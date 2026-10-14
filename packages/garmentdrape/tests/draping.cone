@@ -1,0 +1,169 @@
+// Draping a sewing pattern on a body.
+//
+// A shirt made of one tube panel (an A-line, a rectangle flared to a hem 1.4 times as wide, sewn left edge to right edge)
+// is draped on the mannequin's torso, the arms ignored (a shirt has armholes):
+//
+// 1. The seam joins the panel's two side edges: the cloth has (nu + 1)(nv + 1) - (nv + 1) particles, the seam's pairs
+//    sharing a particle, and the output keeps every vertex (the uvs differ across a seam).
+// 2. Every rest length is the pattern's flat length: the top row's edges are the top edge's cells, the hem's the bottom
+//    edge's (a seam does not average away the A-line), a side edge's cell the slanted edge's.
+// 3. After the drape no particle is inside the body's proxies, the cloth is at rest, and no edge is stretched more than
+//    the strain limit allows.
+// 4. The tight rows (looseness 0) sit at the body's proxy surface plus the gap, the loose rows hang below.
+// 5. A wider panel hangs further from the body than a narrower one (ease is the pattern's width, not the wrap).
+// 6. The skin weights sum to one over real bones, and a refused pattern says so.
+
+mod draping;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import xpbdsoftbody use *;
+import garmentdrape use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// A tube-panel shirt: `girth` round at the chest, `length` long, tight above `tightTo` (a fraction of its length), free
+// below
+fn shirt(girth f32, length f32, tightTo f32) Pattern {
+  mut pat = Pattern.make("shirt");
+  mut p = newPanel("body", 24u32, 16u32);
+  addLine(&mut p.top, 0., 0., girth, 0., 24u32);
+  addLine(&mut p.bottom, -0.2 * girth, length, 1.2 * girth, length, 24u32);
+  addLine(&mut p.left, 0., 0., -0.2 * girth, length, 16u32);
+  addLine(&mut p.right, girth, 0., 1.2 * girth, length, 16u32);
+  p.place.axisFrom = NECK;
+  p.place.axisTo = PELVIS;
+  p.place.shift = 0.12;
+  p.place.face = new Vec3(0., 0., -1.);
+  p.place.arc = 2. * pi;
+  p.place.gap = 0.012;
+  p.place.flare = 0.1;
+  p.loose.push(new Vec2(0., 0.));
+  p.loose.push(new Vec2(tightTo, 0.));
+  p.loose.push(new Vec2(tightTo + 0.15, 1.));
+  p.loose.push(new Vec2(1., 1.));
+  p.reach = 0.2;
+  imm id = pat.addPanel(p);
+  pat.stitch(id, EDGE_LEFT, id, EDGE_RIGHT, false);
+  pat.ignore.push(CLAVICLE_L);
+  pat.ignore.push(CLAVICLE_R);
+  pat;
+}
+
+// The mean distance of a row of the shirt's particles from the torso axis
+fn rowRadius(rig &BodyRig, g &Garment, row usize, nu usize) f32 {
+  imm a = (*rig.restModels[NECK]).translation;
+  imm b = (*rig.restModels[PELVIS]).translation;
+  imm ad = (b - a).normalize();
+  mut sum = 0.;
+  mut i = 0usize;
+  while i < nu {
+    imm pt = *g.soft.pos[row * nu + i];
+    imm perp = (pt - a) - ad * (pt - a).dot(ad);
+    sum = sum + perp.length();
+    i = i + 1usize;
+  }
+  sum / f32.from(nu);
+}
+
+fn edgeRest(g &Garment, a u32, b u32) f32 {
+  mut k = 0usize;
+  while k < g.soft.dist.len() {
+    imm c = *g.soft.dist[k];
+    if (c.a == a and c.b == b) or (c.a == b and c.b == a) { return c.rest; }
+    k = k + 1usize;
+  }
+  -1.;
+}
+
+fn main() i32 {
+  imm rig = humanoidMannequin(1.75);
+  imm none = LayerSurface.empty();
+
+  imm pat = shirt(1.35, 0.5, 0.3);
+  imm d = drape(&pat, &rig, 0., &none, 1u32);
+  expectBool(d.ok, true, "the shirt drapes");
+  imm g = &d.garment;
+  imm nu = 24usize;
+  imm nv = 16usize;
+  expectUInt(u64.from(g.particleCount()), u64.from(nu * (nv + 1usize)), "the seam joins the two side edges: one particle for each pair of vertices on it");
+  expectUInt(u64.from(g.soft.vertexMap.len()), u64.from((nu + 1usize) * (nv + 1usize)), "and the output keeps every vertex (uvs differ across a seam)");
+  expectUInt(u64.from(g.soft.tris.len() / 3usize), u64.from(nu * nv * 2usize), "two triangles a cell");
+  near(edgeRest(g, u32.from(6usize * nu), u32.from(6usize * nu + 1usize)), 1.35 * (1. + 0.4 * 0.375) / 24., 1e-4, "an edge of the free row 6 is that row's cell: the width 1.35 m grown 40% over the panel, 0.375 of the way down, over 24");
+  near(edgeRest(g, u32.from(nv * nu), u32.from(nv * nu + 1usize)), 1.35 * 1.4 / 24., 1e-4, "a hem edge is the bottom edge's cell: 1.4 times as wide");
+  near(edgeRest(g, u32.from(8usize * nu), u32.from(9usize * nu)), (0.27 * 0.27 + 0.5 * 0.5).sqrt() / 16., 1e-4, "a side edge is the slanted edge's cell");
+  expectBool(g.soft.dist.len() > 700usize, true, "stretch constraints on the edges (those between two skinned particles are dropped)");
+  expectUInt(u64.from(g.tightCount()), u64.from(nu * 5usize), "the rows above 0.3 of the length are tight: 5 rows of 24");
+
+  mut circ = 0.;
+  mut ci = 0usize;
+  while ci < nu { circ = circ + (*g.soft.pos[ci]).distance(*g.soft.pos[(ci + 1usize) % nu]); ci = ci + 1usize; }
+  expectBool(circ > 1.1 and circ < 1.35, true, "the pinned top ring is the body's circumference (1.1 to 1.35 m) in a 1.35 m pattern: the cloth has ease");
+  expectUInt(u64.from(d.inside), 0u64, "no particle is left inside the body");
+  expectBool(d.settledSpeed < 0.05, true, "the cloth has come to rest (the fastest particle under 5 cm/s)");
+  mut over = 0usize;
+  mut ek = 0usize;
+  while ek < g.soft.dist.len() {
+    imm c = *g.soft.dist[ek];
+    imm l = (*g.soft.pos[usize.from(c.a)]).distance(*g.soft.pos[usize.from(c.b)]);
+    if l > c.rest * 1.08 { over = over + 1usize; }
+    ek = ek + 1usize;
+  }
+  expectBool(over * 100usize < g.soft.dist.len() * 12usize, true, "fewer than 12% of the edges are stretched past 8% (they are in the pinned rows, where the body's contour is longer than the pattern's rows are apart)");
+  expectBool(d.worstStrain < 0.6, true, "and the worst edge is under 60%");
+
+  // the top row (v = 0) sits the gap outside the body at its nearest, the bottom row hangs below it
+  mut topMin = 1e9;
+  mut i = 0usize;
+  while i < nu {
+    topMin = fminf(topMin, rig.distanceSeen(&rig.restModels, 0., &g.seen, *g.soft.pos[i]));
+    i = i + 1usize;
+  }
+  near(topMin, 0.012, 0.004, "the tight top row is the gap (1.2 cm) from the proxy at its nearest");
+  imm topY = (*g.soft.pos[3usize]).y;
+  imm bottomY = (*g.soft.pos[nv * nu + 3usize]).y;
+  expectBool(topY - bottomY > 0.38, true, "the hem hangs at least 38 cm below the top (the cloth is 50 cm long)");
+
+  // ease: a wider pattern hangs further out than a narrower one at the waist
+  imm wide = shirt(1.9, 0.5, 0.3);
+  imm dw = drape(&wide, &rig, 0., &none, 1u32);
+  imm narrow = shirt(1.2, 0.5, 0.3);
+  imm dn = drape(&narrow, &rig, 0., &none, 1u32);
+  expectBool(dw.ok and dn.ok, true, "the wide and the narrow shirts drape");
+  imm rw = rowRadius(&rig, &dw.garment, 8usize, nu);
+  imm rn = rowRadius(&rig, &dn.garment, 8usize, nu);
+  expectBool(rw > rn + 0.02, true, "at the waist the 1.9 m shirt hangs further from the axis than the 1.2 m one (the pattern is the fit)");
+
+  // skin: weights sum to one, joints are bones of the skeleton
+  mut skinOk = true;
+  mut p = 0usize;
+  while p < g.particleCount() {
+    mut w = 0.;
+    mut c = 0usize;
+    while c < 4usize {
+      w = w + *g.weights[p * 4usize + c];
+      if *g.weights[p * 4usize + c] > 0. and usize.from(*g.joints[p * 4usize + c]) >= rig.boneCount() { skinOk = false; }
+      c = c + 1usize;
+    }
+    if absf(w - 1.) > 1e-3 { skinOk = false; }
+    p = p + 1usize;
+  }
+  expectBool(skinOk, true, "every particle's skin weights sum to one over real bones");
+  imm top0 = usize.from(*g.joints[12usize * 4usize]);
+  expectBool(top0 == CHEST or top0 == SPINE or top0 == NECK, true, "a particle in the top row is skinned mainly to the upper torso");
+
+  // bad patterns are refused
+  mut broken = Pattern.make("broken");
+  mut bp = newPanel("p", 4u32, 4u32);
+  addLine(&mut bp.top, 0., 0., 1., 0., 4u32);
+  broken.addPanel(bp);
+  imm db = drape(&broken, &rig, 0., &none, 1u32);
+  expectBool(db.ok, false, "a panel with missing edges is refused");
+
+  done();
+}

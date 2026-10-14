@@ -1,0 +1,362 @@
+// ======== An outfit in motion: skinned where the cloth is tight, simulated where it is loose ========
+//
+// THE HYBRID. Each particle of a draped garment has a LOOSENESS from its pattern (0 tight to 1 free) and its SKIN: four
+// joints and weights copied from the body. Every frame:
+//
+//  1. SKINNED TARGET. The skinning matrices of the pose (render's skinning: posed bone times the inverse bind pose) carry
+//     the draped bind shape to where the skin would put every particle (linear blend skinning; the CPU twin of
+//     skinning.slang).
+//  2. TIGHT particles (looseness at or below TIGHT) ARE the skinned targets: pinned, and moved to their target every
+//     substep, interpolated from last frame's. The cloth that is tight to the body costs the soft body nothing.
+//  3. LOOSE particles are simulated (XPBD, xpbdsoftbody) against the body's moving collision proxies (capsules and
+//     boxes from the bones, rig.cone), with wind. After each substep they are brought back toward the skin by the two
+//     tools every production cloth system has (PhysX/NvCloth's and Chaos Cloth's "max distance" and "stiffness" paint):
+//       - a MAX DISTANCE: a particle may not stray further than `reach * looseness` from its skinned target, so the
+//         simulation never runs away from the body (a cape stays on its wearer, a sleeve at the arm);
+//       - a FOLLOW pull toward the target for the part-loose, stronger the tighter, so the cloth fades from skin to
+//         simulation without a seam in the middle.
+//     Both are positional corrections; the velocity is corrected by what they moved (so they cost no energy).
+//  4. LAYERS. A garment is stepped after the layers beneath it. The proxies it collides with are grown by its layer's
+//     offset (layers.cone), and each of its free particles is pushed out of the surface of every garment beneath
+//     (shells posed on the CPU, hybrids at their present particles).
+//
+// THE COST per frame is skinning the particles (4 matrix-point products each), the soft body's substeps for the free
+// ones, and one grid rebuild a layer. Nothing is allocated per frame after the first.
+
+pub struct Outfit {
+  pub garments List[Garment];
+  pub shells List[Shell];
+  pub matrices List[Mat4];            // the skinning matrices of the present pose
+  pub stack LayerSurface;             // the layers beneath the one being stepped
+  // Where the time goes, in nanoseconds summed over the frames since the last `resetCost`: skinning the targets, the
+  // colliders and the step's start, the pins, the soft body's substeps, the clamp and pull, the layer push, the shells
+  // and the stack between layers
+  pub cost List[i64];
+  pub frames u32 = 0u32;
+  // How far outside the layers beneath a garment is kept while it moves (metres). The layers move a centimetre or two a frame,
+  // and a particle that gets deeper behind a surface than this is not seen by the push at all, so it is wider than
+  // what is drawn: a loose garment stands that far off the one beneath it.
+  pub layerClearance f32 = 0.025;
+  // How deep behind a layer a skin-driven particle's target can be and still be taken out of it (metres)
+  pub layerReach f32 = 0.0;
+  // Whether the garments are kept outside the layers beneath (for comparing: what the layers do without it)
+  pub keepLayers bool = true;
+
+  // An outfit with nothing on it. The threads its cloth uses are the program's: `step` takes the pool (one pool may serve
+  // every outfit of a scene, stepped one after another).
+  pub fn make() Outfit {
+    mut c = List[i64].empty();
+    mut k = 0usize;
+    while k < 8usize { c.push(0i64); k = k + 1usize; }
+    new Outfit(List[Garment].empty(), List[Shell].empty(), List[Mat4].empty(), LayerSurface.empty(), c, 0u32);
+  }
+
+  pub fn resetCost(self &mut) {
+    mut k = 0usize;
+    while k < cost.len() { cost.set(k, 0i64); k = k + 1usize; }
+    frames = 0u32;
+  }
+
+  pub fn addGarment(self &mut, g Garment) { garments.push(g); }
+  pub fn addShell(self &mut, s Shell) { shells.push(s); }
+
+  // How many particles are simulated (free) and how many skinned (tight), over all the garments
+  pub fn freeParticles(self &) usize {
+    mut n = 0usize;
+    mut g = 0usize;
+    while g < garments.len() {
+      n = n + garments[g].particleCount() - garments[g].tightCount();
+      g = g + 1usize;
+    }
+    n;
+  }
+
+  // Carry every garment to the pose at `models`: each particle goes where the skin takes its draped place, at rest. For
+  // the first frame, and after a teleport.
+  pub fn snap(self &mut, rig &BodyRig, models &List[Transform3]) {
+    rig.skinMatrices(models, &mut matrices);
+    mut g = 0usize;
+    while g < garments.len() {
+      computeTargets(&mut garments[g], &matrices);
+      mut i = 0usize;
+      while i < garments[g].soft.pos.len() {
+        imm t = *garments[g].target[i];
+        garments[g].soft.pos.set(i, t);
+        garments[g].soft.prev.set(i, t);
+        garments[g].soft.vel.set(i, new Vec3(0., 0., 0.));
+        i = i + 1usize;
+      }
+      garments[g].targetPrev.clear();
+      i = 0usize;
+      while i < garments[g].target.len() { garments[g].targetPrev.push(*garments[g].target[i]); i = i + 1usize; }
+      garments[g].primed = true;
+      g = g + 1usize;
+    }
+  }
+
+  // One frame of `dt` seconds with the bones at `models` and the air moving at `wind`
+  pub fn step(self &mut, rig &BodyRig, models &List[Transform3], dt f32, wind Vec3, workers &mut Workers) {
+    imm tShells = Instant.now();
+    rig.skinMatrices(models, &mut matrices);
+    mut top = 0u32;
+    mut g = 0usize;
+    while g < garments.len() { if garments[g].layer > top { top = garments[g].layer; } g = g + 1usize; }
+    g = 0usize;
+    while g < shells.len() { if shells[g].layer > top { top = shells[g].layer; } g = g + 1usize; }
+    stack.clear();
+    imm none = LayerSurface.empty();
+    mut layer = 0u32;
+    while layer <= top {
+      mut any = false;
+      // shells of this layer: posed on the CPU
+      g = 0usize;
+      while g < shells.len() {
+        if shells[g].layer == layer {
+          shells[g].pose(&matrices);
+          any = true;
+        }
+        g = g + 1usize;
+      }
+      // garments of this layer
+      g = 0usize;
+      while g < garments.len() {
+        if garments[g].layer == layer {
+          stepGarment(&mut garments[g], rig, models, &matrices, if keepLayers { &stack; } else { &none; }, workers, dt, wind, &mut cost, layerReach);
+          any = true;
+        }
+        g = g + 1usize;
+      }
+      // then they become the surface the next layer must stay outside
+      imm tStack = Instant.now();
+      if any {
+        g = 0usize;
+        while g < shells.len() {
+          if shells[g].layer == layer { stack.append(&shells[g].posed, &shells[g].mesh.indices); }
+          g = g + 1usize;
+        }
+        g = 0usize;
+        while g < garments.len() {
+          if garments[g].layer == layer { stack.append(&garments[g].soft.pos, &garments[g].soft.tris); }
+          g = g + 1usize;
+        }
+        if layer < top { stack.clearance = layerClearance; stack.reach = layerReach; stack.rebuild(); }
+      }
+      cost.set(6usize, *cost[6usize] + tStack.elapsed().nanos());
+      layer = layer + 1u32;
+    }
+    cost.set(7usize, *cost[7usize] + tShells.elapsed().nanos());
+    frames = frames + 1u32;
+  }
+}
+
+// Where the skin puts every particle of `g`, for the matrices of the present pose
+fn computeTargets(g &mut Garment, matrices &List[Mat4]) {
+  imm n = g.bind.len();
+  if g.target.len() != n {
+    g.target.clear();
+    mut k = 0usize;
+    while k < n { g.target.push(new Vec3(0., 0., 0.)); k = k + 1usize; }
+  }
+  mut i = 0usize;
+  while i < n {
+    imm p = *g.bind[i];
+    mut acc = new Vec3(0., 0., 0.);
+    mut k = 0usize;
+    while k < 4usize {
+      imm w = *g.weights[i * 4usize + k];
+      if w > 0. { acc = acc + (*matrices[usize.from(*g.joints[i * 4usize + k])]).transformPoint(p) * w; }
+      k = k + 1usize;
+    }
+    g.target.set(i, acc);
+    i = i + 1usize;
+  }
+}
+
+fn stepGarment(g &mut Garment, rig &BodyRig, models &List[Transform3], matrices &List[Mat4], below &LayerSurface,
+    workers &mut Workers, dt f32, wind Vec3, cost &mut List[i64], layerReach f32) {
+  imm n = g.soft.pos.len();
+  if n == 0usize { return; }
+  imm t00 = Instant.now();
+  // this frame's targets; last frame's are what the pins were interpolated from
+  mut i = 0usize;
+  if g.targetPrev.len() != n or !g.primed {
+    g.targetPrev.clear();
+    if g.target.len() == n { while i < n { g.targetPrev.push(*g.target[i]); i = i + 1usize; } }
+  } else {
+    while i < n { g.targetPrev.set(i, *g.target[i]); i = i + 1usize; }
+  }
+  computeTargets(g, matrices);
+  // where the skin puts a particle that the skin drives (pinned, or all but free) must not be inside a layer beneath: the
+  // two skins deform a little differently at a bending joint, and a pin cannot be pushed out like a free particle, so the
+  // TARGET is taken out of the layers beneath instead
+  if below.nx != 0u32 {
+    i = 0usize;
+    while i < n {
+      if *g.loose[i] < 0.3 { g.target.set(i, below.pushOut(*g.target[i])); }
+      i = i + 1usize;
+    }
+  }
+  if g.targetPrev.len() != n {
+    g.targetPrev.clear();
+    i = 0usize;
+    while i < n { g.targetPrev.push(*g.target[i]); i = i + 1usize; }
+  }
+  cost.set(0usize, *cost[0usize] + t00.elapsed().nanos());
+  g.primed = true;
+  if g.before.len() != n {
+    g.before.clear();
+    i = 0usize;
+    while i < n { g.before.push(*g.soft.pos[i]); i = i + 1usize; }
+  }
+  imm tc = Instant.now();
+  rig.collidersFor(models, g.inflate, &g.proxyIdx, &mut g.soft.colliders);
+  g.soft.substeps = g.substeps;
+  g.soft.damping = g.damping;
+  g.soft.beginSteps(workers, dt, wind);
+  cost.set(1usize, *cost[1usize] + tc.elapsed().nanos());
+  imm subs = g.soft.stepSubs;
+  while g.soft.substepsLeft() > 0u32 {
+    imm s = g.soft.stepIndex + 1u32;
+    imm f = f32.from(s) / f32.from(subs);
+    // tight particles: on their targets. Part-loose ones: drawn toward theirs, in position and velocity, BEFORE the
+    // substep, so that the substep's contacts have the last word (a skinned target can lie a millimetre inside a
+    // collider, and a pull after the contact would fight it and make the particle buzz)
+    imm tp = Instant.now();
+    i = 0usize;
+    while i < n {
+      imm lo = *g.loose[i];
+      if lo <= TIGHT {
+        g.soft.pos.set(i, (*g.targetPrev[i]).lerp(*g.target[i], f));
+        g.soft.vel.set(i, (*g.target[i] - *g.targetPrev[i]) * (1. / dt));
+      } else {
+        g.before.set(i, *g.soft.pos[i]);
+        if lo < 1. {
+          imm t = (*g.targetPrev[i]).lerp(*g.target[i], f);
+          imm skinV = (*g.target[i] - *g.targetPrev[i]) * (1. / dt);
+          imm tight = 1. - lo;
+          imm pull = fclampf(g.follow * tight * tight * 4., 0., 1.);
+          g.soft.pos.set(i, *g.soft.pos[i] + (t - *g.soft.pos[i]) * pull);
+          g.soft.vel.set(i, (*g.soft.vel[i]).lerp(skinV, pull));
+        }
+      }
+      i = i + 1usize;
+    }
+    cost.set(2usize, *cost[2usize] + tp.elapsed().nanos());
+    imm ts = Instant.now();
+    g.soft.nextSubstep(workers);
+    cost.set(3usize, *cost[3usize] + ts.elapsed().nanos());
+    // loose particles: held within reach of the skin (the max distance, an inelastic stop)
+    imm h = g.soft.substepSeconds();
+    imm tq = Instant.now();
+    i = 0usize;
+    while i < n {
+      imm lo = *g.loose[i];
+      if lo > TIGHT {
+        imm p = *g.soft.pos[i];
+        imm t = (*g.targetPrev[i]).lerp(*g.target[i], f);
+        imm limit = 0.004 + lo * *g.reach[i];
+        imm d = p - t;
+        imm dl = d.length();
+        if dl > limit { g.soft.pos.set(i, t + d * (limit / dl)); }
+      }
+      i = i + 1usize;
+    }
+    // a loose particle's velocity is what it moved over the substep in all, the pull and the stop included (XPBD's own
+    // is the move its contacts and constraints made, and a correction the cloth's constraints undo every substep would
+    // stay in it as a speed of metres a second though the particle does not move); damped as the soft body damps
+    imm keep = 1. / (1. + g.damping * h);
+    i = 0usize;
+    while i < n {
+      if *g.loose[i] > TIGHT { g.soft.vel.set(i, (*g.soft.pos[i] - *g.before[i]) * (keep / h)); }
+      i = i + 1usize;
+    }
+    cost.set(4usize, *cost[4usize] + tq.elapsed().nanos());
+    imm tl = Instant.now();
+    // against the layers beneath, every substep (a position fix; the velocity into the surface is taken out, none added)
+    if s % 2u32 == 0u32 { pushOutOfSurface(below, &mut g.soft, 0.008); }
+    cost.set(5usize, *cost[5usize] + tl.elapsed().nanos());
+  }
+  g.soft.endSteps();
+}
+
+// ---- dressing a body ----
+
+pub struct Dressing {
+  pub outfit Outfit;
+  pub ok bool;
+  pub why String;
+}
+
+// Dress `rig`: the shells and the patterns put on in order of layer, each layer over the ones beneath. A layer's
+// garments collide with the body's proxies grown by the thickest cloth beneath them, and are draped (and, once worn,
+// pushed) outside the surfaces of the layers beneath. `threads` is how many threads the cloth may use (draping and
+// afterwards).
+pub fn dress(rig &BodyRig, shellSpecs &List[ShellSpec], patterns &List[Pattern], threads u32) Dressing {
+  mut outfit = Outfit.make();
+  mut below = LayerSurface.empty();
+  mut inflate = 0.;
+  mut top = 0u32;
+  mut i = 0usize;
+  while i < shellSpecs.len() { if shellSpecs[i].layer > top { top = shellSpecs[i].layer; } i = i + 1usize; }
+  i = 0usize;
+  while i < patterns.len() { if patterns[i].layer > top { top = patterns[i].layer; } i = i + 1usize; }
+  mut layer = 0u32;
+  while layer <= top {
+    mut thick = 0.;
+    i = 0usize;
+    while i < shellSpecs.len() {
+      if shellSpecs[i].layer == layer {
+        imm sh = buildShell(shellSpecs[i], rig, inflate);
+        thick = fmaxf(thick, sh.thickness);
+        outfit.addShell(sh);
+      }
+      i = i + 1usize;
+    }
+    // the surface of everything beneath this layer (the lower layers' shells and draped garments)
+    below.clear();
+    mut s = 0usize;
+    while s < outfit.shells.len() {
+      if outfit.shells[s].layer < layer { below.append(&outfit.shells[s].mesh.positions, &outfit.shells[s].mesh.indices); }
+      s = s + 1usize;
+    }
+    s = 0usize;
+    while s < outfit.garments.len() {
+      if outfit.garments[s].layer < layer { below.append(&outfit.garments[s].bind, &outfit.garments[s].soft.tris); }
+      s = s + 1usize;
+    }
+    below.clearance = 0.014;
+    below.rebuild();
+    i = 0usize;
+    while i < patterns.len() {
+      if patterns[i].layer == layer {
+        mut d = drape(patterns[i], rig, inflate, &below, threads);
+        if !d.ok { return new Dressing(Outfit.make(), false, d.why.copy()); }
+        thick = fmaxf(thick, d.garment.thickness);
+        mut moved = Garment.empty();
+        moved <=> d.garment;
+        outfit.addGarment(moved);
+      }
+      i = i + 1usize;
+    }
+    inflate = inflate + thick;
+    layer = layer + 1u32;
+  }
+  new Dressing(outfit, true, String.empty());
+}
+
+// How well garment `g` stays outside everything beneath it (the shells as last posed, the garments of lower layers
+// as they are): see `measureLayering`
+pub fn layerCheckOf(o &Outfit, g usize) LayerCheck {
+  mut beneath = LayerSurface.empty();
+  mut s = 0usize;
+  while s < o.shells.len() {
+    if o.shells[s].layer < o.garments[g].layer { beneath.append(&o.shells[s].posed, &o.shells[s].mesh.indices); }
+    s = s + 1usize;
+  }
+  s = 0usize;
+  while s < o.garments.len() {
+    if o.garments[s].layer < o.garments[g].layer { beneath.append(&o.garments[s].soft.pos, &o.garments[s].soft.tris); }
+    s = s + 1usize;
+  }
+  measureLayering(&o.garments[g].soft.pos, &o.garments[g].soft.invMass, &beneath);
+}

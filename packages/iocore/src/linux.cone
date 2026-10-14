@@ -96,7 +96,7 @@ extern {
   fn @c("fcntl") sysFcntl(fd i32, cmd i32, arg i32) i32;
   fn @c("pread") sysPread(fd i32, buf *u8, n usize, at i64) i64;
   fn @c("pwrite") sysPwrite(fd i32, buf *u8, n usize, at i64) i64;
-  fn @c("stat") sysStat(path *u8, st *u8) i32;
+  fn @c("stat") sysStat(path cstr, st *u8) i32;
   fn @c("getaddrinfo") sysGetaddrinfo(node *u8, service *u8, hints *AddrInfoLx, res &mut *AddrInfoLx) i32;
   fn @c("freeaddrinfo") sysFreeaddrinfo(res *AddrInfoLx);
 }
@@ -952,13 +952,19 @@ fn lxResolve(arg u64, buf &mut IoBuf) Outcome {
 // high word and its low word
 fn lxStat(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  imm path = cstrCopy(buf.view());
-  if path as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
+  // The path as a C string: a String keeps its zero after its bytes (cstr, the
+  // type the posix package declares 'stat' with too: one C name, one signature)
+  mut name = String.empty();
+  name.appendBytes(buf.view());
+  mut k = 0usize;
+  while k < buf.len() {
+    if buf.view()[k] == 0u8 {return Outcome.Failed(errorInvalidParameter);}
+    k = k + 1usize;
+  }
   // struct stat on x86-64 is 144 bytes: st_mode at 24, st_size at 48 and
   // st_mtim at 88
   mut st = new Array[u64, 18] <- fill 0u64;
-  imm rc = sysStat(path, &mut st as *u8);
-  libc.free(path);
+  imm rc = sysStat(name.cstr(), &mut st as *u8);
   if rc != 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
   imm mode = u32.from(st[3usize] & 0xFFFFFFFFu64);
   imm size = st[6usize];

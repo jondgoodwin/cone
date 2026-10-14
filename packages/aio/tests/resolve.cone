@@ -1,0 +1,184 @@
+// aio.resolve: an actor looks a name up and pauses meanwhile; a thread of
+// iocore's blocking pool (its DNS lane) does the lookup. One actor runs the
+// cases in turn and reports numbers on a channel; main checks them:
+//
+//   an address as text ("127.0.0.1") -- one address, the port given, loopback;
+//   "localhost" -- at least one address, all loopback, all with the port given;
+//   an IPv6 address as text ("::1") -- one address, V6, loopback;
+//   a name that cannot be a host's (a space in it) -- an Error, a system
+//     failure (not Cancelled, not TimedOut);
+//   a group cancelled already -- Cancelled at once; a deadline already past --
+//     TimedOut at once;
+//   twenty lookups at once, from twenty actors -- all Done, none lost.
+//
+// No network is needed: none of the names is looked up outside this machine.
+
+mod resolve;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, SocketAddr, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const many = 20u64;
+
+fn take(rx &mut Receiver[u64]) u64 {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {999u64;}
+  }
+}
+
+fn b(v bool) u64 {if v {1u64;} else {0u64;}}
+
+// How a lookup that failed ended: 2 cancelled, 3 timed out, 4 a failure of the
+// system; 0 for one that did not fail
+fn endedBy(r &Result[List[SocketAddr], IoError]) u64 {
+  match r {
+    case imm e &Error {
+      if e.isCancelled() {2u64;}
+      elif e.isTimedOut() {3u64;}
+      else {4u64;}
+    }
+    else {0u64;}
+  }
+}
+
+// The addresses a lookup found, an empty list for a failure
+fn addrsOf(r Result[List[SocketAddr], IoError]) List[SocketAddr] {
+  mut res = r;
+  mut l = List[SocketAddr].empty();
+  match &mut res {
+    case mut ok &mut Ok {l <=> *ok;}
+    else {}
+  }
+  l;
+}
+
+fn allLoopback(l &List[SocketAddr]) bool {
+  mut i = 0usize;
+  while i < l.len() {
+    if not l[i].isLoopback() {return false;}
+    i = i + 1usize;
+  }
+  l.len() > 0usize;
+}
+
+fn allPort(l &List[SocketAddr], port u16) bool {
+  mut i = 0usize;
+  while i < l.len() {
+    if l[i].port() != port {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+actor Looker {
+  out Sender[u64];
+
+  pub async do cases(self, cancelled CancelGroup) {
+    {
+      imm r = await aio.resolve("127.0.0.1", 8080u16);
+      imm how = endedBy(&r);
+      imm l = addrsOf(r);
+      out.send(how);
+      out.send(u64.from(l.len()));
+      out.send(b(allPort(&l, 8080u16)));
+      out.send(b(allLoopback(&l)));
+      out.send(b(not l[0usize].isV6()));
+    }
+    {
+      imm r = await aio.resolve("localhost", 9000u16);
+      imm how = endedBy(&r);
+      imm l = addrsOf(r);
+      out.send(how);
+      out.send(b(l.len() >= 1usize));
+      out.send(b(allPort(&l, 9000u16)));
+      out.send(b(allLoopback(&l)));
+    }
+    {
+      imm r = await aio.resolve("::1", 7u16);
+      imm how = endedBy(&r);
+      imm l = addrsOf(r);
+      out.send(how);
+      out.send(u64.from(l.len()));
+      out.send(b(l[0usize].isV6()));
+      out.send(b(allLoopback(&l)));
+      out.send(b(allPort(&l, 7u16)));
+    }
+    {
+      imm r = await aio.resolve("no such host", 80u16);
+      out.send(endedBy(&r));
+    }
+    {
+      imm r = await aio.resolveIn("localhost", 80u16, IoLimits.within(cancelled));
+      out.send(endedBy(&r));
+    }
+    {
+      imm r = await aio.resolveIn("localhost", 80u16, IoLimits.until(Instant.now() - Duration.fromSeconds(5i64)));
+      out.send(endedBy(&r));
+    }
+  }
+}
+
+actor Quick {
+  pub async do look(self, out Sender[u64]) {
+    imm r = await aio.resolve("127.0.0.1", 5u16);
+    imm l = addrsOf(r);
+    out.send(b(l.len() == 1usize and allPort(&l, 5u16)));
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm cancelled = CancelGroup.make();
+  expect(cancelled.cancel(), "the group was live");
+  imm s = new Looker(tx.clone());
+  s.cases(cancelled);
+
+  expectUInt(take(&mut rx), 0u64, "an address as text: Done");
+  expectUInt(take(&mut rx), 1u64, "...one address");
+  expectUInt(take(&mut rx), 1u64, "...with the port given");
+  expectUInt(take(&mut rx), 1u64, "...a loopback one");
+  expectUInt(take(&mut rx), 1u64, "...IPv4");
+
+  expectUInt(take(&mut rx), 0u64, "localhost: Done");
+  expectUInt(take(&mut rx), 1u64, "...at least one address");
+  expectUInt(take(&mut rx), 1u64, "...all with the port given");
+  expectUInt(take(&mut rx), 1u64, "...all loopback");
+
+  expectUInt(take(&mut rx), 0u64, "an IPv6 address as text: Done");
+  expectUInt(take(&mut rx), 1u64, "...one address");
+  expectUInt(take(&mut rx), 1u64, "...IPv6");
+  expectUInt(take(&mut rx), 1u64, "...loopback");
+  expectUInt(take(&mut rx), 1u64, "...with the port given");
+
+  expectUInt(take(&mut rx), 4u64, "a name with a space in it: a failure of the system");
+  expectUInt(take(&mut rx), 2u64, "a group cancelled already: Cancelled");
+  expectUInt(take(&mut rx), 3u64, "a deadline already past: TimedOut");
+
+  // Twenty at once
+  {
+    mut k = 0u64;
+    while k < many {
+      imm q = new Quick();
+      q.look(tx.clone());
+      k = k + 1u64;
+    }
+  }
+  mut good = 0u64;
+  mut k = 0u64;
+  while k < many {
+    good = good + take(&mut rx);
+    k = k + 1u64;
+  }
+  expectUInt(good, many, "twenty lookups at once: all Done, each with its address");
+  finalAll();
+  done();
+}
