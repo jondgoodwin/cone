@@ -1,0 +1,191 @@
+// Special tokens: matched whole in an input, the longest first, never merged
+// into or across, decoded as their own text, and left out of a decode on
+// request. The vocabulary is the 'hello world' one of merges.cone (256 to 265)
+// with five more tokens:
+//
+//   266 '<|end|>'   267 '<|begin|>'   268 '<|'   269 '<|ü|>'   (all special)
+//   270 '<|plain|>'  (in the vocabulary, but not marked special)
+
+mod special;
+
+import testing use *;
+import collections use *;
+import bpetokenize;
+
+fn byteTokens() List[String] {
+  mut tokens = List[String].empty();
+  mut b = 0u32;
+  while b < 256u32 {
+    mut one = List[u8].empty();
+    one.push(u8.from(b));
+    tokens.push(bpetokenize.toByteLevel(one.view()));
+    b = b + 1u32;
+  }
+  tokens;
+}
+
+fn spell(plain &str) String { bpetokenize.toByteLevel(plain); }
+
+fn rule(left &str, right &str) String {
+  mut s = spell(left);
+  s.append(" ");
+  s.append(spell(right).view());
+  s;
+}
+
+fn show(ids &List[u32]) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < ids.len() {
+    if i > 0usize { out.append(" "); }
+    out.appendUInt(u64.from(ids.view()[i]));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn ids(tok &bpetokenize.Tokenizer, text &str, want &str) {
+  imm got = tok.encode(text);
+  imm shown = show(&got);
+  expectStr(shown.view(), want, text);
+  match tok.decode(got.view()) {
+    case imm bytes Ok { expectStr(bytes.view(), text, "decode back"); }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", text); }
+  }
+}
+
+fn checks(tok &bpetokenize.Tokenizer) {
+  // a special token alone, at either end, repeated
+  ids(tok, "<|end|>", "266");
+  ids(tok, "hello<|end|>", "259 266");
+  ids(tok, "<|begin|>hello world<|end|>", "267 259 264 266");
+  ids(tok, "<|end|><|end|>", "266 266");
+  ids(tok, "<|end|>hello<|begin|>", "266 259 267");
+  // the longest wins where one begins another, and a short one still matches alone
+  ids(tok, "<|begin|>", "267");
+  ids(tok, "<|", "268");
+  ids(tok, "<|x", "268 120");
+  ids(tok, "<|begi", "268 98 101 103 105");
+  ids(tok, "<", "60");
+  ids(tok, "|>", "124 62");
+  // text between specials is encoded alone: 'hel' and 'lo' do not become 'hello'
+  ids(tok, "hel<|end|>lo", "256 108 266 108 111");
+  ids(tok, "hel<|end|>l", "256 108 266 108");
+  // the special token's text is not the byte-level spelling, so non-ASCII stays itself
+  ids(tok, "<|ü|>", "269");
+  // a token in the vocabulary that is not special is not matched: its text is cut and merged
+  imm plain = tok.encode("<|plain|>");
+  expect(plain.len() > 1usize, "an unmarked token's text is not matched whole");
+  imm shownPlain = show(&plain);
+  expect(shownPlain.view() != "270", "an unmarked token is not found by its text");
+
+  // encodePlain never recognises them
+  imm text = tok.encodePlain("<|end|>");
+  imm shownText = show(&text);
+  expect(shownText.view() != "266", "encodePlain does not make a special token");
+  expect(text.len() > 1usize, "encodePlain encodes the text");
+  match tok.decode(text.view()) {
+    case imm bytes Ok { expectStr(bytes.view(), "<|end|>", "encodePlain decodes back to the text"); }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "encodePlain"); }
+  }
+  // encodeWith appends, and can choose
+  mut out = List[u32].empty();
+  out.push(7u32);
+  tok.encodeWith("<|end|>", true, &mut out);
+  tok.encodeWith("<|end|>", false, &mut out);
+  expect(out.view()[0usize] == 7u32 and out.view()[1usize] == 266u32 and out.len() > 3usize,
+    "encodeWith appends after what is there");
+
+  // asking
+  expect(tok.isSpecialToken(266u32), "266 is special");
+  expect(tok.isSpecialToken(269u32), "269 is special");
+  expect(not tok.isSpecialToken(270u32), "270 is not special");
+  expect(not tok.isSpecialToken(259u32), "259 is not special");
+  expect(not tok.isSpecialToken(5000u32), "an id outside is not special");
+  match tok.tokenBytes(269u32) {
+    case imm bytes Some { expectStr(bytes, "<|ü|>", "a special token decodes to its own text"); }
+    case is None { expect(false, "tokenBytes 269"); }
+  }
+  match tok.tokenId("<|end|>") {
+    case imm id Some { expectUInt(u64.from(id), 266u64, "tokenId of a special token"); }
+    case is None { expect(false, "tokenId of a special token"); }
+  }
+
+  // decode, with the special tokens in and out
+  mut seq = List[u32].empty();
+  seq.push(259u32); seq.push(266u32); seq.push(264u32); seq.push(267u32);
+  match tok.decode(seq.view()) {
+    case imm bytes Ok { expectStr(bytes.view(), "hello<|end|> world<|begin|>", "decode keeps special tokens"); }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "decode specials"); }
+  }
+  mut skipped = List[u8].empty();
+  skipped.push('>');
+  match tok.decodeInto(seq.view(), true, &mut skipped) {
+    case imm count Ok {
+      expectUInt(u64.from(count), 11u64, "decodeInto without specials: 'hello world' is 11 bytes");
+      expectStr(skipped.view(), ">hello world", "decodeInto appends and leaves the specials out");
+    }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "decodeInto"); }
+  }
+}
+
+fn main() i32 {
+  mut tokens = byteTokens();
+  tokens.push(spell("he"));
+  tokens.push(spell("ll"));
+  tokens.push(spell("hell"));
+  tokens.push(spell("hello"));
+  tokens.push(spell(" w"));
+  tokens.push(spell("or"));
+  tokens.push(spell(" wor"));
+  tokens.push(spell("ld"));
+  tokens.push(spell(" world"));
+  tokens.push(spell("aa"));
+  tokens.push(String.from("<|end|>"));
+  tokens.push(String.from("<|begin|>"));
+  tokens.push(String.from("<|"));
+  tokens.push(String.from("<|ü|>"));
+  tokens.push(String.from("<|plain|>"));
+  mut merges = List[String].empty();
+  merges.push(rule("h", "e"));
+  merges.push(rule("l", "l"));
+  merges.push(rule("he", "ll"));
+  merges.push(rule("hell", "o"));
+  merges.push(rule(" ", "w"));
+  merges.push(rule("o", "r"));
+  merges.push(rule(" w", "or"));
+  merges.push(rule("l", "d"));
+  merges.push(rule(" wor", "ld"));
+  merges.push(rule("a", "a"));
+  // given in an order that is not by length, so the longest-first order is made here
+  mut special = List[String].empty();
+  special.push(String.from("<|"));
+  special.push(String.from("<|end|>"));
+  special.push(String.from("<|ü|>"));
+  special.push(String.from("<|begin|>"));
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), bpetokenize.PreTokenizer.Gpt2) {
+    case imm tok Ok { checks(&tok); }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "special vocabulary"); }
+  }
+  // a vocabulary with no special tokens at all: "<|end|>" is just text
+  mut none = List[String].empty();
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Gpt2) {
+    case imm tok Ok {
+      imm got = tok.encode("<|end|>");
+      expect(got.len() > 1usize, "without special tokens the text is encoded");
+      expect(not tok.isSpecialToken(266u32), "none is special");
+      // a non-special token's text is the bytes its spelling stands for: 'ü' as a
+      // character is the byte 0xFC
+      match tok.tokenBytes(269u32) {
+        case imm bytes Some {
+          mut want = List[u8].empty();
+          want.push('<'); want.push('|'); want.push(0xFCu8); want.push('|'); want.push('>');
+          expectStr(bytes, want.view(), "a token that is not special decodes through the table");
+        }
+        case is None { expect(false, "tokenBytes 269, not special"); }
+      }
+    }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "no special tokens"); }
+  }
+  done();
+}

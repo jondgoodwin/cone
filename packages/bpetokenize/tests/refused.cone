@@ -1,0 +1,162 @@
+// What a build refuses, and an id decoded that is not in the vocabulary: each
+// BuildError names its kind, the place (byte, merge or special token) and a
+// message that says what is wrong; a repeated merge and a repeated vocabulary
+// text are not errors.
+
+mod refused;
+
+import testing use *;
+import collections use *;
+import bpetokenize;
+
+fn spell(plain &str) String { bpetokenize.toByteLevel(plain); }
+
+fn rule(left &str, right &str) String {
+  mut s = spell(left);
+  s.append(" ");
+  s.append(spell(right).view());
+  s;
+}
+
+fn byteTokens(without i32) List[String] {
+  mut tokens = List[String].empty();
+  mut b = 0u32;
+  while b < 256u32 {
+    if i32.from(b) != without {
+      mut one = List[u8].empty();
+      one.push(u8.from(b));
+      tokens.push(bpetokenize.toByteLevel(one.view()));
+    }
+    b = b + 1u32;
+  }
+  tokens;
+}
+
+fn kindName(k &bpetokenize.BuildErrorKind) &str {
+  match k {
+    case is MissingByteToken { "MissingByteToken"; }
+    case is BadMerge { "BadMerge"; }
+    case is UnknownMergePart { "UnknownMergePart"; }
+    case is MissingMergeResult { "MissingMergeResult"; }
+    case is UnknownSpecial { "UnknownSpecial"; }
+    case is EmptySpecial { "EmptySpecial"; }
+    case is TooManyTokens { "TooManyTokens"; }
+  }
+}
+
+// The build must be refused with that kind, at that place, and a message holding the phrase
+fn refuse(tokens &List[String], merges &List[String], special &List[String], kind &str, index usize, phrase &str) {
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), bpetokenize.PreTokenizer.Gpt2) {
+    case is Ok { expectStr("<built>", kind, phrase); }
+    case imm e Error {
+      expectStr(kindName(&e.kind), kind, phrase);
+      expectUInt(u64.from(e.index), u64.from(index), phrase);
+      imm m = e.message();
+      if not m.view().contains(phrase) { expectStr(m.view(), phrase, "the message"); }
+      expect(m.view().startsWith("bpetokenize: "), "the message names the package");
+    }
+  }
+}
+
+fn main() i32 {
+  imm none = List[String].empty();
+
+  // a byte with no token: 'A' (65) left out
+  mut gap = byteTokens(65i32);
+  refuse(&gap, &none, &none, "MissingByteToken", 65usize, "no token for the byte 65");
+  // no tokens at all
+  imm nothing = List[String].empty();
+  refuse(&nothing, &none, &none, "MissingByteToken", 0usize, "no token for the byte 0");
+
+  // merges
+  mut tokens = byteTokens(-1i32);
+  tokens.push(spell("he"));
+  mut bad = List[String].empty();
+  bad.push(String.from("h"));
+  refuse(&tokens, &bad, &none, "BadMerge", 0usize, "not two tokens with a space between them");
+  mut bad2 = List[String].empty();
+  bad2.push(rule("h", "e"));
+  bad2.push(String.from("no_space_here"));
+  refuse(&tokens, &bad2, &none, "BadMerge", 1usize, "no_space_here");
+  mut bad3 = List[String].empty();
+  bad3.push(String.from("h "));
+  refuse(&tokens, &bad3, &none, "BadMerge", 0usize, "not two tokens");
+  mut unknown = List[String].empty();
+  unknown.push(String.from("h zzz"));
+  refuse(&tokens, &unknown, &none, "UnknownMergePart", 0usize, "names a token that is not in the vocabulary");
+  mut unknownLeft = List[String].empty();
+  unknownLeft.push(String.from("zzz h"));
+  refuse(&tokens, &unknownLeft, &none, "UnknownMergePart", 0usize, "merge 0 (\"zzz h\")");
+  mut noResult = List[String].empty();
+  noResult.push(rule("h", "e"));
+  noResult.push(rule("l", "l"));
+  refuse(&tokens, &noResult, &none, "MissingMergeResult", 1usize, "makes a token that is not in the vocabulary");
+
+  // special tokens
+  mut absent = List[String].empty();
+  absent.push(String.from("<|nope|>"));
+  refuse(&tokens, &none, &absent, "UnknownSpecial", 0usize, "\"<|nope|>\" is not in the vocabulary");
+  mut empties = byteTokens(-1i32);
+  empties.push(String.from(""));
+  mut emptySpecial = List[String].empty();
+  emptySpecial.push(String.from(""));
+  refuse(&empties, &none, &emptySpecial, "EmptySpecial", 0usize, "has no text");
+
+  // not errors: a merge repeated (the first stands), a text listed twice (the first id is looked up)
+  mut twice = byteTokens(-1i32);
+  twice.push(spell("he"));
+  twice.push(spell("he"));
+  mut merges = List[String].empty();
+  merges.push(rule("h", "e"));
+  merges.push(rule("h", "e"));
+  match bpetokenize.Tokenizer.build(twice.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Gpt2) {
+    case imm tok Ok {
+      expectUInt(u64.from(tok.mergeCount()), 1u64, "a repeated merge counts once");
+      expectUInt(u64.from(tok.vocabSize()), 258u64, "both copies are tokens");
+      imm got = tok.encode("he");
+      expectUInt(u64.from(got.len()), 1u64, "he is one token");
+      expectUInt(u64.from(got.view()[0usize]), 256u64, "the first copy's id");
+      match tok.tokenId(spell("he").view()) {
+        case imm id Some { expectUInt(u64.from(id), 256u64, "tokenId finds the first"); }
+        case is None { expect(false, "tokenId finds the first"); }
+      }
+      // the second copy still decodes
+      mut seq = List[u32].empty();
+      seq.push(257u32);
+      match tok.decode(seq.view()) {
+        case imm bytes Ok { expectStr(bytes.view(), "he", "the repeated token decodes"); }
+        case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "repeated token"); }
+      }
+
+      // decoding an id outside the vocabulary
+      mut outside = List[u32].empty();
+      outside.push(104u32); outside.push(101u32); outside.push(258u32); outside.push(0xFFFFFFFFu32);
+      match tok.decode(outside.view()) {
+        case is Ok { expect(false, "an id outside the vocabulary is refused"); }
+        case imm e Error {
+          expectUInt(u64.from(e.position), 2u64, "the first bad id is at position 2");
+          expectUInt(u64.from(e.id), 258u64, "and it is 258");
+          expectUInt(u64.from(e.vocabSize), 258u64, "of a vocabulary of 258");
+          imm m = e.message();
+          expectStr(m.view(), "bpetokenize: token id 258 at position 2 is not in the vocabulary, which has 258 tokens",
+            "the message");
+        }
+      }
+      // decodeInto leaves the list as it was
+      mut sink = List[u8].empty();
+      sink.push('x');
+      match tok.decodeInto(outside.view(), false, &mut sink) {
+        case is Ok { expect(false, "decodeInto refuses it too"); }
+        case is Error { expectStr(sink.view(), "x", "decodeInto leaves its list as it was"); }
+      }
+      // decoding nothing
+      imm empty = List[u32].empty();
+      match tok.decode(empty.view()) {
+        case imm bytes Ok { expectUInt(u64.from(bytes.len()), 0u64, "no ids decode to no bytes"); }
+        case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "empty decode"); }
+      }
+    }
+    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "repeated merge and token"); }
+  }
+  done();
+}
