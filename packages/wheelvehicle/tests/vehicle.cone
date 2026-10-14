@@ -1,0 +1,302 @@
+// A car in a World (src/vehicle.cone), each check on what it must do, from a number worked out by hand or
+// a physical bound. 1/120 s steps.
+//
+// SUSPENSION
+// 1. At rest on flat ground each of the sedan's four wheels carries m g / 4 = 3,185 N (within 3 percent), the
+//    centre of mass is 0.53 m up (within 2 cm), pitch and roll are under 0.3 degrees and the car is still.
+// 2. Dropped 6 cm, it bounces at its damped heave frequency, w_n sqrt(1 - zeta^2) with w_n = sqrt(4 k / m)
+//    and zeta from the dampers (about 0.5): the period is within 12 percent of 0.73 s.
+// DRIVE
+// 3. Full throttle from rest: 0 to 100 km/h in 4.5 to 9 s; it goes through all five gears; at the end the
+//    driven wheels' rolling speed w r is within 6 percent of the road speed (a tyre at the slip of cruising);
+//    the top speed is 180 to 260 km/h and the engine does not pass its limiter.
+// 4. Reverse: it goes backward (under -2 m/s after 4 s).
+// BRAKES
+// 5. From 100 km/h with the brakes full on it stops in 33 to 50 m: more than v^2 / (2 mu g) = 35.7 m would
+//    allow (a locked tyre grips 0.81 of the peak: 44 m), and the wheels lock (their spin under 5 percent of
+//    the road speed's).
+// STEERING AND GRIP
+// 6. Steering input 0.2 at 6 m/s (Ackermann): the yaw rate is v tan(delta) / L = 0.20 rad/s within 8 percent.
+// 7. Hard cornering at 15 m/s, lock 0.6: the lateral acceleration (speed times yaw rate) is between 0.7 and 1.2 g:
+//    the tyre's grip, not more.
+// 8. On a surface of 0.1 grip under the left wheels and 1.0 under the right, full throttle for 1.5 s: an open
+//    rear differential lets the icy wheel spin far faster than the other (the largest difference over 60 rad/s);
+//    a locked one keeps the two together (under 2 percent of the open one's difference); a limited-slip one
+//    (preload 300 N m, bias 0.5) is in between (under half the open one's, more than the locked one's).
+// JUMP
+// 9. At 20 m/s up a 10 degree ramp all four wheels leave the ground, and while they are off the centre of mass
+//    falls with the acceleration of gravity (9.81 within 3 percent), and the car lands upright and keeps going.
+// DATA
+// 10. The buggy (four-wheel drive, limited slip, long travel) and the truck (six wheels) settle with loads
+//     summing to their weights (within 3 percent), level (pitch under 1.5 degrees).
+
+mod vehicletest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import rigidcollide use *;
+import rigiddynamics use *;
+import wheelvehicle use *;
+
+fn flatWorld() World {
+  mut w = World.make();
+  imm g = w.addShape(Shape.single(Prim.box(new Vec3(30000., 1., 1000.))));
+  w.createBody(BodyDef.staticAt(g, new Vec3(0., -1., 0.)));
+  w;
+}
+
+fn dry(world &mut World, car &mut Vehicle, seconds f32) {
+  imm dt = 1. / 120.;
+  mut n = i32.from(seconds / dt);
+  while n > 0 {
+    car.apply(world, (x, z) => 1., dt);
+    world.step(dt);
+    n = n - 1;
+  }
+}
+
+fn pitchDeg(w &World, id u32) f32 {
+  imm f = w.rotationOf(id) * new Vec3(1., 0., 0.);
+  libc.asinf(f.y) * 57.2958;
+}
+fn rollDeg(w &World, id u32) f32 {
+  imm r = w.rotationOf(id) * new Vec3(0., 0., 1.);
+  libc.asinf(r.y) * 57.2958;
+}
+
+fn totalLoad(car &Vehicle) f32 {
+  mut s = 0.;
+  mut i = 0usize;
+  while i < car.wheels.len() { s = s + car.wheels[i].load; i = i + 1usize; }
+  s;
+}
+
+fn main() i32 {
+  imm g = 9.81;
+  // 1. at rest
+  mut w1 = flatWorld();
+  mut car = Vehicle.create(&mut w1, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w1, &mut car, 4.);
+  mut worstLoad = 0.;
+  mut i = 0usize;
+  while i < 4usize {
+    imm e = libc.fabsf(car.wheels[i].load - 1300. * g / 4.) / (1300. * g / 4.);
+    if e > worstLoad { worstLoad = e; }
+    i = i + 1usize;
+  }
+  expectFloat(f64.from(worstLoad), 0d, 0.03, "at rest each wheel carries a quarter of the weight");
+  expectFloat(f64.from(w1.centerOfMass(car.body).y), 0.53d, 0.02, "at the ride height");
+  expect(libc.fabsf(pitchDeg(&w1, car.body)) < 0.3 and libc.fabsf(rollDeg(&w1, car.body)) < 0.3, "level");
+  expectFloat(f64.from(w1.linearVelocity(car.body).length()), 0d, 0.02, "and still");
+
+  // 2. heave
+  mut w2 = flatWorld();
+  mut c2 = Vehicle.create(&mut w2, sedanSpec(), new Vec3(0., 0.59, 0.), Quat.identity());
+  imm dt = 1. / 120.;
+  mut prevVy = 0.;
+  mut tMin = -1.;      // the first minimum of the height, half a damped period after the release
+  mut t = 0.;
+  while t < 2. {
+    c2.apply(&mut w2, (x, z) => 1., dt);
+    w2.step(dt);
+    t = t + dt;
+    imm vy = w2.linearVelocity(c2.body).y;
+    if tMin < 0. and t > 0.1 and prevVy < 0. and vy >= 0. { tMin = t; }
+    prevVy = vy;
+  }
+  expect(tMin > 0., "the car bounces: its height has a minimum");
+  expectFloat(f64.from(tMin * 2.), 0.73d, 0.09d, "the damped heave period is twice the time to the first minimum");
+
+  // 3. acceleration
+  mut w3 = flatWorld();
+  mut c3 = Vehicle.create(&mut w3, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w3, &mut c3, 1.);
+  c3.drive(1., 0., 0.);
+  mut t100 = -1.;
+  mut maxGear = 0;
+  mut maxRpm = 0.;
+  mut topSpeed = 0.;
+  t = 0.;
+  while t < 60. {
+    c3.apply(&mut w3, (x, z) => 1., dt);
+    w3.step(dt);
+    t = t + dt;
+    c3.speed = w3.linearVelocity(c3.body).dot(w3.rotationOf(c3.body) * new Vec3(1., 0., 0.));
+    if t100 < 0. and c3.kmh() >= 100. { t100 = t; }
+    if c3.gear > maxGear { maxGear = c3.gear; }
+    if c3.rpm > maxRpm { maxRpm = c3.rpm; }
+    if c3.kmh() > topSpeed { topSpeed = c3.kmh(); }
+  }
+  expect(t100 > 4.5 and t100 < 9., "0 to 100 km/h in 4.5 to 9 s");
+  expectInt(i64.from(maxGear), 5i64, "through all five gears");
+  expect(topSpeed > 180. and topSpeed < 260., "top speed 180 to 260 km/h");
+  expect(maxRpm < 6800., "never over the limiter");
+  imm rolling = (c3.wheels[2].omega + c3.wheels[3].omega) * 0.5 * 0.33;
+  expectFloat(f64.from(rolling), f64.from(c3.speed), 0.06d * f64.from(c3.speed), "rolling speed of the driven wheels against the road speed");
+
+  // 4. reverse
+  mut w4 = flatWorld();
+  mut c4 = Vehicle.create(&mut w4, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w4, &mut c4, 1.);
+  c4.reverse = true;
+  c4.drive(1., 0., 0.);
+  dry(&mut w4, &mut c4, 4.);
+  c4.speed = w4.linearVelocity(c4.body).dot(w4.rotationOf(c4.body) * new Vec3(1., 0., 0.));
+  expect(c4.speed < -2., "reverse goes backward");
+
+  // 5. braking from 100 km/h
+  mut w5 = flatWorld();
+  mut c5 = Vehicle.create(&mut w5, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w5, &mut c5, 1.);
+  w5.setLinearVelocity(c5.body, new Vec3(27.78, 0., 0.));
+  i = 0usize;
+  while i < 4usize { c5.wheels[i].omega = 27.78 / 0.33; i = i + 1usize; }
+  c5.drive(0., 1., 0.);
+  imm x0 = w5.positionOf(c5.body).x;
+  mut minOmega = 1000.;
+  t = 0.;
+  while t < 8. and w5.linearVelocity(c5.body).x > 0.3 {
+    c5.apply(&mut w5, (x, z) => 1., dt);
+    w5.step(dt);
+    t = t + dt;
+    if w5.linearVelocity(c5.body).x > 20. { minOmega = 1000.; }
+  }
+  imm dist = w5.positionOf(c5.body).x - x0;
+  expect(dist > 33. and dist < 50., "braking distance from 100 km/h");
+  expect(libc.fabsf(c5.wheels[0].omega) * 0.33 < 0.05 * 27.78 or w5.linearVelocity(c5.body).x < 0.5, "the wheels lock or the car has stopped");
+
+  // 6. Ackermann yaw rate
+  mut w6 = flatWorld();
+  mut c6 = Vehicle.create(&mut w6, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  w6.setLinearVelocity(c6.body, new Vec3(6., 0., 0.));
+  i = 0usize;
+  while i < 4usize { c6.wheels[i].omega = 6. / 0.33; i = i + 1usize; }
+  t = 0.;
+  mut yaw = 0.;
+  while t < 6. {
+    imm v = w6.linearVelocity(c6.body).length();
+    c6.drive(vclampT(0.12 + (6. - v) * 0.3, 0., 1.), 0., 0.2);
+    c6.apply(&mut w6, (x, z) => 1., dt);
+    w6.step(dt);
+    t = t + dt;
+    if t > 4. { yaw = w6.angularVelocity(c6.body).y; }
+  }
+  // right turn: negative rotation about +y; delta from the lock at 6 m/s
+  imm lock6 = 0.5 * (1. - 6. / 40.) + 0.07 * 6. / 40.;
+  imm delta = 0.2 * lock6;
+  imm expectedYaw = 6. * libc.tanf(delta) / 2.6;
+  expectFloat(f64.from(-yaw), f64.from(expectedYaw), 0.08d * f64.from(expectedYaw), "the yaw rate at 6 m/s is v tan(delta) / L");
+
+  // 7. the grip limit
+  mut w7 = flatWorld();
+  mut c7 = Vehicle.create(&mut w7, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  w7.setLinearVelocity(c7.body, new Vec3(15., 0., 0.));
+  i = 0usize;
+  while i < 4usize { c7.wheels[i].omega = 15. / 0.33; i = i + 1usize; }
+  t = 0.;
+  mut aLat = 0.;
+  while t < 6. {
+    imm v = w7.linearVelocity(c7.body).length();
+    c7.drive(vclampT(0.2 + (15. - v) * 0.3, 0., 1.), 0., 0.6);
+    c7.apply(&mut w7, (x, z) => 1., dt);
+    w7.step(dt);
+    t = t + dt;
+    if t > 4. { aLat = libc.fabsf(w7.angularVelocity(c7.body).y) * w7.linearVelocity(c7.body).length(); }
+  }
+  expect(aLat / g > 0.7 and aLat / g < 1.2, "the cornering limit is the tyre's grip");
+
+  // 8. the differential, on split grip
+  mut spOpen = sedanSpec();
+  mut spLimited = sedanSpec();
+  spLimited.axleDiff[1usize] = DiffSpec.limited(300., 0.5);
+  mut spLocked = sedanSpec();
+  spLocked.axleDiff[1usize] = DiffSpec.locked();
+  imm dOpen = splitSpin(spOpen);
+  imm dLimited = splitSpin(spLimited);
+  imm dLocked = splitSpin(spLocked);
+  expect(dOpen > 60., "open differential on split grip: the icy wheel spins far faster than the other");
+  expect(dLocked < 0.02 * dOpen, "locked: the two wheels turn together");
+  expect(dLimited > dLocked and dLimited < 0.5 * dOpen, "limited slip: in between");
+
+  // 9. jump
+  mut w9 = flatWorld();
+  // a ramp: a box tilted 10 degrees whose top surface starts at the ground at x = 27 and rises 1.2 m to x = 34
+  imm rampShape = w9.addShape(Shape.single(Prim.box(new Vec3(3.5, 0.2, 4.))));
+  mut rampDef = BodyDef.staticAt(rampShape, new Vec3(30.48, 0.4108, 0.));
+  rampDef.rot = Quat.angleAxis(0.1745329, new Vec3(0., 0., 1.));
+  w9.createBody(rampDef);
+  mut c9 = Vehicle.create(&mut w9, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w9, &mut c9, 1.);
+  w9.setLinearVelocity(c9.body, new Vec3(20., 0., 0.));
+  i = 0usize;
+  while i < 4usize { c9.wheels[i].omega = 20. / 0.33; i = i + 1usize; }
+  t = 0.;
+  mut airStart = -1.;
+  mut airEnd = -1.;
+  mut vyStart = 0.;
+  mut vyEnd = 0.;
+  mut maxCompress = 0.;
+  while t < 6. {
+    c9.drive(vclampT(0.1 + (20. - w9.linearVelocity(c9.body).x) * 0.3, 0., 1.), 0., 0.);
+    c9.apply(&mut w9, (x, z) => 1., dt);
+    w9.step(dt);
+    t = t + dt;
+    mut anyContact = false;
+    i = 0usize;
+    while i < 4usize {
+      if c9.wheels[i].contact { anyContact = true; }
+      if c9.wheels[i].compression > maxCompress { maxCompress = c9.wheels[i].compression; }
+      i = i + 1usize;
+    }
+    if !anyContact and airStart < 0. and w9.positionOf(c9.body).x > 25. { airStart = t; vyStart = w9.linearVelocity(c9.body).y; }
+    if airStart >= 0. and airEnd < 0. and (anyContact or w9.positionOf(c9.body).y < 0.6) { airEnd = t; vyEnd = w9.linearVelocity(c9.body).y; }
+  }
+  expect(airStart > 0. and airEnd > airStart + 0.2, "all four wheels leave the ground over the ramp");
+  if airEnd > airStart + 0.2 {
+    // the car is in the air: the centre of mass falls with g (minus the small air drag)
+    imm accel = (vyEnd - vyStart) / (airEnd - airStart);
+    expectFloat(f64.from(-accel), 9.81d, 0.03d * 9.81d, "in the air the centre of mass falls at g");
+  }
+  imm up9 = w9.rotationOf(c9.body) * new Vec3(0., 1., 0.);
+  expect(up9.y > 0.95, "lands upright");
+  expect(w9.linearVelocity(c9.body).x > 12., "and keeps going");
+  expect(maxCompress < 0.5, "the suspension takes the landing (under 0.5 m)");
+
+  // 10. data
+  mut w10 = flatWorld();
+  mut bug = Vehicle.create(&mut w10, buggySpec(), new Vec3(0., 0.78, 0.), Quat.identity());
+  dry(&mut w10, &mut bug, 4.);
+  expectFloat(f64.from(totalLoad(&bug)), f64.from(900. * g), 0.03d * 900d * 9.81d, "the buggy's wheels carry its weight");
+  expect(libc.fabsf(pitchDeg(&w10, bug.body)) < 1.5 and libc.fabsf(rollDeg(&w10, bug.body)) < 1.5, "and it sits level");
+  mut w11 = flatWorld();
+  mut tk = Vehicle.create(&mut w11, truckSpec(), new Vec3(0., 0.98, 0.), Quat.identity());
+  dry(&mut w11, &mut tk, 5.);
+  expectFloat(f64.from(totalLoad(&tk)), f64.from(5000. * g), 0.03d * 5000d * 9.81d, "the truck's six wheels carry its weight");
+  expect(libc.fabsf(pitchDeg(&w11, tk.body)) < 1.5 and libc.fabsf(rollDeg(&w11, tk.body)) < 1.5, "and it sits level");
+  done();
+}
+
+// Full throttle for 1.5 s from rest with ice (grip 0.1) under the car's left side and dry road under its right:
+// the largest difference between the spins of the two rear wheels, rad/s
+fn splitSpin(spec VehicleSpec) f32 {
+  mut w = flatWorld();
+  mut car = Vehicle.create(&mut w, spec, new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w, &mut car, 1.);
+  car.drive(1., 0., 0.);
+  imm dt = 1. / 120.;
+  mut t = 0.;
+  mut worst = 0.;
+  while t < 1.5 {
+    imm zc = w.positionOf(car.body).z;
+    car.apply(&mut w, (x, z) => if z < zc { 0.1; } else { 1.; }, dt);
+    w.step(dt);
+    t = t + dt;
+    imm d = libc.fabsf(car.wheels[2].omega - car.wheels[3].omega);
+    if d > worst { worst = d; }
+  }
+  worst;
+}
+
+fn vclampT(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
