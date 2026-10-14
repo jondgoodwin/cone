@@ -1,0 +1,120 @@
+// The scene: picking by ray, the outline, and undo.
+//
+//   A cube reaching 0.5 each way (Mesh.cube(0.5)) has 12 triangles and, once its 24 vertices are welded by
+//   position, 8 corners and 18 edges (12 of the box and 6 diagonals).
+//   A ray down -z from (0, 0, 5) hits its front face at t = 4.5. Moved to x = 3, the same ray misses it; a ray
+//   at x = 3 hits it.
+//   The outline seen straight on from +z is the four edges of the front face; seen from (5, 5, 5), the six
+//   edges of the hexagon the box's outline makes.
+//   A unit sphere's outline lies on its limb: every end point has its normal square to the view direction.
+//   Undo: move an object, record it, and undo puts it back, redo moves it again; a recorded colour change
+//   undoes in order with the move; a new edit after an undo drops the redo.
+//   A transform that did not change records nothing.
+
+mod scenetest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import editgizmo use *;
+
+fn near(a f32, b f32, eps f32) bool {
+  (if a > b {a - b;} else {b - a;}) < eps;
+}
+
+fn at(x f32, y f32, z f32) Transform3 {
+  mut t = Transform3.identity();
+  t.translation = new Vec3(x, y, z);
+  t;
+}
+
+fn colorProps(r f32, g f32, b f32) List[Vec4] {
+  mut l = List[Vec4].empty();
+  l.push(new Vec4(r, g, b, 1.));
+  l;
+}
+
+fn main() i32 {
+  imm cube = PickMesh.fromMesh(&Mesh.cube(0.5));
+  expectInt(i64.from(cube.triangleCount()), 12i64, "twelve triangles");
+  expectInt(i64.from(cube.edgeCount()), 18i64, "eighteen welded edges");
+  imm ray = new Ray3(new Vec3(0., 0., 5.), new Vec3(0., 0., -1.));
+  expect(near(cube.raycast(ray), 4.5, 0.0001), "the front face at 4.5");
+  expect(cube.raycast(new Ray3(new Vec3(2., 0., 5.), new Vec3(0., 0., -1.))) < 0., "a miss is negative");
+  // a ray whose direction is 2 long reports t in its own units
+  expect(near(cube.raycast(new Ray3(new Vec3(0., 0., 5.), new Vec3(0., 0., -2.))), 2.25, 0.0001), "t is in the ray's units");
+
+  mut pts = List[Vec3].empty();
+  cube.silhouette(new Vec3(0., 0., 10.), &mut pts);
+  expectInt(i64.from(pts.len()), 8i64, "four edges seen straight on");
+  mut hex = List[Vec3].empty();
+  cube.silhouette(new Vec3(5., 5., 5.), &mut hex);
+  expectInt(i64.from(hex.len()), 12i64, "six edges seen from a corner");
+
+  imm ball = PickMesh.fromMesh(&Mesh.sphere(1., 16));
+  mut limb = List[Vec3].empty();
+  imm eye = new Vec3(0., 0., 6.);
+  ball.silhouette(eye, &mut limb);
+  expect(limb.len() >= 32usize, "the sphere's outline is a ring of edges");
+  mut worst = 0.;
+  mut i = 0usize;
+  while i < limb.len() {
+    imm p = *limb[i];
+    imm d = p.normalize().dot((eye - p).normalize());
+    if d > worst {worst = d;}
+    i = i + 1usize;
+  }
+  expect(worst < 0.25, "every outline point is near the limb");
+
+  // ---- the scene ----
+  mut scene = EditScene.make();
+  imm m = scene.addMesh(cube);
+  imm a = scene.addObject("A", m, at(0., 0., 0.), colorProps(1., 0., 0.));
+  imm b = scene.addObject("B", m, at(3., 0., 0.), colorProps(0., 1., 0.));
+  expectInt(i64.from(scene.objectCount()), 2i64, "two objects");
+  mut dist = 0.;
+  expectInt(i64.from(scene.pick(ray, &mut dist)), i64.from(a), "the ray down the middle picks A");
+  expect(near(dist, 4.5, 0.0001), "at 4.5");
+  expectInt(i64.from(scene.pick(new Ray3(new Vec3(3., 0., 5.), new Vec3(0., 0., -1.)), &mut dist)), i64.from(b), "a ray at x = 3 picks B");
+  expectInt(i64.from(scene.pick(new Ray3(new Vec3(1.5, 0., 5.), new Vec3(0., 0., -1.)), &mut dist)), 0i64, "between them picks nothing");
+  expect(dist < 0., "no distance");
+  // a scaled and turned object is picked in its own space
+  mut big = Transform3.identity();
+  big.scale = new Vec3(4., 1., 1.);
+  big.translation = new Vec3(0., 10., 0.);
+  imm c = scene.addObject("C", m, big, List[Vec4].empty());
+  expectInt(i64.from(scene.pick(new Ray3(new Vec3(1.8, 10., 5.), new Vec3(0., 0., -1.)), &mut dist)), i64.from(c), "a stretched object is hit where it is long");
+  expectInt(i64.from(scene.pick(new Ray3(new Vec3(2.2, 10., 5.), new Vec3(0., 0., -1.)), &mut dist)), 0i64, "and missed beyond its end");
+
+  // ---- undo ----
+  scene.select(a);
+  expectInt(i64.from(scene.selected()), i64.from(a), "selected");
+  imm t0 = scene.transformOf(a);
+  imm t1 = at(2., 0., 0.);
+  scene.setTransform(a, t1);
+  scene.commitTransform(a, t0, t1);
+  imm c0 = scene.propOf(a, 0usize);
+  scene.setProp(a, 0usize, new Vec4(0., 0., 1., 1.));
+  scene.commitProp(a, 0usize, c0, new Vec4(0., 0., 1., 1.));
+  scene.commitTransform(a, t1, t1);
+  expectInt(i64.from(scene.hist.undoCount()), 2i64, "two steps (the unchanged one recorded nothing)");
+  expect(scene.undo(), "undo");
+  expect(near(scene.propOf(a, 0usize).x, 1., 0.0001) and near(scene.propOf(a, 0usize).z, 0., 0.0001), "the colour is back to red");
+  expect(near(scene.transformOf(a).translation.x, 2., 0.0001), "the move is still done");
+  expect(scene.undo(), "undo again");
+  expect(near(scene.transformOf(a).translation.x, 0., 0.0001), "the move is undone");
+  expect(!scene.undo(), "nothing more to undo");
+  expect(scene.redo() and scene.redo(), "redo twice");
+  expect(near(scene.transformOf(a).translation.x, 2., 0.0001) and near(scene.propOf(a, 0usize).z, 1., 0.0001), "both are done again");
+  scene.undo();
+  scene.commitTransform(a, t1, at(5., 0., 0.));
+  expect(!scene.canRedo(), "a new edit drops the redo");
+
+  // an outline of the selected object
+  mut out = List[Vec3].empty();
+  outlineOf(&scene, a, new Vec3(2., 0., 10.), &mut out);
+  expectInt(i64.from(out.len()), 8i64, "the selected cube outlined from +z");
+  expect(near((*out[0]).x, 2., 0.6), "at the object's place, not the origin");
+  done();
+}

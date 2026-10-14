@@ -1,0 +1,120 @@
+// The uipickers package: the controls an editor needs and uilayout does not have, and a property inspector
+// that makes them from a DESCRIPTION of an object's fields.
+//
+//   drag-number and number slider   press and drag sideways to change a number (shift fine, ctrl coarse), click
+//                                   to type one; with a range it can be drawn and set as a slider
+//   vector fields                   two to four drag-numbers in a row, with coloured axis letters
+//   colour picker                   a saturation-value square, a hue bar, the old and new colour side by
+//                                   side, a hex field and red, green and blue read-outs
+//   dropdown                        a header showing the choice; opens a list of the options in place
+//   inspector                       a column of rows, one per field of a TypeDesc, each with the control
+//                                   that field's kind wants; changes come out as Change records
+//
+// WHERE THEY LIVE. In a package over uilayout, not inside it: uilayout stays a layout and input core with
+// no editor in it, and these controls are what the code editor already is, HOSTED nodes (K_HOSTED): ordinary
+// nodes for layout, hit testing, focus and clipping, whose events are queued for this package and whose draw
+// commands this package supplies. They add no kind to uilayout and change none of it.
+//
+// A FRAME:
+//   mut kit = PickerKit.make();
+//   mut insp = Inspector.build(&mut kit, &mut ui, parentNode, &desc);       // once
+//   insp.setValues(&mut kit, &mut ui, &values);                              // show an object
+//   ... push the pointer and key events into the Ui, run uilayout's layout, then:
+//   imm changes = insp.pump(&mut kit, &mut ui);                              // what the user did
+//   (apply each Change to the object; 'live' ones while a drag is down, the last one with live false)
+//   drawUi(&ui, &mut list);
+//
+// WHAT A CHANGE CARRIES. 'before' is the value when the gesture began, 'after' the value now. While a drag
+// is down, 'live' changes keep coming (the host applies them so the object follows the pointer); when the
+// pointer is released one more comes with live false, and that is the one to record in an undo history, as
+// (before, after): a whole drag is one step.
+//
+// See Design\uipickers.md for the design, the methods chosen and the open questions.
+
+mod uipickers;
+
+import libc;
+import collections use *;
+import geomath use *;
+import uilayout use *;
+
+// A number with 'decimals' places (the standard library has no float formatting yet)
+pub fn fixedString(v f32, decimals u32) String {
+  mut s = String.empty();
+  mut x = v;
+  if x < 0. {x = -x;}
+  mut scale = 1.;
+  mut d = 0u32;
+  while d < decimals {scale = scale * 10.; d = d + 1u32;}
+  imm scaled = libc.floorf(x * scale + 0.5);
+  imm whole = libc.floorf(scaled / scale);
+  // "-0.00" is not shown: a negative that rounds to zero is zero
+  if v < 0. and scaled > 0. {s.append("-");}
+  s.appendInt(i64.from(whole));
+  if decimals > 0u32 {
+    s.append(".");
+    mut frac = i64.from(scaled - whole * scale);
+    mut div = i64.from(scale) / 10i64;
+    while div > 0i64 {
+      s.appendInt(frac / div);
+      frac = frac - (frac / div) * div;
+      div = div / 10i64;
+    }
+  }
+  s;
+}
+
+// A number typed by hand: an optional sign, digits, a point and digits, an optional exponent. 'ok' says
+// whether the whole text was one
+pub fn parseNumber(text &str, ok &mut bool) f32 {
+  imm n = text.len();
+  mut i = 0usize;
+  mut neg = false;
+  *ok = false;
+  if i < n and (text[i] == 45u8 or text[i] == 43u8) {
+    neg = text[i] == 45u8;
+    i = i + 1usize;
+  }
+  mut v = 0.;
+  mut digits = 0u32;
+  while i < n and text[i] >= 48u8 and text[i] <= 57u8 {
+    v = v * 10. + f32.from(i32.from(text[i]) - 48i32);
+    digits = digits + 1u32;
+    i = i + 1usize;
+  }
+  if i < n and text[i] == 46u8 {
+    i = i + 1usize;
+    mut place = 0.1;
+    while i < n and text[i] >= 48u8 and text[i] <= 57u8 {
+      v = v + f32.from(i32.from(text[i]) - 48i32) * place;
+      place = place * 0.1;
+      digits = digits + 1u32;
+      i = i + 1usize;
+    }
+  }
+  if digits == 0u32 {return 0.;}
+  if i < n and (text[i] == 101u8 or text[i] == 69u8) {
+    i = i + 1usize;
+    mut eneg = false;
+    if i < n and (text[i] == 45u8 or text[i] == 43u8) {
+      eneg = text[i] == 45u8;
+      i = i + 1usize;
+    }
+    mut e = 0i32;
+    mut edigits = 0u32;
+    while i < n and text[i] >= 48u8 and text[i] <= 57u8 {
+      e = e * 10i32 + (i32.from(text[i]) - 48i32);
+      edigits = edigits + 1u32;
+      i = i + 1usize;
+    }
+    if edigits == 0u32 {return 0.;}
+    mut k = 0i32;
+    while k < e {
+      v = if eneg {v * 0.1;} else {v * 10.;};
+      k = k + 1i32;
+    }
+  }
+  if i != n {return 0.;}
+  *ok = true;
+  if neg {-v;} else {v;};
+}

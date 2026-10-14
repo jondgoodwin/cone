@@ -1,0 +1,225 @@
+// ======== PickMesh: a mesh as the picker and the outline see it ========
+//
+// RAY PICKING. A ray in the mesh's own space against every triangle (Moller-Trumbore, geomath's
+// Ray3.intersectTriangle), after the mesh's box has said the ray could hit. Exact to the triangle and
+// independent of the render path, so it works for what is drawn by the GPU, instanced or skinned or not.
+// Brute force over the triangles: a few thousand are well under a millisecond, and a world with many
+// objects would put a BVH (the spatialindex package) over the objects, not inside one.
+//
+// SILHOUETTE OUTLINE. An edge is on the silhouette when one of its two triangles faces the eye and the
+// other does not (or it is a boundary edge of a triangle that faces the eye). This is the classic geometric
+// outline (Gooch et al., Rustamov; the "silhouette edge" of every NPR text), computed on the CPU from an
+// edge table built once per mesh: vertices at the same place are welded (a mesh with split normals or UV
+// seams has several vertices per place), so the table sees the shape and not the seams. Each frame costs one
+// dot product per triangle and one comparison per edge.
+
+const NO_FACE = 4294967295u32;
+
+pub struct PickMesh {
+  pub positions List[Vec3];
+  pub indices List[u32];
+  pub bounds Aabb3;
+  edgeA List[u32];                  // an edge's two ends (indices into positions), one entry per edge
+  edgeB List[u32];
+  edgeF0 List[u32];                 // the triangles either side (NO_FACE for the missing one of a boundary edge)
+  edgeF1 List[u32];
+  faceNormals List[Vec3];           // unnormalised
+
+  // The triangles of a Mesh, copied
+  pub fn fromMesh(m &Mesh) PickMesh {
+    mut pos = List[Vec3].withCapacity(m.positions.len());
+    mut i = 0usize;
+    while i < m.positions.len() {
+      pos.push(*m.positions[i]);
+      i = i + 1usize;
+    }
+    mut idx = List[u32].withCapacity(m.indices.len());
+    i = 0usize;
+    while i < m.indices.len() {
+      idx.push(*m.indices[i]);
+      i = i + 1usize;
+    }
+    fromTriangles(pos, idx);
+  }
+
+  // From positions and triangle indices
+  pub fn fromTriangles(positions List[Vec3], indices List[u32]) PickMesh {
+    mut p = new PickMesh(positions, indices, Aabb3.empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[u32].empty(), List[Vec3].empty());
+    mut b = Aabb3.empty();
+    mut v = 0usize;
+    while v < p.positions.len() {
+      b = b.enclose(*p.positions[v]);
+      v = v + 1usize;
+    }
+    p.bounds = b;
+    p.buildEdges();
+    p;
+  }
+
+  pub fn triangleCount(self &) usize {indices.len() / 3usize;}
+  pub fn edgeCount(self &) usize {edgeA.len();}
+
+  fn corner(self &, f usize, k usize) Vec3 {
+    *positions[usize.from(*indices[3usize * f + k])];
+  }
+
+  // Welds the vertices by position, then pairs the triangles on each edge
+  fn buildEdges(self &mut) {
+    imm nv = positions.len();
+    // weld: sort the vertices by their position quantised to 1/10000, equal runs are one place
+    mut qx = List[i32].withCapacity(nv);
+    mut qy = List[i32].withCapacity(nv);
+    mut qz = List[i32].withCapacity(nv);
+    mut v = 0usize;
+    while v < nv {
+      imm q = *positions[v];
+      qx.push(i32.from(libc.floorf(q.x * 10000. + 0.5)));
+      qy.push(i32.from(libc.floorf(q.y * 10000. + 0.5)));
+      qz.push(i32.from(libc.floorf(q.z * 10000. + 0.5)));
+      v = v + 1usize;
+    }
+    mut order = List[u32].withCapacity(nv);
+    v = 0usize;
+    while v < nv {
+      order.push(u32.from(v));
+      v = v + 1usize;
+    }
+    order.sortBy(fn(a &u32, b &u32) i32 {
+      imm ia = usize.from(*a);
+      imm ib = usize.from(*b);
+      if *qx[ia] != *qx[ib] {return if *qx[ia] < *qx[ib] {-1i32;} else {1i32;};}
+      if *qy[ia] != *qy[ib] {return if *qy[ia] < *qy[ib] {-1i32;} else {1i32;};}
+      if *qz[ia] != *qz[ib] {return if *qz[ia] < *qz[ib] {-1i32;} else {1i32;};}
+      if ia < ib {-1i32;} elif ia > ib {1i32;} else {0i32;};
+    });
+    mut weld = List[u32].withCapacity(nv);
+    v = 0usize;
+    while v < nv {weld.push(0u32); v = v + 1usize;}
+    mut run = 0usize;
+    while run < nv {
+      imm first = usize.from(*order[run]);
+      mut end = run + 1usize;
+      while end < nv {
+        imm o = usize.from(*order[end]);
+        if *qx[o] == *qx[first] and *qy[o] == *qy[first] and *qz[o] == *qz[first] {end = end + 1usize;} else {break;}
+      }
+      mut k = run;
+      while k < end {
+        weld[usize.from(*order[k])] = u32.from(first);
+        k = k + 1usize;
+      }
+      run = end;
+    }
+    // the faces' normals and every triangle edge, keyed by its welded ends (low, high)
+    imm nf = indices.len() / 3usize;
+    faceNormals.clear();
+    mut keys = List[u64].withCapacity(nf * 3usize);
+    mut ea = List[u32].withCapacity(nf * 3usize);
+    mut eb = List[u32].withCapacity(nf * 3usize);
+    mut ef = List[u32].withCapacity(nf * 3usize);
+    mut f = 0usize;
+    while f < nf {
+      imm a = corner(f, 0usize);
+      imm b = corner(f, 1usize);
+      imm c = corner(f, 2usize);
+      faceNormals.push((b - a).cross(c - a));
+      mut k = 0usize;
+      while k < 3usize {
+        imm i0 = *indices[3usize * f + k];
+        imm i1 = *indices[3usize * f + (k + 1usize) % 3usize];
+        imm w0 = *weld[usize.from(i0)];
+        imm w1 = *weld[usize.from(i1)];
+        if w0 != w1 {
+          imm lo = if w0 < w1 {w0;} else {w1;};
+          imm hi = if w0 < w1 {w1;} else {w0;};
+          keys.push((u64.from(lo) << 32u64) | u64.from(hi));
+          ea.push(i0);
+          eb.push(i1);
+          ef.push(u32.from(f));
+        }
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    mut eorder = List[u32].withCapacity(keys.len());
+    mut e = 0usize;
+    while e < keys.len() {eorder.push(u32.from(e)); e = e + 1usize;}
+    eorder.sortBy(fn(a &u32, b &u32) i32 {
+      imm ka = *keys[usize.from(*a)];
+      imm kb = *keys[usize.from(*b)];
+      if ka < kb {-1i32;} elif ka > kb {1i32;} elif *a < *b {-1i32;} else {1i32;};
+    });
+    edgeA.clear();
+    edgeB.clear();
+    edgeF0.clear();
+    edgeF1.clear();
+    mut s = 0usize;
+    while s < eorder.len() {
+      imm first = usize.from(*eorder[s]);
+      mut next = s + 1usize;
+      if next < eorder.len() and *keys[usize.from(*eorder[next])] == *keys[first] {
+        imm second = usize.from(*eorder[next]);
+        edgeA.push(*ea[first]);
+        edgeB.push(*eb[first]);
+        edgeF0.push(*ef[first]);
+        edgeF1.push(*ef[second]);
+        next = next + 1usize;
+        // an edge shared by more than two triangles pairs the first two; the rest are skipped
+        while next < eorder.len() and *keys[usize.from(*eorder[next])] == *keys[first] {next = next + 1usize;}
+      } else {
+        edgeA.push(*ea[first]);
+        edgeB.push(*eb[first]);
+        edgeF0.push(*ef[first]);
+        edgeF1.push(NO_FACE);
+      }
+      s = next;
+    }
+  }
+
+  // The distance along a ray (in the mesh's space, its direction not necessarily unit: the distance is in
+  // multiples of it) to the first triangle it hits, or -1 for a miss
+  pub fn raycast(self &, ray Ray3) f32 {
+    match ray.intersectAabb(bounds) {
+      case is None { return -1.; }
+      case imm t Some {}
+    }
+    mut best = -1.;
+    mut f = 0usize;
+    imm nf = indices.len() / 3usize;
+    while f < nf {
+      match ray.intersectTriangle(corner(f, 0usize), corner(f, 1usize), corner(f, 2usize)) {
+        case imm t Some {
+          if best < 0. or t < best {best = t;}
+        }
+        case is None {}
+      }
+      f = f + 1usize;
+    }
+    best;
+  }
+
+  // The silhouette edges seen from 'eye' (in the mesh's space), appended to 'out' as pairs of points
+  pub fn silhouette(self &, eye Vec3, out &mut List[Vec3]) {
+    imm nf = faceNormals.len();
+    mut facing = List[bool].withCapacity(nf);
+    mut f = 0usize;
+    while f < nf {
+      imm n = *faceNormals[f];
+      facing.push(n.dot(eye - corner(f, 0usize)) > 0.);
+      f = f + 1usize;
+    }
+    mut e = 0usize;
+    while e < edgeA.len() {
+      imm f0 = *edgeF0[e];
+      imm f1 = *edgeF1[e];
+      imm front0 = *facing[usize.from(f0)];
+      imm front1 = if f1 == NO_FACE {false;} else {*facing[usize.from(f1)];};
+      if front0 != front1 {
+        out.push(*positions[usize.from(*edgeA[e])]);
+        out.push(*positions[usize.from(*edgeB[e])]);
+      }
+      e = e + 1usize;
+    }
+  }
+}
