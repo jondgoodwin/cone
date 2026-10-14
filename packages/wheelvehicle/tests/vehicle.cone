@@ -29,6 +29,10 @@
 // DATA
 // 10. The buggy (four-wheel drive, limited slip, long travel) and the truck (six wheels) settle with loads
 //     summing to their weights (within 3 percent), level (pitch under 1.5 degrees).
+// 11. The buggy drives all four wheels: over 60 km/h after 8 s, every wheel's rolling speed within 8 percent of the
+//     road speed.
+// 12. The truck steers about the middle of its tandem axle: at 5 m/s with 0.2 of the lock the yaw rate is
+//     v tan(delta) / L, L = 3.9 m, within 12 percent.
 
 mod vehicletest;
 
@@ -275,6 +279,45 @@ fn main() i32 {
   dry(&mut w11, &mut tk, 5.);
   expectFloat(f64.from(totalLoad(&tk)), f64.from(5000. * g), 0.03d * 5000d * 9.81d, "the truck's six wheels carry its weight");
   expect(libc.fabsf(pitchDeg(&w11, tk.body)) < 1.5 and libc.fabsf(rollDeg(&w11, tk.body)) < 1.5, "and it sits level");
+  // 11. the buggy drives on all four wheels: 8 s of full throttle, then every wheel's rolling speed is within 8
+  //     percent of the road speed (four driven wheels: front axle 45 percent, rear 55) and it is over 60 km/h
+  mut w12 = flatWorld();
+  mut bg = Vehicle.create(&mut w12, buggySpec(), new Vec3(0., 0.78, 0.), Quat.identity());
+  dry(&mut w12, &mut bg, 1.);
+  bg.drive(1., 0., 0.);
+  dry(&mut w12, &mut bg, 8.);
+  bg.speed = w12.linearVelocity(bg.body).dot(w12.rotationOf(bg.body) * new Vec3(1., 0., 0.));
+  expect(bg.kmh() > 60., "the buggy is over 60 km/h after 8 s");
+  mut worstRoll = 0.;
+  i = 0usize;
+  while i < 4usize {
+    imm rs = bg.wheels[i].omega * 0.4;
+    imm e = libc.fabsf(rs - bg.speed) / bg.speed;
+    if e > worstRoll { worstRoll = e; }
+    i = i + 1usize;
+  }
+  expect(worstRoll < 0.08, "all four of the buggy's wheels are driven (rolling speed near the road speed)");
+  // 12. the truck steers by Ackermann about the middle of its tandem axle: wheelbase 2.2 to the mean of the rear
+  //     axles' x (-1.7) = 3.9 m; at 5 m/s with 0.2 of the lock, the yaw rate is v tan(delta) / L
+  mut w13 = flatWorld();
+  mut tk2 = Vehicle.create(&mut w13, truckSpec(), new Vec3(0., 0.98, 0.), Quat.identity());
+  dry(&mut w13, &mut tk2, 2.);
+  w13.setLinearVelocity(tk2.body, new Vec3(5., 0., 0.));
+  i = 0usize;
+  while i < 6usize { tk2.wheels[i].omega = 5. / 0.5; i = i + 1usize; }
+  t = 0.;
+  mut yawT = 0.;
+  while t < 8. {
+    imm v = w13.linearVelocity(tk2.body).length();
+    tk2.drive(vclampT(0.12 + (5. - v) * 0.4, 0., 1.), 0., 0.2);
+    tk2.apply(&mut w13, (x, z) => 1., dt);
+    w13.step(dt);
+    t = t + dt;
+    if t > 5. { yawT = w13.angularVelocity(tk2.body).y; }
+  }
+  imm lockT = 0.35 * (1. - 5. / 20.) + 0.1 * 5. / 20.;
+  imm expectedYawT = 5. * libc.tanf(0.2 * lockT) / 3.9;
+  expectFloat(f64.from(-yawT), f64.from(expectedYawT), 0.12d * f64.from(expectedYawT), "the truck's yaw rate is v tan(delta) / L about its tandem axle's middle");
   done();
 }
 
