@@ -1,0 +1,241 @@
+// Causal attention over a KV cache on the GPU against its CPU twin: decode steps (one new token over a long
+// cache) and prefill (several new tokens, each seeing the positions up to itself), plain multi-head, grouped-
+// query and multi-query heads, head sizes 8 to 128 (including 80, not a multiple of the 128 invocations or of
+// 64), sequences from 1 to 501 positions (more than the 128 invocations' strides), and caches with room to
+// spare, whose unused rows hold garbage (123456) that nothing may read. Then a job that fills the caches on the
+// GPU with the append kernel and attends over them in the same job, the dispatches chained on the GPU.
+// Weights are synthetic and seeded.
+//
+// Tolerance, named: each output element within 'attentionUnits' units of 2^-24 times the largest |v| in its
+// dimension over the visible positions (the output is a weighted average of the values, weights summing to 1,
+// so it is at most that). The units, with a = the largest |scale * q . k| over the visible positions (a bound
+// on any score, and on the distance of a score from the maximum, which is at most 2 a):
+//     2 (headDim + 4) a        the scores' own f32 error, which moves every weight by that relative amount
+//   + 2 (3 + 4 a)             the exps (3 + 2 |x| ulp, in the numerator and the denominator)
+//   + seqLen + 4              the values' sum, added in position order by one invocation
+//   + ceil(seqLen / 128) + 20 the softmax's sum (a tree) and the division
+// The twin works in f64, so the difference is the GPU's own error. The worst error seen, in units of 2^-24
+// times that largest |v|, is printed with LLMKERNELS_REPORT set, with the bound's units at the same place.
+//
+// Only a failure prints. GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two. It needs
+// a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod attention;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+const U = 5.9604644775390625e-8d;           // 2^-24
+const GARBAGE = 123456.0;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn zerosF(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l;
+}
+
+fn attentionUnits(headDim usize, seqLen usize, a f64) f64 {
+  2.0d * f64.from(headDim + 4usize) * a + 2.0d * (3.0d + 4.0d * a) + f64.from(seqLen + 4usize)
+    + f64.from((seqLen + 127usize) / 128usize) + 20.0d;
+}
+
+struct Stats {
+  worst f64;        // in units of 2^-24 times the largest |v|
+  worstRatio f64;   // the worst of (error / bound), 1 would be at the bound
+}
+
+fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
+  imm ticket = works.submit(device, job, Target.Here(1u64));
+  mut got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  require(got.len() == 1usize, "the job's completion");
+  expectBool(got[0usize].ok, true, "the job ran");
+  wordFloats(got[0usize].words(back).view());
+}
+
+// Compare the GPU's output with the twin's under the bound: how many elements are outside it
+fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &Array[f32], v &Array[f32], nTokens usize,
+    nHeads usize, nKvHeads usize, headDim usize, pos0 usize, scale f32) u64 {
+  imm kvDim = nKvHeads * headDim;
+  mut bad = 0u64;
+  mut t = 0usize;
+  while t < nTokens {
+    imm seqLen = pos0 + t + 1usize;
+    mut h = 0usize;
+    while h < nHeads {
+      imm kvh = h / (nHeads / nKvHeads);
+      imm qBase = (t * nHeads + h) * headDim;
+      mut a = 0.0d;
+      mut j = 0usize;
+      while j < seqLen {
+        mut s = 0.0d;
+        mut d = 0usize;
+        while d < headDim {
+          s = s + libc.fabs(f64.from(q[qBase + d]) * f64.from(k[j * kvDim + kvh * headDim + d]));
+          d = d + 1usize;
+        }
+        s = s * f64.from(scale);
+        if s > a { a = s; }
+        j = j + 1usize;
+      }
+      imm units = attentionUnits(headDim, seqLen, a);
+      mut d = 0usize;
+      while d < headDim {
+        mut vmax = 0.0d;
+        j = 0usize;
+        while j < seqLen {
+          imm av = libc.fabs(f64.from(v[j * kvDim + kvh * headDim + d]));
+          if av > vmax { vmax = av; }
+          j = j + 1usize;
+        }
+        imm err = libc.fabs(f64.from(*got[qBase + d]) - f64.from(*want[qBase + d]));
+        if !(err <= units * U * vmax) { bad = bad + 1u64; }
+        if vmax > 0.0d {
+          imm seen = err / (U * vmax);
+          if seen > stats.worst { stats.worst = seen; }
+          if seen / units > stats.worstRatio { stats.worstRatio = seen / units; }
+        }
+        d = d + 1usize;
+      }
+      h = h + 1usize;
+    }
+    t = t + 1usize;
+  }
+  bad;
+}
+
+// Fill a cache of maxSeq positions: real values for positions 0 .. valid - 1, garbage after
+fn filledCache(rng &mut Rng, maxSeq usize, kvDim usize, valid usize) List[f32] {
+  mut c = syntheticFloats(rng, valid * kvDim, 1.0);
+  mut i = valid * kvDim;
+  while i < maxSeq * kvDim { c.push(GARBAGE); i = i + 1usize; }
+  c;
+}
+
+// One attention call with the caches uploaded as they are
+fn run(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, nTokens usize, nHeads usize,
+    nKvHeads usize, headDim usize, pos0 usize, maxSeq usize) u64 {
+  imm kvDim = nKvHeads * headDim;
+  imm q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
+  imm k = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
+  imm v = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
+  imm scale = 1.0 / f32.from(libc.sqrt(f64.from(headDim)));
+  mut want = zerosF(nTokens * nHeads * headDim);
+  require(attentionCpu(q.view(), k.view(), v.view(), nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale, want.viewMut()), "the twin ran");
+  mut job = Job.make(device);
+  imm qb = job.give(upload(device, floatWords(q.view()).view()));
+  imm kb = job.give(upload(device, floatWords(k.view()).view()));
+  imm vb = job.give(upload(device, floatWords(v.view()).view()));
+  imm sb = job.give(zeroed(device, nTokens * nHeads * maxSeq));
+  imm ob = job.give(zeroed(device, nTokens * nHeads * headDim));
+  require(kernels.attention(&mut job, device, qb, kb, vb, sb, ob, nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale), "the attention recorded");
+  imm back = job.readback(device, ob);
+  imm got = finish(device, works, job, back);
+  compare(stats, &got, &want, q.view(), k.view(), v.view(), nTokens, nHeads, nKvHeads, headDim, pos0, scale);
+}
+
+// The same, with the caches filled on the GPU by two appends in the job that attends
+fn chained(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, nTokens usize, nHeads usize,
+    nKvHeads usize, headDim usize, pos0 usize, maxSeq usize) u64 {
+  imm kvDim = nKvHeads * headDim;
+  imm total = pos0 + nTokens;
+  imm q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
+  imm ks = syntheticFloats(rng, total * kvDim, 1.0);
+  imm vs = syntheticFloats(rng, total * kvDim, 1.0);
+  imm scale = 1.0 / f32.from(libc.sqrt(f64.from(headDim)));
+  // the twin's caches: appended the same way
+  mut kc = zerosF(maxSeq * kvDim);
+  mut vc = zerosF(maxSeq * kvDim);
+  kvAppendCpu(ks.view(), kc.viewMut(), total, kvDim, 0usize);
+  kvAppendCpu(vs.view(), vc.viewMut(), total, kvDim, 0usize);
+  mut want = zerosF(nTokens * nHeads * headDim);
+  require(attentionCpu(q.view(), kc.view(), vc.view(), nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale, want.viewMut()), "the twin ran");
+  mut job = Job.make(device);
+  imm qb = job.give(upload(device, floatWords(q.view()).view()));
+  imm ksb = job.give(upload(device, floatWords(ks.view()).view()));
+  imm vsb = job.give(upload(device, floatWords(vs.view()).view()));
+  imm kb = job.give(zeroed(device, maxSeq * kvDim));
+  imm vb = job.give(zeroed(device, maxSeq * kvDim));
+  imm sb = job.give(zeroed(device, nTokens * nHeads * maxSeq));
+  imm ob = job.give(zeroed(device, nTokens * nHeads * headDim));
+  require(kernels.kvAppend(&mut job, device, ksb, kb, total, kvDim, 0usize), "the key append recorded");
+  require(kernels.kvAppend(&mut job, device, vsb, vb, total, kvDim, 0usize), "the value append recorded");
+  require(kernels.attention(&mut job, device, qb, kb, vb, sb, ob, nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale), "the attention recorded");
+  imm back = job.readback(device, ob);
+  imm got = finish(device, works, job, back);
+  compare(stats, &got, &want, q.view(), kc.view(), vc.view(), nTokens, nHeads, nKvHeads, headDim, pos0, scale);
+}
+
+fn main() i32 {
+  mut instance = Instance.create("llmkernels attention");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm kernels = Kernels.make(&device);
+  require(kernels.isValid(), "the kernels");
+  mut works = Works.make();
+  mut stats = new Stats(0.0d, 0.0d);
+  mut rng = Rng.fromSeed(99u64);
+
+  // tokens, heads, kv heads, head dim, pos0, maxSeq
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 1usize, 1usize, 8usize, 0usize, 4usize), 0u64, "one token, one position");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 4usize, 4usize, 64usize, 17usize, 40usize), 0u64, "decode, multi-head, 18 positions");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 8usize, 2usize, 64usize, 100usize, 128usize), 0u64, "decode, grouped (8 heads over 2), 101 positions");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 5usize, 8usize, 2usize, 64usize, 0usize, 16usize), 0u64, "prefill of 5, grouped");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 3usize, 6usize, 3usize, 80usize, 40usize, 64usize), 0u64, "3 tokens after 40, head size 80");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 32usize, 8usize, 128usize, 500usize, 512usize), 0u64, "decode, Llama-sized heads, 501 positions");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 40usize, 4usize, 4usize, 32usize, 0usize, 40usize), 0u64, "prefill of 40, cache exactly full");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 2usize, 4usize, 1usize, 16usize, 300usize, 310usize), 0u64, "multi-query, 2 tokens after 300");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 2usize, 2usize, 1usize, 3usize, 8usize), 0u64, "head size 1");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 7usize, 3usize, 1usize, 24usize, 129usize, 200usize), 0u64, "7 tokens after 129 (strides of 128 positions are crossed)");
+
+  expectUInt(chained(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 8usize, 2usize, 64usize, 77usize, 100usize), 0u64, "appends and decode chained in one job");
+  expectUInt(chained(&mut device, &kernels, &mut works, &mut stats, &mut rng, 6usize, 4usize, 2usize, 32usize, 20usize, 40usize), 0u64, "appends and prefill chained in one job");
+
+  // refusals
+  {
+    mut job = Job.make(&mut device);
+    imm a = job.give(zeroed(&mut device, 64usize));
+    imm b = job.give(zeroed(&mut device, 64usize));
+    imm c = job.give(zeroed(&mut device, 64usize));
+    imm d = job.give(zeroed(&mut device, 64usize));
+    imm e = job.give(zeroed(&mut device, 64usize));
+    expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 6usize, 4usize, 8usize, 0usize, 4usize, 1.0), false, "4 KV heads do not divide 6 heads");
+    expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 4usize, 2usize, 8usize, 4usize, 4usize, 1.0), false, "a token beyond the cache is refused");
+    expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 0usize, 4usize, 2usize, 8usize, 0usize, 4usize, 1.0), false, "no tokens is refused");
+    expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 4usize, 2usize, 0usize, 0usize, 4usize, 1.0), false, "head size 0 is refused");
+    expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 2usize, 1usize, 4usize, 0usize, 4usize, 1.0), true, "a good one is recorded");
+    imm t = works.submit(&mut device, job, Target.Here(2u64));
+    mut got = List[Completion].empty();
+    works.waitFor(&mut device, t, &mut got);
+    expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
+  }
+
+  if (libc.getenv("LLMKERNELS_REPORT") as usize) != 0usize {
+    printStr("attention worst: "); printFloat(stats.worst); printStr(" x 2^-24 x largest |v|; worst error / bound: ");
+    printFloat(stats.worstRatio); printStr("\n");
+  }
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  device.endFrame();
+  device.waitIdle();
+  done();
+}

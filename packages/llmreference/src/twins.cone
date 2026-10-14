@@ -21,17 +21,10 @@ fn dot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
   acc;
 }
 
-fn zeros(n usize) List[f32] {
-  mut l = List[f32].withCapacity(n);
-  mut i = 0usize;
-  while i < n { l.push(0.0); i = i + 1usize; }
-  l;
-}
-
 // y[r] = sum over c of W[r][c] x[c], for every row of the matrix. x holds at least m.cols values, y at least m.rows.
 pub fn matvecCpu(m &QMatrix, x &Array[f32], y &mut Array[f32]) bool {
   if x.len < m.cols or y.len < m.rows { return false; }
-  mut row = zeros(m.cols);
+  mut row = zeroFloats(m.cols);
   mut r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
@@ -44,7 +37,7 @@ pub fn matvecCpu(m &QMatrix, x &Array[f32], y &mut Array[f32]) bool {
 // Y[b][r] = sum over c of W[r][c] X[b][c], X 'batch' rows of m.cols, Y 'batch' rows of m.rows
 pub fn matmulCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f32]) bool {
   if x.len < batch * m.cols or y.len < batch * m.rows { return false; }
-  mut row = zeros(m.cols);
+  mut row = zeroFloats(m.cols);
   mut r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
@@ -72,7 +65,7 @@ fn absDot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
 // For each row of the matrix, the sum of the absolute values of its products with x (what 'sumTolerance' scales)
 pub fn matvecMagnitudeCpu(m &QMatrix, x &Array[f32], y &mut Array[f64]) bool {
   if x.len < m.cols or y.len < m.rows { return false; }
-  mut row = zeros(m.cols);
+  mut row = zeroFloats(m.cols);
   mut r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
@@ -85,7 +78,7 @@ pub fn matvecMagnitudeCpu(m &QMatrix, x &Array[f32], y &mut Array[f64]) bool {
 // The same for every output of a matmul, laid out as its Y
 pub fn matmulMagnitudeCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f64]) bool {
   if x.len < batch * m.cols or y.len < batch * m.rows { return false; }
-  mut row = zeros(m.cols);
+  mut row = zeroFloats(m.cols);
   mut r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
@@ -102,7 +95,8 @@ pub fn matmulMagnitudeCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f
 // How far an f32 sum of n products (any order of adding) can be from the exact sum, given the sum of their
 // absolute values: (n + 4) * 2^-24 * that. It is the standard bound (n - 1 additions and n multiplications, each
 // off by at most 2^-24 of its result, and a result never exceeds the sum of the absolute terms) with room for
-// the dequantisation's own two roundings; two adds in different orders both obey it.
+// the dequantisation's own two roundings. The GPU's sum obeys it in whatever order it adds, so a kernel's
+// error against a twin that sums in f64 is within it.
 pub fn sumTolerance(n usize, absSum f64) f64 {
   f64.from(n + 4usize) * 5.9604644775390625e-8d * absSum;
 }

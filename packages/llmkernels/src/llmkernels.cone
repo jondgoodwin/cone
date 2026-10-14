@@ -1,4 +1,160 @@
-// llmkernels: placeholder header, written in full once the kernels are measured.
+// llmkernels: the GPU compute kernels for running a small open language model (a Llama-family transformer) on a
+// local GPU, each checked against a CPU twin. Eleven kernels, written in Slang, compiled ahead of time to SPIR-V,
+// embedded in this package's source, and run through gpuwork:
+//
+//   matvec     y = W x, a weight matrix of any of five types, dequantised as it is read (the decode step)
+//   matmul     Y = X W^T for a batch of input rows, the same five types (the prefill)
+//   rmsnorm    y = x / sqrt(mean(x^2) + eps) * w, per row
+//   rope       rotary position embedding, in place, both pair orders, all of a head or part of it
+//   softmax    per row, the stable way
+//   attention  causal attention of new tokens over a KV cache, one sequence, grouped-query heads
+//   kvAppend   new keys or values into the KV cache
+//   silu, gelu, add, mul   elementwise
+//
+// The CPU twins, the block layouts and the synthetic test data are in the package this stands on,
+// llmreference, which needs no GPU and so builds and tests on Linux; this package needs the GPU packages
+// (Windows alone, for now) and a Vulkan 1.3 device.
+//
+//   imm kernels = Kernels.make(&device);                          // the pipelines, made once
+//   mut job = Job.make(&mut device);
+//   imm w = job.give(upload(&mut device, m.words().view()));       // a QMatrix's bytes, as words
+//   imm x = job.give(upload(&mut device, floatWords(input.view()).view()));
+//   imm y = job.give(zeroed(&mut device, rows));
+//   kernels.matvec(&mut job, &mut device, w, x, y, QTYPE_Q4_K, rows, cols);     // one dispatch recorded
+//   imm back = job.readback(&mut device, y);
+//   imm ticket = works.submit(&mut device, job, Target.Here(1u64));
+//   works.waitFor(&mut device, ticket, &mut done);                // then wordFloats(done[0].words(back))
+//
+// examples/tour.cone is that, whole, checked against the CPU twin; examples/bench.cone times every kernel.
+//
+// Every method of Kernels records ONE dispatch into a gpuwork Job over buffers the caller has given it (slot
+// numbers from 'job.give'), uploading the kernel's small parameter struct itself, and answers whether it
+// recorded. A request the kernel cannot run (an unknown type, columns that are not whole blocks, a zero size,
+// sizes or byte offsets that do not fit 32 bits, a dispatch wider than 65535 workgroups where the kernel has one
+// workgroup for each row) records nothing and answers false. A dispatch binds each buffer once: a kernel
+// writes a buffer of its own (RoPE rotates its buffer in place, and the append writes into the cache).
+//
+// WHAT THE KERNELS TAKE
+//
+// Weights are bytes in the tensor's own layout (GGUF's), packed into 32-bit words (llmreference's
+// 'packWords'), in a storage buffer: the F16 bytes, the 34-byte Q8_0 blocks, the 144- and 210-byte K-quant
+// super-blocks are read by byte offset out of those words, so no 8-bit or 16-bit storage feature of the
+// device is needed. The half-precision scales are unpacked with integer arithmetic (not 'f16tof32', which
+// slangc compiles through a 16-bit float type and declares the Int16 and Float16 capabilities: the kernels
+// declare 'Shader' and nothing else, checked with spirv-dis). Activations are f32. A matrix is rows of 'cols'
+// elements, each row a whole number of blocks (a multiple of 32 for Q8_0, of 256 for Q4_K and Q6_K, any for
+// F32 and F16), the rows one after another; 'matvecAt' and 'matmulAt' take a byte offset of row 0, an element
+// offset into x (or X) and one into y (or Y). Layouts of the activations (all f32):
+//
+//   x, y            vector: n floats; X, Y: a batch of vectors, one row each (token-major)
+//   rope's x        [token][head][d]
+//   attention q, out [token][head][d];   kCache, vCache [position][kvHead][d], room for maxSeq positions
+//   attention scores scratch the kernel writes, nTokens * nHeads * maxSeq floats
+//
+// BLOCK LAYOUTS (GGUF's, as in ggml; little-endian; "half" an IEEE binary16)
+//
+//   F32   4 bytes an element              F16   2 bytes an element
+//   Q8_0  34 bytes, 32 elements: half d; int8 qs[32].                                     x = d * qs[j]
+//   Q4_K  144 bytes, 256 elements: half d; half dmin; uint8 scales[12]; uint8 qs[128].
+//         Eight sub-blocks of 32, each with a 6-bit scale and a 6-bit minimum packed in scales[12]
+//         (ggml's get_scale_min_k4); the low nibbles of qs[32 g .. 32 g + 32) are sub-block 2 g, the high
+//         nibbles sub-block 2 g + 1.                                                       x = d sc q - dmin m
+//   Q6_K  210 bytes, 256 elements: uint8 ql[128]; uint8 qh[64]; int8 scales[16]; half d.
+//         A 6-bit value is 4 bits of ql and 2 of qh; sixteen sub-blocks of 16, a signed scale each.
+//                                                                                          x = d sc (q - 32)
+//   The type numbers are GGUF's ggml_type: QTYPE_F32 0, QTYPE_F16 1, QTYPE_Q8_0 8, QTYPE_Q4_K 12, QTYPE_Q6_K 14.
+//   The decoders are llmreference's blocks.cone (the CPU) and llmcommon.slang (the GPU); they are two
+//   separate transcriptions, and the tests check them against each other and, on one block of each type, against
+//   numbers worked out by hand.
+//
+// UNCERTAIN: THE LAYOUTS ARE NOT CHECKED AGAINST A REAL FILE. They are written from knowledge of ggml (its
+// quantisation source and the GGUF specification) with no copy of either to hand, and no model is downloaded.
+// Q8_0 is simple and certain. The intricate parts are Q4_K's packed scales and minimums and Q6_K's split of
+// each 6-bit value between ql and qh. The gguf package (written independently, in another lane) was read for
+// its own transcription of both and agrees in every detail; that is a second recollection, not a file. The
+// one thing still to do is to read a real Q4_K_M model and compare a tensor's elements with llama.cpp's.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says what was chosen and what was left out.
+//
+// - MATVEC. One workgroup of 64 invocations for each output row (rows beyond 65535 fold into a second
+//   dispatch dimension). A row is cut into units of 32 elements (a Q8_0 block, an eighth of a K-quant
+//   super-block, 32 elements of an F32 or F16 row); invocation t takes units t, t + 64, ..., adding each unit's
+//   products in column order, and the 64 partial sums are added by a tree of 6 levels in workgroup memory.
+//   One kernel serves all five types: the type is a parameter and a uniform branch picks the decoder. Chosen
+//   for plainness: it reads each byte of weights through a 32-bit load (no subgroup operations, no 8- or
+//   16-bit loads, no dot-product instruction), which is why the K-quants read 26 to 38 GB/s of weights on a
+//   4060 whose memory is rated 256 GB/s (see MEASURED). The fast paths wait for the gpu package's feature
+//   queries.
+// - MATMUL. A 16 x 16 tile of Y for each workgroup of 256 invocations; the workgroup walks the shared
+//   dimension 16 columns at a time, each invocation loading one weight (dequantised one element at a time) and
+//   one input into workgroup memory, then adding 16 products. Every output is added in column order, one at a
+//   time. Chosen over a larger tile or a register-blocked one for plainness; it reaches about 700 GFLOP/s
+//   (see MEASURED), far under what the card can do.
+// - RMSNORM. One workgroup of 256 for each row (at most 65535 rows); the sum of squares by the same stride
+//   and tree; 1 / sqrt, not the hardware's inverse square root, so that the CPU agrees closely.
+// - ROPE. One invocation (of 64) for each pair of each head of each token, so none touches another's elements.
+//   The caller gives the frequency table (llmreference's 'ropeFrequencies(ropeDim, base)'), so the GPU and
+//   the CPU start from the same numbers and Llama-3 style frequency scaling is the caller's to bake in (not
+//   implemented here). Pair order 0 is ggml's "normal" order (2 i, 2 i + 1), what a Llama GGUF's permuted
+//   weights want; order 1 is the "neox" order (i, i + ropeDim / 2), Qwen's and the Hugging Face Llama layout.
+//   The angle is (pos0 + token) * freq in f32 and is reduced by a multiple of 2 pi in three parts (Cody and
+//   Waite) before sin and cos: the 4060's sin and cos lose accuracy in proportion to the angle (measured
+//   2.7e-4 at an angle of 2000), and this makes them good to ~4e-7 up to angles of 5e4, ~3e-6 to 2e5.
+// - SOFTMAX. One workgroup of 256 for each row (at most 65535); max, then exp sum, each by stride and tree.
+// - ATTENTION. One workgroup of 128 for each (head, token); the scores go to a scratch row of maxSeq floats
+//   per (head, token) in a buffer, so a sequence of any length fits (workgroup memory is 16 KB at least,
+//   4096 floats); three passes: scores, max and exp-sum by trees, then the weighted sum of values, each
+//   invocation taking dimensions d, d + 128 .... The scratch costs nTokens * nHeads * maxSeq floats (32 heads,
+//   2048 positions: 256 KB for a decode step; a 512-token prefill over 2048: 128 MB). Left out: flash
+//   attention (a tiled online softmax with no scratch), attention over several sequences at once (one
+//   sequence only), sliding windows and alibi/other biases, a mask other than causal, and an f16 cache.
+// - ELEMENTWISE. One invocation for each element, 256 a workgroup; a dispatch past 65535 workgroups folds. SiLU
+//   is x / (1 + e^-x); GELU is the tanh form ggml and llama.cpp use, not the erf form. Left out: fused
+//   kernels (SiLU times the up projection, a residual add with the next norm), which a later design may
+//   add: each is two lines over these.
+// - The F32 activations throughout. Left out: f16 activations, batching of several sequences, Q4_0, Q5_x,
+//   the IQ types and BF16 weights, an embedding lookup (dequantise row t of a quantised table), argmax and
+//   top-k sampling on the GPU (llmrun's), tensor-parallel anything.
+// - LIMITS the code checks. A weights buffer is addressed in 32-bit bytes (the matrix must end below 4 GiB);
+//   gpuwork binds a buffer of at most 128 MiB (WebGPU's default), which a 32000 x 4096 Q6_K output matrix
+//   (107 MB) is under and a 32000 x 4096 F16 one (262 MB) is not: the gpu package's large-buffer work lifts it.
+//
+// TOLERANCES, NAMED, AND WHY (the tests' headers say it with the numbers; every twin works in f64, so a
+// difference is the GPU's own f32 error)
+//
+// - matvec, matmul: each output within llmreference's 'sumTolerance', (cols + 4) * 2^-24 times the sum of the
+//   absolute values of its products: the standard bound on an f32 sum of products in any order (n - 1 adds
+//   and n products, each off by at most 2^-24 relative), with room for the dequantisation's own two
+//   roundings. Measured on the RTX 4060: the worst error is 3.6 (matvec) and 3.0 (matmul) units of 2^-24
+//   times that sum, against a bound of up to 2300 units: the kernels' sums are nowhere near their worst case.
+// - rmsnorm: relative, (ceil(n / 256) + 9) / 2 + 12 units of 2^-24 (measured worst 3.8). softmax: relative,
+//   ceil(n / 256) + 8 + 2 (3 + 2 d) + 4 units (d the largest distance from the maximum, 8 for the tests' inputs;
+//   measured worst 10.8). attention: relative to the largest |v|, the units given in tests/attention.cone
+//   (measured worst 2.7 units, 1.4 per cent of its bound).
+// - rope: 64 units of 2^-24 of |x0| + |x1| (measured worst 8.4, over positions to 4200). silu: relative,
+//   8 + 2 |x| units (measured worst 9.4 at |x| <= 6); gelu: absolute, 6 + 4 |x| units (measured worst 8).
+//   The Vulkan specification promises only 3 + 2 |x| ulp for exp and an absolute 2^-11 for sin and cos; the
+//   transcendental tolerances are the RTX 4060's measured worst times a margin, and another GPU may need them
+//   loosened.
+// - add, mul, kvAppend: none; bit for bit.
+//
+// MEASURED on the RTX 4060 Laptop GPU (8 GB, NVIDIA, Vulkan 1.3; release build, examples/bench.cone; one
+// dispatch, microseconds; a Llama-7B layer's sizes; the laptop's GPU was shared with other work, so a run
+// varies by 10 to 20 per cent; the time is (51 dispatches - 1) / 50, so the job's fixed cost cancels, and
+// the floor of about 20 us is the cost of a dispatch itself in a gpuwork job):
+//
+//   matvec 4096 x 4096        F32 680 (99 GB/s)   F16 469 (72)   Q8_0 363 (49)   Q4_K 361 (26)   Q6_K 389 (35)
+//   matvec 11008 x 4096 Q4_K  934 (27 GB/s);  32000 x 4096 Q6_K (the output layer)  2847 (38 GB/s)
+//   matmul 4096 x 4096, batch 32   F32 1567   F16 1572   Q8_0 1621   Q4_K 1851   Q6_K 1684   (580 to 685 GFLOP/s)
+//   matmul 4096 x 4096, batch 128  F32 6039 (711 GFLOP/s)    Q8_0 6148 (699)
+//   rmsnorm 4096: 30;  128 rows of 4096: 27     rope, 32 heads of 128: 1 token 19, 128 tokens 29
+//   softmax 32000: 49     kv append 1 token of 1024: 21     silu, gelu, add, mul of 11008: 19 to 22
+//   attention decode, 32 heads of 128 over 8 kv heads: 512 positions 97, 2048 positions 325
+//   attention prefill, 128 tokens, same heads: 748
+//
+// The tests: tests/matvec, matmul, layers (rmsnorm, softmax, rope), elementwise (silu, gelu, add, mul,
+// kvAppend) and attention each run on a real GPU with validation on; run them with 'congo test' with SDL3 on
+// LIB. With LLMKERNELS_REPORT set they print the worst errors seen. They compile and run on Windows only.
 
 mod llmkernels;
 

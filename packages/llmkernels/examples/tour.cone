@@ -1,0 +1,67 @@
+// One matrix-vector product on the GPU, checked against its CPU twin: a seeded random 64 x 256 Q4_K matrix
+// and input, the kernels made once, a job that uploads, dispatches and reads back, and the answer compared
+// with llmreference's twin.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import libc;
+import collections use List;
+import random;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+fn main() i32 {
+  mut instance = Instance.create("llmkernels tour");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  mut device = adapter.requestDevice();
+  if !device.isValid() {
+    printStr("no device\n");
+    return 1i32;
+  }
+  imm kernels = Kernels.make(&device);                          // the pipelines, made once
+  mut works = Works.make();
+
+  // a 64 x 256 Q4_K matrix (random blocks, seeded) and an input vector
+  mut rng = random.Rng.fromSeed(1u64);
+  match syntheticMatrix(&mut rng, QTYPE_Q4_K, 64usize, 256usize) {
+    case imm m Some {
+      imm x = syntheticFloats(&mut rng, 256usize, 1.0);
+      mut job = Job.make(&mut device);
+      imm w = job.give(upload(&mut device, m.words().view()));     // the weights' bytes, as words
+      imm xb = job.give(upload(&mut device, floatWords(x.view()).view()));
+      imm yb = job.give(zeroed(&mut device, 64usize));
+      kernels.matvec(&mut job, &mut device, w, xb, yb, QTYPE_Q4_K, 64usize, 256usize);
+      imm back = job.readback(&mut device, yb);
+      imm ticket = works.submit(&mut device, job, Target.Here(1u64));
+      mut done = List[Completion].empty();
+      works.waitFor(&mut device, ticket, &mut done);
+      imm y = wordFloats(done[0usize].words(back).view());         // 64 f32s
+
+      // the CPU's answer
+      mut want = List[f32].withCapacity(64usize);
+      mut i = 0usize;
+      while i < 64usize { want.push(0.0); i = i + 1usize; }
+      matvecCpu(&m, x.view(), want.viewMut());
+      mut worst = 0.0d;
+      i = 0usize;
+      while i < 64usize {
+        imm e = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+        if e > worst { worst = e; }
+        i = i + 1usize;
+      }
+      printStr("y[0] = "); printFloat(f64.from(*y[0usize])); printStr(" on the GPU, ");
+      printFloat(f64.from(*want[0usize])); printStr(" on the CPU; the largest difference over 64 rows is ");
+      printFloat(worst); printStr("\n");
+    }
+    case is None { printStr("not a whole number of blocks\n"); return 1i32; }
+  }
+  device.endFrame();
+  device.waitIdle();
+  0i32;
+}
