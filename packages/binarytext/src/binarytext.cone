@@ -1,0 +1,186 @@
+// The binarytext package: bytes as text. Base64 (RFC 4648's standard and
+// URL-safe alphabets, with or without '=' padding) and hex (base 16, lower or
+// upper case), encoded and decoded in Cone, with no C library and no call to
+// the OS. Each comes one-shot and streaming; a streaming encoder or decoder is
+// a VALUE that holds its own state, fed chunks split at any offset.
+//
+//   mod tokens;
+//   import stdio use *;
+//   import binarytext;
+//
+//   fn main() i32 {
+//     printStr(binarytext.encodeBase64("foobar").view());   // Zm9vYmFy
+//     printStr("\n");
+//     printStr(binarytext.encodeHex("foobar").view());      // 666f6f626172
+//     printStr("\n");
+//     match binarytext.decodeBase64("Zm9vYg==") {           // strict: padding, characters,
+//       case imm bytes Ok {                                 // and trailing bits all checked
+//         printStr(String.fromBytes(bytes.view()).view());  // foob
+//       }
+//       case imm e Error {
+//         imm m = e.message();                              // 'binarytext: ... at offset 3'
+//         printStr(m.view());
+//         return 1i32;
+//       }
+//     }
+//     0i32;
+//   }
+//
+// One-shot, text out: 'encodeBase64(bytes)', 'encodeBase64Url(bytes)',
+// 'encodeBase64With(bytes, &format)', 'encodeHex(bytes)' (lower case),
+// 'encodeHexUpper(bytes)'. 'appendBase64' and 'appendHex' append to a String
+// the caller owns. One-shot, bytes out: 'decodeBase64(text)',
+// 'decodeBase64Url(text)', 'decodeBase64With(text, &format)', 'decodeHex(text)',
+// each a Result[List[u8], DecodeError]; 'decodeBase64Into' and 'decodeHexInto'
+// append to a List the caller owns and answer how many bytes. Streaming:
+// 'Base64Encoder', 'Base64Decoder', 'HexEncoder' and 'HexDecoder' ('update' a
+// chunk at a time, then 'finish'); the one-shot functions are made of them, so
+// there is one grammar. The input of a decode is '&Array[u8]', which a '&str'
+// or a String's 'view()' is as well.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - Decoding is STRICT by default. A base64 text is refused for: a byte that
+//   is not in the alphabet (the two alphabets differ in two characters, '+'
+//   '/' against '-' '_', and are not mixed: the standard alphabet refuses
+//   '-' and '_', the URL-safe one refuses '+' and '/'); padding that does not
+//   match the format (a padded format needs the '=' that make the text a
+//   multiple of 4 characters, an unpadded one allows none, and '=' never
+//   comes except at the end); a last group of one character (6 bits cannot
+//   make a byte); and NON-CANONICAL trailing bits (the unused low 4 or 2 bits
+//   of the last character must be zero, so that 'QR==' is refused although it
+//   would decode like 'QQ=='; RFC 4648 section 3.5 permits an implementation
+//   to reject these, and a codec that accepts them lets two different texts
+//   mean one value, which breaks comparing, hashing and signing texts). The
+//   whitespace is refused too, and the text ends where the padding does:
+//   a second padded text joined on is refused.
+// - Opt-ins are fields of the 'Base64Format' value, all off by default:
+//   'skipWhitespace' (a space, tab, carriage return or line feed anywhere in
+//   the text is passed over, which is what a MIME-style wrapped text needs;
+//   it is a decoder's option and the encoder never writes any), 'optionalPadding'
+//   (a decoder takes the text padded or not, which is what a JWT-style reader
+//   of URL-safe text is glad of; a PARTLY padded text is still refused), and
+//   'allowTrailingBits' (non-zero unused bits are ignored). The builders
+//   'acceptingWhitespace()', 'acceptingAnyPadding()' and
+//   'acceptingTrailingBits()' return the format with that opt-in on.
+//   Left out: line-wrapping on encode (MIME's 76 columns) and the 'data:'
+//   URI's header: wrap or prefix the String yourself.
+// - Padding on or off is the format's 'padded' field: the four ready formats
+//   are 'Base64Format.standard()' and 'urlSafe()' (padded, as RFC 4648's
+//   section 10 vectors are written) and 'standardUnpadded()' and
+//   'urlSafeUnpadded()'. The shortcut functions without a format are the
+//   padded ones; a JWT or a URL parameter wants 'urlSafeUnpadded()'.
+// - Hex decoding is case-insensitive ('0-9', 'a-f', 'A-F', mixed within one
+//   text), needs an even number of digits, and refuses anything else,
+//   including a '0x' prefix and whitespace. 'decodeHexSkippingWhitespace' and
+//   'HexDecoder.skippingWhitespace()' pass over a space, tab, carriage return
+//   and line feed (the form a hex dump is written in). Encoding is lower case
+//   ('encodeHex') or upper ('encodeHexUpper'); it never writes a separator.
+// - A DecodeError says its kind (BadCharacter, BadPadding, BadLength,
+//   NonCanonical), the byte offset from the start of the WHOLE stream (not
+//   of the chunk) of the byte at fault, that byte, and a reason; 'message()'
+//   is the one line. A one-shot decode into a List leaves the List as it was
+//   found on failure; a streaming decoder keeps the bytes it had produced
+//   before the fault, and, once failed, answers the same error to every
+//   later call until 'reset()'.
+// - A streaming decoder holds at most 4 characters of state (base64) or one
+//   digit (hex); an encoder holds at most 2 bytes (base64) or none (hex).
+//   A chunk may be any length, empty included, and a base64 group may be
+//   split at any of its characters. 'finish' ends one text and resets the
+//   decoder or encoder for the next. Left out: a decoder that reads from a
+//   file or socket by itself (the caller feeds it).
+// - No table. Decoding a character is a comparison against ranges ('A'-'Z',
+//   'a'-'z', '0'-'9' and two symbols) and encoding is the same ranges run the
+//   other way; a lookup table here would be a module-level global, and globals
+//   hold. It is a few comparisons a character, not the table's one load.
+// - Existing routines this package does NOT migrate (separate changes
+//   later): gltfimport's private 'b64Val' and 'base64Decode'
+//   (packages/gltfimport/src/gltfbuf.cone; lenient: both alphabets, whitespace
+//   skipped, '=' ends the data, nothing about trailing bits) and the three
+//   copies of a test-only 'base64' encoder in gltfimport/tests (gltfcube,
+//   gltffuzz, gltfskin); the hex digit readers in json (reader.cone
+//   'hexValue'), gltfimport (json.cone 'hexVal'), toml ('hexValue'), tls
+//   ('hexDigit', which 'pinnedSha256' decodes a pin with) and url
+//   ('hexValue' and 'hexDigit', percent-encoding, upper case); the tests'
+//   private 'hexOf' in json, toml and process; starship's 'hexOf' (over
+//   'String.appendHex'); and collections' 'String.appendHex' itself, which
+//   writes a number, not bytes. conestd, core, httpconn, imagedecode and
+//   http1 have no base64 or hex routine of their own (http1 reads a chunk
+//   size in hex, by its own loop).
+// - Written in Cone with no C call, no global and no thread-local.
+
+mod binarytext;
+
+import collections use String, List;
+
+// -------- failure --------
+
+// What kind of thing was wrong with the text
+pub enum DecodeErrorKind {
+  // A byte that is not in the alphabet (or is whitespace, when whitespace is
+  // not skipped)
+  BadCharacter;
+  // Padding that does not match the format: '=' where none may be or in the
+  // wrong number, data after the padding, or padding missing
+  BadPadding;
+  // A length no bytes make: one base64 character in the last group, or an odd
+  // count of hex digits
+  BadLength;
+  // Base64 whose unused trailing bits are not zero
+  NonCanonical;
+
+  // The same kind, for a decoder that stores it and hands it out again
+  pub fn copy(self &DecodeErrorKind) DecodeErrorKind {
+    match self {
+      case is BadCharacter { DecodeErrorKind.BadCharacter; }
+      case is BadPadding { DecodeErrorKind.BadPadding; }
+      case is BadLength { DecodeErrorKind.BadLength; }
+      case is NonCanonical { DecodeErrorKind.NonCanonical; }
+    }
+  }
+}
+
+// Why a text could not be decoded
+pub struct DecodeError {
+  pub kind DecodeErrorKind;
+  // Where, in bytes from the start of the text (of the whole stream, for a
+  // streaming decoder). For a fault at the end of the text, its length
+  pub offset usize;
+  // The byte at fault, or 0 when the fault is at the end
+  pub byte u8;
+  pub reason String;
+
+  // One line for a person: 'binarytext: the text holds 'x', which is not in the
+  // alphabet, at offset 4'
+  pub fn message(self &) String {
+    mut out = String.from("binarytext: ");
+    out.append(reason.view());
+    out.append(", at offset ");
+    out.appendUInt(u64.from(offset));
+    out;
+  }
+
+  pub fn copy(self &) DecodeError {
+    new DecodeError(kind, offset, byte, reason.copy());
+  }
+}
+
+// -------- shared --------
+
+// The four whitespace bytes a decoder can be told to pass over
+fn isSpace(c u8) bool { c == ' ' or c == '\t' or c == '\r' or c == '\n'; }
+
+// The error text for a byte at fault: 'the byte 'x' (0x78) is ...'
+fn describeByte(out &mut String, c u8) {
+  out.append("the byte ");
+  if c >= 0x21u8 and c <= 0x7Eu8 {
+    out.appendByte('\'');
+    out.appendByte(c);
+    out.append("' (0x");
+  } else {
+    out.append("0x");
+  }
+  out.appendHex(u64.from(c), 2usize);
+  if c >= 0x21u8 and c <= 0x7Eu8 { out.appendByte(')'); }
+}
