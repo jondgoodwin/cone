@@ -865,7 +865,8 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 if (why)
                     errorMsgNode(*argsp, whycode, "%s", why);
                 else
-                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
+                        iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));
             }
         }
         parmp++;
@@ -4073,6 +4074,16 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // declares there when they all agree on one.
     INode **argsp;
     uint32_t cnt;
+    // A generic type's written type arguments are named, not held: whatever
+    // holds one by value lays it out itself (structTypeSettle), so while a
+    // layout is in flight an argument that is itself an instance is checked as
+    // a reference's target is (refTargetTypeCheck). 'List[Option[Node]]' in a
+    // field of Node makes the 'Option[Node]' without laying it out, as
+    // 'List[Node]' makes 'Node'.
+    int argsnamed = structValueInFlight() && node->methfld == NULL && node->args
+        && (node->flags & FlagIndex) && !(node->flags & (FlagCtorParen | FlagNew))
+        && isTypeNode(node->objfn) && nameUseNames(node->objfn, StructTag)
+        && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL;
     if (node->args) {
         uint32_t argi = 0;
         uint32_t ovfirst = firstparm;
@@ -4111,6 +4122,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
             if ((*argsp)->tag == ClosureTag)
                 fnCallCheckClosureArg(pstate, argsp, expect);
+            else if (argsnamed && (*argsp)->tag == FnCallTag) {
+                structTargetEnter();
+                inodeTypeCheck(pstate, argsp, expect);
+                structTargetExit();
+            }
             else
                 inodeTypeCheck(pstate, argsp, expect);
             ++argi;

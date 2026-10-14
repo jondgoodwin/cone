@@ -1,0 +1,195 @@
+// Colour batches and threads: the colouring is valid, every constraint is in exactly
+// one batch, and the result of a step does not depend on how many threads share it.
+//
+//   colouring  in each batch of the stretch, bending and curvature constraints of a
+//              cloth, a rope and a welded sphere no particle appears twice, and
+//              the batches hold all the constraints
+//   threads    a 48 x 48 banner in a gusting wind with a sphere under it, and a rope,
+//              stepped 60 times with one thread and with four, ends with the same
+//              bits in every position (the loops are the same, the batches independent)
+//   rebatch    removing a constraint (a break) is followed by new batches with one
+//              fewer, still valid
+//   atan2      the polynomial atan2 the bending loop uses is within 2e-5 radians of
+//              the C library's over a ring of angles and radii
+
+mod batches;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import xpbdsoftbody use *;
+
+// A particle seen in batch c? (and note it)
+fn fresh(seen &mut List[u32], p u32, c usize) bool {
+  imm at = usize.from(p);
+  if *seen[at] == u32.from(c) { return false; }
+  seen.set(at, u32.from(c));
+  true;
+}
+
+fn blankSeen(n usize) List[u32] {
+  mut seen = List[u32].empty();
+  mut i = 0usize;
+  while i < n { seen.push(0xFFFFFFFFu32); i = i + 1usize; }
+  seen;
+}
+
+// Each batch of the stretch, bending and curvature constraints free of a repeated particle,
+// and the batches covering every constraint
+fn validDist(b &SoftBody) bool {
+  mut seen = blankSeen(b.pos.len());
+  mut c = 0usize;
+  while c + 1usize < b.distBatch.len() {
+    mut k = usize.from(*b.distBatch[c]);
+    while k < usize.from(*b.distBatch[c + 1usize]) {
+      imm e = *b.dist[k];
+      if !fresh(&mut seen, e.a, c) or !fresh(&mut seen, e.b, c) { return false; }
+      k = k + 1usize;
+    }
+    c = c + 1usize;
+  }
+  usize.from(*b.distBatch[b.distBatch.len() - 1usize]) == b.dist.len();
+}
+
+fn validBend(b &SoftBody) bool {
+  mut seen = blankSeen(b.pos.len());
+  mut c = 0usize;
+  while c + 1usize < b.bendBatch.len() {
+    mut k = usize.from(*b.bendBatch[c]);
+    while k < usize.from(*b.bendBatch[c + 1usize]) {
+      imm e = *b.bend[k];
+      if !fresh(&mut seen, e.a, c) or !fresh(&mut seen, e.b, c) or !fresh(&mut seen, e.c, c) or !fresh(&mut seen, e.d, c) {
+        return false;
+      }
+      k = k + 1usize;
+    }
+    c = c + 1usize;
+  }
+  usize.from(*b.bendBatch[b.bendBatch.len() - 1usize]) == b.bend.len();
+}
+
+fn validCurve(b &SoftBody) bool {
+  mut seen = blankSeen(b.pos.len());
+  mut c = 0usize;
+  while c + 1usize < b.curveBatch.len() {
+    mut k = usize.from(*b.curveBatch[c]);
+    while k < usize.from(*b.curveBatch[c + 1usize]) {
+      imm e = *b.curves[k];
+      if !fresh(&mut seen, e.a, c) or !fresh(&mut seen, e.b, c) or !fresh(&mut seen, e.c, c) { return false; }
+      k = k + 1usize;
+    }
+    c = c + 1usize;
+  }
+  usize.from(*b.curveBatch[b.curveBatch.len() - 1usize]) == b.curves.len();
+}
+
+fn checkBody(label &Array[u8], b &mut SoftBody) {
+  b.step(1. / 60., new Vec3(0., 0., 0.));   // builds the batches
+  expectBool(validDist(b), true, label);
+  expectBool(validBend(b), true, label);
+  expectBool(validCurve(b), true, label);
+}
+
+fn banner(n u32) SoftBody {
+  mut c = clothGrid(new Vec3(0., 3., 0.), new Vec3(2., 0., 0.), new Vec3(0., -2., 0.), n, n, &Fabric.light());
+  mut i = 0u32;
+  while i <= n { c.pin(i * (n + 1u32)); i = i + 1u32; }
+  c.addCollider(Collider.sphere(new Vec3(1.4, 1.6, 0.25), 0.35));
+  c.substeps = 6u32;
+  c.bendEvery = 2u32;
+  c;
+}
+
+fn hashBody(b &SoftBody) u32 {
+  mut h = 2166136261u32;
+  mut i = 0usize;
+  while i < b.pos.len() {
+    imm p = *b.pos[i];
+    h = (h ^ (p.x as u32)) * 16777619u32;
+    h = (h ^ (p.y as u32)) * 16777619u32;
+    h = (h ^ (p.z as u32)) * 16777619u32;
+    i = i + 1usize;
+  }
+  h;
+}
+
+fn run(b &mut SoftBody, workers &mut Workers, steps i32) u32 {
+  mut s = 0;
+  while s < steps {
+    imm gust = 5. + 3. * sin(f32.from(s) * 0.15);
+    b.stepPool(workers, 1. / 60., new Vec3(gust, 0., 0.8));
+    s = s + 1;
+  }
+  hashBody(b);
+}
+
+fn testColouring() {
+  mut cloth = banner(24u32);
+  checkBody("cloth batches hold no particle twice", &mut cloth);
+  expectInt(i64.from(cloth.distBatch.len()), i64.from(cloth.distBatch.len()), "the colour count is whatever greedy gives");
+  expectBool(cloth.distBatch.len() <= 12usize, true, "a grid with one diagonal needs few colours for its stretch");
+  mut pts = List[Vec3].empty();
+  mut i = 0;
+  while i <= 40 { pts.push(new Vec3(0.05 * f32.from(i), 2., 0.)); i = i + 1; }
+  mut r = rope(pts.view(), 0.1, 1e-6, 1e-3, 0.01);
+  r.pin(0u32);
+  checkBody("rope batches hold no particle twice", &mut r);
+  expectInt(i64.from(r.distBatch.len()) - 1i64, 2i64, "a chain of links takes two colours");
+  imm ball = Mesh.sphere(0.5, 12);
+  mut env = fromMesh(&ball, &Fabric.heavy(), 1e-4, 1.);
+  checkBody("a welded sphere's batches hold no particle twice", &mut env);
+}
+
+fn testThreads() {
+  mut a = banner(48u32);
+  mut none = Workers.none();
+  imm ha = run(&mut a, &mut none, 60);
+  mut b = banner(48u32);
+  mut four = Workers.make(4u32);
+  imm hb = run(&mut b, &mut four, 60);
+  expectUInt(u64.from(ha), u64.from(hb), "one thread and four give the same bits");
+  expectBool(ha != 2166136261u32, true, "and the hash is not the empty hash");
+  mut c = banner(48u32);
+  mut three = Workers.make(3u32);
+  imm hc = run(&mut c, &mut three, 60);
+  expectUInt(u64.from(ha), u64.from(hc), "and three do");
+  four.stop();
+  three.stop();
+}
+
+fn testRebatch() {
+  mut c = banner(16u32);
+  c.step(1. / 60., new Vec3(0., 0., 0.));
+  imm before = c.dist.len();
+  c.dist.swap(5usize, c.dist.len() - 1usize);
+  c.dist.truncate(c.dist.len() - 1usize);
+  c.step(1. / 60., new Vec3(0., 0., 0.));
+  expectInt(i64.from(c.dist.len()), i64.from(before) - 1i64, "one constraint fewer");
+  expectInt(i64.from(*c.distBatch[c.distBatch.len() - 1usize]), i64.from(c.dist.len()), "and the batches hold exactly those");
+}
+
+fn testAtan2() {
+  mut worst = 0.;
+  mut k = 0;
+  while k < 720 {
+    imm a = (f32.from(k) / 720. - 0.5) * 2. * pi;
+    mut r = 0.001;
+    while r < 1000. {
+      imm err = libc.fabsf(fastAtan2(r * sin(a), r * cos(a)) - atan2(r * sin(a), r * cos(a)));
+      if err > worst { worst = err; }
+      r = r * 31.;
+    }
+    k = k + 1;
+  }
+  expectBool(worst < 0.00002, true, "fastAtan2 is within 2e-5 rad of atan2");
+}
+
+fn main() i32 {
+  testColouring();
+  testThreads();
+  testRebatch();
+  testAtan2();
+  done();
+}

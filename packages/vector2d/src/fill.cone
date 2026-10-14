@@ -1,0 +1,109 @@
+// ======== Filling: a polygon to triangles ========
+//
+// The interior is triangulated (a fan for a convex outline; ear clipping, mesh's
+// 'triangulatePolygon', for a concave one) with every corner moved half a
+// pixel inward along its miter, and a fringe of quads joins that ring to one
+// half a pixel outside the outline, coverage 1 falling to 0: the shape's
+// edge is the middle of the ramp. Method: CPU triangulation with analytic edge
+// coverage (NanoVG's fill, Skia's AA fringe).
+// Limits: each outline is filled on its own (no holes: a ring is a thick
+// stroked circle, or two fills), and an outline that crosses itself is
+// triangulated as if it did not (overlaps of the even-odd kind are not cut out).
+
+fn signedArea2(pts &List[Vec2]) f32 {
+  mut s = 0.0f;
+  imm n = pts.len();
+  mut i = 0usize;
+  while i < n {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % n];
+    s = s + (a.x * b.y - b.x * a.y);
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn isConvex(pts &List[Vec2]) bool {
+  imm n = pts.len();
+  mut sign = 0.0f;
+  mut i = 0usize;
+  while i < n {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % n];
+    imm c = *pts[(i + 2usize) % n];
+    imm cr = (b - a).cross(c - b);
+    if absf(cr) > 0.0001 {
+      if sign == 0. { sign = cr; }
+      elif sign * cr < 0. { return false; }
+    }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// Fills the closed outline 'pts' (pixel space)
+pub fn fillPolygon(batch &mut Batch, pts &List[Vec2], paint &Paint) {
+  imm n = pts.len();
+  if n < 3usize { return; }
+  imm area = signedArea2(pts);
+  if absf(area) < 0.0001 { return; }
+  // Inward normal of an edge: the left of a counterclockwise outline
+  imm orient = if area > 0. { 1.0f; } else { -1.0f; };
+  // Smallest extent, to keep tiny shapes from inverting
+  mut lo = *pts[0usize];
+  mut hi = *pts[0usize];
+  mut i = 1usize;
+  while i < n { lo = lo.min(*pts[i]); hi = hi.max(*pts[i]); i = i + 1usize; }
+  imm extent = minf(hi.x - lo.x, hi.y - lo.y);
+  imm dist = minf(0.5, extent * 0.3);
+
+  mut inner = List[Vec2].withCapacity(n);
+  mut outer = List[Vec2].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    imm prev = *pts[(i + n - 1usize) % n];
+    imm p = *pts[i];
+    imm next = *pts[(i + 1usize) % n];
+    imm n0 = (p - prev).normalize().perp() * orient;
+    imm n1 = (next - p).normalize().perp() * orient;
+    imm denom = 1. + n0.dot(n1);
+    mut off = new Vec2(0., 0.);
+    if denom > 0.0001 {
+      off = (n0 + n1) * (1. / denom);
+      imm len = off.length();
+      if len > 4. { off = off * (4. / len); }
+    } else {
+      off = n0;
+    }
+    inner.push(p + off * dist);
+    outer.push(p - off * dist);
+    i = i + 1usize;
+  }
+  imm one = new Vec2(1., 1.);
+  imm zero = new Vec2(0., 1.);
+  // Interior
+  if isConvex(pts) {
+    i = 1usize;
+    while i + 1usize < n {
+      batch.tri(paint, 1., *inner[0usize], one, *inner[i], one, *inner[i + 1usize], one);
+      i = i + 1usize;
+    }
+  } else {
+    imm idx = triangulatePolygon(pts.view());
+    i = 0usize;
+    while i + 2usize < idx.len() {
+      imm a = usize.from(*idx[i]);
+      imm b = usize.from(*idx[i + 1usize]);
+      imm c = usize.from(*idx[i + 2usize]);
+      batch.tri(paint, 1., *inner[a], one, *inner[b], one, *inner[c], one);
+      i = i + 3usize;
+    }
+  }
+  // Fringe
+  i = 0usize;
+  while i < n {
+    imm j = (i + 1usize) % n;
+    batch.quad(paint, 1., *inner[i], one, *inner[j], one, *outer[j], zero, *outer[i], zero);
+    i = i + 1usize;
+  }
+}

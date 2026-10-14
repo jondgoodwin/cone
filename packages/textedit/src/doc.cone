@@ -1,0 +1,870 @@
+// ======== Doc: a document with carets, selections and undo ========
+//
+// A Doc is a TextBuffer, a set of carets (each a selection: an anchor and a head, an empty one is a plain
+// caret) and a History of Edits. Every change to the text goes through 'commit', which applies a set
+// of non-overlapping replacements and records them as ONE undo step: so a keystroke with five
+// carets, a replace-all or an indent of ten lines each undo in one go, and undo puts the carets back
+// where they were.
+//
+// MULTI-CARET is not a special case: every operation (type, delete, newline, paste, indent, move)
+// works on the list of carets, computes one replacement per caret in ascending order of position, and
+// maps the carets through the replacements (the way Sublime Text and VS Code do). Carets are kept
+// sorted and non-overlapping; overlapping ones merge.
+//
+// COLUMNS are visual: a tab advances to the next multiple of 'tabWidth', a UTF-8 continuation byte
+// takes none. Up and down keep a caret's GOAL column across short lines, as every editor does.
+//
+// UNDO. The command type is Edit (position, removed text, inserted text, and the carets before and
+// after, kept on the first edit of a step). Typing a run of letters, or backspacing, MERGES into one
+// step by History.pushMerging; moving the carets or pausing ('breakStep') ends the run.
+
+pub const NOT_FOUND = 18446744073709551615usize;
+
+// Undo tags (History's merge tags)
+pub const TAG_OTHER = 0u32;
+pub const TAG_TYPING = 1u32;
+pub const TAG_BACKSPACE = 2u32;
+pub const TAG_DELETE = 3u32;
+
+pub struct Caret {
+  pub anchor usize;
+  pub head usize;
+  pub goal i32 = -1i32;                // the column up/down try to keep, or -1
+
+  pub fn lo(self &) usize {if anchor < head {anchor;} else {head;};}
+  pub fn hi(self &) usize {if anchor < head {head;} else {anchor;};}
+  pub fn isEmpty(self &) bool {anchor == head;}
+}
+
+pub fn caretAt(off usize) Caret {new Caret(off, off);}
+
+// The History command of a Doc: replace removed.len() bytes at pos by 'inserted'
+pub struct Edit {
+  pub pos usize;
+  pub removed String;
+  pub inserted String;
+  pub before List[Caret];              // the carets before the step (only on the step's first edit; else empty)
+  pub after List[Caret];
+}
+
+// What undo and redo act on
+pub struct Core {
+  pub buf TextBuffer;
+  pub carets List[Caret];
+  pub version u64 = 0u64;              // changes with every edit, undo and redo
+  pub firstDirty usize = 18446744073709551615usize;   // the lowest line edited since 'clearDirty' (NOT_FOUND: none)
+}
+
+fn copyCarets(c &List[Caret]) List[Caret] {
+  mut out = List[Caret].withCapacity(c.len());
+  mut i = 0usize;
+  while i < c.len() {
+    out.push(*c[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Applies one command to the document in one direction (History's replay function)
+pub fn applyEdit(core &mut Core, e &Edit, undoing bool) {
+  imm line = core.buf.lineOf(e.pos);
+  if line < core.firstDirty {core.firstDirty = line;}
+  if undoing {
+    core.buf.remove(e.pos, e.pos + e.inserted.len());
+    core.buf.insert(e.pos, e.removed.view());
+    if e.before.len() > 0usize {core.carets = copyCarets(&e.before);}
+  }
+  else {
+    core.buf.remove(e.pos, e.pos + e.removed.len());
+    core.buf.insert(e.pos, e.inserted.view());
+    if e.after.len() > 0usize {core.carets = copyCarets(&e.after);}
+  }
+  core.version = core.version + 1u64;
+}
+
+// 0 whitespace, 1 word character, 2 punctuation, 3 line break
+pub fn charClass(b u8) u32 {
+  if b == 10u8 or b == 13u8 {return 3u32;}
+  if b == 32u8 or b == 9u8 {return 0u32;}
+  if (b >= 48u8 and b <= 57u8) or (b >= 65u8 and b <= 90u8) or (b >= 97u8 and b <= 122u8) or b == 95u8 or b >= 128u8 {return 1u32;}
+  2u32;
+}
+
+fn isCont(b u8) bool {b >= 128u8 and b < 192u8;}
+
+// History's merge: typing continues typing, backspace continues backspace
+fn mergeEdit(prev &mut Edit, next &Edit) bool {
+  // typing: both only insert, next starts where prev ended, and the character class stays the same
+  if prev.removed.len() == 0usize and next.removed.len() == 0usize and prev.inserted.len() > 0usize and next.inserted.len() > 0usize
+      and prev.pos + prev.inserted.len() == next.pos {
+    imm lastPrev = prev.inserted[prev.inserted.len() - 1usize];
+    imm firstNext = next.inserted[0usize];
+    if charClass(lastPrev) == charClass(firstNext) and charClass(firstNext) != 3u32 {
+      imm more = String.from(next.inserted.view());
+      prev.inserted.append(more.view());
+      prev.after = copyCarets(&next.after);
+      return true;
+    }
+    return false;
+  }
+  // backspace: both only remove, next ends where prev began
+  if prev.inserted.len() == 0usize and next.inserted.len() == 0usize and prev.removed.len() > 0usize
+      and next.pos + next.removed.len() == prev.pos {
+    mut r = String.from(next.removed.view());
+    r.append(prev.removed.view());
+    prev.removed = r;
+    prev.pos = next.pos;
+    prev.after = copyCarets(&next.after);
+    return true;
+  }
+  // forward delete: next removes at the same place
+  if prev.inserted.len() == 0usize and next.inserted.len() == 0usize and prev.removed.len() > 0usize and next.pos == prev.pos {
+    imm more = String.from(next.removed.view());
+    prev.removed.append(more.view());
+    prev.after = copyCarets(&next.after);
+    return true;
+  }
+  false;
+}
+
+pub const MOVE_LEFT = 1u32;
+pub const MOVE_RIGHT = 2u32;
+pub const MOVE_UP = 3u32;
+pub const MOVE_DOWN = 4u32;
+pub const MOVE_LINE_START = 5u32;      // smart: first the indent's end, then column 0
+pub const MOVE_LINE_END = 6u32;
+pub const MOVE_WORD_LEFT = 7u32;
+pub const MOVE_WORD_RIGHT = 8u32;
+pub const MOVE_DOC_START = 9u32;
+pub const MOVE_DOC_END = 10u32;
+pub const MOVE_PAGE_UP = 11u32;
+pub const MOVE_PAGE_DOWN = 12u32;
+
+pub struct Doc {
+  pub core Core;
+  pub hist History[Edit];
+  pub tabWidth u32 = 4u32;
+  pub indentUnit String;               // what one level of indent inserts
+  pub crlf bool = false;               // new line breaks are "\r\n"
+  pub pageLines u32 = 20u32;           // how far PAGE_UP / PAGE_DOWN move (the widget sets it)
+
+  pub fn make() Doc {
+    Doc.fromText("");
+  }
+
+  pub fn fromText(text &str) Doc {
+    mut d = new Doc(new Core(TextBuffer.fromText(text), List[Caret].empty()), History[Edit].make(), 4u32, String.from("  "));
+    d.core.carets.push(caretAt(0usize));
+    d.crlf = d.core.buf.usesCrlf();
+    d;
+  }
+
+  pub fn buffer(self &) &TextBuffer {&core.buf;}
+  pub fn version(self &) u64 {core.version;}
+  pub fn len(self &) usize {core.buf.len();}
+  pub fn lineCount(self &) usize {core.buf.lineCount();}
+  pub fn caretCount(self &) usize {core.carets.len();}
+  pub fn caret(self &, i usize) Caret {*core.carets[i];}
+  pub fn isDirty(self &) bool {hist.isDirty();}
+  pub fn markSaved(self &mut) {hist.markSaved();}
+  pub fn clearDirty(self &mut) {core.firstDirty = NOT_FOUND;}
+  pub fn firstDirtyLine(self &) usize {core.firstDirty;}
+  pub fn breakStep(self &mut) {hist.breakMerge();}
+
+  fn eol(self &) &str {if crlf {"\r\n";} else {"\n";};}
+
+  // ---- characters and columns ----
+
+  pub fn prevChar(self &, off usize) usize {
+    if off == 0usize {return 0usize;}
+    mut j = off - 1usize;
+    if core.buf.byteAt(j) == 10u8 and j > 0usize and core.buf.byteAt(j - 1usize) == 13u8 {return j - 1usize;}
+    while j > 0usize and isCont(core.buf.byteAt(j)) {j = j - 1usize;}
+    j;
+  }
+
+  pub fn nextChar(self &, off usize) usize {
+    imm n = core.buf.len();
+    if off >= n {return n;}
+    if core.buf.byteAt(off) == 13u8 and off + 1usize < n and core.buf.byteAt(off + 1usize) == 10u8 {return off + 2usize;}
+    mut j = off + 1usize;
+    while j < n and isCont(core.buf.byteAt(j)) {j = j + 1usize;}
+    j;
+  }
+
+  // The visual column of an offset
+  pub fn colOf(self &, off usize) u32 {
+    imm line = core.buf.lineOf(off);
+    mut col = 0u32;
+    mut i = core.buf.lineStart(line);
+    while i < off {
+      imm b = core.buf.byteAt(i);
+      if b == 9u8 {col = col + tabWidth - col % tabWidth;}
+      elif !isCont(b) {col = col + 1u32;}
+      i = i + 1usize;
+    }
+    col;
+  }
+
+  // The offset on a line nearest to a visual column (the line's end if the line is shorter)
+  pub fn offsetAtCol(self &, line usize, col u32) usize {
+    imm end = core.buf.lineEnd(line);
+    mut c = 0u32;
+    mut i = core.buf.lineStart(line);
+    while i < end {
+      imm b = core.buf.byteAt(i);
+      imm w = if b == 9u8 {tabWidth - c % tabWidth;} elif isCont(b) {0u32;} else {1u32;};
+      if c + w > col and w > 0u32 {
+        // a tab or character straddling the column: the nearer side
+        if col - c < c + w - col or w == 1u32 {return i;}
+        return nextChar(i);
+      }
+      c = c + w;
+      i = i + 1usize;
+    }
+    end;
+  }
+
+  // The offset after the leading whitespace of a line
+  pub fn indentEnd(self &, line usize) usize {
+    imm end = core.buf.lineEnd(line);
+    mut i = core.buf.lineStart(line);
+    while i < end and (core.buf.byteAt(i) == 32u8 or core.buf.byteAt(i) == 9u8) {i = i + 1usize;}
+    i;
+  }
+
+  // ---- word boundaries ----
+
+  pub fn wordLeft(self &, off usize) usize {
+    if off == 0usize {return 0usize;}
+    imm line = core.buf.lineOf(off);
+    if off == core.buf.lineStart(line) {return prevChar(off);}
+    mut j = off;
+    while j > core.buf.lineStart(line) and charClass(core.buf.byteAt(j - 1usize)) == 0u32 {j = j - 1usize;}
+    if j == core.buf.lineStart(line) {return j;}
+    imm cls = charClass(core.buf.byteAt(j - 1usize));
+    while j > core.buf.lineStart(line) and charClass(core.buf.byteAt(j - 1usize)) == cls {j = j - 1usize;}
+    j;
+  }
+
+  pub fn wordRight(self &, off usize) usize {
+    imm n = core.buf.len();
+    if off >= n {return n;}
+    imm line = core.buf.lineOf(off);
+    imm end = core.buf.lineEnd(line);
+    if off >= end {return nextChar(off);}
+    mut j = off;
+    imm cls = charClass(core.buf.byteAt(j));
+    if cls != 0u32 {
+      while j < end and charClass(core.buf.byteAt(j)) == cls {j = j + 1usize;}
+    }
+    while j < end and charClass(core.buf.byteAt(j)) == 0u32 {j = j + 1usize;}
+    j;
+  }
+
+  // The (start, end) of the word or run of like characters around an offset
+  pub fn wordAt(self &, off usize) Caret {
+    imm line = core.buf.lineOf(off);
+    imm ls = core.buf.lineStart(line);
+    imm le = core.buf.lineEnd(line);
+    if ls == le {return caretAt(off);}
+    mut at = off;
+    if at >= le {at = le - 1usize;}
+    imm cls = charClass(core.buf.byteAt(at));
+    mut lo = at;
+    mut hi = at + 1usize;
+    while lo > ls and charClass(core.buf.byteAt(lo - 1usize)) == cls {lo = lo - 1usize;}
+    while hi < le and charClass(core.buf.byteAt(hi)) == cls {hi = hi + 1usize;}
+    new Caret(lo, hi);
+  }
+
+  // ---- carets ----
+
+  // Sorts the carets and merges those that overlap
+  fn normalize(self &mut) {
+    imm n = core.carets.len();
+    // insertion sort by low end (carets are few)
+    mut i = 1usize;
+    while i < n {
+      mut j = i;
+      while j > 0usize and core.carets[j].lo() < core.carets[j - 1usize].lo() {
+        core.carets.swap(j, j - 1usize);
+        j = j - 1usize;
+      }
+      i = i + 1usize;
+    }
+    mut out = List[Caret].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      if out.len() > 0usize {
+        imm p = *out[out.len() - 1usize];
+        if c.lo() < p.hi() or (c.lo() == p.hi() and (c.isEmpty() or p.isEmpty())) {
+          imm hi = if c.hi() > p.hi() {c.hi();} else {p.hi();};
+          imm forward = p.head >= p.anchor;
+          out.set(out.len() - 1usize, if forward {new Caret(p.lo(), hi);} else {new Caret(hi, p.lo());});
+          i = i + 1usize;
+          continue;
+        }
+      }
+      out.push(c);
+      i = i + 1usize;
+    }
+    core.carets = out;
+  }
+
+  // One caret at an offset (the others go)
+  pub fn setCaret(self &mut, off usize) {
+    core.carets.clear();
+    core.carets.push(caretAt(clampOff(off)));
+    hist.breakMerge();
+  }
+
+  // Extends (or sets) the selection of the primary (last) caret to an offset
+  pub fn extendTo(self &mut, off usize) {
+    imm n = core.carets.len();
+    imm c = *core.carets[n - 1usize];
+    core.carets.set(n - 1usize, new Caret(c.anchor, clampOff(off)));
+    normalize();
+    hist.breakMerge();
+  }
+
+  pub fn addCaret(self &mut, off usize) {
+    core.carets.push(caretAt(clampOff(off)));
+    normalize();
+    hist.breakMerge();
+  }
+
+  pub fn setSelection(self &mut, anchor usize, head usize) {
+    core.carets.clear();
+    core.carets.push(new Caret(clampOff(anchor), clampOff(head)));
+    hist.breakMerge();
+  }
+
+  // Adds a second selection (the new one becomes the primary, the last)
+  pub fn addSelection(self &mut, anchor usize, head usize) {
+    core.carets.push(new Caret(clampOff(anchor), clampOff(head)));
+    normalize();
+    hist.breakMerge();
+  }
+
+  pub fn selectAll(self &mut) {setSelection(0usize, core.buf.len());}
+
+  pub fn selectWordAt(self &mut, off usize) {
+    imm w = wordAt(off);
+    setSelection(w.anchor, w.head);
+  }
+
+  pub fn selectLineAt(self &mut, off usize) {
+    imm l = core.buf.lineOf(off);
+    setSelection(core.buf.lineStart(l), core.buf.lineEndWithBreak(l));
+  }
+
+  pub fn clampOff(self &, off usize) usize {if off > core.buf.len() {core.buf.len();} else {off;};}
+
+  // Moves every caret; with 'extend' the anchors stay (a selection grows), else they follow
+  pub fn move(self &mut, kind u32, extend bool) {
+    imm n = core.carets.len();
+    mut i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      mut to = c.head;
+      mut goal = -1i32;
+      if kind == MOVE_LEFT {
+        to = if !extend and !c.isEmpty() {c.lo();} else {prevChar(c.head);};
+      }
+      elif kind == MOVE_RIGHT {
+        to = if !extend and !c.isEmpty() {c.hi();} else {nextChar(c.head);};
+      }
+      elif kind == MOVE_UP or kind == MOVE_DOWN or kind == MOVE_PAGE_UP or kind == MOVE_PAGE_DOWN {
+        imm line = core.buf.lineOf(c.head);
+        imm col = if c.goal >= 0i32 {u32.from(c.goal);} else {colOf(c.head);};
+        goal = i32.from(col);
+        imm step = if kind == MOVE_UP or kind == MOVE_DOWN {1usize;} else {usize.from(pageLines);};
+        if kind == MOVE_UP or kind == MOVE_PAGE_UP {
+          if line == 0usize {to = 0usize;}
+          else {to = offsetAtCol(if line > step {line - step;} else {0usize;}, col);}
+        }
+        else {
+          if line + 1usize >= core.buf.lineCount() {to = core.buf.len();}
+          else {
+            imm target = if line + step < core.buf.lineCount() {line + step;} else {core.buf.lineCount() - 1usize;};
+            to = offsetAtCol(target, col);
+          }
+        }
+      }
+      elif kind == MOVE_LINE_START {
+        imm line = core.buf.lineOf(c.head);
+        imm ie = indentEnd(line);
+        to = if c.head != ie {ie;} else {core.buf.lineStart(line);};
+      }
+      elif kind == MOVE_LINE_END {to = core.buf.lineEnd(core.buf.lineOf(c.head));}
+      elif kind == MOVE_WORD_LEFT {to = wordLeft(c.head);}
+      elif kind == MOVE_WORD_RIGHT {to = wordRight(c.head);}
+      elif kind == MOVE_DOC_START {to = 0usize;}
+      elif kind == MOVE_DOC_END {to = core.buf.len();}
+      core.carets.set(i, new Caret(if extend {c.anchor;} else {to;}, to, goal));
+      i = i + 1usize;
+    }
+    normalize();
+    hist.breakMerge();
+  }
+
+  // ---- the one way text changes ----
+
+  // Replaces ranges [los[i], his[i]) by texts[i] (ascending, not overlapping) as ONE undo step and
+  // leaves the carets at 'after'. A caret list the caller does not care about may be passed as the
+  // carets mapped through the edits (see 'mapped')
+  fn commit(self &mut, los &List[usize], his &List[usize], texts &List[String], after List[Caret], tag u32) {
+    imm n = los.len();
+    mut any = false;
+    mut i = 0usize;
+    while i < n {
+      if *his[i] > *los[i] or texts[i].len() > 0usize {any = true;}
+      i = i + 1usize;
+    }
+    if !any {return;}
+    imm before = copyCarets(&core.carets);
+    if n == 1usize {
+      imm e = new Edit(*los[0usize], core.buf.text(*los[0usize], *his[0usize]), String.from(texts[0usize].view()), before, copyCarets(&after));
+      applyEdit(&mut core, &e, false);
+      core.carets = copyCarets(&after);
+      if tag == TAG_OTHER {hist.push(e, tag);} else {hist.pushMerging(e, tag, &mergeEdit);}
+      return;
+    }
+    hist.open(tag);
+    i = n;
+    while i > 0usize {
+      i = i - 1usize;
+      imm first = i == 0usize;
+      imm e = new Edit(*los[i], core.buf.text(*los[i], *his[i]), String.from(texts[i].view()),
+        if first {copyCarets(&before);} else {List[Caret].empty();}, if first {copyCarets(&after);} else {List[Caret].empty();});
+      applyEdit(&mut core, &e, false);
+      hist.push(e, tag);
+    }
+    hist.close();
+    core.carets = copyCarets(&after);
+  }
+
+  // A position mapped through ascending replacements: moved by the net length change of those before
+  // it, and to the end of the replacement text when it lies inside a replaced range
+  fn mapped(los &List[usize], his &List[usize], texts &List[String], p usize) usize {
+    mut shift = 0i64;
+    mut i = 0usize;
+    while i < los.len() {
+      imm lo = *los[i];
+      imm hi = *his[i];
+      if hi <= p {shift = shift + i64.from(texts[i].len()) - i64.from(hi - lo);}
+      elif lo < p {return usize.from(i64.from(lo) + shift + i64.from(texts[i].len()));}
+      i = i + 1usize;
+    }
+    usize.from(i64.from(p) + shift);
+  }
+
+  // Where replacement i starts once the replacements before it are done
+  fn shiftedStart(los &List[usize], his &List[usize], texts &List[String], i usize) usize {
+    mut shift = 0i64;
+    mut k = 0usize;
+    while k < i {
+      shift = shift + i64.from(texts[k].len()) - i64.from(*his[k] - *los[k]);
+      k = k + 1usize;
+    }
+    usize.from(i64.from(*los[i]) + shift);
+  }
+
+  // The carets collapsed to the end of their own replacement (typing, pasting)
+  fn caretsAfter(self &, los &List[usize], his &List[usize], texts &List[String]) List[Caret] {
+    mut out = List[Caret].withCapacity(los.len());
+    mut i = 0usize;
+    while i < los.len() {
+      out.push(caretAt(Doc.mapped(los, his, texts, *his[i])));
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // ---- typing and deleting ----
+
+  // Each selection replaced by 's' (the carets end after it)
+  pub fn insertText(self &mut, s &str) {
+    imm n = core.carets.len();
+    mut los = List[usize].withCapacity(n);
+    mut his = List[usize].withCapacity(n);
+    mut texts = List[String].withCapacity(n);
+    // a closing bracket typed on a line of only blanks takes one level of indent off first
+    imm closer = s.len() == 1usize and (s[0usize] == 125u8 or s[0usize] == 41u8 or s[0usize] == 93u8);
+    mut dedented = false;
+    mut i = 0usize;
+    while i < n {
+      mut lo = core.carets[i].lo();
+      if closer and core.carets[i].isEmpty() {
+        imm line = core.buf.lineOf(lo);
+        imm ls = core.buf.lineStart(line);
+        if indentEnd(line) >= lo and lo > ls {
+          if lo - ls >= indentUnit.len() and core.buf.text(lo - indentUnit.len(), lo).view() == indentUnit.view() {
+            lo = lo - indentUnit.len();
+            dedented = true;
+          }
+          elif core.buf.byteAt(lo - 1usize) == 9u8 {
+            lo = lo - 1usize;
+            dedented = true;
+          }
+        }
+      }
+      los.push(lo);
+      his.push(core.carets[i].hi());
+      texts.push(String.from(s));
+      i = i + 1usize;
+    }
+    imm after = caretsAfter(&los, &his, &texts);
+    imm tag = if n == 1usize and s.len() > 0usize and !dedented {TAG_TYPING;} else {TAG_OTHER;};
+    commit(&los, &his, &texts, after, tag);
+  }
+
+  // Each selection replaced by its own piece of 'parts' when there are as many parts as carets, else
+  // by all of 'whole'
+  pub fn paste(self &mut, whole &str) {
+    imm n = core.carets.len();
+    mut lines = List[String].empty();
+    mut start = 0usize;
+    mut k = 0usize;
+    while k <= whole.len() {
+      if k == whole.len() or whole[k] == 10u8 {
+        mut e = k;
+        if e > start and whole[e - 1usize] == 13u8 {e = e - 1usize;}
+        lines.push(String.from(whole.slice(start, e)));
+        start = k + 1usize;
+      }
+      k = k + 1usize;
+    }
+    if lines.len() > 1usize and lines.len() == n + 1usize and whole[whole.len() - 1usize] == 10u8 {lines.pop();}
+    mut los = List[usize].withCapacity(n);
+    mut his = List[usize].withCapacity(n);
+    mut texts = List[String].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      los.push(core.carets[i].lo());
+      his.push(core.carets[i].hi());
+      if lines.len() == n and n > 1usize {texts.push(String.from(lines[i].view()));}
+      else {texts.push(normalizeBreaks(whole, crlf));}
+      i = i + 1usize;
+    }
+    imm after = caretsAfter(&los, &his, &texts);
+    commit(&los, &his, &texts, after, TAG_OTHER);
+  }
+
+  // Deletes the selections; empty carets delete 'back' (or forward) by a character or a word
+  pub fn deleteBackward(self &mut, byWord bool) {delete(true, byWord);}
+  pub fn deleteForward(self &mut, byWord bool) {delete(false, byWord);}
+
+  fn delete(self &mut, back bool, byWord bool) {
+    imm n = core.carets.len();
+    mut los = List[usize].withCapacity(n);
+    mut his = List[usize].withCapacity(n);
+    mut texts = List[String].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      mut lo = c.lo();
+      mut hi = c.hi();
+      if c.isEmpty() {
+        if back {lo = if byWord {wordLeft(c.head);} else {prevChar(c.head);};}
+        else {hi = if byWord {wordRight(c.head);} else {nextChar(c.head);};}
+      }
+      los.push(lo);
+      his.push(hi);
+      texts.push(String.empty());
+      i = i + 1usize;
+    }
+    // (two carets may now cover the same text: merge ranges that overlap)
+    mut ml = List[usize].empty();
+    mut mh = List[usize].empty();
+    mut mt = List[String].empty();
+    i = 0usize;
+    while i < n {
+      if ml.len() > 0usize and *los[i] <= *mh[ml.len() - 1usize] {
+        if *his[i] > *mh[ml.len() - 1usize] {mh.set(ml.len() - 1usize, *his[i]);}
+      }
+      else {
+        ml.push(*los[i]);
+        mh.push(*his[i]);
+        mt.push(String.empty());
+      }
+      i = i + 1usize;
+    }
+    imm after = caretsAfter(&ml, &mh, &mt);
+    imm tag = if n == 1usize and !byWord and ml.len() == 1usize and *mh[0usize] - *ml[0usize] <= 4usize and core.carets[0usize].isEmpty()
+      {if back {TAG_BACKSPACE;} else {TAG_DELETE;};} else {TAG_OTHER;};
+    commit(&ml, &mh, &mt, after, tag);
+  }
+
+  // Deletes the whole line of each caret
+  pub fn deleteLines(self &mut) {
+    imm n = core.carets.len();
+    mut los = List[usize].empty();
+    mut his = List[usize].empty();
+    mut texts = List[String].empty();
+    mut lastLine = NOT_FOUND;
+    mut i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      mut l0 = core.buf.lineOf(c.lo());
+      imm l1 = core.buf.lineOf(if c.hi() > c.lo() and core.buf.lineStart(core.buf.lineOf(c.hi())) == c.hi() {c.hi() - 1usize;} else {c.hi();});
+      if lastLine != NOT_FOUND and l0 <= lastLine {l0 = lastLine + 1usize;}
+      if l0 <= l1 {
+        los.push(core.buf.lineStart(l0));
+        imm e = core.buf.lineEndWithBreak(l1);
+        // the last line has no break of its own: take the one before it instead
+        if l1 + 1usize >= core.buf.lineCount() and core.buf.lineStart(l0) > 0usize {
+          los.set(los.len() - 1usize, prevChar(core.buf.lineStart(l0)));
+        }
+        his.push(e);
+        texts.push(String.empty());
+        lastLine = l1;
+      }
+      i = i + 1usize;
+    }
+    imm after = caretsAfter(&los, &his, &texts);
+    commit(&los, &his, &texts, after, TAG_OTHER);
+  }
+
+  // Enter: a line break, then the indent of the line (and one more level after an opening bracket;
+  // between a bracket and its closer, the closer goes on a line of its own)
+  pub fn newline(self &mut, autoIndent bool) {
+    imm n = core.carets.len();
+    mut los = List[usize].withCapacity(n);
+    mut his = List[usize].withCapacity(n);
+    mut texts = List[String].withCapacity(n);
+    mut inside = List[usize].withCapacity(n);       // where in the text the caret goes
+    mut i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      imm lo = c.lo();
+      imm line = core.buf.lineOf(lo);
+      mut t = String.from(eol());
+      mut caretIn = t.len();
+      if autoIndent {
+        // the line's indent, only as far as the caret
+        imm ls = core.buf.lineStart(line);
+        imm ie = indentEnd(line);
+        imm upto = if ie < lo {ie;} else {lo;};
+        imm indent = core.buf.text(ls, upto);
+        t.append(indent.view());
+        // the last character before the caret (past blanks) and the next after the selection
+        mut p = lo;
+        while p > ls and (core.buf.byteAt(p - 1usize) == 32u8 or core.buf.byteAt(p - 1usize) == 9u8) {p = p - 1usize;}
+        imm prevB = if p > ls {core.buf.byteAt(p - 1usize);} else {0u8;};
+        imm hi = c.hi();
+        imm nextB = if hi < core.buf.lineEnd(line) {core.buf.byteAt(hi);} else {0u8;};
+        if prevB == 123u8 or prevB == 40u8 or prevB == 91u8 {
+          t.append(indentUnit.view());
+          caretIn = t.len();
+          if (prevB == 123u8 and nextB == 125u8) or (prevB == 40u8 and nextB == 41u8) or (prevB == 91u8 and nextB == 93u8) {
+            t.append(eol());
+            t.append(indent.view());
+          }
+        }
+        else {caretIn = t.len();}
+      }
+      los.push(lo);
+      his.push(c.hi());
+      texts.push(t);
+      inside.push(caretIn);
+      i = i + 1usize;
+    }
+    mut after = List[Caret].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      // the start of this edit once the earlier ones are done, plus where the caret sits in its text
+      imm p = Doc.shiftedStart(&los, &his, &texts, i);
+      after.push(caretAt(p + *inside[i]));
+      i = i + 1usize;
+    }
+    commit(&los, &his, &texts, after, TAG_OTHER);
+  }
+
+  // Tab: with a selection over several lines (or Shift-Tab), indents or outdents those lines; else a
+  // plain Tab inserts the indent unit up to the next stop
+  pub fn indentLines(self &mut, outdent bool) {
+    imm n = core.carets.len();
+    mut los = List[usize].empty();
+    mut his = List[usize].empty();
+    mut texts = List[String].empty();
+    mut lastLine = NOT_FOUND;
+    mut i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      mut l0 = core.buf.lineOf(c.lo());
+      imm l1 = core.buf.lineOf(if c.hi() > c.lo() and core.buf.lineStart(core.buf.lineOf(c.hi())) == c.hi() {c.hi() - 1usize;} else {c.hi();});
+      if lastLine != NOT_FOUND and l0 <= lastLine {l0 = lastLine + 1usize;}
+      while l0 <= l1 {
+        imm ls = core.buf.lineStart(l0);
+        if outdent {
+          // remove one level: up to unit.len() blanks, or one tab
+          mut e = ls;
+          imm limit = ls + indentUnit.len();
+          while e < limit and e < core.buf.lineEnd(l0) and core.buf.byteAt(e) == 32u8 {e = e + 1usize;}
+          if e == ls and ls < core.buf.lineEnd(l0) and core.buf.byteAt(ls) == 9u8 {e = ls + 1usize;}
+          if e > ls {
+            los.push(ls);
+            his.push(e);
+            texts.push(String.empty());
+          }
+        }
+        elif core.buf.lineLen(l0) > 0usize {
+          los.push(ls);
+          his.push(ls);
+          texts.push(String.from(indentUnit.view()));
+        }
+        l0 = l0 + 1usize;
+      }
+      lastLine = l1;
+      i = i + 1usize;
+    }
+    // The carets move with the text: each end mapped through the edits
+    mut after = List[Caret].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      imm c = *core.carets[i];
+      after.push(new Caret(Doc.mapped(&los, &his, &texts, c.anchor), Doc.mapped(&los, &his, &texts, c.head)));
+      i = i + 1usize;
+    }
+    commit(&los, &his, &texts, after, TAG_OTHER);
+  }
+
+  // Tab pressed: indent lines if a selection spans lines; else insert the unit at the caret
+  pub fn tab(self &mut, shift bool) {
+    mut multi = shift;
+    mut i = 0usize;
+    while i < core.carets.len() {
+      imm c = *core.carets[i];
+      if !c.isEmpty() and core.buf.lineOf(c.lo()) != core.buf.lineOf(c.hi()) {multi = true;}
+      i = i + 1usize;
+    }
+    imm unit = String.from(indentUnit.view());
+    if multi {indentLines(shift);} else {insertText(unit.view());}
+  }
+
+  // The selected text of every caret, joined by line breaks
+  pub fn selectedText(self &) String {
+    mut out = String.empty();
+    mut i = 0usize;
+    while i < core.carets.len() {
+      imm c = *core.carets[i];
+      if !c.isEmpty() {
+        if out.len() > 0usize {out.append("\n");}
+        out.append(core.buf.text(c.lo(), c.hi()).view());
+      }
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  pub fn hasSelection(self &) bool {
+    mut i = 0usize;
+    while i < core.carets.len() {
+      if !core.carets[i].isEmpty() {return true;}
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  // Replaces the whole text (after a load); undo history is cleared
+  pub fn setText(self &mut, text &str) {
+    core.buf = TextBuffer.fromText(text);
+    core.carets.clear();
+    core.carets.push(caretAt(0usize));
+    core.version = core.version + 1u64;
+    core.firstDirty = 0usize;
+    hist.clear();
+    crlf = core.buf.usesCrlf();
+  }
+
+  // ---- undo and redo ----
+
+  pub fn undo(self &mut) bool {hist.undo(&mut core, &applyEdit);}
+  pub fn redo(self &mut) bool {hist.redo(&mut core, &applyEdit);}
+
+  // ---- replacing for find and replace ----
+
+  // Replaces each given range [los[i], his[i]) by 'with', as one undo step (ranges ascending, disjoint)
+  pub fn replaceRanges(self &mut, los &List[usize], his &List[usize], repl &str) {
+    mut texts = List[String].withCapacity(los.len());
+    mut i = 0usize;
+    while i < los.len() {
+      texts.push(String.from(repl));
+      i = i + 1usize;
+    }
+    mut after = List[Caret].withCapacity(los.len());
+    i = 0usize;
+    while i < los.len() {
+      after.push(new Caret(Doc.mapped(los, his, &texts, *los[i]), Doc.mapped(los, his, &texts, *his[i])));
+      i = i + 1usize;
+    }
+    commit(los, his, &texts, after, TAG_OTHER);
+  }
+
+  // ---- bracket matching ----
+
+  // The offset of the bracket matching the one AT 'off' (one of ()[]{}), or NOT_FOUND. 'code' says
+  // whether the byte at an offset counts (false inside a string or comment). Scans at most 'limit' bytes
+  pub fn matchBracket[F fn(off usize) bool](self &, off usize, code &F, limit usize) usize {
+    if off >= core.buf.len() {return NOT_FOUND;}
+    imm b = core.buf.byteAt(off);
+    mut open = 0u8;
+    mut close = 0u8;
+    mut forward = true;
+    if b == 40u8 {open = 40u8; close = 41u8;}
+    elif b == 91u8 {open = 91u8; close = 93u8;}
+    elif b == 123u8 {open = 123u8; close = 125u8;}
+    elif b == 41u8 {open = 40u8; close = 41u8; forward = false;}
+    elif b == 93u8 {open = 91u8; close = 93u8; forward = false;}
+    elif b == 125u8 {open = 123u8; close = 125u8; forward = false;}
+    else {return NOT_FOUND;}
+    if !code(off) {return NOT_FOUND;}
+    mut depth = 0i32;
+    mut steps = 0usize;
+    if forward {
+      mut i = off;
+      while i < core.buf.len() and steps < limit {
+        imm c = core.buf.byteAt(i);
+        if (c == open or c == close) and code(i) {
+          if c == open {depth = depth + 1i32;} else {depth = depth - 1i32;}
+          if depth == 0i32 {return i;}
+        }
+        i = i + 1usize;
+        steps = steps + 1usize;
+      }
+    }
+    else {
+      mut i = off + 1usize;
+      while i > 0usize and steps < limit {
+        i = i - 1usize;
+        imm c = core.buf.byteAt(i);
+        if (c == open or c == close) and code(i) {
+          if c == close {depth = depth + 1i32;} else {depth = depth - 1i32;}
+          if depth == 0i32 {return i;}
+        }
+        steps = steps + 1usize;
+      }
+    }
+    NOT_FOUND;
+  }
+}
+
+// Line breaks in pasted text made to match the document's
+fn normalizeBreaks(s &str, crlf bool) String {
+  mut out = String.withCapacity(s.len());
+  mut i = 0usize;
+  while i < s.len() {
+    imm b = s[i];
+    if b == 13u8 and i + 1usize < s.len() and s[i + 1usize] == 10u8 {
+      i = i + 1usize;
+      continue;
+    }
+    if b == 10u8 and crlf {out.appendByte(13u8);}
+    out.appendByte(b);
+    i = i + 1usize;
+  }
+  out;
+}

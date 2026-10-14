@@ -1,0 +1,419 @@
+// The standard unit table: FACS action units as recipes over landmarks, the
+// expressions built from them, and the rig's own channels.
+//
+// FACS (Ekman and Friesen, "Facial Action Coding System", 1978; Ekman,
+// Friesen and Hager's 2002 manual) names the visible muscle movements of a
+// face: AU1 inner brow raiser, AU12 lip corner puller, AU26 jaw drop. A face
+// expression is a set of AUs with intensities, and Ekman and Friesen's
+// EMFACS tables name which AUs make each of the six basic emotions. This
+// file is the vocabulary: a UnitDef per AU and side, each with the rules
+// (spec.cone) that say what the surface does near a landmark. The numbers
+// are this package's own authoring (a muscle's pull, in face scales), not
+// measured from anyone's face; they are data, kept in one place so another
+// table can replace them.
+//
+// A unit's value runs 0 to 1, FACS's intensity scale A (trace, 0.15) to E
+// (maximum, 1.0); 'intensity' turns the letter into the number.
+//
+// SIDES. Most AUs act on both sides but can be asymmetric, so each is two
+// units, L and R. The R rules are authored and the L rules are the same with
+// x flipped and the landmark names' suffix changed, so the two always agree.
+// A unit with a central landmark (the lips, the chin) gets both sides' rules
+// added at the middle: both sides at 1 move the centre about 1.6 times what
+// one side does, which the amplitudes allow for.
+//
+// THE RIG'S OWN CHANNELS (AU numbers 100 and up): lid-follow down and up (the
+// lids follow the eyes' vertical movement), tongue lift, nostril flare as AU38.
+// The eyes' own movements, AU61 to 64, are not units: the gaze drives the eyeballs.
+
+// FACS action unit numbers used here
+pub const AU_INNER_BROW_RAISER = 1u32;
+pub const AU_OUTER_BROW_RAISER = 2u32;
+pub const AU_BROW_LOWERER = 4u32;
+pub const AU_UPPER_LID_RAISER = 5u32;
+pub const AU_CHEEK_RAISER = 6u32;
+pub const AU_LID_TIGHTENER = 7u32;
+pub const AU_NOSE_WRINKLER = 9u32;
+pub const AU_UPPER_LIP_RAISER = 10u32;
+pub const AU_LIP_CORNER_PULLER = 12u32;
+pub const AU_DIMPLER = 14u32;
+pub const AU_LIP_CORNER_DEPRESSOR = 15u32;
+pub const AU_LOWER_LIP_DEPRESSOR = 16u32;
+pub const AU_CHIN_RAISER = 17u32;
+pub const AU_LIP_PUCKER = 18u32;
+pub const AU_LIP_STRETCHER = 20u32;
+pub const AU_LIP_FUNNELER = 22u32;
+pub const AU_LIP_TIGHTENER = 23u32;
+pub const AU_LIP_PRESSOR = 24u32;
+pub const AU_LIPS_PART = 25u32;
+pub const AU_JAW_DROP = 26u32;
+pub const AU_MOUTH_STRETCH = 27u32;
+pub const AU_LIP_SUCK = 28u32;
+pub const AU_JAW_THRUST = 29u32;
+pub const AU_JAW_SIDEWAYS = 30u32;
+pub const AU_CHEEK_BLOW = 33u32;
+pub const AU_NOSTRIL_DILATOR = 38u32;
+pub const AU_EYES_CLOSED = 43u32;
+pub const AU_BLINK = 45u32;
+// The rig's own channels
+pub const CH_LID_FOLLOW_DOWN = 101u32;
+pub const CH_LID_FOLLOW_UP = 102u32;
+pub const CH_TONGUE_LIFT = 110u32;
+
+// FACS intensity letters as numbers: A trace, B slight, C marked, D severe, E maximum
+pub fn intensity(letter u8) f32 {
+  if letter == 'A' { return 0.15; }
+  if letter == 'B' { return 0.30; }
+  if letter == 'C' { return 0.55; }
+  if letter == 'D' { return 0.80; }
+  1.0;
+}
+
+fn nm(base &str, sfx &str) String {
+  mut s = String.from(base);
+  s.append(sfx);
+  s;
+}
+
+fn sideName(au u32, label &str, sfx &str) String {
+  mut s = String.from("AU");
+  s.appendUInt(u64.from(au));
+  s.append(label);
+  s.append(sfx);
+  s;
+}
+
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+
+// A move rule near 'lm'+'sfx', x flipped for the left (s = -1)
+fn mv(lm &str, sfx &str, s f32, x f32, y f32, z f32, rx f32, ry f32, rz f32) Influence {
+  Influence.moveNear(nm(lm, sfx).view(), v3(x * s, y, z), v3(rx, ry, rz));
+}
+
+// A lid's turn about the eyeball: the whole lid (the opening's width and the fold above it) moves as one and
+// the skin beyond it not at all
+fn lidTurn(lid &str, eye &str, angle f32, upper bool) Influence {
+  imm radii = if upper { v3(0.30, 0.45, 0.45); } else { v3(0.30, 0.40, 0.45); };
+  Influence.turnNear(lid, eye, v3(1., 0., 0.), angle, radii).plateau();
+}
+
+fn above(r Influence, gate &str, soft f32) Influence { r.gated(gate, v3(0., 1., 0.), soft); }
+fn below(r Influence, gate &str, soft f32) Influence { r.gated(gate, v3(0., -1., 0.), soft); }
+
+// One side of every bilateral unit, or the central units; 'si' picks the side
+fn addSide(out &mut List[UnitDef], s f32, sfx &str, side u32) {
+  imm X = v3(1., 0., 0.);
+  imm eye = nm("eyeCenter", sfx);
+  imm lidU = nm("lidUpper", sfx);
+  imm lidL = nm("lidLower", sfx);
+  imm mouth = "lipContact";
+
+  // AU1 inner brow raiser: the inner brow lifts, the lid below it does not
+  mut u = UnitDef.morph("InnerBrowRaiser", AU_INNER_BROW_RAISER, side);
+  u.name = sideName(AU_INNER_BROW_RAISER, " inner brow raiser ", sfx);
+  u.add(mv("browInner", sfx, s, -0.03, 0.24, 0.0, 0.50, 0.42, 0.50));
+  u.add(mv("browMid", sfx, s, 0., 0.10, 0., 0.45, 0.38, 0.45));
+  out.push(u);
+
+  // AU2 outer brow raiser
+  u = UnitDef.morph("OuterBrowRaiser", AU_OUTER_BROW_RAISER, side);
+  u.name = sideName(AU_OUTER_BROW_RAISER, " outer brow raiser ", sfx);
+  u.add(mv("browOuter", sfx, s, 0.03, 0.26, 0.0, 0.55, 0.42, 0.55));
+  u.add(mv("browMid", sfx, s, 0., 0.12, 0., 0.45, 0.38, 0.45));
+  out.push(u);
+
+  // AU4 brow lowerer: the brows come down and together, the upper lid is pressed
+  u = UnitDef.morph("BrowLowerer", AU_BROW_LOWERER, side);
+  u.name = sideName(AU_BROW_LOWERER, " brow lowerer ", sfx);
+  u.add(mv("browInner", sfx, s, -0.10, -0.18, -0.03, 0.50, 0.42, 0.50));
+  u.add(mv("browMid", sfx, s, -0.04, -0.13, -0.02, 0.45, 0.38, 0.45));
+  u.add(mv("browOuter", sfx, s, 0., -0.06, 0., 0.45, 0.35, 0.45));
+  u.add(above(mv("lidUpper", sfx, s, 0., -0.04, 0., 0.45, 0.30, 0.45), eye.view(), 0.04));
+  out.push(u);
+
+  // AU5 upper lid raiser: the upper lid turns up about the eyeball
+  u = UnitDef.morph("UpperLidRaiser", AU_UPPER_LID_RAISER, side);
+  u.name = sideName(AU_UPPER_LID_RAISER, " upper lid raiser ", sfx);
+  u.add(above(lidTurn(lidU.view(), eye.view(), 0.16, true), eye.view(), 0.04));
+  out.push(u);
+
+  // AU6 cheek raiser: the cheek lifts and the lower lid rises with it
+  u = UnitDef.morph("CheekRaiser", AU_CHEEK_RAISER, side);
+  u.name = sideName(AU_CHEEK_RAISER, " cheek raiser ", sfx);
+  u.add(mv("cheek", sfx, s, 0.03, 0.15, -0.06, 0.70, 0.55, 0.55));
+  u.add(below(lidTurn(lidL.view(), eye.view(), 0.12, false), eye.view(), 0.04));
+  out.push(u);
+
+  // AU7 lid tightener
+  u = UnitDef.morph("LidTightener", AU_LID_TIGHTENER, side);
+  u.name = sideName(AU_LID_TIGHTENER, " lid tightener ", sfx);
+  u.add(below(lidTurn(lidL.view(), eye.view(), 0.09, false), eye.view(), 0.04));
+  u.add(above(lidTurn(lidU.view(), eye.view(), -0.05, true), eye.view(), 0.04));
+  out.push(u);
+
+  // AU9 nose wrinkler
+  u = UnitDef.morph("NoseWrinkler", AU_NOSE_WRINKLER, side);
+  u.name = sideName(AU_NOSE_WRINKLER, " nose wrinkler ", sfx);
+  u.add(mv("noseBridge", sfx, s, 0., 0.06, -0.03, 0.45, 0.40, 0.40));
+  u.add(mv("noseWing", sfx, s, 0.02, 0.15, -0.03, 0.38, 0.32, 0.32));
+  u.add(above(mv("lipUpper", sfx, s, 0., 0.07, 0., 0.45, 0.28, 0.35), mouth, 0.03));
+  out.push(u);
+
+  // AU10 upper lip raiser
+  u = UnitDef.morph("UpperLipRaiser", AU_UPPER_LIP_RAISER, side);
+  u.name = sideName(AU_UPPER_LIP_RAISER, " upper lip raiser ", sfx);
+  u.add(above(mv("lipUpper", sfx, s, 0.01, 0.17, -0.01, 0.48, 0.30, 0.38), mouth, 0.03));
+  u.add(mv("noseWing", sfx, s, 0., 0.05, 0., 0.30, 0.25, 0.30));
+  out.push(u);
+
+  // AU12 lip corner puller: the corner up, out and back, the cheek swelling, the lips following
+  u = UnitDef.morph("LipCornerPuller", AU_LIP_CORNER_PULLER, side);
+  u.name = sideName(AU_LIP_CORNER_PULLER, " lip corner puller ", sfx);
+  u.add(mv("mouthCorner", sfx, s, 0.22, 0.22, 0.07, 0.60, 0.52, 0.52));
+  u.add(mv("cheek", sfx, s, 0.04, 0.10, -0.05, 0.62, 0.50, 0.50));
+  u.add(above(mv("lipUpper", sfx, s, 0.07, 0.10, 0.02, 0.45, 0.30, 0.40), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, 0.09, 0.05, 0.02, 0.45, 0.30, 0.40), mouth, 0.03));
+  out.push(u);
+
+  // AU14 dimpler
+  u = UnitDef.morph("Dimpler", AU_DIMPLER, side);
+  u.name = sideName(AU_DIMPLER, " dimpler ", sfx);
+  u.add(mv("mouthCorner", sfx, s, -0.04, 0.03, 0.10, 0.32, 0.30, 0.30).gauss());
+  out.push(u);
+
+  // AU15 lip corner depressor
+  u = UnitDef.morph("LipCornerDepressor", AU_LIP_CORNER_DEPRESSOR, side);
+  u.name = sideName(AU_LIP_CORNER_DEPRESSOR, " lip corner depressor ", sfx);
+  u.add(mv("mouthCorner", sfx, s, 0.04, -0.21, 0.03, 0.52, 0.46, 0.42));
+  u.add(below(mv("lipLower", sfx, s, 0.02, -0.06, 0., 0.42, 0.30, 0.38), mouth, 0.03));
+  out.push(u);
+
+  // AU16 lower lip depressor
+  u = UnitDef.morph("LowerLipDepressor", AU_LOWER_LIP_DEPRESSOR, side);
+  u.name = sideName(AU_LOWER_LIP_DEPRESSOR, " lower lip depressor ", sfx);
+  u.add(below(mv("lipLower", sfx, s, 0., -0.21, -0.02, 0.42, 0.32, 0.40), mouth, 0.03));
+  u.add(mv("chinCenter", sfx, s, 0., -0.04, 0., 0.40, 0.30, 0.38));
+  out.push(u);
+
+  // AU17 chin raiser
+  u = UnitDef.morph("ChinRaiser", AU_CHIN_RAISER, side);
+  u.name = sideName(AU_CHIN_RAISER, " chin raiser ", sfx);
+  u.add(mv("chinCenter", sfx, s, 0., 0.16, -0.08, 0.60, 0.38, 0.50));
+  u.add(below(mv("lipLower", sfx, s, 0., 0.10, -0.04, 0.40, 0.28, 0.35), mouth, 0.03));
+  out.push(u);
+
+  // AU18 lip pucker
+  u = UnitDef.morph("LipPucker", AU_LIP_PUCKER, side);
+  u.name = sideName(AU_LIP_PUCKER, " lip pucker ", sfx);
+  u.add(mv("mouthCorner", sfx, s, -0.24, 0., -0.20, 0.55, 0.48, 0.50));
+  u.add(above(mv("lipUpper", sfx, s, -0.05, 0., -0.22, 0.48, 0.30, 0.40), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, -0.05, 0., -0.22, 0.48, 0.30, 0.40), mouth, 0.03));
+  u.add(mv("cheek", sfx, s, -0.04, -0.02, 0.02, 0.60, 0.50, 0.50));
+  out.push(u);
+
+  // AU20 lip stretcher
+  u = UnitDef.morph("LipStretcher", AU_LIP_STRETCHER, side);
+  u.name = sideName(AU_LIP_STRETCHER, " lip stretcher ", sfx);
+  u.add(mv("mouthCorner", sfx, s, 0.30, -0.03, 0.06, 0.58, 0.46, 0.46));
+  u.add(above(mv("lipUpper", sfx, s, 0.10, 0., 0.02, 0.45, 0.28, 0.38), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, 0.11, -0.02, 0.02, 0.45, 0.28, 0.38), mouth, 0.03));
+  out.push(u);
+
+  // AU22 lip funneler
+  u = UnitDef.morph("LipFunneler", AU_LIP_FUNNELER, side);
+  u.name = sideName(AU_LIP_FUNNELER, " lip funneler ", sfx);
+  u.add(mv("mouthCorner", sfx, s, -0.15, 0., -0.14, 0.52, 0.46, 0.46));
+  u.add(above(mv("lipUpper", sfx, s, -0.03, 0.09, -0.24, 0.48, 0.30, 0.40), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, -0.03, -0.09, -0.24, 0.48, 0.30, 0.40), mouth, 0.03));
+  out.push(u);
+
+  // AU23 lip tightener
+  u = UnitDef.morph("LipTightener", AU_LIP_TIGHTENER, side);
+  u.name = sideName(AU_LIP_TIGHTENER, " lip tightener ", sfx);
+  u.add(mv("mouthCorner", sfx, s, -0.09, 0., 0.01, 0.45, 0.40, 0.40));
+  u.add(above(mv("lipUpper", sfx, s, 0., -0.03, 0.04, 0.46, 0.28, 0.38), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, 0., 0.04, 0.04, 0.46, 0.28, 0.38), mouth, 0.03));
+  out.push(u);
+
+  // AU24 lip pressor
+  u = UnitDef.morph("LipPressor", AU_LIP_PRESSOR, side);
+  u.name = sideName(AU_LIP_PRESSOR, " lip pressor ", sfx);
+  u.add(above(mv("lipUpper", sfx, s, 0., -0.07, 0., 0.48, 0.28, 0.38), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, 0., 0.08, 0., 0.48, 0.28, 0.38), mouth, 0.03));
+  out.push(u);
+
+  // AU25 lips part
+  u = UnitDef.morph("LipsPart", AU_LIPS_PART, side);
+  u.name = sideName(AU_LIPS_PART, " lips part ", sfx);
+  u.add(above(mv("lipUpper", sfx, s, 0., 0.09, 0., 0.48, 0.28, 0.38), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, 0., -0.12, 0., 0.48, 0.28, 0.38), mouth, 0.03));
+  out.push(u);
+
+  // AU28 lip suck
+  u = UnitDef.morph("LipSuck", AU_LIP_SUCK, side);
+  u.name = sideName(AU_LIP_SUCK, " lip suck ", sfx);
+  u.add(above(mv("lipUpper", sfx, s, 0., -0.03, 0.14, 0.48, 0.28, 0.38), mouth, 0.03));
+  u.add(below(mv("lipLower", sfx, s, 0., 0.03, 0.14, 0.48, 0.28, 0.38), mouth, 0.03));
+  out.push(u);
+
+  // AU33 cheek blow
+  u = UnitDef.morph("CheekBlow", AU_CHEEK_BLOW, side);
+  u.name = sideName(AU_CHEEK_BLOW, " cheek blow ", sfx);
+  u.add(mv("cheek", sfx, s, 0.14, -0.02, -0.11, 0.80, 0.70, 0.60));
+  out.push(u);
+
+  // AU38 nostril dilator (a rig channel: breathing)
+  u = UnitDef.morph("NostrilDilator", AU_NOSTRIL_DILATOR, side);
+  u.name = sideName(AU_NOSTRIL_DILATOR, " nostril dilator ", sfx);
+  u.add(mv("noseWing", sfx, s, 0.11, -0.02, -0.01, 0.30, 0.25, 0.30));
+  out.push(u);
+
+  // AU43 eyes closed: the upper lid turns down about the eyeball to the closing line, the lower rises to it
+  u = UnitDef.morph("EyesClosed", AU_EYES_CLOSED, side);
+  u.name = sideName(AU_EYES_CLOSED, " eyes closed ", sfx);
+  u.add(above(lidTurn(lidU.view(), eye.view(), 1., true).closing(ANGLE_UPPER_CLOSE), eye.view(), 0.04));
+  u.add(below(lidTurn(lidL.view(), eye.view(), 1., false).closing(ANGLE_LOWER_CLOSE), eye.view(), 0.04));
+  out.push(u);
+  imm closedAt = i32.from(out.len()) - 1i32;
+
+  // AU45 blink: the same lids, driven by the blink clock
+  u = UnitDef.morph("Blink", AU_BLINK, side);
+  u.name = sideName(AU_BLINK, " blink ", sfx);
+  u.sharesWith = closedAt;
+  out.push(u);
+
+  // The lids following the gaze down and up
+  u = UnitDef.morph("LidFollowDown", CH_LID_FOLLOW_DOWN, side);
+  u.name = sideName(CH_LID_FOLLOW_DOWN, " lid follows gaze down ", sfx);
+  u.add(above(lidTurn(lidU.view(), eye.view(), -0.34, true), eye.view(), 0.04));
+  u.add(below(lidTurn(lidL.view(), eye.view(), -0.10, false), eye.view(), 0.04));
+  out.push(u);
+  u = UnitDef.morph("LidFollowUp", CH_LID_FOLLOW_UP, side);
+  u.name = sideName(CH_LID_FOLLOW_UP, " lid follows gaze up ", sfx);
+  u.add(above(lidTurn(lidU.view(), eye.view(), 0.10, true), eye.view(), 0.04));
+  u.add(below(lidTurn(lidL.view(), eye.view(), 0.06, false), eye.view(), 0.04));
+  out.push(u);
+}
+
+// The standard table of units. The channel numbers are positions in this
+// list, and the same table must be given to 'buildTargets' and to the rig.
+pub fn standardUnits() List[UnitDef] {
+  mut out = List[UnitDef].empty();
+  // The jaw drops and the tongue lifts: units of their own, with no surface rules
+  mut jawDrop = UnitDef.morph("AU26 jaw drop", AU_JAW_DROP, SIDE_BOTH);
+  jawDrop.kind = UNIT_JAW;
+  jawDrop.jaw = v3(1., 0., 0.);
+  out.push(jawDrop);
+  mut stretch = UnitDef.morph("AU27 mouth stretch", AU_MOUTH_STRETCH, SIDE_BOTH);
+  stretch.kind = UNIT_JAW;
+  stretch.jaw = v3(1.35, 0., 0.);
+  out.push(stretch);
+  mut thrust = UnitDef.morph("AU29 jaw thrust", AU_JAW_THRUST, SIDE_BOTH);
+  thrust.kind = UNIT_JAW;
+  thrust.jaw = v3(0., 0., 0.14);
+  out.push(thrust);
+  mut left = UnitDef.morph("AU30 jaw sideways left", AU_JAW_SIDEWAYS, SIDE_LEFT);
+  left.kind = UNIT_JAW;
+  left.jaw = v3(0., 0.10, 0.);
+  out.push(left);
+  mut right = UnitDef.morph("AU30 jaw sideways right", AU_JAW_SIDEWAYS, SIDE_RIGHT);
+  right.kind = UNIT_JAW;
+  right.jaw = v3(0., -0.10, 0.);
+  out.push(right);
+  mut tongue = UnitDef.morph("tongue lift", CH_TONGUE_LIFT, SIDE_BOTH);
+  tongue.kind = UNIT_TONGUE;
+  out.push(tongue);
+  addSide(&mut out, 1., "R", SIDE_RIGHT);
+  addSide(&mut out, -1., "L", SIDE_LEFT);
+  out;
+}
+
+// The channel of a unit in 'units': its number, or -1
+pub fn findUnit(units &List[UnitDef], au u32, side u32) i32 {
+  mut i = 0usize;
+  while i < units.len() {
+    imm u = units[i];
+    if u.au == au and u.side == side { return i32.from(i); }
+    i = i + 1usize;
+  }
+  -1i32;
+}
+
+// ---- Expressions ----
+
+// One unit of an expression: an AU, a side (SIDE_BOTH sets both), a value 0 to 1
+pub struct ExprUnit {
+  pub au u32;
+  pub side u32;
+  pub value f32;
+}
+
+// A named set of units
+pub struct Expression {
+  pub name String;
+  pub units List[ExprUnit];
+
+  pub fn make(name &str) Expression { new Expression(String.from(name), List[ExprUnit].empty()); }
+
+  pub fn plus(self, au u32, value f32) Expression {
+    mut e = self;
+    e.units.push(new ExprUnit(au, SIDE_BOTH, value));
+    e;
+  }
+
+  pub fn withSide(self, au u32, side u32, value f32) Expression {
+    mut e = self;
+    e.units.push(new ExprUnit(au, side, value));
+    e;
+  }
+}
+
+pub const EXPR_NEUTRAL = 0usize;
+pub const EXPR_HAPPINESS = 1usize;
+pub const EXPR_SADNESS = 2usize;
+pub const EXPR_SURPRISE = 3usize;
+pub const EXPR_FEAR = 4usize;
+pub const EXPR_ANGER = 5usize;
+pub const EXPR_DISGUST = 6usize;
+pub const EXPR_CONTEMPT = 7usize;
+pub const EXPR_PAIN = 8usize;
+pub const EXPR_THINKING = 9usize;
+
+// The six basic emotions as EMFACS gives them (Ekman and Friesen 1978; the AU
+// sets as Ekman, Friesen and Hager 2002 list the prototypes), with contempt
+// (R12 + R14), pain (4, 6, 7, 9/10, 43) and a thinking face (4 slight, 1 and 2
+// slight on one side, 15 slight, 24). Intensities are this package's.
+pub fn standardExpressions() List[Expression] {
+  mut out = List[Expression].empty();
+  out.push(Expression.make("neutral"));
+  out.push(Expression.make("happiness").plus(AU_CHEEK_RAISER, 0.7).plus(AU_LIP_CORNER_PULLER, 0.9)
+    .plus(AU_LIPS_PART, 0.3).plus(AU_JAW_DROP, 0.12));
+  out.push(Expression.make("sadness").plus(AU_INNER_BROW_RAISER, 0.8).plus(AU_BROW_LOWERER, 0.45)
+    .plus(AU_LIP_CORNER_DEPRESSOR, 0.7).plus(AU_CHIN_RAISER, 0.35));
+  out.push(Expression.make("surprise").plus(AU_INNER_BROW_RAISER, 0.8).plus(AU_OUTER_BROW_RAISER, 0.9)
+    .plus(AU_UPPER_LID_RAISER, 0.9).plus(AU_JAW_DROP, 0.55).plus(AU_LIPS_PART, 0.4));
+  out.push(Expression.make("fear").plus(AU_INNER_BROW_RAISER, 0.85).plus(AU_OUTER_BROW_RAISER, 0.55)
+    .plus(AU_BROW_LOWERER, 0.5).plus(AU_UPPER_LID_RAISER, 0.85).plus(AU_LIP_STRETCHER, 0.6)
+    .plus(AU_JAW_DROP, 0.35).plus(AU_LIPS_PART, 0.4));
+  out.push(Expression.make("anger").plus(AU_BROW_LOWERER, 0.9).plus(AU_UPPER_LID_RAISER, 0.45)
+    .plus(AU_LID_TIGHTENER, 0.65).plus(AU_LIP_TIGHTENER, 0.75).plus(AU_CHIN_RAISER, 0.2).plus(AU_LIP_PRESSOR, 0.2));
+  out.push(Expression.make("disgust").plus(AU_NOSE_WRINKLER, 0.85).plus(AU_UPPER_LIP_RAISER, 0.5)
+    .plus(AU_LIP_CORNER_DEPRESSOR, 0.5).plus(AU_CHIN_RAISER, 0.5).plus(AU_BROW_LOWERER, 0.25));
+  out.push(Expression.make("contempt").withSide(AU_LIP_CORNER_PULLER, SIDE_RIGHT, 0.55)
+    .withSide(AU_DIMPLER, SIDE_RIGHT, 0.55));
+  out.push(Expression.make("pain").plus(AU_BROW_LOWERER, 0.8).plus(AU_CHEEK_RAISER, 0.6).plus(AU_LID_TIGHTENER, 0.9)
+    .plus(AU_NOSE_WRINKLER, 0.5).plus(AU_UPPER_LIP_RAISER, 0.5).plus(AU_LIPS_PART, 0.3));
+  out.push(Expression.make("thinking").plus(AU_BROW_LOWERER, 0.25).withSide(AU_INNER_BROW_RAISER, SIDE_LEFT, 0.35)
+    .withSide(AU_OUTER_BROW_RAISER, SIDE_LEFT, 0.4).plus(AU_LIP_CORNER_DEPRESSOR, 0.2).plus(AU_LIP_PRESSOR, 0.3));
+  out;
+}
+
+// The number of the expression called 'name' in 'list', or -1
+pub fn findExpression(list &List[Expression], name &str) i32 {
+  mut i = 0usize;
+  while i < list.len() {
+    if list[i].name.equals(name) { return i32.from(i); }
+    i = i + 1usize;
+  }
+  -1i32;
+}

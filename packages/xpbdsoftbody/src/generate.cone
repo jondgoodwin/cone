@@ -322,13 +322,29 @@ pub fn chain(points &Array[Vec3], linearDensity f32, stretch f32, radius f32) So
 // cloth cannot stretch past its rest length from its pins; 1.02: 2% more).
 // Call it after pinning. Kim, Chentanez and Muller 2012, "Long Range
 // Attachments - a method to simulate inextensible clothing in computer games".
+//
+// A particle held to a body that moves (a BodyAnchor of a Coupled with mass) is a
+// tethered particle, not a pin: for the length of a substep it is as heavy as the
+// body, a rope's heavy end, and the tether to the pin it hangs from is what holds
+// it where the rope's length puts it (a Gauss-Seidel pass over a chain does not
+// carry a heavy load's weight down the chain: the stretch it leaves grows with
+// the mass ratio and the links).
 pub fn addTethers(b &mut SoftBody, slack f32) {
   imm n = b.pos.len();
+  mut held = List[bool].empty();
+  mut i = 0usize;
+  while i < n { held.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < b.bodyAnchors.len() {
+    imm a = *b.bodyAnchors[i];
+    if (*b.bodies[usize.from(a.body)]).invMass > 0. { held.set(usize.from(a.particle), true); }
+    i = i + 1usize;
+  }
   mut best = List[f32].empty();
   mut src = List[u32].empty();
-  mut i = 0usize;
+  i = 0usize;
   while i < n {
-    if *b.invMass[i] == 0. {
+    if *b.invMass[i] == 0. and not *held[i] {
       best.push(0.);
       src.push(u32.from(i));
     } else {
@@ -363,7 +379,7 @@ pub fn addTethers(b &mut SoftBody, slack f32) {
   }
   i = 0usize;
   while i < n {
-    if *b.invMass[i] > 0. and *src[i] != 0xFFFFFFFFu32 {
+    if (*b.invMass[i] > 0. or *held[i]) and *src[i] != 0xFFFFFFFFu32 {
       b.tethers.push(new TetherC(u32.from(i), *src[i], *best[i] * slack));
     }
     i = i + 1usize;

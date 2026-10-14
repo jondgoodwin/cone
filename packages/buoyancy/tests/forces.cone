@@ -1,0 +1,140 @@
+// The water's forces on a hull (src/forces.cone, hull.cone), each check against a number worked out by hand.
+//
+// HULLS
+// 1. A box's volume is 8 hx hy hz, its centre is the origin and every triangle faces outward.
+// 2. A box lofted from two rectangular stations has the same volume (so the loft's windings are right
+//    on the sides and on both caps); a 16-sided barrel's volume is (n / 2) r^2 sin(2 pi / n) L.
+// BUOYANCY
+// 3. Archimedes: a box 3 m under the surface gets rho g V upward to 1e-4, and no sideways force or torque.
+// 4. A box 2 x 1 x 1 with its centre 0.2 m above the surface displaces 2 x 1 x 0.3 = 0.6 m^3, with its centre
+//    0.2 m below it 1.4 m^3 (the clipped triangles' pressure integrates to the exact volume).
+// 5. The surface through the centre of a box cuts it in half whatever the roll: 1 m^3 at roll 0, 20 and 60
+//    degrees.
+// 6. Righting torque: a wide flat box (half sizes 1, 0.25, 1) floating at its centre line, rolled by 0.05
+//    rad about its long axis, has the torque of metacentric theory, -rho g V GM sin(theta), V = 1 m^3 and
+//    GM = T/2 + B^2 / (12 T) - h/2 = 1.2083 m (T the draft, B the beam, h the height): -607 N m within 5 percent.
+// 7. A surface sloping 0.3 through the box's centre: the vertical force is still rho g V, and the sideways
+//    force is -rho g (slope) V, down the slope (the pressure gradient the surface's slope makes).
+// DRAG
+// 8. A fully submerged box moving at 2 m/s along its length: the drag is the sum worked out here by hand
+//    from the formulas (front pressure, back suction, ITTC skin friction on the four long faces).
+// 9. Drag opposes the motion, grows between 3 and 4.2 times when the speed doubles (between linear and
+//    quadratic), and a spinning body's torque opposes its spin.
+
+mod forcestest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import buoyancy use *;
+
+fn zero() Vec3 { new Vec3(0., 0., 0.); }
+
+fn main() i32 {
+  imm props = WaterProps.sea();
+  imm rg = props.density * props.gravity;
+
+  // 1. the box
+  imm box = Hull.box(new Vec3(1., 0.5, 0.25));
+  expectFloat(f64.from(box.volume), 8d * 1d * 0.5d * 0.25d, 0.0001, "a box's volume is 8 hx hy hz");
+  expect(box.centroid.length() < 0.0001, "its centre is the origin");
+  mut outward = true;
+  mut t = 0usize;
+  while t + 2usize < box.tris.len() {
+    imm a = *box.points[usize.from(*box.tris[t])];
+    imm b = *box.points[usize.from(*box.tris[t + 1usize])];
+    imm c = *box.points[usize.from(*box.tris[t + 2usize])];
+    imm n = (b - a).cross(c - a);
+    imm mid = (a + b + c) * (1. / 3.);
+    if n.dot(mid - box.centroid) <= 0. { outward = false; }
+    t = t + 3usize;
+  }
+  expect(outward, "every triangle of the box faces outward");
+
+  // 2. lofts
+  mut stations = List[Station].empty();
+  mut xs = 0;
+  while xs < 2 {
+    mut o = List[Vec2].empty();
+    o.push(new Vec2(-0.5, -0.25));
+    o.push(new Vec2(0.5, -0.25));
+    o.push(new Vec2(0.5, 0.25));
+    o.push(new Vec2(-0.5, 0.25));
+    stations.push(new Station(if xs == 0 { -1.; } else { 1.; }, o));
+    xs = xs + 1;
+  }
+  imm lofted = Hull.loft(&stations);
+  expectFloat(f64.from(lofted.volume), 2d * 1d * 0.5d, 0.0001, "a box lofted from two stations has a box's volume");
+  mut ring = List[Station].empty();
+  mut ss = 0;
+  while ss < 3 {
+    mut o = List[Vec2].empty();
+    mut k = 0;
+    while k < 16 {
+      imm a = 6.28318530718 * f32.from(k) / 16.;
+      o.push(new Vec2(0.4 * libc.cosf(a), 0.4 * libc.sinf(a)));
+      k = k + 1;
+    }
+    ring.push(new Station(f32.from(ss) * 1.5, o));
+    ss = ss + 1;
+  }
+  imm barrel = Hull.loft(&ring);
+  expectFloat(f64.from(barrel.volume), 8d * 0.16d * libc.sin(6.283185307179586d / 16d) * 3d, 0.0005, "a 16-sided barrel's volume is (n / 2) r^2 sin(2 pi / n) L");
+
+  // 3. Archimedes
+  imm sunk = hullForces(&box, new Vec3(0., -3., 0.), Quat.identity(), zero(), zero(), new Vec3(0., -3., 0.), (x, z) => 0., &props);
+  expectFloat(f64.from(sunk.force.y), f64.from(rg * box.volume), f64.from(rg * box.volume) * 0.0001, "a submerged box gets rho g V upward");
+  expect(libc.fabsf(sunk.force.x) + libc.fabsf(sunk.force.z) < 0.5 and sunk.torque.length() < 0.5, "and no sideways force or torque");
+
+  // 4. clipped volumes
+  imm b2 = Hull.box(new Vec3(1., 0.5, 0.5));
+  imm up = hullForces(&b2, new Vec3(0., 0.2, 0.), Quat.identity(), zero(), zero(), new Vec3(0., 0.2, 0.), (x, z) => 0., &props);
+  imm down = hullForces(&b2, new Vec3(0., -0.2, 0.), Quat.identity(), zero(), zero(), new Vec3(0., -0.2, 0.), (x, z) => 0., &props);
+  expectFloat(f64.from(up.volume), 0.6, 0.0005, "a box with its centre 0.2 m up displaces 0.6 m^3");
+  expectFloat(f64.from(down.volume), 1.4, 0.0005, "and 0.2 m down, 1.4 m^3");
+
+  // 5. any roll through the centre
+  mut half = true;
+  mut ang = 0;
+  while ang < 3 {
+    imm theta = if ang == 0 { 0.; } elif ang == 1 { 0.349066; } else { 1.047198; };
+    imm r = hullForces(&b2, zero(), Quat.angleAxis(theta, new Vec3(1., 0., 0.)), zero(), zero(), zero(), (x, z) => 0., &props);
+    if libc.fabsf(r.volume - 1.) > 0.002 { half = false; }
+    ang = ang + 1;
+  }
+  expect(half, "the surface through the centre of a box cuts it in half at roll 0, 20 and 60 degrees");
+
+  // 6. righting torque
+  imm flat = Hull.box(new Vec3(1., 0.25, 1.));
+  imm tilted = hullForces(&flat, zero(), Quat.angleAxis(0.05, new Vec3(1., 0., 0.)), zero(), zero(), zero(), (x, z) => 0., &props);
+  imm gm = 0.25 / 2. + 4. / (12. * 0.25) - 0.25;
+  imm want = 0. - rg * 1. * gm * libc.sinf(0.05);
+  expectFloat(f64.from(tilted.torque.x), f64.from(want), f64.from(libc.fabsf(want)) * 0.05, "the righting torque is -rho g V GM sin(theta), -607 N m within 5 percent");
+
+  // 7. a sloping surface
+  imm slope = hullForces(&b2, zero(), Quat.identity(), zero(), zero(), zero(), (x, z) => 0.3 * x, &props);
+  expectFloat(f64.from(slope.force.y), f64.from(rg * 1.), f64.from(rg) * 0.005, "on a sloping surface the vertical force is rho g V");
+  expectFloat(f64.from(slope.force.x), f64.from(0. - rg * 0.3 * 1.), f64.from(rg * 0.3) * 0.01, "and the sideways force is -rho g (slope) V, down the slope");
+
+  // 8. drag by hand
+  imm v = 2.;
+  imm moving = hullForces(&b2, new Vec3(0., -4., 0.), Quat.identity(), new Vec3(v, 0., 0.), zero(), new Vec3(0., -4., 0.), (x, z) => 0., &props);
+  imm s = v / props.referenceSpeed;
+  imm front = (props.pressureDrag1 * s + props.pressureDrag2 * s * s) * 1.;          // area 1 m^2, cos 1
+  imm back = (props.suctionDrag1 * s + props.suctionDrag2 * s * s) * 1.;
+  imm re = v * 2. / props.viscosity;
+  imm lg = libc.logf(re) / 2.302585 - 2.;
+  imm cf = 0.075 / (lg * lg);
+  imm skin = 0.5 * props.density * cf * 2. * v * v * 4.;                              // four faces of 2 m^2
+  expectFloat(f64.from(moving.drag.x), f64.from(0. - (front + back + skin)), f64.from(front + back + skin) * 0.01, "the drag of a box moving at 2 m/s is front pressure + back suction + skin friction, by hand");
+  expect(libc.fabsf(moving.drag.y) + libc.fabsf(moving.drag.z) < 0.5, "and along the motion");
+
+  // 9. scaling and spin
+  imm fast = hullForces(&b2, new Vec3(0., -4., 0.), Quat.identity(), new Vec3(2. * v, 0., 0.), zero(), new Vec3(0., -4., 0.), (x, z) => 0., &props);
+  imm ratio = fast.drag.x / moving.drag.x;
+  expect(ratio > 3. and ratio < 4.2, "doubling the speed multiplies the drag by between 3 and 4.2");
+  imm spun = hullForces(&b2, new Vec3(0., -4., 0.), Quat.identity(), zero(), new Vec3(0., 2., 0.), new Vec3(0., -4., 0.), (x, z) => 0., &props);
+  expect(spun.torque.y < -1., "a spinning body's torque opposes its spin");
+  done();
+}

@@ -1,0 +1,134 @@
+// ======== Octahedral directions: the frames of an impostor ========
+//
+// An octahedral impostor holds one picture of its object for each of a grid of
+// directions, GRID x GRID of them. The directions are the octahedral map's
+// (Cigolle, Donow, Evangelakos, Mara, McGuire and Meyer, "A Survey of
+// Efficient Representations for Independent Unit Vectors", JCGT 3(2), 2014):
+// the unit sphere folded onto the octahedron |x| + |y| + |z| = 1 and that laid
+// flat as a square, so that equal steps in the square are nearly equal steps
+// of angle everywhere, with no pole to crowd the frames. This is how Ryan
+// Brucks' octahedral impostors (Epic, 2017) and Fortnite's and Unity's lay
+// their frames out. For an object that stands on the ground, whose camera
+// never goes under it, the HEMI-octahedral map spends the whole square on the
+// upper half (y >= 0): the same frames cover half the sphere, twice as finely.
+//
+// +y is up. A frame's direction is the way FROM the object TO the camera that
+// took it. Frame (i, j) of a grid of n is the direction at the square's point
+// (i / (n - 1), j / (n - 1)), the corners and edges included, so the horizon
+// of a hemisphere is a frame of its own and no view is clamped away from it.
+//
+// A view direction is shown by the three nearest frames, the corners of the
+// triangle of the grid cell it falls in, blended by barycentric weights
+// (Brucks): the cell is split on its diagonal, so the three weights are
+// continuous across the cell and the frame chosen changes only where its
+// weight is 0.
+//
+// The functions are pure and are the CPU twins of impostor.slang's: the tests
+// pin them, and the renderer's picture is checked against them.
+
+// The frames whose blend shows a direction: three frames, each (column i, row
+// j) of the grid, and each one's weight (the weights sum to 1)
+pub struct FrameBlend {
+  pub i0 u32; pub j0 u32; pub w0 f32;
+  pub i1 u32; pub j1 u32; pub w1 f32;
+  pub i2 u32; pub j2 u32; pub w2 f32;
+}
+
+// A frame's camera basis: the picture's right and up, in the object's space,
+// for a camera in direction 'd' looking at the object
+pub struct FrameBasis {
+  pub right Vec3;
+  pub up Vec3;
+}
+
+fn absf(x f32) f32 { libc.fabsf(x); }
+fn signf(x f32) f32 { if x < 0. { -1.; } else { 1.; }; }
+
+// The square's point (u, v), each 0 to 1, as the unit direction it stands
+// for. Hemispherical: only y >= 0 (the square's boundary is the horizon).
+pub fn octDecode(u f32, v f32, hemisphere bool) Vec3 {
+  imm px = u * 2. - 1.;
+  imm py = v * 2. - 1.;
+  if hemisphere {
+    // The upper pyramid |x| + |z| + y = 1, the diamond |x| + |z| <= 1 turned a
+    // quarter of the way round into the square: p = (x + z, x - z)
+    imm x = (px + py) * 0.5;
+    imm z = (px - py) * 0.5;
+    imm m = if absf(px) > absf(py) { absf(px); } else { absf(py); };
+    return new Vec3(x, 1. - m, z).normalize();
+  }
+  mut x = px;
+  mut z = py;
+  imm y = 1. - absf(px) - absf(py);
+  if y < 0. {
+    // The lower half is folded out over the square's corners
+    x = (1. - absf(py)) * signf(px);
+    z = (1. - absf(px)) * signf(py);
+  }
+  new Vec3(x, y, z).normalize();
+}
+
+// The square's point (u, v) of the direction 'd' (any length); a hemisphere
+// holds only y >= 0, so a direction below the horizon is taken to the horizon
+pub fn octEncode(d Vec3, hemisphere bool) Vec2 {
+  mut dy = d.y;
+  if hemisphere and dy < 0. { dy = 0.; }
+  imm l1 = absf(d.x) + absf(dy) + absf(d.z);
+  if l1 < 0.0000001 { return new Vec2(0.5, 0.5); }
+  imm ox = d.x / l1;
+  imm oz = d.z / l1;
+  if hemisphere {
+    return new Vec2((ox + oz + 1.) * 0.5, (ox - oz + 1.) * 0.5);
+  }
+  mut px = ox;
+  mut pz = oz;
+  if dy < 0. {
+    px = (1. - absf(oz)) * signf(ox);
+    pz = (1. - absf(ox)) * signf(oz);
+  }
+  new Vec2((px + 1.) * 0.5, (pz + 1.) * 0.5);
+}
+
+// The direction of frame (i, j) of a grid of 'grid' by 'grid'
+pub fn frameDirection(i u32, j u32, grid u32, hemisphere bool) Vec3 {
+  imm n = f32.from(grid - 1u32);
+  octDecode(f32.from(i) / n, f32.from(j) / n, hemisphere);
+}
+
+// The picture's axes for a camera in direction 'd': up is +y as near as it
+// can be (a camera straight above or below looks with its up along -z, as a
+// top view in a modeller does). The frames are baked with it and the shader
+// reprojects through it, so every frame is read with the basis it was made with.
+pub fn frameBasis(d Vec3) FrameBasis {
+  imm n = d.normalize();
+  imm reference = if absf(n.y) > 0.999 { new Vec3(0., 0., 1.); } else { new Vec3(0., 1., 0.); };
+  imm right = reference.cross(n).normalize();
+  new FrameBasis(right, n.cross(right));
+}
+
+// The three frames that show the direction 'd', and their weights
+pub fn pickFrames(d Vec3, grid u32, hemisphere bool) FrameBlend {
+  imm uv = octEncode(d, hemisphere);
+  imm cells = f32.from(grid - 1u32);
+  mut gx = uv.x * cells;
+  mut gy = uv.y * cells;
+  if gx < 0. { gx = 0.; }
+  if gy < 0. { gy = 0.; }
+  if gx > cells { gx = cells; }
+  if gy > cells { gy = cells; }
+  mut cx = libc.floorf(gx);
+  mut cy = libc.floorf(gy);
+  // The last frame closes the last cell, not opens another
+  if cx > cells - 1. { cx = cells - 1.; }
+  if cy > cells - 1. { cy = cells - 1.; }
+  imm fx = gx - cx;
+  imm fy = gy - cy;
+  imm i = u32.from(cx);
+  imm j = u32.from(cy);
+  if fx + fy < 1. {
+    // the lower triangle (i, j), (i + 1, j), (i, j + 1)
+    return new FrameBlend(i, j, 1. - fx - fy, i + 1u32, j, fx, i, j + 1u32, fy);
+  }
+  // the upper: (i + 1, j + 1), (i, j + 1), (i + 1, j)
+  new FrameBlend(i + 1u32, j + 1u32, fx + fy - 1., i, j + 1u32, 1. - fx, i + 1u32, j, 1. - fy);
+}

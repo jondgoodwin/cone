@@ -1,0 +1,117 @@
+// ======== Heightfield: a regular grid of heights in metres ========
+//
+// Sample (ix, iz) is at the world point (originX + ix * cell, originZ + iz * cell) and is stored
+// row by row (index iz * w + ix), the layout a GPU buffer or an r32float texture has, so the data
+// uploads as it is. x runs east and z south, y is up (geomath's right-handed, y up).
+
+pub struct Heightfield {
+  pub w usize;
+  pub h usize;
+  pub cell f32;
+  pub originX f32;
+  pub originZ f32;
+  pub data List[f32];
+
+  // A field of w x h samples, all at 'height'
+  pub fn make(w usize, h usize, cell f32, originX f32, originZ f32, height f32) Heightfield {
+    mut d = List[f32].withCapacity(w * h);
+    mut i = 0usize;
+    while i < w * h {
+      d.push(height);
+      i = i + 1usize;
+    }
+    new Heightfield(w, h, cell, originX, originZ, d);
+  }
+
+  pub fn count(self &) usize { w * h; }
+
+  // The extent in metres from the first sample to the last
+  pub fn width(self &) f32 { f32.from(w - 1usize) * cell; }
+  pub fn depth(self &) f32 { f32.from(h - 1usize) * cell; }
+
+  pub fn at(self &, ix usize, iz usize) f32 { *data[iz * w + ix]; }
+  pub fn set(self &mut, ix usize, iz usize, v f32) { data.set(iz * w + ix, v); }
+
+  // The sample nearest the edge for an index outside the grid (clamped)
+  pub fn atClamped(self &, ix i32, iz i32) f32 {
+    mut x = ix;
+    mut z = iz;
+    if x < 0 { x = 0; }
+    if z < 0 { z = 0; }
+    if x > i32.from(w) - 1 { x = i32.from(w) - 1; }
+    if z > i32.from(h) - 1 { z = i32.from(h) - 1; }
+    *data[usize.from(z) * w + usize.from(x)];
+  }
+
+  // The height at world (x, z): bilinear between the four samples round it, clamped at the edge
+  pub fn sample(self &, x f32, z f32) f32 {
+    imm gx = (x - originX) / cell;
+    imm gz = (z - originZ) / cell;
+    imm fx = libc.floorf(gx);
+    imm fz = libc.floorf(gz);
+    imm ix = i32.from(fx);
+    imm iz = i32.from(fz);
+    imm tx = gx - fx;
+    imm tz = gz - fz;
+    imm a = self.atClamped(ix, iz);
+    imm b = self.atClamped(ix + 1, iz);
+    imm c = self.atClamped(ix, iz + 1);
+    imm d = self.atClamped(ix + 1, iz + 1);
+    (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
+  }
+
+  // The unit surface normal at world (x, z), from central differences of the bilinear surface
+  // one cell apart (so it agrees with 'sample' and with a mesh of the grid's triangles to within
+  // the triangle split)
+  pub fn normalAt(self &, x f32, z f32) Vec3 {
+    imm hx = self.sample(x + cell, z) - self.sample(x - cell, z);
+    imm hz = self.sample(x, z + cell) - self.sample(x, z - cell);
+    new Vec3(-hx, 2. * cell, -hz).normalize();
+  }
+
+  // The slope at world (x, z) in radians from horizontal
+  pub fn slopeAt(self &, x f32, z f32) f32 {
+    imm n = self.normalAt(x, z);
+    libc.acosf(if n.y > 1. {1.;} else {n.y;});
+  }
+
+  pub fn minHeight(self &) f32 {
+    mut m = *data[0usize];
+    mut i = 1usize;
+    while i < data.len() {
+      if *data[i] < m { m = *data[i]; }
+      i = i + 1usize;
+    }
+    m;
+  }
+
+  pub fn maxHeight(self &) f32 {
+    mut m = *data[0usize];
+    mut i = 1usize;
+    while i < data.len() {
+      if *data[i] > m { m = *data[i]; }
+      i = i + 1usize;
+    }
+    m;
+  }
+
+  // The data as the bytes of r32float, for an upload
+  pub fn bytes(self &) &Array[f32] { data.view(); }
+
+  // A copy of the rectangle of 'nw' x 'nh' samples whose first is (ix, iz); samples past the edge
+  // repeat the edge's. This is how a tile is cut: terrain renderers want tiles with one sample of
+  // border (cut them one sample larger and the neighbours share an edge exactly)
+  pub fn tile(self &, ix i32, iz i32, nw usize, nh usize) Heightfield {
+    mut t = Heightfield.make(nw, nh, cell, originX + f32.from(ix) * cell, originZ + f32.from(iz) * cell, 0.);
+    mut j = 0usize;
+    while j < nh {
+      mut i = 0usize;
+      while i < nw {
+        t.set(i, j, self.atClamped(ix + i32.from(i), iz + i32.from(j)));
+        i = i + 1usize;
+      }
+      j = j + 1usize;
+    }
+    t;
+  }
+}

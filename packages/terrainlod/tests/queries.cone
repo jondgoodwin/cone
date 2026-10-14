@@ -1,0 +1,150 @@
+// The physics queries (queries.cone) and the heightmap tiles (source.cone),
+// against heights worked out by hand.
+//
+// The finest level's surface, cells of 1 m, a cell (a, b) split from (a, b) to
+// (a + 1, b + 1) when a + b is even and from (a + 1, b) to (a, b + 1) when odd.
+// A lookup source with h(0, 0) = 0, h(1, 0) = 1, h(0, 1) = 2, h(1, 1) = 4,
+// h(2, 0) = 0, h(2, 1) = 0 and 0 elsewhere:
+//  - the even cell (0, 0), triangles (00, 01, 11) above the diagonal u = v and
+//    (00, 11, 10) below it: at (u, v) = (0.25, 0.75): the first, 0 + (4 - 2)
+//    0.25 + (2 - 0) 0.75 = 2.0; at (0.75, 0.25): the second, 0 + (1 - 0) 0.75
+//    + (4 - 1) 0.25 = 1.5.
+//  - the odd cell (1, 0): its corners are 1, 0, 4 and 0 (00 = h(1, 0), 10 =
+//    h(2, 0), 01 = h(1, 1), 11 = h(2, 1)); triangles (00, 01, 10) where u + v
+//    <= 1: at (0.2, 0.3): 1 + (0 - 1) 0.2 + (4 - 1) 0.3 = 1.7; and (10, 01,
+//    11) beyond: at (0.7, 0.6): 0 + (4 - 0)(1 - 0.7) + (0 - 0)(1 - 0.6) = 1.2.
+// A plane h = 0.5 x - 0.25 z + 3 is its own triangulation: at (3.3, 5.7)
+// 1.65 - 1.425 + 3 = 3.225; its normal (-0.5, 1, 0.25) / sqrt(1.3125) =
+// (-0.43644, 0.87287, 0.21822).
+// A ray down a slope h = 0.1 x from (0, 50, 0) along (1, -1, 0) / sqrt 2:
+// y = 50 - x meets 0.1 x at x = 45.4545, the distance 45.4545 sqrt 2 =
+// 64.2824, the height 4.54545, the normal (-0.1, 1, 0) / sqrt(1.01) =
+// (-0.099504, 0.995037, 0).
+// Tiles of 4 cells of 10 m from (100, 200), 2 across and 1 down, the first
+// holding h(i, j) = i + 10 j, the second missing, outside = -7: at (115, 205)
+// (gx = 1.5, gz = 0.5) the corners are 1, 2, 11, 12 and the bilinear mean
+// 6.5; at (145, 205) the missing tile: -7; at (50, 205) outside the grid: -7;
+// a tile of the wrong length is refused.
+
+mod queries;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import terrainlod use *;
+
+fn near(got f32, want f64, within f64, label &Array[u8]) { expectFloat(f64.from(got), want, within, label); }
+
+fn lookup(x f32, z f32) f32 {
+  if x == 0. and z == 0. { return 0.; }
+  if x == 1. and z == 0. { return 1.; }
+  if x == 0. and z == 1. { return 2.; }
+  if x == 1. and z == 1. { return 4.; }
+  0.;
+}
+fn lookup2(x f32, z f32) f32 {
+  // the odd cell (1, 0): h(1, 0) = 1, h(2, 0) = 0, h(1, 1) = 4, h(2, 1) = 0
+  if x == 1. and z == 0. { return 1.; }
+  if x == 1. and z == 1. { return 4.; }
+  0.;
+}
+fn plane(x f32, z f32) f32 { 0.5 * x - 0.25 * z + 3.; }
+fn slope(x f32, z f32) f32 { 0.1 * x; }
+fn hills(x f32, z f32) f32 { 6. * libc.sinf(x * 0.05) * libc.cosf(z * 0.07) + 0.2 * x; }
+
+fn main() i32 {
+  // The two triangles of an even cell, the two of an odd one
+  near(groundHeight(&lookup, 1., 0.25, 0.75), 2d, 0.00001d, "even cell, upper triangle");
+  near(groundHeight(&lookup, 1., 0.75, 0.25), 1.5d, 0.00001d, "even cell, lower triangle");
+  near(groundHeight(&lookup2, 1., 1.2, 0.3), 1.7d, 0.00001d, "odd cell, first triangle");
+  near(groundHeight(&lookup2, 1., 1.7, 0.6), 1.2d, 0.00001d, "odd cell, second triangle");
+  near(groundHeight(&lookup, 1., 0., 0.), 0d, 0.00001d, "at a corner: its sample");
+  near(groundHeight(&lookup, 1., 1., 1.), 4d, 0.00001d, "at the far corner: its sample");
+  expectBool(diagonalRises(0i32, 0i32), true, "(0, 0) even rises");
+  expectBool(diagonalRises(1i32, 0i32), false, "(1, 0) odd falls");
+  expectBool(diagonalRises(-1i32, 0i32), false, "(-1, 0) odd falls (negative cells)");
+  expectBool(diagonalRises(-1i32, -1i32), true, "(-1, -1) even rises");
+
+  // A plane, and its normal
+  near(groundHeight(&plane, 2., 3.3, 5.7), 3.225d, 0.0001d, "plane at (3.3, 5.7), cells of 2 m");
+  near(groundHeight(&plane, 1., -7.9, -3.1), 0.5d * -7.9d + 0.25d * 3.1d + 3d, 0.0001d, "plane at negative coordinates");
+  imm n = groundNormal(&plane, 2., 3.3, 5.7);
+  near(n.x, -0.43644d, 0.0001d, "plane normal x");
+  near(n.y, 0.87287d, 0.0001d, "plane normal y");
+  near(n.z, 0.21822d, 0.0001d, "plane normal z");
+
+  // The ray down a slope
+  imm hit = raycast(&slope, 1., 0.1, new Vec3(0., 50., 0.), new Vec3(1., -1., 0.), 500.);
+  expectBool(hit.hit, true, "the ray down the slope hits");
+  near(hit.distance, 64.2824d, 0.002d, "its distance 45.4545 x sqrt 2");
+  near(hit.point.x, 45.4545d, 0.002d, "its x");
+  near(hit.point.y, 4.54545d, 0.002d, "its y");
+  near(hit.normal.x, -0.099504d, 0.0001d, "its normal x");
+  near(hit.normal.y, 0.995037d, 0.0001d, "its normal y");
+  imm miss = raycast(&slope, 1., 0.1, new Vec3(0., 50., 0.), new Vec3(1., 1., 0.), 500.);
+  expectBool(miss.hit, false, "a ray going up misses");
+  imm under = raycast(&slope, 1., 0.1, new Vec3(10., -5., 0.), new Vec3(0., 1., 0.), 100.);
+  expectBool(under.hit, true, "a ray from under the ground hits at once");
+  near(under.distance, 0d, 0.00001d, "at distance 0");
+  imm far = raycast(&slope, 1., 0.1, new Vec3(0., 50., 0.), new Vec3(1., -1., 0.), 30.);
+  expectBool(far.hit, false, "out of reach: no hit");
+
+  // Hills: every hit lies on the surface, for rays in many directions
+  mut onSurface = 0;
+  mut total = 0;
+  mut k = 0;
+  while k < 60 {
+    imm angle = f32.from(k) * 0.37;
+    imm dir = new Vec3(libc.cosf(angle), -0.15 - 0.012 * f32.from(k), libc.sinf(angle));
+    imm h = raycast(&hills, 1., 0.5, new Vec3(30. + f32.from(k), 40., -20. + f32.from(k) * 2.), dir, 4000.);
+    if h.hit {
+      total = total + 1;
+      if libc.fabsf(h.point.y - groundHeight(&hills, 1., h.point.x, h.point.z)) < 0.001 { onSurface = onSurface + 1; }
+    }
+    k = k + 1;
+  }
+  expectBool(total >= 50, true, "hills: most rays hit");
+  expectInt(i64.from(onSurface), i64.from(total), "hills: every hit lies on the surface (within 1 mm)");
+  // And no earlier meeting: marching finely along the ray finds none before the hit
+  imm dir = new Vec3(0.6, -0.4, 0.3);
+  imm h = raycast(&hills, 1., 0.5, new Vec3(0., 60., 0.), dir, 4000.);
+  mut earlier = false;
+  mut t = 0.;
+  imm u = dir.normalize();
+  while t < h.distance - 0.01 {
+    imm p = new Vec3(0., 60., 0.) + u * t;
+    if p.y < groundHeight(&hills, 1., p.x, p.z) { earlier = true; }
+    t = t + 0.05;
+  }
+  expectBool(h.hit and !earlier, true, "hills: a fine march finds no meeting before the hit");
+
+  near(lodError(2., 0.5), 1.41421d, 0.0001d, "the drawn ground's error bound: slope x cell x sqrt 2");
+
+  // Tiles
+  mut tiles = HeightTiles.make(100., 200., 10., 4u32, 2u32, 1u32, -7.);
+  mut samples = List[f32].empty();
+  mut j = 0;
+  while j < 5 {
+    mut i = 0;
+    while i < 5 { samples.push(f32.from(i + 10 * j)); i = i + 1; }
+    j = j + 1;
+  }
+  expectBool(tiles.setTile(0u32, 0u32, samples), true, "tile 0 set");
+  expectBool(tiles.hasTile(0u32, 0u32), true, "tile 0 present");
+  expectBool(tiles.hasTile(1u32, 0u32), false, "tile 1 missing");
+  expectBool(tiles.setTile(2u32, 0u32, List[f32].empty()), false, "a tile outside the grid is refused");
+  mut shortTile = List[f32].empty();
+  shortTile.push(1.);
+  expectBool(tiles.setTile(1u32, 0u32, shortTile), false, "a tile of the wrong length is refused");
+  near(tiles.sample(115., 205.), 6.5d, 0.00001d, "tile: bilinear at (115, 205)");
+  near(tiles.sample(100., 200.), 0d, 0.00001d, "tile: the first sample");
+  near(tiles.sample(130., 230.), 33d, 0.0001d, "tile: sample (3, 3) is 3 + 30");
+  near(tiles.sample(145., 205.), -7d, 0.00001d, "tile: a missing tile answers outside");
+  near(tiles.sample(50., 205.), -7d, 0.00001d, "tile: beyond the grid answers outside");
+  near(tiles.sample(115., 260.), -7d, 0.00001d, "tile: beyond the grid in z");
+  tiles.clearTile(0u32, 0u32);
+  near(tiles.sample(115., 205.), -7d, 0.00001d, "tile: cleared (unloaded) answers outside");
+  done();
+}

@@ -1,0 +1,597 @@
+// ======== The impostor bake: an object photographed from a grid of directions ========
+//
+// 'ImpostorBaker.bake' draws an object from each frame direction of an octahedral
+// grid (octahedral.cone), orthographically, with the camera on that direction's
+// axis looking at the middle of the object's bounding sphere and the sphere, a
+// little padded, filling the picture. It makes two pictures a frame, with the
+// renderer itself, offscreen:
+//
+//   1. COLOUR AND COVERAGE: the object drawn with render's lit material under
+//      ambient light alone (the light 0, the ambient 1), so what is written is the
+//      material's base colour times its texture: the albedo, flat. The target
+//      is sRGB, so the bytes are sRGB-encoded colour and the alpha is coverage (the
+//      target is cleared to alpha 0, and the lit material writes 1 where it draws).
+//   2. NORMAL AND DEPTH: the same geometry through impostorbake.slang, a custom
+//      pipeline writing the object-space normal (n * 0.5 + 0.5) in rgb and the
+//      surface's height above the plane through the sphere's middle (0..1 across
+//      the sphere's diameter) in alpha. The target is plain RGBA8.
+//
+// Frame (i, j) goes into cell (i, j) of two atlases (a square of grid x grid
+// cells, each frameSize pixels), rows from the top as the picture comes off the
+// GPU, which the renderer uploads as it is.
+//
+// THE PADDING. The sphere is drawn a sixteenth larger than it is, so the
+// outermost leaf or wall has empty texels round it and the atlas's mip levels
+// (which average a cell with its neighbours' edges once a cell is only a few
+// pixels) cannot bring a neighbour's picture in.
+//
+// THE DILATION. After the bake, empty texels (coverage 0) within 'dilate' pixels
+// of a covered one take its colour, normal and depth (the colour of the edge
+// pixel repeated outward). The coverage stays 0. Without it a bilinear sample at
+// an edge averages the object with black and rims it in dark; with it the average
+// is the object's colour (the practice of every sprite atlas; Brucks' impostors
+// and Unity's do it).
+//
+// WHAT THE COLOUR PASS IS NOT. It is not a g-buffer: the colour is whatever the
+// parts' Blinn-Phong materials give under flat white light (their base colour
+// times texture, plus any emissive). A physically based material is baked by
+// handing the bake a Blinn stand-in with its base colour and texture; the
+// impostor's own lighting then supplies the light (Lambert and ambient), without
+// the original's specular or coat. That is the cost of an impostor.
+
+// How the impostor's card keeps or drops a pixel by its coverage (the blend of the frames' alpha):
+// CUT drops it below 'alphaCutoff' (the mips' alpha raised so as many pass as at level 0): crisp edges,
+//   right for a solid object (a rock, a house), but a sparse one (a crown of leaves) loses all that is
+//   thinner than half-covered and shrinks to its dense core;
+// HASHED keeps it with the probability of its coverage (alpha hashing: Wyman and McGuire, "Hashed Alpha
+//   Testing", I3D 2017), so a sparse object keeps its extent and its density, at the price of a stippled
+//   edge on a solid one;
+// AUTO chooses by the bake's POROSITY: the share of covered texels that touch an uncovered one, averaged
+//   over the frames: about 0.07 for a rock or a house at 128 pixels a frame, about 1 for a crown.
+pub const IMPOSTOR_ALPHA_CUT = 0u32;
+pub const IMPOSTOR_ALPHA_HASHED = 1u32;
+pub const IMPOSTOR_ALPHA_AUTO = 2u32;
+
+pub struct ImpostorSettings {
+  pub grid u32 = 8u32;               // frames a side (grid x grid frames)
+  pub frameSize u32 = 128u32;        // pixels a side of a frame
+  pub hemisphere bool = true;        // upper hemisphere only (objects standing on the ground)
+  pub padding f32 = 0.0625;          // the sphere is framed this much larger than it is
+  pub alphaMode u32 = IMPOSTOR_ALPHA_AUTO;   // how a pixel of the card is kept or dropped (below)
+  pub hashPorosity f32 = 0.3;        // AUTO hashes an object whose frames' covered texels are this share or more on an edge
+  pub alphaCutoff f32 = 0.5;         // CUT: the card drops pixels whose blended coverage is below it
+  pub dilate u32 = 4u32;             // pixels the edge colour is repeated outward
+  pub environmentLight bool = false; // light the card by the sky's irradiance cube, not the frame's ambient (a world drawn with physically based materials)
+  pub mipBias f32 = 0.;              // added to the atlas level the shader reads (positive: blurrier, steadier)
+
+  // The radius the frames are drawn at, for an object of bounding radius 'radius'
+  pub fn framedRadius(self, radius f32) f32 { radius * (1. + padding); }
+}
+
+// A part to bake: a mesh, its material as Blinn-Phong, and the image its texture
+// was made from (an empty image: no texture)
+pub struct BakePart {
+  pub mesh Mesh;
+  pub material Material;
+  pub image Image;
+  pub thinPieces bool = false;      // the mesh is a scatter of small pieces (foliage, grass, rubble): its levels draw fewer, larger ones
+}
+
+// The baked pictures, on the CPU
+pub struct ImpostorAtlas {
+  pub albedo Image;                  // grid x frameSize square, 4 channels: sRGB colour, coverage
+  pub normals Image;                 // the same: object-space normal * 0.5 + 0.5, depth
+  pub grid u32;
+  pub frameSize u32;
+  pub hemisphere bool;
+  pub center Vec3;                   // of the object's bounding sphere
+  pub radius f32;                    // the FRAMED radius (padding included)
+  pub porosity f32;                  // the share of covered texels on an edge, over all the frames
+}
+
+pub struct ImpostorBaker {
+  pub frameSize u32;
+  albedoRenderer Renderer;
+  normalRenderer Renderer;
+  normalPipeline PipelineHandle;
+  colourTarget Texture;
+  normalTarget Texture;
+  depthTarget Texture;
+  colourRead Buffer;
+  normalRead Buffer;
+
+  // A baker for frames of 'frameSize' pixels: its two renderers, targets and
+  // read-back buffers. Make one and bake with it as often as wanted. Check 'isValid'.
+  pub fn create(device &mut Device, frameSize u32) ImpostorBaker {
+    imm colourDesc = new TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+    imm normalDesc = new TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_RGBA8_UNORM,
+      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+    imm depthDesc = new TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+    mut colourTarget = device.createTexture(&colourDesc);
+    mut normalTarget = device.createTexture(&normalDesc);
+    mut depthTarget = device.createTexture(&depthDesc);
+    imm bytes = u64.from(frameSize) * u64.from(frameSize) * 4u64;
+    mut colourRead = device.createBuffer(bytes, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    mut normalRead = device.createBuffer(bytes, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    mut albedoRenderer = Renderer.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+    mut normalRenderer = Renderer.create(device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+    imm sampleTypes = [TEXTURE_SAMPLE_TYPE_FLOAT];
+    imm desc = new CustomPipeline(spirv: &IMPOSTORBAKE_SPIRV, textures: &sampleTypes, streams: 3u32, paramBytes: 48u64);
+    imm normalPipeline = normalRenderer.addPipeline(device, &desc);
+    new ImpostorBaker(frameSize, albedoRenderer, normalRenderer, normalPipeline, colourTarget, normalTarget, depthTarget,
+      colourRead, normalRead);
+  }
+
+  pub fn isValid(self &) bool {
+    albedoRenderer.isValid() and normalRenderer.isValid() and normalRenderer.hasPipeline(normalPipeline);
+  }
+
+  // Bake 'parts', which together fill a sphere of centre 'center' and radius
+  // 'radius' (object space, not yet padded), with the settings' grid. The
+  // settings' frame size must be this baker's.
+  pub fn bake(self &mut, device &mut Device, parts &List[BakePart], center Vec3, radius f32, s &ImpostorSettings) ImpostorAtlas {
+    imm grid = s.grid;
+    imm size = usize.from(grid * frameSize);
+    imm framed = s.framedRadius(radius);
+    mut albedo = new Image(i32.from(size), i32.from(size), 4, List[u8].withCapacity(size * size * 4usize));
+    albedo.pixels.resize(size * size * 4usize, 0u8);
+    mut normals = new Image(i32.from(size), i32.from(size), 4, List[u8].withCapacity(size * size * 4usize));
+    normals.pixels.resize(size * size * 4usize, 0u8);
+    if grid < 2u32 or s.frameSize != frameSize or parts.len() == 0usize or !self.isValid() {
+      return new ImpostorAtlas(albedo, normals, grid, frameSize, s.hemisphere, center, framed, 0.);
+    }
+
+    // The parts in both renderers
+    mut albedoMeshes = List[MeshHandle].empty();
+    mut albedoMaterials = List[MaterialHandle].empty();
+    mut albedoTextures = List[TextureHandle].empty();
+    mut normalMeshes = List[MeshHandle].empty();
+    mut normalMaterials = List[MaterialHandle].empty();
+    mut normalTextures = List[TextureHandle].empty();
+    mut p = 0usize;
+    while p < parts.len() {
+      mut material = parts[p].material;
+      mut aTexture = TextureHandle.none();
+      mut nTexture = TextureHandle.none();
+      if !parts[p].image.isEmpty() {
+        if material.alphaMode == ALPHA_MASK {
+          aTexture = self.albedoRenderer.addCutoutTexture(device, &parts[p].image, material.alphaCutoff);
+          nTexture = self.normalRenderer.addCutoutTexture(device, &parts[p].image, material.alphaCutoff);
+        } else {
+          aTexture = self.albedoRenderer.addTexture(device, &parts[p].image);
+          nTexture = self.normalRenderer.addTexture(device, &parts[p].image);
+        }
+        material.texture = aTexture;
+      }
+      albedoMeshes.push(self.albedoRenderer.addMesh(device, &parts[p].mesh));
+      albedoMaterials.push(self.albedoRenderer.addMaterial(device, &material));
+      albedoTextures.push(aTexture);
+      normalMeshes.push(self.normalRenderer.addMesh(device, &parts[p].mesh));
+      imm noParams = [0.];
+      imm maps = [nTexture];
+      normalMaterials.push(self.normalRenderer.addCustomMaterial(device, self.normalPipeline, &noParams, &maps));
+      normalTextures.push(nTexture);
+      p = p + 1usize;
+    }
+    mut albedoList = DrawList.empty();
+    mut normalList = DrawList.empty();
+    p = 0usize;
+    while p < parts.len() {
+      albedoList.add(*albedoMeshes[p], *albedoMaterials[p], Mat4.identity());
+      normalList.add(*normalMeshes[p], *normalMaterials[p], Mat4.identity());
+      p = p + 1usize;
+    }
+    imm flatLight = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+
+    mut frameNumber = 0u32;
+    while frameNumber < grid * grid {
+      imm i = frameNumber % grid;
+      imm j = frameNumber / grid;
+      imm dir = frameDirection(i, j, grid, s.hemisphere);
+      imm basis = frameBasis(dir);
+      mut camera = Camera.make();
+      camera.projection = Orthogonal;
+      camera.viewHeight = framed;
+      camera.near = framed * 0.5;
+      camera.far = framed * 3.5;
+      camera.lookAt(center + dir * (framed * 2.), center, basis.up);
+
+      // 1. colour and coverage
+      camera.background = new Color(0., 0., 0., 0.);
+      drawPass(device, &mut self.albedoRenderer, &self.colourTarget, &self.depthTarget, &self.colourRead, &camera,
+        &flatLight, &albedoList);
+      copyFrame(self.colourRead.mappedRange(), &mut albedo, i, j, size, frameSize);
+
+      // 2. normal and depth: each part's parameters for this frame
+      p = 0usize;
+      while p < parts.len() {
+        imm cutoff = if parts[p].material.alphaMode == ALPHA_MASK { parts[p].material.alphaCutoff; } else { 0.; };
+        imm params = [center.x, center.y, center.z, framed, dir.x, dir.y, dir.z, cutoff, parts[p].material.baseColor.alpha,
+          0., 0., 0.];
+        self.normalRenderer.setCustomParams(device, *normalMaterials[p], &params);
+        p = p + 1usize;
+      }
+      camera.background = new Color(0.5, 0.5, 1., 0.5);
+      drawPass(device, &mut self.normalRenderer, &self.normalTarget, &self.depthTarget, &self.normalRead, &camera,
+        &flatLight, &normalList);
+      copyFrame(self.normalRead.mappedRange(), &mut normals, i, j, size, frameSize);
+      frameNumber = frameNumber + 1u32;
+    }
+
+    // Give the parts back
+    p = 0usize;
+    while p < parts.len() {
+      self.albedoRenderer.removeMesh(device, *albedoMeshes[p]);
+      self.albedoRenderer.removeMaterial(device, *albedoMaterials[p]);
+      if !albedoTextures[p].isNone() { self.albedoRenderer.removeTexture(device, *albedoTextures[p]); }
+      self.normalRenderer.removeMesh(device, *normalMeshes[p]);
+      self.normalRenderer.removeMaterial(device, *normalMaterials[p]);
+      if !normalTextures[p].isNone() { self.normalRenderer.removeTexture(device, *normalTextures[p]); }
+      p = p + 1usize;
+    }
+    imm porosity = porosityOf(&albedo, grid, frameSize);
+    dilateAtlas(&mut albedo, &mut normals, grid, frameSize, s.dilate);
+    new ImpostorAtlas(albedo, normals, grid, frameSize, s.hemisphere, center, framed, porosity);
+  }
+}
+
+// The share of the atlas's covered texels that have an uncovered four-neighbour (a texel on a frame's own
+// border counts as touching the outside), over all the frames
+fn porosityOf(albedo &Image, grid u32, frameSize u32) f32 {
+  imm size = usize.from(grid * frameSize);
+  imm f = usize.from(frameSize);
+  mut covered = 0u64;
+  mut edge = 0u64;
+  mut cj = 0usize;
+  while cj < usize.from(grid) {
+    mut ci = 0usize;
+    while ci < usize.from(grid) {
+      mut y = 0usize;
+      while y < f {
+        mut x = 0usize;
+        while x < f {
+          imm at = ((cj * f + y) * size + ci * f + x) * 4usize + 3usize;
+          if *albedo.pixels[at] > 0u8 {
+            covered = covered + 1u64;
+            mut touches = x == 0usize or y == 0usize or x + 1usize == f or y + 1usize == f;
+            if !touches {
+              if *albedo.pixels[at - 4usize] == 0u8 or *albedo.pixels[at + 4usize] == 0u8
+                or *albedo.pixels[at - size * 4usize] == 0u8 or *albedo.pixels[at + size * 4usize] == 0u8 {
+                touches = true;
+              }
+            }
+            if touches { edge = edge + 1u64; }
+          }
+          x = x + 1usize;
+        }
+        y = y + 1usize;
+      }
+      ci = ci + 1usize;
+    }
+    cj = cj + 1usize;
+  }
+  if covered == 0u64 { return 0.; }
+  f32.from(edge) / f32.from(covered);
+}
+
+// Draw one pass into its target, copy the target into its read-back buffer, and wait
+fn drawPass(device &mut Device, renderer &mut Renderer, target &Texture, depth &Texture, readback &Buffer, camera &Camera,
+    light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, target, depth, camera, light, list);
+  encoder.copyTextureToBuffer(target, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// The frame in 'src' (frameSize square, 4 bytes a texel, rows from the top) into cell (i, j) of 'image'
+fn copyFrame(src *u8, image &mut Image, i u32, j u32, size usize, frameSize u32) {
+  imm f = usize.from(frameSize);
+  mut y = 0usize;
+  while y < f {
+    imm dst = ((usize.from(j) * f + y) * size + usize.from(i) * f) * 4usize;
+    imm from = y * f * 4usize;
+    mut k = 0usize;
+    while k < f * 4usize {
+      image.pixels.set(dst + k, *(src + from + k));
+      k = k + 1usize;
+    }
+    y = y + 1usize;
+  }
+}
+
+// Repeat the colour, normal and depth of covered texels outward into empty ones,
+// 'steps' texels, inside each cell. Coverage (the albedo's alpha) is not changed.
+fn dilateAtlas(albedo &mut Image, normals &mut Image, grid u32, frameSize u32, steps u32) {
+  if steps == 0u32 { return; }
+  imm size = usize.from(grid * frameSize);
+  imm f = usize.from(frameSize);
+  mut filled = List[u8].withCapacity(f * f);
+  mut next = List[u8].withCapacity(f * f);
+  mut cj = 0u32;
+  while cj < grid {
+    mut ci = 0u32;
+    while ci < grid {
+      imm x0 = usize.from(ci) * f;
+      imm y0 = usize.from(cj) * f;
+      filled.clear();
+      mut y = 0usize;
+      while y < f {
+        mut x = 0usize;
+        while x < f {
+          imm at = ((y0 + y) * size + x0 + x) * 4usize + 3usize;
+          filled.push(if *albedo.pixels[at] > 0u8 { 1u8; } else { 0u8; });
+          x = x + 1usize;
+        }
+        y = y + 1usize;
+      }
+      mut step = 0u32;
+      while step < steps {
+        next.clear();
+        mut k = 0usize;
+        while k < f * f {
+          next.push(*filled[k]);
+          k = k + 1usize;
+        }
+        y = 0usize;
+        while y < f {
+          mut x = 0usize;
+          while x < f {
+            if *filled[y * f + x] == 0u8 {
+              // the mean of the filled four-neighbours
+              mut count = 0u32;
+              mut sum = new Vec3(0., 0., 0.);
+              mut sumN = new Vec4(0., 0., 0., 0.);
+              mut n = 0usize;
+              while n < 4usize {
+                mut sx = x;
+                mut sy = y;
+                if n == 0usize { if x + 1usize < f { sx = x + 1usize; } else { sx = x; } }
+                if n == 1usize { if x > 0usize { sx = x - 1usize; } }
+                if n == 2usize { if y + 1usize < f { sy = y + 1usize; } }
+                if n == 3usize { if y > 0usize { sy = y - 1usize; } }
+                if (sx != x or sy != y) and *filled[sy * f + sx] != 0u8 {
+                  imm at = ((y0 + sy) * size + x0 + sx) * 4usize;
+                  sum = sum + new Vec3(f32.from(*albedo.pixels[at]), f32.from(*albedo.pixels[at + 1usize]),
+                    f32.from(*albedo.pixels[at + 2usize]));
+                  sumN = sumN + new Vec4(f32.from(*normals.pixels[at]), f32.from(*normals.pixels[at + 1usize]),
+                    f32.from(*normals.pixels[at + 2usize]), f32.from(*normals.pixels[at + 3usize]));
+                  count = count + 1u32;
+                }
+                n = n + 1usize;
+              }
+              if count > 0u32 {
+                imm inv = 1. / f32.from(count);
+                imm at = ((y0 + y) * size + x0 + x) * 4usize;
+                albedo.pixels.set(at, u8.from(sum.x * inv + 0.5));
+                albedo.pixels.set(at + 1usize, u8.from(sum.y * inv + 0.5));
+                albedo.pixels.set(at + 2usize, u8.from(sum.z * inv + 0.5));
+                normals.pixels.set(at, u8.from(sumN.x * inv + 0.5));
+                normals.pixels.set(at + 1usize, u8.from(sumN.y * inv + 0.5));
+                normals.pixels.set(at + 2usize, u8.from(sumN.z * inv + 0.5));
+                normals.pixels.set(at + 3usize, u8.from(sumN.w * inv + 0.5));
+                next.set(y * f + x, 1u8);
+              }
+            }
+            x = x + 1usize;
+          }
+          y = y + 1usize;
+        }
+        filled.clear();
+        k = 0usize;
+        while k < f * f {
+          filled.push(*next[k]);
+          k = k + 1usize;
+        }
+        step = step + 1u32;
+      }
+      ci = ci + 1u32;
+    }
+    cj = cj + 1u32;
+  }
+}
+
+// spirv-begin impostorbake.spv IMPOSTORBAKE_SPIRV
+// Written by tools/shaders/shaders.py from impostorbake.slang (sha256 a3def210ae2795d7a4a643cf730392265c2a38f10de237ff7a9af4c856d2ac30): do not edit.
+imm IMPOSTORBAKE_SPIRV Array[u32, 1180] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000000ebu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0006000bu32, 0x00000053u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0010000fu32, 0x00000000u32, 0x00000002u32,
+  0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x0000001du32, 0x0000002eu32, 0x0000006au32,
+  0x0000006eu32, 0x00000071u32, 0x00000075u32, 0x00000026u32, 0x0000003cu32, 0x00000065u32,
+  0x00000013u32, 0x000e000fu32, 0x00000004u32, 0x00000078u32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00000080u32, 0x00000091u32, 0x00000095u32, 0x000000bau32,
+  0x000000a6u32, 0x000000a3u32, 0x0000008du32, 0x00030010u32, 0x00000078u32, 0x00000007u32,
+  0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00060005u32, 0x00000017u32, 0x74736e49u32,
+  0x65636e61u32, 0x6474735fu32, 0x00303334u32, 0x00050006u32, 0x00000017u32, 0x00000000u32,
+  0x65646f6du32, 0x0000006cu32, 0x00050006u32, 0x00000017u32, 0x00000001u32, 0x746e6974u32,
+  0x00000000u32, 0x00070005u32, 0x0000001au32, 0x75727453u32, 0x72757463u32, 0x75426465u32,
+  0x72656666u32, 0x00000000u32, 0x00060006u32, 0x0000001au32, 0x00000000u32, 0x656d5f5fu32,
+  0x7265626du32, 0x00000030u32, 0x00050005u32, 0x0000001du32, 0x74736e69u32, 0x65636e61u32,
+  0x00000073u32, 0x00060005u32, 0x00000026u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32,
+  0x00006e6fu32, 0x00060005u32, 0x0000002cu32, 0x6d617246u32, 0x74735f65u32, 0x30343164u32,
+  0x00000000u32, 0x00070006u32, 0x0000002cu32, 0x00000000u32, 0x77656976u32, 0x6a6f7250u32,
+  0x69746365u32, 0x00006e6fu32, 0x00070006u32, 0x0000002cu32, 0x00000001u32, 0x656d6163u32,
+  0x6f506172u32, 0x69746973u32, 0x00006e6fu32, 0x00070006u32, 0x0000002cu32, 0x00000002u32,
+  0x6867696cu32, 0x72694474u32, 0x69746365u32, 0x00006e6fu32, 0x00060006u32, 0x0000002cu32,
+  0x00000003u32, 0x6867696cu32, 0x6c6f4374u32, 0x0000726fu32, 0x00050006u32, 0x0000002cu32,
+  0x00000004u32, 0x69626d61u32, 0x00746e65u32, 0x00090006u32, 0x0000002cu32, 0x00000005u32,
+  0x65766e69u32, 0x56657372u32, 0x50776569u32, 0x656a6f72u32, 0x6f697463u32, 0x0000006eu32,
+  0x00060006u32, 0x0000002cu32, 0x00000006u32, 0x77656976u32, 0x74726f70u32, 0x00000000u32,
+  0x00060006u32, 0x0000002cu32, 0x00000007u32, 0x6f707865u32, 0x65727573u32, 0x00000000u32,
+  0x00040005u32, 0x0000002eu32, 0x6d617266u32, 0x00000065u32, 0x00060005u32, 0x0000003cu32,
+  0x75706e69u32, 0x6f6e2e74u32, 0x6c616d72u32, 0x00000000u32, 0x00050005u32, 0x00000065u32,
+  0x75706e69u32, 0x76752e74u32, 0x00000000u32, 0x000b0005u32, 0x0000006eu32, 0x72746e65u32,
+  0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32, 0x772e6e69u32,
+  0x646c726fu32, 0x00000000u32, 0x000b0005u32, 0x00000071u32, 0x72746e65u32, 0x696f5079u32,
+  0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32, 0x6e2e6e69u32, 0x616d726fu32,
+  0x0000006cu32, 0x000a0005u32, 0x00000075u32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32,
+  0x5f6d6172u32, 0x74726576u32, 0x614d7865u32, 0x752e6e69u32, 0x00000076u32, 0x00050005u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00070005u32, 0x0000007eu32,
+  0x656b6142u32, 0x61726150u32, 0x735f736du32, 0x34316474u32, 0x00000030u32, 0x00070006u32,
+  0x0000007eu32, 0x00000000u32, 0x746e6563u32, 0x61527265u32, 0x73756964u32, 0x00000000u32,
+  0x00060006u32, 0x0000007eu32, 0x00000001u32, 0x65726964u32, 0x6f697463u32, 0x0000006eu32,
+  0x00050006u32, 0x0000007eu32, 0x00000002u32, 0x65736162u32, 0x00000000u32, 0x00040005u32,
+  0x00000080u32, 0x656b6162u32, 0x00000000u32, 0x00050005u32, 0x0000008du32, 0x75706e69u32,
+  0x76752e74u32, 0x00000000u32, 0x00050005u32, 0x00000091u32, 0x65736162u32, 0x74786554u32,
+  0x00657275u32, 0x00050005u32, 0x00000095u32, 0x65736162u32, 0x706d6153u32, 0x0072656cu32,
+  0x00040005u32, 0x00000098u32, 0x706d6173u32, 0x0064656cu32, 0x00030005u32, 0x0000009bu32,
+  0x00000061u32, 0x00060005u32, 0x000000a3u32, 0x75706e69u32, 0x6f6e2e74u32, 0x6c616d72u32,
+  0x00000000u32, 0x00050005u32, 0x000000a6u32, 0x75706e69u32, 0x6f772e74u32, 0x00646c72u32,
+  0x000a0005u32, 0x000000bau32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00060005u32, 0x00000078u32,
+  0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00040047u32, 0x00000013u32,
+  0x0000000bu32, 0x0000002bu32, 0x00050048u32, 0x00000017u32, 0x00000000u32, 0x00000023u32,
+  0x00000000u32, 0x00040048u32, 0x00000017u32, 0x00000000u32, 0x00000004u32, 0x00050048u32,
+  0x00000017u32, 0x00000000u32, 0x00000007u32, 0x00000010u32, 0x00050048u32, 0x00000017u32,
+  0x00000001u32, 0x00000023u32, 0x00000040u32, 0x00040047u32, 0x00000018u32, 0x00000006u32,
+  0x00000050u32, 0x00040047u32, 0x0000001bu32, 0x00000006u32, 0x00000050u32, 0x00030047u32,
+  0x0000001au32, 0x00000002u32, 0x00050048u32, 0x0000001au32, 0x00000000u32, 0x00000023u32,
+  0x00000000u32, 0x00040047u32, 0x0000001du32, 0x00000021u32, 0x00000001u32, 0x00040047u32,
+  0x0000001du32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000001du32, 0x00000018u32,
+  0x00040047u32, 0x00000026u32, 0x0000001eu32, 0x00000000u32, 0x00030047u32, 0x0000002cu32,
+  0x00000002u32, 0x00050048u32, 0x0000002cu32, 0x00000000u32, 0x00000023u32, 0x00000000u32,
+  0x00040048u32, 0x0000002cu32, 0x00000000u32, 0x00000004u32, 0x00050048u32, 0x0000002cu32,
+  0x00000000u32, 0x00000007u32, 0x00000010u32, 0x00050048u32, 0x0000002cu32, 0x00000001u32,
+  0x00000023u32, 0x00000040u32, 0x00050048u32, 0x0000002cu32, 0x00000002u32, 0x00000023u32,
+  0x00000050u32, 0x00050048u32, 0x0000002cu32, 0x00000003u32, 0x00000023u32, 0x00000060u32,
+  0x00050048u32, 0x0000002cu32, 0x00000004u32, 0x00000023u32, 0x00000070u32, 0x00050048u32,
+  0x0000002cu32, 0x00000005u32, 0x00000023u32, 0x00000080u32, 0x00040048u32, 0x0000002cu32,
+  0x00000005u32, 0x00000004u32, 0x00050048u32, 0x0000002cu32, 0x00000005u32, 0x00000007u32,
+  0x00000010u32, 0x00050048u32, 0x0000002cu32, 0x00000006u32, 0x00000023u32, 0x000000c0u32,
+  0x00050048u32, 0x0000002cu32, 0x00000007u32, 0x00000023u32, 0x000000d0u32, 0x00040047u32,
+  0x0000002eu32, 0x00000021u32, 0x00000000u32, 0x00040047u32, 0x0000002eu32, 0x00000022u32,
+  0x00000000u32, 0x00040047u32, 0x0000003cu32, 0x0000001eu32, 0x00000001u32, 0x00040047u32,
+  0x00000065u32, 0x0000001eu32, 0x00000002u32, 0x00040047u32, 0x0000006au32, 0x0000000bu32,
+  0x00000000u32, 0x00040047u32, 0x0000006eu32, 0x0000001eu32, 0x00000000u32, 0x00040047u32,
+  0x00000071u32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x00000075u32, 0x0000001eu32,
+  0x00000002u32, 0x00030047u32, 0x0000007eu32, 0x00000002u32, 0x00050048u32, 0x0000007eu32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00050048u32, 0x0000007eu32, 0x00000001u32,
+  0x00000023u32, 0x00000010u32, 0x00050048u32, 0x0000007eu32, 0x00000002u32, 0x00000023u32,
+  0x00000020u32, 0x00040047u32, 0x00000080u32, 0x00000021u32, 0x00000000u32, 0x00040047u32,
+  0x00000080u32, 0x00000022u32, 0x00000001u32, 0x00040047u32, 0x0000008du32, 0x0000001eu32,
+  0x00000002u32, 0x00040047u32, 0x00000091u32, 0x00000021u32, 0x00000001u32, 0x00040047u32,
+  0x00000091u32, 0x00000022u32, 0x00000001u32, 0x00040047u32, 0x00000095u32, 0x00000021u32,
+  0x00000002u32, 0x00040047u32, 0x00000095u32, 0x00000022u32, 0x00000001u32, 0x00040047u32,
+  0x000000a3u32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x000000a6u32, 0x0000001eu32,
+  0x00000000u32, 0x00040047u32, 0x000000bau32, 0x0000001eu32, 0x00000000u32, 0x00020013u32,
+  0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32, 0x00000006u32,
+  0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32, 0x00040017u32,
+  0x00000008u32, 0x00000006u32, 0x00000003u32, 0x00040017u32, 0x00000009u32, 0x00000006u32,
+  0x00000002u32, 0x00040018u32, 0x0000000du32, 0x00000007u32, 0x00000004u32, 0x00040015u32,
+  0x00000010u32, 0x00000020u32, 0x00000001u32, 0x00040020u32, 0x00000012u32, 0x00000001u32,
+  0x00000010u32, 0x00040015u32, 0x00000014u32, 0x00000020u32, 0x00000000u32, 0x0004002bu32,
+  0x00000010u32, 0x00000016u32, 0x00000000u32, 0x0004001eu32, 0x00000017u32, 0x0000000du32,
+  0x00000007u32, 0x00040020u32, 0x00000018u32, 0x0000000cu32, 0x00000017u32, 0x0003001du32,
+  0x0000001bu32, 0x00000017u32, 0x0003001eu32, 0x0000001au32, 0x0000001bu32, 0x00040020u32,
+  0x0000001cu32, 0x0000000cu32, 0x0000001au32, 0x00040020u32, 0x00000025u32, 0x00000001u32,
+  0x00000008u32, 0x0004002bu32, 0x00000006u32, 0x00000028u32, 0x3f800000u32, 0x000a001eu32,
+  0x0000002cu32, 0x0000000du32, 0x00000007u32, 0x00000007u32, 0x00000007u32, 0x00000007u32,
+  0x0000000du32, 0x00000007u32, 0x00000007u32, 0x00040020u32, 0x0000002du32, 0x00000002u32,
+  0x0000002cu32, 0x00040020u32, 0x0000002fu32, 0x00000002u32, 0x0000000du32, 0x0004002bu32,
+  0x00000010u32, 0x00000034u32, 0x00000001u32, 0x0004002bu32, 0x00000010u32, 0x00000039u32,
+  0x00000002u32, 0x00040020u32, 0x00000064u32, 0x00000001u32, 0x00000009u32, 0x00040020u32,
+  0x00000069u32, 0x00000003u32, 0x00000007u32, 0x00040020u32, 0x0000006du32, 0x00000003u32,
+  0x00000008u32, 0x00040020u32, 0x00000074u32, 0x00000003u32, 0x00000009u32, 0x0005001eu32,
+  0x0000007eu32, 0x00000007u32, 0x00000007u32, 0x00000007u32, 0x00040020u32, 0x0000007fu32,
+  0x00000002u32, 0x0000007eu32, 0x00040020u32, 0x00000081u32, 0x00000002u32, 0x00000007u32,
+  0x00020014u32, 0x00000085u32, 0x0004002bu32, 0x00000006u32, 0x00000087u32, 0x00000000u32,
+  0x00090019u32, 0x0000008eu32, 0x00000006u32, 0x00000001u32, 0x00000002u32, 0x00000000u32,
+  0x00000000u32, 0x00000001u32, 0x00000000u32, 0x00040020u32, 0x00000090u32, 0x00000000u32,
+  0x0000008eu32, 0x0002001au32, 0x00000092u32, 0x00040020u32, 0x00000094u32, 0x00000000u32,
+  0x00000092u32, 0x0003001bu32, 0x00000096u32, 0x0000008eu32, 0x0004002bu32, 0x00000006u32,
+  0x000000b1u32, 0x40000000u32, 0x0004002bu32, 0x00000006u32, 0x000000b4u32, 0x3f000000u32,
+  0x0004003bu32, 0x00000012u32, 0x00000013u32, 0x00000001u32, 0x0004003bu32, 0x0000001cu32,
+  0x0000001du32, 0x0000000cu32, 0x0004003bu32, 0x00000025u32, 0x00000026u32, 0x00000001u32,
+  0x0004003bu32, 0x0000002du32, 0x0000002eu32, 0x00000002u32, 0x0004003bu32, 0x00000025u32,
+  0x0000003cu32, 0x00000001u32, 0x0004003bu32, 0x00000064u32, 0x00000065u32, 0x00000001u32,
+  0x0004003bu32, 0x00000069u32, 0x0000006au32, 0x00000003u32, 0x0004003bu32, 0x0000006du32,
+  0x0000006eu32, 0x00000003u32, 0x0004003bu32, 0x0000006du32, 0x00000071u32, 0x00000003u32,
+  0x0004003bu32, 0x00000074u32, 0x00000075u32, 0x00000003u32, 0x0004003bu32, 0x0000007fu32,
+  0x00000080u32, 0x00000002u32, 0x0004003bu32, 0x00000064u32, 0x0000008du32, 0x00000001u32,
+  0x0004003bu32, 0x00000090u32, 0x00000091u32, 0x00000000u32, 0x0004003bu32, 0x00000094u32,
+  0x00000095u32, 0x00000000u32, 0x0004003bu32, 0x00000025u32, 0x000000a3u32, 0x00000001u32,
+  0x0004003bu32, 0x00000025u32, 0x000000a6u32, 0x00000001u32, 0x0004003bu32, 0x00000069u32,
+  0x000000bau32, 0x00000003u32, 0x0006002cu32, 0x00000008u32, 0x000000e5u32, 0x000000b4u32,
+  0x000000b4u32, 0x000000b4u32, 0x0004002bu32, 0x00000014u32, 0x000000e7u32, 0x00000000u32,
+  0x00040020u32, 0x000000e8u32, 0x0000000cu32, 0x0000000du32, 0x00050036u32, 0x00000001u32,
+  0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000004u32, 0x0004003du32,
+  0x00000010u32, 0x00000011u32, 0x00000013u32, 0x0004007cu32, 0x00000014u32, 0x00000015u32,
+  0x00000011u32, 0x00060041u32, 0x00000018u32, 0x00000019u32, 0x0000001du32, 0x00000016u32,
+  0x00000015u32, 0x00050041u32, 0x000000e8u32, 0x000000e9u32, 0x00000019u32, 0x000000e7u32,
+  0x0004003du32, 0x0000000du32, 0x000000eau32, 0x000000e9u32, 0x0004003du32, 0x00000008u32,
+  0x00000024u32, 0x00000026u32, 0x00050050u32, 0x00000007u32, 0x00000027u32, 0x00000024u32,
+  0x00000028u32, 0x00050090u32, 0x00000007u32, 0x00000029u32, 0x00000027u32, 0x000000eau32,
+  0x00050041u32, 0x0000002fu32, 0x00000030u32, 0x0000002eu32, 0x00000016u32, 0x0004003du32,
+  0x0000000du32, 0x00000031u32, 0x00000030u32, 0x00050090u32, 0x00000007u32, 0x00000032u32,
+  0x00000029u32, 0x00000031u32, 0x0008004fu32, 0x00000008u32, 0x00000037u32, 0x00000029u32,
+  0x00000029u32, 0x00000000u32, 0x00000001u32, 0x00000002u32, 0x0004003du32, 0x00000008u32,
+  0x0000003bu32, 0x0000003cu32, 0x00050051u32, 0x00000007u32, 0x000000bfu32, 0x000000eau32,
+  0x00000000u32, 0x00050051u32, 0x00000006u32, 0x000000c0u32, 0x000000bfu32, 0x00000000u32,
+  0x00050051u32, 0x00000007u32, 0x000000c1u32, 0x000000eau32, 0x00000001u32, 0x00050051u32,
+  0x00000006u32, 0x000000c2u32, 0x000000c1u32, 0x00000000u32, 0x00050051u32, 0x00000007u32,
+  0x000000c3u32, 0x000000eau32, 0x00000002u32, 0x00050051u32, 0x00000006u32, 0x000000c4u32,
+  0x000000c3u32, 0x00000000u32, 0x00060050u32, 0x00000008u32, 0x000000c5u32, 0x000000c0u32,
+  0x000000c2u32, 0x000000c4u32, 0x00050051u32, 0x00000006u32, 0x000000c6u32, 0x000000bfu32,
+  0x00000001u32, 0x00050051u32, 0x00000006u32, 0x000000c7u32, 0x000000c1u32, 0x00000001u32,
+  0x00050051u32, 0x00000006u32, 0x000000c8u32, 0x000000c3u32, 0x00000001u32, 0x00060050u32,
+  0x00000008u32, 0x000000c9u32, 0x000000c6u32, 0x000000c7u32, 0x000000c8u32, 0x00050051u32,
+  0x00000006u32, 0x000000cau32, 0x000000bfu32, 0x00000002u32, 0x00050051u32, 0x00000006u32,
+  0x000000cbu32, 0x000000c1u32, 0x00000002u32, 0x00050051u32, 0x00000006u32, 0x000000ccu32,
+  0x000000c3u32, 0x00000002u32, 0x00060050u32, 0x00000008u32, 0x000000cdu32, 0x000000cau32,
+  0x000000cbu32, 0x000000ccu32, 0x0007000cu32, 0x00000008u32, 0x000000ceu32, 0x00000053u32,
+  0x00000044u32, 0x000000c9u32, 0x000000cdu32, 0x00050051u32, 0x00000006u32, 0x000000cfu32,
+  0x0000003bu32, 0x00000000u32, 0x0005008eu32, 0x00000008u32, 0x000000d0u32, 0x000000ceu32,
+  0x000000cfu32, 0x0007000cu32, 0x00000008u32, 0x000000d1u32, 0x00000053u32, 0x00000044u32,
+  0x000000cdu32, 0x000000c5u32, 0x00050051u32, 0x00000006u32, 0x000000d2u32, 0x0000003bu32,
+  0x00000001u32, 0x0005008eu32, 0x00000008u32, 0x000000d3u32, 0x000000d1u32, 0x000000d2u32,
+  0x00050081u32, 0x00000008u32, 0x000000d4u32, 0x000000d0u32, 0x000000d3u32, 0x0007000cu32,
+  0x00000008u32, 0x000000d5u32, 0x00000053u32, 0x00000044u32, 0x000000c5u32, 0x000000c9u32,
+  0x00050051u32, 0x00000006u32, 0x000000d6u32, 0x0000003bu32, 0x00000002u32, 0x0005008eu32,
+  0x00000008u32, 0x000000d7u32, 0x000000d5u32, 0x000000d6u32, 0x00050081u32, 0x00000008u32,
+  0x000000d8u32, 0x000000d4u32, 0x000000d7u32, 0x0004003du32, 0x00000009u32, 0x00000063u32,
+  0x00000065u32, 0x0003003eu32, 0x0000006au32, 0x00000032u32, 0x0003003eu32, 0x0000006eu32,
+  0x00000037u32, 0x0003003eu32, 0x00000071u32, 0x000000d8u32, 0x0003003eu32, 0x00000075u32,
+  0x00000063u32, 0x000100fdu32, 0x00010038u32, 0x00050036u32, 0x00000001u32, 0x00000078u32,
+  0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000079u32, 0x00050041u32, 0x00000081u32,
+  0x00000082u32, 0x00000080u32, 0x00000034u32, 0x0004003du32, 0x00000007u32, 0x00000083u32,
+  0x00000082u32, 0x00050051u32, 0x00000006u32, 0x00000084u32, 0x00000083u32, 0x00000003u32,
+  0x000500bau32, 0x00000085u32, 0x00000086u32, 0x00000084u32, 0x00000087u32, 0x000300f7u32,
+  0x0000007du32, 0x00000000u32, 0x000400fau32, 0x00000086u32, 0x0000007au32, 0x0000007du32,
+  0x000200f8u32, 0x0000007au32, 0x00050041u32, 0x00000081u32, 0x00000089u32, 0x00000080u32,
+  0x00000039u32, 0x0004003du32, 0x00000007u32, 0x0000008au32, 0x00000089u32, 0x00050051u32,
+  0x00000006u32, 0x0000008bu32, 0x0000008au32, 0x00000000u32, 0x0004003du32, 0x00000009u32,
+  0x0000008cu32, 0x0000008du32, 0x0004003du32, 0x0000008eu32, 0x0000008fu32, 0x00000091u32,
+  0x0004003du32, 0x00000092u32, 0x00000093u32, 0x00000095u32, 0x00050056u32, 0x00000096u32,
+  0x00000097u32, 0x0000008fu32, 0x00000093u32, 0x00060057u32, 0x00000007u32, 0x00000098u32,
+  0x00000097u32, 0x0000008cu32, 0x00000000u32, 0x00050051u32, 0x00000006u32, 0x0000009au32,
+  0x00000098u32, 0x00000003u32, 0x00050085u32, 0x00000006u32, 0x0000009bu32, 0x0000008bu32,
+  0x0000009au32, 0x0004003du32, 0x00000007u32, 0x0000009cu32, 0x00000082u32, 0x00050051u32,
+  0x00000006u32, 0x0000009du32, 0x0000009cu32, 0x00000003u32, 0x000500b8u32, 0x00000085u32,
+  0x0000009eu32, 0x0000009bu32, 0x0000009du32, 0x000300f7u32, 0x0000007cu32, 0x00000000u32,
+  0x000400fau32, 0x0000009eu32, 0x0000007bu32, 0x0000007cu32, 0x000200f8u32, 0x0000007bu32,
+  0x000100fcu32, 0x000200f8u32, 0x0000007cu32, 0x000200f9u32, 0x0000007du32, 0x000200f8u32,
+  0x0000007du32, 0x0004003du32, 0x00000008u32, 0x000000a2u32, 0x000000a3u32, 0x0006000cu32,
+  0x00000008u32, 0x000000a4u32, 0x00000053u32, 0x00000045u32, 0x000000a2u32, 0x0004003du32,
+  0x00000008u32, 0x000000a5u32, 0x000000a6u32, 0x00050041u32, 0x00000081u32, 0x000000a7u32,
+  0x00000080u32, 0x00000016u32, 0x0004003du32, 0x00000007u32, 0x000000a8u32, 0x000000a7u32,
+  0x0008004fu32, 0x00000008u32, 0x000000a9u32, 0x000000a8u32, 0x000000a8u32, 0x00000000u32,
+  0x00000001u32, 0x00000002u32, 0x00050083u32, 0x00000008u32, 0x000000aau32, 0x000000a5u32,
+  0x000000a9u32, 0x0004003du32, 0x00000007u32, 0x000000abu32, 0x00000082u32, 0x0008004fu32,
+  0x00000008u32, 0x000000acu32, 0x000000abu32, 0x000000abu32, 0x00000000u32, 0x00000001u32,
+  0x00000002u32, 0x00050094u32, 0x00000006u32, 0x000000adu32, 0x000000aau32, 0x000000acu32,
+  0x0004003du32, 0x00000007u32, 0x000000aeu32, 0x000000a7u32, 0x00050051u32, 0x00000006u32,
+  0x000000afu32, 0x000000aeu32, 0x00000003u32, 0x00050085u32, 0x00000006u32, 0x000000b0u32,
+  0x000000b1u32, 0x000000afu32, 0x00050088u32, 0x00000006u32, 0x000000b2u32, 0x000000adu32,
+  0x000000b0u32, 0x00050081u32, 0x00000006u32, 0x000000b3u32, 0x000000b2u32, 0x000000b4u32,
+  0x0008000cu32, 0x00000006u32, 0x000000b5u32, 0x00000053u32, 0x0000002bu32, 0x000000b3u32,
+  0x00000087u32, 0x00000028u32, 0x0005008eu32, 0x00000008u32, 0x000000b6u32, 0x000000a4u32,
+  0x000000b4u32, 0x00050081u32, 0x00000008u32, 0x000000b8u32, 0x000000b6u32, 0x000000e5u32,
+  0x00050050u32, 0x00000007u32, 0x000000b9u32, 0x000000b8u32, 0x000000b5u32, 0x0003003eu32,
+  0x000000bau32, 0x000000b9u32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

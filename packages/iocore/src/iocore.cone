@@ -79,8 +79,9 @@
 //     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
-//   IoError: e.code, e.message(), e.kind() (IoErrorKind: Os, Cancelled, TimedOut),
-//     e.isCancelled() e.isTimedOut()  IoError.cancelled()  IoError.timedOut()
+//   IoError: e.code, e.message(), e.kind() (IoErrorKind: Os, Cancelled, TimedOut, Truncated),
+//     e.isCancelled() e.isTimedOut() e.isTruncated()
+//     IoError.cancelled()  IoError.timedOut()  IoError.truncated()
 //
 // THE LOOP. A Loop is driven by one thread: that thread submits to it and
 // polls it. It is a resource: when it dies it cancels every operation still
@@ -474,21 +475,29 @@ pub struct Handle {
 }
 
 // How an IoError came to be: the system failed (Os, the default), or the
-// operation was ended by a cancel (Cancelled) or by its deadline (TimedOut)
+// operation was ended by a cancel (Cancelled) or by its deadline (TimedOut),
+// or a received datagram was longer than the room that took it (Truncated)
 pub enum IoErrorKind {
   Os,
   Cancelled,
-  TimedOut;
+  TimedOut,
+  Truncated;
 }
 
 // Why something could not be done: for an Os error, Windows' error number, on
 // every system (Linux's errno is turned into the Windows number that names the
 // same condition, or, with none, is itself above 0x10000000). A Cancelled or
 // TimedOut error is no system's failure: its code is 0 and its kind says what
-// it is. 'new IoError(code)' is an Os error
+// it is. A Truncated error is the system's failure with a kind of its own, so
+// that it can be told from the rest: a datagram cut to the room of the buffer
+// that took it, WSAEMSGSIZE, 10040, its code. 'new IoError(code)' is an Os
+// error
 pub struct IoError {
   pub code u32;
   cause IoErrorKind = IoErrorKind.Os;
+
+  // A received datagram cut to its buffer's room (code 10040, WSAEMSGSIZE)
+  pub fn truncated() IoError {new IoError(10040u32, IoErrorKind.Truncated);}
 
   // An operation ended by a cancel
   pub fn cancelled() IoError {new IoError(0u32, IoErrorKind.Cancelled);}
@@ -504,6 +513,9 @@ pub struct IoError {
 
   // Ended by its deadline
   pub fn isTimedOut(self &) bool {cause == IoErrorKind.TimedOut;}
+
+  // A datagram longer than the room that took it
+  pub fn isTruncated(self &) bool {cause == IoErrorKind.Truncated;}
 
   // The OS's text for it: Windows' in English where the system has it, the
   // C library's (strerror) on Linux; a Cancelled or TimedOut error says so

@@ -42,6 +42,8 @@ pub struct GpuMesh {
   pub joints Buffer;               // a skinned mesh's joints, four bytes a vertex; none otherwise
   pub weights Buffer;              // and their weights
   pub sway Buffer;                 // a mesh with colors: them, as flutter's per-leaf data; none otherwise
+  pub tangents Buffer;             // a mesh with tangents: each a float4 (xyz along u, w the handedness), the extended
+                                   // material's anisotropy follows them; none otherwise
   // Half the size of its bounding box along each axis, about 'center'
   // (visibility.cone culls by the box, which is tighter than the sphere)
   pub half Vec3;
@@ -50,7 +52,7 @@ pub struct GpuMesh {
   pub fn none() GpuMesh {
     new GpuMesh(Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none(), 0u32, 0u32, List[Group].empty(),
       PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0., Buffer.none(), Buffer.none(), Buffer.none(),
-      new Vec3(0., 0., 0.));
+      Buffer.none(), new Vec3(0., 0., 0.));
   }
 
   pub fn isValid(self &) bool { positions.isValid() and indices.isValid() and indexCount > 0u32; }
@@ -68,6 +70,7 @@ pub struct GpuMesh {
     if joints.isValid() { n = n + joints.size; }
     if weights.isValid() { n = n + weights.size; }
     if sway.isValid() { n = n + sway.size; }
+    if tangents.isValid() { n = n + tangents.size; }
     n;
   }
 
@@ -81,6 +84,7 @@ pub struct GpuMesh {
     queue.releaseBuffer(&mut joints);
     queue.releaseBuffer(&mut weights);
     queue.releaseBuffer(&mut sway);
+    queue.releaseBuffer(&mut tangents);
     vertexCount = 0u32;
     indexCount = 0u32;
     groups.clear();
@@ -157,6 +161,9 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
   }
   if m.colors.len() == n {
     g.sway = filledBuffer(device, bytesOf[Color](&m.colors), u64.from(n) * 16u64, BUFFER_USAGE_VERTEX);
+  }
+  if m.tangents.len() == n {
+    g.tangents = filledBuffer(device, bytesOf[Vec4](&m.tangents), u64.from(n) * 16u64, BUFFER_USAGE_VERTEX);
   }
   g.indices = filledBuffer(device, bytesOf[u32](&m.indices), u64.from(g.indexCount) * 4u64, BUFFER_USAGE_INDEX);
   if m.groups.len() == 0usize {
@@ -256,14 +263,21 @@ pub struct MeshHandle {
 // past its threshold by the fraction 'hysteresis', and to a coarser one only
 // once it is short of its own threshold by that fraction, so an object
 // resting near a threshold does not flicker between two.
+//
+// A level may carry a MATERIAL of its own ('addWithMaterial', 'materials'): the
+// scene (visibility.cone) then draws the level with it instead of the item's.
+// A level that is not a lesser copy of the mesh but another kind of thing, an
+// octahedral impostor card (autolod), needs another shader. A level with no
+// material of its own holds MaterialHandle.none() and uses the item's.
 pub struct LodChain {
   pub levels List[MeshHandle];
   pub minSizes List[f32];
   pub hysteresis f32;
   pub current usize;
+  pub materials List[MaterialHandle];   // one a level, parallel to 'levels'; none: the item's
 
   pub fn empty(hysteresis f32) LodChain {
-    new LodChain(List[MeshHandle].empty(), List[f32].empty(), hysteresis, 0usize);
+    new LodChain(List[MeshHandle].empty(), List[f32].empty(), hysteresis, 0usize, List[MaterialHandle].empty());
   }
 
   // Add the next, coarser, level: drawn while the object is at least
@@ -272,6 +286,33 @@ pub struct LodChain {
   pub fn add(self &mut, mesh MeshHandle, minSize f32) {
     levels.push(mesh);
     minSizes.push(minSize);
+    materials.push(MaterialHandle.none());
+  }
+
+  // The same, the level drawn with 'material' instead of the item's (an
+  // impostor card's own, say)
+  pub fn addWithMaterial(self &mut, mesh MeshHandle, material MaterialHandle, minSize f32) {
+    levels.push(mesh);
+    minSizes.push(minSize);
+    materials.push(material);
+  }
+
+  // The material of level 'index': its own, or none (the item's)
+  pub fn materialOf(self &, index usize) MaterialHandle {
+    if index < materials.len() { return *materials[index]; }
+    MaterialHandle.none();
+  }
+
+  // The last level, from 'from' towards the finest, that has no material of
+  // its own: what a shadow pass draws when the level chosen has one (a card
+  // casts no shadow)
+  pub fn lastPlainLevel(self &, from usize) usize {
+    mut k = from;
+    if k >= levels.len() { k = levels.len() - 1usize; }
+    while k > 0usize and !self.materialOf(k).isNone() {
+      k = k - 1usize;
+    }
+    k;
   }
 
   pub fn len(self &) usize { levels.len(); }

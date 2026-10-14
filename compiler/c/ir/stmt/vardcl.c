@@ -599,7 +599,8 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             if (why)
                 errorMsgNode(name->value, whycode, "%s", why);
             else
-                errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+                errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type%s",
+                    iexpImmBorrowHint(name->value, name->vtype));
         }
         else if (name->vtype == unknownType) {
             // A local of the type its initializer has, a '&uni' reference held

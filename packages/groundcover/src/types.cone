@@ -1,0 +1,244 @@
+// ======== Cover types: what grows where, as data ========
+//
+// A COVER TYPE is a description, never code: the kind of thing it is (grass
+// tufts, flowers, a ground-hugging patch of moss, fallen leaves, any mesh), how
+// dense it is, which ground it likes (a WINDOW on each of eight SIGNALS the
+// ground is measured by), how it clumps, how big and what colour it is and
+// how the wind moves it, how far it is drawn and how it thins with distance,
+// and which other types it gives way to (INTERACTIONS). Everything else is
+// the library's one mechanism, the same for every type: place.cone (the CPU's
+// copy, which tests pin) and cover.slang (the GPU's, which generates the
+// instances every frame) evaluate the rules identically.
+//
+// THE RULE. A type's SCORE at a point is a number from 0 up to 1:
+//
+//   score = product over the eight signals of window(signal)
+//         x (patchFloor + (1 - patchFloor) x patch)       the large-scale noise gate
+//         x product over interactions of (1 - strength x occupancy)
+//
+// A window is a trapezoid with smooth ramps: it rises from 0 at 'a' to 1 at
+// 'b' (a smoothstep), stays 1 to 'c' and falls to 0 at 'd'. A type that does
+// not care about a signal leaves its window open (Window.any).
+
+// The signals the ground is measured by, in the order the maps hold them and
+// the windows are held in
+pub const SIGNAL_HEIGHT = 0usize;       // metres above the datum
+pub const SIGNAL_SLOPE = 1usize;        // degrees from flat
+pub const SIGNAL_MOISTURE = 2usize;     // 0 (dry) to 1 (wet)
+pub const SIGNAL_EXPOSURE = 3usize;     // 0 (deep shade) to 1 (full sun)
+pub const SIGNAL_PATH = 4usize;         // metres to the nearest footpath
+pub const SIGNAL_WATER = 5usize;        // metres to the nearest water
+pub const SIGNAL_CANOPY = 6usize;       // 0 (open sky) to 1 (under trees)
+pub const SIGNAL_OBJECT = 7usize;       // metres to the nearest object (a boulder, a trunk, a wall)
+pub const SIGNALS = 8usize;
+
+// What a type is drawn as
+pub const KIND_BLADES = 0u32;     // a tuft of grass blades, bending in the wind
+pub const KIND_FLOWER = 1u32;     // a stem with a head of petals
+pub const KIND_PATCH = 2u32;      // a ground-hugging blob that follows the terrain (moss, clover, bare earth)
+pub const KIND_LITTER = 3u32;     // single flat leaves on the ground
+pub const KIND_MESH = 4u32;       // any mesh (ferns, pebbles, fallen branches, shrubs), placed on the ground
+
+// How an interaction reads the type it names
+pub const NEAR = 0u32;            // the type's INSTANCES within 'radius' push this one away (a shrub clears the grass round it)
+pub const SHARE = 1u32;           // the type's SCORE where this one stands pushes it away (flowers take their share of the meadow)
+
+pub const MAX_TYPES = 12usize;
+pub const MAX_RINGS = 3usize;
+pub const MAX_INTERACTIONS = 4usize;
+pub const MAX_PER_CLUSTER = 16u32;
+
+const OPEN f32 = 1000000000.;
+
+// A trapezoid of a signal: 0 below 'a', rising smoothly to 1 at 'b', 1 to 'c',
+// falling smoothly to 0 at 'd'
+pub struct Window {
+  pub a f32;
+  pub b f32;
+  pub c f32;
+  pub d f32;
+
+  // No opinion: 1 everywhere
+  pub fn any() Window { new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN); }
+
+  // 1 from 'lo' to 'hi', falling to 0 over 'soft' beyond each end
+  pub fn between(lo f32, hi f32, soft f32) Window { new Window(lo - soft, lo, hi, hi + soft); }
+
+  // 1 from 'lo' up, rising from 0 over 'soft' below it
+  pub fn atLeast(lo f32, soft f32) Window { new Window(lo - soft, lo, OPEN, OPEN); }
+
+  // 1 up to 'hi', falling to 0 over 'soft' above it
+  pub fn atMost(hi f32, soft f32) Window { new Window(0. - OPEN, 0. - OPEN, hi, hi + soft); }
+
+  // 0 up to 'zeroAt', rising to 1 at 'fullAt': what keeps cover off something (a path's
+  // edge, the water's) and lets it grow in towards it over a distance
+  pub fn rising(zeroAt f32, fullAt f32) Window { new Window(zeroAt, fullAt, OPEN, OPEN); }
+
+  // 1 up to 'fullAt', falling to 0 at 'zeroAt'
+  pub fn falling(fullAt f32, zeroAt f32) Window { new Window(0. - OPEN, 0. - OPEN, fullAt, zeroAt); }
+}
+
+// A type's relation to another, which must come earlier in the list
+pub struct Interaction {
+  pub other u32;                   // the index of the type, lower than this one's
+  pub kind u32;                    // NEAR or SHARE
+  pub radius f32;                  // NEAR: how far (metres); the push is full at the instance and fades to 0 here
+  pub strength f32;                // 0 to 1: how much of this type is taken away at full push
+}
+
+// One cover type
+pub struct CoverType {
+  pub name String;
+  pub kind u32;
+  pub seed u32 = 1u32;                     // seeds this type apart from the others
+
+  // ---- Where and how many ----
+  pub density f32 = 1.;                    // instances a square metre at score 1
+  pub perCluster u32 = 1u32;               // instances in a cluster (1 to MAX_PER_CLUSTER): a drift of flowers, a stand of reeds
+  pub clusterRadius f32 = 0.;              // how far a cluster's members spread (metres, a Gaussian cut at it)
+  pub cellFactor f32 = 0.5;                // the placement lattice's cell as a fraction of the spacing: smaller is more random (Poisson-like), 1 a jittered grid
+  pub height Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub slope Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub moisture Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub exposure Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub path Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub water Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub canopy Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub object Window = new Window(0. - OPEN, 0. - OPEN, OPEN, OPEN);
+  pub patchScale f32 = 0.;                 // metres across a patch of the large-scale noise; 0: no gate
+  pub patchThreshold f32 = 0.5;            // the noise value at which the gate is half open
+  pub patchSoftness f32 = 0.15;            // half the width of the gate's ramp
+  pub patchFloor f32 = 0.;                 // what is left of the score where the gate is shut
+  pub interactions List[Interaction];
+
+  // ---- What it looks like ----
+  pub sizeMin f32 = 0.3;                   // height (blades, flowers, litter: its length), metres
+  pub sizeMax f32 = 0.5;
+  pub sizeNoise f32 = 0.3;                 // how much the patch noise grows or stunts it (fraction of its size)
+  pub widthMin f32 = 0.012;                // blade width; a flower head's, a patch's or a leaf's radius
+  pub widthMax f32 = 0.018;
+  pub lean f32 = 0.3;                      // the most it leans over from upright, radians
+  pub bend f32 = 0.5;                      // how far a blade or stem curves over (fraction of its height)
+  pub baseColor Color = new Color(0.08, 0.2, 0.03, 1.);    // at the root (linear)
+  pub tipColor Color = new Color(0.35, 0.5, 0.12, 1.);     // at the tip
+  pub altColor Color = new Color(0.45, 0.4, 0.1, 1.);      // what the per-instance variation shifts toward
+  pub variation f32 = 0.35;                // how far (0 to 1) each instance moves toward altColor
+  pub dryColor Color = new Color(0.55, 0.5, 0.2, 1.);      // what dry patches shift toward
+  pub dryAmount f32 = 0.25;                // how far dry patches shift
+  pub translucency f32 = 0.5;              // light coming through a blade or a petal from behind
+  pub wind f32 = 1.;                       // how far the wind bends it (1: grass)
+  pub flower Color = new Color(1., 1., 1., 1.);            // a flower head's petals
+  pub flowerCenter Color = new Color(1., 0.8, 0.1, 1.);    // and its middle
+  pub petals u32 = 5u32;                   // how many
+  pub bladesPerTuft u32 = 12u32;           // blades in a tuft (ring 0; the outer rings use fewer)
+  pub alignment f32 = 0.;                  // MESH: how far it stands along the ground's normal rather than up (0 to 1)
+  pub sink f32 = 0.;                       // MESH: how much of its height is below ground
+  pub meshes Array[i32, 3] = [0i32 - 1i32, 0i32 - 1i32, 0i32 - 1i32];    // MESH: the registered mesh for each ring
+  pub albedoNoise f32 = 0.;                // MESH: speckle in the colour
+
+  // ---- How far, and how it thins ----
+  pub range f32 = 60.;                     // not drawn beyond it
+  pub fadeStart f32 = 45.;                 // the last ring thins out from here to 'range'
+  pub rings u32 = 1u32;                    // 1 to 3: rings of coarser cells farther out, each with fewer, bigger tufts
+  pub ringEnd Array[f32, 3] = [15., 40., 60.];    // each ring's outer radius (the last is set to 'range')
+  pub ringStep f32 = 1.8;                  // how much coarser the cells get with each ring
+  pub maxInstances u32 = 100000u32;        // the most it keeps for each ring
+  pub farWeight f32 = 0.;                  // how much of the ground it covers, seen from afar, at score 1: its share of the far-field colour
+
+  // A tuft of grass: green blades that bend in the wind, drawn to 60 m
+  pub fn grass(name &str) CoverType {
+    new CoverType(name: String.from(name), kind: KIND_BLADES, density: 40., farWeight: 0.9, interactions: List[Interaction].empty());
+  }
+
+  // A flower on a stem
+  pub fn flowerKind(name &str) CoverType {
+    new CoverType(name: String.from(name), kind: KIND_FLOWER, density: 2., sizeMin: 0.3, sizeMax: 0.5, widthMin: 0.025,
+      widthMax: 0.04, lean: 0.25, bend: 0.25, wind: 0.6, range: 40., fadeStart: 30., farWeight: 0.04,
+      interactions: List[Interaction].empty());
+  }
+
+  // A ground-hugging patch (moss, clover, bare earth)
+  pub fn patchKind(name &str) CoverType {
+    new CoverType(name: String.from(name), kind: KIND_PATCH, density: 0.15, sizeMin: 0.01, sizeMax: 0.02, widthMin: 0.25,
+      widthMax: 0.7, wind: 0., range: 40., fadeStart: 28., farWeight: 0.6, interactions: List[Interaction].empty());
+  }
+
+  // Fallen leaves
+  pub fn litterKind(name &str) CoverType {
+    new CoverType(name: String.from(name), kind: KIND_LITTER, density: 20., sizeMin: 0.06, sizeMax: 0.12, widthMin: 0.03,
+      widthMax: 0.05, lean: 0.15, wind: 0., range: 25., fadeStart: 18., farWeight: 0.3, interactions: List[Interaction].empty());
+  }
+
+  // Any mesh, placed on the ground
+  pub fn meshKind(name &str) CoverType {
+    new CoverType(name: String.from(name), kind: KIND_MESH, density: 0.5, sizeMin: 1., sizeMax: 1., sizeNoise: 0.,
+      widthMin: 1., widthMax: 1., lean: 0.1, wind: 0., range: 50., fadeStart: 40., interactions: List[Interaction].empty());
+  }
+
+  // Give way to type 'other' (an earlier one): see Interaction
+  pub fn avoid(self &mut, other u32, kind u32, radius f32, strength f32) {
+    interactions.push(new Interaction(other, kind, radius, strength));
+  }
+
+  // The window of signal 's' (SIGNAL_...)
+  pub fn windowOf(self &, s usize) Window {
+    if s == SIGNAL_HEIGHT { return height; }
+    if s == SIGNAL_SLOPE { return slope; }
+    if s == SIGNAL_MOISTURE { return moisture; }
+    if s == SIGNAL_EXPOSURE { return exposure; }
+    if s == SIGNAL_PATH { return path; }
+    if s == SIGNAL_WATER { return water; }
+    if s == SIGNAL_CANOPY { return canopy; }
+    object;
+  }
+
+  // The cell of the placement lattice in ring 0, metres
+  pub fn cellSize(self &) f32 {
+    imm spacing = (f32.from(perCluster) / density).sqrt();
+    spacing * cellFactor;
+  }
+}
+
+// The radius at which ring 'k' ends (the last ring ends at the range)
+pub fn ringOuter(t &CoverType, k usize) f32 {
+  if u32.from(k) + 1u32 >= t.rings { return t.range; }
+  t.ringEnd[k];
+}
+
+// Whether the list of types is a valid world's, and if not, why (empty: valid):
+// a count within MAX_TYPES, a density above 0, clusters within bounds, each
+// interaction naming an earlier type, a NEAR source that has no interactions
+// of its own and one ring, rings ascending
+pub fn problems(types &List[CoverType]) List[String] {
+  mut out = List[String].empty();
+  if types.len() > MAX_TYPES { out.push(String.from("more types than MAX_TYPES")); }
+  mut i = 0usize;
+  while i < types.len() {
+    imm t = types[i];
+    if t.density <= 0. { out.push(String.from("a density must be above 0")); }
+    if t.perCluster < 1u32 or t.perCluster > MAX_PER_CLUSTER { out.push(String.from("perCluster must be 1 to 16")); }
+    if t.rings < 1u32 or t.rings > u32.from(MAX_RINGS) { out.push(String.from("rings must be 1 to 3")); }
+    if t.cellFactor <= 0. or t.cellFactor > 1. { out.push(String.from("cellFactor must be above 0 and at most 1")); }
+    if t.fadeStart >= t.range { out.push(String.from("fadeStart must be below range")); }
+    if t.interactions.len() > MAX_INTERACTIONS { out.push(String.from("more interactions than MAX_INTERACTIONS")); }
+    mut k = 0usize;
+    while k < t.interactions.len() {
+      imm ia = t.interactions[k];
+      if usize.from(ia.other) >= i { out.push(String.from("an interaction must name an earlier type")); }
+      elif ia.kind == NEAR {
+        imm src = types[usize.from(ia.other)];
+        if src.interactions.len() > 0usize { out.push(String.from("a NEAR source may have no interactions of its own")); }
+        // (a MESH type's rings are levels of detail of one lattice: its instances do not depend on the ring)
+        if src.rings != 1u32 and src.kind != KIND_MESH { out.push(String.from("a NEAR source must have one ring, or be a MESH type")); }
+      }
+      k = k + 1usize;
+    }
+    mut r = 0usize;
+    while r + 1usize < usize.from(t.rings) {
+      if ringOuter(t, r + 1usize) <= ringOuter(t, r) { out.push(String.from("ring radii must ascend")); }
+      r = r + 1usize;
+    }
+    i = i + 1usize;
+  }
+  out;
+}

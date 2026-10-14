@@ -108,8 +108,9 @@ fn main() {
 		<span class="pre">connect</span> give a <span class="pre">Result[BoundEndpoint, IoError]</span> instead of a panic when the socket
 		cannot be bound.</li>
 	<li><span class="pre">endpoint.shutdown()</span> closes every connection (each tells its peer), sends what is queued, and
-		stops the socket's thread. Call it before the program ends: that thread sends messages, which must stop before the
-		actors' runtime does. <span class="pre">endpoint.connections()</span> answers how many connections are open.</li>
+		closes the socket. Call it before the program ends; a program that ends in the very instant it calls it may lose
+		the disconnect datagrams (an actor paused on I/O does not hold the program open), and the peers then time out.
+		<span class="pre">endpoint.connections()</span> answers how many connections are open.</li>
 	</ul>
 
 	<h2 id="connection">A connection</h2>
@@ -157,7 +158,7 @@ fn main() {
 		<span class="pre">duplicatePermille</span>, <span class="pre">reorderPermille</span> and <span class="pre">reorderMs</span> (a
 		packet held back this long, so later ones pass it). <span class="pre">LinkConfig.perfect()</span> does nothing;
 		<span class="pre">LinkConfig.lossy(loss, latency, jitter)</span> loses, delays and jitters.</p>
-	<p><span class="pre">startLossyRelay(server, toServer, toClient, seed)</span> does the same to real sockets: a thread that takes
+	<p><span class="pre">startLossyRelay(server, toServer, toClient, seed)</span> does the same to real sockets: an actor that takes
 		datagrams from clients on a port of its own (<span class="pre">relay.port</span>, on 127.0.0.1) and passes them to the
 		server, and the server's answers back, through a <span class="pre">LinkSim</span> each way for each client. A client that
 		connects to the relay's port meets loss, delay, duplication and reordering with the real protocol on real UDP.
@@ -260,17 +261,19 @@ while ms &lt; 3000i64 {
 </pre>
 	<p>The wire level is public too (<span class="pre">putU16</span> and the rest, <span class="pre">PacketReader</span>,
 		<span class="pre">seqNewer</span>, <span class="pre">sipHash24</span>), and so are the actors a socket needs:
-		<span class="pre">Endpoint</span> owns the socket's thread and routes each datagram to the
-		<span class="pre">Connection</span> it belongs to, and <span class="pre">PumpOutbox</span> and <span class="pre">PumpCommand</span> are how
-		the actors reach that thread. None of them is for an application to use.</p>
+		<span class="pre">Endpoint</span> owns the socket and routes each datagram to the
+		<span class="pre">Connection</span> it belongs to, sending each connection's packets through the socket. An application
+		reaches its endpoint through <span class="pre">listen</span> and <span class="pre">connect</span> and uses only <span class="pre">shutdown</span>.</p>
 
 	<h2 id="threads">What runs where</h2>
-	<p>A UDP endpoint has a thread of its own, running an <span class="pre">iocore</span> Loop: it receives datagrams and
-		hands each to the endpoint actor as a message, sends the datagrams connections give it, and wakes the endpoint at
-		the earliest deadline any connection has (there is no fixed tick). Each connection is an actor that drives its
-		<span class="pre">ConnectionCore</span>. Nothing waits in an actor. On Windows the loop is an I/O completion port, on Linux epoll;
-		<span class="pre">netmsg</span> binds no operating system call of its own. (<span class="pre">aio</span>, which lets an
-		actor await an operation, has no datagrams yet; the socket thread is what stands in for it.)</p>
+	<p>A UDP endpoint is an actor holding an <span class="pre">aio</span> <span class="pre">UdpSocket</span>, so it needs no thread
+		of its own (every <span class="pre">aio</span> user in the program shares one I/O thread): a behaviour of the endpoint awaits
+		each datagram in turn and handles it, sends the datagrams connections give it, and sleeps until the earliest
+		deadline any connection has, to tick the ones that are due (aio's sleep; it never waits on a worker thread,
+		and there is no fixed tick). Each connection is an actor that drives its
+		<span class="pre">ConnectionCore</span>. Nothing waits in an actor. On Windows the I/O thread's loop is an I/O completion port, on Linux epoll;
+		<span class="pre">netmsg</span> binds no operating system call of its own. The events still reach the application through
+		one closure shared by every connection (under a lock), since actors cannot yet be generic.</p>
 
 	<p style="text-align: right; margin-top: 2em;"><a href="refstdtest.html"><img alt="_" src="next.png" /></a></p>
     </div>

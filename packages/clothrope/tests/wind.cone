@@ -1,0 +1,148 @@
+// The wind field and the soft body that reads it.
+//
+//   pure       the field is a function of position and time: two reads are the same bits
+//   frozen     with no evolution, gusts are carried by the mean wind (Taylor's frozen
+//              turbulence): the wind at p + mean * dt at time t + dt is the wind at p at t,
+//              within 1e-3 m/s, for gusts and for swirl
+//   swirl      the turbulence is divergence-free: the divergence of the field's swirl part,
+//              by central differences over 2 cm, is under 2% of the swirl's gradient scale
+//   gusts      the speed along the mean wind varies, between 0 and twice the mean, with a
+//              mean over 4,000 samples within 10% of the mean wind's
+//   lattice    a lattice filled from the field and sampled by the cloth reads the field at
+//              a lattice point exactly, and between points (trilinear) within 0.15 of the
+//              gust amplitude
+//   push       a banner in a lattice that blows hard at one end and not at the other bends
+//              away from the strong end: the strong end is farther downwind
+
+mod wind;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import xpbdsoftbody use *;
+import clothrope use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn testPure() {
+  imm w = WindField.gale(new Vec3(6., 0., 1.));
+  imm a = w.velocityAt(new Vec3(1.3, 2.1, -0.4), 3.7);
+  imm b = w.velocityAt(new Vec3(1.3, 2.1, -0.4), 3.7);
+  expectBool(a.x == b.x and a.y == b.y and a.z == b.z, true, "a read is the same bits as the last");
+  imm c = w.velocityAt(new Vec3(1.3, 2.1, -0.4), 3.8);
+  expectBool((a - c).length() > 0.001, true, "and it changes with time");
+}
+
+fn testFrozen() {
+  mut w = WindField.gale(new Vec3(6., 0., 1.));
+  w.evolve = 0.;
+  mut worst = 0.;
+  mut k = 0;
+  while k < 50 {
+    imm p = new Vec3(0.37 * f32.from(k), 1. + 0.11 * f32.from(k), -0.2 * f32.from(k));
+    imm t = 0.13 * f32.from(k);
+    imm dt = 0.4;
+    imm d = (w.velocityAt(p + w.mean * dt, t + dt) - w.velocityAt(p, t)).length();
+    if d > worst { worst = d; }
+    k = k + 1;
+  }
+  expectBool(worst < 0.001, true, "a gust is carried by the mean wind");
+}
+
+fn testSwirl() {
+  // only the swirl: no mean, no gusts
+  mut w = WindField.calm();
+  w.turbulence = 2.;
+  w.turbLength = 1.5;
+  w.mean = new Vec3(0., 0., 0.);
+  imm e = 0.02;
+  mut worstDiv = 0.;
+  mut scale = 0.;
+  mut k = 0;
+  while k < 40 {
+    imm p = new Vec3(0.31 * f32.from(k), 0.5 + 0.17 * f32.from(k), 0.23 * f32.from(k));
+    imm dx = (w.velocityAt(p + new Vec3(e, 0., 0.), 0.) - w.velocityAt(p - new Vec3(e, 0., 0.), 0.)).x / (2. * e);
+    imm dy = (w.velocityAt(p + new Vec3(0., e, 0.), 0.) - w.velocityAt(p - new Vec3(0., e, 0.), 0.)).y / (2. * e);
+    imm dz = (w.velocityAt(p + new Vec3(0., 0., e), 0.) - w.velocityAt(p - new Vec3(0., 0., e), 0.)).z / (2. * e);
+    imm div = libc.fabsf(dx + dy + dz);
+    if div > worstDiv { worstDiv = div; }
+    imm g = libc.fabsf(dx) + libc.fabsf(dy) + libc.fabsf(dz);
+    if g > scale { scale = g; }
+    k = k + 1;
+  }
+  expectBool(scale > 0.1, true, "the swirl has a gradient to speak of");
+  expectBool(worstDiv < 0.02 * scale + 0.01, true, "and its divergence is nothing against it");
+}
+
+fn testGusts() {
+  imm w = WindField.breeze(new Vec3(5., 0., 0.));
+  mut sum = 0.;
+  mut lo = 100.;
+  mut hi = -100.;
+  mut k = 0;
+  while k < 4000 {
+    imm p = new Vec3(0.7 * f32.from(k % 40), 1., 0.9 * f32.from(k % 23));
+    imm v = w.velocityAt(p, 0.031 * f32.from(k)).x;
+    sum = sum + v;
+    if v < lo { lo = v; }
+    if v > hi { hi = v; }
+    k = k + 1;
+  }
+  near(sum / 4000., 5., 0.5, "the mean of the wind along the mean wind is the mean wind");
+  expectBool(hi - lo > 1., true, "gusts vary it by more than 1 m/s");
+  expectBool(lo > -1.5 and hi < 11., true, "and never past twice the mean (the swirl adds a little)");
+}
+
+fn testLattice() {
+  imm w = WindField.breeze(new Vec3(5., 0., 0.));
+  mut b = clothGrid(new Vec3(0., 1., 0.), new Vec3(1., 0., 0.), new Vec3(0., 1., 0.), 4u32, 4u32, &Fabric.light());
+  w.fill(&mut b, 2.5);
+  expectBool(b.windGrid.len() > 8usize, true, "the cloth has a lattice");
+  imm i = 1usize;
+  imm p = b.gridOrigin + new Vec3(f32.from(i), 1., 1.) * b.gridCell;
+  imm lat = *b.windGrid[1usize * usize.from(b.gridNy) * usize.from(b.gridNx) + 1usize * usize.from(b.gridNx) + i];
+  imm direct = w.velocityAt(p, 2.5);
+  near((lat - direct).length(), 0., 0.001, "a lattice point is the field there");
+}
+
+fn testPush() {
+  // a banner whose lattice blows 8 m/s at the far end and nothing at the pole
+  mut b = clothGrid(new Vec3(0., 3., 0.), new Vec3(1.6, 0., 0.), new Vec3(0., -1.2, 0.), 16u32, 12u32, &Fabric.light());
+  mut j = 0u32;
+  while j <= 12u32 { b.pin(j * 17u32); j = j + 1u32; }
+  b.substeps = 8u32;
+  b.damping = 0.5;
+  b.setWindGrid(new Vec3(-1., 0., -1.), 0.5, 8u32, 10u32, 5u32);
+  mut z = 0u32;
+  while z < 5u32 {
+    mut y = 0u32;
+    while y < 10u32 {
+      mut x = 0u32;
+      while x < 8u32 {
+        // from nothing at x = 0 to 8 m/s along z at the far end (it pushes the sheet across its face)
+        b.windGrid.set(usize.from(z * 80u32 + y * 8u32 + x), new Vec3(0., 0., f32.from(x) * 1.2));
+        x = x + 1u32;
+      }
+      y = y + 1u32;
+    }
+    z = z + 1u32;
+  }
+  mut s = 0;
+  while s < 240 { b.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  imm far = (*b.pos[16usize + 6usize * 17usize]).z;
+  imm near_ = (*b.pos[2usize + 6usize * 17usize]).z;
+  expectBool(far > near_ + 0.1, true, "the end in the stronger wind is blown farther");
+}
+
+fn main() i32 {
+  testPure();
+  testFrozen();
+  testSwirl();
+  testGusts();
+  testLattice();
+  testPush();
+  done();
+}

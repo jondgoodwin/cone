@@ -1,0 +1,219 @@
+// The autolod package's level-of-detail chain in render's scene, on a real GPU with no
+// window, with validation on. A scene item with a LodChain of two levels, the subject's
+// mesh and its impostor card (drawn with the card's own material: LodChain's
+// 'addWithMaterial'), is drawn from near and from far and through a cross-fade:
+//
+// - near (the item 100 pixels across, the chain's first level wanting 60 or more) the
+//   scene draws the mesh: the picture matches a DrawList of the mesh;
+// - far (30 pixels) it draws the card: the picture is the same as a DrawList of the
+//   card (the material of the level, not the item's), and the stats say one item drawn;
+// - a chain whose last level is an empty mesh (the other parts of an object, once the
+//   impostor has taken over) draws nothing far away: the background, no validation message;
+// - through the cross-fade (the camera pulled back over a few frames) the stats count a
+//   fading item, and both levels are drawn in it (two items) for a while;
+// - with cascaded shadows on, the item far away (the card casts none, the mesh level
+//   in its stead) and near draw without a validation message;
+// - LodChain: 'materialOf', 'lastPlainLevel' and that 'add' leaves a level with none.
+//
+// Only a failure prints. Needs a GPU driver with Vulkan 1.3 and SDL3.dll.
+
+mod lodscene;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import autolod use *;
+
+const SIZE = 160u32;
+
+fn subject() Mesh {
+  mut m = Mesh.sphere(1., 20);
+  mut cube = Mesh.cube(0.9);
+  cube.transform(Mat4.fromTranslation(new Vec3(0.75, 0.1, 0.2)));
+  m.append(&cube);
+  m.transform(Mat4.fromTranslation(new Vec3(0., 1.4, 0.)));
+  m;
+}
+
+fn iabs(v i32) i32 { if v < 0 { -v; } else { v; }; }
+
+struct Rig {
+  color Texture;
+  depth Texture;
+  readback Buffer;
+}
+
+fn shoot(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, light &Light, list &DrawList) Image {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, &rig.color, &rig.depth, camera, light, list);
+  encoder.copyTextureToBuffer(&rig.color, &rig.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  Image.fromTexels(rig.readback.mappedRange(), i32.from(SIZE), i32.from(SIZE), false);
+}
+
+// The pixels of 'a' that are not the background (sRGB 124, 170, 203)
+fn coveredCount(img &Image) i32 {
+  mut n = 0;
+  mut y = 0;
+  while y < i32.from(SIZE) {
+    mut x = 0;
+    while x < i32.from(SIZE) {
+      if iabs(i32.from(img.at(x, y, 0)) - 124) + iabs(i32.from(img.at(x, y, 1)) - 170) + iabs(i32.from(img.at(x, y, 2)) - 203) > 6 {
+        n = n + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  n;
+}
+
+// The number of bytes of a that differ from b's, over the channels of every pixel
+fn differing(a &Image, b &Image) i32 {
+  mut n = 0;
+  mut i = 0usize;
+  while i < a.pixels.len() {
+    if *a.pixels[i] != *b.pixels[i] { n = n + 1; }
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("autolod scene");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  imm rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
+    device.createBuffer(u64.from(SIZE) * u64.from(SIZE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST));
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+
+  imm material = Material.plain(new Color(0.8, 0.5, 0.3, 1.));
+  imm subjectMesh = subject();
+  imm mesh = renderer.addMesh(&mut device, &subjectMesh);
+  imm matHandle = renderer.addMaterial(&mut device, &material);
+  mut baker = ImpostorBaker.create(&mut device, 64u32);
+  mut parts = List[BakePart].empty();
+  parts.push(new BakePart(subject(), material, Image.empty()));
+  mut center = new Vec3(0., 0., 0.);
+  mut radius = 0.;
+  boundingSphereOf(&subjectMesh, &mut center, &mut radius);
+  mut settings = new ImpostorSettings();
+  settings.frameSize = 64u32;
+  settings.grid = 6u32;
+  imm atlas = baker.bake(&mut device, &parts, center, radius, &settings);
+  imm pipe = makeImpostorPipeline(&mut renderer, &mut device);
+  imm impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
+
+  // The chain: the mesh to 60 pixels, then the card
+  mut chain = LodChain.empty(0.1);
+  chain.add(mesh, 60.);
+  chain.addWithMaterial(impostor.card, impostor.material, 0.);
+  expect(chain.materialOf(0usize).isNone(), "a level added with 'add' has no material of its own");
+  expect(!chain.materialOf(1usize).isNone(), "a level added with a material has it");
+  expectUInt(u64.from(chain.lastPlainLevel(1usize)), 0u64, "a shadow pass falls back from the card to the mesh");
+  expectUInt(u64.from(chain.lastPlainLevel(0usize)), 0u64, "and keeps the mesh");
+
+  imm light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
+  imm dir = new Vec3(0.4, 0.5, 0.7).normalize();
+  mut camera = Camera.make();
+  camera.fov = radians(30.);
+  camera.near = 0.5;
+  camera.far = 400.;
+  camera.background = new Color(0.2, 0.4, 0.6, 1.);
+  // the size in pixels is radius / (distance tan(fov/2)) x 160: 100 px at
+  imm tanHalf = libc.tanf(radians(15.));
+  imm nearDistance = radius / (100. / f32.from(SIZE) * tanHalf);
+  imm farDistance = radius / (30. / f32.from(SIZE) * tanHalf);
+
+  mut item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  require(renderer.setSceneLod(item, &chain), "the chain set");
+  mut empty = DrawList.empty();
+
+  // near: the mesh
+  camera.lookAt(center + dir * nearDistance, center, new Vec3(0., 1., 0.));
+  imm nearScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "near: one item drawn");
+  mut meshList = DrawList.empty();
+  meshList.add(mesh, matHandle, Mat4.identity());
+  renderer.clearScene();
+  imm nearList = shoot(&mut device, &mut renderer, &rig, &camera, &light, &meshList);
+  expectInt(i64.from(differing(&nearScene, &nearList)), 0i64, "near: the scene's picture is the mesh's, bit for bit");
+  expect(coveredCount(&nearScene) > 1500, "near: the subject is on screen");
+
+  // far: the card
+  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  renderer.setSceneLod(item, &chain);
+  camera.lookAt(center + dir * farDistance, center, new Vec3(0., 1., 0.));
+  imm farScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "far: one item drawn");
+  renderer.clearScene();
+  mut cardList = DrawList.empty();
+  cardList.add(impostor.card, impostor.material, Mat4.identity());
+  imm farCard = shoot(&mut device, &mut renderer, &rig, &camera, &light, &cardList);
+  expectInt(i64.from(differing(&farScene, &farCard)), 0i64, "far: the scene's picture is the card's with its own material, bit for bit");
+  imm farMeshOnly = shoot(&mut device, &mut renderer, &rig, &camera, &light, &meshList);
+  expect(differing(&farScene, &farMeshOnly) > 100, "far: and not the mesh's");
+  expect(coveredCount(&farScene) > 40, "far: the subject is on screen");
+
+  // a hidden level: the mesh, then nothing
+  imm hidden = renderer.addMesh(&mut device, &Mesh.empty());
+  mut hideChain = LodChain.empty(0.1);
+  hideChain.add(mesh, 60.);
+  hideChain.add(hidden, 0.);
+  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  renderer.setSceneLod(item, &hideChain);
+  imm farHidden = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  expectInt(i64.from(coveredCount(&farHidden)), 0i64, "a chain ending in an empty mesh draws nothing far away");
+  renderer.clearScene();
+
+  // the cross-fade: pull the camera out over frames
+  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  renderer.setSceneLod(item, &chain);
+  mut sawFading = false;
+  mut sawTwo = false;
+  mut f = 0;
+  while f < 24 {
+    imm t = f32.from(f) / 23.;
+    imm dist = nearDistance + (farDistance - nearDistance) * t;
+    camera.lookAt(center + dir * dist, center, new Vec3(0., 1., 0.));
+    renderer.vis.settings.timeStep = 0.05;
+    renderer.vis.settings.fadeSeconds = 0.3;
+    shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+    if renderer.vis.stats.fading > 0u32 { sawFading = true; }
+    if renderer.vis.stats.drawn == 2u32 { sawTwo = true; }
+    f = f + 1;
+  }
+  expect(sawFading, "going from the mesh to the card the scene fades one into the other");
+  expect(sawTwo, "and draws both in the fade");
+
+  // shadows on
+  imm shadows = ShadowSettings.medium();
+  renderer.setShadows(&mut device, &shadows);
+  camera.lookAt(center + dir * farDistance, center, new Vec3(0., 1., 0.));
+  shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  camera.lookAt(center + dir * nearDistance, center, new Vec3(0., 1., 0.));
+  shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

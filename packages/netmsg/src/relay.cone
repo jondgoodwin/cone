@@ -10,156 +10,220 @@
 //   // clients connect to SocketAddr.localhost(relay.port)
 //   ...
 //   relay.stop();
+//
+// An actor on aio's UdpSockets, as an Endpoint is (endpoint.cone's header):
+// one behaviour receives on the front socket, one on each client's own socket
+// to the server (a "leg", made when the client first speaks), and one wakes
+// every millisecond to deliver the datagrams the links hold back that have come
+// due. The delays are real time, to a millisecond.
 
+// One client's way through the relay
 struct Leg {
   client SocketAddr;
   key String;
-  up Handle;                 // the socket this client's datagrams reach the server from
+  up UdpSocket;              // the socket this client's datagrams reach the server from
   toServer LinkSim;
   toClient LinkSim;
 }
 
-struct RelayArgs is Sendable {
-  pub server SocketAddr;
-  pub toServer LinkConfig;
-  pub toClient LinkConfig;
-  pub seed u64;
-  pub up Sender[Started];
-  pub stop Receiver[u32];
-  pub done Sender[u32];
+// The most receives on one socket that fail one after the other before it is let go
+const relayMaxFailures = 1000u32;
+
+actor Relay {
+  server SocketAddr;
+  toServer LinkConfig;
+  toClient LinkConfig;
+  seed u64;
+  pool Pool;
+  front UdpSocket;
+  legs List[Leg];
+  group CancelGroup;
+  stopped bool;
+
+  fn init(self &new, server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) {
+    *self = new Self(server: server, toServer: toServer, toClient: toClient, seed: seed, pool: Pool.make(),
+      front: UdpSocket.none(), legs: List[Leg].empty(), group: CancelGroup.make(), stopped: false);
+  }
+
+  // Bind the front socket (on loopback, a port of the system's choice), say
+  // which, and start receiving and delivering. The first message
+  async do open(self, up OneshotSender[Result[SocketAddr, IoError]]) {
+    mut tx = up;
+    mut made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    match &mut made {
+      case mut ok &mut Ok { front <=> *ok; }
+      else {}
+    }
+    if front.isNone() {
+      tx.send(Error[SocketAddr, IoError](new IoError(1u32)));
+      return;
+    }
+    mut bound = SocketAddr.localhost(0u16);
+    imm la = await front.localAddr();
+    match &la {
+      case imm a &Ok { bound = *a; }
+      else {}
+    }
+    tx.send(Ok[SocketAddr, IoError](bound));
+    selfactor.receiveFront();
+    selfactor.tick();
+  }
+
+  // Stop: end every receive and timer, close every socket, and say so
+  async do stop(self, done OneshotSender[u32]) {
+    mut tx = done;
+    stopped = true;
+    imm c = group.cancel();
+    mut dead = UdpSocket.none();
+    dead <=> front;
+    legs = List[Leg].empty();
+    tx.send(1u32);
+  }
+
+  // Datagrams from clients: each goes through its leg's link to the server
+  async do receiveFront(self) {
+    mut failures = 0u32;
+    while not stopped and failures <= relayMaxFailures {
+      imm r = await front.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      mut client = SocketAddr.localhost(0u16);
+      mut data = List[u8].empty();
+      mut got = false;
+      match &r {
+        case imm ok &Ok {
+          client = ok.from;
+          data = copyBytes(ok.buf.view());
+          got = true;
+          failures = 0u32;
+        }
+        case imm e &Error {
+          if aio.isCancelled(*e) {return;}
+          if not aio.isTruncated(*e) {failures = failures + 1u32;}
+        }
+      }
+      if got and not stopped {
+        imm key = client.text();
+        mut found = self.leg(key.view());
+        if found == legs.len() {
+          // The client's first datagram: its socket to the server
+          mut made = await aio.bindUdp(SocketAddr.localhost(0u16));
+          if stopped {return;}
+          mut up = UdpSocket.none();
+          match &mut made {
+            case mut ok &mut Ok { up <=> *ok; }
+            else {}
+          }
+          if up.isNone() {return;}
+          imm n = u64.from(legs.len());
+          legs.push(new Leg(client, key, up,
+            LinkSim.make(toServer, seed + 2u64 * n), LinkSim.make(toClient, seed + 2u64 * n + 1u64)));
+          selfactor.receiveLeg(legs.len() - 1usize);
+          found = legs.len() - 1usize;
+        }
+        legs[found].toServer.send(Instant.now(), data);
+        self.deliver();
+      }
+    }
+  }
+
+  // Datagrams from the server to leg n's client
+  async do receiveLeg(self, n usize) {
+    mut failures = 0u32;
+    while not stopped and n < legs.len() and failures <= relayMaxFailures {
+      imm r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      match &r {
+        case imm ok &Ok {
+          failures = 0u32;
+          if not stopped and n < legs.len() {
+            legs[n].toClient.send(Instant.now(), copyBytes(ok.buf.view()));
+            self.deliver();
+          }
+        }
+        case imm e &Error {
+          if aio.isCancelled(*e) {return;}
+          if not aio.isTruncated(*e) {failures = failures + 1u32;}
+        }
+      }
+    }
+  }
+
+  // Every millisecond: what the links hold back that is due goes out
+  async do tick(self) {
+    while not stopped {
+      imm r = await aio.sleepIn(Duration.fromMillis(1i64), IoLimits.within(group));
+      self.deliver();
+    }
+  }
+
+  // One datagram out of leg n: to the server (upstream) or to the client
+  async do out(self, n usize, upstream bool, data List[u8]) {
+    if stopped or n >= legs.len() {return;}
+    mut b = pool.mustTake(max(data.len(), 1usize));
+    b.append(data.view());
+    if upstream {
+      imm r = await legs[n].up.sendTo(server, b);
+    } else {
+      imm r = await front.sendTo(legs[n].client, b);
+    }
+  }
+
+  // The leg of the client at 'key', or legs.len() if it has none
+  fn leg(self &, key &str) usize {
+    mut k = 0usize;
+    while k < legs.len() {
+      if legs[k].key == key {return k;}
+      k = k + 1usize;
+    }
+    legs.len();
+  }
+
+  // What is due goes out
+  fn deliver(self) {
+    if stopped {return;}
+    imm now = Instant.now();
+    mut d = List[List[u8]].empty();
+    mut i = 0usize;
+    while i < legs.len() {
+      legs[i].toServer.deliver(now, &mut d);
+      each p in d.drain() { selfactor.out(i, true, p); }
+      legs[i].toClient.deliver(now, &mut d);
+      each p in d.drain() { selfactor.out(i, false, p); }
+      i = i + 1usize;
+    }
+  }
 }
 
 pub struct LossyRelay {
   pub port u16;
-  waker Waker;
-  stopTx Sender[u32];
-  doneRx Receiver[u32];
+  relay Relay;
 
-  // Stop the relay and wait for its thread
+  // Stop the relay and wait for it
   pub fn stop(self &mut) {
-    stopTx.send(1u32);
-    waker.wake();
-    doneRx.recv();
+    mut tx OneshotSender[u32];
+    mut rx OneshotReceiver[u32];
+    tx, rx = Oneshot[u32].make();
+    relay.stop(tx);
+    rx.recv();
   }
-}
-
-fn relayMain(mut a RelayArgs) u32 {
-  mut lp = Loop.mustMake();
-  imm front = lp.mustBindUdp(SocketAddr.localhost(0u16));
-  mut bound = SocketAddr.localhost(0u16);
-  match lp.localAddr(front) {
-    case imm la Ok { bound = la; }
-    case imm e Error {}
-  }
-  a.up.send(Started.Up(bound, lp.waker()));
-  imm pool = Pool.make();
-  mut legs = List[Leg].empty();
-  lp.submit(Op.RecvFrom(front, pool.mustTake(recvRoom)), Target.Here(1u64));
-  mut out = List[Completion].empty();
-  mut running = true;
-  while running {
-    // Wake when the next datagram held back is due, or in 20 ms
-    mut until = Instant.now() + Duration.fromMillis(20i64);
-    mut i = 0usize;
-    while i < legs.len() {
-      match legs[i].toServer.nextDue() {
-        case imm t Some { if t < until {until = t;} }
-        case is None[Instant] {}
-      }
-      match legs[i].toClient.nextDue() {
-        case imm t Some { if t < until {until = t;} }
-        case is None[Instant] {}
-      }
-      i = i + 1usize;
-    }
-    lp.poll(until, &mut out);
-    imm now = Instant.now();
-    each c in out.drain() {
-      if c.token == 1u64 {
-        // A datagram from a client
-        if c.isDone() {
-          imm key = c.peer.text();
-          mut k = 0usize;
-          mut found = legs.len();
-          while k < legs.len() {
-            if legs[k].key == key.view() {found = k;}
-            k = k + 1usize;
-          }
-          if found == legs.len() {
-            imm up = lp.mustBindUdp(SocketAddr.localhost(0u16));
-            imm n = u64.from(legs.len());
-            legs.push(new Leg(c.peer, key, up,
-              LinkSim.make(a.toServer, a.seed + 2u64 * n), LinkSim.make(a.toClient, a.seed + 2u64 * n + 1u64)));
-            lp.submit(Op.RecvFrom(up, pool.mustTake(recvRoom)), Target.Here(100u64 + n));
-          }
-          imm lg = &mut legs[found];
-          lg.toServer.send(now, copyBytes(c.buf.view()));
-        }
-        lp.submit(Op.RecvFrom(front, pool.mustTake(recvRoom)), Target.Here(1u64));
-      } elif c.token >= 100u64 {
-        // A datagram from the server, to the client of that leg
-        imm n = usize.from(c.token - 100u64);
-        if c.isDone() and n < legs.len() {
-          imm lg = &mut legs[n];
-          lg.toClient.send(now, copyBytes(c.buf.view()));
-        }
-        if n < legs.len() {
-          lp.submit(Op.RecvFrom(legs[n].up, pool.mustTake(recvRoom)), Target.Here(c.token));
-        }
-      }
-    }
-    // What is due goes out
-    mut d = List[List[u8]].empty();
-    i = 0usize;
-    while i < legs.len() {
-      imm lg = &mut legs[i];
-      lg.toServer.deliver(now, &mut d);
-      each p in d.drain() {
-        mut b = pool.mustTake(max(p.len(), 1usize));
-        b.append(p.view());
-        lp.submit(Op.SendTo(lg.up, a.server, b), Target.Here(2u64));
-      }
-      lg.toClient.deliver(now, &mut d);
-      each p in d.drain() {
-        mut b = pool.mustTake(max(p.len(), 1usize));
-        b.append(p.view());
-        lp.submit(Op.SendTo(front, lg.client, b), Target.Here(2u64));
-      }
-      i = i + 1usize;
-    }
-    match a.stop.tryRecv() {
-      case imm s Some { running = false; }
-      case is None[u32] {}
-    }
-  }
-  a.done.send(1u32);
-  0u32;
 }
 
 // Start a relay to the server at 'server': 'toServer' is what happens to the
 // clients' datagrams, 'toClient' to the server's answers. The seed makes the
 // losses repeatable. Clients connect to localhost at 'port'.
 pub fn startLossyRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) LossyRelay {
-  mut upTx Sender[Started];
-  mut upRx Receiver[Started];
-  upTx, upRx = Channel[Started].make();
-  mut stopTx Sender[u32];
-  mut stopRx Receiver[u32];
-  stopTx, stopRx = Channel[u32].make();
-  mut doneTx Sender[u32];
-  mut doneRx Receiver[u32];
-  doneTx, doneRx = Channel[u32].make();
-  mut th = thread.startWith(new thread.Options(name: "netmsg relay"),
-    new RelayArgs(server, toServer, toClient, seed, upTx, stopRx, doneTx), &relayMain);
-  th.detach();
-  match upRx.recv() {
-    case imm s Some {
-      match s {
-        case imm up Up { return new LossyRelay(up.addr.port(),up.waker, stopTx, doneRx); }
+  requireAWorker();
+  imm relay = new Relay(server, toServer, toClient, seed);
+  mut tx OneshotSender[Result[SocketAddr, IoError]];
+  mut rx OneshotReceiver[Result[SocketAddr, IoError]];
+  tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
+  relay.open(tx);
+  match rx.recv() {
+    case imm answer Some {
+      match &answer {
+        case imm a &Ok { return new LossyRelay(a.port(), relay); }
         else {}
       }
     }
-    case is None[Started] {}
+    case is None[Result[SocketAddr, IoError]] {}
   }
   panic("netmsg: the relay could not start");
 }
