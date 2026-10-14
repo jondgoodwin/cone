@@ -1,0 +1,90 @@
+// A body moving fast over a heightfield is stopped by what it meets and by nothing it clears.
+//
+// A 1,300 kg box (2.1 x 0.3 x 0.85 half-sizes, bottom 0.25 m up, no gravity, no drag) slides along +x over a
+// heightfield with a 0.15 m cosine mound 14 m long. Its bottom is 0.10 m above the crest, and it must go over at
+// 8, 14 and 22 m/s alike. At speed the speculative margin (0.02 m plus a step's travel, up to 0.2 m at 22 m/s)
+// reaches the mound's triangles lying below and ahead of the box, and the box-triangle test answered with its
+// box's front face as the separating axis: "0.17 m of gap ahead" for a triangle that is 0.23 m away by the
+// nearest points, a wall at the nose of the box. It stopped dead (0.7 m/s) at 14 and 22 m/s and passed at 8. A
+// cliff the box does hit still stops it.
+
+mod heightfieldpass;
+
+import testing use *;
+import collections use List;
+import libc;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+const Cols = 81u32;
+const Rows = 11u32;
+
+// A heightfield from x = 100 (cells 0.5 m, 40 m long): a cosine mound of height 'h' over x = 115 to 129 when
+// 'cliff' is false; else a step up to 'h' at x = 115 that stays
+fn ground(h f32, cliff bool) Shape {
+  mut heights = List[f32].empty();
+  mut r = 0u32;
+  while r < Rows {
+    mut c = 0u32;
+    while c < Cols {
+      imm x = 100. + 0.5 * f32.from(c);
+      if cliff {
+        heights.push(if x >= 115. { h; } else { 0.; });
+      } else {
+        heights.push(if x > 115. and x < 129. { h * 0.5 * (1. - libc.cosf((x - 115.) * 6.28318530718 / 14.)); } else { 0.; });
+      }
+      c = c + 1u32;
+    }
+    r = r + 1u32;
+  }
+  Shape.single(Prim.heightfield(heights, Cols, Rows, 0.5, 0.5, new Vec3(100., 0., -2.5)));
+}
+
+// The slowest the box goes (its speed along x) and where it ends
+fn runBox(speed f32, h f32, cliff bool, ccd bool) (f32, f32) {
+  mut w = World.make();
+  w.settings.ccd = ccd;
+  imm g = w.addShape(ground(h, cliff));
+  w.createBody(BodyDef.staticAt(g, new Vec3(0., 0., 0.)));
+  imm boxShape = w.addShape(Shape.single(Prim.box(new Vec3(2.1, 0.3, 0.85))));
+  mut bd = BodyDef.dynamicAt(boxShape, new Vec3(104., 0.55, 0.));
+  bd.mass = 1300.;
+  bd.gravityFactor = 0.;
+  bd.linearDamping = 0.;
+  bd.angularDamping = 0.;
+  bd.linVel = new Vec3(speed, 0., 0.);
+  bd.allowSleep = false;
+  imm id = w.createBody(bd);
+  mut t = 0.;
+  mut slowest = 1000.;
+  while t < 22. / speed + 0.5 {
+    w.step(1. / 120.);
+    t = t + 1. / 120.;
+    slowest = minf(slowest, w.linearVelocity(id).x);
+  }
+  (slowest, w.positionOf(id).x);
+}
+
+fn clears(speed f32, ccd bool) {
+  imm r = runBox(speed, 0.15, false, ccd);
+  expectFloat(f64.from(r.0), f64.from(speed), 0.01, "the box clears the mound at full speed");
+  expectBool(r.1 > 120., true, "and is past it");
+}
+
+fn main() i32 {
+  clears(8., true);
+  clears(14., true);
+  clears(22., true);
+  clears(22., false);
+  clears(14., false);
+  // a taller mound (clearance 0.03 m at the crest) is also cleared: gap along the box's faces never matters
+  imm tall = runBox(22., 0.22, false, true);
+  expectFloat(f64.from(tall.0), 22., 0.01, "a 0.22 m mound under a box 0.25 m up: still cleared");
+  // a cliff 1 m high is met head-on: the box stops against it, at any speed
+  imm hit8 = runBox(8., 1., true, true);
+  expectBool(hit8.0 < 0.5 and hit8.1 < 113.2, true, "a 1 m cliff stops the box at 8 m/s");
+  imm hit22 = runBox(22., 1., true, true);
+  expectBool(hit22.0 < 0.5 and hit22.1 < 113.2, true, "a 1 m cliff stops the box at 22 m/s");
+  done();
+}

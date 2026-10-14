@@ -1,0 +1,895 @@
+// ======== Inflating: RFC 1951, with RFC 1950 and RFC 1952 around it ========
+//
+// An 'Inflater' is a value that holds a stream's whole state. Bytes go in
+// with 'feed' in pieces of any size, split anywhere (inside a Huffman code,
+// inside a header, between the data and its checksum); 'pull' answers the
+// decoded bytes a bounded piece at a time, and a status that says what it is
+// waiting for. Nothing but the Inflater holds anything between calls.
+//
+// How a piece can end anywhere. The input fed is kept (a prefix of it is
+// dropped once used) and decoding works one unit at a time: a block header, a
+// code-description table, one symbol with its extra bits and distance. Each
+// unit is read through a 64-bit buffer that reads zeros past the end of the
+// input; if, after a unit, more bits were taken than the input really holds,
+// the unit is put back (the position and the buffer as they were, the output
+// as long as it was) and the pull answers NeedInput. So no unit is ever
+// half-done, and no input byte is waited for that a unit does not need: the
+// last symbol of a stream is decoded as soon as its own bits are there.
+//
+// The output a pull produces is also written to a history of the last 32 KiB
+// (plus slack) that matches copy from; the history is the decoder's own, so
+// the caller may do what it likes with the bytes it was given.
+
+// -------- the bit reader --------
+
+// The fed input, and the bit buffer taken from it. 'pos' is the next byte to
+// load into the buffer; 'bits' holds 'nbits' bits, the oldest in the lowest
+// place. Loading past the end supplies zeros (see 'overrun' and 'unpad').
+struct BitIn {
+  buf List[u8];
+  pos usize;
+  bits u64;
+  nbits u32;
+
+  // Top up the bit buffer to at least 57 bits
+  fn refill(self &mut) {
+    while nbits <= 56u32 {
+      imm b = if pos < buf.len() {u64.from(*buf[pos]);} else {0u64;};
+      bits = bits | (b << u64.from(nbits));
+      pos = pos + 1usize;
+      nbits = nbits + 8u32;
+    }
+  }
+
+  // Take n (0 to 32) bits
+  fn getBits(self &mut, n u32) u32 {
+    if nbits < n { self.refill(); }
+    imm v = u32.from(bits & ((1u64 << u64.from(n)) - 1u64));
+    bits = bits >> u64.from(n);
+    nbits = nbits - n;
+    v;
+  }
+
+  // Whether more bytes were consumed than the input holds. Zeros past the
+  // end are then part of what was taken.
+  fn overrun(self &) bool {
+    pos - usize.from(nbits / 8u32) > buf.len();
+  }
+
+  // Give back the zeros loaded past the end of the input and not taken
+  fn unpad(self &mut) {
+    if pos > buf.len() {
+      imm padBits = u32.from(pos - buf.len()) * 8u32;
+      nbits = nbits - padBits;
+      bits = bits & ((1u64 << u64.from(nbits)) - 1u64);
+      pos = buf.len();
+    }
+  }
+
+  // Drop the bits of a partly used byte and hand the whole bytes the buffer
+  // holds back to the input: 'pos' is then the next byte not used
+  fn sync(self &mut) {
+    imm part = nbits % 8u32;
+    pos = pos - usize.from((nbits - part) / 8u32);
+    bits = 0u64;
+    nbits = 0u32;
+  }
+
+  // Decode one symbol with a table. -1 on a bad code.
+  fn decode(self &mut, h &Huffman) i32 {
+    if nbits < 16u32 { self.refill(); }
+    imm e = *h.fast[usize.from(bits & ((1u64 << u64.from(FastBits)) - 1u64))];
+    if e != 0u16 {
+      imm l = u32.from(e & 15u16);
+      bits = bits >> u64.from(l);
+      nbits = nbits - l;
+      return i32.from(e >> 4u16);
+    }
+    // Slow: canonical walk, one bit at a time
+    mut code = 0i32;
+    mut first = 0i32;
+    mut index = 0i32;
+    mut len = 1u32;
+    mut b = bits;
+    while len <= 15u32 {
+      code = code | i32.from(b & 1u64);
+      b = b >> 1u64;
+      imm cnt = i32.from(*h.count[usize.from(len)]);
+      if code - cnt < first {
+        bits = bits >> u64.from(len);
+        nbits = nbits - len;
+        return i32.from(*h.symbols[usize.from(index + (code - first))]);
+      }
+      index = index + cnt;
+      first = (first + cnt) << 1i32;
+      code = code << 1i32;
+      len = len + 1u32;
+    }
+    -1i32;
+  }
+}
+
+// -------- the state machine --------
+
+// Where in the framing the stream is
+enum Stage {
+  // Before the data: a zlib or gzip header
+  Head;
+  // The DEFLATE data
+  Body;
+  // After the data: the checksum
+  Trail;
+  // After a gzip member: another one, padding, or the end
+  Between;
+  // Complete
+  End;
+}
+
+// Where in the DEFLATE data
+enum Phase {
+  // The next thing is a block header
+  BlockHead;
+  // Inside a stored block
+  Stored;
+  // Inside a Huffman block
+  Codes;
+  // The last block is done
+  Finished;
+}
+
+// The default cap on the output: 1 GiB
+fn defaultLimit() u64 { 1073741824u64; }
+
+// Everything about a stream being inflated. Make one with 'new', 'feed' it,
+// 'finish' it when the input is over, 'pull' the output.
+//
+//   mut inf = deflate.Inflater.make(deflate.Format.Gzip);
+//   mut out = List[u8].empty();
+//   inf.feed(chunk);                        // any size, split anywhere
+//   while true {
+//     out.clear();
+//     imm s = inf.pull(&mut out, 65536usize);   // at most 64 KiB at a time
+//     ... use out ...
+//     if s != deflate.Status.MoreOutput { break; }
+//   }
+//   // NeedInput: feed the next chunk, or inf.finish() and pull once more
+pub struct Inflater {
+  format Format;
+  bi BitIn;
+  // Input bytes dropped from the front of 'bi.buf' so far
+  inBase u64;
+  finished bool;
+  stage Stage;
+  phase Phase;
+  last bool;
+  // lit and dist hold the fixed code of RFC 1951 3.2.6
+  litIsFixed bool;
+  lit Huffman;
+  dist Huffman;
+  storedLeft usize;
+  // A match whose copy is not finished (the output limit of a pull came first)
+  copyLen usize;
+  copyDist usize;
+  // The history and the output: 'hist' ends with the newest output; bytes
+  // from 'mark' on have not been delivered, from 'sumMark' on not checksummed,
+  // before 'base' belong to an earlier gzip member (a match cannot reach them)
+  hist List[u8];
+  mark usize;
+  sumMark usize;
+  base usize;
+  // One-shot use: keep the whole output in 'hist'
+  retain bool;
+  // Output so far, all members; the most it may reach
+  outTotal u64;
+  limit u64;
+  // The current member's output so far, and its checksums
+  memberOut u64;
+  adler Adler32;
+  crc Crc32;
+  crcv u32;
+  multi bool;
+  members u32;
+  header GzipHeader;
+  failed bool;
+  err DeflateError;
+
+  // An inflater for a stream in 'format'. A gzip stream may hold several
+  // members, all inflated one after another (see 'setMultiMember').
+  pub fn make(format Format) Inflater {
+    imm startStage = if format == Format.Raw {Stage.Body;} else {Stage.Head;};
+    imm table = if format == Format.Gzip {Crc32.make();} else {new Crc32(List[u32].empty());};
+    new Inflater(format, new BitIn(List[u8].empty(), 0usize, 0u64, 0u32), 0u64, false, startStage, Phase.BlockHead,
+      false, false, Huffman.empty(), Huffman.empty(), 0usize, 0usize, 0usize, List[u8].empty(), 0usize, 0usize, 0usize,
+      false, 0u64, defaultLimit(), 0u64, Adler32.start(), table, 0u32, true, 0u32, GzipHeader.plain(), false,
+      DeflateError.make(ErrorKind.BadBlock, 0u64, ""));
+  }
+
+  // Appends input. It is copied, so the caller's bytes are its own again at
+  // once. Feed in pieces of any size; pull until NeedInput before feeding the
+  // next, or the input piles up.
+  pub fn feed(self &mut, chunk &Array[u8]) {
+    bi.buf.reserve(chunk.len);
+    mut i = 0usize;
+    while i < chunk.len { bi.buf.push(chunk[i]); i = i + 1usize; }
+  }
+
+  // Says that no more input will come: what is still waiting in the decoder
+  // is decoded, and a stream that is not complete is then a Truncated failure
+  pub fn finish(self &mut) { finished = true; }
+
+  // The most output the whole stream may reach, in bytes (1 GiB at first). A
+  // stream that would pass it fails with TooLarge, which bounds the memory a
+  // hostile stream can ask for: DEFLATE expands at most 1032 to 1.
+  pub fn setLimit(self &mut, bytes u64) { limit = bytes; }
+
+  // Gzip: whether members after the first are read (yes at first, as
+  // 'gzip -d' does). With 'false' the stream ends after the first member and
+  // whatever follows is left for 'takeRest'.
+  pub fn setMultiMember(self &mut, multi bool) { self.multi = multi; }
+
+  // Why the stream failed; meaningful once a pull answered Failed
+  pub fn error(self &) &DeflateError { &err; }
+
+  // Gzip: the header of the member being read, or of the last one read
+  pub fn gzipHeader(self &) &GzipHeader { &header; }
+
+  // Gzip: how many members have been read to their end
+  pub fn memberCount(self &) u32 { members; }
+
+  // Bytes of input used up to now (a byte whose bits are partly used counts)
+  pub fn totalIn(self &) u64 {
+    inBase + u64.from(bi.pos - usize.from(bi.nbits / 8u32));
+  }
+
+  // Bytes of output produced up to now
+  pub fn totalOut(self &) u64 { outTotal; }
+
+  // Whether the stream is complete
+  pub fn isDone(self &) bool { stage == Stage.End; }
+
+  // After Done: the input bytes that came after the stream (a gzip member's
+  // end with 'setMultiMember(false)', a zlib stream's Adler-32, a raw
+  // stream's last byte), taken out
+  pub fn takeRest(self &mut) List[u8] {
+    mut rest = List[u8].empty();
+    if stage == Stage.End {
+      mut i = bi.pos;
+      while i < bi.buf.len() { rest.push(*bi.buf[i]); i = i + 1usize; }
+      bi.buf.truncate(bi.pos);
+    }
+    rest;
+  }
+
+  // Decodes, appending at most 'max' bytes to 'out', and answers what it is
+  // waiting for: NeedInput (all input used), MoreOutput (the limit of this
+  // pull came first), Done, or Failed (and the Inflater stays failed).
+  // Anything pulled before a failure has been delivered and is good.
+  pub fn pull(self &mut, out &mut List[u8], max usize) Status {
+    if failed { return Status.Failed; }
+    imm s = self.advance(max);
+    if not failed { bi.unpad(); }
+    self.deliver(out);
+    self.dropUsedInput();
+    s;
+  }
+
+  // -------- the stages --------
+
+  fn fail(self &mut, kind ErrorKind, reason &str) {
+    if failed { return; }
+    failed = true;
+    err = DeflateError.make(kind, self.totalIn(), reason);
+  }
+
+  // The input ran out where more is needed: wait for more, or if there is no
+  // more, fail
+  fn starved(self &mut, reason &str) Status {
+    if finished {
+      self.fail(ErrorKind.Truncated, reason);
+      return Status.Failed;
+    }
+    Status.NeedInput;
+  }
+
+  // Runs the stages as far as the input and 'max' bytes of output allow
+  fn advance(self &mut, max usize) Status {
+    mut room = max;
+    mut result Status = Status.Done;
+    while true {
+      if stage == Stage.Head {
+        imm s = if format == Format.Zlib {self.zlibHeader();} else {self.gzipHeaderRead();};
+        if s != Status.Done { result = s; break; }
+        self.startMember();
+        stage = Stage.Body;
+      } elif stage == Stage.Body {
+        imm s = self.body(&mut room);
+        if s != Status.Done { result = s; break; }
+        stage = if format == Format.Raw {Stage.End;} else {Stage.Trail;};
+      } elif stage == Stage.Trail {
+        self.sumPending();
+        imm s = if format == Format.Zlib {self.zlibTrailer();} else {self.gzipTrailer();};
+        if s != Status.Done { result = s; break; }
+        members = members + 1u32;
+        stage = if format == Format.Gzip and multi {Stage.Between;} else {Stage.End;};
+      } elif stage == Stage.Between {
+        imm s = self.betweenMembers();
+        if s != Status.Done { result = s; break; }
+      } else {
+        result = Status.Done;
+        break;
+      }
+    }
+    self.sumPending();
+    result;
+  }
+
+  // The start of a member's data: nothing of an earlier member can be matched
+  fn startMember(self &mut) {
+    phase = Phase.BlockHead;
+    last = false;
+    copyLen = 0usize;
+    base = hist.len();
+    memberOut = 0u64;
+    adler = Adler32.start();
+    crcv = 0u32;
+  }
+
+  // Checksum the output not yet checksummed
+  fn sumPending(self &mut) {
+    if sumMark < hist.len() {
+      if format == Format.Zlib { adler.update(hist.view(), sumMark, hist.len()); }
+      elif format == Format.Gzip { crcv = crc.update(crcv, hist.view(), sumMark, hist.len()); }
+      memberOut = memberOut + u64.from(hist.len() - sumMark);
+      sumMark = hist.len();
+    }
+  }
+
+  // Append the output not yet delivered to 'out'; trim the history
+  fn deliver(self &mut, out &mut List[u8]) {
+    if retain { return; }
+    out.reserve(hist.len() - mark);
+    mut i = mark;
+    while i < hist.len() { out.push(*hist[i]); i = i + 1usize; }
+    mark = hist.len();
+    // Keep the last 32 KiB for matches; trim when 64 KiB more have piled up
+    if hist.len() >= 98304usize {
+      imm drop = hist.len() - 32768usize;
+      mut k = 0usize;
+      while k < 32768usize { hist.set(k, *hist[drop + k]); k = k + 1usize; }
+      hist.truncate(32768usize);
+      mark = 32768usize;
+      sumMark = 32768usize;
+      base = if base > drop {base - drop;} else {0usize;};
+    }
+  }
+
+  // Drop the front of the input that is used, when that is at least half of it
+  fn dropUsedInput(self &mut) {
+    imm used = bi.pos - usize.from(bi.nbits / 8u32);
+    imm total = bi.buf.len();
+    if used > 0usize and used >= total - used {
+      mut i = 0usize;
+      while i < total - used { bi.buf.set(i, *bi.buf[used + i]); i = i + 1usize; }
+      bi.buf.truncate(total - used);
+      bi.pos = bi.pos - used;
+      inBase = inBase + u64.from(used);
+    }
+  }
+
+  // -------- zlib and gzip framing --------
+
+  // RFC 1950 section 2.2: CMF, FLG
+  fn zlibHeader(self &mut) Status {
+    if bi.buf.len() - bi.pos < 2usize { return self.starved("zlib: the stream is too short"); }
+    imm cmf = u32.from(*bi.buf[bi.pos]);
+    imm flg = u32.from(*bi.buf[bi.pos + 1usize]);
+    if (cmf & 15u32) != 8u32 or (cmf >> 4u32) > 7u32 {
+      self.fail(ErrorKind.BadHeader, "zlib: not deflate with a window of 32 KiB or less");
+      return Status.Failed;
+    }
+    if (cmf * 256u32 + flg) % 31u32 != 0u32 {
+      self.fail(ErrorKind.BadHeader, "zlib: the header check failed");
+      return Status.Failed;
+    }
+    if (flg & 32u32) != 0u32 {
+      self.fail(ErrorKind.BadHeader, "zlib: a preset dictionary is not supported");
+      return Status.Failed;
+    }
+    bi.pos = bi.pos + 2usize;
+    Status.Done;
+  }
+
+  // RFC 1952 section 2.3, all of it or nothing: if the input ends inside it,
+  // wait and read it again from its start
+  fn gzipHeaderRead(self &mut) Status {
+    mut h = GzipHeader.plain();
+    imm p = parseGzipHeader(bi.buf.view(), bi.pos, &crc, &mut h);
+    if p == -1i64 { return self.starved("gzip: the header is cut off"); }
+    if p == -2i64 {
+      self.fail(ErrorKind.BadHeader, "gzip: not a gzip stream (the first two bytes are not 1F 8B)");
+      return Status.Failed;
+    }
+    if p == -3i64 {
+      self.fail(ErrorKind.BadHeader, "gzip: not deflate (compression method is not 8)");
+      return Status.Failed;
+    }
+    if p == -4i64 {
+      self.fail(ErrorKind.BadHeader, "gzip: reserved flag bits are set");
+      return Status.Failed;
+    }
+    if p == -5i64 {
+      self.fail(ErrorKind.BadHeader, "gzip: the file name or comment is longer than 1 MiB");
+      return Status.Failed;
+    }
+    if p == -6i64 {
+      self.fail(ErrorKind.BadHeader, "gzip: the header check failed");
+      return Status.Failed;
+    }
+    header = h;
+    bi.pos = usize.from(p);
+    Status.Done;
+  }
+
+  // RFC 1950: the Adler-32, most significant byte first
+  fn zlibTrailer(self &mut) Status {
+    if bi.buf.len() - bi.pos < 4usize { return self.starved("zlib: the Adler-32 is missing"); }
+    imm p = bi.pos;
+    imm want = (u32.from(*bi.buf[p]) << 24u32) | (u32.from(*bi.buf[p + 1usize]) << 16u32)
+      | (u32.from(*bi.buf[p + 2usize]) << 8u32) | u32.from(*bi.buf[p + 3usize]);
+    if adler.value() != want {
+      self.fail(ErrorKind.BadChecksum, "zlib: the Adler-32 does not match");
+      return Status.Failed;
+    }
+    bi.pos = p + 4usize;
+    Status.Done;
+  }
+
+  // RFC 1952: the CRC-32, then the size modulo 2^32, least significant byte first
+  fn gzipTrailer(self &mut) Status {
+    if bi.buf.len() - bi.pos < 8usize { return self.starved("gzip: the trailer is cut off"); }
+    imm p = bi.pos;
+    imm wantCrc = le32(bi.buf.view(), p);
+    imm wantSize = le32(bi.buf.view(), p + 4usize);
+    if crcv != wantCrc {
+      self.fail(ErrorKind.BadChecksum, "gzip: the CRC-32 does not match");
+      return Status.Failed;
+    }
+    if u32.from(memberOut & 0xFFFFFFFFu64) != wantSize {
+      self.fail(ErrorKind.BadChecksum, "gzip: the size does not match");
+      return Status.Failed;
+    }
+    bi.pos = p + 8usize;
+    Status.Done;
+  }
+
+  // After a gzip member: padding zeros (as gzip tools allow), another member,
+  // or the end of the input
+  fn betweenMembers(self &mut) Status {
+    while bi.pos < bi.buf.len() and *bi.buf[bi.pos] == 0u8 { bi.pos = bi.pos + 1usize; }
+    if bi.pos >= bi.buf.len() {
+      if finished { stage = Stage.End; return Status.Done; }
+      return Status.NeedInput;
+    }
+    if bi.buf.len() - bi.pos < 2usize {
+      if finished {
+        self.fail(ErrorKind.TrailingData, "gzip: a stray byte after the last member");
+        return Status.Failed;
+      }
+      return Status.NeedInput;
+    }
+    if *bi.buf[bi.pos] != 0x1Fu8 or *bi.buf[bi.pos + 1usize] != 0x8Bu8 {
+      self.fail(ErrorKind.TrailingData, "gzip: bytes after the last member are not another member");
+      return Status.Failed;
+    }
+    stage = Stage.Head;
+    Status.Done;
+  }
+
+  // -------- the DEFLATE data --------
+
+  // Runs the blocks: Done when the last one has ended
+  fn body(self &mut, room &mut usize) Status {
+    while true {
+      if phase == Phase.BlockHead {
+        imm p0 = bi.pos;
+        imm b0 = bi.bits;
+        imm n0 = bi.nbits;
+        self.blockHeader();
+        if bi.overrun() {
+          if finished {
+            failed = false;
+            self.fail(ErrorKind.Truncated, "the compressed data ends early");
+            return Status.Failed;
+          }
+          failed = false;
+          bi.pos = p0;
+          bi.bits = b0;
+          bi.nbits = n0;
+          bi.unpad();
+          phase = Phase.BlockHead;
+          return Status.NeedInput;
+        }
+        if failed { return Status.Failed; }
+      } elif phase == Phase.Stored {
+        imm s = self.storedBytes(room);
+        if s != Status.Done { return s; }
+      } elif phase == Phase.Codes {
+        imm s = self.codes(room);
+        if s != Status.Done { return s; }
+      } else {
+        // Finished: the whole bytes the bit buffer holds belong to what follows
+        bi.sync();
+        return Status.Done;
+      }
+    }
+    Status.Done;
+  }
+
+  // A block's first bits: BFINAL, BTYPE, and whatever the type's header holds
+  fn blockHeader(self &mut) {
+    last = bi.getBits(1u32) == 1u32;
+    imm kind = bi.getBits(2u32);
+    if kind == 0u32 {
+      // Stored: drop to a byte boundary, LEN, NLEN, then LEN raw bytes
+      imm drop = bi.nbits % 8u32;
+      bi.bits = bi.bits >> u64.from(drop);
+      bi.nbits = bi.nbits - drop;
+      imm len = usize.from(bi.getBits(16u32));
+      imm nlen = usize.from(bi.getBits(16u32));
+      if len != (nlen ^ 0xFFFFusize) {
+        self.fail(ErrorKind.BadBlock, "stored block length check failed");
+        return;
+      }
+      // Return any whole bytes the buffer holds to the input
+      bi.pos = bi.pos - usize.from(bi.nbits / 8u32);
+      bi.bits = 0u64;
+      bi.nbits = 0u32;
+      storedLeft = len;
+      phase = Phase.Stored;
+    } elif kind == 1u32 {
+      self.fixedTables();
+      phase = Phase.Codes;
+    } elif kind == 2u32 {
+      self.dynamicTables();
+      if not failed { phase = Phase.Codes; }
+    } else {
+      self.fail(ErrorKind.BadBlock, "invalid block type");
+    }
+  }
+
+  // Copies a stored block's bytes: as many as the input, the room and the
+  // block allow
+  fn storedBytes(self &mut, room &mut usize) Status {
+    if storedLeft > 0usize {
+      imm avail = bi.buf.len() - bi.pos;
+      mut n = if storedLeft < avail {storedLeft;} else {avail;};
+      if n > *room { n = *room; }
+      if outTotal + u64.from(n) > limit {
+        self.fail(ErrorKind.TooLarge, "output larger than expected");
+        return Status.Failed;
+      }
+      hist.reserve(n);
+      mut k = 0usize;
+      while k < n { hist.push(*bi.buf[bi.pos + k]); k = k + 1usize; }
+      bi.pos = bi.pos + n;
+      storedLeft = storedLeft - n;
+      *room = *room - n;
+      outTotal = outTotal + u64.from(n);
+    }
+    if storedLeft == 0usize {
+      phase = if last {Phase.Finished;} else {Phase.BlockHead;};
+      return Status.Done;
+    }
+    if *room == 0usize { return Status.MoreOutput; }
+    self.starved("the compressed data ends early");
+  }
+
+  // The fixed Huffman code of RFC 1951 section 3.2.6
+  fn fixedTables(self &mut) {
+    if litIsFixed { return; }
+    mut l = List[u8].withCapacity(288usize);
+    mut i = 0usize;
+    while i < 288usize {
+      l.push(if i < 144usize {8u8;} elif i < 256usize {9u8;} elif i < 280usize {7u8;} else {8u8;});
+      i = i + 1usize;
+    }
+    lit.build(l.view(), 288usize);
+    mut d = List[u8].withCapacity(30usize);
+    i = 0usize;
+    // 32 five-bit codes; 30 and 31 are in the code but never valid (checked
+    // in 'codes')
+    while i < 32usize { d.push(5u8); i = i + 1usize; }
+    dist.build(d.view(), 32usize);
+    litIsFixed = true;
+  }
+
+  // A dynamic block's code tables read from the stream (RFC 1951 3.2.7). A
+  // failure it finds may be zeros read past the input's end: the caller asks
+  // 'overrun' first.
+  fn dynamicTables(self &mut) {
+    imm nlen = usize.from(bi.getBits(5u32)) + 257usize;
+    imm ndist = usize.from(bi.getBits(5u32)) + 1usize;
+    imm ncode = usize.from(bi.getBits(4u32)) + 4usize;
+    if nlen > 286usize or ndist > 30usize {
+      self.fail(ErrorKind.BadBlock, "too many length or distance codes");
+      return;
+    }
+    mut lengths = List[u8].withCapacity(320usize);
+    mut i = 0usize;
+    while i < 320usize { lengths.push(0u8); i = i + 1usize; }
+    i = 0usize;
+    while i < ncode {
+      lengths.set(usize.from(clOrder[i]), u8.from(bi.getBits(3u32)));
+      i = i + 1usize;
+    }
+    mut cl = Huffman.empty();
+    if not cl.build(lengths.view(), 19usize) {
+      self.fail(ErrorKind.BadBlock, "bad code-length code");
+      return;
+    }
+    // Read nlen + ndist lengths, with the run-length codes 16, 17 and 18
+    i = 0usize;
+    while i < 320usize { lengths.set(i, 0u8); i = i + 1usize; }
+    mut idx = 0usize;
+    while idx < nlen + ndist {
+      imm sym = bi.decode(&cl);
+      if sym < 0i32 {
+        self.fail(ErrorKind.BadCode, "invalid code-length symbol");
+        return;
+      }
+      if sym < 16i32 {
+        lengths.set(idx, u8.from(sym));
+        idx = idx + 1usize;
+      } else {
+        mut rep = 0usize;
+        mut val = 0u8;
+        if sym == 16i32 {
+          if idx == 0usize {
+            self.fail(ErrorKind.BadBlock, "repeat with no previous length");
+            return;
+          }
+          val = *lengths[idx - 1usize];
+          rep = 3usize + usize.from(bi.getBits(2u32));
+        } elif sym == 17i32 {
+          rep = 3usize + usize.from(bi.getBits(3u32));
+        } else {
+          rep = 11usize + usize.from(bi.getBits(7u32));
+        }
+        if idx + rep > nlen + ndist {
+          self.fail(ErrorKind.BadBlock, "code lengths overflow");
+          return;
+        }
+        mut r = 0usize;
+        while r < rep {
+          lengths.set(idx, val);
+          idx = idx + 1usize;
+          r = r + 1usize;
+        }
+      }
+      if bi.overrun() { return; }
+    }
+    if *lengths[256usize] == 0u8 {
+      self.fail(ErrorKind.BadBlock, "no end-of-block code");
+      return;
+    }
+    litIsFixed = false;
+    if not lit.build(lengths.view(), nlen) {
+      self.fail(ErrorKind.BadBlock, "bad literal/length code");
+      return;
+    }
+    // The distance lengths start at nlen
+    mut dl = List[u8].withCapacity(ndist);
+    i = 0usize;
+    while i < ndist { dl.push(*lengths[nlen + i]); i = i + 1usize; }
+    if not dist.build(dl.view(), ndist) {
+      self.fail(ErrorKind.BadBlock, "bad distance code");
+      return;
+    }
+  }
+
+  // Copies up to 'n' bytes of a match: 'dist' bytes back, 'len' long (the
+  // copy may overlap what it makes)
+  fn copyMatch(self &mut, len usize, d usize) {
+    mut from = hist.len() - d;
+    hist.reserve(len);
+    mut k = 0usize;
+    while k < len {
+      hist.push(*hist[from]);
+      from = from + 1usize;
+      k = k + 1usize;
+    }
+  }
+
+  // One compressed block's symbols until the end-of-block code. Done at the
+  // end of the block.
+  fn codes(self &mut, room &mut usize) Status {
+    // How much may still be produced: the room of this pull, and the limit
+    imm left = if limit > outTotal {limit - outTotal;} else {0u64;};
+    imm cap = if left < u64.from(*room) {usize.from(left);} else {*room;};
+    imm limited = cap < *room;
+    mut produced = 0usize;
+    mut result Status = Status.Done;
+    // A match whose copy a limit cut short
+    if copyLen > 0usize {
+      imm n = if copyLen < cap {copyLen;} else {cap;};
+      if limited and n < copyLen {
+        self.fail(ErrorKind.TooLarge, "output larger than expected");
+        return Status.Failed;
+      }
+      self.copyMatch(n, copyDist);
+      produced = produced + n;
+      copyLen = copyLen - n;
+    }
+    while copyLen == 0usize {
+      if produced >= cap and not limited {
+        result = Status.MoreOutput;
+        break;
+      }
+      imm p0 = bi.pos;
+      imm b0 = bi.bits;
+      imm n0 = bi.nbits;
+      // kind: 0 literal, 1 end of block, 2 match, 3 bad
+      mut kind = 0i32;
+      mut value = 0usize;
+      mut d = 0usize;
+      mut why &str = "";
+      imm sym = bi.decode(&lit);
+      if sym < 0i32 {
+        kind = 3i32;
+        why = "invalid Huffman code";
+      } elif sym < 256i32 {
+        value = usize.from(sym);
+      } elif sym == 256i32 {
+        kind = 1i32;
+      } else {
+        imm li = usize.from(sym - 257i32);
+        if li >= 29usize {
+          kind = 3i32;
+          why = "invalid length code";
+        } else {
+          value = usize.from(lenBase[li]) + usize.from(bi.getBits(u32.from(lenExtra[li])));
+          imm ds = bi.decode(&dist);
+          if ds < 0i32 or ds >= 30i32 {
+            kind = 3i32;
+            why = "invalid distance code";
+          } else {
+            imm di = usize.from(ds);
+            d = usize.from(distBase[di]) + usize.from(bi.getBits(u32.from(distExtra[di])));
+            kind = 2i32;
+          }
+        }
+      }
+      if bi.overrun() {
+        // Zeros stood in for input that has not come: put the symbol back
+        bi.pos = p0;
+        bi.bits = b0;
+        bi.nbits = n0;
+        bi.unpad();
+        if finished {
+          self.fail(ErrorKind.Truncated, "the compressed data ends early");
+          result = Status.Failed;
+        } else {
+          result = Status.NeedInput;
+        }
+        break;
+      }
+      if kind == 3i32 {
+        self.fail(ErrorKind.BadCode, why);
+        result = Status.Failed;
+        break;
+      }
+      if kind == 1i32 {
+        phase = if last {Phase.Finished;} else {Phase.BlockHead;};
+        break;
+      }
+      if produced >= cap {
+        // Only the end of the block may come with the limit reached
+        self.fail(ErrorKind.TooLarge, "output larger than expected");
+        result = Status.Failed;
+        break;
+      }
+      if kind == 0i32 {
+        hist.push(u8.from(value));
+        produced = produced + 1usize;
+      } else {
+        if d > hist.len() - base {
+          self.fail(ErrorKind.BadDistance, "distance reaches before the start of the output");
+          result = Status.Failed;
+          break;
+        }
+        imm n = if value < cap - produced {value;} else {cap - produced;};
+        if limited and n < value {
+          self.fail(ErrorKind.TooLarge, "output larger than expected");
+          result = Status.Failed;
+          break;
+        }
+        self.copyMatch(n, d);
+        produced = produced + n;
+        copyLen = value - n;
+        copyDist = d;
+      }
+    }
+    if result == Status.Done and copyLen > 0usize { result = Status.MoreOutput; }
+    *room = *room - produced;
+    outTotal = outTotal + u64.from(produced);
+    result;
+  }
+
+  // -------- one-shot use --------
+
+  // Runs to the end of the input with no limit on a pull, keeping the whole
+  // output in the history. For the one-shot helpers.
+  fn runAll(self &mut) Status {
+    retain = true;
+    imm s = self.advance(18446744073709551615usize);
+    self.dropUsedInput();
+    s;
+  }
+
+  // The output of 'runAll', moved out
+  fn takeOutput(self &mut) List[u8] {
+    mut out = List[u8].empty();
+    out <=> hist;
+    out;
+  }
+}
+
+// The four bytes at p as a number, least significant first
+fn le32(b &Array[u8], p usize) u32 {
+  u32.from(b[p]) | (u32.from(b[p + 1usize]) << 8u32) | (u32.from(b[p + 2usize]) << 16u32) | (u32.from(b[p + 3usize]) << 24u32);
+}
+
+// A gzip member's header starting at b[p0], into 'h': the position after it,
+// -1 if the input ends inside it, -2 not a gzip magic, -3 a method that is
+// not deflate, -4 reserved flags set, -5 a name or comment over 1 MiB,
+// -6 the header's own CRC-16 wrong
+fn parseGzipHeader(b &Array[u8], p0 usize, crc &Crc32, h &mut GzipHeader) i64 {
+  imm n = b.len;
+  if n - p0 < 10usize { return -1i64; }
+  if b[p0] != 0x1Fu8 or b[p0 + 1usize] != 0x8Bu8 { return -2i64; }
+  if b[p0 + 2usize] != 8u8 { return -3i64; }
+  imm flg = b[p0 + 3usize];
+  if (flg & 0xE0u8) != 0u8 { return -4i64; }
+  h.mtime = le32(b, p0 + 4usize);
+  h.xfl = b[p0 + 8usize];
+  h.os = b[p0 + 9usize];
+  h.text = (flg & 1u8) != 0u8;
+  mut p = p0 + 10usize;
+  if (flg & 4u8) != 0u8 {
+    if n - p < 2usize { return -1i64; }
+    imm xlen = usize.from(b[p]) | (usize.from(b[p + 1usize]) << 8usize);
+    p = p + 2usize;
+    if n - p < xlen { return -1i64; }
+    mut k = 0usize;
+    while k < xlen { h.extra.push(b[p + k]); k = k + 1usize; }
+    p = p + xlen;
+  }
+  if (flg & 8u8) != 0u8 {
+    while true {
+      if p >= n { return -1i64; }
+      if p - p0 > 1048576usize { return -5i64; }
+      imm c = b[p];
+      p = p + 1usize;
+      if c == 0u8 { break; }
+      h.name.push(c);
+    }
+  }
+  if (flg & 16u8) != 0u8 {
+    while true {
+      if p >= n { return -1i64; }
+      if p - p0 > 2097152usize { return -5i64; }
+      imm c = b[p];
+      p = p + 1usize;
+      if c == 0u8 { break; }
+      h.comment.push(c);
+    }
+  }
+  if (flg & 2u8) != 0u8 {
+    if n - p < 2usize { return -1i64; }
+    // The low 16 bits of the CRC-32 of all the header before them
+    imm want = u32.from(b[p]) | (u32.from(b[p + 1usize]) << 8u32);
+    if want != (crc.update(0u32, b, p0, p) & 0xFFFFu32) { return -6i64; }
+    p = p + 2usize;
+  }
+  i64.from(p);
+}

@@ -1,0 +1,53 @@
+// Compressing a text to gzip and back in one call, then inflating the same
+// bytes the way a socket would hand them over: five at a time, the output
+// taken eight bytes at a time.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import deflate;
+
+fn main() i32 {
+  imm text = "the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog";
+
+  // One call each way. Level 2 is the dynamic Huffman code; 0 stores, 1 uses the fixed code.
+  imm packed = deflate.gzipCompress(text, 2);
+  printInt(i64.from(text.len));
+  printStr(" bytes became ");
+  printInt(i64.from(packed.len()));
+  printStr(" as a gzip file\n");
+  match deflate.gzipDecompress(packed.view(), 0usize) {
+    case imm ok Ok { printStr(String.fromBytes(ok.view()).view()); printStr("\n"); }
+    case imm e Error { printStr(e.reason.view()); return 1i32; }
+  }
+
+  // The same stream fed in pieces: the state is the Inflater, which holds what
+  // it needs between the calls
+  mut inf = deflate.Inflater.make(deflate.Format.Gzip);
+  mut out = List[u8].empty();
+  mut piece = List[u8].empty();
+  mut pulls = 0;
+  mut pos = 0usize;
+  while pos < packed.len() {
+    imm n = if packed.len() - pos < 5usize {packed.len() - pos;} else {5usize;};
+    inf.feed(&packed.view()[pos..<pos + n]);
+    pos += n;
+    if pos == packed.len() { inf.finish(); }
+    mut st deflate.Status = deflate.Status.MoreOutput;
+    while st == deflate.Status.MoreOutput {
+      piece.clear();
+      st = inf.pull(&mut piece, 8usize);
+      pulls += 1;
+      mut k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+    }
+  }
+  printStr(String.fromBytes(out.view()).view());
+  printStr("\n");
+  printInt(i64.from(pulls));
+  printStr(" pulls\n");
+  0i32;
+}
