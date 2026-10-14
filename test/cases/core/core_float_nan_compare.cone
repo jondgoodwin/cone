@@ -1,0 +1,145 @@
+// A float's comparisons are IEEE's: a NaN is unordered, so '==', '<', '<=',
+// '>' and '>=' are false for it, itself included, and '!=' alone is true. '!='
+// is the one whose generated compare differs from the rest (an unordered "not
+// equal", true when either side is a NaN), so every way to write it is asked:
+// on f64 and f32, in a branch and as a value, through 'not', through a
+// generic's instance, derived from a struct's own '==' on a float member, and
+// on slices of floats, whose '!=' is derived from the element-wise '=='. Zero
+// of either sign, infinities and ordinary values are asked alongside, so that
+// nothing but a NaN's answer moves.
+
+mod core_float_nan_compare;
+
+import stdio use *;
+
+fn b(label &str, v bool) {
+  printStr(label);
+  if v { printStr(" true\n"); } else { printStr(" false\n"); }
+}
+
+// '!=' in a generic's instance, at each float width
+fn differs[T](p T, q T) bool { p != q; }
+
+// A struct whose '==' compares a float member; its '!=' is derived from it
+struct Level {
+  pub v f32;
+  pub fn `==`(self, other Level) bool { v == other.v; }
+}
+
+fn wide() {
+  mut z f64 = 0.0;
+  imm nan = z / z;
+  imm one f64 = 1.0;
+  imm inf = one / z;
+  b("f64 nan != nan", nan != nan);
+  b("f64 nan == nan", nan == nan);
+  b("f64 nan < nan", nan < nan);
+  b("f64 nan <= nan", nan <= nan);
+  b("f64 nan > nan", nan > nan);
+  b("f64 nan >= nan", nan >= nan);
+  b("f64 nan != 1.0", nan != one);
+  b("f64 1.0 != nan", one != nan);
+  b("f64 nan == 1.0", nan == one);
+  b("f64 nan < 1.0", nan < one);
+  b("f64 1.0 != 1.0", one != one);
+  b("f64 1.0 != 2.0", one != 2.0);
+  b("f64 inf != inf", inf != inf);
+  b("f64 inf != -inf", inf != -inf);
+  b("f64 inf != nan", inf != nan);
+  b("f64 -0.0 == 0.0", -z == z);
+  b("f64 -0.0 != 0.0", -z != z);
+  b("f64 not (nan != nan)", not (nan != nan));
+  b("f64 not (nan == nan)", not (nan == nan));
+  if nan != nan { printStr("f64 branch taken\n"); } else { printStr("f64 branch not taken\n"); }
+  if nan == nan { printStr("f64 eq branch taken\n"); } else { printStr("f64 eq branch not taken\n"); }
+  mut n = 0;
+  while n != 2 and nan != nan { n = n + 1; }
+  printInt(n);
+  printStr(" loops on nan\n");
+  b("f64 generic nan", differs(nan, nan));
+  b("f64 generic ordinary", differs(one, one));
+}
+
+fn narrow() {
+  mut z f32 = 0.0f32;
+  imm nan = z / z;
+  imm one f32 = 1.0f32;
+  imm inf = one / z;
+  b("f32 nan != nan", nan != nan);
+  b("f32 nan == nan", nan == nan);
+  b("f32 nan < nan", nan < nan);
+  b("f32 nan <= nan", nan <= nan);
+  b("f32 nan > nan", nan > nan);
+  b("f32 nan >= nan", nan >= nan);
+  b("f32 nan != 1.0", nan != one);
+  b("f32 1.0 != nan", one != nan);
+  b("f32 nan == 1.0", nan == one);
+  b("f32 1.0 != 1.0", one != one);
+  b("f32 1.0 != 2.0", one != 2.0f32);
+  b("f32 inf != inf", inf != inf);
+  b("f32 inf != nan", inf != nan);
+  b("f32 -0.0 == 0.0", -z == z);
+  b("f32 -0.0 != 0.0", -z != z);
+  b("f32 not (nan != nan)", not (nan != nan));
+  if nan != nan { printStr("f32 branch taken\n"); } else { printStr("f32 branch not taken\n"); }
+  b("f32 generic nan", differs(nan, nan));
+  b("f32 generic ordinary", differs(one, one));
+}
+
+fn constants() {
+  // Folded when the compiler can: a float literal is finite, so a fold has
+  // no NaN to meet and these hold with or without it
+  b("const 1.5 != 1.5", 1.5 != 1.5);
+  b("const 1.5 != 2.5", 1.5 != 2.5);
+  b("const 0.0 != -0.0", 0.0 != -0.0);
+  b("const 0.0 == -0.0", 0.0 == -0.0);
+  b("const f32 1.5 != 1.5", 1.5f32 != 1.5f32);
+  b("const f32 1.5 != 2.5", 1.5f32 != 2.5f32);
+}
+
+fn members() {
+  mut z f32 = 0.0f32;
+  imm nan = z / z;
+  imm a = new Level(nan);
+  imm c = new Level(2.0f32);
+  imm d = new Level(2.0f32);
+  b("struct nan != nan", a != a);
+  b("struct nan == nan", a == a);
+  b("struct ordinary != same", c != d);
+  b("struct ordinary != other", a != c);
+}
+
+fn slices() {
+  mut z f32 = 0.0f32;
+  imm nan = z / z;
+  mut f1 Array[f32, 2] = [1.5f32, nan];
+  mut f2 Array[f32, 2] = [1.5f32, nan];
+  imm fs = &[]f1;
+  b("slice nan elements !=", &[]f1 != &[]f2);
+  b("slice nan elements ==", &[]f1 == &[]f2);
+  b("slice nan != itself", fs != fs);
+  b("slice nan == itself", fs == fs);
+  mut g1 Array[f32, 2] = [1.5f32, 2.5f32];
+  mut g2 Array[f32, 2] = [1.5f32, 2.5f32];
+  mut g3 Array[f32, 2] = [1.5f32, 3.5f32];
+  b("slice ordinary != same", &[]g1 != &[]g2);
+  b("slice ordinary != other", &[]g1 != &[]g3);
+  mut pz Array[f32, 1] = [0.0f32];
+  mut nz Array[f32, 1] = [-0.0f32];
+  b("slice -0.0 != 0.0", &[]pz != &[]nz);
+  mut d1 Array[f64, 2] = [1.5, 2.5];
+  mut y f64 = 0.0;
+  mut d2 Array[f64, 2] = [1.5, y / y];
+  mut d3 Array[f64, 2] = [1.5, y / y];
+  b("slice f64 nan !=", &[]d2 != &[]d3);
+  b("slice f64 nan ==", &[]d2 == &[]d3);
+  b("slice f64 ordinary !=", &[]d1 != &[]d1);
+}
+
+fn main() {
+  wide();
+  narrow();
+  constants();
+  members();
+  slices();
+}
