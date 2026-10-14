@@ -1,0 +1,160 @@
+// A rig as text: the same data as a RigSpec, written so a file or a message
+// can carry it.
+//
+//   # a comment, to the end of the line
+//   rig name
+//   chain spine spine                      # chain NAME KIND [parent=CHAIN[@BONE]]
+//     bone pelvis 0 0.9 0   0.16           # bone NAME X Y Z RADIUS
+//     bone mid    0 0 -0.4  0.17
+//   chain foreleg.R leg parent=spine@-1    # hangs from the spine's last bone
+//     bone shoulder 0.12 -0.05 0   0.07
+//   mirror foreleg.R foreleg.L parent=spine@-1
+//
+// KIND is a kind's name (spine neck head tail leg wing arm feather other) or a
+// number. '@BONE' counts from the start of the parent chain, or from its end if
+// negative; without it the parent's last bone. A line's first word says what it
+// is; indentation means nothing.
+
+pub struct RigParse {
+  pub spec RigSpec;
+  pub ok bool;
+  pub error String;
+  pub line u32;          // the line the error is on (1 is the first)
+}
+
+pub struct Number {
+  pub ok bool;
+  pub value f32;
+}
+
+fn blankByte(c u8) bool { c == ' ' or c == '\t' or c == '\r'; }
+fn digitByte(c u8) bool { c >= '0' and c <= '9'; }
+
+// The words of a line, a '#' ending it
+fn words(line &str) List[String] {
+  imm bytes &Array[u8] = line;
+  mut out = List[String].empty();
+  mut i = 0usize;
+  while i < bytes.len {
+    while i < bytes.len and blankByte(bytes[i]) { i = i + 1usize; }
+    if i < bytes.len and bytes[i] == '#' { return out; }
+    imm start = i;
+    while i < bytes.len and !blankByte(bytes[i]) and bytes[i] != '#' { i = i + 1usize; }
+    if i > start { out.push(String.fromBytes(&bytes[start..<i])); }
+  }
+  out;
+}
+
+// A decimal number: an optional sign, digits, an optional '.' and digits, an optional 'e' and exponent
+pub fn parseNumber(s &str) Number {
+  imm t &Array[u8] = s;
+  mut i = 0usize;
+  mut neg = false;
+  if t.len > 0usize and (t[0usize] == '-' or t[0usize] == '+') { neg = t[0usize] == '-'; i = 1usize; }
+  mut digits = 0usize;
+  mut v f64 = 0.;
+  while i < t.len and digitByte(t[i]) { v = v * 10. + f64.from(t[i] - '0'); i = i + 1usize; digits = digits + 1usize; }
+  if i < t.len and t[i] == '.' {
+    i = i + 1usize;
+    mut scale f64 = 0.1;
+    while i < t.len and digitByte(t[i]) { v = v + scale * f64.from(t[i] - '0'); scale = scale * 0.1; i = i + 1usize; digits = digits + 1usize; }
+  }
+  if digits == 0usize { return new Number(false, 0.); }
+  if i < t.len and (t[i] == 'e' or t[i] == 'E') {
+    i = i + 1usize;
+    mut eneg = false;
+    if i < t.len and (t[i] == '-' or t[i] == '+') { eneg = t[i] == '-'; i = i + 1usize; }
+    mut e = 0i32;
+    mut ed = 0usize;
+    while i < t.len and digitByte(t[i]) { e = e * 10i32 + i32.from(t[i] - '0'); i = i + 1usize; ed = ed + 1usize; }
+    if ed == 0usize { return new Number(false, 0.); }
+    mut k = 0i32;
+    while k < e { if eneg { v = v * 0.1; } else { v = v * 10.; } k = k + 1i32; }
+  }
+  if i != t.len { return new Number(false, 0.); }
+  new Number(true, f32.from(if neg { -v; } else { v; }));
+}
+
+fn fail(spec RigSpec, why &str, line usize) RigParse {
+  new RigParse(spec, false, String.from(why), u32.from(line));
+}
+
+// "parent=NAME" or "parent=NAME@N" read into (name, bone); bone 0x7fffffff when there is none
+struct ParentRef {
+  ok bool;
+  name String;
+  bone i32;
+}
+
+fn parseParent(word &str) ParentRef {
+  if !word.startsWith("parent=") { return new ParentRef(false, String.empty(), 0i32); }
+  imm rest = word.sliceFrom(7usize);
+  imm at = rest.find("@");
+  match at {
+    case imm k Some {
+      imm n = parseNumber(rest.sliceFrom(k + 1usize));
+      if !n.ok { return new ParentRef(false, String.empty(), 0i32); }
+      new ParentRef(true, String.from(rest.slice(0usize, k)), i32.from(n.value));
+    }
+    case is None { new ParentRef(true, String.from(rest), -1i32); }
+  }
+}
+
+pub fn parseRig(text &str) RigParse {
+  mut spec = RigSpec.make("rig");
+  imm all = String.from(text).lines();
+  mut current = -1i32;
+  mut ln = 0usize;
+  while ln < all.len() {
+    imm w = words(all[ln].view());
+    ln = ln + 1usize;
+    if w.len() == 0usize { continue; }
+    imm head = w[0usize].view();
+    if head == "rig" {
+      if w.len() < 2usize { return fail(spec, "rig needs a name", ln); }
+      spec.name = String.from(w[1usize].view());
+    } elif head == "chain" {
+      if w.len() < 3usize { return fail(spec, "chain needs a name and a kind", ln); }
+      mut kind = kindFromName(w[2usize].view());
+      if kind < 0i32 {
+        imm kn = parseNumber(w[2usize].view());
+        if !kn.ok { return fail(spec, "chain's kind is not a kind's name or a number", ln); }
+        kind = i32.from(kn.value);
+      }
+      mut parent = String.empty();
+      mut pbone = -1i32;
+      if w.len() >= 4usize {
+        imm pr = parseParent(w[3usize].view());
+        if !pr.ok { return fail(spec, "chain's fourth word should be parent=NAME or parent=NAME@N", ln); }
+        parent = pr.name.copy();
+        pbone = pr.bone;
+      }
+      current = i32.from(spec.chain(w[1usize].view(), u32.from(kind), parent.view(), pbone));
+    } elif head == "bone" {
+      if current < 0i32 { return fail(spec, "a bone before any chain", ln); }
+      if w.len() < 6usize { return fail(spec, "bone needs a name, x, y, z and a radius", ln); }
+      imm x = parseNumber(w[2usize].view());
+      imm y = parseNumber(w[3usize].view());
+      imm z = parseNumber(w[4usize].view());
+      imm r = parseNumber(w[5usize].view());
+      if !x.ok or !y.ok or !z.ok or !r.ok { return fail(spec, "a bone's numbers are not numbers", ln); }
+      spec.bone(usize.from(current), w[1usize].view(), new Vec3(x.value, y.value, z.value), r.value);
+    } elif head == "mirror" {
+      if w.len() < 3usize { return fail(spec, "mirror needs the chain to copy and the new name", ln); }
+      mut parent = String.empty();
+      mut pbone = -1i32;
+      if w.len() >= 4usize {
+        imm pr = parseParent(w[3usize].view());
+        if !pr.ok { return fail(spec, "mirror's fourth word should be parent=NAME or parent=NAME@N", ln); }
+        parent = pr.name.copy();
+        pbone = pr.bone;
+      }
+      imm made = spec.mirror(w[1usize].view(), w[2usize].view(), parent.view(), pbone);
+      if made < 0i32 { return fail(spec, "mirror: there is no such chain to copy", ln); }
+      current = made;
+    } else {
+      return fail(spec, "a line must begin with rig, chain, bone or mirror", ln);
+    }
+  }
+  new RigParse(spec, true, String.empty(), 0u32);
+}

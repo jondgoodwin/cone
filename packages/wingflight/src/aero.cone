@@ -1,0 +1,102 @@
+// Aerodynamics of a wing section: lift and drag coefficients over every angle of attack, and the force on a
+// section moving through the air.
+//
+// COEFFICIENTS. Below the stall, the finite-wing lift slope and the parabolic drag polar:
+//     CL = a alpha,  a = 2 pi / (1 + 2 / AR)   (Prandtl's lifting-line correction of the thin-aerofoil 2 pi)
+//     CD = CD0 + CL^2 / (pi e AR)               (profile drag plus induced drag)
+// Past the stall angle, Viterna and Corrigan's post-stall extrapolation (NASA, "Fixed pitch rotor performance of
+// large horizontal axis wind turbines", 1982), the standard of wind-turbine and helicopter codes for the whole range
+// of angle up to the flat-plate limit at 90 degrees:
+//     CL = A1 sin 2 alpha + A2 cos^2 alpha / sin alpha
+//     CD = B1 sin^2 alpha + B2 cos alpha
+//     A1 = CDmax / 2,  B1 = CDmax,  CDmax = 1.11 + 0.018 AR   (the drag of a flat plate of aspect ratio AR)
+//     A2 = (CLs - CDmax sin as cos as) sin as / cos^2 as,  B2 = (CDs - CDmax sin^2 as) / cos as
+// with (as, CLs, CDs) the values at the stall, so the two pieces meet; at 90 degrees CL is 0 and CD is CDmax. The
+// section is treated as symmetric: CL is odd in alpha, CD is even, and an angle past 90 degrees is its supplement
+// (the plate seen from behind). This is a thin-section model with no camber: a cambered wing has its zero-lift
+// angle below zero, which the caller adds to alpha as the wing's INCIDENCE.
+//
+// FORCE ON A SECTION. A section of area `area` moving through still air with velocity (vf, vn), the components
+// along its chord direction and along its normal (up), at incidence `incidence` (the chord's angle above the
+// forward direction): the velocity's direction has angle atan2(vn, vf), the angle of attack is the chord's angle
+// less that, q = rho |v|^2 / 2, the drag is along -v and the lift perpendicular to it (rotated a quarter turn
+// towards the normal). This is the quasi-steady blade element of DeLaurier's flapping-wing model (An aerodynamic
+// model for flapping-wing flight, Aeronautical Journal 1993) taken to one element a wing at the effective radius,
+// without his added mass, leading-edge suction or dynamic stall: what a flap adds to the section's velocity
+// (r theta-dot along the normal) is what tilts the force forward on the downstroke, which is the thrust.
+
+pub const RHO = 1.225;          // kg/m^3 sea-level air
+
+pub struct Aero {
+  pub aspectRatio f32;          // span^2 / wing area
+  pub cd0 f32;                  // profile drag coefficient
+  pub oswald f32;               // the span efficiency, 0.7 to 1
+  pub stall f32;                // the stall angle, radians (about 0.26, 15 degrees)
+
+  pub fn make(aspectRatio f32, cd0 f32, oswald f32, stall f32) Aero { new Aero(aspectRatio, cd0, oswald, stall); }
+
+  // The lift slope per radian of the finite wing
+  pub fn slope(self &) f32 { 2. * pi / (1. + 2. / aspectRatio); }
+
+  // The flat plate's drag coefficient at 90 degrees (Viterna and Corrigan)
+  pub fn cdMax(self &) f32 { 1.11 + 0.018 * aspectRatio; }
+
+  // The lift coefficient at the stall, and the drag coefficient there
+  pub fn clStall(self &) f32 { self.slope() * stall; }
+  pub fn cdStall(self &) f32 {
+    imm cl = self.clStall();
+    cd0 + cl * cl / (pi * oswald * aspectRatio);
+  }
+}
+
+pub struct Coefficients {
+  pub cl f32;
+  pub cd f32;
+}
+
+// CL and CD at 'alpha' radians, any angle
+pub fn coefficients(a &Aero, alpha f32) Coefficients {
+  // Fold the angle into [0, pi/2]: odd in lift past the sign, an angle past 90 degrees is its supplement
+  mut x = alpha;
+  x = x - 2. * pi * libc.floorf(x / (2. * pi) + 0.5);       // -pi to pi
+  mut sign f32 = 1.;
+  if x < 0. { sign = -1.; x = -x; }
+  if x > pi * 0.5 { x = pi - x; sign = -sign; }
+  if x <= a.stall {
+    imm cl = a.slope() * x;
+    return new Coefficients(sign * cl, a.cd0 + cl * cl / (pi * a.oswald * a.aspectRatio));
+  }
+  imm cdMax = a.cdMax();
+  imm sa = sin(a.stall);
+  imm ca = cos(a.stall);
+  imm a2 = (a.clStall() - cdMax * sa * ca) * sa / (ca * ca);
+  imm b2 = (a.cdStall() - cdMax * sa * sa) / ca;
+  imm s = sin(x);
+  imm c = cos(x);
+  new Coefficients(sign * (0.5 * cdMax * sin(2. * x) + a2 * c * c / s), cdMax * s * s + b2 * c);
+}
+
+// The force on a section: (along the chord direction, along the normal), newtons
+pub struct SectionForce {
+  pub forward f32;
+  pub normal f32;
+  pub lift f32;
+  pub drag f32;
+  pub alpha f32;
+}
+
+pub fn sectionForce(a &Aero, area f32, vf f32, vn f32, incidence f32) SectionForce {
+  imm speed2 = vf * vf + vn * vn;
+  if speed2 < 0.000001 { return new SectionForce(0., 0., 0., 0., 0.); }
+  imm speed = speed2.sqrt();
+  imm df = vf / speed;
+  imm dn = vn / speed;
+  // The angle of attack: the chord's angle less the velocity's
+  imm alpha = incidence - atan2(vn, vf);
+  imm c = coefficients(a, alpha);
+  imm q = 0.5 * RHO * speed2 * area;
+  imm lift = q * c.cl;
+  imm drag = q * c.cd;
+  // Lift: the velocity direction turned a quarter turn toward the normal: (-dn, df); drag: against it
+  new SectionForce(lift * (-dn) - drag * df, lift * df - drag * dn, lift, drag, alpha);
+}
