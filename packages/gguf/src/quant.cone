@@ -1,0 +1,228 @@
+// ======== Quantising f32 into blocks, for making test models ========
+//
+// These write the layouts 'dequant.cone' describes, from f32 values. They are
+// simple quantisers, built for making synthetic models and for tests, not
+// ggml's: Q8_0 and Q4_0 follow ggml's reference rounding; Q4_K and Q6_K pick
+// each sub-block's scale from its range (ggml searches for the scale that
+// minimises the error, which this does not), so a block made here is valid
+// and reads back within a step of the scale, not within ggml's smaller error.
+
+// The nearest whole number, halves away from zero (C's roundf)
+fn roundAway(x f32) i32 {
+  if x >= 0.0 { return i32.from(x + 0.5); }
+  0i32 - i32.from(0.0 - x + 0.5);
+}
+
+fn clampI(v i32, lo i32, hi i32) i32 {
+  if v < lo { return lo; }
+  if v > hi { return hi; }
+  v;
+}
+
+fn putHalf(out &mut List[u8], bits u16) {
+  out.push(u8.from(bits & 0xFFu16));
+  out.push(u8.from(bits >> 8u16));
+}
+
+fn putLe32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from(v >> 24u32));
+}
+
+fn putLe64(out &mut List[u8], v u64) {
+  putLe32(out, u32.from(v & 0xFFFFFFFFu64));
+  putLe32(out, u32.from(v >> 32u64));
+}
+
+fn absF(x f32) f32 { if x < 0.0 { 0.0 - x; } else { x; }; }
+
+fn quantQ8_0(x &Array[f32], at usize, out &mut List[u8]) {
+  mut amax = 0.0;
+  mut j = 0usize;
+  while j < 32usize {
+    if absF(x[at + j]) > amax { amax = absF(x[at + j]); }
+    j = j + 1usize;
+  }
+  imm d = amax / 127.0;
+  imm id = if d != 0.0 { 1.0 / d; } else { 0.0; };
+  putHalf(out, f32ToHalf(d));
+  j = 0usize;
+  while j < 32usize {
+    out.push(u8.from(roundAway(x[at + j] * id)));
+    j = j + 1usize;
+  }
+}
+
+fn quantQ4_0(x &Array[f32], at usize, out &mut List[u8]) {
+  mut amax = 0.0;
+  mut biggest = 0.0;
+  mut j = 0usize;
+  while j < 32usize {
+    if absF(x[at + j]) > amax { amax = absF(x[at + j]); biggest = x[at + j]; }
+    j = j + 1usize;
+  }
+  imm d = biggest / -8.0;
+  imm id = if d != 0.0 { 1.0 / d; } else { 0.0; };
+  putHalf(out, f32ToHalf(d));
+  j = 0usize;
+  while j < 16usize {
+    imm q0 = clampI(i32.from(x[at + j] * id + 8.5), 0i32, 15i32);
+    imm q1 = clampI(i32.from(x[at + j + 16usize] * id + 8.5), 0i32, 15i32);
+    out.push(u8.from(q0 | (q1 << 4i32)));
+    j = j + 1usize;
+  }
+}
+
+fn quantQ4_K(x &Array[f32], at usize, out &mut List[u8]) {
+  mut scale = new Array[f32, 8] <- fill 0.0;
+  mut offset = new Array[f32, 8] <- fill 0.0;
+  mut maxScale = 0.0;
+  mut maxOffset = 0.0;
+  mut s = 0usize;
+  while s < 8usize {
+    mut lo = 0.0;
+    mut hi = 0.0;
+    mut l = 0usize;
+    while l < 32usize {
+      imm v = x[at + 32usize * s + l];
+      if v < lo { lo = v; }
+      if v > hi { hi = v; }
+      l = l + 1usize;
+    }
+    scale[s] = (hi - lo) / 15.0;
+    offset[s] = 0.0 - lo;
+    if scale[s] > maxScale { maxScale = scale[s]; }
+    if offset[s] > maxOffset { maxOffset = offset[s]; }
+    s = s + 1usize;
+  }
+  imm d16 = f32ToHalf(maxScale / 63.0);
+  imm dmin16 = f32ToHalf(maxOffset / 63.0);
+  imm d = halfToF32(d16);
+  imm dmin = halfToF32(dmin16);
+  mut sc = new Array[i32, 8] <- fill 0i32;
+  mut mn = new Array[i32, 8] <- fill 0i32;
+  s = 0usize;
+  while s < 8usize {
+    sc[s] = if d > 0.0 { clampI(roundAway(scale[s] / d), 0i32, 63i32); } else { 0i32; };
+    mn[s] = if dmin > 0.0 { clampI(roundAway(offset[s] / dmin), 0i32, 63i32); } else { 0i32; };
+    s = s + 1usize;
+  }
+  putHalf(out, d16);
+  putHalf(out, dmin16);
+  // The scales and mins, 6 bits each, packed as 'dequant.cone' reads them
+  mut packed = new Array[i32, 12] <- fill 0i32;
+  mut j = 0usize;
+  while j < 4usize {
+    packed[j] = sc[j] | ((sc[j + 4usize] >> 4i32) << 6i32);
+    packed[j + 4usize] = mn[j] | ((mn[j + 4usize] >> 4i32) << 6i32);
+    packed[j + 8usize] = (sc[j + 4usize] & 15i32) | ((mn[j + 4usize] & 15i32) << 4i32);
+    j = j + 1usize;
+  }
+  j = 0usize;
+  while j < 12usize {
+    out.push(u8.from(packed[j]));
+    j = j + 1usize;
+  }
+  // The 4-bit values: sub-blocks 2g (low nibbles) and 2g+1 (high) share 32 bytes
+  mut g = 0usize;
+  while g < 4usize {
+    imm es0 = d * f32.from(sc[2usize * g]);
+    imm em0 = dmin * f32.from(mn[2usize * g]);
+    imm es1 = d * f32.from(sc[2usize * g + 1usize]);
+    imm em1 = dmin * f32.from(mn[2usize * g + 1usize]);
+    mut l = 0usize;
+    while l < 32usize {
+      imm v0 = x[at + 64usize * g + l];
+      imm v1 = x[at + 64usize * g + 32usize + l];
+      imm q0 = if es0 > 0.0 { clampI(roundAway((v0 + em0) / es0), 0i32, 15i32); } else { 0i32; };
+      imm q1 = if es1 > 0.0 { clampI(roundAway((v1 + em1) / es1), 0i32, 15i32); } else { 0i32; };
+      out.push(u8.from(q0 | (q1 << 4i32)));
+      l = l + 1usize;
+    }
+    g = g + 1usize;
+  }
+}
+
+fn quantQ6_K(x &Array[f32], at usize, out &mut List[u8]) {
+  mut scale = new Array[f32, 16] <- fill 0.0;
+  mut maxScale = 0.0;
+  mut s = 0usize;
+  while s < 16usize {
+    mut amax = 0.0;
+    mut l = 0usize;
+    while l < 16usize {
+      if absF(x[at + 16usize * s + l]) > amax { amax = absF(x[at + 16usize * s + l]); }
+      l = l + 1usize;
+    }
+    scale[s] = amax / 32.0;
+    if scale[s] > maxScale { maxScale = scale[s]; }
+    s = s + 1usize;
+  }
+  imm d16 = f32ToHalf(maxScale / 127.0);
+  imm d = halfToF32(d16);
+  mut sc = new Array[i32, 16] <- fill 0i32;
+  s = 0usize;
+  while s < 16usize {
+    sc[s] = if d > 0.0 { clampI(roundAway(scale[s] / d), 0i32, 127i32); } else { 0i32; };
+    s = s + 1usize;
+  }
+  // The 6-bit values (q + 32), by element
+  mut q = new Array[i32, 256] <- fill 0i32;
+  mut e = 0usize;
+  while e < 256usize {
+    imm es = d * f32.from(sc[e / 16usize]);
+    q[e] = if es > 0.0 { clampI(roundAway(x[at + e] / es), -32i32, 31i32) + 32i32; } else { 32i32; };
+    e = e + 1usize;
+  }
+  mut ql = new Array[i32, 128] <- fill 0i32;
+  mut qh = new Array[i32, 64] <- fill 0i32;
+  mut h = 0usize;
+  while h < 2usize {
+    mut l = 0usize;
+    while l < 32usize {
+      imm q1 = q[128usize * h + l];
+      imm q2 = q[128usize * h + l + 32usize];
+      imm q3 = q[128usize * h + l + 64usize];
+      imm q4 = q[128usize * h + l + 96usize];
+      ql[64usize * h + l] = (q1 & 15i32) | ((q3 & 15i32) << 4i32);
+      ql[64usize * h + l + 32usize] = (q2 & 15i32) | ((q4 & 15i32) << 4i32);
+      qh[32usize * h + l] = (q1 >> 4i32) | ((q2 >> 4i32) << 2i32) | ((q3 >> 4i32) << 4i32) | ((q4 >> 4i32) << 6i32);
+      l = l + 1usize;
+    }
+    h = h + 1usize;
+  }
+  mut i = 0usize;
+  while i < 128usize { out.push(u8.from(ql[i])); i = i + 1usize; }
+  i = 0usize;
+  while i < 64usize { out.push(u8.from(qh[i])); i = i + 1usize; }
+  i = 0usize;
+  while i < 16usize { out.push(u8.from(sc[i])); i = i + 1usize; }
+  putHalf(out, d16);
+}
+
+// Quantises x (a whole number of blocks of the type) and appends the blocks'
+// bytes to out. Answers the number of bytes appended. A plain float type is
+// converted, not quantised (F16 and BF16 round to nearest).
+pub fn quantize(kind &TensorType, x &Array[f32], out &mut List[u8]) Result[usize, GgufError] {
+  imm bs = kind.blockSize();
+  if x.len % bs != 0usize {
+    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the element count is not a whole number of blocks"));
+  }
+  imm before = out.len();
+  mut at = 0usize;
+  while at < x.len {
+    match kind {
+      case is F32 { putLe32(out, x[at] as u32); }
+      case is F16 { putHalf(out, f32ToHalf(x[at])); }
+      case is BF16 { putHalf(out, f32ToBfloat(x[at])); }
+      case is Q4_0 { quantQ4_0(x, at, out); }
+      case is Q8_0 { quantQ8_0(x, at, out); }
+      case is Q4_K { quantQ4_K(x, at, out); }
+      case is Q6_K { quantQ6_K(x, at, out); }
+    }
+    at = at + bs;
+  }
+  Ok[usize, GgufError](out.len() - before);
+}
