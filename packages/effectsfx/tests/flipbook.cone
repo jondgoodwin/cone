@@ -1,0 +1,144 @@
+// The baked flipbook, read back from the GPU: an explosion is a description (FlipbookDesc), baked
+// into an atlas of 8 x 8 frames of 48 pixels, and its numbers say what the frames show.
+//
+// 1. Early on the fireball is small and hot: a first-quarter frame has a bright centre (a light
+//    value well over 2) and most of its square empty.
+// 2. It grows: the share of the frame it covers (alpha over a fifth) rises from the first quarter
+//    to the middle.
+// 3. It cools into smoke: late frames are dark (nothing over 1 in light) but still cover more than
+//    the early frame did, and are opaque in the middle.
+// 4. It ends: the last frame is empty (the fade), and the edge of every frame is empty (no square
+//    shows when it is played).
+// 5. A hotter description (brightness doubled) bakes a brighter early frame: the description, not
+//    the code, sets the look.
+// 6. No Vulkan call failed and the validation layer said nothing.
+
+mod flipbook;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import gpu use *;
+import effectsfx use *;
+
+const GRID = 8u32;
+const CELL = 48u32;
+
+// An IEEE half as a float
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  imm exp = i32.from((bits >> 10u32) & 31u32);
+  imm mant = f32.from(bits & 1023u32);
+  if exp == 0 { return sign * mant * 5.9604645e-8; }
+  if exp == 31 { return sign * 65504.; }
+  sign * (1. + mant / 1024.) * libc.powf(2., f32.from(exp - 15));
+}
+
+struct Frame {
+  maxLight f32;          // the brightest rgb sum / 3 in the frame
+  coverage f32;          // the share of pixels with alpha over a fifth
+  centreAlpha f32;
+  centreLight f32;
+  edge f32;              // the greatest alpha on the frame's border
+}
+
+fn frameStats(p *u16, frame u32) Frame {
+  imm side = GRID * CELL;
+  imm fx = (frame % GRID) * CELL;
+  imm fy = (frame / GRID) * CELL;
+  mut s = new Frame(0., 0., 0., 0., 0.);
+  mut over = 0u32;
+  mut y = 0u32;
+  while y < CELL {
+    mut x = 0u32;
+    while x < CELL {
+      imm at = ((fy + y) * side + fx + x) * 4u32;
+      imm r = halfToFloat(*(p + usize.from(at)));
+      imm g = halfToFloat(*(p + usize.from(at + 1u32)));
+      imm b = halfToFloat(*(p + usize.from(at + 2u32)));
+      imm a = halfToFloat(*(p + usize.from(at + 3u32)));
+      imm light = (r + g + b) / 3.;
+      if light > s.maxLight { s.maxLight = light; }
+      if a > 0.2 { over = over + 1u32; }
+      if x == CELL / 2u32 and y == CELL / 2u32 { s.centreAlpha = a; s.centreLight = light; }
+      if x == 0u32 or y == 0u32 or x == CELL - 1u32 or y == CELL - 1u32 {
+        if a > s.edge { s.edge = a; }
+      }
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  s.coverage = f32.from(over) / f32.from(CELL * CELL);
+  s;
+}
+
+fn bakeAndRead(device &mut Device, desc &FlipbookDesc) List[Frame] {
+  mut system = FlipbookSystem.create(device, TEXTURE_FORMAT_RGBA16_FLOAT);
+  require(system.isValid(), "a flipbook system");
+  imm id = system.addFlipbook(device, desc);
+  expectUInt(u64.from(id), 0u64, "the first flipbook is number 0");
+  imm side = GRID * CELL;
+  mut readback = device.createBuffer(u64.from(side) * u64.from(side) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer(system.atlasTexture(0usize), &readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm p = readback.mappedRange() as *u16;
+  mut frames = List[Frame].empty();
+  mut f = 0u32;
+  while f < GRID * GRID {
+    frames.push(frameStats(p, f));
+    f = f + 1u32;
+  }
+  frames;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("effectsfx flipbook");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut desc = FlipbookDesc.make();
+  desc.cell = CELL;
+  imm frames = bakeAndRead(&mut device, &desc);
+  imm early = frames[8usize];
+  imm middle = frames[32usize];
+  imm late = frames[52usize];
+  imm last = frames[63usize];
+  expect(early.maxLight > 2., "an early frame has a hot, bright centre");
+  expect(early.coverage < 0.4, "and is mostly empty");
+  expect(middle.coverage > early.coverage, "the fireball has grown by the middle");
+  expect(late.maxLight < 1., "late frames are dark smoke, nothing over 1");
+  expect(late.coverage > early.coverage, "yet cover more than the early frame");
+  expect(late.centreAlpha > 0.3, "and are opaque in the middle");
+  expect(last.coverage < 0.01, "the last frame is empty");
+  mut f = 0usize;
+  mut edges = 0f32;
+  while f < frames.len() {
+    if frames[f].edge > edges { edges = frames[f].edge; }
+    f = f + 1usize;
+  }
+  expect(edges < 0.02, "no frame touches its border: no square shows");
+
+  mut hot = FlipbookDesc.make();
+  hot.cell = CELL;
+  hot.brightness = desc.brightness * 2.;
+  imm hotter = bakeAndRead(&mut device, &hot);
+  expect(hotter[8usize].maxLight > early.maxLight * 1.5, "twice the brightness bakes a brighter early frame");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

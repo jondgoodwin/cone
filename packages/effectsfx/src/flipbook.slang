@@ -75,17 +75,33 @@ FullscreenOutput fullscreenVertex(uint vid : SV_VulkanVertexID) {
 
 // Gas density and temperature at 'p' (the cloud's own units), time 't'
 float2 gasAt(float3 p, float t, uint seed, int octaves) {
-    float R = lerp(bake.shape.x, bake.shape.y, 1.0 - exp(-bake.shape.z * t));
+    // (the density's soft edge reaches in to about 0.7 of this radius, so it is scaled up to fill the cell)
+    float R = lerp(bake.shape.x, bake.shape.y, 1.0 - exp(-bake.shape.z * t)) * 1.45;
     float3 c = float3(0.0, -0.12 + bake.shape.w * pow(t, 1.3), 0.0);
     float3 q = p - c;
     // Squash a little as it rises and cools (a heavy ball flattens into a cap)
     q.y *= 1.0 + 0.25 * t;
-    float n = fbm3(q * 2.6 + float3(0.0, -t * 0.9, 0.0), seed, octaves, 2.0, 0.5).value;
-    float amp = bake.gas.x * (0.25 + 0.9 * t);
+    // The edge is bent by a domain-warped fBm: billowing lobes (a cauliflower), growing with time
+    float3 f = q * 3.1 + float3(0.0, -t * 1.1, 0.0);
+    float3 warp = float3(0.0, 0.0, 0.0);
+    if (octaves >= 3) {
+        // (the cheap taps the shadow takes skip the warp and the clumps)
+        warp = float3(fbm3(f * 0.7 + 3.1, seed + 3u, 2, 2.0, 0.5).value,
+                      fbm3(f * 0.7 + 8.7, seed + 4u, 2, 2.0, 0.5).value,
+                      fbm3(f * 0.7 + 1.3, seed + 5u, 2, 2.0, 0.5).value);
+    }
+    float n = fbm3(f + warp * 0.9, seed, octaves, 2.1, 0.55).value;
+    float amp = bake.gas.x * (0.55 + 1.2 * t);
     float d = length(q) / R + n * amp;
-    float dens = saturate(1.0 - smoothstep(0.35, 1.0, d));
+    float dens = saturate(1.0 - smoothstep(0.4, 0.95, d));
+    // Clumps inside the gas, so it is not a uniform ball
+    float inner = 0.0;
+    if (octaves >= 3) { inner = fbm3(f * 1.7 + 11.0, seed + 7u, 2, 2.0, 0.5).value; }
+    dens = saturate(dens * (0.85 + 0.55 * inner));
     float core = saturate(1.0 - d);
-    float heat = saturate(core * exp(-bake.gas.y * t) * 1.15 + 0.25 * n * exp(-bake.gas.y * t));
+    float cool = exp(-bake.gas.y * t);
+    // The skin cools first: heat falls steeply towards the edge, with hot veins through the noise
+    float heat = saturate(pow(core, 1.2) * cool * 1.5 + 0.5 * n * cool + 0.2 * inner * cool - 0.1);
     return float2(dens, heat);
 }
 

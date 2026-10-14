@@ -105,6 +105,9 @@ pub struct ParticleSystem {
   pub spawned u32 = 0u32;          // particles spawned last frame
   pub dropped u32 = 0u32;          // spawn orders dropped for want of room in the frame's list
   pub frame u32 = 0u32;
+  longestLife f32 = 0.;            // the longest any registered class lives
+  quietAfter f32 = -1.;            // after this clock time nothing can be alive until the next order
+  pub idle bool = true;            // the last frame did no work: no particle could be alive
 
   // A pool of 'capacity' particles drawing into a frame of 'colorFormat'
   pub fn create(device &mut Device, colorFormat u32, capacity u32) ParticleSystem {
@@ -182,6 +185,8 @@ pub struct ParticleSystem {
   pub fn addClass(self &mut, c &ParticleClass) u32 {
     if classes.len() >= MAX_CLASSES { return 0u32; }
     classes.push(*c);
+    imm longest = c.life * (1. + c.lifeJitter);
+    if longest > longestLife { longestLife = longest; }
     classesDirty = true;
     u32.from(classes.len() - 1usize);
   }
@@ -249,6 +254,10 @@ pub struct ParticleSystem {
   // drawn the scene this frame ('renderScene'): its depth is what particles collide with.
   pub fn simulate(self &mut, device &mut Device, encoder &mut CommandEncoder, fx &ImageFx, camera &Camera,
       now f32, dt f32) {
+    // Nothing ordered and nothing left alive: no pass at all
+    if pending.len() > 0usize { quietAfter = now + longestLife + dt; }
+    idle = now > quietAfter;
+    if idle { return; }
     self.bindFrame(device, fx);
     if classesDirty { self.writeClasses(device); }
     // The batches: each a run of consecutive new slots after the last frame's
@@ -302,16 +311,14 @@ pub struct ParticleSystem {
   }
 
   // Add the pool into 'target' (the HDR frame the scene is in, its contents kept), over what is
-  // there: sparks as light, smoke as soft puffs
-  pub fn render(self &mut, encoder &mut CommandEncoder, target &Texture) {
-    if !drawGroup.isValid() { return; }
+  // there: the particles of one style, PARTICLE_SPARK as light or PARTICLE_SMOKE as soft puffs.
+  // Two calls (smoke, then sparks) let other layers (the flipbooks) go between them.
+  pub fn render(self &mut, encoder &mut CommandEncoder, target &Texture, style u32) {
+    if idle or !drawGroup.isValid() { return; }
     imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
       clearValue: new Color(0., 0., 0., 0.));
     mut pass = encoder.beginRenderPass(&color);
-    pass.setPipeline(&smokePipeline);
-    pass.setBindGroup(0u32, &drawGroup);
-    pass.draw(6u32, capacity, 0u32, 0u32);
-    pass.setPipeline(&sparkPipeline);
+    if style == PARTICLE_SMOKE { pass.setPipeline(&smokePipeline); } else { pass.setPipeline(&sparkPipeline); }
     pass.setBindGroup(0u32, &drawGroup);
     pass.draw(6u32, capacity, 0u32, 0u32);
     pass.end();
