@@ -161,17 +161,19 @@ pub struct EffectPlayer {
   pub lights EffectLights;
   pub debris DebrisSet;
   pub shake CameraShake;
+  pub lowRes LowResLayer;
   registered List[Registered];
   playing List[Playing];
   decals List[ActiveDecal];
   counter u32 = 0u32;
   pub played u32 = 0u32;            // effects played so far
+  pub halfResolution bool = false;  // draw smoke and flipbooks at half the frame's size (a quarter of the fragments)
 
   // A player into frames of 'colorFormat' (the HDR frame's), its particle pool 'capacity' strong
   pub fn create(device &mut Device, colorFormat u32, capacity u32) EffectPlayer {
     new EffectPlayer(ParticleSystem.create(device, colorFormat, capacity), FlipbookSystem.create(device, colorFormat),
       DistortionSystem.create(device, colorFormat), EffectLights.create(), DebrisSet.create(), CameraShake.make(),
-      List[Registered].empty(), List[Playing].empty(), List[ActiveDecal].empty());
+      LowResLayer.create(device, colorFormat), List[Registered].empty(), List[Playing].empty(), List[ActiveDecal].empty());
   }
 
   pub fn isValid(self &) bool { particles.isValid() and flipbooks.isValid() and distortion.isValid(); }
@@ -376,9 +378,18 @@ pub struct EffectPlayer {
   // the flipbook explosions and the particles added into the frame
   pub fn drawLayers(self &mut, device &mut Device, encoder &mut CommandEncoder, fx &ImageFx, target &Texture,
       camera &Camera, now f32) {
-    particles.render(encoder, target, PARTICLE_SMOKE);
-    flipbooks.render(device, encoder, fx, target, camera, now);
-    particles.render(encoder, target, PARTICLE_SPARK);
+    if halfResolution and (!particles.idle or flipbooks.boards.len() > 0usize) {
+      // Smoke and flipbooks into a layer of half the frame's size, then laid over the frame
+      lowRes.ensure(device, target.width, target.height);
+      lowRes.clear(encoder);
+      particles.render(encoder, &lowRes.texture, PARTICLE_SMOKE, 2.);
+      flipbooks.render(device, encoder, fx, &lowRes.texture, camera, now, 2.);
+      lowRes.composite(encoder, target);
+    } else {
+      particles.render(encoder, target, PARTICLE_SMOKE, 1.);
+      flipbooks.render(device, encoder, fx, target, camera, now, 1.);
+    }
+    particles.render(encoder, target, PARTICLE_SPARK, 1.);
   }
 
   // and the distortions, over everything else

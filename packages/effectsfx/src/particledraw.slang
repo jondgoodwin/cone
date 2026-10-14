@@ -34,6 +34,17 @@ import particlecommon;
 [[vk::binding(4, 0)]] StructuredBuffer<float4> pool;
 [[vk::binding(5, 0)]] Texture2D<float> sceneDepth;
 
+// What the draw is into: 1 for the frame itself, 2 for a layer of half its size (a half-resolution
+// pixel's place in the full-resolution depth is twice its own)
+struct DrawScale {
+    float scale;
+    float pad0;
+    float pad1;
+    float pad2;
+};
+
+[[vk::push_constant]] ConstantBuffer<DrawScale> draw;
+
 struct VertexOutput {
     float4 position : SV_Position;
     float2 corner;              // in [-1, 1]
@@ -114,7 +125,7 @@ VertexOutput smokeVertex(uint vid : SV_VulkanVertexID, uint iid : SV_VulkanInsta
 
 // 1 where the fragment is in front of the scene by 'softness', 0 where it is behind
 float depthFade(float4 svPosition, float softness) {
-    float z = sceneDepth.Load(int3(int2(svPosition.xy), 0));
+    float z = sceneDepth.Load(int3(int2(svPosition.xy * draw.scale), 0));
     float sceneD = viewDepth(fx, z);
     float myD = viewDepth(fx, svPosition.z);
     return saturate((sceneD - myD) / softness);

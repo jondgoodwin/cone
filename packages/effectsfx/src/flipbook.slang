@@ -59,6 +59,16 @@ struct BillboardFrame {
 [[vk::binding(5, 0)]] StructuredBuffer<float4> boards;
 [[vk::binding(6, 0)]] Texture2D<float> sceneDepth;
 
+// What the draw is into: 1 for the frame itself, 2 for a layer of half its size
+struct DrawScale {
+    float scale;
+    float pad0;
+    float pad1;
+    float pad2;
+};
+
+[[vk::push_constant]] ConstantBuffer<DrawScale> draw;
+
 // ---- Baking ----
 
 struct FullscreenOutput {
@@ -96,12 +106,12 @@ float2 gasAt(float3 p, float t, uint seed, int octaves) {
     float dens = saturate(1.0 - smoothstep(0.4, 0.95, d));
     // Clumps inside the gas, so it is not a uniform ball
     float inner = 0.0;
-    if (octaves >= 3) { inner = fbm3(f * 1.7 + 11.0, seed + 7u, 2, 2.0, 0.5).value; }
-    dens = saturate(dens * (0.85 + 0.55 * inner));
+    if (octaves >= 3) { inner = fbm3(f * 1.9 + 11.0 + warp * 0.8, seed + 7u, 3, 2.1, 0.55).value; }
+    dens = saturate(dens * (0.7 + 0.95 * inner));
     float core = saturate(1.0 - d);
     float cool = exp(-bake.gas.y * t);
     // The skin cools first: heat falls steeply towards the edge, with hot veins through the noise
-    float heat = saturate(pow(core, 1.2) * cool * 1.5 + 0.5 * n * cool + 0.2 * inner * cool - 0.1);
+    float heat = saturate(pow(core, 1.2) * cool * 1.4 + 0.7 * n * cool + 0.45 * inner * cool - 0.12);
     return float2(dens, heat);
 }
 
@@ -151,7 +161,7 @@ float4 bakeFragment(FullscreenOutput input) : SV_Target {
         float shadowDens = gasAt(p + L * 0.22, t, seed, 2).x;
         float shadow = exp(-shadowDens * 2.6);
         float3 lit = bake.smoke.xyz * (bake.light.w + (1.0 - bake.light.w) * shadow);
-        float sigma = dens * (1.4 + 5.0 * soot) * bake.smoke.w;
+        float sigma = dens * (2.4 + 5.0 * soot) * bake.smoke.w;
         float a = 1.0 - exp(-sigma * dz * 2.2);
         float emissive = dens * dz * 2.2 * (1.0 - soot * 0.5);
         acc += trans * (emit * emissive * 1.6 + lit * a * soot * 0.9 + lit * a * (1.0 - soot) * 0.15);
@@ -225,7 +235,7 @@ float4 drawFragment(BoardOutput input) : SV_Target {
     float4 a = sampleFrame(input.frames.x, input.corner);
     float4 b = sampleFrame(input.frames.y, input.corner);
     float4 s = lerp(a, b, input.frames.z);
-    float z = sceneDepth.Load(int3(int2(input.position.xy), 0));
+    float z = sceneDepth.Load(int3(int2(input.position.xy * draw.scale), 0));
     float sceneD = viewDepth(fx, z);
     float myD = viewDepth(fx, input.position.z);
     float soft = saturate((sceneD - myD) / max(board.right.w, 0.001));
