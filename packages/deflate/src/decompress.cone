@@ -1,0 +1,62 @@
+// ======== Inflating a whole stream at once ========
+//
+// The one-shot helpers: a stream in memory, its bytes out. Each is an
+// Inflater run to the end of its input with the whole output kept.
+
+// Inflates the stream in 'inf' to its end. 'expected' is the output size if
+// known (it reserves room and bounds the output), else 0, which bounds the
+// output by 1 GiB.
+fn inflateAll(inf &mut Inflater, data &Array[u8], start usize, expected usize) Result[List[u8], DeflateError] {
+  inf.limit = if expected > 0usize {u64.from(expected);} else {1073741824u64;};
+  // Room for the expected size, but never more than 64 MiB up front: a header can claim anything
+  inf.hist.reserve(if expected > 0usize {if expected < 67108864usize {expected;} else {67108864usize;};} else {65536usize;});
+  inf.bi.buf.reserve(data.len - start);
+  mut i = start;
+  while i < data.len { inf.bi.buf.push(data[i]); i = i + 1usize; }
+  inf.finished = true;
+  imm s = inf.runAll();
+  if s == Status.Failed {
+    return Error[List[u8], DeflateError](inf.err.copy());
+  }
+  Ok[List[u8], DeflateError](inf.takeOutput());
+}
+
+// Decompress raw DEFLATE data (RFC 1951) starting at 'start'. 'expected' is
+// the output size if known (it reserves room and bounds the output), else 0,
+// which bounds the output by 1 GiB. Answers the bytes and, in 'used', how many
+// input bytes the stream took.
+pub fn inflate(data &Array[u8], start usize, expected usize, used &mut usize) Result[List[u8], DeflateError] {
+  mut inf = Inflater.make(Format.Raw);
+  match inflateAll(&mut inf, data, start, expected) {
+    case mut ok Ok {
+      *used = usize.from(inf.totalIn());
+      mut out = List[u8].empty();
+      out <=> ok;
+      return Ok[List[u8], DeflateError](out);
+    }
+    case imm e Error {
+      return Error[List[u8], DeflateError](e.copy());
+    }
+  }
+}
+
+// Decompress a zlib stream (RFC 1950): a two-byte header, DEFLATE data and
+// the Adler-32 of the output. 'expected' as for 'inflate'. A preset
+// dictionary is refused. The checksum is verified. Bytes after the Adler-32
+// are not looked at.
+pub fn zlibDecompress(data &Array[u8], expected usize) Result[List[u8], DeflateError] {
+  if data.len < 6usize {
+    return Error[List[u8], DeflateError](DeflateError.make(ErrorKind.Truncated, 0u64, "zlib: the stream is too short"));
+  }
+  mut inf = Inflater.make(Format.Zlib);
+  inflateAll(&mut inf, data, 0usize, expected);
+}
+
+// Decompress a gzip file (RFC 1952): every member, one after another, their
+// outputs joined as 'gzip -d' joins them; zero bytes between or after
+// members are ignored. 'expected' as for 'inflate' (the total of all members).
+// Each member's CRC-32 and size are verified.
+pub fn gzipDecompress(data &Array[u8], expected usize) Result[List[u8], DeflateError] {
+  mut inf = Inflater.make(Format.Gzip);
+  inflateAll(&mut inf, data, 0usize, expected);
+}

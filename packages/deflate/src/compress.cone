@@ -1,19 +1,36 @@
-// ======== DEFLATE and zlib, writing: RFC 1951 and RFC 1950 ========
+// ======== Deflating: RFC 1951, with RFC 1950 and RFC 1952 around it ========
 //
-// The other half of inflate, here so a picture can be saved as a PNG (a
-// screenshot, a baked texture) and so the decoder's tests can make their own
-// streams. Three levels:
-//   0  stored blocks (no compression)
-//   1  LZ77 with a hash chain of three-byte strings, coded with the fixed
-//      Huffman code of RFC 1951 3.2.6
-//   2  the same matches coded with a dynamic Huffman code per block
-//      (RFC 1951 3.2.7), the code lengths built by the two-smallest merge of
-//      Huffman 1952 and limited to 15 bits (7 for the code-length code) by
-//      flattening the frequencies until they fit
+// A 'Deflater' is a value that holds a stream's whole state. Bytes go in with
+// 'feed' in pieces of any size, 'finish' says the input is over, and 'pull'
+// answers the compressed bytes a bounded piece at a time. The compressed
+// bytes are the same however the input was split: only the data decides them,
+// not the pieces it came in (the matcher waits for 262 bytes of look-ahead
+// before it decides a position, unless the input is finished).
+//
+// Levels (the same for every format):
+//   0  stored blocks of at most 65535 bytes (no compression)
+//   1  LZ77 with a hash chain of three-byte strings (at most 16 candidates a
+//      position), coded with the fixed Huffman code of RFC 1951 3.2.6, in one
+//      block
+//   2  the same matcher with at most 48 candidates, coded with a dynamic
+//      Huffman code per block of 32768 tokens (RFC 1951 3.2.7), the code
+//      lengths built by the two-lightest merge of Huffman 1952 and limited
+//      to 15 bits (7 for the code-length code) by flattening the frequencies
+//      until they fit
+// Other level numbers act as 2.
+//
 // The matcher is the classic greedy one (zlib's deflate_fast without the
-// level tuning): at each position the longest match within a chain of at most
-// 48 candidates, taken if it is 3 bytes or longer. It is neither as fast as
-// zlib nor as small, but a stream any inflater reads.
+// level tuning): at each position the longest match within a chain of
+// candidates, taken if it is 3 bytes or longer, every position a match covers
+// entered in the hash chain. The window is the full 32 KiB. It is neither as
+// fast as zlib nor as small, but a stream any inflater reads.
+//
+// What a streaming deflater does not do, and the one-shot helpers do: a
+// stream whose compressed form is bigger than the data is not turned into
+// stored blocks, because the end is not known when a block is written. The
+// helpers 'rawDeflate', 'zlibCompress' and 'gzipCompress' store the whole
+// input instead when that would be smaller, as imagedecode's writer always
+// has.
 
 // A bit writer: bits go in least-significant first
 struct BitWriter {
@@ -193,71 +210,12 @@ fn distSymbol(d usize) usize {
   s;
 }
 
-// The LZ77 pass: tokens are a literal byte (value < 256) or a match
-// (0x80000000 | length << 16 | distance)
-fn lz77(data &Array[u8], tokens &mut List[u32], chainLimit usize) {
-  imm n = data.len;
-  imm hashSize = 1usize << 15usize;
-  mut head = List[i32].withCapacity(hashSize);
-  mut i = 0usize;
-  while i < hashSize { head.push(-1i32); i += 1usize; }
-  mut prev = List[i32].withCapacity(n);
-  i = 0usize;
-  while i < n { prev.push(-1i32); i += 1usize; }
-  i = 0usize;
-  while i < n {
-    mut bestLen = 0usize;
-    mut bestDist = 0usize;
-    if i + 3usize <= n {
-      imm h = hash3(data, i);
-      mut cand = *head[h];
-      mut chain = 0usize;
-      while cand >= 0i32 and chain < chainLimit {
-        imm c = usize.from(cand);
-        if i - c > 32768usize { break; }
-        // Match length at this candidate
-        mut l = 0usize;
-        while l < 258usize and i + l < n and data[c + l] == data[i + l] { l += 1usize; }
-        if l > bestLen {
-          bestLen = l;
-          bestDist = i - c;
-          if l == 258usize { break; }
-        }
-        cand = *prev[c];
-        chain += 1usize;
-      }
-    }
-    if bestLen >= 3usize {
-      tokens.push(0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
-      // Insert every position the match covers
-      mut k = 0usize;
-      while k < bestLen {
-        if i + k + 3usize <= n {
-          imm h = hash3(data, i + k);
-          prev.set(i + k, *head[h]);
-          head.set(h, i32.from(i + k));
-        }
-        k += 1usize;
-      }
-      i += bestLen;
-    } else {
-      tokens.push(u32.from(data[i]));
-      if i + 3usize <= n {
-        imm h = hash3(data, i);
-        prev.set(i, *head[h]);
-        head.set(h, i32.from(i));
-      }
-      i += 1usize;
-    }
-  }
-}
-
 fn hash3(d &Array[u8], i usize) usize {
   usize.from(((u32.from(d[i]) << 10u32) ^ (u32.from(d[i + 1usize]) << 5u32) ^ u32.from(d[i + 2usize])) & 32767u32);
 }
 
-// Write tokens [from, to) with the codes (the end-of-block code is added)
-fn writeTokens(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &Code, dist &Code) {
+// Write tokens [from, to) with the codes
+fn writeTokenCodes(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &Code, dist &Code) {
   mut i = from;
   while i < to {
     imm t = tokens[i];
@@ -275,6 +233,11 @@ fn writeTokens(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &
     }
     i += 1usize;
   }
+}
+
+// Write tokens [from, to) with the codes and the end-of-block code
+fn writeTokens(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &Code, dist &Code) {
+  writeTokenCodes(w, tokens, from, to, lit, dist);
   w.putCode(*lit.codes[256usize], u32.from(*lit.lens[256usize]));
 }
 
@@ -387,70 +350,3 @@ fn writeDynamicBlock(w &mut BitWriter, tokens &Array[u32], from usize, to usize,
   writeTokens(w, tokens, from, to, &lit, &dist);
 }
 
-// Compress to a raw DEFLATE stream at 'level' (0 stored, 1 fixed Huffman,
-// 2 dynamic Huffman; other values are 2)
-pub fn deflate(data &Array[u8], level i32) List[u8] {
-  mut w = new BitWriter(List[u8].withCapacity(data.len / 2usize + 64usize), 0u64, 0u32);
-  if level == 0 {
-    // Stored blocks of at most 65535 bytes (an empty input is one empty block)
-    mut pos = 0usize;
-    while true {
-      imm n = if data.len - pos > 65535usize {65535usize;} else {data.len - pos;};
-      imm last = pos + n >= data.len;
-      w.put(if last {1u32;} else {0u32;}, 1u32);
-      w.put(0u32, 2u32);
-      w.align();
-      w.put(u32.from(n), 16u32);
-      w.put(u32.from(n) ^ 0xFFFFu32, 16u32);
-      mut k = 0usize;
-      while k < n { w.out.push(data[pos + k]); k += 1usize; }
-      pos += n;
-      if last { break; }
-    }
-    mut res = List[u8].empty();
-    res <=> w.out;
-    return res;
-  }
-  mut tokens = List[u32].empty();
-  lz77(data, &mut tokens, if level == 1 {16usize;} else {48usize;});
-  if level == 1 {
-    mut lit = makeCode(List[u8].empty());
-    mut dist = makeCode(List[u8].empty());
-    fixedCodes(&mut lit, &mut dist);
-    w.put(1u32, 1u32);
-    w.put(1u32, 2u32);
-    writeTokens(&mut w, tokens.view(), 0usize, tokens.len(), &lit, &dist);
-  } else {
-    // Blocks of 32768 tokens
-    mut from = 0usize;
-    while true {
-      imm to = if tokens.len() - from > 32768usize {from + 32768usize;} else {tokens.len();};
-      writeDynamicBlock(&mut w, tokens.view(), from, to, to == tokens.len());
-      from = to;
-      if from >= tokens.len() { break; }
-    }
-  }
-  w.align();
-  mut res = List[u8].empty();
-  res <=> w.out;
-  // Data that does not compress is stored, as zlib does
-  if res.len() > data.len + 5usize * (data.len / 65535usize + 1usize) { return deflate(data, 0); }
-  res;
-}
-
-// Compress to a zlib stream (header, DEFLATE, Adler-32), 32 KiB window,
-// header 78 01 for stored, 78 9C otherwise
-pub fn zlibCompress(data &Array[u8], level i32) List[u8] {
-  mut out = List[u8].empty();
-  out.push(0x78u8);
-  out.push(if level == 0 {0x01u8;} else {0x9Cu8;});
-  imm body = deflate(data, level);
-  mut i = 0usize;
-  while i < body.len() { out.push(*body[i]); i += 1usize; }
-  imm a = adler32(data);
-  out.push(u8.from(a >> 24u32));
-  out.push(u8.from((a >> 16u32) & 255u32));
-  out.push(u8.from((a >> 8u32) & 255u32));
-  out.push(u8.from(a & 255u32));
-  out;
-}

@@ -1,0 +1,104 @@
+// The weberpenn package's dense conifers (FOLIAGE_BRANCHLETS). Only a failure prints.
+//
+// - Determinism: the same params and seed give the same cards, bit for bit; another seed, other ones.
+// - Shape: every card is 12 vertices and 8 triangles (three rows, both sides); normals are unit length;
+//   uvs lie in the paint's cell, v within the shade rows.
+// - Bent normals: a card on the crown's outside (far from the axis) has a normal that points away from the trunk's axis
+//   on average, and the crown's lower half is lit from further down than its top (the hull's slope).
+// - Depth shade: the cards choose more than one row of the paint (the inside is darker than the outside), and the
+//   cards nearer the axis choose a darker (higher) row on average than the outer ones.
+// - Species as data: each of the four species grows and gets cards; a spruce has many more cards than a young
+//   Norfolk's few; the age tint runs from yellow-green (young) to dark (old).
+
+mod conifers;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh;
+import weberpenn use *;
+
+fn horizDist(p Vec3) f32 { libc.sqrtf(p.x * p.x + p.z * p.z); }
+
+fn main() i32 {
+  imm height = 18.;
+  imm params = spruceTree(3u32, height, 0.2);
+  imm tree = grow(&params);
+  imm fp = spruceFoliage(9u32, 1.);
+  imm a = foliageMesh(&tree, &fp);
+  imm b = foliageMesh(&tree, &fp);
+  expect(mesh.meshHash(&a) == mesh.meshHash(&b), "the same seed gives the same cards");
+  imm fp2 = spruceFoliage(10u32, 1.);
+  expect(mesh.meshHash(&foliageMesh(&tree, &fp2)) != mesh.meshHash(&a), "another seed gives other cards");
+
+  // shape
+  expect(a.positions.len() > 0usize, "a spruce has cards");
+  expectInt(i64.from(a.positions.len() % 12usize), 0i64, "a card is 12 vertices");
+  expectInt(i64.from(a.indices.len()), i64.from(a.positions.len() * 2usize), "8 triangles to 12 vertices");
+  expectInt(i64.from(a.normals.len()), i64.from(a.positions.len()), "a normal a vertex");
+  expectInt(i64.from(a.uvs.len()), i64.from(a.positions.len()), "a uv a vertex");
+  mut unitOk = true;
+  mut uvOk = true;
+  mut maxV = 0.;
+  mut i = 0usize;
+  while i < a.positions.len() {
+    imm n = *a.normals[i];
+    imm l = n.length();
+    if l < 0.99 or l > 1.01 { unitOk = false; }
+    imm uv = *a.uvs[i];
+    if uv.x < 0. or uv.x > 1. or uv.y < 0. or uv.y > 1. { uvOk = false; }
+    if uv.y > maxV { maxV = uv.y; }
+    i = i + 1usize;
+  }
+  expect(unitOk, "normals are unit length");
+  expect(uvOk, "uvs lie in the paint");
+
+  // bent normals: the outermost cards face out from the axis, on average
+  mut outSum = 0.;
+  mut outN = 0;
+  mut innerRow = 0.;
+  mut innerN = 0;
+  mut outerRow = 0.;
+  mut outerN = 0;
+  imm reach = tree.reach;
+  i = 0usize;
+  while i < a.positions.len() {
+    imm p = *a.positions[i];
+    imm n = *a.normals[i];
+    imm r = horizDist(p);
+    imm row = libc.floorf((*a.uvs[i]).y * f32.from(fp.brShadeRows));
+    if r > 0.7 * reach {
+      imm outward = (n.x * p.x + n.z * p.z) / (if r > 0.01 { r; } else { 0.01; });
+      outSum = outSum + outward;
+      outN = outN + 1;
+      outerRow = outerRow + row;
+      outerN = outerN + 1;
+    }
+    if r < 0.35 * reach {
+      innerRow = innerRow + row;
+      innerN = innerN + 1;
+    }
+    i = i + 1usize;
+  }
+  expect(outN > 0 and outSum / f32.from(outN) > 0.3, "the outer cards' normals lean away from the trunk's axis");
+  expect(innerN > 0 and outerN > 0 and innerRow / f32.from(innerN) > outerRow / f32.from(outerN), "inner cards take darker rows than outer ones");
+  expect(maxV > 0.75, "the darkest rows are used");
+
+  // species as data
+  imm fir = grow(&firTree(4u32, 15., 0.1));
+  imm pine = grow(&whitePineMature(5u32, 20., 0.4));
+  imm nor = grow(&norfolkPine(6u32, 16.));
+  expect(foliageMesh(&fir, &firFoliage(1u32, 1.)).positions.len() > 0usize, "a fir has cards");
+  expect(foliageMesh(&pine, &whitePineFoliage(1u32, 1.)).positions.len() > 0usize, "a white pine has cards");
+  expect(foliageMesh(&nor, &norfolkFoliage(1u32, 1.)).positions.len() > 0usize, "a Norfolk pine has cards");
+  imm small = grow(&spruceTree(3u32, 3., 0.03));
+  expect(foliageMesh(&small, &spruceFoliage(1u32, 0.4)).positions.len() < a.positions.len(), "a sapling has fewer cards");
+
+  // age tint
+  imm young = ageTint(0., 0., 1u32);
+  imm old = ageTint(1., 0., 1u32);
+  expect(young.green > old.green and young.red > old.red * 2., "a sapling's tint is brighter and more yellow than an old tree's");
+  expect(young.red / young.blue > old.red / old.blue, "and yellower");
+  done();
+}
