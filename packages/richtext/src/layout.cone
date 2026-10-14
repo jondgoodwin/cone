@@ -97,6 +97,7 @@ pub struct GlyphP {
   pub block u32;
   pub off u32;                   // byte offset in the block's text
   pub len u32;                   // bytes of the character
+  pub link u32 = 0u32;           // the link it belongs to (0: none)
 }
 
 pub struct LineP {
@@ -182,6 +183,7 @@ struct Item {
   desc f32;
   img u32;                       // number + 1
   hyphen bool;
+  link u32 = 0u32;
 }
 
 pub struct FloatBox {
@@ -596,6 +598,7 @@ fn layoutBlock(bd &mut Builder, bi usize, blk &Block, number u32, images &List[I
         prevFace = face;
         prevGlyph = g;
       }
+      items[items.len() - 1usize].link = st.link;
       o = o + clen;
     }
     at = end;
@@ -751,6 +754,7 @@ fn layoutBlock(bd &mut Builder, bi usize, blk &Block, number u32, images &List[I
       if it.kind == 1u32 and p < e { adv = adv + extra; }
       bd.out.glyphs.push(new GlyphP(pen, baseline, adv, it.size, it.face, it.glyph, it.color, if it.kind == 2u32 or it.kind == 3u32 { it.flags | GF_OBJECT; } else { it.flags; },
         u32.from(bi), it.off, it.len));
+      bd.out.glyphs[bd.out.glyphs.len() - 1usize].link = it.link;
       if it.kind == 2u32 {
         bd.out.boxes.push(new BoxP(pen, baseline - it.asc, it.adv, it.asc, it.img, u32.from(bi), it.off, false));
       }
@@ -919,4 +923,20 @@ pub fn boxAt(l &RichLayout, x f32, y f32) i32 {
     if x >= bx.x and x < bx.x + bx.w and y >= bx.y and y < bx.y + bx.h { return i32.from(i); }
   }
   -1i32;
+}
+
+// The link under a point: the number of the link whose glyph's box holds it, or 0
+pub fn linkAt(l &RichLayout, x f32, y f32) u32 {
+  imm p = posAt(l, x, y);
+  imm li = lineOf(l, p);
+  imm ln = l.lines[li];
+  if y < ln.top or y > ln.top + ln.height { return 0u32; }
+  mut g = usize.from(ln.g0);
+  imm gEnd = g + usize.from(ln.gn);
+  while g < gEnd {
+    imm gl = l.glyphs[g];
+    if x >= gl.x and x < gl.x + gl.adv { return gl.link; }
+    g = g + 1usize;
+  }
+  0u32;
 }

@@ -296,6 +296,33 @@ fn run(faces &Faces) {
   expect(seen >= 2u32, "the second paragraph starts beside the tall float");
   expect(nextWraps, "and its lines there start right of it");
 
+  // ---- links, line movement, boxes ----
+  mut kb = List[Block].empty();
+  mut kblk = Block.fromText(LOREM, Style.plain());
+  imm linkOp = new StyleOp(OP_LINK, true, 0.0, 7u32);
+  styleRange(&mut kblk, 4usize, 9usize, &linkOp);
+  kb.push(kblk);
+  imm lk = layoutRich(&kb, &noImages, faces, &cfg);
+  imm linkGlyph = lk.glyphs[6usize];
+  expectInt(i64.from(linkAt(&lk, linkGlyph.x + 1.0, linkGlyph.y - 4.0)), 7i64, "a point on a linked word is the link");
+  expectInt(i64.from(linkAt(&lk, (*lk.glyphs[14usize]).x + 1.0, linkGlyph.y - 4.0)), 0i64, "and elsewhere on the line is not");
+  expect(((*lk.glyphs[6usize]).flags & GF_UNDERLINE) != 0u32, "links are underlined");
+  // movement
+  imm startP = pos(0usize, 0usize);
+  imm down = moveLine(&lk, startP, 1i32, cfg.margin + 100.0);
+  expect(lineOf(&lk, down) == 1usize, "down from the first line is on the second");
+  imm up = moveLine(&lk, down, -1i32, cfg.margin + 100.0);
+  expect(lineOf(&lk, up) == 0usize, "and up again");
+  expect(absF(caretRect(&lk, up).x - (cfg.margin + 100.0)) < 12.0, "keeping to about the same x");
+  imm ls0 = lineStartPos(&lk, down);
+  expectInt(i64.from(ls0.off), i64.from((*lk.lines[1usize]).start), "line start");
+  imm le0 = lineEndPos(&lk, down);
+  expectInt(i64.from(le0.off), i64.from((*lk.lines[1usize]).inkEnd), "line end stops before the trailing space of a wrapped line");
+  imm bottom = moveLine(&lk, pos(0usize, blocks[0usize].text.len()), 1i32, 100.0);
+  expectInt(i64.from(bottom.off), i64.from(blocks[0usize].text.len()), "down from the last line goes to the end of the text");
+  expectInt(i64.from(boxAt(&lf, bx.x + 5.0, bx.y + 5.0)), 0i64, "the float's box is found by a point inside it");
+  expectInt(i64.from(boxAt(&lf, bx.x - 5.0, bx.y + 5.0)), -1i64, "and not outside it");
+
   // ---- an empty document ----
   mut eb = List[Block].empty();
   eb.push(Block.empty());
