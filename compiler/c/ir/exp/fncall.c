@@ -1926,6 +1926,20 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
     }
 
+    // A '<-' on a reference that does not permit the write is refused as '*r <- x'
+    // and the entries of a list are: through the borrow the value is lent with
+    // (contentsLowerEntries), so one entry and several are reported alike
+    if (selected == NULL && status == OverloadNone && methsym == lessDashName && (callnode->flags & FlagOpAssgn)) {
+        INode *refobjtype = iexpGetTypeDcl(obj);
+        INode *derefobj = obj;
+        if (refobjtype->tag == RefTag && !permIsLock(((RefNode*)refobjtype)->perm) && derefInject(&derefobj)) {
+            callnode->objfn = derefobj;
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                callnode->objfn = obj;
+        }
+    }
+
     if (selected == NULL) {
         // A lock-managed reference reaches its value through a borrow only,
         // which a method's receiver is not made of
