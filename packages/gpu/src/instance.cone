@@ -290,17 +290,45 @@ pub struct Adapter {
 
   // A device on this GPU, with one queue that draws and presents. Check
   // 'isValid'.
-  pub fn requestDevice(self &) Device {
-    mut result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily),
-      new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
+  pub fn requestDevice(self &) Device { self.requestDeviceWith(true); }
+
+  // Whether this GPU can build acceleration structures and cast rays from shaders (ray queries):
+  // VK_KHR_acceleration_structure, VK_KHR_ray_query and buffer device addresses, each with its
+  // feature. Ray tracing here is ray query, not the ray-tracing pipeline (see raytracing.cone).
+  pub fn supportsRayTracing(self &) bool {
+    if !self.isValid() { return false; }
+    if !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_acceleration_structure")
+        or !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_ray_query")
+        or !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_deferred_host_operations") {
+      return false;
+    }
+    mut rq = new vulkan.PhysicalDeviceRayQueryFeaturesKHR();
+    mut accel = new vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rq as *u8);
+    mut address = new vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accel as *u8);
+    mut available = new vulkan.PhysicalDeviceFeatures2(pNext: &mut address as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+    backend.fns.getPhysicalDeviceFeatures2(backend.physical, &mut available);
+    address.bufferDeviceAddress == vulkan.TRUE and accel.accelerationStructure == vulkan.TRUE and rq.rayQuery == vulkan.TRUE;
+  }
+
+  // The same, with ray tracing asked for or not: a device made with 'false' draws as one on a GPU
+  // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
+  // ray tracing either; check 'device.rayTracing'.
+  pub fn requestDeviceWith(self &, rayTracing bool) Device {
+    mut result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
+      new vulkan.RayFns()), new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
 
     imm priorities Array[f32, 1] = [1.];
     imm qci = new vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
       pQueuePriorities: &priorities as *f32);
-    imm f13 = new vulkan.PhysicalDeviceVulkan13Features(synchronization2: vulkan.TRUE,
-      dynamicRendering: vulkan.TRUE);
-    imm exts Array[*u8, 1] = [&"VK_KHR_swapchain" as *u8];
+    imm useRay = rayTracing and self.supportsRayTracing();
+    mut rqf = new vulkan.PhysicalDeviceRayQueryFeaturesKHR(rayQuery: vulkan.TRUE);
+    mut accelf = new vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rqf as *u8, accelerationStructure: vulkan.TRUE);
+    mut addressf = new vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accelf as *u8, bufferDeviceAddress: vulkan.TRUE);
+    imm f13 = new vulkan.PhysicalDeviceVulkan13Features(pNext: if useRay { &mut addressf as *u8; } else { null; },
+      synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE);
+    imm exts Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
+      &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8];
     // Anisotropic filtering, the one optional core feature asked for: on
     // where the GPU has it (every desktop one does), else samplers filter
     // trilinearly only ('Device.maxAnisotropy' is 0)
@@ -315,7 +343,7 @@ pub struct Adapter {
     }
     imm dci = new vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
-      enabledExtensionCount: 1u32, ppEnabledExtensionNames: &exts as **u8,
+      enabledExtensionCount: if useRay { 4u32; } else { 1u32; }, ppEnabledExtensionNames: &exts as **u8,
       pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
     mut device = 0usize as vulkan.Device;
     if !check(backend.fns.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
@@ -326,6 +354,10 @@ pub struct Adapter {
     if fns.missing != 0u32 {
       fail("the Vulkan device lacks some of its functions");
       return result;
+    }
+    if useRay {
+      result.backend.ray = vulkan.RayFns.load(&*backend.fns, device);
+      result.rayTracing = result.backend.ray.found;
     }
     mut queue = 0usize as vulkan.Queue;
     fns.getDeviceQueue(device, backend.queueFamily, 0u32, &mut queue);
