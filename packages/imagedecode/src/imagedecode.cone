@@ -1,7 +1,8 @@
 // The imagedecode package: pictures out of files, in Cone. PNG and JPEG
-// decoders, the DEFLATE (zlib) reader and writer they stand on, and a PNG
-// writer, with no C library: stb_image's and libpng's jobs for the 3-D
-// browser's textures.
+// decoders, and a PNG writer, with no C library: stb_image's and libpng's jobs
+// for the 3-D browser's textures. The DEFLATE (zlib) reader and writer and the
+// checksums they stand on live in the 'deflate' package, which this one imports
+// and whose names it re-exports.
 //
 //   import imagedecode use *;
 //
@@ -38,14 +39,19 @@
 //                  markers, JFIF, Adobe RGB / YCbCr / CMYK / YCCK, Exif
 //                  orientation applied (or not, 'decodeJpegWith').
 //   inflate, zlibDecompress     RFC 1951 and RFC 1950: stored, fixed and
-//                  dynamic blocks; the Adler-32 checked.
+//                  dynamic blocks; the Adler-32 checked. Re-exported from
+//                  the deflate package (so are zlibCompress, adler32 and
+//                  Crc32); the error is deflate's DeflateError, which has
+//                  the 'reason' and 'message()' a DecodeError has.
 //   deflate, zlibCompress       the other way: stored, fixed-Huffman and
-//                  dynamic-Huffman at three levels (see deflate.cone).
+//                  dynamic-Huffman at three levels (see the deflate package;
+//                  'deflate' here is its 'rawDeflate', the name being the
+//                  package's own there).
 //   encodePng, encodePngSamples a Raster or raw samples written as a PNG, any
 //                  colour type and depth, any filter or the adaptive choice,
 //                  Adam7, tRNS, PLTE, gAMA, sRGB (so a screenshot or a baked
 //                  texture can be saved).
-//   adler32, Crc32 the checksums.
+//   adler32, Crc32 the checksums (deflate's).
 //
 // Every decoder takes bytes (an &Array[u8], which a &str also is) and answers
 // a core Result: Ok or an Error holding a 'reason'. A damaged or hostile file
@@ -57,9 +63,10 @@
 //
 // THE METHODS (each an industry-standard one, cited in its file)
 //
-//   Huffman decode, inflate    zlib's design: a lookup table by the next 10
-//                              bits and the canonical walk (puff.c's) beyond.
-//   PNG                        the W3C specification, filters and Adam7 as
+//   Huffman decode, inflate,   in the deflate package (its header names them):
+//   deflate (writing)          zlib's design for decoding, a greedy LZ77 with
+//                              a three-byte hash chain for writing.
+//   PNG                       the W3C specification, filters and Adam7 as
 //                              written there; one pass over the inflated
 //                              data in place.
 //   JPEG                       libjpeg's: the "islow" integer IDCT, "fancy"
@@ -70,12 +77,7 @@
 //                              is bit-identical to libjpeg-turbo's on the
 //                              reference files of the test (largest
 //                              difference 0).
-//   deflate (writing)          LZ77 with a three-byte hash chain (greedy,
-//                              zlib's deflate_fast without the tuning), Huffman
-//                              code lengths by the two-lightest merge limited
-//                              to 15 bits by flattening, per-block dynamic
-//                              tables with run-length coded lengths.
-//
+
 // NOT HERE: arithmetic-coded, lossless, 12-bit or hierarchical JPEG; PNG
 // APNG animation frames (the first frame decodes, as the PNG stream says);
 // colour management (an ICC profile is ignored; sRGB and gAMA are only
@@ -89,10 +91,9 @@
 //
 //   imagedecode.cone  this overview
 //   raster.cone       Raster, ColorSpace
-//   decode.cone       decode, sniff
-//   inflate.cone      inflate, zlibDecompress, Huffman, adler32, Crc32
-//   deflate.cone      deflate, zlibCompress
-//   png.cone          decodePng
+//   decode.cone       decode, sniff, DecodeError
+//   zlib.cone         'deflate', the writer's old name for deflate's rawDeflate
+//   png.cone         decodePng
 //   pngwrite.cone     PngWrite, encodePng, encodePngSamples
 //   jpeg.cone         the JPEG parser, Huffman and progressive decode
 //   jpegout.cone      the IDCT, upsampling, colour, orientation

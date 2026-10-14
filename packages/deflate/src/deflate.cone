@@ -1,3 +1,224 @@
+// The deflate package: DEFLATE (RFC 1951) compression and decompression, with
+// zlib (RFC 1950) and gzip (RFC 1952) framing, the Adler-32 and CRC-32 they
+// need, and streaming in both directions. Written in Cone, with no C library
+// and no call of the OS's.
+//
+//   mod squeeze;
+//   import stdio use *;
+//   import deflate;
+//
+//   fn main() i32 {
+//     imm packed = deflate.gzipCompress("the quick brown fox", 2);   // a gzip file in a List[u8]
+//     match deflate.gzipDecompress(packed.view(), 0usize) {          // and back
+//       case imm ok Ok { printInt(i64.from(ok.len())); }              // 19
+//       case imm e Error { printStr(e.reason.view()); return 1i32; }
+//     }
+//     0i32;
+//   }
+//
+// This package was carved out of imagedecode (which stands on it now: its PNG
+// reader and writer call it, and it re-exports 'inflate', 'zlibDecompress',
+// 'zlibCompress', 'adler32' and 'Crc32' under the names it always had). Its
+// gzip framing, its streaming, and the one-call-per-format helpers are new.
+//
+// WHAT IS HERE
+//
+//   ONE CALL         the data in memory, the answer out
+//     zlibCompress(data, level) List[u8]          a zlib stream
+//     zlibDecompress(data, expected) Result[List[u8], DeflateError]
+//     gzipCompress(data, level) List[u8]          one gzip member, a plain header
+//     gzipCompressWith(data, level, &header) List[u8]    the same, with a GzipHeader
+//     gzipDecompress(data, expected) Result[List[u8], DeflateError]
+//     rawDeflate(data, level) List[u8]            the bare DEFLATE stream
+//     inflate(data, start, expected, &mut used) Result[List[u8], DeflateError]
+//   'expected' is the output size if known (0 if not): it reserves room and is
+//   also the most output allowed (0 allows 1 GiB), so a stream that claims to be
+//   small and is not is refused as TooLarge. 'level' is 0, 1 or 2 (below).
+//   gzipDecompress inflates every member and joins their data, as 'gzip -d' does.
+//
+//   STREAMING        a value that holds the whole state; any chunking
+//     Inflater.make(format)       format is Format.Raw, Format.Zlib or Format.Gzip
+//       feed(&Array[u8])          input, any size, split anywhere (copied)
+//       finish()                  no more input will come
+//       pull(&mut List[u8], max) Status    appends at most 'max' bytes of output
+//       setLimit(bytes), setMultiMember(bool), error(), gzipHeader(),
+//       memberCount(), totalIn(), totalOut(), isDone(), takeRest()
+//     Deflater.make(format, level)
+//       feed, finish, pull as above; setGzipHeader(&header), totalIn(),
+//       totalOut(), isDone()
+//     Status: NeedInput (use up what you have: feed more or finish), MoreOutput
+//     (pull again), Done, Failed (an Inflater only; 'error()' says why).
+//     'examples/tour.cone' feeds five bytes at a time and takes eight out.
+//
+//   CHECKSUMS
+//     adler32(data) u32, Adler32 (start, update, value) to go on across pieces
+//     crc32(data) u32, Crc32 (make, update(crc, data, from, to)) likewise
+//
+//   TYPES
+//     DeflateError {kind, offset, reason}   kind is an ErrorKind: BadHeader,
+//         BadBlock, BadCode, BadDistance, Truncated, BadChecksum, TooLarge,
+//         TrailingData; 'offset' is the input bytes used when it was noticed
+//     GzipHeader {mtime, xfl, os, text, name, comment, extra}
+//
+// STREAMING, IN A SENTENCE EACH
+//
+//   An Inflater decodes one unit at a time (a block header, a table of codes,
+//   one symbol with its extra bits and distance). A unit that the input ends
+//   inside is put back whole and the pull answers NeedInput; so input can be
+//   cut anywhere, a byte at a time, and no unit is half-done. The last symbol
+//   of a stream is decoded as soon as its own bits are there, so a raw or zlib
+//   stream is Done without 'finish' (a gzip file that may have more members
+//   needs 'finish', or 'setMultiMember(false)', to know it is over).
+//   Output comes in pieces of at most 'max' bytes, a match cut mid-copy
+//   resumes on the next pull, and the Inflater's own memory is the input not
+//   yet used plus 32 KiB of history (plus up to 64 KiB of slack), whatever the
+//   stream's size. A Deflater turns input into tokens a block at a time, and its
+//   bytes depend only on the data, never on how it was cut (a test cuts it
+//   five ways at every size and shape and compares).
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says what
+// was chosen and what was left out.
+//
+// - Inflating is zlib's design, as imagedecode had it: a lookup table indexed
+//   by the next 10 bits answers every code of that length or less at once, and
+//   a longer code falls to the canonical walk of puff.c (Mark Adler). An
+//   over-subscribed code is refused; an incomplete one only when it holds one
+//   code (RFC 1951 allows a lone distance code), as zlib does. The fixed codes
+//   are built when a fixed block first needs them and kept until a dynamic block
+//   replaces them.
+// - Streaming by putting a unit back, not by a state machine that can stop at
+//   any bit (zlib's inflate.c). The cost: the fed input is kept until used (a
+//   copy, so the caller's buffer is its own at once), and a dynamic block's
+//   table description of up to about 2.5 KiB is read again from its start each
+//   time more input arrives before it is complete (fed a byte at a time, that is
+//   the table's size squared in bit reads, once per block). The gain: the hot
+//   loop is the plain one-shot loop, and the code is a fraction of a bit-level
+//   state machine's. The one-shot helpers feed the whole input at once and keep
+//   the whole output (so a one-shot inflate does not copy its output).
+// - A bomb stopper: output is capped at 1 GiB unless 'setLimit' (or the
+//   one-shot 'expected') says otherwise. DEFLATE can expand 1032 to 1, so a
+//   limit is the only memory bound a hostile stream leaves. The room reserved
+//   up front is never more than 64 MiB on a header's word.
+// - The Adler-32 sums 5552 bytes between reductions (the most that cannot
+//   overflow 32 bits), as zlib does. The CRC-32 takes four bytes a step
+//   ("slicing-by-4", Kounavis and Berry 2005) from a 4 KiB table that a 'Crc32'
+//   value holds: made by 'Crc32.make()', no global. 'crc32(data)' makes one each
+//   call; keep a Crc32 for many calls. Slicing-by-8 and the carry-less multiply
+//   instructions were left out.
+// - Deflating: three levels. 0 stores, in blocks of 65535. 1 is LZ77 with a hash
+//   chain of three-byte strings (32768 buckets of the 15 low bits of a
+//   shift-xor of the three bytes), at most 16 candidates a position, coded with
+//   the fixed Huffman code in one block. 2 is the same matcher with at most 48
+//   candidates, coded with a dynamic Huffman code per block of 32768 tokens: the
+//   code lengths by Huffman's merge of the two lightest, limited to 15 bits (7
+//   for the code-length code) by halving the frequencies until they fit, the
+//   lengths run-length coded with symbols 16, 17 and 18. The matcher is greedy
+//   (zlib's deflate_fast without its tuning): the longest match in the chain,
+//   taken if 3 or more, every position it covers entered in the chain; no lazy
+//   matching, no chain limit that shrinks after a good match. The window is
+//   32 KiB. Other level numbers act as 2.
+// - A streaming Deflater cannot fall back to stored blocks when the data does
+//   not compress (it does not know the end when it writes a block); random
+//   data grows a little through it (70000 random bytes make 70154 as a zlib
+//   stream, 0.2 per cent). The one-shot helpers store the
+//   whole input when the coded stream is bigger than that (as imagedecode's
+//   writer always did), so they never expand by more than 5 bytes a 64 KiB
+//   block and the framing. A block's type is not chosen by cost (zlib picks the
+//   smallest of stored, fixed and dynamic per block): level 1 is always fixed
+//   and level 2 always dynamic. Left out: lazy matching, a block type by cost,
+//   levels 3 to 9, strategies (RLE, Huffman only, fixed), a choice of window
+//   size or memory level, and a sync or full flush (a Deflater ends only with
+//   'finish').
+// - The compressed bytes are fixed by the data and the level: the matcher waits
+//   for 262 bytes of look-ahead before it decides a position (258 for the longest
+//   match, 3 for the hash of the last position a match covers) unless the input
+//   is finished, so cutting the input differently changes nothing. They are
+//   also the very bytes imagedecode's writer wrote before this package existed
+//   (the move was checked by comparing, byte for byte, every PNG and zlib stream
+//   of a corpus written before and after).
+// - zlib framing: CMF 78 (deflate, 32 KiB window), FLG 01 for stored and 9C
+//   otherwise, FDICT never written. On reading, a window under 32 KiB is
+//   accepted and a larger one (CINFO over 7) refused; the stream is not held to
+//   the window its header declares (zlib refuses a distance past it). A preset
+//   dictionary (FDICT) is refused: BadHeader. The Adler-32 is verified; bytes
+//   after it are left alone ('takeRest' has them).
+// - gzip framing, writing: ID1 ID2, CM 8, FLG with FTEXT, FEXTRA, FNAME and
+//   FCOMMENT as the header says, MTIME (0 for none), XFL (4 at levels 0 and 1,
+//   else 0), OS (255, unknown, unless the header says), the extra field (at most
+//   65535 bytes), the name and comment cut at a zero byte (they are ISO 8859-1
+//   bytes, zero-terminated); never FHCRC (the header CRC-16). One member per
+//   stream. Reading: all of those fields are kept in a GzipHeader; FHCRC is
+//   checked when present; reserved flag bits, a method other than 8 and a bad
+//   magic are BadHeader; the CRC-32 and ISIZE (the size modulo 2^32) of every
+//   member are verified. Members after the first are read and their data joined;
+//   zero bytes between members and after the last are padding and ignored (as
+//   GNU gzip and Python's gzip module do); any other byte after a member that is
+//   not the start of another is TrailingData. A name or comment over 1 MiB is
+//   refused. The header (name, comment, extra) is read whole or not at all, so a
+//   header cut by the input is waited for.
+// - No global and no thread-local. The constant tables of RFC 1951 (lengths,
+//   distances, code-length order: the four 'imm' arrays and one const in
+//   tables.cone) are moved here from imagedecode unchanged, not added; the CRC
+//   table and the Huffman tables are values inside the values that use them.
+//   Nothing is shared between two Inflaters or Deflaters, so one per thread or
+//   actor is safe; one is not safe to share.
+//
+// OTHER COPIES. The repository was searched (Cone sources in packages/, samples/,
+// tools/, compiler/, 3D Web's packages, and the pegasus3d tree) for another
+// private inflate, DEFLATE, CRC-32 or Adler-32: there is none. imagedecode's was
+// the only one, and it is gone: the PNG reader and writer call this package.
+// (Hits for "inflate" elsewhere are geometry, "inflating" a box.) The scripts
+// that make test data (imagedecode's and this package's tests/data/*.py) use
+// Python's zlib, as an oracle that no test runs.
+//
+// NOT HERE: preset dictionaries; DEFLATE64; bzip2, LZMA, zstd, brotli; reading
+// from a file or a socket (the caller feeds it); a zip or tar container; a
+// parallel compressor; the 4 GiB mark of gzip's ISIZE (it is checked modulo 2^32
+// and not tested past it).
+//
+// SPEED AND SIZE, best of 3 (compress) and 5 (inflate, checksums) runs on a
+// loaded 13th-gen Core i7-13700HX, release build, next to Python 3.13's zlib
+// 1.3.1, on six files of this repository at the commit it was written (sizes in
+// bytes; speeds in MB/s of the file, compress first and then "in" for
+// inflating; examples/bench.cone makes the first columns, a few lines of Python
+// the others):
+//
+//                                 ours L1       ours L2      zlib L1     zlib L6     zlib L9
+//   ace.js           354531  size  121480        102676       117566       98545       98114
+//                            MB/s  43 / in 223   29 / in 214  78 / in 253 32 / in 258 19 / in 209
+//   struct.c         249581  size   79308         64434        80201       62179       61597
+//                            MB/s  37 / in 215   23 / in 229  66 / in 198 21 / in 230  9 / in 196
+//   pbrxrt.spv       384620  size  153455        117236       123874      116693      115730
+//                            MB/s  36 / in 203   22 / in 207  53 / in 181 14 / in 227  3 / in 236
+//   lighting.cone    647568  size  106545         87577       113917       82398       77179
+//                            MB/s  59 / in 391   37 / in 409 124 / in 315 38 / in 349  4 / in 444
+//   stilllife.jpg    249480  size  249506*       248782       248326      248354      248354
+//                            MB/s  28 / in 476   29 / in 159  29 / in 282 27 / in 253 25 / in 239
+//   refmodule.html    66130  size   24356         19873        23450       19266       19140
+//                            MB/s  34 / in 200   22 / in 208  64 / in 185 20 / in 207 10 / in 188
+//   (* stored: the one-shot helper's fallback.)
+//
+// So level 2 runs about as fast as zlib's level 6 and makes streams 0.2 to 6 per
+// cent bigger; level 1 runs at about half the speed of zlib's level 1 and makes
+// streams from 6 per cent smaller to 24 per cent bigger (the fixed code is the
+// price); inflating runs at 60 to 120 per cent of zlib's speed. The CRC-32 runs
+// at 1.3 GB/s (zlib's: 1.4 to 2.6) and the Adler-32 at 3.8 GB/s (2.4 to 3.2).
+// These are measured, not chased: nothing here has been tuned for speed past the
+// shape of the algorithms.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   deflate.cone      this overview
+//   types.cone        Format, Status, ErrorKind, DeflateError, GzipHeader
+//   tables.cone       the constants of RFC 1951
+//   checksum.cone     adler32, Adler32, crc32, Crc32
+//   huffman.cone      the Huffman decoding table
+//   inflate.cone      Inflater, and the gzip header reader
+//   decompress.cone   inflate, zlibDecompress, gzipDecompress
+//   compress.cone     the bit writer, Huffman code lengths, block writers
+//   deflater.cone     Deflater, the matcher, the zlib and gzip headers and trailers
+//   compressall.cone  rawDeflate, zlibCompress, gzipCompress, gzipCompressWith
+
 mod deflate;
 
 import collections use *;

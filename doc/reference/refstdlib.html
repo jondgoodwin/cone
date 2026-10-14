@@ -394,6 +394,69 @@ fn main() i32 {
 </pre>
 	<p>prints <span class="pre">1 -3</span> on every machine.</p>
 
+	<h3 id="deflatepkg">Compression</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">deflate</span><br><span class="pre">import deflate;</span></td>
+		<td>DEFLATE (RFC 1951) compressed and decompressed, with zlib (RFC 1950) and gzip (RFC 1952) framing, the
+		Adler-32 and CRC-32, and streaming both ways: an inflater and a deflater whose state is a value, fed
+		input split anywhere and answering output in bounded pieces. Written in Cone, with no C library; the
+		PNG reader and writer of <span class="pre">imagedecode</span> stand on it.</td></tr>
+	</table>
+
+	<h3 id="deflate">deflate</h3>
+	<p>For data in memory, one call each way: <span class="pre">zlibCompress(data, level)</span>,
+		<span class="pre">gzipCompress(data, level)</span> and <span class="pre">rawDeflate(data, level)</span> answer
+		a <span class="pre">List[u8]</span>; <span class="pre">zlibDecompress(data, expected)</span> and
+		<span class="pre">gzipDecompress(data, expected)</span> answer a
+		<span class="pre">Result[List[u8], DeflateError]</span>, the error holding a
+		<span class="pre">kind</span> (a bad header, a bad code, a match reaching before the start, a cut stream,
+		a checksum that does not match, more output than allowed, bytes after a gzip file) and a
+		<span class="pre">reason</span>. The level is 0 (stored), 1 (LZ77 with the fixed Huffman code) or 2
+		(the same matcher with a dynamic Huffman code per block); level 2 runs about as fast as zlib's level 6 and
+		makes streams a few per cent bigger. The checksums check themselves: a stream that fails its Adler-32,
+		its CRC-32 or its length is refused.</p>
+	<p>For a stream that arrives in pieces, or output that must not be held whole, an
+		<span class="pre">Inflater</span> (and a <span class="pre">Deflater</span>) is made for a
+		<span class="pre">Format</span> (<span class="pre">Raw</span>, <span class="pre">Zlib</span> or
+		<span class="pre">Gzip</span>), is given input with <span class="pre">feed</span> in pieces of any size
+		cut anywhere, is told with <span class="pre">finish</span> that none is left, and answers
+		<span class="pre">pull(&amp;mut out, max)</span>: at most <span class="pre">max</span> bytes appended to
+		<span class="pre">out</span>, and a <span class="pre">Status</span> that says what it waits for
+		(<span class="pre">NeedInput</span>, <span class="pre">MoreOutput</span>, <span class="pre">Done</span>, or
+		for an inflater <span class="pre">Failed</span>). The state is all in the value, so there is no global; an
+		inflater caps its output at 1 GiB unless <span class="pre">setLimit</span> says otherwise, since a small
+		stream can expand a thousandfold. A gzip file with several members is inflated member after member and the
+		data joined, and the header fields of the member (time, name, comment, extra field) are kept in a
+		<span class="pre">GzipHeader</span>. The package's header lists each method chosen and what was left out, and
+		its speed and size next to zlib's on six files.</p>
+<pre>
+mod squeeze;
+
+import stdio use *;
+import collections use *;
+import deflate;
+
+fn main() i32 {
+  imm text = "the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog";
+  imm packed = deflate.gzipCompress(text, 2);
+  printInt(i64.from(text.len));
+  printStr(" bytes became ");
+  printInt(i64.from(packed.len()));
+  printStr(" as a gzip file\n");
+  match deflate.gzipDecompress(packed.view(), 0usize) {
+    case imm ok Ok { printStr(String.fromBytes(ok.view()).view()); printStr("\n"); }
+    case imm e Error { printStr(e.reason.view()); return 1i32; }
+  }
+  0i32;
+}
+</pre>
+	<p>prints:</p>
+<pre>
+88 bytes became 72 as a gzip file
+the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
+</pre>
+
 	<h3 id="testpkg">Testing</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
