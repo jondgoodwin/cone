@@ -1,0 +1,302 @@
+// yard: a five-car train on a fork in the line: a switch sends it onto the curving branch B, or straight onto
+// branch A. Not a coaster: steel wheels on level ground, 20-tonne cars, a motor (a launch zone) on the trunk. Drawn
+// headless on a real GPU.
+//
+//   congo run --release packages/splinetrack/examples/yard.cone -- --out PREFIX
+//   GPU_POWER_PREFERENCE=low-power congo run --release ...   (the Intel)
+//
+// The network is three tracks (a 200 m trunk, branch A straight on for 200 m, branch B curving away to +z) and a
+// join at the end of the trunk with two options. The train is run twice, the switch set to B and then to A; it
+// prints the lead car's track and place twice a second and, at the join, the pose continuity (the largest jump of
+// the lead car's place from one step to the next beyond the arc it ran). Five shots from one high camera:
+// the approach, the train spanning the fork (lead car on B, tail on the trunk), the train on B, the train on
+// A, and a general view; to PREFIX-<name>.bmp, with the GPU time of each (timestamp queries, median of 100).
+
+mod yard;
+
+import stdio use *;
+import libc;
+import time;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import splinetrack use *;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn cstrToString(s *u8) String {
+  mut r = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
+  r;
+}
+
+fn pt(x f32, y f32, z f32) TrackPoint { new TrackPoint(new Vec3(x, y, z), 0.); }
+
+fn railcar() CarSpec { new CarSpec(20000., 12., 8.5, 0.6, 6., 0.002, 0.001); }
+
+struct Pose2 {
+  pos Vec3;
+  rot Quat;
+}
+
+struct Shot {
+  name String;
+  cars List[Pose2];
+}
+
+fn network() TrackNetwork {
+  imm tan = (new Vec3(100., -0.25, 0.)).normalize();
+  mut tp = List[TrackPoint].empty();
+  tp.push(pt(0., 0.5, 0.)); tp.push(pt(100., 0.25, 0.)); tp.push(pt(200., 0., 0.));
+  mut ap = List[TrackPoint].empty();
+  ap.push(pt(200., 0., 0.)); ap.push(pt(300., -0.25, 0.)); ap.push(pt(400., -0.5, 0.));
+  mut bp = List[TrackPoint].empty();
+  bp.push(pt(200., 0., 0.)); bp.push(pt(240., -0.1, 4.)); bp.push(pt(280., -0.3, 20.)); bp.push(pt(310., -0.45, 45.)); bp.push(pt(325., -0.55, 80.));
+  mut net = TrackNetwork.make();
+  imm trunk = net.addTrack(Track.build(tp, false, new Vec3(1., 0., 0.), tan));
+  imm a = net.addTrack(Track.build(ap, false, tan, tan));
+  imm b = net.addTrack(Track.build(bp, false, tan, new Vec3(0.1, 0., 1.).normalize()));
+  mut options = List[usize].empty();
+  options.push(a); options.push(b);
+  net.addJoin(trunk, options);
+  net.addZone(trunk, Zone.launch(0., 120., 14., 30000.));
+  net;
+}
+
+fn poses(nt &NetTrain) List[Pose2] {
+  mut r = List[Pose2].empty();
+  mut i = 0usize;
+  while i < nt.train.carCount() {
+    imm p = nt.train.carPose(&nt.route, i);
+    r.push(new Pose2(p.pos, p.rot));
+    i = i + 1usize;
+  }
+  r;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut a = 1;
+  while a < argc {
+    if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
+      prefix = cstrToString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+  mut shots = List[Shot].empty();
+  mut stepSeconds = 0d;
+  mut steps = 0;
+  mut run = 0;
+  while run < 2 {
+    mut net = network();
+    net.throwSwitch(0usize, usize.from(run == 0));       // run 0: to B (option 1); run 1: to A (option 0)
+    print <- "\n== switch set to "; print <- (if run == 0 { "B (curving away)"; } else { "A (straight on)"; }); print <- " ==\n";
+    print <- "join gap "; print <- net.joinGap(0usize, 1usize); print <- " m and "; print <- net.joinGap(0usize, 2usize); print <- " m; bend "; print <- net.joinBend(0usize, 1usize); print <- " and "; print <- net.joinBend(0usize, 2usize); print <- " rad\n";
+    mut cars = List[CarSpec].empty();
+    mut c = 0;
+    while c < 5 { cars.push(railcar()); c = c + 1; }
+    mut nt = NetTrain.make(&net, 0usize, cars, 70.);
+    mut t = 0.;
+    mut n = 0;
+    mut gotApproach = false;
+    mut gotSpan = false;
+    mut gotBranch = false;
+    mut worstJump = 0.;
+    mut prev = nt.route.at(nt.train.s).pos;
+    while t < 70. {
+      imm sBefore = nt.train.s;
+      imm c0 = time.Instant.now();
+      nt.step(&net, 1. / 120.);
+      stepSeconds = stepSeconds + (time.Instant.now() - c0).secondsF64();
+      steps = steps + 1;
+      t = t + 1. / 120.;
+      n = n + 1;
+      imm lead = nt.lead();
+      imm cur = nt.route.at(nt.train.s).pos;
+      imm ds = nt.train.s - sBefore;
+      if ds > 0. {
+        imm e = libc.fabsf((cur - prev).length() - ds);
+        if e > worstJump { worstJump = e; }
+      }
+      prev = cur;
+      if n % 120 == 0 {
+        print <- t; print <- " s: track "; print <- u64.from(lead.0); print <- " at "; print <- lead.1; print <- " m, "; print <- nt.train.v; print <- " m/s, g (front car) vertical "; print <- nt.train.gforce(&nt.route, 0usize).vertical;
+        print <- " lateral "; print <- nt.train.gforce(&nt.route, 0usize).lateral; print <- ", route "; print <- u64.from(nt.legs.len()); print <- " legs\n";
+      }
+      if run == 0 {
+        if !gotApproach and lead.0 == 0usize and lead.1 > 170. { gotApproach = true; mut s = String.empty(); s <- "approach"; shots.push(new Shot(s, poses(&nt))); }
+        if !gotSpan and lead.0 == 2usize and lead.1 > 25. { gotSpan = true; mut s = String.empty(); s <- "fork"; shots.push(new Shot(s, poses(&nt))); }
+        if !gotBranch and lead.0 == 2usize and lead.1 > 85. { gotBranch = true; mut s = String.empty(); s <- "branchB"; shots.push(new Shot(s, poses(&nt))); }
+      } else {
+        if !gotBranch and lead.0 == 1usize and lead.1 > 90. { gotBranch = true; mut s = String.empty(); s <- "straightA"; shots.push(new Shot(s, poses(&nt))); }
+      }
+      if nt.train.ended { t = 1000.; }
+    }
+    print <- "the lead car's largest jump beyond the arc it ran, through the join: "; print <- worstJump; print <- " m\n";
+    run = run + 1;
+  }
+  print <- "\nCPU: a 1/120 s step of the five-car train on the network costs "; print <- stepSeconds / f64.from(steps) * 1.0e6d; print <- " microseconds\n";
+
+  // ---- the meshes ----
+  imm net = network();
+  mut spec = RailSpec.coaster(-0.6);
+  spec.gauge = 1.435; spec.railRadius = 0.04; spec.tieSpacing = 0.6; spec.tieHalfWidth = 1.3; spec.tieDrop = 0.1; spec.ringSpacing = 1.0;
+  mut rails = Mesh.empty();
+  mut ties = Mesh.empty();
+  mut ti = 0usize;
+  while ti < 3usize {
+    imm m = railMesh(net.tracks[ti], &spec);
+    rails.append(&m.rails);
+    ties.append(&m.ties);
+    ti = ti + 1usize;
+  }
+  print <- "rails "; print <- u64.from(rails.triangleCount()); print <- " triangles, ties "; print <- u64.from(ties.triangleCount()); print <- " triangles\n";
+
+  // ---- the GPU ----
+  mut instance = Instance.create("splinetrack yard");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm W = 1280u32;
+  imm H = 720u32;
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !queries.isValid() { print <- "renderer failed\n"; return 1i32; }
+  mut sky = Sky.dusk(radians(35.), radians(200.));
+  sky.sunColor = new Color(30., 27., 22., 1.);
+  sky.zenith = new Color(0.14, 0.3, 0.72, 1.);
+  sky.horizon = new Color(0.6, 0.72, 0.88, 1.);
+  sky.glow = new Color(0.5, 0.4, 0.3, 1.);
+  sky.ground = new Color(0.2, 0.25, 0.3, 1.);
+  sky.cloudCover = 0.35;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
+  post.exposure = 0.9;
+  post.bloom = 0.03;
+  imm railMeshH = renderer.addMesh(&mut device, &rails);
+  imm tieMeshH = renderer.addMesh(&mut device, &ties);
+  imm groundData = Mesh.plane(2, 1.);
+  imm groundMesh = renderer.addMesh(&mut device, &groundData);
+  imm cubeData = Mesh.cube(1.);
+  imm cubeMesh = renderer.addMesh(&mut device, &cubeData);
+  mut railMat = Material.shiny(new Color(0.6, 0.6, 0.62, 1.), 0.7, 70.);
+  imm railM = renderer.addMaterial(&mut device, &railMat);
+  mut tieMat = Material.plain(new Color(0.3, 0.19, 0.1, 1.));
+  imm tieM = renderer.addMaterial(&mut device, &tieMat);
+  mut groundMat = Material.plain(new Color(0.3, 0.38, 0.2, 1.));
+  imm groundM = renderer.addMaterial(&mut device, &groundMat);
+  mut locoMat = Material.shiny(new Color(0.1, 0.25, 0.6, 1.), 0.5, 60.);
+  imm locoM = renderer.addMaterial(&mut device, &locoMat);
+  mut wagonMat = Material.shiny(new Color(0.65, 0.3, 0.1, 1.), 0.4, 40.);
+  imm wagonM = renderer.addMaterial(&mut device, &wagonMat);
+  mut roofMat = Material.plain(new Color(0.55, 0.55, 0.55, 1.));
+  imm roofM = renderer.addMaterial(&mut device, &roofMat);
+
+  // an extra overview shot from the second run's last pose list
+  imm count = shots.len();
+  mut si = 0usize;
+  while si < count + 1usize {
+    mut list = DrawList.empty();
+    list.add(groundMesh, groundM, Mat4.fromTrs(new Vec3(220., -0.7, 40.), Quat.identity(), new Vec3(400., 1., 300.)));
+    list.add(railMeshH, railM, Mat4.identity());
+    list.add(tieMeshH, tieM, Mat4.identity());
+    mut name = String.empty();
+    if si < count {
+      name <- shots[si].name.view();
+      mut c = 0usize;
+      while c < shots[si].cars.len() {
+        imm p = *shots[si].cars[c];
+        list.add(cubeMesh, if c == 0usize { locoM; } else { wagonM; }, Mat4.fromTrs(p.pos + p.rot * new Vec3(0., 1.9, 0.), p.rot, new Vec3(5.8, 1.7, 1.45)));
+        list.add(cubeMesh, roofM, Mat4.fromTrs(p.pos + p.rot * new Vec3(0., 3.7, 0.), p.rot, new Vec3(5.4, 0.12, 1.3)));
+        c = c + 1usize;
+      }
+    } else {
+      name <- "overview";
+      mut c = 0usize;
+      while c < shots[1usize].cars.len() {
+        imm p = *shots[1usize].cars[c];
+        list.add(cubeMesh, if c == 0usize { locoM; } else { wagonM; }, Mat4.fromTrs(p.pos + p.rot * new Vec3(0., 1.9, 0.), p.rot, new Vec3(5.8, 1.7, 1.45)));
+        c = c + 1usize;
+      }
+    }
+    mut camera = Camera.make();
+    camera.fov = radians(50.);
+    camera.near = 0.5;
+    camera.far = 4000.;
+    camera.background = new Color(0.4, 0.55, 0.8, 1.);
+    if si < count { camera.lookAt(new Vec3(150., 38., -70.), new Vec3(235., 0., 15.), new Vec3(0., 1., 0.)); }
+    else { camera.lookAt(new Vec3(260., 150., -230.), new Vec3(260., 0., 25.), new Vec3(0., 1., 0.)); }
+    mut samples = List[f64].empty();
+    mut f = 0u32;
+    while f < 130u32 {
+      mut encoder = device.createCommandEncoder();
+      encoder.writeTimestamp(&queries, 0u32);
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      encoder.writeTimestamp(&queries, 1u32);
+      post.apply(&mut encoder, &out);
+      encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      encoder.copyBufferToBuffer(&resolved, 0u64, &timeBuf, 0u64, 16u64);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      if f >= 30u32 {
+        imm ticks = timeBuf.mappedRange() as *u64;
+        samples.push(f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d);
+      }
+      f = f + 1u32;
+    }
+    mut qi = 1usize;
+    while qi < samples.len() {
+      mut qj = qi;
+      while qj > 0usize and *samples[qj - 1usize] > *samples[qj] { samples.swap(qj - 1usize, qj); qj = qj - 1usize; }
+      qi = qi + 1usize;
+    }
+    print <- "shot "; printStr(name.view()); print <- ": GPU draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize];
+    print <- ", max "; print <- *samples[samples.len() - 1usize]; print <- "), "; print <- u64.from(list.len()); print <- " draws\n";
+    if prefix.len() > 0usize {
+      mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      post.apply(&mut encoder, &out);
+      encoder.copyTextureToBuffer(&out, &shot);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+      mut file = prefix.copy();
+      file <- "-"; file <- name.view(); file <- ".bmp";
+      image.save(&filepath.Path.from(file.view()));
+      print <- "wrote "; printStr(file.view()); print <- "\n";
+    }
+    si = si + 1usize;
+  }
+  print <- "\nVulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}
