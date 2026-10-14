@@ -101,6 +101,9 @@ pub struct FoliageParams {
   pub brTipLift f32 = 0.;       // degrees a card's far end rises (an upswept fir tier, an upturned Norfolk limb)
   pub brDroop f32 = 0.2;        // a card's edges fall by this much of its half-width
   pub brCell i32 = 0;           // which paint cell the cards use
+  pub brAlt i32 = -1;           // a second cell (a spruce's, with cones on it) for 'brAltShare' of the cards above
+  pub brAltFrom f32 = 0.55;     // this fraction of the tree's height; -1: none
+  pub brAltShare f32 = 0.35;
   // CROWN LIGHTING. The normals are BENT NORMALS: each vertex's normal is the share 'brBend' of the crown hull's
   // outward normal at that point (a hull measured from the grown tree itself: its radius at each height) and the rest the
   // card's own plane's, so a crown is lit as the one volume it is and not as a heap of plates. DEPTH SHADE: how far
@@ -680,8 +683,10 @@ fn addBranchlets(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng) 
           imm shade = clampf(dep * fp.brShadeDepth + fp.brShadeLow * (1. - clampf(mid.y / top, 0., 1.)) + 0.12 * rng.signed(), 0., 0.999);
           imm row = i32.from(libc.floorf(shade * f32.from(rows)));
           imm flip = rng.unit() < 0.5;
-          imm u0 = if flip { cellU1(fp, fp.brCell); } else { cellU0(fp, fp.brCell); };
-          imm u1 = if flip { cellU0(fp, fp.brCell); } else { cellU1(fp, fp.brCell); };
+          imm alt = fp.brAlt >= 0 and mid.y / top > fp.brAltFrom and rng.unit() < fp.brAltShare;
+          imm cell = if alt { fp.brAlt; } else { fp.brCell; };
+          imm u0 = if flip { cellU1(fp, cell); } else { cellU0(fp, cell); };
+          imm u1 = if flip { cellU0(fp, cell); } else { cellU1(fp, cell); };
           imm cards = maxi(1, fp.brCards);
           mut c = 0;
           while c < cards {

@@ -69,6 +69,8 @@ pub struct NeedleTuftParams {
   pub density f32 = 1.;       // needles per length of twig
   pub twigWidth f32 = 0.0085; // a side twig's width, over the cell's side
   pub spread f32 = 0.46;      // a side twig's longest reach, over the cell's side
+  pub cones i32 = 0;          // sprigs: above 0, a second cell with this many cones hanging on the sprig (a spruce's, on its upper boughs)
+  pub coneColor Color = new Color(112., 72., 44., 1.);
 
   // An eastern white pine's: 84 fascicles of five, needles 0.42 of the card long, deep blue-green
   // to a duller silvery green (foliage reflects a tenth or so of the light: darker than it looks)
@@ -112,6 +114,7 @@ pub struct NeedleTuftParams {
     p.shadeDark = 0.22;
     p.twigWidth = 0.006;
     p.spread = 0.5;
+    p.cones = 4;
     p;
   }
 
@@ -148,6 +151,12 @@ pub struct NeedleTuftParams {
 // (a pine's: the tuft, the tuft in October, the pad, the pad in October)
 pub fn tuftCells(kind i32) i32 { if kind == TUFT_PINE { 4; } else { 1; }; }
 
+// The cells of the image 'p' makes: a sprig with 'cones' has a second cell, the same with cones on it
+pub fn tuftCellsOf(p &NeedleTuftParams) i32 {
+  if p.kind == TUFT_SPRIG and p.cones > 0 { return 2; }
+  tuftCells(p.kind);
+}
+
 struct TuftRng {
   state u32;
 
@@ -164,6 +173,7 @@ struct TuftCanvas {
   w i32;
   h i32;
   px List[f32];               // r, g, b (premultiplied, sRGB values 0 to 255), a: four a texel
+  shift i32 = 0;              // painting goes this many cells to the right of the cell it is told
 }
 
 // Paint one needle: a quadratic curve from (ax, ay) through the control point (cx, cy) to
@@ -240,7 +250,7 @@ fn paintNeedle(cv &mut TuftCanvas, cell i32, size i32, ax f32, ay f32, cx f32, c
           g = g + (tawnyC.green - g) * m;
           b = b + (tawnyC.blue - b) * m;
         }
-        imm at = usize.from(((py * cv.w) + cell * size + pxl) * 4);
+        imm at = usize.from(((py * cv.w) + (cell + cv.shift) * size + pxl) * 4);
         imm keep = 1. - cov;
         cv.px.set(at, *cv.px[at] * keep + r * cov);
         cv.px.set(at + 1usize, *cv.px[at + 1usize] * keep + g * cov);
@@ -472,14 +482,14 @@ fn paintSprig(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
   while s < p.sideTwigs {
     imm t = (f32.from(s) + 0.5) / f32.from(p.sideTwigs);
     imm ly = 0.03 + 0.88 * t;
-    imm reach = p.spread * (1. - 0.5 * t) * (0.7 + 0.45 * rng.unit());
+    imm reach = p.spread * (1. - 0.5 * t) * (0.5 + 0.7 * rng.unit());
     mut side = 0;
     while side < 2 {
       imm sg = if side == 0 { -1.; } else { 1.; };
-      if rng.unit() >= 0.05 {
-        imm ang = radians(p.forward + 11. * rng.signed());
+      if rng.unit() >= 0.14 {
+        imm ang = radians(p.forward + 22. * rng.signed());
         imm ox = 0.5 + bow * 2. * (1. - (2. * t - 1.) * (2. * t - 1.));
-        imm oy = ly + (if side == 0 { 0.; } else { 0.5 / f32.from(p.sideTwigs) * 0.88; });
+        imm oy = ly + (if side == 0 { 0.; } else { 0.5 / f32.from(p.sideTwigs) * 0.88; }) + 0.02 * rng.signed();
         imm exc = clampU(ox + sg * libc.sinf(ang) * reach, 0.03, 0.97);
         imm eyc = clampU(oy + libc.cosf(ang) * reach, 0.0, 0.985);
         paintFringed(cv, p, rng, ox, oy, exc, eyc, p.needleLength, 62., per, w0, p.twigWidth, 0.82);
@@ -561,10 +571,42 @@ fn paintAraucaria(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
   paintAraucariaRope(cv, p, rng, 0.5, 0.8, 0.5 + 0.02 * rng.signed(), 0.95, 0.03);
 }
 
+// A cone: a short stout brown stroke hanging from a twig at (ax, ay), 'len' long to (bx, by) (the unit square),
+// its scales lighter ticks across it
+fn paintCone(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng, ax f32, ay f32, bx f32, by2 f32) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  imm dark = new Color(p.coneColor.red * 0.65, p.coneColor.green * 0.65, p.coneColor.blue * 0.65, 1.);
+  paintNeedle(cv, 0, size, ax, ay, (ax + bx) * 0.5, (ay + by2) * 0.5, bx, by2, 0.05 * fs, 0.45, p.coneColor, dark, dark, 0.);
+  mut k = 1;
+  while k < 6 {
+    imm t = f32.from(k) / 6.;
+    imm cx = ax + (bx - ax) * t;
+    imm cy = ay + (by2 - ay) * t;
+    imm w = 0.045 * (1. - 0.4 * t);
+    paintNeedle(cv, 0, size, cx - w, cy + 0.006, cx, cy - 0.008, cx + w, cy + 0.006, 0.008 * fs, 0.0,
+      new Color(p.coneColor.red * 1.3, p.coneColor.green * 1.3, p.coneColor.blue * 1.3, 1.), dark, dark, 0.);
+    k = k + 1;
+  }
+}
+
+// Cones hanging in a cluster or two on the upper half of the sprig
+fn paintCones(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
+  mut n = 0;
+  while n < p.cones {
+    imm cx = 0.5 + 0.28 * rng.signed();
+    imm cy = 0.55 + 0.35 * rng.unit();
+    imm len = 0.11 + 0.04 * rng.unit();
+    imm sway = 0.03 * rng.signed();
+    paintCone(cv, p, rng, cx, cy, cx + sway, cy - len);
+    n = n + 1;
+  }
+}
+
 // The needle tuft 'p' describes, as RGBA (sRGB colour, straight alpha) texels, the cells
 // ('tuftCells') side by side, rows from the bottom
 pub fn bakeNeedleTuft(p &NeedleTuftParams) TexelMap {
-  imm cells = tuftCells(p.kind);
+  imm cells = tuftCellsOf(p);
   imm w = p.size * cells;
   imm h = p.size;
   mut cv = new TuftCanvas(w, h, List[f32].withCapacity(usize.from(w * h * 4)));
@@ -578,6 +620,13 @@ pub fn bakeNeedleTuft(p &NeedleTuftParams) TexelMap {
     paintPad(&mut cv, p, &mut rng, 3, true);
   } elif p.kind == TUFT_SPRIG {
     paintSprig(&mut cv, p, &mut rng);
+    if p.cones > 0 {
+      // the second cell: the same kind of sprig with cones hanging among its upper needles
+      cv.shift = 1;
+      paintSprig(&mut cv, p, &mut rng);
+      paintCones(&mut cv, p, &mut rng);
+      cv.shift = 0;
+    }
   } elif p.kind == TUFT_ARAUCARIA {
     paintAraucaria(&mut cv, p, &mut rng);
   } else {
