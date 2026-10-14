@@ -1,0 +1,103 @@
+// The surfacepatterns package's dense sprigs (spruce, fir, Norfolk) and their shade rows. Only a failure prints.
+//
+// - Determinism, and another seed gives another picture.
+// - Shape: one cell wide, 'shadeRows' cells tall, RGBA.
+// - Coverage: a spruce or fir sprig is mostly covered (mean alpha of the bottom row above 0.45, a card of
+//   these is a solid bough); a Norfolk's above 0.2.
+// - Shade rows: each row up is darker than the one below (the mean colour of the covered texels falls), and
+//   all rows have the same alpha.
+// - New growth: the pale yellow-green tips are present (some covered texels with green well above blue and
+//   red above the dark needles').
+
+mod sprigs;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import pbrmaterial use *;
+import surfacepatterns use *;
+
+const SIZE = 128;
+
+// The mean alpha of row 'row' of 'rows', and the mean green of its covered texels
+fn rowAlpha(m &TexelMap, row i32, rows i32) f32 {
+  imm h = m.height / rows;
+  mut sum = 0.;
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < m.width {
+      sum = sum + f32.from(m.at(x, row * h + y, 3));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  sum / f32.from(h * m.width) / 255.;
+}
+
+fn rowGreen(m &TexelMap, row i32, rows i32) f32 {
+  imm h = m.height / rows;
+  mut sum = 0.;
+  mut n = 0;
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < m.width {
+      if m.at(x, row * h + y, 3) > 200u8 {
+        sum = sum + f32.from(m.at(x, row * h + y, 1));
+        n = n + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  if n > 0 { sum / f32.from(n); } else { 0.; };
+}
+
+fn paleTexels(m &TexelMap) i32 {
+  mut n = 0;
+  mut y = 0;
+  while y < m.height {
+    mut x = 0;
+    while x < m.width {
+      if m.at(x, y, 3) > 200u8 and m.at(x, y, 1) > 120u8 and i32.from(m.at(x, y, 1)) > i32.from(m.at(x, y, 2)) + 50 { n = n + 1; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  n;
+}
+
+fn main() i32 {
+  imm sp = NeedleTuftParams.spruce(SIZE, 5u32);
+  imm fr = NeedleTuftParams.denseFir(SIZE, 6u32);
+  imm nf = NeedleTuftParams.norfolk(SIZE, 7u32);
+  imm spruce = bakeNeedleTuft(&sp);
+  imm fir = bakeNeedleTuft(&fr);
+  imm norfolk = bakeNeedleTuft(&nf);
+  expect(mapHash(&spruce) == mapHash(&bakeNeedleTuft(&sp)), "a spruce sprig baked twice is the same");
+  expect(mapHash(&spruce) != mapHash(&bakeNeedleTuft(&NeedleTuftParams.spruce(SIZE, 6u32))), "another seed, another sprig");
+  expectInt(i64.from(spruce.width), i64.from(SIZE * 2), "a spruce's is two cells wide: the sprig, and the sprig with cones");
+  expectInt(i64.from(fir.width), i64.from(SIZE), "a fir's is one");
+  expectInt(i64.from(spruce.height), i64.from(SIZE * sp.shadeRows), "shadeRows cells tall");
+  expectInt(i64.from(norfolk.height), i64.from(SIZE * nf.shadeRows), "a Norfolk's rows too");
+  expectInt(i64.from(spruce.channels), 4i64, "RGBA");
+  expect(rowAlpha(&spruce, 0, sp.shadeRows) > 0.45, "a spruce sprig is mostly covered");
+  expect(rowAlpha(&fir, 0, fr.shadeRows) > 0.3, "a fir sprig is well covered");
+  expect(rowAlpha(&norfolk, 0, nf.shadeRows) > 0.2, "a Norfolk card is well covered");
+  mut r = 1;
+  mut ordered = true;
+  mut sameAlpha = true;
+  while r < sp.shadeRows {
+    if rowGreen(&spruce, r, sp.shadeRows) >= rowGreen(&spruce, r - 1, sp.shadeRows) { ordered = false; }
+    if rowAlpha(&spruce, r, sp.shadeRows) != rowAlpha(&spruce, 0, sp.shadeRows) { sameAlpha = false; }
+    r = r + 1;
+  }
+  expect(ordered, "each shade row is darker than the one below");
+  expect(sameAlpha, "the rows share one alpha");
+  expect(paleTexels(&spruce) > 40, "new growth's pale tips are painted");
+  // the older kinds are unchanged by the new fields: one row, as before
+  expectInt(i64.from(bakeNeedleTuft(&NeedleTuftParams.balsamFir(SIZE, 7u32)).height), i64.from(SIZE), "the old kinds have one row");
+  done();
+}

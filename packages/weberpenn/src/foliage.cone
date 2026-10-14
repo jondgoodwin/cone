@@ -31,6 +31,7 @@ pub const FOLIAGE_NEEDLES = 1;
 pub const FOLIAGE_PLUMES = 2;   // a pine's: along each branch, two crossed ribbons of needles, widest a third of the way out
 pub const FOLIAGE_TUFTS = 3;    // tufts of crossed cards at a limb's shoot ends
 pub const FOLIAGE_SPRAYS = 4;   // flat cards along each limb
+pub const FOLIAGE_BRANCHLETS = 5; // overlapping whole-sprig cards along every limb and twig, lit as a crown volume
 
 pub struct FoliageParams {
   pub kind i32 = 0;
@@ -85,6 +86,33 @@ pub struct FoliageParams {
   pub sprayDroop f32 = 0.25;    // its edges fall by this much of its half-width
   pub shadeUp f32 = 0.6;        // the normals' share of up
   pub shadeOut f32 = 0.6;       // and of out from the trunk's axis
+  // BRANCHLETS (FOLIAGE_BRANCHLETS): whole sprigs as cards, laid along every limb and twig of the levels
+  // 'tuftFromLevel' and above, each card following the stem's own bend (three rows of points, so a limb's
+  // sag and its upturned tip carry through), 'brCards' of them at a station fanned about the limb, the
+  // stations 'brStep' of a card's length apart (a third to a half overlap: the crown is solid, with sky
+  // between the tiers only)
+  pub brStart f32 = 0.12;       // from this fraction along a stem
+  pub brLength f32 = 1.0;       // a card's length along the stem, metres (a twig's: 0.65 of it)
+  pub brWidth f32 = 1.0;        // its widest, metres
+  pub brStep f32 = 0.55;        // stations apart, in card lengths
+  pub brCards i32 = 2;          // cards at a station
+  pub brRoll f32 = 30.;         // degrees between the cards of a station, about the stem
+  pub brHang f32 = 0.;          // degrees the whole fan turns down about the stem (a spruce's hanging curtain); negative, up
+  pub brTipLift f32 = 0.;       // degrees a card's far end rises (an upswept fir tier, an upturned Norfolk limb)
+  pub brDroop f32 = 0.2;        // a card's edges fall by this much of its half-width
+  pub brCell i32 = 0;           // which paint cell the cards use
+  pub brAlt i32 = -1;           // a second cell (a spruce's, with cones on it) for 'brAltShare' of the cards above
+  pub brAltFrom f32 = 0.55;     // this fraction of the tree's height; -1: none
+  pub brAltShare f32 = 0.35;
+  // CROWN LIGHTING. The normals are BENT NORMALS: each vertex's normal is the share 'brBend' of the crown hull's
+  // outward normal at that point (a hull measured from the grown tree itself: its radius at each height) and the rest the
+  // card's own plane's, so a crown is lit as the one volume it is and not as a heap of plates. DEPTH SHADE: how far
+  // inside the hull a card lies, and how far down the crown, pick a row of the paint ('brShadeRows' rows, each darker),
+  // so the inside is dark (the paint's rows are ambient occlusion baked per card)
+  pub brBend f32 = 0.75;
+  pub brShadeRows i32 = 1;
+  pub brShadeDepth f32 = 1.1;   // the weight of depth inside the hull in the row choice
+  pub brShadeLow f32 = 0.25;    // and of height: the crown's lower tiers sit under the upper ones
 }
 
 // The golden ratio's fractional part: the phases of successive leaves
@@ -477,10 +505,226 @@ fn addSprays(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng) {
   }
 }
 
+// ---- Branchlets: the crown as a volume ----
+
+const HULL_BINS = 32usize;
+
+// The crown's hull, measured from the grown tree: its radius about the trunk's axis in each of 32 height bins
+// (the farthest any live stem reaches), smoothed twice, and the trunk's axis at each height
+struct Hull {
+  radius List[f32];
+  axisX List[f32];
+  axisZ List[f32];
+  top f32;
+}
+
+fn buildHull(tree &Tree) Hull {
+  imm top = maxf(1., tree.height);
+  mut radius = List[f32].empty();
+  mut ax = List[f32].empty();
+  mut az = List[f32].empty();
+  imm trunk = tree.stems[0usize];
+  mut b = 0usize;
+  while b < HULL_BINS {
+    radius.push(0.);
+    // the trunk's point nearest the bin's centre height
+    imm yc = top * (f32.from(b) + 0.5) / f32.from(HULL_BINS);
+    mut best = 1.0e9;
+    mut bx = 0.;
+    mut bz = 0.;
+    mut i = 0usize;
+    while i < trunk.points.len() {
+      imm q = *trunk.points[i];
+      imm d = absf(q.y - yc);
+      if d < best { best = d; bx = q.x; bz = q.z; }
+      i = i + 1usize;
+    }
+    ax.push(bx);
+    az.push(bz);
+    b = b + 1usize;
+  }
+  mut s = 1usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if !st.dead {
+      mut i = 0usize;
+      while i < st.points.len() {
+        imm q = *st.points[i];
+        mut bin = i32.from(libc.floorf(q.y / top * f32.from(HULL_BINS)));
+        if bin < 0 { bin = 0; }
+        if bin >= i32.from(HULL_BINS) { bin = i32.from(HULL_BINS) - 1; }
+        imm bu = usize.from(bin);
+        imm dx = q.x - *ax[bu];
+        imm dz = q.z - *az[bu];
+        imm d = libc.sqrtf(dx * dx + dz * dz);
+        if d > *radius[bu] { radius.set(bu, d); }
+        i = i + 1usize;
+      }
+    }
+    s = s + 1usize;
+  }
+  mut pass = 0;
+  while pass < 2 {
+    mut nr = List[f32].empty();
+    mut j = 0usize;
+    while j < HULL_BINS {
+      imm l = *radius[if j == 0usize { 0usize; } else { j - 1usize; }];
+      imm r = *radius[if j + 1usize < HULL_BINS { j + 1usize; } else { HULL_BINS - 1usize; }];
+      nr.push(0.25 * l + 0.5 * *radius[j] + 0.25 * r);
+      j = j + 1usize;
+    }
+    radius = nr;
+    pass = pass + 1;
+  }
+  new Hull(radius, ax, az, top);
+}
+
+// The hull's radius at height y
+fn hullRadius(h &Hull, y f32) f32 {
+  imm f = clampf(y / h.top * f32.from(HULL_BINS) - 0.5, 0., f32.from(HULL_BINS) - 1.001);
+  imm i = usize.from(i32.from(libc.floorf(f)));
+  imm k = f - libc.floorf(f);
+  *h.radius[i] * (1. - k) + *h.radius[i + 1usize] * k;
+}
+
+// The hull's outward normal at p (the gradient of r - R(y): out, and up where the crown narrows upward) and
+// how deep p is inside it, 0 on the hull to 1 on the axis
+fn hullNormal(h &Hull, p Vec3, depth &mut f32) Vec3 {
+  imm bin = usize.from(i32.from(clampf(p.y / h.top * f32.from(HULL_BINS), 0., f32.from(HULL_BINS) - 1.)));
+  imm dx = p.x - *h.axisX[bin];
+  imm dz = p.z - *h.axisZ[bin];
+  imm len = libc.sqrtf(dx * dx + dz * dz);
+  imm rh = if len < 0.001 { v3(1., 0., 0.); } else { v3(dx / len, 0., dz / len); };
+  imm dy = h.top / f32.from(HULL_BINS);
+  imm slope = clampf((hullRadius(h, p.y + dy) - hullRadius(h, p.y - dy)) / (2. * dy), -3., 3.);
+  *depth = clampf(1. - len / maxf(hullRadius(h, p.y), 0.3), 0., 1.);
+  unitv(v3(rh.x, 0. - slope, rh.z));
+}
+
+// One card of three rows of points ('rows': the points along it, 'lefts' and 'rights' the edges), both sides, each
+// vertex's normal bent to the hull; 'row' picks the paint's shade row
+fn addBentCard(m &mut mesh.Mesh, hull &Hull, fp &FoliageParams, pl Array[Vec3, 3], pr Array[Vec3, 3], plane Vec3,
+    u0 f32, u1 f32, row i32) {
+  imm rows = maxi(1, fp.brShadeRows);
+  imm first = u32.from(m.positions.len());
+  mut side = 0;
+  while side < 2 {
+    mut r = 0usize;
+    while r < 3usize {
+      imm v = (f32.from(row) + f32.from(r) * 0.5) / f32.from(rows);
+      mut k = 0;
+      while k < 2 {
+        imm p = if k == 0 { pl[r]; } else { pr[r]; };
+        mut dep = 0.;
+        imm hn = hullNormal(hull, p, &mut dep);
+        imm sg = if side == 0 { 1.; } else { -1.; };
+        m.positions.push(p);
+        m.normals.push(unitv(hn * fp.brBend + plane * (sg * (1. - fp.brBend))));
+        m.uvs.push(new Vec2(if k == 0 { u0; } else { u1; }, v));
+        k = k + 1;
+      }
+      r = r + 1usize;
+    }
+    side = side + 1;
+  }
+  mut q = 0u32;
+  while q < 2u32 {
+    imm a = first + q * 2u32;
+    imm b = a + 1u32;
+    imm d = a + 2u32;
+    imm c = a + 3u32;
+    m.indices.push(a); m.indices.push(b); m.indices.push(c);
+    m.indices.push(a); m.indices.push(c); m.indices.push(d);
+    imm a2 = a + 6u32;
+    imm b2 = a2 + 1u32;
+    imm d2 = a2 + 2u32;
+    imm c2 = a2 + 3u32;
+    m.indices.push(a2); m.indices.push(c2); m.indices.push(b2);
+    m.indices.push(a2); m.indices.push(d2); m.indices.push(c2);
+    q = q + 1u32;
+  }
+}
+
+fn addBranchlets(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng) {
+  imm hull = buildHull(tree);
+  imm rows = maxi(1, fp.brShadeRows);
+  imm top = maxf(1., tree.height);
+  imm up = v3(0., 1., 0.);
+  mut s = 1usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if !st.dead and st.level >= fp.tuftFromLevel and st.points.len() >= 2usize and st.length > 0.2 {
+      imm L = st.length;
+      imm limb = st.level == fp.tuftFromLevel;
+      imm scale = if limb { 1.; } else { 0.65; };
+      imm cardLen = fp.brLength * scale;
+      imm step = maxf(0.05, fp.brStep) * cardLen;
+      imm count = maxi(1, i32.from(libc.ceilf((1. - fp.brStart) * L / step)));
+      mut k = 0;
+      while k < count {
+        imm ta = fp.brStart + (1. - fp.brStart) * (f32.from(k) + 0.4 * rng.unit()) / f32.from(count);
+        imm tb = minf(1., ta + cardLen * (0.85 + 0.3 * rng.unit()) / L);
+        mut d0 = v3(0., 1., 0.);
+        mut d1 = v3(0., 1., 0.);
+        mut d2 = v3(0., 1., 0.);
+        imm p0 = stemAt(st, ta, &mut d0);
+        imm p1 = stemAt(st, (ta + tb) * 0.5, &mut d1);
+        imm p2raw = stemAt(st, tb, &mut d2);
+        if (p2raw - p0).length() > 0.05 {
+          imm lift = up * (libc.sinf(radians(fp.brTipLift)) * cardLen * 0.5);
+          imm p2 = p2raw + lift;
+          imm tan = unitv(p2 - p0);
+          imm w0 = flatAcross(unitv(p2raw - p0));
+          imm width = fp.brWidth * scale * (0.85 + 0.3 * rng.unit()) * 0.5;
+          // depth in the crown at the card's middle: the row of paint
+          mut dep = 0.;
+          imm mid = (p0 + p2) * 0.5;
+          hullNormal(&hull, mid, &mut dep);
+          imm shade = clampf(dep * fp.brShadeDepth + fp.brShadeLow * (1. - clampf(mid.y / top, 0., 1.)) + 0.12 * rng.signed(), 0., 0.999);
+          imm row = i32.from(libc.floorf(shade * f32.from(rows)));
+          imm flip = rng.unit() < 0.5;
+          imm alt = fp.brAlt >= 0 and mid.y / top > fp.brAltFrom and rng.unit() < fp.brAltShare;
+          imm cell = if alt { fp.brAlt; } else { fp.brCell; };
+          imm u0 = if flip { cellU1(fp, cell); } else { cellU0(fp, cell); };
+          imm u1 = if flip { cellU0(fp, cell); } else { cellU1(fp, cell); };
+          imm cards = maxi(1, fp.brCards);
+          mut c = 0;
+          while c < cards {
+            imm roll = fp.brHang + (f32.from(c) - 0.5 * f32.from(cards - 1)) * fp.brRoll + 9. * rng.signed();
+            imm w = turnAbout(w0, tan, roll);
+            imm plane = unitv(w.cross(tan));
+            // the card's three rows follow the stem; widest a third along, narrower at both ends
+            mut pl Array[Vec3, 3] = [p0, p1, p2];
+            mut pr Array[Vec3, 3] = [p0, p1, p2];
+            mut r = 0usize;
+            while r < 3usize {
+              imm ww = width * (if r == 0usize { 0.7; } elif r == 1usize { 1.; } else { 0.5; });
+              imm centre = if r == 0usize { p0; } elif r == 1usize { p1; } else { p2; };
+              // edges fall: the more horizontal the cross-direction, the more
+              imm fall = up * (0. - fp.brDroop * ww * (1. - absf(w.y)));
+              pl[r] = centre - w * ww + fall;
+              pr[r] = centre + w * ww + fall;
+              r = r + 1usize;
+            }
+            addBentCard(m, &hull, fp, pl, pr, plane, u0, u1, row);
+            c = c + 1;
+          }
+        }
+        k = k + 1;
+      }
+    }
+    s = s + 1usize;
+  }
+}
+
 // Leaves (or needles) at every site of 'tree', in one mesh
 pub fn foliageMesh(tree &Tree, fp &FoliageParams) mesh.Mesh {
   mut m = mesh.Mesh.empty();
   mut rng = Rng.make(fp.seed);
+  if fp.kind == FOLIAGE_BRANCHLETS {
+    addBranchlets(&mut m, tree, fp, &mut rng);
+    return m;
+  }
   if fp.kind == FOLIAGE_TUFTS {
     addTufts(&mut m, tree, fp, &mut rng);
     return m;
