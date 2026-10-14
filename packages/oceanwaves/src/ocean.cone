@@ -1,0 +1,289 @@
+// ======== The ocean: cascades, time, queries, foam, spray ========
+//
+// An Ocean is a set of cascades (cascade.cone) summed: the height at a point is the sum of the
+// cascades' heights, the displacement the sum of their displacements. 'update(t)' brings every
+// cascade to time t (one inverse FFT pair each, four in all); everything else reads the result.
+//
+// THE HEIGHT QUERY. The surface is drawn (and floats things) at the displaced points x + lambda D(x),
+// where x is the REST position the FFT's grid is indexed by. To find the height at a world point p
+// there must be an x with x + lambda D(x) = p. 'heightAt' finds it by fixed-point iteration,
+// x <- p - lambda D(x) starting from x = p (a few steps converge wherever the surface has not folded:
+// the mapping's slope, lambda times the displacement's, is below 1), then reads the height at x. The
+// same function serves a floating body and the renderer, so what floats on the sea is on the sea
+// drawn. Physics reads it on the CPU at the time of the last update; no GPU readback.
+//
+// SPRAY is a hook for effects, not an effect: 'sprayAt' lists points on the surface where the waves
+// are breaking hardest (the Jacobian lowest, the foam freshest), each with a strength, the direction
+// the crest is travelling and the wind's; vfx (or any emitter) turns them into particles.
+
+pub struct OceanSpec {
+  pub sea SeaState;
+  pub cascades List[CascadeSpec];
+  pub choppiness f32;         // lambda: 0 sinusoidal crests, 1 sharp, much more folds the surface over
+  pub foamThreshold f32;      // the Jacobian below which foam is made (1 is flat water)
+  pub foamGain f32;           // foam made per unit of Jacobian below the threshold
+  pub foamDecay f32;          // seconds for the foam to fade to 1/e
+  pub foamEvery u32;          // the foam is brought up to date on every this-many'th update (it changes slowly: 2 halves its cost)
+  pub seed u32;
+
+  // Three cascades for a sea: the first tile about three peak wavelengths long (at least 200 m), the
+  // second 5.4 times smaller, the third 25 times, with the bands of wavenumber that give each a cell of
+  // wave-vector space it can fill: 128 samples a side each
+  pub fn forSea(sea SeaState, seed u32) OceanSpec {
+    mut l0 = 3. * sea.peakWavelength();
+    if l0 < 200. { l0 = 200.; }
+    if l0 > 2400. { l0 = 2400.; }
+    OceanSpec.withTile(sea, seed, l0);
+  }
+
+  // The same with the first tile 'l0' metres square: choose it for the biggest sea the ocean will see
+  // if the wind is to change ('Ocean.setSea' keeps the tiles; a swell longer than a third of the first
+  // tile is not resolved)
+  pub fn withTile(sea SeaState, seed u32, l0 f32) OceanSpec {
+    imm l1 = l0 / 5.4;
+    imm l2 = l0 / 25.;
+    imm n = 128usize;
+    imm k1 = 6.28318530718 / l1;
+    imm k2 = 6.28318530718 / l2;
+    // each band ends where the next begins: at a quarter of the cascade's own Nyquist wavenumber
+    // (2 pi / L times n / 2), or its own scale for the finest
+    imm e0 = 6.28318530718 / l0 * f32.from(n) / 8.;
+    imm e1 = k1 * f32.from(n) / 8.;
+    imm e2 = k2 * f32.from(n) / 4.;
+    mut cs = List[CascadeSpec].empty();
+    cs.push(new CascadeSpec(l0, n, 0., e0));
+    cs.push(new CascadeSpec(l1, n, e0, e1));
+    cs.push(new CascadeSpec(l2, n, e1, e2));
+    new OceanSpec(sea, cs, 1.1, 0.72, 3., 5., 2u32, seed);
+  }
+}
+
+// A point on the surface where waves are breaking
+pub struct SpraySpot {
+  pub position Vec3;       // on the surface
+  pub strength f32;        // 0 .. 1, the foam's freshness
+  pub crestDirection Vec3; // the way the water is moving at the crest (horizontal, unit)
+}
+
+pub struct Ocean {
+  pub spec OceanSpec;
+  pub cascades List[Cascade];
+  pub time f64;
+  pub updates u32;
+  pendingFoam f32;           // seconds of foam fade not yet applied
+
+  // The ocean of 'spec', at time 0
+  pub fn make(spec OceanSpec) Ocean {
+    mut cs = List[Cascade].empty();
+    mut i = 0usize;
+    while i < spec.cascades.len() {
+      cs.push(Cascade.make(*spec.cascades[i], &spec.sea, spec.seed * 31u32 + u32.from(i)));
+      i = i + 1usize;
+    }
+    mut o = new Ocean(spec, cs, 0d, 0u32, 0.);
+    o.update(0d);
+    o;
+  }
+
+  // A different sea (the wind has risen or fallen): the same random numbers, new amplitudes
+  pub fn setSea(self &mut, sea SeaState) {
+    spec.sea = sea;
+    mut i = 0usize;
+    while i < cascades.len() {
+      cascades[i].synthesise(&spec.sea, spec.seed * 31u32 + u32.from(i));
+      i = i + 1usize;
+    }
+  }
+
+  // Bring every cascade to time t (seconds, increasing; going back only restarts the foam)
+  pub fn update(self &mut, t f64) {
+    mut dt = f32.from(t - time);
+    if dt < 0. { dt = 0.; }
+    if dt > 0.5 { dt = 0.5; }
+    mut i = 0usize;
+    while i < cascades.len() {
+      cascades[i].updateFields(t, spec.choppiness);
+      i = i + 1usize;
+    }
+    pendingFoam = pendingFoam + dt;
+    if spec.foamEvery <= 1u32 or updates % spec.foamEvery == 0u32 {
+      self.updateFoam(pendingFoam);
+      pendingFoam = 0.;
+    }
+    time = t;
+    updates = updates + 1u32;
+  }
+
+  // The foam from the TOTAL Jacobian: the folding of the whole surface, every cascade's displacement
+  // summed, not each cascade's own (a fine cascade alone folds everywhere at a high choppiness, and the
+  // result is speckle; whitecaps are where the small waves ride the big ones' crests and the sum
+  // folds). It is made on the grid of the second cascade (the middle band), which holds the foam; the
+  // others hold none. The foam persists and fades as the cascade's does.
+  fn updateFoam(self &mut, dt f32) {
+    imm fc = if cascades.len() > 1usize { 1usize; } else { 0usize; };
+    imm n = cascades[fc].spec.n;
+    imm len = cascades[fc].spec.length;
+    mut j = List[f32].withCapacity(n * n);
+    mut iz = 0usize;
+    while iz < n {
+      mut ix = 0usize;
+      while ix < n {
+        imm x = f32.from(ix) * len / f32.from(n);
+        imm z = f32.from(iz) * len / f32.from(n);
+        // this cascade's own samples are on the grid: read directly, the others bilinearly
+        imm own = iz * n + ix;
+        mut a = *cascades[fc].dxx[own];
+        mut b = *cascades[fc].dzz[own];
+        mut c = *cascades[fc].dxz[own];
+        mut k = 0usize;
+        while k < cascades.len() {
+          if k != fc {
+            a = a + cascades[k].at(&cascades[k].dxx, x, z);
+            b = b + cascades[k].at(&cascades[k].dzz, x, z);
+            c = c + cascades[k].at(&cascades[k].dxz, x, z);
+          }
+          k = k + 1usize;
+        }
+        imm l = spec.choppiness;
+        j.push((1. + l * a) * (1. + l * b) - l * c * l * c);
+        ix = ix + 1usize;
+      }
+      iz = iz + 1usize;
+    }
+    imm decay = libc.expf(0. - dt / spec.foamDecay);
+    mut q = 0usize;
+    while q < n * n {
+      cascades[fc].jacobian.set(q, *j[q]);
+      imm gen = fclampf((spec.foamThreshold - *j[q]) * spec.foamGain, 0., 1.);
+      imm faded = *cascades[fc].foam[q] * decay;
+      cascades[fc].foam.set(q, if gen > faded { gen; } else { faded; });
+      q = q + 1usize;
+    }
+  }
+
+  // The horizontal displacement D (times lambda, metres) at the rest position (x, z)
+  fn displacementRest(self &, x f32, z f32) Vec2 {
+    mut dx = 0.;
+    mut dz = 0.;
+    mut i = 0usize;
+    while i < cascades.len() {
+      dx = dx + cascades[i].at(&cascades[i].dispX, x, z);
+      dz = dz + cascades[i].at(&cascades[i].dispZ, x, z);
+      i = i + 1usize;
+    }
+    new Vec2(dx * spec.choppiness, dz * spec.choppiness);
+  }
+
+  // The rest position whose displaced point is the world point (x, z)
+  pub fn restOf(self &, x f32, z f32) Vec2 {
+    mut rx = x;
+    mut rz = z;
+    mut it = 0;
+    while it < 4 {
+      imm d = self.displacementRest(rx, rz);
+      rx = x - d.x;
+      rz = z - d.y;
+      it = it + 1;
+    }
+    new Vec2(rx, rz);
+  }
+
+  // The height of the surface at the world point (x, z)
+  pub fn heightAt(self &, x f32, z f32) f32 {
+    imm r = self.restOf(x, z);
+    mut h = 0.;
+    mut i = 0usize;
+    while i < cascades.len() {
+      h = h + cascades[i].at(&cascades[i].height, r.x, r.y);
+      i = i + 1usize;
+    }
+    h;
+  }
+
+  // The unit surface normal at (x, z), from the slopes the spectrum gives (not the finite difference
+  // of heights), at the rest position
+  pub fn normalAt(self &, x f32, z f32) Vec3 {
+    imm r = self.restOf(x, z);
+    mut sx = 0.;
+    mut sz = 0.;
+    mut i = 0usize;
+    while i < cascades.len() {
+      sx = sx + cascades[i].at(&cascades[i].slopeX, r.x, r.y);
+      sz = sz + cascades[i].at(&cascades[i].slopeZ, r.x, r.y);
+      i = i + 1usize;
+    }
+    new Vec3(-sx, 1., -sz).normalize();
+  }
+
+  // The foam at (x, z), 0 .. 1: the strongest of the cascades' there
+  pub fn foamAt(self &, x f32, z f32) f32 {
+    imm r = self.restOf(x, z);
+    mut f = 0.;
+    mut i = 0usize;
+    while i < cascades.len() {
+      imm v = cascades[i].at(&cascades[i].foam, r.x, r.y);
+      if v > f { f = v; }
+      i = i + 1usize;
+    }
+    f;
+  }
+
+  // The root mean square of the surface's height over cascade 'c's tile (m): 4 times it is the
+  // significant wave height the surface has now
+  pub fn rmsHeight(self &) f32 {
+    mut sum f64 = 0d;
+    mut i = 0usize;
+    while i < cascades.len() {
+      imm n = cascades[i].spec.n;
+      mut q = 0usize;
+      mut s2 f64 = 0d;
+      while q < n * n { s2 = s2 + f64.from(*cascades[i].height[q]) * f64.from(*cascades[i].height[q]); q = q + 1usize; }
+      sum = sum + s2 / f64.from(n * n);
+      i = i + 1usize;
+    }
+    f32.from(libc.sqrt(sum));
+  }
+
+  // The significant wave height implied by the spectrum over the cascades' bands: 4 sqrt(expected variance)
+  pub fn expectedSignificantHeight(self &) f32 {
+    mut v f64 = 0d;
+    mut i = 0usize;
+    while i < cascades.len() { v = v + cascades[i].expectedVariance(); i = i + 1usize; }
+    f32.from(4d * libc.sqrt(v));
+  }
+
+  // Up to 'maxCount' points near (cx, cz) within 'radius' metres where the foam made now is above
+  // 'threshold', the freshest first (a partial selection sort over a coarse scan, so cheap to call
+  // each frame): where spray should be emitted
+  pub fn sprayAt(self &, cx f32, cz f32, radius f32, threshold f32, maxCount usize) List[SpraySpot] {
+    mut found = List[SpraySpot].empty();
+    imm step = 2.;
+    mut z = cz - radius;
+    while z <= cz + radius {
+      mut x = cx - radius;
+      while x <= cx + radius {
+        imm f = self.foamAt(x, z);
+        if f > threshold and (x - cx) * (x - cx) + (z - cz) * (z - cz) <= radius * radius {
+          imm n = self.normalAt(x, z);
+          // the water moves toward the waves' direction at a crest; the surface's slope points up the wave
+          imm dir = new Vec2(n.x, n.z);
+          imm dl = dir.length();
+          imm cd = if dl > 0.0001 { new Vec3(-n.x / dl, 0., -n.z / dl); } else { new Vec3(1., 0., 0.); };
+          // keep the list sorted, freshest first, at most maxCount
+          mut place = found.len();
+          while place > 0usize and found[place - 1usize].strength < f { place = place - 1usize; }
+          if place < maxCount {
+            // insert, then drop the weakest if over the count
+            found.push(new SpraySpot(new Vec3(x, self.heightAt(x, z), z), f, cd));
+            mut m = found.len() - 1usize;
+            while m > place { found.swap(m, m - 1usize); m = m - 1usize; }
+            if found.len() > maxCount { found.pop(); }
+          }
+        }
+        x = x + step;
+      }
+      z = z + step;
+    }
+    found;
+  }
+}

@@ -1,0 +1,250 @@
+// shape: a heightfield from parameters, the part of terraingen that is a pure function of
+// (parameters, x, z) and so runs alike on the CPU and, as the kernel 'generate', on the GPU.
+// A module of terraingen's gpu/ folder: everything here is 32-bit numbers and fixed arrays of
+// them, so a ShapeParams can be handed to a kernel by value and read back on the CPU.
+//
+// The recipe (the standard terrain-from-noise one, each step a published method):
+//   1. a point is DOMAIN WARPED (Quilez, "Warping", 2002): moved by a low-frequency noise vector of
+//      'warpStrength' metres, which bends straight noise ridges into river-like sweeps;
+//   2. up to four LAYERS of fractal noise are summed, each of a KIND:
+//        0 fBm            plain fractal Brownian motion (Mandelbrot; Perlin noise octaves), with
+//                         Quilez's derivative damping ("morenoise", 2008): an octave's weight falls
+//                         where the slope the lower octaves made is already steep, so slopes stay
+//                         smooth and valleys fill with detail, which reads as eroded;
+//        1 ridged         Musgrave's ridged multifractal (Texturing and Modeling, ch. 12): sharp crests,
+//                         each octave weighted by the one before so detail gathers on the ridges;
+//        2 billow         2|n| - 1 octaves: rounded, puffy hills;
+//      a layer may be GATED by another layer's value (ridged mountains only where a broad swell is
+//      high), by a smoothstep between two thresholds;
+//   3. the sum is normalised to u in [0, 1], then SHAPED: a power curve (flat lowlands, steep tops),
+//      terraces (steps with a sharpness), a plateau cap (mesas) and a radial island falloff;
+//   4. height = baseHeight + u * heightScale, in metres.
+// Every layer's frequency is in cycles per metre, so a ShapeParams means the same at any resolution.
+
+mod shape;
+
+import noise use gradient2, hash1, pcg, toSigned;
+import geomath use Vec2;
+import libc;
+
+pub const MAX_LAYERS = 4usize;
+
+// One layer of fractal noise. Plain 32-bit fields only (a kernel takes them by value).
+pub struct Layer {
+  pub kind i32;            // 0 fBm, 1 ridged, 2 billow
+  pub frequency f32;       // cycles per metre of the first octave
+  pub octaves i32;
+  pub lacunarity f32;      // frequency step per octave (2)
+  pub gain f32;            // amplitude step per octave (0.5)
+  pub amplitude f32;       // this layer's weight in the sum
+  pub seedOffset u32;      // so two layers never share a lattice
+  pub damp f32;            // derivative damping (fBm); 0 off
+  pub gate i32;            // index of the layer whose value gates this one; -1 none
+  pub gateLo f32;          // the gate's value (-1..1) at which this layer begins to show
+  pub gateHi f32;          // and is fully shown
+  pub offset f32;          // added to the layer's normalised value (-1..1 range) before weighting
+
+  pub fn off() Layer { new Layer(0, 1., 0, 2., 0.5, 0., 0u32, 0., -1, 0., 1., 0.); }
+
+  pub fn fbm(frequency f32, octaves i32, amplitude f32, seedOffset u32) Layer {
+    new Layer(0, frequency, octaves, 2., 0.5, amplitude, seedOffset, 0., -1, 0., 1., 0.);
+  }
+  pub fn ridged(frequency f32, octaves i32, amplitude f32, seedOffset u32) Layer {
+    new Layer(1, frequency, octaves, 2., 0.5, amplitude, seedOffset, 0., -1, 0., 1., 0.);
+  }
+  pub fn billow(frequency f32, octaves i32, amplitude f32, seedOffset u32) Layer {
+    new Layer(2, frequency, octaves, 2., 0.5, amplitude, seedOffset, 0., -1, 0., 1., 0.);
+  }
+}
+
+// A heightfield recipe. Heights come out in metres: baseHeight + u * heightScale.
+pub struct ShapeParams {
+  pub seed u32;
+  pub layers Array[Layer, 4];
+  pub warpStrength f32;        // metres a point is moved by the warp; 0 off
+  pub warpFrequency f32;       // cycles per metre of the warp noise
+  pub warpOctaves i32;
+  pub baseHeight f32;          // metres at u = 0
+  pub heightScale f32;         // metres from u = 0 to u = 1
+  pub power f32;               // u = u^power; above 1 flattens lowlands and keeps peaks; 1 off
+  pub terraces f32;            // number of steps over u in [0, 1]; 0 off
+  pub terraceSharp f32;        // how square the steps are: 1 gentle, 8 cliffs
+  pub terraceMix f32;          // 0 no terracing .. 1 fully terraced
+  pub plateau f32;             // u above this is flattened toward it (mesas); 0 off
+  pub plateauSlope f32;        // the fraction of the excess kept (0 flat top)
+  pub islandRadius f32;        // metres from the centre where the land has fallen to the floor; 0 off
+  pub islandStart f32;         // fraction of the radius where the fall begins
+  pub centerX f32;
+  pub centerZ f32;
+  pub contrast f32;            // stretches the sum about its middle before it is clamped to [0, 1]: 1 keeps
+                               // the amplitudes' own range, 2 or 3 fills [0, 1] the way real noise sums do
+  pub detailAmplitude f32;     // metres of fBm added after the shaping, so a terrace's flat is not glass
+  pub detailFrequency f32;     // cycles per metre of that detail
+
+  pub fn flat() ShapeParams {
+    new ShapeParams(1u32, [Layer.off(), Layer.off(), Layer.off(), Layer.off()], 0., 0.001, 3, 0., 100., 1., 0., 4., 0.,
+      0., 0.25, 0., 0.5, 0., 0., 1., 0., 0.02);
+  }
+}
+
+// The grid a field is sampled on: sample (ix, iz) is at (originX + ix * cell, originZ + iz * cell)
+pub struct Grid {
+  pub w u32;
+  pub h u32;
+  pub cell f32;
+  pub originX f32;
+  pub originZ f32;
+}
+
+fn fclamp01(v f32) f32 { if v < 0. { 0.; } elif v > 1. { 1.; } else { v; }; }
+fn smooth01(t f32) f32 { imm c = fclamp01(t); c * c * (3. - 2. * c); }
+fn smoother01(t f32) f32 { imm c = fclamp01(t); c * c * c * (c * (c * 6. - 15.) + 10.); }
+
+// The sum of one layer's octaves at p, divided by the largest it could be, so about [-1, 1]
+// (ridged: [0, 1] scaled to [-1, 1]). The derivative damping and the ridged weighting are
+// described at the top.
+fn layerValue(l Layer, p Vec2, seed u32) f32 {
+  mut sum f32 = 0.;
+  mut norm f32 = 0.;
+  mut amp f32 = 1.;
+  mut freq f32 = l.frequency;
+  mut dx f32 = 0.;
+  mut dy f32 = 0.;
+  mut weight f32 = 1.;
+  mut i = 0;
+  while i < l.octaves {
+    imm n = gradient2(new Vec2(p.x * freq, p.y * freq), hash1(i, seed + l.seedOffset * 2654435761u32));
+    if l.kind == 1 {
+      // Musgrave's ridged multifractal: signal = (offset - |n|)^2, weighted by the previous octave's
+      imm a = 1. - libc.fabsf(n.value);
+      mut signal = a * a;
+      signal = signal * weight;
+      weight = fclamp01(signal * 2.);
+      sum = sum + signal * amp;
+    } elif l.kind == 2 {
+      sum = sum + (2. * libc.fabsf(n.value) - 1.) * amp;
+    } else {
+      // derivative damping: the slope so far (the sum of the octaves' derivatives) divides the weight
+      dx = dx + n.d.x * amp * freq;
+      dy = dy + n.d.y * amp * freq;
+      imm damped = 1. / (1. + l.damp * (dx * dx + dy * dy));
+      sum = sum + n.value * amp * damped;
+    }
+    norm = norm + amp;
+    amp = amp * l.gain;
+    freq = freq * l.lacunarity;
+    i = i + 1;
+  }
+  if norm <= 0. { return 0.; }
+  imm v = sum / norm;
+  if l.kind == 1 { v * 2. - 1.; } else { v; };
+}
+
+// The total of the layers' amplitudes: what normalises the sum
+fn amplitudeSum(p ShapeParams) f32 {
+  mut s f32 = 0.;
+  mut i = 0usize;
+  while i < MAX_LAYERS {
+    if p.layers[i].octaves > 0 { s = s + libc.fabsf(p.layers[i].amplitude); }
+    i = i + 1usize;
+  }
+  s;
+}
+
+// u in [0, 1] at metres (x, z): warp, layers, normalise. Not yet shaped.
+fn rawLevel(p ShapeParams, x f32, z f32) f32 {
+  mut q = new Vec2(x, z);
+  if p.warpStrength > 0. {
+    imm w = new Vec2(x * p.warpFrequency, z * p.warpFrequency);
+    mut wx f32 = 0.;
+    mut wy f32 = 0.;
+    mut amp f32 = 1.;
+    mut freq f32 = 1.;
+    mut norm f32 = 0.;
+    mut i = 0;
+    while i < p.warpOctaves {
+      imm nx = gradient2(new Vec2(w.x * freq, w.y * freq), hash1(i, p.seed ^ 0x57A5u32));
+      imm ny = gradient2(new Vec2(w.x * freq + 5.2, w.y * freq + 1.3), hash1(i, p.seed ^ 0xA75Cu32));
+      wx = wx + nx.value * amp;
+      wy = wy + ny.value * amp;
+      norm = norm + amp;
+      amp = amp * 0.5;
+      freq = freq * 2.;
+      i = i + 1;
+    }
+    if norm > 0. {
+      q = new Vec2(x + wx / norm * p.warpStrength, z + wy / norm * p.warpStrength);
+    }
+  }
+  imm total = amplitudeSum(p);
+  if total <= 0. { return 0.5; }
+  // layer values first (so a gate can read another's)
+  mut values Array[f32, 4] = [0., 0., 0., 0.];
+  mut i = 0usize;
+  while i < MAX_LAYERS {
+    if p.layers[i].octaves > 0 { values[i] = layerValue(p.layers[i], q, p.seed); }
+    i = i + 1usize;
+  }
+  mut sum f32 = 0.;
+  i = 0usize;
+  while i < MAX_LAYERS {
+    imm l = p.layers[i];
+    if l.octaves > 0 {
+      mut g f32 = 1.;
+      if l.gate >= 0 and l.gate < 4 {
+        g = smooth01((values[usize.from(l.gate)] - l.gateLo) / (l.gateHi - l.gateLo + 0.000001));
+      }
+      sum = sum + (values[i] + l.offset) * l.amplitude * g;
+    }
+    i = i + 1usize;
+  }
+  fclamp01(0.5 + 0.5 * p.contrast * sum / total);
+}
+
+// u shaped: power curve, terraces, plateau cap, island falloff
+fn shaped(p ShapeParams, u0 f32, x f32, z f32) f32 {
+  mut u = u0;
+  if p.power != 1. { u = libc.powf(u, p.power); }
+  if p.terraces > 0.5 and p.terraceMix > 0. {
+    imm s = u * p.terraces;
+    imm fl = libc.floorf(s);
+    imm t = s - fl;
+    imm k = fclamp01((t - 0.5) * p.terraceSharp + 0.5);
+    imm stepped = (fl + smoother01(k)) / p.terraces;
+    u = u + (stepped - u) * p.terraceMix;
+  }
+  if p.plateau > 0. and u > p.plateau {
+    // soft shoulder: the excess is kept in proportion, and rounded where it meets the cap
+    imm ex = u - p.plateau;
+    imm soft = ex / (1. + ex * 8.);
+    u = p.plateau + soft * p.plateauSlope;
+  }
+  if p.islandRadius > 0. {
+    imm dx = x - p.centerX;
+    imm dz = z - p.centerZ;
+    imm d = (dx * dx + dz * dz).sqrt() / p.islandRadius;
+    imm f = 1. - smooth01((d - p.islandStart) / (1. - p.islandStart + 0.000001));
+    u = u * f;
+  }
+  u;
+}
+
+// The height in metres at (x, z): the function the kernel and the CPU share
+pub fn heightAt(p ShapeParams, x f32, z f32) f32 {
+  mut h = p.baseHeight + shaped(p, rawLevel(p, x, z), x, z) * p.heightScale;
+  if p.detailAmplitude > 0. {
+    h = h + p.detailAmplitude * layerValue(Layer.fbm(p.detailFrequency, 4, 1., 977u32), new Vec2(x, z), p.seed);
+  }
+  h;
+}
+
+// One sample an invocation, 8 x 8 a workgroup, over the grid. Bindings: 0 the recipe, 1 the grid,
+// 2 the heights it writes (row by row), then the error buffer.
+pub fn @compute(8, 8) generate(inv Invocation, p ShapeParams, g Grid, out &mut Array[f32]) {
+  imm ix = inv.globalId[0usize];
+  imm iz = inv.globalId[1usize];
+  if ix < g.w and iz < g.h {
+    out[usize.from(iz) * usize.from(g.w) + usize.from(ix)] =
+      heightAt(p, g.originX + f32.from(ix) * g.cell, g.originZ + f32.from(iz) * g.cell);
+  }
+}

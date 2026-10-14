@@ -1,0 +1,194 @@
+// ======== The forces of the water on a hull ========
+//
+// BUOYANCY BY PRESSURE ON THE HULL'S TRIANGLES, the method of Jacques Kerner, "Water interaction model
+// for boats in video games" (Gamasutra, 2010), and of Fossen's "Handbook of Marine Craft Hydrodynamics"
+// for the drag terms. The water presses on every submerged triangle, normal to it and inward, with the
+// hydrostatic pressure p = rho g d (d the depth below the surface). For a triangle of area A with
+// corner depths d1, d2, d3 the force is -n rho g A (d1 + d2 + d3) / 3, applied at its centre (the mean
+// of a linear depth is exact, and so is the centre of pressure it acts at: Kerner takes the triangle's
+// centre, which gives a righting torque 70 percent too small on a wide flat hull). Summed
+// over a closed hull this IS Archimedes' principle (the vertical total is rho g times the submerged
+// volume, and the horizontal totals cancel), so no volume is integrated, and a hull of any shape
+// (concave, a boat's, an open-topped tub that is only a shell of triangles closed by its deck) floats
+// as the pressure says it should. The depth at each corner is the water height there (the query
+// function: a wave) less the corner's height, so a wave's slope presses unevenly and rolls the body.
+//
+// A triangle the surface cuts is CLIPPED: the depths are linear across it, so the cut is exact, and the
+// submerged piece (a triangle or a quadrilateral, two triangles) gets the same formula.
+//
+// DRAG, in Kerner's model:
+//   - viscous (skin friction): -1/2 rho Cf A |vt| vt, vt the water's velocity relative to the hull,
+//     along the surface, and Cf the ITTC 1957 friction line, 0.075 / (log10 Re - 2)^2, Re = |v| L / nu;
+//   - pressure drag on faces turned into the flow, and suction on faces turned away:
+//     -(C1 s + C2 s^2) A cos^f(theta) n  (front, cos > 0)     +(C1' s + C2' s^2) A |cos|^f' n  (back),
+//     s = |v| / vref, theta the angle between the relative velocity and the face's outward normal.
+// Each triangle's velocity is the body's linear velocity plus its spin about the centre of mass crossed
+// with the arm, less the water's own (a constant current, in WaterProps), so a body pitching and rolling
+// is damped by the water it pushes through. Slamming (the impact force of a flat hull falling onto the
+// surface, Kerner's third term) is not modelled.
+
+pub struct WaterProps {
+  pub density f32;           // kg/m^3 (seawater 1025)
+  pub gravity f32;           // m/s^2
+  pub viscosity f32;         // kinematic, m^2/s (seawater 1.19e-6)
+  pub current Vec3;          // the water's own velocity, m/s
+  pub pressureDrag1 f32;     // N/m^2: Kerner's C_PD1, C_PD2 and the cosine's exponent f_P
+  pub pressureDrag2 f32;
+  pub pressureFalloff f32;
+  pub suctionDrag1 f32;      // C_SD1, C_SD2, f_S
+  pub suctionDrag2 f32;
+  pub suctionFalloff f32;
+  pub referenceSpeed f32;    // vref, m/s
+  pub dragScale f32;         // multiplies every drag force: 0 is frictionless water, 1 as modelled
+
+  pub fn sea() WaterProps {
+    new WaterProps(1025., 9.81, 0.00000119, new Vec3(0., 0., 0.), 150., 150., 0.5, 100., 100., 0.5, 1., 1.);
+  }
+
+  pub fn freshWater() WaterProps {
+    mut w = WaterProps.sea();
+    w.density = 998.;
+    w.viscosity = 0.000001;
+    w;
+  }
+}
+
+// What the water does to a hull
+pub struct HullForces {
+  pub force Vec3;            // newtons, total
+  pub torque Vec3;           // N m about the centre of mass given
+  pub buoyancy Vec3;         // the hydrostatic part of the force alone
+  pub drag Vec3;             // the viscous and pressure drag alone
+  pub volume f32;            // the submerged volume the pressure implies: buoyancy.y / (rho g)
+  pub wetted f32;            // submerged surface area, m^2
+}
+
+// The forces on 'hull' placed at 'pos' with orientation 'rot' (its local points to the world's), moving
+// at 'linVel' and spinning at 'angVel' about the world point 'com', in water whose surface height at
+// (x, z) is 'water(x, z)'. Torques are about 'com'.
+pub fn hullForces[F fn(x f32, z f32) f32](hull &Hull, pos Vec3, rot Quat, linVel Vec3, angVel Vec3, com Vec3,
+    water &F, props &WaterProps) HullForces {
+  imm n = hull.points.len();
+  // the corners in the world, with their depths
+  mut wp = List[Vec3].withCapacity(n);
+  mut depth = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm w = pos + rot * *hull.points[i];
+    wp.push(w);
+    depth.push(water(w.x, w.z) - w.y);
+    i = i + 1usize;
+  }
+  mut force = zero3();
+  mut torque = zero3();
+  mut buoy = zero3();
+  mut drag = zero3();
+  mut wetted = 0.;
+  imm rg = props.density * props.gravity;
+  imm length = if hull.length > 0.1 { hull.length; } else { 0.1; };
+  mut t = 0usize;
+  while t + 2usize < hull.tris.len() {
+    imm ia = usize.from(*hull.tris[t]);
+    imm ib = usize.from(*hull.tris[t + 1usize]);
+    imm ic = usize.from(*hull.tris[t + 2usize]);
+    t = t + 3usize;
+    imm da = *depth[ia];
+    imm db = *depth[ib];
+    imm dc = *depth[ic];
+    if da <= 0. and db <= 0. and dc <= 0. { continue; }
+    // the triangle's outward normal from its corners
+    imm a = *wp[ia];
+    imm b = *wp[ib];
+    imm c = *wp[ic];
+    imm cr = (b - a).cross(c - a);
+    imm twiceArea = cr.length();
+    if twiceArea < 0.0000001 { continue; }
+    imm normal = cr * (1. / twiceArea);
+    // the submerged polygon: the corners with positive depth, and where the edges cross the surface
+    mut poly = [a, a, a, a];
+    mut pd = [0., 0., 0., 0.];
+    mut count = 0usize;
+    imm cs = [a, b, c];
+    imm ds = [da, db, dc];
+    mut e = 0usize;
+    while e < 3usize {
+      imm f = (e + 1usize) % 3usize;
+      imm p0 = cs[e];
+      imm p1 = cs[f];
+      imm d0 = ds[e];
+      imm d1 = ds[f];
+      if d0 > 0. {
+        poly[count] = p0;
+        pd[count] = d0;
+        count = count + 1usize;
+      }
+      if (d0 > 0.) != (d1 > 0.) {
+        // the edge crosses the surface (depth 0)
+        imm s = d0 / (d0 - d1);
+        poly[count] = p0 + (p1 - p0) * s;
+        pd[count] = 0.;
+        count = count + 1usize;
+      }
+      e = e + 1usize;
+    }
+    if count < 3usize { continue; }
+    // triangles of the polygon (a fan): 1 or 2
+    mut tri = 0usize;
+    while tri + 2usize < count + 0usize and tri < 2usize {
+      imm q0 = poly[0usize];
+      imm q1 = poly[tri + 1usize];
+      imm q2 = poly[tri + 2usize];
+      imm e0 = pd[0usize];
+      imm e1 = pd[tri + 1usize];
+      imm e2 = pd[tri + 2usize];
+      tri = tri + 1usize;
+      imm area = 0.5 * (q1 - q0).cross(q2 - q0).length();
+      if area < 0.0000001 { continue; }
+      imm centre = (q0 + q1 + q2) * (1. / 3.);
+      imm meanDepth = (e0 + e1 + e2) / 3.;
+      wetted = wetted + area;
+      // hydrostatic pressure, inward, at the centre of pressure: the pressure is linear in the corner
+      // depths, so the point is the centroid weighted by the depth, (S (q0 + q1 + q2) + sum d_i q_i) / (4 S),
+      // S the sum of the depths (from the integral of a barycentric product, A / 12 (1 + delta_ij))
+      imm fp = normal * (0. - rg * meanDepth * area);
+      imm sumDepth = e0 + e1 + e2;
+      imm cp = if sumDepth > 0.000001 { ((q0 + q1 + q2) * sumDepth + q0 * e0 + q1 * e1 + q2 * e2) * (1. / (4. * sumDepth)); } else { centre; };
+      buoy = buoy + fp;
+      force = force + fp;
+      torque = torque + (cp - com).cross(fp);
+      // the water's velocity relative to this piece of hull
+      imm vPoint = linVel + angVel.cross(centre - com);
+      imm vRel = vPoint - props.current;
+      imm speed = vRel.length();
+      if speed > 0.001 {
+        imm vHat = vRel * (1. / speed);
+        imm cosT = normal.dot(vHat);
+        imm s = speed / props.referenceSpeed;
+        mut fd = zero3();
+        if cosT > 0. {
+          // facing the way it moves: pressure drag
+          fd = fd - normal * ((props.pressureDrag1 * s + props.pressureDrag2 * s * s) * area * libc.powf(cosT, props.pressureFalloff));
+        } else {
+          // facing away: suction
+          fd = fd + normal * ((props.suctionDrag1 * s + props.suctionDrag2 * s * s) * area * libc.powf(0. - cosT, props.suctionFalloff));
+        }
+        // skin friction along the surface
+        imm vt = vRel - normal * vRel.dot(normal);
+        imm vtl = vt.length();
+        if vtl > 0.0001 {
+          imm re = fmaxf(speed * length / props.viscosity, 1000.);
+          imm lg = libc.logf(re) / 2.302585 - 2.;
+          imm cf = 0.075 / (lg * lg);
+          fd = fd - vt * (0.5 * props.density * cf * area * vtl);
+        }
+        fd = fd * props.dragScale;
+        drag = drag + fd;
+        force = force + fd;
+        torque = torque + (centre - com).cross(fd);
+      }
+    }
+  }
+  new HullForces(force, torque, buoy, drag, buoy.y / rg, wetted);
+}
+
+fn fmaxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }

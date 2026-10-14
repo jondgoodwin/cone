@@ -1,0 +1,139 @@
+// Floating bodies in a rigiddynamics World (src/floater.cone): the time behaviour, against closed forms.
+//
+// 1. A flat crate (half sizes 0.45, 0.225, 0.3; density 600 kg/m^3) released 0.2 m above the water, in
+//    flat water: its centre, averaged over the last 3 s of 15, is at the equilibrium -0.045 m (the draft
+//    is mass / (rho A) = 0.27 m of the 0.45 m height) to 1 cm, and it settles upright (under 2 degrees).
+// 2. Its heave period (the time between zero crossings of the height above equilibrium, over the first
+//    6 s) is 2 pi sqrt(m / (rho g A_waterplane)) = 1.04 s to 10 percent.
+// 3. A barge (half sizes 1, 0.25, 1; draft 0.25 at the centre line) rolled 15 degrees about its long
+//    axis rights itself: its roll over the last 3 s of 12 is under 2 degrees, and its first roll
+//    period is 2 pi k / sqrt(g GM) = 1.09 s to 20 percent (k the radius of gyration, GM 1.208 m; the
+//    water's added mass, which this model has none of, would lengthen it).
+// 4. On a travelling wave (amplitude 0.5 m, wavelength 80 m) the crate rides it: after 10 s the rms of
+//    its height above the wave surface at its place, less the equilibrium, over the next 10 s, is under 0.15 m.
+// 5. Slabs (half sizes 0.5, 0.25, 0.5) of 400 and 800 kg/m^3 float with their centres at 0.25 - (density / 1025) 0.5
+//    metres (+0.055 and -0.14) to 2 cm after 12 s, and one of 1500 kg/m^3 sinks.
+
+mod floatingtest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import stdio use *;
+import rigiddynamics use *;
+import buoyancy use *;
+
+// The pitch of a body: the angle its local x axis makes with the horizontal, and its roll about x: the
+// angle its local y axis makes with the vertical, projected on the (y, z) plane
+fn rollOf(q Quat) f32 {
+  imm up = q * new Vec3(0., 1., 0.);
+  libc.atan2f(up.z, up.y);
+}
+
+fn tiltOf(q Quat) f32 {
+  imm up = q * new Vec3(0., 1., 0.);
+  libc.acosf(if up.y > 1. { 1.; } else { up.y; });
+}
+
+fn main() i32 {
+  imm props = WaterProps.sea();
+  imm dt = 1. / 60.;
+
+  // 1, 2: the crate in still water
+  mut w = World.make();
+  mut crate = Floater.create(&mut w, Hull.box(new Vec3(0.45, 0.225, 0.3)), new Vec3(0., 0.2, 0.), Quat.identity(), 0., 600.);
+  imm eq = 0.225 - (600. / 1025.) * 0.45;
+  mut sum = 0.;
+  mut samples = 0;
+  mut crossings = List[f32].empty();
+  mut prev = 0.2 - eq;
+  mut step = 0;
+  while step < 900 {
+    crate.apply(&mut w, (x, z) => 0., &props, dt);
+    w.step(dt);
+    imm y = w.centerOfMass(crate.body).y;
+    imm above = y - eq;
+    if step < 360 and prev > 0. and above <= 0. { crossings.push(f32.from(step) * dt); }
+    prev = above;
+    if step >= 720 { sum = sum + y; samples = samples + 1; }
+    step = step + 1;
+  }
+  expectFloat(f64.from(sum / f32.from(samples)), f64.from(eq), 0.01, "the crate's mean height over the last 3 s is its equilibrium, to 1 cm");
+  expect(tiltOf(w.rotationOf(crate.body)) < 0.035, "and it floats upright");
+  // the period: between downward zero crossings
+  expect(crossings.len() >= 3usize, "the crate bobs: three or more downward crossings in 6 s");
+  if crossings.len() >= 3usize {
+    imm period = (*crossings[crossings.len() - 1usize] - *crossings[0usize]) / f32.from(crossings.len() - 1usize);
+    imm expected = 6.28318530718 * (crate.mass / (props.density * props.gravity * 0.9 * 0.6)).sqrt();
+    expectFloat(f64.from(period), f64.from(expected), f64.from(expected) * 0.1, "its heave period is 2 pi sqrt(m / (rho g A)) = 1.04 s, to 10 percent");
+  }
+
+  // 3: the barge rolls
+  mut w2 = World.make();
+  mut barge = Floater.create(&mut w2, Hull.box(new Vec3(1., 0.25, 1.)), new Vec3(0., 0., 0.), Quat.angleAxis(0.261799, new Vec3(1., 0., 0.)), 0., 512.5);
+  mut roll = List[f32].empty();
+  mut lastRoll = 0.;
+  mut stepB = 0;
+  mut zeroT = List[f32].empty();
+  mut rollLate = 0.;
+  mut nLate = 0;
+  while stepB < 720 {
+    barge.apply(&mut w2, (x, z) => 0., &props, dt);
+    w2.step(dt);
+    imm r = rollOf(w2.rotationOf(barge.body));
+    if stepB > 0 and lastRoll > 0. and r <= 0. { zeroT.push(f32.from(stepB) * dt); }
+    lastRoll = r;
+    if stepB >= 540 { rollLate = rollLate + libc.fabsf(r); nLate = nLate + 1; }
+    stepB = stepB + 1;
+  }
+  expect(rollLate / f32.from(nLate) < 0.035, "the barge rolled 15 degrees rights itself: under 2 degrees over the last 3 s");
+  expect(zeroT.len() >= 1usize, "and it swings through upright");
+  if zeroT.len() >= 1usize {
+    // a quarter period from 15 degrees to upright: the roll period is four times the first crossing
+    imm first = *zeroT[0usize];
+    imm k = ((4. + 0.25) / 12.).sqrt();
+    imm expected = 6.28318530718 * k / (9.81 * 1.2083).sqrt();
+    expectFloat(f64.from(first * 4.), f64.from(expected), f64.from(expected) * 0.2, "its roll period is 2 pi k / sqrt(g GM) = 1.09 s, to 20 percent");
+  }
+
+  // 4: a wave
+  mut w3 = World.make();
+  mut rider = Floater.create(&mut w3, Hull.box(new Vec3(0.45, 0.225, 0.3)), new Vec3(0., 0.2, 0.), Quat.identity(), 0., 600.);
+  imm k = 6.28318530718 / 80.;
+  imm om = (9.81 * k).sqrt();
+  mut sq = 0.;
+  mut n = 0;
+  mut stepW = 0;
+  while stepW < 1200 {
+    imm t = f32.from(stepW) * dt;
+    rider.apply(&mut w3, (x, z) => 0.5 * libc.cosf(k * x - om * t), &props, dt);
+    w3.step(dt);
+    if stepW >= 600 {
+      imm p = w3.centerOfMass(rider.body);
+      imm surface = 0.5 * libc.cosf(k * p.x - om * (t + dt));
+      imm off = p.y - surface - eq;
+      sq = sq + off * off;
+      n = n + 1;
+    }
+    stepW = stepW + 1;
+  }
+  expectFloat(f64.from((sq / f32.from(n)).sqrt()), 0., 0.15, "on a wave of 0.5 m the crate's height above the surface, less the equilibrium, is under 15 cm rms");
+
+  // 5: density orders drafts
+  mut drafts = List[f32].empty();
+  mut d = 0;
+  while d < 3 {
+    imm rho = if d == 0 { 400.; } elif d == 1 { 800.; } else { 1500.; };
+    mut wd = World.make();
+    mut b = Floater.create(&mut wd, Hull.box(new Vec3(0.5, 0.25, 0.5)), new Vec3(0., 0.3, 0.), Quat.identity(), 0., rho);
+    mut s = 0;
+    while s < 720 { b.apply(&mut wd, (x, z) => 0., &props, dt); wd.step(dt); s = s + 1; }
+    drafts.push(wd.centerOfMass(b.body).y);
+    d = d + 1;
+  }
+  expectFloat(f64.from(*drafts[0usize]), 0.25d - 0.4d / 1.025d * 0.5d, 0.02, "a 400 kg/m^3 slab (1 x 0.5 x 1 m) floats with its centre 0.055 m above the surface");
+  expectFloat(f64.from(*drafts[1usize]), 0.25d - 0.8d / 1.025d * 0.5d, 0.02, "an 800 kg/m^3 slab 0.14 m below it");
+  expect(*drafts[2usize] < -3., "and a 1500 kg/m^3 slab sinks (under 3 m below in 12 s)");
+  done();
+}
