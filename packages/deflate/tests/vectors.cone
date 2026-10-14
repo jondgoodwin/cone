@@ -4,6 +4,18 @@ import testing use *;
 import collections use *;
 import deflate use *;
 
+fn data(n usize) List[u8] {
+  mut d = List[u8].empty();
+  mut s = 99u64;
+  mut i = 0usize;
+  while i < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    d.push(u8.from(97u64 + ((s >> 45u64) % 6u64)));
+    i += 1usize;
+  }
+  d;
+}
+
 fn main() i32 {
   expectUInt(u64.from(adler32("Wikipedia")), 0x11E60398u64, "adler32 Wikipedia");
   expectUInt(u64.from(crc32("123456789")), 0xCBF43926u64, "crc32");
@@ -11,6 +23,21 @@ fn main() i32 {
   match zlibDecompress(&z, 0usize) {
     case imm ok Ok { expectStr(ok.view(), "hello hello hello", "hello"); }
     case imm e Error { expect(false, "hello"); }
+  }
+  imm d = data(100000usize);
+  mut lv = 0;
+  while lv < 3 {
+    imm zz = zlibCompress(d.view(), lv);
+    match zlibDecompress(zz.view(), 0usize) {
+      case imm ok Ok { expect(ok.view() == d.view(), "zlib roundtrip"); expectUInt(u64.from(zz.len()), 0u64, "size"); }
+      case imm e Error { expect(false, "zlib roundtrip"); }
+    }
+    imm gz = gzipCompress(d.view(), lv);
+    match gzipDecompress(gz.view(), 0usize) {
+      case imm ok Ok { expect(ok.view() == d.view(), "gzip roundtrip"); }
+      case imm e Error { expect(false, "gzip roundtrip"); }
+    }
+    lv += 1;
   }
   done();
 }
