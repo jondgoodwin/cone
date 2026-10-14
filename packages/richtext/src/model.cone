@@ -1,0 +1,410 @@
+// ======== The document model: blocks of text with styled runs ========
+//
+// A document is a list of BLOCKS. A block is one paragraph, heading or list item: its text (UTF-8)
+// and a list of RUNS that cover that text exactly, each run a length in bytes and a STYLE (bold,
+// italic, underline, size, colour, link). This is the model of word processors (a run list is
+// Word's character runs, and a block is a paragraph); adjacent runs with the same style are always
+// merged, so a document is as small as its formatting.
+//
+// Lists are not nested objects: a block has a KIND (bullet or numbered) and a DEPTH, and a list is
+// what consecutive list blocks make (Word and Google Docs hold lists the same way). Nesting is the
+// depth; numbering is worked out at layout time from the blocks before.
+//
+// Images are OBJECTS in the text flow: one anchor character (U+FFFC, three bytes in UTF-8) whose run
+// carries an image number. How the object sits is the image's own: inline (a very large character
+// on the line), or floated left or right (anchored in this paragraph, text wraps around it).
+//
+// A position in the document is a block number and a byte offset in that block's text, always on a
+// character boundary.
+
+pub const BK_PARA = 0u32;
+pub const BK_H1 = 1u32;
+pub const BK_H2 = 2u32;
+pub const BK_H3 = 3u32;
+pub const BK_BULLET = 4u32;
+pub const BK_NUMBER = 5u32;
+
+pub const AL_LEFT = 0u32;
+pub const AL_CENTER = 1u32;
+pub const AL_RIGHT = 2u32;
+pub const AL_JUSTIFY = 3u32;
+
+pub const PL_INLINE = 0u32;
+pub const PL_LEFT = 1u32;
+pub const PL_RIGHT = 2u32;
+
+pub const OBJECT_CHAR_BYTES = 3usize;      // U+FFFC as UTF-8: EF BF BC
+
+pub struct Style {
+  pub bold bool;
+  pub italic bool;
+  pub underline bool;
+  pub size f32;                 // pixels of em; 0: the block's own size
+  pub color u32;                // 0xRRGGBBAA; 0: the document's text colour
+  pub link u32;                 // 0: none; else a link number the host gives meaning to
+  pub image u32;                // 0: none; else the image's number + 1 (an anchor character)
+
+  pub fn plain() Style { new Style(false, false, false, 0.0, 0u32, 0u32, 0u32); }
+}
+
+pub fn sameStyle(a &Style, b &Style) bool {
+  a.bold == b.bold and a.italic == b.italic and a.underline == b.underline and a.size == b.size and a.color == b.color
+    and a.link == b.link and a.image == b.image;
+}
+
+pub struct Run {
+  pub len usize;                // bytes
+  pub style Style;
+}
+
+pub struct Block {
+  pub kind u32;
+  pub depth u32;                // list nesting, 0 is the outermost
+  pub align u32;
+  pub text String;
+  pub runs List[Run];
+
+  pub fn empty() Block { new Block(BK_PARA, 0u32, AL_LEFT, String.empty(), List[Run].empty()); }
+
+  pub fn fromText(text &str, style Style) Block {
+    mut b = Block.empty();
+    b.text = String.from(text);
+    if text.len() > 0usize { b.runs.push(new Run(text.len(), style)); }
+    b;
+  }
+
+  pub fn isList(self &) bool { kind == BK_BULLET or kind == BK_NUMBER; }
+  pub fn isHeading(self &) bool { kind >= BK_H1 and kind <= BK_H3; }
+}
+
+// An image the document refers to. 'pixels' may be empty (the host draws it from the number).
+pub struct ImageInfo {
+  pub w f32;                    // the size it is shown at, pixels
+  pub h f32;
+  pub place u32;                // PL_...
+  pub alt String;
+  pub pw u32 = 0u32;            // the pixel grid (RGBA8), if the document carries one
+  pub ph u32 = 0u32;
+  pub pixels List[u8];
+}
+
+// A place in the document
+pub struct Pos {
+  pub block usize;
+  pub off usize;                // bytes
+
+  pub fn le(self &, o &Pos) bool { block < o.block or (block == o.block and off <= o.off); }
+  pub fn lt(self &, o &Pos) bool { block < o.block or (block == o.block and off < o.off); }
+  pub fn same(self &, o &Pos) bool { block == o.block and off == o.off; }
+}
+
+pub fn pos(block usize, off usize) Pos { new Pos(block, off); }
+
+// ---- characters ----
+
+pub fn isContByte(b u8) bool { b >= 128u8 and b < 192u8; }
+
+// The offset of the character before 'off'
+pub fn prevCharOff(t &str, off usize) usize {
+  if off == 0usize { return 0usize; }
+  mut j = off - 1usize;
+  while j > 0usize and isContByte(t[j]) { j = j - 1usize; }
+  j;
+}
+
+// The offset of the character after 'off'
+pub fn nextCharOff(t &str, off usize) usize {
+  if off >= t.len() { return t.len(); }
+  mut j = off + 1usize;
+  while j < t.len() and isContByte(t[j]) { j = j + 1usize; }
+  j;
+}
+
+// 0 space, 1 word, 2 punctuation
+fn wordClass(b u8) u32 {
+  if b == 32u8 or b == 9u8 or b == 10u8 { return 0u32; }
+  if (b >= 48u8 and b <= 57u8) or (b >= 65u8 and b <= 90u8) or (b >= 97u8 and b <= 122u8) or b == 95u8 or b >= 128u8 { return 1u32; }
+  2u32;
+}
+
+// Where ctrl+left goes: back over spaces, then over one class of characters
+pub fn prevWordOff(t &str, off usize) usize {
+  mut j = off;
+  while j > 0usize and wordClass(t[j - 1usize]) == 0u32 { j = j - 1usize; }
+  if j == 0usize { return 0usize; }
+  imm c = wordClass(t[j - 1usize]);
+  while j > 0usize and wordClass(t[j - 1usize]) == c { j = j - 1usize; }
+  j;
+}
+
+// Where ctrl+right goes: over one class of characters, then over spaces
+pub fn nextWordOff(t &str, off usize) usize {
+  mut j = off;
+  if j >= t.len() { return t.len(); }
+  imm c = wordClass(t[j]);
+  if c != 0u32 {
+    while j < t.len() and wordClass(t[j]) == c { j = j + 1usize; }
+  }
+  while j < t.len() and wordClass(t[j]) == 0u32 { j = j + 1usize; }
+  j;
+}
+
+// ---- copies (a List and a String have no copy of their own) ----
+
+pub fn cloneBlock(b &Block) Block {
+  mut runs = List[Run].withCapacity(b.runs.len());
+  mut i = 0usize;
+  while i < b.runs.len() {
+    runs.push(*b.runs[i]);
+    i = i + 1usize;
+  }
+  new Block(b.kind, b.depth, b.align, String.from(b.text.view()), runs);
+}
+
+pub fn cloneBlocks(blocks &List[Block], first usize, count usize) List[Block] {
+  mut out = List[Block].withCapacity(count);
+  mut i = 0usize;
+  while i < count {
+    out.push(cloneBlock(blocks[first + i]));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// ---- runs ----
+
+// Merge neighbours of the same style, drop empty runs
+pub fn normalizeRuns(b &mut Block) {
+  mut out = List[Run].withCapacity(b.runs.len());
+  mut i = 0usize;
+  while i < b.runs.len() {
+    imm r = *b.runs[i];
+    if r.len > 0usize {
+      imm n = out.len();
+      if n > 0usize and r.style.image == 0u32 and sameStyle(&out[n - 1usize].style, &r.style) {
+        out[n - 1usize].len = out[n - 1usize].len + r.len;
+      } else {
+        out.push(r);
+      }
+    }
+    i = i + 1usize;
+  }
+  b.runs = out;
+}
+
+// Make a run boundary at byte 'off' (so a style can change from there), returning the index of the
+// run that starts at 'off' (runs.len() when 'off' is the end)
+pub fn splitRunAt(b &mut Block, off usize) usize {
+  mut at = 0usize;
+  mut i = 0usize;
+  while i < b.runs.len() {
+    imm r = *b.runs[i];
+    if off == at { return i; }
+    if off < at + r.len {
+      // inside run i: split it
+      b.runs[i].len = off - at;
+      mut tail = List[Run].withCapacity(b.runs.len() + 1usize);
+      mut k = 0usize;
+      while k <= i {
+        tail.push(*b.runs[k]);
+        k = k + 1usize;
+      }
+      tail.push(new Run(at + r.len - off, r.style));
+      k = i + 1usize;
+      while k < b.runs.len() {
+        tail.push(*b.runs[k]);
+        k = k + 1usize;
+      }
+      b.runs = tail;
+      return i + 1usize;
+    }
+    at = at + r.len;
+    i = i + 1usize;
+  }
+  b.runs.len();
+}
+
+// The style a character typed at 'off' takes: that of the character before it (the first run's at the start)
+pub fn styleAt(b &Block, off usize) Style {
+  if b.runs.len() == 0usize { return Style.plain(); }
+  mut at = 0usize;
+  mut i = 0usize;
+  while i < b.runs.len() {
+    imm r = *b.runs[i];
+    if off <= at + r.len and (off > at or i == 0usize) {
+      mut s = r.style;
+      s.image = 0u32;
+      return s;
+    }
+    at = at + r.len;
+    i = i + 1usize;
+  }
+  mut s = (*b.runs[b.runs.len() - 1usize]).style;
+  s.image = 0u32;
+  s;
+}
+
+// Insert text at 'off' with 'style'
+pub fn insertInBlock(b &mut Block, off usize, text &str, style Style) {
+  if text.len() == 0usize { return; }
+  b.text.insert(off, text);
+  imm i = splitRunAt(b, off);
+  // a new run before run i (or at the end); normalize merges it with a neighbour of the same style
+  mut out = List[Run].withCapacity(b.runs.len() + 1usize);
+  mut k = 0usize;
+  while k < i {
+    out.push(*b.runs[k]);
+    k = k + 1usize;
+  }
+  out.push(new Run(text.len(), style));
+  while k < b.runs.len() {
+    out.push(*b.runs[k]);
+    k = k + 1usize;
+  }
+  b.runs = out;
+  normalizeRuns(b);
+}
+
+// Remove bytes lo..hi
+pub fn deleteInBlock(b &mut Block, lo usize, hi usize) {
+  if hi <= lo { return; }
+  imm a = splitRunAt(b, lo);
+  imm z = splitRunAt(b, hi);
+  mut out = List[Run].withCapacity(b.runs.len());
+  mut k = 0usize;
+  while k < b.runs.len() {
+    if k < a or k >= z { out.push(*b.runs[k]); }
+    k = k + 1usize;
+  }
+  b.runs = out;
+  b.text.remove(lo, hi);
+  normalizeRuns(b);
+}
+
+// The part of the block from 'off' on, as a new block of the same kind; the block keeps the front
+pub fn splitBlockAt(b &mut Block, off usize) Block {
+  imm a = splitRunAt(b, off);
+  mut tail = Block.empty();
+  tail.kind = b.kind;
+  tail.depth = b.depth;
+  tail.align = b.align;
+  tail.text = String.from(b.text.view().slice(off, b.text.len()));
+  mut keep = List[Run].withCapacity(a);
+  mut k = 0usize;
+  while k < b.runs.len() {
+    if k < a { keep.push(*b.runs[k]); } else { tail.runs.push(*b.runs[k]); }
+    k = k + 1usize;
+  }
+  b.runs = keep;
+  b.text.truncate(off);
+  tail;
+}
+
+// Put the block 'other' after this block's text
+pub fn appendBlock(b &mut Block, other &Block) {
+  imm t = String.from(other.text.view());
+  b.text.append(t.view());
+  mut k = 0usize;
+  while k < other.runs.len() {
+    b.runs.push(*other.runs[k]);
+    k = k + 1usize;
+  }
+  normalizeRuns(b);
+}
+
+// ---- style changes over a range ----
+
+pub const OP_BOLD = 1u32;
+pub const OP_ITALIC = 2u32;
+pub const OP_UNDERLINE = 3u32;
+pub const OP_SIZE = 4u32;
+pub const OP_COLOR = 5u32;
+pub const OP_LINK = 6u32;
+
+pub struct StyleOp {
+  pub kind u32;
+  pub on bool;                  // for bold, italic, underline
+  pub num f32;                  // for size
+  pub val u32;                  // for colour and link
+}
+
+pub fn applyOp(s &mut Style, op &StyleOp) {
+  if op.kind == OP_BOLD { s.bold = op.on; }
+  elif op.kind == OP_ITALIC { s.italic = op.on; }
+  elif op.kind == OP_UNDERLINE { s.underline = op.on; }
+  elif op.kind == OP_SIZE { s.size = op.num; }
+  elif op.kind == OP_COLOR { s.color = op.val; }
+  elif op.kind == OP_LINK { s.link = op.val; }
+}
+
+pub fn hasOp(s &Style, op &StyleOp) bool {
+  if op.kind == OP_BOLD { return s.bold == op.on; }
+  if op.kind == OP_ITALIC { return s.italic == op.on; }
+  if op.kind == OP_UNDERLINE { return s.underline == op.on; }
+  if op.kind == OP_SIZE { return s.size == op.num; }
+  if op.kind == OP_COLOR { return s.color == op.val; }
+  s.link == op.val;
+}
+
+// Apply 'op' to the bytes lo..hi of the block
+pub fn styleRange(b &mut Block, lo usize, hi usize, op &StyleOp) {
+  if hi <= lo { return; }
+  imm a = splitRunAt(b, lo);
+  imm z = splitRunAt(b, hi);
+  mut k = a;
+  while k < z {
+    applyOp(&mut b.runs[k].style, op);
+    k = k + 1usize;
+  }
+  normalizeRuns(b);
+}
+
+// Whether every character lo..hi already has what 'op' sets (anchor characters are skipped)
+pub fn rangeHas(b &Block, lo usize, hi usize, op &StyleOp) bool {
+  mut at = 0usize;
+  mut any = false;
+  mut i = 0usize;
+  while i < b.runs.len() {
+    imm r = *b.runs[i];
+    if r.len > 0usize and at < hi and at + r.len > lo and r.style.image == 0u32 {
+      any = true;
+      if !hasOp(&r.style, op) { return false; }
+    }
+    at = at + r.len;
+    i = i + 1usize;
+  }
+  any;
+}
+
+// The style of the run holding byte 'off' (the anchor's own style for an image character)
+pub fn runStyleAt(b &Block, off usize) Style {
+  mut at = 0usize;
+  mut i = 0usize;
+  while i < b.runs.len() {
+    imm r = *b.runs[i];
+    if off >= at and off < at + r.len { return r.style; }
+    at = at + r.len;
+    i = i + 1usize;
+  }
+  Style.plain();
+}
+
+// The text of the document, blocks joined by line breaks (anchor characters left out)
+pub fn plainText(blocks &List[Block]) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < blocks.len() {
+    if i > 0usize { s.append("\n"); }
+    imm b = blocks[i];
+    mut at = 0usize;
+    mut k = 0usize;
+    while k < b.runs.len() {
+      imm r = *b.runs[k];
+      if r.style.image == 0u32 { s.append(b.text.view().slice(at, at + r.len)); }
+      at = at + r.len;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  s;
+}
