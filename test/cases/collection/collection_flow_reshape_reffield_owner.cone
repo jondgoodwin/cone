@@ -1,0 +1,58 @@
+// A view taken through a field that holds a REFERENCE or pointer is a view into a String some other
+// struct holds: the struct with the reference field is not that String's owner, so a call handed
+// the struct that does hold it (or any other path to a String) could append to the very String that
+// is viewed, move or free its bytes, and leave the view dangling. Each function here is a program
+// that read freed memory when its caller made the reference field point at the String the call
+// appends to (two '&mut' to one place in one call are allowed): `mut r = new R(&mut dl.chars);
+// viaRefField(&mut r, &mut dl);`. collection_reshape_reffield_owner_success holds what is accepted
+// beside them (a String the struct holds by value, which another struct's String cannot be).
+
+mod collection_flow_reshape_reffield_owner;
+
+import collections use *;
+
+struct Dl {
+  pub chars String;
+  pub n i32;
+  pub fn text(self &mut, s &str) { chars.append(s); }
+}
+struct R { pub s &mut String; }
+struct Wrap { pub r R; pub n i32; }
+struct Link { pub d &mut Dl; }
+struct Holder {
+  pub s &mut String;
+  pub fn copyTo(self &mut, dl &mut Dl) { dl.text(s.view()); }  //~ ErrorShapeReshape
+}
+
+// The filed case
+fn viaRefField(r &mut R, dl &mut Dl) {
+  dl.text(r.s.view());                                        //~ ErrorShapeReshape
+}
+
+// By the reference field's own name, and by a name holding the view
+fn viaStar(r &mut R, dl &mut Dl) {
+  dl.text((*r.s).view());                                     //~ ErrorShapeReshape
+}
+
+fn viaHeldView(r &mut R, dl &mut Dl) {
+  imm v = r.s.view();
+  dl.text(v);                                                 //~ ErrorShapeReshape
+}
+
+// The reference field one level down, in a struct held by value
+fn viaNested(w &mut Wrap, dl &mut Dl) {
+  dl.text(w.r.s.view());                                      //~ ErrorShapeReshape
+}
+
+// A reference field that points at the struct holding the String: that struct is the owner
+fn viaLinkedOwner(l &mut Link) {
+  l.d.text(l.d.chars.view());                                 //~ ErrorShapeReshape
+}
+
+// The call is handed another type that holds a String, which the reference field may point at
+struct Other { pub text String; pub fn add(self &mut, s &str) { text.append(s); } }
+fn viaOther(r &mut R, o &mut Other) {
+  o.add(r.s.view());                                          //~ ErrorShapeReshape
+}
+
+fn main() {}

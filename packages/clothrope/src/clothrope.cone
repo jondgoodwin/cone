@@ -1,0 +1,49 @@
+// The clothrope package (a working name): cloth and rope that push and pull on the
+// world. It joins two packages that know nothing of each other, xpbdsoftbody (cloth,
+// ropes and chains by XPBD) and rigiddynamics (rigid bodies and joints), so that a
+// rope pulls the crate it hangs a crate from, a crate sags the rope bridge it lands
+// on, a banner's pole feels the banner, and a rope that is pulled hard enough
+// snaps. A program reaches it with 'import clothrope'.
+//
+//   mut world = World.make();                      // rigiddynamics
+//   ...bodies...
+//   mut rope = ropeBetween(a, b, 20u32, 0.2, 1e-7, -1., 0.02);      // xpbdsoftbody
+//   mut coupler = Coupler.make(4u32);              // four threads for the cloth's loops
+//   imm crate = coupler.couple(&mut rope, &world, crateBody);       // the crate is a Coupled
+//   coupler.anchor(&mut rope, &world, 20u32, crateBody, hookPoint, -1.);   // the rope's end is tied to it
+//   mut wind = WindField.breeze(new Vec3(4., 0., 1.));
+//   ...
+//   wind.fill(&mut rope, time);                    // gusts for this step
+//   coupler.step(&mut rope, &mut world, 1. / 60., new Vec3(0., 0., 0.));   // soft body, then rigid world
+//
+// What it has:
+//   Coupling      a particle held to a point of a rigid body, and a rigid body's shapes
+//                 (sphere, box, capsule, and compounds of them) as colliders the cloth is
+//                 pushed out of; each is an XPBD constraint in which the body is the second
+//                 mass, and the body is given the impulse that reaction is (xpbdsoftbody's
+//                 step.cone says how). 'Coupler.step' runs the soft body and the rigid world in
+//                 lockstep, a substep at a time: the cloth sees the bodies where they are, the
+//                 bodies get the cloth's impulses and are stepped by the substep.
+//   Wind          a WindField: a mean wind, gusts and turbulence from gradient noise that is
+//                 advected with the mean flow, sampled onto the lattice the cloth's wind forces
+//                 read (coupled cloth and rope feel a wind that differs along their length).
+//   Breaking      a rope or cloth constraint with a break force snaps under that pull
+//                 (xpbdsoftbody's breakForce), a rope tied to a body lets go at its
+//                 anchor's break force, and a rigid joint breaks at a force or torque
+//                 (rigiddynamics' setJointBreak); the program reads the events.
+//
+// Where the pieces are:
+//   wind.cone      WindField
+//   coupler.cone   Coupler: the links between soft bodies and rigid bodies, and the lockstep step
+//
+// Conventions are geomath's: right-handed, y up, metres, kilograms, seconds, f32.
+
+mod clothrope;
+
+import libc;
+import collections use *;
+import geomath use *;
+import noise use fbm3;
+import rigidcollide use Rigid, KSphere, KBox, KCapsule;
+import rigiddynamics use World, MotionDynamic, rotateInertia;
+import xpbdsoftbody use SoftBody, Collider, Coupled, Workers, BreakEvent, NO_BODY;

@@ -1,0 +1,73 @@
+// Find and replace, with matches counted by hand.
+//
+//   "The cat sat. The Cat ate the cats." : "cat" ignoring case matches at 4, 17, 29 (cats); whole word
+//   matches only 4 and 17. Case sensitive "Cat" only at 17. Replacing all "cat" with "dog" by whole word
+//   gives "The dog sat. The dog ate the cats." in one undo step.
+
+mod findtest;
+
+import testing use *;
+import collections use *;
+import textedit use *;
+
+fn main() i32 {
+  mut d = Doc.fromText("The cat sat. The Cat ate the cats.");
+  mut o = FindOptions.make("cat");
+  imm all = findAll(d.buffer(), &o);
+  expectInt(i64.from(all.len()), 3i64, "three matches ignoring case");
+  expectInt(i64.from(*all[0usize]), 4i64, "first at 4");
+  expectInt(i64.from(*all[1usize]), 17i64, "second at 17");
+  expectInt(i64.from(*all[2usize]), 29i64, "third at 29");
+  o.wholeWord = true;
+  expectInt(i64.from(findAll(d.buffer(), &o).len()), 2i64, "two whole words");
+  o.matchCase = true;
+  expectInt(i64.from(findAll(d.buffer(), &o).len()), 1i64, "one whole word, case sensitive");
+  expect(findNext(d.buffer(), &o, 5usize) == NOT_FOUND, "none after 5 (case sensitive, whole)");
+  o.matchCase = false;
+  expectInt(i64.from(findNext(d.buffer(), &o, 5usize)), 17i64, "next after 5 is 17");
+  expectInt(i64.from(findPrev(d.buffer(), &o, 17usize)), 4i64, "previous before 17 is 4");
+  expect(findPrev(d.buffer(), &o, 4usize) == NOT_FOUND, "none before 4");
+
+  // select next wraps
+  d.setCaret(0usize);
+  expect(selectNext(&mut d, &o), "select next");
+  expectStr(d.selectedText().view(), "cat", "first selected");
+  expectInt(i64.from(d.caret(0usize).lo()), 4i64, "at 4");
+  selectNext(&mut d, &o);
+  expectInt(i64.from(d.caret(0usize).lo()), 17i64, "then 17");
+  selectNext(&mut d, &o);
+  expectInt(i64.from(d.caret(0usize).lo()), 4i64, "wraps to 4");
+  selectPrev(&mut d, &o);
+  expectInt(i64.from(d.caret(0usize).lo()), 17i64, "previous wraps to 17");
+
+  // replace all, one undo step
+  d.setCaret(0usize);
+  imm n = replaceAll(&mut d, &o, "dog");
+  expectInt(i64.from(n), 2i64, "two replaced");
+  expectStr(d.buffer().all().view(), "The dog sat. The dog ate the cats.", "replaced text");
+  expectInt(i64.from(d.hist.undoCount()), 1i64, "one undo step");
+  d.undo();
+  expectStr(d.buffer().all().view(), "The cat sat. The Cat ate the cats.", "undone in one go");
+  d.redo();
+  expectStr(d.buffer().all().view(), "The dog sat. The dog ate the cats.", "and redone");
+
+  // replace one by one
+  mut e = Doc.fromText("a-b-a");
+  imm oa = FindOptions.make("a");
+  e.setCaret(0usize);
+  selectNext(&mut e, &oa);
+  expect(replaceNext(&mut e, &oa, "xyz"), "replace and move on");
+  expectStr(e.buffer().all().view(), "xyz-b-a", "first replaced");
+  expectStr(e.selectedText().view(), "a", "the next is selected");
+  replaceNext(&mut e, &oa, "xyz");
+  expectStr(e.buffer().all().view(), "xyz-b-xyz", "second replaced");
+
+  // a needle across lines, and across pieces after edits
+  mut m = Doc.fromText("one\ntwo\nthree");
+  m.setCaret(3usize);
+  m.insertText("X");
+  m.setCaret(0usize);
+  imm across = FindOptions.make("X\ntwo\nth");
+  expectInt(i64.from(findNext(m.buffer(), &across, 0usize)), 3i64, "a match across three lines and several pieces");
+  done();
+}

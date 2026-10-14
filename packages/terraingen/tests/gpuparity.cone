@@ -1,0 +1,113 @@
+// The GPU and the CPU make the same landscape, on a real GPU with validation on (the RTX by default; the
+// Intel with GPU_POWER_PREFERENCE=low-power).
+//
+// 1. 'generate' as a kernel against the CPU's function over a 128 x 128 alpine field: every sample within
+//    0.02 m (the GPU's sin and exp are a few ulps from the CPU's; the field spans a thousand metres).
+// 2. The erosion plan, GPU against CPU, from the same start: the heights' mean difference is under
+//    0.05 m, the volume (heights plus the sediment still suspended) agrees to 0.01 percent, and the
+//    roughness agrees to 1 percent. (Not bit for bit: the GPU's sqrt and floor are not the CPU's.)
+// 3. The GPU's erosion does erode: the mean change is more than 0.05 m.
+// 4. No kernel failed, nothing was refused, no Vulkan call failed, and the validation layer said nothing.
+//
+// With GPUWORK_REPORT set it prints the adapter and the measured numbers.
+
+mod gpuparitytest;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import libc;
+import gpu use *;
+import gpuwork;
+import terraingen use *;
+
+fn roughness(hf &Heightfield) f32 {
+  mut s = 0.;
+  mut n = 0.;
+  mut iz = 1usize;
+  while iz + 1usize < hf.h {
+    mut ix = 1usize;
+    while ix + 1usize < hf.w {
+      s = s + libc.fabsf(hf.at(ix - 1usize, iz) + hf.at(ix + 1usize, iz) + hf.at(ix, iz - 1usize) + hf.at(ix, iz + 1usize) - 4. * hf.at(ix, iz));
+      n = n + 1.;
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  s / n;
+}
+
+fn total(hf &Heightfield, sed &List[f32]) f64 {
+  mut s = 0d;
+  mut i = 0usize;
+  while i < hf.data.len() { s = s + f64.from(*hf.data[i]) + f64.from(*sed[i]); i = i + 1usize; }
+  s;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("terraingen gpu parity");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm report = (libc.getenv("GPUWORK_REPORT") as usize) != 0usize;
+  if report { printStr("adapter: "); printStr(adapter.name.view()); printStr("\n"); }
+
+  // 1. generate
+  imm spec = alpine(128usize, 128usize, 30., 11u32);
+  imm cpu = generate(&spec.shape, 128usize, 128usize, 30., 0., 0.);
+  imm gpuField = generateGpu(&mut device, &spec);
+  mut worst = 0.;
+  mut i = 0usize;
+  while i < cpu.data.len() {
+    imm d = libc.fabsf(*cpu.data[i] - *gpuField.data[i]);
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  if report { print <- "generate: largest difference "; print <- worst; print <- " m\n"; }
+  expect(worst < 0.02, "the generate kernel agrees with the CPU to 0.02 m everywhere");
+  expect(gpuField.maxHeight() > 500., "and is not an empty field");
+
+  // 2, 3. erosion
+  imm plan = ErosionPlan.make(40u32, 10u32, 4u32);
+  mut a = cpu.tile(0, 0, 128usize, 128usize);
+  mut b = cpu.tile(0, 0, 128usize, 128usize);
+  imm ra = erodeCpu(&mut a, &spec.erosion, &plan);
+  imm rb = erodeGpu(&mut device, &mut b, &spec.erosion, &plan);
+  require(rb.ok, "the GPU erosion ran");
+  mut meanDiff = 0.;
+  mut moved = 0.;
+  i = 0usize;
+  while i < a.data.len() {
+    meanDiff = meanDiff + libc.fabsf(*a.data[i] - *b.data[i]);
+    moved = moved + libc.fabsf(*b.data[i] - *cpu.data[i]);
+    i = i + 1usize;
+  }
+  meanDiff = meanDiff / f32.from(a.data.len());
+  moved = moved / f32.from(a.data.len());
+  imm ta = total(&a, &ra.sediment);
+  imm tb = total(&b, &rb.sediment);
+  if report {
+    print <- "erosion: mean difference "; print <- meanDiff; print <- " m, mean moved "; print <- moved;
+    print <- " m, roughness CPU "; print <- roughness(&a); print <- " GPU "; print <- roughness(&b);
+    print <- ", volume CPU "; print <- ta; print <- " GPU "; print <- tb; print <- "\n";
+  }
+  expect(meanDiff < 0.05, "the GPU's and the CPU's eroded heights differ by less than 0.05 m on average");
+  expectFloat(tb, ta, ta * 0.0001, "the volume (heights plus suspended sediment) agrees to 0.01 percent");
+  expectFloat(f64.from(roughness(&b)), f64.from(roughness(&a)), f64.from(roughness(&a)) * 0.01, "the roughness agrees to 1 percent");
+  expect(moved > 0.05, "the erosion moved ground (mean change over 0.05 m)");
+
+  // 4. clean
+  expectUInt(u64.from(gpuwork.refusals()), 0u64, "nothing was refused");
+  expectUInt(u64.from(gpuwork.kernelFailures()), 0u64, "no kernel failed");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

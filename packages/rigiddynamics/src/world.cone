@@ -36,11 +36,12 @@ pub struct World {
   pub lastPairs usize;
   pub lastColors i32;
   pub noCollideJoints bool;         // some joint stops its bodies colliding
+  pub substepSeconds f32;           // the time of the last sub-step (joint loads are impulses over it)
 
   pub fn make() World {
     new World(new Vec3(0., -9.81, 0.), Settings.standard(), List[Shape].empty(), List[Body].empty(), List[u32].empty(),
       List[Joint].empty(), SweepAndPrune.empty(), List[Contact].empty(), List[Contact].empty(), List[BodyPair].empty(),
-      List[u32].empty(), List[u32].empty(), List[Event].empty(), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false);
+      List[u32].empty(), List[u32].empty(), List[Event].empty(), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false, 0.);
   }
 
   // ------------------------------------------------------------------ shapes
@@ -423,6 +424,40 @@ pub struct World {
     joints[usize.from(j)].driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
   }
   pub fn removeJoint(self &mut, j u32) { joints[usize.from(j)].alive = false; }
+  // Make a joint breakable: it is removed, with an EvJointBroken event, in the first sub-step in which the force it
+  // carries passes 'force' newtons or the torque it carries passes 'torque' N m (jointLoadOf says which rows count).
+  // The load is the sub-step's row impulses over the sub-step's time, which is what PhysX's breakForce reads and what
+  // Jolt's constraint-force queries give. Negative: that kind of load never breaks it.
+  pub fn setJointBreak(self &mut, j u32, force f32, torque f32) {
+    joints[usize.from(j)].breakForce = force;
+    joints[usize.from(j)].breakTorque = torque;
+  }
+  // The force and torque joint j carried in the last sub-step, N and N m
+  pub fn jointLoad(self &, j u32) (f32, f32) { jointLoadOf(joints[usize.from(j)], substepSeconds); }
+
+  // Remove the breakable joints loaded past their limits in the sub-step just solved
+  fn breakJoints(self &mut, h f32) {
+    mut a = 0usize;
+    while a < activeJoints.len() {
+      imm ji = usize.from(*activeJoints[a]);
+      imm jt = joints[ji];
+      if jt.breakForce < 0. and jt.breakTorque < 0. { a = a + 1usize; continue; }
+      imm load = jointLoadOf(jt, h);
+      imm byForce = jt.breakForce >= 0. and load.0 > jt.breakForce;
+      imm byTorque = jt.breakTorque >= 0. and load.1 > jt.breakTorque;
+      if not (byForce or byTorque) { a = a + 1usize; continue; }
+      {
+        joints[ji].alive = false;
+        activeJoints.swap(a, activeJoints.len() - 1usize);
+        activeJoints.truncate(activeJoints.len() - 1usize);
+        imm bA = bodies[usize.from(jt.a)];
+        self.emit(EvJointBroken, jt.a, jt.b, bA.pos + bA.rot * jt.la, zero3(), if byForce { load.0; } else { load.1; });
+        events[events.len() - 1usize].id = u32.from(ji);
+        self.wake(jt.a);
+        self.wake(jt.b);
+      }
+    }
+  }
   pub fn hingeAngleOf(self &, j u32) f32 { hingeAngle(self, joints[usize.from(j)]); }
   // How far apart the joint's two anchors are now (zero when it is satisfied), metres
   pub fn jointError(self &, j u32) f32 { jointState(self, joints[usize.from(j)]).d.length(); }
@@ -951,6 +986,8 @@ pub struct World {
         self.sweepContacts(&artic, false, odd == ((rep % 2) == 1), invH, soft, softStatic);
         rep = rep + 1;
       }
+      substepSeconds = h;
+      self.breakJoints(h);
       s = s + 1;
     }
     a = 0usize;

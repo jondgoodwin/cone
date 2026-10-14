@@ -1,0 +1,332 @@
+// ======== The graph model ========
+//
+// Nodes (boxes with a size and a label), ports on their sides, edges between
+// nodes (optionally between ports), and groups (named boxes round some nodes).
+// Everything is named by a small integer id that never changes while the graph
+// lives: removing a node or an edge marks it dead and keeps its slot, so an id
+// a layout has used is never handed to something else. A node also has a KEY, a
+// string the caller chooses (a package's name, a class); adding a node with a key
+// that is already alive returns the same id, which is how a graph is updated from
+// code that changed: add every current node and edge by key, remove what is gone,
+// and lay out again. Positions the layout wrote stay on the nodes, and the next
+// layout starts from them (incremental relayout).
+//
+// Sizes and positions are in the units the caller draws in (pixels for the 2-D
+// drawing). A node's x, y is its CENTRE; y runs down.
+
+pub const SIDE_AUTO = 0u32;
+pub const SIDE_NORTH = 1u32;
+pub const SIDE_EAST = 2u32;
+pub const SIDE_SOUTH = 3u32;
+pub const SIDE_WEST = 4u32;
+
+pub struct Port {
+  pub name String;
+  pub side u32;                    // SIDE_...
+  pub offset f32;                  // 0 to 1 along the side (left to right, top to bottom)
+}
+
+pub struct Node {
+  pub key String;
+  pub label String;
+  pub w f32;
+  pub h f32;
+  pub x f32;                       // the centre
+  pub y f32;
+  pub z f32;                       // depth, for the 3-D rendition (the caller's tier, or 'layout3d''s)
+  pub group i32;                   // a group id, or -1
+  pub kind u32;                    // a class the drawing colours by
+  pub ports List[Port];
+  pub pinned bool;                 // layout leaves it where it is
+  pub placed bool;                 // has a position from an earlier layout
+  pub alive bool;
+}
+
+pub struct GraphEdge {
+  pub from u32;
+  pub to u32;
+  pub fromPort i32;                // an index into the node's ports, or -1: the layout chooses the side
+  pub toPort i32;
+  pub label String;
+  pub kind u32;
+  pub route List[Vec2];            // the polyline the router wrote: from the source's border to the target's
+  pub alive bool;
+}
+
+pub struct GraphGroup {
+  pub label String;
+  pub parent i32;
+  pub x f32;                       // the box round the members, written by 'fitGroups'
+  pub y f32;
+  pub w f32;
+  pub h f32;
+  pub alive bool;
+}
+
+pub struct Graph {
+  pub nodes List[Node];
+  pub edges List[GraphEdge];
+  pub groups List[GraphGroup];
+
+  pub fn make() Graph { new Graph(List[Node].empty(), List[GraphEdge].empty(), List[GraphGroup].empty()); }
+
+  // The id of the live node with 'key', or -1
+  pub fn find(self &, key &str) i32 {
+    mut i = 0usize;
+    while i < nodes.len() {
+      if nodes[i].alive and nodes[i].key.view() == key { return i32.from(i); }
+      i = i + 1usize;
+    }
+    -1;
+  }
+
+  // A node with 'key' and this size: the live one of that key (its size and label updated), else a new one
+  pub fn addNode(self &mut, key &str, label &str, w f32, h f32) u32 {
+    imm at = self.find(key);
+    if at >= 0 {
+      imm id = usize.from(at);
+      nodes[id].label = String.from(label);
+      nodes[id].w = w;
+      nodes[id].h = h;
+      return u32.from(at);
+    }
+    nodes.push(new Node(String.from(key), String.from(label), w, h, 0., 0., 0., -1, 0u32, List[Port].empty(), false, false, true));
+    u32.from(nodes.len() - 1usize);
+  }
+
+  pub fn addPort(self &mut, node u32, name &str, side u32, offset f32) i32 {
+    nodes[usize.from(node)].ports.push(new Port(String.from(name), side, offset));
+    i32.from(nodes[usize.from(node)].ports.len()) - 1;
+  }
+
+  // The live edge from a to b (any ports), or -1
+  pub fn findEdge(self &, a u32, b u32) i32 {
+    mut i = 0usize;
+    while i < edges.len() {
+      if edges[i].alive and edges[i].from == a and edges[i].to == b { return i32.from(i); }
+      i = i + 1usize;
+    }
+    -1;
+  }
+
+  // An edge a to b: an existing live one between the same nodes is returned as it is (a graph of a codebase has no use for two)
+  pub fn addEdge(self &mut, a u32, b u32) u32 {
+    imm at = self.findEdge(a, b);
+    if at >= 0 { return u32.from(at); }
+    edges.push(new GraphEdge(a, b, -1, -1, String.empty(), 0u32, List[Vec2].empty(), true));
+    u32.from(edges.len() - 1usize);
+  }
+
+  pub fn addEdgeByKey(self &mut, a &str, b &str) bool {
+    imm x = self.find(a);
+    imm y = self.find(b);
+    if x < 0 or y < 0 { return false; }
+    self.addEdge(u32.from(x), u32.from(y));
+    true;
+  }
+
+  pub fn addGroup(self &mut, label &str, parent i32) u32 {
+    groups.push(new GraphGroup(String.from(label), parent, 0., 0., 0., 0., true));
+    u32.from(groups.len() - 1usize);
+  }
+
+  pub fn setGroup(self &mut, node u32, group i32) { nodes[usize.from(node)].group = group; }
+
+  // Marks the node and every edge on it dead
+  pub fn removeNode(self &mut, id u32) {
+    nodes[usize.from(id)].alive = false;
+    mut i = 0usize;
+    while i < edges.len() {
+      if edges[i].from == id or edges[i].to == id { edges[i].alive = false; }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn removeEdge(self &mut, id u32) { edges[usize.from(id)].alive = false; }
+
+  pub fn removeNodeByKey(self &mut, key &str) bool {
+    imm at = self.find(key);
+    if at < 0 { return false; }
+    self.removeNode(u32.from(at));
+    true;
+  }
+
+  pub fn liveNodes(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < nodes.len() { if nodes[i].alive { n = n + 1usize; } i = i + 1usize; }
+    n;
+  }
+
+  pub fn liveEdges(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < edges.len() { if edges[i].alive { n = n + 1usize; } i = i + 1usize; }
+    n;
+  }
+
+  // The box of a node: min x, min y, max x, max y
+  pub fn left(self &, id usize) f32 { nodes[id].x - nodes[id].w * 0.5; }
+  pub fn right(self &, id usize) f32 { nodes[id].x + nodes[id].w * 0.5; }
+  pub fn top(self &, id usize) f32 { nodes[id].y - nodes[id].h * 0.5; }
+  pub fn bottom(self &, id usize) f32 { nodes[id].y + nodes[id].h * 0.5; }
+
+  // Every live node's position, in id order (dead ones as the origin): what 'displacement' compares
+  pub fn snapshot(self &) List[Vec2] {
+    mut out = List[Vec2].withCapacity(nodes.len());
+    mut i = 0usize;
+    while i < nodes.len() { out.push(new Vec2(nodes[i].x, nodes[i].y)); i = i + 1usize; }
+    out;
+  }
+
+  // The box round the live nodes
+  pub fn bounds(self &) Aabb2 {
+    mut lo = new Vec2(1.0e30, 1.0e30);
+    mut hi = new Vec2(-1.0e30, -1.0e30);
+    mut i = 0usize;
+    while i < nodes.len() {
+      if nodes[i].alive {
+        lo = lo.min(new Vec2(self.left(i), self.top(i)));
+        hi = hi.max(new Vec2(self.right(i), self.bottom(i)));
+      }
+      i = i + 1usize;
+    }
+    if lo.x > hi.x { return new Aabb2(new Vec2(0., 0.), new Vec2(0., 0.)); }
+    new Aabb2(lo, hi);
+  }
+
+  // Each group's box: round its members (and its child groups) with 'pad', and 'head' extra above for its label
+  pub fn fitGroups(self &mut, pad f32, head f32) {
+    mut g = groups.len();
+    // children first: repeat so a parent sees its children's boxes
+    mut pass = 0u32;
+    while pass < 4u32 {
+      g = 0usize;
+      while g < groups.len() {
+        if groups[g].alive {
+          mut lo = new Vec2(1.0e30, 1.0e30);
+          mut hi = new Vec2(-1.0e30, -1.0e30);
+          mut any = false;
+          mut i = 0usize;
+          while i < nodes.len() {
+            if nodes[i].alive and nodes[i].group == i32.from(g) {
+              lo = lo.min(new Vec2(self.left(i), self.top(i)));
+              hi = hi.max(new Vec2(self.right(i), self.bottom(i)));
+              any = true;
+            }
+            i = i + 1usize;
+          }
+          mut c = 0usize;
+          while c < groups.len() {
+            if groups[c].alive and groups[c].parent == i32.from(g) and groups[c].w > 0. {
+              lo = lo.min(new Vec2(groups[c].x, groups[c].y));
+              hi = hi.max(new Vec2(groups[c].x + groups[c].w, groups[c].y + groups[c].h));
+              any = true;
+            }
+            c = c + 1usize;
+          }
+          if any {
+            groups[g].x = lo.x - pad;
+            groups[g].y = lo.y - pad - head;
+            groups[g].w = hi.x - lo.x + pad * 2.;
+            groups[g].h = hi.y - lo.y + pad * 2. + head;
+          }
+        }
+        g = g + 1usize;
+      }
+      pass = pass + 1u32;
+    }
+  }
+}
+
+// How far the layout moved the nodes: the mean and the greatest distance between
+// two snapshots, over the nodes alive in both (those with an entry in 'alive')
+pub struct Displacement {
+  pub mean f32;
+  pub worst f32;
+  pub moved u32;                   // how many moved more than half a pixel
+}
+
+pub fn displacement(before &List[Vec2], after &List[Vec2], graph &Graph) Displacement {
+  mut sum = 0.0f;
+  mut worst = 0.0f;
+  mut n = 0u32;
+  mut moved = 0u32;
+  mut i = 0usize;
+  while i < before.len() and i < after.len() {
+    if graph.nodes[i].alive {
+      imm d = before[i].distance(*after[i]);
+      sum = sum + d;
+      if d > worst { worst = d; }
+      if d > 0.5 { moved = moved + 1u32; }
+      n = n + 1u32;
+    }
+    i = i + 1usize;
+  }
+  new Displacement(if n > 0u32 { sum / f32.from(n); } else { 0.; }, worst, moved);
+}
+
+// Stable insertion sort of 'idx' by 'key[idx]' (ties keep their order)
+fn sortByKey(idx &mut List[usize], key &List[f32]) {
+  mut i = 1usize;
+  while i < idx.len() {
+    imm v = *idx[i];
+    imm kv = *key[v];
+    mut j = i;
+    while j > 0usize and *key[*idx[j - 1usize]] > kv {
+      idx.set(j, *idx[j - 1usize]);
+      j = j - 1usize;
+    }
+    idx.set(j, v);
+    i = i + 1usize;
+  }
+}
+
+fn minf2(a f32, b f32) f32 { if a < b { return a; } b; }
+fn maxf2(a f32, b f32) f32 { if a > b { return a; } b; }
+fn absf2(a f32) f32 { if a < 0. { return -a; } a; }
+
+// Is 'to' reachable from 'from' along live edges, not using edge 'skip' (and not through 'banned')? Depth-first with a stack.
+fn reachable(g &Graph, from usize, to usize, skip usize) bool {
+  mut seen = List[bool].empty();
+  mut i = 0usize;
+  while i < g.nodes.len() { seen.push(false); i = i + 1usize; }
+  mut stack = List[usize].empty();
+  stack.push(from);
+  seen.set(from, true);
+  while stack.len() > 0usize {
+    imm v = *stack[stack.len() - 1usize];
+    stack.pop();
+    if v == to { return true; }
+    mut e = 0usize;
+    while e < g.edges.len() {
+      if e != skip and g.edges[e].alive and usize.from(g.edges[e].from) == v {
+        imm t = usize.from(g.edges[e].to);
+        if !*seen[t] and g.nodes[t].alive { seen.set(t, true); stack.push(t); }
+      }
+      e = e + 1usize;
+    }
+  }
+  false;
+}
+
+// Transitive reduction (Aho, Garey and Ullman 1972): an edge a to b is removed when b can still be
+// reached from a by another path. It keeps what a dependency drawing needs, the direct links that are
+// not implied, and for a codebase removes most of the edges. An edge on a cycle (b also reaches a) is
+// left alone. Returns how many edges it removed. O(E (V + E)).
+pub fn transitiveReduction(g &mut Graph) u32 {
+  mut removed = 0u32;
+  mut e = 0usize;
+  while e < g.edges.len() {
+    if g.edges[e].alive and g.edges[e].from != g.edges[e].to {
+      imm a = usize.from(g.edges[e].from);
+      imm b = usize.from(g.edges[e].to);
+      if reachable(g, a, b, e) and !reachable(g, b, a, e) {
+        g.edges[e].alive = false;
+        removed = removed + 1u32;
+      }
+    }
+    e = e + 1usize;
+  }
+  removed;
+}

@@ -1,0 +1,325 @@
+// The rig: the clocks and the blends composed into one frame of a face.
+//
+// A FaceRig holds the face's state (what is set by hand, which expressions
+// are blended in, the blink, the gaze, the line being spoken, the idle
+// clock) and 'update' advances it by a time step and fills a FaceFrame. The
+// composition, in order:
+//
+//   1. HAND-SET UNITS ('setUnit'): the caller's own AU values.
+//   2. EXPRESSIONS: each expression has a goal weight and a current weight
+//      that closes on it exponentially (reaching 99% in the 'seconds' asked
+//      for); the blend is the sum of weight times the expression's units, so
+//      a face may be 60% happiness and 40% surprise. While the face speaks,
+//      the lower face's share of the expression is reduced by up to 60% so
+//      the mouth can form its words (lip sync fights an expression's smile
+//      otherwise; the AUs of the mouth are 10 to 28).
+//   3. SPEECH: the Cohen and Massaro blend of the viseme targets (speech.cone).
+//   4. IDLE: the face at rest is never still. Brows, lids, lip corners, chin and
+//      jaw drift by a few percent of their range on smooth noise at tenths of
+//      a hertz, and the nostrils and jaw breathe at a quarter of a hertz; the
+//      head sways by a fraction of a degree. Idle is less where the mouth is
+//      speaking.
+//   5. GAZE: the eyes and head (gaze.cone), the lids following the eyes' vertical
+//      movement (a unit pair of its own), a blink on a large gaze shift.
+//   6. BLINK: the closure from the blinker, onto AU45 of each side.
+//   7. LIMITS: every unit is held to 0 to 1; each morph target's weight is the sum of
+//      the units that drive it, held to 0 to 1 (a blink on a held-shut lid is still
+//      shut, not shut twice over).
+//
+// The jaw is a rotation (the AU26 family, summed, times the spec's maximum)
+// about the spec's hinge, not a morph target: it swings the lower face on
+// the arc a jaw has. The face's frame holds the rotation, and 'attachFace'
+// (bind.cone) puts it on a bone.
+
+pub struct FaceFrame {
+  pub weights List[f32];     // for each morph target
+  pub units List[f32];       // each unit's final value
+  pub jawPitch f32;          // the jaw's opening, radians
+  pub jawYaw f32;            // and its sideways swing
+  pub jawThrust f32;         // and its forward thrust, metres
+  pub jawRot Quat;           // the jaw's rotation about its hinge
+  pub eyeL Quat;             // each eyeball's rotation in the head
+  pub eyeR Quat;
+  pub head Quat;             // the head's turn: gaze share plus the idle sway
+  pub tongue f32;            // the tongue's lift, 0 to 1
+  pub blink f32;             // the lids' closure from the blink clock
+  pub speaking f32;          // 0 silent to 1 speaking
+  pub gazeYaw f32;           // the eyes' version angles, for inspection
+  pub gazePitch f32;
+
+  pub fn make(unitCount usize, targetCount usize) FaceFrame {
+    mut w = List[f32].empty();
+    w.resize(targetCount, 0.);
+    mut u = List[f32].empty();
+    u.resize(unitCount, 0.);
+    new FaceFrame(w, u, 0., 0., 0., Quat.identity(), Quat.identity(), Quat.identity(), Quat.identity(), 0., 0., 0.,
+      0., 0.);
+  }
+}
+
+// A channel of idle motion
+pub struct IdleChan {
+  pub unit usize;
+  pub amp f32;
+  pub freq f32;
+  pub seed u32;
+}
+
+pub struct FaceRig {
+  pub units List[UnitDef];
+  pub unitTarget List[i32];
+  pub targetCount usize;
+  pub expressions List[Expression];
+  pub scale f32;
+  pub jawOpenMax f32;
+  pub manual List[f32];
+  pub exprNow List[f32];
+  pub exprGoal List[f32];
+  pub exprRate List[f32];         // each expression's closing rate, per second
+  pub blinker Blinker;
+  pub blinking bool;
+  pub gaze Gaze;
+  pub speech Speech;
+  pub rng Rng;
+  pub time f32;
+  pub idleAmount f32;             // 0 off, 1 the standard idle
+  pub idle List[IdleChan];
+  pub lowerFace List[u8];         // 1 for a unit of the mouth, for speech to take over
+  pub seed u32;
+  pub scratch List[f32];
+
+  pub fn make(spec &FaceSpec, units &List[UnitDef], targets &FaceTargets, seed u32) FaceRig {
+    mut rng = Rng.make(seed);
+    imm cl = spec.point("eyeCenterL");
+    imm cr = spec.point("eyeCenterR");
+    mut gp = GazeParams.standard();
+    gp.eyeLimit = spec.eyeLimit;
+    imm exprs = standardExpressions();
+    mut manual = List[f32].empty();
+    manual.resize(units.len(), 0.);
+    mut lower = List[u8].empty();
+    lower.resize(units.len(), 0u8);
+    mut copy = List[UnitDef].empty();
+    mut i = 0usize;
+    while i < units.len() {
+      imm u = units[i];
+      copy.push(new UnitDef(u.name.copy(), u.au, u.side, u.kind, List[Influence].empty(), u.sharesWith, u.jaw));
+      if u.au >= 10u32 and u.au <= 28u32 { lower.set(i, 1u8); }
+      i = i + 1usize;
+    }
+    mut now = List[f32].empty();
+    now.resize(exprs.len(), 0.);
+    mut goal = List[f32].empty();
+    goal.resize(exprs.len(), 0.);
+    mut rate = List[f32].empty();
+    rate.resize(exprs.len(), 4.);
+    imm r = FaceRig.idleList(units);
+    mut ut = List[i32].empty();
+    mut q = 0usize;
+    while q < targets.unitTarget.len() { ut.push(*targets.unitTarget[q]); q = q + 1usize; }
+    new FaceRig(copy, ut, targets.count(), exprs, spec.scale, spec.jawOpenMax, manual, now, goal,
+      rate, Blinker.make(BlinkParams.standard(), &mut rng), true, Gaze.make(gp, cl, cr, seed + 17u32),
+      Speech.make(units), rng, 0., 1., r, lower, seed, List[f32].empty());
+  }
+
+  // The idle channels, resolved against the table
+  fn idleList(units &List[UnitDef]) List[IdleChan] {
+    mut out = List[IdleChan].empty();
+    imm aus = [AU_INNER_BROW_RAISER, AU_OUTER_BROW_RAISER, AU_BROW_LOWERER, AU_UPPER_LID_RAISER, AU_LIP_CORNER_PULLER,
+      AU_LIP_CORNER_DEPRESSOR, AU_CHEEK_RAISER, AU_UPPER_LIP_RAISER, AU_CHIN_RAISER, AU_LIPS_PART, AU_LIP_TIGHTENER];
+    imm amps = [0.045, 0.035, 0.05, 0.03, 0.035, 0.02, 0.02, 0.015, 0.03, 0.02, 0.02];
+    imm freqs = [0.21, 0.17, 0.19, 0.13, 0.11, 0.09, 0.10, 0.12, 0.14, 0.23, 0.08];
+    mut a = 0usize;
+    while a < 11usize {
+      mut side = 0u32;
+      while side < 3u32 {
+        imm ui = findUnit(units, aus[a], side);
+        if ui >= 0i32 {
+          out.push(new IdleChan(usize.from(ui), amps[a], freqs[a], u32.from(a) * 101u32 + side * 7u32 + 3u32));
+        }
+        side = side + 1u32;
+      }
+      a = a + 1usize;
+    }
+    out;
+  }
+
+  // ---- inputs ----
+
+  // Set a unit by hand (SIDE_BOTH sets both sides)
+  pub fn setUnit(self &mut, au u32, side u32, value f32) {
+    if side == SIDE_BOTH {
+      imm l = findUnit(&units, au, SIDE_LEFT);
+      imm r = findUnit(&units, au, SIDE_RIGHT);
+      imm b = findUnit(&units, au, SIDE_BOTH);
+      if l >= 0i32 { manual.set(usize.from(l), value); }
+      if r >= 0i32 { manual.set(usize.from(r), value); }
+      if b >= 0i32 { manual.set(usize.from(b), value); }
+    } else {
+      imm i = findUnit(&units, au, side);
+      if i >= 0i32 { manual.set(usize.from(i), value); }
+    }
+  }
+
+  // Blend an expression in: its weight tends to 'weight' and gets within 1% in 'seconds'
+  pub fn express(self &mut, index usize, weight f32, seconds f32) {
+    exprGoal.set(index, weight);
+    exprRate.set(index, 4.6 / fmax(seconds, 0.001));
+  }
+
+  // Take every expression out
+  pub fn clearExpressions(self &mut, seconds f32) {
+    mut i = 0usize;
+    while i < exprGoal.len() { self.express(i, 0., seconds); i = i + 1usize; }
+  }
+
+  pub fn lookAt(self &mut, p Vec3) { gaze.lookAt(p); }
+
+  pub fn say(self &mut, u &Utterance) { speech.say(u); }
+
+  pub fn speaking(self &) bool { !speech.done(); }
+
+  pub fn newFrame(self &) FaceFrame { FaceFrame.make(units.len(), targetCount); }
+
+  // ---- the frame ----
+
+  pub fn update(self &mut, dt f32, out &mut FaceFrame) {
+    time = time + dt;
+    imm n = units.len();
+    mut vals = List[f32].empty();
+    vals.resize(n, 0.);
+
+    // 1. hand-set
+    mut i = 0usize;
+    while i < n { vals.set(i, *manual[i]); i = i + 1usize; }
+
+    // 2. expressions, eased, the mouth's share reduced while speaking
+    mut speechVals = List[f32].empty();
+    speechVals.resize(n, 0.);
+    speech.update(dt, &mut speechVals);
+    imm act = speech.activity;
+    mut e = 0usize;
+    while e < expressions.len() {
+      imm k = 1. - libc.expf(-dt * *exprRate[e]);
+      exprNow.set(e, *exprNow[e] + (*exprGoal[e] - *exprNow[e]) * k);
+      imm w = *exprNow[e];
+      if absf(w) > 0.00001 {
+        imm ex = expressions[e];
+        mut x = 0usize;
+        while x < ex.units.len() {
+          imm eu = ex.units[x];
+          mut side = 0u32;
+          while side < 3u32 {
+            if eu.side == SIDE_BOTH or eu.side == side {
+              imm ui = findUnit(&units, eu.au, side);
+              if ui >= 0i32 {
+                imm lower = *lowerFace[usize.from(ui)] == 1u8;
+                imm share = if lower { 1. - 0.6 * act; } else { 1.; };
+                vals.set(usize.from(ui), *vals[usize.from(ui)] + w * eu.value * share);
+              }
+            }
+            side = side + 1u32;
+          }
+          x = x + 1usize;
+        }
+      }
+      e = e + 1usize;
+    }
+
+    // 3. speech
+    i = 0usize;
+    while i < n { vals.set(i, *vals[i] + *speechVals[i]); i = i + 1usize; }
+
+    // 4. idle
+    imm breath = 0.5 - 0.5 * cos(2. * pi * 0.27 * time);
+    if idleAmount > 0. {
+      mut c = 0usize;
+      while c < idle.len() {
+        imm ch = idle[c];
+        imm nz = smoothNoise(time * ch.freq + 0.37 * f32.from(ch.seed), seed + ch.seed);
+        imm mouthy = *lowerFace[ch.unit] == 1u8;
+        imm calm = if mouthy { 1. - 0.7 * act; } else { 1.; };
+        vals.set(ch.unit, *vals[ch.unit] + idleAmount * calm * ch.amp * (0.5 + 0.5 * nz));
+        c = c + 1usize;
+      }
+      i = 0usize;
+      while i < n {
+        imm u = units[i];
+        if u.au == AU_NOSTRIL_DILATOR { vals.set(i, *vals[i] + idleAmount * 0.22 * breath); }
+        if u.au == AU_JAW_DROP { vals.set(i, *vals[i] + idleAmount * (0.02 + 0.018 * breath) * (1. - 0.8 * act)); }
+        i = i + 1usize;
+      }
+    }
+
+    // 5. gaze, the lids' following, a blink on a large shift
+    gaze.idleOn = idleAmount > 0.;
+    gaze.microScale = clampf(idleAmount, 0., 1.);
+    gaze.update(dt, &mut rng);
+    if blinking and gaze.launched > 0.35 and rng.chance(0.7) { blinker.request(&mut rng); }
+    // 6. the blink
+    imm closure = if blinking { blinker.update(dt, &mut rng); } else { 0.; };
+    imm pitch = gaze.eyePitch;
+    imm followDown = fmax(0., -pitch) / fmax(gaze.params.eyeLimit, 0.01);
+    imm followUp = fmax(0., pitch) / fmax(gaze.params.eyeLimit, 0.01);
+    i = 0usize;
+    while i < n {
+      imm u = units[i];
+      if u.au == AU_BLINK { vals.set(i, *vals[i] + closure); }
+      if u.au == CH_LID_FOLLOW_DOWN { vals.set(i, followDown); }
+      if u.au == CH_LID_FOLLOW_UP { vals.set(i, followUp); }
+      i = i + 1usize;
+    }
+
+    // 7. limits, the targets, the jaw
+    i = 0usize;
+    while i < n {
+      imm u = units[i];
+      imm hi = 1.;
+      out.units.set(i, clampf(*vals[i], 0., hi));
+      i = i + 1usize;
+    }
+    mut t = 0usize;
+    while t < targetCount { out.weights.set(t, 0.); t = t + 1usize; }
+    mut pitchJ = 0.;
+    mut yawJ = 0.;
+    mut thrust = 0.;
+    mut tongue = 0.;
+    i = 0usize;
+    while i < n {
+      imm v = *out.units[i];
+      imm u = units[i];
+      imm tg = *unitTarget[i];
+      if tg >= 0i32 { out.weights.set(usize.from(tg), *out.weights[usize.from(tg)] + v); }
+      pitchJ = pitchJ + v * u.jaw.x;
+      yawJ = yawJ + v * u.jaw.y;
+      thrust = thrust + v * u.jaw.z;
+      if u.kind == UNIT_TONGUE { tongue = tongue + v; }
+      i = i + 1usize;
+    }
+    t = 0usize;
+    while t < targetCount { out.weights.set(t, clampf(*out.weights[t], 0., 1.)); t = t + 1usize; }
+    out.jawPitch = pitchJ * jawOpenMax;
+    out.jawYaw = yawJ;
+    out.jawThrust = thrust * scale;
+    out.jawRot = Quat.angleAxis(yawJ, new Vec3(0., 1., 0.)) * Quat.angleAxis(-out.jawPitch, new Vec3(1., 0., 0.));
+    out.tongue = clampf(tongue, 0., 1.);
+    out.blink = closure;
+    out.speaking = act;
+
+    // The eyes and the head
+    imm lift = 0.12 * closure;
+    imm ang = gaze.eyeAngles(false, lift);
+    imm angR = gaze.eyeAngles(true, lift);
+    out.eyeL = eyeQuat(ang.x, ang.y);
+    out.eyeR = eyeQuat(angR.x, angR.y);
+    out.gazeYaw = gaze.eyeYaw;
+    out.gazePitch = gaze.eyePitch;
+    imm sway = idleAmount;
+    imm swayYaw = sway * 0.010 * smoothNoise(time * 0.23, seed + 901u32);
+    imm swayPitch = sway * (0.008 * smoothNoise(time * 0.19, seed + 902u32) + 0.004 * breath);
+    imm swayRoll = sway * 0.006 * smoothNoise(time * 0.17, seed + 903u32);
+    out.head = Quat.angleAxis(gaze.headYaw + swayYaw, new Vec3(0., 1., 0.))
+      * Quat.angleAxis(gaze.headPitch + swayPitch, new Vec3(1., 0., 0.))
+      * Quat.angleAxis(swayRoll, new Vec3(0., 0., 1.));
+  }
+}

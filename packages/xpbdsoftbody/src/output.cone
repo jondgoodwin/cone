@@ -55,7 +55,7 @@ pub fn writeMesh(b &SoftBody, out &mut Mesh, doubleSided bool, normals &mut List
   imm nv = b.vertexMap.len();
   imm total = outputVertexCount(b, doubleSided);
   particleNormals(b, normals);
-  if out.positions.len() != total {
+  if out.positions.len() != total or out.indices.len() != outputIndexCount(b, doubleSided) {
     out.positions.clear();
     out.normals.clear();
     out.uvs.clear();
@@ -114,11 +114,33 @@ pub fn writeMesh(b &SoftBody, out &mut Mesh, doubleSided bool, normals &mut List
 // rope (parallel transport, so a ring does not twist), uvs (round, length in
 // metres)
 pub fn writeTube(b &SoftBody, out &mut Mesh, radius f32, sides u32) {
-  imm n = b.pos.len();
+  writeTubeRange(b, 0usize, b.pos.len(), out, radius, sides);
+}
+
+// The same for the 'count' particles from 'first' (a body with several ropes in it,
+// or a rope and a cloth), and a segment whose stretch constraint has broken is not
+// drawn: a snapped rope is two tubes with a gap, from the frame it snaps
+pub fn writeTubeRange(b &SoftBody, first usize, count usize, out &mut Mesh, radius f32, sides u32) {
+  imm n = count;
   imm ns = usize.from(sides);
   imm total = n * ns;
   if n < 2usize or sides < 3u32 { return; }
-  if out.positions.len() != total {
+  // a segment is whole while some stretch constraint still joins its two particles
+  mut whole = List[bool].empty();
+  mut s = 0usize;
+  while s + 1usize < n { whole.push(false); s = s + 1usize; }
+  s = 0usize;
+  while s < b.dist.len() {
+    imm c = *b.dist[s];
+    imm lo = if c.a < c.b {usize.from(c.a);} else {usize.from(c.b);};
+    imm hi = if c.a < c.b {usize.from(c.b);} else {usize.from(c.a);};
+    if hi == lo + 1usize and lo >= first and hi < first + n { whole.set(lo - first, true); }
+    s = s + 1usize;
+  }
+  mut wholeCount = 0usize;
+  s = 0usize;
+  while s < whole.len() { if *whole[s] { wholeCount = wholeCount + 1usize; } s = s + 1usize; }
+  if out.positions.len() != total or out.indices.len() != wholeCount * ns * 6usize {
     out.positions.clear();
     out.normals.clear();
     out.uvs.clear();
@@ -135,6 +157,7 @@ pub fn writeTube(b &SoftBody, out &mut Mesh, radius f32, sides u32) {
     }
     i = 0usize;
     while i + 1usize < n {
+      if !*whole[i] { i = i + 1usize; continue; }
       mut k = 0usize;
       while k < ns {
         imm k1 = (k + 1usize) % ns;
@@ -159,7 +182,7 @@ pub fn writeTube(b &SoftBody, out &mut Mesh, radius f32, sides u32) {
   while i < n {
     imm lo = if i == 0usize {0usize;} else {i - 1usize;};
     imm hi = if i + 1usize == n {i;} else {i + 1usize;};
-    imm tang = (*b.pos[hi] - *b.pos[lo]).normalize();
+    imm tang = (*b.pos[first + hi] - *b.pos[first + lo]).normalize();
     if i == 0usize {
       // any direction not along the tangent
       imm helper = if fabs(tang.y) < 0.9 {new Vec3(0., 1., 0.);} else {new Vec3(1., 0., 0.);};
@@ -169,12 +192,12 @@ pub fn writeTube(b &SoftBody, out &mut Mesh, radius f32, sides u32) {
       if cand.lengthSquared() > 1e-12 { nrm = cand.normalize(); }
     }
     imm bin = tang.cross(nrm);
-    if i > 0usize { length = length + (*b.pos[i] - *b.pos[i - 1usize]).length(); }
+    if i > 0usize { length = length + (*b.pos[first + i] - *b.pos[first + i - 1usize]).length(); }
     mut k = 0usize;
     while k < ns {
       imm ang = 2. * pi * f32.from(k) / f32.from(ns);
       imm dir = nrm * cos(ang) + bin * sin(ang);
-      out.positions.set(i * ns + k, *b.pos[i] + dir * radius);
+      out.positions.set(i * ns + k, *b.pos[first + i] + dir * radius);
       out.normals.set(i * ns + k, dir);
       out.uvs.set(i * ns + k, new Vec2(f32.from(k) / f32.from(ns), length));
       k = k + 1usize;

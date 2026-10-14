@@ -1,0 +1,292 @@
+// ======== The Cone tokenizer ========
+//
+// A line tokenizer for Cone source (the highlighter interface of highlight.cone), written from the
+// reference manual's "Lexical Elements" page (doc\reference\reftoken.html):
+//
+//   - line comments '//' to the end of the line; block comments '/* ... */', which NEST (state: mode 1,
+//     depth in the bits above 8);
+//   - string literals: "..." with escapes, r"..." and r`...` raw, and the multi-line forms """ ... """
+//     and r""" ... """ (state: mode 2 and 3, carried to the next line until the closing """);
+//   - character literals 'a', '\n', 'é' and lifetimes 'a (told apart by the closing quote);
+//   - numbers: decimal, 0x hex, underscores, a decimal point or exponent, and the type suffixes
+//     (i8 u32 usize f64 ...); '1..4' is a range, so the '.' there is not part of the number;
+//   - identifiers (letters, '_', '$', digits, any non-ASCII letter; `back-ticked` ones whole),
+//     told apart as keywords (the reserved list of the page), the primitive types and capitalized
+//     names (types), and names followed by '(' (functions);
+//   - attributes '@name', operators and punctuation, and brackets.
+//
+// A malformed token is still tokenized (an unterminated string runs to the line's end): this is a
+// colourer, not a checker; the compiler is the checker.
+
+const KEYWORDS = " actor alias and as async await baseurl break but by case catch const context continue do each else elif enum extends extern false fn if imm import in include inline into is local macro match mixin mod mut mut1 new nil not null opaq or overload pub ref return ro self selfactor selfmethod spawn static struct this throw trait true trynew typedef undef uni use using void wait where while with yield ";
+const PRIMITIVES = " u8 u16 u32 u64 usize i8 i16 i32 i64 isize f32 f64 bool char str cstr void ";
+
+const MODE_COMMENT = 1u32;
+const MODE_TRIPLE = 2u32;
+const MODE_RAW_TRIPLE = 3u32;
+
+// Whether ' word ' is in the space-separated list (no allocation)
+fn inList(list &str, word &str) bool {
+  imm n = word.len();
+  if n == 0usize {return false;}
+  mut i = 1usize;
+  while i + n < list.len() {
+    if list[i - 1usize] == 32u8 and list[i + n] == 32u8 {
+      mut k = 0usize;
+      while k < n and list[i + k] == word[k] {k = k + 1usize;}
+      if k == n {return true;}
+    }
+    i = i + 1usize;
+  }
+  false;
+}
+
+fn isIdentStart(b u8) bool {
+  (b >= 65u8 and b <= 90u8) or (b >= 97u8 and b <= 122u8) or b == 95u8 or b >= 128u8;
+}
+
+fn isIdentPart(b u8) bool {
+  isIdentStart(b) or (b >= 48u8 and b <= 57u8) or b == 36u8;
+}
+
+fn isDigit(b u8) bool {b >= 48u8 and b <= 57u8;}
+
+fn isHexDigit(b u8) bool {
+  isDigit(b) or (b >= 65u8 and b <= 70u8) or (b >= 97u8 and b <= 102u8);
+}
+
+fn isBracket(b u8) bool {
+  b == 40u8 or b == 41u8 or b == 91u8 or b == 93u8 or b == 123u8 or b == 125u8;
+}
+
+fn isPunct(b u8) bool {
+  b == 44u8 or b == 59u8 or b == 46u8 or b == 58u8;
+}
+
+fn emit(out &mut List[Token], start usize, end usize, kind u32) {
+  if end > start {out.push(new Token(u32.from(start), u32.from(end), kind));}
+}
+
+// Cone source, a line at a time. State: 0 normal; MODE_COMMENT | depth << 8; MODE_TRIPLE; MODE_RAW_TRIPLE
+pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
+  imm n = line.len();
+  mut mode = state & 255u32;
+  mut depth = state >> 8u32;
+  mut i = 0usize;
+  mut skip = 0usize;                     // bytes of an opening delimiter still to pass over
+  while i < n {
+    imm start = i;
+    if mode == MODE_COMMENT {
+      // inside a block comment: nested openers count
+      while i < n {
+        if line[i] == 47u8 and i + 1usize < n and line[i + 1usize] == 42u8 {
+          depth = depth + 1u32;
+          i = i + 2usize;
+        }
+        elif line[i] == 42u8 and i + 1usize < n and line[i + 1usize] == 47u8 {
+          i = i + 2usize;
+          depth = depth - 1u32;
+          if depth == 0u32 {
+            mode = 0u32;
+            break;
+          }
+        }
+        else {i = i + 1usize;}
+      }
+      emit(out, start, i, TK_COMMENT);
+      continue;
+    }
+    if mode == MODE_TRIPLE or mode == MODE_RAW_TRIPLE {
+      // inside """ ... """: ends at the next three quotes; escapes only in the cooked form
+      i = i + skip;
+      skip = 0usize;
+      mut closed = false;
+      mut segStart = start;
+      while i < n and !closed {
+        if mode == MODE_TRIPLE and line[i] == 92u8 and i + 1usize < n {
+          emit(out, segStart, i, TK_STRING);
+          mut e = i + 2usize;
+          if line[i + 1usize] == 120u8 and e + 2usize <= n {e = e + 2usize;}     // \xnn
+          emit(out, i, e, TK_ESCAPE);
+          i = e;
+          segStart = i;
+        }
+        elif line[i] == 34u8 and i + 2usize < n and line[i + 1usize] == 34u8 and line[i + 2usize] == 34u8 {
+          i = i + 3usize;
+          closed = true;
+        }
+        else {i = i + 1usize;}
+      }
+      emit(out, segStart, i, TK_STRING);
+      if closed {mode = 0u32;}
+      continue;
+    }
+    imm c = line[i];
+    // white space
+    if c == 32u8 or c == 9u8 or c == 13u8 {
+      i = i + 1usize;
+      continue;
+    }
+    // comments
+    if c == 47u8 and i + 1usize < n and line[i + 1usize] == 47u8 {
+      emit(out, i, n, TK_COMMENT);
+      i = n;
+      continue;
+    }
+    if c == 47u8 and i + 1usize < n and line[i + 1usize] == 42u8 {
+      mode = MODE_COMMENT;
+      depth = 0u32;
+      continue;                          // the comment scanner counts the opener itself
+    }
+    // strings: " ... ", """ ... """, r" ... ", r` ... `, r""" ... """
+    mut raw = false;
+    mut q = i;
+    if c == 114u8 and i + 1usize < n and (line[i + 1usize] == 34u8 or line[i + 1usize] == 96u8) {
+      raw = true;
+      q = i + 1usize;
+    }
+    if line[q] == 34u8 or (raw and line[q] == 96u8) {
+      if line[q] == 34u8 and q + 2usize < n and line[q + 1usize] == 34u8 and line[q + 2usize] == 34u8 {
+        mode = if raw {MODE_RAW_TRIPLE;} else {MODE_TRIPLE;};
+        skip = q + 3usize - i;
+        continue;
+      }
+      imm closer = line[q];
+      mut j = q + 1usize;
+      mut segStart = i;
+      while j < n and line[j] != closer {
+        if !raw and line[j] == 92u8 and j + 1usize < n {
+          emit(out, segStart, j, TK_STRING);
+          mut e = j + 2usize;
+          if line[j + 1usize] == 120u8 and e + 2usize <= n {e = e + 2usize;}
+          elif line[j + 1usize] == 117u8 {
+            while e < n and e < j + 6usize and isHexDigit(line[e]) {e = e + 1usize;}
+          }
+          emit(out, j, e, TK_ESCAPE);
+          j = e;
+          segStart = j;
+        }
+        else {j = j + 1usize;}
+      }
+      if j < n {j = j + 1usize;}
+      emit(out, segStart, j, TK_STRING);
+      i = j;
+      continue;
+    }
+    // character literal or lifetime
+    if c == 39u8 {
+      if i + 1usize < n and line[i + 1usize] == 92u8 {
+        mut j = i + 2usize;
+        while j < n and line[j] != 39u8 {j = j + 1usize;}
+        if j < n {j = j + 1usize;}
+        emit(out, i, j, TK_CHAR);
+        i = j;
+        continue;
+      }
+      // a one-character literal: the quote closes after one (possibly multi-byte) character
+      mut j = i + 1usize;
+      if j < n {
+        j = j + 1usize;
+        while j < n and line[j] >= 128u8 and line[j] < 192u8 {j = j + 1usize;}
+      }
+      if j < n and line[j] == 39u8 {
+        emit(out, i, j + 1usize, TK_CHAR);
+        i = j + 1usize;
+        continue;
+      }
+      if i + 1usize < n and isIdentStart(line[i + 1usize]) {
+        j = i + 1usize;
+        while j < n and isIdentPart(line[j]) {j = j + 1usize;}
+        emit(out, i, j, TK_LIFETIME);
+        i = j;
+        continue;
+      }
+      emit(out, i, i + 1usize, TK_ERROR);
+      i = i + 1usize;
+      continue;
+    }
+    // numbers
+    if isDigit(c) {
+      mut j = i + 1usize;
+      if c == 48u8 and j < n and (line[j] == 120u8 or line[j] == 88u8) {
+        j = j + 1usize;
+        while j < n and (isHexDigit(line[j]) or line[j] == 95u8) {j = j + 1usize;}
+      }
+      else {
+        while j < n and (isDigit(line[j]) or line[j] == 95u8) {j = j + 1usize;}
+        // a decimal point: part of the number unless it starts '..' or a method name
+        if j < n and line[j] == 46u8 {
+          imm after = if j + 1usize < n {line[j + 1usize];} else {0u8;};
+          if isDigit(after) {
+            j = j + 1usize;
+            while j < n and (isDigit(line[j]) or line[j] == 95u8) {j = j + 1usize;}
+          }
+          elif after != 46u8 and !isIdentStart(after) {j = j + 1usize;}
+        }
+        // an exponent
+        if j < n and (line[j] == 101u8 or line[j] == 69u8) {
+          mut e = j + 1usize;
+          if e < n and (line[e] == 45u8 or line[e] == 43u8) {e = e + 1usize;}
+          if e < n and isDigit(line[e]) {
+            while e < n and isDigit(line[e]) {e = e + 1usize;}
+            j = e;
+          }
+        }
+      }
+      // the type suffix
+      while j < n and isIdentPart(line[j]) {j = j + 1usize;}
+      emit(out, i, j, TK_NUMBER);
+      i = j;
+      continue;
+    }
+    // identifiers and keywords
+    if isIdentStart(c) or c == 96u8 {
+      mut j = i + 1usize;
+      if c == 96u8 {
+        while j < n and line[j] != 96u8 {j = j + 1usize;}
+        if j < n {j = j + 1usize;}
+        emit(out, i, j, TK_IDENT);
+        i = j;
+        continue;
+      }
+      while j < n and isIdentPart(line[j]) {j = j + 1usize;}
+      imm word = line.slice(i, j);
+      mut kind = TK_IDENT;
+      if inList(KEYWORDS, word) {kind = TK_KEYWORD;}
+      elif inList(PRIMITIVES, word) {kind = TK_TYPE;}
+      elif c >= 65u8 and c <= 90u8 {kind = TK_TYPE;}
+      elif j < n and line[j] == 40u8 {kind = TK_FUNCTION;}
+      emit(out, i, j, kind);
+      i = j;
+      continue;
+    }
+    // attributes
+    if c == 64u8 and i + 1usize < n and isIdentStart(line[i + 1usize]) {
+      mut j = i + 1usize;
+      while j < n and isIdentPart(line[j]) {j = j + 1usize;}
+      emit(out, i, j, TK_ATTRIBUTE);
+      i = j;
+      continue;
+    }
+    if isBracket(c) {
+      emit(out, i, i + 1usize, TK_BRACKET);
+      i = i + 1usize;
+      continue;
+    }
+    if isPunct(c) {
+      emit(out, i, i + 1usize, TK_PUNCT);
+      i = i + 1usize;
+      continue;
+    }
+    // anything else: a run of operator characters
+    mut j = i + 1usize;
+    while j < n and !isBracket(line[j]) and !isPunct(line[j]) and line[j] != 32u8 and line[j] != 9u8 and line[j] != 34u8 and line[j] != 39u8
+        and !isIdentPart(line[j]) and line[j] != 96u8 and line[j] != 64u8 {j = j + 1usize;}
+    emit(out, i, j, TK_OPERATOR);
+    i = j;
+  }
+  // the state at the end of the line
+  if mode == MODE_COMMENT {return MODE_COMMENT | (depth << 8u32);}
+  if mode == MODE_TRIPLE or mode == MODE_RAW_TRIPLE {return mode;}
+  0u32;
+}

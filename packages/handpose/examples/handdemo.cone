@@ -1,0 +1,493 @@
+// handdemo: a test hand gripping a hammer's handle, a rolling pin and a
+// cup, then kneading, drawn close up offscreen on a real GPU.
+//
+//   congo run --release packages/handpose/examples/handdemo.cone -- --out shots
+//   GPU_POWER_PREFERENCE=low-power congo run --release packages/handpose/examples/handdemo.cone -- --out shots-intel
+//
+// The hand is handpose's procedural test hand (testhand.cone), a skinned
+// mesh on the 15 finger bones that 'attachHand' adds to bonepose's humanoid
+// under its right hand; the arm is bonepose's, brought to the wrist by
+// poseik's two-bone solver ('reachWrist'). Every grip is solved from data
+// alone: a handle's two ends and radius, where along it, which side of it
+// the palm lies, which way the thumb goes: 'cylinderGrip' places the wrist,
+// 'fitGrip' closes the fingers on the prop's signed-distance surface until
+// they touch it. The props are drawn from the same primitives the fingers
+// touched. Kneading is a task cycle (task.cone) evaluated against a ball of
+// dough on a table.
+//
+// It writes contact sheets as PNG files in the --out folder:
+//   hand-grips.png     power grip on a hammer's handle (open, closed, from the side, mid swing), a pin's
+//                      handle, a cup's handle (two views)
+//   hand-knead.png     one kneading stroke in eight steps
+//   hand-pinch.png     a pinch, hook and flat palm beside the open hand
+// and prints each grip's contacts (finger, segment, gap), the deepest any flesh
+// went into the prop, the palm's gap, and the cost: a grip solve, a frame of the
+// tasks, and the skinned hand drawn. Exit status 0 if the checks hold (every grip
+// penetrates less than the squash, the fingers touch, the arm reaches) and the GPU
+// said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation is on and must say nothing. GPU_POWER_PREFERENCE=low-power picks
+// an integrated GPU.
+
+mod handdemo;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import bonepose use *;
+import poseik use *;
+import time use *;
+import imagedecode use *;
+import gpu use *;
+import render use *;
+import handpose use *;
+import fs;
+import path use Path;
+
+const TILE_W = 480;
+const TILE_H = 440;
+const SQUASH = 0.0004;
+
+struct Sheet {
+  raster Raster;
+  tilesAcross i32;
+  tileW i32;
+  tileH i32;
+
+  fn make(tilesAcross i32, tilesDown i32, tileW i32, tileH i32) Sheet {
+    mut r = Raster.empty();
+    r.width = tilesAcross * tileW;
+    r.height = tilesDown * tileH;
+    r.depth = 8;
+    r.colorSpace = ColorSpace.Srgb;
+    r.pixels8.resize(usize.from(r.width) * usize.from(r.height) * 4usize, 255u8);
+    new Sheet(r, tilesAcross, tileW, tileH);
+  }
+
+  fn put(self &mut, n i32, px *u8) {
+    imm tx = (n % tilesAcross) * tileW;
+    imm ty = (n / tilesAcross) * tileH;
+    mut y = 0;
+    while y < tileH {
+      mut x = 0;
+      while x < tileW {
+        imm s = usize.from((y * tileW + x) * 4);
+        imm d = usize.from(((ty + y) * raster.width + tx + x) * 4);
+        raster.pixels8.set(d, *(px + s));
+        raster.pixels8.set(d + 1usize, *(px + s + 1usize));
+        raster.pixels8.set(d + 2usize, *(px + s + 2usize));
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn save(self &, dir &String, name &str) {
+    imm png = encodePng(&raster, 2);
+    mut full = dir.copy();
+    full.append("/");
+    full.append(name);
+    imm op = Path.from(full.view());
+    fs.writeFile(&op, png.view());
+    printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
+  }
+}
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn argString(p *u8) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while *(p + i) != 0u8 { s.appendByte(*(p + i)); i = i + 1usize; }
+  s;
+}
+
+// A tube of radius 1 and length 1 up +y (the arm's limbs)
+fn tube() Mesh {
+  mut m = Mesh.empty();
+  imm sides = 16usize;
+  mut k = 0usize;
+  while k <= sides {
+    imm a = 2. * pi * f32.from(k) / f32.from(sides);
+    m.positions.push(new Vec3(cos(a), 0., sin(a)));
+    m.normals.push(new Vec3(cos(a), 0., sin(a)));
+    m.positions.push(new Vec3(cos(a) * 0.76, 1., sin(a) * 0.76));
+    m.normals.push(new Vec3(cos(a), 0.2, sin(a)).normalize());
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < sides {
+    imm v0 = u32.from(2usize * k);
+    m.indices.push(v0);
+    m.indices.push(v0 + 3u32);
+    m.indices.push(v0 + 1u32);
+    m.indices.push(v0);
+    m.indices.push(v0 + 2u32);
+    m.indices.push(v0 + 3u32);
+    k = k + 1usize;
+  }
+  m;
+}
+
+fn limb(a Vec3, b Vec3, r f32) Mat4 {
+  imm d = b - a;
+  Mat4.fromTrs(a, Quat.fromVectors(new Vec3(0., 1., 0.), d), new Vec3(r, d.length(), r));
+}
+
+fn skinMatrix(posed &List[Transform3], rest &List[Transform3], b usize) Mat4 {
+  ((*posed[b]) * (*rest[b]).inverse()).toMat4();
+}
+
+// The whole scene's resources
+struct Scene {
+  handMesh MeshHandle;
+  skinMat MaterialHandle;
+  tubeMesh MeshHandle;
+  clothMat MaterialHandle;
+  ballMesh MeshHandle;
+}
+
+// A prop's meshes added to the renderer
+struct PropHandles {
+  meshes List[MeshHandle];
+  parts List[u32];
+}
+
+fn addProp(renderer &mut Renderer, device &mut Device, p &Prop) PropHandles {
+  mut out = new PropHandles(List[MeshHandle].empty(), List[u32].empty());
+  mut i = 0usize;
+  while i < p.meshes.len() {
+    out.meshes.push(renderer.addMesh(device, p.meshes[i]));
+    out.parts.push(*p.parts[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// What a frame needs
+struct Pose3 {
+  prop Transform3;        // the prop's placement in the model
+  wrist Transform3;       // the wrist, model space
+  hand HandPose;
+}
+
+// Print a grip's contacts and check it
+fn report(name &str, fit &GripFit) bool {
+  imm r = &fit.result;
+  printStr(name); printStr(": palm gap "); print <- r.palmGap * 1000.; printStr(" mm, deepest "); print <- r.deepest * 1000.;
+  printStr(" mm, fingers touching "); print <- r.fingersTouching; printStr(", contacts "); print <- r.contacts.len(); printStr("\n");
+  mut ok = true;
+  if r.deepest > SQUASH + 0.00005 { print <- "FAIL: a finger passed into the prop\n"; ok = false; }
+  if r.fingersTouching < 2usize { print <- "FAIL: too few fingers touch\n"; ok = false; }
+  ok;
+}
+
+struct Mats {
+  skin MaterialHandle;
+  arm MaterialHandle;
+  cloth MaterialHandle;
+  wood MaterialHandle;
+  steel MaterialHandle;
+  ceramic MaterialHandle;
+  dough MaterialHandle;
+  table MaterialHandle;
+}
+
+// A prop's meshes added to the list, placed by 'at', its two materials
+fn addPropDraw(list &mut DrawList, p &PropHandles, at Transform3, m0 MaterialHandle, m1 MaterialHandle) {
+  imm m = at.toMat4();
+  mut i = 0usize;
+  while i < p.meshes.len() {
+    list.add(*p.meshes[i], if *p.parts[i] == 0u32 { m0; } else { m1; }, m);
+    i = i + 1usize;
+  }
+}
+
+// The body drawn with the hand at 'wrist' (model space) in 'hp': the arm brought to it, the fingers posed, the
+// frame rendered into 'readback'. 'list' holds the props already.
+fn drawHandScene(device &mut Device, renderer &mut Renderer, color &Texture, depth &Texture, readback &Buffer, camera &Camera,
+    sun &Light, list &mut DrawList, skel &Skeleton, bones &HandBones, spec &HandSpec, restModels &List[Transform3],
+    handMesh MeshHandle, tubeMesh MeshHandle, ballMesh MeshHandle, mats &Mats, wrist Transform3, hp &HandPose) bool {
+  mut pose = skel.restPose();
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(&pose, &mut models);
+  imm reach = reachWrist(skel, &mut pose, &mut models, true, wrist, elbowPole(true), 1.);
+  applyHandPose(&mut pose, bones, spec, hp);
+  skel.modelTransforms(&pose, &mut models);
+  // The hand's skinning matrices: the hand bone, then the fifteen finger bones
+  mut bm = List[Mat4].empty();
+  bm.push(skinMatrix(&models, restModels, HAND_R));
+  mut b = 0usize;
+  while b < 15usize { bm.push(skinMatrix(&models, restModels, *bones.bone[b])); b = b + 1usize; }
+  imm bone16 = [*bm[0], *bm[1], *bm[2], *bm[3], *bm[4], *bm[5], *bm[6], *bm[7], *bm[8], *bm[9], *bm[10], *bm[11], *bm[12], *bm[13], *bm[14], *bm[15]];
+  list.addSkinned(handMesh, mats.skin, Mat4.identity(), &bone16);
+  // The arm: a sleeve on the upper arm, the bare forearm, a shoulder, a chest
+  imm shoulder = (*models[UPPER_ARM_R]).translation;
+  imm elbow = (*models[FOREARM_R]).translation;
+  imm wr = (*models[HAND_R]).translation;
+  list.add(tubeMesh, mats.cloth, limb(shoulder, elbow, 0.050));
+  list.add(ballMesh, mats.cloth, Mat4.fromTrs(elbow, Quat.identity(), new Vec3(0.050, 0.050, 0.050)));
+  list.add(tubeMesh, mats.arm, limb(elbow, wr + (wr - elbow).normalize() * -0.005, 0.040));
+  list.add(ballMesh, mats.cloth, Mat4.fromTrs(shoulder, Quat.identity(), new Vec3(0.075, 0.075, 0.075)));
+  list.add(ballMesh, mats.cloth, Mat4.fromTrs(new Vec3(0.0, 1.30, 0.), Quat.identity(), new Vec3(0.20, 0.24, 0.12)));
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, sun, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  reach.reached;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut outDir = String.from("hand-shots");
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") and a + 1 < argc { outDir = argString(*(argv + usize.from(a + 1))); a += 1; }
+    a += 1;
+  }
+  mut ok = true;
+
+  // ---- the body, the hand, the props ----
+  mut skel = humanoid(1.75);
+  imm spec = standardHand(0.189, true);
+  imm bones = attachHand(&mut skel, HAND_R, &spec);
+  imm rest = skel.restPose();
+  mut restModels = List[Transform3].empty();
+  skel.modelTransforms(&rest, &mut restModels);
+  mut hand = makeTestHand(&spec);
+  print <- "hand: "; print <- hand.mesh.positions.len(); print <- " vertices, "; print <- hand.mesh.triangleCount(); print <- " triangles\n";
+  imm hammerProp = hammer();
+  imm pinProp = rollingPin();
+  imm cupProp = cup();
+  imm doughProp = dough();
+
+  // ---- the GPU ----
+  mut instance = Instance.create("handpose handdemo");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1; }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1; }
+  printStr("adapter: "); printStr(adapter.name.view()); printStr("\n");
+  imm colorFmt = TEXTURE_FORMAT_RGBA8_UNORM_SRGB;
+  imm tw = u32.from(TILE_W);
+  imm th = u32.from(TILE_H);
+  imm target = new TextureDescriptor(tw, th, colorFmt, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(tw, th, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(tw) * u64.from(th) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, colorFmt, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1; }
+
+  // The hand's mesh carried to model space at rest, and its skin
+  hand.mesh.transform((*restModels[HAND_R]).toMat4());
+  mut skin = Skin.empty();
+  mut v = 0usize;
+  while v < hand.mesh.positions.len() {
+    skin.push(*hand.joints[4usize * v], *hand.joints[4usize * v + 1usize], *hand.joints[4usize * v + 2usize], *hand.joints[4usize * v + 3usize],
+      *hand.weights[4usize * v], *hand.weights[4usize * v + 1usize], *hand.weights[4usize * v + 2usize], *hand.weights[4usize * v + 3usize]);
+    v = v + 1usize;
+  }
+  imm handMesh = renderer.addSkinnedMesh(&mut device, &hand.mesh, &skin);
+  imm skinMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.86, 0.62, 0.52, 1.), 0., 0.55));
+  imm armMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.84, 0.60, 0.50, 1.), 0., 0.6));
+  imm clothMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.30, 0.34, 0.45, 1.), 0., 0.8));
+  imm woodMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.55, 0.36, 0.20, 1.), 0., 0.55));
+  imm steelMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.62, 0.64, 0.68, 1.), 1., 0.35));
+  imm ceramicMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.88, 0.86, 0.80, 1.), 0., 0.25));
+  imm doughMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.90, 0.80, 0.62, 1.), 0., 0.85));
+  imm tableMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.42, 0.30, 0.22, 1.), 0., 0.7));
+  imm hammerH = addProp(&mut renderer, &mut device, &hammerProp);
+  imm pinH = addProp(&mut renderer, &mut device, &pinProp);
+  imm cupH = addProp(&mut renderer, &mut device, &cupProp);
+  imm doughH = addProp(&mut renderer, &mut device, &doughProp);
+  imm tubeMesh = renderer.addMesh(&mut device, &tube());
+  imm ballMesh = renderer.addMesh(&mut device, &Mesh.sphere(1., 20));
+
+  mut camera = Camera.make();
+  camera.near = 0.03;
+  camera.far = 5.;
+  camera.fov = radians(28.);
+  camera.background = new Color(0.08, 0.09, 0.11, 1.);
+  imm sun = Light.directional(new Vec3(-0.4, -0.7, -0.55), new Color(2.7, 2.55, 2.4, 1.), Color.gray(0.5));
+  mut list = DrawList.empty();
+  imm px = readback.mappedRange();
+
+  // ---- grips from data ----
+  // The hammer: held upright in front of the right shoulder, the palm on the +x side of the handle, fingers forward
+  imm shape = shapePower();
+  imm t0 = Instant.now();
+  imm hamW = cylinderGrip(&spec, new Vec3(0., 0., 0.), new Vec3(0., 0.28, 0.), 0.0155, 0.30, 0., 1., new Vec3(1., 0., 0.));
+  imm hamFit = fitGrip(&spec, &shape, hamW, new Vec3(1., 0., 0.), &hammerProp.surface, SQUASH, 0.04, false);
+  imm tSolve = t0.elapsed().nanos();
+  // The rolling pin's right handle, the palm on top, the thumb towards the pin's middle
+  imm pinW = cylinderGrip(&spec, new Vec3(0.13, 0., 0.), new Vec3(0.235, 0., 0.), 0.0155, 0.5, 0., 1., new Vec3(0., 1., 0.));
+  imm pinFit = fitGrip(&spec, &shape, pinW, new Vec3(0., 1., 0.), &pinProp.surface, SQUASH, 0.04, false);
+  // The cup's handle: the palm on the outer side of the ring's bar, the fingers hooking round it, the thumb up
+  imm hook = shapeHook();
+  imm cupW = cylinderGrip(&spec, new Vec3(0.0805, 0.025, 0.), new Vec3(0.0805, 0.075, 0.), 0.0055, 0.5, 0., 1., new Vec3(1., 0., 0.));
+  imm cupFit = fitGrip(&spec, &hook, cupW, new Vec3(1., 0., 0.), &cupProp.surface, SQUASH, 0.04, false);
+  if !report("hammer", &hamFit) { ok = false; }
+  if !report("rolling pin", &pinFit) { ok = false; }
+  if !report("cup", &cupFit) { ok = false; }
+  print <- "grip solve (hammer: placement, fit and all five fingers): "; print <- tSolve / 1000i64; print <- " us\n";
+
+  imm mats = new Mats(skinMat, armMat, clothMat, woodMat, steelMat, ceramicMat, doughMat, tableMat);
+
+  // ---- the grips sheet ----
+  // Prop placements: each so that the grip's wrist lands where the arm can reach it
+  imm hamWrist = new Vec3(0.27, 1.06, -0.30);
+  imm hamAt = new Transform3(hamWrist - hamFit.wrist.translation, Quat.identity(), new Vec3(1., 1., 1.));
+  imm pinWristT = new Vec3(0.26, 0.98, -0.34);
+  imm pinAt = new Transform3(pinWristT - pinFit.wrist.translation, Quat.identity(), new Vec3(1., 1., 1.));
+  imm cupWristT = new Vec3(0.30, 1.02, -0.32);
+  imm cupAt = new Transform3(cupWristT - cupFit.wrist.translation, Quat.identity(), new Vec3(1., 1., 1.));
+  mut sheet = Sheet.make(3, 2, TILE_W, TILE_H);
+  mut reachedAll = true;
+  mut tile = 0;
+  while tile < 6 {
+    list.clear();
+    mut at = hamAt;
+    mut hp = hamFit.result.pose.copy();
+    mut wristM = hamAt * hamFit.wrist;
+    mut eye = new Vec3(-0.12, 1.16, -0.62);
+    mut look = hamWrist + new Vec3(0., 0.02, -0.04);
+    if tile == 0 {
+      hp = shape.open.copy();
+    }
+    if tile == 2 { eye = new Vec3(0.66, 1.16, -0.50); }
+    if tile == 3 {
+      // the swing: the wrist hinged back by the swing's first quarter
+      imm key = swingMotion(0.6, 1., &hamFit.result.pose, 0.).sample(0.25);
+      wristM = (hamAt * hamFit.wrist) * key.offset();
+      eye = new Vec3(-0.10, 1.22, -0.66);
+    }
+    if tile < 4 {
+      addPropDraw(&mut list, &hammerH, at, woodMat, steelMat);
+      if tile == 3 {
+        // the hammer follows the hand: its placement from the wrist's
+        imm follow = wristM * hamFit.wrist.inverse();
+        list.clear();
+        addPropDraw(&mut list, &hammerH, follow, woodMat, steelMat);
+      }
+    }
+    if tile == 4 {
+      at = pinAt;
+      hp = pinFit.result.pose.copy();
+      wristM = pinAt * pinFit.wrist;
+      look = pinWristT + new Vec3(0., 0., -0.04);
+      eye = new Vec3(0.40, 1.40, -0.84);
+      addPropDraw(&mut list, &pinH, pinAt, woodMat, woodMat);
+    }
+    if tile == 5 {
+      at = cupAt;
+      hp = cupFit.result.pose.copy();
+      wristM = cupAt * cupFit.wrist;
+      look = cupWristT + new Vec3(0., 0., -0.04);
+      eye = new Vec3(0.64, 1.18, -0.70);
+      addPropDraw(&mut list, &cupH, cupAt, ceramicMat, ceramicMat);
+    }
+    camera.lookAt(eye, look, new Vec3(0., 1., 0.));
+    if !drawHandScene(&mut device, &mut renderer, &color, &depth, &readback, &camera, &sun, &mut list, &skel, &bones, &spec, &restModels,
+        handMesh, tubeMesh, ballMesh, &mats, wristM, &hp) { reachedAll = false; }
+    sheet.put(tile, px);
+    tile = tile + 1;
+  }
+  sheet.save(&outDir, "hand-grips.png");
+  if !reachedAll { print <- "FAIL: the arm did not reach a grip\n"; ok = false; }
+
+  // ---- kneading: one stroke in eight steps ----
+  imm doughAt = new Transform3(new Vec3(0.15, 0.86, -0.28), Quat.identity(), new Vec3(1., 1., 1.));
+  imm doughSurf = doughProp.surface.placed(doughAt);
+  imm qBase = frameFrom(new Vec3(0., spec.h, 0.), new Vec3(0., 0., 1.));
+  imm baseWrist = new Transform3(new Vec3(0.15, 0.914 + 0.003 + 0.0145, -0.28 + 0.052), qBase, new Vec3(1., 1., 1.));
+  imm clawShape = shapeClaw();
+  imm kneadCycle = kneadMotion(&spec, 0.085, 0.030, 1.6);
+  sheet = Sheet.make(4, 2, TILE_W, TILE_H);
+  mut kneadReached = true;
+  mut handLow = 1000.;
+  mut k = 0;
+  while k < 8 {
+    imm key = kneadCycle.sample(f32.from(k) * 0.2);
+    imm frame = evaluateKey(&spec, &clawShape, &baseWrist, &key, &doughSurf, SQUASH, true, new Vec3(0., 1., 0.));
+    printStr("knead step "); print <- k; printStr(": close "); print <- key.close; printStr(", deepest "); print <- frame.result.deepest * 1000.;
+    printStr(" mm, touching "); print <- frame.result.fingersTouching; printStr(", palm gap "); print <- frame.result.palmGap * 1000.; printStr(" mm\n");
+    if frame.result.deepest > SQUASH + 0.0002 { print <- "FAIL: kneading went into the dough\n"; ok = false; }
+    list.clear();
+    addPropDraw(&mut list, &doughH, doughAt, doughMat, tableMat);
+    camera.lookAt(new Vec3(-0.18, 1.22, -0.58), new Vec3(0.15, 0.93, -0.30), new Vec3(0., 1., 0.));
+    if !drawHandScene(&mut device, &mut renderer, &color, &depth, &readback, &camera, &sun, &mut list, &skel, &bones, &spec, &restModels,
+        handMesh, tubeMesh, ballMesh, &mats, frame.wrist, &frame.pose) { kneadReached = false; }
+    sheet.put(k, px);
+    k = k + 1;
+  }
+  sheet.save(&outDir, "hand-knead.png");
+  if !kneadReached { print <- "FAIL: the arm did not reach the kneading\n"; ok = false; }
+
+  // ---- the stock shapes ----
+  sheet = Sheet.make(4, 1, TILE_W, TILE_H);
+  imm free = hamAt * hamFit.wrist;
+  imm pinchShape = shapePinch();
+  imm pinched = pinchTips(&spec, &pinchShape, 0.);
+  imm tIdx = fingerPoints(&spec, INDEX, &pinched).joint[3];
+  imm tTh = fingerPoints(&spec, THUMB, &pinched).joint[3];
+  printStr("pinch: tips "); print <- (tIdx.distance(tTh) - spec.fingers[INDEX].radius[2] - spec.fingers[THUMB].radius[2]) * 1000.; printStr(" mm apart (flesh to flesh)\n");
+  imm shown = [shape.open.copy(), pinched.copy(), poseHookClosed(), poseFlat()];
+  mut sdx = 0usize;
+  while sdx < 4usize {
+    list.clear();
+    camera.lookAt(new Vec3(-0.12, 1.14, -0.56), free.translation + new Vec3(0., 0.01, -0.07), new Vec3(0., 1., 0.));
+    drawHandScene(&mut device, &mut renderer, &color, &depth, &readback, &camera, &sun, &mut list, &skel, &bones, &spec, &restModels,
+      handMesh, tubeMesh, ballMesh, &mats, free, &shown[sdx]);
+    sheet.put(i32.from(sdx), px);
+    sdx = sdx + 1usize;
+  }
+  sheet.save(&outDir, "hand-pinch.png");
+
+  // ---- the cost: a kneading frame (the key, the contact solve, the arm, the skinned hand and the props drawn) ----
+  imm solveT = Instant.now();
+  mut cn = 0;
+  while cn < 200 {
+    imm key = kneadCycle.sample(f32.from(cn) * 0.0083);
+    imm fr = evaluateKey(&spec, &clawShape, &baseWrist, &key, &doughSurf, SQUASH, true, new Vec3(0., 1., 0.));
+    cn = cn + 1;
+  }
+  printStr("cost: a task key evaluated against the dough (placement, lift, five fingers closed on contact): ");
+  print <- solveT.elapsed().nanos() / 200i64 / 1000i64; printStr(" us\n");
+  imm drawT = Instant.now();
+  cn = 0;
+  while cn < 100 {
+    imm key = kneadCycle.sample(f32.from(cn) * 0.016);
+    imm fr = evaluateKey(&spec, &clawShape, &baseWrist, &key, &doughSurf, SQUASH, true, new Vec3(0., 1., 0.));
+    list.clear();
+    addPropDraw(&mut list, &doughH, doughAt, doughMat, tableMat);
+    drawHandScene(&mut device, &mut renderer, &color, &depth, &readback, &camera, &sun, &mut list, &skel, &bones, &spec, &restModels,
+      handMesh, tubeMesh, ballMesh, &mats, fr.wrist, &fr.pose);
+    cn = cn + 1;
+  }
+  printStr("cost: whole kneading frame, drawn and waited on at "); print <- TILE_W; printStr("x"); print <- TILE_H; printStr(": ");
+  print <- drawT.elapsed().nanos() / 100i64 / 1000i64; printStr(" us\n");
+
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0; }
+  1;
+}

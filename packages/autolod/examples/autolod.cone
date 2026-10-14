@@ -1,0 +1,919 @@
+// autolod: three generated subjects (a maple, a rock and a house), each turned into
+// levels of detail and an octahedral impostor by 'autoLod', and shown from close to
+// two kilometres, headless: no window, a 1920 x 1080 sRGB target, GPU timestamps.
+//
+//   congo run --release packages/autolod/examples/autolod.cone -- --report
+//   congo run --release packages/autolod/examples/autolod.cone -- --shots <folder>
+//   congo run --release packages/autolod/examples/autolod.cone -- --bench
+//
+// GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU where there are two.
+// With the Vulkan SDK, validation is on and must say nothing.
+//
+// --report   what the levels are: for each subject and part, the triangles, the thresholds
+//            (pixels across the object), the error budget each level was made to and the
+//            largest distance it measures from level 0, and the impostor's atlas size and
+//            how long the levels and the bake took.
+// --shots    for each subject: at each switch size (where one level hands over to the next)
+//            two pictures, a little above the size (the finer level) and a little below
+//            (the coarser), each drawn with that level alone, with the difference between
+//            them, and numbers for the pop (the share of the subject's pixels that change by
+//            more than 24 of 255, and the mean change); then the subject through the scene
+//            at 10, 30, 100, 300, 1000 and 2000 metres, levels chosen by size, cross-faded.
+//            Crops of the 1920 x 1080 frame about the subject, as .bmp.
+// --bench    a forest, a rock field and a village of the three subjects over 4 km by 4 km,
+//            drawn from the ground to 2.4 km, with the levels off (every copy at level 0), the
+//            mesh levels alone, and the mesh levels with the impostor: the GPU and CPU time of a
+//            frame and the triangles drawn.
+
+mod autolodexample;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import autolod use *;
+import weberpenn use *;
+import noiserock use *;
+import path as filepath;
+
+const W = 1920u32;
+const H = 1080u32;
+
+// ---- Subjects ----
+
+fn boxAt(center Vec3, half Vec3) Mesh {
+  mut m = Mesh.cube(1.);
+  m.transform(Mat4.fromTrs(center, Quat.identity(), half));
+  m;
+}
+
+// A maple: its trunk and its crown, two parts
+fn mapleParts(seed u32, height f32) List[BakePart] {
+  imm params = redMaple(seed, height);
+  imm tree = grow(&params);
+  imm tube = new TubeParams();
+  imm trunk = branchMesh(&tree, &tube);
+  mut leaf = mapleFoliage(seed + 100u32);
+  leaf.leafSize = 0.17;
+  leaf.detail = 7;
+  imm crown = foliageMesh(&tree, &leaf);
+  mut parts = List[BakePart].empty();
+  parts.push(new BakePart(trunk, Material.plain(new Color(0.20, 0.12, 0.07, 1.)), Image.empty()));
+  parts.push(new BakePart(crown, Material.plain(new Color(0.10, 0.28, 0.05, 1.)), Image.empty(), true));
+  parts;
+}
+
+fn rockParts(seed u32) List[BakePart] {
+  mut p = new RockParams();
+  p.seed = seed;
+  p.width = 1.6;
+  p.height = 1.1;
+  p.depth = 1.3;
+  p.rings = 16;
+  p.slices = 28;
+  p.facets = 9;
+  p.smooth = true;
+  imm rock = rockMesh(&p);
+  mut parts = List[BakePart].empty();
+  parts.push(new BakePart(rock, Material.plain(new Color(0.34, 0.33, 0.31, 1.)), Image.empty()));
+  parts;
+}
+
+// A window of frame bars and a pane at 'at', on the wall facing 'face' (+z or +x), 'w' wide
+fn windowMeshes(frame &mut Mesh, glass &mut Mesh, at Vec3, alongX bool, w f32, h f32) {
+  imm t = 0.06;
+  imm d = 0.16;
+  imm hx = if alongX { w * 0.5; } else { d; };
+  imm hz = if alongX { d; } else { w * 0.5; };
+  imm tx = if alongX { t; } else { d; };
+  imm tz = if alongX { d; } else { t; };
+  // the frame: left, right (along the wall), top, bottom, a cross bar each way
+  if alongX {
+    frame.append(&boxAt(at + new Vec3(-w * 0.5, 0., 0.), new Vec3(t, h * 0.5, d)));
+    frame.append(&boxAt(at + new Vec3(w * 0.5, 0., 0.), new Vec3(t, h * 0.5, d)));
+    frame.append(&boxAt(at + new Vec3(0., h * 0.5, 0.), new Vec3(hx, t, d)));
+    frame.append(&boxAt(at + new Vec3(0., -h * 0.5, 0.), new Vec3(hx, t, d)));
+    frame.append(&boxAt(at, new Vec3(t * 0.6, h * 0.5, d * 0.8)));
+    frame.append(&boxAt(at + new Vec3(0., h * 0.1, 0.), new Vec3(hx, t * 0.6, d * 0.8)));
+    glass.append(&boxAt(at, new Vec3(hx, h * 0.5, d * 0.4)));
+  } else {
+    frame.append(&boxAt(at + new Vec3(0., 0., -w * 0.5), new Vec3(d, h * 0.5, t)));
+    frame.append(&boxAt(at + new Vec3(0., 0., w * 0.5), new Vec3(d, h * 0.5, t)));
+    frame.append(&boxAt(at + new Vec3(0., h * 0.5, 0.), new Vec3(d, t, hz)));
+    frame.append(&boxAt(at + new Vec3(0., -h * 0.5, 0.), new Vec3(d, t, hz)));
+    frame.append(&boxAt(at, new Vec3(d * 0.8, h * 0.5, t * 0.6)));
+    frame.append(&boxAt(at + new Vec3(0., h * 0.1, 0.), new Vec3(d * 0.8, t * 0.6, hz)));
+    glass.append(&boxAt(at, new Vec3(d * 0.4, h * 0.5, hz)));
+  }
+}
+
+// A house, 10 by 7 metres, two floors, a tiled gable roof, a chimney: four parts (walls, tiles, window
+// frames, glass), about 8000 triangles
+fn houseParts() List[BakePart] {
+  mut walls = boxAt(new Vec3(0., 3., 0.), new Vec3(5., 3., 3.5));
+  walls.append(&boxAt(new Vec3(-2.6, 7.4, 0.6), new Vec3(0.4, 1.2, 0.4)));                // chimney
+  walls.append(&boxAt(new Vec3(1.5, 1.1, 3.6), new Vec3(0.6, 1.1, 0.12)));                // door
+  walls.append(&boxAt(new Vec3(1.5, 0.08, 4.0), new Vec3(1.1, 0.08, 0.5)));               // step
+  mut frames = Mesh.empty();
+  mut glass = Mesh.empty();
+  mut floor = 0;
+  while floor < 2 {
+    imm y = 1.5 + f32.from(floor) * 3.;
+    mut k = 0;
+    while k < 4 {
+      imm x = -3.6 + f32.from(k) * 2.4;
+      if !(floor == 0 and k == 3) {
+        windowMeshes(&mut frames, &mut glass, new Vec3(x, y, 3.5), true, 1.0, 1.4);
+      }
+      windowMeshes(&mut frames, &mut glass, new Vec3(x, y, -3.5), true, 1.0, 1.4);
+      k = k + 1;
+    }
+    windowMeshes(&mut frames, &mut glass, new Vec3(5., y, -1.2), false, 1.0, 1.4);
+    windowMeshes(&mut frames, &mut glass, new Vec3(5., y, 1.2), false, 1.0, 1.4);
+    windowMeshes(&mut frames, &mut glass, new Vec3(-5., y, -1.2), false, 1.0, 1.4);
+    windowMeshes(&mut frames, &mut glass, new Vec3(-5., y, 1.2), false, 1.0, 1.4);
+    floor = floor + 1;
+  }
+  // the roof: each slope one connected sheet, a grid with the tiles as relief on it: 14 rows of overlapping
+  // tiles up the slope (each row a ramp that steps down to the next), 22 tiles across, each a rounded
+  // ridge; four grid cells to a row, four to a tile (a slope rises 3.2 m over 4 m of run)
+  mut tiles = Mesh.empty();
+  imm run = 4.0;
+  imm rise = 3.2;
+  imm length = (run * run + rise * rise).sqrt();
+  imm nx = 88;
+  imm ny = 56;
+  mut side = 0;
+  while side < 2 {
+    imm sign = if side == 0 { 1.; } else { -1.; };
+    imm base = u32.from(tiles.positions.len());
+    mut j = 0;
+    while j <= ny {
+      mut i = 0;
+      while i <= nx {
+        imm u = f32.from(i) / f32.from(nx);
+        imm v = f32.from(j) / f32.from(ny);
+        // the surface, then the relief along the slope's normal
+        imm rowPhase = v * 14. - libc.floorf(v * 14.);
+        imm tilePhase = u * 22.;
+        imm relief = 0.045 * (1. - rowPhase) + 0.02 * libc.sinf(tilePhase * 6.2831853);
+        imm along = v * length;
+        imm x = -5.3 + u * 10.6;
+        imm y = 6. + along * (rise / length) + relief * (run / length);
+        imm z = sign * (4.0 - along * (run / length) + relief * (rise / length));
+        tiles.positions.push(new Vec3(x, y, z));
+        tiles.uvs.push(new Vec2(u * 22., v * 14.));
+        i = i + 1;
+      }
+      j = j + 1;
+    }
+    j = 0;
+    while j < ny {
+      mut i = 0;
+      while i < nx {
+        imm a = base + u32.from(j * (nx + 1) + i);
+        imm b = a + 1u32;
+        imm c = a + u32.from(nx + 1);
+        imm d = c + 1u32;
+        // facing out of the roof: +y and away from the ridge
+        if side == 0 {
+          tiles.indices.push(a); tiles.indices.push(b); tiles.indices.push(c);
+          tiles.indices.push(b); tiles.indices.push(d); tiles.indices.push(c);
+        } else {
+          tiles.indices.push(a); tiles.indices.push(c); tiles.indices.push(b);
+          tiles.indices.push(b); tiles.indices.push(c); tiles.indices.push(d);
+        }
+        i = i + 1;
+      }
+      j = j + 1;
+    }
+    side = side + 1;
+  }
+  tiles.computeSmoothNormals();
+  tiles.append(&boxAt(new Vec3(0., 9.25, 0.), new Vec3(5.4, 0.06, 0.12)));    // ridge cap
+  // gable ends: triangles of wall under the roof
+  mut gable = Mesh.empty();
+  mut e = 0;
+  while e < 2 {
+    imm x = if e == 0 { 4.95; } else { -4.95; };
+    imm nx = if e == 0 { 1.; } else { -1.; };
+    imm base = u32.from(gable.positions.len());
+    gable.positions.push(new Vec3(x, 6., -3.5));
+    gable.positions.push(new Vec3(x, 6., 3.5));
+    gable.positions.push(new Vec3(x, 9.1, 0.));
+    mut n = 0;
+    while n < 3 { gable.normals.push(new Vec3(nx, 0., 0.)); n = n + 1; }
+    if e == 0 {
+      gable.indices.push(base); gable.indices.push(base + 2u32); gable.indices.push(base + 1u32);
+    } else {
+      gable.indices.push(base); gable.indices.push(base + 1u32); gable.indices.push(base + 2u32);
+    }
+    e = e + 1;
+  }
+  walls.append(&gable);
+  mut parts = List[BakePart].empty();
+  parts.push(new BakePart(walls, Material.plain(new Color(0.55, 0.46, 0.33, 1.)), Image.empty()));
+  parts.push(new BakePart(tiles, Material.plain(new Color(0.40, 0.14, 0.08, 1.)), Image.empty()));
+  parts.push(new BakePart(frames, Material.plain(new Color(0.70, 0.68, 0.62, 1.)), Image.empty()));
+  parts.push(new BakePart(glass, Material.plain(new Color(0.03, 0.05, 0.08, 1.)), Image.empty()));
+  parts;
+}
+
+fn totalTriangles(parts &List[BakePart]) u32 {
+  mut n = 0u32;
+  mut p = 0usize;
+  while p < parts.len() {
+    n = n + u32.from(parts[p].mesh.triangleCount());
+    p = p + 1usize;
+  }
+  n;
+}
+
+fn seconds(from u64, to u64) f64 { f64.from(to - from) / f64.from(sdl.GetPerformanceFrequency()); }
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+// ---- The report ----
+
+fn reportOne(name &str, parts &List[BakePart], lod &AutoLod, settings &AutoLodSettings) {
+  printStr(name); print <- ": "; print <- u64.from(parts.len()); print <- " part(s), "; print <- u64.from(totalTriangles(parts));
+  print <- " triangles at level 0; object radius "; print <- lod.radius; print <- " m, the impostor from "; print <- settings.lods.switchSize(settings.lods.levels - 1u32);
+  print <- " px\n";
+  mut p = 0usize;
+  while p < lod.sets.len() {
+    print <- "  part "; print <- u64.from(p); print <- " (radius "; print <- lod.sets[p].radius; print <- " m";
+    if p == lod.anchor { print <- ", carries the impostor"; }
+    print <- ", "; print <- u64.from(lod.sets[p].degenerate); print <- " degenerate triangles dropped, "; print <- u64.from(lod.sets[p].refused); print <- " levels refused for saving too little):\n";
+    mut k = 0usize;
+    while k < lod.sets[p].levels.len() {
+      print <- "    level "; print <- u64.from(k); print <- ": "; print <- u64.from(lod.sets[p].levels[k].triangles); print <- " triangles, drawn from ";
+      print <- lod.sets[p].levels[k].minSize; print <- " px, budget "; print <- lod.sets[p].levels[k].budget; print <- " m, quadric error ";
+      print <- lod.sets[p].levels[k].error; print <- " m, measured "; print <- lod.sets[p].levels[k].measured; print <- " m\n";
+      k = k + 1usize;
+    }
+    p = p + 1usize;
+  }
+  if lod.hasImpostor {
+    print <- "  impostor: "; print <- u64.from(lod.impostor.grid); print <- " x "; print <- u64.from(lod.impostor.grid); print <- " frames of ";
+    print <- u64.from(lod.impostor.frameSize); print <- " px, "; print <- lod.impostor.textureBytes / 1024u64; print <- " KiB of textures, 2 triangles; porosity ";
+    print <- lod.impostor.porosity; print <- (if lod.impostor.hashed { " (alpha hashed)\n"; } else { " (alpha cut)\n"; });
+  }
+}
+
+// ---- Targets ----
+
+struct Rig {
+  out Texture;
+  depth Texture;
+  shotBuffer Buffer;
+  queries QuerySet;
+  resolved Buffer;
+  stamps Buffer;
+}
+
+fn makeRig(device &mut Device) Rig {
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut out = device.createTexture(&outDesc);
+  mut depth = device.createTexture(&depthDesc);
+  mut shotBuffer = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut stamps = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  new Rig(out, depth, shotBuffer, queries, resolved, stamps);
+}
+
+// The sun of every picture: a late-afternoon sun, the sky's ambient
+fn sunLight() Light {
+  Light.directional(new Vec3(-0.55, -0.62, -0.45), new Color(3.2, 2.9, 2.4, 1.), new Color(0.32, 0.38, 0.5, 1.));
+}
+
+// A picture of what the scene and the draw list hold, as an Image
+fn shoot(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, light &Light, list &DrawList) Image {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, &rig.out, &rig.depth, camera, light, list);
+  encoder.copyTextureToBuffer(&rig.out, &rig.shotBuffer);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  Image.fromTexels(rig.shotBuffer.mappedRange(), i32.from(W), i32.from(H), false);
+}
+
+// The part of 'img' 'w' by 'h' about (cx, cy)
+fn crop(img &Image, cx i32, cy i32, w i32, h i32) Image {
+  mut out = new Image(w, h, 3, List[u8].withCapacity(usize.from(w * h * 3)));
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < w {
+      mut sx = cx - w / 2 + x;
+      mut sy = cy - h / 2 + y;
+      if sx < 0 { sx = 0; }
+      if sy < 0 { sy = 0; }
+      if sx >= img.width { sx = img.width - 1; }
+      if sy >= img.height { sy = img.height - 1; }
+      out.pixels.push(img.at(sx, sy, 0));
+      out.pixels.push(img.at(sx, sy, 1));
+      out.pixels.push(img.at(sx, sy, 2));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  out;
+}
+
+fn iabs(v i32) i32 { if v < 0 { -v; } else { v; }; }
+
+// How two pictures of the same size differ over the pixels either covers (background colour 'bg'):
+// the share of those pixels whose change is above 24 in any channel, and the mean change
+struct Pop {
+  share f32;
+  mean f32;
+  covered i32;
+}
+
+fn isBackground(img &Image, x i32, y i32, bg &Array[u8]) bool {
+  iabs(i32.from(img.at(x, y, 0)) - i32.from(bg[0])) + iabs(i32.from(img.at(x, y, 1)) - i32.from(bg[1]))
+    + iabs(i32.from(img.at(x, y, 2)) - i32.from(bg[2])) <= 8;
+}
+
+fn popBetween(a &Image, b &Image, bg &Array[u8]) Pop {
+  mut covered = 0;
+  mut changed = 0;
+  mut sum = 0.;
+  mut y = 0;
+  while y < a.height {
+    mut x = 0;
+    while x < a.width {
+      if !isBackground(a, x, y, bg) or !isBackground(b, x, y, bg) {
+        covered = covered + 1;
+        mut worst = 0;
+        mut c = 0;
+        while c < 3 {
+          imm d = iabs(i32.from(a.at(x, y, c)) - i32.from(b.at(x, y, c)));
+          sum = sum + f32.from(d);
+          if d > worst { worst = d; }
+          c = c + 1;
+        }
+        if worst > 24 { changed = changed + 1; }
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  new Pop(if covered > 0 { f32.from(changed) / f32.from(covered); } else { 0.; }, if covered > 0 { sum / f32.from(covered * 3); } else { 0.; }, covered);
+}
+
+// The picture enlarged by whole pixels
+fn enlarge(img &Image, factor i32) Image {
+  mut out = new Image(img.width * factor, img.height * factor, 3, List[u8].withCapacity(usize.from(img.width * img.height * factor * factor * 3)));
+  mut y = 0;
+  while y < img.height * factor {
+    mut x = 0;
+    while x < img.width * factor {
+      out.pixels.push(img.at(x / factor, y / factor, 0));
+      out.pixels.push(img.at(x / factor, y / factor, 1));
+      out.pixels.push(img.at(x / factor, y / factor, 2));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  out;
+}
+
+// The picture blurred by a box of (2 r + 1) pixels each way, edges clamped (a floating point image, 3 channels)
+fn boxBlur(img &Image, r i32) List[f32] {
+  imm w = img.width;
+  imm h = img.height;
+  mut tmp = List[f32].withCapacity(usize.from(w * h * 3));
+  mut out = List[f32].withCapacity(usize.from(w * h * 3));
+  mut i = 0;
+  while i < w * h * 3 { tmp.push(0.); out.push(0.); i = i + 1; }
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < w {
+      mut c = 0;
+      while c < 3 {
+        mut sum = 0.;
+        mut k = -r;
+        while k <= r {
+          mut sx = x + k;
+          if sx < 0 { sx = 0; }
+          if sx >= w { sx = w - 1; }
+          sum = sum + f32.from(img.at(sx, y, c));
+          k = k + 1;
+        }
+        tmp.set(usize.from((y * w + x) * 3 + c), sum / f32.from(2 * r + 1));
+        c = c + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  y = 0;
+  while y < h {
+    mut x = 0;
+    while x < w {
+      mut c = 0;
+      while c < 3 {
+        mut sum = 0.;
+        mut k = -r;
+        while k <= r {
+          mut sy = y + k;
+          if sy < 0 { sy = 0; }
+          if sy >= h { sy = h - 1; }
+          sum = sum + *tmp[usize.from((sy * w + x) * 3 + c)];
+          k = k + 1;
+        }
+        out.set(usize.from((y * w + x) * 3 + c), sum / f32.from(2 * r + 1));
+        c = c + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  out;
+}
+
+// How much the two pictures differ in tone, seen through a blur of radius r: the mean change of the blurred
+// pixels over those within r of either picture's subject, 0 to 255
+fn toneChange(a &Image, b &Image, bg &Array[u8], r i32) f32 {
+  imm ba = boxBlur(a, r);
+  imm bb = boxBlur(b, r);
+  mut sum = 0.;
+  mut n = 0;
+  mut y = 0;
+  while y < a.height {
+    mut x = 0;
+    while x < a.width {
+      mut near = false;
+      mut dy = -r;
+      while dy <= r and !near {
+        mut dx = -r;
+        while dx <= r and !near {
+          imm sx = x + dx;
+          imm sy = y + dy;
+          if sx >= 0 and sx < a.width and sy >= 0 and sy < a.height {
+            if !isBackground(a, sx, sy, bg) or !isBackground(b, sx, sy, bg) { near = true; }
+          }
+          dx = dx + 1;
+        }
+        dy = dy + 1;
+      }
+      if near {
+        mut c = 0;
+        while c < 3 {
+          imm i = usize.from((y * a.width + x) * 3 + c);
+          sum = sum + (if *ba[i] > *bb[i] { *ba[i] - *bb[i]; } else { *bb[i] - *ba[i]; });
+          c = c + 1;
+        }
+        n = n + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  if n > 0 { sum / f32.from(n * 3); } else { 0.; };
+}
+
+// The difference of two pictures, amplified 4 times
+fn differenceImage(a &Image, b &Image) Image {
+  mut out = new Image(a.width, a.height, 3, List[u8].withCapacity(usize.from(a.width * a.height * 3)));
+  mut y = 0;
+  while y < a.height {
+    mut x = 0;
+    while x < a.width {
+      mut c = 0;
+      while c < 3 {
+        mut d = iabs(i32.from(a.at(x, y, c)) - i32.from(b.at(x, y, c))) * 4;
+        if d > 255 { d = 255; }
+        out.pixels.push(u8.from(d));
+        c = c + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  out;
+}
+
+fn save(folder &str, name &str, img &Image) {
+  mut path = String.from(folder);
+  path <- "/";
+  path <- name;
+  path <- ".bmp";
+  img.save(&filepath.Path.from(path.view()));
+}
+
+fn encodeSrgb(l f32) f32 {
+  if l <= 0.0031308 { return l * 12.92; }
+  1.055 * libc.powf(l, 1. / 2.4) - 0.055;
+}
+
+// ---- A subject in the renderer ----
+
+struct Subject {
+  name String;
+  parts List[BakePart];
+  lod AutoLod;
+  meshChains List[LodChain];          // the same chains without the impostor (and the other parts' hidden level)
+  materials List[MaterialHandle];     // the renderer's, one a part
+  center Vec3;
+  radius f32;
+  bakeMilliseconds f64;
+}
+
+fn addSubject(device &mut Device, renderer &mut Renderer, name &str, parts List[BakePart], pipe &ImpostorPipeline,
+    baker &mut ImpostorBaker, settings &AutoLodSettings) Subject {
+  imm t0 = sdl.GetPerformanceCounter();
+  imm lod = autoLod(device, renderer, pipe, baker, &parts, settings);
+  imm t1 = sdl.GetPerformanceCounter();
+  mut materials = List[MaterialHandle].empty();
+  mut meshChains = List[LodChain].empty();
+  mut p = 0usize;
+  while p < parts.len() {
+    imm m = parts[p].material;
+    materials.push(renderer.addMaterial(device, &m));
+    imm full = lod.chains[p];
+    mut mc = LodChain.empty(settings.lods.hysteresis);
+    mut k = 0usize;
+    imm keep = if lod.hasImpostor { full.levels.len() - 1usize; } else { full.levels.len(); };
+    while k < keep {
+      mc.add(*full.levels[k], *full.minSizes[k]);
+      k = k + 1usize;
+    }
+    meshChains.push(mc);
+    p = p + 1usize;
+  }
+  imm center = lod.center;
+  imm radius = lod.radius;
+  new Subject(String.from(name), parts, lod, meshChains, materials, center, radius, seconds(t0, t1) * 1000d);
+}
+
+// How a copy is planted: no levels, the mesh levels, or the mesh levels and the impostor
+const PLANT_FLAT = 0;
+const PLANT_MESHES = 1;
+const PLANT_FULL = 2;
+
+fn plant(renderer &mut Renderer, s &Subject, model Mat4, mode i32, range f32) {
+  mut p = 0usize;
+  while p < s.lod.chains.len() {
+    imm full = s.lod.chains[p];
+    imm meshes = s.meshChains[p];
+    imm item = renderer.addSceneItem(*full.levels[0usize], *s.materials[p], model, new Color(1., 1., 1., 1.));
+    if mode == PLANT_MESHES { renderer.setSceneLod(item, meshes); }
+    if mode == PLANT_FULL { renderer.setSceneLod(item, full); }
+    if range > 0. { renderer.setSceneRange(item, 0., range, range * 0.08); }
+    p = p + 1usize;
+  }
+}
+
+// How far the camera must stand for the whole subject to be 'px' pixels across in a 1080-pixel-high picture
+fn distanceForSize(radius f32, px f32, fov f32) f32 {
+  radius / (px / f32.from(H) * libc.tanf(fov * 0.5));
+}
+
+// The level of the chain that a size selects, from a fresh start at level 0
+fn levelAtSize(chain &LodChain, size f32) usize {
+  selectLod(chain, size, 0usize);
+}
+
+// The subject drawn alone by DrawList, with chain level 'levels[part]' of each part (the impostor with its own material)
+fn drawLevels(device &mut Device, renderer &mut Renderer, rig &Rig, s &Subject, levels &List[usize], camera &Camera,
+    light &Light, ground MeshHandle, groundMaterial MaterialHandle, model Mat4) Image {
+  renderer.clearScene();
+  mut list = DrawList.empty();
+  mut p = 0usize;
+  while p < s.lod.chains.len() {
+    imm level = *levels[p];
+    imm chain = s.lod.chains[p];
+    imm own = chain.materialOf(level);
+    imm material = if own.isNone() { *s.materials[p]; } else { own; };
+    list.add(*chain.levels[level], material, model);
+    p = p + 1usize;
+  }
+  shoot(device, renderer, rig, camera, light, &list);
+}
+
+// ---- The shots ----
+
+fn shotsFor(device &mut Device, renderer &mut Renderer, rig &Rig, s &Subject, folder &str, settings &AutoLodSettings) {
+  imm light = sunLight();
+  imm groundMesh = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  imm groundMaterial = renderer.addMaterial(device, &Material.plain(new Color(0.16, 0.22, 0.08, 1.)));
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.5;
+  camera.far = 5000.;
+  imm bg = new Color(0.45, 0.58, 0.75, 1.);
+  camera.background = bg;
+  // the background in sRGB bytes: the target encodes it
+  imm bgBytes = [u8.from(255. * encodeSrgb(bg.red) + 0.5), u8.from(255. * encodeSrgb(bg.green) + 0.5), u8.from(255. * encodeSrgb(bg.blue) + 0.5)];
+  imm dir = new Vec3(0.55, 0.22, 0.8).normalize();
+  imm lookAt = new Vec3(0., s.center.y, 0.);
+  imm modelAt = Mat4.identity();
+  imm sizes = settings.lods.levels;
+
+  // At each switch: just above the size and just below it, the finer level and the coarser, each drawn alone
+  mut k = 1u32;
+  while k <= sizes {
+    // switch k: from the level whose threshold it is (k - 1, from the sizes' list) to the next; the last is to the impostor
+    imm hasNext = if k < sizes { true; } else { s.lod.hasImpostor; };
+    if hasNext {
+      imm threshold = settings.lods.switchSize(k - 1u32);
+      mut finerLevels = List[usize].empty();
+      mut coarserLevels = List[usize].empty();
+      mut p = 0usize;
+      while p < s.lod.chains.len() {
+        // each part's own size is the object's times its radius over the object's; the levels either side of
+        // the switch (clear of the chain's hysteresis band)
+        imm chain = s.lod.chains[p];
+        imm scale = s.lod.sets[p].radius / s.radius;
+        finerLevels.push(levelAtSize(chain, threshold * 1.25 * scale));
+        coarserLevels.push(levelAtSize(chain, threshold * 0.7 * scale));
+        p = p + 1usize;
+      }
+      // both are drawn where the scene would make the change, going away: at 85% of the threshold (the hysteresis)
+      imm distance = distanceForSize(s.radius, threshold * (1. - settings.lods.hysteresis), camera.fov);
+      camera.lookAt(lookAt + dir * distance, lookAt, new Vec3(0., 1., 0.));
+      imm finer = drawLevels(device, renderer, rig, s, &finerLevels, &camera, &light, groundMesh, groundMaterial, modelAt);
+      imm coarser = drawLevels(device, renderer, rig, s, &coarserLevels, &camera, &light, groundMesh, groundMaterial, modelAt);
+      // a crop of 1.5 times the object's size, shown enlarged by whole pixels to about 360
+      imm box = if i32.from(threshold * 1.5) > 40 { i32.from(threshold * 1.5); } else { 40; };
+      imm sx = i32.from(W) / 2;
+      imm sy = i32.from(H) / 2;
+      imm cropA = crop(&finer, sx, sy, box, box);
+      imm cropB = crop(&coarser, sx, sy, box, box);
+      imm pop = popBetween(&cropA, &cropB, &bgBytes);
+      imm tone = toneChange(&cropA, &cropB, &bgBytes, 4);
+      imm factor = if 360 / box > 1 { 360 / box; } else { 1; };
+      mut tag = String.from(s.name.view());
+      tag <- "-switch"; tag.appendInt(i64.from(k));
+      mut nameA = tag.copy(); nameA <- "-finer";
+      mut nameB = tag.copy(); nameB <- "-coarser";
+      mut nameD = tag.copy(); nameD <- "-difference";
+      save(folder, nameA.view(), &enlarge(&cropA, factor));
+      save(folder, nameB.view(), &enlarge(&cropB, factor));
+      save(folder, nameD.view(), &enlarge(&differenceImage(&cropA, &cropB), factor));
+      printStr(s.name.view()); print <- " switch "; print <- u64.from(k); print <- " at "; print <- threshold; print <- " px ("; print <- distance;
+      print <- " m): levels ";
+      mut q = 0usize;
+      while q < finerLevels.len() {
+        print <- u64.from(*finerLevels[q]); print <- ">"; print <- u64.from(*coarserLevels[q]); print <- " ";
+        q = q + 1usize;
+      }
+      print <- "; pop: "; print <- pop.share * 100.; print <- "% of the "; print <- u64.from(pop.covered);
+      print <- " pixels it covers change by more than 24/255, mean change "; print <- pop.mean; print <- "/255; seen through a blur of 9 pixels the mean tone change is ";
+      print <- tone; print <- "/255\n";
+    }
+    k = k + 1u32;
+  }
+
+  // Through the scene at distances, levels chosen by size
+  imm distances = [10., 30., 100., 300., 1000., 2000.];
+  mut d = 0usize;
+  while d < 6usize {
+    renderer.clearScene();
+    renderer.vis.settings = new VisibilitySettings();
+    renderer.vis.settings.fadeSeconds = 0.0001;
+    renderer.addSceneItem(groundMesh, groundMaterial, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(3000., 1., 3000.)),
+      new Color(1., 1., 1., 1.));
+    plant(renderer, s, modelAt, PLANT_FULL, 0.);
+    imm dist = distances[d];
+    camera.lookAt(lookAt + dir * dist, lookAt, new Vec3(0., 1., 0.));
+    imm empty = DrawList.empty();
+    shoot(device, renderer, rig, &camera, &light, &empty);
+    imm img = shoot(device, renderer, rig, &camera, &light, &empty);
+    imm size = camera.projectedSize(lookAt, s.radius, f32.from(H));
+    imm box = if dist <= 30. { 540; } elif dist <= 300. { 360; } else { 120; };
+    imm cropped = enlarge(&crop(&img, i32.from(W) / 2, i32.from(H) / 2, box, box), if box < 200 { 3; } else { 1; });
+    mut name = String.from(s.name.view());
+    name <- "-at"; name.appendInt(i64.from(i32.from(dist)));
+    save(folder, name.view(), &cropped);
+    printStr(s.name.view()); print <- " at "; print <- dist; print <- " m: "; print <- size; print <- " px across, ";
+    print <- u64.from(renderer.triangles); print <- " triangles drawn (ground included), "; print <- u64.from(renderer.drawCalls); print <- " draws\n";
+    d = d + 1usize;
+  }
+  renderer.clearScene();
+}
+
+// ---- The bench ----
+
+fn scatter(n u32) f32 {
+  mut x = n * 747796405u32 + 2891336453u32;
+  x = ((x >> ((x >> 28u32) + 4u32)) ^ x) * 277803737u32;
+  x = (x >> 22u32) ^ x;
+  f32.from(x & 0xFFFFu32) / 65535.;
+}
+
+const FRAMES = 40u32;
+
+struct Cost {
+  gpu f64;
+  cpu f64;
+}
+
+fn timeFrames(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, light &Light) Cost {
+  imm empty = DrawList.empty();
+  mut gpuTime = 0d;
+  mut cpuTime = 0d;
+  mut counted = 0u32;
+  mut f = 0u32;
+  while f < FRAMES {
+    imm t0 = sdl.GetPerformanceCounter();
+    mut encoder = device.createCommandEncoder();
+    encoder.writeTimestamp(&rig.queries, 0u32);
+    renderer.render(device, &mut encoder, &rig.out, &rig.depth, camera, light, &empty);
+    encoder.writeTimestamp(&rig.queries, 1u32);
+    encoder.resolveQuerySet(&rig.queries, 0u32, 2u32, &rig.resolved, 0u64);
+    encoder.copyBufferToBuffer(&rig.resolved, 0u64, &rig.stamps, 0u64, 16u64);
+    device.queue.submit(encoder.finish());
+    imm t1 = sdl.GetPerformanceCounter();
+    device.endFrame();
+    device.waitIdle();
+    if f >= 8u32 {
+      imm ticks = rig.stamps.mappedRange() as *u64;
+      gpuTime = gpuTime + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+      cpuTime = cpuTime + seconds(t0, t1) * 1000d;
+      counted = counted + 1u32;
+    }
+    f = f + 1u32;
+  }
+  new Cost(gpuTime / f64.from(counted), cpuTime / f64.from(counted));
+}
+
+fn benchWorld(device &mut Device, renderer &mut Renderer, rig &Rig, subjects &List[Subject], mode i32, folder &str) {
+  renderer.clearScene();
+  renderer.vis.settings = new VisibilitySettings();
+  imm groundMesh = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  imm groundMaterial = renderer.addMaterial(device, &Material.plain(new Color(0.16, 0.22, 0.08, 1.)));
+  renderer.addSceneItem(groundMesh, groundMaterial, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(4200., 1., 4200.)),
+    new Color(1., 1., 1., 1.));
+  // 6,000 maples (three kinds), 1,500 rocks (two), 150 houses
+  mut placed = 0u32;
+  mut n = 0u32;
+  while placed < 7650u32 {
+    imm x = (scatter(n * 5u32) - 0.5) * 4000.;
+    imm z = (scatter(n * 5u32 + 1u32) - 0.5) * 4000.;
+    imm yaw = scatter(n * 5u32 + 2u32) * 6.2831853;
+    imm sc = 0.75 + scatter(n * 5u32 + 3u32) * 0.6;
+    n = n + 1u32;
+    // keep a clearing where the camera stands (a hundred metres round it)
+    if x * x + (z - 1900.) * (z - 1900.) < 10000. { continue; }
+    mut kind = 0usize;
+    if placed < 6000u32 { kind = usize.from(placed % 3u32); }
+    elif placed < 7500u32 { kind = 3usize + usize.from(placed % 2u32); }
+    else { kind = 5usize; }
+    imm model = Mat4.fromTrs(new Vec3(x, 0., z), Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), new Vec3(sc, sc, sc));
+    plant(renderer, subjects[kind], model, mode, 2500.);
+    placed = placed + 1u32;
+  }
+  imm light = sunLight();
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.near = 0.3;
+  camera.far = 3200.;
+  camera.background = new Color(0.45, 0.58, 0.75, 1.);
+  mut v = 0;
+  while v < 2 {
+    if v == 0 {
+      camera.lookAt(new Vec3(0., 2., 1900.), new Vec3(0., 12., 0.), new Vec3(0., 1., 0.));
+    } else {
+      camera.lookAt(new Vec3(0., 120., 2100.), new Vec3(0., 0., 300.), new Vec3(0., 1., 0.));
+    }
+    imm cost = timeFrames(device, renderer, rig, &camera, &light);
+    printStr(if mode == PLANT_FLAT { "    levels off          "; } elif mode == PLANT_MESHES { "    mesh levels         "; } else { "    mesh levels + card  "; });
+    printStr(if v == 0 { "eye level: "; } else { "from 120 m: "; });
+    print <- "GPU "; print <- cost.gpu; print <- " ms, CPU "; print <- cost.cpu; print <- " ms; ";
+    print <- u64.from(renderer.vis.stats.drawn); print <- " items drawn of "; print <- u64.from(renderer.vis.stats.items); print <- ", ";
+    print <- renderer.triangles; print <- " triangles, "; print <- u64.from(renderer.drawCalls); print <- " draws, ";
+    print <- u64.from(renderer.vis.stats.lodSwitches); print <- " switches, "; print <- u64.from(renderer.vis.stats.fading); print <- " fading\n";
+    if folder.len() > 0usize {
+      imm empty = DrawList.empty();
+      imm img = shoot(device, renderer, rig, &camera, &light, &empty);
+      mut name = String.from("forest-");
+      name <- if mode == PLANT_FLAT { "flat"; } elif mode == PLANT_MESHES { "meshes"; } else { "full"; };
+      name <- if v == 0 { "-eye"; } else { "-high"; };
+      save(folder, name.view(), &img);
+    }
+    v = v + 1;
+  }
+  renderer.clearScene();
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut mode = 0;
+  mut folder = String.from("");
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--report") { mode = 1; }
+    elif cstrEquals(arg, "--bench") { mode = 3; }
+    elif (cstrEquals(arg, "--shots") or cstrEquals(arg, "--benchshots")) and a + 1 < argc {
+      mode = if cstrEquals(arg, "--shots") { 2; } else { 4; };
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        folder.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Usage: --report | --shots FOLDER | --bench | --benchshots FOLDER\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if mode == 0 {
+    print <- "Usage: --report | --shots FOLDER | --bench | --benchshots FOLDER\n";
+    return 2;
+  }
+  mut instance = Instance.create("autolod example");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1i32;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm rig = makeRig(&mut device);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() or !rig.queries.isValid() {
+    print <- "The renderer or the timestamps could not be made\n";
+    return 1i32;
+  }
+  mut settings = new AutoLodSettings();
+  settings.lods.measure = mode == 1;
+  mut baker = ImpostorBaker.create(&mut device, settings.impostor.frameSize);
+  imm pipe = makeImpostorPipeline(&mut renderer, &mut device);
+  if !baker.isValid() or !pipe.isValid(&renderer) {
+    print <- "The baker or the impostor pipeline could not be made\n";
+    return 1i32;
+  }
+  mut subjects = List[Subject].empty();
+  // three maples (seeds), two rocks, a house: the subjects of the bench's world
+  subjects.push(addSubject(&mut device, &mut renderer, "maple", mapleParts(3u32, 12.), &pipe, &mut baker, &settings));
+  if mode == 3 or mode == 4 {
+    subjects.push(addSubject(&mut device, &mut renderer, "maple2", mapleParts(4u32, 10.), &pipe, &mut baker, &settings));
+    subjects.push(addSubject(&mut device, &mut renderer, "maple3", mapleParts(9u32, 14.), &pipe, &mut baker, &settings));
+    subjects.push(addSubject(&mut device, &mut renderer, "rock", rockParts(5u32), &pipe, &mut baker, &settings));
+    subjects.push(addSubject(&mut device, &mut renderer, "rock2", rockParts(8u32), &pipe, &mut baker, &settings));
+    subjects.push(addSubject(&mut device, &mut renderer, "house", houseParts(), &pipe, &mut baker, &settings));
+  } else {
+    subjects.push(addSubject(&mut device, &mut renderer, "rock", rockParts(5u32), &pipe, &mut baker, &settings));
+    subjects.push(addSubject(&mut device, &mut renderer, "house", houseParts(), &pipe, &mut baker, &settings));
+  }
+  mut s = 0usize;
+  while s < subjects.len() {
+    print <- subjects[s].name.view(); print <- ": levels and impostor made in "; print <- subjects[s].bakeMilliseconds; print <- " ms\n";
+    s = s + 1usize;
+  }
+  if mode == 1 or mode == 2 {
+    s = 0usize;
+    while s < subjects.len() {
+      reportOne(subjects[s].name.view(), &subjects[s].parts, &subjects[s].lod, &settings);
+      s = s + 1usize;
+    }
+  }
+  if mode == 2 {
+    s = 0usize;
+    while s < subjects.len() {
+      shotsFor(&mut device, &mut renderer, &rig, subjects[s], folder.view(), &settings);
+      s = s + 1usize;
+    }
+  }
+  if mode == 3 or mode == 4 {
+    print <- "A world of 6,000 maples (2 parts each), 1,500 rocks and 150 houses (4 parts each) over 4 km by 4 km, 2.5 km range:\n";
+    imm shotFolder = if mode == 4 { folder.view(); } else { ""; };
+    benchWorld(&mut device, &mut renderer, &rig, &subjects, PLANT_FLAT, shotFolder);
+    benchWorld(&mut device, &mut renderer, &rig, &subjects, PLANT_MESHES, shotFolder);
+    benchWorld(&mut device, &mut renderer, &rig, &subjects, PLANT_FULL, shotFolder);
+    print <- "  with cascaded shadows (medium):\n";
+    imm shadows = ShadowSettings.medium();
+    renderer.setShadows(&mut device, &shadows);
+    benchWorld(&mut device, &mut renderer, &rig, &subjects, PLANT_FLAT, "");
+    benchWorld(&mut device, &mut renderer, &rig, &subjects, PLANT_MESHES, "");
+    benchWorld(&mut device, &mut renderer, &rig, &subjects, PLANT_FULL, "");
+  }
+  device.waitIdle();
+  print <- "Validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}

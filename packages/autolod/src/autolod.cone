@@ -1,0 +1,173 @@
+// The autolod package: levels of detail for any mesh, made automatically, ending in
+// an octahedral impostor. A program reaches it with 'import autolod', and gets:
+//
+// - 'buildLods' (meshlod.cone): the coarser levels of a mesh by quadric-error
+//   decimation to a screen-space error budget, UV seams, hard edges, open rims and
+//   material groups preserved; 'meshDistance' measures how far a level is from the
+//   original.
+// - the octahedral maths (octahedral.cone): the frame directions of an impostor and
+//   the three-frame blend a view direction is shown by.
+// - the impostor (bake.cone, impostor.cone): an object baked from a grid of
+//   directions into two atlases (colour and coverage; normal and depth), drawn as
+//   one camera-facing card by a custom pipeline (impostor.slang) that blends the
+//   three nearest frames and corrects each by its depth.
+// - 'autoLod' (here): the two together, an object of one or more parts turned into
+//   one LodChain per part for render's scene, the impostor the last level of the
+//   largest part's.
+//
+//   // once per renderer, and a baker per frame size:
+//   imm pipe = makeImpostorPipeline(&mut renderer, &mut device);
+//   mut baker = ImpostorBaker.create(&mut device, 128u32);
+//   // an object of two parts, a trunk and a crown:
+//   mut parts = List[BakePart].empty();
+//   parts.push(new BakePart(trunkMesh, trunkMaterial, Image.empty()));
+//   parts.push(new BakePart(crownMesh, crownMaterial, Image.empty()));
+//   imm lod = autoLod(&mut device, &mut renderer, &pipe, &mut baker, &parts, &new AutoLodSettings());
+//   // each part is a scene item with its materials and the chain made for it:
+//   imm trunk = renderer.addSceneItem(*lod.chains[0].levels[0], trunkRendererMaterial, model, white);
+//   renderer.setSceneLod(trunk, &lod.chains[0]);
+//
+// Design\autolod.md in the 3-D web's design folder has the model and the reasons.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   autolod.cone    this overview, AutoLodSettings, AutoLod and 'autoLod'
+//   octahedral.cone the octahedral map, frame directions and bases, the three-frame blend
+//   meshlod.cone    LodSettings, LodLevel, LodSet, buildLods, meshDistance
+//   bake.cone       ImpostorSettings, BakePart, ImpostorAtlas, ImpostorBaker
+//   impostor.cone   ImpostorPipeline, Impostor; impostor.spv
+//   impostor.slang, impostorbake.slang   the shaders
+
+mod autolod;
+
+import libc;
+import geomath use *;
+import collections use *;
+import noise;
+import sculpt;
+import mesh use { Mesh, PolyMesh, NoIndex, CornerDomain, FaceDomain };
+import gpu use *;
+import render use *;
+
+// What 'autoLod' makes
+pub struct AutoLodSettings {
+  pub lods LodSettings = new LodSettings();
+  pub impostor ImpostorSettings = new ImpostorSettings();
+  pub useImpostor bool = true;       // end the largest part's chain in an impostor (the others', in nothing)
+}
+
+// An object made automatically: a chain for each of its parts
+pub struct AutoLod {
+  pub chains List[LodChain];         // one for each part, in the parts' order: LOD 0 first
+  pub sets List[LodSet];             // the levels as meshes, for reporting (triangle counts, errors)
+  pub impostor Impostor;
+  pub hasImpostor bool;
+  pub anchor usize;                  // the part whose chain holds the impostor: the largest
+  pub center Vec3;                   // of the object's bounding sphere
+  pub radius f32;
+
+  // Triangles drawn at level 'level' of the object (every part's), the impostor
+  // being the level after the last mesh level, counted as 2
+  pub fn trianglesAt(self &, level usize) u32 {
+    mut n = 0u32;
+    mut p = 0usize;
+    while p < sets.len() {
+      imm lv = if level < sets[p].levels.len() { level; } else { sets[p].levels.len() - 1usize; };
+      n = n + sets[p].levels[lv].triangles;
+      p = p + 1usize;
+    }
+    n;
+  }
+}
+
+// The bounding sphere of all the parts together
+fn objectSphere(parts &List[BakePart], center &mut Vec3, radius &mut f32) {
+  mut box = Aabb3.empty();
+  mut p = 0usize;
+  while p < parts.len() {
+    if parts[p].mesh.positions.len() > 0usize { box = box.union(parts[p].mesh.bounds()); }
+    p = p + 1usize;
+  }
+  if box.isEmpty() {
+    *center = new Vec3(0., 0., 0.);
+    *radius = 0.;
+    return;
+  }
+  imm c = box.center();
+  mut r2 = 0.;
+  p = 0usize;
+  while p < parts.len() {
+    mut i = 0usize;
+    while i < parts[p].mesh.positions.len() {
+      imm d = (*parts[p].mesh.positions[i]).distanceSquared(c);
+      if d > r2 { r2 = d; }
+      i = i + 1usize;
+    }
+    p = p + 1usize;
+  }
+  *center = c;
+  *radius = r2.sqrt();
+}
+
+// An object's levels of detail made, uploaded to the renderer, and chained; with
+// an impostor if the settings say, baked with 'baker' (whose frame size must be
+// the settings') and drawn by 'pipe'. The parts' meshes are what the levels are
+// made from; their materials are what the impostor's colour is baked from.
+pub fn autoLod(device &mut Device, renderer &mut Renderer, pipe &ImpostorPipeline, baker &mut ImpostorBaker,
+    parts &List[BakePart], s &AutoLodSettings) AutoLod {
+  mut center = new Vec3(0., 0., 0.);
+  mut radius = 0.;
+  objectSphere(parts, &mut center, &mut radius);
+  mut out = new AutoLod(List[LodChain].empty(), List[LodSet].empty(), new Impostor(MaterialHandle.none(), MeshHandle.none(),
+    TextureHandle.none(), TextureHandle.none(), 0u32, 0u32, true, center, radius, 0u64, false, 0.), false, 0usize, center, radius);
+
+  // The largest part holds the impostor
+  mut anchorRadius = -1.;
+  mut p = 0usize;
+  while p < parts.len() {
+    mut c = new Vec3(0., 0., 0.);
+    mut r = 0.;
+    boundingSphereOf(&parts[p].mesh, &mut c, &mut r);
+    if r > anchorRadius { anchorRadius = r; out.anchor = p; }
+    p = p + 1usize;
+  }
+
+  // Each part's levels
+  p = 0usize;
+  while p < parts.len() {
+    out.sets.push(buildLods(&parts[p].mesh, &s.lods, radius, 0., parts[p].thinPieces));
+    p = p + 1usize;
+  }
+
+  // The impostor
+  if s.useImpostor and parts.len() > 0usize and radius > 0. and pipe.isValid(renderer) and baker.isValid() {
+    imm atlas = baker.bake(device, parts, center, radius, &s.impostor);
+    out.impostor = makeImpostor(renderer, device, pipe, &atlas, &s.impostor);
+    out.hasImpostor = true;
+  }
+
+  // The chains. The impostor takes over where the last mesh level ends; the
+  // object's other parts then draw nothing (an empty mesh), which the same
+  // threshold, scaled to each part's own size, ends them at
+  imm empty = Mesh.empty();
+  imm hidden = renderer.addMesh(device, &empty);
+  p = 0usize;
+  while p < parts.len() {
+    mut chain = LodChain.empty(s.lods.hysteresis);
+    mut k = 0usize;
+    while k < out.sets[p].levels.len() {
+      chain.add(renderer.addMesh(device, &out.sets[p].levels[k].mesh), out.sets[p].levels[k].minSize);
+      k = k + 1usize;
+    }
+    if out.hasImpostor {
+      if p == out.anchor {
+        chain.addWithMaterial(out.impostor.card, out.impostor.material, 0.);
+      } else {
+        chain.add(hidden, 0.);
+      }
+    }
+    out.chains.push(chain);
+    p = p + 1usize;
+  }
+  out;
+}
