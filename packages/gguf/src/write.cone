@@ -138,6 +138,13 @@ pub struct Writer {
   // Adds a tensor from f32 values, stored as the given type (quantised if it
   // is a quantised one, by 'quantize')
   pub fn addValues(self &mut, name &str, kind TensorType, dims &Array[u64], values &Array[f32]) Result[usize, GgufError] {
+    imm geo = geometry(&kind, dims);
+    if geo.fault != 0u32 {
+      return Error[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
+    }
+    if u64.from(values.len) != geo.elements {
+      return Error[usize, GgufError](badInput("the number of values is not the tensor's element count"));
+    }
     mut bytes = List[u8].empty();
     match quantize(&kind, values, &mut bytes) {
       case mut e Error {

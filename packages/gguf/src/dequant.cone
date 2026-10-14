@@ -145,6 +145,34 @@ pub fn dequantize(kind &TensorType, src &Array[u8], count usize, out &mut List[f
   out.resize(base + count, 0.0);
   imm bb = kind.blockBytes();
   imm dst = out.viewMut();
+  // The plain floats are one element to a block: read them in a loop of their own
+  match kind {
+    case is F32 {
+      mut i = 0usize;
+      while i < count {
+        dst[base + i] = le32At(src, 4usize * i) as f32;
+        i = i + 1usize;
+      }
+      return Ok[usize, GgufError](count);
+    }
+    case is F16 {
+      mut i = 0usize;
+      while i < count {
+        dst[base + i] = halfAt(src, 2usize * i);
+        i = i + 1usize;
+      }
+      return Ok[usize, GgufError](count);
+    }
+    case is BF16 {
+      mut i = 0usize;
+      while i < count {
+        dst[base + i] = bfloatToF32(u16.from(src[2usize * i]) | (u16.from(src[2usize * i + 1usize]) << 8u16));
+        i = i + 1usize;
+      }
+      return Ok[usize, GgufError](count);
+    }
+    else {}
+  }
   mut b = 0usize;
   while b < blocks {
     dequantBlock(kind, src, b * bb, dst, base + b * bs);
