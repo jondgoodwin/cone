@@ -284,7 +284,10 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
   picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
-  on a method type to `fnCallOpAssgn`. A receiver that is already a reference
+  on a method type to `fnCallOpAssgn`. `<-` on a value is not borrowed there:
+  the method it selects declares the permission, and the borrow retry
+  (`fnCallBorrowReceiver`, below) makes it, so a `self &` `<-` appends through
+  an `imm` receiver. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
   stage 3 takes a named method's receiver: its own permission is what candidate
   selection checks, not the permission of the binding that holds it. The `<-`
@@ -782,8 +785,11 @@ value. Its `first` is an expression resolved like any other, which a
 (`EachEntryTag`) holds in `first` the loop `parseEach` built (below), and a
 `YieldEntryTag` entry is that loop's last statement.
 
-- **On a value**, the receiver is checked, borrowed `&mut` once (held as it is
-  when it is already a reference) into a temporary, and each entry becomes
+- **On a value**, the receiver is checked, borrowed once (held as it is when it
+  is already a reference) into a temporary, with the permission the type's `<-`
+  methods need (`fnCallAppendBorrowPerm`: `mut` when every `<-` takes
+  `self &mut`, `ro` (`imm` for an `Immutable` type) when none does, and when
+  they differ `mut` if the receiver may be written, else `ro`), and each entry becomes
   statements of one block against that borrow: a value, one application
   `*recv <- value`; `n of x`, a block counting `n` (checked here as a `usize`,
   a constant one 0 through 4294967295, `ErrorRepeatCount`) with `x`'s
