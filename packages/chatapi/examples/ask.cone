@@ -1,0 +1,91 @@
+// ask <base-url> <model> <key-variable | -> <prompt>: one question put to a
+// chat-completions server, its reply printed as it arrives (streamed). The
+// base URL is what comes before '/chat/completions' ('http://127.0.0.1:8080/v1'
+// for a llama.cpp or vLLM server on this machine, 'https://api.openai.com/v1'
+// for OpenAI's). The third argument is the NAME of the environment variable
+// holding the API key, never the key itself, or '-' for a server that wants
+// none. Run it with
+//
+//   congo run packages/chatapi/examples/ask.cone -- http://127.0.0.1:8080/v1 mymodel - "Why is the sky blue?"
+//
+// It needs a server, so it is an example and never a test: 'congo test' builds
+// it and does not run it. An error prints how the call ended and the exit
+// status is 1.
+
+mod ask;
+
+import stdio use *;
+import process;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import actors;
+import actorhttp use Client;
+import chatapi use *;
+
+actor Asker {
+  chat Chat;
+
+  pub async do ask(self, model String, prompt String, status OneshotSender[i32]) {
+    mut req = ChatRequest.make(model.view());
+    req.addUser(prompt.view());
+    mut code = 1i32;
+    imm opened = await chat.stream(req);
+    match opened {
+      case imm cs Ok {
+        mut going = true;
+        while going {
+          imm n = await cs.next();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm d Some {printStr(d.content.view());}
+                case is None[Delta] {
+                  printStr("\n");
+                  code = 0i32;
+                  going = false;
+                }
+              }
+            }
+            case imm e Error {
+              printStr("\n");
+              printStr(e.message().view());
+              printStr("\n");
+              going = false;
+            }
+          }
+        }
+      }
+      case imm e Error {
+        printStr(e.message().view());
+        printStr("\n");
+      }
+    }
+    mut s = status;
+    s.send(code);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  imm args = process.args();
+  if args.len() < 5usize {
+    printStr("usage: ask <base-url> <model> <key-variable | -> <prompt>\n");
+    return 2i32;
+  }
+  mut keyVar = args[3usize].copy();
+  if keyVar.view() == "-" {keyVar = String.empty();}
+  mut tx OneshotSender[i32];
+  mut rx OneshotReceiver[i32];
+  tx, rx = Oneshot[i32].make();
+  {
+    imm a = new Asker(new Chat(Client.standard(), Endpoint.make(args[1usize].view(), keyVar.view())));
+    a.ask(args[2usize].copy(), args[4usize].copy(), tx);
+  }
+  mut code = 1i32;
+  match rx.recv() {
+    case imm v Some {code = v;}
+    case is None[i32] {}
+  }
+  finalAll();
+  code;
+}

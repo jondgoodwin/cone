@@ -214,6 +214,87 @@ fn main() {
 	</table>
 	<p><a href="refstdnetmsg.html">Game Networking</a> describes it.</p>
 
+	<h3 id="chatpkgs">Chat APIs: chatapi</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">chatapi</span><br><span class="pre">import chatapi use *;</span></td>
+		<td>A client for the OpenAI-compatible Chat Completions API, pointed at any base URL (OpenAI's, or a
+		llama.cpp, vLLM or Ollama server on this machine): messages and settings in, a whole reply or a stream of
+		chunks out, over <span class="pre">json</span>, <span class="pre">sse</span> and
+		<span class="pre">actorhttp</span>. The key is read from an environment variable the caller names and is sent
+		only as the Authorization field. Written in Cone, with no C library.</td></tr>
+	</table>
+
+	<h3 id="chatapi">chatapi</h3>
+	<p>A <span class="pre">Chat</span> is an actor made from an <span class="pre">actorhttp.Client</span> and an
+		<span class="pre">Endpoint</span> (a base URL and the <em>name</em> of the environment variable that holds the
+		key, or none). A behaviour awaits <span class="pre">chat.complete(request)</span> for a whole reply, or
+		<span class="pre">chat.stream(request)</span> for a <span class="pre">ChatStream</span> whose
+		<span class="pre">next()</span> awaits each chunk's <span class="pre">Delta</span> (the text it adds, then
+		<span class="pre">None</span> at the end) and whose <span class="pre">collect()</span> gathers the rest into a
+		reply. A <span class="pre">ChatRequest</span> holds the model, the messages (system, user, assistant, tool) and
+		the settings <span class="pre">temperature</span>, <span class="pre">topP</span>,
+		<span class="pre">maxTokens</span> and <span class="pre">stop</span>; a setting left
+		<span class="pre">None</span> is not sent. Every call answers a <span class="pre">Result</span>: the error
+		says whether the key was missing, the network failed, the API refused it (its status and error object) or the
+		answer was not what the API writes, and <span class="pre">isRetryable()</span> whether trying again may help.
+		The package's header lists what it chose and what it left out (tool calls, images, several choices, retries).</p>
+<pre>
+mod ask;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actorhttp use Client;
+import chatapi use *;
+
+actor Asker {
+  chat Chat;
+
+  pub async do ask(self, done OneshotSender[i32]) {
+    mut req = ChatRequest.make("my-model");
+    req.addUser("Why is the sky blue?");
+    imm opened = await chat.stream(req);
+    match opened {
+      case imm cs Ok {
+        mut going = true;
+        while going {
+          imm n = await cs.next();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm d Some {printStr(d.content.view());}
+                case is None[Delta] {going = false;}
+              }
+            }
+            case imm e Error {printStr(e.message().view()); going = false;}
+          }
+        }
+      }
+      case imm e Error {printStr(e.message().view());}
+    }
+    mut d = done;
+    d.send(0i32);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx OneshotSender[i32];
+  mut rx OneshotReceiver[i32];
+  tx, rx = Oneshot[i32].make();
+  {
+    // a server on this machine needs no key; OpenAI's is Endpoint.openai(), the key in $OPENAI_API_KEY
+    imm a = new Asker(new Chat(Client.standard(), Endpoint.loopback(8080u16)));
+    a.ask(tx);
+  }
+  rx.recv();
+  finalAll();
+  0i32;
+}
+</pre>
+	<p>(<span class="pre">chatapi</span>'s tests run against a mock server on loopback;
+		<span class="pre">examples/ask.cone</span> takes a base URL, a model, the key's variable and a prompt.)</p>
+
 	<h3 id="textpkgs">Text: textdiff, toml and json</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>

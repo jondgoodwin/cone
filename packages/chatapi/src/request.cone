@@ -1,0 +1,185 @@
+// ======== The request: messages, the settings, and the JSON and HTTP they become ========
+
+// Who said a message
+pub enum Role {
+  System,
+  User,
+  Assistant,
+  Tool;
+}
+
+// The role as the API spells it
+pub fn roleName(r Role) &str {
+  if r == Role.System {"system";}
+  elif r == Role.User {"user";}
+  elif r == Role.Assistant {"assistant";}
+  else {"tool";}
+}
+
+// One message of the conversation: plain text only
+pub struct Message {
+  pub role Role;
+  pub content String;
+  pub name String;           // the participant's name; empty: none is sent
+  pub toolCallId String;     // Role.Tool: the id of the call this answers; empty: none is sent
+
+  pub fn make(role Role, content &str) Message {
+    new Message(role, String.from(content), String.empty(), String.empty());
+  }
+
+  pub fn system(text &str) Message {Message.make(Role.System, text);}
+  pub fn user(text &str) Message {Message.make(Role.User, text);}
+  pub fn assistant(text &str) Message {Message.make(Role.Assistant, text);}
+
+  // A tool's answer to the call whose id is callId
+  pub fn tool(callId &str, text &str) Message {
+    new Message(Role.Tool, String.from(text), String.empty(), String.from(callId));
+  }
+
+  pub fn copy(self &) Message {
+    new Message(role, content.copy(), name.copy(), toolCallId.copy());
+  }
+
+  // The message as the API's JSON object
+  pub fn toJson(self &) json.Json {
+    mut o = json.Json.newObject();
+    o.set("role", json.Json.fromText(roleName(role)));
+    o.set("content", json.Json.fromText(content.view()));
+    if name.len() > 0usize {o.set("name", json.Json.fromText(name.view()));}
+    if toolCallId.len() > 0usize {o.set("tool_call_id", json.Json.fromText(toolCallId.view()));}
+    o;
+  }
+}
+
+// What to ask (see the package's header, THE REQUEST). The fields left None
+// are not sent, so the server's own defaults apply
+pub struct ChatRequest {
+  pub model String;
+  pub messages List[Message];
+  pub temperature Option[f64];
+  pub topP Option[f64];
+  pub maxTokens Option[u64];
+  pub stop List[String];        // sequences that end the reply; none: no 'stop' is sent
+  pub includeUsage bool;        // streamed: ask for a last chunk with the token counts
+
+  pub fn make(model &str) ChatRequest {
+    new ChatRequest(String.from(model), List[Message].empty(), None, None, None, List[String].empty(), false);
+  }
+
+  pub fn copy(self &) ChatRequest {
+    mut ms = List[Message].empty();
+    each m in messages {ms.push(m.copy());}
+    mut ss = List[String].empty();
+    each s in stop {ss.push(s.copy());}
+    new ChatRequest(model.copy(), ms, temperature, topP, maxTokens, ss, includeUsage);
+  }
+
+  pub fn add(self &mut, m Message) {messages.push(m);}
+  pub fn addSystem(self &mut, text &str) {messages.push(Message.system(text));}
+  pub fn addUser(self &mut, text &str) {messages.push(Message.user(text));}
+  pub fn addAssistant(self &mut, text &str) {messages.push(Message.assistant(text));}
+  pub fn addTool(self &mut, callId &str, text &str) {messages.push(Message.tool(callId, text));}
+  pub fn addStop(self &mut, sequence &str) {stop.push(String.from(sequence));}
+
+  // Why it cannot be sent, or "" when it can
+  pub fn problem(self &) &str {
+    if model.len() == 0usize {return "the request names no model";}
+    if messages.len() == 0usize {return "the request has no messages";}
+    "";
+  }
+
+  // The request body the API takes. 'stream' asks for server-sent chunks;
+  // 'completionName' names the token limit 'max_completion_tokens'
+  pub fn toJson(self &, stream bool, completionName bool) json.Json {
+    mut o = json.Json.newObject();
+    o.set("model", json.Json.fromText(model.view()));
+    mut ms = json.Json.newArray();
+    each m in messages {ms.push(m.toJson());}
+    o.set("messages", ms);
+    match &temperature {
+      case imm t Some {o.set("temperature", json.Json.fromF64(*t));}
+      case is None {}
+    }
+    match &topP {
+      case imm t Some {o.set("top_p", json.Json.fromF64(*t));}
+      case is None {}
+    }
+    match &maxTokens {
+      case imm n Some {
+        if completionName {o.set("max_completion_tokens", json.Json.fromU64(*n));}
+        else {o.set("max_tokens", json.Json.fromU64(*n));}
+      }
+      case is None {}
+    }
+    if stop.len() > 0usize {
+      mut ss = json.Json.newArray();
+      each s in stop {ss.push(json.Json.fromText(s.view()));}
+      o.set("stop", ss);
+    }
+    if stream {
+      o.set("stream", json.Json.fromBool(true));
+      if includeUsage {
+        mut so = json.Json.newObject();
+        so.set("include_usage", json.Json.fromBool(true));
+        o.set("stream_options", so);
+      }
+    }
+    o;
+  }
+}
+
+// The HTTP request that posts a chat request to an endpoint: the body written,
+// the Content-Type and Accept fields set, and the key, if the endpoint names an
+// environment variable for one, read now and put in the Authorization field
+// and nowhere else. A request that cannot be written, or whose key's variable
+// is not set, is an error and nothing is sent
+pub fn httpRequest(ep &Endpoint, req &ChatRequest, stream bool) Result[httpclient.Request, ChatError] {
+  imm why = req.problem();
+  if why.len() > 0usize {
+    return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, why));
+  }
+  mut body = String.empty();
+  imm tree = req.toJson(stream, ep.maxCompletionTokens);
+  match tree.toText() {
+    case mut t Ok {body <=> t;}
+    case imm e Error {
+      mut d = String.from("the request cannot be written as JSON: ");
+      d.append(e.reason.view());
+      return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
+    }
+  }
+  mut r = httpclient.Request.make("POST", ep.url().view());
+  r.body <=> body;
+  r.headers.add("Content-Type", "application/json");
+  if stream {
+    r.headers.add("Accept", "text/event-stream");
+    r.headers.add("Cache-Control", "no-cache");
+  } else {
+    r.headers.add("Accept", "application/json");
+  }
+  if ep.keyEnv.len() > 0usize {
+    match env.get(ep.keyEnv.view()) {
+      case imm key Some {
+        if key.len() == 0usize {return noKey(ep);}
+        mut auth = String.from("Bearer ");
+        auth.append(key.view());
+        if not r.headers.add("Authorization", auth.view()) {
+          mut d = String.from("the API key in ");
+          d.append(ep.keyEnv.view());
+          d.append(" cannot be sent as a header field (it holds a line break or a control character)");
+          return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
+        }
+      }
+      case is None {return noKey(ep);}
+    }
+  }
+  Ok[httpclient.Request, ChatError](r);
+}
+
+// The error for a key that is not there. It names the variable, never a value
+fn noKey(ep &Endpoint) Result[httpclient.Request, ChatError] {
+  mut d = String.from("the environment variable ");
+  d.append(ep.keyEnv.view());
+  d.append(" holds no API key");
+  Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.NoKey, d.view()));
+}

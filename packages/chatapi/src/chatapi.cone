@@ -1,0 +1,279 @@
+// The chatapi package: a client for the OpenAI-compatible Chat Completions API
+// (POST {base}/chat/completions), written in Cone over json, sse and actorhttp.
+// The same code talks to OpenAI, to a llama.cpp, vLLM or Ollama server on this
+// machine, and to any service that speaks the API: the base URL is the only
+// difference, and the key, when there is one, is read from an environment
+// variable the caller names.
+//
+//   mod ask;
+//   import collections use List;
+//   import actorhttp use Client;
+//   import chatapi use *;
+//
+//   actor Asker {
+//     chat Chat;
+//
+//     pub async do ask(self) {
+//       mut req = ChatRequest.make("gpt-4o-mini");
+//       req.addSystem("Answer in one sentence.");
+//       req.addUser("Why is the sky blue?");
+//       req.temperature = Some[f64](0.2d);
+//       req.maxTokens = Some[u64](100u64);
+//       imm r = await chat.complete(req);                 // a whole reply
+//       match r {
+//         case imm ok Ok {...ok.content...  ok.finishReason...  ok.usage...}
+//         case imm e Error {...e.message()...  e.isRetryable()...}
+//       }
+//
+//       imm opened = await chat.stream(req);              // or its chunks as they come
+//       match opened {
+//         case imm cs Ok {
+//           imm n = await cs.next();                      // Ok(Some(delta)), Ok(None) at the end, or an Error
+//           ...
+//         }
+//         case imm e Error {...}
+//       }
+//     }
+//   }
+//
+//   ...  new Asker(new Chat(Client.standard(), Endpoint.openai()))  // the key in $OPENAI_API_KEY
+//   ...  new Asker(new Chat(Client.standard(), Endpoint.loopback(8080u16)))  // a local server, no key
+//
+// (tests/calls.cone and tests/streams.cone are this, run against a mock server;
+// examples/ask.cone is a program to point at a real one.)
+//
+// What there is:
+//
+//   Endpoint.make(baseUrl, keyEnv)  Endpoint.openai()  Endpoint.loopback(port)      (THE ENDPOINT)
+//     ep.baseUrl ep.keyEnv ep.maxCompletionTokens  ep.url()
+//   ChatRequest.make(model)  req.addSystem(text)  addUser  addAssistant  addTool(callId, text)  (THE REQUEST)
+//     req.add(Message)  req.addStop(seq)
+//     req.model req.messages req.temperature req.topP req.maxTokens req.stop req.includeUsage
+//   Message.make(role, text)  Message.system(text) user assistant tool(callId, text)
+//     m.role m.content m.name m.toolCallId;  Role: System User Assistant Tool;  roleName(r)
+//   new Chat(client, endpoint)                   an actor that makes the calls      (CHAT)
+//   chat.complete(req)  chat.completeIn(req, lim)   a whole reply     Result[ChatReply, ChatError]
+//   chat.stream(req)    chat.streamIn(req, lim)     a streamed reply  Result[ChatStream, ChatError]
+//   ChatReply: id model created role content finishReason usage (Option[Usage])
+//   Usage: promptTokens completionTokens totalTokens
+//   cs.next()    the next Delta, Ok(None) at the end      Result[Option[Delta], ChatError]   (STREAMS)
+//   cs.collect() the rest gathered into a ChatReply        Result[ChatReply, ChatError]
+//   Delta: id model role content finishReason usage
+//   ChatError: e.kind e.status e.detail e.errorType e.code  e.message()                (ERRORS)
+//     e.isCancelled() e.isTimedOut() e.isRetryable();  ChatErrorKind;  errorKindName(k)
+//   For a program that drives the pieces itself (sans IO, and for a synchronous program):
+//   httpRequest(ep, req, stream)    the httpclient.Request that posts req        Result[httpclient.Request, ChatError]
+//   replyOfResponse(resp)           an httpclient.Response read as a whole reply Result[ChatReply, ChatError]
+//   parseReply(bytes)  apiError(status, bytes)  parseChunk(bytes)  isDone(bytes)  absorb(reply, delta)
+//   transportError(fetchError)
+//
+// METHOD CHOICES. These are defaults, not rulings; each says what was chosen
+// and what was left out.
+//
+// - ACTOR-FRIENDLY, with the pure parts exposed. The calls are behaviours of
+//   an actor, 'Chat', that awaits actorhttp's client (so a caller's behaviour
+//   writes 'await chat.complete(req)' and is paused, not blocked, as for any
+//   awaited operation, and the answer is the Result the behaviour returns).
+//   There is no synchronous client of this package's own. A synchronous
+//   program uses the same pieces by hand: 'httpRequest' makes the HTTP
+//   request, httpclient's 'fetchWhole' sends it, 'replyOfResponse' reads the
+//   answer (tests/calls.cone does this). For a streamed reply a synchronous
+//   program feeds httpclient's Data events to an sse.Reader and reads each
+//   event's data with 'isDone' and 'parseChunk'. The whole reply and the
+//   streamed one are not awaited operations (actors.Awaitable) because only a
+//   behaviour can await several things in turn, check the status, read an
+//   error body and make the ChatStream; a plain function cannot 'await', so
+//   'Chat' and 'ChatStream' are actors, whose behaviours return the Results.
+// - DELTAS. A stream is read one chunk at a time: 'cs.next()' answers the
+//   next chunk's Delta (the text it adds, which may be empty; the role on the
+//   first chunk; the finish reason on the last; the token counts on the
+//   usage chunk when the request set 'includeUsage'), then Ok(None) once the
+//   server sent '[DONE]' (or, from a server that leaves '[DONE]' out, once the
+//   body ended after a chunk with a finish reason). A stream that ends before
+//   either is a Stream error, never a silent short reply. After the end or an
+//   error 'next' answers Ok(None). 'cs.collect()' reads on to the end and
+//   gives the whole reply (the text joined, the last finish reason, the
+//   usage). One 'next' at a time: the actor serialises them, but two awaited
+//   at once would split the chunks between them. Dropping the last handle of
+//   the ChatStream cancels the rest of the exchange and closes the connection.
+// - THE STREAM'S BYTES. The response body arrives in pieces of any size
+//   (actorhttp's BodyStream); the sse package's Reader cuts it into events
+//   whatever the pieces' boundaries (a piece may end inside a line, inside the
+//   JSON, between a CR and its LF), its comments and empty events dropped. The
+//   reader's limit of 1 MiB for one event ends a stream that passes it. A 200
+//   whose Content-Type is not text/event-stream (a server that ignored
+//   'stream' answers application/json) is a Decode error; one with no
+//   Content-Type is read as events.
+// - ERRORS are a ChatError with a kind and the words of the cause. An HTTP
+//   error status is an answer, as for actorhttp: the Api kind, carrying the
+//   status and what the API's error object says ({"error": {"message", "type",
+//   "code"}}, or {"error": "text"} as some servers write it; a body that is no
+//   error object gives the status and the start of the body). An error object
+//   inside a 200 is the same Api error, and one inside a chunk a Stream error.
+//   A reply or chunk that is not what the API writes is Decode, with the json
+//   package's position. The network, TLS and the client's limits are
+//   Transport, a cancel group's cancel Cancelled and a deadline TimedOut (the
+//   'In' forms take an aio.IoLimits as actorhttp's do). 'isRetryable()' says
+//   whether trying again may help (Transport, TimedOut, 408, 429, 5xx);
+//   retrying and backing off are the caller's: this package never retries
+//   (httpclient re-sends a POST only when no byte of it reached the socket).
+//   A problem with the request itself (no model, no messages, text that is not
+//   UTF-8) and a missing key are errors before anything is sent.
+// - THE KEY. 'Endpoint.keyEnv' is the NAME of an environment variable. The key
+//   is read from it when a request is built, put into that request's
+//   Authorization field as 'Bearer <key>' and nowhere else: not in the
+//   Endpoint, the Chat, a reply or a ChatError (a message names the variable,
+//   never its value; tests/calls.cone and streams.cone check that none does),
+//   and this package prints and logs nothing. While a request is in flight it
+//   is in the HTTP client's tables like any header field, and it is not wiped
+//   from memory afterwards. httpclient drops Authorization when a redirect
+//   leaves the origin. An empty keyEnv sends no Authorization field (a local
+//   server); a variable that is unset or empty is a NoKey error and nothing is
+//   sent. A key the header cannot carry (a line break in it) is a Request
+//   error that does not repeat it. Other ways of authenticating (a header
+//   named 'api-key', Azure's) are not here.
+// - THE REQUEST. model, messages (system, user, assistant, tool: plain text
+//   content, an optional name, a tool message's tool_call_id), temperature,
+//   top_p, max_tokens, stop (an array), stream and, for a streamed request,
+//   stream_options.include_usage. A setting left None is not sent, so the
+//   server's own default applies. The limit is sent as 'max_tokens'; set
+//   'Endpoint.maxCompletionTokens' for OpenAI's newer models that want
+//   'max_completion_tokens'. The body is written with the json package, so
+//   its text is checked to be UTF-8.
+// - THE REPLY keeps the first choice only ('n' is never sent), its text
+//   ('content': null is an empty text), finish reason, id, model, created and
+//   the usage. Fields the package does not know are ignored.
+// - LEFT OUT: tool and function calling (a Tool message can be sent, but a
+//   reply's 'tool_calls' are not read, and an assistant message with
+//   'tool_calls' cannot be written), images and other content parts, n above
+//   1, logprobs, response_format, seed, presence and frequency penalties, user,
+//   the reasoning text some servers add ('reasoning_content'), the legacy
+//   completions API, the Responses API, retries and backoff, a cancel of a
+//   call by id (use a cancel group or drop the stream), and any call but
+//   POST /chat/completions (no model list, no embeddings).
+// - Written in Cone, no C call, no global and no thread-local; the only OS
+//   facts it reads are one environment variable per request.
+//
+// The server half (an OpenAI-compatible server over a local model, so that
+// this client drives local or hosted) is not here.
+
+mod chatapi;
+
+import collections use List, String;
+import json;
+import env;
+import http;
+import httpclient;
+import actorhttp;
+import sse;
+import aio use IoLimits;
+import actors;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// What kind of thing went wrong (see the package's header, ERRORS)
+pub enum ChatErrorKind {
+  NoKey,         // the environment variable that should hold the key is not set: nothing was sent
+  Request,       // the request cannot be written: no model, no messages, text that is not UTF-8
+  Transport,     // the exchange failed: the network, TLS, a limit of the client's
+  Cancelled,     // its cancel group was cancelled
+  TimedOut,      // its deadline passed
+  Api,           // the server answered with an error status: status, and the API's error object
+  Decode,        // a reply or a chunk is not what the API says
+  Stream;        // a stream broke: an error chunk, or it ended before the reply was whole
+}
+
+// The name of a kind, in lower case
+pub fn errorKindName(k ChatErrorKind) &str {
+  if k == ChatErrorKind.NoKey {"nokey";}
+  elif k == ChatErrorKind.Request {"request";}
+  elif k == ChatErrorKind.Transport {"transport";}
+  elif k == ChatErrorKind.Cancelled {"cancelled";}
+  elif k == ChatErrorKind.TimedOut {"timedout";}
+  elif k == ChatErrorKind.Api {"api";}
+  elif k == ChatErrorKind.Decode {"decode";}
+  else {"stream";}
+}
+
+// Why a call has no reply. Nothing in it is ever the API key
+pub struct ChatError {
+  pub kind ChatErrorKind;
+  pub status u16;          // Api: the HTTP status; 0 otherwise
+  pub detail String;       // what is wrong: the API's own message for Api
+  pub errorType String;    // Api: the error object's "type", or empty
+  pub code String;         // Api: the error object's "code" (text or number), or empty
+
+  pub fn make(kind ChatErrorKind, detail &str) ChatError {
+    new ChatError(kind, 0u16, String.from(detail), String.empty(), String.empty());
+  }
+
+  pub fn copy(self &) ChatError {
+    new ChatError(kind, status, detail.copy(), errorType.copy(), code.copy());
+  }
+
+  pub fn isCancelled(self &) bool {kind == ChatErrorKind.Cancelled;}
+  pub fn isTimedOut(self &) bool {kind == ChatErrorKind.TimedOut;}
+
+  // Whether trying the same call again later may succeed: the network or the
+  // server failing, a deadline, a rate limit (429) or a server error (5xx)
+  pub fn isRetryable(self &) bool {
+    kind == ChatErrorKind.Transport or kind == ChatErrorKind.TimedOut or
+      (kind == ChatErrorKind.Api and (status == 429u16 or status == 408u16 or status >= 500u16));
+  }
+
+  // One line: 'api: 401 invalid_api_key: Incorrect API key provided'
+  pub fn message(self &) String {
+    mut out = String.from(errorKindName(kind));
+    out.append(": ");
+    if kind == ChatErrorKind.Api {
+      out.appendUInt(u64.from(status));
+      if code.len() > 0usize {
+        out.append(" ");
+        out.append(code.view());
+      }
+      out.append(": ");
+    }
+    out.append(detail.view());
+    out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint
+// ---------------------------------------------------------------------------
+
+// Where the API is, and whose key opens it (see the package's header, THE ENDPOINT)
+pub struct Endpoint {
+  pub baseUrl String;              // 'https://api.openai.com/v1': the path before '/chat/completions'
+  pub keyEnv String;               // the NAME of the environment variable holding the key; empty: none is sent
+  pub maxCompletionTokens bool;    // send the limit as 'max_completion_tokens' (OpenAI's newer models), not 'max_tokens'
+
+  pub fn make(baseUrl &str, keyEnv &str) Endpoint {
+    new Endpoint(String.from(baseUrl), String.from(keyEnv), false);
+  }
+
+  // OpenAI's, the key in OPENAI_API_KEY
+  pub fn openai() Endpoint {Endpoint.make("https://api.openai.com/v1", "OPENAI_API_KEY");}
+
+  // A server on this machine (llama.cpp, vLLM, Ollama, ...) at 127.0.0.1:port/v1, no key
+  pub fn loopback(port u16) Endpoint {
+    mut u = String.from("http://127.0.0.1:");
+    u.appendUInt(u64.from(port));
+    u.append("/v1");
+    Endpoint.make(u.view(), "");
+  }
+
+  pub fn copy(self &) Endpoint {
+    new Endpoint(baseUrl.copy(), keyEnv.copy(), maxCompletionTokens);
+  }
+
+  // The URL a request is posted to: the base with one '/chat/completions' after it
+  pub fn url(self &) String {
+    mut u = String.from(baseUrl.view());
+    while u.len() > 0usize and u[u.len() - 1usize] == '/' {u.truncate(u.len() - 1usize);}
+    u.append("/chat/completions");
+    u;
+  }
+}

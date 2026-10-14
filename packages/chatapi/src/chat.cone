@@ -1,0 +1,269 @@
+// ======== The actors: a Chat that makes calls, a ChatStream that is read ========
+
+// A whole reply put together from the chunks of a streamed one: the first id,
+// model and role seen, every chunk's text in order, the last finish reason and
+// the usage the stream gave
+pub fn absorb(r &mut ChatReply, d &Delta) {
+  if r.id.len() == 0usize {r.id = d.id.copy();}
+  if r.model.len() == 0usize {r.model = d.model.copy();}
+  if r.role.len() == 0usize {r.role = d.role.copy();}
+  r.content.append(d.content.view());
+  if d.finishReason.len() > 0usize {r.finishReason = d.finishReason.copy();}
+  match &d.usage {
+    case imm u Some {r.usage = Some[Usage](new Usage(u.promptTokens, u.completionTokens, u.totalTokens));}
+    case is None {}
+  }
+}
+
+// A chat API client an actor awaits (the package's header, CHAT and STREAM):
+// it holds the actorhttp Client its calls go through and the Endpoint they go
+// to. Each behaviour answers a Result
+pub actor Chat {
+  client actorhttp.Client;
+  endpoint Endpoint;
+
+  // A Chat over a client (actorhttp.Client.standard() is the usual one; share it with
+  // 'clone' to share its connection pools) for an endpoint
+  pub fn init(self &new, client actorhttp.Client, endpoint Endpoint) {
+    *self = new Self(client: client, endpoint: endpoint);
+  }
+
+  // A whole reply: the request is posted and the answer read when it is whole
+  pub async do complete(self, req ChatRequest) Result[ChatReply, ChatError] {
+    mut hreq = httpclient.Request.get("");
+    match httpRequest(&endpoint, &req, false) {
+      case mut ok Ok {hreq <=> ok;}
+      case imm e Error {return Error[ChatReply, ChatError](e.copy());}
+    }
+    imm r = await client.send(hreq);
+    replyOfExchange(&r);
+  }
+
+  // The same, ended if lim says so (an aio.IoLimits: a cancel group and a deadline)
+  pub async do completeIn(self, req ChatRequest, lim IoLimits) Result[ChatReply, ChatError] {
+    mut hreq = httpclient.Request.get("");
+    match httpRequest(&endpoint, &req, false) {
+      case mut ok Ok {hreq <=> ok;}
+      case imm e Error {return Error[ChatReply, ChatError](e.copy());}
+    }
+    imm r = await client.sendIn(hreq, lim);
+    replyOfExchange(&r);
+  }
+
+  // A streamed reply: answered when the response's head arrives, with a
+  // ChatStream to read the chunks from, or the error that the status or the
+  // transport gives
+  pub async do stream(self, req ChatRequest) Result[ChatStream, ChatError] {
+    imm r = await selfactor.streamIn(req, IoLimits.none());
+    r;
+  }
+
+  // The same, the whole stream ended if lim says so
+  pub async do streamIn(self, req ChatRequest, lim IoLimits) Result[ChatStream, ChatError] {
+    mut hreq = httpclient.Request.get("");
+    match httpRequest(&endpoint, &req, true) {
+      case mut ok Ok {hreq <=> ok;}
+      case imm e Error {return Error[ChatStream, ChatError](e.copy());}
+    }
+    imm r = await client.streamIn(hreq, lim);
+    match r {
+      case imm bs Ok {
+        if not bs.isOk() {
+          // An error status: the body is the API's error object. Read it (the first 64 KiB of it)
+          mut body = String.empty();
+          mut going = true;
+          while going {
+            imm n = await bs.read();
+            match n {
+              case imm ok Ok {
+                match ok {
+                  case imm piece Some {
+                    if body.len() < 65536usize {body.append(piece.view());}
+                  }
+                  case is None[String] {going = false;}
+                }
+              }
+              case imm er Error {going = false;}
+            }
+          }
+          return Error[ChatStream, ChatError](apiError(bs.status, body.view()));
+        }
+        if not isEventStream(&bs.headers) {
+          return Error[ChatStream, ChatError](ChatError.make(ChatErrorKind.Decode,
+            "the server answered a streamed request with something that is not an event stream"));
+        }
+        imm cs = new ChatStream(bs, sse.Reader.make(), List[sse.Event].empty(), 0usize, 0u64, false, false, false);
+        Ok[ChatStream, ChatError](cs);
+      }
+      case imm e Error {Error[ChatStream, ChatError](transportError(&e));}
+    }
+  }
+}
+
+// Whether a response may be an event stream: its Content-Type says so, or it
+// says nothing (a server that streams without naming the type is read as
+// events; one that names another, as a server that ignored 'stream' does with
+// application/json, is not)
+fn isEventStream(h &http.Headers) bool {
+  match h.get("Content-Type") {
+    case imm v Some {
+      imm t = String.fromBytes(v);
+      t.view().startsWith("text/event-stream");
+    }
+    case is None[&Array[u8]] {true;}
+  }
+}
+
+// What an exchange that gave a response, or none, is as a reply
+fn replyOfExchange(r &Result[httpclient.Response, actorhttp.FetchError]) Result[ChatReply, ChatError] {
+  match r {
+    case imm ok &Ok {replyOfResponse(ok);}
+    case imm e &Error {Error[ChatReply, ChatError](transportError(e));}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The stream
+// ---------------------------------------------------------------------------
+
+// What the next step of reading a stream is
+enum Step {
+  Need;              // the events held are used up: the body has more to give
+  Item(Delta);       // a chunk's delta
+  End;               // the reply is whole
+  Fail(ChatError);   // the stream is broken
+}
+
+// A streamed reply being read (the package's header, STREAM): the response's
+// body arrives to the actor in pieces, the sse package's Reader cuts them into
+// events whatever the pieces' boundaries, and each event's data is a chunk of
+// the reply. 'next' awaits the next delta, one at a time: it answers
+// Ok(Some(delta)), Ok(None) once the reply is whole ('[DONE]'), or an error,
+// after which it answers Ok(None). Dropping the last handle cancels the rest
+// of the exchange
+pub actor ChatStream {
+  body actorhttp.BodyStream;
+  reader sse.Reader;
+  queue List[sse.Event];     // events cut from the pieces, not yet read
+  at usize;                  // the next of them
+  chunks u64;                // chunks read, for the error that names one
+  sawFinish bool;            // a chunk carried a finish reason
+  bodyEnd bool;              // the body has ended
+  over bool;                 // '[DONE]' or an error was answered: nothing more is read
+
+  // The next delta of the reply
+  pub async do next(self) Result[Option[Delta], ChatError] {
+    mut out Result[Option[Delta], ChatError] = Ok[Option[Delta], ChatError](None);
+    mut going = true;
+    while going {
+      match self.step() {
+        case mut d Item {
+          mut x = Delta.empty();
+          x <=> d;
+          out = Ok[Option[Delta], ChatError](Some[Delta](x));
+          going = false;
+        }
+        case is End {going = false;}
+        case mut e Fail {
+          mut x = ChatError.make(ChatErrorKind.Stream, "");
+          x <=> e;
+          out = Error[Option[Delta], ChatError](x);
+          going = false;
+        }
+        case is Need {
+          imm n = await body.read();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm piece Some {self.feed(piece.view());}
+                case is None[String] {bodyEnd = true;}
+              }
+            }
+            case imm er Error {
+              over = true;
+              out = Error[Option[Delta], ChatError](transportError(&er));
+              going = false;
+            }
+          }
+        }
+      }
+    }
+    out;
+  }
+
+  // The rest of the stream gathered into a whole reply
+  pub async do collect(self) Result[ChatReply, ChatError] {
+    mut reply = ChatReply.empty();
+    mut why = ChatError.make(ChatErrorKind.Stream, "");
+    mut failed = false;
+    mut going = true;
+    while going {
+      imm n = await selfactor.next();
+      match n {
+        case imm ok Ok {
+          match ok {
+            case imm d Some {absorb(&mut reply, &d);}
+            case is None[Delta] {going = false;}
+          }
+        }
+        case imm e Error {
+          why = e.copy();
+          failed = true;
+          going = false;
+        }
+      }
+    }
+    if failed {Error[ChatReply, ChatError](why);} else {Ok[ChatReply, ChatError](reply);}
+  }
+
+  // Bytes of the body in: the events they complete are queued
+  fn feed(self, piece &Array[u8]) {
+    reader.feed(piece, &mut queue);
+  }
+
+  // The reading of what is queued: the next delta, or why there is none yet
+  fn step(self) Step {
+    if over {return Step.End;}
+    while at < queue.len() {
+      imm k = at;
+      at = at + 1usize;
+      imm data = queue[k].data.view().trim();
+      if data.len() == 0usize {continue;}
+      if isDone(data) {
+        over = true;
+        return Step.End;
+      }
+      chunks = chunks + 1u64;
+      match parseChunk(data) {
+        case mut d Ok {
+          if d.finishReason.len() > 0usize {sawFinish = true;}
+          mut x = Delta.empty();
+          x <=> d;
+          return Step.Item(x);
+        }
+        case imm e Error {
+          over = true;
+          mut m = e.detail.copy();
+          m.append(" (chunk ");
+          m.appendUInt(chunks);
+          m.append(")");
+          mut c = e.copy();
+          c.detail = m;
+          return Step.Fail(c);
+        }
+      }
+    }
+    queue.clear();
+    at = 0usize;
+    if reader.overflowed() {
+      over = true;
+      return Step.Fail(ChatError.make(ChatErrorKind.Stream, "an event of the stream is longer than the limit"));
+    }
+    if bodyEnd {
+      over = true;
+      if sawFinish {return Step.End;}
+      return Step.Fail(ChatError.make(ChatErrorKind.Stream, "the stream ended before the reply was complete"));
+    }
+    Step.Need;
+  }
+}
