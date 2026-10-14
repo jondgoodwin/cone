@@ -427,7 +427,8 @@ static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
 // that borrows the receiver once and applies each entry against that borrow:
 //   { imm recv = &mut xs; *recv <- 1; ... }
 // The borrow is as strong as the type's '<-' methods need (fnCallAppendBorrowPerm),
-// and each application takes of it what its own method's 'self' declares. A receiver that is already a reference is held as it is, so its permission,
+// and each application takes of it what its own method's 'self' declares. A
+// receiver that is already a reference is held as it is, so its permission,
 // not the binding's, is what each application is checked against.
 //
 // This is lowering, so it belongs to type check: the borrow needs the
