@@ -1,0 +1,150 @@
+// Reading an event stream, by the standard's parsing rules (WHATWG HTML 9.2.6):
+// lines ending in LF, CR or CRLF; comments; 'event', 'data', 'id' and 'retry'
+// fields and the values' one dropped space; an empty line dispatching an
+// event that had a data line; the event type forgotten at each dispatch; a
+// byte order mark; a field with no colon; unknown fields; and a stream cut
+// off in the middle of an event, which is discarded. The same streams are
+// read whole, one byte at a time, and split at a CR/LF, and give the same
+// events. A Reader past its bound takes no more.
+
+mod reader;
+
+import testing use *;
+import collections use List, String;
+import sse use Event, Reader;
+
+// Every event of a stream given whole, as 'name|data|id|retry' separated by ';',
+// the data's line feeds shown as '/'
+fn describe(events &List[Event]) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < events.len() {
+    out.append(events[i].name.view());
+    out.append("|");
+    mut k = 0usize;
+    imm d = events[i].data.view() as &Array[u8];
+    while k < d.len {
+      if d[k] == '\n' {out.appendByte('/');} else {out.appendByte(d[k]);}
+      k = k + 1usize;
+    }
+    out.append("|");
+    out.append(events[i].id.view());
+    out.append("|");
+    out.appendInt(events[i].retry);
+    out.append(";");
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn whole(stream &str) String {
+  mut r = Reader.make();
+  mut events = List[Event].empty();
+  r.feed(stream, &mut events);
+  describe(&events);
+}
+
+// The same stream a byte at a time
+fn bytewise(stream &str) String {
+  mut r = Reader.make();
+  mut events = List[Event].empty();
+  imm b = stream as &Array[u8];
+  mut i = 0usize;
+  while i < b.len {
+    r.feed(&b[i ..< i + 1usize], &mut events);
+    i = i + 1usize;
+  }
+  describe(&events);
+}
+
+// Whole and byte by byte must agree: the expectation is checked for both
+fn check(stream &str, want &str, label &str) {
+  expectStr(whole(stream).view(), want, label);
+  mut l = String.from(label);
+  l.append(" (byte by byte)");
+  expectStr(bytewise(stream).view(), want, l.view());
+}
+
+fn main() i32 {
+  check("event: tick\ndata: 1\n\n", "tick|1||-1;", "a named event");
+  check("data: hello\n\n", "|hello||-1;", "a message");
+  check("data: a\ndata: b\n\n", "|a/b||-1;", "two data lines joined with a line feed");
+  check("data: a\ndata: \ndata: c\n\n", "|a//c||-1;", "an empty data line in the middle");
+  check(": hi\n\ndata: x\n\n", "|x||-1;", "a comment, and an empty line with no data, dispatch nothing");
+  check("data: a\r\n\r\ndata: b\r\rdata: c\n\n", "|a||-1;|b||-1;|c||-1;", "CRLF, CR and LF line endings");
+  check("data: a\n\n\n\ndata: b\n\n", "|a||-1;|b||-1;", "extra empty lines dispatch nothing");
+  check("data:x\n\n", "|x||-1;", "no space after the colon");
+  check("data:  x\n\n", "| x||-1;", "only one space after the colon is dropped");
+  check("data\n\n", "|||-1;", "a field name with no colon: an empty data line, which dispatches");
+  check("data:\n\n", "|||-1;", "an empty data value dispatches an event with empty data");
+  check("foo: bar\ndata: 1\n\n", "|1||-1;", "an unknown field is ignored");
+  check("Data: 1\n\n", "", "field names are case-sensitive");
+  check("event: a\ndata: 1\n\ndata: 2\n\n", "a|1||-1;|2||-1;", "the event type is forgotten at a dispatch");
+  check("event: x\n\ndata: 1\n\n", "|1||-1;", "...and at an empty line with no data");
+  check("event: first\nevent: second\ndata: 1\n\n", "second|1||-1;", "the last event field wins");
+  check("id: 5\ndata: a\n\ndata: b\n\nid: 6\ndata: c\n\n", "|a|5|-1;|b|5|-1;|c|6|-1;", "the last event id stands until another");
+  check("id\ndata: a\n\n", "|a||-1;", "an id with no value sets the id to empty");
+  check("retry: 1500\ndata: a\n\ndata: b\n\n", "|a||1500;|b||-1;", "a retry belongs to its block's event");
+  check("retry: abc\nretry: 12x\nretry\nretry: -5\ndata: a\n\n", "|a||-1;", "a retry that is not all digits is ignored");
+  check("data: partial", "", "a stream cut off mid-line has no event");
+  check("data: whole\n\ndata: cut\n", "|whole||-1;", "a stream cut off mid-event: the event is discarded");
+  check("event: e\r\ndata: 1\r\n\r\n", "e|1||-1;", "a CRLF stream");
+
+  // A CR at the end of one piece and the LF at the start of the next are one line ending
+  mut r = Reader.make();
+  mut events = List[Event].empty();
+  r.feed("data: a\r", &mut events);
+  r.feed("\n\r", &mut events);
+  r.feed("\ndata: b\r\n\r\n", &mut events);
+  expectStr(describe(&events).view(), "|a||-1;|b||-1;", "CR and LF split across pieces are one ending");
+
+  // A byte order mark at the start is dropped
+  mut bom = String.empty();
+  bom.appendByte(0xEFu8);
+  bom.appendByte(0xBBu8);
+  bom.appendByte(0xBFu8);
+  bom.append("data: x\n\ndata: y\n\n");
+  mut rb = Reader.make();
+  mut eb = List[Event].empty();
+  rb.feed(bom.view(), &mut eb);
+  expectStr(describe(&eb).view(), "|x||-1;|y||-1;", "a byte order mark at the start is dropped");
+
+  // An id holding a NUL is ignored
+  mut nul = String.from("id: 1\ndata: a\n\nid: 2");
+  nul.appendByte(0u8);
+  nul.append("3\ndata: b\n\n");
+  mut rn = Reader.make();
+  mut en = List[Event].empty();
+  rn.feed(nul.view(), &mut en);
+  expectStr(describe(&en).view(), "|a|1|-1;|b|1|-1;", "an id with a NUL in it is ignored");
+
+  // The stream's own state: last id, retry, what is held
+  mut rs = Reader.make();
+  mut es = List[Event].empty();
+  rs.feed("id: abc\nretry: 7\n\n", &mut es);
+  expectUInt(u64.from(es.len()), 0u64, "an id and a retry alone dispatch no event");
+  expectStr(rs.lastId(), "abc", "...but the last id took effect");
+  expectInt(rs.retryMillis(), 7i64, "...and so did the retry");
+  rs.feed("data: par", &mut es);
+  expectUInt(u64.from(rs.pending()), 9u64, "a partial line is held: its 9 bytes");
+  expect(not rs.overflowed(), "not overflowed");
+
+  // The bound: a Reader holding at most 16 bytes of line and data stops past it
+  mut rl = Reader.withLimit(16usize);
+  mut el = List[Event].empty();
+  rl.feed("data: 12345\n\n", &mut el);
+  expectUInt(u64.from(el.len()), 1u64, "within the bound");
+  mut big = String.from("data: ");
+  mut k = 0usize;
+  while k < 100usize {
+    big.appendByte('z');
+    k = k + 1usize;
+  }
+  big.append("\n\ndata: after\n\n");
+  rl.feed(big.view(), &mut el);
+  expect(rl.overflowed(), "past the bound: overflowed");
+  expectUInt(u64.from(el.len()), 1u64, "...and it gave no more events");
+  expect(rl.pending() <= 17usize, "...holding no more than the bound (and one byte)");
+
+  done();
+}

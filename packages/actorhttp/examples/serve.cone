@@ -1,0 +1,110 @@
+// serve [port]: an HTTP server whose requests are taken by actors, on
+// 127.0.0.1 (this machine only; port 8080 unless one is given). A Front actor
+// listens and awaits 'next' in a loop, giving each request to an Answerer actor
+// of its own:
+//
+//   GET /hello         a line of text
+//   GET /events        server-sent events, one a second, ten of them, then the stream ends
+//   anything else      404
+//
+// Run it with
+//
+//   congo run packages/actorhttp/examples/serve.cone -- 8080
+//
+// and fetch http://127.0.0.1:8080/hello or watch the events with a browser's
+// EventSource or 'curl -N http://127.0.0.1:8080/events'. It runs until it is
+// stopped, so it is an example and never a test: 'congo test' builds it and does
+// not run it.
+
+mod serve;
+
+import stdio use *;
+import process;
+import thread;
+import collections use String;
+import time use Duration;
+import iocore use SocketAddr;
+import http use *;
+import sse;
+import actors;
+import actorhttp use Server, ServerConfig, Exchange;
+
+// Answers one request
+actor Answerer {
+  ex Exchange;
+
+  pub async do run(self) {
+    imm path = String.from(ex.request.path());
+    if path.view() == "/hello" {
+      ex.text(200u16, "hello from a Cone actor\n");
+    } elif path.view() == "/events" {
+      ex.startEvents();
+      mut n = 1u64;
+      while n <= 10u64 {
+        mut text = String.from("tick ");
+        text.appendUInt(n);
+        imm ev = sse.Event.named("tick", text.view());
+        imm w = await ex.sendEvent(&ev);
+        match w {
+          case imm ok Ok {n = n + 1u64;}
+          case imm gone Error {break;}        // the client left: stop
+        }
+        thread.sleep(Duration.fromSeconds(1i64));
+      }
+      imm f = await ex.finish();
+    } else {
+      ex.text(404u16, "not found\n");
+    }
+  }
+}
+
+actor Front {
+  server Server;
+
+  pub async do run(self, port u16) {
+    imm r = await actorhttp.listen(SocketAddr.localhost(port), ServerConfig.make());
+    mut res = r;
+    match &mut res {
+      case mut ok &mut Ok {server <=> *ok;}
+      case imm e &mut Error {
+        printStr(e.message().view());
+        printStr("\n");
+        return;
+      }
+    }
+    printStr("listening on 127.0.0.1:");
+    printUInt(u64.from(server.port()));
+    printStr("\n");
+    while true {
+      imm n = await server.next();
+      match n {
+        case mut ok Ok {
+          imm a = new Answerer(ok);
+          a.run();
+        }
+        case imm e Error {break;}
+      }
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  imm args = process.args();
+  mut port = 8080u16;
+  if args.len() >= 2usize {
+    match collections.parseUInt(args[1usize].view()) {
+      case imm p Some {port = u16.from(p);}
+      case is None[u64] {
+        printStr("usage: serve [port]\n");
+        return 2i32;
+      }
+    }
+  }
+  imm front = new Front(Server.none());
+  front.run(port);
+  // The program runs until it is stopped: the front's loop never ends
+  thread.sleep(Duration.fromSeconds(31536000i64));
+  finalAll();
+  0i32;
+}
