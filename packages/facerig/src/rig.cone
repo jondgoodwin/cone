@@ -87,6 +87,10 @@ pub struct FaceRig {
   pub lowerFace List[u8];         // 1 for a unit of the mouth, for speech to take over
   pub seed u32;
   pub scratch List[f32];
+  // The breath, when a body breathes it for the face: the lungs' fill 0 to 1 (negative: the face keeps its own
+  // 0.27 Hz clock) and the breath's depth (1 at rest), set by 'setBreath' each frame
+  pub breathExternal f32 = -1.;
+  pub breathDepth f32 = 1.;
 
   pub fn make(spec &FaceSpec, units &List[UnitDef], targets &FaceTargets, seed u32) FaceRig {
     mut rng = Rng.make(seed);
@@ -175,6 +179,14 @@ pub struct FaceRig {
 
   pub fn lookAt(self &mut, p Vec3) { gaze.lookAt(p); }
 
+  // Breathe with the body: 'fill' (0 empty, 1 full) is the lungs now and 'depth' the breath's size (1 at rest, 3 after a
+  // run). The nostrils, the jaw's idle drop and the head's breath nod then follow the BODY's breath, one clock and not two.
+  // 'fill' below 0 gives the clock back to the face.
+  pub fn setBreath(self &mut, fill f32, depth f32) {
+    breathExternal = fill;
+    breathDepth = depth;
+  }
+
   pub fn say(self &mut, u &Utterance) { speech.say(u); }
 
   pub fn speaking(self &) bool { !speech.done(); }
@@ -231,7 +243,7 @@ pub struct FaceRig {
     while i < n { vals.set(i, *vals[i] + *speechVals[i]); i = i + 1usize; }
 
     // 4. idle
-    imm breath = 0.5 - 0.5 * cos(2. * pi * 0.27 * time);
+    imm breath = if breathExternal >= 0. { breathExternal; } else { 0.5 - 0.5 * cos(2. * pi * 0.27 * time); };
     if idleAmount > 0. {
       mut c = 0usize;
       while c < idle.len() {
@@ -245,8 +257,8 @@ pub struct FaceRig {
       i = 0usize;
       while i < n {
         imm u = units[i];
-        if u.au == AU_NOSTRIL_DILATOR { vals.set(i, *vals[i] + idleAmount * 0.22 * breath); }
-        if u.au == AU_JAW_DROP { vals.set(i, *vals[i] + idleAmount * (0.02 + 0.018 * breath) * (1. - 0.8 * act)); }
+        if u.au == AU_NOSTRIL_DILATOR { vals.set(i, *vals[i] + idleAmount * 0.22 * breath * breathDepth); }
+        if u.au == AU_JAW_DROP { vals.set(i, *vals[i] + idleAmount * (0.02 + 0.018 * breath * breathDepth) * (1. - 0.8 * act)); }
         i = i + 1usize;
       }
     }

@@ -1,0 +1,203 @@
+// Breathing: one clock for the whole body, with a rate and a depth set by exertion.
+//
+// THE MODEL, in three small parts.
+//
+// 1. EXERTION. The body does WORK (0 resting, about 0.25 at a stroll, 0.6 at a jog, 1 flat out; the caller says, as a
+//    function of speed, load and fitness). Ventilation does not follow work at once: it is a first-order lag with a
+//    different time constant up and down (Wasserman et al., "Principles of Exercise Testing and Interpretation": the
+//    ventilatory response to a step in work has a time constant of tens of seconds on, and recovers more slowly). Work
+//    above an aerobic THRESHOLD builds an oxygen DEBT; the debt is repaid slowly once work falls, and holds ventilation
+//    up while it is (excess post-exercise oxygen consumption, Gaesser and Brooks 1984): a person who has stopped running
+//    still pants for a while. 'ExertionParams.realistic' has the physiological times; 'quick' compresses them about six
+//    times so that a filmed demonstration of a few seconds shows the whole cycle (the demo says so).
+//    The drive (0 to 1) sets the RATE (13 a minute at rest to about 50 flat out) and the DEPTH (tidal volume rises first
+//    and then saturates, so depth leads rate: depth = 1 + (maxDepth - 1) (1 - (1 - drive)^2)).
+// 2. THE CLOCK. The phase advances by rate x dt, so it never jumps when the rate changes. Each cycle's depth and rate
+//    carry a little variability (a few per cent, from a seeded generator): no one breathes like a metronome. A sigh is
+//    one deep breath followed by a long pause.
+// 3. THE WAVEFORM. The lungs' fill over a cycle is inspiration (a half cosine, 40 per cent of the cycle at rest rising to
+//    50 per cent at full drive), then expiration (passive recoil at rest: an exponential, quick at first and slow at the
+//    end; nearly linear and active under load), then an end-expiratory pause that is a tenth of the cycle at rest and
+//    gone at full drive. The ratio of inspiration to expiration is about 2:3 at rest and 1:1 flat out.
+//
+// OUTPUT. A BreathState: the fill, the depth, and the displacements the body shows in metres: the chest wall (which
+// takes more of the work as drive rises), the belly (which leads at rest, and is drawn IN by the abdominal muscles on a
+// hard exhalation), and the shoulders (accessory muscles lift them, under load only). 'applyBreathPose' turns these into
+// bone deltas for an additive layer; the same numbers drive the soft-region morph targets (soft.cone); and a FaceRig
+// breathes the same fill (its nostrils and jaw), so there is one clock.
+
+pub struct ExertionParams {
+  pub onsetTau f32;       // seconds for ventilation to close on a higher drive
+  pub recoverTau f32;     // and on a lower one
+  pub threshold f32;      // the work above which a debt builds
+  pub debtGain f32;       // debt added per second at work 1 over the threshold
+  pub debtRepay f32;      // the share of the debt repaid per second once work is below the threshold
+  pub debtDrive f32;      // the drive a full debt holds up
+  pub restRate f32;       // breaths a second at rest
+  pub maxRate f32;        // and flat out
+  pub maxDepth f32;       // the deepest breath, in resting breaths
+
+  // The times of a body: about thirty seconds on, a minute to recover, a debt that takes a minute or two to repay
+  pub fn realistic() ExertionParams {
+    new ExertionParams(25., 45., 0.55, 0.02, 0.012, 0.8, 0.22, 0.85, 3.2);
+  }
+
+  // The same body with time squeezed about six times, for a demonstration that lasts seconds
+  pub fn quick() ExertionParams {
+    new ExertionParams(4., 8., 0.55, 0.14, 0.07, 0.8, 0.22, 0.85, 3.2);
+  }
+}
+
+// What the body shows of a breath
+pub struct BreathState {
+  pub phase f32;          // cycles, 0 to 1
+  pub fill f32;           // the lungs' fill over a cycle, 0 (end of expiration) to 1 (end of inspiration)
+  pub depth f32;          // this cycle's size, in resting breaths
+  pub rate f32;           // breaths a second now
+  pub drive f32;          // ventilation drive, 0 to 1
+  pub debt f32;           // oxygen debt, 0 to 1.5
+  pub inspiring bool;
+  pub extent f32;         // fill x depth: the chest and belly's travel in resting breaths
+  pub chest f32;          // metres the chest wall stands out from its rest at the front (and a little at the sides)
+  pub belly f32;          // metres the belly stands out (negative: drawn in)
+  pub shoulders f32;      // metres the shoulders are lifted
+  pub winded f32;         // 0 to 1: how out of breath the body looks (drive over what a stroll asks)
+}
+
+pub struct Breathing {
+  pub params ExertionParams;
+  pub size f32;           // the body's height over 1.75 m: scales the displacements
+  pub drive f32;
+  pub debt f32;
+  pub phase f32;
+  pub rate f32;
+  pub cycleDepth f32;     // this cycle's variability
+  pub cycleRate f32;
+  pub sighing bool;       // the cycle in progress is a sigh
+  pub sighNext bool;      // the next cycle will be one
+  pub rng Rng;
+  pub state BreathState;
+
+  pub fn make(params ExertionParams, height f32, seed u32) Breathing {
+    mut rng = Rng.make(seed + 31u32);
+    imm ph = rng.unit();
+    new Breathing(params, height / 1.75, 0., 0., ph, params.restRate, 1., 1., false, false, rng,
+      new BreathState(ph, 0., 1., params.restRate, 0., 0., true, 0., 0., 0., 0., 0.));
+  }
+
+  // The next breath is a sigh: one very deep breath, a long pause after it
+  pub fn sigh(self &mut) { sighNext = true; }
+
+  // Put the body at a drive and debt at once (a body that comes on the scene already winded)
+  pub fn set(self &mut, newDrive f32, newDebt f32) {
+    drive = newDrive;
+    debt = newDebt;
+  }
+
+  // The rate for a drive
+  pub fn rateFor(self &, d f32) f32 {
+    params.restRate + (params.maxRate - params.restRate) * libc.powf(clampf(d, 0., 1.), 0.9);
+  }
+
+  // The depth for a drive
+  pub fn depthFor(self &, d f32) f32 {
+    imm c = clampf(d, 0., 1.);
+    1. + (params.maxDepth - 1.) * (1. - (1. - c) * (1. - c));
+  }
+
+  // Advance 'dt' seconds with the body doing 'work'
+  pub fn update(self &mut, dt f32, work f32) BreathState {
+    // 1. exertion
+    imm over = if work > params.threshold { work - params.threshold; } else { 0.; };
+    imm repay = if work < params.threshold { 1.; } else { 0.25; };
+    debt = clampf(debt + dt * (params.debtGain * over - params.debtRepay * debt * repay), 0., 1.5);
+    imm target = clampf(work + params.debtDrive * (if debt > 1. { 1.; } else { debt; }), 0., 1.);
+    imm tau = if target > drive { params.onsetTau; } else { params.recoverTau; };
+    drive = drive + (target - drive) * (1. - libc.expf(-dt / tau));
+    // 2. the clock
+    rate = self.rateFor(drive) * cycleRate;
+    if sighing { rate = rate * 0.7; }
+    phase = phase + rate * dt;
+    if phase >= 1. {
+      phase = phase - libc.floorf(phase);
+      sighing = sighNext;
+      sighNext = false;
+      cycleDepth = clampf(rng.normal(1., 0.09), 0.7, 1.3);
+      cycleRate = clampf(rng.normal(1., 0.05), 0.85, 1.15);
+      if sighing { cycleDepth = 2.2; }
+    }
+    // 3. the waveform
+    imm depth = self.depthFor(drive) * cycleDepth;
+    imm fill = lungFill(phase, drive, sighing);
+    imm ext = fill * depth;
+    imm chestShare = 0.45 + 0.35 * drive;
+    imm bellyShare = 0.55 - 0.20 * drive;
+    imm s = size;
+    imm chest = 0.008 * s * ext * chestShare / 0.5;
+    imm drawIn = 0.008 * s * drive * drive * (1. - fill);
+    imm belly = 0.011 * s * ext * bellyShare / 0.5 - drawIn;
+    imm shoulders = 0.012 * s * smoothstep(0.25, 0.9, drive) * fill;
+    imm winded = smoothstep(0.2, 0.8, drive);
+    imm inspiring = phase < inspirationEnd(drive);
+    state = new BreathState(phase, fill, depth, rate, drive, debt, inspiring, ext, chest, belly, shoulders, winded);
+    state;
+  }
+}
+
+// Where inspiration ends in the cycle: 0.40 at rest, 0.50 flat out
+fn inspirationEnd(drive f32) f32 { 0.40 + 0.10 * clampf(drive, 0., 1.); }
+
+// The lungs' fill at a phase of the cycle (0 to 1) for a drive (0 to 1): the inspiration, the expiration and the pause
+pub fn lungFill(phase f32, drive f32, sigh bool) f32 {
+  imm d = clampf(drive, 0., 1.);
+  imm tI = inspirationEnd(d);
+  mut pause = 0.10 * (1. - d) * (1. - d);
+  if sigh { pause = 0.22; }
+  imm tE = 1. - pause;
+  if phase < tI {
+    imm u = phase / tI;
+    return 0.5 - 0.5 * cos(pi * u);
+  }
+  if phase < tE {
+    imm s = (phase - tI) / (tE - tI);
+    // passive recoil at rest: an exponential, quick and then slow; active and nearly linear under load
+    imm k = 2.8 + (1.0 - 2.8) * d;
+    imm e0 = libc.expf(-k);
+    return (libc.expf(-k * s) - e0) / (1. - e0);
+  }
+  0.;
+}
+
+// A body's bones in a breath: the chest and spine lean back as the chest fills, the neck and head take a little back,
+// the clavicles lift. Each is a bone number, or -1 for a body that has none of it. Gains are degrees of turn at one resting
+// breath's chest travel (7 mm); lift is a share of the shoulders' metres.
+pub struct BreathBones {
+  pub spine i32;
+  pub chest i32;
+  pub neck i32;
+  pub head i32;
+  pub clavicleL i32;
+  pub clavicleR i32;
+  pub spineGain f32;
+  pub chestGain f32;
+  pub neckGain f32;
+  pub headGain f32;
+}
+
+pub fn humanoidBreathBones() BreathBones {
+  new BreathBones(i32.from(SPINE), i32.from(CHEST), i32.from(NECK), i32.from(HEAD), i32.from(CLAVICLE_L), i32.from(CLAVICLE_R),
+    0.45, 1.1, -0.35, -0.2);
+}
+
+// The breath as bone deltas, added to 'delta' (an additive layer's pose): a turn about x leans an upright bone back
+// (the chest filling), and the clavicles lift with the shoulders
+pub fn applyBreathPose(s &BreathState, b &BreathBones, delta &mut Pose) {
+  imm ax = new Vec3(1., 0., 0.);
+  imm k = s.chest / 0.007;
+  if b.spine >= 0i32 { deltaRotate(delta, usize.from(b.spine), Quat.angleAxis(radians(b.spineGain * k), ax)); }
+  if b.chest >= 0i32 { deltaRotate(delta, usize.from(b.chest), Quat.angleAxis(radians(b.chestGain * k), ax)); }
+  if b.neck >= 0i32 { deltaRotate(delta, usize.from(b.neck), Quat.angleAxis(radians(b.neckGain * k), ax)); }
+  if b.head >= 0i32 { deltaRotate(delta, usize.from(b.head), Quat.angleAxis(radians(b.headGain * k), ax)); }
+  if b.clavicleL >= 0i32 { deltaTranslate(delta, usize.from(b.clavicleL), new Vec3(0., s.shoulders, 0.)); }
+  if b.clavicleR >= 0i32 { deltaTranslate(delta, usize.from(b.clavicleR), new Vec3(0., s.shoulders, 0.)); }
+}
