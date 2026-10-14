@@ -1,0 +1,40 @@
+// What a read-through still refuses at the levels each_operand_readthrough_levels reads:
+// a borrow of a struct that moves (it has a finalizer) is never read through, at one
+// level or two, by a comparison or by a `<-` taking the value, since that would move the
+// value out of the borrow. Nothing is moved out of a borrow: the call is refused where it
+// always was.
+
+mod each_operand_readthrough_levels_typecheck;
+
+import collections use *;
+
+// A struct that moves, with a `<-` taking one by value and a `==` taking borrows
+struct Tok {
+  pub n i32;
+
+  pub fn `==`(self &, other &Tok) bool {
+    n == other.n;
+  }
+
+  fn final(self &uni) { }
+}
+
+struct Bin {
+  pub total i32;
+  pub fn add overload `<-`(self &mut, t Tok) { total += t.n; }
+}
+
+// A borrow of a Tok against a Tok, one level and two
+fn compare(xs &List[Tok], t Tok) {
+  each s in xs {
+    imm a = s == t;                 //~ ErrorRefCompareMixed:15 "so the other side must be a reference too"
+  }
+  mut kept = xs.iter().filter(p => p == t);   //~ ErrorRefCompareMixed:38 "so the other side must be a reference too"
+}
+
+// A `<-` taking a Tok by value is not handed the borrow's Tok
+fn append(xs &List[Tok], mut bin Bin) {
+  each s in xs {
+    bin <- s;                       //~ ErrorNoCandidate:9 "accepts the call's arguments"
+  }
+}

@@ -690,7 +690,22 @@ Three adjustments, two of them asymmetric on purpose:
   matches the operands as written before any of this, and a type that moves is
   never read through, so a borrowed `String` is refused where it was. An
   argument that is not a borrow of such a value, and an index (`FlagIndex`,
-  which is not an operator), are left alone.
+  which is not an operator), are left alone. **Every level of borrow is read
+  through** (`fnCallReadThroughAll`; `fnCallBorrowTypeReadsThrough` recurses
+  into a borrow of a borrow, so `&&i64` qualifies as `&i64` does): the
+  closure of `iter().filter(...)` sees such a borrow, and `p > 4`, `p == q` and
+  `p + 1` read it as `*p` would. A receiver that is itself a borrow of a
+  borrow is read one level at a time by the `RefTag` dispatch
+  (`fnCallTypeCheck`) and dispatched again.
+- **The read-through argument of a receiver that must be borrowed.** A `<-`
+  such as `print <- n` (`IOStream`'s methods declare `self &`) finds no
+  candidate in the deref retry, which tries the receiver as it is. After
+  `fnCallBorrowReceiver` has found none either, an operator's one argument that
+  reads through is read through and `fnCallBorrowReceiver` is asked again. It
+  runs last, only when nothing accepted the arguments as written, so an
+  overload taking the borrow still wins over one taking the value. (A `&u8`
+  still meets `*u8` first: the borrow converts to a raw pointer, so
+  `print <- n` for a borrowed byte selects the C-string overload, as it did.)
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
   reaches a method declaring `self &`, `self &mut` or `self &uni`: it is probed as a `ro`
   borrow, then (for a receiver whose type declares `Immutable`, whose `self &`
