@@ -49,6 +49,27 @@ pub struct RichCore {
   pub anchor Pos;
   pub head Pos;
   pub version u64 = 0u64;        // changes with every edit, undo and redo
+  // The blocks changed since the last layout, as one window dirtyLo..dirtyHi (counted now); NO_BLOCK: none
+  pub dirtyLo usize = 18446744073709551615usize;
+  pub dirtyHi usize = 0usize;
+  pub laidOut usize = 0usize;    // how many blocks there were at the last layout
+}
+
+pub const NO_BLOCK = 18446744073709551615usize;
+
+// A change replaced 'rem' blocks at 'first' by 'ins' blocks: widen the dirty window to hold it
+pub fn markDirty(core &mut RichCore, first usize, rem usize, ins usize) {
+  if core.dirtyLo == NO_BLOCK {
+    core.dirtyLo = first;
+    core.dirtyHi = first + ins;
+    return;
+  }
+  if first < core.dirtyLo { core.dirtyLo = first; }
+  if core.dirtyHi >= first + rem {
+    core.dirtyHi = usize.from(i64.from(core.dirtyHi) + i64.from(ins) - i64.from(rem));
+  } else {
+    core.dirtyHi = first + ins;
+  }
 }
 
 fn oneBlock(b Block) List[Block] {
@@ -91,10 +112,12 @@ pub fn spliceBlocks(blocks &mut List[Block], first usize, count usize, repl List
 
 pub fn applyBlockEdit(core &mut RichCore, c &BlockEdit, undoing bool) {
   if undoing {
+    markDirty(core, c.first, c.inserted.len(), c.removed.len());
     spliceBlocks(&mut core.blocks, c.first, c.inserted.len(), cloneBlocks(&c.removed, 0usize, c.removed.len()));
     core.anchor = c.before.anchor;
     core.head = c.before.head;
   } else {
+    markDirty(core, c.first, c.removed.len(), c.inserted.len());
     spliceBlocks(&mut core.blocks, c.first, c.removed.len(), cloneBlocks(&c.inserted, 0usize, c.inserted.len()));
     core.anchor = c.after.anchor;
     core.head = c.after.head;
@@ -201,6 +224,7 @@ pub struct RichEditor {
 
   // Record the window (now 'newCount' blocks) as one command
   fn commit(self &mut, newCount usize, tag u32, merging bool) {
+    markDirty(&mut core, pendFirst, pendRemoved.len(), newCount);
     mut removed = List[Block].empty();
     removed <=> pendRemoved;
     imm cmd = new BlockEdit(pendFirst, removed, cloneBlocks(&core.blocks, pendFirst, newCount), pendBefore,
@@ -498,6 +522,32 @@ pub struct RichEditor {
     core.anchor = core.head;
     commit(1usize, RT_TAG_OTHER, false);
     hist.breakMerge();
+  }
+
+  // ---- layout, kept up to date ----
+
+  // The whole document laid out; the editor then counts changes from here
+  pub fn fullLayout(self &mut, faces &Faces, cfg &LayoutConfig) RichLayout {
+    imm l = layoutRich(&core.blocks, &core.images, faces, cfg);
+    core.dirtyLo = NO_BLOCK;
+    core.laidOut = core.blocks.len();
+    l;
+  }
+
+  // Whether the document has changed since the last 'fullLayout' or 'relayout'
+  pub fn layoutStale(self &) bool { core.dirtyLo != NO_BLOCK; }
+
+  // The layout after the edits since the last layout, from 'prev', the layout then (made by 'fullLayout' or
+  // 'relayout' with the same faces and configuration): the blocks the edits did not touch are taken, not laid out again
+  pub fn relayout(self &mut, prev &RichLayout, faces &Faces, cfg &LayoutConfig) RichLayout {
+    imm n = core.blocks.len();
+    imm lo = if core.dirtyLo == NO_BLOCK { n; } else { core.dirtyLo; };
+    imm hi = if core.dirtyLo == NO_BLOCK { n; } else { core.dirtyHi; };
+    imm oldHi = usize.from(i64.from(hi) + i64.from(core.laidOut) - i64.from(n));
+    imm l = layoutRichFrom(&core.blocks, &core.images, faces, cfg, prev, lo, hi, oldHi, true);
+    core.dirtyLo = NO_BLOCK;
+    core.laidOut = n;
+    l;
   }
 
   // ---- history ----

@@ -143,10 +143,26 @@ pub struct RichLayout {
   pub lines List[LineP];
   pub boxes List[BoxP];
   pub rects List[RectP];         // underlines
-  pub blockLine List[u32];       // the first line of each block
+  pub floats List[FloatBox];     // the space the floats take
+  // For each block, where its items start in each list, and the y it started at (before the gap above it):
+  // what an incremental layout needs to start in the middle
+  pub blockLine List[u32];
+  pub blockGlyph List[u32];
+  pub blockBox List[u32];
+  pub blockRect List[u32];
+  pub blockMarker List[u32];
+  pub blockFloat List[u32];
+  pub blockY List[f32];
+  pub endY f32 = 0.0;            // y after the last block
   pub width f32;
   pub height f32;
-  pub lineBreaks u32 = 0u32;     // a count, for the tests
+  pub reused u32 = 0u32;         // blocks an incremental layout took from the previous layout (prefix + tail)
+}
+
+pub fn emptyLayout(width f32) RichLayout {
+  new RichLayout(List[GlyphP].empty(), List[GlyphP].empty(), List[LineP].empty(), List[BoxP].empty(), List[RectP].empty(),
+    List[FloatBox].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+    List[u32].empty(), List[f32].empty(), 0.0, width, 0.0);
 }
 
 // ---- the builder ----
@@ -168,11 +184,11 @@ struct Item {
   hyphen bool;
 }
 
-struct FloatBox {
-  x0 f32;
-  x1 f32;
-  y0 f32;
-  y1 f32;
+pub struct FloatBox {
+  pub x0 f32;
+  pub x1 f32;
+  pub y0 f32;
+  pub y1 f32;
 }
 
 fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
@@ -202,7 +218,6 @@ struct Builder {
   floats List[FloatBox];
   y f32;                         // the next block's top
   counters List[u32];            // numbering per depth
-  counterKinds List[u32];
 
   fn floatBottom(self &, y f32, h f32) f32 {
     // the lowest bottom edge among floats that meet the band y..y+h
@@ -286,36 +301,225 @@ fn headingScale(kind u32) f32 {
   1.0;
 }
 
+// The numbering state after a block, and the number a numbered block takes
+fn stepCounters(b &mut Builder, blk &Block) u32 {
+  mut number = 0u32;
+  if blk.kind == BK_NUMBER {
+    while b.counters.len() <= usize.from(blk.depth) { b.counters.push(0u32); }
+    b.counters.set(usize.from(blk.depth), *b.counters[usize.from(blk.depth)] + 1u32);
+    number = *b.counters[usize.from(blk.depth)];
+    // deeper levels start again
+    mut d = usize.from(blk.depth) + 1usize;
+    while d < b.counters.len() { b.counters.set(d, 0u32); d = d + 1usize; }
+  } elif blk.kind == BK_BULLET {
+    mut d = usize.from(blk.depth) + 1usize;
+    while d < b.counters.len() { b.counters.set(d, 0u32); d = d + 1usize; }
+  } else {
+    b.counters.clear();
+  }
+  number;
+}
+
+fn at(l &List[u32], i usize, total usize) usize { if i < l.len() { usize.from(*l[i]); } else { total; }; }
+
+fn shiftU(x u32, d i64) u32 { u32.from(i64.from(x) + d); }
+
+// The blocks before 'n' are as in 'p': take their lines, glyphs and the rest, and the state the layout was in
+fn copyPrefix(b &mut Builder, p &RichLayout, n usize) {
+  imm nl = at(&p.blockLine, n, p.lines.len());
+  imm ng = at(&p.blockGlyph, n, p.glyphs.len());
+  imm nb = at(&p.blockBox, n, p.boxes.len());
+  imm nr = at(&p.blockRect, n, p.rects.len());
+  imm nm = at(&p.blockMarker, n, p.markers.len());
+  imm nf = at(&p.blockFloat, n, p.floats.len());
+  mut k = 0usize;
+  while k < ng { b.out.glyphs.push(*p.glyphs[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < nl { b.out.lines.push(*p.lines[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < nb { b.out.boxes.push(*p.boxes[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < nr { b.out.rects.push(*p.rects[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < nm { b.out.markers.push(*p.markers[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < nf { b.floats.push(*p.floats[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < n {
+    b.out.blockLine.push(*p.blockLine[k]);
+    b.out.blockGlyph.push(*p.blockGlyph[k]);
+    b.out.blockBox.push(*p.blockBox[k]);
+    b.out.blockRect.push(*p.blockRect[k]);
+    b.out.blockMarker.push(*p.blockMarker[k]);
+    b.out.blockFloat.push(*p.blockFloat[k]);
+    b.out.blockY.push(*p.blockY[k]);
+    k = k + 1usize;
+  }
+  b.y = if n < p.blockY.len() { *p.blockY[n]; } else { p.endY; };
+}
+
+// Whether blocks from old index 'oldIdx' on can be moved down by the difference in y: no float of either layout reaches
+// down to where they start, so nothing before them can touch them
+fn canSplice(b &Builder, p &RichLayout, oldIdx usize) bool {
+  mut k = 0usize;
+  while k < b.floats.len() {
+    if (*b.floats[k]).y1 > b.y { return false; }
+    k = k + 1usize;
+  }
+  imm nf = at(&p.blockFloat, oldIdx, p.floats.len());
+  imm oy = *p.blockY[oldIdx];
+  k = 0usize;
+  while k < nf {
+    if (*p.floats[k]).y1 > oy { return false; }
+    k = k + 1usize;
+  }
+  true;
+}
+
+// Take blocks oldIdx.. of 'p' as blocks bi.. of the layout being built, moved by the difference in y
+fn spliceTail(b &mut Builder, p &RichLayout, oldIdx usize, bi usize) {
+  imm dy = b.y - *p.blockY[oldIdx];
+  imm dBlock = i64.from(bi) - i64.from(oldIdx);
+  imm l0 = at(&p.blockLine, oldIdx, p.lines.len());
+  imm g0 = at(&p.blockGlyph, oldIdx, p.glyphs.len());
+  imm b0 = at(&p.blockBox, oldIdx, p.boxes.len());
+  imm r0 = at(&p.blockRect, oldIdx, p.rects.len());
+  imm m0 = at(&p.blockMarker, oldIdx, p.markers.len());
+  imm f0 = at(&p.blockFloat, oldIdx, p.floats.len());
+  imm lShift = i64.from(b.out.lines.len()) - i64.from(l0);
+  imm gShift = i64.from(b.out.glyphs.len()) - i64.from(g0);
+  imm bShift = i64.from(b.out.boxes.len()) - i64.from(b0);
+  imm rShift = i64.from(b.out.rects.len()) - i64.from(r0);
+  imm mShift = i64.from(b.out.markers.len()) - i64.from(m0);
+  imm fShift = i64.from(b.floats.len()) - i64.from(f0);
+  mut k = g0;
+  while k < p.glyphs.len() {
+    mut g = *p.glyphs[k];
+    g.y = g.y + dy;
+    g.block = shiftU(g.block, dBlock);
+    b.out.glyphs.push(g);
+    k = k + 1usize;
+  }
+  k = l0;
+  while k < p.lines.len() {
+    mut ln = *p.lines[k];
+    ln.top = ln.top + dy;
+    ln.baseline = ln.baseline + dy;
+    ln.block = shiftU(ln.block, dBlock);
+    ln.g0 = shiftU(ln.g0, gShift);
+    b.out.lines.push(ln);
+    k = k + 1usize;
+  }
+  k = b0;
+  while k < p.boxes.len() {
+    mut bx = *p.boxes[k];
+    bx.y = bx.y + dy;
+    bx.block = shiftU(bx.block, dBlock);
+    b.out.boxes.push(bx);
+    k = k + 1usize;
+  }
+  k = r0;
+  while k < p.rects.len() {
+    mut r = *p.rects[k];
+    r.y = r.y + dy;
+    b.out.rects.push(r);
+    k = k + 1usize;
+  }
+  k = m0;
+  while k < p.markers.len() {
+    mut m = *p.markers[k];
+    m.y = m.y + dy;
+    m.block = shiftU(m.block, dBlock);
+    b.out.markers.push(m);
+    k = k + 1usize;
+  }
+  k = f0;
+  while k < p.floats.len() {
+    mut f = *p.floats[k];
+    f.y0 = f.y0 + dy;
+    f.y1 = f.y1 + dy;
+    b.floats.push(f);
+    k = k + 1usize;
+  }
+  k = oldIdx;
+  while k < p.blockLine.len() {
+    b.out.blockLine.push(shiftU(*p.blockLine[k], lShift));
+    b.out.blockGlyph.push(shiftU(*p.blockGlyph[k], gShift));
+    b.out.blockBox.push(shiftU(*p.blockBox[k], bShift));
+    b.out.blockRect.push(shiftU(*p.blockRect[k], rShift));
+    b.out.blockMarker.push(shiftU(*p.blockMarker[k], mShift));
+    b.out.blockFloat.push(shiftU(*p.blockFloat[k], fShift));
+    b.out.blockY.push(*p.blockY[k] + dy);
+    k = k + 1usize;
+  }
+  b.y = p.endY + dy;
+  b.out.reused = b.out.reused + u32.from(p.blockLine.len() - oldIdx);
+}
+
 pub fn layoutRich(blocks &List[Block], images &List[ImageInfo], faces &Faces, cfg &LayoutConfig) RichLayout {
-  mut b = new Builder(new RichLayout(List[GlyphP].empty(), List[GlyphP].empty(), List[LineP].empty(), List[BoxP].empty(),
-    List[RectP].empty(), List[u32].empty(), cfg.width, 0.0), List[FloatBox].empty(), cfg.marginTop, List[u32].empty(),
-    List[u32].empty());
+  imm none = emptyLayout(cfg.width);
+  layoutRichFrom(blocks, images, faces, cfg, &none, 0usize, blocks.len(), 0usize, false);
+}
+
+// The layout of the document after an edit that replaced blocks lo..hi (counted now) which were lo..oldHi in
+// 'prev', the layout before the edit, made with the same fonts and configuration. The blocks before lo are taken from
+// 'prev' as they are. The blocks from hi on are taken too, moved by the change in y, from the first one where that is
+// safe: a block that is not in a list (so numbering does not carry in), with no float from either layout reaching
+// down to it (so nothing above can wrap around into it). A list continues to be laid out until such a block is
+// reached; a float reaching far down makes the layout go on. The result is the same as 'layoutRich''s (the test
+// compares them field by field).
+pub fn layoutRichFrom(blocks &List[Block], images &List[ImageInfo], faces &Faces, cfg &LayoutConfig, prev &RichLayout, lo usize,
+    hi usize, oldHi usize, usePrev bool) RichLayout {
+  mut b = new Builder(emptyLayout(cfg.width), List[FloatBox].empty(), cfg.marginTop, List[u32].empty());
   imm left = cfg.margin;
   imm right = cfg.width - cfg.margin;
   mut bi = 0usize;
+  imm prevBlocks = prev.blockLine.len();
+  if usePrev and lo > 0usize and lo <= prevBlocks and lo <= blocks.len() {
+    copyPrefix(&mut b, prev, lo);
+    mut k = 0usize;
+    while k < lo { stepCounters(&mut b, blocks[k]); k = k + 1usize; }
+    bi = lo;
+    b.out.reused = u32.from(lo);
+  }
+  if usePrev {
+    // the lists will be about as long as the previous ones: no growing by doubling
+    b.out.glyphs.reserve(prev.glyphs.len() + 256usize);
+    b.out.lines.reserve(prev.lines.len() + 16usize);
+    b.out.boxes.reserve(prev.boxes.len() + 4usize);
+    b.out.rects.reserve(prev.rects.len() + 8usize);
+    b.out.markers.reserve(prev.markers.len() + 8usize);
+    b.out.blockLine.reserve(prev.blockLine.len() + 4usize);
+    b.out.blockGlyph.reserve(prev.blockLine.len() + 4usize);
+    b.out.blockBox.reserve(prev.blockLine.len() + 4usize);
+    b.out.blockRect.reserve(prev.blockLine.len() + 4usize);
+    b.out.blockMarker.reserve(prev.blockLine.len() + 4usize);
+    b.out.blockFloat.reserve(prev.blockLine.len() + 4usize);
+    b.out.blockY.reserve(prev.blockLine.len() + 4usize);
+  }
+  mut spliced = false;
   while bi < blocks.len() {
     imm blk = blocks[bi];
-    b.out.blockLine.push(u32.from(b.out.lines.len()));
-    // numbering
-    mut number = 0u32;
-    if blk.kind == BK_NUMBER {
-      while b.counters.len() <= usize.from(blk.depth) { b.counters.push(0u32); b.counterKinds.push(0u32); }
-      b.counters.set(usize.from(blk.depth), *b.counters[usize.from(blk.depth)] + 1u32);
-      b.counterKinds.set(usize.from(blk.depth), BK_NUMBER);
-      number = *b.counters[usize.from(blk.depth)];
-      // deeper levels start again
-      mut d = usize.from(blk.depth) + 1usize;
-      while d < b.counters.len() { b.counters.set(d, 0u32); d = d + 1usize; }
-    } elif blk.kind == BK_BULLET {
-      mut d = usize.from(blk.depth) + 1usize;
-      while d < b.counters.len() { b.counters.set(d, 0u32); d = d + 1usize; }
-    } else {
-      b.counters.clear();
-      b.counterKinds.clear();
+    if usePrev and bi >= hi {
+      imm oldIdx = bi - hi + oldHi;
+      if oldIdx < prevBlocks and !blk.isList() and canSplice(&b, prev, oldIdx) {
+        spliceTail(&mut b, prev, oldIdx, bi);
+        spliced = true;
+        break;
+      }
     }
+    b.out.blockLine.push(u32.from(b.out.lines.len()));
+    b.out.blockGlyph.push(u32.from(b.out.glyphs.len()));
+    b.out.blockBox.push(u32.from(b.out.boxes.len()));
+    b.out.blockRect.push(u32.from(b.out.rects.len()));
+    b.out.blockMarker.push(u32.from(b.out.markers.len()));
+    b.out.blockFloat.push(u32.from(b.floats.len()));
+    b.out.blockY.push(b.y);
+    imm number = stepCounters(&mut b, blk);
     layoutBlock(&mut b, bi, blk, number, images, faces, cfg, left, right);
     bi = bi + 1usize;
   }
+  b.out.endY = b.y;
   // the page ends below the lowest float too
   mut bottom = b.y;
   mut f = 0usize;
@@ -325,8 +529,8 @@ pub fn layoutRich(blocks &List[Block], images &List[ImageInfo], faces &Faces, cf
     f = f + 1usize;
   }
   b.out.height = bottom + cfg.marginTop;
-  mut result = new RichLayout(List[GlyphP].empty(), List[GlyphP].empty(), List[LineP].empty(), List[BoxP].empty(),
-    List[RectP].empty(), List[u32].empty(), cfg.width, 0.0);
+  b.out.floats <=> b.floats;
+  mut result = emptyLayout(cfg.width);
   result <=> b.out;
   result;
 }
@@ -580,7 +784,6 @@ fn layoutBlock(bd &mut Builder, bi usize, blk &Block, number u32, images &List[I
     imm gn = bd.out.glyphs.len() - g0;
     bd.out.lines.push(new LineP(u32.from(bi), startOff, endOff, if e == j { endOff; } else { inkEndOff; }, bd.y, thisH, baseline, x, x + inkW + extra * f32.from(spaces),
       u32.from(g0), u32.from(gn), isLast));
-    bd.out.lineBreaks = bd.out.lineBreaks + 1u32;
     bd.y = bd.y + thisH;
     lineNo = lineNo + 1u32;
     if n == 0usize { break; }
