@@ -1,0 +1,53 @@
+// What `String.fromCStr` takes: a `cstr`, which promises the zero that ends it. A literal, a
+// String's `cstr()`, an owner of text's, a raw pointer the caller vouches for
+// (`cstr.fromPtr`) and what a C function answers (strerror) all make the right String, each
+// copying the bytes up to the zero and no further. A pointer C may leave null (what `getenv`
+// answers for a name no one set) is asked about first and only then vouched for. What is
+// refused (a `&u8`, a raw `*u8`, `null`) is in module_string_fromcstr_reject.
+//
+// - the cstrs above, and the empty literal;
+// - a pointer into a longer run of bytes holding a zero: the String ends at the zero;
+// - a null `getenv` answer: the caller's own check, no String made.
+
+mod module_string_fromcstr;
+
+import stdio use *;
+import collections use List, String;
+import libc;
+
+fn show(label &str, s &String) {
+  print <- label, ": [", s.view(), "] len ", s.len(), "\n";
+}
+
+fn main() {
+  imm lit = String.fromCStr("from a literal");
+  show("literal", &lit);
+  imm empty = String.fromCStr("");
+  show("empty", &empty);
+  imm owned = String.from("from a String");
+  imm viaString = String.fromCStr(owned.cstr());
+  show("String", &viaString);
+  imm owner So[str] = "from an owner";
+  imm viaOwner = String.fromCStr(owner.cstr());
+  show("owner", &viaOwner);
+  imm bytes = &"from raw bytes" as *u8;
+  imm viaPtr = String.fromCStr(cstr.fromPtr(bytes));
+  show("fromPtr", &viaPtr);
+  imm viaC = String.fromCStr(libc.strerror(2i32));
+  show("strerror", &viaC);
+
+  // Bytes that hold a zero: the copy ends at the first one
+  imm longer = &"ab\x00cd" as *u8;
+  imm cut = String.fromCStr(cstr.fromPtr(longer));
+  show("cut", &cut);
+
+  // A pointer C may leave null: ask first
+  imm unset = libc.getenv("CONE_FROMCSTR_NEVER_SET");
+  if unset == null {
+    print <- "unset: nothing to copy\n";
+  } else {
+    imm s = String.fromCStr(cstr.fromPtr(unset));
+    show("unset", &s);
+  }
+  print.flush();
+}
