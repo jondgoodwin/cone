@@ -1,0 +1,582 @@
+// ======== Editing a rich document ========
+//
+// 'RichEditor' is a document (blocks and images), a selection (anchor and head) and an undo history.
+// Every operation names the blocks it may change (the EDIT WINDOW: a first block and a count), changes
+// them in place, and then records the window as it was and as it is now: one command, 'BlockEdit',
+// that replaces the window's old blocks by its new ones. Undo and redo are that replacement run in
+// either direction, with the selection put back. So every kind of change (typing, deleting a range
+// over several paragraphs, making a list, toggling bold, inserting an image) undoes by one mechanism,
+// and the History is textedit's 'History[C]', which never looks inside a command. The cost of a
+// keystroke is a copy of the one block it is in, twice (before and after): a snapshot per command,
+// the way a document editor with paragraph granularity does it (Word and Google Docs undo by
+// paragraph-sized deltas as well); a long paragraph is the worst case, a few kilobytes.
+//
+// Typing a word undoes as one step (History.pushMerging with a function that takes the later
+// command's result and keeps the earlier one's 'removed'); a space, a newline, a movement or a
+// formatting change ends the run.
+//
+// STYLE AT THE CARET. A caret takes the style of the character before it. Toggling bold with a
+// collapsed selection sets a PENDING style that the next typed character takes and any movement
+// forgets (every editor does this).
+//
+// The editor knows nothing of layout: movement by line, up and down, and hit testing need the
+// layout and are in layout.cone.
+
+pub const RT_TAG_OTHER = 0u32;
+pub const RT_TAG_TYPING = 1u32;
+pub const RT_TAG_BACKSPACE = 2u32;
+pub const RT_TAG_DELETE = 3u32;
+pub const RT_TAG_FORMAT = 4u32;
+
+pub struct Sel {
+  pub anchor Pos;
+  pub head Pos;
+}
+
+// The History command: replace 'removed.len()' blocks at 'first' by 'inserted' (and back)
+pub struct BlockEdit {
+  pub first usize;
+  pub removed List[Block];
+  pub inserted List[Block];
+  pub before Sel;
+  pub after Sel;
+}
+
+// What undo and redo act on (the History is held beside it, so they can borrow it and this separately)
+pub struct RichCore {
+  pub blocks List[Block];
+  pub images List[ImageInfo];
+  pub anchor Pos;
+  pub head Pos;
+  pub version u64 = 0u64;        // changes with every edit, undo and redo
+  // The blocks changed since the last layout, as one window dirtyLo..dirtyHi (counted now); NO_BLOCK: none
+  pub dirtyLo usize = 18446744073709551615usize;
+  pub dirtyHi usize = 0usize;
+  pub laidOut usize = 0usize;    // how many blocks there were at the last layout
+}
+
+pub const NO_BLOCK = 18446744073709551615usize;
+
+// A change replaced 'rem' blocks at 'first' by 'ins' blocks: widen the dirty window to hold it
+pub fn markDirty(core &mut RichCore, first usize, rem usize, ins usize) {
+  if core.dirtyLo == NO_BLOCK {
+    core.dirtyLo = first;
+    core.dirtyHi = first + ins;
+    return;
+  }
+  if first < core.dirtyLo { core.dirtyLo = first; }
+  if core.dirtyHi >= first + rem {
+    core.dirtyHi = usize.from(i64.from(core.dirtyHi) + i64.from(ins) - i64.from(rem));
+  } else {
+    core.dirtyHi = first + ins;
+  }
+}
+
+fn oneBlock(b Block) List[Block] {
+  mut l = List[Block].withCapacity(1usize);
+  l.push(b);
+  l;
+}
+
+// Replace 'count' blocks at 'first' by 'repl', moving the tail by swaps (no copies of the tail)
+pub fn spliceBlocks(blocks &mut List[Block], first usize, count usize, repl List[Block]) {
+  imm n = repl.len();
+  if n > count {
+    imm diff = n - count;
+    mut k = 0usize;
+    while k < diff {
+      blocks.push(Block.empty());
+      k = k + 1usize;
+    }
+    // shift the tail up, last element first
+    mut i = blocks.len() - diff;
+    while i > first + count {
+      i = i - 1usize;
+      blocks.swap(i, i + diff);
+    }
+  } elif n < count {
+    imm diff = count - n;
+    mut i = first + count;
+    while i < blocks.len() {
+      blocks.swap(i, i - diff);
+      i = i + 1usize;
+    }
+    blocks.truncate(blocks.len() - diff);
+  }
+  mut j = 0usize;
+  while j < n {
+    blocks.set(first + j, cloneBlock(repl[j]));
+    j = j + 1usize;
+  }
+}
+
+pub fn applyBlockEdit(core &mut RichCore, c &BlockEdit, undoing bool) {
+  if undoing {
+    markDirty(core, c.first, c.inserted.len(), c.removed.len());
+    spliceBlocks(&mut core.blocks, c.first, c.inserted.len(), cloneBlocks(&c.removed, 0usize, c.removed.len()));
+    core.anchor = c.before.anchor;
+    core.head = c.before.head;
+  } else {
+    markDirty(core, c.first, c.removed.len(), c.inserted.len());
+    spliceBlocks(&mut core.blocks, c.first, c.removed.len(), cloneBlocks(&c.inserted, 0usize, c.inserted.len()));
+    core.anchor = c.after.anchor;
+    core.head = c.after.head;
+  }
+  core.version = core.version + 1u64;
+}
+
+// History's merge: typing continues typing in the same block
+fn mergeBlockEdit(prev &mut BlockEdit, next &BlockEdit) bool {
+  if prev.first == next.first and prev.inserted.len() == 1usize and next.removed.len() == 1usize and next.inserted.len() == 1usize
+      and prev.removed.len() == 1usize {
+    prev.inserted = cloneBlocks(&next.inserted, 0usize, 1usize);
+    prev.after = next.after;
+    return true;
+  }
+  false;
+}
+
+pub struct RichEditor {
+  pub core RichCore;
+  pub hist History[BlockEdit];
+  pub pending Style;
+  pub pendingSet bool = false;
+  pendFirst usize = 0usize;
+  pendRemoved List[Block];
+  pendBefore Sel;
+
+  pub fn make() RichEditor {
+    mut b = List[Block].empty();
+    b.push(Block.empty());
+    new RichEditor(new RichCore(b, List[ImageInfo].empty(), pos(0usize, 0usize), pos(0usize, 0usize)),
+      History[BlockEdit].make(), Style.plain(), false, 0usize, List[Block].empty(), new Sel(pos(0usize, 0usize), pos(0usize, 0usize)));
+  }
+
+  // A document of these blocks
+  pub fn fromBlocks(blocks List[Block]) RichEditor {
+    mut e = RichEditor.make();
+    if blocks.len() > 0usize { e.core.blocks = blocks; }
+    e;
+  }
+
+  pub fn version(self &) u64 { core.version; }
+  pub fn blockCount(self &) usize { core.blocks.len(); }
+  pub fn block(self &, i usize) &Block { core.blocks[i]; }
+  pub fn anchor(self &) Pos { core.anchor; }
+  pub fn head(self &) Pos { core.head; }
+  pub fn hasSelection(self &) bool { !core.anchor.same(&core.head); }
+  pub fn isDirty(self &) bool { hist.isDirty(); }
+
+  pub fn lo(self &) Pos { if core.anchor.le(&core.head) { core.anchor; } else { core.head; }; }
+  pub fn hi(self &) Pos { if core.anchor.le(&core.head) { core.head; } else { core.anchor; }; }
+
+  pub fn addImage(self &mut, info ImageInfo) u32 {
+    core.images.push(info);
+    u32.from(core.images.len());
+  }
+
+  // ---- the selection ----
+
+  pub fn setCaret(self &mut, p Pos, extend bool) {
+    core.head = p;
+    if !extend { core.anchor = p; }
+    pendingSet = false;
+    hist.breakMerge();
+  }
+
+  pub fn selectAll(self &mut) {
+    core.anchor = pos(0usize, 0usize);
+    core.head = pos(core.blocks.len() - 1usize, core.blocks[core.blocks.len() - 1usize].text.len());
+    pendingSet = false;
+  }
+
+  // Left or right by one character (or word), over block boundaries
+  pub fn moveHorizontal(self &mut, dir i32, byWord bool, extend bool) {
+    // a selection collapses to the edge it moves toward
+    if !extend and hasSelection() {
+      imm p = if dir < 0i32 { lo(); } else { hi(); };
+      setCaret(p, false);
+      return;
+    }
+    mut p = core.head;
+    imm t = core.blocks[p.block].text.view();
+    if dir < 0i32 {
+      if p.off == 0usize {
+        if p.block > 0usize { p = pos(p.block - 1usize, core.blocks[p.block - 1usize].text.len()); }
+      } elif byWord { p.off = prevWordOff(t, p.off); }
+      else { p.off = prevCharOff(t, p.off); }
+    } else {
+      if p.off >= t.len() {
+        if p.block + 1usize < core.blocks.len() { p = pos(p.block + 1usize, 0usize); }
+      } elif byWord { p.off = nextWordOff(t, p.off); }
+      else { p.off = nextCharOff(t, p.off); }
+    }
+    setCaret(p, extend);
+  }
+
+  // ---- the edit window ----
+
+  fn begin(self &mut, first usize, count usize) {
+    pendFirst = first;
+    pendRemoved = cloneBlocks(&core.blocks, first, count);
+    pendBefore = new Sel(core.anchor, core.head);
+  }
+
+  // Record the window (now 'newCount' blocks) as one command
+  fn commit(self &mut, newCount usize, tag u32, merging bool) {
+    markDirty(&mut core, pendFirst, pendRemoved.len(), newCount);
+    mut removed = List[Block].empty();
+    removed <=> pendRemoved;
+    imm cmd = new BlockEdit(pendFirst, removed, cloneBlocks(&core.blocks, pendFirst, newCount), pendBefore,
+      new Sel(core.anchor, core.head));
+    core.version = core.version + 1u64;
+    if merging { hist.pushMerging(cmd, tag, &mergeBlockEdit); } else { hist.push(cmd, tag); }
+  }
+
+  // Delete the selection inside an open window; leaves the caret where it was. Returns the number of
+  // blocks the window now holds
+  fn deleteSelectionRaw(self &mut) usize {
+    imm a = lo();
+    imm z = hi();
+    if a.block == z.block {
+      deleteInBlock(&mut core.blocks[a.block], a.off, z.off);
+    } else {
+      // the front of the first block, the back of the last
+      imm tail = splitBlockAt(&mut core.blocks[z.block], z.off);
+      deleteInBlock(&mut core.blocks[a.block], a.off, core.blocks[a.block].text.len());
+      appendBlock(&mut core.blocks[a.block], &tail);
+      spliceBlocks(&mut core.blocks, a.block + 1usize, z.block - a.block, List[Block].empty());
+    }
+    core.anchor = a;
+    core.head = a;
+    1usize;
+  }
+
+  // ---- typing and deleting ----
+
+  // Insert text (line breaks make new blocks), replacing the selection
+  pub fn insertText(self &mut, s &str) {
+    if s.len() == 0usize { return; }
+    imm a = lo();
+    imm z = hi();
+    imm selected = hasSelection();
+    begin(a.block, z.block - a.block + 1usize);
+    mut count = z.block - a.block + 1usize;
+    if selected { count = deleteSelectionRaw(); }
+    mut style = if pendingSet { pending; } else { styleAt(core.blocks[a.block], a.off); };
+    style.image = 0u32;
+    mut p = a;
+    mut segStart = 0usize;
+    mut i = 0usize;
+    while i <= s.len() {
+      if i == s.len() or s[i] == 10u8 {
+        if i > segStart {
+          imm seg = s.slice(segStart, i);
+          insertInBlock(&mut core.blocks[p.block], p.off, seg, style);
+          p.off = p.off + seg.len();
+        }
+        if i < s.len() {
+          // a line break
+          imm tail = splitBlockAt(&mut core.blocks[p.block], p.off);
+          spliceBlocks(&mut core.blocks, p.block + 1usize, 0usize, oneBlock(tail));
+          count = count + 1usize;
+          p = pos(p.block + 1usize, 0usize);
+        }
+        segStart = i + 1usize;
+      }
+      i = i + 1usize;
+    }
+    core.anchor = p;
+    core.head = p;
+    pendingSet = false;
+    imm typing = !selected and count == 1usize and s.len() <= 4usize and s[0usize] != 32u8 and s[0usize] != 10u8;
+    commit(count, RT_TAG_TYPING, typing);
+    if !typing { hist.breakMerge(); }
+  }
+
+  // Backspace: the selection, or the character before the caret, or (at a block's start) the block's
+  // list or heading, or the break before it
+  pub fn backspace(self &mut) {
+    if hasSelection() { deleteSelection(); return; }
+    imm p = core.head;
+    if p.off > 0usize {
+      begin(p.block, 1usize);
+      imm from = prevCharOff(core.blocks[p.block].text.view(), p.off);
+      deleteInBlock(&mut core.blocks[p.block], from, p.off);
+      core.head = pos(p.block, from);
+      core.anchor = core.head;
+      pendingSet = false;
+      commit(1usize, RT_TAG_BACKSPACE, true);
+    } elif core.blocks[p.block].kind != BK_PARA {
+      begin(p.block, 1usize);
+      core.blocks[p.block].kind = BK_PARA;
+      core.blocks[p.block].depth = 0u32;
+      commit(1usize, RT_TAG_FORMAT, false);
+    } elif p.block > 0usize {
+      begin(p.block - 1usize, 2usize);
+      imm at = core.blocks[p.block - 1usize].text.len();
+      imm tail = cloneBlock(core.blocks[p.block]);
+      appendBlock(&mut core.blocks[p.block - 1usize], &tail);
+      spliceBlocks(&mut core.blocks, p.block, 1usize, List[Block].empty());
+      core.head = pos(p.block - 1usize, at);
+      core.anchor = core.head;
+      commit(1usize, RT_TAG_OTHER, false);
+    }
+  }
+
+  // Delete: the selection, or the character after the caret, or the break after it
+  pub fn deleteForward(self &mut) {
+    if hasSelection() { deleteSelection(); return; }
+    imm p = core.head;
+    imm t = core.blocks[p.block].text.len();
+    if p.off < t {
+      begin(p.block, 1usize);
+      imm to = nextCharOff(core.blocks[p.block].text.view(), p.off);
+      deleteInBlock(&mut core.blocks[p.block], p.off, to);
+      commit(1usize, RT_TAG_DELETE, true);
+    } elif p.block + 1usize < core.blocks.len() {
+      begin(p.block, 2usize);
+      imm tail = cloneBlock(core.blocks[p.block + 1usize]);
+      appendBlock(&mut core.blocks[p.block], &tail);
+      spliceBlocks(&mut core.blocks, p.block + 1usize, 1usize, List[Block].empty());
+      commit(1usize, RT_TAG_OTHER, false);
+    }
+  }
+
+  pub fn deleteSelection(self &mut) {
+    if !hasSelection() { return; }
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    imm n = deleteSelectionRaw();
+    pendingSet = false;
+    commit(n, RT_TAG_OTHER, false);
+  }
+
+  // Enter: split the block at the caret; Enter on an empty list item leaves the list
+  pub fn enter(self &mut) {
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    if hasSelection() { deleteSelectionRaw(); }
+    imm p = core.head;
+    imm b = core.blocks[p.block];
+    mut count = 1usize;
+    if b.isList() and b.text.len() == 0usize {
+      if b.depth > 0u32 { core.blocks[p.block].depth = b.depth - 1u32; }
+      else { core.blocks[p.block].kind = BK_PARA; }
+    } else {
+      imm style = if pendingSet { pending; } else { styleAt(b, p.off); };
+      mut tail = splitBlockAt(&mut core.blocks[p.block], p.off);
+      if core.blocks[p.block].isHeading() { tail.kind = BK_PARA; }
+      spliceBlocks(&mut core.blocks, p.block + 1usize, 0usize, oneBlock(tail));
+      core.head = pos(p.block + 1usize, 0usize);
+      core.anchor = core.head;
+      pending = style;
+      pendingSet = true;
+      count = 2usize;
+    }
+    commit(count, RT_TAG_OTHER, false);
+  }
+
+  // ---- formatting ----
+
+  // Turn an attribute on over the selection, or off if all of it has it; with no selection, for what is typed next
+  pub fn toggleStyle(self &mut, kind u32) {
+    mut op = new StyleOp(kind, true, 0.0, 0u32);
+    if !hasSelection() {
+      mut s = if pendingSet { pending; } else { styleAt(core.blocks[core.head.block], core.head.off); };
+      op.on = !hasOp(&s, &op);
+      applyOp(&mut s, &op);
+      pending = s;
+      pendingSet = true;
+      return;
+    }
+    imm a = lo();
+    imm z = hi();
+    // on unless every character already has it
+    mut all = true;
+    mut bi = a.block;
+    while bi <= z.block {
+      imm from = if bi == a.block { a.off; } else { 0usize; };
+      imm to = if bi == z.block { z.off; } else { core.blocks[bi].text.len(); };
+      if to > from and !rangeHas(core.blocks[bi], from, to, &op) { all = false; }
+      bi = bi + 1usize;
+    }
+    op.on = !all;
+    styleSelection(&op);
+  }
+
+  // Set an attribute (size, colour, link) over the selection
+  pub fn styleSelection(self &mut, op &StyleOp) {
+    if !hasSelection() {
+      mut s = if pendingSet { pending; } else { styleAt(core.blocks[core.head.block], core.head.off); };
+      applyOp(&mut s, op);
+      pending = s;
+      pendingSet = true;
+      return;
+    }
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    mut bi = a.block;
+    while bi <= z.block {
+      imm from = if bi == a.block { a.off; } else { 0usize; };
+      imm to = if bi == z.block { z.off; } else { core.blocks[bi].text.len(); };
+      styleRange(&mut core.blocks[bi], from, to, op);
+      bi = bi + 1usize;
+    }
+    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    hist.breakMerge();
+  }
+
+  // Set the kind (paragraph, heading, list) of the blocks the selection touches
+  pub fn setBlockKind(self &mut, kind u32) {
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    mut bi = a.block;
+    while bi <= z.block {
+      core.blocks[bi].kind = kind;
+      if kind != BK_BULLET and kind != BK_NUMBER { core.blocks[bi].depth = 0u32; }
+      bi = bi + 1usize;
+    }
+    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    hist.breakMerge();
+  }
+
+  // A list of this kind, or back to paragraphs when they all are one already
+  pub fn toggleList(self &mut, kind u32) {
+    imm a = lo();
+    imm z = hi();
+    mut all = true;
+    mut bi = a.block;
+    while bi <= z.block {
+      if core.blocks[bi].kind != kind { all = false; }
+      bi = bi + 1usize;
+    }
+    setBlockKind(if all { BK_PARA; } else { kind; });
+  }
+
+  // Deeper (+1) or shallower (-1) list items
+  pub fn indent(self &mut, delta i32) {
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    mut bi = a.block;
+    while bi <= z.block {
+      imm d = core.blocks[bi].depth;
+      if core.blocks[bi].isList() {
+        if delta > 0i32 and d < 5u32 { core.blocks[bi].depth = d + 1u32; }
+        if delta < 0i32 and d > 0u32 { core.blocks[bi].depth = d - 1u32; }
+      }
+      bi = bi + 1usize;
+    }
+    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    hist.breakMerge();
+  }
+
+  // The list depth of the blocks the selection touches (list blocks only)
+  pub fn setListDepth(self &mut, depth u32) {
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    mut bi = a.block;
+    while bi <= z.block {
+      if core.blocks[bi].isList() { core.blocks[bi].depth = depth; }
+      bi = bi + 1usize;
+    }
+    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    hist.breakMerge();
+  }
+
+  pub fn setAlign(self &mut, align u32) {
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    mut bi = a.block;
+    while bi <= z.block {
+      core.blocks[bi].align = align;
+      bi = bi + 1usize;
+    }
+    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    hist.breakMerge();
+  }
+
+  // An image at the caret: add it to the document's table first with 'addImage'
+  pub fn insertImage(self &mut, image u32) {
+    imm a = lo();
+    imm z = hi();
+    begin(a.block, z.block - a.block + 1usize);
+    if hasSelection() { deleteSelectionRaw(); }
+    imm p = core.head;
+    mut s = Style.plain();
+    s.image = image;
+    // U+FFFC
+    mut anchorChar = String.empty();
+    anchorChar.appendByte(0xEFu8);
+    anchorChar.appendByte(0xBFu8);
+    anchorChar.appendByte(0xBCu8);
+    insertInBlock(&mut core.blocks[p.block], p.off, anchorChar.view(), s);
+    core.head = pos(p.block, p.off + OBJECT_CHAR_BYTES);
+    core.anchor = core.head;
+    commit(1usize, RT_TAG_OTHER, false);
+    hist.breakMerge();
+  }
+
+  // ---- layout, kept up to date ----
+
+  // The whole document laid out; the editor then counts changes from here
+  pub fn fullLayout(self &mut, faces &Faces, cfg &LayoutConfig) RichLayout {
+    imm l = layoutRich(&core.blocks, &core.images, faces, cfg);
+    core.dirtyLo = NO_BLOCK;
+    core.laidOut = core.blocks.len();
+    l;
+  }
+
+  // Whether the document has changed since the last 'fullLayout' or 'relayout'
+  pub fn layoutStale(self &) bool { core.dirtyLo != NO_BLOCK; }
+
+  // The layout after the edits since the last layout, from 'prev', the layout then (made by 'fullLayout' or
+  // 'relayout' with the same faces and configuration): the blocks the edits did not touch are taken, not laid out again
+  pub fn relayout(self &mut, prev &RichLayout, faces &Faces, cfg &LayoutConfig) RichLayout {
+    imm n = core.blocks.len();
+    imm lo = if core.dirtyLo == NO_BLOCK { n; } else { core.dirtyLo; };
+    imm hi = if core.dirtyLo == NO_BLOCK { n; } else { core.dirtyHi; };
+    imm oldHi = usize.from(i64.from(hi) + i64.from(core.laidOut) - i64.from(n));
+    imm l = layoutRichFrom(&core.blocks, &core.images, faces, cfg, prev, lo, hi, oldHi, true);
+    core.dirtyLo = NO_BLOCK;
+    core.laidOut = n;
+    l;
+  }
+
+  // ---- history ----
+
+  pub fn undo(self &mut) bool {
+    imm ok = hist.undo(&mut core, &applyBlockEdit);
+    pendingSet = false;
+    ok;
+  }
+
+  pub fn redo(self &mut) bool {
+    imm ok = hist.redo(&mut core, &applyBlockEdit);
+    pendingSet = false;
+    ok;
+  }
+
+  // The selected text, plain
+  pub fn selectedText(self &) String {
+    imm a = lo();
+    imm z = hi();
+    mut s = String.empty();
+    mut bi = a.block;
+    while bi <= z.block {
+      imm from = if bi == a.block { a.off; } else { 0usize; };
+      imm to = if bi == z.block { z.off; } else { core.blocks[bi].text.len(); };
+      if bi > a.block { s.append("\n"); }
+      s.append(core.blocks[bi].text.view().slice(from, to));
+      bi = bi + 1usize;
+    }
+    s;
+  }
+}

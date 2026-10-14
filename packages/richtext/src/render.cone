@@ -1,0 +1,256 @@
+// ======== Drawing a laid-out document ========
+//
+// 'RichRenderer' draws a RichLayout onto a texture with what the other 2-D packages already have:
+//
+//   - shapes (the page, the selection, underlines, the caret, image pixels) are a vector2d Canvas, drawn
+//     by its VectorRenderer, anti-aliased by analytic edge coverage;
+//   - text is msdftext's: one atlas and one TextRenderer for each FACE (a face is a font file, so bold
+//     and italic each have their own atlas), and one text slot for each (face, colour, size) group of
+//     glyphs, whose quads are made here from the layout's pen positions and the atlas's glyph boxes
+//     (msdftext's layoutText lays a whole string out in one font; a rich line mixes fonts, so the
+//     layout is richtext's and only the quads are the atlas's).
+//
+// IMAGES. A document image that carries pixels (ImageInfo.pixels, RGBA8) is drawn as a grid of
+// rectangles, one a pixel, each a whole number of screen pixels so no seams show. That is a stand-in:
+// the packages have no textured-quad pass for 2-D (msdftext draws only its atlas, vector2d only
+// coloured triangles), and a draw-list renderer with images is the gap this shows (textedit's design
+// note says the same of its own demo renderer). An image with no pixels is drawn as a grey placeholder
+// with its alt text.
+//
+// A frame:
+//   draw(device, encoder, target, view, faces, layout, images, selection, caret)
+// where the target is any RGBA8 texture that is a render attachment.
+
+pub struct RichView {
+  pub width f32;                 // the target's size, pixels
+  pub height f32;
+  pub pageX f32;                 // the page's left edge on the target
+  pub scrollY f32;               // how far the page is scrolled up
+  pub deskColor u32;             // 0xRRGGBBAA behind the page
+  pub paperColor u32;
+  pub selectionColor u32;
+  pub caretColor u32;
+  pub pageWidth f32;
+  pub showCaret bool;
+}
+
+pub struct RichRenderer {
+  vr VectorRenderer;
+  texts List[TextRenderer];
+  atlases List[Atlas];
+  slots List[List[TextHandle]];
+  canvas Canvas;
+  pub glyphsDrawn u32 = 0u32;
+  pub groupsDrawn u32 = 0u32;
+  pub cellsDrawn u32 = 0u32;
+
+  // Check 'isValid'
+  pub fn create(device &mut Device, faces &Faces, format u32) RichRenderer {
+    mut atlases = List[Atlas].empty();
+    mut texts = List[TextRenderer].empty();
+    mut slots = List[List[TextHandle]].empty();
+    mut i = 0usize;
+    while i < faces.count() {
+      mut atlas = Atlas.create(AtlasConfig.standard());
+      // the printable ASCII now, so the first frame does not pay for it in the middle of drawing
+      mut cp = 32u32;
+      while cp < 127u32 {
+        atlas.ensure(faces.font(u32.from(i)), faces.font(u32.from(i)).glyphOf(cp));
+        cp = cp + 1u32;
+      }
+      texts.push(TextRenderer.create(device, &atlas, format, format, TEXTURE_FORMAT_DEPTH32_FLOAT));
+      slots.push(List[TextHandle].empty());
+      atlases.push(atlas);
+      i = i + 1usize;
+    }
+    imm vr = VectorRenderer.create(device, atlases[0usize], format);
+    new RichRenderer(vr, texts, atlases, slots, Canvas.make(1.0, 1.0));
+  }
+
+  pub fn isValid(self &) bool { vr.isValid(); }
+
+  // Record the document into 'target'. Glyphs the atlases lack are made now.
+  pub fn draw(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, view &RichView, faces &Faces,
+      l &RichLayout, images &List[ImageInfo], selection &List[RectP], caret &CaretRect) {
+    canvas.clear();
+    canvas.resize(view.width, view.height);
+    imm ox = view.pageX;
+    imm oy = 0.0 - view.scrollY;
+    glyphsDrawn = 0u32;
+    cellsDrawn = 0u32;
+    // only what is in view (page coordinates): lines are in order of y, so the first and last visible are found by search
+    imm minY = view.scrollY - 40.0;
+    imm maxY = view.scrollY + view.height + 40.0;
+    mut lo = 0usize;
+    mut hi = l.lines.len();
+    while lo < hi {
+      imm mid = (lo + hi) / 2usize;
+      if l.lines[mid].top + l.lines[mid].height < minY { lo = mid + 1usize; } else { hi = mid; }
+    }
+    imm firstLine = lo;
+    mut endLine = firstLine;
+    while endLine < l.lines.len() and l.lines[endLine].top <= maxY { endLine = endLine + 1usize; }
+    // the page
+    canvas.fillRect(ox, oy, view.pageWidth, l.height, colorOf(view.paperColor));
+    // the selection, under everything else
+    mut s = 0usize;
+    while s < selection.len() {
+      imm r = selection[s];
+      if r.y + r.h >= minY and r.y <= maxY { canvas.fillRect(ox + r.x, oy + r.y, r.w, r.h, colorOf(view.selectionColor)); }
+      s = s + 1usize;
+    }
+    // images
+    mut bi = 0usize;
+    while bi < l.boxes.len() {
+      imm bx = l.boxes[bi];
+      if bx.y + bx.h >= minY and bx.y <= maxY { drawImage(self, bx, images, ox, oy); }
+      bi = bi + 1usize;
+    }
+    // underlines
+    mut ui = 0usize;
+    while ui < l.rects.len() {
+      imm r = l.rects[ui];
+      if r.y >= minY and r.y <= maxY { canvas.fillRect(ox + r.x, oy + r.y, r.w, r.h, colorOf(r.color)); }
+      ui = ui + 1usize;
+    }
+    if view.showCaret {
+      canvas.fillRect(ox + caret.x - 0.75, oy + caret.y + 1.0, 1.5, caret.h - 2.0, colorOf(view.caretColor));
+    }
+    // text: quads in groups of (face, colour, size)
+    mut groupFace List[u32] = List[u32].empty();
+    mut groupSize List[f32] = List[f32].empty();
+    mut groupColor List[u32] = List[u32].empty();
+    mut groupQuads List[List[GlyphQuad]] = List[List[GlyphQuad]].empty();
+    if endLine > firstLine {
+      imm gFrom = usize.from(l.lines[firstLine].g0);
+      imm gTo = usize.from(l.lines[endLine - 1usize].g0 + l.lines[endLine - 1usize].gn);
+      addGlyphs(self, &l.glyphs, gFrom, gTo, faces, ox, oy, &mut groupFace, &mut groupSize, &mut groupColor, &mut groupQuads);
+    }
+    addGlyphs(self, &l.markers, 0usize, l.markers.len(), faces, ox, oy, &mut groupFace, &mut groupSize, &mut groupColor, &mut groupQuads);
+    // the shapes first (one pass, clearing to the desk), then each face's text over them
+    imm font0 = faces.font(0u32);
+    vr.render(device, encoder, target, &canvas, font0, &mut atlases[0usize], true, colorOf(view.deskColor));
+    mut f = 0usize;
+    while f < texts.len() {
+      texts[f].syncAtlas(device, atlases[f]);
+      f = f + 1usize;
+    }
+    mut used List[u32] = List[u32].empty();
+    f = 0usize;
+    while f < texts.len() { used.push(0u32); f = f + 1usize; }
+    mut g = 0usize;
+    while g < groupFace.len() {
+      imm face = usize.from(*groupFace[g]);
+      imm n = usize.from(*used[face]);
+      while slots[face].len() <= n { slots[face].push(texts[face].addText(device, SPACE_OVERLAY)); }
+      mut quads = List[GlyphQuad].withCapacity(groupQuads[g].len());
+      mut q = 0usize;
+      while q < groupQuads[g].len() {
+        quads.push(*groupQuads[g][q]);
+        q = q + 1usize;
+      }
+      imm lay = new TextLayout(List[PlacedGlyph].empty(), quads, List[LineInfo].empty(), 0.0, 0.0, 0.0, *groupSize[g]);
+      texts[face].set(device, *slots[face][n], &lay, &TextStyle.plain(colorOf(*groupColor[g])),
+        overlayTransform(view.width, view.height, 0.0, 0.0));
+      used.set(face, u32.from(n + 1usize));
+      glyphsDrawn = glyphsDrawn + u32.from(groupQuads[g].len());
+      g = g + 1usize;
+    }
+    groupsDrawn = u32.from(groupFace.len());
+    f = 0usize;
+    while f < texts.len() {
+      mut k = usize.from(*used[f]);
+      while k < slots[f].len() {
+        texts[f].clearText(*slots[f][k]);
+        k = k + 1usize;
+      }
+      texts[f].renderOverlay(encoder, target);
+      f = f + 1usize;
+    }
+  }
+}
+
+pub fn colorOf(c u32) Color {
+  new Color(f32.from((c >> 24u32) & 255u32) / 255.0, f32.from((c >> 16u32) & 255u32) / 255.0,
+    f32.from((c >> 8u32) & 255u32) / 255.0, f32.from(c & 255u32) / 255.0);
+}
+
+fn addGlyphs(r &mut RichRenderer, glyphs &List[GlyphP], from usize, to usize, faces &Faces, ox f32, oy f32, gFace &mut List[u32],
+    gSize &mut List[f32], gColor &mut List[u32], gQuads &mut List[List[GlyphQuad]]) {
+  mut i = from;
+  while i < to {
+    imm g = glyphs[i];
+    // glyphs far off the target are skipped
+    if (g.flags & (GF_SPACE | GF_OBJECT)) == 0u32 and oy + g.y > -g.size * 2.0 and oy + g.y < r.canvas.height + g.size * 2.0 {
+      imm face = usize.from(g.face);
+      imm e = r.atlases[face].ensure(faces.font(g.face), g.glyph);
+      if e >= 0i32 {
+        imm en = r.atlases[face].entry(e);
+        if !en.empty {
+          // the group
+          mut gi = 0usize;
+          mut found = false;
+          while gi < gFace.len() {
+            if *gFace[gi] == g.face and *gColor[gi] == g.color and *gSize[gi] == g.size { found = true; break; }
+            gi = gi + 1usize;
+          }
+          if !found {
+            gFace.push(g.face);
+            gColor.push(g.color);
+            gSize.push(g.size);
+            gQuads.push(List[GlyphQuad].empty());
+            gi = gFace.len() - 1usize;
+          }
+          gQuads[gi].push(new GlyphQuad(ox + g.x + en.left * g.size, oy + g.y - en.top * g.size, ox + g.x + en.right * g.size,
+            oy + g.y - en.bottom * g.size, en.u0, en.v0, en.u1, en.v1));
+        }
+      }
+    }
+    i = i + 1usize;
+  }
+}
+
+fn drawImage(r &mut RichRenderer, bx &BoxP, images &List[ImageInfo], ox f32, oy f32) {
+  imm info = images[usize.from(bx.image - 1u32)];
+  // whole screen pixels, so the cells meet exactly
+  imm x0 = floorF(ox + bx.x + 0.5);
+  imm y0 = floorF(oy + bx.y + 0.5);
+  if info.pw == 0u32 or info.ph == 0u32 {
+    r.canvas.fillRect(x0, y0, bx.w, bx.h, new Color(0.85, 0.85, 0.87, 1.0));
+    return;
+  }
+  imm cw = floorF(bx.w / f32.from(info.pw));
+  imm ch = floorF(bx.h / f32.from(info.ph));
+  imm cell = if cw < 1.0 { 1.0; } else { cw; };
+  imm cellY = if ch < 1.0 { 1.0; } else { ch; };
+  mut y = 0u32;
+  while y < info.ph {
+    mut x = 0u32;
+    // runs of equal colour along a row are one rectangle
+    while x < info.pw {
+      imm o = usize.from((y * info.pw + x) * 4u32);
+      mut run = 1u32;
+      while x + run < info.pw and samePixel(info, o, usize.from((y * info.pw + x + run) * 4u32)) { run = run + 1u32; }
+      imm a = f32.from(*info.pixels[o + 3usize]) / 255.0;
+      if a > 0.0 {
+        r.canvas.fillRect(x0 + f32.from(x) * cell, y0 + f32.from(y) * cellY, f32.from(run) * cell, cellY,
+          new Color(f32.from(*info.pixels[o]) / 255.0, f32.from(*info.pixels[o + 1usize]) / 255.0,
+            f32.from(*info.pixels[o + 2usize]) / 255.0, a));
+        r.cellsDrawn = r.cellsDrawn + 1u32;
+      }
+      x = x + run;
+    }
+    y = y + 1u32;
+  }
+}
+
+fn samePixel(info &ImageInfo, a usize, b usize) bool {
+  *info.pixels[a] == *info.pixels[b] and *info.pixels[a + 1usize] == *info.pixels[b + 1usize]
+    and *info.pixels[a + 2usize] == *info.pixels[b + 2usize] and *info.pixels[a + 3usize] == *info.pixels[b + 3usize];
+}
+
+fn floorF(x f32) f32 {
+  imm i = i32.from(x);
+  imm f = f32.from(i);
+  if f > x { f - 1.0; } else { f; };
+}
