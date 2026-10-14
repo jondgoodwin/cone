@@ -1,0 +1,320 @@
+// aio.run and aio.runLine: an actor runs a child process and pauses meanwhile;
+// a thread of iocore's blocking pool (its general lane) runs the process
+// package's synchronous 'run' and waits for the child, and the actor's worker
+// is free. One actor runs the basic cases in turn and reports numbers on a
+// channel; main checks them. The programs are the system's own (Windows:
+// 'cmd /c ...' and 'ping -n N 127.0.0.1', which waits N-1 seconds; Linux:
+// 'echo', 'sh -c' lines and 'sleep N'):
+//
+//   run(["cmd","/c","echo","hello"]) (Linux: ["echo","hello"]) -- Done, exit
+//     code 0, standard output "hello" and a line end, standard error empty;
+//   runLine of 'exit 3' -- Done, exit code 3 (an exit code is an answer);
+//   runLine writing "oops" to its standard error -- stderr holds it, stdout is empty;
+//   a program that is not there -- an Error, a system failure,
+//     ERROR_FILE_NOT_FOUND (2) on both systems; a folder that is not there -- an Error;
+//   a child slower than Options.timeout -- Done, 'timedOut', in time.
+//
+// Then: twenty children at once (four at a time, the rest queued, all Done);
+// a child that takes about a second, and, while it runs, another actor
+// sleeping in 100 ms steps -- the sleeper finishes first (nothing waits on a
+// worker); four children holding the lane's four threads and a fifth, queued
+// behind them in a cancel group main cancels -- Cancelled at once, not when a
+// thread frees; a running child under a deadline -- TimedOut at the deadline
+// (the child left running, and ended by its own timeout).
+
+mod child;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import time use Instant, Duration;
+import thread;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, CancelGroup;
+import process;
+import actors;
+import aio use IoLimits;
+
+fn take(rx &mut Receiver[u64]) u64 {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {999u64;}
+  }
+}
+
+fn b(v bool) u64 {if v {1u64;} else {0u64;}}
+
+fn ms(since Instant) u64 {
+  imm n = since.elapsed().millis();
+  if n < 0i64 {0u64;} else {u64.from(n);};
+}
+
+// How a run ended: 1 done, 2 cancelled, 3 timed out, 4 a failure of the system
+fn endedBy(r &Result[process.Output, IoError]) u64 {
+  match r {
+    case imm e &Error {
+      if e.isCancelled() {2u64;}
+      elif e.isTimedOut() {3u64;}
+      else {4u64;}
+    }
+    else {1u64;}
+  }
+}
+
+fn codeOf(r &Result[process.Output, IoError]) u64 {
+  match r {
+    case imm e &Error {u64.from(e.code);}
+    else {0u64;}
+  }
+}
+
+// The Output an answer holds, a blank one for a failure
+fn outputOf(r Result[process.Output, IoError]) process.Output {
+  mut res = r;
+  mut o = new process.Output(0u32, 0u32, false, String.empty(), String.empty());
+  match &mut res {
+    case mut ok &mut Ok {o <=> *ok;}
+    else {}
+  }
+  o;
+}
+
+// The system's way to say hello, as arguments
+fn echoArgs() List[String] {
+  mut a = List[String].empty();
+  if isWindows() {
+    a.push(String.from("cmd"));
+    a.push(String.from("/c"));
+  }
+  a.push(String.from("echo"));
+  a.push(String.from("hello"));
+  a;
+}
+
+// A command line that takes about 'secs' seconds
+fn slowLine(secs u64) String {
+  mut s = String.empty();
+  if isWindows() {
+    s.append("cmd /c ping -n ");
+    s.appendUInt(secs + 1u64);
+    s.append(" 127.0.0.1 >nul");
+  } else {
+    s.append("sleep ");
+    s.appendUInt(secs);
+  }
+  s;
+}
+
+actor Runner {
+  out Sender[u64];
+
+  pub async do basic(self) {
+    {
+      imm args = echoArgs();
+      imm r = await aio.run(args.view());
+      imm how = endedBy(&r);
+      imm o = outputOf(r);
+      out.send(how);
+      out.send(u64.from(o.exitCode));
+      out.send(b(o.stdout.startsWith("hello") and o.stdout.len() > 5usize));
+      out.send(b(o.stderr.isEmpty()));
+    }
+    {
+      imm r = await aio.runLine(if isWindows() {"cmd /c exit 3";} else {"exit 3";});
+      imm how = endedBy(&r);
+      imm o = outputOf(r);
+      out.send(how);
+      out.send(u64.from(o.exitCode));
+      out.send(b(o.success()));
+    }
+    {
+      imm r = await aio.runLine(if isWindows() {"cmd /c echo oops>&2";} else {"echo oops >&2";});
+      imm how = endedBy(&r);
+      imm o = outputOf(r);
+      out.send(how);
+      out.send(b(o.stderr.startsWith("oops")));
+      out.send(b(o.stdout.isEmpty()));
+    }
+    {
+      mut args = List[String].empty();
+      args.push(String.from("aio-no-such-program"));
+      imm r = await aio.run(args.view());
+      out.send(endedBy(&r));
+      out.send(codeOf(&r));
+    }
+    {
+      imm args = echoArgs();
+      imm r = await aio.run(args.view(), new process.Options(), "aio-no-such-folder");
+      out.send(endedBy(&r));
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.runLine(slowLine(4u64).view(), new process.Options(timeout: Duration.fromMillis(300i64)));
+      imm how = endedBy(&r);
+      imm o = outputOf(r);
+      out.send(how);
+      out.send(b(o.timedOut));
+      out.send(b(ms(t) < 2500u64));
+    }
+  }
+}
+
+// A child that says hello
+actor Echoer {
+  pub async do go(self, out Sender[u64]) {
+    imm args = echoArgs();
+    imm r = await aio.run(args.view());
+    imm how = endedBy(&r);
+    imm o = outputOf(r);
+    out.send(b(how == 1u64 and o.exitCode == 0u32 and o.stdout.startsWith("hello")));
+  }
+}
+
+// A child of about a second
+actor Slow {
+  pub async do go(self, out Sender[u64]) {
+    imm r = await aio.runLine(slowLine(1u64).view());
+    imm how = endedBy(&r);
+    imm o = outputOf(r);
+    out.send(if how == 1u64 and o.exitCode == 0u32 {12u64;} else {19u64;});
+  }
+}
+
+// Five 100 ms sleeps while the child runs
+actor Napper {
+  pub async do go(self, out Sender[u64]) {
+    mut k = 0u64;
+    while k < 5u64 {
+      imm nap = await aio.sleep(Duration.fromMillis(100i64));
+      k = k + 1u64;
+    }
+    out.send(11u64);
+  }
+}
+
+// A child that holds a thread of the pool's lane for a second, then is stopped
+actor Holder {
+  pub async do go(self, out Sender[u64]) {
+    imm r = await aio.runLine(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1000i64)));
+    imm how = endedBy(&r);
+    imm o = outputOf(r);
+    out.send(b(how == 1u64 and o.timedOut));
+  }
+}
+
+// A child queued behind the four, in a group main cancels
+actor Waiter {
+  pub async do go(self, g CancelGroup, out Sender[u64]) {
+    imm t = Instant.now();
+    imm r = await aio.runLineIn(slowLine(1u64).view(), new process.Options(), "", IoLimits.within(g));
+    out.send(endedBy(&r));
+    out.send(ms(t));
+  }
+}
+
+// A running child under a deadline
+actor Deadliner {
+  pub async do go(self, out Sender[u64]) {
+    imm t = Instant.now();
+    imm r = await aio.runLineIn(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1500i64)), "",
+      IoLimits.until(t + Duration.fromMillis(100i64)));
+    out.send(endedBy(&r));
+    out.send(ms(t));
+    // Let the child end by its own timeout
+    imm rest = await aio.sleep(Duration.fromMillis(1700i64));
+    out.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm r = new Runner(tx.clone());
+  r.basic();
+
+  expectUInt(take(&mut rx), 1u64, "echo hello: Done");
+  expectUInt(take(&mut rx), 0u64, "...exit code 0");
+  expectUInt(take(&mut rx), 1u64, "...standard output holds hello and a line end");
+  expectUInt(take(&mut rx), 1u64, "...standard error is empty");
+
+  expectUInt(take(&mut rx), 1u64, "exit 3: Done");
+  expectUInt(take(&mut rx), 3u64, "...exit code 3, an answer and no error");
+  expectUInt(take(&mut rx), 0u64, "...not a success");
+
+  expectUInt(take(&mut rx), 1u64, "a child writing to standard error: Done");
+  expectUInt(take(&mut rx), 1u64, "...standard error holds it");
+  expectUInt(take(&mut rx), 1u64, "...standard output is empty");
+
+  expectUInt(take(&mut rx), 4u64, "a program that is not there: a failure of the system");
+  expectUInt(take(&mut rx), 2u64, "...ERROR_FILE_NOT_FOUND");
+  expectUInt(take(&mut rx), 4u64, "a folder that is not there: a failure of the system");
+
+  expectUInt(take(&mut rx), 1u64, "a child slower than its timeout: Done");
+  expectUInt(take(&mut rx), 1u64, "...timedOut");
+  expectUInt(take(&mut rx), 1u64, "...stopped in time, not after four seconds");
+
+  // Twenty at once: four run at a time, the rest wait their turn
+  {
+    mut k = 0u64;
+    while k < 20u64 {
+      imm e = new Echoer();
+      e.go(tx.clone());
+      k = k + 1u64;
+    }
+  }
+  mut said = 0u64;
+  {
+    mut k = 0u64;
+    while k < 20u64 {
+      said = said + take(&mut rx);
+      k = k + 1u64;
+    }
+  }
+  expectUInt(said, 20u64, "twenty children at once: each Done, saying hello");
+
+  // A child of a second, and a sleeper meanwhile
+  imm slow = new Slow();
+  slow.go(tx.clone());
+  imm nap = new Napper();
+  nap.go(tx.clone());
+  expectUInt(take(&mut rx), 11u64, "a sleeper finishes while the child still runs");
+  expectUInt(take(&mut rx), 12u64, "...and the child ends Done, exit code 0");
+
+  // The lane's four threads held, a fifth child queued behind them
+  {
+    mut k = 0u64;
+    while k < 4u64 {
+      imm h = new Holder();
+      h.go(tx.clone());
+      k = k + 1u64;
+    }
+  }
+  thread.sleep(Duration.fromMillis(300i64));
+  imm g = CancelGroup.make();
+  imm w = new Waiter();
+  w.go(g, tx.clone());
+  thread.sleep(Duration.fromMillis(150i64));
+  expect(g.cancel(), "the group was live");
+  expectUInt(take(&mut rx), 2u64, "a child queued behind four: Cancelled");
+  expect(take(&mut rx) < 900u64, "...at once, not when a thread freed");
+  mut held = 0u64;
+  {
+    mut k = 0u64;
+    while k < 4u64 {
+      held = held + take(&mut rx);
+      k = k + 1u64;
+    }
+  }
+  expectUInt(held, 4u64, "the four children were stopped by their timeouts, Done");
+
+  // A running child under a deadline
+  imm d = new Deadliner();
+  d.go(tx.clone());
+  expectUInt(take(&mut rx), 3u64, "a running child under a deadline: TimedOut");
+  expect(take(&mut rx) < 1000u64, "...at the deadline, not when the child ended");
+  expectUInt(take(&mut rx), 1u64, "...and the child ended by its own timeout meanwhile");
+  finalAll();
+  done();
+}

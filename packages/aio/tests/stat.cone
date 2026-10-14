@@ -1,0 +1,177 @@
+// aio.stat: an actor asks a file's metadata and pauses meanwhile; a thread of
+// iocore's blocking pool (its general lane) asks the system. One actor makes a
+// file (aio.openFile, writeAt), then runs the cases in turn and reports numbers
+// on a channel; main checks them:
+//
+//   the file just written (13 bytes) -- Done, size 13, not a directory, last
+//     written within a minute of now;
+//   the folder it is in -- Done, a directory;
+//   a file written to again, longer (40 bytes) -- the size follows;
+//   a path that is not there -- ERROR_FILE_NOT_FOUND (2), a system failure;
+//   a path of 5,000 characters -- a failure of the system, not a panic, and not
+//     a truncated path read as another (the query holds the whole path);
+//   a group cancelled already -- Cancelled at once; a deadline already past --
+//     TimedOut at once.
+//
+// The test removes its file.
+
+mod stat;
+
+import testing use *;
+import fs;
+import path use Path;
+import collections use String;
+import time use Instant, Duration, Timestamp;
+import sync use Channel, Sender, Receiver;
+import iobuf use IoBuf, Pool;
+import iocore use IoError, CancelGroup, Access, FileStat;
+import actors;
+import aio use IoLimits, File;
+
+fn take(rx &mut Receiver[u64]) u64 {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {999u64;}
+  }
+}
+
+fn b(v bool) u64 {if v {1u64;} else {0u64;}}
+
+fn fileOf(r Result[File, IoError]) File {
+  mut res = r;
+  mut f = File.none();
+  match &mut res {
+    case mut ok &mut Ok {f <=> *ok;}
+    else {}
+  }
+  f;
+}
+
+// The metadata an answer holds, zeroes for a failure
+fn statOf(r &Result[FileStat, IoError]) FileStat {
+  match r {
+    case imm s &Ok {*s;}
+    else {new FileStat(0u64, 0u32, Timestamp.fromUnixNanos(0i64));}
+  }
+}
+
+// How an answer ended: 1 done, 2 cancelled, 3 timed out, 4 a system failure,
+// with the failure's code beside it
+fn endedBy(r &Result[FileStat, IoError]) u64 {
+  match r {
+    case imm e &Error {
+      if e.isCancelled() {2u64;}
+      elif e.isTimedOut() {3u64;}
+      else {4u64;}
+    }
+    else {1u64;}
+  }
+}
+
+fn codeOf(r &Result[FileStat, IoError]) u64 {
+  match r {
+    case imm e &Error {u64.from(e.code);}
+    else {0u64;}
+  }
+}
+
+// A block of n bytes
+fn block(pool &Pool, n usize) IoBuf {
+  mut buf = pool.mustTake(n);
+  imm room = buf.whole();
+  mut i = 0usize;
+  while i < n {
+    room[i] = u8.from(i % 251usize);
+    i = i + 1usize;
+  }
+  buf.setLen(n);
+  buf;
+}
+
+actor Statter {
+  pool Pool;
+  out Sender[u64];
+
+  pub async do cases(self, cancelled CancelGroup) {
+    imm name = Path.from("aiostat.tmp");
+    imm f = fileOf(await aio.openFile(&name, Access.Create));
+    imm w = await f.writeAt(0u64, block(&pool, 13usize));
+    {
+      imm began = Timestamp.now();
+      imm r = await aio.stat(&name);
+      imm s = statOf(&r);
+      out.send(endedBy(&r));
+      out.send(s.size);
+      out.send(b(not s.isDir()));
+      // The write was within a minute: the metadata's time is not the epoch's
+      imm age = began - s.modified;
+      out.send(b(age.millis() < 60000i64 and age.millis() > -60000i64));
+    }
+    {
+      imm r = await aio.stat(&Path.from("."));
+      out.send(endedBy(&r));
+      out.send(b(statOf(&r).isDir()));
+    }
+    {
+      imm more = await f.writeAt(13u64, block(&pool, 27usize));
+      imm r = await aio.stat(&name);
+      out.send(endedBy(&r));
+      out.send(statOf(&r).size);
+    }
+    {
+      imm r = await aio.stat(&Path.from("aiostat-missing.tmp"));
+      out.send(endedBy(&r));
+      out.send(codeOf(&r));
+    }
+    {
+      mut long = String.empty();
+      mut i = 0usize;
+      while i < 5000usize {
+        long.append("x");
+        i = i + 1usize;
+      }
+      imm r = await aio.stat(&Path.fromString(long));
+      out.send(endedBy(&r));
+    }
+    {
+      imm r = await aio.statIn(&name, IoLimits.within(cancelled));
+      out.send(endedBy(&r));
+    }
+    {
+      imm r = await aio.statIn(&name, IoLimits.until(Instant.now() - Duration.fromSeconds(5i64)));
+      out.send(endedBy(&r));
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm cancelled = CancelGroup.make();
+  expect(cancelled.cancel(), "the group was live");
+  imm s = new Statter(Pool.make(), tx.clone());
+  s.cases(cancelled);
+
+  expectUInt(take(&mut rx), 1u64, "the file just written: Done");
+  expectUInt(take(&mut rx), 13u64, "...its size");
+  expectUInt(take(&mut rx), 1u64, "...not a directory");
+  expectUInt(take(&mut rx), 1u64, "...last written within a minute of now");
+
+  expectUInt(take(&mut rx), 1u64, "the folder: Done");
+  expectUInt(take(&mut rx), 1u64, "...a directory");
+
+  expectUInt(take(&mut rx), 1u64, "the file written to again: Done");
+  expectUInt(take(&mut rx), 40u64, "...its size follows");
+
+  expectUInt(take(&mut rx), 4u64, "a path that is not there: a failure of the system");
+  expectUInt(take(&mut rx), 2u64, "...ERROR_FILE_NOT_FOUND");
+
+  expectUInt(take(&mut rx), 4u64, "a path of 5,000 characters: a failure of the system");
+  expectUInt(take(&mut rx), 2u64, "a group cancelled already: Cancelled");
+  expectUInt(take(&mut rx), 3u64, "a deadline already past: TimedOut");
+  finalAll();
+  fs.removeFile(&Path.from("aiostat.tmp"));
+  done();
+}
