@@ -1,0 +1,104 @@
+// How fast and how small. Give it files; for each it compresses at levels 1 and
+// 2 as a zlib stream, inflates the result, and times the checksums, printing the
+// best of several runs (compress 3, inflate and checksums 5) as megabytes a
+// second of the file's bytes, and the sizes. Run it in release mode:
+//
+//   congo run --release packages/deflate/examples/bench.cone file1 file2 ...
+//
+// The numbers in the package header (deflate.cone) are from this program on the
+// files named there, beside Python's zlib module (level 6, and 1 and 9) on the same
+// files.
+
+mod bench;
+
+import collections use *;
+import deflate use *;
+import time use *;
+import fs;
+import path use Path;
+import process;
+import stdio use *;
+
+fn mbps(bytes usize, ns i64) i64 {
+  if ns <= 0i64 { return 0i64; }
+  i64.from(bytes) * 1000i64 / ns;
+}
+
+fn row(label &str, a i64, b i64, c i64) {
+  printStr(label);
+  printStr(": ");
+  printInt(a);
+  printStr(" ");
+  printInt(b);
+  printStr(" ");
+  printInt(c);
+  printStr("\n");
+}
+
+fn main() i32 {
+  imm args = process.args();
+  mut i = 1usize;
+  while i < args.len() {
+    imm p = Path.from(args[i].view());
+    match fs.readFile(&p) {
+      case mut ok Ok {
+        mut s = String.empty();
+        s <=> ok;
+        imm data = s.view();
+        printStr(args[i].view());
+        printStr(" (");
+        printInt(i64.from(data.len));
+        printStr(" bytes)\n");
+        mut level = 1;
+        while level <= 2 {
+          mut best = 0x7FFFFFFFFFFFFFFFi64;
+          mut z = List[u8].empty();
+          mut run = 0;
+          while run < 3 {
+            imm t0 = Instant.now();
+            z = zlibCompress(data, level);
+            imm ns = t0.elapsed().nanos();
+            if ns < best { best = ns; }
+            run += 1;
+          }
+          mut bestIn = 0x7FFFFFFFFFFFFFFFi64;
+          run = 0;
+          while run < 5 {
+            imm t0 = Instant.now();
+            match zlibDecompress(z.view(), data.len) {
+              case imm ok2 Ok { if ok2.len() != data.len { printStr("MISMATCH\n"); } }
+              case imm e Error { printStr("ERROR "); printStr(e.reason.view()); printStr("\n"); }
+            }
+            imm ns = t0.elapsed().nanos();
+            if ns < bestIn { bestIn = ns; }
+            run += 1;
+          }
+          printStr("  level ");
+          printInt(i64.from(level));
+          row(": compressed bytes, compress MB/s, inflate MB/s", i64.from(z.len()), mbps(data.len, best), mbps(data.len, bestIn));
+          level += 1;
+        }
+        mut bestC = 0x7FFFFFFFFFFFFFFFi64;
+        mut bestA = 0x7FFFFFFFFFFFFFFFi64;
+        imm crc = Crc32.make();
+        mut run = 0;
+        while run < 5 {
+          imm t0 = Instant.now();
+          imm c = crc.update(0u32, data, 0usize, data.len);
+          imm ns = t0.elapsed().nanos();
+          if ns < bestC { bestC = ns; }
+          imm t1 = Instant.now();
+          imm a = adler32(data);
+          imm ns2 = t1.elapsed().nanos();
+          if ns2 < bestA { bestA = ns2; }
+          if c == a + 1u32 { printStr("?"); }
+          run += 1;
+        }
+        row("  checksums: crc32 MB/s, adler32 MB/s, 0", mbps(data.len, bestC), mbps(data.len, bestA), 0i64);
+      }
+      case imm e Error { printStr("cannot read "); printStr(args[i].view()); printStr("\n"); }
+    }
+    i += 1usize;
+  }
+  0i32;
+}

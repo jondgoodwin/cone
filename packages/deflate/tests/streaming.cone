@@ -1,0 +1,241 @@
+// The streaming promises, one at a time:
+//
+//   - input split anywhere gives the same output: each small stream (raw,
+//     zlib and gzip; fixed, dynamic and stored blocks; one made by zlib and
+//     ones made here) is fed split in two at EVERY offset, and one byte at a
+//     time, and must inflate to the data;
+//   - output comes in bounded pieces: no pull gives more than it was asked,
+//     down to one byte, and the pieces joined are the data;
+//   - nothing waits for 'finish' that it does not need: once the last bit of
+//     a raw or zlib stream is fed, the stream is Done (a gzip file with more
+//     members allowed is Done at 'finish', or at once with one member only);
+//   - what follows a stream is left for 'takeRest';
+//   - the counts, 'totalIn' and 'totalOut', are right;
+//   - the deflater's pieces: a pull gives no more than asked, and an empty
+//     feed, a feed after 'finish' and a pull after Done do no harm.
+
+mod streaming;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+
+fn words(n usize) List[u8] {
+  imm w Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  mut d = List[u8].empty();
+  mut s = 3u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    imm piece = w[usize.from((s >> 40u64) % 5u64)];
+    mut i = 0usize;
+    while i < piece.len { d.push(piece[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d;
+}
+
+// Feed s[0, split), pull to NeedInput, feed the rest, pull to the end; the
+// output pieces at most 'maxPull'. Answers whether it ended Done with 'want'.
+fn splitRun(fmt Format, s &Array[u8], split usize, maxPull usize, want &Array[u8]) bool {
+  mut inf = Inflater.make(fmt);
+  mut out = List[u8].empty();
+  mut piece = List[u8].empty();
+  mut st Status = Status.NeedInput;
+  if split > 0usize {
+    inf.feed(&s[0usize..<split]);
+    st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = inf.pull(&mut piece, maxPull);
+      if piece.len() > maxPull { return false; }
+      mut k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+    }
+    if st == Status.Failed { return false; }
+  }
+  if split < s.len { inf.feed(&s[split..<s.len]); }
+  inf.finish();
+  st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    piece.clear();
+    st = inf.pull(&mut piece, maxPull);
+    if piece.len() > maxPull { return false; }
+    mut k = 0usize;
+    while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+  }
+  st == Status.Done and out.view() == want and inf.totalOut() == u64.from(want.len);
+}
+
+// Every split of 's', and one byte at a time
+fn everySplit(fmt Format, s &Array[u8], want &Array[u8], label &str) {
+  mut bad = 0usize;
+  mut at = 0usize;
+  while at <= s.len {
+    if not splitRun(fmt, s, at, 65536usize, want) { bad += 1usize; }
+    at += 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, label);
+  // one byte in, one byte out
+  mut inf = Inflater.make(fmt);
+  mut out = List[u8].empty();
+  mut piece = List[u8].empty();
+  mut st Status = Status.NeedInput;
+  mut i = 0usize;
+  while i < s.len {
+    inf.feed(&s[i..<i + 1usize]);
+    st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = inf.pull(&mut piece, 1usize);
+      if piece.len() > 1usize { st = Status.Failed; }
+      mut k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+    }
+    i += 1usize;
+  }
+  inf.finish();
+  st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    piece.clear();
+    st = inf.pull(&mut piece, 1usize);
+    mut k = 0usize;
+    while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+  }
+  expect(st == Status.Done and out.view() == want, label);
+}
+
+fn main() i32 {
+  // zlib's own stream of "hello hello hello": a fixed-Huffman block with a match
+  imm hz Array[u8, 16] = [120u8, 218u8, 203u8, 72u8, 205u8, 201u8, 201u8, 87u8, 200u8, 64u8, 144u8, 0u8, 58u8, 46u8, 6u8, 125u8];
+  everySplit(Format.Zlib, &hz, "hello hello hello", "zlib's fixed-Huffman stream, split anywhere");
+
+  // streams made here from 600 bytes of words, in every format and at every level
+  imm w = words(600usize);
+  mut lv = 0;
+  while lv < 3 {
+    imm r = rawDeflate(w.view(), lv);
+    everySplit(Format.Raw, r.view(), w.view(), "raw, split anywhere");
+    imm z = zlibCompress(w.view(), lv);
+    everySplit(Format.Zlib, z.view(), w.view(), "zlib, split anywhere");
+    imm g = gzipCompress(w.view(), lv);
+    everySplit(Format.Gzip, g.view(), w.view(), "gzip, split anywhere");
+    lv += 1;
+  }
+
+  // A stream with several blocks of different kinds: a dynamic block, a
+  // stored block, a fixed block (built from three streams' blocks by hand is
+  // long; zlib's sync-flush file in zoo.cone covers it). Here: 70000 bytes in
+  // stored blocks, inflated in 5000-byte pieces.
+  imm big = words(70000usize);
+  imm bz = zlibCompress(big.view(), 0);
+  mut inf = Inflater.make(Format.Zlib);
+  mut got = List[u8].empty();
+  mut piece = List[u8].empty();
+  mut pos = 0usize;
+  mut biggest = 0usize;
+  mut st Status = Status.NeedInput;
+  while pos < bz.len() {
+    imm n = if bz.len() - pos < 5000usize {bz.len() - pos;} else {5000usize;};
+    inf.feed(&bz.view()[pos..<pos + n]);
+    pos += n;
+    st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = inf.pull(&mut piece, 3000usize);
+      if piece.len() > biggest { biggest = piece.len(); }
+      mut k = 0usize;
+      while k < piece.len() { got.push(*piece[k]); k += 1usize; }
+    }
+  }
+  expect(st == Status.Done, "stored blocks, no 'finish' needed: Done once the Adler-32 is in");
+  expect(got.view() == big.view(), "stored blocks in 5000-byte pieces");
+  expect(biggest <= 3000usize, "no piece over the 3000 asked");
+  expectInt(i64.from(inf.totalIn()), i64.from(bz.len()), "totalIn at the end");
+  expectInt(i64.from(inf.totalOut()), 70000i64, "totalOut at the end");
+
+  // Done without 'finish': the last symbol is decoded from its own bits
+  {
+    imm r = rawDeflate(w.view(), 2);
+    mut i1 = Inflater.make(Format.Raw);
+    i1.feed(r.view());
+    mut o = List[u8].empty();
+    imm s1 = i1.pull(&mut o, 100000usize);
+    expect(s1 == Status.Done and o.view() == w.view(), "raw: Done as soon as the last bit is in, without 'finish'");
+    imm z = zlibCompress(w.view(), 2);
+    mut i2 = Inflater.make(Format.Zlib);
+    i2.feed(z.view());
+    mut o2 = List[u8].empty();
+    imm s2 = i2.pull(&mut o2, 100000usize);
+    expect(s2 == Status.Done and o2.view() == w.view(), "zlib: Done as soon as the Adler-32 is in, without 'finish'");
+    imm g = gzipCompress(w.view(), 2);
+    mut i3 = Inflater.make(Format.Gzip);
+    i3.feed(g.view());
+    mut o3 = List[u8].empty();
+    imm s3 = i3.pull(&mut o3, 100000usize);
+    expect(s3 == Status.NeedInput and o3.view() == w.view(), "gzip: the data is out, but another member may follow: NeedInput");
+    i3.finish();
+    expect(i3.pull(&mut o3, 100000usize) == Status.Done, "gzip: Done at 'finish'");
+    mut i4 = Inflater.make(Format.Gzip);
+    i4.setMultiMember(false);
+    i4.feed(g.view());
+    mut o4 = List[u8].empty();
+    expect(i4.pull(&mut o4, 100000usize) == Status.Done and o4.view() == w.view(), "gzip, one member: Done without 'finish'");
+  }
+
+  // What follows the stream
+  {
+    imm r = rawDeflate("abc", 1);
+    mut withTail = List[u8].empty();
+    mut i = 0usize;
+    while i < r.len() { withTail.push(*r[i]); i += 1usize; }
+    withTail.push(7u8); withTail.push(8u8); withTail.push(9u8);
+    mut inf2 = Inflater.make(Format.Raw);
+    inf2.feed(withTail.view());
+    inf2.finish();
+    mut o = List[u8].empty();
+    imm s = inf2.pull(&mut o, 100usize);
+    expect(s == Status.Done and o.len() == 3usize, "a raw stream with bytes after it ends Done");
+    imm rest = inf2.takeRest();
+    expectInt(i64.from(rest.len()), 3i64, "the rest after a raw stream: its length");
+    expect(rest.len() == 3usize and *rest[0usize] == 7u8 and *rest[2usize] == 9u8, "the rest after a raw stream: its bytes");
+    expectInt(i64.from(inf2.totalIn()), i64.from(r.len()), "totalIn stops at the end of the stream");
+    // pulling again after Done
+    expect(inf2.pull(&mut o, 100usize) == Status.Done and o.len() == 3usize, "a pull after Done gives Done and nothing");
+  }
+
+  // The deflater's pieces
+  {
+    mut def = Deflater.make(Format.Zlib, 2);
+    def.feed("");
+    mut o = List[u8].empty();
+    imm s0 = def.pull(&mut o, 100usize);
+    expect(s0 == Status.NeedInput and o.len() == 2usize, "an empty feed: the header only, then NeedInput");
+    def.feed(w.view());
+    def.finish();
+    def.feed(w.view());
+    mut piece2 = List[u8].empty();
+    mut total = 0usize;
+    mut st2 Status = Status.MoreOutput;
+    mut biggest2 = 0usize;
+    while st2 == Status.MoreOutput {
+      piece2.clear();
+      st2 = def.pull(&mut piece2, 17usize);
+      if piece2.len() > biggest2 { biggest2 = piece2.len(); }
+      total += piece2.len();
+    }
+    expect(st2 == Status.Done and def.isDone(), "the deflater ends Done");
+    expect(biggest2 <= 17usize, "no deflater piece over the 17 asked");
+    expectInt(i64.from(def.totalIn()), 600i64, "the deflater's totalIn: bytes fed before 'finish' only");
+    expectInt(i64.from(def.totalOut()), i64.from(total + 2usize), "the deflater's totalOut counts what was delivered");
+    piece2.clear();
+    expect(def.pull(&mut piece2, 17usize) == Status.Done and piece2.len() == 0usize, "a pull after Done gives Done and nothing");
+    // the whole thing is the stream of w
+    mut whole = List[u8].empty();
+    mut again = Deflater.make(Format.Zlib, 2);
+    again.feed(w.view());
+    again.finish();
+    again.pull(&mut whole, 100000usize);
+    expectInt(i64.from(whole.len()), i64.from(total + 2usize), "the pieces total the stream (less the 2 header bytes pulled first)");
+  }
+  done();
+}
