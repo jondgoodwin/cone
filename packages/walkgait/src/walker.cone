@@ -47,6 +47,9 @@ pub struct Walker {
   pub shiftStart f32;       // when it began
   pub shiftNext f32;        // when the next begins
   pub rng u32;
+  // true: the walker breathes and shifts its weight itself (a sine and a drifting offset). false: it leaves both to the
+  // caller (livingbody's layers do them, with exertion, on top of the walk)
+  pub ownIdle bool = true;
 
   // A walker for a being 'height' metres tall; 'seed' makes its idle motion its own
   pub fn make(height f32, seed u32) Walker {
@@ -276,9 +279,10 @@ pub struct Walker {
       shiftStart = clock;
       shiftNext = clock + 4. + 5. * self.nextRandom();
     }
-    imm shift = (shiftFrom + (shiftTo - shiftFrom) * smoothstep(0., 1.2, clock - shiftStart)) * idle * (1. - air);
+    imm own = if ownIdle { 1.; } else { 0.; };
+    imm shift = (shiftFrom + (shiftTo - shiftFrom) * smoothstep(0., 1.2, clock - shiftStart)) * idle * (1. - air) * own;
     imm breath = sin(2. * pi * 0.25 * clock + f32.from(seed % 7u32)) + 0.15 * sin(4. * pi * 0.25 * clock);
-    imm breathW = 1. - 0.5 * (1. - idle);
+    imm breathW = (1. - 0.5 * (1. - idle)) * own;
 
     // Pelvis: height from the legs, then sway, turn and list
     imm pelvisYaw = 0. - PELVIS_YAW * amp * cos(cyc);
