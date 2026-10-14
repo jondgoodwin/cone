@@ -1,0 +1,164 @@
+<html>
+  <head>
+	  <title>Platforms and Targets - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Platforms and Targets</div>
+		</div>
+
+    <div class="text">
+
+	<!-- NEW: drafted -->
+	<p style="margin-left: 40px;"><i>Note: This page gathers what the manual already says, in status notes and
+		in the library pages, about where Cone code runs. It adds nothing of its own: each entry names the page
+		it comes from, and that page is the authority. Where this page and one of those disagree, the other page is right.</i></p>
+
+	<p>Cone's compiler, <span class="pre">conec</span>, compiles for a <i>target</i>, named by a target triple:
+		the host's own, or the one <span class="pre">--triple</span> or <span class="pre">--wasm</span> names.
+		Most of the language is the same on every target; this page lists the places the manual says it is not,
+		so that a program (or a package) knows which targets to expect it to build for.</p>
+
+	<h2>At a glance</h2>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Target</th><th>Where the manual says</th></tr>
+	<tr><td><b>Windows</b> (x86-64)</td><td>supported: the standard library, threads, actors, I/O and HTTP all run here</td></tr>
+	<tr><td><b>Linux</b> (x86-64)</td><td>supported, the same</td></tr>
+	<tr><td><b>macOS</b></td><td>not supported yet for threads, locks, channels and actors; a C struct crosses by value as C does on x86-64 macOS</td></tr>
+	<tr><td><b>WebAssembly</b></td><td>a target (<span class="pre">--wasm</span>); a C struct does not yet cross by value; <span class="pre">usize</span> is 32 bits; barriers are nothing</td></tr>
+	<tr><td><b>SPIR-V</b> (GPU)</td><td>Vulkan form only, for compute kernels; the OpenCL form is refused</td></tr>
+	</table>
+
+	<h2>Windows and Linux</h2>
+	<p>These two, on x86-64, are where the manual says things run. Each of these is stated as running on both:</p>
+	<ul>
+		<li><b>Threads, locks, channels and actors.</b> The <span class="pre">thread</span> and <span class="pre">sync</span>
+			packages, and so the locks, the channels and the actors built on them, run on Windows and Linux (x86-64).
+			The <span class="pre">actors</span> package likewise.
+			Source: the status notes of <a href="conc-primitives.html">Roll your own: threads, atomics and locks</a>
+			and <a href="conc-actors.html">Actors in depth</a>.
+			<!-- from refconc and refactor status notes -->
+		</li>
+		<li><b>I/O.</b> <span class="pre">iocore</span> (sockets, timers, files, cancel groups and the blocking pool),
+			<span class="pre">iobuf</span>, <span class="pre">aio</span>, <span class="pre">actorhttp</span> and the HTTP and
+			TLS packages over them run on Windows and on Linux. The loop is an I/O completion port and Winsock on
+			Windows, epoll on Linux.
+			Source: <a href="conc-io.html">I/O in depth</a>, <a href="lib-time.html">Time</a>,
+			<a href="lib-http.html">HTTP</a>.
+			<!-- from refconcio status note, refstdtime "What runs where", refstdhttp -->
+		</li>
+		<li><b>Files, paths, environment, processes.</b> <span class="pre">path</span> reads the paths of the system the
+			program is built for (Windows' drive letters, shares and both separators; or POSIX's one separator and root);
+			<span class="pre">fs</span> and <span class="pre">env</span> are written over ISO C and the
+			<span class="pre">posix</span> package, which is the C library's own POSIX functions on Linux and maps the POSIX
+			names onto the Windows C runtime on Windows; <span class="pre">process</span> is written directly over
+			<span class="pre">kernel32</span> on Windows and over <span class="pre">posix_spawn</span>, pipes and
+			<span class="pre">poll</span> on Linux. Where the two behave differently it is said where the function is described.
+			Source: <a href="lib-fs.html">Files, paths and processes</a>.
+			<!-- from refstdfs -->
+		</li>
+		<li><b>Time.</b> <span class="pre">time</span> calls the operating system for one thing,
+			<span class="pre">Instant.now()</span>: <span class="pre">QueryPerformanceCounter</span> on Windows,
+			<span class="pre">clock_gettime</span> on Linux, chosen when the program is compiled.
+			Source: <a href="lib-time.html">Time</a>.
+			<!-- from refstdtime -->
+		</li>
+		<li><b>TLS.</b> <span class="pre">tls</span> asks the operating system whether a server is who it says it is: on
+			Windows its certificate verifier (<span class="pre">crypt32</span>), on Linux OpenSSL's own check against the
+			system's roots. On Windows, Congo copies OpenSSL's two libraries beside any program that imports
+			<span class="pre">tls</span> or <span class="pre">httpclient</span>; on Linux those programs link the system's
+			OpenSSL 3 (<span class="pre">libssl-dev</span> on Ubuntu).
+			Source: <a href="lib-http.html">HTTP</a>.
+			<!-- from refstdhttp -->
+		</li>
+		<li><b>C structs by value.</b> On 64-bit Windows a struct crosses as one integer if it is 1, 2, 4 or 8 bytes and
+			otherwise by pointer; on x86-64 Linux (System V) a struct of up to 16 bytes is passed in registers.
+			Source: <a href="safe-c.html#cabi">Structs by value</a>.
+			<!-- from refinclude -->
+		</li>
+		<li><b>The standard library's packages.</b> The library catalogue has a section, "Where they run", saying
+			which packages run on Windows and on Linux, which call nothing of the system's, and which have been run on
+			Linux so far.
+			Source: <a href="library.html#platforms">The Standard Library</a>.
+			<!-- from refstdlib §Where they run -->
+		</li>
+		<li><b>Linking.</b> What differs by system in a package's link libraries goes in a section of the manifest's
+			<span class="pre">[link]</span> table: <span class="pre">[link.windows]</span>, <span class="pre">[link.linux]</span>
+			and <span class="pre">[link.macos]</span>.
+			Source: <a href="mod-packages.html#linksections">Packages and the build</a>.
+			<!-- from refmodule -->
+		</li>
+	</ul>
+
+	<h2>macOS</h2>
+	<p>The <span class="pre">thread</span> and <span class="pre">sync</span> packages, and so the locks, the channels and the
+		actors built on them, and the <span class="pre">actors</span> package, run on Windows and Linux (x86-64),
+		<b>not yet on macOS</b>
+		(<a href="conc-primitives.html">Roll your own: threads, atomics and locks</a>,
+		<a href="conc-actors.html">Actors in depth</a>).
+		A version of <span class="pre">path</span>, <span class="pre">fs</span>, <span class="pre">env</span> and
+		<span class="pre">process</span> for macOS would change their insides, not what a program calls
+		(<a href="lib-fs.html">Files, paths and processes</a>).
+		What the manual does say about macOS is that a C-named function passes a struct by value as C does on x86-64
+		macOS, as it does on x86-64 Linux (<a href="safe-c.html#cabi">Structs by value</a>),
+		that a target triple naming <span class="pre">darwin</span> or <span class="pre">macos</span> makes
+		<span class="pre">isMacOS()</span> true (below), and that <span class="pre">[link.macos]</span> is a link section.</p>
+
+	<h2>WebAssembly</h2>
+	<p>A WebAssembly target is named with <span class="pre">--wasm</span> (or a WebAssembly triple).
+		What the manual says about it:</p>
+	<ul>
+		<li><b>No C struct by value yet.</b> A struct crosses as C passes it on x86-64 (Windows, Linux and macOS) only,
+			not yet on WebAssembly. A <span class="pre">bool</span>, and an 8- or 16-bit integer, cross as C's do on
+			WebAssembly too.
+			Source: <a href="safe-c.html#cabi">Structs by value</a>.</li>
+		<li><b>Pointer-sized numbers are 32 bits.</b> <span class="pre">usize</span> and <span class="pre">isize</span> are
+			64 bits on some targets and 32 on others, such as WebAssembly, so neither may be reinterpreted as a
+			fixed-width number type; convert the value instead.
+			Source: <a href="safe-trust.html#reinterpret">Type Reinterpretation</a>.</li>
+		<li><b>Barriers are nothing.</b> A GPU workgroup's barriers do nothing on WebAssembly.
+			Source: <a href="safe-intrinsics.html#barriers">Intrinsics</a>, <a href="conc-gpu.html">The GPU</a>.</li>
+		<li><b>No entry from the compiler.</b> A WebAssembly or GPU module gets no entry (runner of every module's
+			initializer and finalizer) from the compiler.
+			Source: <a href="mod-globals.html#initall">Global state and initialisation</a>.</li>
+	</ul>
+
+	<h2>SPIR-V and the GPU</h2>
+	<p>Compiled for a GPU, the entry points of a module are written as SPIR-V's Vulkan form:
+		<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span> writes
+		<span class="pre">&lt;name&gt;.spv</span>. SPIR-V's OpenCL form
+		(<span class="pre">--triple=spirv64-unknown-unknown</span>) has kernels of another kind, and a compute entry point
+		compiled for it is refused. Not implemented: any GPU target but SPIR-V's Vulkan form.
+		A SPIR-V triple makes none of the OS tests below true.
+		Source: <a href="conc-gpu.html">The GPU</a> (its status note and its first section on compiling for a GPU).</p>
+
+	<h2>Choosing by target in your own code</h2>
+	<p>Core has constants of the compile that say which OS the compile targets, read from its target triple with no flag:
+		<span class="pre">isWindows()</span> (a triple naming <span class="pre">windows</span>, such as
+		<span class="pre">x86_64-pc-windows-msvc</span>), <span class="pre">isLinux()</span>,
+		<span class="pre">isMacOS()</span> (one naming <span class="pre">darwin</span> or <span class="pre">macos</span>) and
+		<span class="pre">isWasm()</span>; at most one holds, and none for a SPIR-V triple.
+		An <span class="pre">if</span> on one of them has only the side the build takes generated, so a program links
+		without the other platform's functions. This is a provisional mechanism: its final design is open.
+		The full description, with its caveats, is under
+		<a href="safe-intrinsics.html#buildconst">Constants of the build</a>.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="safe-c.html">Talking to C</a> &mdash; the C calling convention per platform.</li>
+		<li><a href="safe-intrinsics.html#buildconst">Intrinsics</a> &mdash; <span class="pre">isWindows</span>, <span class="pre">isLinux</span>, <span class="pre">isMacOS</span>, <span class="pre">isWasm</span> and the <span class="pre">-D</span> constants.</li>
+		<li><a href="library.html">The Standard Library</a> &mdash; which packages run where.</li>
+		<li><a href="conc-gpu.html">The GPU</a> &mdash; the SPIR-V form of a kernel.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="library.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

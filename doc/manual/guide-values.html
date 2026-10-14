@@ -1,0 +1,1362 @@
+<html>
+  <head>
+	  <title>Values, variables and expressions - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Values, variables and expressions</div>
+		</div>
+
+    <div class="text">
+
+	<p>Every program works with values: it names them, computes new ones from old ones, and hands them
+		around. This page shows how Cone does each of those, by working out the numbers for a day's drive.</p>
+
+<pre>
+// Values, variables and expressions
+//
+// A day's drive, worked out: numbers and their types, imm and mut,
+// a named constant, operators, a block that gives a value,
+// and which values copy and which move.
+
+mod values;
+
+import stdio use *;
+import collections use *;
+
+const kmPerMile = 1.609344d;
+
+fn main() {
+  // imm: a variable that never changes. Its type, f64, comes from the literal
+  imm miles = 420d;
+  imm km = miles * kmPerMile;
+  print &lt;- miles, " miles is ", km, " km\n";
+
+  // mut: a variable that may change. Its type may be written out
+  mut minutes i32 = 0;
+  minutes += 7 * 60;        // seven hours of driving
+  minutes += 3 * 25;        // three stops of 25 minutes
+  ++minutes;                // and one to find the car keys
+  print &lt;- "on the road: ", minutes / 60, " h ", minutes % 60, " min\n";
+
+  // One number type becomes another only when asked
+  imm hours = f64.from(minutes) / 60d;
+  print &lt;- "average speed: ", miles / hours, " mph\n";
+
+  // A block is a value: the value of its last statement
+  imm fuel = {
+    imm gallons = miles / 32d;
+    gallons * 3.45d;
+  };
+  print &lt;- "fuel: about $", fuel, "\n";
+
+  // Two drivers trade places in one statement
+  mut driving = 1;
+  mut resting = 2;
+  driving, resting = resting, driving;
+  print &lt;- "driver ", driving, " takes over from driver ", resting, "\n";
+
+  // Numbers copy: changing the copy leaves the original as it was
+  mut odometer = 12000;
+  imm start = odometer;
+  odometer += 420;
+  print &lt;- "odometer: ", start, " to ", odometer, "\n";
+
+  // A String, text that grows, moves instead: it has one owner at a time
+  imm plan = String.from("day two: the coast road");
+  imm today = plan;         // plan's text moves to today
+  print &lt;- today.view(), "\n";
+  // print &lt;- plan.view();  // Error: plan's value has moved to today
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+420 miles is 675.924 km
+on the road: 8 h 16 min
+average speed: 50.8065 mph
+fuel: about $45.2812
+driver 2 takes over from driver 1
+odometer: 12000 to 12420
+day two: the coast road
+</pre>
+
+	<h3 id="notice">What to notice</h3>
+	<ul>
+		<li>Each variable is declared <span class="pre">imm</span> (it never changes) or
+			<span class="pre">mut</span> (it may). The type may be written after the name, as
+			<span class="pre">minutes i32</span>, or left for the compiler to infer from the value.</li>
+		<li>A suffix on a literal says its type: <span class="pre">420d</span> is a 64-bit float, an
+			<span class="pre">f64</span>. A whole number with no suffix is an <span class="pre">i32</span>.</li>
+		<li><span class="pre">minutes / 60</span> divides two integers, so the answer is a whole number;
+			<span class="pre">%</span> gives the remainder. To divide an integer by a float, it is first
+			converted: <span class="pre">f64.from(minutes)</span>.</li>
+		<li>A block in braces has a value, that of its last statement, and its own variables, such as
+			<span class="pre">gallons</span>, end with it.</li>
+		<li><span class="pre">driving, resting = resting, driving;</span> assigns both at once, so the two values
+			swap.</li>
+		<li>A number copies; a <span class="pre">String</span> moves. Remove the <span class="pre">//</span> from
+			the last line to see the compiler refuse to use <span class="pre">plan</span> after its text moved.</li>
+	</ul>
+
+	<!-- NEW: drafted (narrative on the program above) -->
+	<h2 id="naming">Naming a value: imm and mut</h2>
+	<p>A variable is a name for a value. Cone asks you to say, each time you declare one, whether the value
+		may change. <span class="pre">imm</span> (immutable) says it never will: <span class="pre">miles</span> is
+		420 for as long as it exists, and an attempt to assign it again is refused before the program ever
+		runs. <span class="pre">mut</span> (mutable) says it may: <span class="pre">minutes</span> starts at zero
+		and is added to as the day goes on.</p>
+	<p>A variable's declaration always begins with one of the two words, so a reader can always see, at the
+		declaration, which values hold still. Most of a program's values turn out not to need changing, and
+		writing <span class="pre">imm</span> for them makes the ones that do stand out. If you know JavaScript,
+		<span class="pre">imm</span> and <span class="pre">mut</span> play the parts of <span class="pre">const</span> and
+		<span class="pre">let</span>. Cone has a <span class="pre">const</span> too, for something different: a name
+		for a value that is fixed when the program is compiled, such as <span class="pre">kmPerMile</span>,
+		declared at the top of the file.</p>
+
+	<h2 id="typed">Every value has a type</h2>
+	<p>Every value in Cone has a type, known when the program is compiled. Usually you need not write it,
+		because the compiler infers it from the value: <span class="pre">miles</span> is an
+		<span class="pre">f64</span> because <span class="pre">420d</span> is. Where you want a particular type, you
+		can write it after the name, as <span class="pre">minutes i32</span> does, or on the literal, as a
+		suffix.</p>
+	<p>The number types say their size in their name: <span class="pre">i8</span> to <span class="pre">i64</span> are
+		signed integers, <span class="pre">u8</span> to <span class="pre">u64</span> unsigned ones, and
+		<span class="pre">f32</span> and <span class="pre">f64</span> floating point. A whole-number literal with no
+		suffix is an <span class="pre">i32</span>, and one with a decimal point or an exponent is an
+		<span class="pre">f32</span>; <span class="pre">d</span> makes it an <span class="pre">f64</span>, and
+		<span class="pre">u8</span>, <span class="pre">i64</span> and the rest may be written after a number too.</p>
+<pre>
+imm small = 65u8;      // u8
+imm count = 1_000_000; // i32: underscores are ignored
+imm ratio = 3.14159;   // f32
+imm precise = 1d;      // f64
+</pre>
+	<p>Types are strict. Where a value of one number type goes into a larger type of the same kind, an
+		<span class="pre">i32</span> into an <span class="pre">i64</span> or an <span class="pre">f32</span> into an
+		<span class="pre">f64</span>, nothing can be lost and Cone widens it for you. Anything else must be asked
+		for. An integer is not a float, so <span class="pre">minutes / 60d</span> is refused: the program asks for
+		the conversion by name, <span class="pre">f64.from(minutes)</span>. Every number type has a
+		<span class="pre">from</span> that takes any other number, and the name says plainly where a value changes
+		type. Even assigning <span class="pre">24.0</span> to <span class="pre">minutes</span> is refused, because
+		<span class="pre">minutes</span> holds integers.</p>
+
+	<h2 id="computing">Computing new values</h2>
+	<p>An expression combines values with operators to make a new one, and the operators are the ones you
+		know: <span class="pre">+ - * / %</span>, with the usual precedence, and parentheses to change it.
+		Division of two integers gives a whole number, rounding toward zero, which is why
+		<span class="pre">minutes / 60</span> is 8 and <span class="pre">minutes % 60</span> the 16 minutes left over.</p>
+	<p>A <span class="pre">mut</span> variable can be updated in place: <span class="pre">minutes += 75</span> is
+		<span class="pre">minutes = minutes + 75</span>, and <span class="pre">-=</span>, <span class="pre">*=</span>
+		and <span class="pre">/=</span> work the same way.
+		<span class="pre">++minutes</span> adds one. And several variables can be assigned in one statement, each
+		taking the value in the same position on the right. Because every value on the right is worked out before
+		any variable changes, <span class="pre">driving, resting = resting, driving</span> swaps the two, with no
+		temporary variable to hold one of them on the way.</p>
+
+	<h2 id="blockvalue">A block is a value</h2>
+	<p>Braces group statements into a block, and in Cone a block is itself an expression: its value is the
+		value of its last statement. That lets a calculation that needs a few steps, and a scratch variable or
+		two, be written right where its answer is wanted. <span class="pre">gallons</span> exists only inside the
+		block that computes <span class="pre">fuel</span>; when the block ends, so does it, and nothing outside
+		can use it by mistake.</p>
+	<p>The same rule gives a function its result. A function's body is a block, so its last expression is what
+		it returns, with no <span class="pre">return</span> needed: the pi program on the
+		<a href="guide-first.html#firstprogram">first page</a> ends with <span class="pre">result * 6d;</span>.
+		<span class="pre">if</span> and <span class="pre">match</span> are values the same way, on the
+		<a href="guide-conditionals.html">next pages</a>.</p>
+
+	<h2 id="moving">Copy or move</h2>
+	<p>Assigning a number, or handing one to a function, copies it. <span class="pre">start</span> is a copy of
+		<span class="pre">odometer</span>, so adding to <span class="pre">odometer</span> afterwards leaves
+		<span class="pre">start</span> at 12000. Most values in Cone behave like this.</p>
+	<p>Some values should never exist twice, because they own something: a <span class="pre">String</span> owns
+		the memory its text is kept in. Two copies would each believe the memory was theirs to change and to free.
+		So a value like this <b>moves</b> instead. <span class="pre">imm today = plan;</span> hands the text to
+		<span class="pre">today</span>, and <span class="pre">plan</span> has nothing left: the compiler refuses
+		any later use of it, with <i>"This variable's value has been moved out."</i> There is only ever one owner,
+		so Cone knows exactly when the text is no longer needed, and frees it then, with no garbage collector and
+		nothing for you to free by hand.</p>
+	<p>Whether a value copies or moves is decided by its type, not by how it is used. Numbers copy. A type
+		moves if it says so, if it has a finalizer, or if anything it holds moves; you will meet such types again
+		with <a href="guide-text.html">text</a>, <a href="guide-structs.html">structs</a> and
+		<a href="guide-collections.html">collections</a>. That is all a program needs to know about moving for
+		now. <a href="mem-moves.html">Moves in depth</a> has the rest.</p>
+
+	<h2 id="indetail">In detail</h2>
+	<p><i>The rest of this page is the complete reference for values, variables, numbers, expressions, blocks
+		and conversions; skip to the <a href="guide-text.html">next page</a> if the program above was enough.</i></p>
+
+	<p>We begin with literals and variables,
+		two basic building blocks for any expression.
+		Along the way, additional concepts will be introduced,
+		such as types, variable declarations, assignment, and scope.</p>
+<pre>
+imm height = 1.86;     // a variable that never changes: f32 is inferred
+mut age = 23;          // a variable that may change: i32
+age = 24;
+const pi = 3.141592;   // a named constant
+</pre>
+
+	<h3 id="literals">Literals</h3>
+	<p>A literal is a specific, unchangeable value.
+		Each of these <a href="syntax-lexical.html#number">numbers</a> is a literal:</p>
+<pre>
+123
+3.14159
+1e6          // 1000000.0
+-1_000_000   // underscores are ignored
+0x1000       // Hexadecimal
+</pre>
+	<p>Beyond numbers, other forms of literals will be introduced later, including:</p>
+	<ul>
+	<li><a href="syntax-lexical.html#string">string</a> and
+		<a href="syntax-lexical.html#char">character</a> literals
+		(e.g., "Hello" and 'a')
+	</li>
+	<li>boolean <span class="pre">true</span> and <span class="pre">false</span></li>
+	<li>struct, array, and other compound values</li>
+	</ul>
+
+	<h3 id="vars">imm and mut</h3>
+	<p>A variable is like a named container which holds a value of some specific type.</p>
+
+	<h4 id="vardcl">Variable declarations</h4>
+	<p>Before a variable can be used, it must first be declared and initialized.
+		This example explicitly does both:</p>
+<pre>
+imm height f32 = 1.86;
+</pre>
+	<p>Let's examine each part of this variable declaration statement:</p>
+	<ul>
+	<li><span class="pre">imm</span> at the beginning announces that
+	this statement is a variable declaration. It also indicates that the variable is immutable:
+	once given its initial value, it can never be given a different value.</li>
+	<li><span class="pre">height</span> is the name of the variable.
+		A variable name is an <a href="syntax-lexical.html#ident">identifier</a>
+		which typically begins with an alphabetic letter, followed by letters or numbers.
+		Underscores are also permissible.</li>
+	<li><span class="pre">f32</span> is the variable's declared type.
+		The variable can only hold values of this type.</li>
+	<li>Following the <span class="pre">=</span> is an expression that establishes the initial
+		value for the variable. In this example, height's value is 1.86.</li>
+	</ul>
+
+	<p>When an initial value is specified, the type can usually be omitted.
+		It will be inferred, as this example shows:</p>
+<pre>
+imm height = 1.86;     // f32 type is inferred
+imm width  = height;   // its value is 1.86 and type is f32
+</pre>
+	<p>Notice that the second statement makes use of the variable 'height'
+		after it has been declared and initialized.</p>
+
+	<h4 id="varperm">Mutable Variables</h4>
+	<p>What if we need to change a variable's value after initialization?
+		To allow that, use <span class="pre">mut</span>
+		(instead of <span class="pre">imm</span>) on the declaration statement:
+	</p>
+<pre>
+mut age = 23;      // type is i32
+// ... some statements here ...
+age = 24;          // alters age to hold 24 instead
+</pre>
+	<p style="margin-left: 40px;"><i>Just enough: <span class="pre">mut</span> and <span class="pre">imm</span>
+	are called <b>permissions</b>.
+	Cone supports a number of other permissions.
+	These are discussed more fully on the <a href="mem-permissions.html">Permissions</a> page.</i></p>
+	<p><b>Note:</b> If we had tried to re-assign age to 24.0,
+	we would have gotten an error message.
+	This is because age is declared to only hold integer values,
+	and 24.0 is a floating point number.
+	Type safety of variables requires that the expression's type be the same or
+	<a href="#coercion">coerceable</a>.
+	</p>
+
+	<h3 id="vtype">Types you can name</h3>
+	<p>Every value has a type it belongs to. A type is a pattern that:</p>
+	<ul>
+	<li>Establishes all permissible values.
+		Thus, the <span class="pre">bool</span> type only supports <span class="pre">true</span> and <span class="pre">false</span> as values.
+		Integer types only support integer number values.
+		Floating point types support floating point number values, and so on.</li>
+	<li>Determines how values are digitally encoded, including how many binary bits are needed to encode them.</li>
+	<li>Specifies what operations can be performed on values of that type.
+			For example, an integer type permits two integers to be added together,
+			the result of which is another integer value.
+			These type operations are called <b>methods</b>.</li>
+	<li>Enforces <a href="#features">constraints</a> that ensure the type's values are handled consistently and safely.</li>
+	</ul>
+	<p>Every value in a program has a type,
+	  known at compile-time due to an explicit declaration or because the type can be easily inferred based on the context.
+	  By knowing the types of all values, the compiler can optimize a program's performance and memory use.
+	  Clear typing facilitates precise, flexible data manipulation and improves the safe and correct use of data.</p>
+	<p>The names of specific types are capitalized by convention.
+			This helps cleanly distinguish variable names from type names,
+			reducing unexpected naming conflicts and improving code clarity.
+			One notable exception to this naming convention is the type names for the primitive numeric types.</p>
+	<p>Besides the numbers below, two more types are built in.
+		<span class="pre">bool</span> holds <span class="pre">true</span> or <span class="pre">false</span>.
+		Text is built of <span class="pre">char</span>, a Unicode code point
+		(<a href="syntax-lexical.html#char">character literals</a>), which is compared but is no quantity.
+		And <a href="#void"><span class="pre">void</span></a> is the type of no value at all: the return type of
+		a function that returns nothing. The <a href="#repertoire">whole repertoire of types</a> is listed at the end of
+		this page.</p>
+
+	<h3 id="numbertypes">Integers and floats</h3>
+	<p>The built-in number types
+		specify their bit-size as part of the type's name. Here they are:</p>
+	<ul>
+	<li><b>Signed integer</b> types: <span class="pre">i8</span>, <span class="pre">i16</span>,
+	<span class="pre">i32</span> and <span class="pre">i64</span></li>
+	<li><b>Unsigned integer</b> types: <span class="pre">u8</span>, <span class="pre">u16</span>,
+	<span class="pre">u32</span> and <span class="pre">u64</span></li>
+	<li><b>Floating point</b> types: <span class="pre">f32</span> and <span class="pre">f64</span></li>
+	</ul>
+	<p>Later, a number of other types will be introduced.</p>
+	<h4 id="typedlit">Typed Number Literals</h4>
+	<p>To explicitly specify the type for a numeric literal,
+		append the type name right after the number:</p>
+<pre>
+65u8       // 8-bit unsigned integer
+1f64       // 64-bit floating point number
+</pre>
+	<p>If the type is omitted, the number is understood to be 32-bits.
+		When the number explicitly includes a decimal point or exponent,
+		it is treated as a floating point number (f32).
+		Otherwise, it is considered to be a signed integer (i32).</p>
+<pre>
+3.14159    // f32 (because of the decimal point)
+1e6        // f32 (because of the exponent)
+1_000_000  // i32 (no decimal point or exponent)
+</pre>
+	<p>Type name shortcuts are also supported:</p>
+<pre>
+1000u      // u32
+1f         // f32
+1d         // f64
+</pre>
+
+	<h4 id="bits">An integer's bits</h4>
+	<p>Every integer type (<span class="pre">u8</span> to <span class="pre">u64</span>,
+		<span class="pre">i8</span> to <span class="pre">i64</span>, <span class="pre">usize</span>
+		and <span class="pre">isize</span>) has methods that count and move its bits.
+		Each count is a <span class="pre">u32</span>, and each is defined for 0, as the width:</p>
+	<dl>
+	<dt>x.countOnes()</dt>
+	<dd>How many of its bits are 1.</dd>
+	<dt>x.leadingZeros()</dt>
+	<dd>How many bits are 0 above its highest 1: the width, for 0.</dd>
+	<dt>x.trailingZeros()</dt>
+	<dd>How many bits are 0 below its lowest 1: the width, for 0.</dd>
+	</dl>
+<pre>
+0x2Cu8.countOnes()        // 3
+1u64.leadingZeros()       // 63
+0u32.trailingZeros()      // 32
+(-1i16).countOnes()       // 16: a signed integer's bits, the sign's among them
+</pre>
+	<p>The rest take an amount <span class="pre">n</span>, a <span class="pre">u32</span>,
+		and use it modulo the width, so every amount has an answer and 0, the width and twice
+		the width give the same one:</p>
+	<dl>
+	<dt>x.rotateLeft(n), x.rotateRight(n)</dt>
+	<dd>The bits moved by <span class="pre">n</span>, those shifted out of one end coming in at the other.</dd>
+	<dt>x.shlMasked(n), x.shrMasked(n)</dt>
+	<dd>A shift by <span class="pre">n</span> modulo the width: the shift most processors do in one
+		instruction. <span class="pre">shrMasked</span> fills with the sign bit on a signed integer
+		and with zeros on an unsigned one. The operators <span class="pre">&lt;&lt;</span> and
+		<span class="pre">&gt;&gt;</span> differ only past the width, where they shift every bit out
+		(<a href="#shift">Shift operators</a>).</dd>
+	</dl>
+<pre>
+0x81u8.rotateLeft(1)      // 0x03
+1u32.shlMasked(33)        // 2, a shift by 1
+1u32 &lt;&lt; 33u32            // 0
+(-16i8).shrMasked(10)     // -4, a shift by 2
+</pre>
+	<p>The same operations are core's intrinsics, <span class="pre">mem.countOnes(x)</span> and the
+		rest (<a href="safe-intrinsics.html#bits">Intrinsics</a>), whose type parameter is any of these
+		integer types.</p>
+
+	<h3 id="const">Named constants</h3>
+	<p>Constant literals can be given a name. For example:
+<pre>
+const pi = 3.141592;
+</pre>
+	<p>With this declaration in place, any program reference
+		to the name <span class="pre">pi</span> will substitute in the
+		the corresponding floating-point constant literal value.</p>
+	<p>A constant's value may be an expression computed from constants alone:
+		number literals, <span class="pre">true</span> and <span class="pre">false</span>,
+		and other named constants, declared before it or after,
+		combined by the <a href="#arithops">arithmetic, bitwise and shift operators</a>
+		(<span class="pre">+ - * / % | &amp; ^ ~ &lt;&lt; &gt;&gt;</span>, and a prefix <span class="pre">-</span>),
+		the comparisons, <span class="pre">not</span>, <span class="pre">and</span> and <span class="pre">or</span>,
+		a number's conversion <span class="pre">T.from(x)</span>, a reinterpretation with
+		<span class="pre">as</span>, and parentheses.
+		The constant is the literal the expression computes:</p>
+<pre>
+const Red = 0x1u32;
+const Green = 0x2u32;
+const All = Red | Green | Blue;    // 0x7u32
+const Blue = 0x4u32;
+const Half = 1.0f32 / 2.0f32;      // 0.5f32
+</pre>
+	<p>Each operator gives the value it gives when the program runs, on the same type:
+		an <span class="pre">f32</span> is computed as an <span class="pre">f32</span>,
+		integer division truncates toward zero, and <span class="pre">&lt;&lt;</span>
+		drops the bits shifted out. What has no value when the program runs is an error:
+		a result its type cannot hold (<span class="pre">255u8 + 1u8</span>),
+		a division or remainder by zero,
+		and a float converted to an integer that cannot hold it.
+		So is a shift by the type's width or more, or by a negative amount, although the
+		running program gives one a value (<a href="#shift">Shift operators</a>).
+		So is a constant whose value names itself, directly or through other constants.
+		A function call, a variable or a method like <span class="pre">sqrt</span> is not a constant,
+		so neither is an expression using one.
+		The same expressions may be written wherever a constant is required:
+		a global variable's or a static's value, a parameter's or a field's default,
+		and the elements of an array, struct or tuple literal in any of these.</p>
+	<p>A variant of an <a href="guide-enums.html#enum">enum</a> that holds no value is a constant:
+		<span class="pre">Kind.Os</span> for <span class="pre">enum Kind {Os, Cancelled, TimedOut;}</span>,
+		and <span class="pre">None</span> for an <span class="pre">Option</span>, whose other variant does hold one.
+		It is its tag, and the rest of the enum's value, where it is wider than the tag, is zero.
+		It may be a named constant's value, a global's, a parameter's or a field's default, or an
+		element of an array, struct or tuple literal in any of these.
+		A variant that holds a value is not, nor is a variant of an enum that has fields in common,
+		whose value is no part of the tag.</p>
+<pre>
+enum Kind {Os, Cancelled, TimedOut;}
+
+const Fallback Kind = Kind.TimedOut;
+struct Failure {
+	pub code u32;
+	pub kind Kind = Kind.Os;       // left out of new Failure(5u32), it is Os
+	pub next Option[i32] = None;   // and none; Some(5) is not a constant
+}
+</pre>
+	<p>A constant may name a compound literal too, such as an array, a struct or a tuple.
+		Each use of it is that literal, so it may be used however the literal could be:</p>
+<pre>
+const primes Array[u32, 4] = [2u32, 3u32, 5u32, 7u32];
+
+primes[n]          // an element, by a constant or run-time index
+&amp;primes            // a reference to the array, as &amp;[2u32, 3u32, 5u32, 7u32] is
+</pre>
+	<p><b>Note:</b> Named constants of numbers, strings, arrays, structs and tuples are implemented,
+		and so are the constant expressions above.
+		A constant's elements and fields may be read, and a constant array or string, which is kept
+		in read-only memory as its literal is, may be borrowed: as a reference or a slice, never
+		<span class="pre">mut</span>, living as long as the program. No other constant may be borrowed,
+		nor may a field of one or of one of its elements, since each use of it is a fresh copy with no
+		place in memory, as its literal would be; that includes calling a method that takes a
+		borrowed <span class="pre">self</span> on one.
+		(<a href="mem-borrowing.html">Borrowed references</a> explains borrowing.)</p>
+
+	<h3 id="scope">Delayed initialization and scope</h3>
+	<h4 id="delayed">Delayed initialization</h4>
+	<p>It is often preferable to initialize a variable as part of declaration.
+		When that is not realistic, initialization may be performed later
+		using an <b>assignment</b>:</p>
+<pre>
+imm height f32;
+// ... some statements here ...
+height = 1.86;         // Initialize height now
+</pre>
+	<p>An <i>assignment</i> essentially copies the evaluated value of the expression
+		to the right of the <span class="pre">=</span> into the variable specified to the left.
+		(Later, we will show that assignment can also be used to place values into structures
+		that lie "within" a variable's value.)
+		Any assignment is itself an expression, and may be used wherever expressions are allowed.</p>
+	<p>It is worth pointing out that any attempt to re-assign 'height' later
+	to another value will trigger an error message:</p>
+<pre>
+height = 2.12;         // **ERROR** since height is immutable and initialized
+</pre>
+
+	<h4 id="visibility">Scope and Visibility</h4>
+	<p>As we have seen, variables have a name, permission, type and value.
+		They also have a scope and visibility.
+		Scope and visibility restrict where a variable may be
+		referenced and used in a program.</p>
+	<ul>
+	<li><i>Scope</i> is established by where the variable's declaration is found.
+		Based on this position, the scope can be <a href="mod-globals.html#global">global</a>,
+		<a href="guide-functions.html#local">local</a> to a function,
+		local to a <a href="#blockscope">block</a>,
+			or a <a href="guide-structs.html#struct">field</a> in a type.</li>
+	<li><i>Visibility</i> is declared, not spelled: a global variable or type field
+		is private unless its declaration begins with <span class="pre">pub</span>.
+		Visibility determines whether a global variable or type field is visible outside
+		its owning <a href="mod-namespaces.html">namespace</a>.</li>
+	</ul>
+
+	<h3 id="arith">Operators and precedence</h3>
+	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented
+		except the special <span class="pre">my</span> name and
+		<span class="pre">max</span> and <span class="pre">abs</span> on numbers, which are not built.</i></p>
+	<p>Now that we have literals and variables, we can construct more complex expressions that
+	use operators, methods and functions calls to calculate new values.
+	Although the expression examples on this page work with integer and floating point values,
+	similar expressions can be formulated that manipulate values of other types.</p>
+	<p>Expressions are gathered into blocks.
+			A block is the basic unit for structured control flow.
+			It holds a ordered collection of statements that are executed in order, starting with the first statement.
+			It may also accumulate its own temporary, local state.
+			Blocks that evaluate to some value may also be used in expressions.</p>
+
+	<h4 id="arithops">Arithmetic Operators</h4>
+	<p>Integer and floating point numbers may be computed using arithmetic operators:</p>
+	<dl>
+	<dt>'+'</dt>
+	<dd>Add</dd>
+	<dt>'-'</dt>
+	<dd>Subtract (or negate when used as a prefix operator)</dd>
+	<dt>'*'</dt>
+	<dd>Multiply</dd>
+	<dt>'/'</dt>
+	<dd>Divide</dd>
+	<dt>'%'</dt>
+	<dd>Modulo (remainder)</dd>
+	</dl>
+	<p>Thus:</p>
+<pre>
+-12 + 14    // 2
+6 / 5       // 1
+-4 % 3      // -1 (where -4/3 --&gt; -1, truncating towards zero)
+2*2 + 2*3   // 10 (standard algebraic operator precedence)
+2 * (4 + 1) // 10 (parentheses override operator precedence)
+</pre>
+
+	<h4 id="bitwise">Bitwise expressions</h4>
+	<p>The bitwise operators operate on true/false values:</p>
+	<dl>
+	<dt>'|'</dt>
+	<dd>Or</dd>
+	<dt>'&amp;'</dt>
+	<dd>And</dd>
+	<dt>'^'</dt>
+	<dd>Xor</dd>
+	<dt>'~'</dt>
+	<dd>Not</dd>
+	</dl>
+	<p>For example:</p>
+<pre>
+true | (false &amp; true) // true
+true ^ ~true          // true
+</pre>
+	<p>These bitwise operators may also be used on unsigned integers,
+	as they are viewed as a collection of true/false bits.</p>
+<pre>
+0xE0u | 0xB8u  // 0xF8u
+</pre>
+	<h4 id="shift">Shift operators</h4>
+	<p>The shifting of an integer's bits is accomplished
+	using the &lt;&lt; and &gt;&gt; operators:</p>
+<pre>
+0x0Cu &lt;&lt; 1    // 0x18, after shifting bits left once
+</pre>
+	<p>The amount to shift by is a value of the same integer type. <span class="pre">&lt;&lt;</span>
+		fills the bits it vacates with zeros, and the bits shifted past the top are gone.
+		<span class="pre">&gt;&gt;</span> on an unsigned integer fills with zeros; on a signed
+		integer it fills with copies of the sign bit, so a negative value stays negative.</p>
+	<p>Every amount gives an answer, the same in every build. An amount of the integer's width
+		or more shifts every bit out: <span class="pre">&lt;&lt;</span> gives 0, as does
+		<span class="pre">&gt;&gt;</span> on an unsigned integer, and <span class="pre">&gt;&gt;</span>
+		on a signed integer gives the sign in every bit, 0 or -1. The amount is read as an unsigned
+		number of its own width, so a negative amount of a signed type is past the width too:</p>
+<pre>
+imm n = 64u64;
+255u64 &gt;&gt; n         // 0
+(1u64 &lt;&lt; n) - 1u64  // all ones: 1 &lt;&lt; 64 is 0
+-8i32 &gt;&gt; 40i32      // -1, at run time
+</pre>
+	<p>In a <a href="#const">constant expression</a>, such as a <span class="pre">const</span>'s
+		value, a shift by the width or more, or by a negative amount, is an error.</p>
+	<p>An amount taken modulo the width is asked for by name: the integer methods
+		<span class="pre">shlMasked</span> and <span class="pre">shrMasked</span>, the processor's
+		one-instruction shift, and <span class="pre">rotateLeft</span> and
+		<span class="pre">rotateRight</span> (<a href="#bits">An integer's bits</a>).</p>
+
+	<h4 id="otherops">Other Expression Operators</h4>
+	<p>Cone supports several more expression operators.
+		Descriptions may be found in the chapters
+		relevant to their common use:</p>
+	<ul>
+	<li><a href="guide-conditionals.html#condexp">conditional expression operators</a></li>
+	<li><a href="mod-composition.html#with">'with' block operators</a></li>
+	<li>construction, <span class="pre">new Point(1, 2)</span>, which builds a struct's value by one of its
+		<a href="guide-structs.html#initializer">initializers</a></li>
+	</ul>
+	<p>The precedence of every operator is listed in <a href="syntax-lexical.html">Lexical Elements</a>.</p>
+
+	<h3 id="lval">Assignment forms: +=, ++, parallel assignment</h3>
+	<p>An 'lval'-based expression is one where the expression to the "left" represents a memory "container"
+		which holds a value. Lval-based expressions will change the stored value.
+		The <i>assignment</i> expression introduced <a href="#delayed">above</a> is lval-based,
+		as examples specified a variable to the left of the <span class="pre">=</span>.
+	</p>
+	<h4 id="parallel">Parallel Assignment</h4>
+	<p>Parallel assignment makes it possible to simultaneously assign multiple values to multiple variables.
+	This can be convenient when swapping the values held by two variables:</p>
+<pre>
+// Swap the variable values for a and b
+a,b = b,a;
+</pre>
+	<p>This is also useful for capturing multiple values returned by a function or method call:</p>
+<pre>
+min, max = minmax(5, 4);
+</pre>
+
+	<h4 id="incrdecr">Increment/decrement Operators</h4>
+	<p>When used to the left of an lval, <span class="pre">++</span> will increment the number and
+	<span class="pre">--</span> will decrement it.</p>
+<pre>
+mut cnt = 10;
+++cnt;          // 11
+--cnt;          // 10
+</pre>
+	<p>When used to the right of an lval, it will still increment and decrement, but the expression
+		will return the original value.</p>
+<pre>
+mut cnt = 10;
+imm x = cnt++;  // x is 10, cnt is 11
+</pre>
+
+	<h4 id="arithassign">Arithmetic Assignment</h4>
+	<p>The arithmetic assignment operators (e.g., '+=', '-=', '*=', '/=') offer a convenient way to update
+		an existing stored value:</p>
+<pre>
+counter = 3;
+counter += 1;  // 4. Equivalent to: counter = counter + 1
+</pre>
+
+	<h4 id="logicassign">Logical assignment operators</h4>
+	<p>These work similarly to the arithmetic assignment operators:</p>
+<pre>
+mut flags = 0xC0u;
+flags |= 0x01u;   // 0xC1u
+flags &gt;&gt;= 1;      // 0x60u
+</pre>
+
+	<h3 id="method">Calling a method</h3>
+	<p>Additional calculations can be performed using method calls.
+	The name of the desired method follows the object value, separated by the dot operator ('.'):
+<pre>
+(-1).abs    // 1 (the absolute value, making a number positive)
+(pi/2).sin  // 1.0 (trigonometric sine function)
+</pre>
+	<p>Sometimes, a method may require additional values.
+	These argument values are specified within parentheses following the method's name.</p>
+<pre>
+4.max(5)    // 5 (returns the larger of the two numbers)
+</pre>
+	<p>Method calls are very common and convenient. It is helpful to know that:
+	<ul>
+	<li>The logic a method performs depends on the type of the value it is applied to.
+	Thus, a method named 'max' applied to an integer is actually a different method than
+	when 'max' is applied to a floating point number.
+	Every type defines the names and logic for all methods it supports.
+	An error results when trying to use a method not implemented by the value's type.</li>
+	<li>The arithmetic operators introduced earlier (e.g., <span class="pre">+</span> for add)
+	are implemented under the covers using number type methods:
+<pre>
+// The method name equivalent for the + operator is `+`
+// The method name is enclosed in backticks since it includes punctuation
+3+4 // is actually the same as: 3 .`+`(4)
+// The space between 3 and . is needed here, otherwise 3. would be parsed as the float 3.0
+// When using a variable this space is not needed: n.`+`(4)
+</pre>
+	</li>
+	</ul>
+	<p><b>Note:</b> The arguments to a function or method call are evaluated in left-to-right
+		order. This is also true for tuples.</p>
+	<p><b>Note:</b> Inside any argument on a method call,
+		the special name <span class="pre">my</span> may be used.
+		Its value is the same as the object of the method call.
+		This can be helpful to call helper methods on the object
+		to prepare other argument values.</p>
+
+	<h4 id="fncall">Function calls</h4>
+	<p>Function calls are very much like method calls, except they are not applied to a value in the same way.
+	  Instead of specifying a value, dot operator, and a method name, one simply specifies the function name
+	  followed by any comma-separated arguments in parentheses.
+	</p>
+<pre>
+pow(10f, 2f)
+</pre>
+	<p><a href="guide-functions.html">Functions</a> shows how to declare one.</p>
+
+	<h3 id="blocks">Blocks are values</h3>
+	<h4 id="statements">Statements</h4>
+		<p>A statement is typically some expression to be performed. If the expression evaluates to
+			some value, it is then usually discarded by the statement.
+			In addition to expression statements, there are other kinds of statements,
+			such as <a href="#vardcl">variable declarations</a>,
+			a block treated as a statement,
+			or various statements used to control execution flow
+			(<a href="guide-conditionals.html">Conditionals</a>, <a href="guide-loops.html">Loops</a>).</p>
+		<p>Every statement that does not finish with a block is terminated by a semicolon.
+			The semicolon is never optional: not at the end of a line, and not on the
+			last statement before a block's closing brace.
+			This example shows two expression statements:</p>
+<pre>
+mut a = 12;
+mut b = 5;
+</pre>
+		<p>A single line may hold more than one statement,
+			each ended by its own semicolon:</p>
+<pre>
+a = 24; b = 6;
+</pre>
+		<p>A statement may span as many lines as it needs, since nothing but the semicolon ends it.
+			Indenting the continuation lines helps a reader see that they belong to one statement,
+			but the compiler pays no attention to indentation or to where a line ends:</p>
+<pre>
+a = b + c + d
+    - e + f;     // One statement: a = b + c + d - e + f;
+</pre>
+		<p>So a missing semicolon is never silently inferred. Leave one out and the compiler
+			reports it, at the end of the statement the semicolon belongs to:</p>
+<pre>
+a = b + c + d     // Error: expected ';' to end the statement
+e = f;
+</pre>
+
+		<h4 id="block">Blocks</h4>
+		<p>Blocks offer a versatile, easy-to-apprehend way to structure logic.
+	  A block's well-defined single point of entry and exit establishes clear
+	  boundaries around control flow as well as the local context it manages.</p>
+	  <p>Versatility comes from being able to nest different kinds of block easily within each other.
+	  This inherent modularity is useful when used in conjunction
+	  with control flow statements or to establish a context for compiler operations
+		(e.g., safety constraints).</p>
+	<p>Blocks support these roles:</p>
+	  <ul>
+		<li>Holding an ordered collection of statements</li>
+		<li>Establishing a lexical scope for a local context</li>
+		<li>Building and/or returning a value</li>
+	  </ul>
+
+	<h5>Ordered Collection of Statements</h5>
+	<p>At its simplest, a block is merely a ordered set of statements which are
+		executed one after another, in order.
+		The block's statements are wrapped inside curly braces, which is the only way
+		to mark that several statements belong to one block:</p>
+<pre>
+{
+	a = 12;
+	b = 5;
+}
+</pre>
+	<p>Indentation is for the reader. Where a block begins and ends is decided by the braces alone:</p>
+<pre>
+if a == 0 {
+	a = 12;
+}
+b = 5;        // Not part of if's inner block: it follows the closing brace.
+</pre>
+	<p>Blocks may be specified within blocks:</p>
+<pre>
+{
+  ++a;
+  {
+    ++b;
+    --a;
+  }
+  a + b;
+}
+</pre>
+	<p>The statements incrementing <span class="pre">b</span>
+	and decrementing <span class="pre">a</span> comprise an interior block within
+	an outer block. This particular example is a bit contrived,
+	as there is no good reason for us to use an interior block here,
+	since the logic would work the same if all statements belong to a single block.
+  However, later we will see useful examples of blocks embedded within other blocks.</p>
+
+	<h5 id="blockscope">Lexical Context</h5>
+	<p>Execution of a block's statements always begins with the first statement,
+	as one cannot jump into the middle of a block.
+	Likewise, execution of the block always finishes at the end of the block.
+	This single-entrance and single-exit nature makes it possible for a block
+	to create a temporary execution context that persists for the lifetime of the block
+	and then is automatically cleaned up at the end of the block.</p>
+
+	<p><b>Local Variables.</b>
+		Any variable <a href="#vardcl">declared</a> wihin a block
+		provides a temporary working state for that block.
+		Such variables are <i><a href="#visibility">local</a></i> to their block.
+		They cannot be referenced or used outside of that scope.
+		This silly example illustrates the block scope of declared variables:</p>
+<pre>
+{
+	mut result = 0;
+	{
+		mut sum = a + b;
+		result = sum;
+	}
+	++result;    // sum cannot be referenced in outer block
+}
+</pre>
+	<p>The block where a variable is defined is considered to be its lexical scope.
+	Scopes are nested from outer to inner, with global variables having the outer-most scope.
+	Variables declared in outer scopes are accessible in any inner scope.
+	However, the reverse is not true.
+	Thus, the outer block may not refer to <span class="pre">sum</span>.</p>
+	<p>If an inner block declares a local variable of the same name
+	as an outer scope (including global variables),
+		the outer-scoped variable is effectively inaccessible
+		throughout the lexical scope of that inner block.
+		To avoid potential confusion, this should be avoided.</p>
+
+	<p><b>Resource Disposal.</b>
+	The execution lifetime of a local variable does not last beyond its lexical scope.
+	At the end of the block, any resources acquired by local variables
+	are automatically reclaimed.
+	Reclamation might encompass a wide variety of possible activities,
+	including: freeing heap-allocated memory, decrementing counters,
+	releasing locks, joining threads,
+	or other type-based <a href="guide-structs.html#finalizer">finalization</a> activity
+	that closes acquired resources or removes dependencies to other objects.</p>
+
+	<h4 id="blockexpr">Blocks as expressions</h4>
+	<p>Blocks that evaluate to a value may be used as an expression, embedded within a larger expression.
+	When a block is used as an expression,
+	its value is that of the last statement in the block.</p>
+<pre>
+// Using a block as an expression
+a = {
+	3.14;
+	6;      // a's value will become 6
+}
+</pre>
+	<p>A <span class="pre">with</span> block is a block that focuses its logic around one value, named
+		<span class="pre">this</span>, whose fields and methods it reaches with a bare dot:</p>
+<pre>
+with &amp;mut point {
+	.x /= len;      // the same as point.x /= len
+	.y /= len;
+}
+</pre>
+	<p><a href="mod-composition.html#with">with blocks and this</a> has the form in full, with the prefix
+		operators that act on <span class="pre">this</span>.</p>
+
+	<h3 id="conversion-coercion">Conversion, coercion and subtypes</h3>
+	<p style="margin-left: 40px;"><i>Note: Most of this is implemented to some degree.</i></p>
+
+	<h4 id="features">Features that enrich types</h4>
+	<p>We have introduced many different flavors of types.
+		Let's now talk about some type-based features that
+		enrich our use of types and typed values.</p>
+	<ul>
+		<li>A type's <span class="pre">from</span> method, <span class="pre">f32.from(x)</span>,
+			for explicit conversion of values from one type to another,
+			and <span class="pre">as</span> for reinterpretation.
+			Where subtyping is in play, values will implicitly coerce to their supertype.</li>
+		<li><span class="pre">alias</span>,
+			which gives some type a second name
+			(<a href="mod-namespaces.html">Namespaces</a>).</li>
+		<li><span class="pre">extend</span>,
+			which allows an existing type to be extended to support additional methods
+			(<a href="mod-extensibility.html">Extensibility</a>).</li>
+		</ul>
+
+	<p>Typing is strict: You cannot put a round peg in a square hole.</p>
+	<p>Since all values, expressions and variables have a type, the compiler can (and will)
+		check whether the use of types is consistent.
+		In most cases, an error will be reported wherever a program:</p>
+	<ul>
+		<li>Stores a value of one type into a variable or collection declared for a different type.</li>
+		<li>Passes an argument of one type to a function that expects a value of another type in that position.</li>
+		<li>Returns a value of one type when the function's signature declares a different type for the return value.</li>
+		<li>Creates a reference (or pointer) to an object whose type does not match the reference's type declaration.</li>
+	</ul>
+	<p>These constraints protect against a program manipulating a value in ways that make no sense or could be harmful,
+		due to acting as if the value has a different meaning than it actually does.</p>
+	<p>However, sometimes we <i>do</i> want to transform a value of one type to another type.
+		Cone supports three such capabilities:</p>
+	<ul>
+		<li><b>Coercion</b>,
+			which implicitly and safely converts a value to some other expected type (usually a supertype).</li>
+		<li><b>Conversion</b>,
+			which explicitly asks a method of another type for the closest "equivalent" value in that type.
+			This mapping is imperfect, as some (or all) of the meaning of the original value could be lost.</li>
+		<li><b>Reinterpretation</b>,
+			which explicitly preserves the original value but re-interprets it as if it has a different type.
+			This potentially unsafe capability will be described on another
+			<a href="safe-trust.html#reinterpret">page</a>.</li>
+	</ul>
+	<p>To distinguish between coercion and conversion,
+		it is first necessary to understand how subtyping works in Cone.</p>
+
+	<h4 id="numrconv">Numeric conversions</h4>
+	<p>To convert a number from one type to another, call the intended type's method
+		<span class="pre">from</span> with the number:</p>
+<pre>
+imm six = i32.from(6u8);    // Converts 8-bit unsigned integer to 32-bit signed integer
+imm sixf = f64.from(six);   // Converts 32-bit signed integer to 64-bit floating point number
+</pre>
+	<p>If the receiving number type is a smaller size, numeric information may be lost.
+		<a href="#conversion">Explicit Conversion</a> gives what each conversion does.</p>
+
+	<h4 id="subtype">Subtypes</h4>
+	<p>Subtyping captures a simple but powerful idea: if we have two types named
+		<span class="pre">Base</span> and <span class="pre">Subtype</span>,
+		how do we determine when it is safe to substitute in a value of
+		type <span class="pre">Subtype</span> whenever our program logic
+		is looking for a value of type <span class="pre">Base</span>?</p>
+		<p>Here are two essential criteria (there are others):</p>
+	<ul>
+		<li>Every possible value in <span class="pre">Subtype</span> can be mapped uniquely
+				to its semantically identical value in <span class="pre">Base</span>.</li>
+		<li>The behavior of values in <span class="pre">Subtype</span>
+			must correspond in every way to the behavior of equivalent
+			values in <span class="pre">Base</span>.
+			In our case, that means at minimum that for every method in <span class="pre">Base</span>,
+			there exists an equivalent method in <span class="pre">Subtype</span>
+			with the same type signature and constraints.</li>
+	</ul>
+	<p>Many type pairs in Cone comply with these criteria and support a safe subtyping relationship:</p>
+	<ul>
+		<li>Any variant type is a subtype of any trait or struct type
+			that it complies with, even if it does not inherit from it.</li>
+		<li>Any non-nullable type is a subtype of its
+			nullable equivalent (e.g., <span class="pre">&amp;Foo</span>
+			is a subtype of <span class="pre">?&amp;Foo</span>).</li>
+		<li>An owning reference is a subtype of the borrowed reference to the same value type
+			(e.g., <span class="pre">So[Foo]</span> is a subtype of <span class="pre">&amp;Foo</span>)</li>
+		<li>A <a href="safe-pointers.html">pointer</a>
+			is a subtype of any reference whose object type is the same.</li>
+		<li>Some reference permissions are subtypes of others
+			(e.g., <span class="pre">ro</span> is a subtype of
+			<span class="pre">imm</span> or <span class="pre">mut</span>).
+			Similarly, most permissions are a subtype of <span class="pre">uni</span>.</li>
+		<li>A smaller number type is a subtype of a larger version of the same type
+			(e.g., <span class="pre">u8</span> is a subtype of <span class="pre">u32</span>).</li>
+		<li>A struct is a subtype of any <a href="mod-substitution.html">trait</a> it conforms to.</li>
+	</ul>
+	<p>An important characteristic of subtyping relationships is that
+		it is trivially safe to transform a <span class="pre">Subtype</span> value
+		into its equivalent <span class="pre">Base</span> value.
+		However, the journey of a value back from <span class="pre">Base</span>
+		to <span class="pre">Subtype</span> often requires some sort of
+		pattern-matched guard, as there are likely to be values in <span class="pre">Base</span>
+		that do not have a valid mapping from
+		<span class="pre">Subtype</span> to <span class="pre">Base</span>.
+		A successful pattern match guarantees we will get back a valid
+		<span class="pre">Subtype</span> value when the reverse transformation is applied.</p>
+
+	<h4 id="coercion">Implicit Coercion</h4>
+	<p>We call it coercion when implicitly converting a value into
+		an expected type (usually a supertype).
+		Coercion is the one safe exception to the strict typing rule described earlier,
+		given that the type of a value and its receiver are not strictly the same.</p>
+	<p>Since coercion is always safe, Cone performs it implicitly
+		when copying or moving a subtype value
+		to any container (variable, parameter, return value, field, reference)
+		expecting a base value.
+		This happens during assignments, function calls and returns.
+		For example:</p>
+<pre>
+fn doStuff () {
+  imm bigint u32 = 101u8;        // Coerce a u8 to u32
+  mut matrix = new So[Mat4];     // Allocate a matrix
+  imm float = mat4det(matrix)?;  // Coerce So[Mat4] to &amp;Mat4
+}
+
+fn mat4det(mat &amp;Mat4) f32 throws DivByZero {
+  // ...
+  return 1.0;                     // Coerce f32 to Result&lt;&gt;
+}
+</pre>
+	<p>Coercion is more than just changing the type of some value.
+		It usually means creating a new value whose encoding is different
+		than its source value.</p>
+	<p>Coercion can also trigger compiler mechanics:
+		In the case of coercing an owning reference to a borrowed reference,
+		it triggers appropriate borrowing mechanics on the source variable.
+		Similarly, when coercing a non-copy value, move semantics apply.</p>
+	<p>If an expression requires, it is possible to explicitly request coercion.
+		For non-reference types, use the appropriate constructor
+		(as described below for conversion).
+		For references, use the <span class="pre">as</span> operator:</p>
+<pre>
+imm newref = oldref as &amp;Point;  // Explicitly coerce to a borrowed reference
+</pre>
+	<p>Between references, <span class="pre">as</span> may only be a coercion:
+		it never gives a reference a permission its source could not be coerced to
+		(<span class="pre">&amp;</span> to <span class="pre">&amp;mut</span>, or <span class="pre">&amp;mut</span>
+		to <span class="pre">&amp;uni</span>), which would need
+		<a href="safe-trust.html#reinterpret"><span class="pre">trust</span></a>.
+			For now there is one exception: the <span class="pre">imm</span> a type declaring
+			<span class="pre">Immutable</span> gives a reference written with no permission may come from a
+			<span class="pre">&amp;</span> (<span class="pre">bytes as &amp;str</span>); a permission written out may not.</p>
+
+	<h5>Implicit Coercion to bool</h5>
+	<p>In addition to supertype coercions, Cone supports the automatic coercion
+		of some value to bool, so long as the value's type implements the
+		<span class="pre">isTrue</span> method. This is implemented by the number
+		and pointer types. A number is true if it is not zero. A pointer is true
+		if it is not null.</p>
+	<p>The other direction is never implicit. A bool is not a number, so it does
+		not coerce to one anywhere a number is wanted: an initializer, an assignment,
+		an argument, an index or an operand of arithmetic. It is converted explicitly,
+		<span class="pre">usize.from(b)</span> (see <a href="#conversion">Explicit Conversion</a>),
+		which gives 0 for false and 1 for true:</p>
+<pre>
+imm count usize = flag;              // **ERROR** a bool is not a number
+imm count usize = usize.from(flag);  // 0 or 1
+</pre>
+
+	<h5>A char Coerces to No Number</h5>
+	<p>A <a href="syntax-lexical.html#char"><span class="pre">char</span></a> is a Unicode code point held in
+		32 bits, and it is no number. It coerces to none, a wider unsigned type included,
+		and no number coerces to it, neither a <span class="pre">u8</span>, whose values above 127 would
+		be Latin-1 characters, nor a <span class="pre">u32</span>, which may be no code point at all.
+		Each direction is a conversion, asked for (see <a href="#conversion">Explicit Conversion</a>);
+		the one exception is the character literal that is ASCII, which is a <span class="pre">u8</span> where
+		a <span class="pre">u8</span> is wanted:</p>
+<pre>
+imm code u32 = c;                    // **ERROR** a char is not a number
+imm code u32 = u32.from(c);          // the code point
+imm low u8 = u8.from(c);             // the low 8 bits: a code point past ASCII is not a byte
+imm c char = b;                      // **ERROR** a u8 is not a char
+imm c char = char.from(b);           // U+00xx: a Latin-1 character when b is 128 or more
+imm b u8 = 'a';                      // fine: the literal is the byte 97
+</pre>
+
+	<h5 id="slicenoptr">A Slice Coerces to No Pointer</h5>
+	<p>A slice is an address and a count, so it is not a raw pointer, and it converts to none
+		implicitly: the count would be dropped without a word. A <a href="safe-pointers.html">pointer</a> to its
+		elements is asked for with <span class="pre">as</span>, which takes the address of the first
+		element. Only a pointer to the slice's own element type is made this way (it retypes nothing).
+		Text is neither: a <span class="pre">&amp;str</span> is no pointer, and reaches C as a
+		<a href="guide-text.html#cstr">cstr</a>, which a raw pointer is not either, except by
+		<span class="pre">cstr.fromPtr(p)</span>, whose caller promises the zero that ends it:</p>
+<pre>
+imm p *u8 = bytes;                   // **ERROR** a slice is not a pointer
+imm p *u8 = bytes as *u8;            // the address of bytes[0]
+fwrite(bytes as *u8, 1usize, bytes.len, f);
+puts(text);                          // **ERROR** a &amp;str promises no zero after it: a literal or s.cstr() does
+imm c cstr = p;                      // **ERROR** a pointer promises no zero either
+imm c cstr = cstr.fromPtr(p);        // the caller promises it
+</pre>
+
+	<h5>Implicit Coercion of 'self'</h5>
+		<p>Cone offers a very different form of coercion when dealing with method calls
+		(or field access) and the 'self' value. This convenience sugar
+		automatically coerces self from a value to a reference (or the other way).</p>
+	<p>Cone will automatically transform 'self' to a mutable borrowed reference
+		for operators that expect an lval, such as <span class="pre">++</span>,
+		<span class="pre">+=</span>, or a 'set' method.</p>
+<pre>
+++a;    // equivalent to:  Type.`++`(&amp;mut a)
+</pre>
+	<p>The same is true of a method called by name on a value held in a variable
+		(or a field of one): when no method accepts the value itself, but one
+		declares <span class="pre">self</span> as a borrowed reference,
+		the value is borrowed for it. A method that only reads is handed a
+		read-only borrow; one declaring <span class="pre">self &amp;mut</span>
+		is handed a mutable one, which the variable must permit;
+			one declaring <span class="pre">self &amp;uni</span> is handed a unique one,
+			which only a place that lends <span class="pre">&amp;uni</span> can give
+			(a <span class="pre">mut</span> variable, or a part of one held by value:
+			<a href="mem-permissions.html#uni">From 'uni'</a>), and the call is held to what
+			<span class="pre">(&amp;uni v).bump()</span> would be.
+		A temporary value has nowhere to be borrowed from, so such a call on one
+		is an error, and a pointer is never borrowed from.</p>
+<pre>
+list.push(x);   // equivalent to:  (&amp;mut list).push(x)
+list.len();     // equivalent to:  (&amp;list).len()
+</pre>
+	<p>Automatic de-reference of 'self' may happen when 'self' is a reference,
+		but no method matches with a reference-based self.
+		'self' is then automatically dereferenced in hopes of finding a matching
+		method that uses a value rather than a reference.</p>
+<pre>
+&amp;a + 5;  // may coerce to:  a + 5
+</pre>
+	<p>A method called by name on a reference to a reference (<span class="pre">&amp;&amp;T</span>,
+		<span class="pre">&amp;mut &amp;T</span>, a borrow of an owner) reaches through every level the same way,
+		the outermost level winning a name, and with the access the dereferences written out would give:
+		an owner reached through a <span class="pre">&amp;</span> lends only <span class="pre">&amp;</span>, so a
+		<span class="pre">self &amp;mut</span> method is not reached through it
+		(<a href="mem-borrowing.html#implicit">Implicit De-referencing</a>).</p>
+
+	<h4 id="conversion">Explicit Conversion</h4>
+	<p>Type conversion involves transforming a value of one type
+		to the closest possible value in another type.
+		For example, converting the integer 1 to the floating point number 1.0,
+		or serializing it to text:  "1".
+		Unlike coercion, conversion may not map perfectly:
+		A valid mapping may not exist or some precision may be lost.
+	</p>
+	<p>A conversion is not a construction but a method of the new type,
+		<span class="pre">from</span>, called on the type with the value to convert.
+		It is the type's default conversion from another type;
+		any other way of converting, such as one that saturates at the type's limits
+		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
+<pre>
+imm float = f32.from(1);
+imm count = u32.from(list.len());
+imm name = String.from("node");    // collections' String, from a slice of bytes
+</pre>
+	<p>Every number type has <span class="pre">from</span>, which takes a value of any number type.
+		It may be called on the type named directly, through an alias of it,
+		or on a generic's type parameter: <span class="pre">T.from(x)</span>
+		converts to whichever type <span class="pre">T</span> is.
+		The <span class="pre">into</span> operator is retired: <span class="pre">from</span> is the conversion.
+		Between numbers it does what the machine does:</p>
+	<ul>
+		<li>To a narrower integer, the low bits are kept: <span class="pre">u8.from(300)</span> is 44.</li>
+		<li>To a wider integer, a signed value converting to a signed type is sign-extended;
+			every other value is zero-extended from its own width, so
+			<span class="pre">u64.from(-1i8)</span> is 255. Between a signed and an unsigned type of one width,
+			the bits are kept: <span class="pre">i8.from(200u8)</span> is -56.</li>
+		<li>A float converts to an integer by truncating toward zero:
+			<span class="pre">i32.from(-2.75)</span> is -2. A float whose truncated value
+			the integer type cannot hold, a negative one to an unsigned type among them, has no defined result.</li>
+		<li>An integer converts to the nearest float, and a float to the nearest float of the other width.</li>
+		<li>An integer literal with no suffix is an <span class="pre">i32</span> and converts as one:
+			<span class="pre">u64.from(-1)</span> is 4294967295. Converting a literal gives a literal,
+			so it may be a global's value.</li>
+	</ul>
+	<p>Converting a number, reference or pointer to <span class="pre">bool</span>,
+		written <span class="pre">bool.from(n)</span>,
+		gives the answer its <span class="pre">isTrue</span> method gives a condition
+		(see <a href="#coercion">Implicit Coercion to bool</a>):
+		<span class="pre">bool.from(2)</span> is true, as are <span class="pre">bool.from(0.5)</span>
+		and NaN; only 0, -0 and a null pointer are false.
+		A <span class="pre">bool</span> converts to a number as 0 or 1.</p>
+	<p>A number type takes no square brackets: <span class="pre">u64[count]</span> is an error
+		naming <span class="pre">u64.from(count)</span>.</p>
+	<p>In some cases, it may be more convenient to request conversion
+		by using some method in the old type:</p>
+<pre>
+imm text = 1.text;
+</pre>
+
+	<h3 id="movecopy">Move vs. Copy, in brief</h3>
+	<p>Values are copied as they flow from
+		variable-to-variable or function-to-function.
+		Changes made to a copy don't affect the original value.</p>
+<pre>
+imm a = 3;
+mut b = a;  // b holds a copy of a's value
+b += 1;     // b's value is changed to 4
+a;          // is still 3
+</pre>
+	<p>Sometimes, however, we have values for which we don't want multiple copies to
+		exist at the same time: for example, a handle to a just-opened file, where closing the file
+		using one copy would make it unsafe to use the other.
+		To provide safe support for such "non-copyable" values, Cone supports <b>move semantics</b>.
+	   Move semantics enable non-copyable values to be moved from one place to another in a code's logic.
+	   However, once the value moves, it may no longer be accessed from its old location.
+	   This restriction ensures there is only ever one copy of the value in existence.</p>
+	<p>Whether a value is handled by move vs. copy semantics is determined by its type.
+		Most types copy. A type moves if it declares so, by naming <span class="pre">Move</span> in its
+		<span class="pre">is</span> list, if it has a <a href="guide-structs.html#finalizer">finalizer</a>, or if any of
+		its fields moves:</p>
+<pre>
+struct Handle is Move {
+   pub id i32;
+}
+
+fn take(h Handle) {
+  print &lt;- h.id, "\n";
+}
+
+imm h = new Handle(1);
+take(h);            // h moves into take
+print &lt;- h.id;      // **ERROR** h was moved out
+</pre>
+	<p>A <span class="pre">clone</span> method takes no part in copying: a type may declare one and call it by name,
+		but no copy calls it. <a href="mem-moves.html">Moves in depth</a> has every rule, what a move leaves behind,
+		moves on only some paths, and swapping.</p>
+
+	<h3 id="finetuning">Fine-tuning</h3>
+	<p>Rarely needed on a first reading.</p>
+
+	<h4 id="static">Static variables</h4>
+	<p>A variable declared <span class="pre">static</span> inside a function is one copy shared by every call
+		of the function, kept across calls (<span class="pre">static mut calls = 0;</span>).
+		<a href="guide-structs.html#static-local">Static variables</a> has the rules at every scale.</p>
+
+	<h4 id="void">void, and Never</h4>
+	<p>The language's pre-defined <span class="pre">void</span> type is used whenever we want to represent that no value is expected.
+		This is useful in several circumstances:
+	<ul>
+	<li>As the return type for a function or method that accomplishes some effect, but returns no value.</li>
+	<li>As the value for a generic type for which it makes sense to substitute in the void type.
+		For example, a function that returns no value on success, but returns an E type on failure
+		would have a return type of <span class="pre">Result[void, E]</span>.</li>
+	</ul>
+	<p>There is only one possible value for a <span class="pre">void</span> type:
+		<span class="pre">nil</span>.
+		Any <span class="pre">return</span> or <span class="pre">break</span>
+		statement that specifies no expression value is effectively returning a value of
+		<span class="pre">nil</span>.</p>
+	<p>Zero-sized values may not be stored in memory. For this reason, one may not define a variable of type void nor
+		allocate space for a new value of type void. However, it is fine for a struct to define a void-typed field,
+		so long as at least one other field has a non-zero-sized type.</p>
+	<p id="never"><span class="pre">Never</span> is the return type of a function that does not return at all:
+		the core library's <span class="pre">panic</span>, or the C library's
+		<span class="pre">abort</span>. It is <span class="pre">void</span> wherever a value is asked
+		of it, and says one thing more: control does not come back from the call. So a call to one
+		may end a block that must produce a value, which then has no value on that path, and a function
+		declared to return <span class="pre">Never</span> must end in such a call.
+		<a href="safe-panics.html">Panics</a> has examples.</p>
+
+	<h4 id="intfloat">The primitive 'int' and 'float' number types</h4>
+	<p style="margin-left: 40px;"><i>Note: The primitive <span class="pre">int-</span> and
+		<span class="pre">float-</span> types are not implemented, and the standard number
+		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are built
+		into the compiler rather than defined in a library. A custom number type written as below,
+		with a standard number type as its field in place of <span class="pre">int-32</span>, does
+		work: a struct wrapping the number, methods on it, and its conversion from a number,
+		<span class="pre">Nbr32.from(somenbr)</span>, declared as below. The standard number
+		types' <span class="pre">from</span> is built into the compiler with them, and so are
+		<a href="#bits">an integer's bit methods</a>, which are implemented.</i></p>
+	<p><span class="pre">int-32</span> specifies a 32-bit integer.
+		Any integer value from 1 to 128 may be specified after the dash, to establish the number of bits.</p>
+	<p>Similarly, <span class="pre">float-32</span> is a 32-bit floating point number.
+		Floats only support 32 and 64-bit values.</p>
+	<p>Unlike <span class="pre">i32</span>, <span class="pre">int-32</span> does not define any methods
+		for manipulating its values (e.g., adding and subtracting).
+		It is also agnostic on the semantic interpretation of its values ... it does not even signify
+		whether the integer value should be interpreted as signed or unsigned.
+		Its lack of built-in methods and interpretation is what makes it an ideal foundation for defining
+		new types with very different interpretations and methods.</p>
+
+	<h4 id="customnbr">Custom Number Types</h4>
+	<p><i>Rarely needed, and largely hypothetical for now (see the note above): defining a number type of your own.</i></p>
+	<p>There are several reasons why we might want to define distinctly different
+		number types than those provided by the standard library:</p>
+	<ul>
+	<li>One might want to use different types to distinguish between units of measure,
+		thereby potentially avoiding problems like the loss of the $125 million Mars probe.</li>
+	<li>Different number types could make different promises for undefined behavior
+		(e.g., protecting against undesired overflows), or could guarantee the number values are bounded by some range.</li>
+	<li>Integers that support intrinsic atomic operations can be separately typed, as the
+		core package's <a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a> is.</li>
+	</ul>
+
+	<p>Creating a new numeric integer type is nearly as simple as wrapping an primitive integer
+		type as a field in a struct. For example:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+}
+</pre>
+	<p>Methods may be added to this struct to define the operations that may be performed on values of this type.
+		These methods can make use of fast internal integer primitive functions (TBD).</p>
+	<p>Although numbers of one type are never implicitly converted into the equivalent number of another type,
+		a conversion may always be asked for explicitly. A conversion is a method of the type converted to,
+		named <span class="pre">from</span> and called on the type, which takes the value to convert:</p>
+<pre>
+imm converted = Nbr32.from(somenbr);
+</pre>
+	<p>Every standard number type has one, which takes a value of any number type
+		(<a href="#conversion">Explicit Conversion</a>).
+		A custom number type declares its own, an ordinary function of the type:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+
+    pub fn from(n i32) Nbr32 {
+        new Nbr32(n);
+    }
+}
+</pre>
+	<p><span class="pre">from</span> is the type's default conversion from another type.
+		A conversion that differs from it, such as one that saturates at the type's limits
+		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
+
+	<h4 id="repertoire">The repertoire of types</h4>
+	<p>As mentioned <a href="#vtype">earlier</a>, every value has a type it belongs to.
+		Each type establishes all its permissible data values, determines how those values are digitally encoded, and
+		specifies what operations can be performed on values of that type.</p>
+	<p>Cone offers a comprehensive repertoire of types:</p>
+	<ul>
+	<li><b>Primitive integer and floating-point number types.</b>
+		Several are built-in, such as
+		<a href="#numbertypes">i32, u8, f32</a> and
+		<span class="pre">bool</span>, as illustrated in prior page examples.
+		Text is built of <span class="pre">char</span>, a Unicode code point
+		(<a href="syntax-lexical.html#char">character literals</a>), which is compared but is no quantity.
+		Additional distinct number types may be defined using
+		the <b><a href="#customnbr">integer or float</a></b> keywords.</li>
+	<li><b><a href="guide-structs.html#struct">struct</a></b> types.
+		Each named struct type is composed of some number of co-located, named, and typed fields.</li>
+	<li><b><a href="guide-structs.html#array">array</a></b> types.
+		Statically-sized arrays are composed of a fixed, constant number of values, all of the same type.</li>
+	<li><b><a href="guide-enums.html#enum">enum</a></b> types.
+		Each named enum type declares a closed set of variants. Any value of the enum is exactly one
+		of them, and a variant may carry values of its own or carry nothing but its name.
+		Cone builds in support (and syntactic sugar) for two enum types:
+		<a href="guide-enums.html#option">Option</a> and <a href="guide-functions.html#result">Result</a>.</li>
+	<li><b><a href="mem-regions.html">reference</a></b> types.
+		These offer a safe way to point at some value stored in memory.
+		There are three flavors:  regular, array and virtual. References can additionally be
+		region-managed or borrowed. Race safety is protected via permissions.</li>
+	<li><b><a href="safe-pointers.html">pointer</a></b> types.
+		Like references, pointer types also point at some memory-stored value.
+		Unlike reference, pointers do not have compiler-enforced guard rails to ensure their use is safe.</li>
+	<li><b><a href="mod-substitution.html">traits</a></b> types.
+		Traits are supertypes that abstract the type signature (interface) that is common across several types.
+		They are very useful when we want to work with values of many different types in the same way.</li>
+	<li><b><a href="#void">void</a></b> type.
+		This built-in type represents the absence of any value. It does have its uses.</li>
+	</ul>
+
+	<h4 id="semantics">What the type system offers</h4>
+	<p>As you will see explored later, Cone's type system supports a rich and useful variety of semantics:</p>
+	<ul>
+	<li>Most types are concrete, but some (particularly trait) are abstract. Only concrete-typed values
+		can be passed around or stored in variables. Abstract values can only be pointed-at using a reference.</li>
+	<li>Most types are defined and used by name (nominal). Others are defined by their structure (e.g., arrays and references).</li>
+	<li>Some types enforce constraints on how its values may be used:
+		<ul>
+		<li>The values of most types may be freely copied. However, some types are defined with move semantics,
+			which prevents the existence of multiple copies of the same object.</li>
+		<li>Most values may freely move around anywhere in a program. However, some types restrict its values
+			to a particular scope, such as the lifetime of a block, a particular thread, or a region.</li>
+		</ul></li>
+	<li>In certain cases, it is safe and possible to implicitly coerce a value of one type into
+		its supertype's comparable value.</li>
+	<li>Named types can be genericized using type parameters.</li>
+	</ul>
+
+	<h2 id="comesback">Comes back in &hellip;</h2>
+	<ul>
+		<li><a href="guide-text.html">Text</a>: <span class="pre">str</span> and <span class="pre">String</span>, the
+			next page.</li>
+		<li><a href="guide-conditionals.html">Conditionals</a> and <a href="guide-loops.html">Loops</a>:
+			<span class="pre">if</span>, <span class="pre">match</span> and <span class="pre">while</span>, which are blocks
+			and values too.</li>
+		<li><a href="guide-functions.html">Functions</a>: declaring the functions these expressions call.</li>
+		<li><a href="guide-structs.html">Structs and methods</a>: data of your own, and the methods that work on it.</li>
+		<li><a href="mem-moves.html">Moves in depth</a>: conditional moves, drop flags, field moves, swap.</li>
+		<li><a href="mem-permissions.html">Permissions in depth</a>: the permissions beyond <span class="pre">imm</span>
+			and <span class="pre">mut</span>, and the subtype relations among them.</li>
+		<li><a href="mod-globals.html">Global state and initialisation</a>: variables declared at the top of a module.</li>
+		<li><a href="mod-composition.html">Composition</a>: <span class="pre">with</span> blocks and the prefix operators.</li>
+		<li><a href="mod-substitution.html">Substitution</a>: traits, virtual references, and the subtypes they give rise to.</li>
+		<li><a href="mod-namespaces.html">Namespaces</a>: <span class="pre">alias</span>.
+			<a href="mod-extensibility.html">Extensibility</a>: <span class="pre">extend</span>.</li>
+		<li><a href="safe-trust.html">Trust and reinterpretation</a>: reinterpreting a value as another type.</li>
+		<li><a href="safe-intrinsics.html#bits">Intrinsics</a>: the same bit operations as core's intrinsics.</li>
+		<li><a href="syntax-lexical.html#number">Lexical elements</a>: the numeric literal's spelling in full.</li>
+	</ul>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="guide-text.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

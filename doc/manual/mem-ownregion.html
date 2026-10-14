@@ -1,0 +1,344 @@
+<html>
+  <head>
+	  <title>Roll Your Own: A Region of Your Own - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Roll Your Own: A Region of Your Own</div>
+		</div>
+
+    <div class="text">
+
+<p style="margin-left: 40px;"><i>Note: The <span class="pre">alloc</span> declaration is not implemented.</i></p>
+<p>Although Cone provides a rich collection of standard allocators, there are times that
+		other allocators can prove valuable. For example:
+		Rc allocators that use tracing to break cycles or
+		multi-threaded garbage collectors that use tracing for intrathread memory management and ref counting
+		for inter-thread memory management (Pony's Orca).</p>
+	<p>This is why Cone supports the creation and use of custom allocators.
+		Definition of a new allocator looks and acts very much like a struct with methods.</p>
+	<h2 id="regionstruct">How a Region Is Written</h2>
+	<p>A region is a struct that declares the built-in trait <span class="pre">RegionRef</span>; there is
+		no separate <span class="pre">region</span> declaration. The struct's fields are the bookkeeping kept
+		with every value the region allocates (a count, say), and its methods are the ones the compiler calls
+		when a value is allocated, when an owning reference is copied or goes away, and when a value is
+		freed (<a href="#methods">the methods the compiler calls</a> describes each one). Every method is
+		optional, and what a region leaves out says what it does:</p>
+	<ul>
+		<li><span class="pre">fn alloc(size usize) *u8</span> gets the memory. It answers null for a failure,
+			rather than an Option.</li>
+		<li><span class="pre">fn free(self &amp;uni R)</span> gives the block back. The regions in the core
+			package give it to core's raw blocks layer (<span class="pre">RawBlocks</span>), the one place the
+			heap's bytes come from, which today forwards to C's <span class="pre">malloc</span>,
+			<span class="pre">realloc</span> and <span class="pre">free</span>
+			(<a href="mem-collections.html#heapregion">the heap's region and the raw blocks layer</a>).</li>
+		<li>A region that declares the built-in trait <a href="mem-moves.html"><span class="pre">Move</span></a>
+			is single-owner: a copy of its reference is a move.</li>
+		<li>A region that adds a count is a counted one: an <span class="pre">init</span> that sets the count
+			to one, an <span class="pre">aliasRef</span> that adds one when a reference is copied, and a
+			<span class="pre">dealiasRef</span> that answers whether the count reached zero when a reference
+			goes away. It does not declare <span class="pre">Move</span>, and the compiler refuses a region that
+			declares both <span class="pre">Move</span> and <span class="pre">aliasRef</span>.</li>
+		<li>A region that declares neither <span class="pre">aliasRef</span> nor <span class="pre">Move</span>
+			shares its references freely. With no <span class="pre">dealiasRef</span> either, a reference going
+			away does nothing and the compiler never frees the value: that is the shape of a tracing
+			collector, which frees a value once nothing reaches it.</li>
+	</ul>
+	<p>When a region frees a value, the value is finalized first: its <span class="pre">final</span>, then its
+		fields, then the region's <span class="pre">free</span>.</p>
+	<h2 id="struct">An allocator is a struct that declares RegionRef</h2>
+	<p>A custom allocator is written as a struct declaring <span class="pre">is RegionRef</span>, which is how the core
+		package's <span class="pre">Rc</span> and <span class="pre">So</span> are written. The struct's fields are the
+		bookkeeping the allocator keeps with every value it allocates (a count, say), and the compiler calls its
+		methods at the events described <a href="#methods">below</a>, each method optional. A value is then allocated in it
+		by naming it in a <span class="pre">new</span>:
+		<span class="pre">new Counted[mut, Note](7)</span>.</p>
+<pre>
+import stdio use *;
+import libc;
+
+// A reference-counting allocator: the count lives in the bookkeeping
+struct Counted is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 { libc.malloc(size); }
+  fn init(self &amp;new) { *self = new Counted(1usize); }
+  fn aliasRef(self &amp;uni Counted) {
+    owners = owners + 1usize;
+    print &lt;- "owners ";
+    print &lt;- owners;
+    print &lt;- "\n";
+  }
+  fn dealiasRef(self &amp;uni Counted) bool {
+    owners = owners - 1usize;
+    print &lt;- "owners ";
+    print &lt;- owners;
+    print &lt;- "\n";
+    owners == 0usize;                 // true: that was the last owner
+  }
+  fn free(self &amp;uni Counted) {
+    print &lt;- "freed\n";
+    libc.free(self as *u8);
+  }
+}
+
+struct Note {
+  pub n i64;
+  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
+}
+
+fn main() i32 {
+  imm a = new Counted[mut, Note](7);
+  {
+    imm b = a;                        // another owner: aliasRef
+    print &lt;- b.n;
+    print &lt;- "\n";
+  }                                   // b goes: dealiasRef
+  print &lt;- "end of main\n";
+  0i32;
+}                                     // a goes: dealiasRef, then the finalizer, then free
+</pre>
+	<p>This prints <span class="pre">owners 2</span>, <span class="pre">7</span>,
+		<span class="pre">owners 1</span>, <span class="pre">end of main</span>, <span class="pre">owners 0</span>,
+		<span class="pre">final 7</span> and <span class="pre">freed</span>, one to a line.</p>
+	<h2 id="methods">The methods the compiler calls</h2>
+	<p>The methods are invoked automatically by the compiler based on key events in the lifetime of an owning
+		reference. Each is handed the bookkeeping data, not the value. An absent method's operation does not
+		happen. Allocator methods are not trust blocks.</p>
+	<h3 id="alloc">alloc</h3>
+	<p><span class="pre">fn alloc(size usize) *u8</span> is for allocate, and static. It is invoked whenever a new owning
+		reference is created with <span class="pre">new</span>, after the value initializer's arguments are evaluated.
+		The compiler supplies the sizeof the appropriate type of value to be stored in the allocated memory.
+		This size is expanded to include runtime bookkeeping data for the allocator (e.g., the count) and permission,
+		and null fails. After alloc, the compiler will also initialize any runtime permission's fields, if needed.
+		The compiler's final step is to adjust the pointer to point at the value's data (past the runtime bookkeeping data),
+		and then to initialize its value based on the literal, initializer or a copy of another similar value.</p>
+	<p>The other form, <span class="pre">fn alloc(size usize, ty *TypeRecord) *u8</span>,
+		is also handed the allocated value's <a href="safe-intrinsics.html">type record</a> (its size,
+		alignment, finalizer and trace, so the allocator can later finalize a value of any type itself; an owning
+		slice's is its element type's).</p>
+	<h3 id="init">init</h3>
+	<p><span class="pre">fn init(self &amp;new)</span> is an
+		<a href="guide-structs.html#initializer">initializer</a>, run right after alloc on the bookkeeping,
+		which it fills in place: <span class="pre">*self = new Rc(1usize)</span>.</p>
+	<h3 id="aliasref">aliasRef and dealiasRef</h3>
+	<p><span class="pre">fn aliasRef(self &amp;uni R)</span> is invoked whenever a new shared copy is made of the reference.
+		<span class="pre">fn dealiasRef(self &amp;uni R) bool</span> is invoked whenever an owning reference is destroyed,
+		typically when the variable holding the reference reaches the end of its lexical lifetime.
+		It can also happen when overwriting a reference held by an existing variable or field.
+		It answers whether the last owner is gone rather than calling free itself.</p>
+	<h3 id="free">free</h3>
+	<p><span class="pre">fn free(self &amp;uni R)</span> is invoked whenever the allocator determines the value is safe to free.
+		When the last owner goes, the compiler runs the value's finalizer before calling free,
+		which disposes of any resources obtained by the owning reference.</p>
+	<h2 id="owners">Single owner, shared, and counted</h2>
+	<p>Single ownership is declared rather than read off a missing aliasRef. An allocator whose struct declares
+		the built-in trait <a href="mem-moves.html"><span class="pre">Move</span></a>
+		(<span class="pre">struct So is RegionRef, Move</span>) is single-owner, and
+		may not also have aliasRef. Any allocator which declares the built-in <span class="pre">Move</span> trait
+		(e.g., the 'So' allocator)
+		ensures single-owner <a href="mem-moves.html">move semantics</a>,
+		as it prevents multiple copies of the reference from being created.
+		The single-owner reference is moved instead of being copied.
+		This restriction also constrains the permissions on borrowed references,
+		effectively disallowing <span class="pre">mut</span> and all other shared mutable permissions.</p>
+<pre>
+import stdio use *;
+import libc;
+
+// A single-owner allocator: Move means a copy of the reference is a move
+struct Unique is RegionRef, Move {
+  fn alloc(size usize) *u8 {
+    print &lt;- "alloc\n";
+    libc.malloc(size);
+  }
+  fn free(self &amp;uni Unique) {
+    print &lt;- "free\n";
+    libc.free(self as *u8);
+  }
+}
+
+struct Point { pub x i32; pub y i32; }
+
+fn consume(p Unique[mut, Point]) {
+  print &lt;- p.x + p.y;
+  print &lt;- "\n";
+}                                     // the owner ends here
+
+fn main() i32 {
+  imm p = new Unique[mut, Point](3, 4);
+  consume(p);                         // moved: p may not be used again
+  print &lt;- "after\n";
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">alloc</span>, <span class="pre">7</span>, <span class="pre">free</span> and
+		<span class="pre">after</span>.</p>
+	<p>An allocator may declare neither <span class="pre">Move</span> nor the aliasRef
+		method (e.g., the Gc allocator).
+		In this case, multiple, sharable references to the same value become possible, and copying one costs nothing;
+		it needs no aliasRef method that does nothing. With no
+		dealiasRef either, an owner going away does nothing and the compiler never frees the value: a
+		collector does, as Gc's does (<a href="#traced">below</a>). One with aliasRef but no dealiasRef never frees a value by count.</p>
+	<h2 id="traced">Traced allocators</h2>
+	<p>An allocator whose struct also declares the built-in trait <span class="pre">Traced</span>
+		(<span class="pre">struct Gc is RegionRef, Traced</span>) has its references traced: it declares
+		<span class="pre">fn mark(self &amp;uni R, slot *usize)</span>, or <span class="pre">fn mark(self &amp;uni R,
+		slot *usize, perm u32, mode u32)</span> to be told each reference's permission and the mode it was
+		traced in, and every
+		type record's trace (and <a href="safe-intrinsics.html"><span class="pre">mem.trace</span></a>) hands
+		it the bookkeeping of each of its references a value holds, and the slot the reference is stored in
+		(its first word is the address of the value), which a collector that moves values rewrites. It may
+		not be <span class="pre">Move</span>.</p>
+<pre>
+import stdio use *;
+import libc;
+
+// A traced allocator: it declares Traced and a mark method. A collector built on it
+// is told, through mark, each reference a value holds, and the slot it is stored in.
+struct Heapy is RegionRef, Traced {
+  seen usize;
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *Heapy, new Heapy(0usize));
+    p;
+  }
+  fn mark(self &amp;uni Heapy, slot *usize) {
+    seen = seen + 1usize;
+    print &lt;- "marked\n";
+  }
+}
+
+struct Leaf { pub n i64; }
+struct Pair { pub left Heapy[mut, Leaf]; pub right Heapy[mut, Leaf]; }
+
+fn main() i32 {
+  imm l = new Heapy[mut, Leaf](1);
+  imm r = new Heapy[mut, Leaf](2);
+  imm pair = new Pair(l, r);
+  print &lt;- pair.left.n + pair.right.n;
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>Nothing here collects, so mark is never called and this prints <span class="pre">3</span>.</p>
+	<h3 id="held">Where a traced reference may be held</h3>
+	<p>A traced reference may be held only where a collector can find it:
+		in a local, a parameter, a temporary, a value held in one of those, a value a traced allocator
+		allocated, or behind what a trace passes through. A trace passes through a
+		<span class="pre">Rc</span> or <span class="pre">So</span> reference to the traced references its
+		value holds (once for each collection: a count-owning allocator declares
+		<span class="pre">fn visit(self &amp;uni R, mode u32) bool</span>, which answers whether this is the first time its
+		value was reached in the collection whose epoch the trace's mode names, so a value several owners
+		hold, or one round a cycle, is traced once; one that declares neither
+		<span class="pre">Move</span> nor <span class="pre">visit</span> cannot be passed through), and through a
+		<a href="mem-collections.html#gctrace">collection</a>, a pool or an arena (a type that declares the built-in trait
+		<span class="pre">GcTraceElements</span> and a method <span class="pre">fn gcTraceElements(self &amp;mut) I</span>, <span class="pre">I</span>
+		a cursor declaring <span class="pre">is Iterator[&amp;mut E]</span>: a writable reference to each
+		value it holds). So the compiler refuses one held in a global, or in
+		memory placed by <span class="pre">mem.writeRaw</span> from a type that declares no
+		<span class="pre">GcTraceElements</span>; one held by an allocator a trace cannot pass through, among them a
+		traced allocator that declares <span class="pre">writeBarrier</span> (below), whose collector would
+		not hear of a reference stored behind an owner; and a local, a parameter or a traced
+		allocator's value whose type holds a raw pointer to a value that holds one, declaring no
+		<span class="pre">GcTraceElements</span>, which no trace can follow. It refuses a traced allocator's value
+		holding a borrowed reference, a traced virtual
+		reference, and a permission that takes room. A traced value may hold <span class="pre">Rc</span>
+		and <span class="pre">So</span> references, which its finalizer releases.</p>
+	<h3 id="roots">Finding the roots</h3>
+	<p>The traced references
+		on the stack are found: <a href="safe-intrinsics.html"><span class="pre">mem.traceRoots(mode)</span></a>
+		hands each one every running function holds -- in its locals, its parameters and the temporaries it is
+		making -- to its allocator's <span class="pre">mark</span>, which is what a collector starts from.
+		A traced allocation evaluates its initializer's arguments before it calls
+		<span class="pre">alloc</span>, so a collection inside <span class="pre">alloc</span> finds them; and as
+		soon as <span class="pre">alloc</span> returns, before any initializer runs, the new value is held
+		as a root and reads as empty (its references null) until it is filled, so a collection during an
+		initializer that allocates finds it, and nothing half made. The roots are a thread-local chain of
+		frames, one for each thread.</p>
+	<h3 id="barrier">The write barrier</h3>
+	<p>A traced allocator may also declare
+		<span class="pre">fn writeBarrier(self &amp;uni R)</span>: every store of one of its references into
+		memory that is not a local (a field, an element or a dereference reached through any reference, a
+		borrow included; a swap; <span class="pre">:=</span>) then hands it the bookkeeping of what was
+		stored, just after the store. It is told nothing of where the reference went. Stores into locals
+		and a new value's contents stored whole get none, so a collector that marks while the program runs traces
+		the stacks again before it finishes marking.</p>
+	<h3 id="collectors">The collectors that exist</h3>
+	<p>One collector is built, as library
+		code: the <span class="pre">collector</span> package's <span class="pre">Gc</span> allocator
+		(<span class="pre">import collector;</span> then <span class="pre">new Gc[mut, T](...)</span>), an
+		incremental mark and sweep that works a bounded step at a time inside <span class="pre">alloc</span>
+		once the heap passes its trigger, and whole on <span class="pre">Gc.collect()</span>. Run
+		generationally (<span class="pre">Gc.setGenerational(true)</span>), what survives a collection
+		is old, and the collections after it are minor: they mark and sweep only the young values, the
+		barrier staying on between them so that an old value's new young child is found. It runs a
+		dead value's finalizer one collection before it frees the value, so a finalizer may still read the
+		Gc values it holds. A finalizer runs some time after its value became unreachable, when a
+		collection's step reaches it, not at a moment the program chooses.
+		<span class="pre">Gc.step(work)</span> runs some collection work on demand, and
+		<span class="pre">Gc.setStress(true)</span> a step at every allocation, for testing. It is single
+		threaded (see <a href="conc-primitives.html">concurrency</a>), and for use outside actors only. <b>It is
+		discouraged</b>: it is likely to be replaced, nothing else in Cone's packages depends on it, and new
+		code does not build on it.</p>
+	<p>The other
+		is an actor's own: the <span class="pre">actors</span> package's <span class="pre">ActorGc</span>, a copying
+		collector run between that actor's messages (<a href="conc-runtime.html#actor-gc">Its own region</a>),
+		which declares the built-in trait <span class="pre">ActorLocal</span> (provisional) beside
+		<span class="pre">Traced</span>: its references stay in one actor, no stack is scanned for its roots,
+		and it declares no <span class="pre">writeBarrier</span>, so a reference behind an
+		<span class="pre">Rc</span> is traced. The compiler refuses a traced allocator's reference inside an
+		actor or a <span class="pre">parallel each</span> unless the allocator declares
+		<span class="pre">ActorLocal</span>, and there a read-only reference counts as Shareable and none may be
+		made.</p>
+	<h2 id="finetuning">Fine-tuning</h2>
+	<p>Not built yet: a declaration of its own for an allocator.</p>
+	<h3 id="planned">The planned alloc declaration</h3>
+	<p>The compiler does not yet recognize an <span class="pre">alloc</span> declaration. It is meant to read like this,
+		a struct whose methods are named for the events above:</p>
+<pre>
+// A simple reference counting allocator
+alloc Rc {
+  refcnt usize;
+
+  fn allocate(size usize) *uni Rc {
+    imm rcref = malloc(size) as *uni Rc;
+    rcref.refcnt = 1;
+    rcref;
+  }
+  fn aliasRef(self *mutx Rc) {
+    .refcnt += 1;
+  }
+  fn dealiasRef(self *mutx Rc) {
+    .refcnt -= 1;
+    if .refcnt == 0 {
+      .free();
+    }
+  }
+  fn free(self *mutx Rc) {
+    free(self as *u8);
+  }
+}
+</pre>
+	<p>Notice also that allocators work with pointers (which have no assigned allocator).
+		In that form all allocator methods would be considered wrapped as trust blocks, which allows the use of pointers
+		as well as trusted functions like malloc() and free(). The pointers are automatically and correctly cast by the compiler back and forth
+		from the correct pointer to the correct reference.</p>
+	<h2 id="comesback">Comes back in &hellip;</h2>
+	<ul>
+		<li><a href="mem-regions.html">Owning references and regions</a>: the regions already written.</li>
+		<li><a href="mem-collections.html#memregion">The region a collection&rsquo;s block comes from</a>: a region for collections, as three function references.</li>
+		<li><a href="safe-intrinsics.html">Intrinsics</a>: type records, <span class="pre">mem.trace</span> and <span class="pre">mem.traceRoots</span>.</li>
+		<li><a href="conc-runtime.html#actor-gc">The actor&rsquo;s own garbage-collected region</a>.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="concurrency.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

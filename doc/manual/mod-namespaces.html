@@ -1,0 +1,846 @@
+<html>
+  <head>
+	  <title>Namespaces - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Namespaces</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>A module spans the files of its folder, its
+		designated file declares it with <span class="pre">mod</span>, and a
+		subfolder holding its own designated file is a submodule of it, as is a
+		<a href="#onefile">file of the folder that opens with its own
+		<span class="pre">mod</span></a>. Every file that makes a module
+		<a href="#header">opens with its <span class="pre">mod</span> line, and
+		its imports come right after it</a>. A module
+		reaches its own submodules by name, folds their names in with a
+		<a href="#usesub"><span class="pre">use</span> statement</a>, and reaches a
+		<a href="#sister">sister by importing her</a>, but never
+		<a href="#parent">a name of its parent</a>: modules
+		<a href="mod-packages.html#dag">depend on each other in one direction only</a>. A module
+		may name on its <span class="pre">mod</span> line the
+		<a href="#default">names a bare import of it folds</a>. A module is never
+		declared inside a source file: nesting is by files and folders. Only a
+		package's generated <a href="safe-c.html#nested">include file</a>
+		writes a module block, for each submodule it reaches.
+		A module may be <a href="safe-c.html#cnames">C-named</a> with
+		<span class="pre">@c</span> on its <span class="pre">mod</span> line.</i></p>
+
+	<p>Many things are given names: variables, functions, types, fields, methods, etc.
+		The collection of all names defined for a scope is called a namespace.
+		Blocks and types are two different kinds of namespaces.</p>
+	<p>Namespaces facilitate a modular architecture by:</p>
+	<ul>
+		<li>hiding implementation details visible within the namespace
+			behind the simpler, durable API shown outside.
+			This is called <a href="mod-encapsulation.html">encapsulation</a>.</li>
+		<li>lowering the accidental risk of name collisions,
+			where two different items (possibly created by different authors)
+			are given the same name.</li>
+	</ul>
+	<p>The rules governing names vary according to the type of namespace it belongs to.
+		Let's review those here, beginning with the
+		introduction of a new kind of namespace: the module.</p>
+
+	<h2 id="modules">Modules</h2>
+	<p>A module is a global namespace.
+		You have seen code examples for modules already:</p>
+<pre>
+// A type declaration
+struct Handler {
+  pub id u32;
+}
+
+// a global variable
+imm handler = new Handler(0);
+
+// A function
+fn main() {
+  // do some stuff
+}
+</pre>
+	<p>As this example shows, modules hold global variables, functions,
+		and type declarations. They can also hold other named things,
+		such as macros and even other named modules.
+		Further, modules can import names from other modules: an
+		<span class="pre">import</span> binds the other module's name, and its
+		<a href="#folding"><span class="pre">use</span> clause</a> folds
+		that module's public names in as names of this one.</p>
+	<p>Every program or library has a single main module.
+		That main module may import other modules or types offering reusable,
+		isolated capabilities it depends on.</p>
+
+	<h3 id="dcl">A module is a folder's files</h3>
+	<p>A module's source files are the files of a folder. One of them is the
+		folder's <b>designated file</b>: the file named for the folder, as
+		<span class="pre">geometry/geometry.cone</span> is for
+		<span class="pre">geometry</span>. It is the file that declares the module,
+		with <span class="pre">mod</span> written as its first statement:</p>
+<pre>
+mod geometry;
+
+pub struct Point {
+  pub x f32;
+  pub y f32;
+}
+</pre>
+	<p>Point the compiler at that file and it finds the rest itself.
+		Every other <span class="pre">.cone</span> file in the folder belongs to
+		the same module, unless it opens with a <span class="pre">mod</span> of
+		its own and so is a <a href="#onefile">module of its own</a>, and so does
+		every file of every subfolder that holds no designated file of its own, at
+		any depth. Nothing lists them: putting files
+		in a folder is what brings them together, and moving a file to another
+		folder moves it to another module. Such a subfolder groups files without
+		making a namespace of them, so a large module can be organized by topic
+		with no new names to write and none to path through.</p>
+	<p><b>The folder names the module.</b> A name written after
+		<span class="pre">mod</span> may restate the folder's name and may not
+		change it, because a name on the filesystem is one that any tool can read
+		without parsing Cone. That name is what another module binds when it
+		imports this one, the name a path through the module is written with,
+		and the name the module's declarations carry in the symbols the linker
+		sees.</p>
+	<p>Only the designated file declares the module, and it must. Because the
+		declaration claims it, it comes before everything else in that file, and a
+		module declares itself once. A file the folder brought in declares nothing: a
+		file whose first statement is a <span class="pre">mod</span> is not brought
+		in at all, but is a module of its own, and a <span class="pre">mod</span>
+		anywhere later in a file is an error.</p>
+	<p>The folder is the only thing that brings a file into a module: nothing
+		written in one file brings another in, so a file's module can be told from
+		where the file sits.
+		<a href="#include"><span class="pre">include</span></a>,
+		which once brought a named file in, is retired.</p>
+	<p>Two files of one module may not share a name, however deep in the folder
+		tree they sit, and a file belongs to one module: a file another module
+		already holds cannot be brought into a second one.</p>
+	<p>A module's own name is one of the names in reach inside it.
+		That matters where a local variable, a parameter or a type's member
+		hides a name the module declares or a module it imports, since it is the
+		only way to reach past the nearer one without renaming anything (a
+		method named like an imported module is
+		<a href="guide-structs.html#hiding">the common case</a>):</p>
+<pre>
+mod counters;
+
+imm total = 0;
+
+fn addTo(total i32) i32 {
+  counters.total + total;   // the parameter hides the global; the module's name reaches it
+}
+</pre>
+	<p>A file the compiler is pointed at that is not its folder's designated file
+		is a module of one file:
+		a complete program or library as it always was, named after the file,
+		with the files beside it none of its business. It opens with a
+		<span class="pre">mod</span> line too, naming the file, as
+		<span class="pre">mod counters;</span> opens
+		<span class="pre">counters.cone</span>. For now a
+		<span class="pre">mod</span> declaration in such a file may still rename
+		its module.</p>
+
+	<h3 id="header">A module's header: the <span class="pre">mod</span> line, then the imports</h3>
+	<p>Every file that makes a module opens with its <span class="pre">mod</span>
+		line: a folder's designated file, a <a href="#onefile">one-file module</a>,
+		and a file the compiler is pointed at or an import reaches that is a module
+		of one file. The line names what the filesystem already names, the folder
+		or the file, so that the name is the first thing a reader of the file sees.
+		A file that makes a module and opens with anything else, a
+		<span class="pre">mod trait</span> included, is an error. The other files of
+		a folder's module have no <span class="pre">mod</span> line, since the
+		folder is what names the module they join.</p>
+	<p>A module's imports come right after its <span class="pre">mod</span> line,
+		ahead of everything else it declares, and so they are all in its designated
+		file. Comments may sit anywhere among them:</p>
+<pre>
+// geometry: points, and the shapes built on them
+
+mod geometry;
+
+// What this module uses
+import stdio;
+import units use metre;
+
+pub struct Point {
+  pub x f32;
+  pub y f32;
+}
+</pre>
+	<p>An <span class="pre">import</span> written after any other declaration,
+		a standalone <span class="pre">use</span> included, is an error. So is an
+		<span class="pre">import</span> anywhere in the module's other files: they
+		have no <span class="pre">mod</span> line, so there is no place for one.
+		A <span class="pre">use</span> is not an import, and any file of the module
+		may write one. So the top of the designated file says which module it opens
+		and everything that module depends on, and the build tool, Congo, reads
+		nothing more of it to find a package's modules and what they import.</p>
+
+	<h3 id="submodule">Submodules</h3>
+	<p>A subfolder that holds <i>its own</i> designated file is not organizing
+		files: it is a <b>submodule</b>, a module of its own inside the module
+		whose folder holds it. One rule decides both kinds of subfolder — does it
+		hold the file named for it? — and it is the same rule that made the folder
+		a module in the first place.</p>
+<pre>
+geometry/
+  geometry.cone      the module 'geometry'
+  shapes.cone        a file of 'geometry'
+  detail/util.cone   also a file of 'geometry': 'detail' holds no detail.cone
+  scaling/
+    scaling.cone     the module 'geometry.scaling'
+    matrix.cone      a file of 'geometry.scaling'
+</pre>
+	<p>Its parent reaches into it by writing a path, the same way a path reaches
+		into any module: <span class="pre">scaling.twice(n)</span> from inside
+		<span class="pre">geometry</span>. What the parent may reach is what the
+		submodule declares <span class="pre">pub</span>, because a submodule is a
+		module and its private names are its own.</p>
+	<p id="usesub"><b>A parent folds a submodule's names in with
+		<span class="pre">use</span>.</b> A submodule is never imported — its
+		subfolder or its file is what brings it in — so a parent that wants its child's names
+		bare writes a <span class="pre">use</span> statement naming the submodule,
+		and the same clause an <a href="#folding">import's
+		<span class="pre">use</span></a> takes follows the name:</p>
+<pre>
+mod geometry;
+
+use scaling;                     // every public name of scaling: twice(n), not scaling.twice(n)
+use measure inches as toInches;  // one name, spelled another way here
+use units { metre, yard };       // a list, written as a block
+use shapes but Hexagon;          // every public name but one
+use scaling.fixed;               // a submodule's pub submodule, reached by a path
+pub use detail;                  // detail's public names, re-exported as geometry's
+</pre>
+	<p>Only a submodule's public names fold, and naming a private one is an error,
+		whether in a list or after <span class="pre">but</span>, where there is nothing
+		to leave out; so is the submodule's <span class="pre">final</span> or
+		<span class="pre">clone</span>, in a list or after <span class="pre">but</span>, which a star never folds.
+		The folded names are this module's own and private to it unless the
+		statement is written <span class="pre">pub use</span>, which re-exports them:
+		the parent's neighbours then reach them as names of the parent, while the
+		submodule itself may stay private. A submodule is folded once: a second
+		<span class="pre">use</span> of it is an error, so say everything in one.</p>
+	<p>A standalone <span class="pre">use</span> folds what a module reaches
+		<i>without</i> importing it: an enum, <a href="#useenum">below</a>, or a
+		submodule. A module brought in by <span class="pre">import</span> is folded
+		by that import's own clause, <span class="pre">import math3d use Point3;</span>,
+		and naming it in a <span class="pre">use</span> statement is an error —
+		one spelling for each situation.</p>
+	<p><b>A submodule is private to its parent unless it says otherwise.</b>
+		Written <span class="pre">pub mod scaling;</span> it can be named from
+		outside its parent as well, as <span class="pre">geometry.scaling.twice</span>;
+		written <span class="pre">mod scaling;</span> only
+		<span class="pre">geometry</span> may name it. The
+		<span class="pre">pub</span> goes on the submodule's own declaration,
+		since the parent declares nothing about a subfolder or a file, and it
+		means what it means everywhere else: this entry is visible outside this
+		namespace. It opens a submodule to the rest of its package, never beyond:
+		a program importing the package reaches a submodule's names only where
+		the package's root re-exports them with <span class="pre">pub use</span>,
+		since the package's <a href="safe-c.html#nested">include file</a>
+		declares each submodule in a private block.</p>
+	<p id="onefile"><b>A submodule of one file needs no folder.</b> A folder is
+		only worth making when a module has more than one file, so a file of a
+		module's folder whose first statement is a <span class="pre">mod</span>
+		declaration is a submodule by itself:</p>
+<pre>
+geometry/
+  geometry.cone      the module 'geometry'
+  shapes.cone        a file of 'geometry': no 'mod' of its own
+  units.cone         'mod units;' -- the module 'geometry.units'
+  scaling/
+    scaling.cone     the module 'geometry.scaling'
+    matrix.cone      a file of 'geometry.scaling'
+</pre>
+	<p><span class="pre">units</span> is a submodule in every respect
+		<span class="pre">scaling</span> is: private to
+		<span class="pre">geometry</span> unless it is written
+		<span class="pre">pub mod units;</span>, reached by a path,
+		<span class="pre">units.metre()</span>, folded by
+		<span class="pre">use units;</span>, and imported by its sisters by name.
+		Its own <span class="pre">import</span>s follow its
+		<span class="pre">mod</span>, as a designated file's do. It does not join
+		<span class="pre">geometry</span>, and none of
+		<span class="pre">geometry</span>'s files join it. It is named for its
+		file: <span class="pre">mod units;</span> is written in
+		<span class="pre">units.cone</span>, and any other name there is an error.</p>
+	<p>When it grows past one file, move <span class="pre">units.cone</span> to
+		<span class="pre">units/units.cone</span> and put the new files beside it.
+		Nothing that names it changes: not its name, not a path through it, and
+		not the symbols the linker sees. A <span class="pre">units.cone</span> that
+		declares a module beside a <span class="pre">units/</span> folder that
+		holds its own <span class="pre">units.cone</span> is an error, since that
+		is two modules of one name.</p>
+	<p>A module must sit directly in its parent module's folder — as a file
+		there, or as a folder that is a direct child of it — so the module tree
+		has the shape of the folder tree. A designated file further down — inside
+		a folder that holds none of its own — is an error rather than a deeper
+		submodule, and so is a file that opens with <span class="pre">mod</span>
+		inside such a folder.</p>
+	<p><b>Two submodules of one module may name each other, by importing.</b> The
+		module that holds them is the registry they are found in: they are public
+		to each other and to it, and invisible outside it unless it publishes
+		them. So <span class="pre">import scaling;</span> written inside a sister
+		of <span class="pre">scaling</span> finds her there — see
+		<a href="#sister">importing a sister module</a> — and
+		nothing arrives unasked, because a name nobody imported is not a name of
+		the module.</p>
+	<p><b>A submodule does not import its parent's names.</b> A module depends on
+		each of its own submodules, so a submodule that depended on its parent —
+		<span class="pre">import Point;</span> inside <span class="pre">scaling</span>,
+		naming <span class="pre">geometry</span>'s <span class="pre">Point</span> —
+		would make the two depend on each other, and that is an error (see
+		<a href="mod-packages.html#dag">one-direction dependencies</a>). What a parent and its submodules share belongs
+		in a sister of theirs, which each of them imports. A submodule cannot name
+		its parent either — containment runs one way.</p>
+	<p>The reach between sisters is one level and does not accumulate as you go
+		down. A module sees its own parent's submodules, and not its
+		grandparent's.</p>
+
+	<h2 id="import">import</h2>
+
+	<p style="margin-left: 40px;"><i>Note: Without a build description, a module found beside
+		the importing file is only declared, so a program importing one cannot be linked.</i></p>
+
+	<p>After a program's source code gets big enough,
+		it may become easier to work with when partitioned across multiple files.
+		The files of one module need nothing to stitch them together:
+		a module is the files of its <a href="#dcl">folder</a>,
+		and the compiler finds every one of them itself.
+		Two mechanisms reach beyond a module:
+		<span class="pre">import</span>, for another Cone module, described here,
+		and <span class="pre">extern</span>, for what is defined in another
+		compiled unit — a separately built Cone package, or code written in
+		another language such as C — described in <a href="safe-c.html#extern">Talking to C</a>.</p>
+
+	<h3 id="include">include is retired</h3>
+	<p>A file joins a module by being in the module's folder, so no statement
+		brings one in. <span class="pre">include</span>, which once did,
+		is a reserved word, and the compiler reports an
+		<span class="pre">include</span> statement wherever it is written.
+		Put the file in the folder of the module it belongs to instead.</p>
+
+	<h3 id="importuse">Importing a module</h3>
+	<p>Use <span class="pre">import</span> to import another module that has its own namespace.
+		For example:</p>
+<pre>
+import math3d;
+import opengl;
+</pre>
+	<p>An <span class="pre">import</span> may fold the module's names in with a
+		<span class="pre">use</span> clause, as <a href="#folding">Namespace folding</a> describes.</p>
+
+	<h3 id="importplace">Where an import is written</h3>
+	<p>An <span class="pre">import</span> comes right after its file's
+		<a href="#header"><span class="pre">mod</span> line</a>,
+		with the file's other imports, so that every dependency a module has is
+		stated at its declaration; one written after any other declaration is
+		refused. A file of a folder's module other than its designated file has
+		no <span class="pre">mod</span> line, and its imports come first.</p>
+
+	<h3 id="paths">File names and Paths</h3>
+	<p>An <span class="pre">import</span> names a module, or where the
+		module's name is not found, a file path.
+		If the file path includes characters that are not legal for a Cone name
+		(such as periods or slashes),
+		it should be enclosed in double quotes
+		(and make use of the appropriate escape sequences where needed).
+		If the file's extension is not specified, .cone is assumed.</p>
+	<p>In the simplest case, the file path specifies just the name of a source file
+		to be found in the same folder as the source file which imports it.
+		If a file of that name is not found there, the compiler will look for it
+		in a folder of the same name (e.g., "useme/useme.cone").
+		This behavior allows source files to be organized across nested folders,
+		where related source files are grouped together.</p>
+	<p>If desired, the file path may explicitly specify folders in front of the source file name.
+		This can be an absolute path name, such as "/libs/math/trigfns".
+		It can also be relative to the source file doing the importing,
+		for example "nomnom/useme" or "../lib/useme".</p>
+	<p id="packages">If the file is not found in the current folder, the compiler
+		searches the <b>package search path</b> for it: first each folder given to the
+		compiler with <span class="pre">--path</span>, in order, and then the
+		<b>packages folder</b>. The packages folder holds one folder per
+		<a href="mod-packages.html#package">package</a>, whose source is its
+		<span class="pre">src</span> folder: <span class="pre">src/<i>name</i>.cone</span>
+		is the designated file of the package's module, and the folder's other
+		files and submodules are the package's by the
+		<a href="#dcl">module rules</a>. It is where the
+		<a href="library.html">packages that come with Cone</a> live: <span class="pre">stdio</span>, which
+		<span class="pre">import stdio</span> reaches;
+		<span class="pre">core</span>, which every module imports without asking;
+		and <span class="pre">libc</span> and <span class="pre">posix</span>,
+		raw bindings to the C library and to the POSIX functions beyond it
+		(the C library's own on Linux, a mapping onto the C runtime on Windows), which
+		<span class="pre">core</span> rests on for
+		<span class="pre">malloc</span>; and, over those two,
+		<a href="lib-fs.html"><span class="pre">fs</span></a> (files and folders),
+		<span class="pre">path</span> (paths taken apart and put together) and
+		<span class="pre">env</span> (environment variables), written over ISO C
+		and POSIX. What is Windows-only beneath them is <span class="pre">posix</span>'s:
+		on Windows its POSIX names map onto the Windows C runtime, and its folder listing
+		(<span class="pre">opendir</span>, <span class="pre">readdir</span>) and
+		<span class="pre">lstat</span> are written over the runtime's
+		<span class="pre">_findfirst64</span> (on Linux they are the C library's);
+		<span class="pre">path</span> reads the paths of the system it is built for
+		(Windows' drive letters, shares and both separators, or POSIX's <span class="pre">/</span>).
+		Beside them, <span class="pre">process</span> runs a program and waits
+		for it (its arguments, a working folder, a time limit; its exit code and
+		what it wrote to standard output and standard error, captured apart):
+		its interface belongs to no one system, its insides are written over
+		<span class="pre">kernel32</span>
+		(<span class="pre">CreateProcessW</span>, pipes, a job object) on Windows and over
+		<span class="pre">posix_spawn</span> on Linux, since
+		neither ISO C nor POSIX alone can do it on both.
+		The compiler finds its packages folder from where it is installed: the
+		nearest <span class="pre">packages</span> folder holding
+		<span class="pre">core</span>, in the compiler's own folder or one above it.
+		The <span class="pre">CONE_PACKAGES</span> environment variable names another.
+		This allows the name of an imported module to correspond
+		to some externally-hosted packaged library.</p>
+	<p>A name is looked for in that order, and a <a href="#sister">sister</a> comes
+		before all of it, since the enclosing module is asked before any file is
+		looked for. So inside a submodule whose sister is named
+		<span class="pre">stdio</span>, <span class="pre">import stdio</span> reaches
+		her, and a package in a <span class="pre">--path</span> folder is found ahead
+		of the packages folder's package of the same name.</p>
+	<p id="described">A package built from a
+		<a href="mod-packages.html#build">build description</a> searches for nothing.
+		After a sister, an <span class="pre">import</span>
+		is found where the description's <span class="pre">import</span> line for
+		its name says, and an import the description provides nothing for is an
+		error, <span class="pre">import stdio</span> included. The file such a line
+		names is only declared, as another package's include file is: its name is
+		the import's. Its functions are called, and its globals read, in the object
+		of the package it stands for, which is linked in beside the program's; only
+		its <span class="pre">inline</span> bodies are compiled into the
+		importer. It is a module file like any other, so it may import in its
+		turn: those imports are found where the description's package lines say,
+		and what they bind is the include file's own, not the importer's.</p>
+	<p>More than one module may import the same module.
+		The imported module will only be loaded once.
+		Its information is then reused by all modules that imported it.</p>
+	<p>A module imports another module once. Writing the same
+		<span class="pre">import</span> a second time does nothing. A second
+		<span class="pre">import</span> of the same module that says something
+		different — it folds in other names, spells one differently, or is
+		<span class="pre">pub</span> where the first is not — is an error, which names
+		both. Say everything in the one <span class="pre">import</span>.</p>
+	<p>A module's own <a href="#submodule">submodule</a> is not
+		imported, and importing one is an error: the subfolder or the file that
+		holds it is what brings it in, so its name is already there to be written. Its names
+		are folded in with a <a href="#usesub"><span class="pre">use</span>
+		statement</a> instead, which takes the same clause an import's
+		<span class="pre">use</span> does.</p>
+
+	<h3 id="nodescription">Compiled apart, and without a build description</h3>
+	<p>Separate compilation is built through a
+		<a href="mod-packages.html#build">build description</a>, which the build
+		tool, <a href="mod-packages.html#package">Congo</a>, writes for each package:
+		a library compiled from one exports what its importers need, and a program
+		whose import line names that library's include file links with the
+		library's object. A library's compile generates its
+		<a href="safe-c.html#includefile">include file</a>, and Congo compiles every program and
+		package against the include files of the packages it imports.
+		<a href="#described">Above</a> is how a program built that way finds its imports.</p>
+	<p>A program compiled without a build description finds them by the
+		<a href="#packages">package search path</a> instead. A module found on the
+		search path is compiled into the program that imports it. One found beside
+		the importing file is only declared, so a program importing one cannot be
+		linked.</p>
+
+	<h3 id="sister">Importing a sister module</h3>
+	<p>A <a href="#submodule">submodule</a> imports one of its
+		sisters by writing her <i>name</i>, not a path to her file:</p>
+<pre>
+mod engine;
+import wheels;
+
+pub fn drive(n i64) i64 {
+  wheels.turn(n);
+}
+</pre>
+	<p>A module is the registry its own modules are found in. They are public to
+		each other and to it, and invisible outside it unless it publishes them
+		— so an <span class="pre">import</span> written inside one of them looks
+		the name up in the enclosing module and finds a sister there, with no
+		file to search for and nothing loaded. It is the same mechanism that
+		reaches a separately built library; only the registry that answers is
+		different.</p>
+	<p>What is in reach is the enclosing module's modules and no further up than
+		that. A module two levels down does not see its parent's sisters.</p>
+	<p>A module inside such a tree is reached by its name, never by a path to
+		its file. Writing <span class="pre">import "../wheels/wheels"</span> is
+		an error, and so is a module importing the module that contains it:
+		containment runs one way.</p>
+
+	<h3 id="parent">A name of the parent is not imported</h3>
+	<p>The enclosing module's namespace holds more than its modules: what it
+		declares, and what its own imports bind. But a submodule may not import
+		any of it:</p>
+<pre>
+mod scaling;
+import Point;               // error: Point is the parent's, and the parent
+                            // contains scaling, so the two would loop
+</pre>
+	<p>A module depends on each of its own submodules, so a submodule that
+		depended on its parent would close a
+		<a href="mod-packages.html#dag">loop</a>, which is an error naming both. The
+		same holds for a module the parent imported, reached through the parent:
+		the submodule imports it by its own name instead. What a parent and its
+		submodules share goes in a sister of theirs, which each imports:</p>
+<pre>
+mod scaling;
+import shapes use Point;    // shapes is scaling's sister, and holds Point
+</pre>
+
+	<h3 id="reexport">Re-exporting what you import</h3>
+	<p>What an <span class="pre">import</span> brings in belongs to the module
+		that wrote it. A module importing <i>that</i> module sees only what it
+		passed on, which it does by writing <span class="pre">pub</span>:</p>
+<pre>
+pub import wheels;          // 'wheels' is a public name here, so 'engine.wheels.turn' resolves
+pub import rims use *;      // and so is 'rims', and every name folded in from it
+import tyres pub use *;     // every name folded in from tyres is public, and 'tyres' is not
+import bolts use *;         // while these are this module's own business
+</pre>
+	<p><span class="pre">pub</span> before <span class="pre">import</span> reaches every
+		name the import binds: the module's own name, and each name it folds in.
+		<span class="pre">pub use</span> reaches only the names the
+		<span class="pre">use</span> clause folds in, so a module can pass on a
+		library's names without passing on the library. Writing both is allowed and
+		means what <span class="pre">pub import</span> means alone.
+		<span class="pre">pub</span> says what it says everywhere else — this name is
+		visible outside the module that holds it — and it never makes public
+		something that was not public where it was declared.</p>
+	<p>A name made public this way travels on: a module that imports
+		<span class="pre">engine</span> with <span class="pre">use *</span> receives
+		what <span class="pre">engine</span> passed on, and nothing that it kept for
+		itself. That holds round a cycle of imports too: where two modules import
+		each other, what each re-exports reaches the other, as it would if neither
+		imported the other back.</p>
+
+	<h3 id="qualified">Module-qualified names</h3>
+	<p><span class="pre">import</span> is bringing in a module with its
+		own namespace. By default, the names of an imported module
+		are kept separate from the names in the module doing the importing.
+		The only name that the importing module automically obtains is the
+		name of the module it is importing — unless that module names a
+		<a href="#default">default fold</a> on its
+		<span class="pre">mod</span> line, which an import writing no
+		<span class="pre">use</span> clause of its own folds in as well.</p>
+
+	<p>Since the namespaces of the modules stay separated by default,
+		the importing module normally refers to names inside the imported module
+		using a module-qualified name:</p>
+<pre>
+import opengl;
+
+fn setColor(col Color) {
+  opengl.setColor(col);
+}
+</pre>
+	<p><span class="pre">opengl.setColor</span> references the <span class="pre">setColor</span>
+		function to be found in the imported <span class="pre">opengl</span> module.
+		The period separates the module name from the name of the function
+		defined in that module. It is the same operator that reaches a member of a
+		value: one period, for a path through a namespace and for a member of a value alike.</p>
+	<p>Module-qualified names can only access names the module declared
+		<span class="pre">pub</span>. Every other name is private to its module and
+		is not accessible to any other module.</p>
+
+	<h3 id="as">Importing under another name</h3>
+	<p><span class="pre">as</span> after the module binds it under a name of the
+		importer's choosing instead of its own:</p>
+<pre>
+import geometry as geo;
+
+pub fn far(a geo.Point, b geo.Point) i64 {
+  geo.dist2(a, b);
+}
+</pre>
+	<p>The new name is used exactly as the module's own would have been: for its
+		types, its functions, and the modules inside it
+		(<span class="pre">geo.metric.cm</span>). The module's own name,
+		<span class="pre">geometry</span>, is not a name here at all. Every form of
+		import takes <span class="pre">as</span> — a name or a quoted path, a
+		package or a sister, <span class="pre">pub</span> or not — and it comes
+		before any <span class="pre">use</span> clause, which folds what it would
+		have folded without the rename:</p>
+<pre>
+import geometry as geo use dist2 as d2;
+</pre>
+	<p>A module's <a href="#default">default fold</a> still applies
+		to a renamed import that writes no clause, and
+		<span class="pre">pub import units as u;</span> makes
+		<span class="pre">u</span> a public name of the importing module, as
+		<a href="#reexport">Re-exporting</a> describes for the module's own
+		name.</p>
+	<p>The rename is a name of the importing module like any other, so it may not
+		collide with one of its declarations, with the name another import binds,
+		or with a name a <span class="pre">use</span> clause folds in. A module is
+		still imported only once, so a second import of it is an error whatever
+		name each binds it under. A <span class="pre">use</span> clause may not fold
+		the module's own name back in, which would undo the rename.</p>
+	<p>The usual reason to rename is a name that is wanted for something else. A
+		type's field or method hides a module of the same name inside the type,
+		its methods' signatures included, so a method named after the module it
+		returns a type of needs the module imported under another name; see
+		<a href="guide-structs.html#hiding">Implicit field and method access</a>.</p>
+
+	<h3 id="folding">Namespace folding</h3>
+	<p>By default, an imported module does not pollute the namespace of the module importing it.
+		This is often what you want. However, it can become tedious to read (and type)
+		module-qualified names when they are used a lot by the importing module's code.
+		To address this, an <span class="pre">import</span> may end with a
+		<span class="pre">use</span> clause, which folds
+		some or all of the module's public names into the importing module.
+		It is the same clause a <a href="mod-extensibility.html#globals">global variable</a> carries,
+		with the imported module in the place of the variable's type.
+		The names being folded can be for anything: type, function, global variable, macro, etc.
+		However, names folded in may not collide with any name the importing module already uses.</p>
+	<p>To fold in just a few specific names, list them after
+		<span class="pre">use</span>, separated by commas:</p>
+<pre>
+import math3d use Point3, Mat3;
+
+fn move(pos &amp;Point3, delta Point3) {
+  pos += delta;
+}
+</pre>
+	<p>Use <span class="pre">as</span> to give a folded name another spelling here,
+		for instance when its own is already in use:</p>
+<pre>
+import math3d use Point3 as Point;
+
+fn move(pos &amp;Point, delta Point) {
+  pos += delta;
+}
+</pre>
+	<p>A long list may be written as a block instead, which means the same thing:</p>
+<pre>
+import math3d use {
+  Point3 as Point,
+  Mat3,
+  Quaternion,
+};
+</pre>
+	<p>Or one can fold in all public names from the module using <span class="pre">*</span>,
+		and leave some out with <span class="pre">but</span>:</p>
+<pre>
+import math3d use *;
+import opengl use * but Point3;   // math3d's Point3 is the one wanted here
+</pre>
+	<p>An import's own <span class="pre">use</span> clause replaces whatever
+		<a href="#default">default fold</a> the imported module names:
+		<span class="pre">import bigint;</span> folds what
+		<span class="pre">mod bigint use BigInt;</span> says, and
+		<span class="pre">import bigint use *;</span> folds every public name instead.</p>
+	<p>The <span class="pre">use</span> clause is the only way an import folds names in.
+		<span class="pre">import math3d.*;</span> and <span class="pre">import math3d.Point3;</span>
+		are errors, each naming the clause to write instead.</p>
+	<p>A folded name is private to the importing module unless the import says
+		otherwise, as <a href="#reexport">Re-exporting</a> describes. A name the
+		module does not have, or does not make public, cannot be folded in, and it is
+		an error to list one. Naming either after <span class="pre">but</span> is an
+		error too: seen from outside the module a private name is as absent as a
+		missing one, and <span class="pre">*</span> never folds it, so there is nothing
+		to leave out. Nor does <span class="pre">*</span> fold the module's finalizer
+		<span class="pre">final</span> or a <span class="pre">clone</span>, which belong to the
+		module's own lifecycle, so naming one of those after <span class="pre">but</span>, or in a list,
+		is an error as well. So is folding in a name the importing module already
+		has for something else, whether it declared that name or folded it in from
+		somewhere else: rename one with <span class="pre">as</span>, or leave it out with
+		<span class="pre">but</span>. Writing the same thing in twice is an error too:
+		listing a name twice, or listing it from two modules that each re-export it.
+		A module imports another only once, so a second import of it, even an
+		identical one, is an error. What a wildcard brings is different, since nothing
+		was written twice: if two modules you fold in with <span class="pre">*</span>
+		each re-export one function, say, folding in both is fine, and so is listing
+		the function from one while the other's <span class="pre">*</span> brings it
+		too. The name is bound once, and if either fold made it public, it is public.</p>
+
+	<h3 id="default">A module's default fold</h3>
+	<p>A package named for the one thing it provides would put that name in every
+		path twice: <span class="pre">bigint.BigInt</span>. So a module may say, on its
+		own <span class="pre">mod</span> line, what an importer gets when it imports the
+		module and asks for nothing in particular. A package holding one thing then
+		just becomes the thing:</p>
+<pre>
+mod bigint use BigInt;
+
+pub struct BigInt {
+  pub digits i64;
+}
+
+pub fn helper(n i64) i64 {
+  n + 100;
+}
+</pre>
+	<p>Now a module that writes a bare <span class="pre">import bigint;</span> has
+		<span class="pre">BigInt</span> directly, and
+		<span class="pre">bigint</span> as well, so
+		<span class="pre">bigint.helper</span> still reaches what the default leaves
+		out. With <a href="mod-extensibility.html#extends"><span class="pre">extends</span></a>, the clause comes last:</p>
+<pre>
+mod bigint extends base use BigInt;
+</pre>
+	<ul>
+		<li><b>The list is the default, however many names it holds.</b>
+			<span class="pre">mod units use metre, foot;</span> makes a bare import
+			fold both. <span class="pre">*</span> and
+			<span class="pre">* but</span> may be written too. Adding a name later only
+			adds to what importers see.</li>
+		<li><b>An importer's own clause replaces the default entirely.</b>
+			<span class="pre">import bigint use *</span>,
+			<span class="pre">import bigint use helper</span> or
+			<span class="pre">import bigint use * but BigInt</span> folds what it says,
+			and nothing of the default.</li>
+		<li><b>Here <span class="pre">use</span> runs the other way.</b> Everywhere
+			else, <span class="pre">use</span> folds names into the module where it is
+			written. On the <span class="pre">mod</span> line it names what
+			<i>importers</i> fold.</li>
+		<li><b>It is not an export list.</b> <span class="pre">pub</span> still decides
+			what is reachable, and every name the clause lists must already be a public
+			name of the module: one the module has not got, or keeps private, is an
+			error at the <span class="pre">mod</span> line. The clause only chooses
+			which public names a bare import folds.</li>
+		<li><b>The importer decides the rest.</b> The names are the importer's, private
+			to it unless it writes <span class="pre">pub import bigint;</span>, which
+			re-exports them with <span class="pre">bigint</span>. A default name that
+			collides with one of the importer's own is an error there, settled by
+			writing a clause of its own. For the same reason neither
+			<span class="pre">as</span> nor <span class="pre">pub</span> may be written
+			in the clause on a <span class="pre">mod</span> line.</li>
+	</ul>
+	<p>The default applies wherever a module is imported with no clause of its own:
+		a sister, or a module found by its file. A
+		<a href="#usesub"><span class="pre">use</span></a> of a submodule is not an
+		import, and still folds every public name.</p>
+
+	<h3 id="useenum">Folding an enum's variants in</h3>
+	<p>An enum's variants are names of the enum, reached as <span class="pre">Colors.Red</span>. A
+		module that wants them as names of its own writes a <span class="pre">use</span> statement
+		naming the enum, and optionally which variants — the same statement that
+		<a href="#usesub">folds a submodule's names in</a>:</p>
+<pre>
+use Colors;                  // Red, Green and Blue are names of this module
+use shapes.Shape Circle;     // one variant of an enum another module declares
+pub use Suit;                // and names other modules may reach through this one
+</pre>
+	<p>The names are this module's own and private to it unless the statement is written
+		<span class="pre">pub use</span>, which is how a module re-exports an enum's variants: another
+		module reaches them through it, and an import of it with <span class="pre">use *</span> brings
+		them in bare. The core library does exactly this for <span class="pre">Option</span> and
+		<span class="pre">Result</span>, which is why <span class="pre">Some</span>,
+		<span class="pre">None</span>, <span class="pre">Ok</span> and <span class="pre">Error</span>
+		are bare in every program. See <a href="guide-enums.html#naming">Naming a variant</a>.</p>
+
+	<h2 id="typens">Types as Namespaces</h2>
+	<p>Declarations for struct and enum types are also namespaces.
+		At a minimum, these hold the names of the type's fields and methods.
+		They may also hold the names for the type's static functions,
+		its <a href="guide-structs.html#static">static variables</a>
+		and the names of other types (e.g., enums). An enum's namespace holds its variants, which is
+		why a variant is reached through its enum, <span class="pre">Colors.Red</span>, unless a
+		module folds it in with <a href="#useenum"><span class="pre">use</span></a>.
+		What a type's names may be, and who may reach them, is in
+		<a href="mod-encapsulation.html#typenames">Encapsulation</a>.</p>
+
+	<h3 id="staticfn">Static Functions</h3>
+	<p>In addition to methods, a type may declare useful static functions
+		that are not methods and do not work with a specific object of that type.
+		A static function is declared among the type's methods, and what makes it
+		static is that it has no <a href="guide-structs.html#self"><span class="pre">self</span></a>
+		parameter. It is not marked <span class="pre">static</span>: that word
+		declares a <a href="guide-structs.html#static">static variable</a>, and before a
+		function it is an error.</p>
+<pre>
+struct Counter {
+  count i32;
+
+  pub fn zeroFactory() Counter {
+    new Counter(0);
+  }
+}
+</pre>
+
+	<p>To make use of the function outside the type, qualify the name with the name of the type:</p>
+<pre>
+mut cnt = Counter.zeroFactory();
+</pre>
+
+	<h2 id="fnblocks">Function Blocks</h2>
+	<p>All logic blocks inside functions and methods
+		are namespaces that hold local (and parameter) variables.</p>
+	<p>Every block's names are:</p>
+	<ul>
+		<li><b>unique</b>. no two variables in a block may be declared with the same name.
+			However, variables in a block might shadow same-named variables in outer scopes.</li>
+		<li><b>order-dependent</b>. Logic may not reference a local variable until after it is declared.</li>
+		<li><b>private</b>. Only the block logic may see and use local variables.</li>
+	</ul>
+
+	<h2 id="alias">alias</h2>
+
+	<p style="margin-left: 40px;"><i>Note: an alias of a type is implemented. An alias of a function,
+		a global, a module or a method is not yet.</i></p>
+
+	<p>To give some type a second name, declare an <span class="pre">alias</span>
+		in the appropriate module's global scope (it may not be placed anywhere else):</p>
+<pre>
+alias Noderef = Rc[mut, Node];
+</pre>
+	<p>In this example, wherever Noderef is used in this module, it will be understood to mean
+		<span class="pre">Rc[mut, Node]</span>.</p>
+
+	<p>What follows the <span class="pre">=</span> is the alias's target. It is resolved when the
+		program is compiled, and is never a computation: an alias names something that already
+		exists, it does not make a value.</p>
+
+	<p>An alias is a second spelling for one type, not a second type: it creates no distinct type and
+		nothing is asserted by using one name rather than the other. To declare a type of your own that
+		enriches an existing one with methods, which <i>is</i> a distinct type, see
+		<a href="mod-extensibility.html#enrich">Enriching a concrete type</a>.</p>
+
+	<p>Because it is a second spelling and not a second thing, it also <b>qualifies</b> what it names.
+		Where <span class="pre">alias Sample = Reading;</span> names a struct,
+		<span class="pre">Sample.make(1)</span> reaches the same static function
+		<span class="pre">Reading.make(1)</span> does.</p>
+
+	<p>An alias may be declared <span class="pre">pub</span>, which makes the name visible outside
+		its module; the type it names keeps its own visibility, so an alias never lends out something
+		private. A chain of aliases is ordinary &mdash; one alias may name another &mdash; but a
+		chain that comes back to itself names no type at all, and is refused where it is written.</p>
+
+	<p><span class="pre">typedef</span>, the statement's former spelling, is retired. It remains a
+		keyword, and the compiler reports a <span class="pre">typedef</span> statement where it is
+		written.</p>
+
+	<h2 id="comesback">Comes back in</h2>
+	<ul>
+		<li><a href="mod-encapsulation.html">Encapsulation</a>: which names are private, and to whom.</li>
+		<li><a href="mod-extensibility.html">Extensibility</a>: the same <span class="pre">use</span>
+			clause on a field, a type and a global, and a module that extends another.</li>
+		<li><a href="mod-packages.html">Packages and the build</a>: how imported packages are found,
+			built and linked, and why imports never loop.</li>
+		<li><a href="safe-c.html">Talking to C</a>: <span class="pre">extern</span>, include files and
+			C-named modules.</li>
+		<li><a href="mod-substitution.html#alias">Naming a signature</a>: an alias of a function's
+			signature.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mod-encapsulation.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,143 @@
+<html>
+  <head>
+	  <title>Encapsulation - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Encapsulation</div>
+		</div>
+
+    <div class="text">
+
+	<h2 id="why">Publish the interface, hide the rest</h2>
+	<!-- NEW: drafted -->
+	<p>Encapsulation treats a component as a black box. It <b>publishes</b> an interface, the
+		names other components may use, and it <b>hides</b> everything else: the logic that does
+		the work, and the state and structures it does it with. Done well, it reduces coupling,
+		because there is less for anyone outside to depend on; it lets a reader hold a part in
+		mind without holding all of it; and it keeps most changes local, since what nobody
+		outside could reach, nobody outside can be broken by.</p>
+	<p>In Cone the boundary is the <b>module</b>. A name declared <span class="pre">pub</span> is
+		the module's interface, and every other name is private to the module, whatever kind of
+		name it is: a function, a global, a type, or a type's field or method. The same idea comes
+		back at the other layers:</p>
+	<ul>
+		<li>A block's local variables are private to the block
+			(<a href="mod-namespaces.html#fnblocks">Function Blocks</a>).</li>
+		<li>A type's members that are not <span class="pre">pub</span> are private to the module
+			that declares the type (<a href="#typenames">below</a>).</li>
+		<li>An <a href="guide-structs.html#opaque">opaque type</a>, declared
+			<span class="pre">struct @opaque SocketHandle;</span>, hides even its size and layout: its
+			values are reached only through references or pointers, and its fields are never read.</li>
+		<li>An actor's state is private to it: a field of an actor is never
+			<span class="pre">pub</span>, and nothing outside the actor reaches one
+			(<a href="conc-actors.html#confined">Private state</a>).</li>
+		<li>A type that <a href="mod-extensibility.html#encap">enriches</a> another is inside its
+			base's encapsulation, and sees what the base's own methods see.</li>
+	</ul>
+
+	<h2 id="modnames">A module's names</h2>
+	<p>Module names are:</p>
+	<ul>
+		<li><b>unique</b>. no two items in a module may have the same name.
+			Several functions may nonetheless share one
+			<a href="guide-functions.html#overload">overload name</a>, which is itself
+			a single name in the module that maps to those functions.
+			A module may not bring one name in twice, even for the same item: listing
+			a name twice, writing the same <span class="pre">use</span> twice,
+			importing a module twice, or importing a module and also listing it
+			through another module that re-exports it, is an error.
+			Core is imported into every module automatically, so
+			<span class="pre">import core</span> in any module but a
+			<a href="safe-c.html#cnames">C-named</a> one is a second import of it, and the
+			error says so.
+			What a module never wrote is different. When a name arrives by a
+			wildcard <span class="pre">use *</span>, by <span class="pre">extends</span>,
+			or by the automatic import of core, and it is the same item the name
+			already has, it is not two items: when two wildcard imports each
+			re-export the same function, a module that extends this one hands
+			this one's own names back, or <span class="pre">import libc use *</span>
+			brings the <span class="pre">malloc</span> core already re-exports from it,
+			the name is bound once, and it is public if
+			either route made it public.</li>
+		<li><b>order-independent</b>. One can reference functions, variables,
+			or types whose names are not defined until later in the module.
+			The only exception to this are permissions and regions whose
+			definition must precede their use.</li>
+		<li><b>private unless <span class="pre">pub</span></b>.
+			A name declared <span class="pre">pub</span> may be referenced outside the module.
+			Any other name may not: it is private to the module, whatever it is spelled.
+			The interface of a module is what it says it is, and nothing more.
+			A type's members that are not <span class="pre">pub</span> are private to
+			its module in the same way (<a href="#typenames">A type's names</a>).</li>
+	</ul>
+	<p>What <span class="pre">pub</span> means for the other things a module holds is on the
+		pages that describe them: a <a href="mod-namespaces.html#submodule">submodule</a> is
+		private to its parent unless it is written <span class="pre">pub mod</span>, and the names
+		an <a href="mod-namespaces.html#reexport">import</a> or a
+		<a href="mod-namespaces.html#usesub"><span class="pre">use</span></a> folds in are private
+		to the module that folds them unless it writes <span class="pre">pub</span>.</p>
+
+	<h2 id="typenames">A type's names</h2>
+	<p>A type's names are:</p>
+	<ul>
+		<li><b>unique for every field, function and method</b>.
+			Every method and function has its own name, unique within the type.
+			Several methods or functions may additionally share one
+			<a href="guide-functions.html#overload">overload name</a>, which they declare with
+			<span class="pre">overload</span>.</li>
+		<li><b>order-independent</b>.
+			A name may be referenced before its declaration, and the order in which
+			the methods or functions sharing an overload name are declared never
+			affects which one a call selects.</li>
+		<li><b>private to the module unless <span class="pre">pub</span></b>.
+			A field, method or function declared <span class="pre">pub</span> may be used
+			anywhere the type's values reach. Any other member is private to the
+			module that declares the type: every function, method and type of that
+			module may use it, through any value of the type, in any file of the
+			module's folder, and nothing outside the module may. A sister, a
+			submodule and the parent are other modules, as is a file that opens
+			with its own <span class="pre">mod</span> line. A type that extends
+			another, a <a href="mod-extensibility.html#enrich">struct</a> enriching its base or an
+			<a href="mod-extensibility.html#enum-extends">enum</a> extending its base, is the one exception:
+			it is inside its base's boundary, so its code reaches the base's private
+			members wherever it is declared.
+			Fields and methods are accessed on a value using the dot (.) operator.
+			A static function is reached with the same operator, on the type's name.</li>
+		<li><b>a <span class="pre">pub</span> field of a <span class="pre">pub</span>
+			type names only types the outside can name</b>. Such a field is reached
+			from outside the module, so a type private to the module may not be its
+			type, alone or behind a reference, a pointer, an array or a type argument.
+			Either the field is made private, which the module still reaches, or the
+			type is made <span class="pre">pub</span>.</li>
+	</ul>
+	<p>A type's members and a module's names share one privacy boundary, the
+		module. The module is the unit of trust: the code that may see a type's
+		private members is decided by where it is written, not by a list the type
+		declares, so there is no <i>friend</i> declaration. A type whose state must
+		be kept even from its neighbours is declared in a module of its own.</p>
+
+	<h2 id="comesback">Comes back in</h2>
+	<ul>
+		<li><a href="mod-namespaces.html">Namespaces</a>: modules, submodules, imports and
+			re-exporting.</li>
+		<li><a href="mod-substitution.html#restrictions">Virtual references</a>: a trait's private
+			member has no slot, and is not reached through a virtual reference.</li>
+		<li><a href="mod-extensibility.html#encap">An enrichment is inside its base's
+			encapsulation</a>, and what that costs the base's author.</li>
+		<li><a href="guide-structs.html#opaque">Opaque types</a>, in Structs and enums in depth.</li>
+		<li><a href="conc-actors.html">Actors in depth</a>: an actor's state, isolated at the
+			actor's layer.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mod-substitution.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

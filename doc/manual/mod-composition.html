@@ -1,0 +1,178 @@
+<html>
+  <head>
+	  <title>Composition - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Composition</div>
+		</div>
+
+    <div class="text">
+
+		<p style="margin-left: 40px;"><i>Note: All of this capability is implemented
+				except for '.[]' indexing.</i>
+		</p>
+
+	<h2 id="why">Assembling from parts</h2>
+	<!-- NEW: drafted -->
+	<p>Composition is the first of the strategies, and every other one builds on it: a component
+		is assembled from distinct parts, which it owns. The parts may come in an order or in
+		none, they may be of one kind or several, and a part may itself be assembled from
+		smaller parts, layer under layer.</p>
+	<p>Cone composes at every layer:</p>
+	<ul>
+		<li>A <a href="guide-values.html#blocks">block</a> is an ordered collection of statements,
+			blocks among them.</li>
+		<li>A <a href="guide-structs.html">struct</a> is composed of its fields, in the order they
+			are declared, and of its methods; a <a href="guide-structs.html#tuple">tuple</a> of its
+			elements, and an <a href="guide-structs.html#array">array</a> of its elements, all of one type.</li>
+		<li>An <a href="guide-enums.html">enum</a> is composed of its variants, each a struct of
+			its own, with the fields they share.</li>
+		<li>A <a href="mod-namespaces.html#dcl">module</a> is composed of the files of its folder,
+			and of its <a href="mod-namespaces.html#submodule">submodules</a>; a
+			<a href="mod-packages.html#package">package</a> of its modules.</li>
+		<li>An <a href="conc-actors.html#declaration">actor</a> is composed of its state and its
+			behaviours.</li>
+	</ul>
+	<p>The pages that describe each of these are in the Guide:
+		<a href="guide-structs.html">Structs and methods</a> and <a href="guide-enums.html">Enums, and match on variants</a>. A part that is composed in
+		can also lend its names to the whole, so that <span class="pre">car.fuel</span> reaches
+		<span class="pre">car.engine.fuel</span>: that is
+		<a href="mod-extensibility.html">delegated inheritance</a>, composition with names folded
+		in. The rest of this page is the one piece of composition that is about using a value
+		rather than declaring one: the <span class="pre">with</span> block, which focuses a
+		block's logic on one value and the parts it is composed of.</p>
+
+	<h2 id="with">with blocks and this</h2>
+
+	<p>A <span class="pre">with</span> block is a special kind of block able
+		to focus its logic around a single value.
+		Its sugar offers a concise way to invoke many methods on, or access fields belonging to, some value.
+		Although it may resemble method chaining or cascades in other languages,
+		it is more versatile.</p>
+	<p>A <span class="pre">this</span> block's simple mechanism consists of two aspects:</p>
+	<ul>
+		<li>implicit definition of a <span class="pre">this</span> variable within a block
+			(not to be confused with
+			<a href="guide-structs.html#self"><span class="pre">self</span></a>.)
+		</li>
+		<li>using operators that implicitly rely on the <span class="pre">this</span> variable</li>
+	</ul>
+
+	<h2 id="this">Implicit <span class="pre">this</span> Variable</h2>
+	<p>A <span class="pre">with</span> block is simply an expression followed by a code block.
+		Throughout the block, the variable <span class="pre">this</span> is understood to hold
+		the evaluated value of that expression.</p>
+<pre>
+// Calculate the value of 'this' (0.174533)
+with Float.Pi/180 {
+	quarter = 90f * this; // Use 'this' to convert to radians
+	acute = 10f * this;
+}
+</pre>
+	<p>The above example is short-hand for:</p>
+<pre>
+{
+	imm this = Float.Pi/180;
+	quarter = 90f * this; // Use 'this' to convert to radians
+	acute = 10f * this;
+}
+</pre>
+	<p>Since <span class="pre">with</span> blocks can be nested within each other,
+		the value of <span class="pre">this</span> for any statement refers
+		to the inner-most <span class="pre">with</span> block's expression's value.</p>
+
+	<h2 id="dotprefix">'.' Prefix Operator</h2>
+	<p>The convenience of a <span class="pre">with</span> block comes from using
+	operators which implicitly work with the value of <span class="pre">this</span>.
+	The most common of these is the dot ('.') operator, used to call methods or access fields.</p>
+	<p>Normally, the '.' operator specifies some data object to the left,
+		on which a method might be invoked or whose field is accessed.
+		However, if no object is specified to the left of '.',
+		<span class="pre">this</span> is assumed.
+		It is common to find <span class="pre">with</span> block logic
+		taking advantage of this shortcut:</p>
+<pre>
+// Normalize point to unit length
+with &amp;mut point {
+	imm len = (.x * .x + .y * .y).sqrt;
+	if len &gt; 0 {
+		.x /= len;
+		.y /= len;
+	}
+}
+</pre>
+	<p>There are several things happening in this example:</p>
+	<ul>
+	<li>The <span class="pre">with</span> block works with a mutable reference to <span class="pre">point</span>.
+		We do this because the block changes the value of <span class="pre">point</span>.
+		If we had not captured a reference, the block would have tried to change the value of <span class="pre">this</span>,
+		which is not mutable and which does not survive the block.</li>
+	<li>It uses <span class="pre">.x</span> and <span class="pre">.y</span> to indirectly access
+		fields in <span class="pre">point</span>, via the mutable reference held by <span class="pre">this</span>
+		(<span class="pre">.x</span> is equivalent to <span class="pre">this.x</span>).
+		The block's logic is cleaner and easier to read without having to place
+		<span class="pre">point</span> ahead of every dot operator.</li>
+	</ul>
+	<p>Why is this approach is more versatile than method chaining or cascades?</p>
+	<ul>
+	<li>Called methods need not return <span class="pre">self</span>, as method chaining requires.</li>
+	<li>Method calls may appear at any point in the block logic, instead of having to be sequenced together.</li>
+	<li>It supports field access as well as method calls.</li>
+	</ul>
+
+	<h2 id="dotindex">'.[]' indexing</h2>
+	<p>'.[]' may be used to access or modify some element of a collection:</p>
+<pre>
+with myScene.numbers {
+	.[4] = 1.6;      // Equivalent to: myScene.numbers[4] = 1.6
+	.[6] = 1.9;
+	.sort;       // Sort the list of numbers
+}
+</pre>
+
+	<h2 id="streamprefix">'&lt;-' Prefix Operator</h2>
+	<p>The &lt;- operator adds the element on the right to the collection on the left.
+		If no collection is specified on the left, <span class="pre">this</span> is assumed.</p>
+<pre>
+// numbers is a vector of floating-point numbers
+with myScene.numbers {
+	&lt;- 3.4;
+	&lt;- 2.6;
+	&lt;- 1.4;
+	.sort;
+}
+</pre>
+	<p>This appends three floating point numbers to the list of numbers held in
+		<span class="pre">myscene.numbers</span> and then re-sorts the numbers list
+		by calling the <span class="pre">sort</span> method.
+	</p>
+	<p><b>Note:</b> If we just want to append three numbers without sorting:</p>
+<pre>
+myScene.numbers &lt;- 3.4, 2.6, 1.4;
+</pre>
+	<p>The stream operator itself is described in
+		<a href="guide-collections.html">Collections</a>.</p>
+
+	<h2 id="comesback">Comes back in</h2>
+	<ul>
+		<li><a href="mod-namespaces.html">Namespaces</a>: a component's parts are given names,
+			by which they are reached.</li>
+		<li><a href="mod-extensibility.html">Extensibility</a>: a part's names folded in as the
+			whole's own, which is composition with its names lent out.</li>
+		<li><a href="guide-enums.html#enumsmore">Enums, and match on variants</a> and
+			<a href="guide-collections.html">Collections and the stream operator</a>: the parts types are
+			composed of.</li>
+	</ul>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-namespaces.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

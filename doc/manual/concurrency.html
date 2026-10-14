@@ -1,0 +1,86 @@
+<html>
+  <head>
+	  <title>Concurrency in depth - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Concurrency in depth</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Co-routines beyond generators (a two-way <span class="pre">yield</span>), green threads that are paused and resumed, processes working together on one job, and distributed computing are not implemented.</i></p>
+
+	<p>This part is for the program that has outgrown the tour. Actors and lock permissions are
+		already in the Guide (<a href="guide-actors.html">Actors</a>,
+		<a href="guide-parallel.html">parallel each</a>), so the pages here build on them
+		freely. They run from the most used (actors and their replies) to the least (threads, atomics and locks
+		you write yourself). What follows is the lay of the land: which kinds of concurrency Cone has, and
+		what can go wrong with any of them.</p>
+
+	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
+	<ul>
+	<li>Distributing work across multiple CPUs (many hands make light work).</li>
+	<li>Keeping the CPU(s) busy with other work, rather than pausing all work while waiting on i/o to complete.</li>
+	</ul>
+	<p>Most of the heavy lifting for Cone's concurrency and parallelism capability is baked into library packages.
+		Depending on the library packages chosen, many work distribution and scheduling approaches can be taken
+		(ordered by context switching cost):</p>
+	<ul>
+	<li>Cooperative concurrency (generators or co-routines), where context switching is explicitly baked into the logic.
+		<a href="guide-functions.html#generators">Generators</a> are the form that exists.</li>
+	<li>Green (mxn) threads, where context-switching is cooperatively handled by the runtime's work-stealing scheduler, rather than the OS.
+		The <span class="pre">actors</span> package (<a href="conc-actors.html">Actors</a>) is the nearest thing:
+		actors are multiplexed on a pool of worker threads by a work-stealing scheduler, and each message is
+		handled to completion on a worker's own stack, or up to an <span class="pre">await</span>, where the compiler
+		cuts the behaviour in two. An actor is not a green thread that is paused and resumed.</li>
+	<li>OS threads, where context-switching is handled by the OS scheduler. Threads share memory and resources.
+		The <span class="pre">thread</span> package provides them, <a href="conc-primitives.html#thread">below</a>, with
+		<a href="conc-primitives.html#atomic">atomic values</a>, <a href="conc-primitives.html#futex">the futex</a> and <a href="conc-primitives.html#locks">locks</a> to share
+		memory safely, and <a href="conc-sharing.html#channel">channels</a> to pass messages.</li>
+	<li>OS processes, where context-switching is handled by the OS. Processes are isolated, largely communicating via pipes.</li>
+	<li>Distributed computing, where work is distributed across different machines, communicating via network sockets.</li>
+	</ul>
+	<p>As always there are trade-offs: Sometimes the loss in context-switching cost (latency) can be justified by 
+		improvements in scalability, fault tolerance, i/o handling, etc.</p>
+	<p>All the above models support structured concurrency. 
+		All new processes or threads are effectively owned resources. 
+		Like all owned resources, there is a programmatic point-in-time when owned threads are joined, terminated and freed
+		according to the logic of the finalizer.
+		Libraries also support the ability to split m pieces of work across n independent processes/logic.
+		(A <a href="conc-parallel.html#parallel"><span class="pre">parallel each</span></a> loop splits the pieces of a loop
+		across the actors package's worker threads; splitting across processes is not implemented.)</p>
+	<p>Concurrency (and parallelism) introduce safety risks, when implemented poorly:</p>
+	<ul>
+	<li><b>Race conditions</b>, where a system's behavior varies inconsistently, depending on the sequence or timing of independent operations.</li>
+	<li><b>Deadlocks</b>, where forward progress has stalled out because independent operations have unresolved contention 
+		over the temporary ownership of multiple resources.</li>
+	<li><b>Livelocks</b>, where forward progress has stalled out because of resource starvation that is not caused by deadlocks.</li>
+	</ul>
+	<p>Subsequent pages highlight Cone language features (e.g., permissions and queued methods)
+		that can be used to make synchronized, inter-thread communications easier and safer.</p>
+
+	<h2 id="pages">The pages of this part</h2>
+	<ol>
+	<li><a href="conc-actors.html">Actors in depth</a>: the four shapes of behaviour, the declaration, making an actor, an actor&rsquo;s life, <span class="pre">selfactor</span> and private state.</li>
+	<li><a href="conc-await.html">Awaiting in depth</a>: what crosses an <span class="pre">await</span>, an <span class="pre">await</span> inside a statement, futures, loops.</li>
+	<li><a href="conc-io.html">I/O in depth</a>: sockets, UDP, files, sleeping, processes, cancel groups, deadlines, the I/O thread.</li>
+	<li><a href="conc-parallel.html">Data parallelism in depth</a>: what a <span class="pre">parallel each</span> body may do, filling buffers, the parallel builder, reductions.</li>
+	<li><a href="conc-sharing.html">What may cross a thread: Sendable and Shareable</a>: channels, the one-shot reply channel, <span class="pre">Arc</span>, and the marker traits in one place.</li>
+	<li><a href="conc-locks.html">Lock permissions in depth</a>: how a borrow takes and gives back a lock, which regions take which lock, defining one.</li>
+	<li><a href="conc-gpu.html">The GPU</a>: kernels, buffers, workgroups, barriers.</li>
+	<li><a href="conc-runtime.html">How the runtime works</a>: the scheduler, an actor&rsquo;s garbage-collected region, the parallel loop underneath.</li>
+	<li><a href="conc-primitives.html">Roll your own: threads, atomics and locks</a>: OS threads, parking, atomic values, the futex, <span class="pre">Mutex</span>, <span class="pre">Condvar</span> and <span class="pre">Once</span>.</li>
+	</ol>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-actors.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

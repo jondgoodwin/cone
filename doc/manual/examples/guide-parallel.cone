@@ -1,0 +1,43 @@
+// parallel each: one loop, every core
+//
+// Writing 'parallel' in front of an 'each' runs the loop's passes at the
+// same time, spread over a worker thread for each core of the machine.
+
+mod primes;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+// Is n a prime? Try every divisor up to its square root.
+fn isPrime(n u64) bool {
+  if n < 2 {
+    return false;
+  }
+  mut d = 2u64;
+  while d * d <= n {
+    if n % d == 0 {
+      return false;
+    }
+    d = d + 1;
+  }
+  true;
+}
+
+fn main() {
+  // Count the primes below 200,000, with every core testing numbers at once
+  imm count = Atomic[u64].of(0);
+  parallel each n in 0u64 ..< 200000u64 {
+    if isPrime(n) {
+      count.add(1);                    // an Atomic takes additions from every pass
+    }
+  }                                    // here, every pass has finished
+  print <- "Primes below 200000: ", count.load(), "\n";
+
+  // Collect them into a list instead: it comes out in order, as a plain 'each' would
+  imm primes = new List[u64] <- parallel each n in 0u64 ..< 200000u64 if isPrime(n) yield n;
+  print <- "In the list: ", primes.len(), "\n";
+
+  // And add the list up, in parallel too
+  print <- "Their sum: ", primes.parallel().sum(), "\n";
+}

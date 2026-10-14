@@ -1,0 +1,90 @@
+// Functions, closures, Result and generators
+//
+// A function names a piece of work: what it takes, and what it gives back.
+// A closure is a function written right where it is used, and it may keep
+// state of its own. A function that can fail gives back a Result, which the
+// caller checks. A generator hands out a sequence of values, one at a time.
+
+mod functions;
+
+import stdio use *;
+import collections use *;     // String
+
+// Each parameter has a name and a type; the return type comes after them.
+// 'height' has a default, so a call may leave it off.
+// The last expression is the value the function gives back.
+fn area(width i32, height i32 = 1) i32 {
+  width * height;
+}
+
+// A function may give back several values at once
+fn divmod(a i32, b i32) i32, i32 {
+  a / b, a % b;
+}
+
+// A function that can fail says so in its return type. It gives back a
+// Result: Ok with the answer, or Error with what went wrong.
+fn average(total i32, count i32) Result[i32, String] {
+  if count == 0 {
+    return Error(String.from("there are no values to average"));
+  }
+  Ok(total / count);
+}
+
+// A function that takes a closure: any closure that takes one i32
+// and gives back one i32
+fn twice[F fn(x i32) i32](f F, x i32) i32 {
+  f(f(x));
+}
+
+// A generator says 'yields' where a return type would go.
+// Each 'yield' hands out one value, then the generator waits for the next call.
+fn squares(n i32) yields i32 {
+  mut i = 1;
+  while i <= n {
+    yield i * i;
+    i += 1;
+  }
+}
+
+fn main() {
+  print <- "area 6 by 7: ", area(6, 7), "\n";
+  print <- "area 5 (height left off): ", area(5), "\n";
+
+  imm q i32;
+  imm r i32;
+  q, r = divmod(17, 5);
+  print <- "17 / 5 is ", q, " remainder ", r, "\n";
+
+  // A closure with state of its own: n lives on between calls
+  mut next = fn() [mut n = 0] { n += 1; n; };
+  print <- "counting: ", next(), " ", next(), " ", next(), "\n";
+
+  // A closure may use, and change, the variables of the code around it
+  mut total = 0;
+  mut add = fn(x i32) { total += x; };
+  add(3);
+  add(4);
+  print <- "total after adding 3 and 4: ", total, "\n";
+
+  // The short form, x => ..., handed to a function
+  imm step = 3;
+  print <- "add 3, twice, to 10: ", twice(x => x + step, 10), "\n";
+
+  // Checking a Result: match on its two variants
+  match average(30, 4) {
+    case imm avg Ok { print <- "average: ", avg, "\n"; }
+    case imm why Error { print <- "no average: ", why.view(), "\n"; }
+  }
+  match average(30, 0) {
+    case imm avg Ok { print <- "average: ", avg, "\n"; }
+    case imm why Error { print <- "no average: ", why.view(), "\n"; }
+  }
+
+  // 'each' walks a generator's values
+  print <- "squares:";
+  each sq in squares(5) {
+    print <- " ", sq;
+  }
+  print <- "\n";
+}

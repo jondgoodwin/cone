@@ -1,0 +1,86 @@
+// A cafe's menu: enums, and match on their variants
+mod cafe;
+
+import stdio use *;
+
+// A plain enum: a closed set of names
+enum Size {
+  Small, Medium, Large;
+
+  // One function over the whole enum, taking the value
+  pub fn ml(self Size) i32 {
+    match self {
+      case Small {240;}
+      case Medium {350;}
+      case Large {470;}
+    }
+  }
+}
+
+// Variants that carry values of their own, and a field they all share
+enum Drink {
+  pub size Size;
+
+  Espresso;
+  struct Latte {
+    pub shots i32;
+    pub oat bool;
+  }
+  struct Tea {
+    pub minutes i32;
+  }
+}
+
+// Why an order can fail
+enum Fault {
+  SoldOut;
+  NoSuchCode(i32);
+}
+
+// A price in cents. Every variant has a case, so no 'else' is needed.
+fn price(d Drink) i32 {
+  imm base = match d {
+    case Espresso {250;}
+    case imm l Latte if l.oat {350 + 60 * l.shots;}
+    case imm l Latte {320 + 60 * l.shots;}
+    case imm t Tea {200 + 10 * t.minutes;}
+  };
+  if d.size == Size.Large {base + 80;} else {base;}
+}
+
+// A drink for a code on the menu, or the reason there is none
+fn order(code i32) Result[Drink, Fault] {
+  if code == 4 {
+    imm why Fault = Fault.SoldOut;
+    return Error(why);
+  }
+  if code < 1 or code > 4 {
+    imm why Fault = Fault.NoSuchCode(code);
+    return Error(why);
+  }
+  imm drink Drink = match code {
+    case 1 {Drink.Espresso(Size.Small);}
+    case 2 {Drink.Latte(Size.Large, 2, true);}
+    else {Drink.Tea(Size.Medium, 4);}
+  };
+  Ok(drink);
+}
+
+fn main() {
+  each code in 1 .. 5 {
+    print <- "#", code, ": ";
+    match order(code) {               // a Result is an enum too
+      case imm d Ok {
+        print <- d.size.ml(), " ml for ", price(d), " cents";
+        if d is Tea {print <- " (let it steep)";}
+        print <- "\n";
+      }
+      case imm f Error {
+        match f {
+          case SoldOut {print <- "sold out, sorry\n";}
+          case imm n NoSuchCode {print <- "there is no drink ", n, "\n";}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1568 @@
+<html>
+  <head>
+	  <title>Borrowed References in Depth - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Borrowed References in Depth</div>
+		</div>
+
+    <div class="text">
+
+<p style="margin-left: 40px;"><i>Note: The check for changing the shape of a collection does not tell two
+			lists of one type apart.</i></p>
+
+<p>References work differently than other types.
+	The basic idea is simple: references carry an address that points to some value in memory.
+	Using this reference, we can access or change the value the reference points to.</p>
+	<p>For example:</p>
+<pre>
+mut a = 3;
+imm ref = &amp;mut a;   // ref holds a reference to a's contents
+imm val = *ref;     // val is now 3
+*ref = 4;           // a is now set to 4
+</pre>
+	<p>The <span class="pre">&</span> operator borrows a mutable reference to the variable <span class="pre">a</span>,
+	effectively pointing to the value it holds.
+	The <span class="pre">*</span> (de-referencing) operator is used
+	to obtain and then change the value pointed to by the reference.</p>
+
+	<p>References are useful, as they support:</p>
+	<ul>
+		<li><b>Shared access to the same value</b>.
+			Multiple references may point to the same value.
+			Any of them can see (and possibly change) the latest value at that address.
+			If one reference changes a value, another sees the updated value.
+			By contrast, values copied around between functions do not work this way:
+			changing a copy leaves the original value unchanged.</li>
+		<li><b>Performance efficiency</b>.
+			For non-trivial data structures, it is faster to pass around a reference to the data
+			rather than making a full copy for each function that needs it.</li>
+		<li><b>Access to dynamically-allocated values</b>.
+			Values that have been allocated from a region (as opposed to local or global variables)
+			are only accessible via references.
+			We will talk about <a href="mem-regions.html">region-managed references</a> later.</li>
+		</ul>
+
+	<p>As the name suggests, borrowed references point to values that already exist in memory.
+		A common scenario is when we have some existing value and, for some limited lexical scope,
+		we want a reference able to work with that value.
+		A borrowed reference is ideal for this requirement because:</p>
+	<ul>
+		<li>Borrowed references may point to nearly any value accessible to program logic,	
+			including any variable, locked value, field, array element,
+			function, method, or any value pointed at by another reference.
+			This versatility makes it possible to create polymorphic functions or methods that
+			work with referred-to values no matter which region they were allocated in.</li>
+		<li>A borrowed reference is as fast as any reference can be,
+			as it never incurs any of the runtime bookkeeping cost borne by region-managed references.</li>
+	</ul>
+
+	<h2>Creating a Borrowed Reference</h2>
+	<p>Here are several ways to borrow a reference to some existing value.</p>
+
+	<h3>Borrowing from a variable</h3>
+	<p>Place the ampersand operator in front of any variable's name
+		to create a borrowed reference that points to the value held by that variable.
+		This works equally well on any global, local or parameter variable:</p>
+<pre>
+imm glovar = 2;
+fn func(parm i32) {
+	mut localvar = 3;
+	imm ref1 = &amp;glovar;    // ref1's type: &amp;i32
+	imm ref2 = &amp;parm;      // ref2's type: &amp;i32
+	imm ref3 = &amp;localvar;  // ref3's type: &amp;i32
+}
+</pre>
+
+	<h3>Borrowing from another reference</h3>
+	<p>To explicitly create a borrowed reference out of some other reference,
+		place the ampersand operator in front of a de-referenced reference:</p>
+<pre>
+imm borref = &amp;*someref;    // Borrow from someref
+</pre>
+	<p>More often, however, borrowing a reference from an existing reference
+		happens implicitly, as part of a function (or method) call or assignment.
+		This happens when the receiver is given a region-managed reference but expects a borrowed reference.
+		So long as the value type (and permission) match, the borrow is performed automatically.</p>
+<pre>
+// This function accepts a borrowed reference
+fn incr(nbr &amp;i32) {
+  *nbr + 1;
+}
+
+fn main() {
+  imm allocref = new So[i32](1);   // An owning reference pointing to an allocated value of 1
+  incr(allocref);         // Coerces the So reference to a borrowed reference
+}
+</pre>
+	<p>The owning reference is borrowed from, not moved: it is frozen while the borrow is still
+		to be used, may be lent again after, and still ends its value at the end of its own scope.
+		The lend is a borrow exactly as if it were written out, so for a <span class="pre">So</span>
+		owner <span class="pre">a</span>, <span class="pre">both(a, a)</span> handing one call a
+		<span class="pre">&amp;mut</span> and a <span class="pre">&amp;</span> of it is refused as
+		<span class="pre">both(&amp;mut *a, &amp;*a)</span> is, and so is
+		<span class="pre">a.absorb(a)</span>, lending <span class="pre">a</span> to a
+		<span class="pre">self &amp;mut</span> method while moving it in as the argument.
+		That holds whatever permission the borrow asks for, <span class="pre">&amp;uni</span> included,
+		when the owner is its value's only holder (a <span class="pre">So</span> reference,
+		or a <span class="pre">Rc</span> one not yet shared), so
+		<span class="pre">fn f(p &amp;uni Point)</span> may be called twice with one owner.
+		A shared owner, such as a <span class="pre">Rc[mut, T]</span> reference, cannot lend a
+		<span class="pre">&amp;uni</span>.</p>
+	<p>Because <i>any</i> reference may be safely coerced to a borrowed reference,
+	functions and methods typically accept borrowed references as parameters.
+	This capability is what makes possible the benefits mentioned earlier:</p>
+	<ul>
+		<li>Functions and methods can be polymorphic across regions and permissions at no cost</li>
+		<li>Using borrowed references avoids the runtime performance overhead of reference counting (for the Rc region)
+			and reference tracing (for a tracing GC region) within these functions.</li>
+	</ul>
+
+<h3 id="internal">Referring to a field or array element</h3>
+
+	<p>A borrowed reference may point to a value within some composite value,
+		such as a field in a <a href="guide-structs.html">struct</a> 
+		or an element in an <a href="guide-structs.html#array">array</a>.
+		Again, all we need to do is apply the ampersand operator:
+	</p>
+<pre>
+imm ref1 = &amp;apoint.x;   // a field within a struct
+imm ref2 = &amp;vec[a];     // an element within an array
+</pre>
+	<p>This kind of internal borrow is quite powerful, as it supports:</p>
+	<ul>
+	<li><b>Internal reference chains</b>.
+		One can reference values within values within values, by chaining together
+		fields or indexing:
+<pre>
+imm ref3 = &amp;vec[3].point.x;
+</pre>
+	<p>Parentheses should be used, where needed, to clearly demark where an internal reference chain ends.
+	</p>			
+	</li>
+	<li><b>A type's own indexing operator</b>.
+		Where the indexed value's type declares a <span class="pre">`&amp;[]`</span> method,
+		that method decides what a reference to one of its elements is,
+		and it is called with the borrowed reference evaluated so far as
+		<span class="pre">self</span>:
+<pre>
+imm ref4 = &amp;mut list[key];  // passes &amp;mut list as self to list's `&amp;[]` method
+</pre>
+	<p>A plain <span class="pre">&amp;list[key]</span> passes the read-only
+		<span class="pre">&amp;list</span>, which a <span class="pre">`&amp;[]`</span> method
+		declared with <span class="pre">self &amp;mut</span> does not accept.
+		For such a type, <span class="pre">list[key]</span> is the read-only way to reach an element.</p>
+	<p>A method name after the dot operator is <i>not</i> such a case.
+		The ampersand applies to the whole term, so the method is called first
+		and the ampersand is then applied to what it returned &mdash; a temporary,
+		which lives to the end of its statement, or longer where a variable's initializer
+		borrows it (see <a href="#temporary">Borrowing a temporary</a> below).
+		To call a method on a borrowed reference, borrow it explicitly:
+		<span class="pre">(&amp;pointer).someref(key)</span>.</p>
+	</li>
+	<li><b>Auto-dereferencing a reference source</b>.
+		When an internal reference expression begins with a reference as the source, it is automatically dereferenced:
+<pre>
+// pointref is a reference to a Point structure
+imm ref3 = &amp;pointref.x;   // equivalent to:  &amp;(*pointref).x
+</pre>
+		The source may be a reference to a reference, to any depth: every level is dereferenced
+		(<a href="#implicit">Implicit De-referencing</a>).
+	</li>
+	</ul>
+
+	<h3>Pattern-matching and each loops</h3>
+	<p>A plain <span class="pre">each</span> borrows each item to read it. One obtains mutable references
+		during <span class="pre">each</span> iteration by walking a source that lends them,
+		<span class="pre">mutItems()</span>
+		(<a href="guide-collections.html#mutitems">Each and Iteration</a>):</p>
+<pre>
+// increment every number in list
+each x in list.mutItems() {
+  ++*x;   // x is a mutable reference
+}
+</pre>
+	<p>Pattern matching borrows by using a borrowed reference with the required permission as the source
+		(<a href="guide-enums.html#matchvariants">Pattern Matching</a>).</p>
+	
+	<h2>Permissions</h2>
+	<p>A reference permission may be specified when a reference is borrowed.
+		The permission governs what may be done with the reference: May we read its value?
+		May we change its value? May we make a copy of the reference?</p>
+	<p>This permission is specified after the ampersand operator.
+		If none is specified, <span class="pre">ro</span> is assumed.</p>
+<pre>
+mut a = 3;
+imm ref = &amp;mut a;   // Creates a mutable borrowed reference to a's value
+*ref = 4;           // a is now set to 4
+</pre>
+
+	<p>The permission requested for the borrowed reference must be allowed by the source we are borrowing from.
+		For example, a mutable borrowed reference may not be obtained from an immutable variable.</p>
+	<p>Permission mechanics are rich enough to be more fully covered on 
+		<a href="mem-permissions.html">their own page</a>.</p>
+
+	<h2 id="ops">Reference Operations</h2>
+	<p>The de-referencing and comparison operators may be directly applied to references.</p>
+
+	<h3>De-referencing</h3>
+	<p>The most common use of references is to access and work with the value it points to.
+		Accessing this value is called de-referencing.
+  	To explicitly de-reference, use the <span class="pre">*</span> operator.
+		Within expressions, dereferencing retrieves the value the reference points to.
+		Used to the left of an assignment operator, dereferencing changes that value.</p>
+<pre>
+mut count = 3;
+imm ref = &amp;mut count;
+imm val = *ref;  // val is now 3
+*ref = 4;        // ref now points to the value of 4 (in count)
+</pre>
+	<p>De-referencing is only permitted if the reference's permission allows it.
+		Certain permissions, such as <span class="pre">opaq</span> and the locked permissions,
+		disallow de-referencing.</p>
+
+	<h3>Comparison</h3>
+	<p>A reference stands in for its value everywhere else, and comparison is no exception.
+		<span class="pre">==</span> and <span class="pre">!=</span> on two references compare
+		the values they refer to, using the value type's own <span class="pre">==</span>
+		(a number's, an enum's, or one a struct <a href="guide-structs.html#compare">declares</a>).
+		The ordering operators (<span class="pre">&lt;</span>, <span class="pre">&lt;=</span>,
+		<span class="pre">&gt;</span>, <span class="pre">&gt;=</span>) compare the values too.
+		A reference may also be compared with a value, on either side, when the value copies freely
+		(a number, a <span class="pre">bool</span>, a <span class="pre">char</span>, a plain struct): the
+		borrow is read through, as it is for any operator
+		(<a href="#implicit">Implicit De-referencing</a>). A reference to a type that moves,
+		such as a <span class="pre">String</span> or a struct with a finalizer, is not read through against a value,
+		since that would take the value out of the borrow:</p>
+<pre>
+mut a = 5;
+mut b = 5;
+imm ref1 = &amp;a;
+imm ref2 = &amp;b;
+if ref1 == ref2 {   // true: both refer to a 5
+		// do some stuff
+}
+if ref1 == 5 {     // true: a reference against a value is read through
+}
+if 4 &lt; ref2 {       // and so is a value against a reference
+}
+</pre>
+	<p>A value type that offers no <span class="pre">==</span> (or no ordering operator)
+		cannot be compared through a reference either.
+		Two <a href="guide-collections.html#slices">slices</a> compare their elements, one by one.
+		Comparing what two virtual references refer to is not yet implemented.</p>
+	<p>To ask instead whether two references point to the same place, use the identity operator
+		<span class="pre">===</span>, or its negation <span class="pre">!==</span>.
+		Identity reads nothing through either reference, so it works whatever the value type is,
+		and even for an <span class="pre">opaq</span> reference.
+		Both references must have the same type.
+		Two slices are identical when they view the same elements with the same length:</p>
+<pre>
+if ref1 === ref2 {  // false: a and b are different variables
+}
+if ref1 === &amp;a {    // true
+}
+</pre>
+	<p>References have no order of their own. A <a href="safe-pointers.html">pointer</a> does:
+		its comparison operators work on the pointer itself, never on what it points to,
+		and on a pointer <span class="pre">===</span> means the same as <span class="pre">==</span>.</p>
+
+	<h2 id="handle">Reference Handling</h2>
+	<p>References are values. As such, they can be stored and passed around a program.
+		Whether such transfers are simple copies or moves depends on the reference's permission:
+		a reference having the <a href="mem-moves.html">uni</a> permission can itself be moved,
+		or it can be borrowed from, which is the reborrow.
+		Passing a <span class="pre">&amp;uni</span> variable to a call or binding that wants a borrowed
+		reference (<span class="pre">&amp;</span>, <span class="pre">&amp;imm</span>,
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;uni</span>: an argument, a method's
+		receiver, a local's type) implicitly borrows from it, a fresh and shorter loan, instead of
+		handing over the reference itself.
+		The borrow is exactly what <span class="pre">&amp;mut *r</span> (or <span class="pre">&amp;uni *r</span>)
+		written out would be: the reference is frozen as for any borrow, so it may not be used while
+		the borrow is, and it may be used again once that borrow's last use is behind it
+		(<a href="mem-permissions.html#recovery">"Borrowed reference recovery"</a>).
+		A result derived from the borrow keeps the reference frozen while that result lives, and
+		the callee cannot keep the borrow past the caller's own storage.
+		So a function taking <span class="pre">r &amp;uni Point</span> may pass <span class="pre">r</span>
+		to a <span class="pre">&amp;uni Point</span> or a <span class="pre">&amp;mut Point</span> parameter twice,
+		and a method taking <span class="pre">self &amp;uni</span> may call the type's
+		<span class="pre">self &amp;uni</span>, <span class="pre">self &amp;</span> and
+		<span class="pre">self &amp;mut</span> methods, one after another, and then read its fields.
+		A <span class="pre">&amp;uni</span> slice is borrowed from the same way, whether it is passed to a
+		<span class="pre">&amp;uni</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> slice,
+		or is the receiver of one of its own methods, so <span class="pre">s.len() + s.len()</span>
+		and <span class="pre">while i &lt; s.len()</span> work on a <span class="pre">&amp;uni</span> slice:</p>
+<pre>
+fn fill(q &amp;uni Point) { q.x = q.x + 10; }
+fn twice(p &amp;uni Point) {
+  fill(p);       // fill borrows from p for the call
+  fill(p);       // and p is still there, still unique, to borrow from again
+  imm q &amp;uni Point = p;   // a &amp;uni local borrows from p
+  q.x = 0;
+  p.y = 1;       // allowed: q's last use is behind us
+}
+</pre>
+	<p>A part of a <span class="pre">&amp;uni</span> slice is borrowed from in the same way:
+		<span class="pre">&amp;uni s[a..&lt;b]</span>, <span class="pre">&amp;uni s[a..]</span> and
+		<span class="pre">&amp;uni s[i]</span> are loans of part of what <span class="pre">s</span> reaches, so
+		<span class="pre">s</span> is frozen while the sub-slice or element is used.
+		A local holding a <span class="pre">&amp;uni</span> that the function was lent, such as a cursor
+		(<span class="pre">mut cur = p</span>, reassigned as it walks along),
+		can be handed back, and so can a borrow from it:
+		it holds the caller's reference, so what is borrowed from it lasts as long as that does.
+		A borrow of the function's own value, however it came to be held in the local, cannot be handed back.</p>
+	<p>A slice's elements are not told apart, so two parts of one slice are two borrows of the same
+		place. One call may not be handed a <span class="pre">&amp;uni</span> of an element or sub-slice
+		beside any other borrow of the same slice (a second element, a sub-slice, the whole slice,
+		a <span class="pre">&amp;</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;imm</span>),
+		even when the indexes or ranges differ, because the call would reach the part through two paths
+		while a unique reference promises there is one. Distinct fields of a struct are apart. Two
+		<span class="pre">&amp;mut</span> or two <span class="pre">&amp;</span> promise nothing of the kind
+		(a <span class="pre">&amp;mut</span> is an alias loan, <a href="#freezing">below</a>), so one call may be handed several
+		of them, of one element or of different ones, whatever the slice or array is reached by: a
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> slice, a <span class="pre">&amp;uni</span>
+		slice, or an owner's array, as it may be handed two of one field or of one local.
+		Only a <span class="pre">&amp;uni</span> is refused.</p>
+<pre>
+fn two(a &amp;uni i64, b &amp;uni i64) {}
+fn byIndex(s &amp;uni Array[i64]) { two(&amp;uni s[0usize], &amp;uni s[1usize]); }  // Error: the elements are not told apart
+fn byField(p &amp;uni Pair) { two(&amp;uni p.a, &amp;uni p.b); }        // Ok: distinct fields
+</pre>
+<pre>
+fn walk(p &amp;uni Array[i64], k i64) &amp;uni Array[i64] {
+  mut cur = p;
+  mut i i64 = 0;
+  while i &lt; k {
+    cur = &amp;uni cur[1..];   // a sub-slice, borrowed from the cursor
+    i = i + 1;
+  }
+  cur;                      // the caller's slice, narrowed: allowed
+}
+</pre>
+		<p>
+		Reference transfers also check reference type information to ensure everyone is in agreement
+		about what you can do with any passed-around reference.</p>
+	<p>Even though references are typed values,
+		they do sometimes get some special treatment to make them more convenient to use,
+		particularly to enable them to act as stand-ins for the values they point to.</p>
+
+	<h3>Reference Method Definitions</h3>
+	<p>Methods may be defined that accept references as the type for <span class="pre">self</span>.
+		However, importantly, such methods must be defined as part of the
+		<b>value type's</b> collection of methods.
+		Thus, if we want to define a method that works on a reference to a
+		<span class="pre">Point</span>, that method must be defined within the collection
+		of methods for the <span class="pre">Point</span> type:</p>
+<pre>
+struct Point {
+  // .. other Point methods here
+
+  // method that accepts a reference to a Point
+  pub fn normalize(self &amp;mut Point) {
+    imm len = self.len;
+    x /= len;
+    y /= len;
+    z /= len;
+  }
+}
+</pre>
+
+	<h3 id="implicit">Implicit De-referencing</h3>
+	<p>Since a reference is generally understood to be a stand-in for the value it references,
+		de-referencing often happens implicitly.
+	  For example, when the dot operator is applied to a reference to access a field, 
+		the reference is automatically de-referenced:</p>
+<pre>
+imm y = ref.y; // equivalent to: (*ref).y
+</pre>
+	<p>Automatic de-referencing might also happen when applying
+		a method to a reference. For example:</p>
+<pre>
+imm pos = ref.abs;    // pos is 4. Equivalent to: (*ref).abs
+imm sum = ref + 4.;   // sum is 0. Equivalent to *ref + 4.
+</pre>
+	<p>With methods, the decision on whether or not to implicitly de-reference
+		depends on what is supported by implemented methods.
+		If an existing method can accept the reference as a reference, it is used.
+		If not, the reference is de-referenced before applying the method.</p>
+	<p>A field or a method called by name, or an index, reaches through <i>every</i> level of reference:
+		a reference to a reference (<span class="pre">&amp;&amp;Pt</span>, <span class="pre">&amp;&amp;&amp;Pt</span>,
+		<span class="pre">&amp;mut &amp;Pt</span>), an owner behind a borrow
+		(<span class="pre">&amp;So[Pt]</span>), a slice or a virtual reference behind one. This is what the closure
+		of <span class="pre">iter().filter(...)</span> sees, a borrow of the borrowed item:</p>
+<pre>
+imm big = pts.iter().filter(p =&gt; p.x &gt; 5).count();   // p is &amp;&amp;Pt: p.x is (**p).x
+imm n = rr.len();                                     // rr is &amp;&amp;&amp;Pt: (***rr).len()
+</pre>
+	<p>The outermost level wins a name. A method the outer reference or owner itself declares is
+		used before the receiver is read through any further: the identity test
+		<span class="pre">===</span> on two <span class="pre">&amp;&amp;Pt</span> asks whether the outer
+		references are the same place, not whether the <span class="pre">&amp;Pt</span> they hold point at
+		one. A struct that holds a reference and declares its own <span class="pre">len</span> has that one
+		called, never the held value's. A raw pointer is not read through: its own operators are used,
+		and it is dereferenced with <span class="pre">*</span> (<a href="safe-pointers.html">Pointers</a>).</p>
+	<p>The access is exactly what the dereferences written out would give:
+		<span class="pre">r.x</span> is <span class="pre">(**r).x</span>. Each borrow keeps its own permission,
+		so through <span class="pre">r &amp; &amp;mut Pt</span> a write <span class="pre">r.x = 9</span> is allowed
+		as <span class="pre">(**r).x = 9</span> is, and through <span class="pre">&amp;mut &amp;Pt</span> it is refused,
+		as it is written out, since the inner level only reads. An owner reached through a
+		<span class="pre">&amp;</span> lends only <span class="pre">&amp;</span>
+		(<a href="#freezing">Freezing access to the source of a borrow</a>, below): through
+		<span class="pre">r &amp;So[Pt]</span>, <span class="pre">r.x = 9</span> and a
+		<span class="pre">self &amp;mut</span> method are refused.</p>
+	<p>An operator's other operand is read through the same way. A reference on either side of an
+		operator, or on the right of a compound assignment, gives the operator the value it refers to,
+		so a variable that borrows a number takes part in arithmetic and comparison like the number:</p>
+<pre>
+imm total = sum + ref;     // equivalent to: sum + *ref
+sum += ref;                // equivalent to: sum += *ref
+imm bigger = ref &gt; 3;      // equivalent to: *ref &gt; 3
+imm same = ref == other;   // two references: the values are compared, not the places
+</pre>
+	<p>This is a copy of a value that copies freely: a number, a <span class="pre">bool</span>, a
+		<span class="pre">char</span>, or a plain struct with no finalizer. It never moves a value out of a
+		borrow, so a borrowed <span class="pre">String</span> (or any type that moves) is not read through
+		this way, and keeps whatever its own operators accept. As with a method, an operator that
+		accepts the reference itself is used as it is before any reading through is tried.
+		The <span class="pre">*</span> stays wherever it means something more than reading: an explicit copy
+		(<span class="pre">imm y = *x</span>), a store through the reference (<span class="pre">*x = 4</span>),
+		or a function's argument.</p>
+				
+	<h3>Nullable References</h3>
+	<p>References only ever point to valid values.
+		However, it is possible to explicitly declare and use nullable references,
+		much like any other <a href="guide-enums.html#option">nullable value</a>.</p>
+<pre>
+imm ref4 ?&amp;imm i32;		 // nullable reference to an integer
+</pre>
+	<p>In addition to pointing to a valid value, a nullable reference
+		may also have the value <span class="pre">None</span>,
+		which means the reference does not point to any valid value.
+	  To ensure safety, access to a nullable reference's value is only possible if
+		the code first ensures the reference is not <span class="pre">None</span>,
+		by binding the reference it holds (<a href="guide-enums.html#option">Option types</a>):
+	</p>
+<pre>
+// This binding is made only if maybePoint holds a reference ...
+if imm point Some = maybePoint {
+  imm p = *point;           // ... allowing us to obtain its value
+}
+imm point2 = *maybePoint;   // **ERROR** maybePoint is an Option here, not a reference
+</pre>
+	<p><b>Note:</b> A special optimization ensures that nullable references are the same size
+		as regular references.</p>
+
+	<h2>Array and Virtual References</h2>
+	<p>In addition to regular references, there are also special-purpose "fat" references
+		which are handled somewhat differently:</p>
+	<ul>
+		<li><a href="guide-collections.html#slices"><b>Array references</b></a>
+		point to a collection of identically-typed elements.
+		These elements are contiguous in memory with the reference pointing to the first element.
+		The number of elements is carried as part of the array reference.
+		Such references may be indexed and are subject to bounds checks.</li>
+		<li><a href="mod-substitution.html"><b>Virtual references</b></a>
+		offer an abstract view of some value instantiated by one of several variant types.
+		In addition to pointing at the value's data, the reference also points to
+		runtime type information that facilitates field access or method dispatch.</li>
+	</ul>
+
+	<h2 id="lifetime">Lifetime Constraints</h2>
+	<p>Every borrowed reference has a lifetime constraint implicitly imposed on it.
+		This lifetime constraint indicates how long the borrowed reference can stay alive before it must expire.</p>
+	<ul>
+	<li>A reference borrowed from a global variable or function is granted the global lifetime,
+		written <span class="pre">'static</span>.
+		This means it can last for as long as it wants.</li>
+	<li>A borrowed reference passed in as a parameter comes from the caller: it outlives the function,
+		so it may be returned, but it may not be stored in a global variable, which may outlive the caller.
+		Where the signature names lifetimes, it may be returned only as a lifetime it is written with,
+		or one the signature's <span class="pre">where</span> clause or types order shorter
+		(see <a href="mem-lifetimes.html">lifetime annotations</a>).</li>
+	<li>A reference borrowed from a local variable has its lifetime constrained
+		to the block where the borrow took place. The compiler prohibits it from surviving beyond the end of the block.
+		A parameter passed by value, <span class="pre">self</span> taken by value, and whatever an owner
+		passed by value owns belong to the function, as its local variables do:
+		a borrow of them may be used anywhere in the function, but never returned or stored outside it.</li>
+	<li>A reference borrowed through another borrowed reference has the lifetime of what that reference points at,
+		not of the variable holding it. So a field of what a borrowed parameter points at may be borrowed
+		and returned, even through a local variable the parameter was copied into, a <span class="pre">mut</span>
+		one too, so long as it holds nothing shorter-lived.</li>
+	</ul>
+	<p>A value chosen by an <span class="pre">if</span>, a <span class="pre">match</span> or a block
+		has the lifetime of the shortest-lived value it could give.</p>
+
+	<p>This example demonstrates the importance of this lifetime constraint to memory safety:</p>
+<pre>
+fn getval() i32 {
+  mut ref &amp;i32;
+  {
+    imm a = 5;
+    ref = &amp;a;  // Bad idea! This violates the lifetime constraint
+	}
+  *ref;   // Oops!
+}
+</pre>
+	<p>The scope of the variable <span class="pre">a</span> lasts only for the duration of the inner block.
+	So when we are done executing that block, the variable <span class="pre">a</span> ceases to exist.
+	However, when we try copying the borrowed reference into <span class="pre">ref</span>, we effectively
+	extend its life beyond the scope it was created in and beyond the life of the value it points to. 
+	When we then dereference it, we are trying to retrieve a value that is no longer there.
+	That's a memory safety hazard we must avoid.</p>
+	<p>The compiler protects against this by refusing it: <span class="pre">a</span> may not go out of
+	scope while <span class="pre">ref</span> still holds a borrow of it and is used again afterwards.
+	The store <span class="pre">ref = &amp;a</span> is not itself the error. A variable's lifetime is that
+	of whatever it holds now, so it may hold borrows of different lifetimes over its life, and had
+	<span class="pre">ref</span> been used only inside the inner block, the function would be fine.
+	What a variable holds may not be used after its source is gone, nor returned from the function,
+	nor stored where it would outlive its source: a borrowed reference may only be stored in a
+	place that outlives the function (a global, or what a parameter points at) when its own lifetime
+	is at least as long as that place's.</p>
+	<p>A borrow is followed wherever it is held. A variable holding a value that contains a borrow
+		&mdash; in a struct's field, an <span class="pre">Option</span>, an <span class="pre">Rc</span> &mdash;
+		has the lifetime of that borrow, whatever the value's type, so returning the value,
+		or storing it where it would outlive what it borrows, is refused:</p>
+<pre>
+struct R { pub n i64; }
+struct H { pub r &amp;R; }
+
+fn inStruct() H {
+  imm x = new So[R](4);
+  new H(&amp;*x);                   // Error: the returned value carries a borrow of x
+}
+fn inOption() Option[&amp;R] {
+  imm x = new So[R](4);
+  Some[&amp;R](&amp;*x);                // Error, the same
+}
+fn inRc() Rc[H] {
+  imm x = new So[R](4);
+  new Rc[H](new H(&amp;*x));        // Error, the same
+}
+</pre>
+	<p>The lifetime is enforced across calls as well. A borrow returned through a call keeps the
+		lifetime of what the call was handed, and a borrow handed to a call that could store it
+		somewhere that outlives the function (through a <span class="pre">&amp;mut</span> parameter, say)
+		is refused, as is one the call stores into a local that is used after the borrow's source ends:</p>
+<pre>
+struct Holder {
+  pub r &amp;i32;
+  pub fn set(self &amp;mut, r &amp;i32) { self.r = r; }
+}
+fn id(p &amp;i32) &amp;i32 { p; }
+
+fn throughCall() &amp;i32 {
+  imm a = 5;
+  id(&amp;a);                       // Error: a belongs to this function
+}
+fn viaParam(h &amp;mut Holder) {
+  imm x = 1;
+  h.set(&amp;x);                    // Error: the call could keep the borrow of x in h
+}
+fn refstore(slot &amp;mut &amp;i32, v &amp;i32) { *slot = v; }
+fn intoLocal() i32 {
+  imm i = 5;
+  mut a = &amp;i;
+  {
+    imm b = 10;                 // Error: b ends while a, used again below, may hold a borrow of it
+    refstore(&amp;mut a, &amp;b);
+  }
+  *a;
+}
+</pre>
+	<p>Most of the time, the compiler has all the information it needs to infer and enforce lifetime constraints.
+		However, sometimes it needs help in the form of
+		<a href="mem-lifetimes.html">lifetime annotations</a>.</p>
+
+	<h3 id="temporary">Borrowing a temporary</h3>
+	<p>A temporary &mdash; a value a call or a literal makes that no variable holds &mdash; dies
+		at the end of the statement that made it (see <a href="guide-structs.html#finalizer">finalizers</a>).
+		Where a variable's initializer borrows one, it lives longer instead, to the end of the
+		variable's block, as Rust extends it, so the borrow may be used for as long as the
+		variable can be:</p>
+<pre>
+imm r = &amp;make();          // the temporary lives to the end of the block
+imm n = &amp;make().count;    // so does this one, of which n borrows a field
+imm o &amp;R = makeOwner();   // and an owner lent as a borrow
+imm t = (&amp;make(), 1);     // and one borrowed in a tuple, array or variant literal
+imm u = if c { &amp;make(); } else { &amp;other(); };  // and one an arm's value borrows
+</pre>
+	<p>An <span class="pre">if</span>'s or a <span class="pre">match</span>'s arm, and a block,
+		whose value is in such a place extends what its value borrows the same way: only the arm
+		that runs makes its temporary, which then lives to the end of the variable's block.
+		Nothing else extends a temporary: one passed to a function, a method's receiver, one in a
+		statement of an arm before its value. Any other temporary may be borrowed too, and
+		lives to the end of its statement: passed to a function
+		(<span class="pre">show(&amp;make())</span>), or a method's receiver taken by
+		reference (<span class="pre">make().count()</span>). A variable holding a borrow of such a
+		temporary may not be used after its statement, nor may the borrow be returned or stored
+		away.</p>
+<pre>
+show(&amp;make());              // the temporary lives to the end of this statement
+imm p = pick(makeOwner());   // fine while p is not used again;
+p.count;                     // but refused here: the owner died with the statement above
+</pre>
+
+	<h3 id="freezing">Freezing access to the source of a borrow</h3>
+	<p>When a borrowed reference is created, its source is a named variable, or a temporary
+		as above.
+		That source either holds or points to the value we are borrowing a pointer to.
+		When we borrow from the source, we are not just gaining access to the value,
+		we are also gaining some or all of its access permissions.
+		To preserve the borrowed reference's guarantees, its source is frozen
+		while the borrowed reference is still to be used.
+		How much is frozen depends on how the source is reached.</p>
+	<p>A source reached as <a href="mem-permissions.html#uni"><span class="pre">uni</span></a> &mdash;
+		a local variable, which the stack alone owns, a field of one,
+		or what a <span class="pre">uni</span> reference points at &mdash;
+		has no other reference to it, so a borrow that promises it unique or unchanging may be given more
+		than the source can share, and the source waits until it is given back
+		(see <a href="mem-permissions.html">"From 'uni'"</a>):</p>
+	<ul>
+	<li>While a <b>read-only</b> borrow (<span class="pre">&amp;</span>, <span class="pre">&amp;ro</span>,
+		<span class="pre">&amp;imm</span>) is still to be used, its source may be read,
+		and borrowed read-only again, but not changed, moved, or ended.</li>
+	<li>While an <b>exclusive</b> borrow (<span class="pre">&amp;uni</span>, <span class="pre">&amp;mut1</span>)
+		is still to be used, its source may not be touched at all
+		except through the borrow: it may not be read, borrowed, changed, moved, or ended.</li>
+	<li>A <b>mutable</b> borrow (<span class="pre">&amp;mut</span>) is an <i>alias</i> loan, as a borrow of a
+		source reached through a shared path is (below): <span class="pre">mut</span> is shared mutable, so the source
+		may be read, changed, and borrowed again while the borrow is still to be used, as one more alias
+		of the value, and any number of <span class="pre">&amp;mut</span> borrows of it may be held at once, in one
+		call, in locals and in structs. What the source cannot give while another reference may change it is
+		refused: moving it, sending it, lending it <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
+		ending it, replacing it whole (its old value finalized). A change of its <i>shape</i> &mdash; a collection
+		reshaped, an enum given another variant &mdash; while a borrow into it is still to be used is
+		refused too, by the rule for shape-changing values below.</li>
+	<li>An <span class="pre">&amp;opaq</span> borrow, which reads and writes nothing,
+		only keeps its source from being moved, replaced whole, or ended.</li>
+	</ul>
+	<p>A source reached through a <b>shared path</b> &mdash; through a
+		<span class="pre">mut</span> or <span class="pre">ro</span> reference
+		(<span class="pre">&amp;mut *p</span>, <span class="pre">&amp;p.x</span> for a parameter
+		<span class="pre">p &amp;mut Point</span>), through a <span class="pre">Rc[mut, T]</span>
+		or other aliasable owner, or a field reached through one &mdash;
+		may already be read and changed by other references,
+		since <span class="pre">mut</span> is shared.
+		Freezing it against reading or writing would protect nothing,
+		so a <span class="pre">&amp;mut</span> or <span class="pre">&amp;ro</span> borrow of it
+		only needs it to stay alive:</p>
+	<ul>
+	<li>The owner it is reached through may not be moved, replaced, changed where it is held,
+		or ended, and may not be borrowed mutably where it is held.</li>
+	<li>It may not be borrowed <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
+		which promise what the live borrow could break.
+		(A shared path cannot lend either today in any case: an owner held in a field of a
+		<span class="pre">&amp;mut</span> parameter's value or of a <span class="pre">Rc[mut, T]</span>'s,
+		<span class="pre">h.app</span>
+		for <span class="pre">app So[App]</span>, lends <span class="pre">&amp;mut</span> and
+		<span class="pre">&amp;</span> and no more.)</li>
+	<li>An <span class="pre">&amp;imm</span> borrow of it still forbids changing it,
+		and an <span class="pre">&amp;opaq</span> borrow is as above.</li>
+	</ul>
+<pre>
+fn bump(p &amp;mut Point) {
+  imm x = &amp;mut p.x;
+  p.x = 7;           // Ok: p's point is shared mutable, so x does not freeze it
+  *x = *x + 1;
+}
+</pre>
+	<p>"Still to be used" means until the borrow's last use, not the end of its block.
+		Once nothing will use the borrow again, the source is free, even in the middle of the
+		block that made it. The last use may be on any path the program can take:
+		a later iteration of a loop, or the code after it, is a use too.
+		A copy of a borrowed reference, and any value holding one &mdash; a struct, an
+		<span class="pre">Option</span>, an array or a list it was put in, by building the value,
+		by storing into it, or by a call handed a <span class="pre">&amp;mut</span> of it that may
+		store the borrow there &mdash; keeps the source frozen exactly as the borrow does,
+		until that value's last use. A value whose type has a <span class="pre">final</span>
+		method that may read the borrow uses it again when it dies.
+		"Ended" covers the source going out of scope, being moved away
+		(passed to a function that takes it, or assigned to another variable),
+		and being replaced whole (assigned or swapped).</p>
+<pre>
+fn freeze(n i32) i32 {
+  mut k = n;
+  imm r = &amp;mut k;
+  *r = 5;
+  imm m = k;         // Ok: r is not used again (and a read would be let through beside it)
+  imm s = &amp;k;
+  imm t = k;         // Ok: a read-only borrow still lets k be read
+  k = 6;             // Error: s is used again below, and may not see k change
+  *s + m + t;
+}
+
+fn aliases(n i32) i32 {
+  mut k = n;
+  imm a = &amp;mut k;
+  imm b = &amp;mut k;    // Ok: a 'mut' borrow of a local is an alias loan, so several may be held
+  *a = 5;
+  k = *b + 1;        // Ok: k is one more alias of the value
+  *a + *b;
+}
+</pre>
+	<p>Borrowing one field of a struct freezes that field, and the whole struct with it,
+		but leaves the struct's other fields free. Borrowing an element of an array freezes
+		the whole array, since the compiler cannot tell one index from another.
+		Borrowing through a borrowed reference (<span class="pre">&amp;mut *r</span>)
+		keeps frozen whatever <span class="pre">r</span> itself froze, while the new borrow
+		is still to be used; what <span class="pre">r</span> points at is reached through
+		a shared path, as above, unless <span class="pre">r</span> is <span class="pre">uni</span>.</p>
+	<p>An enum follows the collection rule
+		(<a href="#shapechanging">below</a>). A reference into the payload of an
+		enum's variant &mdash; the binding of <span class="pre">case imm c Circle</span> on a reference
+		&mdash; is a borrow into the enum, through a <span class="pre">mut</span> or
+		<span class="pre">ro</span> reference from anywhere (a parameter, a field reached through a
+		reference, a reference a variable holds) as well as a borrow of a local made where it is
+		matched. It is allowed, and refused only if something could change which variant the enum
+		holds while it is still to be used: the enum stored over whole or swapped, through the same name
+		or another, or handed to a call whose body (or what it calls) does either, or whose body the
+		compiler cannot read. Writing a field within the variant, by the binding or by the enum's
+		name, or a field the variants share, is not a change. A <span class="pre">&amp;mut</span> borrow of a
+		local is an alias loan and is asked the same; a read-only borrow of a local is frozen, as above,
+		and a <span class="pre">uni</span>, <span class="pre">imm</span> or <span class="pre">mut1</span>
+		reference has no other name to change it, so neither is asked. A name narrowed by a test,
+		<span class="pre">if s is Circle</span>, is followed the same way (<a href="guide-conditionals.html#flow">flow typing</a>).
+		A value owned by an <span class="pre">Rc</span> is another owner of the value, and no loan stands for the other owners: where none can store another variant (<span class="pre">Rc[imm, T]</span>) the binding is a copy of the owner typed as the variant, and where one could (<span class="pre">mut</span>, <span class="pre">ro</span>) it is refused
+		(see <a href="guide-enums.html#variantpartial">variant type partial matches</a>).</p>
+
+	<h3 id="returned">A borrow a method returns</h3>
+	<p>A borrow returned by a function or method is a borrow of what it was handed:
+		every borrowed reference in a signature without lifetime annotations shares one
+		lifetime (see <a href="mem-lifetimes.html">lifetimes</a>), so the returned borrow keeps each
+		borrowed argument frozen, as if it were that borrow itself, until its last use.
+		For a method, that is its receiver. Where the signature names lifetimes, it keeps
+		frozen only the arguments whose lifetimes the result may hold, and of an argument whose own
+		borrow's lifetime it may not hold, only what that argument holds in the lifetimes it may: a
+		<span class="pre">Cursor['a]</span>'s <span class="pre">next</span> returning
+		<span class="pre">Option[&amp;'a R]</span> keeps frozen what the cursor holds, not the cursor
+		(see <a href="mem-lifetimes.html">lifetime annotations</a>). An element taken from a local list borrows the
+		list read-only, so the list may be read while the element is used, but not pushed onto,
+		since a push may move every element:</p>
+<pre>
+mut list = List[Point].empty();
+list.push(new Point(1, 2));
+imm first = list[0usize];      // borrows list, read-only
+imm n = list.len();            // Ok: list may still be read
+list.push(new Point(3, 4));    // Error: first is used again below
+first.x;
+</pre>
+	<p>A method returning a mutable borrow (<span class="pre">&amp;mut list[0usize]</span>, <span class="pre">list.viewMut()</span>)
+		holds an alias loan on its receiver: the receiver may be read, lent again and written while the borrow is used,
+		and a change of its shape &mdash; a push, which may move what the borrow points into &mdash; is what is refused.
+		A struct that wraps a collection (a method of it lends an element) is held the same way, except that a
+		change to the collection inside it through the struct's own field (<span class="pre">w.entities.push(x)</span>)
+		is refused where the loan is, as it always was: the shape check asks about the struct, and a push to
+		what it holds is not a change of the struct's shape.</p>
+	<p>The arguments of one call are all used by it, so none may touch what an earlier one
+		borrowed in a way that borrow forbids: <span class="pre">f(&amp;uni v, v.len())</span>
+		is an error, while two <span class="pre">&amp;mut</span> (or a <span class="pre">&amp;mut</span> and a
+		<span class="pre">&amp;</span>) of one source in one call are not: <span class="pre">f(&amp;mut v, &amp;mut v)</span>,
+		<span class="pre">step(&amp;w, &amp;mut w.entities[0usize])</span>. The borrow a method call makes of its receiver is
+		mutable and waits for the call, meeting the arguments as a read-only borrow would,
+		so <span class="pre">v.push(v.len())</span> reads <span class="pre">v</span> first and then
+		pushes, as does <span class="pre">v.push(takeLast(&amp;mut v))</span>, which works the argument out before the push.</p>
+	<p>A container may declare that the borrows it hands out need no loan on it, because it
+		never moves what it lent. An arena's allocations are fresh and stay where they are, so
+		the arena declares <span class="pre">NoLoanMut</span>: while an allocation is used, the arena
+		may be allocated from again, borrowed, and read, but not moved, replaced, or ended. A
+		container of values that never change could declare <span class="pre">NoLoanRead</span>
+		for the read-only borrows it lends. (The names are provisional. The compiler takes the
+		container's word for it.)</p>
+<pre>
+mut a = Arena.empty();
+imm p = a.alloc(new Point(1, 2));
+imm q = a.alloc(new Point(3, 4));  // Ok: allocations loan nothing of a
+consume(a);                    // Error: p is used again below, and a would take it away
+p.x + q.x;
+</pre>
+	<p>An owning reference used where a borrowed one is wanted lends what it owns:
+		after <span class="pre">imm b &amp;Point = u</span>, for <span class="pre">u</span> a
+		<span class="pre">So[Point]</span>, <span class="pre">u</span> may not be moved while
+		<span class="pre">b</span> is still to be used.</p>
+	<p>A borrow carried inside a value a call returns is held the same way: the
+		<span class="pre">Option</span> a pool's <span class="pre">get</span> returns holds a borrow
+		into the pool, which waits for it:</p>
+<pre>
+mut p = Pool[Pt].empty();
+imm r = p.add(new Pt(7));
+imm o = p.get(r);              // an Option holding a borrow into p
+p.add(new Pt(8));              // Error: o is used again below
+match o { case imm e Some { e.x; } else { 0; } }
+</pre>
+
+		<h3 id="shape">Shape-changing values under mut</h3>
+	<p>Some values can change shape. A resizable collection (a list, a dictionary, a string) may move
+		all of its elements to a bigger block when it grows, and an enum may be given another variant.
+		A borrow into one is a borrow into storage that such a change would leave dangling, or read
+		as the wrong type. A <span class="pre">mut</span> reference is shared, so another name may make
+		that change while the borrow is in use. The rule is the same for a collection and for an enum:
+		an element borrowed through one, or a reference narrowed from an enum to one of its variants,
+		is allowed, and is refused only if something could change the shape while the borrow is
+		still to be used.</p>
+	<p>For a collection, a read-only borrow of an element of a local list holds the list against a change.
+		The list may be read, but a push waits for the borrow's last use:</p>
+<pre>
+mut list = List[i32].empty();
+list.push(10);
+list.push(20);
+imm first = list[0usize];     // borrows list, read-only
+imm n = list.len();           // fine: the list may be read
+list.push(30);                // **ERROR** first is used again below
+print &lt;- *first;
+</pre>
+	<p>A mutable borrow of an element is one more alias of the elements. Until its last use the
+		collection may still be read and written in place, but not reshaped by a push, a
+		<span class="pre">clear</span> or a <span class="pre">pop</span>:</p>
+<pre>
+mut list = List[i32].empty();
+list.push(10);
+list.push(20);
+imm e = &amp;mut list[0usize];
+imm n = list.len();           // fine: read while the mutable borrow is live
+list.set(1usize, 5);          // fine: written in place
+*e = 7;                       // the last use of e
+list.push(30);                // fine: the borrow is over
+</pre>
+	<p>This leaves the list holding 7, 5 and 30. A collection reached through a shared path is treated the
+		same way: the borrow lets the path be read, lent and written as any alias does, and a change of the
+		collection's shape, by the same name or another, is refused
+		(<a href="guide-collections.html#shapechanging">why a push waits for a borrow of an element</a>).</p>
+	<p>For an enum, nothing is frozen. Narrowing a reference into one of the enum's variants is allowed, and the
+		fields of the variant may be written through it. What is refused is storing another variant over the
+		enum, by the same name or another, or handing it to a call that might, while the narrowed reference is
+		still to be used:</p>
+<pre>
+fn grow(s &amp;mut Shape) {
+  match s {
+    case mut c Circle { c.radius = 2; }   // Ok: nothing changes the variant while c is used
+    else {}
+  }
+}
+fn restart(s &amp;mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      c.radius = 2;
+      *s = Shape.Rect(1, 2, 3);   // **ERROR** c is used again below
+      c.radius;
+    }
+    else { 0; }
+  }
+}
+</pre>
+	<p>The same store after the narrowed reference's last use is fine, which is how a state machine moves to its
+		next state. <a href="guide-enums.html#matchvariants">Match</a> and
+		<a href="#shapechanging">the sections below</a> say what is and is not refused.</p>
+
+	<h3 id="shapechanging">Elements of a collection and changing its shape</h3>
+	<p>The resizable collections (<span class="pre">List</span>, <span class="pre">Deque</span>,
+		<span class="pre">String</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>,
+		<span class="pre">Set</span> and <span class="pre">Pool</span>) each declare
+		<span class="pre">ShapeChanging</span>: they may move their elements when they change,
+		and so may a type that wraps one.
+		<a href="guide-collections.html#shapechanging">Why a push waits for a borrow of an element</a>
+		is explained with the collections. This section is how the compiler enforces that wait
+		when the collection is not simply a local variable.</p>
+	<p>A read-only borrow of an element of a local collection freezes it, as above. A collection reached
+		through a path other references share (a <span class="pre">&amp;mut</span> parameter, a
+		<span class="pre">Rc[mut, T]</span> owner, a field of <span class="pre">self</span>) may be borrowed
+		from freely. The borrow is allowed, and refused only if something could reshape the
+		collection while the borrow is still to be used. That has two parts, and both are enforced.</p>
+	<p><b>A change through the same name.</b> A borrow that a method of the collection returns (an element,
+		a cursor, a view), or that a free function handed a reference to the collection returns, is an alias loan of
+		the path the collection was reached through, while the borrow is still to be used.
+		The path may be read, lent and written, but its shape may not be changed, by a push, a clear or a store
+		over it. Each of these is refused at the push (error 1339):</p>
+<pre>
+import collections use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn f(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  l.push(p);                    // Error: e is used again below
+  e.x;
+}
+
+fn g(dq &amp;mut Deque[i64]) {
+  mut it = dq.items();          // a cursor
+  dq.push(9);                   // Error: it is used again below
+  it.next();
+}
+
+struct Holder {
+  items List[Pt];
+  fn h(self &amp;mut, p Pt) i64 {  // the same through a field of self
+    imm e = items[0usize];
+    items.push(p);              // Error
+    e.x;
+  }
+}
+</pre>
+	<p>A borrow that may write (<span class="pre">&amp;mut l[0usize]</span>, <span class="pre">l.viewMut()</span>)
+		is an alias loan the same way, and so is a read-only one. Either lets the path be read, lent again
+		and written, and refuses only a change of its shape, by the same name or by another:</p>
+<pre>
+fn grow(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = &amp;mut l[0usize];
+  imm n = l.len();              // Ok: the path may be read,
+  l.set(1usize, p);             // and an element written in place
+  e.x = e.x + 1;
+  e.x + i64.from(n);            // (a l.push(p) anywhere above would be an Error)
+}
+</pre>
+
+	<h3 id="shapetypes">Shape-changing types of your own</h3>
+	<p>A type does not have to declare <span class="pre">ShapeChanging</span> to be one: the compiler finds
+		it from the type's methods, whatever the type declares. A type changes shape when one method writes
+		storage the type owns (a raw pointer, or a field that holds one, such as a list) and one returns a borrow.
+		So <span class="pre">Bag</span> below changes shape, and so does a struct that holds a
+		<span class="pre">Bag</span>:</p>
+<pre>
+struct Bag {
+  items List[Pt];
+  fn first(self &amp;) &amp;Pt { items[0usize]; }
+  fn add(self &amp;mut, p Pt) { items.push(p); }
+}
+fn bagAdd(bag &amp;mut Bag, p Pt) i64 {
+  imm e = bag.first();
+  bag.add(p);                   // Error: e is used again below
+  e.x;
+}
+
+struct Shelf {
+  bag Bag;
+  fn first(self &amp;) &amp;Pt { bag.first(); }
+  fn add(self &amp;mut, p Pt) { bag.add(p); }
+}
+fn shelfAdd(s &amp;mut Shelf, p Pt) i64 {
+  imm e = s.first();
+  s.add(p);                     // Error, the same
+  e.x;
+}
+</pre>
+	<p>Writing a number (a cursor that advances, a count) reshapes nothing, and neither does writing an
+		element in place, so a type whose only writes are those does not change shape:</p>
+<pre>
+struct Counter {
+  items List[Pt];
+  at usize;
+  fn current(self &amp;) &amp;Pt { items[at]; }
+  fn advance(self &amp;mut) { at = at + 1usize; }
+}
+fn count(a &amp;mut Counter, b &amp;mut Counter) i64 {
+  imm e = a.current();
+  b.advance();                  // Ok: advance writes only a position
+  e.x;
+}
+</pre>
+	<p>Code the compiler cannot read counts as writing: an <span class="pre">extern</span> function,
+		a virtual call, a function pointer, and a function of another package whose body its include file
+		leaves out. That is why the include file records the types its package's compile found
+		shape-changing.</p>
+	<p>Declaring <span class="pre">ShapeChanging</span> only asserts what the compiler finds, so a type
+		that declares it and has no such methods is refused (error 1338):</p>
+<pre>
+struct Reader is ShapeChanging {   // Error: it lends a borrow, and nothing writes its storage
+  items List[Pt];
+  fn first(self &amp;) &amp;Pt { items[0usize]; }
+}
+</pre>
+	<p>A type of your own that is not built on a collection changes shape when a method, or a free function
+		of its module that takes it by reference, lends a borrow of it, and one writes storage it owns.
+		<span class="pre">fn first(c &amp;Cell) &amp;i64</span> and <span class="pre">fn grow(c &amp;mut Cell)</span>
+		beside the struct <span class="pre">Cell</span> are enough. Code in another module reaches the type only
+		through its public methods and fields.</p>
+<pre>
+import libc;
+
+struct Cell { ptr *i64; }
+fn first(c &amp;Cell) &amp;i64 { c.ptr as &amp;i64; }
+fn grow(c &amp;mut Cell) { c.ptr = libc.realloc(c.ptr as *u8, 64usize) as *i64; }
+
+fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
+  imm e = first(a);
+  grow(b);                      // Error: e is used again below
+  *e;
+}
+</pre>
+
+	<h3 id="reshape">When a call could reshape a collection</h3>
+	<p><b>A change through another name.</b> The second part of the rule: another, different reference to the
+		same collection, or a call that could make one, leaves the element dangling, so a change through it
+		is refused too.
+		The compiler asks of every call made while such a borrow is still to be used, or is being handed
+		to a call, whether the call could reshape the collection. It never goes by a method's name.
+		A call could, when:</p>
+	<ol>
+	<li>it is a method taking the collection writable whose body, or anything its body calls,
+		<ul>
+		<li>writes a field of the collection (<span class="pre">clear</span>, <span class="pre">pop</span>
+			and <span class="pre">truncate</span> each write the length), or</li>
+		<li>runs a finalizer of an element, which frees what the element owns
+			(<span class="pre">set</span> on a <span class="pre">List[String]</span> finalizes the String it
+			replaces, so a view of that String's bytes held through another name dangles; on a
+			<span class="pre">List[i64]</span>, whose element has no finalizer, it reshapes nothing), or</li>
+		<li>moves an element that owns something out of the storage and does not put it back;</li>
+		</ul></li>
+	<li>it is handed a value that can reach a collection of that type (as a field, an element, a variant,
+		a pointer, a reference or an owner) by a path it may write, and its body, or what it calls,
+		reshapes one; or</li>
+	<li>it is handed nothing that reaches one and reshapes one through a global; or</li>
+	<li>the borrow points into a <span class="pre">mut</span> global, or into anything reached from one, or
+		is reached through a reference some <span class="pre">mut</span> global of that type could be, and the
+		call, <a href="#globalview">whatever it is handed</a>, reshapes one through a global or is code the
+		compiler cannot read.</li>
+	</ol>
+	<p>Moving elements about within the storage (<span class="pre">swap</span>, <span class="pre">sortBy</span>)
+		destroys none and moves none out, and the bytes a String element owns stay where they are, so a view of
+		them stays good. Writing an element that has no finalizer in place, <span class="pre">l[i] = v</span> on
+		numbers, reshapes nothing.</p>
+	<p>A function whose body the compiler cannot read (an <span class="pre">extern</span> function, a call
+		through a function pointer or a trait, a function of another package that is no generic and no inline)
+		is assumed to reshape whatever it is handed that reaches the collection, unless the call is through a
+		virtual reference marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A mutable virtual
+		reference (<span class="pre">&amp;&lt;mut Trait</span>, a <span class="pre">&amp;&lt;mut fn</span> called) is assumed to
+		reach any collection even when handed nothing (<a href="mod-substitution.html#reshape">a visitor and its closure</a>,
+		<a href="mod-substitution.html#reshape">virtual references</a>). A read-only reference
+		(<span class="pre">&amp;</span> or <span class="pre">&amp;imm</span>) cannot write what it reaches, and a
+		value the function owns whole, a local, cannot be the collection reached through a reference, so
+		neither makes a call one that could.</p>
+	<p>All of these are refused when the borrow is still to be used afterwards (error 1339):</p>
+<pre>
+fn clearOther(l &amp;mut List[Pt], m &amp;mut List[Pt]) i64 {
+  imm e = l[0usize];
+  m.clear();                    // Error: clear writes the length (so do pop and truncate)
+  e.x;
+}
+
+fn setString(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  m.set(0usize, s);             // Error: set finalizes the String it replaces
+  t.len;
+}
+
+fn bump(q &amp;mut List[Pt], p Pt) { q.push(p); }
+
+fn viaCall(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  bump(m, p);                   // Error: bump is handed a list and pushes
+  e.x;
+}
+
+mut pool List[Pt];
+fn @initpure init() { pool = List[Pt].empty(); }
+fn resetPool() { pool.clear(); }
+
+fn viaGlobal(l &amp;mut List[Pt]) i64 {
+  imm e = l[0usize];
+  resetPool();                  // Error: resetPool clears a list through a global
+  e.x;
+}
+
+extern fn elsewhere(q &amp;mut List[Pt]);
+
+fn viaExtern(l &amp;mut List[Pt], m &amp;mut List[Pt]) i64 {
+  imm e = l[0usize];
+  elsewhere(m);                 // Error: its body is not visible, so it is assumed to reshape
+  e.x;
+}
+</pre>
+	<p>And these reshape nothing, so they are accepted:</p>
+<pre>
+fn setNum(l &amp;mut List[i64], m &amp;mut List[i64]) i64 {
+  imm e = l[0usize];
+  m.set(0usize, 9i64);          // Ok: a number has no finalizer
+  *e;
+}
+
+fn swapStr(l &amp;mut List[String], m &amp;mut List[String]) usize {
+  imm t = l[0usize].view();
+  m.swap(0usize, 1usize);       // Ok: the bytes of each String stay where they are
+  t.len;
+}
+
+fn readOnly(l &amp;mut List[Pt], m &amp;List[Pt]) i64 {
+  imm e = l[0usize];
+  e.x + i64.from(m.len());      // Ok: a read-only reference cannot write
+}
+
+fn ownedLocal(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  mut mine = List[Pt].empty();
+  mine.push(p);                 // Ok: a local list is not the one reached through l
+  e.x + mine[0usize].x;
+}
+</pre>
+	<p>Two names for one collection can arise in several ways. Each of these is refused at the push
+		(<span class="pre">p</span> is a value to push, and the push through the second name moves the
+		element <span class="pre">e</span> points at):</p>
+	<ul>
+	<li><b>A parameter.</b> Two <span class="pre">&amp;mut</span> parameters, which the caller may have made
+		one list.</li>
+	<li><b>A field of <span class="pre">self</span>.</b> A borrow of one field, and a push through
+		<span class="pre">other.items</span> in a method, <span class="pre">other</span> being the same value.</li>
+	<li><b>A <span class="pre">Rc[mut, T]</span> owner.</b> The owner copied, so two names hold the one list.</li>
+	<li><b>An arena allocation held by name.</b> A list allocated in an arena and held by two names.</li>
+	<li><b>A reference made from a pointer.</b> Two references made from one pointer.</li>
+	</ul>
+<pre>
+struct Bag2 {
+  items List[Pt];
+  fn fb(self &amp;mut, other &amp;mut Bag2, p Pt) i64 {
+    imm e = items[0usize];
+    other.items.push(p);        // Error: other may be self
+    e.x;
+  }
+}
+
+fn fa(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m.push(p);                    // Error: m may be l
+  e.x;
+}
+
+fn fc(p Pt) i64 {
+  imm l = new Rc[mut, List[Pt]](List[Pt].empty());
+  imm l2 = l;
+  imm e = l[0usize];
+  l2.push(p);                   // Error
+  e.x;
+}
+
+fn fd(a &amp;mut Arena, p Pt) i64 {
+  imm l = a.alloc(List[Pt].empty());
+  imm l2 = l;
+  imm e = l[0usize];
+  l2.push(p);                   // Error
+  e.x;
+}
+
+fn fe(ptr *List[Pt], p Pt) i64 {
+  imm l = ptr as &amp;mut List[Pt];
+  imm l2 = ptr as &amp;mut List[Pt];
+  imm e = l[0usize];
+  l2.push(p);                   // Error
+  e.x;
+}
+</pre>
+	<p>A borrow handed to the very call beside the reference that changes it is refused too, for the caller
+		may have made <span class="pre">out</span> and <span class="pre">x</span> one string:</p>
+<pre>
+fn appendBoth(out &amp;mut String, x &amp;String) {
+  out.append(x.view());         // Error: x's view is in use while out may change shape
+}
+</pre>
+	<p>Taking the view through an element, with no name for the element, is the same as naming it first. The
+		view of <span class="pre">ui.items[0usize].label</span> is of one <span class="pre">String</span>, the
+		field of an <span class="pre">Item</span>, and a call can change it through another name only if it is
+		handed what holds that <span class="pre">Item</span> (the <span class="pre">List[Item]</span> and whatever
+		holds the list), or a reference to a <span class="pre">String</span>, which may be that one. A
+		<span class="pre">String</span> that some other struct holds is another value. The same goes for the
+		view of an element of a <span class="pre">List[String]</span>: the call must be handed the list, or a
+		reference to a <span class="pre">String</span>. A <span class="pre">String</span> appended to is
+		asked the same way when it is written as a field of a struct: it is another value than the view is
+		into if that struct is not the one that holds the viewed <span class="pre">String</span> (a value is the
+		field of one struct only), so <span class="pre">pad.input.clipboard.append(pad.texts[i].view())</span>
+		is accepted. A <span class="pre">String</span> that is a field of the very struct, a name, a list's
+		element, or a field that holds a reference says nothing of where it is held, and is still asked.</p>
+<pre>
+struct Item { label String; }
+struct Dl {
+  chars String;
+  fn text(self &amp;mut, s &amp;str) { chars.append(s); }
+}
+struct Ed {
+  items List[Item];
+  fn grow(self &amp;mut, s &amp;str) { imm r = &amp;mut items[0usize]; r.label.append(s); }
+}
+struct Ui { items List[Item]; }
+
+fn draw(dl &amp;mut Dl, ui &amp;Ui) {
+  dl.text(ui.items[0usize].label.view());       // Ok: dl holds a String of its own, and no Item
+}
+
+fn twoParams(ed &amp;mut Ed, src &amp;mut Ed) {
+  ed.grow(src.items[0usize].label.view());      // Error: ed and src may be one value; the same as imm item = src.items[0usize]; item.label.view()
+  imm c = String.from(src.items[0usize].label.view());
+  ed.grow(c.view());                            // Ok: copied out first
+}
+
+struct Input { clipboard String; }
+struct Pad { texts List[String]; input Input; }
+
+fn copyOut(pad &amp;mut Pad, i usize) {
+  pad.input.clipboard.append(pad.texts[i].view());   // Ok: the clipboard is a field of an Input, not an element of the list
+}
+
+fn twoEds(a &amp;mut Ed, b &amp;mut Ed) {
+  a.items[0usize].label.append(b.items[0usize].label.view());   // Error: both are the label of an Item, and a and b may be one value
+}
+</pre>
+	<p>A collection held as an element of an array is followed as one held by a local or a field is: a
+		borrow into <span class="pre">ls[i][j]</span>, the element <span class="pre">j</span> of the list
+		that is the element <span class="pre">i</span> of the array <span class="pre">ls</span>, is a borrow
+		into that list, whether the array is the owner's own, a struct's field, a multi-dimensional one, or a
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;uni</span> slice. Since the compiler cannot
+		tell one index from another (above), a call or store that could reshape any element of the array is
+		refused while the borrow is still to be used, as one that reshapes the list the borrow is into would be.
+		Reading another element, or swapping two, reshapes nothing and is accepted.</p>
+<pre>
+fn grow(x &amp;mut List[i64], e &amp;mut i64) { x.push(1); }
+
+fn two() {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  grow(&amp;mut ls[0usize], &amp;mut ls[0usize][0usize]);   // Error: grow pushes, and the second borrow points into the block that may move
+  imm e = &amp;mut ls[0usize][0usize];
+  ls[1usize].push(1);                               // Error: any element of the array may be the one e is into
+  *e;
+}
+</pre>
+
+	<h3 id="stores">Stores</h3>
+	<p>A store is asked as a call is, for it is no call but could do the same. While such a borrow is still
+		to be used, an assignment or a swap through another name is refused when it replaces the collection
+		whole (<span class="pre">*m = List[String].empty();</span>), a struct holding one, or an element that owns
+		something, or a field of one, found by indexing the collection (<span class="pre">m[0usize] = s</span>
+		finalizes the old String, so a view of its bytes dangles). So is a store over a field that owns the
+		collection through an owning reference (<span class="pre">So</span>, <span class="pre">Rc</span>,
+		<span class="pre">Arc</span>, or a region a program declares), and a store over the whole struct that
+		holds it. These are refused with error 1426:</p>
+<pre>
+struct Item { pub n i64; }
+struct Ship { pub fuel i64; pub vec So[List[Item]]; }
+
+fn whole(l &amp;mut List[String], m &amp;mut List[String]) usize {
+  imm t = l[0usize].view();
+  *m = List[String].empty();    // Error: the old list is freed
+  t.len;
+}
+
+fn elem(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  m[0usize] = s;                // Error: the old String is finalized
+  t.len;
+}
+
+fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
+  imm e = a.vec[0usize];
+  b.vec = new So[List[Item]](List[Item].empty());   // Error: the list the owner held is freed
+  e.n;
+}
+
+fn wholeShip(a &amp;mut Ship, b &amp;mut Ship, s Ship) i64 {
+  imm e = a.vec[0usize];
+  *b = s;                       // Error, the same
+  e.n;
+}
+</pre>
+	<p>Writing an element that owns nothing in place is not refused, nor is replacing a field of an element
+		through the reference that borrowed the element, nor a field of some other struct that holds a String:</p>
+<pre>
+fn setPt(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m[0usize] = p;                // Ok: a Pt owns nothing
+  e.x;
+}
+
+fn fieldOfElem(l &amp;mut List[Pt]) i64 {
+  imm e = &amp;mut l[0usize];
+  e.x = 12;                     // Ok: a field of the element, through the borrow
+  e.x;
+}
+
+struct Log { pub log String; pub n i64; }
+
+fn otherStruct(l &amp;mut List[String], g &amp;mut Log, s String) usize {
+  imm t = l[0usize].view();
+  g.log = s;                    // Ok: that String is not an element of l
+  t.len;
+}
+</pre>
+
+	<h3 id="owners">An owner stored over</h3>
+	<p>The same rule covers what an owning reference (<span class="pre">So</span>, <span class="pre">Rc</span>,
+		<span class="pre">Arc</span>, or a region a program declares) owns. Storing over an owner frees what it
+		points at, as replacing a list frees its block, so the owner is the shape-changing value of a borrow
+		into its contents: <span class="pre">&amp;mut *s</span>, a field of what it owns, or the owner itself
+		lent where a borrow of its contents is wanted. <a href="mem-permissions.html">Another name for the same
+		holder</a> can replace the owner: a second <span class="pre">&amp;mut</span> parameter, or a local lent
+		<span class="pre">&amp;mut</span> beside a borrow of what it owns (a local may be lent
+		<span class="pre">&amp;mut</span> more than once to one call). The borrow is allowed, and refused when
+		something could replace the owner while it is still to be used. A call handed a way to write an
+		owner of that type, whose body (or something it calls) stores over one, is refused with error 1339,
+		and a store over an owner, or over a struct, an array or an <span class="pre">Option</span> that holds one
+		by value, with error 1426:</p>
+<pre>
+struct Item { pub v i64; }
+struct Ship { pub fuel i64; pub it So[Item]; }
+
+fn clobber(x &amp;mut So[Item], y &amp;mut Item) {
+  *x = new So[Item](9);         // the old Item is freed
+  y.v;                          // and read
+}
+
+fn local() {
+  mut s = new So[Item](1);
+  clobber(&amp;mut s, s);           // Error: clobber stores over the owner it is handed, beside a borrow of its contents
+}
+
+fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
+  imm y = &amp;mut *a.it;
+  b.it = new So[Item](9);       // Error: b may be a
+  y.v;
+}
+</pre>
+	<p>Writing the value the owner points at, a field of it, or the whole value in place, replaces
+		nothing the owner frees, so a callee that only reads, or writes through the borrow, is accepted, as is
+		an owner of another type, another field of the ship, and an owner stored over after the borrow's last use:</p>
+<pre>
+fn writes(x &amp;mut So[Item], y &amp;mut Item) {
+  x.v = 5;                      // Ok: a field of the Item
+  **x = new Item(7);            // Ok: the Item replaced in place, at the same address
+  y.v;
+}
+
+fn after(a &amp;mut So[Item]) i64 {
+  imm n = (**a).v;
+  *a = new So[Item](n + 1);     // Ok: the borrow was used up first
+  n;
+}
+</pre>
+	<p>An owner of an array (<span class="pre">So[Array[Item]]</span>, what a list's <span class="pre">freeze</span>
+		gives) and an owner of a trait object (<span class="pre">So[Gadget]</span>, <span class="pre">Rc[mut, Gadget]</span>) are
+		owners like any other, the borrow an element's, or one a method of the trait lent into the object's
+		state. A call through a mutable virtual reference runs code the compiler cannot read, so it is assumed to
+		replace an owner of the type as it is assumed to reshape a collection
+		(<a href="#shapekeeping">ShapeKeeping</a>): calling another method of the object while a borrow its
+		<span class="pre">count()</span> lent is held is refused, unless the owner is declared
+		<span class="pre">So[Gadget + ShapeKeeping]</span>.</p>
+
+	<h3 id="cures">The cures</h3>
+	<p>A refusal is cured in one of three ways, each of which keeps the borrow:</p>
+	<ul>
+	<li>Make the source <span class="pre">&amp;imm</span>, which nothing may write
+		(<span class="pre">x &amp;imm String</span>).</li>
+	<li>Make the receiver <span class="pre">&amp;uni</span>, which no other name reaches
+		(<span class="pre">out &amp;uni String</span>). A <span class="pre">&amp;uni</span> reference passed
+		to a call that wants a <span class="pre">&amp;uni</span> is borrowed from, so a method taking
+		<span class="pre">self &amp;uni</span> may be called twice.</li>
+	<li>Copy what is needed out first, so that no borrow is left to wait.</li>
+	</ul>
+<pre>
+fn appendImm(out &amp;mut String, x &amp;imm String) { out.append(x.view()); }
+fn appendUni(out &amp;uni String, x &amp;String) { out.append(x.view()); }
+
+fn appendCopy(out &amp;mut String, x &amp;String) {
+  imm c = String.from(x.view());
+  out.append(c.view());
+}
+
+fn twice(s &amp;uni String, x &amp;String) {
+  appendUni(s, x);
+  appendUni(s, x);              // Ok: the first call borrowed from s, and has given it back
+}
+</pre>
+
+
+	<h2 id="finetuning">Fine-tuning</h2>
+	<p>Rarely needed: three corners of the shape check &mdash; calls through a virtual reference or a closure, borrows into a <span class="pre">mut</span> global, and what the check does not follow.</p>
+
+	<h3 id="shapekeeping">Calls through a virtual reference: ShapeKeeping</h3>
+	<p>A call through a virtual reference, <span class="pre">&amp;&lt;fn(x &amp;mut World)</span> or
+		<span class="pre">&amp;&lt;mut Scorer</span>, runs code the compiler cannot read where the call is. So it is
+		assumed to reshape whatever it is handed that reaches the collection, and the borrow ends at the call
+		(error 1339):</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World)) i64 {
+  imm e = w.entities[0usize];
+  f(w);                         // Error: f's body is not visible, so it may push
+  e.hp;
+}
+</pre>
+	<p>A <em>mutable</em> virtual reference, <span class="pre">&amp;&lt;mut fn(...)</span> or
+			<span class="pre">&amp;&lt;mut Trait</span>, is assumed to reach the collection even when the call is handed
+			nothing that does: the closure behind it may have captured the list (by <span class="pre">&amp;mut</span>), the
+			struct behind it may hold it, and the type that says so is hidden. So a borrow into a collection reached
+			through a shared path ends at the call, however the call is spelled:</p>
+<pre>
+fn visit[T](xs &amp;List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }  // Error: f may be a closure that pushes to xs, which moves the block iter reads
+}
+</pre>
+	<p>A read-only virtual reference (<span class="pre">&amp;&lt;fn</span>, <span class="pre">&amp;&lt;Trait</span> with methods that
+			take <span class="pre">self &amp;</span>) can write nothing it reaches, and is not asked. A list lent
+			<span class="pre">&amp;imm</span> is one nothing can write, so <span class="pre">visit(xs &amp;imm List[T], ...)</span> is Ok (its
+			caller needs a list that is <span class="pre">imm</span>); and the mark below promises the same of the closure.</p>
+	<p>The reference can promise otherwise. <span class="pre">ShapeKeeping</span>, the twin of
+		<span class="pre">ShapeChanging</span>, is a marker the compiler finds, like <span class="pre">Shareable</span>, and is
+		written after a <span class="pre">+</span> in the type of the reference or the owner
+		(<a href="conc-sharing.html#marks">Closure References</a>). A call through such a reference keeps the borrows
+		of the caller:</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);                         // Ok: whatever f is, it reshapes nothing it was handed
+  e.hp;
+}
+
+fn tune(w &amp;mut World, s &amp;&lt;mut Scorer + ShapeKeeping) i64 { ... s.bump(w); ... }
+</pre>
+	<p>The promise is held by the closure or the struct put behind the reference, where it becomes one, as a
+		marker like <span class="pre">+ Shareable</span> is. It holds when nothing in the body of the closure, or of the
+		methods the trait dispatches to, or in what they call, reshapes a collection that it reaches through a path
+		others share: through a parameter that is a <span class="pre">&amp;mut</span> (or holds one), or through a
+		variable a closure borrows, or a reference a struct holds. The question is the one a call is asked above, put to the
+		body. Writing a field or an element, the method's own new collections, a parameter held by value or
+		<span class="pre">&amp;uni</span>, and reading through <span class="pre">&amp;</span> or
+		<span class="pre">&amp;imm</span> are all free:</p>
+<pre>
+visit(w, fn (x &amp;mut World) { x.score = x.score + 1; x.entities[0usize].hp = 6; });   // Ok
+
+visit(w, fn (x &amp;mut World) { x.entities.push(new Entity(1)); });
+    // Error 1500: this closure calls push on a List that it reaches through a &amp;mut parameter
+
+fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
+  visit(w, fn (x &amp;mut World) { log.push(1); });   // Error 1500: the log it borrows is as shared as w
+}
+</pre>
+	<p>The check is as coarse as the one for a call, for the same reasons. A closure that pushes to a list of
+		<span class="pre">log</span>'s type is refused even if the caller borrowed from some other list of that
+		type, and so is a method that pushes to a list the struct owns when a parameter reaches a list of that type.
+		A function named with <span class="pre">&amp;</span>, <span class="pre">&amp;grow</span>, is held by its body;
+		a function reference held in a variable has none the compiler can read, and is refused. A type does not declare
+		<span class="pre">ShapeKeeping</span>.</p>
+	<p>A struct of another package can be put behind such a reference too. Its package's include file carries no method
+		bodies, so the package's own compile does the reading and the file says the result: a struct all of whose methods
+		(the public ones that take <span class="pre">self</span>) reshape nothing they reach through a shared mutable path is
+		written there with <span class="pre">ShapeKeeping</span> after its <span class="pre">is</span>. The importer takes the
+		struct as the file says. One method that does reshape, even one the trait never calls, leaves the marker off, and the
+		whole struct is refused. A function of another package named with <span class="pre">&amp;</span> has no body to read,
+		and is refused.</p>
+
+	<h3 id="globalview">A borrow into a <span class="pre">mut</span> global</h3>
+	<p>A function may write a global by its name, whatever it is handed, and the check does not keep a summary
+		of which globals a function writes. So a borrow into a <span class="pre">mut</span> global (the view of a
+		String it holds, an element of a List it holds), or into anything reached from one, is asked of every
+		call made while it is still to be used, or while it is being handed to a call, whether or not the call
+		is handed the global. The call is refused (error 1339) when it, or something it calls, reshapes a
+		collection of that type through a global, as above, or when it is code the compiler cannot read, as
+		listed there: a call through a virtual reference, a closure or any function value (a
+		<span class="pre">&amp;fn</span> held in a parameter, a field, a global or a local, including one a callee
+		makes); an <span class="pre">extern</span> C function handed anything whose type can reach something
+		callable (a <span class="pre">&amp;fn</span>, a virtual reference, a closure or trait object an owner holds,
+		directly or in a struct or behind a pointer it is handed), which C may call back; or a Cone function whose
+		body is not here. The allocator is one such: a collection calls its
+		region through a <span class="pre">&amp;fn</span>, so <span class="pre">String.from(title.view())</span>
+		is refused while <span class="pre">title.copy()</span> is not. A call that reshapes nothing is let through,
+		and so is an <span class="pre">extern</span> C function handed nothing callable, such as a
+		print handed the view, as are the intrinsics, an init, and a call
+		through a virtual reference marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>.
+		A global that is <span class="pre">imm</span> cannot change, so a borrow into it is not asked.</p>
+<pre>
+struct Item { label String; }
+struct Ed {
+  items List[Item];
+  fn growFirst(self &amp;mut, s &amp;str) { items[0usize].label.append(s); }
+}
+
+mut gl Ed;
+mut title String;
+fn grow(s &amp;str) { gl.growFirst(s); }
+fn show(s &amp;str) usize { s.len; }
+
+fn direct() {
+  grow(gl.items[0usize].label.view());  // Error: grow writes gl, and moves the String the view points into
+}
+
+fn readOnlyCallee() usize {
+  imm v = gl.items[0usize].label.view();
+  imm n = show("x");                    // Ok: show reshapes nothing
+  n + v.len;
+}
+
+fn viaClosure(h &Holder) {
+  h.f(gl.items[0usize].label.view());   // Error: h.f is code the compiler cannot read, and may write gl
+}
+
+fn viaCopy() {
+  imm c = String.from(title.view());    // Error: String.from calls the heap's region through a &fn
+  c.len;
+}
+</pre>
+	<p>A global named from C is not followed: a global of a <span class="pre">mod @c</span> module is an external
+		symbol, and an <span class="pre">extern</span> function handed nothing could write it.</p>
+	<p>The cure for a call that may reshape is to read what is needed out of the global before it: a number, or
+		a copy of the String made by a method of the global itself (<span class="pre">title.copy()</span>), and to
+		hold that.</p>
+<pre>
+mut count i64;
+
+fn copied() {
+  imm text = title.copy();              // Ok: a copy of the String, not a borrow of it
+  imm n = count;                        // Ok: a number
+  grow("!");
+  show(text.view());
+}
+</pre>
+	<p>A function handed a reference cannot tell that it is the global: the <span class="pre">&amp;mut Ed</span>
+		parameter of a function that is called with <span class="pre">&amp;mut gl</span>. So where a
+		<span class="pre">mut</span> global reaches the type of the collection (a global holding a
+		<span class="pre">List[Item]</span> reaches <span class="pre">List[Item]</span>, <span class="pre">Item</span>
+		and <span class="pre">String</span>), a borrow into it reached through a reference is asked of the same calls.
+		A program with no <span class="pre">mut</span> global of that type is not affected.</p>
+<pre>
+fn useHolder(h &amp;Holder, s &amp;str) { h.f(s); }   // h.f is a closure that may write gl
+
+fn viaParam(h &amp;Holder, g &amp;mut Ed) {
+  useHolder(h, g.items[0usize].label.view());  // Error: g may be gl, and the closure may write it
+}
+</pre>
+
+	<h3 id="notfollowed">What the check does not follow</h3>
+	<p>The check does not tell two values of one type apart. A function handed a
+		<span class="pre">List[Pt]</span> that reshapes one is taken to reshape the one an element was borrowed
+		from, even when the compiler could show they differ, as for a list freshly allocated in the function.
+		(A list the function owns whole, a plain local, is the exception, as above.)</p>
+<pre>
+fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  imm m = new So[List[Pt]](List[Pt].empty());
+  bump(&amp;mut *m, p);            // refused, though m cannot be l
+  e.x;
+}
+</pre>
+	<p>The same holds of owners (<a href="#owners">above</a>): a callee that replaces some
+		<span class="pre">So[Node]</span> is taken to replace the one a borrow is into, though it replaces a
+		different node's. A borrow into the owner a method is called through is its receiver and no other
+		name for the owner, so <span class="pre">left.insert(v)</span> is asked only of the other arguments.</p>
+	<p>Nor does it tell which global a function writes: a borrow of a collection a <span class="pre">mut</span>
+		global could be is refused across a call that reshapes a collection of that type through any global, or
+		that runs code it cannot read (<a href="#globalview">above</a>), even when the global it writes is
+		another. A virtual call or a closure called anywhere in the callee counts, even one handed nothing.</p>
+	
+
+	<h2 id="comesback">Comes back in &hellip;</h2>
+	<ul>
+		<li><a href="guide-values.html#moving">Values, variables and expressions</a>, the Guide's short version of moving.</li>
+		<li><a href="mem-permissions.html">Permissions in depth</a>: every permission a borrow may ask for.</li>
+		<li><a href="mem-lifetimes.html">Lifetimes</a>: annotating the lifetimes the compiler cannot infer.</li>
+		<li><a href="guide-collections.html#shapechanging">Why a push waits for a borrow of an element</a>, with the collections.</li>
+		<li><a href="guide-collections.html">Collections and the stream operator</a>: slices, the array references.</li>
+		<li><a href="mod-substitution.html">Substitution</a>: virtual references, and calling a closure while a collection is borrowed.</li>
+		<li><a href="conc-await.html">Awaiting in depth</a>: using a borrow after an await.</li>
+		<li><a href="conc-sharing.html#marks">Sendable, Shareable and ShapeKeeping</a>: saying what is behind a reference.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-lifetimes.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,63 @@
+// Actors: each keeps its own state, and they work by sending messages
+//
+// A Till keeps the cafe's takings. Two Baristas make drinks, at the same
+// time, and ring them up on the Till. The Manager hands out the orders
+// and waits for the answers it needs.
+
+mod cafe;
+
+import stdio use *;
+import sync use Arc;
+import actors;
+
+// The price list: shared by everyone, changed by no one
+struct Menu {
+  pub latte u64;
+  pub tea u64;
+}
+
+actor Till {
+  takings u64 = 0;                     // the till's own state: no one else can touch it
+
+  pub async do ring(self, price u64) { // a behaviour: it arrives as a message
+    takings = takings + price;
+  }
+
+  pub async do total(self) u64 {       // it returns a value, so it can be awaited
+    takings;
+  }
+}
+
+actor Barista {
+  till Till;                           // a handle: how this actor reaches the till
+  menu Arc[imm, Menu];                 // the shared price list
+
+  pub async do make(self, lattes u64, teas u64) u64 {
+    imm bill = lattes * menu.latte + teas * menu.tea;
+    till.ring(bill);                   // sent, and not waited for
+    bill;                              // the reply, for whoever awaits it
+  }
+}
+
+actor Manager {
+  till Till;
+  ana Barista;
+  ben Barista;
+
+  pub async do open(self) {
+    imm first = ana.make(2, 1);        // both orders go out at once,
+    imm second = ben.make(1, 3);       // and the baristas work on them together
+    print <- "Ana's order: ", await first, "\n";
+    print <- "Ben's order: ", await second, "\n";
+    print <- "In the till: ", await till.total(), "\n";
+  }
+}
+
+fn main() {
+  imm menu = new Arc[imm, Menu](latte: 4, tea: 3);
+  imm till = new Till();
+  imm ana = new Barista(till, menu);
+  imm ben = new Barista(till, menu);
+  imm manager = new Manager(till, ana, ben);
+  manager.open();                      // returns at once: the actors do the work
+}                                      // and the program ends when they are all done

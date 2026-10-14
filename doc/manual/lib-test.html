@@ -1,0 +1,269 @@
+<html>
+  <head>
+	  <title>Testing - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Testing</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built: a failure that names the expression it checked and its
+		line; test functions marked in source and a test build; a test that reaches a package's private
+		submodules; fixtures, setup and teardown beyond a program's own; mocks; running a package's examples
+		(they are built, not run).</i></p>
+
+	<p>A Cone test is an ordinary program. It lives in the <span class="pre">tests</span> folder of the
+		package it tests, imports that package by name as any user would, makes some checks, and prints what
+		it finds. <span class="pre">congo test</span> builds and runs every test of a package and compares what
+		each one printed, and the status it exited with, against what the test's files say they should be. The
+		<span class="pre">testing</span> package supplies the checks. Nothing in either is known to the
+		compiler: both are library and tool code.</p>
+
+	<h2 id="write-a-test">Writing a test</h2>
+	<p>Suppose a package <span class="pre">mylib</span> has three functions:</p>
+<pre>
+mod mylib;
+
+pub fn sum(a i64, b i64) i64 {
+  a + b;
+}
+
+pub fn mean(a f64, b f64) f64 {
+  (a + b) / 2.;
+}
+
+pub fn isEven(n i64) bool {
+  n % 2i64 == 0i64;
+}
+</pre>
+	<p>Its folder holds the manifest, the source, and the tests (<a href="mod-packages.html#package">Packages
+		and Congo</a> describes the folder):</p>
+<pre>
+mylib/
+    congo.toml
+    src/mylib.cone
+    tests/arith.cone       one test: a program
+    tests/arith.out        what it must print
+    examples/              programs showing the package's use; built by congo test, not run
+</pre>
+	<p>A test is a lone file with its own <span class="pre">mod</span> line and a
+		<span class="pre">main</span>. It imports the package under test and the
+		<span class="pre">testing</span> package, and returns what <span class="pre">done</span> gives:</p>
+<pre>
+mod arith;
+
+import testing use *;
+import mylib;
+
+fn main() i32 {
+  expectInt(mylib.sum(2, 3), 5, "sum of 2 and 3");
+  expectFloat(mylib.mean(1., 2.), 1.5, 0.000001, "mean of 1 and 2");
+  expect(mylib.isEven(4), "4 is even");
+  done();
+}
+</pre>
+	<p>Every check that passes prints nothing, so the test prints only its summary. That summary is the
+		whole of <span class="pre">tests/arith.out</span>:</p>
+<pre>
+3 checks passed
+</pre>
+	<p>Because the test imports <span class="pre">mylib</span> the way any other program does, it reaches
+		only what the package makes <span class="pre">pub</span>.</p>
+
+	<h2 id="checks">The testing package: checks</h2>
+	<p>The package is imported with <span class="pre">import testing use *;</span>, and its checks are
+		functions. Each kind of value has a check of its own name, in two forms: an <span class="pre">expect</span>
+		check, which records a failure and lets the test go on, and a <span class="pre">require</span> twin,
+		which stops the test when it fails.</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Check</th><th>Passes when</th></tr>
+	<tr><td><span class="pre">expect(cond, label)</span></td><td><span class="pre">cond</span> is true</td></tr>
+	<tr><td><span class="pre">expectInt(got, want, label)</span></td><td>two signed integers are equal; an
+		<span class="pre">i32</span>, <span class="pre">i16</span> or <span class="pre">i8</span> value is widened to
+		<span class="pre">i64</span></td></tr>
+	<tr><td><span class="pre">expectUInt(got, want, label)</span></td><td>two unsigned integers are equal; a
+		<span class="pre">usize</span>, <span class="pre">u32</span>, <span class="pre">u16</span> or
+		<span class="pre">u8</span> value is widened to <span class="pre">u64</span></td></tr>
+	<tr><td><span class="pre">expectFloat(got, want, within, label)</span></td><td>the two differ by no more than
+		<span class="pre">within</span> (the bound is inclusive); an <span class="pre">f32</span> is widened to
+		<span class="pre">f64</span>; a NaN is never within any tolerance of anything</td></tr>
+	<tr><td><span class="pre">expectStr(got, want, label)</span></td><td>two strings hold the same bytes</td></tr>
+	<tr><td><span class="pre">expectBool(got, want, label)</span></td><td>two <span class="pre">bool</span> values are equal</td></tr>
+	</table>
+	<p>The <span class="pre">label</span> is a string saying what the check is about. Each check returns
+		<span class="pre">true</span> when it passed, for a test that wants to branch on it. The
+		<span class="pre">require</span> versions are named <span class="pre">require</span>,
+		<span class="pre">requireInt</span>, <span class="pre">requireUInt</span>, <span class="pre">requireFloat</span>,
+		<span class="pre">requireStr</span> and <span class="pre">requireBool</span>, with the same parameters.</p>
+	<p>A failing check prints one line: the label, then what was expected against what was got. The
+		test goes on, so one run reports every failing check. At the end, <span class="pre">done()</span> prints
+		the summary, <span class="pre">3 checks passed</span> or <span class="pre">3 checks, 1 failed</span>, and
+		returns the exit status for <span class="pre">main</span> to return: 0 when every check passed, 1
+		when any failed. A test whose <span class="pre">.out</span> file holds the summary therefore pins how
+		many checks ran, as well as that they passed.</p>
+<pre>
+mod standalone;
+
+import testing use *;
+
+// The code under test
+fn sum(a i64, b i64) i64 {
+  a + b;
+}
+
+// Wrong on purpose: it drops the fractional part
+fn mean3(a f64, b f64, c f64) f64 {
+  f64.from(i64.from((a + b + c) / 3.));
+}
+
+fn main() i32 {
+  expectInt(sum(2, 3), 5, "sum of 2 and 3");
+  expectFloat(mean3(1., 2., 3.), 2., 0.0001, "mean of 1 and 2 and 3");
+  expectFloat(mean3(1., 2., 4.), 2.333333, 0.0001, "mean of 1 and 2 and 4");
+  expectStr("cone ", "cone", "a trailing space shows");
+  expectBool(sum(1, 1) == 2, true, "one and one is two");
+  // A check whose failure would make the rest meaningless stops the test
+  require(sum(0, 0) == 0, "zero is the identity");
+  done();
+}
+</pre>
+	<p>Run as a program, that prints:</p>
+<pre>
+mean of 1 and 2 and 4: expected 2.333333 within 0.0001, got 2.000000
+a trailing space shows: expected "cone", got "cone "
+6 checks, 2 failed
+</pre>
+	<p>and exits with status 1. A test written to fail like this one would pin that status in a
+		<span class="pre">.exit</span> file (below).</p>
+
+	<h3 id="stopping">Stopping a test</h3>
+	<p>A <span class="pre">require</span> check is for the place where going on would make no sense, as when a
+		later check reads something this one found missing. When it fails it prints its failure line, then
+		<span class="pre">stopped:</span> and the summary, and ends the program with exit status 1; the
+		statements after it never run, and neither does <span class="pre">done</span>. Each test is its own
+		program, so stopping one stops no other. A <span class="pre">require</span> that passes goes on.</p>
+<pre>
+mod stopper;
+
+import testing use *;
+
+fn main() i32 {
+  expectInt(1, 2, "first");
+  requireInt(3, 4, "second");
+  expectInt(5, 6, "never runs");
+  done();
+}
+</pre>
+<pre>
+first: expected 2, got 1
+second: expected 4, got 3
+stopped: 2 checks, 2 failed
+</pre>
+
+	<h3 id="printing">How values print</h3>
+	<ul>
+	<li>Integers print exactly, and an unsigned value prints unsigned.</li>
+	<li>Floats print to six decimal places, rounded, so the noise in the last digits of an
+		<span class="pre">f32</span> does not show (a tiny negative value prints as
+		<span class="pre">0.000000</span>, without a sign). NaN and the infinities print as
+		<span class="pre">nan</span>, <span class="pre">inf</span> and <span class="pre">-inf</span>; a value of nine
+		million million or more prints as the C library's <span class="pre">%g</span> does,
+		<span class="pre">1e+20</span>. The tolerance prints as <span class="pre">%g</span> does, so a tolerance
+		below a millionth can print a failing expected value and got value alike.</li>
+	<li>Strings print as given in double quotes, so leading and trailing spaces show.</li>
+	<li><span class="pre">bool</span> prints as <span class="pre">true</span> or <span class="pre">false</span>.</li>
+	</ul>
+	<p>A float literal with no suffix is an <span class="pre">f32</span>, and carries an
+		<span class="pre">f32</span>'s rounding into the <span class="pre">f64</span> a check takes. Against an
+		<span class="pre">f64</span> result, with a tolerance finer than about a ten-millionth of the value, write the
+		expected value as an <span class="pre">f64</span>: <span class="pre">0.1d</span>.</p>
+
+	<h2 id="congo-test">Running tests: congo test</h2>
+	<p><span class="pre">congo test</span>, run in a package's folder or any folder below it, does four things:</p>
+	<ol>
+	<li><b>Builds the package</b> as <span class="pre">congo build</span> does. A package that does not build is
+		reported, and none of it is tested.</li>
+	<li><b>Runs each test</b>, <span class="pre">tests/<i>name</i>.cone</span>. It is compiled against the
+		package's generated include file and linked with the package's object, the path every importer takes. The
+		package under test is found before any other package of its name, so a package in no registry can be
+		tested where it stands. Each test is built in <span class="pre">build/debug/tests/<i>name</i>/</span> and
+		run there, with no arguments and no input, for at most 60 seconds.</li>
+	<li><b>Compares</b> what the test printed with <span class="pre">tests/<i>name</i>.out</span>, line ends and
+		trailing blank lines aside, and the exit status with 0, or with the number in
+		<span class="pre">tests/<i>name</i>.exit</span> where there is one. A mismatch prints a difference.</li>
+	<li><b>Builds each example</b>, <span class="pre">examples/<i>name</i>.cone</span>, and does not run it. An
+		example that does not build is a failure.</li>
+	</ol>
+	<p>Each test reports as <span class="pre">test <i>name</i> ... ok</span> or <span class="pre">FAILED</span>,
+		followed by a summary line, and <span class="pre">congo test</span> exits 1 if anything failed. For
+		<span class="pre">mylib</span>:</p>
+<pre>
+        test arith ... ok
+      Result mylib: 1 test: 1 passed, 0 failed; 0 examples: 0 built, 0 failed to build
+</pre>
+	<p>A test that is meant to fail says so in its files. A copy of the test above that expects
+		<span class="pre">sum(2, 3)</span> to be 6, and so fails:</p>
+<pre>
+mod broken;
+
+import testing use *;
+import mylib;
+
+fn main() i32 {
+  expectInt(mylib.sum(2, 3), 6, "sum of 2 and 3");
+  expect(mylib.isEven(4), "4 is even");
+  done();
+}
+</pre>
+	<p>pins what it prints in <span class="pre">tests/broken.out</span>:</p>
+<pre>
+sum of 2 and 3: expected 6, got 5
+2 checks, 1 failed
+</pre>
+	<p>and its status in <span class="pre">tests/broken.exit</span>, which holds the single line
+		<span class="pre">1</span>.</p>
+
+	<h3 id="test-files">The files beside a test</h3>
+	<ul>
+	<li><b><span class="pre">.out</span></b>: what the test must print. Required.</li>
+	<li><b><span class="pre">.exit</span></b>: the exit status, where it is not 0.</li>
+	<li><b><span class="pre">.err</span></b>: what the test must write to standard error. Written by hand, for a
+		test that provokes a panic on purpose: the file holds the panic's line, and the
+		<span class="pre">.exit</span> holds the status an aborted program has (3221226505 on Windows). Without a
+		<span class="pre">.err</span> file, standard error is not compared.</li>
+	<li><b><span class="pre">.debug</span></b>: marks a test of a check made only in a debug build (an
+		<span class="pre">assertDebug</span>). What the file holds does not matter. A debug build panics on the
+		broken check, which the test expects; a release build leaves the check out, so
+		<span class="pre">congo test --release</span> does not build or run such a test, and reports it as skipped,
+		which is not a failure.</li>
+	</ul>
+
+	<h3 id="congo-test-options">Choosing and blessing tests</h3>
+	<p><span class="pre">congo test arith</span> runs only the tests and examples whose file name contains the
+		text; text that matches nothing is an error.</p>
+	<p><span class="pre">congo test --bless</span> writes the <span class="pre">.out</span> (and
+		<span class="pre">.exit</span>, if the status is not 0) of a test that has none, from a run. It never
+		rewrites a file that exists: to change an expected file, edit it, or delete it and bless again. Blessed
+		output is a claim that the package is right, so read each line of it against what you know the package
+		should do before you keep it. A blessed file is only as good as the run it was copied from.</p>
+	<p>Run in a folder of packages instead of inside one, <span class="pre">congo test</span> tests each package
+		in turn and ends with a summary of them all. A test of an executable package cannot import it, since only
+		a library can be imported, so <span class="pre">congo test</span> says so and fails the test.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="library.html#testpkg">The Standard Library</a> &mdash; the <span class="pre">testing</span> package in the catalogue.</li>
+		<li><a href="mod-packages.html#package">Packages and the build</a> &mdash; the package folder a test lives in.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;"><a href="syntax.html"><img alt="_" src="next.png" /></a></p>
+
+	</div>
+	</body>
+</html>

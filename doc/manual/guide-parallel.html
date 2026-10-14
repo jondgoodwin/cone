@@ -1,0 +1,314 @@
+<html>
+  <head>
+	  <title>parallel each - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">parallel each</div>
+		</div>
+
+    <div class="text">
+
+	<p>Some work is one big job: the same test made of every number in a range, the same change made to every item
+		of a list. Put the word <span class="pre">parallel</span> in front of the <span class="pre">each</span>, and
+		every core of the machine works on the loop at once. This program counts the primes below 200,000 that way.</p>
+<pre>
+// parallel each: one loop, every core
+//
+// Writing 'parallel' in front of an 'each' runs the loop's passes at the
+// same time, spread over a worker thread for each core of the machine.
+
+mod primes;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+// Is n a prime? Try every divisor up to its square root.
+fn isPrime(n u64) bool {
+  if n &lt; 2 {
+    return false;
+  }
+  mut d = 2u64;
+  while d * d &lt;= n {
+    if n % d == 0 {
+      return false;
+    }
+    d = d + 1;
+  }
+  true;
+}
+
+fn main() {
+  // Count the primes below 200,000, with every core testing numbers at once
+  imm count = Atomic[u64].of(0);
+  parallel each n in 0u64 ..&lt; 200000u64 {
+    if isPrime(n) {
+      count.add(1);                    // an Atomic takes additions from every pass
+    }
+  }                                    // here, every pass has finished
+  print &lt;- "Primes below 200000: ", count.load(), "\n";
+
+  // Collect them into a list instead: it comes out in order, as a plain 'each' would
+  imm primes = new List[u64] &lt;- parallel each n in 0u64 ..&lt; 200000u64 if isPrime(n) yield n;
+  print &lt;- "In the list: ", primes.len(), "\n";
+
+  // And add the list up, in parallel too
+  print &lt;- "Their sum: ", primes.parallel().sum(), "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Primes below 200000: 17984
+In the list: 17984
+Their sum: 1709600813
+</pre>
+	<p><b>What to notice</b></p>
+	<ul>
+		<li><span class="pre">parallel each</span> is an ordinary <span class="pre">each</span> with one word in front.
+			A module that writes one imports the <span class="pre">actors</span> package, which runs it.</li>
+		<li>When the program reaches the line after the loop, every pass has finished.</li>
+		<li>The passes may read what was declared outside the loop, but not change it. The count comes back through an
+			<span class="pre">Atomic</span>, a number that every pass may add to safely.</li>
+		<li>A list built with <span class="pre">&lt;- parallel each &hellip; yield</span> holds its values in the order a
+			plain loop would give them, whichever pass finished first.</li>
+		<li><span class="pre">primes.parallel().sum()</span> adds up a list on every core, and gives the same answer
+			on every run.</li>
+	</ul>
+
+	<h2 id="why">One loop, every core</h2>
+	<p><a href="guide-actors.html">Actors</a> divide a program into parts that keep their own state and talk by
+		message. A <span class="pre">parallel each</span> divides a single loop. It suits work where each pass stands on
+		its own: whether 7919 is a prime has nothing to do with whether 7920 is, so the numbers can be tested in any
+		order, on any core, all at once.</p>
+	<p>You do not say how to split the work. The loop starts as one piece covering the whole range; whoever works on
+		a piece cuts it in half while it is big, keeps one half and leaves the other for an idle worker to take. So a
+		range whose passes take uneven time, as testing big numbers takes longer than small ones, still spreads itself
+		evenly, and the code that wrote the loop helps with it while it waits. When control reaches the statement after
+		the loop, all of it is done.</p>
+	<p>An <span class="pre">if</span> after the source skips the passes it is false for, as it does in a plain
+		<span class="pre">each</span>: <span class="pre">parallel each n in 0u64 ..&lt; 200000u64 if isPrime(n)</span>.</p>
+
+	<h2 id="results">Getting the results out</h2>
+	<p>Since the passes really do run at the same time, a pass may not change a variable declared outside the loop:
+		if two passes added to one total at once, one of the additions could be lost. The compiler refuses it, and says
+		what to do instead:</p>
+<pre>
+mut total = 0u64;
+parallel each n in 0u64 ..&lt; 1000u64 {
+  total = total + n;                 // refused
+}
+</pre>
+<pre>
+A 'parallel each' body may not write total, which is declared outside the loop: the passes run at the same time. Outside variables are read-only for the loop. Hand results back with the parallel builder, or 'mutItems()' on the items, or count with an Atomic.
+</pre>
+	<p>The program uses three ways to hand results back:</p>
+	<ul>
+		<li><b>An <span class="pre">Atomic</span></b> is a number that is changed only through its methods, and those
+			methods are safe to call from every pass at once. <span class="pre">Atomic[u64].of(0)</span> makes one,
+			<span class="pre">add</span> adds to it, and <span class="pre">load</span> reads it once the loop is
+			done.</li>
+		<li><b>The parallel builder</b> makes a list. Write <span class="pre">parallel each</span> after the
+			<span class="pre">&lt;-</span> that fills a <a href="guide-collections.html">new list</a>, and give each
+			pass's value with <span class="pre">yield</span>. Each piece of the loop collects its own values, and the
+			pieces are joined in order at the end, so the list is the same as the one a plain loop would make.</li>
+		<li><b>A reduction</b> boils a whole list down to one value: <span class="pre">primes.parallel().sum()</span>
+			adds every item, each core adding up a stretch of the list and the stretches' totals then being added
+			together. The stretches are cut by the list's length alone, so the answer is the same on every run, on any
+			machine.</li>
+	</ul>
+
+	<h2 id="choosing">Actors or a parallel each?</h2>
+	<p>Both put every core to work, and they suit different shapes of problem. When the job is the same thing done
+		to many items, with nothing to remember between them, a <span class="pre">parallel each</span> is the simplest
+		thing to write: it is the loop you would have written anyway. When the work falls into parts that each keep
+		their own state, and need to ask each other things, give each part to an actor. The two mix: a behaviour may
+		run a <span class="pre">parallel each</span> over the actor's own data, and a pass may send a message to an
+		actor (<a href="#body">What the body may do</a>, below).</p>
+
+	<h2 id="indetail">In detail</h2>
+	<p>The rest of this page is the complete reference for <span class="pre">parallel each</span> at this level, with
+		excerpts from <a href="conc-parallel.html">Data parallelism in depth</a>, which carries the whole of it; skip
+		to <a href="#where-next">Where next</a> if the program above was enough.</p>
+
+	<p style="margin-left: 40px;"><i>Note: Not built yet: <span class="pre">parallel each</span> inside a generator; a
+		source of your own that can be split; the parallel builder inside an actor's method; and a reduction over a
+		number range. The <span class="pre">actors</span> package it runs on runs on Windows and Linux (x86-64), not yet
+		on macOS.</i></p>
+
+	<h3 id="writing">One loop on every core</h3>
+<pre>
+import actors;
+
+fn total(xs &amp;Array[u64]) u64 {
+  imm sum = Atomic[u64].of(0u64);
+  parallel each x in xs {
+    sum.add(weigh(*x));
+  }
+  sum.load();               // every pass has finished
+}
+</pre>
+	<p>The loop has finished when control reaches the statement after it. The work is split as it runs: whoever runs
+		a piece splits it in half while it is big, queues one half and works the other, and an idle worker takes the
+		oldest, largest half. So uneven passes spread themselves, and the code that wrote the loop works on pieces of its
+		own loop while it waits. A module that writes one imports <span class="pre">actors</span>.</p>
+	<p>The filter, <span class="pre">parallel each x in xs if cond { &hellip; }</span>, skips the items for which the
+		condition is false, as it does for <span class="pre">each</span>. A <span class="pre">parallel each</span> takes
+		no <span class="pre">else</span> and is a statement. (<a href="conc-parallel.html#parallel">Writing a parallel
+		each</a>.)</p>
+	<p><i>From <a href="conc-parallel.html#parallel">Writing a parallel each</a>:</i>
+		<span class="pre">parallel</span> is a word only directly before <span class="pre">each</span>: anywhere else
+		it is a name like any other (a variable, a function, a field).</p>
+
+	<h3 id="walk">What it can walk</h3>
+	<p>The source must be something that can be cut into independent pieces and says how big it is: a number range
+		counting up by one (<span class="pre">parallel each i in 0 ..&lt; n</span>), an array, a slice, a list, and the
+		runs <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give. A cursor, a generator, a
+		file or a channel hands out its items one after another and cannot be split: collect it into a list first, and
+		walk the list. As in an ordinary <span class="pre">each</span>, the variable is a new one on every pass.
+		(<a href="conc-parallel.html#parallelwalk">What it can walk</a>.)</p>
+
+	<h3 id="body">What the body may do</h3>
+	<p>The passes run at the same time, so the body keeps rules an ordinary <span class="pre">each</span> does not:</p>
+	<ul>
+		<li>What is declared <b>outside</b> the loop is <b>read-only</b> in it. Writing it is refused. What the pass
+			declares itself is its own to change.</li>
+		<li>A pass may <b>change its own item</b>: <span class="pre">parallel each x in list.mutItems()</span> gives each
+			pass its own item to change, and the items are disjoint.</li>
+		<li>Results come back through something that is changed by its methods, an <span class="pre">Atomic</span>, as
+			above, or as a list the loop builds (<a href="#builder">below</a>).</li>
+		<li>A value from outside that holds an <span class="pre">Rc</span> may not be named in the body: copy what the
+			loop needs into a local before it. An <span class="pre">Arc</span>, an <span class="pre">Atomic</span> and a
+			number are free. (This is the marker <span class="pre">Shareable</span>,
+			<a href="conc-sharing.html#shareable">Sendable and Shareable</a>.)</li>
+		<li><span class="pre">continue</span> skips the rest of a pass. A <span class="pre">break</span>, a
+			<span class="pre">return</span> and an <span class="pre">await</span> are refused.</li>
+		<li>A message sent to an actor is allowed, and is sent after the loop, in iteration order, so an actor sees the
+			same order every run.</li>
+	</ul>
+	<p>Each rule, and how a loop fills a buffer a row at a time with <span class="pre">mutChunks</span>, is in
+		<a href="conc-parallel.html#parallelbody">What the body may do</a> and
+		<a href="conc-parallel.html#parallelfill">Filling a buffer</a>.</p>
+
+	<h3 id="builder">Building a list, and adding up</h3>
+	<p>A list is built by a parallel each as it is by an <a href="guide-collections.html">each inside
+		<span class="pre">&lt;-</span></a>: put <span class="pre">parallel</span> in front of the
+		<span class="pre">each</span>, and give the value each pass appends with <span class="pre">yield</span>. The list
+		holds the values in the order a plain <span class="pre">each</span> would give them:</p>
+<pre>
+imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
+</pre>
+	<p>A result such as a total is a <b>reduction</b>, a method called on <span class="pre">parallel()</span>:</p>
+<pre>
+imm total = xs.parallel().sum();                 // the total of the numbers (0 for none)
+</pre>
+	<p>(<a href="conc-parallel.html#parallelbuilder">The parallel builder</a>,
+		<a href="conc-parallel.html#parallelreduce">Reductions</a>, which also fold and find.)</p>
+	<p><i>From <a href="conc-parallel.html#parallelbuilder">The parallel builder</a>:</i> The list holds the values in
+		the order of the passes, the order a plain <span class="pre">each</span> would
+		give them, however the passes were spread over the workers; with a filter, the values of the passes that kept
+		their items, in order. The loop has finished, and the list is whole, when control reaches the statement after
+		it. Only a <span class="pre">List</span> is built this way. A dictionary or any other collection is built from a
+		list of pairs after the loop.</p>
+	<p><i>From <a href="conc-parallel.html#parallelreduce">Reductions</a>:</i> <b>The result is the same on every run,
+		with any number of workers</b>, a float sum included: the items are
+		cut into runs by their count alone (at least 128 items to a run, and at most 256 runs; a view of 128 or
+		fewer is one run, folded at once on the caller's thread), each run is folded front to back, and the runs are
+		joined by halving. So a float sum is not the plain loop's last bits, and is identical from one run, and one
+		machine, to the next.</p>
+
+	<h3 id="inactor">In an actor's method</h3>
+	<p><i>From <a href="conc-parallel.html#parallelactor">In an actor's method</a>:</i> A
+		<span class="pre">parallel each</span> written directly in a behaviour (a method declared
+		<span class="pre">async do</span>) cuts the behaviour where the loop ends, as an <span class="pre">await</span>
+		does. The behaviour returns to the actor's dispatcher while the passes run on the workers, and the rest of it
+		runs when the last pass has finished:</p>
+<pre>
+actor Scaler {
+  vals List[u64];
+  scale u64;
+
+  pub async do run(self, add u64) {
+    imm k = add * 2u64;
+    parallel each v in vals.mutItems() {
+      *v = *v * scale + k;      // the actor's fields are read through self; k and add are carried
+    }
+    // here the loop has finished, and this is the same behaviour, the same call
+  }
+}
+</pre>
+	<p>The actor is <b>not run again until the loop has finished</b>, the rest of the behaviour included. Its mailbox
+		goes on accepting messages, and they are handled after the behaviour, in order. (The rest:
+		<a href="conc-parallel.html#parallelactor">In an actor's method</a>.)</p>
+
+	<h2 id="comesback">Comes back in &hellip;</h2>
+	<ul>
+		<li><a href="conc-parallel.html">Data parallelism in depth</a>: filling buffers with
+			<span class="pre">indexed</span>, <span class="pre">chunks</span>, <span class="pre">mutChunks</span> and
+			<span class="pre">zip</span>; a parallel each in an actor's behaviour; reductions.</li>
+		<li><a href="conc-sharing.html">What may cross a thread</a>: Shareable.</li>
+		<li><a href="conc-runtime.html">How the runtime works</a>: the loop underneath.</li>
+		<li><a href="conc-gpu.html">The GPU</a>: Cone functions compiled as compute kernels, with a CPU twin.</li>
+	</ul>
+
+	<h2 id="where-next">Where next</h2>
+	<p>That is the Guide. With values, text, loops, functions, structs, enums, collections, actors and
+		<span class="pre">parallel each</span>, you can write real programs, and use every core of the machine while
+		you are at it. The rest of the manual goes down a layer, into the plumbing, one topic to a part. Each part
+		begins with what most programs meet and ends with what few need, so read as far as you find useful.</p>
+	<ul>
+		<li><a href="memory.html"><b>Memory</b></a>: what happens to a value underneath, when it is copied and when it
+			moves, lending a value without giving it away, and where a value's memory comes from: regions, from the
+			ready-made ones to writing your own.</li>
+		<li><a href="concurrency.html"><b>Concurrency</b></a>: actors and <span class="pre">await</span> in full,
+			files, timers and the network, what may cross between threads, locks, the GPU, and the threads and atomics
+			to build your own.</li>
+		<li><a href="modularity.html"><b>Modularity and reuse</b></a>: dividing a larger program into modules and
+			packages, and everything that lets a part be written once and used again: names, what a part shows and
+			hides, traits, generics and macros.</li>
+		<li><a href="safety.html"><b>Safety and C</b></a>: exactly what the compiler promises, and how to step outside
+			those promises with care: calling C, raw pointers, and the platforms Cone runs on.</li>
+		<li><a href="library.html"><b>The standard library</b></a>: the packages that come with Cone, among them files
+			and paths, time, and HTTP.</li>
+	</ul>
+
+	<h3 id="testing">Testing your code: <span class="pre">congo test</span></h3>
+	<p>A program you can change with confidence is one whose behaviour is pinned down by tests, and a Cone test is
+		just another small program. It lives in the <span class="pre">tests</span> folder of the package it tests,
+		imports that package, makes some checks with the <span class="pre">testing</span> package, and returns what
+		<span class="pre">done</span> gives:</p>
+<pre>
+mod arith;
+
+import testing use *;
+import mylib;
+
+fn main() i32 {
+  expectInt(mylib.sum(2, 3), 5, "sum of 2 and 3");
+  expectFloat(mylib.mean(1., 2.), 1.5, 0.000001, "mean of 1 and 2");
+  expect(mylib.isEven(4), "4 is even");
+  done();
+}
+</pre>
+	<p>Beside it, <span class="pre">tests/arith.out</span> says what it must print, here
+		<span class="pre">3 checks passed</span>. Run <span class="pre">congo test</span> in the package's folder, and it
+		builds the package, runs every test, and compares what each printed with its <span class="pre">.out</span>
+		file:</p>
+<pre>
+        test arith ... ok
+      Result mylib: 1 test: 1 passed, 0 failed; 0 examples: 0 built, 0 failed to build
+</pre>
+	<p>Every check, what a failing one prints, and the files beside a test are in
+		<a href="lib-test.html">Testing</a>.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="memory.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,448 @@
+<html>
+  <head>
+	  <title>Roll your own: threads, atomics and locks - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Roll your own: threads, atomics and locks</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">thread</span> and <span class="pre">sync</span> packages, and so the locks, the channels and the actors built on them, run on Windows and Linux (x86-64), not yet on macOS. The <span class="pre">atomic</span> permission is not implemented, nor is the rule that a whole atomic value may be replaced plainly only through a unique path. <span class="pre">actor trait</span> is not implemented.</i></p>
+
+	<h2 id="why">Why you&rsquo;d want it</h2>
+	<p>Actors, channels, lock permissions and the parallel loop are all built on a few operating-system layers: OS threads, atomic values, the futex and plain locks. This page is for the program that uses those layers directly, to write a scheduler, a channel or a data structure of its own. Most programs never need to.</p>
+
+	<h2 id="thread">OS threads: the thread package</h2>
+	<p>The <span class="pre">thread</span> package is the operating-system layer every other
+		model is to be built on: starting and joining OS threads. The one blocking primitive the
+		locks, the channels and the schedulers are written over, the <a href="#futex">futex</a>, is
+		the <span class="pre">sync</span> package's, which the thread package imports. It is
+		deliberately small, and it is ordinary library code, bound to the operating system through
+		<span class="pre">extern</span> functions; the compiler knows nothing of it.
+		Its source, <span class="pre">packages/thread/src/thread.cone</span>, documents the same
+		rules at greater length.</p>
+<pre>
+import thread;
+
+fn triangle(n i64) i64 { ... }
+
+fn main() {
+  imm t = thread.start(100i64, &amp;triangle);  // a new thread runs triangle(100)
+  ...                                        // while main goes on
+  imm total = t.join();                      // wait for it: 5050
+}
+</pre>
+
+	<h3>Starting a thread</h3>
+	<p><span class="pre">thread.start(arg, &amp;f)</span> starts a new OS thread running
+		<span class="pre">f(arg)</span> and returns its handle at once, a
+		<span class="pre">Thread[R]</span>. The thread is given a function and one value:</p>
+	<ul>
+	<li><b>The value is moved in.</b> The thread owns it, and it dies there when
+		<span class="pre">f</span> is done with it. A struct carries more than one value.</li>
+	<li><b><span class="pre">f</span> is a plain function</b> taking an <span class="pre">A</span>
+		and returning an <span class="pre">R</span>, which may be <span class="pre">void</span>.
+		A function reference holds no state, which is why a thread is given a value beside its function;
+		a closure travels as that value, in an owner marked <span class="pre">+ Sendable</span>
+		(<a href="conc-sharing.html#marks">Closure References</a>).</li>
+	<li><b>The type arguments are inferred</b> from the value and from the function's signature.
+		A number literal given as the value keeps its own type, <span class="pre">i32</span> unless
+		suffixed, and must agree with <span class="pre">f</span>'s parameter:
+		<span class="pre">100i64</span> for a function taking an <span class="pre">i64</span>.</li>
+	<li><b>The value and the result must be <span class="pre">Sendable</span></b>, which the
+		compiler checks where <span class="pre">start</span> is called
+		(<a href="#sendable">below</a>).</li>
+	</ul>
+	<p><span class="pre">thread.startWith(new thread.Options(name: n, stackSize: s), arg, &amp;f)</span>
+		does the same with options, each of which has a default and may be left out:</p>
+	<ul>
+	<li><span class="pre">name</span>, empty by default, is copied as the thread starts. It is
+		Cone's own, seen through <span class="pre">name()</span>; the operating system's debuggers do
+		not see it.</li>
+	<li><span class="pre">stackSize</span>, 0 by default, is how many bytes of address space to
+		reserve for the thread's stack; 0 is the system's default, the executable's on Windows and
+		the C library's on Linux (the process's stack limit, usually 8 MB). A size is rounded up to
+		64 KB at least, and Windows rounds it up to its allocation granularity and takes one of 4 GB
+		or more as 4 GB less one byte.</li>
+	</ul>
+	<p>A thread that cannot be started, or memory that cannot be allocated for it, is a
+		<a href="safe-panics.html#panic">panic</a>. A panic or a trap on any thread ends the whole
+		process: nothing unwinds, so no thread fails alone while the others go on.</p>
+
+	<h3 id="sendable">What a thread may be handed</h3>
+	<p>The value handed to a thread, and the value it returns, must be <span class="pre">Sendable</span>:
+		a value the thread may own, or share with the others, without a race. The compiler checks it where
+		<span class="pre">thread.start</span> is called, and the same holds for a value sent over a channel or to
+		an actor (<a href="conc-sharing.html#race">Race condition safety</a>). These cross:</p>
+	<ul>
+	<li>A value the thread owns outright: a number, a struct of them, a <span class="pre">So</span> owner, a
+		<span class="pre">uni</span> reference.</li>
+	<li>An <span class="pre">imm</span> or <span class="pre">opaq</span> reference, which
+		<a href="conc-sharing.html">the permission rules</a> already mark as safe to share, where
+		its region's count, if it keeps one, is atomic: an <span class="pre">Arc[imm, T]</span> owner
+		(the <span class="pre">sync</span> package's <span class="pre">Arc</span>, folded in by
+		<span class="pre">import sync use Arc</span>), which <span class="pre">thread.start</span> copies, so the
+		value is freed once, after the last thread lets it go (<a href="mem-regions.html">regions</a>); and a
+		borrow of a global, <span class="pre">thread.start(&amp;imm table, &amp;sum)</span>, since a global lives
+		for the whole program.</li>
+	<li>A struct that carries raw pointers the program shares safely, with <a href="#atomic">atomic values</a> or
+		<a href="#locks">locks</a>, and declares <span class="pre">is Sendable</span>. That is a promise the
+		compiler takes on trust.</li>
+	</ul>
+	<p>These are refused, naming what is at fault (Error 1194):</p>
+	<ul>
+	<li>A <span class="pre">mut</span> or <span class="pre">ro</span> borrow, and any borrow into the starting
+		thread's stack (an <span class="pre">imm</span> borrow of a local is refused as not global, Error 1249).</li>
+	<li>An <span class="pre">Rc</span> owner that is not <span class="pre">uni</span>, since its count is not
+		atomic.</li>
+	<li>A reference the <span class="pre">collector</span> package's <span class="pre">Gc</span> traces, since that
+		collector is single threaded (<a href="#started">below</a>).</li>
+	<li>A raw pointer, since nothing checks what it points at, unless a struct holding it declares
+		<span class="pre">is Sendable</span>.</li>
+	</ul>
+<pre>
+struct Counter { pub n i64; }
+struct Job { pub data &amp;mut Counter; }
+
+fn work(j Job) i64 { j.data.n; }
+
+fn main() {
+  mut c = new Counter(1i64);
+  imm t = thread.start(new Job(&amp;mut c), &amp;work);
+  // Error 1194: start requires A is Sendable, and Job is not Sendable:
+  // Job.data is &amp;mut Counter, a borrowed reference of permission mut, ...
+}
+</pre>
+
+	<h3>The handle: join, detach, and join on drop</h3>
+	<p>A <span class="pre">Thread[R]</span> is its thread's one owner, a move type.</p>
+	<ul>
+	<li><span class="pre">t.join()</span> waits for the thread to finish and returns what
+		<span class="pre">f</span> returned. It consumes the handle, so a thread is joined once.</li>
+	<li><span class="pre">t.detach()</span> consumes the handle and lets the thread run on alone.
+		What <span class="pre">f</span> returns is finalized on the thread, since nobody will read it.</li>
+	<li><b>A handle that dies unjoined joins</b>: its finalizer waits for the thread and finalizes
+		the result nobody took. This is tidiness, not safety. A handle can be kept where it never
+		dies, and a process ends without finalizing what its threads hold, so nothing a program
+		depends on may rest on that join. A thread whose work must be finished is joined.</li>
+	<li><span class="pre">t.id()</span>, <span class="pre">t.name()</span> and
+		<span class="pre">t.unpark()</span> are the thread's own, as below, and
+		<span class="pre">t.threadRef()</span> is a <span class="pre">ThreadRef</span> to it.</li>
+	</ul>
+	<p>A handle kept in a field or a collection cannot yet be moved out of it to be joined (Cone does
+		not move a value out of a struct's field), so such a handle is joined by its container's death.
+		When <span class="pre">main</span> returns, the process ends, and every thread still running
+		ends with it; handles in <span class="pre">main</span>'s locals have been joined by then.</p>
+
+	<h3>The running thread</h3>
+	<ul>
+	<li><span class="pre">thread.current()</span> is a <span class="pre">ThreadRef</span> to the
+		calling thread: its identity, kept alive while the ThreadRef lives, which may be sent to other
+		threads. It is a move type; <span class="pre">r.copy()</span> makes another.
+		<span class="pre">r.id()</span> is the operating system's thread id, which it may reuse once a
+		thread has ended and its handle is gone. <span class="pre">r.name()</span> is the name
+		<span class="pre">startWith</span> gave, and empty for any other thread, the main thread
+		included. A thread the package did not start takes up an identity the first time it asks
+		for one, and keeps it, since nothing runs when such a thread ends.</li>
+	<li><span class="pre">thread.parallelism()</span> is how many logical processors the machine
+		has (on Linux, the ones online), at least 1. It does not count what an affinity mask takes
+		away.</li>
+	<li><span class="pre">thread.sleep(d)</span> sleeps at least <span class="pre">d</span>,
+		a <span class="pre">Duration</span> of the <a href="lib-time.html"><span class="pre">time</span> package</a>
+		(<span class="pre">thread.sleep(time.Duration.fromMillis(5))</span>),
+		on Windows' high-resolution timer, so a 1 ms sleep takes 1 to 2 ms rather than
+		the 15.6 ms of the system's timer tick. Where that timer is missing (before Windows 10 version
+		1803) it falls back to whole milliseconds, rounded up. On Linux it is POSIX's
+		<span class="pre">nanosleep</span>, accurate to a few tens of microseconds. A sleep of zero, or of a negative
+		duration, gives up the rest of the time slice to another ready thread of the same
+		priority.</li>
+	<li><span class="pre">thread.yieldNow()</span> lets another thread ready to run on the same
+		processor have it, and returns at once if there is none.</li>
+	</ul>
+
+	<h3>Parking</h3>
+	<p>Each thread has one parking token, and starts without it.
+		<span class="pre">thread.park()</span> takes the token, sleeping until there is one;
+		<span class="pre">unpark()</span>, on the thread's handle or a
+		<span class="pre">ThreadRef</span> to it, makes it available. An unpark sent before the park
+		is therefore not lost, and the park returns at once. Unparks do not add up: two before a park
+		are one token. <span class="pre">park</span> never returns without a token, but a parked
+		thread still checks what it was waiting for, since a token may have been meant for an earlier
+		park. Parking is built on <a href="#futex">the futex</a>.</p>
+
+	<h3 id="started">What a started thread may not use yet</h3>
+	<p>The <span class="pre">collector</span> package's <span class="pre">Gc</span> collector is
+		single threaded: its roots are one chain and its heap is not synchronized. A traced reference
+		made, held, reached or dropped on a thread the package started corrupts it. One is not
+		<span class="pre">Sendable</span>, so it cannot be handed to a thread or returned from one,
+		but nothing stops a started thread from making one of its own (an actor and a
+		<span class="pre">parallel each</span> are refused one for now, <a href="conc-actors.html">Actors</a>
+		and <a href="conc-parallel.html#parallel">Each</a>). A <a href="mod-globals.html#threadlocal">thread-local global</a> gives each thread a copy
+		starting from its initial value, and nothing finalizes a thread's copies when it ends.</p>
+	<p>Deliberately not provided: killing a thread, priorities, pinning a thread to a processor, a
+		flag asking a thread to stop, and scoped threads, which would join before a function returns
+		so that their threads could borrow. The package runs on Windows and on Linux.</p>
+
+	<h2 id="atomic">Atomic values</h2>
+	<p>An <b>atomic value</b> is a number, a flag or a pointer that several threads may read and
+		change at once, with no lock: each change is <b>indivisible</b>, so no thread ever sees one
+		half done, and when several threads change it together, each change happens whole, one after
+		another. The core package provides it as
+		<span class="pre">Atomic[T]</span>, a name of every module with no import (it needs
+		nothing of the operating system, so it is core's, as Rust keeps its atomics in
+		<span class="pre">core</span>; the <span class="pre">sync</span> package holds what does),
+		for a <span class="pre">T</span> that is an integer type
+		of 8 to 64 bits (<span class="pre">usize</span> and <span class="pre">isize</span> among them),
+		<span class="pre">bool</span>, or a raw pointer, <span class="pre">*T</span>. Its declaration
+		says so: <span class="pre">struct Atomic[T] ... where T is Integer or T is bool or T is
+		Pointer</span> (<a href="mod-generativity.html#constraints">Generic constraints</a>), and any other
+		<span class="pre">T</span> is refused where it is written.</p>
+	<p>These atomic operations are the building blocks that make possible
+		many of the synchronized communication mechanisms described under <a href="conc-sharing.html">sharing across threads</a> and <a href="conc-locks.html">lock permissions</a>.
+		Underneath them are the raw atomic operations core declares in
+		<span class="pre">mem</span> (<a href="safe-intrinsics.html">Intrinsics</a>), which
+		act through a raw pointer and so need trust.</p>
+<pre>
+struct Stats {
+  pub name u32;
+  pub hits Atomic[u64];        // atomic because of its type
+}
+
+imm stats Stats;
+
+fn @initpure init() {
+  stats = new Stats(7u32, Atomic[u64].of(0u64));
+}
+
+fn count() {                   // called from any number of threads at once
+  stats.hits.add(1u64);        // one indivisible add
+  imm n = stats.hits.load();   // the number itself
+}
+</pre>
+	<p><span class="pre">stats</span> is <span class="pre">imm</span>, and its
+		<span class="pre">hits</span> changes: <b><span class="pre">imm</span> means that nothing
+		changes, except inside the atomic values it holds.</b> Its other fields read as they
+		always did. An atomic value changes only through its own operations:</p>
+	<ul>
+	<li><span class="pre">Atomic[T].of(v)</span> makes one holding <span class="pre">v</span>.</li>
+	<li><span class="pre">load()</span> answers the value, and <span class="pre">store(v)</span>
+		puts <span class="pre">v</span> there.</li>
+	<li><span class="pre">swap(v)</span>, <span class="pre">add(v)</span>,
+		<span class="pre">sub(v)</span>, <span class="pre">min(v)</span>,
+		<span class="pre">max(v)</span>, <span class="pre">bitAnd(v)</span>,
+		<span class="pre">bitOr(v)</span> and <span class="pre">bitXor(v)</span> change it and answer
+		the value it held before. Add and sub wrap; min and max keep the lesser or the greater,
+		compared signed for a signed <span class="pre">T</span>. (<span class="pre">and</span> and
+		<span class="pre">or</span> are keywords, hence the <span class="pre">bit</span>.)</li>
+	<li><span class="pre">compareSwap(expected, desired)</span> stores
+		<span class="pre">desired</span> only if the value is <span class="pre">expected</span>, and
+		answers the value it saw and whether it stored: <span class="pre">seen, ok =
+		a.compareSwap(e, d);</span>. A loop around it makes any change indivisible: read, work out
+		the new value, and try again if another thread changed it in between.</li>
+	<li><span class="pre">inner()</span> takes the value out of an atomic value held by value,
+		which nobody else can be reaching.</li>
+	</ul>
+	<p><b>Which of these an atomic value has depends on its <span class="pre">T</span></b>, each
+		method saying with its own <span class="pre">where</span> clause when it
+		<a href="mod-generativity.html#methodwhere">exists</a>: <span class="pre">add</span>,
+		<span class="pre">sub</span>, <span class="pre">min</span> and <span class="pre">max</span>
+		only for an integer, the bit operations for an integer or a
+		<span class="pre">bool</span>, and the rest for all three. So an
+		<span class="pre">Atomic[bool]</span> is a flag, set by <span class="pre">store</span> or
+		<span class="pre">bitOr</span> and tested by <span class="pre">load</span>, and an
+		<span class="pre">Atomic[*Node]</span> is the head of a lock-free list, moved on with
+		<span class="pre">compareSwap</span>; <span class="pre">flag.add(true)</span> is refused where it
+		is written, since <span class="pre">add</span> exists only where <span class="pre">T</span> is
+		<span class="pre">Integer</span>.</p>
+<pre>
+struct Node {
+  pub next *Node;
+  pub val u64;
+}
+
+imm head Atomic[*Node];         // set by init: Atomic[*Node].of(null)
+
+fn push(node *Node) {           // called from any number of threads at once
+  mut seen = head.load();
+  mut ok = false;
+  while !ok {
+    mem.writeRaw(node, new Node(seen, (node as &amp;Node).val));   // link to what was seen
+    seen, ok = head.compareSwap(seen, node);                  // swing the head, or see anew
+  }
+}
+</pre>
+	<p><b>Each of them is sequentially consistent</b>, the strongest ordering: every thread sees all
+		such operations in one order, and nothing the thread does before or after one moves across
+		it. That is right for nearly every use. For an expert, each has an
+		<span class="pre">Ordered</span> form taking a <a href="safe-intrinsics.html">MemOrder</a> after
+		its other arguments: <span class="pre">a.addOrdered(1u64, MemOrder.Relaxed)</span>,
+		<span class="pre">a.loadOrdered(MemOrder.Acquire)</span>,
+		<span class="pre">a.compareSwapOrdered(e, d, success, failure)</span>. An ordering the
+		operation cannot have (a load's <span class="pre">Release</span>, for one; the rules are the
+		intrinsics') is known only as the program runs, so it ends the program with a message.
+		Core's <span class="pre">mem.atomicAdd</span> and the rest, which take the ordering as a
+		constant written at the call, refuse it where it is written instead.</p>
+
+	<h3>What the compiler knows: AtomicValue</h3>
+	<p><span class="pre">Atomic[T]</span> is ordinary library code. What the compiler knows is the
+		built-in marker trait it declares, <span class="pre">AtomicValue</span>, and a type may declare
+		it for itself: <span class="pre">struct Flag is AtomicValue { pub v u32; }</span>. The
+		compiler holds such a type to four rules:</p>
+	<ul>
+	<li><b>It is one number</b>: a struct of exactly one field, of a type some atomic operation
+		acts on &mdash; an integer of 8 to 64 bits, a <span class="pre">bool</span> or a raw
+		pointer. A float, a struct, a reference or anything else is refused, as are a trait, an enum
+		or a variant declaring it. <span class="pre">Atomic[T]</span>'s own
+		<span class="pre">where</span> clause admits exactly these, so
+		<span class="pre">Atomic[f64]</span> is refused where it is written, once, as a requirement
+		it does not meet.</li>
+	<li><b>It moves</b>, and is never copied (<a href="mem-moves.html">Move</a>): a copy would be a
+		second value that no atomic operation on the first could reach. Declaring
+		<span class="pre">Copy</span> beside it is refused.</li>
+	<li><b>A value holding one is never read-only.</b> A global holding an atomic value anywhere
+		inside it &mdash; in a field, a field's field, an array &mdash; is placed in writable memory
+		even when it is <span class="pre">imm</span>, and its reads are never assumed unchanged.</li>
+	<li><b>A <span class="pre">const</span> may not hold one</b>, however deep: each use of a
+		<span class="pre">const</span> is a fresh copy, which no other use would see change. Use a
+		global.</li>
+	</ul>
+	<p>Not implemented yet: the <span class="pre">atomic</span> permission, the reference that
+		allows only atomic operations on what it points at, which every reference to an atomic value
+		is to become; and the rule that a whole atomic value may be replaced plainly only through a
+		unique path. Until they are, <span class="pre">Atomic[T]</span>'s operations take any
+		reference (as <span class="pre">&amp;opaq</span>), and a plain assignment over an atomic
+		value &mdash; <span class="pre">*r = s</span> through a <span class="pre">&amp;mut
+		Stats</span> &mdash; compiles, and is the program's to get right.</p>
+
+	<h2 id="futex">The futex</h2>
+	<p>A futex is a 32-bit atomic word that threads sleep on while it holds a value, and are woken
+		from. It is the one way a thread waits for another, and everything that blocks &mdash; the
+		locks below, the thread package's parking, the <a href="conc-sharing.html#channel">channels</a>,
+		and the <a href="conc-actors.html">actors</a> package's idle workers &mdash;
+		is built on it. It is the <span class="pre">sync</span> package's, and its word is an
+		<span class="pre">Atomic[u32]</span>, taken by any reference, as that type's own operations
+		are.</p>
+	<ul>
+	<li><span class="pre">sync.futexWait(&amp;word, expected)</span>: if the word still
+		holds <span class="pre">expected</span>, checked atomically with going to sleep, sleep until
+		woken. It returns when woken, when the word already differed, or spuriously, which the
+		operating system permits. So a waiter loops, re-reading the word.</li>
+	<li><span class="pre">sync.futexWaitTimeout(&amp;word, expected, d)</span> is the same,
+		sleeping at most <span class="pre">d</span>, a <span class="pre">Duration</span> of the
+		<span class="pre">time</span> package. It returns false only when the timeout passed. The
+		timeout on Windows is rounded up to whole milliseconds, and its resolution is the system's timer
+		tick, up to 15.6 ms; a timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. On
+		Linux it is to the nanosecond, as the kernel's timers go. A timeout of
+		zero, or a negative one, returns false at once if the word still holds
+		<span class="pre">expected</span>.</li>
+	<li><span class="pre">sync.futexWake(&amp;word)</span> wakes one waiting thread, and
+		<span class="pre">sync.futexWakeAll(&amp;word)</span> every one. A wake with no thread waiting
+		does nothing and is not remembered, so a thread stores the new value first and wakes after.</li>
+	<li>The caller keeps the word alive while any thread may wait on it or wake it: nothing checks
+		that. Waits and wakes reach only the threads of one process.</li>
+	</ul>
+<pre>
+while word.load() == 0u32 {
+  sync.futexWait(&amp;word, 0u32);     // sleeps only while the word is still 0
+}
+</pre>
+
+	<h2 id="locks">Locks: Mutex, Rwlock, Condvar and Once</h2>
+	<p>The <span class="pre">sync</span> package's locks are built on the futex alone, not on the
+		operating system's own locks, as Rust's standard library has built its own since 2022. Each
+		is one <span class="pre">Atomic[u32]</span> (an <span class="pre">Rwlock</span>, two), holds
+		no operating-system handle, needs no finalizer, and may be moved while nobody holds it or
+		waits on it. Each is made by <span class="pre">make()</span>, and each operation takes it
+		by any reference, <span class="pre">imm</span> included, since a lock is shared by every
+		thread that uses it.</p>
+<pre>
+import sync use *;
+
+imm lock Mutex;             // both set by the module's init:
+imm total Atomic[u64];      //   Mutex.make(), Atomic[u64].of(0u64)
+
+fn add(n u64) {             // called from any number of threads
+  lock.lock();
+  total.store(total.load() + n);   // read and written as a pair, only while lock is held
+  lock.unlock();
+}
+</pre>
+	<p>A global is shared by every thread, so its type must be <a href="mod-globals.html#global">Shareable</a>:
+		an atomic word is, and the lock makes a read and a write of it one step. Data too big for an atomic,
+		such as a <span class="pre">List</span>, is kept behind a lock permission instead
+		(see below).</p>
+	<ul>
+	<li><b><span class="pre">Mutex</span></b>: one thread at a time.
+		<span class="pre">m.lock()</span> takes it, sleeping while another thread holds it (after
+		a short spin); <span class="pre">m.unlock()</span> gives it up, waking a waiting thread;
+		<span class="pre">m.tryLock()</span> takes it only if nobody holds it, and says whether it
+		did.</li>
+	<li><b><span class="pre">Rwlock</span></b>: any number of readers at once, or one writer
+		alone: <span class="pre">readLock()</span>, <span class="pre">readUnlock()</span>,
+		<span class="pre">tryReadLock()</span>, <span class="pre">writeLock()</span>,
+		<span class="pre">writeUnlock()</span> and <span class="pre">tryWriteLock()</span>. While a
+		writer waits, new readers wait too, so readers cannot starve it.</li>
+	<li><b><span class="pre">Condvar</span></b>: a thread sleeps, holding no lock, until another
+		says that what it waits for may have changed. <span class="pre">c.condWait(&amp;m)</span>
+		unlocks the <span class="pre">Mutex</span> the thread holds, sleeps until notified, and
+		locks it again; <span class="pre">c.condWaitTimeout(&amp;m, d)</span> sleeps at most
+		<span class="pre">d</span>, a <span class="pre">time.Duration</span>, and returns false only if
+		that passed;
+		<span class="pre">c.notifyOne()</span> and <span class="pre">c.notifyAll()</span> wake one
+		waiting thread or all of them. A wait may return spuriously, so a waiter loops, rechecking
+		what it waits for under the <span class="pre">Mutex</span>. (<span class="pre">wait</span>
+		is a reserved word.)</li>
+	<li><b><span class="pre">Once</span></b>: a function run exactly once, however many threads
+		ask at once. <span class="pre">o.callOnce(f)</span> runs <span class="pre">f()</span>
+		if no call on this <span class="pre">Once</span> has run one; every other caller sleeps
+		until it has returned, and then sees all it did.
+		<span class="pre">o.callOnceWith(arg, f)</span> runs <span class="pre">f(arg)</span>
+		likewise, <span class="pre">arg</span> moved in, and dropped unused by a call that runs
+		nothing. <span class="pre">o.isCompleted()</span> says whether the function has run.
+		What is run is any callable of that signature: a function reference
+		(<span class="pre">o.callOnce(&amp;f)</span>), a closure written at the call
+		(<span class="pre">o.callOnce(fn() { ready = true; })</span>, which may change what it borrows), or
+		a struct with a <span class="pre">()</span> (<span class="pre">&amp;mut s</span>). The parameter is a
+		<span class="pre">&amp;&lt;mut fn()</span> (<a href="mod-substitution.html">Closure References</a>), compiled
+		once and called through the reference, which a start-up that runs once can afford.</li>
+	</ul>
+	<p><b>These locks, held as values, are unchecked.</b> A lock is a plain lock with explicit
+		<span class="pre">lock()</span> and <span class="pre">unlock()</span>; it guards nothing
+		the compiler can see, and <b>protecting the data is the program's job</b>. Nothing stops a
+		thread reaching the data without the lock, keeping a reference to it past the unlock,
+		forgetting to unlock, or unlocking a lock another thread holds. A lock is not reentrant: a
+		thread that locks a <span class="pre">Mutex</span> it holds sleeps forever. Unlocking a lock
+		that nothing holds is caught, and ends the program with a message. A thread that ends while
+		holding a lock leaves it locked; there is no poisoning, since nothing unwinds.</p>
+	<p><b>The checked way is a lock permission.</b> <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are also <a href="conc-locks.html">lock permissions</a>:
+		written in the permission slot of an <span class="pre">Arc</span>,
+		<span class="pre">Arc[Mutex, T]</span>, the lock sits in each allocation's header, the
+		reference reaches its value only by a borrow through it, the borrow takes the lock, and the
+		borrow's last use gives it back. A <span class="pre">Condvar</span> waits on a
+		<span class="pre">Mutex</span> held as a value only: a lock permission's lock is in a header
+		no program names, so no wait is offered while a borrow holds one.</p>
+
+	<h2 id="comes-back">Comes back in &hellip;</h2>
+	<ul>
+	<li><a href="conc-sharing.html">What may cross a thread: channels, the one-shot channel, and the markers <span class="pre">Sendable</span> and <span class="pre">Shareable</span>.</a></li>
+	<li><a href="conc-locks.html">Lock permissions in depth: <span class="pre">Mutex</span> and <span class="pre">Rwlock</span> as checked permissions.</a></li>
+	<li><a href="conc-actors.html">Actors in depth: the actors built on the futex and the workers.</a></li>
+	<li><a href="conc-runtime.html">How the runtime works: the scheduler over these threads.</a></li>
+	<li><a href="safe-intrinsics.html">Intrinsics: the raw atomic operations, and the memory orderings.</a></li>
+	<li><a href="guide-actors.html">The Guide, <i>Actors</i>: the everyday route to concurrency.</a></li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="modularity.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

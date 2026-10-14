@@ -1,0 +1,149 @@
+<html>
+  <head>
+	  <title>Raw Pointers - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Raw Pointers</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Most of this is implemented,
+		but trust protections are not enforced.</i></p>
+	
+	<p>Pointers are a more powerful (but potentially unsafe) alternative to references.
+	   As compared to references, pointers have these superpowers: they support pointer arithmetic,
+	   they are never constrained by lifetimes, permissions or regions,
+	   and they are always nullable.
+	   However, being freed from these constraints means that pointers may be used
+	   in unsafe ways, such as accessing memory locations that are invalid or protected.
+	   Using pointers safely is solely the responsibility of the programmer.</p>
+
+	<h2>Pointer Declaration and Creation</h2>
+	<p>The type of a pointer is declared using <span class="pre">*</span> 
+	(rather than <span class="pre">&amp;</span> for references).
+	No region, lifetime or permission is specified after the asterick;
+	only the value's type is required:</p>
+<pre>
+imm ptr1 *i32;   // Pointer to an integer
+</pre>
+	<p>Pointers typically get their initial value from a reference or an external function.
+	   When coming from a reference, one can use the <span class="pre">as</span> operator
+	   to reinterpret the reference's type (the value type should match):
+	</p>
+<pre>
+imm ptr2 = ref1 as *i32;  // This creates a copy of the reference
+</pre>
+	<p>A slice is an address and a count, so it is not a pointer, and none is made of it implicitly.
+		<span class="pre">as</span> takes the address of its first element, the count dropped, for
+		a C function that takes a buffer and a length:</p>
+<pre>
+imm ptr3 = bytes as *u8;  // bytes is a &amp;Array[u8]: the address of bytes[0]
+</pre>
+	<p>A C <i>string</i> is not a pointer here but a <a href="guide-text.html#cstr">cstr</a>, which
+		promises the zero that ends it; the pointer that may be null stays a <span class="pre">*u8</span>.</p>
+	<p>The null pointer is written <span class="pre">null</span>. It takes the pointer type
+		it is wanted as, so it may initialize or be assigned to a pointer, be passed for a pointer
+		parameter or returned as one, fill a pointer field, or be compared with a pointer:</p>
+<pre>
+mut ptr3 *i32 = null;
+if ptr3 == null { ptr3 = ref1 as *i32; }
+</pre>
+	<p>Only a raw pointer may be null: a reference never is, and an
+		<a href="guide-enums.html#option">Option</a>'s absence is <span class="pre">None</span>.
+		So <span class="pre">null</span> is an error anywhere it is wanted as something else,
+		and anywhere nothing says which pointer type it is, as in <span class="pre">imm p = null;</span>,
+		which has to say: <span class="pre">imm p *u8 = null;</span>, or <span class="pre">null as *u8</span>.
+		It is a constant, so it may be a global's initial value or a field's or parameter's default.
+		A null pointer is false as a condition, and every other pointer true. It is zero:
+		<span class="pre">0usize as *i32</span> is the same pointer.</p>
+	<p><b>Note:</b> Since pointers (unlike references) don't belong to a region,
+		if the pointer has been obtained via explicit memory allocation (e.g., malloc),
+		the programmer is responsible for ensuring that the memory segment
+		is properly freed.
+	</p>
+	<p>A pointer may be coerced into a reference. 
+		This requires the use of <span class="pre">trust</span>.</p>
+<pre>
+ref = trust{ptr1 as &amp;i32};
+</pre>
+
+	<h2>Pointer Arithmetic</h2>
+	<p>Unlike references, pointers are not a stand-in for the value they point at.
+	  Thus, operations on a pointer typically affect the pointer itself.
+	  This is true for pointer arithmetic and comparisons.</p>
+	  <p>Pointer arithmetic allows one to move a pointer
+	  forward or backwards across elements of the same type and size
+	  using the <span class="pre">++</span>, <span class="pre">--</span>,
+	  <span class="pre">+</span>, <span class="pre">-</span>, 
+	  <span class="pre">+=</span> or <span class="pre">-=</span> operators.
+	  For example:
+	</p>
+<pre>
+++ptr1; // increment pointer to point to next element
+</pre>
+	<p><b>Note:</b> Although the above example increments the pointer by "one",
+	the effect is to actually point to an address that is 4 bytes after.
+	This happens because it increments (or decrements) by the size of the type it points to.
+	Since a 32-bit integer is 4 bytes large, any value added to such an integer pointer
+	is effectively multiplied by 4.</p>
+
+	<h2>Pointer Comparison</h2>
+	<p>Pointer comparisons compare the pointers, not what they point to
+	(unlike <a href="mem-borrowing.html#ops">references</a>, whose <span class="pre">==</span>
+	compares the values they refer to).
+	So long as two pointers have the same type, they can be compared for equality:
+	<span class="pre">==</span> is true when both point to the same place.
+	<span class="pre">===</span> and <span class="pre">!==</span>, which ask that question of references,
+	mean the same as <span class="pre">==</span> and <span class="pre">!=</span> on pointers.
+	It can also be valuable to know when some pointer's address is greater or less than
+	another pointer's address.</p>
+
+	<h2>De-referencing a pointer</h2>
+	<p>As with references, the <span class="pre">*</span> operator is used to
+	access the value the pointer points to.
+	However, such pointer dereferencing may only be done within a trust block.
+	This requirement signals to the programmer that such de-referencing may be
+	potentially unsafe.</p>
+<pre>
+trust {
+  while (*ptr2++ = *ptr1++);
+}
+</pre>
+	<p>Pointers also support [], the index operator, in effect treating a pointer
+		as if it were a pointer to an array of indexable values:</p>
+<pre>
+trust{ptr1[2] = ptr2[1]}
+</pre>
+	<p>Unlike array references, this does not performs any bounds-check.
+	Using a pointer this way can improve performance where we know the index is safe.</p>
+
+	<p>Storing through a pointer, <span class="pre">*ptr = value</span>, treats the
+	place as holding a value of its type already. Where that type is an owning
+	reference, the reference the place held is released before the new one is
+	stored; a value whose type has a <span class="pre">final</span> is not finalized.
+	Reading a value of a move type out with <span class="pre">*ptr</span> marks the
+	variable <span class="pre">ptr</span> as moved. Memory that holds no value yet, or
+	a value being moved out for good, is what the <a href="safe-intrinsics.html">intrinsics</a>
+	<span class="pre">mem.writeRaw</span> and <span class="pre">mem.readRaw</span> are for.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="safe-trust.html">Trust</a> &mdash; the <span class="pre">trust</span> block that dereferencing, casting to a reference and arithmetic need.</li>
+		<li><a href="safe-c.html">Talking to C</a> &mdash; the external functions that hand out and take pointers.</li>
+		<li><a href="safe-intrinsics.html">Intrinsics</a> &mdash; <span class="pre">mem.readRaw</span>, <span class="pre">mem.writeRaw</span> and the other raw-memory operations.</li>
+		<li><a href="guide-text.html#cstr">Text</a> &mdash; <span class="pre">cstr</span>, C's strings.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-trust.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

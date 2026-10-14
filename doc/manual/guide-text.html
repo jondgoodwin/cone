@@ -1,0 +1,416 @@
+<html>
+  <head>
+	  <title>Text - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Text</div>
+		</div>
+
+    <div class="text">
+
+	<p>Nearly every program reads, builds or prints some text. This page prints a receipt for a café, which
+		takes both kinds of text Cone has: the text written into the program, and text the program builds
+		as it runs.</p>
+
+<pre>
+// Text
+//
+// A café receipt: string literals, the methods of str,
+// and String, text that grows, built the way print is fed.
+
+mod text;
+
+import stdio use *;
+import collections use *;
+
+fn main() {
+  // A string literal is UTF-8 text, so any language prints as written
+  imm shop = "Café Zürich";
+  print &lt;- shop, "\n";
+  // Lengths and positions count bytes: é and ü take two bytes each
+  print &lt;- shop.len, " bytes, ", shop.charCount(), " characters\n\n";
+
+  // Each line of the receipt is a String, built by 'item' below
+  imm coffee = item("coffee", 450);
+  imm cake = item("Sachertorte", 675);
+  imm total = item("total", 450 + 675);
+  print &lt;- coffee.view(), "\n";
+  print &lt;- cake.view(), "\n";
+  print &lt;- total.view(), "\n\n";
+
+  // Some methods change a String where it is
+  mut thanks = String.from("thank you, come again");
+  thanks.replace("come again", "à bientôt");
+  thanks.upperAscii();      // ASCII letters only: à and ô stay as they are
+  print &lt;- thanks.view(), "\n";
+}
+
+// One line of the receipt: the name, dots out to a column, then the price.
+// A literal passed for 'name' is copied into a new String, which moves in
+fn item(name String, cents i64) String {
+  imm price = money(cents);
+  mut line = name;          // the String moves on, into 'line'
+  line.padEnd(20usize - price.len(), '.');
+  line &lt;- price.view();
+  line;
+}
+
+// 1125 cents is "CHF 11.25"; the cents are always two digits
+fn money(cents i64) String {
+  mut s = String.from("CHF ");
+  s &lt;- cents / 100;
+  s &lt;- ".";
+  mut c = String.empty();
+  c &lt;- cents % 100;
+  c.padStart(2usize, '0');
+  s &lt;- c.view();
+  s;
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Café Zürich
+13 bytes, 11 characters
+
+coffee......CHF 4.50
+Sachertorte.CHF 6.75
+total......CHF 11.25
+
+THANK YOU, à BIENTôT
+</pre>
+
+	<h3 id="notice">What to notice</h3>
+	<ul>
+		<li>A string literal, <span class="pre">"Café Zürich"</span>, is a <span class="pre">str</span>, Cone's type for
+			text: it can be named, printed, and asked questions with its methods.</li>
+		<li><span class="pre">len</span> counts bytes and <span class="pre">charCount()</span> counts characters.
+			Text is UTF-8, where a letter like <span class="pre">é</span> takes more than one byte.</li>
+		<li>A <span class="pre">String</span>, from the <span class="pre">collections</span> package, is text that grows.
+			<span class="pre">s &lt;- x</span> adds text or a number to its end, just as
+			<span class="pre">print &lt;- x</span> prints it.</li>
+		<li>Methods such as <span class="pre">replace</span>, <span class="pre">upperAscii</span> and
+			<span class="pre">padEnd</span> change a <span class="pre">mut</span> String where it is, and
+			<span class="pre">view()</span> gives its text to <span class="pre">print</span> to read.</li>
+		<li><span class="pre">item</span> takes a String and gives one back. The String moves in, and moves out
+			again to its caller; a literal passed where a String is wanted is copied into a new one.</li>
+	</ul>
+
+	<!-- NEW: drafted (narrative on the program above) -->
+	<h2 id="twokinds">Two kinds of text</h2>
+	<p>Cone has two kinds of text, for two jobs. Text written into the program, a string literal, never
+		changes and lasts as long as the program runs, so it costs nothing to name or to hand around:
+		<span class="pre">shop</span> is just another name for the literal. Its text is a <span class="pre">str</span>,
+		Cone's type for text, and <span class="pre">str</span> has the methods one expects of text: its length, whether it starts or
+		ends with something, where something else is found in it, the text without the spaces at its ends.</p>
+	<p>Text the program builds as it runs is a <span class="pre">String</span>, from the
+		<span class="pre">collections</span> package. A String owns the memory its text is kept in, and grows that
+		memory as text is added. It has every method of <span class="pre">str</span> as its own, so anything you can
+		ask of a literal you can ask of a String, and more besides: methods that change it, such as
+		<span class="pre">replace</span>, <span class="pre">insert</span>, <span class="pre">padStart</span> and
+		<span class="pre">upperAscii</span>. Wherever a String is wanted and a literal is given, the literal's text is
+		copied into a new String for you:</p>
+<pre>
+imm word String = "copied";       // a literal becomes a String where one is wanted
+imm part = String.from("hello world").sub(6usize, 11usize);   // "world", a new String
+</pre>
+
+	<h2 id="bytes-first">Counting in bytes</h2>
+	<p>Text in Cone is UTF-8, so text in any language is stored and printed just as it is written. In UTF-8, an
+		English letter takes one byte, but <span class="pre">é</span> and <span class="pre">ü</span> take two each, and
+		a Japanese character three. So <span class="pre">"Café Zürich"</span> has 11 characters in 13 bytes.</p>
+	<p>Every length and every position in Cone's text is a number of <b>bytes</b>, as it is in Rust and Go.
+		A position measured in bytes costs nothing to find: the text need not be read from the start to reach it.
+		When you do want characters, <span class="pre">charCount()</span> counts them by walking the text, and
+		<span class="pre">chars()</span> gives you each one in turn. It also explains the last line of the
+		receipt: <span class="pre">upperAscii</span> changes only the 26 ASCII letters, which are one byte each,
+		so <span class="pre">à</span> and <span class="pre">ô</span> come through as they were.</p>
+
+	<h2 id="building">Building text the way you print it</h2>
+	<p>A String is built with the same arrow that prints. <span class="pre">print &lt;- x</span> sends
+		<span class="pre">x</span> to the output; <span class="pre">s &lt;- x</span> adds it to the end of
+		<span class="pre">s</span>. Text is added as it is, and a number as its digits, so
+		<span class="pre">money</span> builds <span class="pre">"CHF 11.25"</span> in a few short lines, with no format
+		string to get wrong. Building in a String and then printing it is also how the receipt lines up its prices:
+		<span class="pre">padEnd</span> fills a String out to a given length, and <span class="pre">padStart</span> fills from
+		the front, which is how the cents are always two digits.</p>
+	<p>To print a String, <span class="pre">print</span> is handed its <span class="pre">view()</span>: the String's text
+		as a <span class="pre">str</span>, read where it is, without copying it.</p>
+
+	<h2 id="moves">A String has one owner</h2>
+	<p>A String owns its text, so, as the <a href="guide-values.html#moving">previous page</a> showed, it moves
+		rather than copies. Follow the text of <span class="pre">"coffee"</span> through the program. The literal is
+		copied once, into a new String, because <span class="pre">item</span> asks for a String. That String moves
+		into the parameter <span class="pre">name</span>, then into the variable <span class="pre">line</span>, which
+		may change, and finally back out to <span class="pre">main</span> as <span class="pre">item</span>'s result.
+		At each step the text stays where it is in memory, and only its ownership passes on. When
+		<span class="pre">main</span> ends, <span class="pre">coffee</span> is the owner, and its text is freed then,
+		once.</p>
+	<p>A function that takes a String and hands back a String, as <span class="pre">item</span> does, is a natural
+		shape in Cone: the caller gives the text away, and gets the finished text back.</p>
+
+	<h2 id="indetail">In detail</h2>
+	<p><i>The rest of this page is the complete reference for text: <span class="pre">str</span>,
+		<span class="pre">String</span>, text as bytes, and C strings; skip to the
+		<a href="guide-conditionals.html">next page</a> if the program above was enough.</i></p>
+
+	<p style="margin-left: 40px;"><i>Note: Making text from bytes, <span class="pre">bytes as &amp;str</span>, does not yet check that the bytes are UTF-8, nor that nothing still writes them while the text is used.</i></p>
+
+	<!-- NEW: drafted -->
+	<p>Text comes in a few forms in Cone, each for a job. A string literal is a <span class="pre">&amp;str</span>, a
+		borrow of text that lasts as long as the program; a <span class="pre">String</span> is text that grows; an
+		owner of text, <span class="pre">So[str]</span>, owns it; and a
+		<span class="pre">cstr</span> is text on its way to a C function. They share one set of methods, written once on
+		<span class="pre">str</span>, and they share one convention: text is UTF-8, and every position in it is a number of
+		<b>bytes</b>.</p>
+
+	<!-- NEW: drafted (from refallocref "The Methods of str", reftypecoll "String", refarray "Initialization") -->
+	<h3 id="text">Text: str and String, briefly</h3>
+	<p>A string literal, <span class="pre">"Hello"</span>, is text: a sequence of bytes holding
+		UTF-8 code points, of the type <span class="pre">&amp;str</span>. It may be held in a variable, handed to a
+		function and printed as it is, and it has the methods one expects of text:</p>
+<pre>
+imm greeting = "Hello world";
+print &lt;- greeting, "\n";
+greeting.len                    // 11: bytes, not characters
+greeting.startsWith("Hello")    // true
+greeting.find("world")          // the byte index where it first starts, as an Option
+</pre>
+	<p>Every position in text is a number of <b>bytes</b>, so it costs nothing to find; a text is UTF-8 by
+		convention, and where a position must fall between characters the method says so.
+		<span class="pre">chars()</span> gives each code point in turn as a <span class="pre">char</span>.</p>
+	<p>Text that grows is a <span class="pre">String</span>, from the <span class="pre">collections</span>
+		package: built from text, appended to with <span class="pre">&lt;-</span>, and lent as text with
+		<span class="pre">view()</span>.</p>
+
+	<h3 id="string">String, the growable string</h3>
+	<p><span class="pre">String</span> is the growable string: a list of
+		bytes and one spare byte, so its block always has a NUL after the text (which the length leaves out,
+		rewritten by each change) for C, and a String that holds nothing has no block at all.
+		<span class="pre">s.view()</span> lends it as a <span class="pre">&amp;str</span> (the static empty
+		literal when it holds nothing), and the String
+		<a href="mod-extensibility.html#lend">folds the methods of <span class="pre">str</span> in as its own</a>
+		(<span class="pre">trimStart</span>, <span class="pre">isCharBoundary</span>, <span class="pre">slice</span>
+		and the ranges <span class="pre">&amp;s[a..&lt;b]</span>, the orderings <span class="pre">&lt;</span> ...:
+		<a href="#strmethods">The Methods of str</a>), and <span class="pre">==</span> and the
+		orderings compare its bytes with any other text, a literal, a <span class="pre">&amp;str</span>, a
+		<span class="pre">So[str]</span> or another String. A literal is copied into a String wherever one is wanted
+		(<span class="pre">imm s String = "core"</span>, <span class="pre">names.push("core")</span>).</p>
+<pre>
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut s = String.from("hello");
+  s &lt;- ", ";                               // append text
+  s &lt;- "world", 33i64;                     // and a number
+  s.appendByte('!');
+  print &lt;- s.view();
+  print &lt;- "\n";
+  print &lt;- s.len();
+  print &lt;- "\n";
+  if s.view().startsWith("hello") { print &lt;- "starts with hello\n"; }
+  s.insert(5usize, "!!");
+  s.replace("l", "L");
+  s.upperAscii();
+  print &lt;- s.view();
+  print &lt;- "\n";
+  imm parts = String.from("a,b,c").split(',');   // copies, which are Strings
+  print &lt;- parts.len();
+  print &lt;- "\n";
+  print &lt;- parts[1usize].view();
+  print &lt;- "\n";
+  imm frozen = s.freeze();                 // the bytes move into a So[str]
+  print &lt;- frozen.len;
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">hello, world33!</span>, <span class="pre">15</span>,
+		<span class="pre">starts with hello</span>, <span class="pre">HELLO!!, WORLD33!</span>,
+		<span class="pre">3</span>, <span class="pre">b</span> and <span class="pre">17</span>, one to a line.</p>
+
+	<h4 id="stringtext">Text and bytes</h4>
+	<p>Text is a <span class="pre">&amp;str</span> throughout: a <span class="pre">&amp;Array[u8]</span> is bytes, and is
+		not text until it says so (<span class="pre">bytes as &amp;str</span>), though any <span class="pre">&amp;str</span>
+		is a <span class="pre">&amp;Array[u8]</span> where bytes are wanted.</p>
+
+	<h4 id="stringmethods">Building, changing and reading a String</h4>
+	<p>Building: <span class="pre">String.from(text)</span>,
+		<span class="pre">String.fromBytes(bytes)</span> (a copy of bytes that are text, such as a buffer read from a
+		file or a socket; nothing checks they are UTF-8, as <span class="pre">bytes as &amp;str</span> does not),
+		<span class="pre">String.withCapacity(n)</span>,
+		<span class="pre">String.fromCStr(c)</span> (a copy of a <a href="#cstr">cstr</a>'s bytes,
+		or of a raw pointer's, which is a panic if null) and <span class="pre">String.join(parts, sep)</span>;
+		appending: <span class="pre">append(text)</span> (also <span class="pre">s &lt;- text</span>; Rust's
+		<span class="pre">push_str</span>), <span class="pre">appendBytes(bytes)</span> (bytes that are text,
+		unchecked like <span class="pre">fromBytes</span>), <span class="pre">appendByte</span>, <span class="pre">appendInt</span>,
+		<span class="pre">appendUInt</span> and <span class="pre">appendHex</span>; editing:
+		<span class="pre">insert(i, text)</span> (<span class="pre">i</span> between characters),
+		<span class="pre">remove(start, end)</span> (the bytes from start up to end, both between characters),
+		<span class="pre">truncate(n)</span>, <span class="pre">clear</span>, <span class="pre">replace(from, to)</span>,
+		<span class="pre">replaceByte</span>, <span class="pre">padStart</span>, <span class="pre">padEnd</span>,
+		<span class="pre">lowerAscii</span> and <span class="pre">upperAscii</span>; reading, in bytes, with
+		<span class="pre">&amp;str</span> text: <span class="pre">equals</span>,
+		<span class="pre">equalsIgnoreAsciiCase</span>, and (folded in from <span class="pre">str</span>)
+		<span class="pre">compare</span>, <span class="pre">startsWith</span>, <span class="pre">endsWith</span>,
+		<span class="pre">find</span>, <span class="pre">findFrom</span> and <span class="pre">contains</span>; and copies
+		of parts, which are Strings: <span class="pre">sub</span>, <span class="pre">trim</span>,
+		<span class="pre">lines</span> and <span class="pre">split</span>.</p>
+
+	<h4 id="stringc">A String for C, and freezing it</h4>
+	<p><span class="pre">s.cstr()</span> is its
+		<a href="#cstr">C string</a>, the NUL already there, so nothing is copied; it is good
+		until the String next changes, and a NUL inside the text is a panic, at the caller's line, since C would
+		stop reading there.
+		<span class="pre">s.freeze()</span> consumes the String and moves its block, shrunk to the text and its
+		NUL, into a <span class="pre">So[str]</span>: the bytes are not copied.</p>
+
+	<h3 id="strmethods">The Methods of str</h3>
+	<p><span class="pre">str</span> has the methods one expects of text, written once on
+		<span class="pre">str</span> itself; a literal, a <span class="pre">&amp;str</span>, a
+		<span class="pre">So[str]</span> or <span class="pre">Rc[str]</span>, and any type that
+		<a href="mod-extensibility.html#lend">lends one</a>, a <span class="pre">String</span>, reaches them all.
+		Every position is a number of <b>bytes</b>, so they cost nothing to find; a text is UTF-8 by
+		convention, and where a position must fall between characters the method says so.</p>
+	<ul>
+		<li><span class="pre">len</span> (bytes, not characters), <span class="pre">isEmpty</span>,
+			<span class="pre">bytes()</span> (the <span class="pre">&amp;Array[u8]</span> of the text),
+			<span class="pre">s[i]</span> (the byte, a <span class="pre">u8</span>; an index past the end is a
+			program error as for a slice) and <span class="pre">isCharBoundary(i)</span> (a character starts at
+			<span class="pre">i</span>, or the text ends there).</li>
+		<li><b>A part of the text:</b> <span class="pre">&amp;s[a..&lt;b]</span>, <span class="pre">&amp;s[a..]</span>
+			and <span class="pre">&amp;s[a..b]</span> (the last byte included), each a <span class="pre">&amp;str</span>
+			borrowed from <span class="pre">s</span>, as a slice's range is a slice; they are the calls
+			<span class="pre">slice(a, b)</span>, <span class="pre">sliceFrom(a)</span> and
+			<span class="pre">sliceThrough(a, b)</span>. <b>A bound that is out of order, past the end, or inside
+			a character is a program error</b> (a panic at the line of the slice), as in Rust: a
+			<span class="pre">&amp;str</span> is always whole characters. The range makes a part only when
+			borrowed; the text itself has no size to hold.</li>
+		<li><b>Code points:</b> <span class="pre">chars()</span>, <span class="pre">charIndices()</span> and
+			<span class="pre">charCount()</span>. <span class="pre">chars()</span> is a cursor whose
+			<span class="pre">next()</span> gives each code point in turn as a
+			<a href="syntax-lexical.html#char"><span class="pre">char</span></a>, an
+			<span class="pre">Option[char]</span>, <span class="pre">None</span> past the last;
+			<span class="pre">charIndices()</span> gives each with the byte index it starts at, a
+			<span class="pre">StrCharIndex</span> with the fields <span class="pre">offset</span> and
+			<span class="pre">ch</span> (what a lexer needs, and every offset is a place a slice may begin).
+			<span class="pre">charCount()</span> counts them by walking the text, O(n), where
+			<span class="pre">len</span> is the bytes. A byte that is not part of well-formed UTF-8 reads as
+			U+FFFD, one for each such byte, so every <span class="pre">char</span> given is valid. These are
+			code points and not graphemes: a letter and its combining accent are two. The bytes
+			themselves are <span class="pre">bytes()</span>, above.</li>
+		<li><span class="pre">startsWith(p)</span>, <span class="pre">endsWith(p)</span>,
+			<span class="pre">find(p)</span> (an <span class="pre">Option</span> of the byte index where
+			<span class="pre">p</span> first starts, 0 for an empty <span class="pre">p</span>),
+			<span class="pre">findFrom(p, i)</span> (at or after <span class="pre">i</span>) and
+			<span class="pre">contains(p)</span>.</li>
+		<li><span class="pre">trim()</span>, <span class="pre">trimStart()</span> and
+			<span class="pre">trimEnd()</span>: a <span class="pre">&amp;str</span> without the ASCII whitespace (space,
+			tab, line feed, form feed, carriage return) at the ends.</li>
+		<li><span class="pre">==</span>, <span class="pre">!=</span>, <span class="pre">&lt;</span>,
+			<span class="pre">&lt;=</span>, <span class="pre">&gt;</span>, <span class="pre">&gt;=</span> and
+			<span class="pre">compare(o)</span> (-1, 0 or 1): the bytes compared, and UTF-8's byte order is
+			the order of the code points. Between <span class="pre">&amp;str</span>, <span class="pre">So[str]</span>,
+			<span class="pre">Rc[str]</span>, a literal and a <span class="pre">String</span>, in any pair
+			(Rust's cross-type <span class="pre">PartialEq</span>). <span class="pre">===</span> asks whether two
+			references are the same place.</li>
+		<li><span class="pre">hash(h)</span>: feeds a <a href="mod-substitution.html#hash">hasher</a> the bytes, then
+			the terminator (<span class="pre">h.writeStr</span>), as a <span class="pre">String</span> does, so any
+			kind of text hashes as the others of the same bytes do. A <span class="pre">Dict[String, V]</span> is
+			asked by a <span class="pre">&amp;str</span> for that reason.</li>
+	</ul>
+
+	<p>How an owner of text (<span class="pre">So[str]</span>, <span class="pre">Rc[str]</span>) is counted and freed is described with <a href="mem-regions.html#dynbody">owning references</a>.</p>
+
+	<h3 id="bytes">A String as a Slice of Bytes</h3>
+    <p>A string literal on its own is not an array but a <span class="pre">&amp;str</span>, a borrow of its text that
+        lasts as long as the program (<a href="mem-regions.html">managed references</a>). Any
+        <span class="pre">&amp;str</span> converts to a slice of bytes, <span class="pre">&amp;Array[u8]</span>,
+        wherever one is wanted, so a literal goes where a slice of bytes is taken. The way back is written,
+        <span class="pre">bytes as &amp;str</span>, since bytes need not be UTF-8:</p>
+<pre>
+fn say(bytes &amp;Array[u8]) { printStr(bytes as &amp;str); }
+
+say("Padma");                       // the literal, as a slice of bytes
+</pre>
+
+	<h3 id="finetuning">Fine-tuning</h3>
+	<p><i>Needed only where text meets C.</i></p>
+
+	<h4 id="cstr">C Strings: cstr</h4>
+	<p>A C function that takes text takes a <span class="pre">const char *</span>: one pointer to bytes that
+		end in a zero, whose length it finds by scanning for the zero. Cone's name for that is
+		<span class="pre">cstr</span>, a borrowed C string, and a C binding declares its strings with it:
+		<span class="pre">extern fn puts(s cstr) i32;</span>. It is a pointer and no more (a one-field struct that
+		crosses to C as one), and it promises the zero. Nothing else does: a <span class="pre">&amp;str</span> may
+		be part of a longer text and a slice never has one, so neither converts to a
+		<span class="pre">cstr</span>, nor does a raw pointer. What does:</p>
+	<ul>
+		<li>A <b>literal</b>, wherever a <span class="pre">cstr</span> is wanted: <span class="pre">puts("hi")</span>.
+				A literal with a zero <i>inside</i> (<span class="pre">"ab\x00cd"</span>) is <b>refused</b> there, since C
+				would read only <span class="pre">ab</span>; the same text is fine as a <span class="pre">&amp;str</span>,
+				a <span class="pre">String</span> or an owner.</li>
+		<li>A <b>String</b>, <span class="pre">s.cstr()</span>, with no copy: its block always keeps a zero after
+			its bytes, rewritten by each change, and a String that holds nothing has a static empty literal for
+			one. A zero <i>inside</i> the text would end the string early for C, so <span class="pre">cstr()</span>
+			scans for one (at <span class="pre">memchr</span>'s speed) and <b>panics</b>, at the caller's line, if it
+			finds it. It is good until the String next changes or dies.</li>
+		<li>An <b>owner of text</b> keeps the zero after its bytes too, however it was made (copied from a
+			literal or a view, or by <span class="pre">s.freeze()</span>): <span class="pre">owner.cstr()</span> on a
+			<span class="pre">So[str]</span> is its C string, with no copy, checking the text for a zero inside
+			as a String's <span class="pre">cstr()</span> does (<span class="pre">cstr.fromOwned(&amp;owner)</span> is the
+			same call). A plain <span class="pre">&amp;str</span> has no <span class="pre">cstr()</span>: it promises no
+			zero.</li>
+		<li>A <b>general <span class="pre">&amp;str</span></b>, which promises nothing after its bytes, reaches C by a
+			copy: <span class="pre">String.from(s).cstr()</span>. There is no owned C-string type; a String is one.</li>
+		<li>A <b>raw pointer</b> the caller knows ends in a zero, <span class="pre">cstr.fromPtr(p)</span>: an
+			<span class="pre">argv</span> entry, what <span class="pre">getenv</span> answers when it is not null. A
+			C function that may take or answer a null string stays a <span class="pre">*u8</span> in its binding.</li>
+	</ul>
+	<p>From C, <span class="pre">c.view()</span> is the <span class="pre">&amp;str</span> of a
+		<span class="pre">cstr</span>, found by scanning for the zero and <b>not checked to be UTF-8</b> (text is UTF-8
+		by convention), <span class="pre">c.len()</span> the count of bytes before it, and
+		<span class="pre">c.ptr()</span> the pointer, for a function that takes a buffer. Copy the view into a
+		<span class="pre">String</span> to keep it (<span class="pre">String.fromCStr(c)</span>); whether C or Cone frees what
+		a C function answered is the binding's knowledge, which copies and then calls C's
+		<span class="pre">free</span>.</p>
+<pre>
+imm name String = "core";
+libc.remove(name.cstr());                    // a pointer to its bytes and the zero, no copy
+libc.remove("old.tmp");                      // a literal is a cstr where one is wanted
+imm owner So[str] = "scratch.tmp";
+libc.remove(owner.cstr());                   // an owner of text is one too, no copy
+imm text = libc.strerror(2i32).view();       // a &amp;str of C's answer, scanned
+libc.fwrite(bytes as *u8, 1usize, bytes.len, f);  // a buffer and a count: a pointer, asked for
+</pre>
+	<p>A slice is an address and a count, so it is <b>not</b> a pointer: the implicit conversion of a
+		slice to a raw pointer is gone, and <span class="pre">xs as *T</span> takes the address of a
+		slice's first element, for a C function that takes a buffer and a length
+		(<a href="guide-values.html#slicenoptr">a slice coerces to no pointer</a>). A buffer and its length are
+		two parameters in C, so they stay a <span class="pre">*u8</span> and a count.</p>
+
+	<h2 id="comesback">Comes back in &hellip;</h2>
+	<ul>
+	<li><a href="guide-collections.html">Collections</a>: more of <span class="pre">String</span>, beside
+		<span class="pre">List</span> and <span class="pre">Dict</span>.</li>
+	<li><a href="syntax-lexical.html#string">Lexical elements</a>: how a string or character literal is written,
+		its escapes, raw and multi-line forms.</li>
+	<li><a href="mem-regions.html">Owning references</a>: <span class="pre">So[str]</span> and <span class="pre">Rc[str]</span> as owners, and how a body is allocated.</li>
+	<li><a href="mem-borrowing.html">Borrowed references</a>: what lending text, as <span class="pre">view()</span>
+		does, means underneath.</li>
+	<li><a href="safe-c.html">Talking to C</a>: <span class="pre">extern</span> bindings that take a <span class="pre">cstr</span>.</li>
+	<li><a href="guide-values.html#conversion-coercion">Conversion, coercion and subtypes</a>: a slice coerces to no pointer.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-conditionals.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

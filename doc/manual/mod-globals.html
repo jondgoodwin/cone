@@ -1,0 +1,264 @@
+<html>
+  <head>
+	  <title>Global State and Initialization - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Global State and Initialization</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>A module may declare its own
+		<a href="#dyninit">initializer and finalizer</a>, and every global
+		without an initial value must be assigned by its initializer; the entry
+		the compiler builds for a program runs every module's initializer before
+		the program's <span class="pre">main</span> and every finalizer after it
+		(<a href="#initall">below</a>). A global may be
+		<a href="#threadlocal">thread-local</a>, one copy per thread. The purity rules of
+		<span class="pre">initpure</span> are not checked.</i></p>
+
+	<h2 id="why">A module's own state</h2>
+	<!-- NEW: drafted -->
+	<p>A module holds state as well as names: its global variables, one of each for the whole
+		program, as a struct's value holds its fields. Because there is one of each, and every
+		thread may reach it, a global is more constrained than a local, and because a module may
+		need to set its state up when the program starts, and release it when the program ends,
+		every module may have an initializer and a finalizer, run in the order the modules
+		<a href="mod-packages.html#dag">depend on each other</a>. A global's members may also be
+		folded in as names of the module: see <a href="mod-extensibility.html#globals">Folding
+		through a global</a>.</p>
+
+	<h2 id="global">Global variables</h2>
+	<p>Global variables across all modules (and types)
+		are managed by the global region.
+		Memory space for them is allocated automatically and all-at-once
+		when a program is loaded for execution.
+		The lifetime of all global variables is the same as the program's lifetime,
+		since global variables come into being when the program starts
+		and only disappear once the program stops.
+		The lifetime annotation for this scope is <span class="pre">'static</span>.</p>
+	<p>Global variable declarations have two important constraints:</p>
+	<ul>
+		<li>A global variable's type must be <a href="conc-sharing.html#shareable">Shareable</a>.
+			Every thread may name a global at once, and every program is taken to have
+			threads, so a plain <span class="pre">mut</span> global is refused.
+			A global may be <span class="pre">imm</span> (given its value where it is declared,
+			or by <a href="#dyninit">the module's initializer</a>),
+			<span class="pre">imm</span> holding a lock or an atomic value (the shared mutable form),
+			<a href="#threadlocal"><span class="pre">@threadlocal</span></a> (one per thread, never shared),
+			or <span class="pre">@workgroup</span>.
+			A value known only after the program has started (a device made, a choice
+			read from the command line) belongs to the object it describes, and is handed
+			down as state rather than kept in a global.</li>
+		<li>Variables <i>must</i> be explicitly initialized with a valid value.
+			In many cases, the initial value is a statically-computable
+			constant value whose exact size is also known to the compiler:
+			a literal, a named constant, or a <a href="guide-values.html#const">constant expression</a>.
+			Otherwise the variable is declared with its type and no value,
+			and <a href="#dyninit">the module's initializer</a> assigns it.</li>
+	</ul>
+	<p style="margin-left: 40px;"><i>Note: Not yet checked: a plain <span class="pre">mut</span>
+		global is still accepted. The check at the declaration is being built.</i></p>
+
+	<p>A global variable may also <b>fold its type's members in as names of the module</b>, with the
+		same <span class="pre">use</span> clause a struct's field carries:</p>
+<pre>
+imm config Config = new Config(80i64, 24i64) use *;
+</pre>
+	<p>Every public member of <span class="pre">Config</span> is now a name of this module, reached
+		through <span class="pre">config</span>, so a function here writes
+		<span class="pre">area()</span> where it would have written
+		<span class="pre">config.area()</span>. A global is to a module what a field is to a type,
+		with one difference that makes this the cheaper fold: there is exactly one of it, at an
+		address known when the program is compiled. See
+		<a href="mod-extensibility.html#globals">Folding through a global</a> for the whole of the clause,
+		including what <span class="pre">pub use</span> lets another module see.</p>
+
+	<h2 id="threadlocal">Thread-local global variables</h2>
+	<p>A global variable written with <span class="pre">@threadlocal</span> after its permission is
+		<b>one copy per thread</b>: every thread that runs has its own, and a thread's code reads
+		and writes only its own.</p>
+<pre>
+mut @threadlocal depth i64 = 0i64;
+
+fn enter() {
+  depth = depth + 1i64;   // this thread's depth, whatever the others' are
+}
+</pre>
+	<p>Each thread's copy starts from the initial value written on the declaration, which is
+		why a thread-local global is constrained more than other globals:</p>
+	<ul>
+		<li><b>It must be written with an initial value</b>, a literal as every global's is. It
+			cannot be left for the <a href="#dyninit">module's initializer</a> to assign, since that
+			runs on one thread and would give a value to that thread's copy alone.</li>
+		<li><b>It must be <span class="pre">mut</span>.</b> A copy per thread of a value no thread
+			can change would be the same value in every copy.</li>
+		<li><b>Its type may not need finalizing</b>: not a struct with a
+			<a href="guide-structs.html#finalizer">finalizer</a>, nor anything holding one, nor an owning
+			reference whose region has work to do when it is dropped. Nothing finalizes a thread's
+			copy yet when its thread ends.</li>
+		<li><b>Only a global declared in a module may be thread-local</b>: not a local, a
+			function's or a type's static, a parameter, a field, or a module trait's global.</li>
+	</ul>
+	<p>A thread-local global is declared <span class="pre">extern</span> like any other, with
+		<span class="pre">@threadlocal</span> kept and no value, and a library's
+		<a href="safe-c.html#includefile">include file</a> declares its thread-local globals that way.
+		Every declaration of it must say <span class="pre">@threadlocal</span>, because a compiled
+		object reaches a thread's copy by a different route than it reaches ordinary storage. The
+		compiler checks this only among the declarations of one compile.</p>
+	<p><i>Implemented. The language itself starts no thread; a thread the
+		<a href="conc-primitives.html#thread"><span class="pre">thread</span> package</a> starts, or one
+		started through the operating system directly, sees its own copy as described.</i></p>
+	<p id="workgroup">A global written with <span class="pre">@workgroup</span> after its permission is a GPU
+		workgroup's: one copy for each workgroup of a compute dispatch, which its invocations
+		share, and an ordinary global on the CPU (<a href="conc-gpu.html#workgroup">Workgroup
+		memory</a>). It is written as a thread-local is, but with no initial value; a global is
+		one or the other, never both.</p>
+
+	<h2 id="dyninit">Dynamic initialization of global variables</h2>
+	<p>Sometimes, the initial value of a global variable is unknown,
+		or too complex to specify, at compile-time.
+		In such cases, we want to initialize the variable
+		using run-time logic invoked when the program or library is loaded.
+		To accomplish this, declare the variable without an initial value
+		and then initialize that variable inside
+		the module's initializer, a function called <span class="pre">init</span>.</p>
+<pre>
+imm handler Handler;
+
+fn @initpure init() {
+  handler = new Handler(80);
+}
+</pre>
+	<p>The variable is declared with its type, since there is no value to infer it from.
+		Inside <span class="pre">init</span>, such a variable starts out holding nothing, exactly
+		as a local declared without a value does: <span class="pre">init</span> may assign it once,
+		even when it is <span class="pre">imm</span>, and may not read it before it does. Every other
+		function sees it holding the value <span class="pre">init</span> gave it.</p>
+	<p>The initializer is declared with <span class="pre">initpure</span>,
+		a less constrained version of
+		<a href="safe-purity.html#pure"><span class="pre">pure</span></a>.
+		Any function marked as <span class="pre">initpure</span>
+		may not read any uninitialized global variables in the current module
+		and may only call functions marked as
+		<span class="pre">pure</span> or <span class="pre">initpure</span>.</p>
+	<p><span class="pre">initpure</span> marks a function as safe to call while initialization
+		runs, because it relies on no state that is not ready yet: no uninitialized global of its
+		module, and the modules it depends on are initialized first. It does not forbid i/o.
+		Set-up an initializer needs, such as loading a library, opening a device or reading
+		the environment, is done through functions marked <span class="pre">initpure</span>,
+		kept to what the module's own state needs.</p>
+	<p>To ensure safe and complete dynamic initialization, the compiler:</p>
+	<ul>
+		<li>Verifies that every uninitialized global variable is assigned a value at some point
+			within the same module's <span class="pre">initpure</span>-marked
+			<span class="pre">init</span> function.</li>
+		<li>Verifies that <span class="pre">pure</span> and <span class="pre">initpure</span>
+			functions comply with their constraints.</li>
+		<li>Runs the initializers for any dependent modules
+			before running the initializer for the module.</li>
+	</ul>
+	<p><i>The first and last are implemented. The second is not: a function marked
+		<span class="pre">@initpure</span> is accepted, and nothing yet checks what it calls,
+		since <span class="pre">pure</span> functions are not implemented.</i></p>
+
+	<p id="final">The initializer is written <span class="pre">fn @initpure init()</span>, taking no
+		parameters and returning nothing. A module may also declare a <b>finalizer</b>, a function
+		called <span class="pre">final</span>, written <span class="pre">fn final()</span>, to release
+		its own state when the program is shutting down:</p>
+<pre>
+fn final() {
+  log.flush();
+}
+</pre>
+	<p>Each module declares only its own initializer and finalizer, for its own state; it cannot
+		set up another module's. A module may declare either, both or neither. At module scope the
+		names <span class="pre">init</span> and <span class="pre">final</span> mean these two, and
+		naming anything else by them is an error.</p>
+	<p>Where a module's global variables hold values whose type has a
+		<a href="guide-structs.html#finalizer">finalizer</a>, or owning references, the compiler gives the
+		module a finalizer that runs the module's own <span class="pre">final</span>, if it declares
+		one, and then finalizes each such global, releasing an owner as a local's end would, in the
+		order they are declared: the way a type's
+		<span class="pre">final</span> runs before its fields are finalized. Such a module may not
+		declare a function named <span class="pre">drop</span>, which is the name the compiler gives
+		it.</p>
+
+	<h2 id="initall">Running every module's initializer and finalizer</h2>
+	<p>The compiler stitches every module's initializer together, in the order the modules
+		<a href="mod-packages.html#dag">depend on each other</a>: each module's runs after the initializers of every
+		module it depends on, and the program's own module's runs last. Every module's finalizer runs
+		in exactly the reverse order, the program's own first. A module with neither is left out.</p>
+	<p>A <a href="safe-c.html#cnames">C-named</a> module is reached by its C names, not by an import, so a
+		program need not know it exists: the program may link it, as every program links the
+		runtime, and declare <span class="pre">extern</span> only the functions it calls. Its
+		initializer is therefore run when the object holding it is loaded, as a C
+		static constructor is, before the program's <span class="pre">main</span> and ahead of every
+		other module's initializer. So a C-named module's initializer may not depend on a module
+		with an initializer of its own, unless that module is C-named too. Its initializer and
+		finalizer are named after the module as any module's are, <span class="pre">cla.init</span>
+		and not the C name <span class="pre">init</span>, so two C-named modules may each declare
+		them.</p>
+	<p style="margin-left: 40px;"><i>Note: Not followed: where two C-named modules with
+		initializers are compiled separately, the order their initializers run is the linker's,
+		not the order the modules depend on each other (within one compile it is that order). A
+		C-named module's finalizer runs only in a program that imports the module.</i></p>
+	<p>A program does not start them. The compiler builds the program's entry, the
+		C <span class="pre">main</span> the system calls, round the program's own
+		<span class="pre">main</span>: the entry runs every module's initializer, calls
+		<span class="pre">main</span> (with the command line's <span class="pre">argc</span> and
+		<span class="pre">argv</span> if it takes them), runs every module's finalizer, and exits
+		with the value <span class="pre">main</span> returned (0 if it returns nothing).
+		Everything has been initialized when <span class="pre">main</span> begins, and a program that
+		opened files in an initializer has them closed by a finalizer when
+		<span class="pre">main</span> returns. The program's <span class="pre">main</span> is a
+		function of the module that is the program, taking nothing, or an
+		<span class="pre">i32</span> and a <span class="pre">**u8</span>, and returning an integer or
+		nothing:</p>
+<pre>
+fn main() i32 {
+  run();
+  0;
+}
+</pre>
+	<p>The names <span class="pre">initAll()</span> and <span class="pre">finalAll()</span>, which
+		every module can use, run the same two stitched sequences, and each runs its modules once:
+		a program that calls them itself, as programs did before the entry was built, finds nothing
+		left to run at <span class="pre">initAll()</span>, and runs the finalizers at its first
+		<span class="pre">finalAll()</span> (so it may finalize early) and not again when
+		<span class="pre">main</span> returns.</p>
+	<p><i>A program ends without running any finalizer when it panics, or calls the C
+		library's <span class="pre">exit</span> or <span class="pre">abort</span>: the
+		entry's final runs only when <span class="pre">main</span> returns. A library compiled on
+		its own has no entry of its own and keeps its initializer and
+		finalizer for the program that imports it, whose include file for the library declares
+		them, with <span class="pre">extern</span>, and declares the globals its finalizer
+		finalizes. A C program that calls such a library is on its own for setting it up. A
+		<span class="pre">main</span> that takes any other parameters, a function with a C name
+		that is the program's own C entry, and a WebAssembly or GPU module, get no
+		entry from the compiler.</i></p>
+
+	<h2 id="comesback">Comes back in</h2>
+	<ul>
+		<li><a href="conc-sharing.html">What may cross a thread</a>: why a global must be
+			<span class="pre">Shareable</span>.</li>
+		<li><a href="mem-borrowing.html#globalview">A borrow into a mut global</a>.</li>
+		<li><a href="mem-lifetimes.html">Lifetimes</a>: <span class="pre">'static</span>.</li>
+		<li><a href="safe-purity.html">Purity</a>: <span class="pre">pure</span>, which
+			<span class="pre">initpure</span> loosens.</li>
+		<li><a href="safe-c.html">Talking to C</a>: C-named modules and their initializers.</li>
+		<li><a href="conc-gpu.html">The GPU</a>: <span class="pre">@workgroup</span> globals.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safety.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

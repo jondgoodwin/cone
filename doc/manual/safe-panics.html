@@ -1,0 +1,216 @@
+<html>
+  <head>
+	  <title>When a program stops: panics - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">When a program stops: panics</div>
+		</div>
+
+    <div class="text">
+
+		<p style="margin-left: 40px;"><i>Note: Panics are implemented, as described below:
+			<span class="pre">panic</span>,
+			<span class="pre">assert</span> (every build), <span class="pre">assertDebug</span>
+			and <span class="pre">assertDebugMsg</span> (debug builds only),
+			<span class="pre">unreachable</span>,
+			<span class="pre">todo</span>, the panic hook and the <span class="pre">Never</span>
+			return type. Not built: <span class="pre">requires</span>, and contract conditions.
+			Overflow and divide by zero do not panic.</i></p>
+
+	<h2 id="why">Why you'd want it</h2>
+	<p>An exception occurs whenever a program tries to do something and fails.
+		Sometimes, there is no graceful way to recover from certain exceptions.
+		For example, maybe the program:</p>
+	<ul>
+		<li>Needs more heap or stack memory and it is all used up.</li>
+		<li>Encounters a math error, such as an overflow or divide by zero.</li>
+		<li>Tries to access an out-of-bounds memory location.</li>
+	</ul>
+	<p>When there is no obvious way to recover from an exception, the program "panics",
+		shutting down as quickly and gracefully as possible.
+		Part of the shutdown process involves reporting on the nature of the failure
+		so the logic problem that failed to prevent this problem can be fixed.</p>
+	<p>A failure a program can recover from is a different thing: a function that may fail says so by
+		answering a <a href="guide-functions.html#result">Result</a>, and its caller decides what to do.
+		A panic is for what must not happen at all.</p>
+
+	<h2 id="panic">Panics</h2>
+	<p>Recovering from a failure may be possible and the right thing to do
+		in certain circumstances.
+		However, sometimes the right response to a bad condition
+		is to intentionally shut the program down: something that must not happen
+		has, and going on would only compound it. A panic is a bug report, not a way
+		to handle an error. The core library's <span class="pre">panic</span> does it:</p>
+<pre>
+fn half(n i32) i32 {
+  if n % 2 == 1 {panic("half of an odd number");}
+  n / 2;
+}
+</pre>
+	<p>A panic writes out whatever the program has printed to stdout, then one line to
+		stderr, naming the source file and the line where <span class="pre">panic</span>
+		was called, and the message:</p>
+<pre>
+panic at shapes.cone:2: half of an odd number
+</pre>
+	<p>and then ends the program at once, through the C library's
+		<span class="pre">abort</span>. Nothing unwinds: no finalizer runs, no caller
+		sees the panic, and the program's other threads end with it. A panic on a thread
+		other than the one the program started on names it:
+		<span class="pre">panic in thread 5828 at ...</span>.</p>
+	<p>The checks the compiler inserts panic the same way, naming what they found:
+		an index out of bounds (<span class="pre">index 5 is out of bounds for a count of
+		3</span>), a slice's range (<span class="pre">slice 2..&lt;7 is out of bounds for a
+		count of 5</span>), and an allocation whose region has no memory to give
+		(<span class="pre">out of memory allocating 24 bytes</span>).</p>
+
+	<h3 id="never">Never</h3>
+	<p><span class="pre">panic</span> returns <span class="pre">Never</span>, the type
+		that says a call does not return. So it may end a block that must produce a value,
+		as a <span class="pre">return</span> may, and gives that block no value on that
+		path:</p>
+<pre>
+imm half = if n &gt;= 0 {n / 2;} else {panic("negative");};
+</pre>
+	<p>A function of a program's own may return <span class="pre">Never</span>, and must
+		then end in a call that does not return, or in an <span class="pre">if</span> each
+		of whose paths does; it may not say <span class="pre">return</span>. The C library's
+		<span class="pre">abort</span> and <span class="pre">exit</span> return
+		<span class="pre">Never</span>.</p>
+
+	<h3 id="unreachable">unreachable and todo</h3>
+	<p><span class="pre">unreachable()</span> marks code the author knows cannot be
+		reached, and <span class="pre">todo()</span> code not written yet. Each returns
+		<span class="pre">Never</span>, and panics if it runs, with a message of its own or
+		one given:</p>
+<pre>
+match n {
+  case ==1 {"one";}
+  case ==2 {"two";}
+  else {unreachable();}
+}
+fn area(sides i32, size i32) i32 {
+  if sides == 4 {size * size;} else {todo("areas of other shapes");}
+}
+</pre>
+
+	<h3 id="assert">assert and requires</h3>
+	<p><span class="pre">assert</span> triggers a panic when its condition
+		evaluates to false, with the message given, or
+		<span class="pre">assertion failed</span>.</p>
+<pre>
+assert(idx &lt; bound);
+assert(idx &lt; bound, "the index is within the table");
+</pre>
+	<p><span class="pre">assert</span> is performed in every build, release builds included.
+	<span class="pre">assertDebug</span> is performed in debug builds only
+	(<span class="pre">conec --debug</span>, and Congo's default): in a release build the
+	whole use is dropped, and its condition is <b>not evaluated</b>, so a check may cost
+	what it likes, and a condition with a side effect has it only in a debug build.
+	<span class="pre">assertDebugMsg</span> is the same with a message of its own.
+	The panic names the line where either is used, as <span class="pre">assert</span>'s does,
+	and says the same: <span class="pre">assertion failed</span>, or the message given.</p>
+<pre>
+assertDebug(isSorted(table));
+assertDebugMsg(isSorted(table), "the table is kept sorted");
+</pre>
+	<p>Both are <a href="mod-generativity.html">macros</a> in the core library, so the condition
+	is substituted where they are used rather than evaluated before the call. Each expands to
+	an <span class="pre">if</span> on <span class="pre">isDebugBuild()</span>, a
+	<a href="safe-intrinsics.html#debugbuild">constant</a> that is true in a debug build, and
+	a program may branch on it the same way. A macro takes no default argument, which is why
+	the form with a message has a name of its own.
+	The camelCase spelling of
+	<span class="pre">assertDebug</span> is for now.</p>
+	<p>This page first had <span class="pre">assert</span> performed only in test builds,
+	and a <span class="pre">requires</span> statement as the equivalent guarantee in
+	production:</p>
+<pre>
+requires idx &lt; bound;
+</pre>
+	<p>That always-checked role is now <span class="pre">assert</span>'s.
+	<span class="pre">requires</span> and <span class="pre">ensures</span> are kept for the
+	<a href="#contracts">contract conditions</a>, which are not built yet.</p>
+
+	<h3 id="where">Where it happened</h3>
+	<p>A message is text, a <span class="pre">&amp;str</span>: a literal, or a
+		<span class="pre">String</span>'s <span class="pre">view()</span>.
+		Each of these reports where it was <b>called</b>, not where it is written in the
+		core library. Each takes two more parameters,
+		<span class="pre">file &amp;Array[u8] = srcFile()</span> and
+		<span class="pre">line u32 = srcLine()</span>, whose default values
+		<a href="safe-intrinsics.html#srcloc">answer where the call taking them is</a>. A
+		function that panics on its caller's behalf may declare the same two and hand them
+		on, and then reports its caller too:</p>
+<pre>
+fn at(list &amp;Array[i32], i usize, file &amp;Array[u8] = srcFile(), line u32 = srcLine()) i32 {
+  if i &gt;= list.len {panic("past the end", file, line);}
+  list[i];
+}
+</pre>
+	<p><span class="pre">assertDebug</span> and <span class="pre">assertDebugMsg</span> take
+	neither parameter. They are macros, and <span class="pre">srcFile()</span> and
+	<span class="pre">srcLine()</span> written in a macro's body answer where the macro is
+	used. In a macro used inside another macro's body, they answer where the outermost one is used.</p>
+
+	<h3 id="hook">The panic hook</h3>
+	<p><span class="pre">setPanicHook</span> names a function a panic calls once its line
+		is written and before the program ends, with the message and the location: to log
+		the failure somewhere, or report it. The last one set is called, from whichever
+		thread panicked. A panic inside it ends the program at once.</p>
+<pre>
+fn logPanic(msg &amp;str, file &amp;str, line u32) {
+  // write it to the log
+}
+
+setPanicHook(&amp;logPanic);
+</pre>
+
+	<h2 id="contracts">Contract conditions</h2>
+	<p style="margin-left: 40px;"><i>Note: Not built. This is the design these pages
+		first described, kept as it was written; the design of error handling now under way may rewrite it.</i></p>
+	<p>Where we want a function to preserve some invariants on entry
+		and exit from the function, the
+		<span class="pre">requires</span> and <span class="pre">ensures</span>
+		clauses may be added to a function signature.
+		These provide a visibly strengthened contract that governs use of the
+		function. If these conditions fail, a panic is triggered.</p>
+<pre>
+fn factorial(mut n i32) i32
+  requires n &gt; 0
+  ensures result &gt; 0 {
+
+  mut result = 1;
+  while n {
+    result *= n--;
+  }
+  result;
+}
+</pre>
+	<p>This function expects that it will get a positive, non-zero number
+		and return the same. Any other behavior is a bug which we
+		want to catch quickly in testing and fix.</p>
+
+	<h2 id="comesback">Comes back in &hellip;</h2>
+	<ul>
+		<li><a href="guide-functions.html#result">Functions, closures and Result</a>: a failure the caller
+			can recover from, answered as a <span class="pre">Result</span>.</li>
+		<li><a href="lib-test.html">Testing</a>: checks that report a failure and go on, and a test that expects
+			a panic.</li>
+		<li><a href="safe-intrinsics.html">Intrinsics</a>: <span class="pre">srcFile</span>,
+			<span class="pre">srcLine</span> and <span class="pre">isDebugBuild</span>.</li>
+		<li><a href="conc-locks.html">Locks</a>: what a panic means for a lock held.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-platforms.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
