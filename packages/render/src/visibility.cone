@@ -387,7 +387,7 @@ pub struct Visibility {
     mut copy = LodChain.empty(chain.hysteresis);
     mut k = 0usize;
     while k < chain.levels.len() {
-      copy.add(*chain.levels[k], *chain.minSizes[k]);
+      copy.addWithMaterial(*chain.levels[k], chain.materialOf(k), *chain.minSizes[k]);
       k = k + 1usize;
     }
     if it.chain >= 0i32 {
@@ -507,14 +507,14 @@ pub struct Visibility {
     }
     if prev != level and t < 1. {
       // Two levels, each by a share of the pixels that together make the range's share (fade.slang)
-      out.push(new DrawItem(levelMesh(&chains, it, prev), it.material, it.model, it.tint, NO_BONES, it.layers,
+      out.push(new DrawItem(levelMesh(&chains, it, prev), levelMaterial(&chains, it, prev), it.model, it.tint, NO_BONES, it.layers,
         it.castsShadow, 1. - (1. - t) * v, it.occludable));
-      out.push(new DrawItem(levelMesh(&chains, it, level), it.material, it.model, it.tint, NO_BONES, it.layers,
+      out.push(new DrawItem(levelMesh(&chains, it, level), levelMaterial(&chains, it, level), it.model, it.tint, NO_BONES, it.layers,
         it.castsShadow, 0. - t * v, it.occludable));
       stats.fading = stats.fading + 1u32;
       stats.drawn = stats.drawn + 2u32;
     } else {
-      out.push(new DrawItem(levelMesh(&chains, it, level), it.material, it.model, it.tint, NO_BONES, it.layers,
+      out.push(new DrawItem(levelMesh(&chains, it, level), levelMaterial(&chains, it, level), it.model, it.tint, NO_BONES, it.layers,
         it.castsShadow, if v < 1. { 1. - v; } else { 0.; }, it.occludable));
       stats.drawn = stats.drawn + 1u32;
     }
@@ -568,7 +568,8 @@ pub struct Visibility {
                 imm cur = usize.from(lodSlots[i * LOD_SLOTS].level);
                 level = selectLod(chain, size * bias, cur);
               }
-              mesh = *chain.levels[level];
+              // A level with a material of its own (an impostor card) casts nothing: the last plain one casts
+              mesh = *chain.levels[chain.lastPlainLevel(level)];
             }
             out.push(new DrawItem(mesh, it.material, it.model, it.tint, NO_BONES, it.layers, true, 0., false));
             stats.casters = stats.casters + 1u32;
@@ -584,6 +585,16 @@ pub struct Visibility {
 fn levelMesh(chains &List[LodChain], it &SceneItem, l u32) MeshHandle {
   if it.chain >= 0i32 { return *chains[usize.from(u32.from(it.chain))].levels[usize.from(l)]; }
   it.mesh;
+}
+
+// The material an item draws level 'l' with: the level's own (an impostor
+// card's), or the item's
+fn levelMaterial(chains &List[LodChain], it &SceneItem, l u32) MaterialHandle {
+  if it.chain >= 0i32 {
+    imm own = chains[usize.from(u32.from(it.chain))].materialOf(usize.from(l));
+    if !own.isNone() { return own; }
+  }
+  it.material;
 }
 
 // The share of an item at distance 'd' that its range lets be seen, 0 to 1:
