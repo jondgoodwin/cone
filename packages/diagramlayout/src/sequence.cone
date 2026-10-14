@@ -1,0 +1,189 @@
+// ======== Sequence diagrams ========
+//
+// Participants across the top, each with a lifeline running down; messages
+// between them in time order, one row each; activations (the thin bars on a
+// lifeline while a participant is busy) worked out from the messages.
+//
+// MESSAGES: MSG_CALL (a solid line, filled head: the caller waits), MSG_ASYNC
+// (a solid line, open head: no wait), MSG_RETURN (a dashed line, open head),
+// MSG_SELF (a loop out of and back to the same lifeline).
+// ACTIVATIONS (UML 2): a call to B opens an activation of B at its row; the next
+// return from B to the caller closes the most recent open activation of B. A call
+// with no return closes at the end of the last row B sends from. Activations on
+// one lifeline nest, each drawn a few pixels right of the one it sits in.
+// SPACING: a message that spans several lifelines asks its label's width spread
+// over the gaps it crosses; each gap is the largest such demand, at least 'minGap'.
+// The sequence is in the order given: layout does not reorder messages (time is
+// the vertical axis and means something). Not built: combined fragments (alt, loop,
+// opt), notes, lifeline creation and destruction.
+
+pub const MSG_CALL = 0u32;
+pub const MSG_ASYNC = 1u32;
+pub const MSG_RETURN = 2u32;
+pub const MSG_SELF = 3u32;
+
+pub struct Participant {
+  pub name String;
+  pub w f32;                       // the head box
+  pub h f32;
+  pub x f32;                       // lifeline x (the centre), written by layout
+}
+
+pub struct Message {
+  pub from u32;
+  pub to u32;
+  pub label String;
+  pub labelW f32;                  // the label's width, from the caller's measurement
+  pub kind u32;
+  pub y f32;                       // written by layout
+}
+
+pub struct Activation {
+  pub participant u32;
+  pub y0 f32;
+  pub y1 f32;
+  pub depth u32;
+  pub x f32;                       // the bar's left edge
+  pub w f32;
+}
+
+pub struct SequenceDiagram {
+  pub participants List[Participant];
+  pub messages List[Message];
+  pub activations List[Activation];
+  pub width f32;
+  pub height f32;
+  pub lifelineTop f32;
+  pub lifelineBottom f32;
+  pub rowHeight f32;
+
+  pub fn make() SequenceDiagram {
+    new SequenceDiagram(List[Participant].empty(), List[Message].empty(), List[Activation].empty(), 0., 0., 0., 0., 0.);
+  }
+
+  pub fn addParticipant(self &mut, name &str, w f32, h f32) u32 {
+    participants.push(new Participant(String.from(name), w, h, 0.));
+    u32.from(participants.len() - 1usize);
+  }
+
+  pub fn addMessage(self &mut, from u32, to u32, label &str, labelW f32, kind u32) u32 {
+    mut k = kind;
+    if from == to { k = MSG_SELF; }
+    messages.push(new Message(from, to, String.from(label), labelW, k, 0.));
+    u32.from(messages.len() - 1usize);
+  }
+}
+
+pub struct SequenceOptions {
+  pub minGap f32;
+  pub margin f32;
+  pub rowHeight f32;               // between messages
+  pub activationWidth f32;
+  pub headGap f32;                 // from the head boxes to the first message
+  pub tailGap f32;
+
+  pub fn make() SequenceOptions { new SequenceOptions(150., 30., 46., 12., 34., 30.); }
+}
+
+pub fn layoutSequence(d &mut SequenceDiagram, o &SequenceOptions) {
+  imm np = d.participants.len();
+  if np == 0usize { return; }
+  // gaps
+  mut gap = List[f32].empty();
+  mut i = 0usize;
+  while i + 1usize < np { gap.push(o.minGap); i = i + 1usize; }
+  i = 0usize;
+  while i < np {
+    // the head boxes must not touch
+    if i + 1usize < np {
+      imm need = (d.participants[i].w + d.participants[i + 1usize].w) * 0.5 + 24.;
+      if need > *gap[i] { gap.set(i, need); }
+    }
+    i = i + 1usize;
+  }
+  mut m = 0usize;
+  while m < d.messages.len() {
+    imm a = usize.from(d.messages[m].from);
+    imm b = usize.from(d.messages[m].to);
+    if a != b {
+      imm lo = if a < b { a; } else { b; };
+      imm hi = if a < b { b; } else { a; };
+      imm per = (d.messages[m].labelW + 28.) / f32.from(hi - lo);
+      mut g = lo;
+      while g < hi { if per > *gap[g] { gap.set(g, per); } g = g + 1usize; }
+    } else {
+      // a self message's loop and label go to the right: ask the next gap for its width
+      if a + 1usize < np {
+        imm need = d.messages[m].labelW + 50.;
+        if need > *gap[a] { gap.set(a, need); }
+      }
+    }
+    m = m + 1usize;
+  }
+  mut x = o.margin + d.participants[0usize].w * 0.5;
+  i = 0usize;
+  while i < np {
+    d.participants[i].x = x;
+    if i + 1usize < np { x = x + *gap[i]; }
+    i = i + 1usize;
+  }
+  mut headH = 0.0f;
+  i = 0usize;
+  while i < np { if d.participants[i].h > headH { headH = d.participants[i].h; } i = i + 1usize; }
+  d.lifelineTop = o.margin + headH;
+  mut y = d.lifelineTop + o.headGap;
+  d.rowHeight = o.rowHeight;
+  m = 0usize;
+  while m < d.messages.len() {
+    d.messages[m].y = y;
+    y = y + o.rowHeight + if d.messages[m].kind == MSG_SELF { o.rowHeight * 0.4; } else { 0.; };
+    m = m + 1usize;
+  }
+  d.lifelineBottom = y - o.rowHeight * 0.4 + o.tailGap;
+  d.height = d.lifelineBottom + headH + o.margin;
+  d.width = d.participants[np - 1usize].x + d.participants[np - 1usize].w * 0.5 + o.margin;
+  if d.width < x + o.margin { d.width = x + o.margin; }
+  // activations
+  d.activations.clear();
+  mut open = List[List[usize]].empty();      // per participant, the indices into activations of the still open ones
+  i = 0usize;
+  while i < np { open.push(List[usize].empty()); i = i + 1usize; }
+  mut lastSend = List[f32].empty();
+  i = 0usize;
+  while i < np { lastSend.push(0.); i = i + 1usize; }
+  m = 0usize;
+  while m < d.messages.len() {
+    imm msg = d.messages[m];
+    imm from = usize.from(msg.from);
+    imm to = usize.from(msg.to);
+    lastSend.set(from, msg.y);
+    if msg.kind == MSG_CALL {
+      imm depth = u32.from(open[to].len());
+      d.activations.push(new Activation(msg.to, msg.y - 6., msg.y, depth, 0., o.activationWidth));
+      open[to].push(d.activations.len() - 1usize);
+    } elif msg.kind == MSG_RETURN {
+      if open[from].len() > 0usize {
+        imm a = *open[from][open[from].len() - 1usize];
+        open[from].pop();
+        d.activations[a].y1 = msg.y + 6.;
+      }
+    }
+    m = m + 1usize;
+  }
+  // unclosed: to the last row the participant sent from, at least a short bar
+  i = 0usize;
+  while i < d.activations.len() {
+    if d.activations[i].y1 <= d.activations[i].y0 + 6.01 {
+      imm p = usize.from(d.activations[i].participant);
+      imm end = if *lastSend[p] > d.activations[i].y0 { *lastSend[p] + 6.; } else { d.activations[i].y0 + 18.; };
+      d.activations[i].y1 = end;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < d.activations.len() {
+    imm p = usize.from(d.activations[i].participant);
+    d.activations[i].x = d.participants[p].x - o.activationWidth * 0.5 + f32.from(d.activations[i].depth) * o.activationWidth * 0.5;
+    i = i + 1usize;
+  }
+}

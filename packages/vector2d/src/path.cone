@@ -1,0 +1,206 @@
+// ======== VectorPaths, transforms and flattening ========
+//
+// A VectorPath is a list of commands over a list of points: move to, line to,
+// quadratic and cubic Bezier to, close. Arcs, rounded rectangles, ellipses and
+// circles are built from cubics (an arc is cut into pieces of at most a
+// quarter turn, each a cubic whose control legs are 4/3 tan(a/4) of the radius:
+// the standard approximation, error under 0.03% of the radius).
+//
+// FLATTENING. Before it is tessellated a path is transformed to pixel space and
+// each curve cut into straight segments with a count taken from the curve's
+// second differences, so that the chord is never further from the curve than
+// the tolerance (Wang's formula, as Skia uses it: a quadratic needs
+// ceil(sqrt(M / (4 tol))) segments, a cubic ceil(sqrt(3 M / (4 tol))), M the
+// largest second difference of the control points).
+
+const V2_PI = 3.14159265f;
+const V2_TWO_PI = 6.2831853f;
+
+fn minf(a f32, b f32) f32 { if a < b { return a; } b; }
+fn maxf(a f32, b f32) f32 { if a > b { return a; } b; }
+fn absf(a f32) f32 { if a < 0. { return -a; } a; }
+fn clampf(v f32, lo f32, hi f32) f32 { if v < lo { return lo; } if v > hi { return hi; } v; }
+fn ceilCount(v f32) u32 {
+  if v <= 1. { return 1u32; }
+  if v > 400. { return 400u32; }
+  u32.from(libc.ceilf(v));
+}
+
+// An affine transform of the plane: x' = a x + c y + e, y' = b x + d y + f
+pub struct Mat2D {
+  pub a f32;
+  pub b f32;
+  pub c f32;
+  pub d f32;
+  pub e f32;
+  pub f f32;
+
+  pub fn identity() Mat2D { new Mat2D(1., 0., 0., 1., 0., 0.); }
+  pub fn translation(x f32, y f32) Mat2D { new Mat2D(1., 0., 0., 1., x, y); }
+  pub fn scaling(x f32, y f32) Mat2D { new Mat2D(x, 0., 0., y, 0., 0.); }
+  // Turned 'angle' radians (clockwise on a y-down screen)
+  pub fn rotation(angle f32) Mat2D {
+    imm c = cos(angle);
+    imm s = sin(angle);
+    new Mat2D(c, s, -s, c, 0., 0.);
+  }
+
+  // self applied after 'o' (o first)
+  pub fn then(self, o Mat2D) Mat2D {
+    new Mat2D(a * o.a + c * o.b, b * o.a + d * o.b, a * o.c + c * o.d, b * o.c + d * o.d,
+      a * o.e + c * o.f + e, b * o.e + d * o.f + f);
+  }
+
+  pub fn apply(self, p Vec2) Vec2 { new Vec2(a * p.x + c * p.y + e, b * p.x + d * p.y + f); }
+
+  // The factor lengths are scaled by on average: the square root of |determinant|
+  pub fn meanScale(self) f32 { absf(a * d - b * c).sqrt(); }
+}
+
+pub const CMD_MOVE = 0u8;
+pub const CMD_LINE = 1u8;
+pub const CMD_QUAD = 2u8;
+pub const CMD_CUBIC = 3u8;
+pub const CMD_CLOSE = 4u8;
+
+// A flattened subpath
+pub struct Subpath {
+  pub pts List[Vec2];
+  pub closed bool;
+}
+
+pub struct VectorPath {
+  pub cmds List[u8];
+  pub pts List[Vec2];
+  cur Vec2;
+  start Vec2;
+
+  pub fn make() VectorPath { new VectorPath(List[u8].empty(), List[Vec2].empty(), new Vec2(0., 0.), new Vec2(0., 0.)); }
+
+  pub fn clear(self &mut) {
+    cmds.clear();
+    pts.clear();
+  }
+
+  pub fn moveTo(self &mut, x f32, y f32) {
+    cmds.push(CMD_MOVE);
+    pts.push(new Vec2(x, y));
+    cur = new Vec2(x, y);
+    start = cur;
+  }
+
+  pub fn lineTo(self &mut, x f32, y f32) {
+    if cmds.len() == 0usize { self.moveTo(x, y); return; }
+    cmds.push(CMD_LINE);
+    pts.push(new Vec2(x, y));
+    cur = new Vec2(x, y);
+  }
+
+  pub fn quadTo(self &mut, cx f32, cy f32, x f32, y f32) {
+    if cmds.len() == 0usize { self.moveTo(cx, cy); }
+    cmds.push(CMD_QUAD);
+    pts.push(new Vec2(cx, cy));
+    pts.push(new Vec2(x, y));
+    cur = new Vec2(x, y);
+  }
+
+  pub fn cubicTo(self &mut, c1x f32, c1y f32, c2x f32, c2y f32, x f32, y f32) {
+    if cmds.len() == 0usize { self.moveTo(c1x, c1y); }
+    cmds.push(CMD_CUBIC);
+    pts.push(new Vec2(c1x, c1y));
+    pts.push(new Vec2(c2x, c2y));
+    pts.push(new Vec2(x, y));
+    cur = new Vec2(x, y);
+  }
+
+  pub fn close(self &mut) {
+    if cmds.len() == 0usize { return; }
+    cmds.push(CMD_CLOSE);
+    cur = start;
+  }
+
+  pub fn isEmpty(self &) bool { cmds.len() == 0usize; }
+  pub fn current(self &) Vec2 { cur; }
+
+  // A circular arc about (cx, cy) from angle a0 to a1 (radians; a1 < a0 runs
+  // the other way), joined to the current point by a line (or starting the path)
+  pub fn arc(self &mut, cx f32, cy f32, r f32, a0 f32, a1 f32) {
+    imm sweep = a1 - a0;
+    mut pieces = u32.from(libc.ceilf(absf(sweep) / (V2_PI * 0.5) - 0.0001));
+    if pieces < 1u32 { pieces = 1u32; }
+    imm step = sweep / f32.from(pieces);
+    imm k = 4. / 3. * tan(step / 4.);
+    mut a = a0;
+    imm sx = cx + r * cos(a0);
+    imm sy = cy + r * sin(a0);
+    if cmds.len() == 0usize { self.moveTo(sx, sy); } else { self.lineTo(sx, sy); }
+    mut i = 0u32;
+    while i < pieces {
+      imm b = a + step;
+      imm x0 = cx + r * cos(a);
+      imm y0 = cy + r * sin(a);
+      imm x1 = cx + r * cos(b);
+      imm y1 = cy + r * sin(b);
+      self.cubicTo(x0 - k * r * sin(a), y0 + k * r * cos(a), x1 + k * r * sin(b), y1 - k * r * cos(b), x1, y1);
+      a = b;
+      i = i + 1u32;
+    }
+  }
+
+  pub fn ellipse(self &mut, cx f32, cy f32, rx f32, ry f32) {
+    imm k = 0.5522847498f;
+    self.moveTo(cx + rx, cy);
+    self.cubicTo(cx + rx, cy + ry * k, cx + rx * k, cy + ry, cx, cy + ry);
+    self.cubicTo(cx - rx * k, cy + ry, cx - rx, cy + ry * k, cx - rx, cy);
+    self.cubicTo(cx - rx, cy - ry * k, cx - rx * k, cy - ry, cx, cy - ry);
+    self.cubicTo(cx + rx * k, cy - ry, cx + rx, cy - ry * k, cx + rx, cy);
+    self.close();
+  }
+
+  pub fn circle(self &mut, cx f32, cy f32, r f32) { self.ellipse(cx, cy, r, r); }
+
+  pub fn rect(self &mut, x f32, y f32, w f32, h f32) {
+    self.moveTo(x, y);
+    self.lineTo(x + w, y);
+    self.lineTo(x + w, y + h);
+    self.lineTo(x, y + h);
+    self.close();
+  }
+
+  // A rectangle with corners of radius r (held to half the shorter side)
+  pub fn roundRect(self &mut, x f32, y f32, w f32, h f32, radius f32) {
+    imm r = minf(radius, minf(w, h) * 0.5);
+    if r <= 0. { self.rect(x, y, w, h); return; }
+    imm k = 0.5522847498f * r;
+    self.moveTo(x + r, y);
+    self.lineTo(x + w - r, y);
+    self.cubicTo(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
+    self.lineTo(x + w, y + h - r);
+    self.cubicTo(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
+    self.lineTo(x + r, y + h);
+    self.cubicTo(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
+    self.lineTo(x, y + r);
+    self.cubicTo(x, y + r - k, x + r - k, y, x + r, y);
+    self.close();
+  }
+
+  // The path through 'points', closed or not
+  pub fn polyline(self &mut, points &Array[Vec2], closed bool) {
+    mut i = 0usize;
+    while i < points.len {
+      if i == 0usize { self.moveTo(points[i].x, points[i].y); } else { self.lineTo(points[i].x, points[i].y); }
+      i = i + 1usize;
+    }
+    if closed { self.close(); }
+  }
+}
+
+fn pushPoint(c &mut Subpath, p Vec2) {
+  imm n = c.pts.len();
+  if n > 0usize {
+    imm q = *c.pts[n - 1usize];
+    if absf(q.x - p.x) < 0.001 and absf(q.y - p.y) < 0.001 { return; }
+  }
+  c.pts.push(p);
+}
+

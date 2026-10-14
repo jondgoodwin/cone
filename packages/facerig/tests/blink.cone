@@ -1,0 +1,166 @@
+// The blink clock: the rate, the profile, partial and double blinks, determinism.
+//
+// Worked out here:
+// 1. A blink of closeTime 0.07, holdTime 0.02, openTime 0.15 is 0.24 s long;
+//    its profile is smoothstep(t / 0.07) down, 1 for 0.02 s, then
+//    1 - smoothstep((t - 0.09) / 0.15). Half closed (0.5) at t = 0.035, and
+//    again on the way up at t = 0.09 + 0.075 = 0.165: closing is 2.1 times
+//    faster than opening.
+// 2. Over ten simulated minutes the gaps between blinks are 0.9 s plus an
+//    exponential of mean 2.6 s, so the mean gap is 3.5 s and the rate 17 a
+//    minute (Bentivoglio et al. 1997: 17 a minute at rest); no gap is shorter
+//    than 0.9 s plus the blink's own 0.24 s (which counts from its end).
+// 3. 12% of blinks are partial (amplitude 0.55 to 0.85) and 7% are followed by
+//    a second at once, found within a loose binomial range.
+// 4. Same seed, same blinks; another seed, others.
+
+mod blink;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import facerig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn testProfile() {
+  mut r = Rng.make(1u32);
+  imm b = Blinker.make(BlinkParams.standard(), &mut r);
+  near(b.length(), 0.24, 0.000001, "a blink is 0.24 s");
+  near(b.profile(0.), 0., 0.000001, "open at 0");
+  near(b.profile(0.035), 0.5, 0.000001, "half closed 0.035 s in");
+  near(b.profile(0.07), 1., 0.000001, "shut at 0.07");
+  near(b.profile(0.08), 1., 0.000001, "held shut");
+  near(b.profile(0.09), 1., 0.000001, "until 0.09");
+  near(b.profile(0.165), 0.5, 0.000001, "half open again at 0.165");
+  near(b.profile(0.24), 0., 0.000001, "open at 0.24");
+  near(b.profile(-1.), 0., 0.000001, "and before it");
+}
+
+struct Blink {
+  start f32;
+  peak f32;
+  closeTime f32;     // 10% to 90% on the way down
+  openTime f32;      // 90% to 10% on the way up
+  rising bool;
+}
+
+fn testRate() {
+  mut rng = Rng.make(12345u32);
+  mut b = Blinker.make(BlinkParams.standard(), &mut rng);
+  imm dt = 1. / 60.;
+  mut t = 0.;
+  mut was = 0.;
+  mut starts = List[f32].empty();
+  mut partial = 0usize;
+  mut peaks = List[f32].empty();
+  mut peak = 0.;
+  while t < 600. {
+    imm c = b.update(dt, &mut rng);
+    if was == 0. and c > 0. { starts.push(t); peak = 0.; }
+    if c > peak { peak = c; }
+    if was > 0. and c == 0. { peaks.push(peak); }
+    was = c;
+    t = t + dt;
+  }
+  imm n = starts.len();
+  imm rate = f32.from(n) / 10.;
+  expect(rate > 14. and rate < 21., "about 17 blinks a minute over ten minutes");
+  // Gaps from one blink's start to the next's
+  mut shortest = 1000.;
+  mut sum = 0.;
+  mut i = 1usize;
+  while i < starts.len() {
+    imm gap = *starts[i] - *starts[i - 1usize];
+    if gap < shortest { shortest = gap; }
+    sum = sum + gap;
+    i = i + 1usize;
+  }
+  expect(shortest > 0.24, "no blink starts before the last has ended");
+  near(sum / f32.from(starts.len() - 1usize), 3.5 + 0.24, 0.5, "the mean gap is 3.5 s plus the blink's own length");
+  // Partial blinks
+  mut p = 0usize;
+  i = 0usize;
+  while i < peaks.len() { if *peaks[i] < 0.9 { p = p + 1usize; } i = i + 1usize; }
+  partial = p;
+  imm frac = f32.from(partial) / f32.from(peaks.len());
+  expect(frac > 0.05 and frac < 0.22, "about one blink in eight is partial");
+}
+
+fn testClosingFasterThanOpening() {
+  mut b = Blinker.make(BlinkParams.standard(), &mut Rng.make(5u32));
+  b.start(1.);
+  imm dt = 0.001;
+  mut t = 0.;
+  mut t10 = -1.;
+  mut t90 = -1.;
+  mut u90 = -1.;
+  mut u10 = -1.;
+  mut rng = Rng.make(9u32);
+  mut last = 0.;
+  while t < 0.3 {
+    imm c = b.update(dt, &mut rng);
+    if last < 0.1 and c >= 0.1 and t10 < 0. { t10 = t; }
+    if last < 0.9 and c >= 0.9 and t90 < 0. { t90 = t; }
+    if last >= 0.9 and c < 0.9 and u90 < 0. { u90 = t; }
+    if last >= 0.1 and c < 0.1 and u10 < 0. { u10 = t; }
+    last = c;
+    t = t + dt;
+  }
+  imm closing = t90 - t10;
+  imm opening = u10 - u90;
+  expect(opening > closing * 1.8, "the lids rise more slowly than they fall");
+  near(closing, 0.07 * 0.5, 0.01, "the fall takes 10% to 90% in about 0.035 s");
+}
+
+fn countBlinks(seed u32) List[f32] {
+  mut rng = Rng.make(seed);
+  mut b = Blinker.make(BlinkParams.standard(), &mut rng);
+  mut out = List[f32].empty();
+  mut t = 0.;
+  mut was = 0.;
+  while t < 60. {
+    imm c = b.update(1. / 60., &mut rng);
+    if was == 0. and c > 0. { out.push(t); }
+    was = c;
+    t = t + 1. / 60.;
+  }
+  out;
+}
+
+fn testDeterminism() {
+  imm a = countBlinks(77u32);
+  imm b = countBlinks(77u32);
+  imm c = countBlinks(78u32);
+  expectUInt(u64.from(a.len()), u64.from(b.len()), "same seed, same number of blinks");
+  mut same = true;
+  mut i = 0usize;
+  while i < a.len() and i < b.len() { if *a[i] != *b[i] { same = false; } i = i + 1usize; }
+  expectBool(same, true, "same seed, same times");
+  mut differ = a.len() != c.len();
+  i = 0usize;
+  while i < a.len() and i < c.len() { if *a[i] != *c[i] { differ = true; } i = i + 1usize; }
+  expectBool(differ, true, "another seed, other times");
+}
+
+fn testRequest() {
+  mut rng = Rng.make(3u32);
+  mut b = Blinker.make(BlinkParams.standard(), &mut rng);
+  expectBool(b.active(), false, "no blink at first");
+  b.request(&mut rng);
+  expectBool(b.active(), true, "a request starts one");
+  imm n = b.count;
+  b.request(&mut rng);
+  expectUInt(u64.from(b.count), u64.from(n), "a request during a blink starts none");
+}
+
+fn main() i32 {
+  testProfile();
+  testRate();
+  testClosingFasterThanOpening();
+  testDeterminism();
+  testRequest();
+  done();
+}

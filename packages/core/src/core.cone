@@ -1088,6 +1088,13 @@ pub trait Iterator[T] {
     new Zip[T, U, Self, J](self, other);
   }
 
+  // The items with their positions, counted from 0: a tuple of the position (a usize)
+  // and what the cursor gives, which 'each i, x in it.indexed()' unpacks. A collection's
+  // own 'indexed' (a list's, an array's, a zip's) is the counted loop or the cursor
+  // that has it; this is the one for every other cursor, a generator, a reader, a chain.
+  // An item that lends stays lending inside the tuple
+  pub fn indexed(self) IterIndexed[T, Self] inline { new IterIndexed[T, Self](self, 0usize); }
+
   // How many items there are
   pub fn count(self &mut) usize inline {
     mut n = 0usize;
@@ -1198,6 +1205,24 @@ pub struct IterFilter[T, I Iterator[T], F fn(x &T) bool] is Iterator[T] {
       }
     }
     None;
+  }
+}
+
+// Each item with its position, counted from 0: 'next' gives a tuple of the position
+// and what the cursor wrapped gives
+pub struct IterIndexed[T, I Iterator[T]] is Iterator[(usize, T)] {
+  pub src I;
+  pub index usize;
+
+  pub fn next(self &mut) Option[(usize, T)] inline {
+    match src.next() {
+      case imm e Some {
+        imm i = index;
+        index = i + 1usize;
+        return Some[(usize, T)]((i, e));
+      }
+      case is None { return None; }
+    }
   }
 }
 

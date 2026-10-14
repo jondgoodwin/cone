@@ -1,0 +1,560 @@
+// Draws the Cone packages' real dependency graph, read from every packages/*/congo.toml
+// and each package's root source, with no window: in 2-D (layered layout, routed
+// orthogonal connectors, vector2d on the GPU), in 2-D by force, and in 3-D (boxes and
+// tubes through render, labels by msdftext); then a sequence diagram of a fixed message
+// trace (a client connecting to the server). Writes .bmp files and prints the timings.
+//
+//   congo run examples/packagegraph.cone -- [--packages <dir>] [--out <folder>] [--font file.ttf]
+//
+// A package's name and targets come from its congo.toml; Congo has no dependency list
+// in the manifest ("the import lines in the source are the dependency list"), so the edges
+// are the 'import' lines of src/<name>.cone, the one file of a package that imports,
+// kept where they name another package (core, the prelude, is left out). The node's kind is its
+// depth: 0 for a package that imports no other package, else 1 + its deepest dependency's.
+// GPU_POWER_PREFERENCE=low-power draws on the integrated GPU.
+
+mod packagegraph;
+
+import libc;
+import stdio use *;
+import fs;
+import path use Path;
+import process;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import vector2d use *;
+import msdftext use *;
+import diagramlayout use *;
+
+fn saveBmp(file &Path, p *u8, w u32, h u32) {
+  imm rowBytes = w * 3u32;
+  imm pad = (4u32 - rowBytes % 4u32) % 4u32;
+  imm size = 54u32 + (rowBytes + pad) * h;
+  mut b = List[u8].withCapacity(usize.from(size));
+  b.push('B');
+  b.push('M');
+  mut words = new Array[u32, 13] <- fill 0u32;
+  words[0] = size;
+  words[2] = 54u32;
+  words[3] = 40u32;
+  words[4] = w;
+  words[5] = h;
+  words[6] = 0x00180001u32;
+  mut k = 0usize;
+  while k < 13usize {
+    b.push(u8.from(words[k] & 255u32));
+    b.push(u8.from((words[k] >> 8u32) & 255u32));
+    b.push(u8.from((words[k] >> 16u32) & 255u32));
+    b.push(u8.from((words[k] >> 24u32) & 255u32));
+    k = k + 1usize;
+  }
+  mut y = h;
+  while y > 0u32 {
+    y = y - 1u32;
+    mut x = 0u32;
+    while x < w {
+      imm at = p + usize.from((y * w + x) * 4u32);
+      b.push(*(at + 2usize));
+      b.push(*(at + 1usize));
+      b.push(*at);
+      x = x + 1u32;
+    }
+    mut q = 0u32;
+    while q < pad { b.push(0u8); q = q + 1u32; }
+  }
+  fs.writeFile(file, b.view());
+}
+
+// ---- reading the packages ----
+
+struct PackageInfo {
+  name String;
+  imports List[String];
+  gpu bool;
+}
+
+fn quoted(line &str) String {
+  mut out = String.empty();
+  mut inside = false;
+  mut i = 0usize;
+  while i < line.len() {
+    if line[i] == '"' { if inside { return out; } inside = true; }
+    elif inside { out.appendByte(line[i]); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn startsWith(s &str, prefix &str) bool {
+  if s.len() < prefix.len() { return false; }
+  mut i = 0usize;
+  while i < prefix.len() { if s[i] != prefix[i] { return false; } i = i + 1usize; }
+  true;
+}
+
+fn readPackages(dir &Path) List[PackageInfo] {
+  mut out = List[PackageInfo].empty();
+  match fs.readDir(dir) {
+    case imm entries Ok {
+      mut e = 0usize;
+      while e < entries.len() {
+        imm entry = entries[e];
+        e = e + 1usize;
+        if !entry.isDir { continue; }
+        imm toml = entry.path.join("congo.toml");
+        match fs.readFile(&toml) {
+          case imm text Ok {
+            mut name = String.empty();
+            mut gpuTarget = false;
+            imm lines = text.lines();
+            mut l = 0usize;
+            while l < lines.len() {
+              imm line = lines[l].trim();
+              if startsWith(line.view(), "name") and name.len() == 0usize { name = quoted(line.view()); }
+              if startsWith(line.view(), "targets") and line.view().len() > 0usize {
+                mut q = 0usize;
+                while q + 3usize < line.view().len() {
+                  if line.view()[q] == 'g' and line.view()[q + 1usize] == 'p' and line.view()[q + 2usize] == 'u' { gpuTarget = true; }
+                  q = q + 1usize;
+                }
+              }
+              l = l + 1usize;
+            }
+            if name.len() == 0usize { continue; }
+            mut imports = List[String].empty();
+            mut rootPath = entry.path.join("src");
+            rootPath = rootPath.join(name.view());
+            mut rootFile = String.from(rootPath.view());
+            rootFile.append(".cone");
+            imm rp = Path.fromLiteral(rootFile.view());
+            match fs.readFile(&rp) {
+              case imm src Ok {
+                imm sl = src.lines();
+                mut k = 0usize;
+                while k < sl.len() {
+                  imm line = sl[k].view();
+                  if startsWith(line, "import ") {
+                    mut target = String.empty();
+                    mut i = 7usize;
+                    while i < line.len() and line[i] != ' ' and line[i] != ';' { target.appendByte(line[i]); i = i + 1usize; }
+                    if target.len() > 0usize and !(target.view() == "core") { imports.push(target); }
+                  }
+                  k = k + 1usize;
+                }
+              }
+              case is Error { }
+            }
+            out.push(new PackageInfo(name, imports, gpuTarget));
+          }
+          case is Error { }
+        }
+      }
+    }
+    case is Error { print <- "cannot read the packages folder\n"; }
+  }
+  out;
+}
+
+// The depth of each package: 0 with no package imports, else 1 + the deepest
+fn depths(pkgs &List[PackageInfo]) List[u32] {
+  mut d = List[u32].empty();
+  mut i = 0usize;
+  while i < pkgs.len() { d.push(0u32); i = i + 1usize; }
+  mut changed = true;
+  mut rounds = 0u32;
+  while changed and rounds < 64u32 {
+    changed = false;
+    i = 0usize;
+    while i < pkgs.len() {
+      mut k = 0usize;
+      while k < pkgs[i].imports.len() {
+        mut j = 0usize;
+        while j < pkgs.len() {
+          if pkgs[j].name.view() == pkgs[i].imports[k].view() and *d[i] < *d[j] + 1u32 and j != i {
+            d.set(i, *d[j] + 1u32);
+            changed = true;
+          }
+          j = j + 1usize;
+        }
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+    rounds = rounds + 1u32;
+  }
+  d;
+}
+
+fn buildGraph(pkgs &List[PackageInfo], font &Font, atlas &mut Atlas) Graph {
+  mut g = Graph.make();
+  imm d = depths(pkgs);
+  mut i = 0usize;
+  while i < pkgs.len() {
+    imm size = measureText(font, atlas, pkgs[i].name.view(), 14., 0.);
+    imm id = g.addNode(pkgs[i].name.view(), pkgs[i].name.view(), size.x + 22., 30.);
+    g.nodes[usize.from(id)].kind = *d[i];
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < pkgs.len() {
+    mut k = 0usize;
+    while k < pkgs[i].imports.len() {
+      g.addEdgeByKey(pkgs[i].name.view(), pkgs[i].imports[k].view());
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  g;
+}
+
+// ---- the GPU ----
+
+struct Gpu {
+  target Texture;
+  readback Buffer;
+  renderer VectorRenderer;
+  atlas Atlas;
+  device Device;
+  w u32;
+  h u32;
+}
+
+fn makeAdapter(instance &mut Instance) Adapter {
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  instance.requestAdapter(&none, preference);
+}
+
+fn fitScale(g &Graph, w f32, h f32, margin f32) Vec3 {
+  imm b = g.bounds();
+  imm bw = b.max.x - b.min.x + margin * 2.;
+  imm bh = b.max.y - b.min.y + margin * 2.;
+  imm s = if w / bw < h / bh { w / bw; } else { h / bh; };
+  // scale, and the offsets that centre it
+  new Vec3(s, (w - (b.max.x + b.min.x) * s) * 0.5, (h - (b.max.y + b.min.y) * s) * 0.5);
+}
+
+fn framed(c &mut Canvas, fit Vec3) {
+  c.translate(fit.y, fit.z);
+  c.scale(fit.x, fit.x);
+}
+
+fn run(font &Font, packages &Path, out &String) i32 {
+  mut instance = Instance.create("packagegraph");
+  mut adapter = makeAdapter(&mut instance);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "no usable GPU\n"; return 1; }
+  print <- "adapter ", adapter.name.view(), "\n";
+  mut atlas = Atlas.create(AtlasConfig.standard());
+  imm pkgs = readPackages(packages);
+  mut edgesCount = 0usize;
+  mut i = 0usize;
+  while i < pkgs.len() { edgesCount = edgesCount + pkgs[i].imports.len(); i = i + 1usize; }
+  print <- pkgs.len(), " packages, ", edgesCount, " import lines\n";
+  mut g = buildGraph(&pkgs, font, &mut atlas);
+  print <- g.liveNodes(), " nodes, ", g.liveEdges(), " edges (imports of other packages)\n";
+  imm tr0 = Instant.now();
+  imm reduced = transitiveReduction(&mut g);
+  print <- "transitive reduction removed ", reduced, " implied edges in ", (Instant.now() - tr0).micros(), " us; ", g.liveEdges(), " direct dependencies remain\n";
+
+  // ---- 2-D layered ----
+  imm t0 = Instant.now();
+  mut lo = LayeredOptions.make();
+  lo.routeEdges = false;
+  imm ls = layoutLayered(&mut g, &lo);
+  imm t1 = Instant.now();
+  imm rs = routeEdges(&mut g, &RouteOptions.make());
+  imm t2 = Instant.now();
+  print <- "layered: ", ls.layers, " layers, ", ls.dummies, " dummies, ", ls.crossings, " crossings, ", ls.reversed, " reversed; layout ",
+    (t1 - t0).micros(), " us, routing ", (t2 - t1).micros(), " us (", rs.fallback, " fallbacks, ", rs.bends, " bends)\n";
+
+  imm W = 2560u32;
+  imm H = 1440u32;
+  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = VectorRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM);
+  if !renderer.isValid() { print <- "the vector renderer is not valid\n"; return 1; }
+  imm style = DiagramStyle.light();
+  mut canvas = Canvas.make(f32.from(W), f32.from(H));
+  canvas.fillRect(0., 0., f32.from(W), f32.from(H), style.background);
+  canvas.save();
+  framed(&mut canvas, fitScale(&g, f32.from(W), f32.from(H), 30.));
+  imm t3 = Instant.now();
+  drawGraph(&mut canvas, &g, &style);
+  imm t4 = Instant.now();
+  canvas.restore();
+  print <- "tessellated ", canvas.triangleCount(), " triangles and ", canvas.texts.len(), " labels in ", (t4 - t3).micros(), " us\n";
+  mut file = String.from(out.view());
+  file.append("deps-layered.bmp");
+  {
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &target, &canvas, font, &mut atlas, true, style.background);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm fp = Path.fromLiteral(file.view());
+    saveBmp(&fp, readback.mappedRange(), W, H);
+  }
+  // the cost of the frame: the GPU and the text layout, 60 frames of the same canvas
+  imm c0 = Instant.now();
+  mut f = 0u32;
+  while f < 60u32 {
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &target, &canvas, font, &mut atlas, true, style.background);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    f = f + 1u32;
+  }
+  imm c1 = Instant.now();
+  print <- "render of the layered graph (", renderer.triangles, " triangles, ", renderer.texts, " labels) at 2560x1440: ", (c1 - c0).micros() / 60i64, " us a frame (record, submit, wait)\n";
+
+  // ---- 2-D force ----
+  mut gf = buildGraph(&pkgs, font, &mut atlas);
+  transitiveReduction(&mut gf);
+  imm t5 = Instant.now();
+  mut fo = ForceOptions.make();
+  fo.iterations = 400u32;
+  imm fs2 = layoutForce(&mut gf, &fo);
+  imm t6 = Instant.now();
+  mut fr = RouteOptions.make();
+  fr.flow = FLOW_ANY;
+  imm frs = routeEdges(&mut gf, &fr);
+  imm t7 = Instant.now();
+  print <- "force: ", fs2.iterations, " iterations, ", fs2.overlapsLeft, " overlaps left; layout ", (t6 - t5).micros(), " us, routing ", (t7 - t6).micros(), " us (",
+    frs.fallback, " fallbacks)\n";
+  canvas.clear();
+  canvas.fillRect(0., 0., f32.from(W), f32.from(H), style.background);
+  canvas.save();
+  framed(&mut canvas, fitScale(&gf, f32.from(W), f32.from(H), 30.));
+  drawGraph(&mut canvas, &gf, &style);
+  canvas.restore();
+  {
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &target, &canvas, font, &mut atlas, true, style.background);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    mut ff = String.from(out.view());
+    ff.append("deps-force.bmp");
+    imm fp = Path.fromLiteral(ff.view());
+    saveBmp(&fp, readback.mappedRange(), W, H);
+  }
+
+  // ---- incremental: a package is added (with imports) and one that nothing imports is removed; lay out again with stability ----
+  imm before = g.snapshot();
+  mut gone = String.empty();
+  mut rm = 0usize;
+  while rm < g.nodes.len() and gone.len() == 0usize {
+    if g.nodes[rm].alive {
+      mut incoming = false;
+      mut ie = 0usize;
+      while ie < g.edges.len() { if g.edges[ie].alive and usize.from(g.edges[ie].to) == rm { incoming = true; } ie = ie + 1usize; }
+      if !incoming and g.nodes[rm].key.view() != "actorhttp" and g.edges.len() > 0usize {
+        // only a node that has edges (a loose one would not show a layout change)
+        mut outgoing = false;
+        ie = 0usize;
+        while ie < g.edges.len() { if g.edges[ie].alive and usize.from(g.edges[ie].from) == rm { outgoing = true; } ie = ie + 1usize; }
+        if outgoing { gone = String.from(g.nodes[rm].key.view()); }
+      }
+    }
+    rm = rm + 1usize;
+  }
+  g.removeNodeByKey(gone.view());
+  imm extra = g.addNode("vector2d", "vector2d", 90., 30.);
+  g.nodes[usize.from(extra)].kind = 3u32;
+  g.addEdgeByKey("vector2d", "msdftext");
+  g.addEdgeByKey("vector2d", "geomath");
+  g.addEdgeByKey("vector2d", "mesh");
+  print <- "incremental change: removed '", gone.view(), "', added 'vector2d' with imports msdftext, geomath, mesh\n";
+  mut stable = LayeredOptions.make();
+  stable.stability = 1.;
+  stable.routeEdges = false;
+  imm t8 = Instant.now();
+  layoutLayered(&mut g, &stable);
+  imm t9 = Instant.now();
+  imm dd = displacement(&before, &g.snapshot(), &g);
+  print <- "incremental relayout: ", (t9 - t8).micros(), " us; the other nodes moved ", dd.mean, " px on average, ", dd.worst,
+    " at worst, ", dd.moved, " of ", g.liveNodes(), " moved more than half a pixel\n";
+
+  // ---- sequence diagram ----
+  mut sd = SequenceDiagram.make();
+  imm sizeOf = 15.;
+  imm names = ["Client view", "Net client", "Server", "Simulation"];
+  mut pi = 0usize;
+  while pi < 4usize {
+    imm sz = measureText(font, &mut atlas, names[pi], sizeOf, 0.);
+    sd.addParticipant(names[pi], sz.x + 26., 32.);
+    pi = pi + 1usize;
+  }
+  imm trace = [new Message(0u32, 1u32, "connect(address)", 0., MSG_CALL, 0.),
+    new Message(1u32, 2u32, "hello(protocol 4)", 0., MSG_CALL, 0.),
+    new Message(2u32, 2u32, "check the protocol version", 0., MSG_SELF, 0.),
+    new Message(2u32, 3u32, "spawnPlayer()", 0., MSG_CALL, 0.),
+    new Message(3u32, 2u32, "playerId", 0., MSG_RETURN, 0.),
+    new Message(2u32, 1u32, "welcome(playerId, world)", 0., MSG_RETURN, 0.),
+    new Message(1u32, 0u32, "ready", 0., MSG_RETURN, 0.),
+    new Message(0u32, 1u32, "input(move)", 0., MSG_ASYNC, 0.),
+    new Message(1u32, 2u32, "input(move)", 0., MSG_ASYNC, 0.),
+    new Message(2u32, 3u32, "step(dt)", 0., MSG_CALL, 0.),
+    new Message(3u32, 2u32, "snapshot", 0., MSG_RETURN, 0.),
+    new Message(2u32, 1u32, "snapshot", 0., MSG_ASYNC, 0.),
+    new Message(1u32, 0u32, "snapshot", 0., MSG_ASYNC, 0.)];
+  mut mi = 0usize;
+  while mi < 13usize {
+    imm lw = measureText(font, &mut atlas, trace[mi].label.view(), 13.5, 0.);
+    sd.addMessage(trace[mi].from, trace[mi].to, trace[mi].label.view(), lw.x, trace[mi].kind);
+    mi = mi + 1usize;
+  }
+  imm t10 = Instant.now();
+  layoutSequence(&mut sd, &SequenceOptions.make());
+  imm t11 = Instant.now();
+  print <- "sequence: ", sd.participants.len(), " participants, ", sd.messages.len(), " messages, ", sd.activations.len(), " activations; layout ", (t11 - t10).micros(), " us\n";
+  imm SW = 1100u32;
+  imm SH = u32.from(sd.height) + 20u32;
+  mut sc = Canvas.make(f32.from(SW), f32.from(SH));
+  sc.fillRect(0., 0., f32.from(SW), f32.from(SH), style.background);
+  sc.save();
+  sc.translate((f32.from(SW) - sd.width) * 0.5, 10.);
+  drawSequence(&mut sc, &sd, &style);
+  sc.restore();
+  imm sTarget = device.createTexture(&new TextureDescriptor(SW, SH, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC));
+  mut sTargetM = sTarget;
+  mut sReadback = device.createBuffer(u64.from(SW * SH * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  {
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &sTargetM, &sc, font, &mut atlas, true, style.background);
+    encoder.copyTextureToBuffer(&sTargetM, &sReadback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    mut sf = String.from(out.view());
+    sf.append("sequence.bmp");
+    imm fp = Path.fromLiteral(sf.view());
+    saveBmp(&fp, sReadback.mappedRange(), SW, SH);
+  }
+
+  // ---- 3-D ----
+  mut g3 = buildGraph(&pkgs, font, &mut atlas);
+  transitiveReduction(&mut g3);
+  layoutLayered(&mut g3, &lo);
+  tierByKind(&mut g3, 0.);
+  // z by depth is what the layers already show; stand the picture up with a tier per package group instead:
+  // the GPU packages (targets with "gpu") forward, the rest behind
+  mut pz = 0usize;
+  while pz < pkgs.len() {
+    imm id = g3.find(pkgs[pz].name.view());
+    if id >= 0 { g3.nodes[usize.from(id)].z = if pkgs[pz].gpu { 120.; } else { 0.; }; }
+    pz = pz + 1usize;
+  }
+  imm W3 = 1600u32;
+  imm H3 = 900u32;
+  mut color3 = device.createTexture(&new TextureDescriptor(W3, H3, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC));
+  mut depth3 = device.createTexture(&new TextureDescriptor(W3, H3, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT));
+  mut readback3 = device.createBuffer(u64.from(W3 * H3 * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut r3 = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  r3.keepDepth = true;
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, W3, H3);
+  if !r3.isValid() or !post.isValid() { print <- "the 3-D renderer is not valid\n"; return 1; }
+  imm sky = Sky.dusk(radians(35.), 0.4);
+  r3.setSky(&mut device, &sky);
+  mut kinds = List[Color].empty();
+  kinds.push(new Color(0.30, 0.55, 0.85, 1.));
+  kinds.push(new Color(0.35, 0.72, 0.40, 1.));
+  kinds.push(new Color(0.90, 0.68, 0.25, 1.));
+  kinds.push(new Color(0.85, 0.40, 0.60, 1.));
+  kinds.push(new Color(0.62, 0.50, 0.85, 1.));
+  kinds.push(new Color(0.40, 0.75, 0.75, 1.));
+  imm t12 = Instant.now();
+  mut d3 = buildDiagram3d(&mut r3, &mut device, &g3, &Diagram3dOptions.make(), &kinds);
+  imm t13 = Instant.now();
+  print <- "3-D: ", d3.triangles, " triangles (boxes and tubes), built in ", (t13 - t12).micros(), " us\n";
+  mut text3 = TextRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut camera = Camera.make();
+  camera.fov = radians(38.);
+  camera.near = 0.1;
+  camera.far = 200.;
+  camera.background = new Color(0.02, 0.025, 0.04, 1.);
+  imm aspect3 = f32.from(W3) / f32.from(H3);
+  imm needW = d3.extent.x / (tan(camera.fov * 0.5) * aspect3);
+  imm needH = d3.extent.y / tan(camera.fov * 0.5);
+  imm dist = (if needW > needH { needW; } else { needH; }) * 1.3 + d3.extent.z;
+  camera.lookAt(d3.centre + new Vec3(dist * 0.25, dist * 0.45, dist * 0.85), d3.centre, new Vec3(0., 1., 0.));
+  imm light = Light.directional(new Vec3(-0.3, -0.6, -0.75).normalize(), Color.gray(7.0), Color.gray(1.0));
+  mut list = DrawList.empty();
+  drawList3d(&d3, &mut list);
+  placeLabels(&mut d3, &g3, &mut device, &mut text3, font, &mut atlas, &camera, f32.from(W3) / f32.from(H3), 0.20, new Color(1., 1., 1., 1.));
+  post.bloom = 0.0;
+  {
+    mut encoder = device.createCommandEncoder();
+    r3.render(&mut device, &mut encoder, &post.hdr, &depth3, &camera, &light, &list);
+    text3.renderWorld(&mut encoder, &post.hdr, &depth3);
+    post.apply(&mut encoder, &color3);
+    encoder.copyTextureToBuffer(&color3, &readback3);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    mut f3 = String.from(out.view());
+    f3.append("deps-3d.bmp");
+    imm fp = Path.fromLiteral(f3.view());
+    saveBmp(&fp, readback3.mappedRange(), W3, H3);
+  }
+  imm c2 = Instant.now();
+  mut fr3 = 0u32;
+  while fr3 < 60u32 {
+    placeLabels(&mut d3, &g3, &mut device, &mut text3, font, &mut atlas, &camera, f32.from(W3) / f32.from(H3), 0.20, new Color(1., 1., 1., 1.));
+    mut encoder = device.createCommandEncoder();
+    r3.render(&mut device, &mut encoder, &post.hdr, &depth3, &camera, &light, &list);
+    text3.renderWorld(&mut encoder, &post.hdr, &depth3);
+    post.apply(&mut encoder, &color3);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    fr3 = fr3 + 1u32;
+  }
+  imm c3 = Instant.now();
+  print <- "3-D frame (labels re-placed each frame, ", r3.triangles, " triangles, ", r3.drawCalls, " draws) at 1600x900: ", (c3 - c2).micros() / 60i64, " us (record, submit, wait)\n";
+  0;
+}
+
+fn main() i32 {
+  imm args = process.args();
+  mut packages = Path.fromLiteral("C:/src/cone-wt-diagrams/packages");
+  mut out = String.from("");
+  mut fontFile = Path.fromLiteral("C:/Windows/Fonts/arial.ttf");
+  mut a = 1usize;
+  while a + 1usize < args.len() {
+    imm k = (*args[a]).view();
+    if k == "--packages" { packages = Path.fromLiteral((*args[a + 1usize]).view()); }
+    elif k == "--out" { out = String.from((*args[a + 1usize]).view()); }
+    elif k == "--font" { fontFile = Path.fromLiteral((*args[a + 1usize]).view()); }
+    a = a + 2usize;
+  }
+  match fs.readFile(&fontFile) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok { return run(&f, &packages, &out); }
+        case is Error { print <- "cannot load the font\n"; return 1; }
+      }
+    }
+    case is Error {
+      print <- "no font file; using the demo font\n";
+      match Font.load(&DEMO_FONT) {
+        case imm f Ok { return run(&f, &packages, &out); }
+        case is Error { return 1; }
+      }
+    }
+  }
+  0;
+}

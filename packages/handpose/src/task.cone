@@ -1,0 +1,299 @@
+// Tasks as motions of the wrist and the fingers, and blends between them.
+//
+// A TASK is a cycle: hold, turn, press, knead. Each is a HandMotion, a set of
+// keys round a period; a key is the wrist's offset from where the grip
+// placed it (a translation and a small rotation, in the wrist's own frame), the
+// hand pose at that moment, and 'close', how far the fingers close on the prop
+// from that pose (0 the pose as it is, 1 closed until they touch). A key is 32
+// numbers (three of translation, three of a rotation vector, one of closure,
+// 25 of pose), and the motion between keys is a cubic Hermite spline of
+// all 32 together with Catmull-Rom tangents, taken round the cycle, so the
+// motion is smooth through the join and a pose is just a place in a
+// 32-dimensional space that blends linearly.
+//
+// BLENDING. A TaskBlend holds motions with weights that ease (a weight closes
+// on its goal exponentially, like the face rig's expressions); a sample at the
+// clock is the weighted average of the motions' samples at the clock. A hand
+// can hold a cup, set it down into a press and go on into a knead, the keys
+// of each sampled and mixed, with no jump at the seams. The result goes to
+// 'evaluateKey' (below), which places the wrist from the base grip and the
+// offset and closes the fingers on the prop by contact.
+//
+// The cycles are authored (their numbers are this package's): hold is still; turn
+// rolls the wrist about the forearm (a key, a knob, a stirring spoon); swing
+// hinges the wrist about its bending axis (a hammer's blow); press leans
+// the palm into the surface and eases off; knead pushes the heel of the palm
+// forward and down, folds the fingers, and draws back with them raked.
+
+pub const KEY_FLOATS = 32usize;
+
+// The wrist offset, pose and closure as a key's 32 numbers
+pub struct HandKey {
+  pub translation Vec3;      // the wrist's offset, in the base wrist's frame
+  pub rotation Vec3;         // and its turn, a rotation vector (axis times angle)
+  pub close f32;             // 0 the pose as it is, 1 closed on the prop
+  pub pose HandPose;
+
+  pub fn make(pose HandPose) HandKey { new HandKey(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0., pose); }
+
+  pub fn flat(self &) List[f32] {
+    mut out = List[f32].empty();
+    out.push(translation.x); out.push(translation.y); out.push(translation.z);
+    out.push(rotation.x); out.push(rotation.y); out.push(rotation.z);
+    out.push(close);
+    mut i = 0usize;
+    while i < pose.v.len() { out.push(*pose.v[i]); i = i + 1usize; }
+    out;
+  }
+
+  pub fn fromFlat(v &List[f32]) HandKey {
+    mut p = HandPose.zero();
+    mut i = 0usize;
+    while i < FINGERS * DOF { p.v.set(i, *v[7usize + i]); i = i + 1usize; }
+    new HandKey(new Vec3(*v[0], *v[1], *v[2]), new Vec3(*v[3], *v[4], *v[5]), *v[6], p);
+  }
+
+  // The wrist's offset as a transform
+  pub fn offset(self &) Transform3 {
+    imm angle = rotation.length();
+    imm q = if angle > 0.000001 { Quat.angleAxis(angle, rotation * (1. / angle)); } else { Quat.identity(); };
+    new Transform3(translation, q, new Vec3(1., 1., 1.));
+  }
+}
+
+pub struct MotionKey {
+  pub time f32;
+  pub key HandKey;
+}
+
+pub struct HandMotion {
+  pub name String;
+  pub keys List[MotionKey];
+  pub period f32;
+
+  pub fn make(name &str, period f32) HandMotion { new HandMotion(String.from(name), List[MotionKey].empty(), period); }
+
+  pub fn add(self &mut, time f32, key HandKey) { keys.push(new MotionKey(time, key)); }
+
+  // The key at time 't' (taken round the period)
+  pub fn sample(self &, t f32) HandKey {
+    imm n = keys.len();
+    if n == 1usize { return HandKey.fromFlat(&keys[0].key.flat()); }
+    imm u = t - period * libc.floorf(t / period);
+    // The interval u falls in: key i to key i + 1 (the last to the first, a period on)
+    mut i = 0usize;
+    while i + 1usize < n and keys[i + 1usize].time <= u { i = i + 1usize; }
+    imm j = (i + 1usize) % n;
+    imm pi_ = (i + n - 1usize) % n;
+    imm nj = (j + 1usize) % n;
+    imm t0 = keys[i].time;
+    imm t1 = if j > i { keys[j].time; } else { keys[j].time + period; };
+    imm tp = if pi_ < i { keys[pi_].time; } else { keys[pi_].time - period; };
+    imm tn = if nj > j { keys[nj].time; } else { keys[nj].time + period; };
+    imm h = t1 - t0;
+    imm s = (u - t0) / h;
+    imm v0 = keys[i].key.flat();
+    imm v1 = keys[j].key.flat();
+    imm vp = keys[pi_].key.flat();
+    imm vn = keys[nj].key.flat();
+    imm s2 = s * s;
+    imm s3 = s2 * s;
+    imm h00 = 2. * s3 - 3. * s2 + 1.;
+    imm h10 = s3 - 2. * s2 + s;
+    imm h01 = -2. * s3 + 3. * s2;
+    imm h11 = s3 - s2;
+    mut out = List[f32].empty();
+    mut k = 0usize;
+    while k < KEY_FLOATS {
+      imm m0 = (*v1[k] - *vp[k]) / (t1 - tp) * h;
+      imm m1 = (*vn[k] - *v0[k]) / (tn - t0) * h;
+      out.push(h00 * *v0[k] + h10 * m0 + h01 * *v1[k] + h11 * m1);
+      k = k + 1usize;
+    }
+    HandKey.fromFlat(&out);
+  }
+}
+
+// ---- the blend ----
+
+pub struct TaskBlend {
+  pub motions List[HandMotion];
+  pub weight List[f32];
+  pub goal List[f32];
+  pub rate List[f32];
+  pub clock f32;
+
+  pub fn make() TaskBlend {
+    new TaskBlend(List[HandMotion].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0.);
+  }
+
+  // Add a motion with weight 'weight' at first: its number
+  pub fn add(self &mut, m HandMotion, weight f32) usize {
+    motions.push(m);
+    weight_push(self, weight);
+    motions.len() - 1usize;
+  }
+
+  // Ease motion 'i' to 'w', within 1% in 'seconds'
+  pub fn setGoal(self &mut, i usize, w f32, seconds f32) {
+    goal.set(i, w);
+    rate.set(i, 4.6 / fmax(seconds, 0.001));
+  }
+
+  // Advance the clock and the weights
+  pub fn update(self &mut, dt f32) {
+    clock = clock + dt;
+    mut i = 0usize;
+    while i < motions.len() {
+      imm k = 1. - libc.expf(-dt * *rate[i]);
+      weight.set(i, *weight[i] + (*goal[i] - *weight[i]) * k);
+      i = i + 1usize;
+    }
+  }
+
+  // The blend at the clock: the weights' normalised sum of the motions' samples
+  pub fn sample(self &) HandKey {
+    mut total = 0.;
+    mut i = 0usize;
+    while i < motions.len() { total = total + *weight[i]; i = i + 1usize; }
+    mut acc = List[f32].empty();
+    acc.resize(KEY_FLOATS, 0.);
+    if total < 0.000001 { return motions[0].sample(clock); }
+    i = 0usize;
+    while i < motions.len() {
+      imm w = *weight[i] / total;
+      if w > 0.000001 {
+        imm k = motions[i].sample(clock).flat();
+        mut c = 0usize;
+        while c < KEY_FLOATS { acc.set(c, *acc[c] + w * *k[c]); c = c + 1usize; }
+      }
+      i = i + 1usize;
+    }
+    HandKey.fromFlat(&acc);
+  }
+}
+
+fn weight_push(b &mut TaskBlend, w f32) {
+  b.weight.push(w);
+  b.goal.push(w);
+  b.rate.push(4.6 / 0.3);
+}
+
+fn fmax(a f32, b f32) f32 { if a > b { return a; } b; }
+
+// ---- the stock tasks ----
+
+// Hold: still, in a pose, closed to 'close'
+pub fn holdMotion(pose &HandPose, close f32) HandMotion {
+  mut m = HandMotion.make("hold", 1.);
+  mut k = HandKey.make(pose.copy());
+  k.close = close;
+  m.add(0., k);
+  m;
+}
+
+// A sinusoidal cycle of wrist translation and rotation about a held pose
+pub fn oscillate(name &str, translationAmp Vec3, rotationAmp Vec3, period f32, pose &HandPose, close f32) HandMotion {
+  mut m = HandMotion.make(name, period);
+  mut i = 0;
+  while i < 8 {
+    imm ph = f32.from(i) / 8.;
+    imm s = sin(2. * pi * ph);
+    mut k = HandKey.make(pose.copy());
+    k.translation = translationAmp * s;
+    k.rotation = rotationAmp * s;
+    k.close = close;
+    m.add(ph * period, k);
+    i = i + 1;
+  }
+  m;
+}
+
+// Turn: the wrist rolls about the forearm (the hand's y axis) by +-'roll' radians
+pub fn turnMotion(roll f32, period f32, pose &HandPose, close f32) HandMotion {
+  oscillate("turn", new Vec3(0., 0., 0.), new Vec3(0., roll, 0.), period, pose, close);
+}
+
+// Swing: the wrist hinges about its bending axis (across the hand: z) by +-'angle', a hammer's stroke
+pub fn swingMotion(angle f32, period f32, pose &HandPose, close f32) HandMotion {
+  oscillate("swing", new Vec3(0., 0., 0.), new Vec3(0., 0., angle), period, pose, close);
+}
+
+// Press: the palm leans into the surface by 'depth' metres along its normal and eases off
+pub fn pressMotion(spec &HandSpec, depth f32, period f32, pose &HandPose) HandMotion {
+  mut m = HandMotion.make("press", period);
+  mut i = 0;
+  while i < 8 {
+    imm ph = f32.from(i) / 8.;
+    imm lean = 0.5 - 0.5 * cos(2. * pi * ph);
+    mut k = HandKey.make(pose.copy());
+    k.translation = spec.palmNormal * (depth * lean);
+    k.close = 0.;
+    m.add(ph * period, k);
+    i = i + 1;
+  }
+  m;
+}
+
+fn keyAt(spec &HandSpec, along f32, lean f32, roll f32, pose &HandPose, close f32) HandKey {
+  mut k = HandKey.make(pose.copy());
+  // 'along' is distance towards the fingertips (the hand's -y); 'lean' the palm's push into the surface
+  k.translation = new Vec3(0., -along, 0.) + spec.palmNormal * lean;
+  k.rotation = new Vec3(0., 0., roll * spec.h);
+  k.close = close;
+  k;
+}
+
+// Knead: the heel of the palm pushes forward and down, the fingers fold at the end of the stroke
+// and the hand draws back with them raked. 'stroke' metres long, 'depth' of lean, 'period' seconds.
+pub fn kneadMotion(spec &HandSpec, stroke f32, depth f32, period f32) HandMotion {
+  mut m = HandMotion.make("knead", period);
+  imm flat = poseFlat();
+  imm claw = poseClaw();
+  imm mid = lerpPose(&flat, &claw, 0.5);
+  m.add(0.00 * period, keyAt(spec, -stroke * 0.5, depth * 0.45, 0.05, &flat, 0.));
+  m.add(0.28 * period, keyAt(spec, -stroke * 0.05, depth, 0.18, &flat, 0.));
+  m.add(0.50 * period, keyAt(spec, stroke * 0.5, depth * 0.85, 0.12, &mid, 0.4));
+  m.add(0.64 * period, keyAt(spec, stroke * 0.38, depth * 0.30, -0.04, &claw, 1.));
+  m.add(0.84 * period, keyAt(spec, -stroke * 0.25, depth * 0.25, -0.02, &claw, 1.));
+  m;
+}
+
+// ---- evaluating a key ----
+
+pub struct HandFrame {
+  pub wrist Transform3;          // the hand frame's placement in the surface's space
+  pub pose HandPose;
+  pub result GripResult;
+}
+
+// The hand for a key: the wrist at 'base' moved by the key's offset (in the base wrist's frame), the fingers from the key's
+// pose closed by 'close' of the way to where they meet the surface (the shape's closed pose is the far end).
+// With 'rest' the hand is lifted along 'up' until its palm and fingers are clear of the surface.
+pub fn evaluateKey(spec &HandSpec, shape &GripShape, base &Transform3, key &HandKey, surface &PropSurface, squash f32, rest bool, up Vec3) HandFrame {
+  imm off = key.offset();
+  mut wrist = base * off;
+  if rest {
+    // Lifted until the palm and every finger of the key's own pose are clear (the fingers then close from there)
+    mut lifted = 0.;
+    while lifted < 0.05 and !poseClear(spec, &key.pose, &wrist, surface, squash) {
+      wrist = new Transform3(wrist.translation + up * 0.0005, wrist.rotation, wrist.scale);
+      lifted = lifted + 0.0005;
+    }
+  }
+  imm trial = new GripShape(String.from("key"), key.pose.copy(), shape.closed.copy());
+  mut closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);
+  // (the spline may overshoot the closure a little; past 0 to 1 it would pull the fingers through the prop)
+  mut pose = lerpPose(&key.pose, &closedOn.pose, clampf(key.close, 0., 1.));
+  mut result = measure(spec, &pose, &wrist, surface);
+  // A pose in between can chord through a curved prop: with 'rest', lift a little more and close again
+  mut again = 0;
+  while rest and result.deepest > squash * 1.5 and again < 40 {
+    wrist = new Transform3(wrist.translation + up * 0.002, wrist.rotation, wrist.scale);
+    closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);
+    pose = lerpPose(&key.pose, &closedOn.pose, clampf(key.close, 0., 1.));
+    result = measure(spec, &pose, &wrist, surface);
+    again = again + 1;
+  }
+  new HandFrame(wrist, pose.copy(), result);
+}
