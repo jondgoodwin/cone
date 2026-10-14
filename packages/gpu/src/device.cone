@@ -9,6 +9,8 @@ pub struct Device {
   pub frameNumber u64;             // frames ended so far
   pub timestampPeriod f32 = 0.;    // nanoseconds a timestamp's tick; 0: its queue keeps no time
   pub maxAnisotropy f32 = 0.;      // the most anisotropic filtering a sampler may ask for; 0: the GPU has none
+  pub rayTracing bool = false;     // the device was made with ray queries and acceleration structures (raytracing.cone);
+                                   // false on a GPU that lacks them, which then draws exactly as it always did
 
   pub fn isValid(self &) bool { (backend.device as *u8 as usize) != 0usize; }
 
@@ -125,11 +127,38 @@ pub struct Device {
     if (usage & BUFFER_USAGE_UNIFORM) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_STORAGE) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_STORAGE_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_INDIRECT) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDIRECT_BUFFER_BIT; }
+    // Ray tracing: the GPU reads these by address (a build's inputs, its scratch, the structure's own memory)
+    if (usage & (BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH
+        | BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE)) != 0u32 {
+      if !rayTracing {
+        fail("createBuffer: an acceleration structure's buffer on a device without ray tracing");
+        return new Buffer(new BufferBackend(backend.device, backend.fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64),
+          nullp(), true), size, usage);
+      }
+      vkUsage = vkUsage | vulkan.BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | vulkan.BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      if (usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32 {
+        vkUsage = vkUsage | vulkan.BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      }
+      if (usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE) != 0u32 {
+        vkUsage = vkUsage | vulkan.BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+      }
+    }
     imm mapping = usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE);
     mut b = new BufferBackend(backend.device, backend.fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
     if self.isValid() { b = allocateBuffer(&backend.fns, backend.device, &queue.backend.memory, size, vkUsage, mapping); }
     new Buffer(b, size, usage);
   }
+
+  // The ray-tracing structure over one mesh's triangles, 'vertexCount' float3 positions and
+  // 'indexCount' u32 indices, both buffers made with BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT
+  // (raytracing.cone). Needs 'rayTracing'. Check 'isValid'.
+  pub fn createBottomLevel(self &mut, positions &Buffer, vertexCount u32, indices &Buffer, indexCount u32) AccelerationStructure {
+    makeBottomLevel(self, positions, vertexCount, indices, indexCount);
+  }
+
+  // The structure over up to 'maxInstances' placed bottom-level ones (raytracing.cone). Needs
+  // 'rayTracing'. Check 'isValid'.
+  pub fn createTopLevel(self &mut, maxInstances u32) AccelerationStructure { makeTopLevel(self, maxInstances); }
 
   // A texture 'desc' describes, in the GPU's own memory: one to draw into,
   // its usage TEXTURE_USAGE_RENDER_ATTACHMENT (and TEXTURE_USAGE_COPY_SRC to
@@ -550,9 +579,10 @@ pub struct Device {
     // A pool of its own, holding just its set: destroying the pool frees it
     // How many of each descriptor type: uniform and storage buffers,
     // samplers, sampled images, storage images
-    imm types Array[u32, 5] = [vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      vulkan.DESCRIPTOR_TYPE_SAMPLER, vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE, vulkan.DESCRIPTOR_TYPE_STORAGE_IMAGE];
-    mut counts = new Array[u32, 5] <- fill 0u32;
+    imm types Array[u32, 6] = [vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      vulkan.DESCRIPTOR_TYPE_SAMPLER, vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE, vulkan.DESCRIPTOR_TYPE_STORAGE_IMAGE,
+      vulkan.DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR];
+    mut counts = new Array[u32, 6] <- fill 0u32;
     mut i = 0usize;
     while i < entries.len {
       if entries[i].binding >= MAX_BINDINGS { return result; }
@@ -568,16 +598,16 @@ pub struct Device {
         }
       }
       mut t = 0usize;
-      while t < 5usize {
+      while t < 6usize {
         if types[t] == type { counts[t] = counts[t] + 1u32; }
         t = t + 1usize;
       }
       i = i + 1usize;
     }
-    mut sizes = new Array[vulkan.DescriptorPoolSize, 5] <- fill new vulkan.DescriptorPoolSize(vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1u32);
+    mut sizes = new Array[vulkan.DescriptorPoolSize, 6] <- fill new vulkan.DescriptorPoolSize(vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1u32);
     mut sizeCount = 0usize;
     mut t = 0usize;
-    while t < 5usize {
+    while t < 6usize {
       if counts[t] > 0u32 {
         sizes[sizeCount] = new vulkan.DescriptorPoolSize(types[t], counts[t]);
         sizeCount = sizeCount + 1usize;
@@ -604,6 +634,9 @@ pub struct Device {
     mut infos = new Array[vulkan.DescriptorBufferInfo, 16] <- fill new vulkan.DescriptorBufferInfo(new vulkan.Buffer(0u64), 0u64, 0u64);
     mut images = new Array[vulkan.DescriptorImageInfo, 16] <- fill new vulkan.DescriptorImageInfo(new vulkan.Sampler(0u64),
       new vulkan.ImageView(0u64), vulkan.IMAGE_LAYOUT_UNDEFINED);
+    mut structures = new Array[vulkan.AccelerationStructureKHR, 16] <- fill new vulkan.AccelerationStructureKHR(0u64);
+    mut structureWrites = new Array[vulkan.WriteDescriptorSetAccelerationStructureKHR, 16] <- fill
+      new vulkan.WriteDescriptorSetAccelerationStructureKHR(pAccelerationStructures: null);
     mut writes = new Array[vulkan.WriteDescriptorSet, 16] <- fill new vulkan.WriteDescriptorSet(
       dstSet: new vulkan.DescriptorSet(0u64), pImageInfo: null,
       pBufferInfo: null, pTexelBufferView: null);
@@ -619,6 +652,11 @@ pub struct Device {
         if range == WHOLE_SIZE { range = vulkan.WHOLE_SIZE; }
         infos[i] = new vulkan.DescriptorBufferInfo(e.backend.buffer, e.backend.offset, range);
         writes[i].pBufferInfo = (&infos as *u8 + i * mem.sizeof[vulkan.DescriptorBufferInfo]()) as *vulkan.DescriptorBufferInfo;
+      } elif e.backend.kind == BINDING_KIND_ACCELERATION_STRUCTURE {
+        structures[i] = new vulkan.AccelerationStructureKHR(e.backend.accel);
+        structureWrites[i] = new vulkan.WriteDescriptorSetAccelerationStructureKHR(
+          pAccelerationStructures: (&structures as *u8 + i * mem.sizeof[vulkan.AccelerationStructureKHR]()) as *vulkan.AccelerationStructureKHR);
+        writes[i].pNext = (&structureWrites as *u8 + i * mem.sizeof[vulkan.WriteDescriptorSetAccelerationStructureKHR]()) as *u8;
       } else {
         // A texture is bound in the layout it rests in (a sampled one the
         // shader-read layout, a storage texture the general); a sampler has none
@@ -681,13 +719,22 @@ fn memoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, want u32) 
 // allocation
 fn allocate(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, req &vulkan.MemoryRequirements,
     want u32) vulkan.DeviceMemory {
+  allocateFlagged(fns, device, props, req, want, false);
+}
+
+// The same, for a buffer whose device address is taken (ray tracing's inputs, scratch and structures): the
+// allocation says so (VkMemoryAllocateFlagsInfo)
+fn allocateFlagged(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, req &vulkan.MemoryRequirements,
+    want u32, addressable bool) vulkan.DeviceMemory {
   mut memory = new vulkan.DeviceMemory(0u64);
   imm typeIndex = memoryType(props, req.memoryTypeBits, want);
   if typeIndex == 0xFFFFFFFFu32 {
     fail("no memory type suits the buffer or texture");
     return memory;
   }
-  imm mai = new vulkan.MemoryAllocateInfo(allocationSize: req.size, memoryTypeIndex: typeIndex);
+  imm flags = new vulkan.MemoryAllocateFlagsInfo(flags: vulkan.MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT);
+  imm mai = new vulkan.MemoryAllocateInfo(pNext: if addressable { &flags as *u8; } else { null; },
+    allocationSize: req.size, memoryTypeIndex: typeIndex);
   check(fns.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
   memory;
 }
@@ -742,7 +789,8 @@ fn allocateBuffer(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDevic
     imm mai = new vulkan.MemoryAllocateInfo(allocationSize: req.size, memoryTypeIndex: typeIndex);
     check(fns.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
   } else {
-    memory = allocate(fns, device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    memory = allocateFlagged(fns, device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      (usage & vulkan.BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0u32);
   }
   if memory.h == 0u64 { return result; }
   result.memory = memory;

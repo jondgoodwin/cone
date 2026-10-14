@@ -814,7 +814,7 @@ what an expression does to a place:
 | a read, a copy out | exclusive |
 | a read-only borrow (`&`, `&ro`) | exclusive |
 | an `&imm` borrow | exclusive, alias |
-| a write — `=`, an operator changing it in place (`+=`, `++`, `<-`), one side of `<=>` — or a `&mut`/`&mut1` borrow | shared or exclusive |
+| a write — `=`, an operator changing it in place (`+=`, `++`, a `<-` whose method takes `self &mut`; one taking `self &` is a read-only borrow), one side of `<=>` — or a `&mut`/`&mut1` borrow | shared or exclusive |
 | a `&uni` borrow | any but a pin |
 | a move, a replacement of the whole (its old value finalized), the end of its scope | any, a pin too |
 | an `&opaq` borrow | none |

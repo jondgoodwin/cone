@@ -1,0 +1,228 @@
+// ---- Ray tracing: acceleration structures, for shaders that cast rays ----
+//
+// The method is RAY QUERY (VK_KHR_ray_query, with VK_KHR_acceleration_structure): a shader of any
+// stage casts a ray into a top-level acceleration structure it has bound, and walks the hits
+// itself (SPIR-V's OpRayQuery..., Slang's RayQuery, HLSL's inline ray tracing, WGSL's ray_query
+// extension). It was chosen over the ray-tracing PIPELINE (VK_KHR_ray_tracing_pipeline) because:
+// - it fits the layer's objects as they are: a ray is cast from the fragment or compute shader
+//   that already draws the material, so there is no new pipeline kind, no shader binding table
+//   and no recursion model to wrap, and WebGPU's shape (bind groups, render and compute
+//   pipelines) is unchanged;
+// - one pipeline family serves both paths, so a material draws with the same pipeline layout
+//   whether the card has ray tracing or not (the raster path is the fallback of the same shader
+//   family, not a second renderer);
+// - ray queries are what the portable proposals use (wgpu's experimental ray tracing, WebGPU's
+//   ray-query proposal), where the pipeline is Vulkan- and DXR-shaped.
+// The cost is that no hardware scheduling of hit shaders is done for us (the shader that casts a ray
+// shades its hit itself), which suits glass seen through a few interfaces, and not a full path tracer.
+//
+// What the layer offers:
+// - 'Adapter.supportsRayTracing' (the extensions and features, asked of the GPU) and
+//   'adapter.requestDeviceWith(rayTracing)'; 'Device.rayTracing' says whether the device has it.
+//   A device that does not behaves exactly as before: nothing here is touched.
+// - Buffers made with BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT, whose addresses a build reads.
+// - 'device.createBottomLevel': one mesh's triangles (a positions buffer of float3 and a u32 index
+//   buffer, both made with that usage), 'device.createTopLevel': a structure over up to
+//   'maxInstances' placed bottom-level ones. The instances are written to the top level's
+//   'instances' buffer by 'queue.writeBuffer', as AccelerationStructureInstance records.
+// - 'encoder.buildAccelerationStructure(&mut structure, count)' records the build, with a global
+//   barrier before and after (the layer's synchronization is global, as compute's is).
+// - 'BindGroupEntry.accelerationStructure(binding, &topLevel)' and a layout entry of
+//   BINDING_KIND_ACCELERATION_STRUCTURE bind the top level to a shader.
+// A top level rebuilt every frame is one structure: the build's barrier makes it wait for the
+// earlier frames' reads.
+
+struct AccelerationStructureBackend {
+  device vulkan.Device;
+  fns DevFns;
+  ray vulkan.RayFns;
+  handle vulkan.AccelerationStructureKHR;
+}
+
+// One instance of a top-level structure: a bottom-level structure placed in the world. 64 bytes,
+// the layout the GPU reads (VkAccelerationStructureInstanceKHR).
+pub struct AccelerationStructureInstance {
+  // The object-to-world transform, a 3 x 4 matrix in rows
+  pub transform Array[f32, 12];
+  // The custom index (low 24 bits; a shader reads it back from the hit) and the visibility mask (high 8: a ray
+  // with a mask that shares no bit with it misses the instance)
+  pub indexAndMask u32;
+  // The flags in the high 8 bits (INSTANCE_FLAG_...), the low 24 unused
+  pub flags u32;
+  // The bottom-level structure's 'address'
+  pub structure u64;
+}
+
+pub const INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE = 0x1u32;   // both faces of a triangle are hit
+pub const INSTANCE_FLAG_FORCE_OPAQUE = 0x4u32;
+pub const ACCELERATION_STRUCTURE_INSTANCE_BYTES = 64u64;
+
+// An acceleration structure: what rays are cast into
+pub struct AccelerationStructure {
+  backend AccelerationStructureBackend;
+  storage Buffer;                  // the memory it lives in
+  pub scratch Buffer;              // the memory a build works in; given back with 'queue.releaseBuffer' once built, for a bottom level
+  pub instances Buffer;            // a top level's instances (not a bottom level's)
+  pub address u64;                 // its device address, which an instance refers to it by
+  pub top bool;
+  pub capacity u32;                // triangles (bottom level) or most instances (top level)
+  inputAddress u64;                // bottom: the positions' address; top: the instances'
+  indexAddress u64;
+  scratchAddress u64;
+  vertexCount u32;
+
+  pub fn isValid(self &) bool { backend.handle.h != 0u64; }
+
+  // No structure: what a field holds before one is made for it (not valid)
+  pub fn none() AccelerationStructure {
+    new AccelerationStructure(new AccelerationStructureBackend(0usize as vulkan.Device, noDevFns(), new vulkan.RayFns(),
+      new vulkan.AccelerationStructureKHR(0u64)), Buffer.none(), Buffer.none(), Buffer.none(), 0u64, false, 0u32, 0u64, 0u64,
+      0u64, 0u32);
+  }
+
+  fn final(self &uni) {
+    if backend.handle.h != 0u64 {
+      backend.fns.deviceWaitIdle(backend.device);
+      backend.ray.destroyAccelerationStructureKHR(backend.device, backend.handle, nullp());
+    }
+  }
+}
+
+fn noStructure(device &Device) AccelerationStructure {
+  new AccelerationStructure(new AccelerationStructureBackend(device.backend.device, device.backend.fns, device.backend.ray,
+    new vulkan.AccelerationStructureKHR(0u64)), Buffer.none(), Buffer.none(), Buffer.none(), 0u64, false, 0u32, 0u64, 0u64, 0u64, 0u32);
+}
+
+fn bufferAddress(device &Device, buffer &Buffer) u64 {
+  imm info = new vulkan.BufferDeviceAddressInfo(buffer: buffer.backend.buffer);
+  device.backend.ray.getBufferDeviceAddress(device.backend.device, &info);
+}
+
+fn roundUp256(n u64) u64 { ((n + 255u64) / 256u64) * 256u64; }
+
+// The structure over one mesh's triangles. The buffers are read when the build is recorded, so they
+// must keep these contents until then (and must not be released before the build is done).
+fn makeBottomLevel(device &mut Device, positions &Buffer, vertexCount u32, indices &Buffer, indexCount u32) AccelerationStructure {
+  mut result = noStructure(device);
+  if !device.rayTracing {
+    fail("createBottomLevel: the device was made without ray tracing");
+    return result;
+  }
+  if !positions.isValid() or !indices.isValid() or vertexCount == 0u32 or indexCount < 3u32
+      or (positions.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) == 0u32
+      or (indices.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) == 0u32 {
+    fail("createBottomLevel: the buffers must be valid and made with BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT");
+    return result;
+  }
+  imm triangles = indexCount / 3u32;
+  imm positionsAddress = bufferAddress(device, positions);
+  imm indicesAddress = bufferAddress(device, indices);
+  imm geometry = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: positionsAddress,
+    maxVertex: vertexCount - 1u32, indexData: indicesAddress, flags: vulkan.GEOMETRY_OPAQUE_BIT_KHR);
+  imm info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(type: vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+    flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, srcAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64),
+    dstAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64), pGeometries: &geometry as *u8);
+  imm primitives = triangles;
+  mut sizes = new vulkan.AccelerationStructureBuildSizesInfoKHR();
+  device.backend.ray.getAccelerationStructureBuildSizesKHR(device.backend.device,
+    vulkan.ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &primitives as *u32, &mut sizes);
+  result.storage = device.createBuffer(roundUp256(sizes.accelerationStructureSize), BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE);
+  if !result.storage.isValid() { return result; }
+  imm ci = new vulkan.AccelerationStructureCreateInfoKHR(buffer: result.storage.backend.buffer,
+    size: sizes.accelerationStructureSize, type: vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
+  mut handle = new vulkan.AccelerationStructureKHR(0u64);
+  if !check(device.backend.ray.createAccelerationStructureKHR(device.backend.device, &ci, nullp(), &mut handle),
+      "vkCreateAccelerationStructureKHR") {
+    return result;
+  }
+  result.backend.handle = handle;
+  imm ai = new vulkan.AccelerationStructureDeviceAddressInfoKHR(accelerationStructure: handle);
+  result.address = device.backend.ray.getAccelerationStructureDeviceAddressKHR(device.backend.device, &ai);
+  result.scratch = device.createBuffer(roundUp256(umax64(sizes.buildScratchSize, 256u64)), BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH);
+  result.scratchAddress = bufferAddress(device, &result.scratch);
+  result.top = false;
+  result.capacity = triangles;
+  result.inputAddress = positionsAddress;
+  result.indexAddress = indicesAddress;
+  result.vertexCount = vertexCount;
+  result;
+}
+
+fn umax64(a u64, b u64) u64 { if a > b { a; } else { b; }; }
+
+// The structure over up to 'maxInstances' placed bottom-level ones
+fn makeTopLevel(device &mut Device, maxInstances u32) AccelerationStructure {
+  mut result = noStructure(device);
+  if !device.rayTracing {
+    fail("createTopLevel: the device was made without ray tracing");
+    return result;
+  }
+  if maxInstances == 0u32 {
+    fail("createTopLevel: no instances");
+    return result;
+  }
+  result.instances = device.createBuffer(u64.from(maxInstances) * ACCELERATION_STRUCTURE_INSTANCE_BYTES,
+    BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+  if !result.instances.isValid() { return result; }
+  imm instancesAddress = bufferAddress(device, &result.instances);
+  imm geometry = new vulkan.AccelerationStructureGeometryInstancesKHR(data: instancesAddress);
+  imm info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(type: vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+    flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, srcAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64),
+    dstAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64), pGeometries: &geometry as *u8);
+  imm primitives = maxInstances;
+  mut sizes = new vulkan.AccelerationStructureBuildSizesInfoKHR();
+  device.backend.ray.getAccelerationStructureBuildSizesKHR(device.backend.device,
+    vulkan.ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &primitives as *u32, &mut sizes);
+  result.storage = device.createBuffer(roundUp256(sizes.accelerationStructureSize), BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE);
+  if !result.storage.isValid() { return result; }
+  imm ci = new vulkan.AccelerationStructureCreateInfoKHR(buffer: result.storage.backend.buffer,
+    size: sizes.accelerationStructureSize, type: vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR);
+  mut handle = new vulkan.AccelerationStructureKHR(0u64);
+  if !check(device.backend.ray.createAccelerationStructureKHR(device.backend.device, &ci, nullp(), &mut handle),
+      "vkCreateAccelerationStructureKHR") {
+    return result;
+  }
+  result.backend.handle = handle;
+  imm ai = new vulkan.AccelerationStructureDeviceAddressInfoKHR(accelerationStructure: handle);
+  result.address = device.backend.ray.getAccelerationStructureDeviceAddressKHR(device.backend.device, &ai);
+  result.scratch = device.createBuffer(roundUp256(umax64(sizes.buildScratchSize, 256u64)), BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH);
+  result.scratchAddress = bufferAddress(device, &result.scratch);
+  result.top = true;
+  result.capacity = maxInstances;
+  result.inputAddress = instancesAddress;
+  result;
+}
+
+// Record the build of 'structure' (all of a bottom level; the first 'count' instances of a top level),
+// after everything recorded before it, and visible to everything after
+fn recordBuild(encoder &mut CommandEncoder, structure &AccelerationStructure, count u32) {
+  imm cmd = encoder.backend.cmd;
+  if isNull(cmd) or !structure.isValid() { return; }
+  mut n = count;
+  if structure.top {
+    if n > structure.capacity {
+      fail("buildAccelerationStructure: more instances than the top level was made for");
+      return;
+    }
+  } else {
+    n = structure.capacity;
+  }
+  memoryBarrier(&encoder.backend.fns, cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+  imm triangles = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: structure.inputAddress,
+    maxVertex: structure.vertexCount - 1u32, indexData: structure.indexAddress, flags: vulkan.GEOMETRY_OPAQUE_BIT_KHR);
+  imm instances = new vulkan.AccelerationStructureGeometryInstancesKHR(data: structure.inputAddress);
+  imm geometry *u8 = if structure.top { &instances as *u8; } else { &triangles as *u8; };
+  imm info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(
+    type: if structure.top { vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR; } else { vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR; },
+    flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+    srcAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64), dstAccelerationStructure: structure.backend.handle, pGeometries: geometry, scratchData: structure.scratchAddress);
+  imm range = new vulkan.AccelerationStructureBuildRangeInfoKHR(primitiveCount: n);
+  imm rangePointer = &range as *vulkan.AccelerationStructureBuildRangeInfoKHR;
+  structure.backend.ray.cmdBuildAccelerationStructuresKHR(cmd, 1u32, &info as *vulkan.AccelerationStructureBuildGeometryInfoKHR,
+    &rangePointer as **vulkan.AccelerationStructureBuildRangeInfoKHR);
+  memoryBarrier(&encoder.backend.fns, cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+}

@@ -1251,6 +1251,60 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     return NULL;
 }
 
+// The borrow a '<-' list takes of its receiver, once, for every entry
+// (contentsLowerEntries). Each entry is then applied through that borrow and
+// takes from it what its own method's 'self' declares, as one '<-' on a value
+// does (fnCallBorrowReceiver), so the borrow need only be as strong as the
+// strongest 'self' among the type's '<-' methods, and never stronger than
+// the receiver permits:
+// - every '<-' takes 'self &mut': mutable, as it always was (an immutable
+//   receiver is refused by the borrow itself);
+// - none does: read-only ('imm' for a type declaring Immutable, which a 'ro'
+//   borrow is not accepted as), so an immutable receiver is appended to
+//   through a method that only reads it;
+// - some do: mutable where the receiver may be written, read-only otherwise,
+//   so an entry whose method needs the write is the one refused.
+// A '<-' whose signature is not a method's of known 'self' counts as mutable.
+PermNode *fnCallAppendBorrowPerm(INode *lval, INode *colltype) {
+    INode *found = isMethodType(colltype) ? iNsTypeFindFnField((INsTypeNode*)colltype, lessDashName) : NULL;
+    if (found)
+        found = aliasDclResolve(found);
+    if (found == NULL || !iexpIsLval(lval))
+        return mutPerm;
+    INode **candp = &found;
+    uint32_t ncand = 1;
+    if (found->tag == FnOverloadDclTag) {
+        candp = &nodesGet(((FnOverloadDclNode*)found)->overloads, 0);
+        ncand = ((FnOverloadDclNode*)found)->overloads->used;
+    }
+    else if (found->tag != FnDclTag)
+        return mutPerm;
+    int wantsmut = 0, wantsro = 0;
+    while (ncand--) {
+        FnDclNode *cand = (FnDclNode*)*candp++;
+        int mut = 1;
+        if (cand->vtype->tag == FnSigTag && ((FnSigNode*)cand->vtype)->parms->used > 0) {
+            INode *selftype = ((IExpNode*)nodesGet(((FnSigNode*)cand->vtype)->parms, 0))->vtype;
+            if (selftype->tag == RefTag)
+                mut = (permGetFlags(((RefNode*)selftype)->perm) & MayWrite) != 0;
+        }
+        if (mut)
+            wantsmut = 1;
+        else
+            wantsro = 1;
+    }
+    if (wantsmut && !wantsro)
+        return mutPerm;
+    if (wantsmut) {
+        INode *lvalperm = (INode*)immPerm;
+        uint16_t scope;
+        iexpGetLvalInfo(lval, &lvalperm, &scope);
+        if (permGetFlags(lvalperm) & MayWrite)
+            return mutPerm;
+    }
+    return itypeIsImmutable(colltype) ? immPerm : roPerm;
+}
+
 // An operand of an enum's '==' is lent to the comparison, read-only, where it
 // lies: a value is borrowed (a temporary, to the end of its statement), and a
 // reference is passed as it is. Nothing is copied or moved into the comparison,
@@ -2572,9 +2626,12 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     // reference, which is taken as it is. Either way the rest of this works on
     // a reference to the method-declaring type: the operator is looked up on
     // that type, and the rewrite below dereferences the reference to reach it.
+    // A '<-' on a value is the exception: it borrows its receiver with what
+    // the method it selects declares for 'self' (fnCallBorrowReceiver, as a
+    // named method does), because the selection depends on the entry appended.
     if (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
-    else
+    else if (methsym != lessDashName)
         borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
 
     // Lower to op-assign, if method supported by type
