@@ -1,0 +1,183 @@
+// Idle motion and attention, counted over long runs of a seeded generator.
+//
+// ENVELOPE. 0 at the ends; smoothstep(0, 0.3, u) up, so 0.5 at u = 0.15; 1 from 0.30 to 0.65; down again, 0.5 at u = 0.825.
+//
+// WEIGHT SHIFT. The side is -1 to 1; the pelvis is moved sideways by side x 0.035 m (a 1.75 m figure) and rolled by side x 3
+// degrees, and the spine takes -0.5, the chest -0.4 and the neck -0.1 of that roll, so the head's roll is the pelvis's
+// less the three: 3 - 1.5 - 1.2 - 0.3 = 0 degrees. Standing for two minutes there are several changes of side (one every 3.5
+// to 9 s, 6.5 on average, so 12 to 24). Walking (calm 0) there is none and the pelvis delta is nothing.
+//
+// FIDGETS. A gesture every 2.5 s plus an exponential of mean 5 s after the last ends (and each lasts 1.5 to 2.6 s): about one
+// every 9.5 s, so 200 s of standing makes 15 to 30. None while the body is walking.
+//
+// ATTENTION. A hold of 0.6 s plus an exponential of mean 1 s (clipped at 3.6 s), one in seven a long one of 3 to 6 s: the mean
+// hold is about 2.2 s, so 300 s makes 100 to 170 changes. Most are near ahead (45 per cent within 0.22 rad), the rest wide
+// (to 1.1 rad each side). Half the choices go to a named interest when there is one.
+
+mod idle;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import animlayers use *;
+import livingbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn angleOf(q Quat) f32 { 2. * acos(clampf(absf(q.w), 0., 1.)); }
+
+fn testEnvelope() {
+  near(fidgetEnvelope(0.), 0., 0.00001, "starts at nothing");
+  near(fidgetEnvelope(1.), 0., 0.00001, "ends at nothing");
+  near(fidgetEnvelope(0.15), 0.5, 0.0001, "half way up");
+  near(fidgetEnvelope(0.5), 1., 0.00001, "held");
+  near(fidgetEnvelope(0.825), 0.5, 0.0001, "half way down");
+}
+
+fn testShift() {
+  imm s = humanoid(1.75);
+  mut idle = IdleMotion.humanoid(1.75, 5u32);
+  mut changes = 0;
+  mut last = idle.shiftTo;
+  mut maxSide = 0.;
+  mut t = 0;
+  mut headRollWorst = 0.;
+  while t < 60 * 120 {
+    mut d = zeroPose(s.boneCount());
+    idle.update(1. / 60., 1., &mut d);
+    if idle.shiftTo != last { changes = changes + 1; last = idle.shiftTo; }
+    imm side = idle.side();
+    if absf(side) > maxSide { maxSide = absf(side); }
+    if idle.active < 0i32 {
+      // with no gesture going, the pelvis roll less the counter-rolls is the head's roll: nothing
+      imm roll = side * radians(3.);
+      imm res = roll - 0.5 * roll - 0.4 * roll - 0.1 * roll;
+      if absf(res) > headRollWorst { headRollWorst = absf(res); }
+      near((*d.locals[PELVIS]).translation.x, side * 0.035, 0.0001, "the pelvis is over the loaded foot");
+    }
+    t = t + 1;
+  }
+  expectBool(changes >= 10 and changes <= 26, true, "two minutes: the weight changes sides 10 to 26 times");
+  expectBool(maxSide <= 1.0001, true, "the side stays within -1 to 1");
+  near(headRollWorst, 0., 0.00001, "the counter-rolls bring the head level");
+  // roll of the pelvis at full shift
+  mut idle2 = IdleMotion.humanoid(1.75, 5u32);
+  idle2.shiftFrom = 1.;
+  idle2.shiftTo = 1.;
+  idle2.shiftStart = -100.;
+  idle2.shiftNext = 1000.;
+  idle2.nextFidget = 1000.;
+  mut d2 = zeroPose(s.boneCount());
+  idle2.update(1. / 60., 1., &mut d2);
+  near(angleOf(d2.rotation(PELVIS)), radians(3.), 0.0001, "the pelvis rolls 3 degrees at full shift");
+  near(angleOf(d2.rotation(SPINE)), radians(1.5), 0.0001, "the spine counters 1.5");
+  near((*d2.locals[PELVIS]).translation.x, 0.035, 0.0001, "3.5 cm over");
+  // walking
+  mut idle3 = IdleMotion.humanoid(1.75, 5u32);
+  idle3.shiftFrom = 1.;
+  idle3.shiftTo = 1.;
+  idle3.shiftStart = -100.;
+  mut d3 = zeroPose(s.boneCount());
+  idle3.update(1. / 60., 0., &mut d3);
+  near((*d3.locals[PELVIS]).translation.x, 0., 0.00001, "walking: no shift");
+  near(angleOf(d3.rotation(PELVIS)), 0., 0.00001, "and no roll");
+}
+
+fn testFidgets() {
+  imm s = humanoid(1.75);
+  mut idle = IdleMotion.humanoid(1.75, 11u32);
+  mut starts = 0;
+  mut wasActive = false;
+  mut names = List[String].empty();
+  mut t = 0;
+  while t < 60 * 200 {
+    mut d = zeroPose(s.boneCount());
+    idle.update(1. / 60., 1., &mut d);
+    imm now = idle.active >= 0i32;
+    if now and !wasActive { starts = starts + 1; names.push(idle.gestureName()); }
+    wasActive = now;
+    t = t + 1;
+  }
+  expectBool(starts >= 15 and starts <= 30, true, "200 s: 15 to 30 gestures");
+  mut distinct = 0;
+  mut i = 0usize;
+  while i < names.len() {
+    mut seen = false;
+    mut j = 0usize;
+    while j < i { if names[j].view() == names[i].view() { seen = true; } j = j + 1usize; }
+    if !seen { distinct = distinct + 1; }
+    i = i + 1usize;
+  }
+  expectBool(distinct >= 4, true, "and at least four different ones");
+  // none while walking
+  mut walker = IdleMotion.humanoid(1.75, 11u32);
+  mut started = 0;
+  t = 0;
+  while t < 60 * 100 {
+    mut d = zeroPose(s.boneCount());
+    walker.update(1. / 60., 0., &mut d);
+    if walker.active >= 0i32 { started = started + 1; }
+    t = t + 1;
+  }
+  expectInt(i64.from(started), 0i64, "walking: no gestures");
+  // a gesture's peak: the shrug lifts both clavicles 1.6 cm, and asks for a deep breath
+  mut sh = IdleMotion.humanoid(1.75, 3u32);
+  sh.active = 0i32;
+  sh.gestureStart = 0.;
+  sh.time = 0.75 - 1. / 60.;
+  sh.shiftNext = 1000.;
+  sh.nextFidget = 1000.;
+  mut d = zeroPose(s.boneCount());
+  sh.update(1. / 60., 1., &mut d);
+  near((*d.locals[CLAVICLE_L]).translation.y, 0.016, 0.0005, "the shrug at its peak: 1.6 cm");
+  near((*d.locals[CLAVICLE_R]).translation.y, 0.016, 0.0005, "both sides");
+}
+
+fn testAttention() {
+  mut a = Attention.make(AttentionParams.standard(), 21u32);
+  mut interests = List[Vec3].empty();
+  mut changes = 0;
+  mut near0 = 0;
+  mut maxYaw = 0.;
+  mut t = 0;
+  while t < 60 * 300 {
+    if a.update(1. / 60., &interests) {
+      changes = changes + 1;
+      if absf(a.yaw) < 0.23 { near0 = near0 + 1; }
+      if absf(a.yaw) > maxYaw { maxYaw = absf(a.yaw); }
+    }
+    t = t + 1;
+  }
+  expectBool(changes >= 90 and changes <= 180, true, "300 s: 90 to 180 changes of direction");
+  expectBool(near0 * 100 >= changes * 40, true, "most are near ahead (the near share plus the wide ones that happen to be)");
+  expectBool(maxYaw <= 1.1001 and maxYaw > 0.8, true, "the widest look is about 1.1 rad");
+  near(a.direction().length(), 1., 0.0001, "the direction is a unit vector");
+  // with an interest
+  mut b = Attention.make(AttentionParams.standard(), 22u32);
+  interests.push(new Vec3(0.5, 0., -0.8660254));
+  mut onIt = 0;
+  mut total = 0;
+  t = 0;
+  while t < 60 * 300 {
+    if b.update(1. / 60., &interests) {
+      total = total + 1;
+      if b.holding >= 0i32 {
+        onIt = onIt + 1;
+        near(b.direction().x, 0.5, 0.0001, "an interest is looked at exactly");
+      }
+    }
+    t = t + 1;
+  }
+  expectBool(onIt * 100 >= total * 35 and onIt * 100 <= total * 65, true, "about half the choices go to the interest");
+}
+
+fn main() i32 {
+  testEnvelope();
+  testShift();
+  testFidgets();
+  testAttention();
+  done();
+}

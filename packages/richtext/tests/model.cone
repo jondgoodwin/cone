@@ -1,0 +1,85 @@
+// The document model's run bookkeeping, with counts worked out by hand.
+//
+//   "hello world", bold over 6..11 -> runs [6 plain][5 bold]; bold over 0..6 as well -> one run of 11;
+//   inserting "big " plain at 6 into [6 plain][5 bold] -> [10 plain][5 bold]; deleting 4..8 of
+//   "abcdefghij" with runs [5 plain][5 bold] -> [4 plain][2 bold], text "abcdij";
+//   splitting "abcdij" at 4 -> "abcd" and "ij"; word offsets in "one two  three" (14 bytes): from 0
+//   right -> 4, -> 9, -> 14 (end), and back from the end -> 9, 4, 0.
+
+mod modeltest;
+
+import testing use *;
+import collections use *;
+import richtext use *;
+
+fn boldOp() StyleOp { new StyleOp(OP_BOLD, true, 0.0, 0u32); }
+
+fn main() i32 {
+  mut b = Block.fromText("hello world", Style.plain());
+  expectInt(i64.from(b.runs.len()), 1i64, "one run");
+  imm op = boldOp();
+  styleRange(&mut b, 6usize, 11usize, &op);
+  expectInt(i64.from(b.runs.len()), 2i64, "split in two");
+  expectInt(i64.from((*b.runs[0usize]).len), 6i64, "first run is 6 bytes");
+  expectInt(i64.from((*b.runs[1usize]).len), 5i64, "second run is 5 bytes");
+  expect((*b.runs[1usize]).style.bold, "second run is bold");
+  expect(rangeHas(&b, 6usize, 11usize, &op), "6..11 is all bold");
+  expect(!rangeHas(&b, 0usize, 11usize, &op), "0..11 is not all bold");
+  styleRange(&mut b, 0usize, 6usize, &op);
+  expectInt(i64.from(b.runs.len()), 1i64, "all bold merges to one run");
+  expect(rangeHas(&b, 0usize, 11usize, &op), "all bold");
+
+  // insertion takes the style given and merges with a neighbour of the same style
+  mut c = Block.fromText("hello world", Style.plain());
+  styleRange(&mut c, 6usize, 11usize, &op);
+  insertInBlock(&mut c, 6usize, "big ", Style.plain());
+  expectStr(c.text.view(), "hello big world", "inserted text");
+  expectInt(i64.from(c.runs.len()), 2i64, "inserted plain text joined the plain run");
+  expectInt(i64.from((*c.runs[0usize]).len), 10i64, "plain run 10 bytes");
+  mut bold = Style.plain();
+  bold.bold = true;
+  insertInBlock(&mut c, 3usize, "X", bold);
+  expectInt(i64.from(c.runs.len()), 4i64, "a bold character inside the plain run makes three runs and the bold one");
+  expectInt(i64.from((*c.runs[1usize]).len), 1i64, "the bold X");
+
+  // deletion across runs
+  mut d = Block.fromText("abcdefghij", Style.plain());
+  styleRange(&mut d, 5usize, 10usize, &op);
+  deleteInBlock(&mut d, 4usize, 8usize);
+  expectStr(d.text.view(), "abcdij", "text after deleting 4..8");
+  expectInt(i64.from(d.runs.len()), 2i64, "two runs remain");
+  expectInt(i64.from((*d.runs[0usize]).len), 4i64, "plain 4");
+  expectInt(i64.from((*d.runs[1usize]).len), 2i64, "bold 2");
+  imm tail = splitBlockAt(&mut d, 4usize);
+  expectStr(d.text.view(), "abcd", "front kept");
+  expectStr(tail.text.view(), "ij", "tail made");
+  expectInt(i64.from(d.runs.len()), 1i64, "front has one run");
+  expect((*tail.runs[0usize]).style.bold, "tail is bold");
+  mut e = cloneBlock(&d);
+  appendBlock(&mut e, &tail);
+  expectStr(e.text.view(), "abcdij", "joined");
+  expectInt(i64.from(e.runs.len()), 2i64, "joined runs");
+  expectStr(d.text.view(), "abcd", "the original is unchanged by its clone");
+
+  // the style a caret takes
+  expect(styleAt(&e, 5usize).bold, "after a bold character the caret is bold");
+  expect(!styleAt(&e, 2usize).bold, "inside plain text it is plain");
+  expect(!styleAt(&e, 0usize).bold, "at the start it takes the first run's");
+
+  // characters and words
+  imm t = "one two  three";
+  expectInt(i64.from(nextWordOff(t, 0usize)), 4i64, "word right from 0");
+  expectInt(i64.from(nextWordOff(t, 4usize)), 9i64, "word right from 4 skips two spaces");
+  expectInt(i64.from(nextWordOff(t, 9usize)), 14i64, "word right from 9 is the end");
+  expectInt(i64.from(prevWordOff(t, 14usize)), 9i64, "word left from the end");
+  expectInt(i64.from(prevWordOff(t, 9usize)), 4i64, "word left from 9");
+  expectInt(i64.from(prevWordOff(t, 4usize)), 0i64, "word left from 4");
+  mut us = String.empty();
+  us.appendByte(97u8);
+  us.appendByte(0xC3u8);
+  us.appendByte(0xA9u8);
+  us.appendByte(98u8);
+  expectInt(i64.from(nextCharOff(us.view(), 1usize)), 3i64, "a two-byte character steps by two");
+  expectInt(i64.from(prevCharOff(us.view(), 3usize)), 1i64, "and back");
+  done();
+}

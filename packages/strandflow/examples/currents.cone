@@ -1,0 +1,259 @@
+// currents: strands in water, drawn headless on a real GPU. Not hair: sea anemones on rocks and a bed of kelp, in a current
+// that surges to and fro with the waves, by the same mechanism (strandflow) that moves a head of hair in air.
+//
+//   congo run --release packages/strandflow/examples/currents.cone -- --out DIR
+//   GPU_POWER_PREFERENCE=low-power congo run --release packages/strandflow/examples/currents.cone -- --out DIR
+//
+// Three rocks (spheres the tentacles are pushed out of) carry 90 anemone tentacles each, as tapered tubes rooted on a disc of
+// the rock's top; two tufts of kelp stand on the sand. The water is a steady 0.25 m/s current with a little swirl and a surge
+// of 0.4 m/s at 0.2 Hz. Anemone tissue is a little denser than water (apparent weight 3 per cent of its weight), kelp lighter
+// (it floats up). Pictures at four phases of the surge, from the side and from above; the cost of a frame by phase and the
+// GPU's time. Exits 1 if validation speaks, a Vulkan call fails, or a tentacle goes non-finite.
+
+mod currents;
+
+import stdio use *;
+import libc;
+import time use Instant;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import xpbdsoftbody use Collider;
+import clothrope use WindField;
+import strandflow use *;
+
+const W = 640u32;
+const H = 512u32;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn sortInto(v &mut List[i64]) {
+  mut i = 1usize;
+  while i < v.len() {
+    imm x = *v[i];
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > x { v.set(j, *v[j - 1usize]); j = j - 1usize; }
+    v.set(j, x);
+    i = i + 1usize;
+  }
+}
+
+fn p50(v &mut List[i64]) i64 { sortInto(v); *v[v.len() / 2usize]; }
+
+fn main(argc i32, argv **u8) i32 {
+  mut outDir = String.from(".");
+  mut a = 1;
+  while a < argc {
+    if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
+      outDir = String.empty();
+      mut q = 0usize;
+      imm s = *(argv + usize.from(a + 1));
+      while *(s + q) != 0u8 { outDir.appendByte(*(s + q)); q = q + 1usize; }
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("strandflow currents");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  imm depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  imm queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  imm resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  imm tick = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  // the sky is the water's light: green-blue, the sun a soft pale disc high up
+  mut sky = Sky.dusk(radians(75.), radians(200.));
+  sky.zenith = new Color(0.05, 0.30, 0.38, 1.);
+  sky.horizon = new Color(0.08, 0.34, 0.42, 1.);
+  sky.sunColor = new Color(14., 18., 16., 1.);
+  sky.glow = new Color(0.10, 0.25, 0.25, 1.);
+  sky.ground = new Color(0.04, 0.12, 0.13, 1.);
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(1.6, 2.0, 1.9, 1.), new Color(0.05, 0.12, 0.14, 1.));
+  imm settings = ShadowSettings.medium();
+  renderer.setShadows(&mut device, &settings);
+  mut sand = PbrMaterial.standard(new Color(0.55, 0.50, 0.38, 1.), 0., 0.95);
+  imm sandMat = renderer.addPbrMaterial(&mut device, &sand);
+  mut rock = PbrMaterial.standard(new Color(0.22, 0.24, 0.24, 1.), 0., 0.85);
+  imm rockMat = renderer.addPbrMaterial(&mut device, &rock);
+  imm cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  imm sphere = renderer.addMesh(&mut device, &Mesh.sphere(1., 32));
+  // the tentacles' texture: a gradient along the strand, deep orange at the base to pale pink at the tip
+  mut grad = new Image(4, 64, 3, List[u8].empty());
+  mut y = 0;
+  while y < 64 {
+    imm f = f32.from(y) / 63.;
+    mut x = 0;
+    while x < 4 {
+      grad.pixels.push(u8.from(i32.from(255. * (0.85 + 0.15 * f))));
+      grad.pixels.push(u8.from(i32.from(255. * (0.30 + 0.55 * f * f))));
+      grad.pixels.push(u8.from(i32.from(255. * (0.12 + 0.55 * f * f))));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  imm gradTex = renderer.addTexture(&mut device, &grad);
+  mut tm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.45);
+  tm.texture = gradTex;
+  imm tentacleMat = renderer.addPbrMaterial(&mut device, &tm);
+  mut km = PbrMaterial.standard(new Color(0.20, 0.34, 0.07, 1.), 0., 0.5);
+  imm kelpMat = renderer.addPbrMaterial(&mut device, &km);
+
+  // the water
+  mut flow = WindField.steady(new Vec3(0.25, 0., 0.05));
+  flow.turbulence = 0.05;
+  flow.turbLength = 0.5;
+  flow.gustiness = 0.3;
+  flow.gustLength = 1.5;
+  mut sim = StrandSim.make(Medium.water(flow, new Vec3(0.4, 0., 0.05), 0.2, 0.), 1u32);
+  mut kelpSim = StrandSim.make(Medium.water(flow, new Vec3(0.4, 0., 0.05), 0.2, 0.), 1u32);
+  // three rocks
+  imm rockCentre = [new Vec3(-0.5, 0.12, 0.), new Vec3(0.35, 0.10, -0.25), new Vec3(0.05, 0.08, 0.45)];
+  imm rockRadius = [0.18, 0.14, 0.12];
+  mut roots = List[StrandRoot].empty();
+  mut shapes = List[Collider].empty();
+  mut r = 0usize;
+  while r < 3usize {
+    imm g = sim.addGroup(Transform3.identity(), StrandStyle.anemone());
+    imm top = rockCentre[r] + new Vec3(0., rockRadius[r] * 0.92, 0.);
+    imm rs = rootsOnDisc(g, top, new Vec3(0., 1., 0.), 0.01, rockRadius[r] * 0.55, 90usize, 0.45, 31u32 + u32.from(r) * 7u32);
+    mut i = 0usize;
+    while i < rs.len() { roots.push(*rs[i]); i = i + 1usize; }
+    shapes.push(Collider.sphere(rockCentre[r], rockRadius[r]));
+    r = r + 1usize;
+  }
+  sim.addStrands(&roots);
+  r = 0usize;
+  while r < 3usize { sim.setColliders(r, &shapes); r = r + 1usize; }
+  mut kroots = List[StrandRoot].empty();
+  imm kg0 = kelpSim.addGroup(Transform3.identity(), StrandStyle.kelp());
+  imm kg1 = kelpSim.addGroup(Transform3.identity(), StrandStyle.kelp());
+  imm k0 = rootsOnDisc(kg0, new Vec3(0.9, 0., 0.3), new Vec3(0., 1., 0.), 0.02, 0.18, 7usize, 0.3, 2u32);
+  imm k1 = rootsOnDisc(kg1, new Vec3(-1.0, 0., -0.5), new Vec3(0., 1., 0.), 0.02, 0.2, 7usize, 0.3, 3u32);
+  mut i = 0usize;
+  while i < k0.len() { kroots.push(*k0[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < k1.len() { kroots.push(*k1[i]); i = i + 1usize; }
+  kelpSim.addStrands(&kroots);
+  imm tc = tubeCounts(&sim, 7usize);
+  imm kc = cardCounts(&kelpSim);
+  imm tentacleMesh = renderer.addDynamicMesh(&mut device, u32.from(tc.0), u32.from(tc.1));
+  imm kelpMeshH = renderer.addDynamicMesh(&mut device, u32.from(kc.0), u32.from(kc.1));
+  // kelp blades are drawn as wide cards
+  mut kstyle = StrandStyle.kelp();
+  imm dt = 1. / 60.;
+  mut tubes = Mesh.empty();
+  mut blades = Mesh.empty();
+  mut ok = true;
+  mut costSim = List[i64].empty();
+  mut costDraw = List[i64].empty();
+  mut gpuSum f64 = 0d;
+  mut gpuN = 0;
+  mut shots = 0;
+  mut frame = 0;
+  while frame < 60 * 40 {
+    imm c0 = Instant.now();
+    sim.step(dt);
+    kelpSim.step(dt);
+    costSim.push(c0.elapsed().nanos() / 1000i64);
+    imm t = f32.from(frame) * dt;
+    // a picture at four phases of the surge (period 5 s), side and top, after the first 20 s
+    imm phaseFrame = frame - 60 * 20;
+    imm shootNow = phaseFrame >= 0 and phaseFrame % 75 == 0 and phaseFrame < 75 * 4 or frame == 60 * 35;
+    imm c1 = Instant.now();
+    tubes.positions.clear();
+    writeTubes(&sim, &mut tubes, 7usize);
+    renderer.writeDynamicMesh(&mut device, tentacleMesh, &tubes);
+    writeCards(&kelpSim, &mut blades, 1u32, 1.);
+    renderer.writeDynamicMesh(&mut device, kelpMeshH, &blades);
+    mut list = DrawList.empty();
+    list.add(cube, sandMat, Mat4.fromTrs(new Vec3(0., -0.05, 0.), Quat.identity(), new Vec3(8., 0.1, 8.)));
+    r = 0usize;
+    while r < 3usize { list.add(sphere, rockMat, Mat4.fromTrs(rockCentre[r], Quat.identity(), new Vec3(rockRadius[r], rockRadius[r], rockRadius[r]))); r = r + 1usize; }
+    list.add(tentacleMesh, tentacleMat, Mat4.identity());
+    list.add(kelpMeshH, kelpMat, Mat4.identity());
+    costDraw.push(c1.elapsed().nanos() / 1000i64);
+    mut cam = Camera.make();
+    cam.fov = radians(34.);
+    cam.near = 0.05;
+    cam.far = 100.;
+    cam.lookAt(new Vec3(0.2, 0.55, 2.0), new Vec3(0., 0.3, 0.), new Vec3(0., 1., 0.));
+    cam.background = new Color(0.05, 0.30, 0.38, 1.);
+    if frame % 4 == 0 or shootNow {
+      mut name = String.empty();
+      if shootNow {
+        name = String.from(outDir.view());
+        name <- "/anemone-";
+        name <- i64.from(frame);
+        name <- ".bmp";
+      }
+      mut enc = device.createCommandEncoder();
+      enc.writeTimestamp(&queries, 0u32);
+      renderer.render(&mut device, &mut enc, &post.hdr, &depth, &cam, &light, &list);
+      enc.writeTimestamp(&queries, 1u32);
+      post.apply(&mut enc, &out);
+      enc.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      enc.copyBufferToBuffer(&resolved, 0u64, &tick, 0u64, 16u64);
+      if name.len() > 0usize { enc.copyTextureToBuffer(&out, &shot); }
+      device.queue.submit(enc.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm ticks = tick.mappedRange() as *u64;
+      if frame > 120 { gpuSum = gpuSum + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d; gpuN = gpuN + 1; }
+      if name.len() > 0usize {
+        imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+        image.save(&filepath.Path.from(name.view()));
+        shots = shots + 1;
+      }
+    }
+    // every tentacle must stay finite
+    if frame % 120 == 0 {
+      mut g = 0usize;
+      while g < sim.groupCount() {
+        mut s = 0usize;
+        while s < sim.groups[g].strands.len() {
+          imm p = sim.particle(g, s, sim.groups[g].strands[s].count - 1usize);
+          if p.x != p.x or p.y != p.y or p.z != p.z { ok = false; }
+          s = s + 1usize;
+        }
+        g = g + 1usize;
+      }
+    }
+    frame = frame + 1;
+  }
+  print <- "currents: "; print <- i64.from(shots); print <- " pictures; "; print <- i64.from(sim.strandCount()); print <- " tentacles ("; print <- i64.from(sim.particleCount());
+  print <- " particles) and "; print <- i64.from(kelpSim.strandCount()); print <- " kelp blades ("; print <- i64.from(kelpSim.particleCount()); print <- " particles)\n";
+  print <- "  p50 microseconds a frame: strand steps (anemones and kelp) "; print <- p50(&mut costSim); print <- ", meshes written and uploaded "; print <- p50(&mut costDraw); print <- "\n";
+  print <- "  GPU time of a frame, mean: "; print <- gpuSum / f64.from(gpuN); print <- " ms\n";
+  sim.stop();
+  kelpSim.stop();
+  if !ok { print <- "FAIL: a tentacle went non-finite\n"; }
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0i32; }
+  1i32;
+}
