@@ -43,6 +43,8 @@
 pub const TUFT_PINE = 0;
 pub const TUFT_HEMLOCK = 1;
 pub const TUFT_FIR = 2;
+pub const TUFT_SPRIG = 3;       // a dense fringed sprig (spruce, fir): needles all round the twigs, twigs of twigs
+pub const TUFT_ARAUCARIA = 4;   // a Norfolk pine's: stout branchlets rolled in short needles, fanning from a shoot
 
 pub struct NeedleTuftParams {
   pub kind i32;
@@ -57,6 +59,16 @@ pub struct NeedleTuftParams {
   pub brown Color;            // the twig, and the dead needles
   pub sideTwigs i32;          // sprays: how many, each side of the main twig
   pub forward f32;            // sprays: degrees a side twig leaves the main one at; needles lean forward by this much less than a right angle
+  // Added for the dense kinds (TUFT_SPRIG, TUFT_ARAUCARIA); the older kinds ignore them
+  pub shadeRows i32 = 1;      // the image is this many rows of cells tall: the same paint darker each row (the crown's depth picks the row)
+  pub shadeDark f32 = 0.3;    // the last row's brightness against the first, in light
+  pub subTwigs i32 = 0;       // sprigs: sub-twigs on each side twig
+  pub around i32 = 2;         // sprigs: needles at a station of a twig: 2 (a comb) or 4 (all round, the outer two foreshortened)
+  pub newGrowth Color = new Color(0., 0., 0., 1.);   // the new season's needles at a twig's tip: yellow-green (sRGB 0 to 255)
+  pub newShare f32 = 0.;      // the chance a needle in the last part of its twig is new growth
+  pub density f32 = 1.;       // needles per length of twig
+  pub twigWidth f32 = 0.0085; // a side twig's width, over the cell's side
+  pub spread f32 = 0.46;      // a side twig's longest reach, over the cell's side
 
   // An eastern white pine's: 84 fascicles of five, needles 0.42 of the card long, deep blue-green
   // to a duller silvery green (foliage reflects a tenth or so of the light: darker than it looks)
@@ -75,6 +87,60 @@ pub struct NeedleTuftParams {
   pub fn balsamFir(size i32, seed u32) NeedleTuftParams {
     new NeedleTuftParams(TUFT_FIR, size, seed, 20, 0.11, 0.0095, new Color(16., 44., 32., 1.), new Color(42., 82., 58., 1.),
       new Color(0., 0., 0., 1.), new Color(80., 62., 48., 1.), 11, 40.);
+  }
+
+  // A white pine's atlas with the shade rows (a crown's depth picks the darker rows)
+  pub fn whitePineCrown(size i32, seed u32) NeedleTuftParams {
+    mut p = NeedleTuftParams.whitePine(size, seed);
+    p.shadeRows = 4;
+    p.shadeDark = 0.24;
+    p;
+  }
+
+  // A spruce's sprig (Norway or white spruce): long side twigs spreading wide, each with sub-twigs, needles
+  // all round, short and stiff, deep blue-green, the new season's tips pale yellow-green. Four rows of
+  // the same paint, each darker: a crown's depth picks the row
+  pub fn spruce(size i32, seed u32) NeedleTuftParams {
+    mut p = new NeedleTuftParams(TUFT_SPRIG, size, seed, 20, 0.062, 0.0058, new Color(14., 40., 30., 1.), new Color(44., 84., 58., 1.),
+      new Color(0., 0., 0., 1.), new Color(70., 52., 40., 1.), 15, 58.);
+    p.subTwigs = 2;
+    p.around = 4;
+    p.newGrowth = new Color(128., 160., 60., 1.);
+    p.newShare = 0.8;
+    p.density = 2.4;
+    p.shadeRows = 4;
+    p.shadeDark = 0.22;
+    p.twigWidth = 0.006;
+    p.spread = 0.5;
+    p;
+  }
+
+  // A fir's sprig (Douglas or balsam): a flat dense comb of fine needles, the year's tips pale
+  pub fn denseFir(size i32, seed u32) NeedleTuftParams {
+    mut p = new NeedleTuftParams(TUFT_SPRIG, size, seed, 20, 0.075, 0.0055, new Color(16., 46., 32., 1.), new Color(50., 92., 62., 1.),
+      new Color(0., 0., 0., 1.), new Color(80., 62., 48., 1.), 17, 44.);
+    p.subTwigs = 1;
+    p.around = 4;
+    p.newGrowth = new Color(150., 176., 70., 1.);
+    p.newShare = 0.8;
+    p.density = 2.4;
+    p.shadeRows = 4;
+    p.shadeDark = 0.22;
+    p.twigWidth = 0.0055;
+    p.spread = 0.44;
+    p;
+  }
+
+  // A Norfolk Island pine's: branchlets as thick as a finger, rolled in short awl needles that overlap
+  // like scales, fanning from a stem
+  pub fn norfolk(size i32, seed u32) NeedleTuftParams {
+    mut p = new NeedleTuftParams(TUFT_ARAUCARIA, size, seed, 22, 0.075, 0.011, new Color(30., 62., 28., 1.), new Color(86., 124., 52., 1.),
+      new Color(0., 0., 0., 1.), new Color(96., 76., 58., 1.), 11, 40.);
+    p.newGrowth = new Color(140., 170., 70., 1.);
+    p.newShare = 0.6;
+    p.shadeRows = 4;
+    p.shadeDark = 0.25;
+    p;
   }
 }
 
@@ -357,6 +423,144 @@ fn paintSpray(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
   }
 }
 
+// A twig from (ox, oy) to (ex, ey) (the unit square), fringed with needles: at stations along it
+// ('per' apart, closer by 'density'), needles leaving at 'lean' degrees to its heading, one each side, and
+// with 'around' 4 two more at a third of that angle and shorter (the ones above and below, foreshortened).
+// The last share of a twig, past 'tipFrom', has new growth's colour on some needles.
+fn paintFringed(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng, ox f32, oy f32, ex f32, ey f32,
+    nl f32, lean f32, per f32, w0 f32, twigW f32, tipFrom f32) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  paintNeedle(cv, 0, size, ox, oy, (ox + ex) * 0.5, (oy + ey) * 0.5, ex, ey, twigW * fs, 0.5, p.brown, p.brown, p.brown, 0.);
+  imm hdx = ex - ox;
+  imm hdy = ey - oy;
+  imm tl = libc.sqrtf(hdx * hdx + hdy * hdy);
+  imm heading = degrees(libc.atan2f(hdx, hdy));
+  mut u = 0.04;
+  while u < 1. {
+    imm px = ox + hdx * u;
+    imm py = oy + hdy * u;
+    imm len = nl * (1. - 0.4 * u) * (0.6 + 0.8 * rng.unit());
+    imm fresh = u > tipFrom and rng.unit() < p.newShare;
+    imm c0 = if fresh { p.newGrowth; } else { p.base; };
+    imm c1 = if fresh { new Color(p.newGrowth.red * 0.8 + 20., p.newGrowth.green * 0.85 + 20., p.newGrowth.blue * 0.9 + 10., 1.); } else { p.tip; };
+    mut r = 0;
+    while r < p.around {
+      imm rs = if r % 2 == 0 { -1.; } else { 1.; };
+      imm outer = r < 2;
+      imm la = if outer { lean; } else { lean * 0.4; };
+      imm ll = if outer { len; } else { len * 0.7; };
+      imm deg = heading + rs * (la + 26. * rng.signed());
+      paintNeedleAt(cv, 0, size, px, py, deg, ll, rs * 8., w0, 0.4, c0, c1, p.tawny, 0.);
+      r = r + 1;
+    }
+    u = u + per / (maxF(0.12, tl) * p.density);
+  }
+}
+
+// A dense sprig, TUFT_SPRIG: a main twig up the middle and 'sideTwigs' on each side, alternately, longest
+// low on the card; 'subTwigs' of each side twig's own; every twig fringed (paintFringed). Mostly covered:
+// a card of these overlapping its neighbours is a solid bough, not a comb.
+fn paintSprig(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  imm w0 = p.needleWidth * fs;
+  imm bow = 0.025 * rng.signed();
+  imm per = 0.0105;
+  paintFringed(cv, p, rng, 0.5, 0.0, 0.5 + bow, 0.97, p.needleLength * 0.9, 56., per, w0, 0.014, 0.8);
+  mut s = 0;
+  while s < p.sideTwigs {
+    imm t = (f32.from(s) + 0.5) / f32.from(p.sideTwigs);
+    imm ly = 0.03 + 0.88 * t;
+    imm reach = p.spread * (1. - 0.5 * t) * (0.7 + 0.45 * rng.unit());
+    mut side = 0;
+    while side < 2 {
+      imm sg = if side == 0 { -1.; } else { 1.; };
+      if rng.unit() >= 0.05 {
+        imm ang = radians(p.forward + 11. * rng.signed());
+        imm ox = 0.5 + bow * 2. * (1. - (2. * t - 1.) * (2. * t - 1.));
+        imm oy = ly + (if side == 0 { 0.; } else { 0.5 / f32.from(p.sideTwigs) * 0.88; });
+        imm exc = clampU(ox + sg * libc.sinf(ang) * reach, 0.03, 0.97);
+        imm eyc = clampU(oy + libc.cosf(ang) * reach, 0.0, 0.985);
+        paintFringed(cv, p, rng, ox, oy, exc, eyc, p.needleLength, 62., per, w0, p.twigWidth, 0.82);
+        mut k = 0;
+        while k < p.subTwigs {
+          imm uu = 0.28 + 0.42 * (f32.from(k) + 0.5) / f32.from(maxi(1, p.subTwigs));
+          imm bpx = ox + (exc - ox) * uu;
+          imm bpy = oy + (eyc - oy) * uu;
+          imm hs = libc.atan2f(exc - ox, eyc - oy);
+          imm turn = radians((if (k + side) % 2 == 0 { 52.; } else { -52.; }) + 10. * rng.signed());
+          imm sl = reach * (0.42 - 0.18 * uu) * (0.8 + 0.4 * rng.unit());
+          imm sx = clampU(bpx + libc.sinf(hs + turn) * sl, 0.02, 0.98);
+          imm sy = clampU(bpy + libc.cosf(hs + turn) * sl, 0.0, 0.985);
+          paintFringed(cv, p, rng, bpx, bpy, sx, sy, p.needleLength * 0.9, 62., per * 1.1, w0, p.twigWidth * 0.7, 0.78);
+          k = k + 1;
+        }
+      }
+      side = side + 1;
+    }
+    s = s + 1;
+  }
+}
+
+fn clampU(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
+
+// A Norfolk pine's card, TUFT_ARAUCARIA: a stem up the middle, stout branchlets leaving it alternately and
+// turned up, each a thick dark core rolled in short needles pointing on (a bottle-brush rope), with a tuft
+// of them at its end and the stem's
+fn paintAraucariaRope(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng, ox f32, oy f32, ex f32, ey f32, thick f32) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  paintNeedle(cv, 0, size, ox, oy, (ox + ex) * 0.5, (oy + ey) * 0.5 + 0.005, ex, ey, thick * fs, 0.45, p.base, p.base, p.base, 0.);
+  imm hdx = ex - ox;
+  imm hdy = ey - oy;
+  imm heading = degrees(libc.atan2f(hdx, hdy));
+  imm w0 = p.needleWidth * fs;
+  mut u = 0.03;
+  while u < 1.02 {
+    imm px = ox + hdx * u;
+    imm py = oy + hdy * u;
+    mut r = 0;
+    while r < 6 {
+      imm rs = if r % 2 == 0 { -1.; } else { 1.; };
+      imm la = 22. + 14. * f32.from(r / 2) + 8. * rng.signed();
+      imm len = p.needleLength * (1. - 0.3 * u) * (if r < 2 { 1.; } else { 0.8; }) * (0.8 + 0.4 * rng.unit());
+      imm fresh = u > 0.6 and rng.unit() < p.newShare;
+      imm c0 = if fresh { p.newGrowth; } else { p.base; };
+      imm c1 = if fresh { new Color(p.newGrowth.red * 0.9 + 20., p.newGrowth.green * 0.9 + 20., p.newGrowth.blue, 1.); } else { p.tip; };
+      paintNeedleAt(cv, 0, size, px, py, heading + rs * la, len, rs * 6., w0, 0.5, c0, c1, p.tawny, 0.);
+      r = r + 1;
+    }
+    u = u + 0.03 / p.density;
+  }
+  // the end: a little crown of needles
+  mut f = 0;
+  while f < 7 {
+    imm deg = heading + (f32.from(f) - 3.) * 15. + 5. * rng.signed();
+    paintNeedleAt(cv, 0, size, ex, ey, deg, p.needleLength * 1.1, 0., w0, 0.5, p.tip, p.newGrowth, p.tawny, 0.);
+    f = f + 1;
+  }
+}
+
+fn paintAraucaria(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  paintNeedle(cv, 0, size, 0.5, 0.0, 0.5, 0.5, 0.5, 0.93, 0.03 * fs, 0.4, p.brown, p.brown, p.brown, 0.);
+  mut s = 0;
+  while s < p.sideTwigs {
+    imm t = (f32.from(s) + 0.5) / f32.from(p.sideTwigs);
+    imm sg = if s % 2 == 0 { -1.; } else { 1.; };
+    imm oy = 0.04 + 0.78 * t;
+    imm ang = radians(38. + 12. * rng.signed());
+    imm len = (0.36 - 0.2 * t) * (0.8 + 0.4 * rng.unit());
+    imm ex = clampU(0.5 + sg * libc.sinf(ang) * len, 0.04, 0.96);
+    imm ey = clampU(oy + libc.cosf(ang) * len, 0.0, 0.95);
+    paintAraucariaRope(cv, p, rng, 0.5, oy, ex, ey, 0.05);
+    s = s + 1;
+  }
+  paintAraucariaRope(cv, p, rng, 0.5, 0.8, 0.5 + 0.02 * rng.signed(), 0.95, 0.03);
+}
+
 // The needle tuft 'p' describes, as RGBA (sRGB colour, straight alpha) texels, the cells
 // ('tuftCells') side by side, rows from the bottom
 pub fn bakeNeedleTuft(p &NeedleTuftParams) TexelMap {
@@ -372,29 +576,42 @@ pub fn bakeNeedleTuft(p &NeedleTuftParams) TexelMap {
     paintPine(&mut cv, p, &mut rng, 1, true);
     paintPad(&mut cv, p, &mut rng, 2, false);
     paintPad(&mut cv, p, &mut rng, 3, true);
+  } elif p.kind == TUFT_SPRIG {
+    paintSprig(&mut cv, p, &mut rng);
+  } elif p.kind == TUFT_ARAUCARIA {
+    paintAraucaria(&mut cv, p, &mut rng);
   } else {
     paintSpray(&mut cv, p, &mut rng);
   }
-  // to bytes; a clear texel takes the needles' mean colour
+  // to bytes; a clear texel takes the needles' mean colour. With shadeRows above 1 the picture is
+  // repeated that many rows tall, each darker than the one below by an even step of light down to
+  // 'shadeDark' (so a card in the depth of a crown samples a darker row: ambient occlusion in the paint)
+  imm rows = maxi(1, p.shadeRows);
   imm fill = new Color((p.base.red + p.tip.red) * 0.5, (p.base.green + p.tip.green) * 0.5, (p.base.blue + p.tip.blue) * 0.5, 1.);
-  mut out = TexelMap.withCapacity(w, h, 4);
-  mut t = 0;
-  while t < w * h {
-    imm at = usize.from(t * 4);
-    imm a = clamp01(*cv.px[at + 3usize]);
-    mut r = fill.red;
-    mut g = fill.green;
-    mut b = fill.blue;
-    if a > 0.0005 {
-      r = *cv.px[at] / a;
-      g = *cv.px[at + 1usize] / a;
-      b = *cv.px[at + 2usize] / a;
+  mut out = TexelMap.withCapacity(w, h * rows, 4);
+  mut row = 0;
+  while row < rows {
+    imm light = if rows > 1 { 1. - (1. - p.shadeDark) * f32.from(row) / f32.from(rows - 1); } else { 1.; };
+    imm k = libc.powf(light, 0.4545);
+    mut t = 0;
+    while t < w * h {
+      imm at = usize.from(t * 4);
+      imm a = clamp01(*cv.px[at + 3usize]);
+      mut r = fill.red;
+      mut g = fill.green;
+      mut b = fill.blue;
+      if a > 0.0005 {
+        r = *cv.px[at] / a;
+        g = *cv.px[at + 1usize] / a;
+        b = *cv.px[at + 2usize] / a;
+      }
+      out.pixels.push(unitByte(r * k / 255.));
+      out.pixels.push(unitByte(g * k / 255.));
+      out.pixels.push(unitByte(b * k / 255.));
+      out.pixels.push(unitByte(a));
+      t = t + 1;
     }
-    out.pixels.push(unitByte(r / 255.));
-    out.pixels.push(unitByte(g / 255.));
-    out.pixels.push(unitByte(b / 255.));
-    out.pixels.push(unitByte(a));
-    t = t + 1;
+    row = row + 1;
   }
   out;
 }
