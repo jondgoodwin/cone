@@ -52,7 +52,9 @@
 	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may
 		<span class="pre">await</span> a socket's operation &mdash; listen, accept, connect, read,
 		write &mdash; or a file's &mdash; open, read at an offset, write at an offset &mdash; or
-		a timer (<span class="pre">aio.sleep(d)</span>), and
+		a timer (<span class="pre">aio.sleep(d)</span>), a name looked up
+		(<span class="pre">aio.resolve(host)</span>), a file's metadata (<span class="pre">aio.stat(path)</span>)
+		or a child process (<span class="pre">aio.run(args)</span>), and
 		pauses there until the operation's answer comes, as it pauses for another
 		actor's reply (<a href="refawait.html#await">Awaiting a reply</a>; below,
 		<a href="#await-io">Awaiting I/O</a>). TCP sockets, UDP sockets and files.</li>
@@ -385,6 +387,56 @@ actor Patcher {
     }
   }
 </pre>
+
+	<h3 id="await-io-pool">Names, file metadata and child processes</h3>
+	<p>Three things have no completion form of their own, and run on a thread of
+		<span class="pre">iocore</span>'s blocking pool: the behaviour pauses, a pool thread does the work,
+		and the answer comes back as the other operations' do.</p>
+	<ul>
+	<li><span class="pre">aio.resolve(host, port)</span> looks a name up (or an address written as text):
+		a <span class="pre">List[SocketAddr]</span>, every address found, each with the port (default 0).
+		A name with no address is the system's failure (<span class="pre">11001</span>,
+		<span class="pre">WSAHOST_NOT_FOUND</span>, for a name that is not there).</li>
+	<li><span class="pre">aio.stat(path)</span> asks a file's metadata: <span class="pre">iocore</span>'s
+		<span class="pre">FileStat</span>, with its <span class="pre">size</span>,
+		<span class="pre">attributes</span>, <span class="pre">modified</span> time and
+		<span class="pre">isDir()</span>. A path that is not there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2.</li>
+	<li><span class="pre">aio.run(args, opts, dir)</span> and <span class="pre">aio.runLine(line, opts, dir)</span>
+		run a child process and wait for it, as the <span class="pre">process</span> package's synchronous
+		<span class="pre">run</span> and <span class="pre">runLine</span> do, with the same
+		<span class="pre">Options</span> and the same <span class="pre">Output</span>: its exit code (an answer, not an
+		error), and what it wrote to its standard output and standard error, apart. The
+		<span class="pre">Error</span> is a program that could not be started, an
+		<span class="pre">IoError</span> whose code is the system's number. The synchronous
+		<span class="pre">process</span> package stays beside it.</li>
+	</ul>
+	<p>Each has an <span class="pre">In</span> form taking <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
+		(<span class="pre">resolveIn</span>, <span class="pre">statIn</span>, <span class="pre">runIn</span>,
+		<span class="pre">runLineIn</span>). A job still queued for a thread, which a cancel group's cancel or a
+		deadline takes out of its queue, is answered <span class="pre">Cancelled</span> or
+		<span class="pre">TimedOut</span> without having run. A job a thread has taken cannot be stopped: a cancel
+		waits for it to end, and a deadline answers <span class="pre">TimedOut</span> at the deadline while the work
+		goes on, its answer dropped. So a child process is not stopped by its limits: give its
+		<span class="pre">Options</span> a <span class="pre">timeout</span>, which stops it and everything it started.
+		At most four children run at once (the general lane's threads); more wait their turn.</p>
+<pre>
+actor Builder {
+  pub async do build(self) u64 {
+    mut args = List[String].empty();
+    args.push(String.from("conec"));
+    args.push(String.from("app.cone"));
+    // The compile runs on a pool thread; this actor handles its other messages meanwhile
+    imm r = await aio.run(args.view(), new process.Options(timeout: Duration.fromSeconds(60i64)));
+    match r {
+      case imm ok Ok {u64.from(ok.exitCode);}
+      case imm e Error {u64.from(e.code);}      // 2: no program of that name
+    }
+  }
+}
+</pre>
+	<p>What is left out: a child's standard input and output as streams while it runs, and a spawn apart from the
+		wait (the <span class="pre">process</span> package offers neither), and a file's metadata by its open
+		<span class="pre">File</span>.</p>
 
 	<h3 id="await-io-http">HTTP an actor awaits</h3>
 	<p>The <span class="pre">actorhttp</span> package (a working name, as <span class="pre">netmsg</span> is; the
