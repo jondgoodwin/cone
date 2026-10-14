@@ -1,0 +1,250 @@
+// ======== The property inspector: a column of controls made from a TypeDesc ========
+//
+// One row for each field: its name at the left, the control its kind wants at the right.
+//   FK_FLOAT, FK_INT   a drag-number (or a slider when the field has a range and says so)
+//   FK_VEC2, FK_VEC3   two or three drag-numbers in a row, with coloured axis letters
+//   FK_COLOR           a colour picker, shown as a swatch and its hex, opening in place
+//   FK_ENUM            a dropdown
+//   FK_BOOL            a uilayout toggle
+//   FK_TEXT            a uilayout text field
+//   FK_HEADER          a heading
+//
+// The inspector keeps a copy of the object's values ('values', one Value per field) and changes it as the
+// user works; 'pump' answers the Changes that made. The program applies each to its own object, and calls
+// 'setValues' when the object changes some other way (a gizmo drag, an undo, another selection), which
+// moves the controls without making Changes.
+//
+// The toggle and the text field are uilayout's own widgets, which tell their owner nothing, so the inspector
+// looks at them each frame ("polls"): a toggle that now differs from the stored value is a Change; a text
+// field that differs while it has focus is a live Change, and one more final Change when it loses focus.
+
+struct Row {
+  field usize;
+  kind u32;
+  label usize;                     // the label's node
+  first usize;                     // the first control in the kit's table (numbers, colours or dropdowns by kind)
+  count usize;                     // how many drag-numbers (a vector's components)
+  node usize;                      // a toggle's or text field's node
+  gesture bool;                    // a text field is being edited
+  start String;                    // its text when editing began
+}
+
+pub struct Inspector {
+  pub root usize;                  // the column node holding everything
+  pub kinds List[u32];             // each field's kind
+  pub values List[Value];          // each field's current value
+  rows List[Row];
+
+  // Builds the controls for 'desc' under 'parent' (which should be a container the inspector may fill)
+  pub fn build(kit &mut PickerKit, ui &mut Ui, parent usize, desc &TypeDesc) Inspector {
+    imm root = ui.create(parent, K_PLAIN);
+    ui.setFlex(root, LK_COLUMN, 6.);
+    ui.setPad(root, 8.);
+    mut insp = new Inspector(root, List[u32].empty(), List[Value].empty(), List[Row].empty());
+    imm titleText = desc.name.copy();
+    imm title = label(ui, root, titleText.view());
+    ui.setStyle(title, "label");
+    mut f = 0usize;
+    while f < desc.fields.len() {
+      insp.addRow(kit, ui, f, desc.fields[f]);
+      f = f + 1usize;
+    }
+    insp;
+  }
+
+  fn addRow(self &mut, kit &mut PickerKit, ui &mut Ui, field usize, d &FieldDesc) {
+    kinds.push(d.kind);
+    values.push(new Value(String.empty()));
+    if d.kind == FK_HEADER {
+      imm nm = d.name.copy();
+      imm l = label(ui, root, nm.view());
+      ui.setMargin(l, 0., 6., 0., 0.);
+      rows.push(new Row(field, d.kind, l, 0usize, 0usize, 0usize, false, String.empty()));
+      return;
+    }
+    imm row = ui.create(root, K_PLAIN);
+    ui.setFlex(row, LK_ROW, 8.);
+    ui.setJustify(row, JUSTIFY_START, if d.kind == FK_COLOR {ALIGN_START;} else {ALIGN_CENTER;});
+    imm nm = d.name.copy();
+    imm l = label(ui, row, nm.view());
+    ui.setSize(l, 92., kit.style.rowH);
+    ui.setMinSize(l, 92., kit.style.rowH);
+    ui.setFlexChild(l, 0., 0., 92.);
+    mut r = new Row(field, d.kind, l, 0usize, 0usize, 0usize, false, String.empty());
+    if d.kind == FK_FLOAT or d.kind == FK_INT {
+      r.first = kit.addNumber(ui, row, 0., d.min, d.max, d.speed, d.decimals, d.slider);
+      r.count = 1usize;
+      kit.numbers[r.first].step = d.step;
+      kit.numbers[r.first].suffix = String.from(d.suffix.view());
+      ui.setFlexChild(kit.numbers[r.first].node, 1., 1., 60.);
+    } elif d.kind == FK_VEC2 or d.kind == FK_VEC3 {
+      imm n = if d.kind == FK_VEC2 {2usize;} else {3usize;};
+      imm box = ui.create(row, K_PLAIN);
+      ui.setFlex(box, LK_ROW, 3.);
+      ui.setFlexChild(box, 1., 1., 120.);
+      ui.setSize(box, 120., kit.style.rowH);
+      r.count = n;
+      mut k = 0usize;
+      while k < n {
+        imm idx = kit.addNumber(ui, box, 0., d.min, d.max, d.speed, d.decimals, false);
+        if k == 0usize {r.first = idx;}
+        kit.numbers[idx].label = String.from(if k == 0usize {"X";} elif k == 1usize {"Y";} else {"Z";});
+        kit.numbers[idx].labelColor = if k == 0usize {0xe85a48ffu32;} elif k == 1usize {0x76c846ffu32;} else {0x4c88ebffu32;};
+        kit.numbers[idx].suffix = String.from(d.suffix.view());
+        ui.setFlexChild(kit.numbers[idx].node, 1., 1., 40.);
+        k = k + 1usize;
+      }
+    } elif d.kind == FK_COLOR {
+      r.first = kit.addColor(ui, row, 1., 1., 1., true);
+      kit.colors[r.first].prefW = 220.;
+      ui.setSize(kit.colors[r.first].node, 220., HEADER_H);
+      ui.setFlexChild(kit.colors[r.first].node, 0., 0., 220.);
+    } elif d.kind == FK_ENUM {
+      r.first = kit.addDropdown(ui, row, &d.options, 0i32);
+      ui.setFlexChild(kit.drops[r.first].node, 1., 1., 120.);
+    } elif d.kind == FK_BOOL {
+      r.node = toggle(ui, row, "", false);
+    } else {
+      r.node = textField(ui, row, "");
+      ui.setFlexChild(r.node, 1., 1., 120.);
+    }
+    rows.push(r);
+  }
+
+  // The uilayout node of a toggle or text field's row (so the program can focus or place it), 0 for other kinds
+  pub fn nodeOf(self &, field usize) usize {
+    mut r = 0usize;
+    while r < rows.len() {
+      if rows[r].field == field {return rows[r].node;}
+      r = r + 1usize;
+    }
+    0usize;
+  }
+
+  fn comp(v &Value, k usize) f32 {
+    if k == 0usize {v.x;} elif k == 1usize {v.y;} elif k == 2usize {v.z;} else {v.w;};
+  }
+
+  fn withComp(v &Value, k usize, x f32) Value {
+    mut o = v.copy();
+    if k == 0usize {o.x = x;} elif k == 1usize {o.y = x;} elif k == 2usize {o.z = x;} else {o.w = x;}
+    o;
+  }
+
+  // Shows these values (one per field). No Change comes of it
+  pub fn setValues(self &mut, kit &mut PickerKit, ui &mut Ui, vals &List[Value]) {
+    mut r = 0usize;
+    while r < rows.len() {
+      imm f = rows[r].field;
+      if f < vals.len() {
+        values[f] = (*vals[f]).copy();
+        imm v = vals[f];
+        imm kind = rows[r].kind;
+        if kind == FK_FLOAT or kind == FK_INT or kind == FK_VEC2 or kind == FK_VEC3 {
+          mut k = 0usize;
+          while k < rows[r].count {
+            kit.setNumber(rows[r].first + k, comp(v, k));
+            k = k + 1usize;
+          }
+        } elif kind == FK_COLOR {
+          kit.setColor(rows[r].first, v.x, v.y, v.z, v.w);
+        } elif kind == FK_ENUM {
+          kit.setSelected(rows[r].first, i32.from(libc.floorf(v.x + 0.5)));
+        } elif kind == FK_BOOL {
+          imm on = v.x > 0.5;
+          if isChecked(ui, rows[r].node) != on {setChecked(ui, rows[r].node, on);}
+        } elif kind == FK_TEXT {
+          if !ui.hasState(rows[r].node, ST_FOCUSED) and fieldText(ui, rows[r].node) != v.s.view() {
+            imm sv = v.s.copy();
+            fieldSetText(ui, rows[r].node, sv.view());
+          }
+        }
+      }
+      r = r + 1usize;
+    }
+  }
+
+  // What the user did since the last call. After the Ui's layout
+  pub fn pump(self &mut, kit &mut PickerKit, ui &mut Ui) List[Change] {
+    kit.pump(ui);
+    mut changes = List[Change].empty();
+    // (the kit may serve several inspectors: the events that are not this one's go back for the others)
+    imm evs = kit.takeEvents();
+    mut e = 0usize;
+    while e < evs.len() {
+      imm ev = evs[e];
+      mut matched = false;
+      mut r = 0usize;
+      while r < rows.len() {
+        imm kind = rows[r].kind;
+        imm first = rows[r].first;
+        mut mine = false;
+        mut k = 0usize;
+        if ev.kind == PK_NUMBER and (kind == FK_FLOAT or kind == FK_INT or kind == FK_VEC2 or kind == FK_VEC3)
+            and ev.index >= first and ev.index < first + rows[r].count {
+          mine = true;
+          k = ev.index - first;
+        } elif ev.kind == PK_COLOR and kind == FK_COLOR and ev.index == first {
+          mine = true;
+        } elif ev.kind == PK_DROPDOWN and kind == FK_ENUM and ev.index == first {
+          mine = true;
+        }
+        if mine {
+          matched = true;
+          imm f = rows[r].field;
+          mut before = values[f].copy();
+          mut after = values[f].copy();
+          if ev.kind == PK_NUMBER {
+            before = withComp(&before, k, ev.pa);
+            after = withComp(&after, k, ev.a);
+          } elif ev.kind == PK_COLOR {
+            before = Value.color(ev.pa, ev.pb, ev.pc, ev.pd);
+            after = Value.color(ev.a, ev.b, ev.c, ev.d);
+          } else {
+            before = Value.number(ev.pa);
+            after = Value.number(ev.a);
+          }
+          values[f] = after.copy();
+          changes.push(new Change(f, before, after, ev.live));
+        }
+        r = r + 1usize;
+      }
+      if !matched {kit.out.push(*ev);}
+      e = e + 1usize;
+    }
+    // the uilayout widgets, by looking
+    mut r = 0usize;
+    while r < rows.len() {
+      imm kind = rows[r].kind;
+      imm f = rows[r].field;
+      if kind == FK_BOOL {
+        imm on = isChecked(ui, rows[r].node);
+        imm was = values[f].x > 0.5;
+        if on != was {
+          imm before = values[f].copy();
+          values[f] = Value.number(if on {1.;} else {0.;});
+          changes.push(new Change(f, before, values[f].copy(), false));
+        }
+      } elif kind == FK_TEXT {
+        imm now = fieldText(ui, rows[r].node);
+        imm focused = ui.hasState(rows[r].node, ST_FOCUSED);
+        if focused and !rows[r].gesture {
+          rows[r].gesture = true;
+          rows[r].start = String.from(values[f].s.view());
+        }
+        if now != values[f].s.view() and (focused or rows[r].gesture) {
+          values[f] = Value.text(now);
+          changes.push(new Change(f, Value.text(rows[r].start.view()), values[f].copy(), focused));
+          if !focused {rows[r].gesture = false;}
+        } elif !focused and rows[r].gesture {
+          rows[r].gesture = false;
+          if rows[r].start.view() != values[f].s.view() {
+            changes.push(new Change(f, Value.text(rows[r].start.view()), values[f].copy(), false));
+          }
+        }
+      }
+      r = r + 1usize;
+    }
+    changes;
+  }
+}

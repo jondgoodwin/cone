@@ -1,0 +1,66 @@
+// The editgizmo package: editing 3-D in place. Pick an object by a ray, hold it with move, rotate and scale
+// handles that are picked by a ray too, drag them with snapping in world or local space, see the selection
+// outlined, and undo and redo every edit through a command history.
+//
+// NOTHING HERE TOUCHES THE GPU OR A WINDOW. The handles and the outline are made as 2-D lines in a uilayout
+// DrawList (in the pixels of the picture, y down) for any renderer to draw over the scene, and the pointer
+// comes in as a Ray3 (GizmoView.rayAt turns a pixel into one). What an object LOOKS like is the host's: this
+// package holds a PickMesh (positions, triangles, edges) and a transform per object, and a bag of numbers
+// ('props') the host gives meaning to.
+//
+//   pickmesh.cone  PickMesh: a mesh's triangles for ray picking, and its edges for the silhouette outline
+//   view.cone      GizmoView: eye, projection, pixels <-> rays; the lines it draws with
+//   gizmo.cone     Gizmo: handles, hit test by ray, drag maths, snapping, local and world space, drawing
+//   scene.cone     EditScene: the objects, the selection, picking, and edits recorded in a History
+//
+// WHERE UNDO COMES FROM: textedit's History[C] (the command history that lane built), over this package's own
+// command type SceneCmd (an object id and its old and new transform, or old and new property). A drag of a
+// handle is one command: the host moves the object live while the pointer is down and records the whole drag
+// once, on release (EditScene.commitTransform).
+//
+// See Design\editgizmo.md for the design, the methods chosen and the open questions.
+
+mod editgizmo;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import uilayout use DrawList, rgba, rgb, withAlpha;
+import textedit use History;
+
+// ---- small numeric helpers (geomath's are private to it) ----
+fn absf(v f32) f32 inline {if v < 0. {-v;} else {v;};}
+fn minf2(a f32, b f32) f32 inline {if a < b {a;} else {b;};}
+fn maxf2(a f32, b f32) f32 inline {if a > b {a;} else {b;};}
+fn clampf2(v f32, lo f32, hi f32) f32 inline {if v < lo {lo;} elif v > hi {hi;} else {v;};}
+fn roundTo(v f32, step f32) f32 {
+  if step <= 0. {return v;}
+  imm q = v / step;
+  imm r = if q >= 0. {libc.floorf(q + 0.5);} else {-libc.floorf(-q + 0.5);};
+  r * step;
+}
+
+// A number with 'decimals' places, for readouts (there is no float formatting in the standard library yet)
+pub fn fixedString(v f32, decimals u32) String {
+  mut s = String.empty();
+  mut x = v;
+  if x < 0. {s.append("-"); x = -x;}
+  mut scale = 1.;
+  mut d = 0u32;
+  while d < decimals {scale = scale * 10.; d = d + 1u32;}
+  imm scaled = libc.floorf(x * scale + 0.5);
+  imm whole = libc.floorf(scaled / scale);
+  s.appendInt(i64.from(whole));
+  if decimals > 0u32 {
+    s.append(".");
+    mut frac = i64.from(scaled - whole * scale);
+    mut div = i64.from(scale) / 10i64;
+    while div > 0i64 {
+      s.appendInt(frac / div);
+      frac = frac - (frac / div) * div;
+      div = div / 10i64;
+    }
+  }
+  s;
+}
