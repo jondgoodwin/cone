@@ -1,0 +1,240 @@
+// ======== The numbers of the terrain's levels of detail ========
+//
+// Pure arithmetic with no GPU: the settings a terrain is made from
+// ('TerrainConfig'), the ranges its levels are drawn at ('LodLevels'), and
+// the CPU's twin of the vertex shader's geomorph ('vertexHeight',
+// 'morphFactor'), which the tests pin and the render test compares with the
+// GPU's picture.
+//
+// THE METHOD is CDLOD, Filip Strugar's "Continuous Distance-Dependent Level
+// of Detail for Rendering Heightmaps" (JGT 2010): a quadtree of square
+// nodes, each drawn as the same grid of 'nodeCells' x 'nodeCells' cells;
+// a node splits into four when the camera is nearer than its level's
+// range; and a vertex slides smoothly (in height) from its own level's
+// surface to the next coarser level's as its distance passes the level's
+// morph band, so a split or a merge changes no pixel at the moment it
+// happens.
+//
+// LEVEL l (0 the finest) has cells of c_l = cell x 2^l metres, nodes of
+// s_l = nodeCells x c_l, a range R_l and a morph start S_l < R_l. The
+// quadtree's nodes at level l are the squares [ix s_l, (ix + 1) s_l] x
+// [iz s_l, (iz + 1) s_l] of the infinite lattice; a node's samples are the
+// source's heights at the lattice points (ix nodeCells + i) c_l.
+//
+// WHY THE RANGES ARE WHAT THEY ARE. A node is split when the camera's
+// distance to its box is below R_(l-1), so a level-l leaf is next to leaves
+// of level l - 1, l and l + 1 and no others, if the ranges obey one rule.
+// Take a level-l leaf B in a split parent P (level l + 1) and its neighbour
+// Q, a level-(l + 1) leaf: Q is not split, so every point of the border they
+// share is at least R_l from the camera; it is also in P, so at most
+// R_l + diag_(l+1) from it (P's box is nearer than R_l, and P is diag_(l+1)
+// across). B's vertex there has morphed all the way to level l + 1's
+// surface (its distance is past R_l, where level l's morph ends). Q's vertex
+// there must not have started to morph yet: S_(l+1) >= R_l + diag_(l+1).
+// 'LodLevels.build' makes the ranges obey that, and so the two meet exactly:
+// both are level l + 1's surface along the border. (The same rule shows
+// leaves two levels apart never touch.) diag is the node's box diagonal
+// given the largest slope the source has, 'maxSlope'.
+
+pub const MAX_LEVELS = 16usize;
+
+// Samples beyond the node's grid on every side: the vertex shader takes
+// normals from differences two samples out (the coarser level's own stencil)
+pub const BORDER = 2u32;
+
+fn fmin(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn fmax(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+fn fclamp(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
+
+// What a terrain is made from
+pub struct TerrainConfig {
+  pub cell f32;             // the finest level's cell, metres
+  pub nodeCells u32;        // cells along a node's side: a power of two, 8 to 128
+  pub horizon f32;          // the farthest ground drawn, metres
+  pub pixelsPerCell f32;    // the screen size a cell is held to (its geometric error), pixels
+  pub maxSlope f32;         // the largest rise over run the height function has (a Lipschitz bound)
+  pub minHeight f32;        // the least and greatest height it has; a node outside the view is
+  pub maxHeight f32;        // skipped by these before any of its heights are computed
+  pub cacheNodes u32;       // height patches kept for reuse
+  pub morphFraction f32;    // where a level's morph band starts, as a share of its range
+  pub skirt f32;            // how far a node's edge skirts hang, in its cells (0: no skirts)
+
+  pub fn make() TerrainConfig {
+    new TerrainConfig(1., 32u32, 40000., 4., 2., -1000., 6000., 6144u32, 0.6, 0.15);
+  }
+
+  // The samples along a patch's side: the grid's, and the borders
+  pub fn patchSide(self &) u32 { nodeCells + 1u32 + 2u32 * BORDER; }
+}
+
+// The levels of a terrain: their cells, node sizes, morph starts and ranges
+pub struct LodLevels {
+  pub count u32;
+  pub cell List[f32];         // c_l
+  pub size List[f32];         // s_l
+  pub morphStart List[f32];   // S_l
+  pub rangeEnd List[f32];     // R_l
+  pub k f32;                  // the view's pixels per radian over the pixels a cell is held to
+
+  // The levels for 'cfg' seen at 'k': the screen-space factor
+  // 'viewportHeight / (2 tan(fov / 2) pixelsPerCell)', at which a cell of c
+  // metres is 'pixelsPerCell' tall at k c metres. Levels are made until a
+  // range reaches the horizon.
+  pub fn build(cfg &TerrainConfig, k f32) LodLevels {
+    mut cells = List[f32].empty();
+    mut sizes = List[f32].empty();
+    mut starts = List[f32].empty();
+    mut ends = List[f32].empty();
+    mut c = cfg.cell;
+    imm n = f32.from(cfg.nodeCells);
+    imm m = cfg.maxSlope;
+    mut prevEnd f32 = 0.;
+    mut l = 0usize;
+    mut done = false;
+    while !done and l < MAX_LEVELS {
+      imm s = n * c;
+      imm rise = m * s * 1.4142135 + 2. * m * c;
+      imm diag = (2. * s * s + rise * rise).sqrt();
+      mut r = k * c;
+      mut start = cfg.morphFraction * r;
+      if l > 0usize {
+        if r < 2. * prevEnd { r = 2. * prevEnd; }
+        imm need = prevEnd + diag;
+        if r * 0.9 < need { r = need / 0.9; }
+        start = fmax(cfg.morphFraction * r, need);
+      }
+      cells.push(c);
+      sizes.push(s);
+      starts.push(start);
+      ends.push(r);
+      prevEnd = r;
+      if r >= cfg.horizon { done = true; }
+      c = c * 2.;
+      l = l + 1usize;
+    }
+    new LodLevels(u32.from(l), cells, sizes, starts, ends, k);
+  }
+
+  pub fn cellAt(self &, level u32) f32 { *cell[usize.from(level)]; }
+  pub fn sizeAt(self &, level u32) f32 { *size[usize.from(level)]; }
+  pub fn startAt(self &, level u32) f32 { *morphStart[usize.from(level)]; }
+  pub fn endAt(self &, level u32) f32 { *rangeEnd[usize.from(level)]; }
+  pub fn top(self &) u32 { count - 1u32; }
+
+  // How far a vertex at distance 'd' from the camera has morphed to the
+  // next coarser level: 0 before the morph band, 1 after it
+  pub fn morphFactor(self &, level u32, d f32) f32 {
+    imm s = *morphStart[usize.from(level)];
+    imm e = *rangeEnd[usize.from(level)];
+    fclamp((d - s) / (e - s), 0., 1.);
+  }
+}
+
+// The screen-space factor of a view: a cell of c metres is held to
+// 'pixelsPerCell' pixels at k c metres
+pub fn screenFactor(viewportHeight f32, fov f32, pixelsPerCell f32) f32 {
+  viewportHeight / (2. * libc.tanf(fov * 0.5) * pixelsPerCell);
+}
+
+// The key of the node (level, ix, iz) in the cache
+pub fn nodeKey(level u32, ix i32, iz i32) u64 {
+  imm off = 134217728i64;
+  (u64.from(level) << 56u64) | (u64.from(i64.from(ix) + off) << 28u64) | u64.from(i64.from(iz) + off);
+}
+
+// ---- Heights of a patch ----
+
+// The height patch of the node (level, ix, iz): the source at every lattice
+// point of the node's grid and BORDER samples beyond it on each side, row by
+// row from the lowest z, each row from the lowest x: patchSide x patchSide
+// numbers. The coordinates are computed from integer lattice indices in f64
+// and rounded once, so two nodes sharing a lattice point ask the source for
+// the very same (x, z).
+pub fn buildHeights(cfg &TerrainConfig, level u32, ix i32, iz i32, cell f32,
+    source &<fn(x f32, z f32) f32) List[f32] {
+  imm side = cfg.patchSide();
+  mut out = List[f32].withCapacity(usize.from(side * side));
+  imm n = i64.from(cfg.nodeCells);
+  imm b = i64.from(BORDER);
+  imm c = f64.from(cell);
+  imm i0 = i64.from(ix) * n;
+  imm j0 = i64.from(iz) * n;
+  mut j = 0i64 - b;
+  while j <= n + b {
+    imm z = f32.from(f64.from(j0 + j) * c);
+    mut i = 0i64 - b;
+    while i <= n + b {
+      imm x = f32.from(f64.from(i0 + i) * c);
+      out.push(source(x, z));
+      i = i + 1i64;
+    }
+    j = j + 1i64;
+  }
+  out;
+}
+
+// The patch's height at lattice (i, j) of its node (BORDER outside -> 0..side)
+pub fn patchAt(heights &List[f32], side u32, i i32, j i32) f32 {
+  imm b = i32.from(BORDER);
+  *heights[usize.from((j + b) * i32.from(side) + (i + b))];
+}
+
+// The least and greatest of the node's own grid heights (without borders)
+pub fn patchRange(heights &List[f32], side u32, nodeCells u32, lo &mut f32, hi &mut f32) {
+  mut l = 3.4028235e38;
+  mut h = -3.4028235e38;
+  mut j = 0i32;
+  while j <= i32.from(nodeCells) {
+    mut i = 0i32;
+    while i <= i32.from(nodeCells) {
+      imm v = patchAt(heights, side, i, j);
+      if v < l { l = v; }
+      if v > h { h = v; }
+      i = i + 1i32;
+    }
+    j = j + 1i32;
+  }
+  *lo = l;
+  *hi = h;
+}
+
+// ---- The geomorph: the vertex shader's height, on the CPU ----
+
+// The height of the vertex (i, j) of a node at the next coarser level's
+// surface: itself where i and j are both even; the middle of its two even
+// neighbours along an edge where one is odd; and where both are odd (the
+// middle of a coarser cell) the middle of the coarser cell's diagonal, which
+// is the one the triangulation uses there: a quad (a, b) of any level has
+// its diagonal from (a, b) to (a + 1, b + 1) when a + b is even and from
+// (a + 1, b) to (a, b + 1) when it is odd, and that rule holds at every
+// level, so the finer quads' diagonals lie along the coarser ones and the
+// morphed surface is exactly the coarser level's.
+pub fn coarseHeight(heights &List[f32], side u32, i i32, j i32) f32 {
+  imm oi = (i & 1i32) != 0i32;
+  imm oj = (j & 1i32) != 0i32;
+  if !oi and !oj { return patchAt(heights, side, i, j); }
+  if oi and !oj { return 0.5 * (patchAt(heights, side, i - 1i32, j) + patchAt(heights, side, i + 1i32, j)); }
+  if !oi and oj { return 0.5 * (patchAt(heights, side, i, j - 1i32) + patchAt(heights, side, i, j + 1i32)); }
+  imm bi = i >> 1i32;
+  imm bj = j >> 1i32;
+  if ((bi + bj) & 1i32) == 0i32 {
+    0.5 * (patchAt(heights, side, i - 1i32, j - 1i32) + patchAt(heights, side, i + 1i32, j + 1i32));
+  } else {
+    0.5 * (patchAt(heights, side, i + 1i32, j - 1i32) + patchAt(heights, side, i - 1i32, j + 1i32));
+  }
+}
+
+// The vertex (i, j)'s height morphed by 'k' (0 its own level's, 1 the coarser's)
+pub fn vertexHeight(heights &List[f32], side u32, i i32, j i32, k f32) f32 {
+  imm fine = patchAt(heights, side, i, j);
+  if k <= 0. { return fine; }
+  fine + (coarseHeight(heights, side, i, j) - fine) * k;
+}
+
+// Distance from 'p' to a box (zero inside it)
+pub fn boxDistance(px f32, py f32, pz f32, minx f32, miny f32, minz f32, maxx f32, maxy f32, maxz f32) f32 {
+  imm dx = fmax(fmax(minx - px, px - maxx), 0.);
+  imm dy = fmax(fmax(miny - py, py - maxy), 0.);
+  imm dz = fmax(fmax(minz - pz, pz - maxz), 0.);
+  (dx * dx + dy * dy + dz * dz).sqrt();
+}

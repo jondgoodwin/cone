@@ -1,0 +1,130 @@
+// ======== Height queries for physics, on the same function ========
+//
+// Everything here takes the closure the terrain is drawn from, so a
+// character or a body stands on the ground the player sees. Two heights are
+// given:
+//
+// - 'groundHeight' is the height of the finest level's triangulated surface:
+//   the very triangles the vertex shader draws near the camera (a vertex a
+//   cell, each cell split by the rule 'diagonalRises' states). A body that
+//   rests on it rests on the drawn ground wherever the finest level is
+//   drawn. Farther out the drawn ground is coarser and a body would float
+//   or sink by the difference ('lodError' bounds it); nothing walks there.
+// - the source itself, for a caller who wants the function's own value.
+//
+// 'raycast' finds where a ray meets the finest surface, by sphere tracing a
+// Lipschitz height function (Hart, "Sphere Tracing", 1996): while the ray is
+// above the ground by c at a point, it can go on c / (the most the ground
+// can rise against it) before it can meet the ground, then it bisects the
+// last step on the triangulated surface.
+
+// A ray's hit on the ground
+pub struct GroundHit {
+  pub hit bool;
+  pub distance f32;          // along the ray, in the units of its direction
+  pub point Vec3;
+  pub normal Vec3;
+}
+
+fn floorInt(v f32) i32 { i32.from(libc.floorf(v)); }
+
+// Whether the cell (a, b) is split from its (a, b) corner to its
+// (a + 1, b + 1) corner (a + b even) or from (a + 1, b) to (a, b + 1)
+pub fn diagonalRises(a i32, b i32) bool { ((a + b) & 1i32) == 0i32; }
+
+// The height of the finest triangulated surface at (x, z), cells of 'cell'
+// metres
+pub fn groundHeight(source &<fn(x f32, z f32) f32, cell f32, x f32, z f32) f32 {
+  imm gx = x / cell;
+  imm gz = z / cell;
+  imm a = floorInt(gx);
+  imm b = floorInt(gz);
+  imm u = gx - f32.from(a);
+  imm v = gz - f32.from(b);
+  imm h00 = source(f32.from(a) * cell, f32.from(b) * cell);
+  imm h10 = source(f32.from(a + 1i32) * cell, f32.from(b) * cell);
+  imm h01 = source(f32.from(a) * cell, f32.from(b + 1i32) * cell);
+  imm h11 = source(f32.from(a + 1i32) * cell, f32.from(b + 1i32) * cell);
+  if diagonalRises(a, b) {
+    // triangles (00, 01, 11) and (00, 11, 10), the plane through 00 and 11 and one more
+    if v >= u { h00 + (h11 - h01) * u + (h01 - h00) * v; } else { h00 + (h10 - h00) * u + (h11 - h10) * v; }
+  } else {
+    // triangles (00, 01, 10) and (10, 01, 11)
+    if u + v <= 1. { h00 + (h10 - h00) * u + (h01 - h00) * v; } else { h11 + (h01 - h11) * (1. - u) + (h10 - h11) * (1. - v); }
+  }
+}
+
+// The unit normal of the triangle of the finest surface at (x, z)
+pub fn groundNormal(source &<fn(x f32, z f32) f32, cell f32, x f32, z f32) Vec3 {
+  imm gx = x / cell;
+  imm gz = z / cell;
+  imm a = floorInt(gx);
+  imm b = floorInt(gz);
+  imm u = gx - f32.from(a);
+  imm v = gz - f32.from(b);
+  imm x0 = f32.from(a) * cell;
+  imm z0 = f32.from(b) * cell;
+  imm x1 = f32.from(a + 1i32) * cell;
+  imm z1 = f32.from(b + 1i32) * cell;
+  imm p00 = new Vec3(x0, source(x0, z0), z0);
+  imm p10 = new Vec3(x1, source(x1, z0), z0);
+  imm p01 = new Vec3(x0, source(x0, z1), z1);
+  imm p11 = new Vec3(x1, source(x1, z1), z1);
+  mut n = new Vec3(0., 1., 0.);
+  if diagonalRises(a, b) {
+    n = if v >= u { (p01 - p00).cross(p11 - p00); } else { (p11 - p00).cross(p10 - p00); };
+  } else {
+    n = if u + v <= 1. { (p01 - p00).cross(p10 - p00); } else { (p01 - p11).cross(p10 - p11); };
+  }
+  // Each of those is wound to point up
+  n = if n.y < 0. { n * -1.; } else { n; };
+  n.normalize();
+}
+
+// The first meeting of the ray (origin, direction) with the finest surface
+// within 'maxDistance' (along the unit direction), 'maxSlope' the source's
+// largest rise over run. A ray that starts below the surface hits at 0.
+pub fn raycast(source &<fn(x f32, z f32) f32, cell f32, maxSlope f32, origin Vec3, direction Vec3,
+    maxDistance f32) GroundHit {
+  imm dir = direction.normalize();
+  imm hlen = (dir.x * dir.x + dir.z * dir.z).sqrt();
+  mut t = 0.;
+  mut steps = 0;
+  mut lastAbove = 0.;
+  while t <= maxDistance and steps < 100000 {
+    imm p = origin + dir * t;
+    imm clearance = p.y - groundHeight(source, cell, p.x, p.z);
+    if clearance <= 0. {
+      // Between lastAbove and t the ray went below: bisect
+      mut lo = lastAbove;
+      mut hi = t;
+      mut i = 0;
+      while i < 40 {
+        imm mid = 0.5 * (lo + hi);
+        imm q = origin + dir * mid;
+        if q.y - groundHeight(source, cell, q.x, q.z) > 0. { lo = mid; } else { hi = mid; }
+        i = i + 1;
+      }
+      imm at = origin + dir * hi;
+      return new GroundHit(true, hi, at, groundNormal(source, cell, at.x, at.z));
+    }
+    lastAbove = t;
+    // The ground can come up at most maxSlope per metre of horizontal travel, the ray goes
+    // up dir.y per metre: they close at (maxSlope hlen - dir.y) per metre
+    imm closing = maxSlope * hlen - dir.y;
+    imm step = if closing > 0.0001 { clearance / closing; } else { maxDistance; };
+    t = t + (if step < cell * 0.05 { cell * 0.05; } else { step; });
+    steps = steps + 1;
+  }
+  new GroundHit(false, maxDistance, origin + dir * maxDistance, new Vec3(0., 1., 0.));
+}
+
+// The most the drawn ground at a level can be off the source's value: the
+// surface is linear between samples a 'cell' apart, and the source rises at
+// most 'maxSlope' per metre, so within a cell of a sample
+// (cell x sqrt(2) / 2 at worst from the nearest) it differs from the
+// source by at most maxSlope x cell x sqrt(2) / 2, doubled for the
+// triangle's other two corners
+pub fn lodError(cell f32, maxSlope f32) f32 {
+  maxSlope * cell * 1.4142135;
+}

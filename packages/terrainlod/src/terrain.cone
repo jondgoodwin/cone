@@ -1,0 +1,677 @@
+// ======== The terrain: a CDLOD quadtree drawn through render ========
+//
+// A 'Terrain' keeps the cache of height patches, picks the nodes to draw
+// from the camera each frame ('update'), and adds one draw per node to a
+// render DrawList ('draw'). The height function is not held: it is a closure
+// the caller passes to 'update', and to the queries (queries.cone), so the
+// picture and the physics ask one function.
+//
+// PER FRAME (CPU): the top level's cells within the horizon of the camera
+// are visited; a node outside the frustum is dropped, a node nearer than its
+// level's split range is replaced by its four children, anything else is
+// drawn. A node's height patch is built (and, the first frame it is drawn,
+// put on the GPU as a texture with a material of its own) the first time the
+// walk needs its box; patches live in a cache of 'cfg.cacheNodes', the
+// oldest unused evicted. The work is bounded by the ring of nodes at each
+// level: the same count whether the horizon is 4 km or 400 km, one more level
+// for each doubling.
+//
+// PER FRAME (GPU): the vertex shader (terrain.slang) positions the shared
+// grid mesh for each node by its lattice indices and level, reads the
+// node's patch, geomorphs by distance. Nothing is rebuilt as the camera
+// moves but the node list and the new patches at the edge.
+
+// A layer of the ground's colour: where it shows is a band of height and a
+// band of steepness (1 - the normal's y: 0 flat, 1 vertical), their edges
+// softened by 'soft' (metres of height, steepness units) and moved about by
+// noise of 'noiseScale' metres and 'noiseAmount'. The first layer shows
+// everywhere; each later one is blended over what is below it.
+pub struct TerrainLayer {
+  pub color Color;
+  pub heightLow f32;
+  pub heightHigh f32;
+  pub heightSoft f32;
+  pub steepLow f32;
+  pub steepHigh f32;
+  pub steepSoft f32;
+  pub noiseScale f32;
+  pub noiseAmount f32;
+
+  // A layer that shows everywhere (the base)
+  pub fn base(color Color) TerrainLayer {
+    new TerrainLayer(color, -100000., 100000., 1., -1., 2., 0.05, 40., 0.3);
+  }
+
+  // A layer on ground between two heights and two steepnesses
+  pub fn band(color Color, heightLow f32, heightHigh f32, heightSoft f32, steepLow f32, steepHigh f32,
+      steepSoft f32) TerrainLayer {
+    new TerrainLayer(color, heightLow, heightHigh, heightSoft, steepLow, steepHigh, steepSoft, 30., 0.4);
+  }
+}
+
+// How the ground is drawn
+pub struct TerrainLook {
+  pub layers List[TerrainLayer];
+  pub hazeColor Color;      // radiance the far ground fades to
+  pub hazeDensity f32;      // per metre, at sea level
+  pub hazeFalloff f32;      // per metre of height: the haze thins as exp(-height x this)
+  pub bump f32;             // strength of the fine bump on the normal near the eye (0 off)
+  pub sunShadows bool;      // receive render's sun shadow maps
+  pub debug u32;            // 0 the look; 1 the height; 2 the level; 3 the morph
+
+  pub fn make() TerrainLook {
+    mut layers = List[TerrainLayer].empty();
+    layers.push(TerrainLayer.base(new Color(0.12, 0.2, 0.07, 1.)));
+    new TerrainLook(layers, new Color(0.5, 0.6, 0.75, 1.), 0.00002, 0.0004, 0.15, false, 0u32);
+  }
+}
+
+// What a frame did
+pub struct TerrainStats {
+  pub visited u32;          // nodes the walk looked at
+  pub drawn u32;            // nodes drawn: draw calls
+  pub triangles u64;        // triangles of the nodes drawn
+  pub builtPatches u32;     // height patches computed this frame
+  pub heightSamples u64;    // calls of the height function this frame
+  pub uploaded u32;         // patches put on the GPU this frame
+  pub evicted u32;
+  pub resident u32;         // patches in the cache
+  pub byLevel Array[u32, 16];   // nodes drawn at each level
+  pub walkMs f64;           // CPU time of 'update': the walk (and the patches it built)
+  pub uploadMs f64;         //   putting new patches on the GPU
+  pub evictMs f64;          //   freeing old ones
+}
+
+// A node's height patch and what the GPU holds of it
+pub struct Patch {
+  pub level u32;
+  pub ix i32;
+  pub iz i32;
+  pub heights List[f32];
+  pub lo f32;               // the least and greatest sample of the node's grid
+  pub hi f32;
+  pub onGpu bool;           // its heights are in the atlas, at the texel block its slot names
+  pub used u64;             // the frame it was last wanted
+}
+
+// A node chosen for this frame
+pub struct DrawNode {
+  pub level u32;
+  pub ix i32;
+  pub iz i32;
+  pub slot usize;
+}
+
+pub struct Terrain {
+  pub cfg TerrainConfig;
+  pub lod LodLevels;
+  pub look TerrainLook;
+  pub visible List[DrawNode];
+  pub stats TerrainStats;
+  patches List[Patch];
+  index Dict[u64, usize];
+  freeSlots List[usize];
+  pipeline PipelineHandle;
+  gridMesh MeshHandle;
+  atlas TextureHandle;          // every patch on the GPU, a block of texels each
+  material MaterialHandle;      // the one material all nodes draw with: the atlas and the parameters
+  across u32;                   // blocks across the atlas; its slots are across x across
+  frame u64;
+  lastLook u64;
+  builtLook u64;
+  overflowed bool;
+
+  // A terrain for 'cfg' drawn by 'renderer' on 'device': its pipeline, grid
+  // mesh, atlas and material made now. The renderer must have been made with
+  // the colour and depth formats the terrain will be drawn into. The atlas
+  // holds 'cfg.cacheNodes' patches (rounded up to a square), each
+  // patchSide x patchSide floats: 4096 patches of 37 x 37 are 22 MB.
+  pub fn create(device &mut Device, renderer &mut Renderer, cfg TerrainConfig) Terrain {
+    imm textures = [TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT];
+    imm desc = new CustomPipeline(spirv: &TERRAIN_SPIRV, textures: &textures, paramBytes: PARAM_BYTES, streams: 1u32,
+      environment: false);
+    imm pipeline = renderer.addPipeline(device, &desc);
+    mut grid = buildGridMesh(cfg.nodeCells, cfg.skirt > 0.);
+    imm meshHandle = renderer.addMesh(device, &grid);
+    imm lod = LodLevels.build(&cfg, 1000.);
+    mut across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
+    while across * across < cfg.cacheNodes { across = across + 1u32; }
+    imm texels = across * cfg.patchSide();
+    // Written whole once with zeros, so that its layout holds contents; patches go in by region
+    mut zeros = List[f32].withCapacity(usize.from(texels) * usize.from(texels));
+    mut z = 0usize;
+    while z < usize.from(texels) * usize.from(texels) { zeros.push(0.); z = z + 1usize; }
+    imm atlas = renderer.addFieldTexture(device, texels, texels, zeros.view());
+    mut t = new Terrain(cfg, lod, TerrainLook.make(), List[DrawNode].empty(), emptyStats(), List[Patch].empty(),
+      Dict[u64, usize].empty(), List[usize].empty(), pipeline, meshHandle, atlas, MaterialHandle.none(), across, 0u64, 1u64, 0u64, false);
+    imm maps = [atlas];
+    imm params = t.paramBlock();
+    t.material = renderer.addCustomMaterial(device, pipeline, params.view(), &maps);
+    t;
+  }
+
+  // A terrain with no GPU: it can 'walk' (choose nodes, build patches) and
+  // answer 'displayedHeight', for tests and for tools that only need to know
+  // what would be drawn
+  pub fn createCpu(cfg TerrainConfig) Terrain {
+    imm lod = LodLevels.build(&cfg, 1000.);
+    mut across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
+    while across * across < cfg.cacheNodes { across = across + 1u32; }
+    new Terrain(cfg, lod, TerrainLook.make(), List[DrawNode].empty(), emptyStats(), List[Patch].empty(),
+      Dict[u64, usize].empty(), List[usize].empty(), PipelineHandle.none(), MeshHandle.none(), TextureHandle.none(),
+      MaterialHandle.none(), across, 0u64, 1u64, 0u64, false);
+  }
+
+  // Whether the pipeline and mesh were made
+  pub fn isValid(self &, renderer &Renderer) bool {
+    renderer.hasPipeline(pipeline);
+  }
+
+  // The most patches the atlas (and so the cache) can hold
+  pub fn capacity(self &) usize { usize.from(across) * usize.from(across); }
+
+  // Whether a frame wanted more patches than the cache holds: the nodes that
+  // did not fit were not drawn. Raise 'cfg.cacheNodes' (or the pixels a cell
+  // is held to).
+  pub fn overflow(self &) bool { overflowed; }
+
+  // Change how the ground is drawn; every patch on the GPU takes it on the next update
+  pub fn setLook(self &mut, look TerrainLook) {
+    self.look = look;
+    lastLook = lastLook + 1u64;
+  }
+
+  // ---- The patch cache ----
+
+  fn cellOf(self &, level u32) f32 { lod.cellAt(level); }
+
+  // The slot of the node's patch, built from 'source' if it is not held
+  fn patchSlot(self &mut, level u32, ix i32, iz i32, source &<fn(x f32, z f32) f32) usize {
+    imm key = nodeKey(level, ix, iz);
+    mut found = -1i64;
+    match index.get(&key) {
+      case imm v Some { found = i64.from(*v); }
+      else {}
+    }
+    if found >= 0i64 {
+      patches[usize.from(found)].used = frame;
+      return usize.from(found);
+    }
+    imm side = cfg.patchSide();
+    // A slot of the atlas: a freed one, or the next; none if the cache is full of patches used this frame
+    mut slot = 0usize;
+    mut have = false;
+    match freeSlots.pop() {
+      case imm s Some { slot = s; have = true; }
+      else {}
+    }
+    if !have and patches.len() < self.capacity() {
+      slot = patches.len();
+      patches.push(emptyPatch());
+      have = true;
+    }
+    if !have {
+      self.evict(1u64, 0usize);
+      match freeSlots.pop() {
+        case imm s Some { slot = s; have = true; }
+        else {}
+      }
+    }
+    if !have {
+      overflowed = true;
+      return NO_SLOT;
+    }
+    imm heights = buildHeights(&cfg, level, ix, iz, self.cellOf(level), source);
+    mut lo f32 = 0.;
+    mut hi f32 = 0.;
+    patchRange(&heights, side, cfg.nodeCells, &mut lo, &mut hi);
+    patches.set(slot, new Patch(level, ix, iz, heights, lo, hi, false, frame));
+    stats.builtPatches = stats.builtPatches + 1u32;
+    stats.heightSamples = stats.heightSamples + u64.from(side * side);
+    index.insert(key, slot);
+    slot;
+  }
+
+  // Free patches not wanted for at least 'age' frames, oldest first by age
+  // bands, until no more than 'keep' are held (keep 0: all that are that old)
+  fn evict(self &mut, age u64, keep usize) {
+    mut s = 0usize;
+    while s < patches.len() {
+      if patches[s].heights.len() > 0usize and patches[s].used + age <= frame and index.len() > keep {
+        self.dropSlot(s);
+        stats.evicted = stats.evicted + 1u32;
+      }
+      s = s + 1usize;
+    }
+  }
+
+  // Keep the cache within its size, dropping the longest unused first
+  fn trim(self &mut) {
+    if index.len() <= usize.from(cfg.cacheNodes) { return; }
+    imm ages = [600u64, 240u64, 90u64, 30u64, 10u64, 3u64, 1u64];
+    mut a = 0usize;
+    while a < 7usize and index.len() > usize.from(cfg.cacheNodes) {
+      self.evict(ages[a], usize.from(cfg.cacheNodes));
+      a = a + 1usize;
+    }
+  }
+
+  fn dropSlot(self &mut, s usize) {
+    imm key = nodeKey(patches[s].level, patches[s].ix, patches[s].iz);
+    index.remove(&key);
+    patches.set(s, emptyPatch());
+    freeSlots.push(s);
+  }
+
+  // Put a patch in the atlas if it is not there: its heights in the block of texels its slot names
+  fn upload(self &mut, device &mut Device, renderer &mut Renderer, s usize) {
+    if patches[s].onGpu { return; }
+    imm side = cfg.patchSide();
+    imm x = u32.from(s % usize.from(across)) * side;
+    imm y = u32.from(s / usize.from(across)) * side;
+    renderer.writeFieldRegion(device, atlas, x, y, side, side, patches[s].heights.view());
+    patches[s].onGpu = true;
+    patches[s].used = frame;
+    stats.uploaded = stats.uploaded + 1u32;
+  }
+
+  // The material parameters (terrain.slang's Params), the same for every node
+  fn paramBlock(self &) List[f32] {
+    mut p = List[f32].withCapacity(usize.from(PARAM_BYTES / 4u64));
+    p.push(f32.from(cfg.nodeCells));
+    p.push(cfg.cell);
+    p.push(f32.from(lod.count));
+    p.push(look.bump);
+    p.push(look.hazeColor.red);
+    p.push(look.hazeColor.green);
+    p.push(look.hazeColor.blue);
+    p.push(look.hazeDensity);
+    p.push(look.hazeFalloff);
+    p.push(f32.from(look.debug));
+    p.push(f32.from(look.layers.len()));
+    p.push(if look.sunShadows { 1.; } else { 0.; });
+    p.push(f32.from(across));
+    p.push(f32.from(cfg.patchSide()));
+    p.push(cfg.skirt);
+    p.push(0.);
+    mut l = 0usize;
+    while l < MAX_LEVELS {
+      if l < usize.from(lod.count) {
+        p.push(*lod.cell[l]);
+        p.push(*lod.morphStart[l]);
+        p.push(*lod.rangeEnd[l]);
+      } else {
+        p.push(1.);
+        p.push(1.);
+        p.push(2.);
+      }
+      p.push(0.);
+      l = l + 1usize;
+    }
+    mut part = 0usize;
+    while part < 3usize {
+      l = 0usize;
+      while l < 8usize {
+        if l < look.layers.len() {
+          imm t = *look.layers[l];
+          if part == 0usize {
+            p.push(t.color.red); p.push(t.color.green); p.push(t.color.blue); p.push(t.noiseAmount);
+          } elif part == 1usize {
+            p.push(t.heightLow); p.push(t.heightHigh); p.push(t.heightSoft); p.push(t.noiseScale);
+          } else {
+            p.push(t.steepLow); p.push(t.steepHigh); p.push(t.steepSoft); p.push(0.);
+          }
+        } else {
+          p.push(0.); p.push(0.); p.push(0.); p.push(0.);
+        }
+        l = l + 1usize;
+      }
+      part = part + 1usize;
+    }
+    p;
+  }
+
+  // ---- The walk ----
+
+  // Choose this frame's nodes for 'camera' drawing into a target of
+  // 'width' x 'height' pixels, building patches from 'source' as needed,
+  // and put what the GPU needs on it. Call once a frame before 'draw'.
+  pub fn update(self &mut, device &mut Device, renderer &mut Renderer, camera &Camera, width u32, height u32,
+      source &<fn(x f32, z f32) f32) {
+    imm t0 = Instant.now();
+    imm relook = self.walk(camera, width, height, source);
+    imm walked = t0.elapsed().secondsF64() * 1000d;
+    imm t1 = Instant.now();
+    if relook { self.rewriteParams(device, renderer); }
+    mut n = 0usize;
+    while n < visible.len() {
+      self.upload(device, renderer, (*visible[n]).slot);
+      n = n + 1usize;
+    }
+    imm uploaded = t1.elapsed().secondsF64() * 1000d;
+    imm t2 = Instant.now();
+    stats.walkMs = walked;
+    stats.uploadMs = uploaded;
+    stats.evictMs = t2.elapsed().secondsF64() * 1000d;
+  }
+
+  // The CPU half of 'update': choose the nodes for 'camera' and build their
+  // patches, touching no GPU. True if the levels' ranges or the look changed
+  // (so the materials' parameters need writing again).
+  pub fn walk(self &mut, camera &Camera, width u32, height u32, source &<fn(x f32, z f32) f32) bool {
+    frame = frame + 1u64;
+    visible.clear();
+    stats = emptyStats();
+    imm k = screenFactor(f32.from(height), camera.fov, cfg.pixelsPerCell);
+    mut relook = lastLook != builtLook;
+    if lod.count == 0u32 or libc.fabsf(k - lod.k) > 0.001 * k {
+      lod = LodLevels.build(&cfg, k);
+      relook = true;
+    }
+    imm aspect = f32.from(width) / f32.from(height);
+    imm view = camera.viewMatrix();
+    imm vp = camera.projectionMatrix(aspect) * view;
+    imm frustum = Frustum.fromMatrix(vp);
+    imm eye = camera.position();
+    imm top = lod.top();
+    imm size = lod.sizeAt(top);
+    imm reach = lod.endAt(top);
+    imm x0 = i32.from(libc.floorf((eye.x - reach) / size));
+    imm x1 = i32.from(libc.floorf((eye.x + reach) / size));
+    imm z0 = i32.from(libc.floorf((eye.z - reach) / size));
+    imm z1 = i32.from(libc.floorf((eye.z + reach) / size));
+    mut iz = z0;
+    while iz <= z1 {
+      mut ix = x0;
+      while ix <= x1 {
+        self.visit(top, ix, iz, eye, &frustum, source);
+        ix = ix + 1i32;
+      }
+      iz = iz + 1i32;
+    }
+    self.trim();
+    stats.drawn = u32.from(visible.len());
+    stats.resident = u32.from(index.len());
+    stats.triangles = u64.from(stats.drawn) * u64.from(cfg.nodeCells) * u64.from(cfg.nodeCells) * 2u64;
+    relook;
+  }
+
+  // The height of the surface as it is drawn this frame at (x, z) for a
+  // camera at 'eye': the leaf node that holds the point, its triangle, each
+  // corner's height morphed by its distance to the eye (the vertex shader's
+  // arithmetic). NaN-free: a point outside every leaf answers the source's
+  // height, 'found' false. For tests and for tools that must agree with the
+  // picture.
+  pub fn displayedHeight(self &, eye Vec3, x f32, z f32, found &mut bool) f32 {
+    mut n = 0usize;
+    while n < visible.len() {
+      imm v = *visible[n];
+      imm s = lod.sizeAt(v.level);
+      imm x0 = f32.from(v.ix) * s;
+      imm z0 = f32.from(v.iz) * s;
+      if x >= x0 and x <= x0 + s and z >= z0 and z <= z0 + s {
+        *found = true;
+        return self.nodeSurface(v.slot, v.level, v.ix, v.iz, eye, x, z);
+      }
+      n = n + 1usize;
+    }
+    *found = false;
+    0.;
+  }
+
+  // The drawn surface of one node at (x, z)
+  fn nodeSurface(self &, slot usize, level u32, ix i32, iz i32, eye Vec3, x f32, z f32) f32 {
+    imm c = lod.cellAt(level);
+    imm nn = i32.from(cfg.nodeCells);
+    imm side = cfg.patchSide();
+    imm gx = x / c - f32.from(ix) * f32.from(cfg.nodeCells);
+    imm gz = z / c - f32.from(iz) * f32.from(cfg.nodeCells);
+    mut a = i32.from(libc.floorf(gx));
+    mut b = i32.from(libc.floorf(gz));
+    if a >= nn { a = nn - 1i32; }
+    if b >= nn { b = nn - 1i32; }
+    if a < 0i32 { a = 0i32; }
+    if b < 0i32 { b = 0i32; }
+    imm u = gx - f32.from(a);
+    imm v = gz - f32.from(b);
+    imm h00 = self.vertexAt(slot, level, ix, iz, eye, a, b);
+    imm h10 = self.vertexAt(slot, level, ix, iz, eye, a + 1i32, b);
+    imm h01 = self.vertexAt(slot, level, ix, iz, eye, a, b + 1i32);
+    imm h11 = self.vertexAt(slot, level, ix, iz, eye, a + 1i32, b + 1i32);
+    if diagonalRises(a, b) {
+      if v >= u { h00 + (h11 - h01) * u + (h01 - h00) * v; } else { h00 + (h10 - h00) * u + (h11 - h10) * v; }
+    } else {
+      if u + v <= 1. { h00 + (h10 - h00) * u + (h01 - h00) * v; } else { h11 + (h01 - h11) * (1. - u) + (h10 - h11) * (1. - v); }
+    }
+  }
+
+  // Vertex (i, j) of a node as drawn: its height morphed by its distance to 'eye'
+  pub fn vertexAt(self &, slot usize, level u32, ix i32, iz i32, eye Vec3, i i32, j i32) f32 {
+    imm c = lod.cellAt(level);
+    imm side = cfg.patchSide();
+    imm n = f64.from(cfg.nodeCells);
+    imm px = f32.from((f64.from(ix) * n + f64.from(i)) * f64.from(c));
+    imm pz = f32.from((f64.from(iz) * n + f64.from(j)) * f64.from(c));
+    imm fine = patchAt(&patches[slot].heights, side, i, j);
+    imm dx = eye.x - px;
+    imm dy = eye.y - fine;
+    imm dz = eye.z - pz;
+    imm d = (dx * dx + dy * dy + dz * dz).sqrt();
+    vertexHeight(&patches[slot].heights, side, i, j, lod.morphFactor(level, d));
+  }
+
+  // The nodes drawn this frame, and a node's place (for tests)
+  pub fn leafCount(self &) usize { visible.len(); }
+  pub fn leaf(self &, n usize) DrawNode { *visible[n]; }
+
+  // Leaf 'n''s vertex (i, j) as drawn for a camera at 'eye', and its surface at (x, z)
+  pub fn leafVertex(self &, n usize, eye Vec3, i i32, j i32) f32 {
+    imm v = *visible[n];
+    self.vertexAt(v.slot, v.level, v.ix, v.iz, eye, i, j);
+  }
+  pub fn leafSurface(self &, n usize, eye Vec3, x f32, z f32) f32 {
+    imm v = *visible[n];
+    self.nodeSurface(v.slot, v.level, v.ix, v.iz, eye, x, z);
+  }
+
+  // The level's numbers as of the last walk
+  pub fn cellOfLevel(self &, level u32) f32 { lod.cellAt(level); }
+  pub fn sizeOfLevel(self &, level u32) f32 { lod.sizeAt(level); }
+
+  fn rewriteParams(self &mut, device &mut Device, renderer &mut Renderer) {
+    imm params = self.paramBlock();
+    renderer.setCustomParams(device, material, params.view());
+    builtLook = lastLook;
+  }
+
+  fn visit(self &mut, level u32, ix i32, iz i32, eye Vec3, frustum &Frustum, source &<fn(x f32, z f32) f32) {
+    stats.visited = stats.visited + 1u32;
+    imm s = lod.sizeAt(level);
+    imm bx0 = f32.from(ix) * s;
+    imm bz0 = f32.from(iz) * s;
+    // First by the source's declared bounds: no heights are computed for a node out of view
+    imm coarse = new Aabb3(new Vec3(bx0, cfg.minHeight, bz0), new Vec3(bx0 + s, cfg.maxHeight, bz0 + s));
+    if frustum.testAabb(coarse) == Outside { return; }
+    if level == lod.top() {
+      imm dTop = boxDistance(eye.x, eye.y, eye.z, bx0, cfg.minHeight, bz0, bx0 + s, cfg.maxHeight, bz0 + s);
+      if dTop >= lod.endAt(level) { return; }
+    }
+    imm slot = self.patchSlot(level, ix, iz, source);
+    if slot == NO_SLOT { return; }
+    imm c = lod.cellAt(level);
+    imm pad = 0.7071 * cfg.maxSlope * c;
+    imm lo = patches[slot].lo - pad;
+    imm hi = patches[slot].hi + pad;
+    imm box = new Aabb3(new Vec3(bx0, lo, bz0), new Vec3(bx0 + s, hi, bz0 + s));
+    if frustum.testAabb(box) == Outside { return; }
+    imm d = boxDistance(eye.x, eye.y, eye.z, bx0, lo, bz0, bx0 + s, hi, bz0 + s);
+    if level == lod.top() and d >= lod.endAt(level) { return; }
+    if level > 0u32 and d < lod.endAt(level - 1u32) {
+      imm cx = ix * 2i32;
+      imm cz = iz * 2i32;
+      self.visit(level - 1u32, cx, cz, eye, frustum, source);
+      self.visit(level - 1u32, cx + 1i32, cz, eye, frustum, source);
+      self.visit(level - 1u32, cx, cz + 1i32, eye, frustum, source);
+      self.visit(level - 1u32, cx + 1i32, cz + 1i32, eye, frustum, source);
+      return;
+    }
+    visible.push(new DrawNode(level, ix, iz, slot));
+    stats.byLevel[usize.from(level)] = stats.byLevel[usize.from(level)] + 1u32;
+  }
+
+  // Add this frame's nodes to 'list'. Terrain casts no shadows of its own.
+  pub fn draw(self &, list &mut DrawList) {
+    mut n = 0usize;
+    while n < visible.len() {
+      imm v = *visible[n];
+      imm s = lod.sizeAt(v.level);
+      imm c = lod.cellAt(v.level);
+      imm model = Mat4.fromTrs(new Vec3(f32.from(v.ix) * s, 0., f32.from(v.iz) * s), Quat.identity(), new Vec3(c, 1., c));
+      list.addTinted(gridMesh, material, model, new Color(f32.from(v.ix), f32.from(v.iz), f32.from(v.level), f32.from(v.slot)));
+      list.dontCastShadow();
+      n = n + 1usize;
+    }
+  }
+
+  // The node's lowest and highest sample, if its patch is in the cache (for tests)
+  pub fn patchRangeOf(self &, level u32, ix i32, iz i32, lo &mut f32, hi &mut f32) bool {
+    imm key = nodeKey(level, ix, iz);
+    mut found = -1i64;
+    match index.get(&key) {
+      case imm v Some { found = i64.from(*v); }
+      else {}
+    }
+    if found < 0i64 { return false; }
+    *lo = patches[usize.from(found)].lo;
+    *hi = patches[usize.from(found)].hi;
+    true;
+  }
+
+  // The node's heights, a copy (empty if its patch is not in the cache)
+  pub fn heightsOf(self &, level u32, ix i32, iz i32) List[f32] {
+    imm key = nodeKey(level, ix, iz);
+    mut found = -1i64;
+    match index.get(&key) {
+      case imm v Some { found = i64.from(*v); }
+      else {}
+    }
+    if found < 0i64 { return List[f32].empty(); }
+    mut out = List[f32].withCapacity(patches[usize.from(found)].heights.len());
+    mut n = 0usize;
+    while n < patches[usize.from(found)].heights.len() {
+      out.push(*patches[usize.from(found)].heights[n]);
+      n = n + 1usize;
+    }
+    out;
+  }
+
+  // Give back the GPU's mesh, atlas and material, and forget every patch
+  pub fn release(self &mut, device &mut Device, renderer &mut Renderer) {
+    mut s = 0usize;
+    while s < patches.len() {
+      if patches[s].heights.len() > 0usize { self.dropSlot(s); }
+      s = s + 1usize;
+    }
+    renderer.removeMaterial(device, material);
+    renderer.removeTexture(device, atlas);
+    renderer.removeMesh(device, gridMesh);
+  }
+}
+
+// The bytes of the material parameters: terrain.slang's Params
+const PARAM_BYTES u64 = 704u64;
+
+// What 'patchSlot' answers when the cache has no room
+const NO_SLOT = 18446744073709551615usize;
+
+fn emptyStats() TerrainStats {
+  new TerrainStats(0u32, 0u32, 0u64, 0u32, 0u64, 0u32, 0u32, 0u32, [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32,
+    0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32], 0d, 0d, 0d);
+}
+
+fn emptyPatch() Patch {
+  new Patch(0u32, 0i32, 0i32, List[f32].empty(), 0., 0., false, 0u64);
+}
+
+// The grid every node is drawn with: (nodeCells + 1)^2 vertices at (i, 0, j),
+// two triangles a cell, the diagonal by the rule that holds at every level:
+// the cell (a, b) is split from (a, b) to (a + 1, b + 1) when a + b is even
+// and from (a + 1, b) to (a, b + 1) when it is odd. Wound counterclockwise
+// seen from above (+y).
+pub fn buildGridMesh(cells u32, skirt bool) Mesh {
+  mut m = Mesh.empty();
+  imm n = cells;
+  mut j = 0u32;
+  while j <= n {
+    mut i = 0u32;
+    while i <= n {
+      m.positions.push(new Vec3(f32.from(i), 0., f32.from(j)));
+      m.normals.push(new Vec3(0., 1., 0.));
+      m.uvs.push(new Vec2(f32.from(i) / f32.from(n), f32.from(j) / f32.from(n)));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  imm stride = n + 1u32;
+  j = 0u32;
+  while j < n {
+    mut i = 0u32;
+    while i < n {
+      imm a = j * stride + i;           // (i, j)
+      imm b = a + 1u32;                 // (i + 1, j)
+      imm c = a + stride;               // (i, j + 1)
+      imm d = c + 1u32;                 // (i + 1, j + 1)
+      if ((i + j) & 1u32) == 0u32 {
+        // diagonal a-d
+        m.indices.push(a); m.indices.push(c); m.indices.push(d);
+        m.indices.push(a); m.indices.push(d); m.indices.push(b);
+      } else {
+        // diagonal b-c
+        m.indices.push(a); m.indices.push(c); m.indices.push(b);
+        m.indices.push(b); m.indices.push(c); m.indices.push(d);
+      }
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  if skirt {
+    // A wall hanging from each edge: copies of the edge's vertices at y = -1
+    // (the shader drops them a fraction of a cell), wound outward. They close
+    // the hairline gaps rounding leaves where a finer node's edge vertices
+    // meet a coarser node's edge (T-junctions), as skirts do in CDLOD and
+    // clipmap terrain.
+    mut edge = 0u32;
+    while edge < 4u32 {
+      mut t = 0u32;
+      while t < n {
+        // The edge's vertices t and t + 1 on the grid, and the outward direction
+        imm ia = if edge == 0u32 { t; } elif edge == 1u32 { n * stride + t; } elif edge == 2u32 { t * stride; } else { t * stride + n; };
+        imm ib = if edge == 0u32 { t + 1u32; } elif edge == 1u32 { n * stride + t + 1u32; } elif edge == 2u32 { (t + 1u32) * stride; } else { (t + 1u32) * stride + n; };
+        imm outward = if edge == 0u32 { new Vec3(0., 0., -1.); } elif edge == 1u32 { new Vec3(0., 0., 1.); }
+          elif edge == 2u32 { new Vec3(-1., 0., 0.); } else { new Vec3(1., 0., 0.); };
+        imm pa = *m.positions[usize.from(ia)];
+        imm pb = *m.positions[usize.from(ib)];
+        imm la = u32.from(m.positions.len());
+        m.positions.push(new Vec3(pa.x, -1., pa.z));
+        m.normals.push(new Vec3(0., 1., 0.));
+        m.uvs.push(new Vec2(0., 0.));
+        m.positions.push(new Vec3(pb.x, -1., pb.z));
+        m.normals.push(new Vec3(0., 1., 0.));
+        m.uvs.push(new Vec2(0., 0.));
+        imm lb = la + 1u32;
+        // (ia, lb, la) and (ia, ib, lb): flipped if they face inward
+        imm nrm = (new Vec3(pb.x, -1., pb.z) - pa).cross(new Vec3(pa.x, -1., pa.z) - pa);
+        if nrm.dot(outward) >= 0. {
+          m.indices.push(ia); m.indices.push(lb); m.indices.push(la);
+          m.indices.push(ia); m.indices.push(ib); m.indices.push(lb);
+        } else {
+          m.indices.push(ia); m.indices.push(la); m.indices.push(lb);
+          m.indices.push(ia); m.indices.push(lb); m.indices.push(ib);
+        }
+        t = t + 1u32;
+      }
+      edge = edge + 1u32;
+    }
+  }
+  m;
+}
