@@ -117,6 +117,7 @@ pub struct SceneCapture {
   pub blendPipeline RenderPipeline;
   pub skinnedBlendPipeline RenderPipeline;
   pub tangentPipeline RenderPipeline;    // opaque, for a mesh with tangents (a fourth vertex stream)
+  pub glassPipeline RenderPipeline;      // see-through that writes depth: ray-traced glass, which replaces what is behind it
   captureShader ShaderModule;            // capture.spv
   colorLayout BindGroupLayout;           // a colour source and a sampler
   colorPipelineLayout PipelineLayout;
@@ -145,12 +146,17 @@ pub struct SceneCapture {
   pub levels u32;
   tablesBaked bool;
   pub captures u32;                      // how many captures have been made (a test counts them)
+  rtEntries List[BindGroupEntry];        // group 3's bindings 6 to 9 when rayTraced: the structure, records, normals, indices
   pub forceAll bool = false;             // draw every physically based material with the extended pipelines (a test)
+  pub rayTraced bool = false;            // made over a ray-traced scene: pbrxrt.spv, and group 3 holds the structure (raytrace.cone)
 
   // The pipelines and tables for a renderer of these formats, over its frame, material
-  // and environment layouts. Check 'isValid'.
+  // and environment layouts. Check 'isValid'. With a valid 'rt' (raytrace.cone) the pipelines are those of the
+  // ray-traced extended shader (pbrxrt.spv), and group 3 holds the structure and the buffers its hits are read from.
   pub fn create(device &mut Device, colorFormat u32, depthFormat u32, frameLayout &BindGroupLayout,
-      pbrMaterialLayout &BindGroupLayout, environmentLayout &BindGroupLayout, settings &ReflectionSettings) SceneCapture {
+      pbrMaterialLayout &BindGroupLayout, environmentLayout &BindGroupLayout, settings &ReflectionSettings,
+      rt &RtScene) SceneCapture {
+    imm traced = rt.isValid();
     // Group 3
     imm sceneEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
@@ -158,13 +164,25 @@ pub struct SceneCapture {
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
-      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT)];
-    mut sceneLayout = device.createBindGroupLayout(&sceneEntries);
+      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT),
+      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_ACCELERATION_STRUCTURE),
+      new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 9u32, visibility: SHADER_STAGE_FRAGMENT, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE)];
+    mut sceneLayout = if traced { device.createBindGroupLayout(&sceneEntries); }
+      else { device.createBindGroupLayout(&sceneEntries[..<6]); };
     imm groups = [frameLayout, pbrMaterialLayout, environmentLayout, &sceneLayout];
     mut pipelineLayout = device.createPipelineLayout(&groups, IMMEDIATE_BYTES);
+    mut rtEntries = List[BindGroupEntry].empty();
+    if traced {
+      rtEntries.push(BindGroupEntry.accelerationStructure(6u32, &rt.tlas));
+      rtEntries.push(BindGroupEntry.buffer(7u32, &rt.records));
+      rtEntries.push(BindGroupEntry.buffer(8u32, &rt.normals));
+      rtEntries.push(BindGroupEntry.buffer(9u32, &rt.indices));
+    }
 
     // The extended pipelines: pbr.slang's stages, the fragment stage fragmentExtended
-    mut shader = device.createShaderModule(&PBRX_SPIRV);
+    mut shader = if traced { device.createShaderModule(&PBRXRT_SPIRV); } else { device.createShaderModule(&PBRX_SPIRV); };
     imm positionAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
     imm normalAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32)];
     imm uvAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32)];
@@ -200,6 +218,14 @@ pub struct SceneCapture {
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
     mut skinnedBlendPipeline = device.createRenderPipeline(&skinnedBlendDesc);
+    // Ray-traced glass: found by rays through the whole scene, it replaces what is behind it, so it writes depth
+    // (the glass nearest the eye wins whatever the order they are drawn in); the blend is as the see-through one's
+    imm glassDesc = new RenderPipelineDescriptor(layout: &pipelineLayout, vertexModule: &shader, buffers: &litBuffers,
+      fragmentModule: &shader, fragmentEntryPoint: "fragmentExtended", colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
+      depthFormat: depthFormat, depthWriteEnabled: traced, depthCompare: COMPARE_FUNCTION_LESS,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut glassPipeline = device.createRenderPipeline(&glassDesc);
     // A mesh with tangents: the tangents as a fourth buffer, read at location 3
     imm tangentAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 3u32)];
     imm tangentBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
@@ -266,26 +292,26 @@ pub struct SceneCapture {
     imm standInDepthView = standInDepth.createView();
     imm diffusionView = diffusion.createView();
     imm sheenView = sheen.createView();
-    imm standInEntries = [BindGroupEntry.texture(0u32, &standInColorView), BindGroupEntry.texture(1u32, &standInDepthView),
-      BindGroupEntry.texture(2u32, &diffusionView), BindGroupEntry.texture(3u32, &sheenView),
-      BindGroupEntry.sampler(4u32, &sampler), BindGroupEntry.buffer(5u32, &standInParams)];
-    mut standInGroup = device.createBindGroup(&sceneLayout, &standInEntries);
+    imm standInEntries = sceneGroupEntries(&standInColorView, &standInDepthView, &diffusionView, &sheenView, &sampler,
+      &standInParams, &rtEntries);
+    mut standInGroup = device.createBindGroup(&sceneLayout, standInEntries.view());
     imm pyramidView = pyramid.createView();
     imm depthCopyView = depthCopy.createView();
-    imm liveEntries = [BindGroupEntry.texture(0u32, &pyramidView), BindGroupEntry.texture(1u32, &depthCopyView),
-      BindGroupEntry.texture(2u32, &diffusionView), BindGroupEntry.texture(3u32, &sheenView),
-      BindGroupEntry.sampler(4u32, &sampler), BindGroupEntry.buffer(5u32, &params)];
-    mut group = device.createBindGroup(&sceneLayout, &liveEntries);
-    new SceneCapture(*settings, sceneLayout, pipelineLayout, shader, opaquePipeline, skinnedPipeline, blendPipeline,
-      skinnedBlendPipeline, tangentPipeline, captureShader, colorLayout, colorPipelineLayout, depthLayout, depthPipelineLayout,
-      bakePipelineLayout, copyPipeline, downPipeline, depthPipeline, diffusionPipeline, sheenPipeline, sampler, pyramid,
-      depthCopy, diffusion, sheen, standInColor, standInDepth, params, standInParams, List[BindGroup].empty(), group,
-      standInGroup, 1u32, 1u32, 1u32, false, 0u32);
+    imm liveEntries = sceneGroupEntries(&pyramidView, &depthCopyView, &diffusionView, &sheenView, &sampler, &params,
+      &rtEntries);
+    mut group = device.createBindGroup(&sceneLayout, liveEntries.view());
+    mut result = new SceneCapture(*settings, sceneLayout, pipelineLayout, shader, opaquePipeline, skinnedPipeline, blendPipeline,
+      skinnedBlendPipeline, tangentPipeline, glassPipeline, captureShader, colorLayout, colorPipelineLayout, depthLayout,
+      depthPipelineLayout, bakePipelineLayout, copyPipeline, downPipeline, depthPipeline, diffusionPipeline, sheenPipeline,
+      sampler, pyramid, depthCopy, diffusion, sheen, standInColor, standInDepth, params, standInParams, List[BindGroup].empty(),
+      group, standInGroup, 1u32, 1u32, 1u32, false, 0u32, rtEntries);
+    result.rayTraced = traced;
+    result;
   }
 
   pub fn isValid(self &) bool {
     opaquePipeline.isValid() and skinnedPipeline.isValid() and blendPipeline.isValid() and skinnedBlendPipeline.isValid()
-      and tangentPipeline.isValid() and copyPipeline.isValid() and downPipeline.isValid() and depthPipeline.isValid() and diffusionPipeline.isValid()
+      and glassPipeline.isValid() and tangentPipeline.isValid() and copyPipeline.isValid() and downPipeline.isValid() and depthPipeline.isValid() and diffusionPipeline.isValid()
       and sheenPipeline.isValid() and group.isValid() and standInGroup.isValid() and sampler.isValid()
       and diffusion.isValid() and sheen.isValid();
   }
@@ -355,10 +381,9 @@ pub struct SceneCapture {
     imm sheenView = sheen.createView();
     imm pyramidView = pyramid.createView();
     imm depthCopyView = depthCopy.createView();
-    imm liveEntries = [BindGroupEntry.texture(0u32, &pyramidView), BindGroupEntry.texture(1u32, &depthCopyView),
-      BindGroupEntry.texture(2u32, &diffusionView), BindGroupEntry.texture(3u32, &sheenView),
-      BindGroupEntry.sampler(4u32, &sampler), BindGroupEntry.buffer(5u32, &params)];
-    group = device.createBindGroup(&sceneLayout, &liveEntries);
+    imm liveEntries = sceneGroupEntries(&pyramidView, &depthCopyView, &diffusionView, &sheenView, &sampler, &params,
+      &rtEntries);
+    group = device.createBindGroup(&sceneLayout, liveEntries.view());
   }
 
   // Capture the frame drawn so far into 'encoder': 'color' (the target, a view of a texture that can
@@ -416,6 +441,25 @@ pub struct SceneCapture {
       device.queue.releaseBindGroup(&mut g);
     }
   }
+}
+
+// Group 3's bindings: the picture of the frame, its depth, the two tables, the sampler and the parameters, then (when
+// the pipelines are ray-traced) the structure and the buffers its hits are read from
+fn sceneGroupEntries(color &TextureView, depth &TextureView, diffusion &TextureView, sheen &TextureView, sampler &Sampler,
+    params &Buffer, rtEntries &List[BindGroupEntry]) List[BindGroupEntry] {
+  mut entries = List[BindGroupEntry].empty();
+  entries.push(BindGroupEntry.texture(0u32, color));
+  entries.push(BindGroupEntry.texture(1u32, depth));
+  entries.push(BindGroupEntry.texture(2u32, diffusion));
+  entries.push(BindGroupEntry.texture(3u32, sheen));
+  entries.push(BindGroupEntry.sampler(4u32, sampler));
+  entries.push(BindGroupEntry.buffer(5u32, params));
+  mut i = 0usize;
+  while i < rtEntries.len() {
+    entries.push(*rtEntries[i]);
+    i = i + 1usize;
+  }
+  entries;
 }
 
 // One full-screen pass into 'view' with no bind group (the table bakes)
