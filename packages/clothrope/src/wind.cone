@@ -1,0 +1,102 @@
+// ======== Wind: a mean flow with gusts and turbulence ========
+//
+// The wind at a point p and time t is
+//
+//   v(p, t) = mean * max(0, 1 + gustiness * g(q)) + turbulence * curl(psi)(q')
+//
+// where q = (p - mean * t * advect) / gustLength + evolve * t * d, g is fractal
+// noise (fBm of gradient noise, two octaves, in [-1, 1] roughly) and psi a
+// vector potential of three such noises. Advecting the noise pattern with the
+// mean flow is Taylor's frozen turbulence hypothesis: gusts are patterns the
+// wind carries past, so a gust reaches a rope's far end after the time the mean
+// wind takes to carry it there, not everywhere at once. The curl of a vector
+// potential is divergence-free (Bridson, Hourihan and Nordenstam, SIGGRAPH 2007,
+// "Curl-noise for procedural fluid flow"), so the turbulence swirls without making
+// air from nothing; it is added to the flow in metres per second, not scaled
+// by the mean. 'evolve' slowly changes the pattern while it travels.
+//
+// A WindField is plain data and 'velocityAt' is a pure function of p and t, so a
+// field is the same on both ends of a network connection and in a replay.
+
+pub struct WindField {
+  pub mean Vec3;         // the mean wind, m/s
+  pub gustiness f32;     // the mean's relative swing: 0.5 takes it between 0.5 and 1.5 times itself
+  pub gustLength f32;    // the size of a gust, metres
+  pub advect f32;        // how much of the mean the pattern travels with (1: all of it)
+  pub evolve f32;        // pattern changes per second
+  pub turbulence f32;    // the swirl's speed, m/s
+  pub turbLength f32;    // the swirl's size, metres
+  pub seed u32;
+
+  // No wind
+  pub fn calm() WindField {
+    new WindField(new Vec3(0., 0., 0.), 0., 8., 1., 0.1, 0., 2., 1u32);
+  }
+
+  // A steady wind with no gusts
+  pub fn steady(mean Vec3) WindField {
+    new WindField(mean, 0., 8., 1., 0.1, 0., 2., 1u32);
+  }
+
+  // A breeze with gusts a third of the mean and a little swirl: a day for flags
+  pub fn breeze(mean Vec3) WindField {
+    new WindField(mean, 0.35, 6., 1., 0.15, mean.length() * 0.12, 1.5, 7u32);
+  }
+
+  // A strong, gusty wind: gusts half again the mean either way, and a lot of swirl
+  pub fn gale(mean Vec3) WindField {
+    new WindField(mean, 0.6, 5., 1., 0.3, mean.length() * 0.2, 1.2, 11u32);
+  }
+
+  // The wind velocity at p, time t
+  pub fn velocityAt(self &, p Vec3, t f32) Vec3 {
+    mut v = mean;
+    if gustiness != 0. {
+      imm q = (p - mean * (t * advect)) * (1. / gustLength) + new Vec3(0.37, 0.11, 0.53) * (t * evolve);
+      imm g = fbm3(q, seed, 2, 2., 0.5).value;
+      imm scale = 1. + gustiness * g;
+      v = mean * (if scale > 0. {scale;} else {0.;});
+    }
+    if turbulence != 0. {
+      imm q = (p - mean * (t * advect)) * (1. / turbLength) + new Vec3(0.21, 0.47, 0.13) * (t * evolve);
+      imm n1 = fbm3(q, seed + 101u32, 2, 2., 0.5);
+      imm n2 = fbm3(q, seed + 202u32, 2, 2., 0.5);
+      imm n3 = fbm3(q, seed + 303u32, 2, 2., 0.5);
+      // curl of (n1, n2, n3)
+      imm c = new Vec3(n3.d.y - n2.d.z, n1.d.z - n3.d.x, n2.d.x - n1.d.y);
+      v = v + c * (turbulence / turbLength);
+    }
+    v;
+  }
+
+  // Fill the soft body's wind lattice for time t: a lattice over the body's box (a
+  // metre beyond it) with samples about every 'cell' metres, built the first time
+  // and whenever the body outgrows it
+  pub fn fill(self &, body &mut SoftBody, t f32) {
+    imm box = body.bounds();
+    imm cell = if gustLength * 0.5 > 0.4 {gustLength * 0.5;} else {0.4;};
+    imm lo = box.0 - new Vec3(1., 1., 1.);
+    imm span = (box.1 + new Vec3(1., 1., 1.)) - lo;
+    imm nx = u32.from(span.x / cell) + 2u32;
+    imm ny = u32.from(span.y / cell) + 2u32;
+    imm nz = u32.from(span.z / cell) + 2u32;
+    if body.windGrid.len() == 0usize or body.gridNx != nx or body.gridNy != ny or body.gridNz != nz
+      or (body.gridOrigin - lo).lengthSquared() > 0.25 {
+      body.setWindGrid(lo, cell, nx, ny, nz);
+    }
+    mut z = 0u32;
+    while z < body.gridNz {
+      mut y = 0u32;
+      while y < body.gridNy {
+        mut x = 0u32;
+        while x < body.gridNx {
+          imm p = body.gridOrigin + new Vec3(f32.from(x), f32.from(y), f32.from(z)) * body.gridCell;
+          body.windGrid.set(usize.from(z * body.gridNy * body.gridNx + y * body.gridNx + x), velocityAt(p, t));
+          x = x + 1u32;
+        }
+        y = y + 1u32;
+      }
+      z = z + 1u32;
+    }
+  }
+}

@@ -1,0 +1,39 @@
+// The jaw and the eyes as bones on a skeleton.
+//
+// A face rides on a body: its jaw and eyeballs are bones under the head
+// bone, so a skinned head mesh, the teeth and the eyes follow the head
+// wherever the body takes it. 'attachFace' adds three bones to a bonepose
+// skeleton under 'headBone': the jaw (its origin at the hinge, so the
+// rotation in a FaceFrame is the bone's local rotation as it stands) and an
+// eye bone at each eyeball's centre. 'origin' is where the spec's frame
+// sits in the head bone's frame (for bonepose's humanoid, the skull's centre
+// above the head bone's origin). 'applyFace' writes a frame into a pose.
+
+pub struct FaceBones {
+  pub head usize;
+  pub jaw usize;
+  pub eyeL usize;
+  pub eyeR usize;
+  pub origin Vec3;         // the spec's frame origin in the head bone's frame
+
+  // A point in the spec's frame, in the head bone's frame
+  pub fn toHead(self &, p Vec3) Vec3 { origin + p; }
+}
+
+fn translation(p Vec3) Transform3 { new Transform3(p, Quat.identity(), new Vec3(1., 1., 1.)); }
+
+pub fn attachFace(skel &mut Skeleton, headBone usize, spec &FaceSpec, origin Vec3) FaceBones {
+  imm jaw = skel.addBone(i32.from(headBone), translation(origin + spec.jawPivot));
+  imm eyeL = skel.addBone(i32.from(headBone), translation(origin + spec.point("eyeCenterL")));
+  imm eyeR = skel.addBone(i32.from(headBone), translation(origin + spec.point("eyeCenterR")));
+  new FaceBones(headBone, jaw, eyeL, eyeR, origin);
+}
+
+// Write a frame's jaw and eyes into the pose; with 'withHead' the frame's head turn is composed onto the head bone
+pub fn applyFace(pose &mut Pose, bones &FaceBones, frame &FaceFrame, spec &FaceSpec, withHead bool) {
+  pose.setRotation(bones.jaw, frame.jawRot);
+  pose.setTranslation(bones.jaw, bones.origin + spec.jawPivot + new Vec3(0., 0., -frame.jawThrust));
+  pose.setRotation(bones.eyeL, frame.eyeL);
+  pose.setRotation(bones.eyeR, frame.eyeR);
+  if withHead { pose.setRotation(bones.head, pose.rotation(bones.head) * frame.head); }
+}

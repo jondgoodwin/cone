@@ -1,0 +1,294 @@
+// ======== The 3-D rendition: the same graph as boxes and tubes in space ========
+//
+// Each live node becomes a box (one shared unit-cube mesh, scaled per node by its
+// model matrix) and each live edge a tube with an arrowhead, bowed towards the
+// viewer so a tube passes in front of the boxes between its ends. The picture is
+// the 2-D layout stood up: x is the layout's x, y the layout's y turned upside
+// down, and z the node's 'z' (a tier the caller assigns, or 'tierByKind'); all
+// scaled by 'unit' (metres a layout unit). A force layout in space ('layoutForce'
+// with space = true) writes x, y and z itself, and the same code draws it.
+// Boxes use render's physically based material, a colour a node kind; tubes one
+// metal-ish material. Labels are msdftext world text, billboarded to the camera
+// (spherical), set each frame from the camera by 'placeLabels'.
+// Built per Graph state: 'build' makes meshes and materials once; a changed graph builds again
+// (the old handles are released with 'release'), a moved node needs only 'updateTransforms'.
+
+pub struct Diagram3dOptions {
+  pub unit f32;                    // metres a layout unit
+  pub boxDepth f32;                // metres, front to back
+  pub tubeRadius f32;
+  pub bow f32;                     // how far a tube arches towards +z, as a fraction of its length
+  pub arrowLength f32;
+  pub segments u32;                // sides of a tube
+
+  pub fn make() Diagram3dOptions { new Diagram3dOptions(0.012, 0.35, 0.025, 0.12, 0.16, 10u32); }
+}
+
+pub struct Diagram3d {
+  pub centre Vec3;                 // of the boxes, world
+  pub radius f32;                  // of a sphere round them
+  pub extent Vec3;                 // half the size of the box round them
+  pub box MeshHandle;
+  pub boxMaterials List[MaterialHandle];
+  pub tubeMaterial MaterialHandle;
+  pub nodePos List[Vec3];          // world centres (dead nodes at the origin)
+  pub nodeHalf List[Vec3];
+  pub nodeKind List[u32];
+  pub nodeLive List[bool];
+  pub tubes List[MeshHandle];
+  pub texts List[TextHandle];
+  pub triangles u32;               // boxes and tubes together
+}
+
+// The tier of a node as z: kind times 'spacing' (layout units)
+pub fn tierByKind(g &mut Graph, spacing f32) {
+  mut i = 0usize;
+  while i < g.nodes.len() { g.nodes[i].z = f32.from(g.nodes[i].kind) * spacing; i = i + 1usize; }
+}
+
+fn perpendicularTo(t Vec3) Vec3 {
+  imm a = if absf2(t.y) < 0.9 { new Vec3(0., 1., 0.); } else { new Vec3(1., 0., 0.); };
+  t.cross(a).normalize().cross(t).normalize();
+}
+
+// A tube along 'pts' (at least two points) of 'radius', ended by a cone of 'arrowLen' and 'arrowRadius' at the
+// last point (which is the cone's tip; the tube stops at its base)
+pub fn tubeMesh(pts &List[Vec3], radius f32, arrowLen f32, arrowRadius f32, sides u32) Mesh {
+  mut m = Mesh.empty();
+  imm n = pts.len();
+  if n < 2usize { return m; }
+  // trim the last points so the tube ends where the cone's base is
+  mut ends = List[Vec3].empty();
+  mut total = 0.0f;
+  mut k = 1usize;
+  while k < n { total = total + pts[k].distance(*pts[k - 1usize]); k = k + 1usize; }
+  imm cut = minf2(arrowLen, total * 0.6);
+  mut acc = 0.0f;
+  ends.push(*pts[0usize]);
+  k = 1usize;
+  mut tip = *pts[n - 1usize];
+  mut dirEnd = (*pts[n - 1usize] - *pts[n - 2usize]).normalize();
+  while k < n {
+    imm seg = pts[k].distance(*pts[k - 1usize]);
+    if acc + seg >= total - cut {
+      imm t = if seg > 0. { (total - cut - acc) / seg; } else { 0.; };
+      ends.push((*pts[k - 1usize]).lerp(*pts[k], clampf2(t, 0., 1.)));
+      dirEnd = (*pts[k] - *pts[k - 1usize]).normalize();
+      break;
+    }
+    ends.push(*pts[k]);
+    acc = acc + seg;
+    k = k + 1usize;
+  }
+  imm ne = ends.len();
+  if ne < 2usize { return m; }
+  mut normal = perpendicularTo((*ends[1usize] - *ends[0usize]).normalize());
+  mut ring = 0usize;
+  mut i = 0usize;
+  while i < ne {
+    imm a = *ends[if i == 0usize { 0usize; } else { i - 1usize; }];
+    imm b = *ends[if i + 1usize < ne { i + 1usize; } else { i; }];
+    imm t = (b - a).normalize();
+    normal = (normal - t * normal.dot(t)).normalize();
+    imm binormal = t.cross(normal);
+    mut s = 0u32;
+    while s < sides {
+      imm ang = 6.2831855 * f32.from(s) / f32.from(sides);
+      imm dir = normal * cos(ang) + binormal * sin(ang);
+      m.positions.push(*ends[i] + dir * radius);
+      m.normals.push(dir);
+      s = s + 1u32;
+    }
+    ring = ring + 1usize;
+    i = i + 1usize;
+  }
+  imm S = usize.from(sides);
+  i = 0usize;
+  while i + 1usize < ne {
+    mut s = 0usize;
+    while s < S {
+      imm a = i * S + s;
+      imm b = i * S + (s + 1usize) % S;
+      imm c = (i + 1usize) * S + s;
+      imm d = (i + 1usize) * S + (s + 1usize) % S;
+      m.indices.push(u32.from(a)); m.indices.push(u32.from(c)); m.indices.push(u32.from(b));
+      m.indices.push(u32.from(b)); m.indices.push(u32.from(c)); m.indices.push(u32.from(d));
+      s = s + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // the cone: a base ring at the tube's end, wider, and the tip
+  imm base = *ends[ne - 1usize];
+  imm t = dirEnd;
+  imm nrm = (normal - t * normal.dot(t)).normalize();
+  imm bin = t.cross(nrm);
+  imm baseStart = m.positions.len();
+  mut s = 0u32;
+  while s < sides {
+    imm ang = 6.2831855 * f32.from(s) / f32.from(sides);
+    imm dir = nrm * cos(ang) + bin * sin(ang);
+    m.positions.push(base + dir * arrowRadius);
+    m.normals.push((dir * arrowLen + t * arrowRadius).normalize());
+    s = s + 1u32;
+  }
+  imm tipIndex = m.positions.len();
+  m.positions.push(tip);
+  m.normals.push(t);
+  s = 0u32;
+  while s < sides {
+    imm a = baseStart + usize.from(s);
+    imm b = baseStart + (usize.from(s) + 1usize) % S;
+    m.indices.push(u32.from(a)); m.indices.push(u32.from(tipIndex)); m.indices.push(u32.from(b));
+    s = s + 1u32;
+  }
+  // the cone's base disc, facing back along the tube
+  imm centreIndex = m.positions.len();
+  m.positions.push(base);
+  m.normals.push(-t);
+  mut ringBack = List[u32].empty();
+  s = 0u32;
+  while s < sides {
+    imm dir = nrm * cos(6.2831855 * f32.from(s) / f32.from(sides)) + bin * sin(6.2831855 * f32.from(s) / f32.from(sides));
+    ringBack.push(u32.from(m.positions.len()));
+    m.positions.push(base + dir * arrowRadius);
+    m.normals.push(-t);
+    s = s + 1u32;
+  }
+  s = 0u32;
+  while s < sides {
+    imm a = *ringBack[usize.from(s)];
+    imm b = *ringBack[(usize.from(s) + 1usize) % S];
+    m.indices.push(u32.from(centreIndex)); m.indices.push(a); m.indices.push(b);
+    s = s + 1u32;
+  }
+  m;
+}
+
+fn clampf2(v f32, lo f32, hi f32) f32 { if v < lo { return lo; } if v > hi { return hi; } v; }
+
+// Where the segment from the box centre 'c' (half extents 'h') towards 'to' leaves the box
+fn leaveBox(c Vec3, h Vec3, to Vec3) Vec3 {
+  imm d = to - c;
+  mut t = 1.0f;
+  if absf2(d.x) > 0.0001 { t = minf2(t, h.x / absf2(d.x)); }
+  if absf2(d.y) > 0.0001 { t = minf2(t, h.y / absf2(d.y)); }
+  if absf2(d.z) > 0.0001 { t = minf2(t, h.z / absf2(d.z)); }
+  c + d * t;
+}
+
+// Builds the meshes and materials for the live nodes and edges of 'g'. 'kindColors' gives a colour per node kind (wrapping).
+pub fn buildDiagram3d(renderer &mut Renderer, device &mut Device, g &Graph, o &Diagram3dOptions, kindColors &List[Color]) Diagram3d {
+  imm bb = g.bounds();
+  imm cx = (bb.min.x + bb.max.x) * 0.5;
+  imm cy = (bb.min.y + bb.max.y) * 0.5;
+  mut d = new Diagram3d(new Vec3(0., 0., 0.), 1., new Vec3(1., 1., 1.), renderer.addMesh(device, &Mesh.cube(1.)), List[MaterialHandle].empty(),
+    MaterialHandle.none(), List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[bool].empty(), List[MeshHandle].empty(),
+    List[TextHandle].empty(), 0u32);
+  mut k = 0usize;
+  while k < kindColors.len() {
+    imm pm = PbrMaterial.standard(*kindColors[k], 0.05, 0.45);
+    d.boxMaterials.push(renderer.addPbrMaterial(device, &pm));
+    k = k + 1usize;
+  }
+  imm tm = PbrMaterial.standard(new Color(0.62, 0.66, 0.74, 1.), 0.6, 0.3);
+  d.tubeMaterial = renderer.addPbrMaterial(device, &tm);
+  mut lo = new Vec3(1.0e30, 1.0e30, 1.0e30);
+  mut hi = new Vec3(-1.0e30, -1.0e30, -1.0e30);
+  mut n = 0usize;
+  while n < g.nodes.len() {
+    imm nd = g.nodes[n];
+    imm p = new Vec3((nd.x - cx) * o.unit, -(nd.y - cy) * o.unit, nd.z * o.unit);
+    imm h = new Vec3(nd.w * o.unit * 0.5, nd.h * o.unit * 0.5, o.boxDepth * 0.5);
+    d.nodePos.push(if nd.alive { p; } else { new Vec3(0., 0., 0.); });
+    d.nodeHalf.push(h);
+    d.nodeKind.push(nd.kind);
+    d.nodeLive.push(nd.alive);
+    if nd.alive {
+      lo = lo.min(p - h);
+      hi = hi.max(p + h);
+      d.triangles = d.triangles + 12u32;
+    }
+    n = n + 1usize;
+  }
+  d.centre = (lo + hi) * 0.5;
+  d.radius = (hi - lo).length() * 0.5;
+  d.extent = (hi - lo) * 0.5;
+  // tubes
+  mut e = 0usize;
+  while e < g.edges.len() {
+    if g.edges[e].alive and g.edges[e].from != g.edges[e].to {
+      imm a = usize.from(g.edges[e].from);
+      imm b = usize.from(g.edges[e].to);
+      if *d.nodeLive[a] and *d.nodeLive[b] {
+        imm pa = *d.nodePos[a];
+        imm pb = *d.nodePos[b];
+        imm len = pa.distance(pb);
+        imm ctrl = (pa + pb) * 0.5 + new Vec3(0., 0., len * o.bow + (*d.nodeHalf[a]).z * 1.2);
+        // sample the quadratic and drop the samples inside either box (grown a little)
+        mut pts = List[Vec3].empty();
+        mut s = 0u32;
+        while s <= 24u32 {
+          imm t = f32.from(s) / 24.;
+          imm u = 1. - t;
+          imm q = pa * (u * u) + ctrl * (2. * u * t) + pb * (t * t);
+          imm ha = *d.nodeHalf[a] * 1.04;
+          imm hb = *d.nodeHalf[b] * 1.04;
+          imm inA = absf2(q.x - pa.x) < ha.x and absf2(q.y - pa.y) < ha.y and absf2(q.z - pa.z) < ha.z;
+          imm inB = absf2(q.x - pb.x) < hb.x and absf2(q.y - pb.y) < hb.y and absf2(q.z - pb.z) < hb.z;
+          if !inA and !inB { pts.push(q); }
+          s = s + 1u32;
+        }
+        if pts.len() >= 2usize {
+          imm mesh = tubeMesh(&pts, o.tubeRadius, o.arrowLength, o.tubeRadius * 2.6, o.segments);
+          d.triangles = d.triangles + u32.from(mesh.indices.len() / 3usize);
+          d.tubes.push(renderer.addMesh(device, &mesh));
+        }
+      }
+    }
+    e = e + 1usize;
+  }
+  d;
+}
+
+// Adds the boxes and tubes to 'list'
+pub fn drawList3d(d &Diagram3d, list &mut DrawList) {
+  mut n = 0usize;
+  while n < d.nodePos.len() {
+    if *d.nodeLive[n] {
+      imm h = *d.nodeHalf[n];
+      imm model = Mat4.fromTrs(*d.nodePos[n], Quat.identity(), h);
+      imm mat = if d.boxMaterials.len() == 0usize { d.tubeMaterial; } else { *d.boxMaterials[usize.from(*d.nodeKind[n]) % d.boxMaterials.len()]; };
+      list.add(d.box, mat, model);
+    }
+    n = n + 1usize;
+  }
+  mut t = 0usize;
+  while t < d.tubes.len() {
+    list.add(*d.tubes[t], d.tubeMaterial, Mat4.identity());
+    t = t + 1usize;
+  }
+}
+
+// Labels: one world text a live node, floating in front of its box, billboarded to 'camera'. Call it each frame
+// the camera moves (and after the atlas gains glyphs: it syncs the atlas). 'size' is the text's em in metres.
+pub fn placeLabels(d &mut Diagram3d, g &Graph, device &mut Device, text &mut TextRenderer, font &Font, atlas &mut Atlas,
+    camera &Camera, aspect f32, size f32, color Color) {
+  imm vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
+  mut n = 0usize;
+  while n < g.nodes.len() {
+    if n >= d.texts.len() { d.texts.push(text.addText(device, SPACE_WORLD)); }
+    if n < d.nodeLive.len() and *d.nodeLive[n] {
+      imm layout = layoutText(font, atlas, g.nodes[n].label.view(), &LayoutOptions.make(size));
+      mut style = TextStyle.plain(color);
+      style.outlineColor = new Color(0.05, 0.06, 0.08, 1.);
+      style.outlineWidth = size * 0.08;
+      // in front of the box, towards the camera, far enough that the billboard clears the box's faces
+      imm at = *d.nodePos[n] + (camera.origin - *d.nodePos[n]).normalize() * ((*d.nodeHalf[n]).z + 0.22);
+      text.set(device, *d.texts[n], &layout, &style, worldTransform(vp, billboardPlacement(camera, at, false), &layout, 0.5, 0.5));
+    } else {
+      text.clearText(*d.texts[n]);
+    }
+    n = n + 1usize;
+  }
+  text.syncAtlas(device, atlas);
+}

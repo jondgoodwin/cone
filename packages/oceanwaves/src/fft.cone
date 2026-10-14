@@ -1,0 +1,113 @@
+// ======== The fast Fourier transform ========
+//
+// Radix-2 decimation in time (Cooley and Tukey 1965): a bit-reversal permutation, then log2(n)
+// passes of butterflies, in place on separate real and imaginary arrays. 'Fft' holds the twiddle
+// factors and the permutation for one size (a power of two); the 2-D transform is rows then
+// columns. Only the INVERSE is needed here (the spectrum to the surface), written with the positive
+// exponent and NOT divided by n:
+//
+//     f[x] = sum over k of F[k] exp(+2 pi i k x / n)
+//
+// which is the convention the ocean's sum over wave vectors has, so no factor is lost or gained
+// between the spectrum's variance and the surface's.
+
+pub struct Fft {
+  pub n usize;
+  cosT List[f32];       // cos(2 pi j / n), j < n/2
+  sinT List[f32];       // sin(2 pi j / n)
+  rev List[u32];        // the bit-reversed index
+
+  // The transform of size n, a power of two
+  pub fn make(n usize) Fft {
+    mut bits = 0u32;
+    while (1usize << usize.from(bits)) < n { bits = bits + 1u32; }
+    mut c = List[f32].withCapacity(n / 2usize);
+    mut s = List[f32].withCapacity(n / 2usize);
+    mut j = 0usize;
+    while j < n / 2usize {
+      imm a = 6.28318530717959d * f64.from(j) / f64.from(n);
+      c.push(f32.from(libc.cos(a)));
+      s.push(f32.from(libc.sin(a)));
+      j = j + 1usize;
+    }
+    mut r = List[u32].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      mut v = 0u32;
+      mut b = 0u32;
+      while b < bits {
+        if ((i >> usize.from(b)) & 1usize) != 0usize { v = v | (1u32 << (bits - 1u32 - b)); }
+        b = b + 1u32;
+      }
+      r.push(v);
+      i = i + 1usize;
+    }
+    new Fft(n, c, s, r);
+  }
+
+  // One 1-D inverse transform of the 'n' complex values in tr, ti (contiguous)
+  pub fn inverse1(self &, tr &mut Array[f32], ti &mut Array[f32]) {
+    imm rv = rev.view();
+    mut i = 0usize;
+    while i < n {
+      imm j = usize.from(rv[i]);
+      if j > i {
+        imm a = tr[i]; tr[i] = tr[j]; tr[j] = a;
+        imm b = ti[i]; ti[i] = ti[j]; ti[j] = b;
+      }
+      i = i + 1usize;
+    }
+    imm ct = cosT.view();
+    imm st = sinT.view();
+    mut len = 2usize;
+    while len <= n {
+      imm half = len / 2usize;
+      imm step = n / len;
+      mut start = 0usize;
+      while start < n {
+        mut k = 0usize;
+        while k < half {
+          imm wr = ct[k * step];
+          imm wi = st[k * step];
+          imm a = start + k;
+          imm b = a + half;
+          imm xr = tr[b] * wr - ti[b] * wi;
+          imm xi = tr[b] * wi + ti[b] * wr;
+          tr[b] = tr[a] - xr;
+          ti[b] = ti[a] - xi;
+          tr[a] = tr[a] + xr;
+          ti[a] = ti[a] + xi;
+          k = k + 1usize;
+        }
+        start = start + len;
+      }
+      len = len * 2usize;
+    }
+  }
+
+  // The 2-D inverse transform of an n x n grid (row z, column x at z * n + x): rows, then columns. 'row'
+  // and 'rowI' are two scratch lists of n values.
+  pub fn inverse2(self &, re &mut List[f32], im &mut List[f32], row &mut List[f32], rowI &mut List[f32]) {
+    imm rr = re.viewMut();
+    imm ii = im.viewMut();
+    mut z = 0usize;
+    while z < n {
+      // a row is contiguous: copy in, transform, copy out (the slices handed on are length n)
+      mut x = 0usize;
+      while x < n { row.set(x, rr[z * n + x]); rowI.set(x, ii[z * n + x]); x = x + 1usize; }
+      self.inverse1(row.viewMut(), rowI.viewMut());
+      x = 0usize;
+      while x < n { rr[z * n + x] = *row[x]; ii[z * n + x] = *rowI[x]; x = x + 1usize; }
+      z = z + 1usize;
+    }
+    mut x = 0usize;
+    while x < n {
+      z = 0usize;
+      while z < n { row.set(z, rr[z * n + x]); rowI.set(z, ii[z * n + x]); z = z + 1usize; }
+      self.inverse1(row.viewMut(), rowI.viewMut());
+      z = 0usize;
+      while z < n { rr[z * n + x] = *row[z]; ii[z * n + x] = *rowI[z]; z = z + 1usize; }
+      x = x + 1usize;
+    }
+  }
+}

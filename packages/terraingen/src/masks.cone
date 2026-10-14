@@ -1,0 +1,403 @@
+// ======== Masks and biomes: what the ground is like at each sample ========
+//
+// A MaskSet is rasters on the heightfield's own grid (sample for sample), each f32, row by row:
+//   slope          degrees from flat (central differences of the bilinear surface, one cell each side)
+//   moisture       0 dry .. 1 wet: humidity, falling with altitude, plus the wetness the drainage
+//                  gives (the log of the contributing area, the idea of the topographic wetness index,
+//                  Beven and Kirkby 1979) and nearness to water (an exponential of the distance)
+//   exposure       0 .. 1, the sun's light on the surface compared with flat ground, 0 in the
+//                  terrain's own shadow (a horizon march toward the sun)
+//   flow           0 .. 1, log(area) over log(largest area): where water gathers
+//   river          0 .. 1 from the carving: 1 in the channel, falling across the bank
+//   lake           metres of lake depth
+//   waterDistance  metres to the nearest water (a river bed or a lake), at most FAR (64)
+//   curvature      the Laplacian of the heights per metre: positive in hollows, negative on crests
+//   biome          the id of the best-fitting biome of the table, and 'weights', B weights a sample
+//                  that sum to 1: a splat map for terrain materials
+//
+// BIOMES are data: a window on slope, height and moisture each (the sample is "in" it, softly), and a
+// rule about water. The best fit wins; the weights are the fits, normalised, so a material blends
+// across a border instead of switching.
+//
+// FEEDING groundcover: its GroundMaps hold eight signals (height, slope in degrees, moisture 0..1,
+// exposure 0..1, distance to a path, to water and to an object in metres, canopy 0..1). 'groundSignals'
+// resamples this set into exactly those eight rasters, with the same units, orientation and texel
+// convention (texel (i, j) is at the window's origin + (i + 0.5, j + 0.5) texels), ready to be copied
+// into a GroundMaps with its 'set'. Path, canopy and object are not the land's: they come back as
+// "none near" (64 m, 0, 64 m) for the world to fill. So there is one set of signals and terraingen
+// supplies the land's share of it; nothing here competes with groundcover's.
+
+pub const FAR = 64f32;
+
+pub struct Biome {
+  pub name String;
+  pub slopeLo f32;       // degrees
+  pub slopeHi f32;
+  pub slopeSoft f32;
+  pub heightLo f32;      // metres
+  pub heightHi f32;
+  pub heightSoft f32;
+  pub moistLo f32;       // 0..1
+  pub moistHi f32;
+  pub moistSoft f32;
+  pub waterRule i32;     // 0 ignore water, 1 only where there is water, 2 within 'waterNear' metres of it
+  pub waterNear f32;
+  pub priority f32;      // multiplies the fit, so a rare biome can win ties
+  pub color Color;       // the ground's albedo here (linear), for baking a colour map
+
+  pub fn make(name &str, slopeLo f32, slopeHi f32, heightLo f32, heightHi f32, moistLo f32, moistHi f32, color Color) Biome {
+    new Biome(String.from(name), slopeLo, slopeHi, 4., heightLo, heightHi, 40., moistLo, moistHi, 0.15, 0, 0., 1., color);
+  }
+
+  pub fn water(name &str, color Color) Biome {
+    new Biome(String.from(name), 0., 90., 4., -10000., 10000., 40., 0., 1., 0.15, 1, 0., 2., color);
+  }
+
+  pub fn nearWater(name &str, metres f32, slopeHi f32, color Color) Biome {
+    new Biome(String.from(name), 0., slopeHi, 4., -10000., 10000., 40., 0., 1., 0.15, 2, metres, 1.5, color);
+  }
+}
+
+// A trapezoid-ish soft window: 0.5 at lo and hi, 1 'soft/2' inside them
+fn window(x f32, lo f32, hi f32, soft f32) f32 {
+  imm a = smooth01((x - lo) / soft + 0.5);
+  imm b = smooth01((hi - x) / soft + 0.5);
+  a * b;
+}
+
+pub struct MaskSpec {
+  pub humidity f32;          // 0..1 baseline wetness at sea level
+  pub moistureReach f32;     // metres over which nearness to water wets the ground
+  pub sunDirection Vec3;     // toward the sun, unit
+  pub shadowReach f32;       // metres the horizon march goes
+
+  pub fn standard() MaskSpec {
+    new MaskSpec(0.45, 60., new Vec3(0.5, 0.7, 0.3).normalize(), 1500.);
+  }
+}
+
+pub struct MaskSet {
+  pub w usize;
+  pub h usize;
+  pub cell f32;
+  pub originX f32;
+  pub originZ f32;
+  pub slope List[f32];
+  pub moisture List[f32];
+  pub exposure List[f32];
+  pub flow List[f32];
+  pub river List[f32];
+  pub lake List[f32];
+  pub waterDistance List[f32];
+  pub curvature List[f32];
+  pub biome List[u8];
+  pub weights List[f32];       // biomeCount per sample
+  pub biomeCount usize;
+  pub biomeNames List[String];
+
+  // Biome weight b at sample (ix, iz)
+  pub fn weight(self &, b usize, ix usize, iz usize) f32 { *weights[(iz * w + ix) * biomeCount + b]; }
+}
+
+// ---- computing ----
+
+fn index(w usize, h usize, x i32, z i32) usize {
+  mut a = x;
+  mut b = z;
+  if a < 0 { a = 0; }
+  if b < 0 { b = 0; }
+  if a > i32.from(w) - 1 { a = i32.from(w) - 1; }
+  if b > i32.from(h) - 1 { b = i32.from(h) - 1; }
+  usize.from(b) * w + usize.from(a);
+}
+
+// Distance in metres to the nearest sample where 'water' is set, by the two-pass chamfer transform
+// (Borgefors 1986, the 3-4 weights, here 1 and sqrt 2), capped at FAR
+fn distanceToWater(water &List[u8], w usize, h usize, cell f32) List[f32] {
+  imm big = 1.0e9;
+  mut d = List[f32].withCapacity(w * h);
+  mut i = 0usize;
+  while i < w * h {
+    d.push(if *water[i] != 0u8 { 0.; } else { big; });
+    i = i + 1usize;
+  }
+  imm r2 = 1.41421356;
+  mut z = 0;
+  while z < i32.from(h) {
+    mut x = 0;
+    while x < i32.from(w) {
+      imm c = index(w, h, x, z);
+      mut best = *d[c];
+      if x > 0 { best = fm(best, *d[index(w, h, x - 1, z)] + 1.); }
+      if z > 0 { best = fm(best, *d[index(w, h, x, z - 1)] + 1.); }
+      if x > 0 and z > 0 { best = fm(best, *d[index(w, h, x - 1, z - 1)] + r2); }
+      if x + 1 < i32.from(w) and z > 0 { best = fm(best, *d[index(w, h, x + 1, z - 1)] + r2); }
+      d.set(c, best);
+      x = x + 1;
+    }
+    z = z + 1;
+  }
+  z = i32.from(h) - 1;
+  while z >= 0 {
+    mut x = i32.from(w) - 1;
+    while x >= 0 {
+      imm c = index(w, h, x, z);
+      mut best = *d[c];
+      if x + 1 < i32.from(w) { best = fm(best, *d[index(w, h, x + 1, z)] + 1.); }
+      if z + 1 < i32.from(h) { best = fm(best, *d[index(w, h, x, z + 1)] + 1.); }
+      if x + 1 < i32.from(w) and z + 1 < i32.from(h) { best = fm(best, *d[index(w, h, x + 1, z + 1)] + r2); }
+      if x > 0 and z + 1 < i32.from(h) { best = fm(best, *d[index(w, h, x - 1, z + 1)] + r2); }
+      d.set(c, best);
+      x = x - 1;
+    }
+    z = z - 1;
+  }
+  i = 0usize;
+  while i < w * h {
+    d.set(i, fm(*d[i] * cell, FAR));
+    i = i + 1usize;
+  }
+  d;
+}
+
+fn fm(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+
+fn cloneList(l &List[f32]) List[f32] {
+  mut c = List[f32].withCapacity(l.len());
+  mut i = 0usize;
+  while i < l.len() { c.push(*l[i]); i = i + 1usize; }
+  c;
+}
+
+// The sun's light on each sample as a share of what flat ground gets, 0 in shadow: n.sun / sun.y
+// (capped at 1), times a horizon test that marches toward the sun for 'reach' metres in steps that
+// grow with distance, shadowed if the ground rises above the ray
+fn exposureOf(hf &Heightfield, toSun Vec3, reach f32) List[f32] {
+  imm w = hf.w;
+  imm h = hf.h;
+  mut out = List[f32].withCapacity(w * h);
+  imm sun = toSun.normalize();
+  imm horiz = (sun.x * sun.x + sun.z * sun.z).sqrt();
+  mut iz = 0usize;
+  while iz < h {
+    mut ix = 0usize;
+    while ix < w {
+      imm x = hf.originX + f32.from(ix) * hf.cell;
+      imm z = hf.originZ + f32.from(iz) * hf.cell;
+      imm y = hf.at(ix, iz);
+      imm n = hf.normalAt(x, z);
+      mut light = n.dot(sun) / (if sun.y > 0.05 { sun.y; } else { 0.05; });
+      if light < 0. { light = 0.; }
+      if light > 1. { light = 1.; }
+      if light > 0. and horiz > 0.001 {
+        mut t = hf.cell;
+        mut shadow = false;
+        while t < reach and !shadow {
+          imm px = x + sun.x / horiz * t;
+          imm pz = z + sun.z / horiz * t;
+          if px < hf.originX or pz < hf.originZ or px > hf.originX + hf.width() or pz > hf.originZ + hf.depth() { break; }
+          imm rayY = y + 0.3 + sun.y / horiz * t;
+          if hf.sample(px, pz) > rayY { shadow = true; }
+          t = t + hf.cell * (1. + t / 150.);
+        }
+        if shadow { light = 0.; }
+      }
+      out.push(light);
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  out;
+}
+
+// Compute every mask of the landscape. 'hf' is the final (carved) ground.
+pub fn computeMasks(hf &Heightfield, hy &Hydrology, rm &RiverMaps, spec &MaskSpec, biomes &List[Biome]) MaskSet {
+  imm w = hf.w;
+  imm h = hf.h;
+  imm n = w * h;
+  mut slope = List[f32].withCapacity(n);
+  mut curv = List[f32].withCapacity(n);
+  mut iz = 0usize;
+  while iz < h {
+    mut ix = 0usize;
+    while ix < w {
+      imm x = hf.originX + f32.from(ix) * hf.cell;
+      imm z = hf.originZ + f32.from(iz) * hf.cell;
+      slope.push(degrees(hf.slopeAt(x, z)));
+      imm c = hf.at(ix, iz);
+      imm s = hf.atClamped(i32.from(ix) - 1, i32.from(iz)) + hf.atClamped(i32.from(ix) + 1, i32.from(iz))
+        + hf.atClamped(i32.from(ix), i32.from(iz) - 1) + hf.atClamped(i32.from(ix), i32.from(iz) + 1);
+      curv.push((s - 4. * c) / (hf.cell * hf.cell));
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  mut isWater = List[u8].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    isWater.push(if *rm.waterDepth[i] > 0.01 { 1u8; } else { 0u8; });
+    i = i + 1usize;
+  }
+  imm wd = distanceToWater(&isWater, w, h, hf.cell);
+  imm exposure = exposureOf(hf, spec.sunDirection, spec.shadowReach);
+  imm lo = hf.minHeight();
+  imm hi = hf.maxHeight();
+  imm span = if hi - lo > 1. { hi - lo; } else { 1.; };
+  imm maxA = hy.maxAccum();
+  imm logMax = libc.logf(if maxA > 1.5 { maxA; } else { 1.5; });
+  mut flow = List[f32].withCapacity(n);
+  mut moisture = List[f32].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    imm fl = libc.logf(*hy.accum[i]) / logMax;
+    flow.push(fl);
+    imm hn = (*hf.data[i] - lo) / span;
+    imm prox = libc.expf(0. - *wd[i] / spec.moistureReach);
+    mut m = spec.humidity * (1. - 0.55 * hn) * 0.6 + 0.3 * fl + 0.45 * prox;
+    if m > 1. { m = 1.; }
+    moisture.push(m);
+    i = i + 1usize;
+  }
+  // biomes
+  imm bc = biomes.len();
+  mut weights = List[f32].withCapacity(n * bc);
+  mut id = List[u8].withCapacity(n);
+  mut names = List[String].empty();
+  mut b = 0usize;
+  while b < bc { names.push(biomes[b].name.copy()); b = b + 1usize; }
+  i = 0usize;
+  while i < n {
+    mut sum = 0.;
+    mut bestV = -1.;
+    mut best = bc - 1usize;
+    imm base = weights.len();
+    b = 0usize;
+    while b < bc {
+      imm bi = biomes[b];
+      mut f = 1.;
+      if bi.waterRule == 1 {
+        f = if *rm.waterDepth[i] > 0.01 { 1.; } else { 0.; };
+      } else {
+        f = window(*slope[i], bi.slopeLo, bi.slopeHi, bi.slopeSoft)
+          * window(*hf.data[i], bi.heightLo, bi.heightHi, bi.heightSoft)
+          * window(*moisture[i], bi.moistLo, bi.moistHi, bi.moistSoft);
+        if bi.waterRule == 2 { f = f * smooth01(1. - *wd[i] / bi.waterNear); }
+        if *rm.waterDepth[i] > 0.01 { f = 0.; }
+      }
+      f = f * bi.priority;
+      weights.push(f);
+      sum = sum + f;
+      if f > bestV { bestV = f; best = b; }
+      b = b + 1usize;
+    }
+    if sum > 0.0001 {
+      b = 0usize;
+      while b < bc { weights.set(base + b, *weights[base + b] / sum); b = b + 1usize; }
+    } else {
+      // nothing fits: the last biome takes it whole
+      b = 0usize;
+      while b < bc { weights.set(base + b, if b == bc - 1usize { 1.; } else { 0.; }); b = b + 1usize; }
+      best = bc - 1usize;
+    }
+    id.push(u8.from(best));
+    i = i + 1usize;
+  }
+  new MaskSet(w, h, hf.cell, hf.originX, hf.originZ, slope, moisture, exposure, flow, cloneList(&rm.river), cloneList(&hy.lakeDepth), wd, curv,
+    id, weights, bc, names);
+}
+
+// ---- for groundcover ----
+
+// The eight signals of groundcover's GroundMaps over a square window, each a res x res raster
+// (row j, column i, texel centre at origin + (i + 0.5, j + 0.5) texels), in groundcover's order and
+// units: 0 height (m), 1 slope (degrees), 2 moisture, 3 exposure, 4 path distance, 5 water distance,
+// 6 canopy, 7 object distance
+pub struct GroundSignals {
+  pub res u32;
+  pub originX f32;
+  pub originZ f32;
+  pub size f32;
+  pub channels List[List[f32]];
+}
+
+fn bilinear(data &List[f32], w usize, h usize, cell f32, ox f32, oz f32, x f32, z f32) f32 {
+  imm gx = (x - ox) / cell;
+  imm gz = (z - oz) / cell;
+  imm fx = libc.floorf(gx);
+  imm fz = libc.floorf(gz);
+  imm tx = gx - fx;
+  imm tz = gz - fz;
+  imm a = *data[index(w, h, i32.from(fx), i32.from(fz))];
+  imm b = *data[index(w, h, i32.from(fx) + 1, i32.from(fz))];
+  imm c = *data[index(w, h, i32.from(fx), i32.from(fz) + 1)];
+  imm d = *data[index(w, h, i32.from(fx) + 1, i32.from(fz) + 1)];
+  imm top = a + (b - a) * tx;
+  imm bottom = c + (d - c) * tx;
+  top + (bottom - top) * tz;
+}
+
+pub fn groundSignals(hf &Heightfield, m &MaskSet, originX f32, originZ f32, size f32, res u32) GroundSignals {
+  imm n = usize.from(res) * usize.from(res);
+  mut ch = List[List[f32]].empty();
+  mut c = 0usize;
+  while c < 8usize {
+    mut l = List[f32].withCapacity(n);
+    l.resize(n, 0.);
+    ch.push(l);
+    c = c + 1usize;
+  }
+  imm texel = size / f32.from(res);
+  mut j = 0u32;
+  while j < res {
+    mut i = 0u32;
+    while i < res {
+      imm x = originX + (f32.from(i) + 0.5) * texel;
+      imm z = originZ + (f32.from(j) + 0.5) * texel;
+      imm k = usize.from(j) * usize.from(res) + usize.from(i);
+      ch[0usize].set(k, hf.sample(x, z));
+      ch[1usize].set(k, bilinear(&m.slope, m.w, m.h, m.cell, m.originX, m.originZ, x, z));
+      ch[2usize].set(k, bilinear(&m.moisture, m.w, m.h, m.cell, m.originX, m.originZ, x, z));
+      ch[3usize].set(k, bilinear(&m.exposure, m.w, m.h, m.cell, m.originX, m.originZ, x, z));
+      ch[4usize].set(k, FAR);
+      ch[5usize].set(k, bilinear(&m.waterDistance, m.w, m.h, m.cell, m.originX, m.originZ, x, z));
+      ch[6usize].set(k, 0.);
+      ch[7usize].set(k, FAR);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  new GroundSignals(res, originX, originZ, size, ch);
+}
+
+// ---- a colour map ----
+
+// The ground's albedo at each sample, linear rgb (3 floats a sample, row by row): the biomes' colours
+// mixed by their weights, a little darker where the slope is steep (the soil's thin) and varied from
+// sample to sample by a hash so large areas of one biome are not a flat colour
+pub fn bakeAlbedo(m &MaskSet, biomes &List[Biome]) List[f32] {
+  imm n = m.w * m.h;
+  mut out = List[f32].withCapacity(n * 3usize);
+  mut i = 0usize;
+  while i < n {
+    mut r = 0.;
+    mut g = 0.;
+    mut b = 0.;
+    mut k = 0usize;
+    while k < m.biomeCount {
+      imm wgt = *m.weights[i * m.biomeCount + k];
+      imm c = biomes[k].color;
+      r = r + wgt * c.red;
+      g = g + wgt * c.green;
+      b = b + wgt * c.blue;
+      k = k + 1usize;
+    }
+    imm hsh = noise.toUnit(noise.pcg(u32.from(i) ^ 0x9E3779B9u32));
+    imm vary = 0.88 + 0.24 * hsh;
+    imm thin = 1. - 0.18 * (if *m.slope[i] > 45. { 1.; } else { *m.slope[i] / 45.; });
+    out.push(r * vary * thin);
+    out.push(g * vary * thin);
+    out.push(b * vary * thin);
+    i = i + 1usize;
+  }
+  out;
+}

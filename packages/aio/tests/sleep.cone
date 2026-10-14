@@ -1,0 +1,209 @@
+// aio.sleep and aio.sleepUntil: an actor pauses on a timer and resumes, the
+// rest of its behaviour run when the timer is due, with its worker free
+// meanwhile. One actor runs the cases in turn and reports, for each, how the
+// sleep ended (1 done, 2 cancelled, 3 timed out, 4 failed) and the
+// milliseconds it took:
+//
+//   sleep 100 ms, sleepUntil 80 ms ahead -- Done, no sooner than due;
+//   sleepUntil an instant already past, sleep of zero -- Done at once;
+//   a timer due after the limits' deadline (IoLimits.until; a group made
+//   'until'; a live group with a deadline of its own beside it) -- TimedOut at
+//   the deadline, not at the timer's time (an hour away);
+//   a timer due before the deadline -- Done at its time;
+//   a group cancelled already -- Cancelled at once; a group cancelled by main
+//   (a plain thread) while the actor sleeps -- Cancelled, then and there.
+//
+// Then twenty actors each sleep 200 ms at once: all are Done within a second
+// or so, not the four a sleep at a time would take.
+
+mod sleep;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import iocore use IoError, CancelGroup;
+import actors;
+import aio use IoLimits;
+
+const marker = 77u64;
+const many = 20u64;
+
+fn take(rx &mut Receiver[u64]) u64 {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {999u64;}
+  }
+}
+
+// How a sleep ended: 1 done, 2 cancelled, 3 timed out, 4 failed
+fn ended(r Result[void, IoError]) u64 {
+  match r {
+    case imm e Error {
+      if aio.isCancelled(e) {2u64;}
+      elif aio.isTimedOut(e) {3u64;}
+      else {4u64;}
+    }
+    else {1u64;}
+  }
+}
+
+fn ms(since Instant) u64 {
+  imm n = since.elapsed().millis();
+  if n < 0i64 {0u64;} else {u64.from(n);};
+}
+
+fn report(out &Sender[u64], r Result[void, IoError], began Instant) {
+  out.send(ended(r));
+  out.send(ms(began));
+}
+
+actor Sleeper {
+  out Sender[u64];
+
+  pub async do cases(self, cancelled CancelGroup, live CancelGroup) {
+    imm hour = Duration.fromSeconds(3600i64);
+    imm fifty = Duration.fromMillis(50i64);
+    imm eighty = Duration.fromMillis(80i64);
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleep(Duration.fromMillis(100i64));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepUntil(t + eighty);
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepUntil(t - Duration.fromSeconds(5i64));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleep(Duration.zero());
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepIn(hour, IoLimits.until(t + eighty));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepIn(hour, IoLimits.within(CancelGroup.until(t + eighty)));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepUntilIn(t + hour, new IoLimits(Some[CancelGroup](live), t + eighty));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepIn(fifty, IoLimits.within(CancelGroup.until(t + hour)));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepIn(fifty, IoLimits.until(t + hour));
+      report(&out, r, t);
+    }
+    {
+      imm t = Instant.now();
+      imm r = await aio.sleepIn(hour, IoLimits.within(cancelled));
+      report(&out, r, t);
+    }
+    {
+      out.send(marker);
+      imm t = Instant.now();
+      imm r = await aio.sleepIn(hour, IoLimits.within(live));
+      report(&out, r, t);
+    }
+  }
+}
+
+actor Napper {
+  pub async do nap(self, out Sender[u64]) {
+    imm r = await aio.sleep(Duration.fromMillis(200i64));
+    out.send(ended(r));
+  }
+}
+
+fn nth(l &List[u64], i usize) u64 {
+  match l.get(i) {
+    case imm v Some {*v;}
+    else {999u64;}
+  }
+}
+
+// Case i ended as 'code' says, no sooner than 'least' ms and well within 3 s
+// (an hour's sleep that ended at its time would be far outside)
+fn check(how &List[u64], took &List[u64], i usize, code u64, least u64, what &str) {
+  expectUInt(nth(how, i), code, what);
+  imm t = nth(took, i);
+  expect(t >= least and t < 1000u64 + least, "...in time");
+}
+
+fn main() i32 {
+  initAll();
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm cancelled = CancelGroup.make();
+  imm live = CancelGroup.make();
+  expect(cancelled.cancel(), "the group was live");
+  imm s = new Sleeper(tx.clone());
+  s.cases(cancelled, live);
+  // 11 cases, the last announced by a marker; each reports (how, ms)
+  mut how = List[u64].empty();
+  mut took = List[u64].empty();
+  mut i = 0u64;
+  while i < 11u64 {
+    imm a = take(&mut rx);
+    if a == marker {
+      thread.sleep(Duration.fromMillis(50i64));
+      expect(live.cancel(), "the group was live until main cancelled it");
+      how.push(take(&mut rx));
+    } else {
+      how.push(a);
+    }
+    took.push(take(&mut rx));
+    i = i + 1u64;
+  }
+  // Twenty sleeping at once
+  imm began = Instant.now();
+  {
+    mut k = 0u64;
+    while k < many {
+      imm n = new Napper();
+      n.nap(tx.clone());
+      k = k + 1u64;
+    }
+  }
+  mut doneCount = 0u64;
+  mut k = 0u64;
+  while k < many {
+    if take(&mut rx) == 1u64 {doneCount = doneCount + 1u64;}
+    k = k + 1u64;
+  }
+  imm together = ms(began);
+  finalAll();
+
+  check(&how, &took, 0usize, 1u64, 95u64, "sleep(100 ms)");
+  check(&how, &took, 1usize, 1u64, 75u64, "sleepUntil(80 ms ahead)");
+  check(&how, &took, 2usize, 1u64, 0u64, "sleepUntil an instant already past (at once)");
+  check(&how, &took, 3usize, 1u64, 0u64, "sleep(zero) (at once)");
+  check(&how, &took, 4usize, 3u64, 75u64, "an hour's sleep under IoLimits.until(80 ms)");
+  check(&how, &took, 5usize, 3u64, 75u64, "an hour's sleep in a group with a deadline of 80 ms");
+  check(&how, &took, 6usize, 3u64, 75u64, "an hour's sleep in a live group, with a deadline of 80 ms of its own");
+  check(&how, &took, 7usize, 1u64, 45u64, "a 50 ms sleep in a group whose deadline is an hour away");
+  check(&how, &took, 8usize, 1u64, 45u64, "a 50 ms sleep under a deadline an hour away");
+  check(&how, &took, 9usize, 2u64, 0u64, "a sleep in a group cancelled already (at once)");
+  check(&how, &took, 10usize, 2u64, 45u64, "a sleep in a group main cancelled meanwhile");
+  expectUInt(doneCount, many, "all twenty sleeps were Done");
+  expect(together < 2500u64, "...together, not one after another");
+  done();
+}

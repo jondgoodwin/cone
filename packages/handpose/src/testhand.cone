@@ -1,0 +1,384 @@
+// A procedural hand to draw, skinned to the fingers' bones, and the props it holds.
+//
+// THE HAND. A palm (a rounded box, a superellipsoid of exponent 0.45), a wrist
+// stub, a mound at the thumb's base, and five fingers: each a tube along the
+// rest joints of its HandSpec, elliptical in section (a little flatter across the palm's
+// normal than across it), tapering and ending in a hemisphere. The tube's vertices
+// are skinned to the finger's three bones and, at the knuckle, to the hand bone,
+// by smooth blends across each joint (width of twice the flesh's radius), so a
+// bent finger creases at its joints and does not tear. Bone numbers are the
+// hand's own: 0 the hand bone (the wrist), 1 + 3 f + k finger f's segment k. A
+// vertex has four joints and four weights (the order of render's Skin), and the
+// rest pose is the HandSpec's: all the finger bones unrotated.
+//
+// THE PROPS. A Prop is a signed-distance PropSurface (what the fingers meet) and a
+// list of meshes, one for each of its primitives, in the same placement: what is
+// drawn is exactly what is touched. 'hammer', 'rollingPin', 'cup' and 'dough'
+// make the four of the demo.
+
+pub struct TestHand {
+  pub mesh Mesh;
+  pub joints List[u32];     // four a vertex
+  pub weights List[f32];    // four a vertex, summing to 1
+}
+
+fn sgnPow(v f32, e f32) f32 {
+  imm a = libc.powf(absf(v), e);
+  if v < 0. { return -a; }
+  a;
+}
+
+// A rounded box: a superellipsoid, of half sizes 'half' about 'centre'
+fn roundedBox(centre Vec3, half Vec3, e f32, seg i32) Mesh {
+  mut m = Mesh.sphere(1., seg);
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm p = *m.positions[i];
+    m.positions.set(i, new Vec3(centre.x + half.x * sgnPow(p.x, e), centre.y + half.y * sgnPow(p.y, e), centre.z + half.z * sgnPow(p.z, e)));
+    i = i + 1usize;
+  }
+  m.computeSmoothNormals();
+  m;
+}
+
+// A tube along the finger's rest joints
+fn fingerTube(spec &HandSpec, f usize, firstBone u32, out &mut TestHand) {
+  imm fs = spec.fingers[f];
+  imm d = fs.dir;
+  imm n = spec.palmNormal;
+  imm u1 = (n - d * n.dot(d)).normalize();
+  imm v1 = d.cross(u1);
+  imm sides = 14;
+  imm perSeg = 6;
+  imm total = fs.len[0] + fs.len[1] + fs.len[2];
+  // The stations: along the chain from a little inside the palm to the tip, then the cap
+  mut centres = List[Vec3].empty();
+  mut radii = List[f32].empty();
+  mut xs = List[f32].empty();
+  // inside the palm first
+  centres.push(fs.base - d * 0.010);
+  radii.push(fs.radius[0] * 1.02);
+  xs.push(-0.010);
+  mut acc = 0.;
+  mut s = 0usize;
+  while s < 3usize {
+    mut k = 0;
+    while k <= perSeg {
+      if !(s > 0usize and k == 0) {
+        imm t = f32.from(k) / f32.from(perSeg);
+        imm x = acc + fs.len[s] * t;
+        centres.push(fs.base + d * x);
+        imm r0 = fs.radius[s];
+        imm r1 = if s < 2usize { fs.radius[s + 1usize]; } else { fs.radius[2]; };
+        // a swelling at each joint
+        imm bump = 1. + 0.10 * libc.expf(-(t / 0.16) * (t / 0.16)) * (if s > 0usize { 1.; } else { 0.6; });
+        radii.push((r0 + (r1 - r0) * t) * bump);
+        xs.push(x);
+      }
+      k = k + 1;
+    }
+    acc = acc + fs.len[s];
+    s = s + 1usize;
+  }
+  // the cap: a hemisphere over the tip
+  imm tipR = fs.radius[2];
+  mut c = 1;
+  while c <= 4 {
+    imm ang = f32.from(c) / 4. * pi * 0.5;
+    centres.push(fs.base + d * (total + tipR * sin(ang)));
+    radii.push(tipR * cos(ang));
+    xs.push(total + tipR * sin(ang));
+    c = c + 1;
+  }
+  // The bone boundaries along the finger: the knuckle (into the palm's bone), the two joints
+  imm b = [0.002, fs.len[0], fs.len[0] + fs.len[1]];
+  imm wid = [0.012, fs.radius[0] * 1.6, fs.radius[1] * 1.6];
+  imm base = u32.from(out.mesh.positions.len());
+  mut r = 0usize;
+  while r < centres.len() {
+    imm x = *xs[r];
+    imm t0 = smoothstep(b[0] - wid[0], b[0] + wid[0], x);
+    imm t1 = smoothstep(b[1] - wid[1], b[1] + wid[1], x);
+    imm t2 = smoothstep(b[2] - wid[2], b[2] + wid[2], x);
+    imm w0 = 1. - t0;
+    imm w1 = t0 - t1;
+    imm w2 = t1 - t2;
+    imm w3 = t2;
+    mut i = 0;
+    while i <= sides {
+      imm phi = 2. * pi * f32.from(i) / f32.from(sides);
+      imm radial = u1 * cos(phi) + v1 * sin(phi);
+      imm p = *centres[r] + radial * *radii[r];
+      out.mesh.positions.push(p);
+      out.mesh.uvs.push(new Vec2(f32.from(i) / f32.from(sides), 0.));
+      out.joints.push(0u32); out.joints.push(firstBone); out.joints.push(firstBone + 1u32); out.joints.push(firstBone + 2u32);
+      out.weights.push(w0); out.weights.push(w1); out.weights.push(w2); out.weights.push(w3);
+      i = i + 1;
+    }
+    r = r + 1usize;
+  }
+  // The strips: (a, b, c), (a, c, d) with b the next round the ring and c, d on the next ring
+  mut ring = 0usize;
+  while ring + 1usize < centres.len() {
+    mut i = 0;
+    while i < sides {
+      imm a = base + u32.from(ring * usize.from(sides + 1) + usize.from(i));
+      imm bb = a + 1u32;
+      imm cc = a + u32.from(sides + 1) + 1u32;
+      imm dd = a + u32.from(sides + 1);
+      out.mesh.indices.push(a);
+      out.mesh.indices.push(bb);
+      out.mesh.indices.push(cc);
+      out.mesh.indices.push(a);
+      out.mesh.indices.push(cc);
+      out.mesh.indices.push(dd);
+      i = i + 1;
+    }
+    ring = ring + 1usize;
+  }
+}
+
+// A procedural hand for the spec, skinned to the bone numbers described in the header
+pub fn makeTestHand(spec &HandSpec) TestHand {
+  mut out = new TestHand(Mesh.empty(), List[u32].empty(), List[f32].empty());
+  imm s = spec.length / 0.19;
+  // The palm and the wrist stub and the thumb's mound: the hand bone's
+  mut palm = roundedBox(spec.palmBone, spec.palmHalf, 0.75, 32);
+  // The palm narrows towards the wrist and arches across the back of the hand
+  mut pi_ = 0usize;
+  while pi_ < palm.positions.len() {
+    imm q = *palm.positions[pi_];
+    imm along = clampf((spec.palmBone.y + spec.palmHalf.y - q.y) / (2. * spec.palmHalf.y), 0., 1.);   // 0 at the knuckles' end, 1 at the wrist
+    imm across = (q.z - spec.palmBone.z) / spec.palmHalf.z;
+    imm narrow = 1. - 0.24 * smoothstep(0.2, 1., along);
+    imm arch = 1. + 0.16 * (1. - across * across) * spec.h * (if q.x * spec.h > 0. { 1.; } else { 0.; });
+    palm.positions.set(pi_, new Vec3(spec.palmBone.x + (q.x - spec.palmBone.x) * (if q.x * spec.h > 0. { arch; } else { 1.; }), q.y,
+      spec.palmBone.z + (q.z - spec.palmBone.z) * narrow));
+    pi_ = pi_ + 1usize;
+  }
+  palm.computeSmoothNormals();
+  mut stub = roundedBox(new Vec3(0., 0.020 * s, 0.), new Vec3(0.0195 * s, 0.030 * s, 0.0300 * s), 0.9, 20);
+  mut mound = roundedBox(new Vec3(-spec.h * 0.011 * s, -0.042 * s, -0.027 * s), new Vec3(0.0165 * s, 0.036 * s, 0.023 * s), 0.8, 16);
+  imm parts = [palm, stub, mound];
+  mut p = 0usize;
+  while p < 3usize {
+    imm first = out.mesh.positions.len();
+    out.mesh.append(&parts[p]);
+    mut i = first;
+    while i < out.mesh.positions.len() {
+      out.joints.push(0u32); out.joints.push(0u32); out.joints.push(0u32); out.joints.push(0u32);
+      out.weights.push(1.); out.weights.push(0.); out.weights.push(0.); out.weights.push(0.);
+      i = i + 1usize;
+    }
+    p = p + 1usize;
+  }
+  // The fingers
+  mut f = 0usize;
+  while f < FINGERS {
+    fingerTube(spec, f, u32.from(1usize + 3usize * f), &mut out);
+    f = f + 1usize;
+  }
+  out.mesh.computeSmoothNormals();
+  out;
+}
+
+// ---- the props ----
+
+pub struct Prop {
+  pub surface PropSurface;
+  pub meshes List[Mesh];          // one for each primitive of the surface, in the prop's space
+  pub parts List[u32];            // a material number each (0 the main material, 1 the second)
+}
+
+fn cylinderMesh(radius f32, halfHeight f32, sides i32) Mesh {
+  mut m = Mesh.empty();
+  mut i = 0;
+  while i <= sides {
+    imm a = 2. * pi * f32.from(i) / f32.from(sides);
+    imm c = cos(a);
+    imm s = sin(a);
+    m.positions.push(new Vec3(c * radius, -halfHeight, s * radius));
+    m.normals.push(new Vec3(c, 0., s));
+    m.uvs.push(new Vec2(f32.from(i) / f32.from(sides), 0.));
+    m.positions.push(new Vec3(c * radius, halfHeight, s * radius));
+    m.normals.push(new Vec3(c, 0., s));
+    m.uvs.push(new Vec2(f32.from(i) / f32.from(sides), 1.));
+    i = i + 1;
+  }
+  i = 0;
+  while i < sides {
+    imm a = u32.from(2 * i);
+    // counterclockwise from outside: bottom i, bottom i + 1... the angle runs from +x towards +z, so seen from outside the order is a, a + 1 (up), a + 3
+    m.indices.push(a);
+    m.indices.push(a + 1u32);
+    m.indices.push(a + 3u32);
+    m.indices.push(a);
+    m.indices.push(a + 3u32);
+    m.indices.push(a + 2u32);
+    i = i + 1;
+  }
+  // the caps
+  imm topCentre = u32.from(m.positions.len());
+  m.positions.push(new Vec3(0., halfHeight, 0.));
+  m.normals.push(new Vec3(0., 1., 0.));
+  m.uvs.push(new Vec2(0.5, 0.5));
+  imm botCentre = u32.from(m.positions.len());
+  m.positions.push(new Vec3(0., -halfHeight, 0.));
+  m.normals.push(new Vec3(0., -1., 0.));
+  m.uvs.push(new Vec2(0.5, 0.5));
+  imm capStart = u32.from(m.positions.len());
+  i = 0;
+  while i <= sides {
+    imm a = 2. * pi * f32.from(i) / f32.from(sides);
+    m.positions.push(new Vec3(cos(a) * radius, halfHeight, sin(a) * radius));
+    m.normals.push(new Vec3(0., 1., 0.));
+    m.uvs.push(new Vec2(0.5, 0.5));
+    m.positions.push(new Vec3(cos(a) * radius, -halfHeight, sin(a) * radius));
+    m.normals.push(new Vec3(0., -1., 0.));
+    m.uvs.push(new Vec2(0.5, 0.5));
+    i = i + 1;
+  }
+  i = 0;
+  while i < sides {
+    imm t0 = capStart + u32.from(2 * i);
+    imm t1 = capStart + u32.from(2 * i + 2);
+    imm b0 = capStart + u32.from(2 * i + 1);
+    imm b1 = capStart + u32.from(2 * i + 3);
+    // the top faces +y: seen from above the angle runs from +x towards +z, which is clockwise, so reverse
+    m.indices.push(topCentre); m.indices.push(t1); m.indices.push(t0);
+    m.indices.push(botCentre); m.indices.push(b0); m.indices.push(b1);
+    i = i + 1;
+  }
+  m;
+}
+
+fn torusMesh(major f32, minor f32, rings i32, sides i32) Mesh {
+  mut m = Mesh.empty();
+  mut i = 0;
+  while i <= rings {
+    imm a = 2. * pi * f32.from(i) / f32.from(rings);
+    imm c = cos(a);
+    imm s = sin(a);
+    mut j = 0;
+    while j <= sides {
+      imm b = 2. * pi * f32.from(j) / f32.from(sides);
+      imm n = new Vec3(c * cos(b), sin(b), s * cos(b));
+      m.positions.push(new Vec3(c * major, 0., s * major) + n * minor);
+      m.normals.push(n);
+      m.uvs.push(new Vec2(f32.from(i) / f32.from(rings), f32.from(j) / f32.from(sides)));
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while i < rings {
+    mut j = 0;
+    while j < sides {
+      imm a = u32.from(i * (sides + 1) + j);
+      imm b = a + 1u32;
+      imm c = a + u32.from(sides + 1) + 1u32;
+      imm d = a + u32.from(sides + 1);
+      m.indices.push(a); m.indices.push(c); m.indices.push(b);
+      m.indices.push(a); m.indices.push(d); m.indices.push(c);
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  m;
+}
+
+// Each primitive of 'surface' as a mesh in the prop's space
+fn meshOf(pr &Prim) Mesh {
+  mut m = if pr.kind == PRIM_SPHERE { Mesh.sphere(pr.p.x, 24); }
+    else if pr.kind == PRIM_CYLINDER { cylinderMesh(pr.p.x, pr.p.y, 32); }
+    else if pr.kind == PRIM_CAPSULE { cylinderMesh(pr.p.x, pr.p.y, 24); }
+    else if pr.kind == PRIM_BOX { let_box(pr.p); }
+    else if pr.kind == PRIM_TORUS { torusMesh(pr.p.x, pr.p.y, 48, 14); }
+    else if pr.kind == PRIM_ELLIPSOID { ellipsoidMesh(pr.p); }
+    else { slab(); };
+  m.transform(pr.placement.toMat4());
+  m;
+}
+
+// A table top: a slab whose upper face is the plane (y = 0 in its own space)
+fn slab() Mesh {
+  mut m = Mesh.cube(1.);
+  m.transform(Mat4.fromTranslation(new Vec3(0., -0.01, 0.)) * Mat4.fromScale(new Vec3(0.9, 0.02, 0.9)));
+  m;
+}
+
+fn let_box(half Vec3) Mesh {
+  mut m = Mesh.cube(1.);
+  m.transform(Mat4.fromScale(half * 2.));
+  m;
+}
+
+fn ellipsoidMesh(r Vec3) Mesh {
+  mut m = Mesh.sphere(1., 32);
+  m.transform(Mat4.fromScale(r));
+  m;
+}
+
+fn finishProp(surface PropSurface, parts List[u32]) Prop {
+  mut meshes = List[Mesh].empty();
+  mut i = 0usize;
+  while i < surface.prims.len() {
+    meshes.push(meshOf(surface.prims[i]));
+    i = i + 1usize;
+  }
+  new Prop(surface, meshes, parts);
+}
+
+// A claw hammer: the handle from the butt at the origin up the +y axis (0.28 long, radius 0.0155), the head across the top
+pub fn hammer() Prop {
+  mut s = PropSurface.empty();
+  mut parts = List[u32].empty();
+  s.cylinder(new Vec3(0., 0., 0.), new Vec3(0., 0.28, 0.), 0.0155);
+  parts.push(0u32);
+  s.sphere(new Vec3(0., 0., 0.), 0.0165);
+  parts.push(0u32);
+  s.box(new Vec3(0., 0.298, 0.), Quat.identity(), new Vec3(0.050, 0.020, 0.020));
+  parts.push(1u32);
+  s.cylinder(new Vec3(0.050, 0.298, 0.), new Vec3(0.074, 0.298, 0.), 0.021);
+  parts.push(1u32);
+  finishProp(s, parts);
+}
+
+// A rolling pin along x: a body of radius 0.032 and 0.26 long, a handle of radius 0.0155 at each end
+pub fn rollingPin() Prop {
+  mut s = PropSurface.empty();
+  mut parts = List[u32].empty();
+  s.cylinder(new Vec3(-0.13, 0., 0.), new Vec3(0.13, 0., 0.), 0.032);
+  parts.push(0u32);
+  s.cylinder(new Vec3(0.13, 0., 0.), new Vec3(0.235, 0., 0.), 0.0155);
+  parts.push(1u32);
+  s.cylinder(new Vec3(-0.235, 0., 0.), new Vec3(-0.13, 0., 0.), 0.0155);
+  parts.push(1u32);
+  s.sphere(new Vec3(0.235, 0., 0.), 0.0165);
+  parts.push(1u32);
+  s.sphere(new Vec3(-0.235, 0., 0.), 0.0165);
+  parts.push(1u32);
+  finishProp(s, parts);
+}
+
+// A cup standing on y = 0: a body of radius 0.038 and 0.09 high, a ring handle on its +x side
+pub fn cup() Prop {
+  mut s = PropSurface.empty();
+  mut parts = List[u32].empty();
+  s.cylinder(new Vec3(0., 0.002, 0.), new Vec3(0., 0.088, 0.), 0.038);
+  parts.push(0u32);
+  s.torus(new Vec3(0.052, 0.050, 0.), new Vec3(0., 0., 1.), 0.028, 0.0055);
+  parts.push(0u32);
+  finishProp(s, parts);
+}
+
+// A ball of dough on a table: an ellipsoid half sunk in the plane y = 0
+pub fn dough() Prop {
+  mut s = PropSurface.empty();
+  mut parts = List[u32].empty();
+  s.ellipsoid(new Vec3(0., 0.014, 0.), Quat.identity(), new Vec3(0.090, 0.040, 0.075));
+  parts.push(0u32);
+  s.plane(new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  parts.push(1u32);
+  finishProp(s, parts);
+}

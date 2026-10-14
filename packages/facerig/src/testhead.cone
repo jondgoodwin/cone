@@ -1,0 +1,495 @@
+// A procedural test head: plain, smooth, and complete enough to show a face rig.
+//
+// WHAT IT IS. A bald, featureless-in-character head (no one's likeness, and
+// no beauty claimed) with the structure a rig needs: a skin surface dense
+// enough for lips and lids (a grid about a millimetre across at the face), two
+// eyeballs, a mouth cavity, teeth, a tongue, a jaw split in the skin's
+// weights, and a FaceSpec with its landmarks. The same units, targets and rig
+// that move this head move any other head that comes with its own spec.
+//
+// METHOD. The skin is a LATHE: horizontal super-elliptical sections (exponent
+// 2.5, flatter at the face than an ellipse) whose half-width, front depth
+// and back depth come from a table by height (a Catmull-Rom curve through
+// the profile of an adult head: crown, forehead, cheeks, chin, throat,
+// neck). On it go smooth bumps and dents for the features (nose, brow ridge,
+// cheekbones, lips, chin) as Gaussians in the face's plane, moved along the
+// horizontal outward direction; this is how a sculptor's alpha brush works.
+// Two operations then shape what a bump cannot:
+//
+//   EYE OPENINGS. Round each eyeball a spherical SHELL of the lid's radius,
+//   with an almond opening where the surface is pushed in behind the
+//   eyeball so the eyeball shows through (the surface's own vertices slide
+//   along their line from the eyeball's centre). The lids are therefore
+//   already on a sphere about the eyeball, which is what lets AU43's turn
+//   about the eyeball's centre close them over the globe and never through it.
+//   The shell blends into the face between 42 and 62 degrees off the eye's
+//   axis, leaving the eye in a shallow socket.
+//
+//   MOUTH SLOT. The mouth line is a deep narrow slot along one grid row of
+//   the lathe, pushed back into the head by 14 mm. Closed, it is a thin dark
+//   line; opened (the jaw's skin weight changes across the slot's row, and the
+//   lips' units move the rims), it is a V-shaped cleft whose walls part to
+//   show the cavity, teeth and tongue behind. No triangle has to be cut.
+//
+// THE JAW'S SKIN WEIGHTS are a smooth step across a plane through the mouth
+// line and the jaw's hinge (so a vertex's weight tracks how far it is from
+// the hinge's arc), faded to nothing down the throat. Joint 0 is the head,
+// joint 1 the jaw.
+//
+// Faces -z; y up; the origin is the middle of the skull between the ears.
+// Dimensions are an adult head's in metres: crown at 0.125, chin at -0.105,
+// eyes at 0.02, interocular (centre to centre) 0.062.
+
+pub struct Pixels {
+  pub width i32;
+  pub height i32;
+  pub rgba List[u8];       // rows from the bottom up, as render's Image holds them
+
+  pub fn make(width i32, height i32) Pixels {
+    mut p = new Pixels(width, height, List[u8].empty());
+    p.rgba.resize(usize.from(width * height * 4), 255u8);
+    p;
+  }
+}
+
+pub struct TestHead {
+  pub mesh Mesh;               // the skin
+  pub jawWeight List[f32];     // per skin vertex: 0 head, 1 jaw
+  pub spec FaceSpec;
+  pub eyeMesh Mesh;            // one eyeball, centred on its own origin, looking along -z
+  pub teethUpper Mesh;         // in the head's frame
+  pub teethLower Mesh;         // in the head's frame at rest; carried by the jaw
+  pub tongue Mesh;             // carried by the jaw
+  pub cavity Mesh;             // the dark inside of the mouth
+  pub tongueRoot Vec3;         // where the tongue lifts about
+  pub skinPixels Pixels;
+  pub eyePixels Pixels;
+  pub rows usize;
+  pub cols usize;
+  pub grooveY f32;
+}
+
+// ---- the profile ----
+
+const Y_TOP = 0.125;
+const Y_BOTTOM = -0.23;
+const N_EXP = 2.5;
+
+fn profileAt(y f32) Vec3 {
+  imm ys = [0.125, 0.118, 0.105, 0.090, 0.070, 0.045, 0.020, -0.005, -0.030, -0.055, -0.080, -0.098, -0.108, -0.118, -0.140, -0.200, -0.230];
+  imm aw = [0.000, 0.030, 0.052, 0.065, 0.072, 0.075, 0.076, 0.077, 0.074, 0.069, 0.060, 0.049, 0.041, 0.040, 0.048, 0.052, 0.053];
+  imm bf = [0.000, 0.034, 0.062, 0.076, 0.086, 0.091, 0.090, 0.087, 0.084, 0.082, 0.080, 0.075, 0.062, 0.048, 0.048, 0.052, 0.053];
+  imm bb = [0.000, 0.040, 0.074, 0.090, 0.099, 0.103, 0.103, 0.100, 0.093, 0.082, 0.067, 0.058, 0.054, 0.054, 0.056, 0.058, 0.059];
+  imm n = 17usize;
+  if y >= ys[0] { return new Vec3(aw[0], bf[0], bb[0]); }
+  if y <= ys[n - 1usize] { return new Vec3(aw[n - 1usize], bf[n - 1usize], bb[n - 1usize]); }
+  mut i = 0usize;
+  while i + 2usize < n and y < ys[i + 1usize] { i = i + 1usize; }
+  imm y0 = ys[i];
+  imm y1 = ys[i + 1usize];
+  imm h = y1 - y0;
+  imm t = (y - y0) / h;
+  imm prev = if i == 0usize { 0usize; } else { i - 1usize; };
+  imm next = if i + 2usize < n { i + 2usize; } else { n - 1usize; };
+  // Catmull-Rom tangents (per unit of y), made monotone-friendly by limiting them
+  mut out = [0., 0., 0.];
+  mut k = 0usize;
+  while k < 3usize {
+    imm v0 = if k == 0usize { aw[i]; } else if k == 1usize { bf[i]; } else { bb[i]; };
+    imm v1 = if k == 0usize { aw[i + 1usize]; } else if k == 1usize { bf[i + 1usize]; } else { bb[i + 1usize]; };
+    imm vp = if k == 0usize { aw[prev]; } else if k == 1usize { bf[prev]; } else { bb[prev]; };
+    imm vn = if k == 0usize { aw[next]; } else if k == 1usize { bf[next]; } else { bb[next]; };
+    imm m0 = (v1 - vp) / (y1 - ys[prev]) * h;
+    imm m1 = (vn - v0) / (ys[next] - y0) * h;
+    imm t2 = t * t;
+    imm t3 = t2 * t;
+    out[k] = (2. * t3 - 3. * t2 + 1.) * v0 + (t3 - 2. * t2 + t) * m0 + (-2. * t3 + 3. * t2) * v1 + (t3 - t2) * m1;
+    k = k + 1usize;
+  }
+  new Vec3(fmax(out[0], 0.), fmax(out[1], 0.), fmax(out[2], 0.));
+}
+
+fn signedPow(v f32, e f32) f32 {
+  imm a = libc.powf(absf(v), e);
+  if v < 0. { return -a; }
+  a;
+}
+
+// A point of the lathe at angle 'theta' (0 is the front, positive to the being's left? no: x = a sin theta) and height 'y'
+fn lathe(theta f32, y f32) Vec3 {
+  imm p = profileAt(y);
+  imm s = sin(theta);
+  imm c = cos(theta);
+  imm e = 2. / N_EXP;
+  imm x = p.x * signedPow(s, e);
+  imm z = if c > 0. { -p.y * libc.powf(c, e); } else { p.z * libc.powf(-c, e); };
+  new Vec3(x, y, z);
+}
+
+// ---- features ----
+
+fn gb(x f32, y f32, cx f32, cy f32, sx f32, sy f32, amp f32) f32 {
+  imm dx = (x - cx) / sx;
+  imm dy = (y - cy) / sy;
+  amp * libc.expf(-0.5 * (dx * dx + dy * dy));
+}
+
+// A ridge along the segment (x0, y0)-(x1, y1) of Gaussian section 'sigma', amplitude easing from 'a0' to 'a1'
+fn ridge(x f32, y f32, x0 f32, y0 f32, x1 f32, y1 f32, sigma f32, a0 f32, a1 f32) f32 {
+  imm dx = x1 - x0;
+  imm dy = y1 - y0;
+  imm len2 = dx * dx + dy * dy;
+  imm t = clampf(((x - x0) * dx + (y - y0) * dy) / len2, 0., 1.);
+  imm px = x0 + dx * t;
+  imm py = y0 + dy * t;
+  imm d2 = (x - px) * (x - px) + (y - py) * (y - py);
+  (a0 + (a1 - a0) * t) * libc.expf(-0.5 * d2 / (sigma * sigma));
+}
+
+fn featureHeight(x f32, y f32, yg f32) f32 {
+  imm ax = absf(x);
+  mut b = 0.;
+  // the nose
+  b = b + ridge(ax, y, 0., 0.032, 0., -0.030, 0.0085, 0.0008, 0.0140);
+  b = b + gb(ax, y, 0., -0.037, 0.0095, 0.0085, 0.0165);
+  b = b + gb(ax, y, 0.0135, -0.0405, 0.0055, 0.0055, 0.0095);
+  b = b - gb(ax, y, 0.0075, -0.0470, 0.0035, 0.0030, 0.0045);
+  b = b - gb(ax, y, 0., -0.0525, 0.0045, 0.0050, 0.0020);
+  // the brow ridge and the glabella
+  b = b + ridge(ax, y, 0., 0.047, 0.055, 0.045, 0.0085, 0.0045, 0.0030);
+  b = b + gb(ax, y, 0., 0.040, 0.010, 0.010, 0.0030);
+  // cheekbone, the hollow under the eye, the cheek, the fold beside the nose
+  b = b + gb(ax, y, 0.052, -0.016, 0.020, 0.014, 0.0040);
+  b = b - gb(ax, y, 0.031, -0.004, 0.020, 0.009, 0.0030);
+  b = b + gb(ax, y, 0.040, -0.047, 0.018, 0.016, 0.0030);
+  b = b - ridge(ax, y, 0.0185, -0.040, 0.0285, -0.064, 0.0040, 0.0025, 0.0025);
+  // the lips and the chin
+  b = b + gb(ax, y, 0., yg + 0.0053, 0.0165, 0.0058, 0.0070);
+  b = b + gb(ax, y, 0., yg - 0.0075, 0.0150, 0.0068, 0.0078);
+  b = b - gb(ax, y, 0., yg, 0.020, 0.0014, 0.0030);
+  b = b + gb(ax, y, 0., -0.094, 0.016, 0.012, 0.0080);
+  b = b - gb(ax, y, 0., yg - 0.0175, 0.012, 0.003, 0.0030);
+  b;
+}
+
+// ---- the eye and the mouth ----
+
+const EYE_R = 0.0135;          // the eyeball's radius
+const EYE_SHELL = 0.0158;      // the lid shell's: more than the eyeball and its cornea's bulge together
+const EYE_X = 0.031;
+const EYE_Y = 0.020;
+const EYE_Z = -0.0702;
+const LID_HW = 0.0108;         // half the opening's width
+const LID_HU = 0.0058;         // the upper edge above the eye's centre line, at the middle
+const LID_HL = 0.0050;         // the lower edge below it
+const LID_TILT = 0.0012;       // the outer corner higher than the inner
+const EYE_ZONE0 = 0.0125;      // the shell gives way to the face between these radii
+const EYE_ZONE1 = 0.0300;
+const GROOVE_DEPTH = 0.014;
+
+fn eyeCentre(side f32) Vec3 { new Vec3(side * EYE_X, EYE_Y, EYE_Z); }
+
+// The opening's edges at a distance 'dx' (outward) from the eye's axis: the upper edge's height above
+// the centre line and the lower edge's (negative, below); both 0 where the opening ends
+fn lidEdges(dx f32) Vec2 {
+  imm q = dx / LID_HW;
+  imm h = if absf(q) < 1. { (1. - q * q).sqrt(); } else { 0.; };
+  new Vec2(LID_HU * h + LID_TILT * q * h, -LID_HL * h + LID_TILT * q * h);
+}
+
+// The eye operation of the header, on a point, for the eye at 'c' on side 'side' (+1 right, -1 left):
+// a change of the surface's depth alone, so the opening is where the shape says in the picture
+fn eyeOp(p Vec3, c Vec3, side f32) Vec3 {
+  imm dx = side * (p.x - c.x);
+  imm dy = p.y - c.y;
+  imm r = (dx * dx + dy * dy).sqrt();
+  if r >= EYE_ZONE1 { return p; }
+  imm edges = lidEdges(dx);
+  imm e = fmin(edges.x - dy, dy - edges.y);        // positive inside the opening
+  imm w = smoothstep(0., 0.0016, e);
+  imm rr = fmin(r, EYE_ZONE0);
+  mut zShell = c.z - (EYE_SHELL * EYE_SHELL - rr * rr).sqrt();
+  // the rim's roll, and the crease above the upper lid
+  if e < 0. {
+    imm along = 1. - smoothstep(0.80, 1.0, absf(dx) / LID_HW);
+    zShell = zShell - 0.0005 * along * libc.expf(-(e / 0.0009) * (e / 0.0009));
+  }
+  if absf(dx) < LID_HW {
+    imm k = (dy - (edges.x + 0.0045)) / 0.0022;
+    zShell = zShell + 0.0008 * libc.expf(-k * k);
+  }
+  imm zIn = c.z - 0.006;
+  imm z = zShell * (1. - w) + zIn * w;
+  imm b = smoothstep(EYE_ZONE0, EYE_ZONE1, r);
+  new Vec3(p.x, p.y, z * (1. - b) + p.z * b);
+}
+
+fn mouthOp(p Vec3, yg f32) Vec3 {
+  imm ax = absf(p.x);
+  imm taper = 1. - smoothstep(0.018, 0.026, ax);
+  imm front = smoothstep(-0.02, -0.06, p.z);
+  imm dy = (p.y - yg) / 0.0006;
+  if absf(dy) > 4.5 { return p; }
+  imm g = libc.expf(-0.5 * dy * dy);
+  new Vec3(p.x, p.y, p.z + GROOVE_DEPTH * g * taper * front);
+}
+
+// The head's rest position at a lathe coordinate
+fn headVertex(theta f32, y f32, yg f32) Vec3 {
+  imm base = lathe(theta, y);
+  imm r = (base.x * base.x + base.z * base.z).sqrt();
+  // The outward horizontal direction; a feature only shows on the front
+  imm ux = if r > 0.000001 { base.x / r; } else { 0.; };
+  imm uz = if r > 0.000001 { base.z / r; } else { -1.; };
+  imm fm = smoothstep(-0.010, -0.050, base.z);
+  imm bump = featureHeight(base.x, y, yg) * fm;
+  mut p = new Vec3(base.x + ux * bump, y, base.z + uz * bump);
+  p = eyeOp(p, eyeCentre(1.), 1.);
+  p = eyeOp(p, eyeCentre(-1.), -1.);
+  mouthOp(p, yg);
+}
+
+// ---- the jaw's skin weight ----
+
+fn jawWeightAt(p Vec3, yg f32, pivot Vec3, lipZ f32) f32 {
+  // The plane through the mouth line and the hinge: normal (0, dz, -dy) over its length
+  imm dy = pivot.y - yg;
+  imm dz = pivot.z - lipZ;
+  imm len = (dy * dy + dz * dz).sqrt();
+  imm n = new Vec3(0., dz / len, -dy / len);
+  imm s = n.dot(new Vec3(0., p.y - yg, p.z - lipZ));
+  imm ax = absf(p.x);
+  imm width = 0.0009 + 0.010 * smoothstep(0.012, 0.032, ax);
+  // below the plane (s < 0) the jaw
+  imm t = smoothstep(-1., 1., -s / width);
+  // Faded down the throat and neck, and kept off the skull behind the hinge
+  imm low = 1. - smoothstep(-0.103, -0.143, p.y);
+  imm back = 1. - smoothstep(0.03, 0.06, p.z - pivot.z);
+  t * low * back;
+}
+
+// ---- the build ----
+
+fn makeSphere(rx f32, ry f32, rz f32, centre Vec3, seg i32) Mesh {
+  mut m = Mesh.sphere(1., seg);
+  m.transform(Mat4.fromTrs(centre, Quat.identity(), new Vec3(rx, ry, rz)));
+  m;
+}
+
+// An eyeball with its pole along -z, with a cornea's bulge and its uv a planar projection along z
+fn eyeball(seg i32) Mesh {
+  mut m = Mesh.empty();
+  imm n = seg;
+  mut i = 0;
+  while i <= n {
+    imm phi = pi * f32.from(i) / f32.from(n);          // from the front pole
+    mut j = 0;
+    while j <= n {
+      imm psi = 2. * pi * f32.from(j) / f32.from(n);
+      imm sx = sin(phi) * cos(psi);
+      imm sy = sin(phi) * sin(psi);
+      imm sz = -cos(phi);
+      imm bulge = 0.0010 * (1. - smoothstep(0.35, 0.62, phi));
+      imm r = EYE_R + bulge;
+      m.positions.push(new Vec3(sx * r, sy * r, sz * r));
+      m.normals.push(new Vec3(sx, sy, sz));
+      m.uvs.push(new Vec2(0.5 + 0.5 * sx, 0.5 + 0.5 * sy));
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while i < n {
+    mut j = 0;
+    while j < n {
+      imm a = u32.from(i * (n + 1) + j);
+      imm b = u32.from(i * (n + 1) + j + 1);
+      imm c = u32.from((i + 1) * (n + 1) + j + 1);
+      imm d = u32.from((i + 1) * (n + 1) + j);
+      m.indices.push(a);
+      m.indices.push(b);
+      m.indices.push(c);
+      m.indices.push(a);
+      m.indices.push(c);
+      m.indices.push(d);
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  m;
+}
+
+// The nearest vertex of the front of the skin to (x, y)
+fn surfaceNear(mesh &Mesh, x f32, y f32) Vec3 {
+  mut best = 1000000.;
+  mut at = new Vec3(x, y, -0.085);
+  mut v = 0usize;
+  while v < mesh.positions.len() {
+    imm p = *mesh.positions[v];
+    if p.z < -0.03 {
+      imm d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+      if d < best { best = d; at = p; }
+    }
+    v = v + 1usize;
+  }
+  at;
+}
+
+fn addSymmetric(spec &mut FaceSpec, mesh &Mesh, name &str, x f32, y f32) {
+  mut r = String.from(name);
+  r.append("R");
+  mut l = String.from(name);
+  l.append("L");
+  imm pr = surfaceNear(mesh, x, y);
+  imm pl = surfaceNear(mesh, -x, y);
+  spec.add(r.view(), pr);
+  spec.add(l.view(), pl);
+}
+
+// A test head with 'rows' sections by 'cols' columns of skin (about 400 by 512 for a close-up, 100 by 128 for a test)
+pub fn makeTestHead(rows usize, cols usize) TestHead {
+  imm dy = (Y_TOP - Y_BOTTOM) / f32.from(rows);
+  // The mouth line on a grid row, so its slot is the same depth all along
+  imm rowOfGroove = libc.floorf((Y_TOP + 0.0628) / dy + 0.5);
+  imm yg = Y_TOP - rowOfGroove * dy;
+  imm pivot = new Vec3(0., -0.002, 0.012);
+
+  mut mesh = Mesh.empty();
+  mut j = 0usize;
+  while j <= rows {
+    imm y = Y_TOP - f32.from(j) * dy;
+    mut i = 0usize;
+    while i <= cols {
+      imm theta = -pi + 2. * pi * f32.from(i) / f32.from(cols);
+      mesh.positions.push(headVertex(theta, y, yg));
+      mesh.uvs.push(new Vec2(f32.from(i) / f32.from(cols), (y - Y_BOTTOM) / (Y_TOP - Y_BOTTOM)));
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  imm stride = cols + 1usize;
+  j = 0usize;
+  while j < rows {
+    mut i = 0usize;
+    while i < cols {
+      imm v00 = u32.from(j * stride + i);
+      imm v01 = u32.from(j * stride + i + 1usize);
+      imm v10 = u32.from((j + 1usize) * stride + i);
+      imm v11 = u32.from((j + 1usize) * stride + i + 1usize);
+      mesh.indices.push(v00);
+      mesh.indices.push(v01);
+      mesh.indices.push(v11);
+      mesh.indices.push(v00);
+      mesh.indices.push(v11);
+      mesh.indices.push(v10);
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+
+  // Ears: flattened ellipsoids on the sides of the head
+  mut ear = makeSphere(0.0065, 0.030, 0.018, new Vec3(0.0775, -0.006, 0.014), 14);
+  mut ear2 = makeSphere(0.0065, 0.030, 0.018, new Vec3(-0.0775, -0.006, 0.014), 14);
+  imm skinNormalsBefore = mesh.positions.len();
+  mesh.computeSmoothNormals();
+  // The seam column and the crown: one normal for the two copies
+  j = 0usize;
+  while j <= rows {
+    imm a = j * stride;
+    imm b = j * stride + cols;
+    imm nn = (*mesh.normals[a] + *mesh.normals[b]).normalize();
+    mesh.normals.set(a, nn);
+    mesh.normals.set(b, nn);
+    j = j + 1usize;
+  }
+  mut i = 0usize;
+  while i <= cols { mesh.normals.set(i, new Vec3(0., 1., 0.)); i = i + 1usize; }
+  imm skinVertices = mesh.positions.len();
+  mesh.append(&ear);
+  mesh.append(&ear2);
+  // The ears' uvs point at a plain patch of the skin texture
+  mut e = skinVertices;
+  while e < mesh.positions.len() { mesh.uvs.set(e, new Vec2(0.02, 0.7)); e = e + 1usize; }
+
+  // The landmarks
+  mut spec = FaceSpec.empty();
+  spec.jawPivot = pivot;
+  imm shell = EYE_SHELL;
+  mut side = 1.;
+  while side > -2. {
+    imm c = eyeCentre(side);
+    imm sfx = if side > 0. { "R"; } else { "L"; };
+    mut nm = String.from("eyeCenter");
+    nm.append(sfx);
+    spec.add(nm.view(), c);
+    nm = String.from("lidUpper");
+    nm.append(sfx);
+    spec.add(nm.view(), new Vec3(c.x, c.y + LID_HU, c.z - (shell * shell - LID_HU * LID_HU).sqrt()));
+    nm = String.from("lidLower");
+    nm.append(sfx);
+    spec.add(nm.view(), new Vec3(c.x, c.y - LID_HL, c.z - (shell * shell - LID_HL * LID_HL).sqrt()));
+    side = side - 2.;
+  }
+  addSymmetric(&mut spec, &mesh, "browInner", 0.014, 0.0475);
+  addSymmetric(&mut spec, &mesh, "browMid", 0.032, 0.0515);
+  addSymmetric(&mut spec, &mesh, "browOuter", 0.053, 0.0455);
+  addSymmetric(&mut spec, &mesh, "noseBridge", 0.004, 0.012);
+  addSymmetric(&mut spec, &mesh, "noseWing", 0.0135, -0.0405);
+  addSymmetric(&mut spec, &mesh, "cheek", 0.050, -0.018);
+  addSymmetric(&mut spec, &mesh, "lipUpper", 0.011, yg + 0.0050);
+  addSymmetric(&mut spec, &mesh, "lipLower", 0.012, yg - 0.0072);
+  addSymmetric(&mut spec, &mesh, "chinCenter", 0.006, -0.0885);
+  addSymmetric(&mut spec, &mesh, "jawAngle", 0.060, -0.085);
+  spec.add("glabella", surfaceNear(&mesh, 0., 0.040));
+  spec.add("noseTip", surfaceNear(&mesh, 0., -0.037));
+  imm upperPad = surfaceNear(&mesh, 0., yg + 0.0050);
+  spec.add("lipUpper", upperPad);
+  spec.add("lipLower", surfaceNear(&mesh, 0., yg - 0.0072));
+  spec.add("lipContact", new Vec3(0., yg, upperPad.z));
+  spec.add("philtrum", surfaceNear(&mesh, 0., -0.052));
+  spec.add("chinTip", surfaceNear(&mesh, 0., -0.103));
+  // The mouth corners sit on the line, at the end of the slot
+  imm cornerR = surfaceNear(&mesh, 0.0265, yg);
+  imm cornerL = surfaceNear(&mesh, -0.0265, yg);
+  spec.add("mouthCornerR", cornerR);
+  spec.add("mouthCornerL", cornerL);
+  spec.scale = 0.062;
+  spec.eyeRadius = EYE_R;
+  spec.upperLidEdge = asin(LID_HU / shell);
+  spec.lowerLidEdge = asin(LID_HL / shell);
+  spec.closingLine = -0.10;
+
+  // The jaw's weights
+  mut jw = List[f32].empty();
+  e = 0usize;
+  while e < mesh.positions.len() {
+    if e < skinVertices { jw.push(jawWeightAt(*mesh.positions[e], yg, pivot, upperPad.z)); } else { jw.push(0.); }
+    e = e + 1usize;
+  }
+
+  // The eyeball, the mouth parts
+  imm eyeMesh = eyeball(40);
+  mut upper = Mesh.empty();
+  mut lower = Mesh.empty();
+  imm xs = [-0.0190, -0.0125, -0.0043, 0.0043, 0.0125, 0.0190];
+  imm halfW = [0.0050, 0.0036, 0.0042, 0.0042, 0.0036, 0.0050];
+  mut t = 0usize;
+  while t < 6usize {
+    imm ax = absf(xs[t]);
+    imm zc = -0.0715 + (ax / 0.019) * (ax / 0.019) * 0.0075;
+    mut tu = makeSphere(halfW[t], 0.0052, 0.0042, new Vec3(xs[t], yg + 0.0044, zc), 12);
+    upper.append(&tu);
+    mut tl = makeSphere(halfW[t] * 0.92, 0.0045, 0.0040, new Vec3(xs[t], yg - 0.0040, zc + 0.0035), 12);
+    lower.append(&tl);
+    t = t + 1usize;
+  }
+  imm tongueRoot = new Vec3(0., yg - 0.0075, -0.030);
+  imm tongue = makeSphere(0.0165, 0.0058, 0.0230, new Vec3(0., yg - 0.0072, -0.050), 16);
+  imm cavity = makeSphere(0.0300, 0.0210, 0.0240, new Vec3(0., yg - 0.0040, -0.044), 20);
+
+  // Textures
+  imm skinPixels = paintSkin(&spec, yg);
+  imm eyePixels = paintEye();
+
+  new TestHead(mesh, jw, spec, eyeMesh, upper, lower, tongue, cavity, tongueRoot, skinPixels, eyePixels, rows, cols, yg);
+}

@@ -1,0 +1,347 @@
+// ======== The ground maps: what the rules read ========
+//
+// A GroundMaps is a square raster over a patch of ground holding the eight
+// signals the cover rules measure (types.cone: height, slope, moisture,
+// exposure, distance to a path, distance to water, canopy, distance to an
+// object), one f32 for each, and the far-field colour the cover adds up to
+// seen from a distance. It is DATA: any source fills it (a terrain's heights, a
+// painted mask, a simulation's wetness) with 'set', and the helpers below
+// derive what can be derived from the others (slope from heights, exposure
+// from a sun direction by marching shadows over the heightfield, moisture
+// from the distance to water, distances to polylines and points).
+//
+// Texel (i, j) is at the world point (originX + (i + 0.5) texel, originZ + (j + 0.5) texel),
+// 'texel' being size / res. A sample is BILINEAR over the four nearest texels,
+// clamped at the edge, computed in the shader by 'Load' and four weights, not by
+// a sampler, so that the GPU's sample is the same arithmetic as the CPU's.
+// The GPU holds the eight channels side by side in one r32float texture,
+// 8 res wide and res high: channel c of texel (i, j) is texel (c res + i, j).
+
+// The distance every distance signal starts at, and is clamped to
+pub const FAR = 64f32;
+
+pub struct GroundMaps {
+  pub originX f32;
+  pub originZ f32;
+  pub size f32;                    // metres across (the raster is square)
+  pub res u32;                     // texels across
+  pub texel f32;                   // metres a texel
+  pub data List[f32];              // channel c, texel (i, j) at c res res + j res + i
+  pub farField List[u8];           // RGBA8, res x res, row 0 at the smallest z: the colour the ground adds up to
+
+  // Maps over the square from (originX, originZ) 'size' metres each way, 'res'
+  // texels across. Height 0, flat, a little damp, in full sun, no path, water,
+  // canopy or objects near.
+  pub fn create(originX f32, originZ f32, size f32, res u32) GroundMaps {
+    imm n = usize.from(res) * usize.from(res);
+    mut data = List[f32].withCapacity(n * SIGNALS);
+    data.resize(n * SIGNALS, 0.);
+    mut m = new GroundMaps(originX, originZ, size, res, size / f32.from(res), data, List[u8].empty());
+    m.fill(SIGNAL_MOISTURE, 0.3);
+    m.fill(SIGNAL_EXPOSURE, 1.);
+    m.fill(SIGNAL_PATH, FAR);
+    m.fill(SIGNAL_WATER, FAR);
+    m.fill(SIGNAL_OBJECT, FAR);
+    m;
+  }
+
+  pub fn fill(self &mut, c usize, v f32) {
+    imm n = usize.from(res) * usize.from(res);
+    mut k = 0usize;
+    while k < n {
+      data.set(c * n + k, v);
+      k = k + 1usize;
+    }
+  }
+
+  // The world position of texel column i, and row j
+  pub fn worldX(self &, i u32) f32 { originX + (f32.from(i) + 0.5) * texel; }
+  pub fn worldZ(self &, j u32) f32 { originZ + (f32.from(j) + 0.5) * texel; }
+
+  // Channel 'c' of texel (i, j)
+  pub fn at(self &, c usize, i u32, j u32) f32 {
+    imm n = usize.from(res) * usize.from(res);
+    *data[c * n + usize.from(j) * usize.from(res) + usize.from(i)];
+  }
+
+  pub fn set(self &mut, c usize, i u32, j u32, v f32) {
+    imm n = usize.from(res) * usize.from(res);
+    data.set(c * n + usize.from(j) * usize.from(res) + usize.from(i), v);
+  }
+
+  fn clampIndex(self &, v i32) u32 {
+    if v < 0i32 { return 0u32; }
+    if v >= i32.from(res) { return res - 1u32; }
+    u32.from(v);
+  }
+
+  // Channel 'c' at the world point (x, z): bilinear, clamped at the edge.
+  // cover.slang's 'mapSample' is this, operation for operation.
+  pub fn sample(self &, c usize, x f32, z f32) f32 {
+    imm u = (x - originX) / texel - 0.5;
+    imm v = (z - originZ) / texel - 0.5;
+    imm fu = libc.floorf(u);
+    imm fv = libc.floorf(v);
+    imm tx = u - fu;
+    imm ty = v - fv;
+    imm i0 = self.clampIndex(i32.from(fu));
+    imm i1 = self.clampIndex(i32.from(fu) + 1i32);
+    imm j0 = self.clampIndex(i32.from(fv));
+    imm j1 = self.clampIndex(i32.from(fv) + 1i32);
+    imm a = self.at(c, i0, j0);
+    imm b = self.at(c, i1, j0);
+    imm cc = self.at(c, i0, j1);
+    imm d = self.at(c, i1, j1);
+    imm top = a + (b - a) * tx;
+    imm bottom = cc + (d - cc) * tx;
+    top + (bottom - top) * ty;
+  }
+
+  pub fn heightAt(self &, x f32, z f32) f32 { self.sample(SIGNAL_HEIGHT, x, z); }
+
+  // The ground's unit normal at (x, z), from the height a texel either side
+  pub fn normalAt(self &, x f32, z f32) Vec3 {
+    imm dx = (self.sample(SIGNAL_HEIGHT, x + texel, z) - self.sample(SIGNAL_HEIGHT, x - texel, z)) / (2. * texel);
+    imm dz = (self.sample(SIGNAL_HEIGHT, x, z + texel) - self.sample(SIGNAL_HEIGHT, x, z - texel)) / (2. * texel);
+    imm inv = 1. / (dx * dx + 1. + dz * dz).sqrt();
+    new Vec3(0. - dx * inv, inv, 0. - dz * inv);
+  }
+
+  // All eight signals at (x, z)
+  pub fn signalsAt(self &, x f32, z f32) Array[f32, 8] {
+    [self.sample(0usize, x, z), self.sample(1usize, x, z), self.sample(2usize, x, z), self.sample(3usize, x, z),
+      self.sample(4usize, x, z), self.sample(5usize, x, z), self.sample(6usize, x, z), self.sample(7usize, x, z)];
+  }
+
+  // ---- Deriving signals ----
+
+  // The slope channel (degrees from flat) from the heights, by central
+  // differences over one texel each side
+  pub fn deriveSlope(self &mut) {
+    mut j = 0u32;
+    while j < res {
+      mut i = 0u32;
+      while i < res {
+        imm n = self.normalAt(self.worldX(i), self.worldZ(j));
+        self.set(SIGNAL_SLOPE, i, j, degrees(acos(n.y)));
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+  }
+
+  // The exposure channel from a sun 'toSun' (unit vector towards it): the
+  // share of the sun's light a surface gets relative to flat ground, 0 in the
+  // shadow of the terrain itself (a march of 'reach' metres toward the sun over
+  // the heightfield, in steps of a texel, each step compared with the ground
+  // there) and capped at 1. Soft by one texel of blur. Later, 'shadeByCanopy'
+  // dims it under trees.
+  pub fn deriveExposure(self &mut, toSun Vec3, reach f32) {
+    imm n = usize.from(res) * usize.from(res);
+    mut raw = List[f32].withCapacity(n);
+    raw.resize(n, 0.);
+    imm horizontal = (toSun.x * toSun.x + toSun.z * toSun.z).sqrt();
+    imm flat = fmax(toSun.y, 0.05);
+    mut j = 0u32;
+    while j < res {
+      mut i = 0u32;
+      while i < res {
+        imm x = self.worldX(i);
+        imm z = self.worldZ(j);
+        imm y = self.heightAt(x, z);
+        mut lit = 1f32;
+        if horizontal > 0.0001 {
+          imm rise = toSun.y / horizontal;
+          mut s = 1f32;
+          while s * texel < reach {
+            imm px = x + toSun.x / horizontal * s * texel;
+            imm pz = z + toSun.z / horizontal * s * texel;
+            if self.heightAt(px, pz) > y + rise * s * texel + 0.02 {
+              lit = 0.;
+              s = reach / texel;
+            }
+            s = s + 1.;
+          }
+        }
+        imm normal = self.normalAt(x, z);
+        imm facing = fclamp((normal.x * toSun.x + normal.y * toSun.y + normal.z * toSun.z) / flat, 0., 1.);
+        raw.set(usize.from(j) * usize.from(res) + usize.from(i), lit * facing);
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+    // a one-texel blur, so the shadow's edge is not a staircase
+    j = 0u32;
+    while j < res {
+      mut i = 0u32;
+      while i < res {
+        mut sum = 0f32;
+        mut count = 0f32;
+        mut dj = -1i32;
+        while dj <= 1i32 {
+          mut di = -1i32;
+          while di <= 1i32 {
+            imm ii = i32.from(i) + di;
+            imm jj = i32.from(j) + dj;
+            if ii >= 0i32 and jj >= 0i32 and ii < i32.from(res) and jj < i32.from(res) {
+              sum = sum + *raw[usize.from(u32.from(jj)) * usize.from(res) + usize.from(u32.from(ii))];
+              count = count + 1.;
+            }
+            di = di + 1i32;
+          }
+          dj = dj + 1i32;
+        }
+        self.set(SIGNAL_EXPOSURE, i, j, sum / count);
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+  }
+
+  // Dim exposure under the canopy: exposure x (1 - strength x canopy)
+  pub fn shadeByCanopy(self &mut, strength f32) {
+    mut j = 0u32;
+    while j < res {
+      mut i = 0u32;
+      while i < res {
+        self.set(SIGNAL_EXPOSURE, i, j, self.at(SIGNAL_EXPOSURE, i, j) * (1. - strength * self.at(SIGNAL_CANOPY, i, j)));
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+  }
+
+  // The moisture channel from the distance to water: 'dry' far away, rising
+  // to 1 at the water's edge as e^(-distance / reach), and a little drier on
+  // slopes (water runs off): moisture x (1 - slopeLoss x slope / 45), at least 0
+  pub fn deriveMoisture(self &mut, dry f32, reach f32, slopeLoss f32) {
+    mut j = 0u32;
+    while j < res {
+      mut i = 0u32;
+      while i < res {
+        imm w = self.at(SIGNAL_WATER, i, j);
+        mut m = dry + (1. - dry) * libc.expf(0. - w / reach);
+        m = m * (1. - slopeLoss * fclamp(self.at(SIGNAL_SLOPE, i, j) / 45., 0., 1.));
+        self.set(SIGNAL_MOISTURE, i, j, fclamp(m, 0., 1.));
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+  }
+
+  // Lower channel 'c' (a distance channel) to the distance to the polyline
+  // through 'points' (x, z) less 'halfWidth': a path or a stream of that
+  // width. Exact (point to segment), for texels within FAR of it.
+  pub fn addPolylineDistance(self &mut, c usize, points &List[Vec2], halfWidth f32) {
+    mut s = 0usize;
+    while s + 1usize < points.len() {
+      imm a = *points[s];
+      imm b = *points[s + 1usize];
+      self.addSegmentDistance(c, a, b, halfWidth);
+      s = s + 1usize;
+    }
+  }
+
+  fn addSegmentDistance(self &mut, c usize, a Vec2, b Vec2, halfWidth f32) {
+    imm lo = new Vec2(fmin(a.x, b.x) - FAR, fmin(a.y, b.y) - FAR);
+    imm hi = new Vec2(fmax(a.x, b.x) + FAR, fmax(a.y, b.y) + FAR);
+    imm i0 = self.clampIndex(i32.from(libc.floorf((lo.x - originX) / texel)));
+    imm i1 = self.clampIndex(i32.from(libc.floorf((hi.x - originX) / texel)) + 1i32);
+    imm j0 = self.clampIndex(i32.from(libc.floorf((lo.y - originZ) / texel)));
+    imm j1 = self.clampIndex(i32.from(libc.floorf((hi.y - originZ) / texel)) + 1i32);
+    imm ab = b - a;
+    imm len2 = fmax(ab.x * ab.x + ab.y * ab.y, 0.000001);
+    mut j = j0;
+    while j <= j1 {
+      mut i = i0;
+      while i <= i1 {
+        imm p = new Vec2(self.worldX(i), self.worldZ(j));
+        imm t = fclamp(((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2, 0., 1.);
+        imm dx = p.x - (a.x + ab.x * t);
+        imm dz = p.y - (a.y + ab.y * t);
+        imm d = fmax((dx * dx + dz * dz).sqrt() - halfWidth, 0.);
+        if d < self.at(c, i, j) { self.set(c, i, j, fmin(d, FAR)); }
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+  }
+
+  // Lower the object-distance channel round a round object (a boulder, a
+  // trunk) at (x, z) of 'radius'
+  pub fn addObject(self &mut, x f32, z f32, radius f32) {
+    imm p = new Vec2(x, z);
+    self.addSegmentDistance(SIGNAL_OBJECT, p, p, radius);
+  }
+
+  // Raise the canopy channel under a tree crown: a disc of 'radius' at (x, z)
+  // whose density is 'density' (0 to 1) at the middle and falls to 0 at the
+  // rim (a smoothstep), the largest of overlapping crowns kept
+  pub fn addCrown(self &mut, x f32, z f32, radius f32, density f32) {
+    imm i0 = self.clampIndex(i32.from(libc.floorf((x - radius - originX) / texel)));
+    imm i1 = self.clampIndex(i32.from(libc.floorf((x + radius - originX) / texel)) + 1i32);
+    imm j0 = self.clampIndex(i32.from(libc.floorf((z - radius - originZ) / texel)));
+    imm j1 = self.clampIndex(i32.from(libc.floorf((z + radius - originZ) / texel)) + 1i32);
+    mut j = j0;
+    while j <= j1 {
+      mut i = i0;
+      while i <= i1 {
+        imm dx = self.worldX(i) - x;
+        imm dz = self.worldZ(j) - z;
+        imm r = (dx * dx + dz * dz).sqrt() / radius;
+        if r < 1. {
+          imm t = 1. - r;
+          imm v = density * t * t * (3. - 2. * t);
+          if v > self.at(SIGNAL_CANOPY, i, j) { self.set(SIGNAL_CANOPY, i, j, v); }
+        }
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+  }
+
+  // ---- The far-field colour ----
+
+  // The colour at (x, z) the far field holds: linear rgb
+  pub fn farColorAt(self &, x f32, z f32) Vec3 {
+    if farField.len() == 0usize { return new Vec3(0.2, 0.2, 0.2); }
+    imm u = (x - originX) / texel - 0.5;
+    imm v = (z - originZ) / texel - 0.5;
+    imm fu = libc.floorf(u);
+    imm fv = libc.floorf(v);
+    imm tx = u - fu;
+    imm ty = v - fv;
+    imm i0 = self.clampIndex(i32.from(fu));
+    imm i1 = self.clampIndex(i32.from(fu) + 1i32);
+    imm j0 = self.clampIndex(i32.from(fv));
+    imm j1 = self.clampIndex(i32.from(fv) + 1i32);
+    mut out = new Vec3(0., 0., 0.);
+    mut ch = 0usize;
+    while ch < 3usize {
+      imm a = srgbToLinear(f32.from(*farField[(usize.from(j0) * usize.from(res) + usize.from(i0)) * 4usize + ch]) / 255.);
+      imm b = srgbToLinear(f32.from(*farField[(usize.from(j0) * usize.from(res) + usize.from(i1)) * 4usize + ch]) / 255.);
+      imm cc = srgbToLinear(f32.from(*farField[(usize.from(j1) * usize.from(res) + usize.from(i0)) * 4usize + ch]) / 255.);
+      imm d = srgbToLinear(f32.from(*farField[(usize.from(j1) * usize.from(res) + usize.from(i1)) * 4usize + ch]) / 255.);
+      imm top = a + (b - a) * tx;
+      imm bottom = cc + (d - cc) * tx;
+      imm v2 = top + (bottom - top) * ty;
+      if ch == 0usize { out.x = v2; } elif ch == 1usize { out.y = v2; } else { out.z = v2; }
+      ch = ch + 1usize;
+    }
+    out;
+  }
+}
+
+pub fn fmin(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+pub fn fmax(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+pub fn fclamp(x f32, lo f32, hi f32) f32 { if x < lo { lo; } elif x > hi { hi; } else { x; }; }
+
+pub fn srgbToLinear(c f32) f32 {
+  if c <= 0.04045 { return c / 12.92; }
+  libc.powf((c + 0.055) / 1.055, 2.4);
+}
+
+pub fn linearToSrgb(c f32) f32 {
+  if c <= 0.0031308 { return c * 12.92; }
+  1.055 * libc.powf(c, 1. / 2.4) - 0.055;
+}

@@ -1,0 +1,361 @@
+// Lip sync: visemes, a timeline from phonemes, and coarticulation.
+//
+// VISEMES. A viseme is a mouth shape that several phonemes share ("p", "b"
+// and "m" look the same from outside). This package uses the fifteen of the
+// Oculus/Meta lip-sync set, which games and engines (Unity, Unreal, Meta's
+// avatars) already target: sil, PP, FF, TH, DD, kk, CH, SS, nn, RR, aa, E, ih,
+// oh, ou. Each viseme is a table of unit values (FACS units: AU26 jaw drop,
+// AU18 pucker, AU24 lip pressor ...) and, for each, a DOMINANCE: how strongly
+// that shape insists on the value. Bilabials insist on closed lips; a "k"
+// has no opinion about the lips at all and leaves them to its neighbours.
+//
+// COARTICULATION. A mouth does not hop from shape to shape: the shape for
+// "oo" starts forming during the sound before it. The model is Cohen and
+// Massaro's (1993, "Modeling coarticulation in synthetic visual speech"): each
+// phoneme segment has, for each articulator (here: each unit), a TARGET value
+// and a DOMINANCE that is greatest at the segment's centre and falls off
+// exponentially with time away from it, D(t) = a exp(-theta |t - c|), with a
+// faster fall before the centre than after it (anticipation is shorter than
+// carry-over). The articulator's value at a time is the dominance-weighted
+// average of the targets: sum(D T) / sum(D). A weak constant "rest"
+// dominance with target 0 returns the mouth to neutral between phrases. A
+// unit a segment does not list takes no part in its average.
+//
+// TIMELINE. A phoneme has a duration by its class (vowel 100 ms, stop 65 ms ...;
+// the speaking rate scales them), a diphthong is two visemes in one segment,
+// and the punctuation of the text makes pauses. 'utteranceFromPhonemes'
+// reads ARPAbet names ('HH AH L OW'), '|' between words, ',' and '.' for
+// pauses; 'utteranceFromText' runs the text through g2p.cone first.
+
+pub const VIS_SIL = 0u32;
+pub const VIS_PP = 1u32;
+pub const VIS_FF = 2u32;
+pub const VIS_TH = 3u32;
+pub const VIS_DD = 4u32;
+pub const VIS_KK = 5u32;
+pub const VIS_CH = 6u32;
+pub const VIS_SS = 7u32;
+pub const VIS_NN = 8u32;
+pub const VIS_RR = 9u32;
+pub const VIS_AA = 10u32;
+pub const VIS_E = 11u32;
+pub const VIS_IH = 12u32;
+pub const VIS_OH = 13u32;
+pub const VIS_OU = 14u32;
+pub const VISEME_COUNT = 15usize;
+
+// One unit's part in a viseme
+pub struct VisemeChannel {
+  pub au u32;
+  pub value f32;       // the target, 0 to 1
+  pub dominance f32;   // how strongly the viseme insists on it
+}
+
+pub struct Viseme {
+  pub name String;
+  pub channels List[VisemeChannel];
+  pub sharp f32;       // how fast its dominance falls away: 1 is the standard rate
+
+  pub fn make(name &str, sharp f32) Viseme { new Viseme(String.from(name), List[VisemeChannel].empty(), sharp); }
+
+  pub fn set(self, au u32, value f32, dominance f32) Viseme {
+    mut v = self;
+    v.channels.push(new VisemeChannel(au, value, dominance));
+    v;
+  }
+}
+
+// The fifteen visemes as unit tables (authored values; jaw is AU26)
+pub fn standardVisemes() List[Viseme] {
+  mut t = List[Viseme].empty();
+  t.push(Viseme.make("sil", 1.0));
+  t.push(Viseme.make("PP", 2.2).set(AU_LIP_PRESSOR, 1.0, 3.2).set(AU_LIP_TIGHTENER, 0.25, 1.5)
+    .set(AU_JAW_DROP, 0.0, 1.5).set(AU_LIPS_PART, 0.0, 2.0));
+  t.push(Viseme.make("FF", 1.8).set(AU_CHIN_RAISER, 0.55, 2.0).set(AU_LIP_SUCK, 0.35, 1.6).set(AU_UPPER_LIP_RAISER, 0.45, 1.6)
+    .set(AU_JAW_DROP, 0.12, 1.2).set(AU_LIPS_PART, 0.2, 1.0));
+  t.push(Viseme.make("TH", 1.4).set(AU_LIPS_PART, 0.4, 1.2).set(AU_JAW_DROP, 0.16, 1.0).set(AU_TONGUE, 0.7, 1.4));
+  t.push(Viseme.make("DD", 1.3).set(AU_JAW_DROP, 0.2, 0.7).set(AU_LIPS_PART, 0.3, 0.6).set(AU_TONGUE, 0.9, 1.2));
+  t.push(Viseme.make("kk", 1.3).set(AU_JAW_DROP, 0.24, 0.7).set(AU_LIPS_PART, 0.3, 0.5).set(AU_TONGUE, 0.35, 1.0));
+  t.push(Viseme.make("CH", 1.4).set(AU_LIP_PUCKER, 0.5, 1.6).set(AU_LIP_FUNNELER, 0.4, 1.4).set(AU_LIPS_PART, 0.3, 1.0)
+    .set(AU_JAW_DROP, 0.14, 1.0));
+  t.push(Viseme.make("SS", 1.4).set(AU_LIP_STRETCHER, 0.5, 1.5).set(AU_LIPS_PART, 0.2, 1.0).set(AU_JAW_DROP, 0.08, 1.3));
+  t.push(Viseme.make("nn", 1.3).set(AU_JAW_DROP, 0.16, 0.7).set(AU_LIPS_PART, 0.25, 0.6).set(AU_TONGUE, 0.85, 1.2));
+  t.push(Viseme.make("RR", 1.2).set(AU_LIP_PUCKER, 0.35, 1.2).set(AU_LIP_FUNNELER, 0.25, 1.0).set(AU_JAW_DROP, 0.2, 0.9)
+    .set(AU_LIPS_PART, 0.3, 0.8));
+  t.push(Viseme.make("aa", 1.0).set(AU_JAW_DROP, 0.8, 1.3).set(AU_LIPS_PART, 0.6, 1.0).set(AU_LOWER_LIP_DEPRESSOR, 0.25, 0.9));
+  t.push(Viseme.make("E", 1.0).set(AU_JAW_DROP, 0.5, 1.2).set(AU_LIPS_PART, 0.5, 1.0).set(AU_LIP_STRETCHER, 0.3, 0.9)
+    .set(AU_LIP_CORNER_PULLER, 0.15, 0.8));
+  t.push(Viseme.make("ih", 1.0).set(AU_JAW_DROP, 0.26, 1.1).set(AU_LIPS_PART, 0.35, 1.0).set(AU_LIP_STRETCHER, 0.35, 1.0)
+    .set(AU_LIP_CORNER_PULLER, 0.2, 0.8));
+  t.push(Viseme.make("oh", 1.0).set(AU_JAW_DROP, 0.5, 1.2).set(AU_LIPS_PART, 0.45, 1.0).set(AU_LIP_FUNNELER, 0.6, 1.2)
+    .set(AU_LIP_PUCKER, 0.3, 1.0));
+  t.push(Viseme.make("ou", 1.1).set(AU_LIP_PUCKER, 0.8, 1.5).set(AU_LIP_FUNNELER, 0.45, 1.2).set(AU_LIPS_PART, 0.3, 0.9)
+    .set(AU_JAW_DROP, 0.16, 1.0));
+  t;
+}
+
+// The tongue's lift as a pseudo-AU for the viseme tables
+pub const AU_TONGUE = CH_TONGUE_LIFT;
+
+// ---- Phonemes ----
+
+pub struct PhonemeInfo {
+  pub name String;
+  pub viseme u32;
+  pub viseme2 i32;       // a diphthong's second shape, or -1
+  pub duration f32;      // seconds at the standard rate
+}
+
+fn ph(name &str, viseme u32, viseme2 i32, duration f32) PhonemeInfo {
+  new PhonemeInfo(String.from(name), viseme, viseme2, duration);
+}
+
+// The ARPAbet phonemes of CMUdict, each with its viseme and its duration
+pub fn standardPhonemes() List[PhonemeInfo] {
+  mut t = List[PhonemeInfo].empty();
+  t.push(ph("AA", VIS_AA, -1i32, 0.115));
+  t.push(ph("AE", VIS_E, -1i32, 0.115));
+  t.push(ph("AH", VIS_AA, -1i32, 0.085));
+  t.push(ph("AO", VIS_OH, -1i32, 0.115));
+  t.push(ph("AW", VIS_AA, i32.from(VIS_OU), 0.165));
+  t.push(ph("AY", VIS_AA, i32.from(VIS_IH), 0.165));
+  t.push(ph("B", VIS_PP, -1i32, 0.065));
+  t.push(ph("CH", VIS_CH, -1i32, 0.105));
+  t.push(ph("D", VIS_DD, -1i32, 0.060));
+  t.push(ph("DH", VIS_TH, -1i32, 0.060));
+  t.push(ph("EH", VIS_E, -1i32, 0.100));
+  t.push(ph("ER", VIS_RR, -1i32, 0.110));
+  t.push(ph("EY", VIS_E, i32.from(VIS_IH), 0.150));
+  t.push(ph("F", VIS_FF, -1i32, 0.085));
+  t.push(ph("G", VIS_KK, -1i32, 0.060));
+  t.push(ph("HH", VIS_SIL, -1i32, 0.055));
+  t.push(ph("IH", VIS_IH, -1i32, 0.085));
+  t.push(ph("IY", VIS_IH, -1i32, 0.105));
+  t.push(ph("JH", VIS_CH, -1i32, 0.095));
+  t.push(ph("K", VIS_KK, -1i32, 0.070));
+  t.push(ph("L", VIS_DD, -1i32, 0.070));
+  t.push(ph("M", VIS_PP, -1i32, 0.080));
+  t.push(ph("N", VIS_NN, -1i32, 0.070));
+  t.push(ph("NG", VIS_KK, -1i32, 0.075));
+  t.push(ph("OW", VIS_OH, i32.from(VIS_OU), 0.150));
+  t.push(ph("OY", VIS_OH, i32.from(VIS_IH), 0.165));
+  t.push(ph("P", VIS_PP, -1i32, 0.070));
+  t.push(ph("R", VIS_RR, -1i32, 0.070));
+  t.push(ph("S", VIS_SS, -1i32, 0.090));
+  t.push(ph("SH", VIS_CH, -1i32, 0.100));
+  t.push(ph("T", VIS_DD, -1i32, 0.060));
+  t.push(ph("TH", VIS_TH, -1i32, 0.080));
+  t.push(ph("UH", VIS_OU, -1i32, 0.090));
+  t.push(ph("UW", VIS_OU, -1i32, 0.115));
+  t.push(ph("V", VIS_FF, -1i32, 0.070));
+  t.push(ph("W", VIS_OU, -1i32, 0.070));
+  t.push(ph("Y", VIS_IH, -1i32, 0.060));
+  t.push(ph("Z", VIS_SS, -1i32, 0.080));
+  t.push(ph("ZH", VIS_CH, -1i32, 0.090));
+  t;
+}
+
+pub fn findPhoneme(table &List[PhonemeInfo], name &str) i32 {
+  mut i = 0usize;
+  while i < table.len() {
+    if table[i].name.equals(name) { return i32.from(i); }
+    i = i + 1usize;
+  }
+  -1i32;
+}
+
+// ---- The timeline ----
+
+// One viseme in time: its shape, where it starts and ends (seconds)
+pub struct Segment {
+  pub viseme u32;
+  pub start f32;
+  pub end f32;
+
+  pub fn centre(self &) f32 { (start + end) * 0.5; }
+}
+
+// A spoken line: its segments, in order, and its length
+pub struct Utterance {
+  pub segments List[Segment];
+  pub phonemes List[String];       // the phonemes as read, for inspection
+  pub starts List[f32];            // each phoneme's start time
+  pub duration f32;
+
+  pub fn empty() Utterance { new Utterance(List[Segment].empty(), List[String].empty(), List[f32].empty(), 0.); }
+
+  pub fn copy(self &) Utterance {
+    mut u = Utterance.empty();
+    mut i = 0usize;
+    while i < segments.len() { u.segments.push(*segments[i]); i = i + 1usize; }
+    i = 0usize;
+    while i < phonemes.len() { u.phonemes.push(phonemes[i].copy()); u.starts.push(*starts[i]); i = i + 1usize; }
+    u.duration = duration;
+    u;
+  }
+}
+
+// Read phonemes into a timeline at 'rate' (1 is the standard pace; 1.3 is faster)
+pub fn utteranceFromPhonemes(text &str, rate f32) Utterance {
+  imm table = standardPhonemes();
+  mut u = Utterance.empty();
+  mut t = 0.;
+  imm src = String.from(text);
+  mut tok = String.empty();
+  mut i = 0usize;
+  while i <= src.len() {
+    imm c = if i < src.len() { src[i]; } else { 32u8; };
+    if c == 32u8 {
+      if tok.len() > 0usize {
+        if tok.equals(",") { u.segments.push(new Segment(VIS_SIL, t, t + 0.18 / rate)); t = t + 0.18 / rate; }
+        else if tok.equals(".") { u.segments.push(new Segment(VIS_SIL, t, t + 0.40 / rate)); t = t + 0.40 / rate; }
+        else if tok.equals("|") { }
+        else {
+          imm pi_ = findPhoneme(&table, tok.view());
+          if pi_ >= 0i32 {
+            imm info = table[usize.from(pi_)];
+            imm d = info.duration / rate;
+            u.phonemes.push(tok.copy());
+            u.starts.push(t);
+            if info.viseme2 < 0i32 {
+              u.segments.push(new Segment(info.viseme, t, t + d));
+            } else {
+              u.segments.push(new Segment(info.viseme, t, t + d * 0.5));
+              u.segments.push(new Segment(u32.from(info.viseme2), t + d * 0.5, t + d));
+            }
+            t = t + d;
+          }
+        }
+        tok = String.empty();
+      }
+    } else {
+      tok.appendByte(c);
+    }
+    i = i + 1usize;
+  }
+  u.duration = t;
+  u;
+}
+
+pub fn utteranceFromText(text &str, rate f32) Utterance {
+  imm ph_ = textToPhonemes(text);
+  utteranceFromPhonemes(ph_.view(), rate);
+}
+
+// ---- The player ----
+
+// One resolved channel: a unit of the rig, the target and the dominance
+pub struct VisChan {
+  pub unit usize;
+  pub value f32;
+  pub alpha f32;
+}
+
+// Plays an utterance: the Cohen and Massaro blend, into unit values
+pub struct Speech {
+  pub visemes List[Viseme];
+  pub chans List[List[VisChan]];    // for each viseme, its channels resolved to the rig's units
+  pub touched List[usize];          // every unit any viseme uses
+  pub utterance Utterance;
+  pub time f32;
+  pub playing bool;
+  pub thetaFore f32;                // the dominance's fall-off rate before a segment's centre, per second
+  pub thetaBack f32;                // and after it
+  pub rest f32;                     // the constant rest dominance
+  pub activity f32;                 // 0 silent to 1 speaking, for the rig's other clocks
+
+  // A player over the rig's unit table
+  pub fn make(units &List[UnitDef]) Speech {
+    imm v = standardVisemes();
+    mut chans = List[List[VisChan]].empty();
+    mut touched = List[usize].empty();
+    mut k = 0usize;
+    while k < v.len() {
+      mut row = List[VisChan].empty();
+      mut c = 0usize;
+      while c < v[k].channels.len() {
+        imm ch = v[k].channels[c];
+        mut side = 0u32;
+        while side < 3u32 {
+          imm ui = findUnit(units, ch.au, side);
+          if ui >= 0i32 {
+            // AU26 at 1 is a jaw wide open; speech uses a little over half of it
+            imm v = if ch.au == AU_JAW_DROP { ch.value * 0.6; } else { ch.value; };
+            row.push(new VisChan(usize.from(ui), v, ch.dominance));
+            mut seen = false;
+            mut q = 0usize;
+            while q < touched.len() { if *touched[q] == usize.from(ui) { seen = true; } q = q + 1usize; }
+            if !seen { touched.push(usize.from(ui)); }
+          }
+          side = side + 1u32;
+        }
+        c = c + 1usize;
+      }
+      chans.push(row);
+      k = k + 1usize;
+    }
+    new Speech(v, chans, touched, Utterance.empty(), 0., false, 11., 15., 0.12, 0.);
+  }
+
+  pub fn say(self &mut, u &Utterance) {
+    utterance = u.copy();
+    time = 0.;
+    playing = true;
+  }
+
+  pub fn stop(self &mut) { playing = false; activity = 0.; }
+
+  pub fn done(self &) bool { !playing or time > utterance.duration + 0.35; }
+
+  // The unit values at time 't' into 'out' (one a unit of the rig, added to what is there)
+  pub fn valuesAt(self &mut, t f32, out &mut List[f32]) {
+    imm nu = touched.len();
+    mut num = List[f32].empty();
+    mut den = List[f32].empty();
+    num.resize(nu, 0.);
+    den.resize(nu, self.rest);
+    mut best = 0.;
+    mut s = 0usize;
+    while s < utterance.segments.len() {
+      imm seg = utterance.segments[s];
+      imm centre = seg.centre();
+      imm dt = t - centre;
+      if absf(dt) < 0.45 and seg.viseme != VIS_SIL {
+        imm sharp = visemes[usize.from(seg.viseme)].sharp;
+        imm theta = (if dt < 0. { thetaFore; } else { thetaBack; }) * sharp;
+        imm fall = libc.expf(-theta * absf(dt));
+        if fall > best { best = fall; }
+        imm row = chans[usize.from(seg.viseme)];
+        mut c = 0usize;
+        while c < row.len() {
+          imm ch = row[c];
+          mut slot = 0usize;
+          while slot < nu { if *touched[slot] == ch.unit { break; } slot = slot + 1usize; }
+          imm d = ch.alpha * fall;
+          num.set(slot, *num[slot] + d * ch.value);
+          den.set(slot, *den[slot] + d);
+          c = c + 1usize;
+        }
+      }
+      s = s + 1usize;
+    }
+    activity = best;
+    mut slot = 0usize;
+    while slot < nu {
+      imm unit = *touched[slot];
+      out.set(unit, *out[unit] + *num[slot] / *den[slot]);
+      slot = slot + 1usize;
+    }
+  }
+
+  // Advance 'dt' seconds and add the unit values for the new time to 'out'
+  pub fn update(self &mut, dt f32, out &mut List[f32]) {
+    if !playing {
+      activity = 0.;
+      return;
+    }
+    time = time + dt;
+    self.valuesAt(time, out);
+    if time > utterance.duration + 0.5 { playing = false; activity = 0.; }
+  }
+}

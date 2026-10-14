@@ -1,0 +1,337 @@
+// Grip shapes, closing the fingers on a prop until they touch, and placing a hand on a handle.
+//
+// GRIP SHAPES. A grip shape is a pair of hand poses, 'open' (the preshape
+// the hand takes as it reaches) and 'closed' (the farthest it closes): the
+// power grip (a fist round a handle, thumb opposed), the pinch (thumb and
+// index), the hook (the fingers bent at the middle joints, a bag's handle,
+// a mug's), the flat palm, the claw. A hand holds something by closing from
+// one pose towards the other until the fingers meet it (Napier 1956;
+// Cutkosky 1989).
+//
+// METHOD: CLOSING UNTIL CONTACT WITH COUPLED JOINTS AND BLOCKING (the
+// auto-grasp of GraspIt!, Miller and Allen 2004, "GraspIt!: a versatile
+// simulator for robotic grasping"). Every joint of a finger closes together,
+// each at the pace that takes it from its open to its closed angle in the
+// same progress t from 0 to 1 (so a distal joint follows a middle one by the
+// ratio of their ranges, about 2/3). When a segment of the finger meets the
+// prop, the joints that move it (that segment's own joint and every one
+// before it) STOP; the joints beyond it (those that move only the segments
+// further out) go on closing until their segments meet the prop too. A
+// proximal segment that lands on the handle first therefore leaves the middle
+// and end segments free to wrap round it, and a fingertip that lands first
+// stops the whole finger: contact decides the shape, not a table. Each stop
+// is found by bisection between the last free and the first colliding
+// progress to within 16 halvings, so a segment ends within a micrometre of the
+// 'squash' depth, the depth a fingertip's flesh may be pressed (0.4 mm).
+//
+// CONTACT is the flesh's capsule: a segment's samples along its axis are
+// each a ball of the segment's radius, and a sample is in contact when its
+// distance to the prop, less that radius, is below the squash. No fingertip
+// ends more than the squash into the prop, which the tests measure.
+//
+// PLACEMENT puts the hand's wrist where a handle needs it. For a cylindrical
+// handle (a hammer's, a pin's, a mug's), 'cylinderGrip' puts the palm on the
+// handle's surface at a place along it and a roll round it, the fingers
+// across the handle (round it), the thumb along the handle towards one end.
+// 'fitGrip' then moves the hand along the approach (out from the handle) until the
+// open hand just clears the prop, so a preshape never starts inside it.
+
+pub struct GripShape {
+  pub name String;
+  pub open HandPose;
+  pub closed HandPose;
+}
+
+pub fn shapePower() GripShape { new GripShape(String.from("power"), posePowerOpen(), posePowerClosed()); }
+pub fn shapePinch() GripShape { new GripShape(String.from("pinch"), posePinchOpen(), posePinchClosed()); }
+pub fn shapeHook() GripShape { new GripShape(String.from("hook"), poseHookOpen(), poseHookClosed()); }
+pub fn shapeFlat() GripShape { new GripShape(String.from("flat palm"), poseFlat(), poseFlat()); }
+pub fn shapeClaw() GripShape { new GripShape(String.from("claw"), poseRelaxed(), poseClaw()); }
+
+// A segment touching a prop
+pub struct Contact {
+  pub finger usize;
+  pub segment usize;
+  pub point Vec3;       // where the flesh meets the surface, in the prop's space
+  pub gap f32;          // the surface's distance from the flesh: 0 touching, negative pressed in
+}
+
+pub struct GripResult {
+  pub pose HandPose;
+  pub contacts List[Contact];     // every segment within a millimetre of the prop, once a finger
+  pub fingersTouching usize;      // how many fingers have a segment in contact
+  pub deepest f32;                // the deepest any flesh is pressed into the surface, metres (0 if none)
+  pub palmGap f32;                // the palm's surface's distance from the prop's (negative inside)
+}
+
+const SAMPLES_PER_SEGMENT = 5usize;
+
+// The flesh's clearance from the surface: the smallest, over the samples of segments 'first' to 2 of finger 'f'
+// in 'pose', of the sample's distance to the surface less the flesh's radius. 'wrist' places the hand frame in the
+// surface's space.
+pub fn fingerClearance(spec &HandSpec, f usize, pose &HandPose, wrist &Transform3, surface &PropSurface, first usize) f32 {
+  imm fs = spec.fingers[f];
+  imm pts = fingerPoints(spec, f, pose);
+  mut best = 1000000.;
+  mut s = first;
+  while s < 3usize {
+    imm a = pts.joint[s];
+    imm b = pts.joint[s + 1usize];
+    mut k = if s == 0usize { 0usize; } else { 1usize; };
+    while k <= SAMPLES_PER_SEGMENT {
+      imm u = f32.from(k) / f32.from(SAMPLES_PER_SEGMENT);
+      imm p = wrist.transformPoint(a + (b - a) * u);
+      imm c = surface.distance(p) - fs.radius[s];
+      if c < best { best = c; }
+      k = k + 1usize;
+    }
+    s = s + 1usize;
+  }
+  best;
+}
+
+// Segment 's' alone
+fn segmentClearance(spec &HandSpec, f usize, pose &HandPose, wrist &Transform3, surface &PropSurface, s usize, at &mut Vec3) f32 {
+  imm fs = spec.fingers[f];
+  imm pts = fingerPoints(spec, f, pose);
+  imm a = pts.joint[s];
+  imm b = pts.joint[s + 1usize];
+  mut best = 1000000.;
+  mut k = 0usize;
+  while k <= SAMPLES_PER_SEGMENT {
+    imm u = f32.from(k) / f32.from(SAMPLES_PER_SEGMENT);
+    imm p = wrist.transformPoint(a + (b - a) * u);
+    imm c = surface.distance(p) - fs.radius[s];
+    if c < best { best = c; *at = p; }
+    k = k + 1usize;
+  }
+  best;
+}
+
+// The palm's clearance: its surface's centre and four corners
+pub fn palmClearance(spec &HandSpec, wrist &Transform3, surface &PropSurface) f32 {
+  imm c = spec.palmCentre;
+  imm hy = spec.palmHalf.y * 0.8;
+  imm hz = spec.palmHalf.z * 0.8;
+  imm offsets = [new Vec3(0., 0., 0.), new Vec3(0., -hy, -hz), new Vec3(0., -hy, hz), new Vec3(0., hy, -hz), new Vec3(0., hy, hz)];
+  mut best = 1000000.;
+  mut i = 0usize;
+  while i < 5usize {
+    imm p = wrist.transformPoint(c + offsets[i]);
+    imm d = surface.distance(p);
+    if d < best { best = d; }
+    i = i + 1usize;
+  }
+  best;
+}
+
+// A finger's pose at progress 't' from the shape's open to its closed; the joints that have stopped
+// ('stopped', one flag a flexion) keep 'held'
+fn fingerAt(shape &GripShape, f usize, t f32, held &HandPose, stopped &Array[bool, 3], spreadHeld bool) HandPose {
+  mut p = shape.open.copy();
+  mut k = 0usize;
+  while k < DOF {
+    imm o = shape.open.get(f, k);
+    imm c = shape.closed.get(f, k);
+    imm frozen = if k >= FLEX0 and k <= FLEX2 { stopped[k - FLEX0]; } else { spreadHeld; };
+    if frozen { p.set(f, k, held.get(f, k)); } else { p.set(f, k, o + (c - o) * t); }
+    k = k + 1usize;
+  }
+  p;
+}
+
+// Close finger 'f' on the surface: the final pose of that finger written into 'out'
+fn closeFinger(spec &HandSpec, shape &GripShape, f usize, wrist &Transform3, surface &PropSurface, squash f32, out &mut HandPose) {
+  imm steps = 40;
+  mut held = shape.open.copy();
+  mut stopped = [false, false, false];
+  mut spreadHeld = false;
+  mut tFree = 0.;
+  mut i = 1;
+  while i <= steps {
+    imm tn = f32.from(i) / f32.from(steps);
+    imm cand = fingerAt(shape, f, tn, &held, &stopped, spreadHeld);
+    if fingerClearance(spec, f, &cand, wrist, surface, 0usize) >= -squash {
+      tFree = tn;
+      held = cand;
+    } else {
+      // The step collided: the largest free progress in it, by bisection
+      mut lo = tFree;
+      mut hi = tn;
+      mut it = 0;
+      while it < 16 {
+        imm mid = (lo + hi) * 0.5;
+        imm c2 = fingerAt(shape, f, mid, &held, &stopped, spreadHeld);
+        if fingerClearance(spec, f, &c2, wrist, surface, 0usize) >= -squash { lo = mid; } else { hi = mid; }
+        it = it + 1;
+      }
+      held = fingerAt(shape, f, lo, &held, &stopped, spreadHeld);
+      tFree = lo;
+      // Which segments are in contact at the colliding progress: the joints that move them stop
+      imm hit = fingerAt(shape, f, hi, &held, &stopped, spreadHeld);
+      mut deepest = 0usize;
+      mut s = 0usize;
+      while s < 3usize {
+        mut dummy = new Vec3(0., 0., 0.);
+        if segmentClearance(spec, f, &hit, wrist, surface, s, &mut dummy) < -squash { deepest = s; }
+        s = s + 1usize;
+      }
+      mut j = 0usize;
+      while j <= deepest { stopped[j] = true; j = j + 1usize; }
+      spreadHeld = true;
+      if stopped[0] and stopped[1] and stopped[2] { break; }
+    }
+    i = i + 1;
+  }
+  mut k = 0usize;
+  while k < DOF { out.set(f, k, held.get(f, k)); k = k + 1usize; }
+}
+
+// Close the hand's fingers ('fingers' is a bit for each: 1 << f) from the shape's open pose until each meets the
+// surface, which is in the same space as 'wrist' (the hand frame's placement in it). The fingers not named stay open.
+pub fn closeOn(spec &HandSpec, shape &GripShape, wrist &Transform3, surface &PropSurface, squash f32, fingers u32) GripResult {
+  mut pose = shape.open.copy();
+  mut f = 0usize;
+  while f < FINGERS {
+    if (fingers & (1u32 << u32.from(f))) != 0u32 { closeFinger(spec, shape, f, wrist, surface, squash, &mut pose); }
+    f = f + 1usize;
+  }
+  measure(spec, &pose, wrist, surface);
+}
+
+// A pose's contacts, how deep it presses, and the palm's gap
+pub fn measure(spec &HandSpec, pose &HandPose, wrist &Transform3, surface &PropSurface) GripResult {
+  mut contacts = List[Contact].empty();
+  mut touching = 0usize;
+  mut deepest = 0.;
+  mut f = 0usize;
+  while f < FINGERS {
+    mut any = false;
+    mut s = 0usize;
+    while s < 3usize {
+      mut at = new Vec3(0., 0., 0.);
+      imm c = segmentClearance(spec, f, pose, wrist, surface, s, &mut at);
+      if c < 0.001 {
+        contacts.push(new Contact(f, s, at, c));
+        any = true;
+      }
+      if -c > deepest { deepest = -c; }
+      s = s + 1usize;
+    }
+    if any { touching = touching + 1usize; }
+    f = f + 1usize;
+  }
+  new GripResult(pose.copy(), contacts, touching, deepest, palmClearance(spec, wrist, surface));
+}
+
+// ---- placement ----
+
+// The rotation that takes the hand frame's x axis to 'x' and its y axis to 'y' (perpendicular unit vectors)
+pub fn frameFrom(x Vec3, y Vec3) Quat {
+  imm q1 = Quat.fromVectors(new Vec3(0., 1., 0.), y);
+  imm xa = q1 * new Vec3(1., 0., 0.);
+  imm ang = atan2(y.dot(xa.cross(x)), xa.dot(x));
+  Quat.angleAxis(ang, y) * q1;
+}
+
+// A direction perpendicular to 'a', as near to 'ref' as can be
+fn perpendicularTo(a Vec3, ref Vec3) Vec3 {
+  mut p = ref - a * ref.dot(a);
+  if p.length() < 0.001 { p = new Vec3(1., 0., 0.) - a * a.x; }
+  if p.length() < 0.001 { p = new Vec3(0., 0., 1.) - a * a.z; }
+  p.normalize();
+}
+
+// Where the wrist goes for a hand whose palm lies on the cylinder from 'a' to 'b' (radius 'radius') at
+// 'u' (0 to 1 along it), the palm facing the axis from the side 'roll' radians round it from 'ref'
+// (a reference direction: roll 0 puts the palm on the side of the handle nearest 'ref'), the fingers
+// across the handle (round it), the thumb pointing along it towards 'b' ('thumbToward' +1) or 'a' (-1).
+pub fn cylinderGrip(spec &HandSpec, a Vec3, b Vec3, radius f32, u f32, roll f32, thumbToward f32, ref Vec3) Transform3 {
+  imm axis = (b - a).normalize();
+  imm e1 = perpendicularTo(axis, ref);
+  imm e2 = axis.cross(e1);
+  imm out = e1 * cos(roll) + e2 * sin(roll);
+  imm fingerDir = axis.cross(out) * (spec.h * thumbToward);
+  imm rx = out * spec.h;
+  imm ry = -fingerDir;
+  imm q = frameFrom(rx, ry);
+  imm contact = a + (b - a) * u + out * radius;
+  new Transform3(contact - q * spec.gripCentre, q, new Vec3(1., 1., 1.));
+}
+
+// The grip's wrist moved out along 'outward' until the open hand (the shape's open pose) and the palm just clear the surface
+pub struct GripFit {
+  pub wrist Transform3;
+  pub result GripResult;
+}
+
+// Close the shape's fingers on 'surface' from a hand at 'wrist0'. The hand is first slid along 'outward' (a unit vector,
+// away from the prop) until the open fingers and palm clear the surface by the squash; with 'settle', a hand that
+// started clear is slid back in until the palm's surface touches (within a millimetre) or 'reach' metres have been
+// tried (for a flat prop; a cylinder grip is placed exactly and does not settle).
+pub fn fitGrip(spec &HandSpec, shape &GripShape, wrist0 Transform3, outward Vec3, surface &PropSurface, squash f32, reach f32,
+    settle bool) GripFit {
+  mut wrist = wrist0;
+  // Slide out until the open hand is clear
+  mut moved = 0.;
+  while moved < reach and !openClear(spec, shape, &wrist, surface, squash) {
+    wrist = new Transform3(wrist.translation + outward * 0.0005, wrist.rotation, wrist.scale);
+    moved = moved + 0.0005;
+  }
+  // Then, if asked to settle, in, while it stays clear and the palm is not yet touching
+  mut tried = 0.;
+  while settle and tried < reach and palmClearance(spec, &wrist, surface) > 0.001 {
+    imm next = new Transform3(wrist.translation - outward * 0.0005, wrist.rotation, wrist.scale);
+    if !openClear(spec, shape, &next, surface, squash) { break; }
+    wrist = next;
+    tried = tried + 0.0005;
+  }
+  new GripFit(wrist, closeOn(spec, shape, &wrist, surface, squash, 31u32));
+}
+
+// Whether the open hand's fingers and palm are clear of the surface
+pub fn openClear(spec &HandSpec, shape &GripShape, wrist &Transform3, surface &PropSurface, squash f32) bool {
+  poseClear(spec, &shape.open, wrist, surface, squash);
+}
+
+// Whether a pose's fingers and the palm are clear of the surface
+pub fn poseClear(spec &HandSpec, pose &HandPose, wrist &Transform3, surface &PropSurface, squash f32) bool {
+  mut f = 0usize;
+  while f < FINGERS {
+    if fingerClearance(spec, f, pose, wrist, surface, 0usize) < -squash { return false; }
+    f = f + 1usize;
+  }
+  palmClearance(spec, wrist, surface) >= -squash;
+}
+
+// ---- the pinch ----
+
+// A pinch of thumb and index brought together until their tips' flesh is 'gap' apart (or as close as the shape closes). Both
+// close together from the shape's open pose; the fingers not in the pinch take the shape's closed pose.
+pub fn pinchTips(spec &HandSpec, shape &GripShape, gap f32) HandPose {
+  mut pose = shape.closed.copy();
+  imm th = spec.fingers[THUMB];
+  imm ix = spec.fingers[INDEX];
+  mut lo = 0.;
+  mut hi = 1.;
+  // Is the pinch closed at progress t? the tips' flesh within the gap
+  mut it = 0;
+  while it < 30 {
+    imm mid = (lo + hi) * 0.5;
+    imm p = lerpPose(&shape.open, &shape.closed, mid);
+    imm tt = fingerPoints(spec, THUMB, &p).joint[3];
+    imm ti = fingerPoints(spec, INDEX, &p).joint[3];
+    imm d = tt.distance(ti) - th.radius[2] - ix.radius[2];
+    if d > gap { lo = mid; } else { hi = mid; }
+    it = it + 1;
+  }
+  imm t = (lo + hi) * 0.5;
+  imm closed = lerpPose(&shape.open, &shape.closed, t);
+  mut k = 0usize;
+  while k < DOF {
+    pose.set(THUMB, k, closed.get(THUMB, k));
+    pose.set(INDEX, k, closed.get(INDEX, k));
+    k = k + 1usize;
+  }
+  pose;
+}

@@ -8,6 +8,7 @@
 #include "ir.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -444,13 +445,93 @@ int iexpCheckedCoerce(INode *totype, INode **from) {
     return iexpCheckedCoerceIn(NULL, totype, from);
 }
 
+// Does a plain read-only borrow of 'from' stand where 'to' wants an '&imm' one
+// of the same value: the two references, or the same generic type made with one
+// each ('Option[&i32]' where 'Option[&imm i32]' is wanted)? Every other argument
+// of such a pair must be the same type, so the borrow's permission is the cause.
+static int iexpImmBorrowWanted(INode *from, INode *to) {
+    INode *fromdcl = itypeGetTypeDcl(from);
+    INode *todcl = itypeGetTypeDcl(to);
+    // A variant ('Some(&n)') stands for the enum it belongs to
+    if (fromdcl->tag == StructTag && ((StructNode*)fromdcl)->basetrait
+        && (itypeGetTypeDcl(((StructNode*)fromdcl)->basetrait)->flags & EnumType))
+        fromdcl = itypeGetTypeDcl(((StructNode*)fromdcl)->basetrait);
+    if (fromdcl->tag == RefTag && todcl->tag == RefTag) {
+        RefNode *fromref = (RefNode*)fromdcl;
+        RefNode *toref = (RefNode*)todcl;
+        INode *fromperm = fromref->perm && isTypeNode(fromref->perm) ? itypeGetTypeDcl(fromref->perm) : NULL;
+        INode *toperm = toref->perm && isTypeNode(toref->perm) ? itypeGetTypeDcl(toref->perm) : NULL;
+        return fromperm == (INode*)roPerm && toperm == (INode*)immPerm && !toref->permImmDefault
+            && itypeGetTypeDcl(fromref->region) == borrowRef && itypeGetTypeDcl(toref->region) == borrowRef
+            && itypeIsSame(fromref->vtexp, toref->vtexp);
+    }
+    if (fromdcl == todcl || fromdcl->tag != todcl->tag)
+        return 0;
+    Nodes *fromargs = itypeInstanceTypeArgs(fromdcl);
+    Nodes *toargs = itypeInstanceTypeArgs(todcl);
+    if (fromargs == NULL || toargs == NULL || fromargs->used != toargs->used)
+        return 0;
+    // The type an enum's variant was made through can be a different generic from the one named ('Some' for 'Option'), so the enum's own name is what agrees
+    if (fromdcl->tag != StructTag || ((StructNode*)fromdcl)->namesym != ((StructNode*)todcl)->namesym)
+        return 0;
+    int found = 0;
+    uint32_t cnt;
+    INode **fromp = &nodesGet(fromargs, 0);
+    INode **top = &nodesGet(toargs, 0);
+    for (cnt = 0; cnt < fromargs->used; cnt++, fromp++, top++) {
+        if (itypeIsSame(*fromp, *top))
+            continue;
+        if (!iexpImmBorrowWanted(*fromp, *top))
+            return 0;
+        found = 1;
+    }
+    return found;
+}
+
+// A hint to append to the message that expression 'node' was refused where
+// 'totype' is wanted: when a plain '&' borrow was given where an '&imm' reference
+// is wanted, it says to write '&imm' before the borrowed value (named, when the
+// node is a borrow of one variable). Empty when that is not the cause. Words only:
+// it decides nothing about what is accepted.
+const char *iexpImmBorrowHint(INode *node, INode *totype) {
+    static char hint[400];
+    if (!isExpNode(node) || totype == unknownType || totype == noCareType
+        || !iexpImmBorrowWanted(((IExpNode*)node)->vtype, totype))
+        return "";
+    // The borrow written: the node itself, or an argument of the call or literal
+    // that wraps it ('Some(&n)'). A reference held in a variable has none to respell.
+    INode *borrow = node->tag == BorrowTag ? node : NULL;
+    if (borrow == NULL && (node->tag == FnCallTag || node->tag == TypeLitTag) && ((FnCallNode*)node)->args) {
+        INode **argp;
+        uint32_t cnt;
+        for (nodesFor(((FnCallNode*)node)->args, cnt, argp)) {
+            if (*argp && (*argp)->tag == BorrowTag) {
+                borrow = *argp;
+                break;
+            }
+        }
+    }
+    if (borrow == NULL)
+        return "";
+    if (((RefNode*)borrow)->vtexp && isNameUseNode(((RefNode*)borrow)->vtexp)) {
+        Name *namesym = ((NameUseNode*)((RefNode*)borrow)->vtexp)->namesym;
+        if (namesym) {
+            snprintf(hint, sizeof(hint),
+                "; a plain `&` borrow is read-only but not `imm`, so write `&imm %s` to lend it as imm",
+                &namesym->namestr);
+            return hint;
+        }
+    }
+    return "; a plain `&` borrow is read-only but not `imm`, so write `&imm` before the borrowed value to lend it as imm";
+}
+
 // Report that expression 'node' was refused where 'totype' is wanted
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
     char *why = isExpNode(node) ? fnSigConvRefusal(((IExpNode*)node)->vtype, totype) : NULL;
     if (why)
         errorMsgNode(node, ErrorFnRefConv, "%s", why);
     else
-        errorMsgNode(node, code, "%s", msg);
+        errorMsgNode(node, code, "%s%s", msg, iexpImmBorrowHint(node, totype));
 }
 
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,

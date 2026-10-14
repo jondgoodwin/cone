@@ -9,6 +9,16 @@ pub struct DistanceC {
   pub rest f32;
   pub compliance f32;
   pub lambda f32;
+  // The pull (newtons) at which the constraint gives way and is removed (a rope
+  // snaps, a seam tears); negative: it never does. The force is XPBD's own,
+  // |lambda| / h^2 of the substep it is solved in (Macklin, Muller and
+  // Chentanez 2016, section 3.2: the multiplier over the squared step is the
+  // constraint force)
+  pub breakForce f32 = -1.;
+  // The force averaged over the last 'SoftBody.breakWindow' seconds, which is what is tested
+  // against the break force (the force of one substep rings: a stiff rope with a heavy load
+  // reads from a tenth to one and a half times the tension from one substep to the next)
+  pub load f32 = 0.;
 }
 
 // A bending constraint across an edge: particles a and b are the shared edge,
@@ -22,7 +32,19 @@ pub struct BendC {
   pub rest f32;
   pub compliance f32;
   pub lambda f32;
+  // The curvature model's weights (SoftBody.useCurvatureBending): the four
+  // numbers K that give zero curvature vector K0 a + K1 b + K2 c + K3 d to a
+  // flat hinge, and the square of the curvature vector's length per radian of
+  // fold, which turns the hinge compliance into the constraint's
+  pub k0 f32 = 0.;
+  pub k1 f32 = 0.;
+  pub k2 f32 = 0.;
+  pub k3 f32 = 0.;
+  pub gain2 f32 = 0.;
 }
+
+pub const BEND_DIHEDRAL = 0u32;
+pub const BEND_CURVATURE = 1u32;
 
 // A curvature constraint on three consecutive particles of a rope: the length of
 // q = p_a - 2 p_b + p_c (the discrete curvature vector, about the segment length
@@ -39,7 +61,8 @@ pub struct CurveC {
 
 // A long range attachment (Kim, Chentanez and Muller 2012): 'particle' may be
 // no farther than 'maxLength' from 'anchor', a pinned or attached particle. It
-// pulls, never pushes.
+// pulls, never pushes. The anchor is a pin and is never moved by it, which is
+// what lets every tether be taken at once.
 pub struct TetherC {
   pub particle u32;
   pub anchor u32;
@@ -61,6 +84,65 @@ pub struct PressureC {
   pub target f32;        // the volume wanted, as a multiple of restVolume
   pub compliance f32;
   pub lambda f32;
+}
+
+pub const NO_BODY = 0xFFFFFFFFu32;
+
+// A rigid body as the soft body sees it: its pose and motion, its inverse mass
+// and world inverse inertia, and the impulse the soft body has given it this
+// step. A program that owns a rigid world (rigiddynamics, in the clothrope
+// package) refreshes 'pos' to 'angVel' and the inverse masses before each step
+// and applies 'impulse' and 'angImpulse' to the rigid body after it, so this
+// package imports no rigid body engine. A body with 'invMass' 0 is static or
+// kinematic: it is pushed against and never pushed.
+pub struct Coupled {
+  pub pos Vec3;            // centre of mass, world
+  pub rot Quat;
+  pub linVel Vec3;
+  pub angVel Vec3;
+  pub invMass f32;
+  pub invInertia Mat3;     // world space
+  pub impulse Vec3;        // given by the soft body this step, N s, on the centre of mass
+  pub angImpulse Vec3;     // N m s about the centre of mass
+  pub anchored u32 = 0u32;    // particles held to it (set each substep)
+  pub couplings u32 = 1u32;   // contacts and anchors sharing the body this substep (mass splitting)
+
+  pub fn make(pos Vec3, rot Quat, invMass f32, invInertia Mat3) Coupled {
+    new Coupled(pos, rot, new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), invMass, invInertia,
+      new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  }
+
+  // The velocity of the body's material point at world position p
+  pub fn velocityAt(self &, p Vec3) Vec3 {linVel + angVel.cross(p - pos);}
+
+  // The inverse mass the body offers to a push along unit n at world point p:
+  // 1/m + (r x n) . I^-1 (r x n)
+  pub fn invMassAlong(self &, p Vec3, n Vec3) f32 {
+    imm rn = (p - pos).cross(n);
+    invMass + rn.dot(invInertia * rn);
+  }
+}
+
+// A particle held to a point of a rigid body (a rope tied to a crate, a banner to
+// a pole that swings). The particle goes where the body's point is; what the
+// soft body would move it by is the force the body feels. 'local' is the point
+// in the body's frame, from its centre of mass.
+pub struct BodyAnchor {
+  pub particle u32;
+  pub body u32;
+  pub offset Vec3;
+  pub breakForce f32 = -1.;   // pull at which it lets go (negative: never)
+}
+
+// What gave way, for the program to hear about
+pub const BREAK_DISTANCE = 1u32;
+pub const BREAK_ANCHOR = 2u32;
+
+pub struct BreakEvent {
+  pub kind u32;
+  pub a u32;        // the two particles of a distance constraint; the anchor's particle and body
+  pub b u32;
+  pub force f32;
 }
 
 // A heightfield ground: heights on a regular grid in x and z, bilinear
@@ -109,6 +191,11 @@ pub struct Collider {
   pub b Vec3;          // capsule end; box half extents; the plane's unit normal
   pub radius f32;      // sphere or capsule radius
   pub rotation Quat;   // box orientation
+  // The rigid body (an index into SoftBody.bodies) the shape belongs to, or
+  // NO_BODY for static scenery. A particle pushed out of a shape with a body
+  // pushes the body back, by their inverse masses. The caller still rewrites the
+  // shape's world fields each step, from the rigid body's pose
+  pub body u32 = NO_BODY;
 
   pub fn sphere(center Vec3, radius f32) Collider {
     new Collider(COLLIDER_SPHERE, center, new Vec3(0., 0., 0.), radius, Quat.identity());
@@ -160,6 +247,16 @@ pub struct SoftBody {
   pub anchors List[Anchor];
   pub frameFrom Transform3;    // the anchor frame at the start of the step
   pub frameTo Transform3;      // and at its end
+  // ---- rigid bodies the soft body is coupled to ----
+  pub bodies List[Coupled];
+  pub bodyAnchors List[BodyAnchor];
+  pub breaks List[BreakEvent]; // what gave way since the program last cleared this
+  // ---- wind that varies in space ----
+  // A lattice of wind velocities (gridNx by gridNy by gridNz, x fastest, 'gridCell'
+  // metres apart from 'gridOrigin') the program fills before each step (clothrope's
+  // WindField does); a triangle takes the wind at its centre, a rope segment at its
+  // middle, trilinear between the samples. Empty: the one wind velocity 'step' is given.
+  pub windGrid List[Vec3];
   // ---- scratch ----
   pub prev List[Vec3];
   pub force List[Vec3];
@@ -167,6 +264,19 @@ pub struct SoftBody {
   pub cellItems List[u32];
   pub cellOf List[u32];
   pub ropeSegments List[u32];  // particle pairs, the segments wind pushes
+  // constraint colour batches (batch.cone): starts of each colour in dist, bend, curves
+  pub distBatch List[u32];
+  pub bendBatch List[u32];
+  pub curveBatch List[u32];
+  pub adjStart List[u32];      // triangles around each particle (CSR), for the wind gather
+  pub adjList List[u32];
+  pub triForce List[Vec3];
+  pub builtDist usize = 0usize;   // the counts the batches were made for
+  pub builtBend usize = 0usize;
+  pub builtCurve usize = 0usize;
+  pub builtTris usize = 0usize;
+  pub batchesSerial bool = false; // a colouring ran out of colours: one thread only
+  pub anyBreakable bool = false;  // some constraint has a break force
   // ---- settings ----
   pub gravity Vec3 = new Vec3(0., -9.81, 0.);
   pub damping f32 = 0.2;       // velocity damping, per second
@@ -185,6 +295,32 @@ pub struct SoftBody {
   pub ropeRadius f32 = 0.0;    // 0: ropes feel no wind
   pub selfCollide bool = false;
   pub selfRadius f32 = 0.02;   // half the distance particles keep apart from each other
+  // Bending is soft and slow, so it may be solved on every bendEvery-th substep,
+  // with that many substeps' time (multi-rate XPBD): 1 solves it on every one
+  pub bendEvery u32 = 1u32;
+  // How bending is solved: BEND_DIHEDRAL, the angle between the two triangles of a
+  // hinge held at its rest angle (any rest shape), or BEND_CURVATURE, the hinge's
+  // curvature vector held at zero (flat rest only; about a sixth of the cost): see
+  // useCurvatureBending
+  pub bendModel u32 = 0u32;
+  // The time over which a stretch constraint's force is averaged before it is compared with its break force
+  pub breakWindow f32 = 0.02;
+  // Successive over-relaxation of the stretch projections (Young 1954, "Iterative methods for
+  // solving partial difference equations of elliptic type"): each correction is taken
+  // 'relaxation' times as large. Above 1 (below 2) it carries a load along a chain of
+  // constraints in fewer passes, so a cloth hung from an edge stretches less for the same
+  // cost; 1 is plain Gauss-Seidel.
+  pub relaxation f32 = 1.;
+  pub gridOrigin Vec3 = new Vec3(0., 0., 0.);
+  pub gridCell f32 = 1.;
+  pub gridNx u32 = 0u32;
+  pub gridNy u32 = 0u32;
+  pub gridNz u32 = 0u32;
+  // The step in progress (beginStep .. endStep)
+  pub stepH f32 = 0.;
+  pub stepSubs u32 = 0u32;
+  pub stepIndex u32 = 0u32;
+  pub stepWind Vec3 = new Vec3(0., 0., 0.);
 
   // A body with nothing in it
   pub fn empty() SoftBody {
@@ -194,7 +330,10 @@ pub struct SoftBody {
       new PressureC(false, 0., 1., 0., 0.),
       List[Collider].empty(), List[Heightfield].empty(), List[Anchor].empty(),
       Transform3.identity(), Transform3.identity(),
-      List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty());
+      List[Coupled].empty(), List[BodyAnchor].empty(), List[BreakEvent].empty(), List[Vec3].empty(),
+      List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[Vec3].empty());
   }
 
   pub fn particleCount(self &) usize {pos.len();}
@@ -249,6 +388,153 @@ pub struct SoftBody {
   // The anchor frame for the next step: attached particles move to it, smoothly
   // across the substeps (position by lerp, orientation by slerp)
   pub fn moveAnchors(self &mut, to Transform3) {frameTo = to;}
+
+  // Couple a rigid body: its index, for 'Collider.body' and 'attachBody'. The
+  // program refreshes bodies[i] before each step and applies its impulses after
+  // Solve bending by the curvature model (cheaper, for cloth that is flat at rest); the number
+  // of hinges that were folded at rest and are now held flat. Call it with the cloth as built.
+  pub fn useCurvatureBending(self &mut) usize {useCurvatureModel(self);}
+
+  // Give the body a wind lattice of nx by ny by nz samples, 'cell' metres apart
+  // from 'origin', all calm; the program writes windGrid before each step
+  pub fn setWindGrid(self &mut, origin Vec3, cell f32, nx u32, ny u32, nz u32) {
+    gridOrigin = origin;
+    gridCell = cell;
+    gridNx = nx;
+    gridNy = ny;
+    gridNz = nz;
+    windGrid.clear();
+    mut k = 0usize;
+    while k < usize.from(nx) * usize.from(ny) * usize.from(nz) {
+      windGrid.push(new Vec3(0., 0., 0.));
+      k = k + 1usize;
+    }
+  }
+
+  // The axis-aligned box the particles fill: (lowest corner, highest corner)
+  pub fn bounds(self &) (Vec3, Vec3) {
+    mut lo = new Vec3(1e30, 1e30, 1e30);
+    mut hi = new Vec3(-1e30, -1e30, -1e30);
+    mut i = 0usize;
+    while i < pos.len() {
+      imm p = *pos[i];
+      lo = new Vec3(fmin(lo.x, p.x), fmin(lo.y, p.y), fmin(lo.z, p.z));
+      hi = new Vec3(fmax(hi.x, p.x), fmax(hi.y, p.y), fmax(hi.z, p.z));
+      i = i + 1usize;
+    }
+    (lo, hi);
+  }
+
+  pub fn addBody(self &mut, c Coupled) u32 {
+    bodies.push(c);
+    u32.from(bodies.len() - 1usize);
+  }
+
+  // Hold particle i to the point of body 'body' that is at world position 'p'
+  // now (the particle is put there). 'breakForce' (negative: never) is the pull
+  // at which the particle is let go.
+  pub fn attachBody(self &mut, i u32, body u32, p Vec3, breakForce f32) {
+    imm c = *bodies[usize.from(body)];
+    imm off = c.rot.conjugate() * (p - c.pos);
+    bodyAnchors.push(new BodyAnchor(i, body, off, breakForce));
+    invMass.set(usize.from(i), 0.);
+    pos.set(usize.from(i), p);
+    if breakForce >= 0. { anyBreakable = true; }
+  }
+
+  // Make every stretch constraint (or just those between particles in the
+  // list's range) breakable at 'force' newtons
+  pub fn setBreakForce(self &mut, force f32) {
+    mut k = 0usize;
+    while k < dist.len() {
+      dist[k].breakForce = force;
+      k = k + 1usize;
+    }
+    anyBreakable = anyBreakable or force >= 0.;
+  }
+
+  // The break force of every stretch constraint joining particles a and b
+  pub fn setBreakForceBetween(self &mut, a u32, b u32, force f32) {
+    mut k = 0usize;
+    while k < dist.len() {
+      imm c = *dist[k];
+      if (c.a == a and c.b == b) or (c.a == b and c.b == a) { dist[k].breakForce = force; }
+      k = k + 1usize;
+    }
+    anyBreakable = anyBreakable or force >= 0.;
+  }
+
+  // Append everything of 'other' to this body, its particle numbers shifted by
+  // the particle count now (returned, so the caller can find them), and tie the
+  // two with constraints afterwards. 'other' is consumed.
+  pub fn merge(self &mut, other SoftBody) u32 {
+    imm base = u32.from(pos.len());
+    mut i = 0usize;
+    while i < other.pos.len() {
+      pos.push(*other.pos[i]);
+      vel.push(*other.vel[i]);
+      mass.push(*other.mass[i]);
+      invMass.push(*other.invMass[i]);
+      rest.push(*other.rest[i]);
+      prev.push(*other.prev[i]);
+      force.push(new Vec3(0., 0., 0.));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.tris.len() {
+      tris.push(*other.tris[i] + base);
+      i = i + 1usize;
+    }
+    imm vbase = u32.from(vertexMap.len());
+    i = 0usize;
+    while i < other.vertexMap.len() {
+      vertexMap.push(*other.vertexMap[i] + base);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.vertexUvs.len() {
+      vertexUvs.push(*other.vertexUvs[i]);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.vertexTris.len() {
+      vertexTris.push(*other.vertexTris[i] + vbase);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.dist.len() {
+      imm c = *other.dist[i];
+      dist.push(new DistanceC(c.a + base, c.b + base, c.rest, c.compliance, 0., c.breakForce));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.bend.len() {
+      imm c = *other.bend[i];
+      bend.push(new BendC(c.a + base, c.b + base, c.c + base, c.d + base, c.rest, c.compliance, 0.,
+        c.k0, c.k1, c.k2, c.k3, c.gain2));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.curves.len() {
+      imm c = *other.curves[i];
+      curves.push(new CurveC(c.a + base, c.b + base, c.c + base, c.rest, c.compliance, 0.));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.tethers.len() {
+      imm t = *other.tethers[i];
+      tethers.push(new TetherC(t.particle + base, t.anchor + base, t.maxLength));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < other.ropeSegments.len() {
+      ropeSegments.push(*other.ropeSegments[i] + base);
+      i = i + 1usize;
+    }
+    anyBreakable = anyBreakable or other.anyBreakable;
+    if other.ropeRadius > ropeRadius { ropeRadius = other.ropeRadius; }
+    base;
+  }
 
   pub fn addCollider(self &mut, c Collider) usize {
     colliders.push(c);
@@ -311,13 +597,34 @@ pub struct SoftBody {
   }
 
   // Advance by 'dt' seconds in 'wind' (the air's velocity, metres per second)
-  pub fn step(self &mut, dt f32, wind Vec3) {runStep(self, dt, wind, &noField, false);}
+  pub fn step(self &mut, dt f32, wind Vec3) {
+    mut none = Workers.none();
+    runStep(self, dt, wind, &noField, false, &mut none);
+  }
 
   // The same, with one more collider: 'field' gives, for a point p, the unit
   // surface normal in xyz and the signed distance to the surface in w (negative
   // inside). A caller wraps any shape's closest-point query this way
   // (rigidcollide's, a signed distance field), so this package imports neither
-  pub fn stepWith(self &mut, dt f32, wind Vec3, field &<fn(p Vec3) Vec4) {runStep(self, dt, wind, field, true);}
+  pub fn stepWith(self &mut, dt f32, wind Vec3, field &<fn(p Vec3) Vec4) {
+    mut none = Workers.none();
+    runStep(self, dt, wind, field, true, &mut none);
+  }
+
+  // The same, sharing the constraint batches between the threads of 'workers'
+  pub fn stepPool(self &mut, workers &mut Workers, dt f32, wind Vec3) {
+    runStep(self, dt, wind, &noField, false, workers);
+  }
+
+  // A step in pieces, for a program that does something between substeps (a
+  // rigid world to step, impulses to apply): 'beginStep', then 'substep' until
+  // 'substepsLeft' is 0, then 'endStep'
+  pub fn beginSteps(self &mut, workers &mut Workers, dt f32, wind Vec3) {beginStep(self, dt, wind, workers);}
+  pub fn nextSubstep(self &mut, workers &mut Workers) {substep(self, workers, &noField, false);}
+  pub fn nextSubstepWith(self &mut, workers &mut Workers, field &<fn(p Vec3) Vec4) {substep(self, workers, field, true);}
+  pub fn substepsLeft(self &) u32 {stepSubs - stepIndex;}
+  pub fn substepSeconds(self &) f32 {stepH;}
+  pub fn endSteps(self &mut) {endStep(self);}
 }
 
 // The field that is nowhere

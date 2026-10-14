@@ -1,0 +1,176 @@
+// ======== Hulls: closed triangle meshes a body floats by ========
+//
+// A Hull is what a floating body's buoyancy is worked out from: a CLOSED triangle mesh, outward
+// normals (counter-clockwise from outside), in the body's own coordinates (the origin of the rigid
+// body's shape). Any closed mesh floats: a box, a barrel, a boat, an imported model. Three ways to make
+// one, all data:
+//
+//   Hull.box(half)            a box of half sizes 'half'
+//   Hull.loft(stations)       a hull lofted through cross-section outlines along x (a boat, a log, a
+//                             barrel, a buoy): each Station is an x and a closed outline in the (z, y)
+//                             plane, counter-clockwise with z to the right and y up, every outline of the
+//                             same number of points; the ends are capped
+//   Hull.fromMesh(mesh)       the triangles of a mesh (render's or sculpt's), taken as they are
+//
+// It also knows its volume, the point its volume balances about, its size and its length (what the
+// skin friction's Reynolds number needs), by the divergence theorem over its triangles.
+
+pub struct Station {
+  pub x f32;                 // along the hull (bow at the larger x)
+  pub outline List[Vec2];    // the section in the (z, y) plane: x = z across, y = height, counter-clockwise
+}
+
+pub struct Hull {
+  pub points List[Vec3];
+  pub tris List[u32];        // three indices a triangle, counter-clockwise from outside
+  pub volume f32;            // m^3
+  pub centroid Vec3;         // the centre of the volume
+  pub length f32;            // the longest extent of its box, m
+  pub lowest f32;            // the box's lowest and highest y
+  pub highest f32;
+
+  // The hull of a closed triangle mesh: positions 'p', triangles 'idx' (three each, outward). The
+  // volume is the sum over triangles of the signed volume of the tetrahedron it makes with the origin
+  // (a . (b x c) / 6): positive for outward windings. A mesh that comes out negative is wound
+  // inward, and is flipped.
+  pub fn make(p List[Vec3], idx List[u32]) Hull {
+    mut v = 0d;
+    mut cx = 0d;
+    mut cy = 0d;
+    mut cz = 0d;
+    mut t = 0usize;
+    while t + 2usize < idx.len() {
+      imm a = *p[usize.from(*idx[t])];
+      imm b = *p[usize.from(*idx[t + 1usize])];
+      imm c = *p[usize.from(*idx[t + 2usize])];
+      imm vol = f64.from(a.dot(b.cross(c))) / 6d;
+      v = v + vol;
+      // the tetrahedron's centroid is (a + b + c) / 4 (the origin is its fourth vertex)
+      cx = cx + vol * f64.from(a.x + b.x + c.x) * 0.25d;
+      cy = cy + vol * f64.from(a.y + b.y + c.y) * 0.25d;
+      cz = cz + vol * f64.from(a.z + b.z + c.z) * 0.25d;
+      t = t + 3usize;
+    }
+    mut tris = idx;
+    if v < 0d {
+      mut k = 0usize;
+      while k + 2usize < tris.len() { tris.swap(k + 1usize, k + 2usize); k = k + 3usize; }
+      v = 0d - v;
+      cx = 0d - cx; cy = 0d - cy; cz = 0d - cz;
+    }
+    imm vf = if v > 0.000000001d { v; } else { 1d; };
+    mut lo = new Vec3(1.0e9, 1.0e9, 1.0e9);
+    mut hi = new Vec3(-1.0e9, -1.0e9, -1.0e9);
+    mut i = 0usize;
+    while i < p.len() {
+      lo = lo.min(*p[i]);
+      hi = hi.max(*p[i]);
+      i = i + 1usize;
+    }
+    imm ext = hi - lo;
+    imm longest = if ext.x > ext.y and ext.x > ext.z { ext.x; } elif ext.y > ext.z { ext.y; } else { ext.z; };
+    new Hull(p, tris, f32.from(v), new Vec3(f32.from(cx / vf), f32.from(cy / vf), f32.from(cz / vf)), longest, lo.y, hi.y);
+  }
+
+  pub fn fromMesh(m &Mesh) Hull {
+    mut p = List[Vec3].withCapacity(m.positions.len());
+    mut i = 0usize;
+    while i < m.positions.len() { p.push(*m.positions[i]); i = i + 1usize; }
+    mut t = List[u32].withCapacity(m.indices.len());
+    i = 0usize;
+    while i < m.indices.len() { t.push(*m.indices[i]); i = i + 1usize; }
+    Hull.make(p, t);
+  }
+
+  pub fn box(half Vec3) Hull {
+    mut p = List[Vec3].empty();
+    mut z = -1.;
+    while z <= 1. {
+      mut y = -1.;
+      while y <= 1. {
+        mut x = -1.;
+        while x <= 1. { p.push(new Vec3(x * half.x, y * half.y, z * half.z)); x = x + 2.; }
+        y = y + 2.;
+      }
+      z = z + 2.;
+    }
+    // vertices numbered x + 2 y + 4 z (as bits): 12 triangles, outward
+    mut t = List[u32].empty();
+    imm quads = [[1u32, 0u32, 2u32, 3u32], [4u32, 5u32, 7u32, 6u32], [0u32, 1u32, 5u32, 4u32], [3u32, 2u32, 6u32, 7u32],
+      [2u32, 0u32, 4u32, 6u32], [1u32, 3u32, 7u32, 5u32]];
+    mut q = 0usize;
+    while q < 6usize {
+      t.push(quads[q][0usize]); t.push(quads[q][1usize]); t.push(quads[q][2usize]);
+      t.push(quads[q][0usize]); t.push(quads[q][2usize]); t.push(quads[q][3usize]);
+      q = q + 1usize;
+    }
+    Hull.make(p, t);
+  }
+
+  // Loft the stations (in order of increasing x) into a closed hull: the sides between consecutive
+  // outlines, and a fan of triangles closing each end from the outline's centre
+  pub fn loft(stations &List[Station]) Hull {
+    mut p = List[Vec3].empty();
+    mut t = List[u32].empty();
+    imm ns = stations.len();
+    imm m = stations[0usize].outline.len();
+    mut s = 0usize;
+    while s < ns {
+      mut i = 0usize;
+      while i < m {
+        imm o = *stations[s].outline[i];
+        p.push(new Vec3(stations[s].x, o.y, o.x));
+        i = i + 1usize;
+      }
+      s = s + 1usize;
+    }
+    s = 0usize;
+    while s + 1usize < ns {
+      mut i = 0usize;
+      while i < m {
+        imm j = (i + 1usize) % m;
+        imm a = u32.from(s * m + i);
+        imm a2 = u32.from(s * m + j);
+        imm b = u32.from((s + 1usize) * m + i);
+        imm b2 = u32.from((s + 1usize) * m + j);
+        // counter-clockwise outlines (z right, y up) wind these sides outward. A lofted quad is not flat,
+        // so which diagonal splits it matters: it is chosen by the side of the hull the quad is on, so
+        // that a symmetrical hull is symmetrical in its triangles too (the mirror of one diagonal is the other)
+        if stations[s].outline[i].x + stations[s].outline[j].x >= 0. {
+          t.push(a); t.push(b); t.push(a2);
+          t.push(a2); t.push(b); t.push(b2);
+        } else {
+          t.push(a); t.push(b); t.push(b2);
+          t.push(a); t.push(b2); t.push(a2);
+        }
+        i = i + 1usize;
+      }
+      s = s + 1usize;
+    }
+    // the caps: a centre point of each end's outline and a fan
+    mut e = 0;
+    while e < 2 {
+      imm station = if e == 0 { 0usize; } else { ns - 1usize; };
+      mut cy = 0.;
+      mut cz = 0.;
+      mut i = 0usize;
+      while i < m { cy = cy + stations[station].outline[i].y; cz = cz + stations[station].outline[i].x; i = i + 1usize; }
+      imm centre = u32.from(p.len());
+      p.push(new Vec3(stations[station].x, cy / f32.from(m), cz / f32.from(m)));
+      i = 0usize;
+      while i < m {
+        imm j = (i + 1usize) % m;
+        imm a = u32.from(station * m + i);
+        imm a2 = u32.from(station * m + j);
+        // seen from +x the outline runs clockwise, from -x counter-clockwise
+        if e == 0 { t.push(centre); t.push(a); t.push(a2); } else { t.push(centre); t.push(a2); t.push(a); }
+        i = i + 1usize;
+      }
+      e = e + 1;
+    }
+    Hull.make(p, t);
+  }
+
+  // The points as a slice (for a collision hull)
+  pub fn pointArray(self &) &Array[Vec3] { points.view(); }
+}
