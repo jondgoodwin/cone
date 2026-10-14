@@ -1,0 +1,264 @@
+// RMSNorm, RoPE and softmax on the GPU against their CPU twins, over sizes that are not multiples of the
+// workgroup (256 invocations for RMSNorm and softmax, 64 for RoPE): row lengths 1, 5, 255, 256, 257, 1000, 4096,
+// 4097; RoPE over both pair orders, a rotation of part of each head, grouped heads' shapes, positions from 0 to
+// 2000 and a dispatch past one dimension's 65535 groups (so its index folds). Inputs are synthetic and seeded.
+//
+// Tolerances, named. Each kernel's result is checked against the twin, which works in f64, so the difference
+// is the GPU's own f32 error.
+//  - RMSNORM: relative, (ceil(n / 256) + 9) / 2 + 12 units of 2^-24 ('rmsnormUnits'): the sum of squares is
+//    ceil(n / 256) terms added by an invocation, then a tree of 8 levels, and the scale is its inverse
+//    square root (half its relative error), plus a square root, a division and two products.
+//  - SOFTMAX: relative, ceil(n / 256) + 8 + 2 (3 + 2 d) + 4 units of 2^-24 ('softmaxUnits'), d the largest
+//    distance from the row's maximum: the same sum, and an exp in the numerator and the denominator, whose
+//    error the Vulkan specification bounds at 3 + 2 |x| ulp.
+//  - ROPE: absolute, 'ROPE_UNITS' units of 2^-24 times |x0| + |x1| of the pair rotated. The rotation is two
+//    products and a sum; the sine and cosine are the GPU's. The Vulkan specification only promises an absolute
+//    error of 2^-11 for a sine or cosine in [-pi, pi], which a real GPU does not come near: this bound is the
+//    RTX 4060's measured worst times a margin, and another GPU may need it loosened.
+// The worst error seen of each, in these units, is printed with LLMKERNELS_REPORT set.
+//
+// Only a failure prints. GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two. It needs
+// a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod layers;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+const U = 5.9604644775390625e-8d;           // 2^-24
+const ROPE_UNITS = 64.0d;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn zerosF(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l;
+}
+
+fn rmsnormUnits(n usize) f64 { f64.from((n + 255usize) / 256usize + 9usize) / 2.0d + 12.0d; }
+
+fn softmaxUnits(n usize, d f64) f64 { f64.from((n + 255usize) / 256usize + 8usize) + 2.0d * (3.0d + 2.0d * d) + 4.0d; }
+
+struct Stats {
+  rms f64;       // worst error in the units of the tolerance's formula
+  soft f64;
+  rope f64;
+}
+
+// Submit the job and wait; the words of the read-back slot as f32s
+fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
+  imm ticket = works.submit(device, job, Target.Here(1u64));
+  mut got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  require(got.len() == 1usize, "the job's completion");
+  expectBool(got[0usize].ok, true, "the job ran");
+  wordFloats(got[0usize].words(back).view());
+}
+
+// RMSNorm of 'rows' rows of 'n': the number of outputs outside the bound
+fn rmsnorm(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, n usize, rows usize) u64 {
+  imm x = syntheticFloats(rng, n * rows, 3.0);
+  imm w = syntheticFloats(rng, n, 1.5);
+  mut want = zerosF(n * rows);
+  rmsnormCpu(x.view(), w.view(), n, rows, 0.00001, want.viewMut());
+  mut job = Job.make(device);
+  imm xb = job.give(upload(device, floatWords(x.view()).view()));
+  imm wb = job.give(upload(device, floatWords(w.view()).view()));
+  imm yb = job.give(zeroed(device, n * rows));
+  require(kernels.rmsnorm(&mut job, device, xb, wb, yb, n, rows, 0.00001), "the rmsnorm recorded");
+  imm back = job.readback(device, yb);
+  imm y = finish(device, works, job, back);
+  mut bad = 0u64;
+  mut i = 0usize;
+  while i < n * rows {
+    imm err = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+    imm mag = libc.fabs(f64.from(*want[i]));
+    if !(err <= rmsnormUnits(n) * U * mag) { bad = bad + 1u64; }
+    if mag > 0.0d {
+      imm units = err / (U * mag);
+      if units > stats.rms { stats.rms = units; }
+    }
+    i = i + 1usize;
+  }
+  bad;
+}
+
+// Softmax of 'rows' rows of 'n', the inputs lifted by 'lift' (large inputs test the max subtraction)
+fn softmax(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, n usize, rows usize, lift f32) u64 {
+  imm raw = syntheticFloats(rng, n * rows, 4.0);
+  mut x = List[f32].withCapacity(n * rows);
+  mut i = 0usize;
+  while i < n * rows { x.push(*raw[i] + lift); i = i + 1usize; }
+  mut want = zerosF(n * rows);
+  softmaxCpu(x.view(), n, rows, want.viewMut());
+  mut job = Job.make(device);
+  imm xb = job.give(upload(device, floatWords(x.view()).view()));
+  imm yb = job.give(zeroed(device, n * rows));
+  require(kernels.softmax(&mut job, device, xb, yb, n, rows), "the softmax recorded");
+  imm back = job.readback(device, yb);
+  imm y = finish(device, works, job, back);
+  mut bad = 0u64;
+  // the largest distance from a row's maximum is at most 8 for inputs in [-4, 4] (before the lift)
+  imm bound = softmaxUnits(n, 8.0d);
+  i = 0usize;
+  while i < n * rows {
+    imm err = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+    imm mag = libc.fabs(f64.from(*want[i]));
+    if !(err <= bound * U * mag) { bad = bad + 1u64; }
+    if mag > 0.0d {
+      imm units = err / (U * mag);
+      if units > stats.soft { stats.soft = units; }
+    }
+    i = i + 1usize;
+  }
+  // each row sums to 1
+  mut r = 0usize;
+  while r < rows {
+    mut s = 0.0d;
+    i = 0usize;
+    while i < n { s = s + f64.from(*y[r * n + i]); i = i + 1usize; }
+    if libc.fabs(s - 1.0d) > 1.0e-4d { bad = bad + 1u64; }
+    r = r + 1usize;
+  }
+  bad;
+}
+
+// RoPE in place on tokens x nHeads x headDim, rotating the first ropeDim of each head
+fn rope(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, tokens usize, nHeads usize,
+    headDim usize, ropeDim usize, pos0 usize, mode u32, base f32) u64 {
+  imm freqs = ropeFrequencies(ropeDim, base);
+  imm x = syntheticFloats(rng, tokens * nHeads * headDim, 1.0);
+  mut want = List[f32].withCapacity(x.len());
+  mut i = 0usize;
+  while i < x.len() { want.push(*x[i]); i = i + 1usize; }
+  ropeCpu(want.viewMut(), freqs.view(), tokens, nHeads, headDim, ropeDim, pos0, mode);
+  mut job = Job.make(device);
+  imm fb = job.give(upload(device, floatWords(freqs.view()).view()));
+  imm xb = job.give(upload(device, floatWords(x.view()).view()));
+  require(kernels.rope(&mut job, device, fb, xb, tokens, nHeads, headDim, ropeDim, pos0, mode), "the rope recorded");
+  imm back = job.readback(device, xb);
+  imm y = finish(device, works, job, back);
+  mut bad = 0u64;
+  imm half = ropeDim / 2usize;
+  mut head = 0usize;
+  while head < tokens * nHeads {
+    mut d = 0usize;
+    while d < headDim {
+      imm at = head * headDim + d;
+      // the partner of this dimension in its pair, or itself past ropeDim
+      mut mate = at;
+      if d < ropeDim {
+        if mode == 0u32 {
+          if d % 2usize == 0usize { mate = at + 1usize; } else { mate = at - 1usize; }
+        } else {
+          if d < half { mate = at + half; } else { mate = at - half; }
+        }
+      }
+      imm err = libc.fabs(f64.from(*y[at]) - f64.from(*want[at]));
+      imm mag = libc.fabs(f64.from(*x[at])) + libc.fabs(f64.from(*x[mate]));
+      if d >= ropeDim {
+        // untouched dimensions are bit for bit the input
+        if *y[at] != *x[at] { bad = bad + 1u64; }
+      } else {
+        if !(err <= ROPE_UNITS * U * mag) { bad = bad + 1u64; }
+        if mag > 0.0d {
+          imm units = err / (U * mag);
+          if units > stats.rope { stats.rope = units; }
+        }
+      }
+      d = d + 1usize;
+    }
+    head = head + 1usize;
+  }
+  bad;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("llmkernels layers");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm kernels = Kernels.make(&device);
+  require(kernels.isValid(), "the kernels");
+  mut works = Works.make();
+  mut stats = new Stats(0.0d, 0.0d, 0.0d);
+  mut rng = Rng.fromSeed(777u64);
+
+  // ---- RMSNorm ----
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 1usize), 0u64, "rmsnorm n 1");
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 7usize, 3usize), 0u64, "rmsnorm n 7, 3 rows");
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 255usize, 2usize), 0u64, "rmsnorm n 255");
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 256usize, 1usize), 0u64, "rmsnorm n 256");
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 257usize, 5usize), 0u64, "rmsnorm n 257, 5 rows");
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1000usize, 4usize), 0u64, "rmsnorm n 1000");
+  expectUInt(rmsnorm(&mut device, &kernels, &mut works, &mut stats, &mut rng, 4096usize, 3usize), 0u64, "rmsnorm n 4096");
+
+  // ---- softmax ----
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 1usize, 0.0), 0u64, "softmax n 1");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 5usize, 3usize, 0.0), 0u64, "softmax n 5, 3 rows");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 255usize, 2usize, 0.0), 0u64, "softmax n 255");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 256usize, 1usize, 0.0), 0u64, "softmax n 256");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 257usize, 4usize, 0.0), 0u64, "softmax n 257, 4 rows");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1000usize, 3usize, 0.0), 0u64, "softmax n 1000");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 4097usize, 2usize, 0.0), 0u64, "softmax n 4097");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 300usize, 2usize, 1000.0), 0u64, "softmax of values near 1000 (the max is subtracted)");
+  expectUInt(softmax(&mut device, &kernels, &mut works, &mut stats, &mut rng, 100usize, 2usize, -1000.0), 0u64, "softmax of values near -1000");
+
+  // ---- RoPE: tokens, heads, headDim, ropeDim, pos0, mode, base ----
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 1usize, 4usize, 4usize, 0usize, 0u32, 10000.0), 0u64, "rope 1 x 1 x 4 at position 0");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 2usize, 64usize, 64usize, 17usize, 0u32, 10000.0), 0u64, "rope mode 0, 2 heads of 64 at 17");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 3usize, 4usize, 64usize, 64usize, 5usize, 1u32, 10000.0), 0u64, "rope mode 1, 3 tokens x 4 heads of 64");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 5usize, 8usize, 128usize, 128usize, 1000usize, 0u32, 500000.0), 0u64, "rope mode 0, base 500000, at 1000");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 2usize, 3usize, 80usize, 64usize, 7usize, 0u32, 10000.0), 0u64, "rope mode 0 rotating 64 of 80");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 2usize, 3usize, 80usize, 64usize, 7usize, 1u32, 10000.0), 0u64, "rope mode 1 rotating 64 of 80");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 300usize, 8usize, 128usize, 128usize, 0usize, 1u32, 10000.0), 0u64, "rope 300 tokens x 8 heads of 128");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 1usize, 6usize, 6usize, 2000usize, 0u32, 10000.0), 0u64, "rope an odd number of pairs, position 2000");
+  expectUInt(rope(&mut device, &kernels, &mut works, &mut stats, &mut rng, 2048usize, 32usize, 128usize, 128usize, 0usize, 0u32, 10000.0), 0u64, "rope 2048 x 32 x 128: 4194304 pairs, past 65535 groups");
+
+  // ---- refusals ----
+  {
+    mut job = Job.make(&mut device);
+    imm a = job.give(zeroed(&mut device, 64usize));
+    imm b = job.give(zeroed(&mut device, 64usize));
+    imm c = job.give(zeroed(&mut device, 64usize));
+    expectBool(kernels.rmsnorm(&mut job, &mut device, a, b, c, 0usize, 1usize, 0.00001), false, "rmsnorm of no elements is refused");
+    expectBool(kernels.rmsnorm(&mut job, &mut device, a, b, c, 8usize, 65536usize, 0.00001), false, "rmsnorm of 65536 rows is refused (a workgroup each)");
+    expectBool(kernels.softmax(&mut job, &mut device, a, b, 0usize, 1usize), false, "softmax of no elements is refused");
+    expectBool(kernels.rope(&mut job, &mut device, a, b, 1usize, 1usize, 4usize, 3usize, 0usize, 0u32), false, "an odd ropeDim is refused");
+    expectBool(kernels.rope(&mut job, &mut device, a, b, 1usize, 1usize, 4usize, 6usize, 0usize, 0u32), false, "ropeDim past headDim is refused");
+    expectBool(kernels.rope(&mut job, &mut device, a, b, 1usize, 1usize, 4usize, 4usize, 0usize, 2u32), false, "an unknown pair order is refused");
+    expectBool(kernels.softmax(&mut job, &mut device, a, b, 8usize, 2usize), true, "a good softmax is recorded");
+    imm t = works.submit(&mut device, job, Target.Here(2u64));
+    mut got = List[Completion].empty();
+    works.waitFor(&mut device, t, &mut got);
+    expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
+  }
+
+  if (libc.getenv("LLMKERNELS_REPORT") as usize) != 0usize {
+    printStr("rmsnorm worst: "); printFloat(stats.rms); printStr(" x 2^-24 relative (bound (ceil(n/256)+9)/2+12)\n");
+    printStr("softmax worst: "); printFloat(stats.soft); printStr(" x 2^-24 relative (bound ceil(n/256)+8+2(3+2d)+4, d 8)\n");
+    printStr("rope worst: "); printFloat(stats.rope); printStr(" x 2^-24 of |x0|+|x1| (bound 64)\n");
+  }
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  device.endFrame();
+  device.waitIdle();
+  done();
+}

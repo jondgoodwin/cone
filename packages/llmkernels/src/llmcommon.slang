@@ -43,8 +43,25 @@ uint loadU16(StructuredBuffer<uint> b, uint byteOffset) {
     return (b[byteOffset >> 2u] >> ((byteOffset & 2u) * 8u)) & 0xFFFFu;
 }
 
+// The float a half's 16 bits stand for, by integer arithmetic, as blocks.cone's f16ToF32 does it. Not
+// f16tof32: slangc compiles that through a 16-bit float type, which declares the SPIR-V capabilities Int16 and
+// Float16, features not every device has and this package does not require.
+float halfBitsToFloat(uint h) {
+    uint sign = (h & 0x8000u) << 16u;
+    uint e = (h >> 10u) & 31u;
+    uint m = h & 1023u;
+    if (e == 0u) {
+        float v = float(m) * (1.0 / 16777216.0);
+        return (sign != 0u) ? -v : v;
+    }
+    if (e == 31u) {
+        return asfloat(sign | 0x7f800000u | (m << 13u));
+    }
+    return asfloat(sign | ((e + 112u) << 23u) | (m << 13u));
+}
+
 float loadF16(StructuredBuffer<uint> b, uint byteOffset) {
-    return f16tof32(loadU16(b, byteOffset));
+    return halfBitsToFloat(loadU16(b, byteOffset));
 }
 
 // Q4_K's six-bit scale and minimum number j (0 to 7) from its 12 bytes at 'sbase'
@@ -171,6 +188,22 @@ float unitDot(StructuredBuffer<uint> w, uint qtype, uint rowByte, uint u, uint c
         acc += ((d * float(sc)) * float(q)) * x[xo + sb * 256u + 128u * n + 32u * k + l];
     }
     return acc;
+}
+
+// sin and cos of an angle of any size. A GPU's sin and cos are accurate on [-pi, pi] (the RTX 4060's about
+// 4e-7 absolute) and lose accuracy in proportion to the angle outside it (measured: 2.7e-4 at an angle of
+// 2000), and a RoPE angle is a position times a frequency, thousands of radians. So the angle is first
+// reduced by a multiple of 2 pi, in three parts (Cody and Waite): 2 pi = 6.28125 + 0.0019350051879882812 +
+// 3.019916050561733e-07 + 7e-15, the first two with so few significant bits (9 and 11) that k times each is
+// exact for k up to 2^15 and 2^13, so the reduction is good to about 4e-7 for angles up to 5e4 and 3e-6 up
+// to 2e5. Compile with -fp-mode precise (the shader's own line): a fused multiply-add would round differently.
+void sincosReduced(float angle, out float s, out float c) {
+    float k = floor(angle * 0.15915494309189535 + 0.5);
+    float r = angle - k * 6.28125;
+    r = r - k * 0.0019350051879882812;
+    r = r - k * 3.019916050561733e-07;
+    s = sin(r);
+    c = cos(r);
 }
 
 // A kernel launched as a grid of groups too wide for one dimension (a

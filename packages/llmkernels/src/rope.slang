@@ -46,8 +46,9 @@ void ropeMain(uint3 gid : SV_GroupID, uint lid : SV_GroupIndex) {
     uint a = (p.mode == 0u) ? (basis + 2u * pair) : (basis + pair);
     uint b = (p.mode == 0u) ? (a + 1u) : (basis + pair + half);
     float angle = float(p.pos0 + token) * freqs[pair];
-    float c = cos(angle);
-    float s = sin(angle);
+    float c;
+    float s;
+    sincosReduced(angle, s, c);
     float x0 = x[a];
     float x1 = x[b];
     x[a] = x0 * c - x1 * s;

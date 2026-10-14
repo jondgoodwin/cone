@@ -58,6 +58,55 @@ pub fn matmulCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f32]) bool
   true;
 }
 
+// The sum of |w[c] x[c]| in f64, the size of the terms a sum is made of
+fn absDot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
+  mut acc = 0.0d;
+  mut c = 0usize;
+  while c < cols {
+    acc = acc + libc.fabs(f64.from(w[c]) * f64.from(x[x0 + c]));
+    c = c + 1usize;
+  }
+  acc;
+}
+
+// For each row of the matrix, the sum of the absolute values of its products with x (what 'sumTolerance' scales)
+pub fn matvecMagnitudeCpu(m &QMatrix, x &Array[f32], y &mut Array[f64]) bool {
+  if x.len < m.cols or y.len < m.rows { return false; }
+  mut row = zeros(m.cols);
+  mut r = 0usize;
+  while r < m.rows {
+    dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
+    y[r] = absDot64(row.view(), x, 0usize, m.cols);
+    r = r + 1usize;
+  }
+  true;
+}
+
+// The same for every output of a matmul, laid out as its Y
+pub fn matmulMagnitudeCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f64]) bool {
+  if x.len < batch * m.cols or y.len < batch * m.rows { return false; }
+  mut row = zeros(m.cols);
+  mut r = 0usize;
+  while r < m.rows {
+    dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
+    mut b = 0usize;
+    while b < batch {
+      y[b * m.rows + r] = absDot64(row.view(), x, b * m.cols, m.cols);
+      b = b + 1usize;
+    }
+    r = r + 1usize;
+  }
+  true;
+}
+
+// How far an f32 sum of n products (any order of adding) can be from the exact sum, given the sum of their
+// absolute values: (n + 4) * 2^-24 * that. It is the standard bound (n - 1 additions and n multiplications, each
+// off by at most 2^-24 of its result, and a result never exceeds the sum of the absolute terms) with room for
+// the dequantisation's own two roundings; two adds in different orders both obey it.
+pub fn sumTolerance(n usize, absSum f64) f64 {
+  f64.from(n + 4usize) * 5.9604644775390625e-8d * absSum;
+}
+
 // y = x / sqrt(mean(x^2) + eps) * w, for each of 'rows' rows of 'n'
 pub fn rmsnormCpu(x &Array[f32], w &Array[f32], n usize, rows usize, eps f32, y &mut Array[f32]) bool {
   if n == 0usize or x.len < n * rows or w.len < n or y.len < n * rows { return false; }
