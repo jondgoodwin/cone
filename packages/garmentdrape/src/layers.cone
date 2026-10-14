@@ -1,0 +1,395 @@
+// ======== Layering: an outer garment never passes through an inner one ========
+//
+// THE METHOD, two parts that together keep the layers in order.
+//
+// 1. PROXY INFLATION. The body's collision proxies (rig.cone) are what a garment collides with. A garment worn over
+//    others collides with the proxies grown by the thickness of everything beneath it, so it rides over whatever is on
+//    the body and cannot fall through the gap an inner layer leaves. This is the shell-and-offset method of production
+//    cloth (Marvelous Designer's layer "offset", Unreal's cloth "thickness" ordering): cheap, and exact for an inner
+//    layer that hugs the body.
+// 2. ONE-WAY POINT-TRIANGLE CONTACT. An inner layer that hangs loose (a tunic's skirt under a coat) is not the body.
+//    So each outer particle is tested against the inner layers' triangles (a uniform grid of triangle references,
+//    rebuilt every frame) and, if it is nearer than a gap to one, pushed out along the triangle's outward normal to the
+//    gap (Ericson, "Real-Time Collision Detection", 5.1.5, closest point on a triangle). The contact is one-way: the
+//    inner layer is not moved, the layers are ordered, and the outer is the one that gives way. A particle already
+//    behind the triangle is put back in front of it (an outer layer is never allowed to stay inside an inner one).
+//    Only particles are tested, so an outer triangle could still cut an inner vertex between its corners; the
+//    clearance (the sum of the two thicknesses and a margin) and the cloth's spacing keep that rare, and the test
+//    measures it (tests/layers.cone).
+
+// The closest point to 'p' on the triangle (a, b, c) (Ericson, RTCD 5.1.5)
+pub fn closestOnTriangle(p Vec3, a Vec3, b Vec3, c Vec3) Vec3 {
+  imm ab = b - a;
+  imm ac = c - a;
+  imm ap = p - a;
+  imm d1 = ab.dot(ap);
+  imm d2 = ac.dot(ap);
+  if d1 <= 0. and d2 <= 0. { return a; }
+  imm bp = p - b;
+  imm d3 = ab.dot(bp);
+  imm d4 = ac.dot(bp);
+  if d3 >= 0. and d4 <= d3 { return b; }
+  imm vc = d1 * d4 - d3 * d2;
+  if vc <= 0. and d1 >= 0. and d3 <= 0. { return a + ab * (d1 / (d1 - d3)); }
+  imm cp = p - c;
+  imm d5 = ab.dot(cp);
+  imm d6 = ac.dot(cp);
+  if d6 >= 0. and d5 <= d6 { return c; }
+  imm vb = d5 * d2 - d1 * d6;
+  if vb <= 0. and d2 >= 0. and d6 <= 0. { return a + ac * (d2 / (d2 - d6)); }
+  imm va = d3 * d6 - d5 * d4;
+  if va <= 0. and (d4 - d3) >= 0. and (d5 - d6) >= 0. {
+    return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+  }
+  imm denom = 1. / (va + vb + vc);
+  a + ab * (vb * denom) + ac * (vc * denom);
+}
+
+// The surface of an inner layer: positions and triangles (outward wound), with a grid for finding the triangles near a
+// point
+pub struct LayerSurface {
+  pub pos List[Vec3];
+  pub tris List[u32];
+  pub clearance f32 = 0.014;       // how far outside this surface an outer layer's particle is kept
+  pub reach f32 = 0.0;             // how near a point must be for pushOutR to see this surface (at least the clearance)
+  origin Vec3 = new Vec3(0., 0., 0.);
+  cell f32 = 0.05;
+  nx u32 = 0u32;
+  ny u32 = 0u32;
+  nz u32 = 0u32;
+  start List[u32];
+  items List[u32];
+  fillAt List[u32];
+  triN List[Vec3];            // each triangle's unit normal (zero for a sliver), made by 'rebuild'
+  vertN List[Vec3];           // each vertex's smooth unit normal
+
+  pub fn empty() LayerSurface {
+    new LayerSurface(List[Vec3].empty(), List[u32].empty(), 0.014, 0., new Vec3(0., 0., 0.), 0.07, 0u32, 0u32, 0u32,
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[Vec3].empty(), List[Vec3].empty());
+  }
+
+  pub fn triangleCount(self &) usize { tris.len() / 3usize; }
+
+  // Nothing in it
+  pub fn clear(self &mut) {
+    pos.clear();
+    tris.clear();
+    nx = 0u32;
+    ny = 0u32;
+    nz = 0u32;
+  }
+
+  // This surface made to be the soft body's particles and triangles
+  pub fn setFromSoft(self &mut, soft &SoftBody) {
+    pos.clear();
+    mut i = 0usize;
+    while i < soft.pos.len() { pos.push(*soft.pos[i]); i = i + 1usize; }
+    if tris.len() != soft.tris.len() {
+      tris.clear();
+      i = 0usize;
+      while i < soft.tris.len() { tris.push(*soft.tris[i]); i = i + 1usize; }
+    }
+  }
+
+  // Another surface's triangles added (its vertices appended)
+  pub fn append(self &mut, p &List[Vec3], t &List[u32]) {
+    imm base = u32.from(pos.len());
+    mut i = 0usize;
+    while i < p.len() { pos.push(*p[i]); i = i + 1usize; }
+    i = 0usize;
+    while i < t.len() { tris.push(*t[i] + base); i = i + 1usize; }
+  }
+
+  // The grid of triangle references, from the present positions: each triangle is listed in every cell its box, grown
+  // by the clearance, touches, so a point need look in its own cell only
+  pub fn rebuild(self &mut) {
+    if tris.len() == 0usize { nx = 0u32; ny = 0u32; nz = 0u32; return; }
+    mut lo = *pos[0usize];
+    mut hi = *pos[0usize];
+    mut i = 1usize;
+    while i < pos.len() { lo = lo.min(*pos[i]); hi = hi.max(*pos[i]); i = i + 1usize; }
+    imm reg = if reach > clearance { reach; } else { clearance; };
+    imm margin = new Vec3(reg + 0.01, reg + 0.01, reg + 0.01);
+    lo = lo - margin;
+    hi = hi + margin;
+    cell = 0.07;
+    imm ext = hi - lo;
+    // the triangles' normals, once
+    triN.clear();
+    mut tn = 0usize;
+    while tn + 2usize < tris.len() {
+      imm na = *pos[usize.from(*tris[tn])];
+      imm nc = (*pos[usize.from(*tris[tn + 1usize])] - na).cross(*pos[usize.from(*tris[tn + 2usize])] - na);
+      imm nl = nc.length();
+      triN.push(if nl < 1e-12 { new Vec3(0., 0., 0.); } else { nc * (1. / nl); });
+      tn = tn + 3usize;
+    }
+    // and the smooth normal at each vertex (the area-weighted mean of the faces round it): the push goes along the
+    // normal interpolated at the nearest point, so that it does not jump where two faces meet
+    vertN.clear();
+    mut vn = 0usize;
+    while vn < pos.len() { vertN.push(new Vec3(0., 0., 0.)); vn = vn + 1usize; }
+    tn = 0usize;
+    while tn + 2usize < tris.len() {
+      imm ia = usize.from(*tris[tn]);
+      imm ib = usize.from(*tris[tn + 1usize]);
+      imm ic = usize.from(*tris[tn + 2usize]);
+      imm area2 = (*pos[ib] - *pos[ia]).cross(*pos[ic] - *pos[ia]);
+      vertN.set(ia, *vertN[ia] + area2);
+      vertN.set(ib, *vertN[ib] + area2);
+      vertN.set(ic, *vertN[ic] + area2);
+      tn = tn + 3usize;
+    }
+    vn = 0usize;
+    while vn < vertN.len() {
+      imm l = (*vertN[vn]).length();
+      if l > 1e-12 { vertN.set(vn, *vertN[vn] * (1. / l)); }
+      vn = vn + 1usize;
+    }
+    // keep the grid to about 300 000 cells
+    while (ext.x / cell + 1.) * (ext.y / cell + 1.) * (ext.z / cell + 1.) > 300000. { cell = cell * 1.3; }
+    origin = lo;
+    nx = u32.from(ext.x / cell) + 1u32;
+    ny = u32.from(ext.y / cell) + 1u32;
+    nz = u32.from(ext.z / cell) + 1u32;
+    imm cells = usize.from(nx) * usize.from(ny) * usize.from(nz);
+    start.clear();
+    start.resize(cells + 1usize, 0u32);
+    // the cells each triangle's box (grown by the clearance) touches, by raw reads and writes
+    imm posP = pos.view() as *Vec3;
+    imm trisP = tris.view() as *u32;
+    mut boxes = List[u32].empty();      // x0 x1 y0 y1 z0 z1 a triangle
+    boxes.resize(tris.len() / 3usize * 6usize, 0u32);
+    imm boxP = boxes.viewMut() as *u32;
+    mut t = 0usize;
+    while t + 2usize < tris.len() {
+      imm a = *(posP + usize.from(*(trisP + t)));
+      imm b = *(posP + usize.from(*(trisP + t + 1usize)));
+      imm c = *(posP + usize.from(*(trisP + t + 2usize)));
+      imm tlo = a.min(b).min(c) - new Vec3(reg, reg, reg);
+      imm thi = a.max(b).max(c) + new Vec3(reg, reg, reg);
+      imm o = t / 3usize * 6usize;
+      *(boxP + o) = self.cellX(tlo.x, nx); *(boxP + o + 1usize) = self.cellX(thi.x, nx);
+      *(boxP + o + 2usize) = self.cellY(tlo.y, ny); *(boxP + o + 3usize) = self.cellY(thi.y, ny);
+      *(boxP + o + 4usize) = self.cellZ(tlo.z, nz); *(boxP + o + 5usize) = self.cellZ(thi.z, nz);
+      t = t + 3usize;
+    }
+    // pass 1: count; then the starts; pass 2: fill
+    imm startP = start.viewMut() as *u32;
+    imm nTris = tris.len() / 3usize;
+    imm sx = usize.from(nx);
+    imm sxy = usize.from(nx) * usize.from(ny);
+    mut ti = 0usize;
+    while ti < nTris {
+      imm o = ti * 6usize;
+      mut z = usize.from(*(boxP + o + 4usize));
+      while z <= usize.from(*(boxP + o + 5usize)) {
+        mut y = usize.from(*(boxP + o + 2usize));
+        while y <= usize.from(*(boxP + o + 3usize)) {
+          mut x = usize.from(*(boxP + o));
+          while x <= usize.from(*(boxP + o + 1usize)) {
+            imm id = z * sxy + y * sx + x;
+            *(startP + id) = *(startP + id) + 1u32;
+            x = x + 1usize;
+          }
+          y = y + 1usize;
+        }
+        z = z + 1usize;
+      }
+      ti = ti + 1usize;
+    }
+    mut run = 0u32;
+    mut ci = 0usize;
+    while ci <= cells { imm cnt = *(startP + ci); *(startP + ci) = run; run = run + cnt; ci = ci + 1usize; }
+    items.clear();
+    items.resize(usize.from(run), 0u32);
+    imm itemP = items.viewMut() as *u32;
+    fillAt.clear();
+    fillAt.resize(cells, 0u32);
+    imm fillP = fillAt.viewMut() as *u32;
+    ci = 0usize;
+    while ci < cells { *(fillP + ci) = *(startP + ci); ci = ci + 1usize; }
+    ti = 0usize;
+    while ti < nTris {
+      imm o = ti * 6usize;
+      mut z = usize.from(*(boxP + o + 4usize));
+      while z <= usize.from(*(boxP + o + 5usize)) {
+        mut y = usize.from(*(boxP + o + 2usize));
+        while y <= usize.from(*(boxP + o + 3usize)) {
+          mut x = usize.from(*(boxP + o));
+          while x <= usize.from(*(boxP + o + 1usize)) {
+            imm id = z * sxy + y * sx + x;
+            imm at = usize.from(*(fillP + id));
+            *(itemP + at) = u32.from(ti);
+            *(fillP + id) = *(fillP + id) + 1u32;
+            x = x + 1usize;
+          }
+          y = y + 1usize;
+        }
+        z = z + 1usize;
+      }
+      ti = ti + 1usize;
+    }
+  }
+
+  fn cellX(self &, x f32, n u32) u32 {
+    imm c = (x - origin.x) / cell;
+    if c < 0. { return 0u32; }
+    imm k = u32.from(c);
+    if k >= n { n - 1u32; } else { k; };
+  }
+  fn cellY(self &, y f32, n u32) u32 {
+    imm c = (y - origin.y) / cell;
+    if c < 0. { return 0u32; }
+    imm k = u32.from(c);
+    if k >= n { n - 1u32; } else { k; };
+  }
+  fn cellZ(self &, z f32, n u32) u32 {
+    imm c = (z - origin.z) / cell;
+    if c < 0. { return 0u32; }
+    imm k = u32.from(c);
+    if k >= n { n - 1u32; } else { k; };
+  }
+
+  // The point 'p' pushed out of the surface if it is nearer than the clearance to a triangle's front: the new place
+  // (p itself if nothing touches it)
+  pub fn pushOut(self &, p Vec3) Vec3 { self.pushOutR(p, clearance, clearance); }
+
+  // The same for a clearance of  (up to each, or the clearance, whichever is the larger): out to  from the surface
+  pub fn pushOutR(self &, p Vec3, front f32, back f32) Vec3 {
+    if nx == 0u32 { return p; }
+    imm r = if front > back { front; } else { back; };
+    imm c = (p - origin) * (1. / cell);
+    if c.x < 0. or c.y < 0. or c.z < 0. { return p; }
+    imm ix = u32.from(c.x);
+    imm iy = u32.from(c.y);
+    imm iz = u32.from(c.z);
+    if ix >= nx or iy >= ny or iz >= nz { return p; }
+    imm id = (usize.from(iz) * usize.from(ny) + usize.from(iy)) * usize.from(nx) + usize.from(ix);
+    mut q = p;
+    imm first = usize.from(*start[id]);
+    imm end = usize.from(*start[id + 1usize]);
+    if first == end { return p; }
+    // raw reads: this is the inner loop of every substep of every layered garment
+    imm posP = pos.view() as *Vec3;
+    imm trisP = tris.view() as *u32;
+    imm normP = triN.view() as *Vec3;
+    imm vertP = vertN.view() as *Vec3;
+    imm itemP = items.view() as *u32;
+    // up to three passes: a push out of one triangle can go into the next
+    mut pass = 0;
+    while pass < 3 {
+      mut moved = false;
+      mut k = first;
+      while k < end {
+        imm ti = usize.from(*(itemP + k));
+        imm t = ti * 3usize;
+        k = k + 1usize;
+        imm nn = *(normP + ti);
+        if nn.x == 0. and nn.y == 0. and nn.z == 0. { continue; }
+        imm a = *(posP + usize.from(*(trisP + t)));
+        // the plane's distance is never more than the triangle's: a point clear of the plane is clear of the triangle
+        imm plane = (q - a).dot(nn);
+        if plane >= r or plane <= -r { continue; }
+        imm b = *(posP + usize.from(*(trisP + t + 1usize)));
+        imm cc = *(posP + usize.from(*(trisP + t + 2usize)));
+        imm cp = closestOnTriangle(q, a, b, cc);
+        imm d = q - cp;
+        imm dl = d.length();
+        if dl >= r - 1e-5 { continue; }
+        // the normal here: the vertex normals interpolated at the nearest point (the face's where that fails)
+        imm v0 = b - a;
+        imm v1 = cc - a;
+        imm v2 = cp - a;
+        imm d00 = v0.dot(v0);
+        imm d01 = v0.dot(v1);
+        imm d11 = v1.dot(v1);
+        imm d20 = v2.dot(v0);
+        imm d21 = v2.dot(v1);
+        imm den = d00 * d11 - d01 * d01;
+        mut ns = nn;
+        if den > 1e-14 {
+          imm bu = (d11 * d20 - d01 * d21) / den;
+          imm bv = (d00 * d21 - d01 * d20) / den;
+          imm mix = *(vertP + usize.from(*(trisP + t))) * (1. - bu - bv) + *(vertP + usize.from(*(trisP + t + 1usize))) * bu
+            + *(vertP + usize.from(*(trisP + t + 2usize))) * bv;
+          imm ml = mix.length();
+          if ml > 1e-6 { ns = mix * (1. / ml); }
+        }
+        imm side = d.dot(ns);
+        // in front: out along the direction from the surface; behind or on it: along the normal, out to the front
+        if side > 0. and dl > 1e-6 {
+          if dl >= front - 1e-5 { continue; }
+          q = cp + d * (front / dl);
+        } else {
+          if dl >= back - 1e-5 { continue; }
+          q = cp + ns * front;
+        }
+        moved = true;
+      }
+      if !moved { break; }
+      pass = pass + 1;
+    }
+    q;
+  }
+}
+
+// How well an outer cloth stays outside a layer beneath it, measured (brute force, for tests and checks, not the frame loop):
+// each particle of `outer` against its nearest triangle of `inner`
+pub struct LayerCheck {
+  pub within usize;      // particles within 5 cm of the inner surface
+  pub behind usize;      // of those, how many are behind (inside) the triangle nearest them
+  pub least f32;         // the least signed distance (along the nearest triangle's outward normal) of those within 5 cm
+}
+
+// onlyFree (the particles' inverse masses, or an empty list for all of them): count only the particles that are free to move
+pub fn measureLayering(outerPos &List[Vec3], invMass &List[f32], inner &LayerSurface) LayerCheck {
+  mut behind = 0usize;
+  mut within = 0usize;
+  mut least = 1e9;
+  mut i = 0usize;
+  while i < outerPos.len() {
+    if invMass.len() > 0usize and *invMass[i] == 0. { i = i + 1usize; continue; }
+    imm p = *outerPos[i];
+    mut bestD = 1e9;
+    mut bestS = 1e9;
+    mut interior = false;
+    mut t = 0usize;
+    while t + 2usize < inner.tris.len() {
+      imm a = *inner.pos[usize.from(*inner.tris[t])];
+      imm b = *inner.pos[usize.from(*inner.tris[t + 1usize])];
+      imm c = *inner.pos[usize.from(*inner.tris[t + 2usize])];
+      imm cp = closestOnTriangle(p, a, b, c);
+      imm d = (p - cp).length();
+      if d < bestD {
+        bestD = d;
+        bestS = (p - cp).dot((b - a).cross(c - a).normalize());
+        // whether the nearest point is inside the face (not on an edge or corner, where the front is not defined)
+        imm v0 = b - a;
+        imm v1 = c - a;
+        imm v2 = cp - a;
+        imm d00 = v0.dot(v0);
+        imm d01 = v0.dot(v1);
+        imm d11 = v1.dot(v1);
+        imm d20 = v2.dot(v0);
+        imm d21 = v2.dot(v1);
+        imm den = d00 * d11 - d01 * d01;
+        if den > 1e-14 {
+          imm u = (d11 * d20 - d01 * d21) / den;
+          imm v = (d00 * d21 - d01 * d20) / den;
+          interior = u > 0.02 and v > 0.02 and u + v < 0.98;
+        } else {
+          interior = false;
+        }
+      }
+      t = t + 3usize;
+    }
+    if bestD < 0.05 and interior {
+      within = within + 1usize;
+      if bestS < 0. { behind = behind + 1usize; }
+      least = fminf(least, bestS);
+    }
+    i = i + 1usize;
+  }
+  new LayerCheck(within, behind, least);
+}

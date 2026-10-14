@@ -1,0 +1,264 @@
+// ======== A plain test body for any skeleton: tapered tubes, one a bone, skinned to their bones ========
+//
+// Garments are fitted to a skeleton and a skinned mesh, and nothing about a garment names a humanoid. To try one on
+// something, this builds a body from the skeleton and a table of tubes: each tube runs from a bone's joint to another
+// bone's joint (or, for a leaf bone, a given way and length), tapers from one radius to another, and has an elliptical
+// cross-section (a depth against its width). A vertex is skinned to its own bone and, near either end, to the neighbour
+// across the joint, so that a bent elbow bends smoothly (linear blend skinning). Its uvs are metres along the tube and
+// round it, so a cloth texture on a shell worn over it keeps its scale. The mannequin is generic: 'humanoidTubes' is the
+// table for bonepose's 19-bone figure; a creature rig's skeleton needs its own table, not its own code.
+
+pub struct Tube {
+  pub bone usize;          // the bone it belongs to; the tube starts at the bone's joint
+  pub toBone i32;          // and ends at this bone's joint; -1: at the start plus 'dir' times 'length'
+  pub dir Vec3;            // the way a leaf tube points (model space, bind pose)
+  pub length f32;
+  pub r0 f32;              // the half-width at the start and the end
+  pub r1 f32;
+  pub depth f32;           // the half-depth as a share of the half-width
+  pub capStart bool;       // a rounded end where nothing else closes it
+  pub capEnd bool;
+}
+
+fn tube(bone usize, toBone i32, r0 f32, r1 f32, depth f32) Tube {
+  new Tube(bone, toBone, new Vec3(0., 0., 0.), 0., r0, r1, depth, false, false);
+}
+
+// The table for bonepose's 19-bone figure of height 'h' (the proportions are fractions of the height)
+pub fn humanoidTubes(h f32) List[Tube] {
+  mut t = List[Tube].empty();
+  mut pelvis = tube(PELVIS, i32.from(SPINE), 0.105 * h, 0.098 * h, 0.72);
+  pelvis.capStart = true;
+  t.push(pelvis);
+  t.push(tube(SPINE, i32.from(CHEST), 0.098 * h, 0.104 * h, 0.70));
+  t.push(tube(CHEST, i32.from(NECK), 0.104 * h, 0.112 * h, 0.66));
+  t.push(tube(NECK, i32.from(HEAD), 0.044 * h, 0.040 * h, 1.0));
+  mut head = tube(HEAD, -1i32, 0.050 * h, 0.052 * h, 1.15);
+  head.dir = new Vec3(0., 1., 0.);
+  head.length = 0.095 * h;
+  head.capStart = true;
+  head.capEnd = true;
+  t.push(head);
+  t.push(tube(CLAVICLE_L, i32.from(UPPER_ARM_L), 0.045 * h, 0.044 * h, 1.0));
+  t.push(tube(CLAVICLE_R, i32.from(UPPER_ARM_R), 0.045 * h, 0.044 * h, 1.0));
+  t.push(tube(UPPER_ARM_L, i32.from(FOREARM_L), 0.045 * h, 0.036 * h, 1.0));
+  t.push(tube(UPPER_ARM_R, i32.from(FOREARM_R), 0.045 * h, 0.036 * h, 1.0));
+  t.push(tube(FOREARM_L, i32.from(HAND_L), 0.036 * h, 0.027 * h, 1.0));
+  t.push(tube(FOREARM_R, i32.from(HAND_R), 0.036 * h, 0.027 * h, 1.0));
+  mut handL = tube(HAND_L, -1i32, 0.027 * h, 0.022 * h, 0.5);
+  handL.dir = new Vec3(0., -1., 0.);
+  handL.length = 0.100 * h;
+  handL.capEnd = true;
+  t.push(handL);
+  mut handR = tube(HAND_R, -1i32, 0.027 * h, 0.022 * h, 0.5);
+  handR.dir = new Vec3(0., -1., 0.);
+  handR.length = 0.100 * h;
+  handR.capEnd = true;
+  t.push(handR);
+  t.push(tube(THIGH_L, i32.from(SHIN_L), 0.064 * h, 0.048 * h, 1.0));
+  t.push(tube(THIGH_R, i32.from(SHIN_R), 0.064 * h, 0.048 * h, 1.0));
+  t.push(tube(SHIN_L, i32.from(FOOT_L), 0.050 * h, 0.033 * h, 1.0));
+  t.push(tube(SHIN_R, i32.from(FOOT_R), 0.050 * h, 0.033 * h, 1.0));
+  mut footL = tube(FOOT_L, -1i32, 0.034 * h, 0.022 * h, 0.7);
+  footL.dir = new Vec3(0., -0.22, -1.).normalize();
+  footL.length = 0.140 * h;
+  footL.capEnd = true;
+  footL.capStart = true;
+  t.push(footL);
+  mut footR = tube(FOOT_R, -1i32, 0.034 * h, 0.022 * h, 0.7);
+  footR.dir = new Vec3(0., -0.22, -1.).normalize();
+  footR.length = 0.140 * h;
+  footR.capEnd = true;
+  footR.capStart = true;
+  t.push(footR);
+  t;
+}
+
+fn perpendicularTo(a Vec3) Vec3 {
+  imm ref = if fabsf(a.x) > 0.8 { new Vec3(0., 0., 1.); } else { new Vec3(1., 0., 0.); };
+  (ref - a * ref.dot(a)).normalize();
+}
+
+// Push one ring of a tube: 'sides' + 1 vertices (the last repeats the first, for the uv seam), skinned
+fn pushRing(m &mut Mesh, skin &mut Skin, centre Vec3, s1 Vec3, s2 Vec3, rx f32, ry f32, sides usize,
+    v f32, ownBone u32, otherBone u32, wOther f32) {
+  mut k = 0usize;
+  while k <= sides {
+    imm phi = 2. * pi * f32.from(k % sides) / f32.from(sides);
+    m.positions.push(centre + s1 * (rx * cos(phi)) + s2 * (ry * sin(phi)));
+    m.uvs.push(new Vec2(f32.from(k) / f32.from(sides) * 2. * pi * (rx + ry) * 0.5, v));
+    skin.push(ownBone, otherBone, 0u32, 0u32, 1. - wOther, wOther, 0., 0.);
+    k = k + 1usize;
+  }
+}
+
+// A smooth shading across a uv seam: vertices at one place (a ring's first and last) are given the normal their normals
+// add up to
+fn weldNormals(m &mut Mesh) {
+  mut sums = Dict[u64, Vec3].deterministic();
+  mut keys = List[u64].empty();
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm p = *m.positions[i];
+    imm kx = u64.from(i32.from(libc.floorf(p.x * 1e4 + 0.5)) as u32) & 0x1FFFFFu64;
+    imm ky = u64.from(i32.from(libc.floorf(p.y * 1e4 + 0.5)) as u32) & 0x1FFFFFu64;
+    imm kz = u64.from(i32.from(libc.floorf(p.z * 1e4 + 0.5)) as u32) & 0x1FFFFFu64;
+    imm key = (kx << 42u64) | (ky << 21u64) | kz;
+    keys.push(key);
+    mut s = *m.normals[i];
+    match sums.getCopy(&key) { case imm have Some { s = s + have; } case is None { } }
+    sums.insert(key, s);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.positions.len() {
+    match sums.getCopy(&*keys[i]) {
+      case imm s Some { if s.length() > 1e-9 { m.normals.set(i, s.normalize()); } }
+      case is None { }
+    }
+    i = i + 1usize;
+  }
+}
+
+// The mannequin for a skeleton and a table of tubes: a mesh, its skin
+pub fn tubeBody(skeleton Skeleton, tubes &List[Tube]) BodyRig {
+  imm rp = skeleton.restPose();
+  mut models = List[Transform3].empty();
+  skeleton.modelTransforms(&rp, &mut models);
+  mut m = Mesh.empty();
+  mut skin = Skin.empty();
+  imm sides = 14usize;
+  imm rings = 7usize;
+  mut ti = 0usize;
+  while ti < tubes.len() {
+    imm tb = *tubes[ti];
+    ti = ti + 1usize;
+    imm a = (*models[tb.bone]).translation;
+    mut b = a + tb.dir * tb.length;
+    if tb.toBone >= 0i32 { b = (*models[usize.from(tb.toBone)]).translation; }
+    imm axis = (b - a).normalize();
+    imm len = (b - a).length();
+    imm s1 = perpendicularTo(axis);
+    imm s2 = axis.cross(s1);
+    imm own = u32.from(tb.bone);
+    imm parent = skeleton.parentOf(tb.bone);
+    imm parentB = if parent >= 0i32 { u32.from(usize.from(parent)); } else { own; };
+    imm childB = if tb.toBone >= 0i32 { u32.from(usize.from(tb.toBone)); } else { own; };
+    imm first = m.positions.len();
+    mut r = 0usize;
+    while r < rings {
+      imm t = f32.from(r) / f32.from(rings - 1usize);
+      imm rad = tb.r0 + (tb.r1 - tb.r0) * t;
+      // blend across the joints: half the weight at the very end, none by 35% along
+      imm wStart = 0.5 * (1. - smooth01(t / 0.35));
+      imm wEnd = 0.5 * smooth01((t - 0.65) / 0.35);
+      mut other = parentB;
+      mut w = wStart;
+      if wEnd > wStart { other = childB; w = wEnd; }
+      if other == own { w = 0.; }
+      pushRing(&mut m, &mut skin, a + axis * (len * t), s1, s2, rad, rad * tb.depth, sides, len * t, own, other, w);
+      r = r + 1usize;
+    }
+    // caps: rings shrinking round a hemisphere, then a point
+    mut capRingsStart = 0usize;
+    mut capRingsEnd = 0usize;
+    if tb.capEnd {
+      imm rad = tb.r1;
+      mut c = 0usize;
+      while c < 3usize {
+        imm ang = radians(30. + 28. * f32.from(c));
+        pushRing(&mut m, &mut skin, b + axis * (rad * sin(ang)), s1, s2, rad * cos(ang), rad * tb.depth * cos(ang), sides,
+          len + rad * ang, own, own, 0.);
+        c = c + 1usize;
+      }
+      capRingsEnd = 3usize;
+    }
+    if tb.capStart {
+      imm rad = tb.r0;
+      mut c = 0usize;
+      while c < 3usize {
+        imm ang = radians(30. + 28. * f32.from(c));
+        pushRing(&mut m, &mut skin, a - axis * (rad * sin(ang)), s1, s2, rad * cos(ang), rad * tb.depth * cos(ang), sides,
+          -(rad * ang), own, own, 0.);
+        c = c + 1usize;
+      }
+      capRingsStart = 3usize;
+    }
+    // faces between rings: main rings 0..rings-1, then end caps (rings..), start caps after those
+    imm perRing = sides + 1usize;
+    mut ringBase = List[usize].empty();
+    mut q = 0usize;
+    while q < rings + capRingsEnd + capRingsStart { ringBase.push(first + q * perRing); q = q + 1usize; }
+    // the sequence of rings from the start cap (outermost first) through the tube to the end cap
+    mut seq = List[usize].empty();
+    mut c2 = capRingsStart;
+    while c2 > 0usize { seq.push(*ringBase[rings + capRingsEnd + c2 - 1usize]); c2 = c2 - 1usize; }
+    q = 0usize;
+    while q < rings { seq.push(*ringBase[q]); q = q + 1usize; }
+    q = 0usize;
+    while q < capRingsEnd { seq.push(*ringBase[rings + q]); q = q + 1usize; }
+    q = 0usize;
+    while q + 1usize < seq.len() {
+      imm r0 = *seq[q];
+      imm r1 = *seq[q + 1usize];
+      mut k = 0usize;
+      while k < sides {
+        imm v00 = u32.from(r0 + k);
+        imm v01 = u32.from(r0 + k + 1usize);
+        imm v10 = u32.from(r1 + k);
+        imm v11 = u32.from(r1 + k + 1usize);
+        // ring phi runs s1 -> s2 about the axis; outward normals counter-clockwise from outside
+        m.indices.push(v00); m.indices.push(v01); m.indices.push(v10);
+        m.indices.push(v01); m.indices.push(v11); m.indices.push(v10);
+        k = k + 1usize;
+      }
+      q = q + 1usize;
+    }
+    // the cap points
+    if tb.capEnd {
+      imm apex = m.positions.len();
+      m.positions.push(b + axis * tb.r1);
+      m.uvs.push(new Vec2(0., len + tb.r1 * 1.57));
+      skin.push(own, own, 0u32, 0u32, 1., 0., 0., 0.);
+      imm lastRing = *seq[seq.len() - 1usize];
+      mut k = 0usize;
+      while k < sides {
+        m.indices.push(u32.from(lastRing + k)); m.indices.push(u32.from(lastRing + k + 1usize)); m.indices.push(u32.from(apex));
+        k = k + 1usize;
+      }
+    }
+    if tb.capStart {
+      imm apex = m.positions.len();
+      m.positions.push(a - axis * tb.r0);
+      m.uvs.push(new Vec2(0., -tb.r0 * 1.57));
+      skin.push(own, own, 0u32, 0u32, 1., 0., 0., 0.);
+      imm firstRing = *seq[0usize];
+      mut k = 0usize;
+      while k < sides {
+        m.indices.push(u32.from(firstRing + k + 1usize)); m.indices.push(u32.from(firstRing + k)); m.indices.push(u32.from(apex));
+        k = k + 1usize;
+      }
+    }
+  }
+  m.computeSmoothNormals();
+  weldNormals(&mut m);
+  BodyRig.make(skeleton, m, skin);
+}
+
+// The mannequin for bonepose's figure of height 'h'
+pub fn humanoidMannequin(h f32) BodyRig {
+  imm tubes = humanoidTubes(h);
+  tubeBody(humanoid(h), &tubes);
+}
+
+// The names of bonepose's 19 bones, as a pattern's text calls them
+pub fn humanoidNames() List[String] {
+  mut n = List[String].empty();
+  n.push(String.from("pelvis")); n.push(String.from("spine")); n.push(String.from("chest")); n.push(String.from("neck"));
+  n.push(String.from("head")); n.push(String.from("clavicle_l")); n.push(String.from("clavicle_r"));
+  n.push(String.from("upper_arm_l")); n.push(String.from("upper_arm_r")); n.push(String.from("forearm_l"));
+  n.push(String.from("forearm_r")); n.push(String.from("hand_l")); n.push(String.from("hand_r"));
+  n.push(String.from("thigh_l")); n.push(String.from("thigh_r")); n.push(String.from("shin_l")); n.push(String.from("shin_r"));
+  n.push(String.from("foot_l")); n.push(String.from("foot_r"));
+  n;
+}

@@ -1,0 +1,529 @@
+// outfits: three plain test mannequins dressed in garments defined as data, walking, drawn offscreen on a real GPU.
+//
+//   left    a peasant's tunic and apron (patterns, skinned where tight and simulated where loose) over breeches (a shell)
+//   middle  a long coat (a pattern) over a waistcoat and trousers (shells) over a shirt (a shell): three layers
+//   right   a cape (a pattern) over a shirt and breeches (shells)
+//
+//   congo run --release packages/garmentdrape/examples/outfits.cone
+//   OUTFITS_SHOT=prefix congo run --release packages/garmentdrape/examples/outfits.cone
+//
+// With OUTFITS_SHOT set to a prefix it writes <prefix>-<name>.bmp for a few frames of the walk and for the three at rest.
+// It prints the cost of a frame (median and 95th percentile, the simulation alone and the whole frame with the drawing
+// and the wait for the GPU) and checks what the package promises: no particle is left inside the body, an outer layer
+// never goes through an inner one, nothing runs away (exits 1 if a check fails). GPU_POWER_PREFERENCE=low-power picks
+// an integrated GPU. OUTFITS_ONLY=0|1|2 studies one wearer at rest from five sides. It needs a GPU with Vulkan 1.3 and
+// SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod outfits;
+
+import stdio use *;
+import libc;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import bonepose use *;
+import walkgait use Walker;
+import xpbdsoftbody use *;
+import gpu use *;
+import render use *;
+import path use Path;
+import garmentdrape use *;
+
+const W = 960u32;
+const H = 640u32;
+
+struct Gfx {
+  renderer Renderer;
+  color Texture;
+  depth Texture;
+  readback Buffer;
+  cubeMesh MeshHandle;
+  ground MaterialHandle;
+  skin MaterialHandle;
+  cloth PipelineHandle;
+  sun Light;
+  prefix *u8;
+}
+
+fn save(g &Gfx, name &str, p *u8) bool {
+  if (g.prefix as usize) == 0usize { return true; }
+  mut file = String.empty();
+  mut i = 0usize;
+  while *(g.prefix + i) != 0u8 { file.appendByte(*(g.prefix + i)); i = i + 1usize; }
+  file.append("-");
+  file.append(name);
+  file.append(".bmp");
+  imm img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
+  if img.save(&Path.from(file.view())) { print <- "wrote "; printStr(file.view()); print <- "\n"; return true; }
+  false;
+}
+
+fn slab(center Vec3, size Vec3) Mat4 { Mat4.fromTrs(center, Quat.identity(), size); }
+
+fn sortInto(v &mut List[i64]) {
+  mut i = 1usize;
+  while i < v.len() {
+    imm x = *v[i];
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > x { v.set(j, *v[j - 1usize]); j = j - 1usize; }
+    v.set(j, x);
+    i = i + 1usize;
+  }
+}
+
+fn cost(what &str, times &mut List[i64]) {
+  if times.len() == 0usize { return; }
+  sortInto(times);
+  print <- what; print <- ": p50 "; print <- *times[times.len() / 2usize]; print <- " us, p95 "; print <- *times[times.len() * 95usize / 100usize];
+  print <- " us, min "; print <- *times[0usize]; print <- " us ("; print <- i64.from(times.len()); print <- " frames)\n";
+}
+
+// A mannequin and what it wears, with the things the GPU holds for them
+struct Wearer {
+  rig BodyRig;
+  outfit Outfit;
+  bodyMesh MeshHandle;
+  shellMeshes List[MeshHandle];
+  shellMaterials List[MaterialHandle];
+  views List[GarmentView];
+  walker Walker;
+  pose Pose;
+  models List[Transform3];
+  world List[Transform3];
+  mats List[Mat4];
+  baseX f32;
+  kind i32;
+}
+
+fn bonesOf(b &mut List[usize], a usize, c usize, d usize, e usize, f usize) {
+  b.push(a); b.push(c); b.push(d); b.push(e); b.push(f);
+}
+
+fn shirtSpec(name &str, layer u32) ShellSpec {
+  mut sh = ShellSpec.make(name);
+  sh.bones.push(SPINE); sh.bones.push(CHEST); sh.bones.push(CLAVICLE_L); sh.bones.push(CLAVICLE_R);
+  sh.bones.push(UPPER_ARM_L); sh.bones.push(UPPER_ARM_R); sh.bones.push(FOREARM_L); sh.bones.push(FOREARM_R);
+  sh.layer = layer;
+  sh;
+}
+
+fn legsSpec(name &str, layer u32) ShellSpec {
+  mut b = ShellSpec.make(name);
+  bonesOf(&mut b.bones, PELVIS, THIGH_L, THIGH_R, SHIN_L, SHIN_R);
+  b.layer = layer;
+  b;
+}
+
+// Dress a new wearer: `kind` 0 the peasant, 1 the coat, 2 the cape
+fn makeWearer(g &mut Gfx, device &mut Device, kind i32, baseX f32, threads u32) Wearer {
+  imm rig = humanoidMannequin(1.75);
+  imm names = humanoidNames();
+  mut shells = List[ShellSpec].empty();
+  mut patterns = List[Pattern].empty();
+  mut shellColors = List[Color].empty();
+  mut looks = List[ClothLook].empty();
+  mut bandSets = List[List[WearBand]].empty();
+  if kind == 0i32 {
+    shells.push(legsSpec("breeches", 0u32));
+    shellColors.push(new Color(0.34, 0.27, 0.20, 1.));
+    mut a = parsePattern(tunicBody(), &names);
+    mut b = parsePattern(tunicSleeves(), &names);
+    mut c = parsePattern(apron(), &names);
+    if !a.ok or !b.ok or !c.ok { print <- "FAIL: a tunic pattern does not parse\n"; }
+    patterns.push(a.take()); patterns.push(b.take()); patterns.push(c.take());
+    looks.push(ClothLook.linen(new Color(0.62, 0.46, 0.28, 1.)));
+    looks.push(ClothLook.linen(new Color(0.62, 0.46, 0.28, 1.)));
+    looks.push(ClothLook.linen(new Color(0.80, 0.76, 0.64, 1.)));
+    mut none = List[WearBand].empty();
+    bandSets.push(none);
+    mut elbows = List[WearBand].empty();
+    elbows.push(new WearBand(0.56, 0.12, 1.0));
+    bandSets.push(elbows);
+    mut waist = List[WearBand].empty();
+    waist.push(new WearBand(0.5, 0.06, 0.6));
+    bandSets.push(waist);
+  }
+  if kind == 1i32 {
+    shells.push(shirtSpec("shirt", 0u32));
+    shellColors.push(new Color(0.78, 0.76, 0.68, 1.));
+    shells.push(legsSpec("trousers", 0u32));
+    shellColors.push(new Color(0.20, 0.20, 0.24, 1.));
+    mut wc = ShellSpec.make("waistcoat");
+    wc.bones.push(SPINE); wc.bones.push(CHEST);
+    wc.layer = 1u32;
+    wc.ease = 0.006;
+    shells.push(wc);
+    shellColors.push(new Color(0.40, 0.14, 0.12, 1.));
+    mut a = parsePattern(longCoat(), &names);
+    mut b = parsePattern(coatSleeves(), &names);
+    if !a.ok or !b.ok { print <- "FAIL: a coat pattern does not parse\n"; }
+    patterns.push(a.take()); patterns.push(b.take());
+    looks.push(ClothLook.wool(new Color(0.12, 0.20, 0.36, 1.)));
+    looks.push(ClothLook.wool(new Color(0.12, 0.20, 0.36, 1.)));
+    mut none = List[WearBand].empty();
+    bandSets.push(none);
+    mut elbows = List[WearBand].empty();
+    elbows.push(new WearBand(0.56, 0.12, 1.0));
+    bandSets.push(elbows);
+  }
+  if kind == 2i32 {
+    shells.push(shirtSpec("shirt", 0u32));
+    shellColors.push(new Color(0.74, 0.72, 0.64, 1.));
+    shells.push(legsSpec("breeches", 0u32));
+    shellColors.push(new Color(0.26, 0.22, 0.18, 1.));
+    mut a = parsePattern(cape(), &names);
+    if !a.ok { print <- "FAIL: the cape does not parse\n"; }
+    mut pc = a.take();
+    pc.layer = 1u32;
+    patterns.push(pc);
+    looks.push(ClothLook.velvet(new Color(0.55, 0.05, 0.09, 1.)));
+    mut none = List[WearBand].empty();
+    bandSets.push(none);
+  }
+  // OUTFITS_BARE=1: no shells; =2: and every pattern in layer 0 (each draped on the bare body), for studying a garment alone
+  imm bare = libc.getenv("OUTFITS_BARE");
+  if (bare as usize) != 0usize {
+    shells.clear();
+    shellColors.clear();
+    if *bare == '2' {
+      mut pi = 0usize;
+      while pi < patterns.len() { patterns[pi].layer = 0u32; pi = pi + 1usize; }
+    }
+  }
+  imm t0 = Instant.now();
+  mut dressing = dress(&rig, &shells, &patterns, threads);
+  imm ms = t0.elapsed().nanos() / 1000000i64;
+  if !dressing.ok { print <- "FAIL: dressing: "; printStr(dressing.why.view()); print <- "\n"; }
+  mut outfit = Outfit.make();
+  outfit <=> dressing.outfit;
+  print <- "wearer "; print <- i64.from(kind); print <- ": dressed in "; print <- ms; print <- " ms; ";
+  print <- i64.from(outfit.shells.len()); print <- " shells, "; print <- i64.from(outfit.garments.len()); print <- " garments";
+  mut gi = 0usize;
+  while gi < outfit.garments.len() {
+    print <- "; "; printStr(outfit.garments[gi].name.view()); print <- " "; print <- i64.from(outfit.garments[gi].particleCount());
+    print <- " particles ("; print <- i64.from(outfit.garments[gi].tightCount()); print <- " skinned)";
+    gi = gi + 1usize;
+  }
+  print <- "\n";
+  imm bodyMesh = g.renderer.addSkinnedMesh(device, &rig.mesh, &rig.skin);
+  mut shellMeshes = List[MeshHandle].empty();
+  mut shellMaterials = List[MaterialHandle].empty();
+  mut si = 0usize;
+  while si < outfit.shells.len() {
+    shellMeshes.push(g.renderer.addSkinnedMesh(device, &outfit.shells[si].mesh, &outfit.shells[si].skin));
+    shellMaterials.push(g.renderer.addMaterial(device, &Material.shiny(*shellColors[si], 0.04, 8.)));
+    si = si + 1usize;
+  }
+  mut views = List[GarmentView].empty();
+  gi = 0usize;
+  while gi < outfit.garments.len() {
+    imm cm = addClothMaterial(&mut g.renderer, device, g.cloth, outfit.garments[gi], looks[gi], bandSets[gi]);
+    views.push(GarmentView.make(&mut g.renderer, device, outfit.garments[gi], cm));
+    gi = gi + 1usize;
+  }
+  imm walker = Walker.make(1.75, u32.from(kind) + 3u32);
+  imm restPose = rig.skeleton.restPose();
+  new Wearer(rig, outfit, bodyMesh, shellMeshes, shellMaterials, views, walker, restPose, List[Transform3].empty(),
+    List[Transform3].empty(), List[Mat4].empty(), baseX, kind);
+}
+
+// The wearer's bones in the world: the model space ones carried to the point it stands on
+fn toWorld(w &mut Wearer, at Vec3) {
+  imm root = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
+  w.world.clear();
+  mut i = 0usize;
+  while i < w.models.len() { w.world.push(root * *w.models[i]); i = i + 1usize; }
+}
+
+// The wearer standing at rest at its place, its garments carried to the pose
+fn standAtRest(w &mut Wearer) {
+  imm rp = w.rig.skeleton.restPose();
+  w.rig.skeleton.modelTransforms(&rp, &mut w.models);
+  toWorld(w, new Vec3(w.baseX, 0., 0.));
+  w.outfit.snap(&w.rig, &w.world);
+}
+
+// One frame of the walk: the walker, the bones in the world, the garments
+fn stepWearer(w &mut Wearer, z f32, speed f32, dt f32, wind Vec3, workers &mut Workers) {
+  imm at = new Vec3(w.baseX, 0., z);
+  w.walker.update(&w.rig.skeleton, &mut w.pose, &mut w.models, at, 0., speed, 0., true, &ground, dt);
+  toWorld(w, at);
+  w.outfit.step(&w.rig, &w.world, dt, wind, workers);
+}
+
+// Add the wearer to the draw list, its bones at `world`
+fn drawWearer(g &mut Gfx, device &mut Device, w &mut Wearer, list &mut DrawList) {
+  w.rig.skinMatrices(&w.world, &mut w.mats);
+  list.addSkinned(w.bodyMesh, g.skin, Mat4.identity(), w.mats.view());
+  mut s = 0usize;
+  while s < w.shellMeshes.len() {
+    list.addSkinned(*w.shellMeshes[s], *w.shellMaterials[s], Mat4.identity(), w.mats.view());
+    s = s + 1usize;
+  }
+  imm hide = libc.getenv("OUTFITS_HIDE");
+  mut gi = 0usize;
+  while gi < w.views.len() {
+    mut hidden = false;
+    if (hide as usize) != 0usize { hidden = usize.from(*hide - '0') == gi; }
+    if !hidden { w.views[gi].draw(&mut g.renderer, device, w.outfit.garments[gi], list); }
+    gi = gi + 1usize;
+  }
+}
+
+fn drawFrame(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  g.renderer.render(device, &mut encoder, &g.color, &g.depth, camera, &g.sun, list);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn shoot(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList, name &str) bool {
+  mut encoder = device.createCommandEncoder();
+  g.renderer.render(device, &mut encoder, &g.color, &g.depth, camera, &g.sun, list);
+  encoder.copyTextureToBuffer(&g.color, &g.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm p = g.readback.mappedRange();
+  save(g, name, p);
+}
+
+fn camera(eye Vec3, at Vec3) Camera {
+  mut c = Camera.make();
+  c.lookAt(eye, at, new Vec3(0., 1., 0.));
+  c.fov = radians(34.);
+  c.background = new Color(0.62, 0.72, 0.86, 1.);
+  c;
+}
+
+fn ground(z f32, x f32) f32 { 0.; }
+
+// What the package promises, measured on the walk: every garment's particles are finite, none is inside a body proxy
+// the garment sees, and no particle of a layer is behind the surface of the layer beneath it (the shirts' and the
+// waistcoat's). Returns the number of failed checks.
+fn checkWearer(w &mut Wearer, label &str) i32 {
+  mut bad = 0i32;
+  mut gi = 0usize;
+  while gi < w.outfit.garments.len() {
+    imm n = w.outfit.garments[gi].particleCount();
+    mut nan = 0usize;
+    mut inside = 0usize;
+    mut far = 0usize;
+    mut i = 0usize;
+    while i < n {
+      imm p = *w.outfit.garments[gi].soft.pos[i];
+      if p.x != p.x or p.y != p.y or p.z != p.z { nan = nan + 1usize; }
+      else {
+        if w.rig.distanceSeen(&w.world, 0., &w.outfit.garments[gi].seen, p) < -0.02 { inside = inside + 1usize; }
+        imm t = *w.outfit.garments[gi].target[i];
+        if (p - t).length() > 1.5 { far = far + 1usize; }
+      }
+      i = i + 1usize;
+    }
+    printStr(label); print <- " "; printStr(w.outfit.garments[gi].name.view()); print <- ": "; print <- i64.from(nan); print <- " NaN, ";
+    print <- i64.from(inside); print <- " inside the body by more than 2 cm, "; print <- i64.from(far); print <- " more than 1.5 m from their skin\n";
+    if nan > 0usize or far > 0usize { bad = bad + 1i32; }
+    if inside * 100usize > n * 3usize { bad = bad + 1i32; }
+    // a garment over others: how much of it near the layers beneath is on their inner side
+    if w.outfit.garments[gi].layer > 0u32 {
+      imm lc = layerCheckOf(&w.outfit, gi);
+      printStr(label); print <- " "; printStr(w.outfit.garments[gi].name.view()); print <- ": over the layers beneath, "; print <- i64.from(lc.within);
+      print <- " particles within 5 cm, "; print <- i64.from(lc.behind); print <- " behind a face of them (the deepest "; print <- -lc.least * 1000.; print <- " mm)\n";
+    }
+    gi = gi + 1usize;
+  }
+  bad;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("garmentdrape outfits");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
+  imm target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  imm depth = device.createTexture(&depthDesc);
+  imm readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
+  imm cubeMesh = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  imm groundMat = renderer.addMaterial(&mut device, &Material.plain(new Color(0.34, 0.40, 0.30, 1.)));
+  imm skin = renderer.addMaterial(&mut device, &Material.shiny(new Color(0.72, 0.58, 0.48, 1.), 0.05, 10.));
+  imm cloth = addClothPipeline(&mut renderer, &mut device);
+  imm sun = Light.directional(new Vec3(0.35, -0.55, -0.45).normalize(), Color.gray(3.4), Color.gray(0.75));
+  mut g = new Gfx(renderer, color, depth, readback, cubeMesh, groundMat, skin, cloth, sun, libc.getenv("OUTFITS_SHOT"));
+  mut failures_ = 0i32;
+
+  // OUTFITS_ONLY=0|1|2: one wearer, studied at rest from five sides
+  imm only = libc.getenv("OUTFITS_ONLY");
+  if (only as usize) != 0usize {
+    imm kind = i32.from(*only - '0');
+    mut w = makeWearer(&mut g, &mut device, kind, 0., 4u32);
+    mut rp = w.rig.skeleton.restPose();
+    w.rig.skeleton.modelTransforms(&rp, &mut w.models);
+    toWorld(&mut w, new Vec3(0., 0., 0.));
+    mut lst = DrawList.empty();
+    lst.add(g.cubeMesh, g.ground, slab(new Vec3(0., -0.05, 0.), new Vec3(8., 0.1, 8.)));
+    drawWearer(&mut g, &mut device, &mut w, &mut lst);
+    mut k = 0;
+    while k < 5 {
+      imm a = radians(45. * f32.from(k));
+      imm cam = camera(new Vec3(-3.2 * sin(a), 1.2, -3.2 * cos(a)), new Vec3(0., 1.05, 0.));
+      shoot(&mut g, &mut device, &cam, &lst, if k == 0 {"only-0";} elif k == 1 {"only-1";} elif k == 2 {"only-2";} elif k == 3 {"only-3";} else {"only-4";});
+      k = k + 1;
+    }
+    return 0i32;
+  }
+
+  // one pool of cloth threads for every wearer (the soft bodies are stepped one after another)
+  imm clothThreads = libc.getenv("OUTFITS_THREADS");
+  mut workers = if (clothThreads as usize) != 0usize { Workers.make(u32.from(*clothThreads - '0')); } else { Workers.make(1u32); };
+  mut wearers = List[Wearer].empty();
+  wearers.push(makeWearer(&mut g, &mut device, 0i32, -1.3, 1u32));
+  wearers.push(makeWearer(&mut g, &mut device, 1i32, 0., 1u32));
+  wearers.push(makeWearer(&mut g, &mut device, 2i32, 1.3, 1u32));
+  // what the description is, against what it makes
+  print <- "descriptions (bytes of text): tunic body "; print <- i64.from(String.from(tunicBody()).len()); print <- ", tunic sleeves "; print <- i64.from(String.from(tunicSleeves()).len());
+  print <- ", apron "; print <- i64.from(String.from(apron()).len()); print <- ", coat "; print <- i64.from(String.from(longCoat()).len());
+  print <- ", coat sleeves "; print <- i64.from(String.from(coatSleeves()).len()); print <- ", cape "; print <- i64.from(String.from(cape()).len()); print <- "\n";
+  mut meshBytes = 0usize;
+  mut sheetBytes = 0usize;
+  mut shellBytes = 0usize;
+  mut k = 0usize;
+  while k < wearers.len() {
+    mut gi = 0usize;
+    while gi < wearers[k].outfit.garments.len() {
+      meshBytes = meshBytes + outputVertexCount(&wearers[k].outfit.garments[gi].soft, true) * 32usize + outputIndexCount(&wearers[k].outfit.garments[gi].soft, true) * 4usize;
+      sheetBytes = sheetBytes + (usize.from(i32.from(wearers[k].outfit.garments[gi].atlasWidth * 250.)) + 1usize) * (usize.from(i32.from(wearers[k].outfit.garments[gi].atlasHeight * 250.)) + 1usize) * 4usize;
+      gi = gi + 1usize;
+    }
+    mut si = 0usize;
+    while si < wearers[k].outfit.shells.len() {
+      shellBytes = shellBytes + wearers[k].outfit.shells[si].mesh.positions.len() * 40usize + wearers[k].outfit.shells[si].mesh.indices.len() * 4usize;
+      si = si + 1usize;
+    }
+    k = k + 1usize;
+  }
+  print <- "what they make: garment meshes "; print <- i64.from(meshBytes); print <- " bytes, pattern sheets "; print <- i64.from(sheetBytes);
+  print <- " bytes, shells "; print <- i64.from(shellBytes); print <- " bytes\n";
+  // each stands at rest first, for the stills, then walks
+  k = 0usize;
+  while k < wearers.len() {
+    standAtRest(&mut wearers[k]);
+    k = k + 1usize;
+  }
+  mut list = DrawList.empty();
+  list.add(g.cubeMesh, g.ground, slab(new Vec3(0., -0.05, -10.), new Vec3(30., 0.1, 40.)));
+  k = 0usize;
+  while k < wearers.len() { drawWearer(&mut g, &mut device, &mut wearers[k], &mut list); k = k + 1usize; }
+  if !shoot(&mut g, &mut device, &camera(new Vec3(0., 1.15, -5.0), new Vec3(0., 0.95, 0.)), &list, "rest-front") { failures_ = failures_ + 1i32; }
+  if !shoot(&mut g, &mut device, &camera(new Vec3(0., 1.15, 5.0), new Vec3(0., 0.95, 0.)), &list, "rest-back") { failures_ = failures_ + 1i32; }
+  if !shoot(&mut g, &mut device, &camera(new Vec3(3.4, 1.15, -3.4), new Vec3(0., 0.95, 0.)), &list, "rest-side") { failures_ = failures_ + 1i32; }
+
+  // the walk: half a second standing, a second to reach 1.4 m/s, then on at 1.4 m/s; 600 frames of 1/60 s
+  imm dt = 1. / 60.;
+  mut simTimes = List[i64].empty();
+  mut frameTimes = List[i64].empty();
+  mut z = 0.;
+  mut frame = 0;
+  while frame < 600 {
+    imm t = f32.from(frame) * dt;
+    imm speed = if t < 0.5 { 0.; } elif t < 1.5 { 1.4 * (t - 0.5); } else { 1.4; };
+    z = z - speed * dt;
+    imm gust = 0.5 + 0.5 * sin(t * 1.3) * sin(t * 0.7 + 1.);
+    imm wind = new Vec3(1.2 * gust, 0., 0.4 * gust);
+    imm t0 = Instant.now();
+    k = 0usize;
+    while k < wearers.len() {
+      stepWearer(&mut wearers[k], z, speed, dt, wind, &mut workers);
+      k = k + 1usize;
+    }
+    imm simMicros = t0.elapsed().nanos() / 1000i64;
+    // the camera ahead of them, a little to one side
+    imm cam = camera(new Vec3(2.6, 1.3, z - 4.6), new Vec3(0., 0.95, z));
+    list.clear();
+    list.add(g.cubeMesh, g.ground, slab(new Vec3(0., -0.05, z - 10.), new Vec3(30., 0.1, 40.)));
+    k = 0usize;
+    while k < wearers.len() { drawWearer(&mut g, &mut device, &mut wearers[k], &mut list); k = k + 1usize; }
+    imm shot = frame == 120 or frame == 210 or frame == 330 or frame == 480;
+    if shot {
+      if !shoot(&mut g, &mut device, &cam, &list, if frame == 120 {"walk-120";} elif frame == 210 {"walk-210";} elif frame == 330 {"walk-330";} else {"walk-480";}) { failures_ = failures_ + 1i32; }
+      if frame == 330 {
+        imm side = camera(new Vec3(5.5, 1.2, z), new Vec3(0., 1.0, z));
+        if !shoot(&mut g, &mut device, &side, &list, "walk-330-side") { failures_ = failures_ + 1i32; }
+        imm back = camera(new Vec3(-2.2, 1.4, z + 4.2), new Vec3(0., 1.0, z));
+        if !shoot(&mut g, &mut device, &back, &list, "walk-330-back") { failures_ = failures_ + 1i32; }
+        // close up: the coat's wool and its sleeve, the cape's velvet, the apron's linen
+        imm closeCoat = camera(new Vec3(0.95, 1.25, z - 1.5), new Vec3(0.05, 1.1, z));
+        if !shoot(&mut g, &mut device, &closeCoat, &list, "walk-330-coat") { failures_ = failures_ + 1i32; }
+        imm closeCape = camera(new Vec3(2.4, 1.25, z - 1.3), new Vec3(1.3, 1.05, z));
+        if !shoot(&mut g, &mut device, &closeCape, &list, "walk-330-cape") { failures_ = failures_ + 1i32; }
+        imm closeApron = camera(new Vec3(-0.45, 1.2, z - 1.5), new Vec3(-1.3, 1.05, z));
+        if !shoot(&mut g, &mut device, &closeApron, &list, "walk-330-apron") { failures_ = failures_ + 1i32; }
+        // very close: the weave, the wear and the dirt on the tunic's sleeve and the apron's hem
+        imm weave = camera(new Vec3(-0.85, 1.0, z - 0.7), new Vec3(-1.15, 0.95, z));
+        if !shoot(&mut g, &mut device, &weave, &list, "walk-330-weave") { failures_ = failures_ + 1i32; }
+      }
+    } else {
+      drawFrame(&mut g, &mut device, &cam, &list);
+    }
+    if !shot and frame >= 60 {
+      simTimes.push(simMicros);
+      frameTimes.push(t0.elapsed().nanos() / 1000i64);
+    }
+    frame = frame + 1;
+  }
+  cost("simulation, three wearers (with a drawing and a GPU wait between frames)", &mut simTimes);
+  cost("whole frame (simulation, drawing, GPU)", &mut frameTimes);
+  // 600 frames more of the walk with no drawing between them, to read the simulation's own cost (a thread that sleeps in
+  // the GPU wait wakes on a cold core): the per-phase costs below are of these
+  k = 0usize;
+  while k < wearers.len() { wearers[k].outfit.resetCost(); k = k + 1usize; }
+  mut soakTimes = List[i64].empty();
+  mut soakFrame = 0;
+  while soakFrame < 600 {
+    imm t = f32.from(frame + soakFrame) * dt;
+    z = z - 1.4 * dt;
+    imm gust = 0.5 + 0.5 * sin(t * 1.3) * sin(t * 0.7 + 1.);
+    imm wind = new Vec3(1.2 * gust, 0., 0.4 * gust);
+    imm t0 = Instant.now();
+    k = 0usize;
+    while k < wearers.len() { stepWearer(&mut wearers[k], z, 1.4, dt, wind, &mut workers); k = k + 1usize; }
+    soakTimes.push(t0.elapsed().nanos() / 1000i64);
+    soakFrame = soakFrame + 1;
+  }
+  cost("simulation, three wearers, back to back", &mut soakTimes);
+  k = 0usize;
+  while k < wearers.len() {
+    imm fr = f32.from(wearers[k].outfit.frames);
+    print <- "wearer "; print <- i64.from(k); print <- " per frame (us): skin "; print <- f32.from(*wearers[k].outfit.cost[0usize]) / fr / 1000.;
+    print <- ", colliders+begin "; print <- f32.from(*wearers[k].outfit.cost[1usize]) / fr / 1000.;
+    print <- ", pins "; print <- f32.from(*wearers[k].outfit.cost[2usize]) / fr / 1000.;
+    print <- ", soft substeps "; print <- f32.from(*wearers[k].outfit.cost[3usize]) / fr / 1000.;
+    print <- ", clamp+pull "; print <- f32.from(*wearers[k].outfit.cost[4usize]) / fr / 1000.;
+    print <- ", layer push "; print <- f32.from(*wearers[k].outfit.cost[5usize]) / fr / 1000.;
+    print <- ", stack "; print <- f32.from(*wearers[k].outfit.cost[6usize]) / fr / 1000.;
+    print <- ", whole step "; print <- f32.from(*wearers[k].outfit.cost[7usize]) / fr / 1000.; print <- "\n";
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < wearers.len() {
+    failures_ = failures_ + checkWearer(&mut wearers[k], if k == 0usize {"peasant";} elif k == 1usize {"coat";} else {"cape";});
+    k = k + 1usize;
+  }
+  workers.stop();
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; failures_ = failures_ + 1i32; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; failures_ = failures_ + 1i32; }
+  if failures_ == 0i32 { print <- "ok\n"; return 0i32; }
+  1i32;
+}

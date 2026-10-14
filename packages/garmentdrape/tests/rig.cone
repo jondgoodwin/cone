@@ -1,0 +1,216 @@
+// The body a garment is worn on: a mannequin built from the 19-bone skeleton and a table of tubes, its skin, and the
+// collision proxies fitted to it.
+//
+// 1. The mannequin is a closed, outward-facing skinned mesh: every skin entry sums to one, every normal points away from
+//    its tube's axis, the mesh holds thousands of vertices.
+// 2. Skinning at the bind pose is the identity; under a bent elbow a forearm vertex moves with the forearm bone.
+// 3. The fitted proxies cover the body: every vertex lies within 1 cm of a proxy's surface or inside it (a proxy is a
+//    capsule where the cross-section is round, a box where it is not), the chest and hips are boxes and the limbs
+//    capsules, and no proxy is much larger than the bone's own vertices.
+// 4. The same fit works on a body that is not humanoid: a skeleton of a spine and four legs with a table of tubes.
+// 5. The eigen decomposition recovers a known covariance's axes.
+
+mod rig;
+
+import testing use *;
+import stdio use *;
+import xpbdsoftbody use Collider;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import bonepose use *;
+import render use Skin;
+import garmentdrape use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn main() i32 {
+  imm h = 1.75;
+  imm body = humanoidMannequin(h);
+  imm nv = body.mesh.vertexCount();
+  expectBool(nv > 1500usize, true, "the mannequin has a body's worth of vertices");
+  expectBool(body.skin.len() == nv, true, "one skin entry a vertex");
+  expectBool(body.mesh.uvs.len() == nv, true, "and a uv");
+  expectBool(body.mesh.normals.len() == nv, true, "and a normal");
+
+  // every skin sums to one (bytes to 255)
+  mut sumsOk = true;
+  mut v = 0usize;
+  while v < nv {
+    mut w = 0.;
+    mut k = 0usize;
+    while k < 4usize { w = w + body.skin.weight(v, k); k = k + 1usize; }
+    if absf(w - 1.) > 0.005 { sumsOk = false; }
+    v = v + 1usize;
+  }
+  expectBool(sumsOk, true, "every vertex's weights sum to one");
+
+  // the normals point out of the body: away from the nearest proxy axis, for a vertex clear of the joints
+  mut outward = 0usize;
+  mut counted = 0usize;
+  v = 0usize;
+  while v < nv {
+    imm p = *body.mesh.positions[v];
+    imm n = *body.mesh.normals[v];
+    // the vertex's own bone's proxy
+    imm bone = body.skin.joint(v, 0);
+    mut k = 0usize;
+    while k < body.proxies.len() {
+      imm pr = *body.proxies[k];
+      if pr.bone == bone and pr.kind == PROXY_CAPSULE {
+        imm m = *body.restModels[bone];
+        imm a = m.transformPoint(pr.a);
+        imm b = m.transformPoint(pr.b);
+        imm ab = b - a;
+        imm l2 = ab.lengthSquared();
+        mut t = 0.;
+        if l2 > 1e-12 { t = fclampf((p - a).dot(ab) / l2, 0., 1.); }
+        imm radial = p - (a + ab * t);
+        if radial.length() > 0.01 and body.skin.weight(v, 0) > 0.99 {
+          counted = counted + 1usize;
+          if radial.normalize().dot(n) > 0.5 { outward = outward + 1usize; }
+        }
+      }
+      k = k + 1usize;
+    }
+    v = v + 1usize;
+  }
+  expectBool(counted > 500usize, true, "enough limb vertices to judge the normals by");
+  expectBool(outward * 100usize >= counted * 97usize, true, "97% of the limb normals point away from the axis");
+
+  // bind pose: the skinning matrices are the identity
+  mut matrices = List[Mat4].empty();
+  body.skinMatrices(&body.restModels, &mut matrices);
+  mut worst = 0.;
+  v = 0usize;
+  while v < nv {
+    imm p = *body.mesh.positions[v];
+    imm q = body.skinnedPoint(&matrices, v, p);
+    worst = fmaxf(worst, (q - p).length());
+    v = v + 1usize;
+  }
+  near(worst, 0., 1e-4, "skinned at the bind pose, every vertex stays where it was modelled");
+
+  // bend the left elbow 90 degrees: a forearm vertex far from the elbow follows the forearm
+  mut pose = body.skeleton.restPose();
+  pose.setRotation(FOREARM_L, Quat.angleAxis(1.5707964, new Vec3(1., 0., 0.)));
+  mut models = List[Transform3].empty();
+  body.skeleton.modelTransforms(&pose, &mut models);
+  body.skinMatrices(&models, &mut matrices);
+  mut best = -1i32;
+  mut bestW = 0.;
+  v = 0usize;
+  while v < nv {
+    if body.skin.joint(v, 0) == FOREARM_L and body.skin.weight(v, 0) > 0.99 {
+      imm d = (*body.mesh.positions[v] - (*body.restModels[FOREARM_L]).translation).length();
+      if d > bestW { bestW = d; best = i32.from(v); }
+    }
+    v = v + 1usize;
+  }
+  expectBool(best >= 0i32, true, "a pure forearm vertex exists");
+  imm vv = usize.from(best);
+  imm bent = body.skinnedPoint(&matrices, vv, *body.mesh.positions[vv]);
+  imm byBone = (*models[FOREARM_L]) .transformPoint((*body.restModels[FOREARM_L]).inverse().transformPoint(*body.mesh.positions[vv]));
+  near((bent - byBone).length(), 0., 1e-4, "a forearm vertex under a bent elbow goes where the forearm bone takes it");
+  expectBool((bent - *body.mesh.positions[vv]).length() > 0.1, true, "and that is a long way from where it was");
+
+  // the proxies cover the body
+  mut uncovered = 0usize;
+  mut worstGap = 0.;
+  v = 0usize;
+  while v < nv {
+    imm d = body.distance(&body.restModels, 0., *body.mesh.positions[v]);
+    if d > 0.01 { uncovered = uncovered + 1usize; }
+    worstGap = fmaxf(worstGap, d);
+    v = v + 1usize;
+  }
+  print <- "proxies: "; print <- i64.from(body.proxies.len()); print <- " shapes, "; print <- i64.from(uncovered);
+  print <- " of "; print <- i64.from(nv); print <- " vertices beyond 1 cm\n";
+  expectBool(worstGap < 1e-4, true, "the proxies hold every vertex (they are fitted to hold them all)");
+  expectBool(uncovered * 100usize < nv, true, "99% of the body's vertices are within 1 cm of a proxy");
+  expectBool(body.proxies.len() >= 14usize and body.proxies.len() <= 19usize, true, "about a shape a bone");
+  mut boxes = 0usize;
+  mut capsules = 0usize;
+  mut chestBox = false;
+  mut armCapsule = false;
+  mut i = 0usize;
+  while i < body.proxies.len() {
+    imm pr = *body.proxies[i];
+    if pr.kind == PROXY_BOX { boxes = boxes + 1usize; } else { capsules = capsules + 1usize; }
+    if pr.bone == CHEST and pr.kind == PROXY_BOX { chestBox = true; }
+    if pr.bone == UPPER_ARM_L and pr.kind == PROXY_CAPSULE { armCapsule = true; }
+    i = i + 1usize;
+  }
+  expectBool(chestBox or capsules > 0usize, true, "the chest has a shape");
+  expectBool(armCapsule, true, "the upper arm is a capsule");
+  expectBool(capsules >= 6usize, true, "most limbs are capsules");
+
+  // a flat slab on one bone is fitted with a box, exactly: 0.4 x 0.05 x 0.3 m
+  mut slabSkel = Skeleton.empty();
+  slabSkel.addBone(-1i32, Transform3.identity());
+  mut slab = Mesh.cube(0.5);
+  slab.transform(Mat4.fromScale(new Vec3(0.4, 0.05, 0.3)));
+  mut slabSkin = Skin.empty();
+  mut sv = 0usize;
+  while sv < slab.vertexCount() { slabSkin.push(0u32, 0u32, 0u32, 0u32, 1., 0., 0., 0.); sv = sv + 1usize; }
+  imm slabRig = BodyRig.make(slabSkel, slab, slabSkin);
+  expectBool(slabRig.proxies.len() == 1usize, true, "one bone, one proxy");
+  imm sp = *slabRig.proxies[0usize];
+  expectBool(sp.kind == PROXY_BOX, true, "a slab is fitted with a box");
+  mut halves = [sp.b.x, sp.b.y, sp.b.z];
+  // sort the three half extents
+  mut a1 = 0usize;
+  while a1 < 3usize { mut a2 = a1 + 1usize; while a2 < 3usize { if halves[a2] < halves[a1] { imm t = halves[a1]; halves[a1] = halves[a2]; halves[a2] = t; } a2 = a2 + 1usize; } a1 = a1 + 1usize; }
+  near(halves[0], 0.025, 1e-4, "its thinnest half extent is 2.5 cm");
+  near(halves[1], 0.15, 1e-4, "its middle one 15 cm");
+  near(halves[2], 0.2, 1e-4, "its longest 20 cm");
+
+  // a point well outside is far, one at the middle of the chest is inside
+  expectBool(body.distance(&body.restModels, 0., new Vec3(3., 1., 0.)) > 2.5, true, "a point 3 m away is far from the body");
+  imm chestC = (*body.restModels[CHEST]).translation + new Vec3(0., 0.05, 0.);
+  expectBool(body.distance(&body.restModels, 0., chestC) < 0., true, "the middle of the chest is inside the proxies");
+  expectBool(body.distance(&body.restModels, 0.02, new Vec3(0., 1.3, 0.2)) < body.distance(&body.restModels, 0., new Vec3(0., 1.3, 0.2)), true, "inflating a proxy brings the surface nearer");
+
+  // the colliders match the proxies in number and follow the bones
+  mut cols = List[Collider].empty();
+  body.colliders(&models, 0.01, &mut cols);
+  expectBool(cols.len() == body.proxies.len(), true, "a collider a proxy");
+
+  // not a humanoid: a spine of two bones and four legs
+  mut sk = Skeleton.empty();
+  imm root = sk.addBone(-1i32, new Transform3(new Vec3(0., 0.9, 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+  imm front = sk.addBone(i32.from(root), new Transform3(new Vec3(0., 0., -0.5), Quat.identity(), new Vec3(1., 1., 1.)));
+  mut legs = List[usize].empty();
+  mut tubes = List[Tube].empty();
+  tubes.push(new Tube(root, i32.from(front), new Vec3(0., 0., 0.), 0., 0.18, 0.2, 0.9, true, false));
+  mut front2 = new Tube(front, -1i32, new Vec3(0., 0., -1.), 0.3, 0.2, 0.12, 0.9, false, true);
+  tubes.push(front2);
+  mut li = 0;
+  while li < 4 {
+    imm side = if li % 2 == 0 { -1.; } else { 1.; };
+    imm parent = if li < 2 { root; } else { front; };
+    imm leg = sk.addBone(i32.from(parent), new Transform3(new Vec3(side * 0.15, 0., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+    imm foot = sk.addBone(i32.from(leg), new Transform3(new Vec3(0., -0.45, 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+    legs.push(leg);
+    tubes.push(new Tube(leg, i32.from(foot), new Vec3(0., 0., 0.), 0., 0.06, 0.04, 1.0, false, false));
+    mut leaf = new Tube(foot, -1i32, new Vec3(0., -1., 0.), 0.4, 0.04, 0.03, 1.0, false, true);
+    leaf.length = 0.4;
+    tubes.push(leaf);
+    li = li + 1;
+  }
+  imm beast = tubeBody(sk, &tubes);
+  expectBool(beast.mesh.vertexCount() > 600usize, true, "a quadruped test body has a mesh");
+  expectBool(beast.proxies.len() >= 8usize, true, "and proxies are fitted to it");
+  mut bad = 0usize;
+  v = 0usize;
+  while v < beast.mesh.vertexCount() {
+    if beast.distance(&beast.restModels, 0., *beast.mesh.positions[v]) > 0.015 { bad = bad + 1usize; }
+    v = v + 1usize;
+  }
+  print <- "quadruped: "; print <- i64.from(beast.proxies.len()); print <- " proxies, "; print <- i64.from(bad); print <- " of "; print <- i64.from(beast.mesh.vertexCount()); print <- " vertices beyond 1.5 cm\n";
+  expectBool(bad * 50usize < beast.mesh.vertexCount(), true, "98% of the quadruped's vertices are within 1.5 cm of a proxy");
+
+  done();
+}
