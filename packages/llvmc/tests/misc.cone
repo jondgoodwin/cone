@@ -1,0 +1,85 @@
+// The rest: LLVM's version; a message LLVM makes and the caller disposes; a module as bitcode (in a memory
+// buffer and a file) and as text in a file; the fatal-error handler installed, with a Cone function
+// LLVM could call, and reset; the stack trace on a crash switched on; LLVM's command-line options parsed
+// from an argv of C strings; the JIT linked in. None of it can fail quietly: each result is checked.
+
+mod misc;
+
+import stdio use *;
+import collections use *;
+import libc;
+import llvmc;
+
+fn expect(ok bool, label &str) {
+  if not ok { print <- "FAILED: ", label, "\n"; }
+}
+
+// What LLVM would call before it aborts: a C function that is Cone's
+fn @c onFatal(reason cstr) {
+  print <- "fatal: ", reason.view(), "\n";
+}
+
+fn main() i32 {
+  // the version the headers are for
+  mut major = 0u32;
+  mut minor = 0u32;
+  mut patch = 0u32;
+  llvmc.GetVersion(&major, &minor, &patch);
+  print <- "LLVM ", major, ".", minor, "\n";
+  expect(major == 23u32, "built for LLVM 23");
+
+  // a message LLVM makes, which is disposed with DisposeMessage
+  imm made = llvmc.CreateMessage("a message");
+  expect(made != null, "CreateMessage");
+  imm copy = llvmc.takeMessage(made);
+  expect(copy.view() == "a message", "its text");
+
+  // a small module, as bitcode and as text
+  imm ctx = llvmc.ContextCreate();
+  imm m = llvmc.ModuleCreateWithNameInContext("misc", ctx);
+  imm i32t = llvmc.Int32TypeInContext(ctx);
+  imm f = llvmc.AddFunction(m, "one", llvmc.FunctionType(i32t, null, 0u32, 0i32));
+  imm bld = llvmc.CreateBuilderInContext(ctx);
+  llvmc.PositionBuilderAtEnd(bld, llvmc.AppendBasicBlockInContext(ctx, f, "entry"));
+  llvmc.BuildRet(bld, llvmc.ConstInt(i32t, 1u64, 0i32));
+
+  imm bc = llvmc.WriteBitcodeToMemoryBuffer(m);
+  expect(bc != null, "bitcode in a buffer");
+  imm bytes = llvmc.GetBufferStart(bc);
+  expect(llvmc.GetBufferSize(bc) > 16usize, "the bitcode has a body");
+  expect(bytes[0usize] == 0x42u8 and bytes[1usize] == 0x43u8 and bytes[2usize] == 0xC0u8 and bytes[3usize] == 0xDEu8, "and begins 'BC' C0 DE, bitcode's magic");
+  llvmc.DisposeMemoryBuffer(bc);
+  expect(llvmc.WriteBitcodeToFile(m, "misc-test.bc") == 0i32, "bitcode in a file");
+
+  mut message *u8 = null;
+  expect(llvmc.PrintModuleToFile(m, "misc-test.ll", &message) == 0i32, "text in a file");
+  imm file = libc.fopen("misc-test.ll", "rb");
+  expect(file != null, "the text file opens");
+  mut head List[u8] = List[u8].empty();
+  head.resize(64usize, 0u8);
+  imm got = libc.fread(head.viewMut() as *u8, 1usize, 17usize, file);
+  libc.fclose(file);
+  expect(got == 17usize, "the text file has its first line");
+  expect(head[0usize] == ';' and head[2usize] == 'M', "which is '; ModuleID'");
+  // a path that cannot be written answers the failure and a message
+  mut message2 *u8 = null;
+  imm bad = llvmc.PrintModuleToFile(m, "no-such-folder/x/y.ll", &message2);
+  expect(bad != 0i32, "an unwritable path fails");
+  imm why = llvmc.takeMessage(message2);
+  expect(why.len() > 0usize, "with a message");
+
+  // handlers and options
+  llvmc.InstallFatalErrorHandler(&onFatal);
+  llvmc.ResetFatalErrorHandler();
+  llvmc.EnablePrettyStackTrace();
+  mut argv Array[*u8, 1] = [llvmc.bytesOf("llvmc-test")];
+  llvmc.ParseCommandLineOptions(1i32, &argv[0], "");
+  llvmc.LinkInMCJIT();
+
+  llvmc.DisposeBuilder(bld);
+  llvmc.DisposeModule(m);
+  llvmc.ContextDispose(ctx);
+  llvmc.Shutdown();
+  print <- "done\n";
+  0i32;
+}
