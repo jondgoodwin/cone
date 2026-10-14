@@ -1,5 +1,5 @@
 // The fs package: files and folders, synchronously. A file is read or
-// written whole; a folder is made, listed, walked and removed; a file's size,
+// written whole, or mapped into memory for reading; a folder is made, listed, walked and removed; a file's size,
 // time and kind are asked; and the current folder is read and changed.
 //
 //   mod notes;
@@ -68,11 +68,60 @@
 // symbolic link or a directory junction, and also some cloud-storage
 // placeholders, which are then left whole.
 //
+// **Mapped files.** 'mapFile(path)' maps a whole file for reading and answers a
+// 'MappedFile': one owner, moved, whose 'view()' is the file's bytes in place
+// (a '&Array[u8]'), 'size()' their count, 'isEmpty()', and 'base()' the address
+// of the first byte for handing on (a GPU upload). Its death unmaps the view;
+// no file stays open. The OS reads a page when it is first touched, so a file
+// far larger than memory (a multi-gigabyte model's weights) is mapped at no
+// cost and only what is read is loaded. Sizes and offsets are 64 bits whole:
+// a file past 4 GB is mapped as any other (the test mapfile_big.cone maps a
+// sparse one with markers either side of 4 GiB and past 5 GiB). It is Sendable,
+// and an 'Arc[imm, MappedFile]' shares one among threads.
+//
+//   match fs.mapFile("model.bin") {
+//     case imm m Ok { imm w = m.view(); ... w[0usize] ... }   // read in place, nothing copied
+//     case imm e Error { ... }                                // as readFile's
+//   }
+//
+// Method choices (defaults for review, not rulings):
+// - The whole file, read-only, private: no writable map, no map of a byte
+//   range, no offset. A range is a sub-slice of the view; the OS pages in only
+//   what is touched, so mapping all of a file costs only address space.
+//   Not here: writable maps (and flushing them), mapping a range, 'madvise'
+//   and MAP_POPULATE (Linux), prefetch and large pages (Windows), locking
+//   pages in memory.
+// - Failures are 'FsError's with the C library's error numbers, as everything
+//   here: a file not there ENOENT, a folder EISDIR (also on Linux, where
+//   fopen would open one), anything but a regular file EINVAL, a NUL in the
+//   path EINVAL, a refused mapping (no address space) ENOMEM or the system's
+//   own errno. Windows' error numbers are translated (ERROR_FILE_NOT_FOUND to
+//   ENOENT, and so on; one with no counterpart is EIO).
+// - The file is opened through the C runtime's 'fopen' (mode "rb"), as
+//   'readFile' does, so its path, UTF-8 names and failures are exactly
+//   readFile's; the OS handle under the stream (Windows: _get_osfhandle of
+//   _fileno; Linux: fileno) is what is mapped, and the stream is closed as soon
+//   as the map is made.
+// - Windows: GetFileSizeEx, CreateFileMappingW (PAGE_READONLY, the size given
+//   as its high and low halves), MapViewOfFile (FILE_MAP_READ, the whole
+//   file), then the mapping object's handle is closed at once; the view keeps
+//   the file. Linux: the size is lseek's end offset (64 bits), then mmap
+//   (PROT_READ, MAP_PRIVATE, offset 0). The Windows externs are kernel32's,
+//   on every link line already; the rest is the C library's.
+// - An empty file is an empty view with no address, since the OS cannot map no
+//   bytes.
+// - The size is the file's when mapped. A file made shorter while mapped, by
+//   this program or another, faults when the lost part is read (SIGBUS on
+//   Linux, an in-page error on Windows), and Windows refuses to remove,
+//   rename or truncate a file while it is mapped; a map that must not hold
+//   its file keeps the file alone or is dropped first.
+//
 // **What differs by system.** The package itself is written over ISO C (libc's
 // 'fopen', 'fread', 'fwrite', 'rename') and POSIX (posix's 'stat', 'lstat',
 // 'unlink', 'mkdir', 'rmdir', 'getcwd', 'chdir', 'realpath', 'opendir',
 // 'readdir'), and holds nothing of Windows' own, except 'absolute' on POSIX,
-// which reads the path's text (below). What is Windows' is beneath it: the
+// which reads the path's text (below), and 'mapFile', which asks kernel32 for
+// the mapping itself (above). What is Windows' is beneath it: the
 // posix package maps those names onto the Windows C runtime, and its
 // 'opendir', 'readdir' and 'lstat' are written over the runtime's
 // '_findfirst64'. The 'path' rules it relies on are the system's own (drive
@@ -297,6 +346,139 @@ pub fn writeFile(path &Path, data &Array[u8]) Result[void, FsError] {
 // Add data to the end of the file, making it if it is not there
 pub fn appendFile(path &Path, data &Array[u8]) Result[void, FsError] {
   writeWith("appendFile", path, data, "ab");
+}
+
+// -------- mapped files --------
+
+// What the OS is asked for. Every extern is declared on every system;
+// 'isWindows()', a constant of the compile, chooses, so only the target's calls
+// are generated.
+extern {
+  // Windows: kernel32 (on every link line), and the C runtime's way from a
+  // stream to the handle under it
+  fn @c(system) GetFileSizeEx(h usize, size &mut i64) i32;
+  fn @c(system) CreateFileMappingW(h usize, attrs *u8, protect u32, sizeHigh u32, sizeLow u32,
+    name *u16) usize;
+  fn @c(system) MapViewOfFile(map usize, access u32, offHigh u32, offLow u32, bytes usize) *u8;
+  fn @c(system) UnmapViewOfFile(base *u8) i32;
+  fn @c(system) CloseHandle(h usize) i32;
+  fn @c(system) GetLastError() u32;
+  fn @c _fileno(stream *libc.FILE) i32;
+  fn @c _get_osfhandle(fd i32) isize;
+  // Linux: the C library's
+  fn @c fileno(stream *libc.FILE) i32;
+  fn @c lseek(fd i32, offset i64, whence i32) i64;
+  fn @c mmap(addr *u8, size usize, protect i32, flags i32, fd i32, offset i64) *u8;
+  fn @c munmap(addr *u8, size usize) i32;
+}
+
+const pageReadonly = 0x02u32;       // PAGE_READONLY
+const fileMapRead = 0x04u32;        // FILE_MAP_READ
+const seekEnd = 2i32;               // SEEK_END
+const protRead = 1i32;              // PROT_READ
+const mapPrivate = 2i32;            // MAP_PRIVATE
+const mmapFailed = 0xFFFFFFFFFFFFFFFFusize;     // MAP_FAILED, (void*)-1
+
+// The POSIX error number for a Windows error number from the calls above
+fn errnoOfWindows(code u32) i32 {
+  if code == 2u32 or code == 3u32 { posix.ENOENT; }                  // file / path not found
+  elif code == 5u32 or code == 32u32 or code == 33u32 { posix.EACCES; }  // denied, sharing, lock
+  elif code == 8u32 or code == 14u32 or code == 1450u32 or code == 1455u32 or code == 1453u32 {
+    posix.ENOMEM;       // not enough memory, address space or system resources
+  }
+  elif code == 87u32 { posix.EINVAL; }
+  else { posix.EIO; }
+}
+
+// A read-only view of a whole file's bytes, held by the OS's memory mapping:
+// one owner, moved, never copied. 'view' lends the bytes, in place, as a
+// '&Array[u8]'; the OS reads a page from the file when it is first touched, so
+// a file larger than memory costs nothing to map and only what is read is
+// loaded. Its death unmaps the view; the file itself is not held open. It
+// declares Sendable, a promise taken on trust, for its raw pointer: the view is
+// the owner's alone and read-only, so it may be handed to another thread, and
+// 'Arc[imm, MappedFile]' shares it among threads.
+pub struct MappedFile is Move, Sendable {
+  ptr *u8;          // the view's first byte; null for an empty file
+  bytes usize;      // the file's size when it was mapped
+
+  fn empty() MappedFile { new MappedFile(null, 0usize); }
+
+  // The file's size in bytes, as it was when mapped
+  pub fn size(self &) usize { bytes; }
+
+  // Whether the file held nothing
+  pub fn isEmpty(self &) bool { bytes == 0usize; }
+
+  // The file's bytes, in place: a view as long as 'size()', good while this
+  // owner lives
+  pub fn view(self &) &Array[u8] { mem.sliceFromParts(ptr, bytes); }
+
+  // The address of the first byte (null for an empty file), for handing the
+  // mapping on, to a GPU upload for instance. Good while this owner lives.
+  pub fn base(self &) *u8 { ptr; }
+
+  // Unmap the view
+  fn final(self &uni) {
+    if ptr as usize != 0usize {
+      if isWindows() { UnmapViewOfFile(ptr); } else { munmap(ptr, bytes); }
+    }
+  }
+}
+
+// Map a file for reading, whole. A file that is not there, a folder, anything
+// that is not a regular file, or one that cannot be read is refused, as
+// 'readFile' refuses it. An empty file is mapped as an empty view (the OS
+// cannot map no bytes). The file must stay as long as the mapping does: one
+// that is truncated while mapped, by this program or another, makes a read of
+// the lost part fault (SIGBUS on Linux, an in-page error on Windows), and
+// Windows refuses to remove or rename a mapped file.
+pub fn mapFile(path &Path) Result[MappedFile, FsError] {
+  if hasNul(path) { return fail[MappedFile]("mapFile", path, posix.EINVAL); }
+  useUtf8();
+  imm kind = kindOf(path);
+  if kind == posix.S_IFDIR { return fail[MappedFile]("mapFile", path, posix.EISDIR); }
+  if kind != 0u16 and kind != posix.S_IFREG { return fail[MappedFile]("mapFile", path, posix.EINVAL); }
+  mut c = cText(path);
+  imm f = libc.fopen(c.cstr(), "rb");
+  if f == null { return fail[MappedFile]("mapFile", path, openErrno(path)); }
+  // The mapping holds the file once made, so the stream can go at once
+  imm mapped = if isWindows() {mapWindows(path, f);} else {mapLinux(path, f);};
+  libc.fclose(f);
+  mapped;
+}
+
+// Windows: size the file, make a file-mapping object over it, map a view of
+// the whole of it, and let the object go (the view keeps the file)
+fn mapWindows(path &Path, f *libc.FILE) Result[MappedFile, FsError] {
+  imm h = _get_osfhandle(_fileno(f)) as usize;
+  mut size = 0i64;
+  if GetFileSizeEx(h, &mut size) == 0i32 {
+    return fail[MappedFile]("mapFile", path, errnoOfWindows(GetLastError()));
+  }
+  if size == 0i64 { return Ok[MappedFile, FsError](MappedFile.empty()); }
+  // The size as the two halves Windows takes it in
+  imm n = u64.from(size);
+  imm map = CreateFileMappingW(h, null, pageReadonly, u32.from(n >> 32u64),
+    u32.from(n & 0xFFFFFFFFu64), null);
+  if map == 0usize { return fail[MappedFile]("mapFile", path, errnoOfWindows(GetLastError())); }
+  imm view = MapViewOfFile(map, fileMapRead, 0u32, 0u32, usize.from(n));
+  imm code = GetLastError();
+  CloseHandle(map);
+  if view as usize == 0usize { return fail[MappedFile]("mapFile", path, errnoOfWindows(code)); }
+  Ok[MappedFile, FsError](new MappedFile(view, usize.from(n)));
+}
+
+// Linux: the size is the offset of the end; map it private and read-only
+fn mapLinux(path &Path, f *libc.FILE) Result[MappedFile, FsError] {
+  imm fd = fileno(f);
+  imm end = lseek(fd, 0i64, seekEnd);
+  if end < 0i64 { return fail[MappedFile]("mapFile", path, lastErrno()); }
+  if end == 0i64 { return Ok[MappedFile, FsError](MappedFile.empty()); }
+  imm n = usize.from(end);
+  imm view = mmap(null, n, protRead, mapPrivate, fd, 0i64);
+  if view as usize == mmapFailed { return fail[MappedFile]("mapFile", path, lastErrno()); }
+  Ok[MappedFile, FsError](new MappedFile(view, n));
 }
 
 // -------- names --------

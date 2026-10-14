@@ -60,7 +60,9 @@
 		<a href="#await-io">Awaiting I/O</a>). TCP sockets, UDP sockets and files.</li>
 	<li><b>HTTP an actor awaits:</b> <span class="pre">actorhttp</span>. An actor's behaviour may
 		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for
-		<span class="pre">http://</span> or <span class="pre">https://</span>, and gets the whole response
+		<span class="pre">http://</span> or <span class="pre">https://</span>, and gets the whole response, or the
+		response as it arrives, in chunks or as server-sent events; and an actor may serve: await each request
+		of a listening server and answer it, whole or streamed
 		(<a href="#await-io-http">below</a>).</li>
 	</ul>
 
@@ -503,6 +505,31 @@ actor Weather {
 		client's configuration refuses ends that request failed at the TLS stage (or at the read or closed
 		stage, if the connection broke before the request was asked for). Dropping a
 		<span class="pre">Conn</span> closes the connection.</p>
+	<p>A response can instead be read as it arrives. <span class="pre">client.stream(request)</span> is answered when
+		the response's head is in, with a <span class="pre">BodyStream</span> (the status and header fields are fields
+		of it) whose <span class="pre">read()</span> awaits the next piece of the body: <span class="pre">Some(piece)</span>,
+		then <span class="pre">None</span> when the body is whole, or an <span class="pre">Error</span> as above.
+		<span class="pre">client.events(request)</span> is the same for server-sent events (the
+		<span class="pre">sse</span> package's, <a href="refstdhttp.html#sse">HTTP, TLS and URLs</a>): an
+		<span class="pre">EventStream</span> whose <span class="pre">next()</span> awaits the next
+		<span class="pre">sse.Event</span>. A reader that awaits slowly slows the sender (the connection is told to send
+		more only as the actor takes what is there), and dropping the stream cancels the rest of the fetch.</p>
+	<p>The other way round, <span class="pre">actorhttp.listen(addr, config)</span> answers a
+		<span class="pre">Server</span> (a handle that moves and <span class="pre">clone()</span>s; its last handle's
+		going closes it), and <span class="pre">await server.next()</span> answers the next request, whole, as an
+		<span class="pre">Exchange</span>: the <span class="pre">Request</span> (method, target, header fields, body, the
+		client's address) and the way to answer it. A server usually has one actor looping on
+		<span class="pre">next()</span> and giving each Exchange, which moves, to an actor of its own. The actor answers once:
+		<span class="pre">ex.respond(head, body)</span>, or <span class="pre">ex.start(head, length)</span> then
+		<span class="pre">await ex.write(bytes)</span> as often as it likes and <span class="pre">await ex.finish()</span>
+		(a body of unknown length goes chunked), or <span class="pre">ex.startEvents()</span> then
+		<span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of server-sent events. A write is answered when the
+		connection has taken the bytes, so an actor that awaits each is slowed to its peer's speed; a peer that has left
+		answers the write <span class="pre">Closed</span>. <span class="pre">ServerConfig.secure(tlsConfig)</span> makes the
+		connections TLS; its other fields bound the request body a server takes (past it, 413) and the requests that may
+		wait for an actor (past it, 503). An Exchange dropped without an answer is answered 500. The package's header
+		lists each choice; <span class="pre">tests/server.cone</span>, <span class="pre">events.cone</span> and
+		<span class="pre">tlsserver.cone</span> are these, run.</p>
 	<p>A cancel and a completion that race, and a fetch dropped with its client, are settled as an
 		<span class="pre">aio</span> operation's are: exactly one answer. At the program's end, a behaviour still paused
 		on a fetch is abandoned, as one paused on a socket is (below).</p>
@@ -527,8 +554,8 @@ actor Weather {
 	<li>The blocking pool's other work (file metadata, name lookup), and a socket's half-close, awaited;
 		<span class="pre">fileio</span>, the file service.</li>
 	<li>More than one I/O thread.</li>
-	<li>A response's body handed to the actor as it arrives (it comes whole, up to a limit), a request's body
-		streamed from it, a server whose accepts and responses an actor awaits, and
+	<li>A request's body streamed from an actor or to one (a client sends it whole; a server delivers it whole,
+		up to a limit), a stream that reconnects, Upgrade and WebSocket, and
 		<span class="pre">httpclient</span> and <span class="pre">httpconn</span> running on
 		<span class="pre">aio</span>'s own sockets (<span class="pre">actorhttp</span> keeps a thread and a loop of its
 		own).</li>

@@ -60,12 +60,13 @@ struct Wait {
   sent usize;                   // ...and how much of it has gone
   conn usize;                   // a connection's request: its connection's slot
   bodyDone bool;                // its body has been finished
+  stream usize;                 // a stream's fetch: its slot in the client's streams, else noStream
 }
 
 fn blankWait() Wait {
   new Wait(reply: new actors.Reply(), resp: httpclient.Response.blank(), tooBig: false, limit: 0usize,
     fetch: httpclient.FetchId.none(), req: httpconn.ReqId.none(), body: String.empty(), sent: 0usize,
-    conn: 0usize, bodyDone: false);
+    conn: 0usize, bodyDone: false, stream: noStream);
 }
 
 // A wait slot back to being free (its reply was moved out to answer it)
@@ -78,6 +79,7 @@ fn clearWait(w &mut Wait) {
   w.sent = 0usize;
   w.conn = 0usize;
   w.bodyDone = false;
+  w.stream = noStream;
   w.resp = httpclient.Response.blank();
 }
 
@@ -89,6 +91,7 @@ struct ClientRec {
   maxBody usize;
   client httpclient.Client;
   waits Slots[Wait];
+  streams Slots[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
 }
 
 // A connection the service owns, which a Conn names
@@ -121,15 +124,29 @@ struct Service {
   drv httpconn.Driver;
   conns Slots[ConnRec];
   xwaits Slots[Wait];
+  srvs List[*SrvRec];           // the servers listening, each with a driver of its own
 
   fn make() Service {
     imm pool = Pool.make();
     new Service(pool: pool, clients: List[*ClientRec].empty(),
       drv: httpconn.Driver.make(httpconn.Config.make(), pool), conns: Slots[ConnRec].make(),
-      xwaits: Slots[Wait].make());
+      xwaits: Slots[Wait].make(), srvs: List[*SrvRec].empty());
   }
 
   fn clientAt(self &, k usize) *ClientRec {*clients[k];}
+
+  fn srvAt(self &, k usize) *SrvRec {*srvs[k];}
+
+  // Where the live server id is in its list, or its length
+  fn findSrv(self &, id u64) usize {
+    mut k = 0usize;
+    while k < srvs.len() {
+      imm rec = self.srvAt(k) as &SrvRec;
+      if rec.id == id {return k;}
+      k = k + 1usize;
+    }
+    srvs.len();
+  }
 
   // Where the live client id is in its list, or its length
   fn findClient(self &, id u64) usize {
@@ -169,6 +186,15 @@ struct Service {
     self.pumpConns(lp);
     imm dw = drv.wakeAt();
     if dw < limit {limit = dw;}
+    mut s = 0usize;
+    while s < srvs.len() {
+      imm srec = self.srvAt(s) as &mut SrvRec;
+      pumpServer(srec, lp, pool);
+      imm sw = srec.drv.wakeAt();
+      if sw < limit {limit = sw;}
+      s = s + 1usize;
+    }
+    self.sweepServers(lp);
     self.sweep();
     mut cs = List[Completion].empty();
     cs <=> *comps;
@@ -192,7 +218,37 @@ struct Service {
       if rec.client.complete(lp, c) {return;}
       k = k + 1usize;
     }
+    mut s = 0usize;
+    while s < srvs.len() {
+      imm srec = self.srvAt(s) as &mut SrvRec;
+      if srec.drv.complete(lp, c) {return;}
+      s = s + 1usize;
+    }
     drv.complete(lp, c);
+  }
+
+  // Servers that are closed, with nothing left to answer, leave: their
+  // connections (idle ones kept alive) are reset first
+  fn sweepServers(self &mut, lp &mut Loop) {
+    mut k = 0usize;
+    while k < srvs.len() {
+      imm srec = self.srvAt(k) as &mut SrvRec;
+      if srec.closing and srec.live == 0usize {
+        if not srec.aborted {
+          srec.aborted = true;
+          srec.drv.abortAll(lp);
+        }
+        if srec.drv.live() == 0u32 and srec.drv.held() == 0usize {
+          imm p = self.srvAt(k);
+          srvs.swap(k, srvs.len() - 1usize);
+          srvs.pop();
+          mem.finalize[SrvRec](p);
+          libc.free(p as *u8);
+          continue;
+        }
+      }
+      k = k + 1usize;
+    }
   }
 
   // Clients whose handles are gone and whose work is over leave
@@ -331,7 +387,8 @@ struct Service {
         drv.cancel(lp, w.req);
         return;
       }
-      imm all = w.body.view();
+      // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
+      imm all = w.body.view() as &Array[u8];
       b.append(&all[w.sent ..< w.sent + n]);
       match drv.sendData(w.req, b) {
         case is None[IoBuf] {w.sent = w.sent + n;}
@@ -347,6 +404,13 @@ struct Service {
     while k < clients.len() {
       imm p = *clients[k];
       mem.finalize[ClientRec](p);
+      libc.free(p as *u8);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < srvs.len() {
+      imm p = *srvs[k];
+      mem.finalize[SrvRec](p);
       libc.free(p as *u8);
       k = k + 1usize;
     }
@@ -410,6 +474,10 @@ fn pumpClient(rec &mut ClientRec, lp &mut Loop) {
 fn onFetchEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event) {
   imm slot = usize.from(e.token);
   imm w = rec.waits.at(slot) as &mut Wait;
+  if w.stream != noStream {
+    onStreamEvent(rec, lp, e, slot, w);
+    return;
+  }
   imm k = e.kind;
   if k == httpclient.EventKind.Response {
     w.resp.status = e.response.status;
@@ -461,7 +529,7 @@ struct CreateClientJob {
     imm p = libc.malloc(mem.sizeof[ClientRec]()) as *ClientRec;
     if p as usize == 0usize {die("actorhttp: out of memory for a client");}
     mem.writeRaw[ClientRec](p, new ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(c, sv.pool),
-      Slots[Wait].make()));
+      Slots[Wait].make(), Slots[StreamRec].make()));
     sv.clients.push(p);
   }
 }
@@ -480,11 +548,7 @@ struct RefJob {
       rec.refs = rec.refs + 1u32;
       return;
     }
-    rec.refs = rec.refs - 1u32;
-    if rec.refs == 0u32 {
-      rec.dying = true;
-      rec.client.abortAll(lp);
-    }
+    unrefClient(rec, lp);
   }
 }
 

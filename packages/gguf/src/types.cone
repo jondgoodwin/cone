@@ -1,0 +1,586 @@
+// ======== Errors, metadata values, tensor types, the parsed model ========
+
+// -------- failure --------
+
+// What kind of thing was wrong
+pub enum ErrorKind {
+  // The file does not start with "GGUF"
+  BadMagic;
+  // The file is a GGUF file written big-endian (its version reads as 0x03000000
+  // or 0x02000000): this package reads little-endian only
+  BigEndian;
+  // A version other than 2 and 3 (version 1 had 32-bit counts)
+  UnsupportedVersion;
+  // The file ends where more was needed
+  Truncated;
+  // A metadata value type that does not exist
+  BadValueType;
+  // A tensor type this package does not know (see the header for the list)
+  BadTensorType;
+  // A tensor's dimensions: none, more than 4, a zero, a product that
+  // overflows, or a first dimension that is not a whole number of blocks
+  BadDimensions;
+  // 'general.alignment' that is not a non-zero power of two, or a tensor's
+  // offset that is not a multiple of it
+  BadAlignment;
+  // A tensor that reaches past the end of the file
+  BadOffset;
+  // A metadata key written twice
+  DuplicateKey;
+  // A tensor name written twice
+  DuplicateTensor;
+  // Arrays nested deeper than the reader follows
+  TooDeep;
+  // Asking, not reading: a count of values that is not a whole number of
+  // blocks, bytes too few for the count, an index out of range
+  BadSize;
+  // Writing: a tensor whose bytes are not the number its type and dimensions
+  // need, or a metadata value the format cannot hold
+  BadInput;
+}
+
+// Why a file could not be read, or a model written. 'offset' is the position
+// in the file of the byte at fault (0 for a fault that has no position).
+pub struct GgufError {
+  pub kind ErrorKind;
+  pub offset u64;
+  pub reason String;
+
+  pub fn make(kind ErrorKind, offset u64, reason &str) GgufError {
+    new GgufError(kind, offset, String.from(reason));
+  }
+
+  // One line for a person: 'gguf: at offset 24: the file ends inside a string'
+  pub fn message(self &) String {
+    mut out = String.from("gguf: ");
+    if offset > 0u64 {
+      out.append("at offset ");
+      out.appendUInt(offset);
+      out.append(": ");
+    }
+    out.append(reason.view());
+    out;
+  }
+
+  pub fn copy(self &) GgufError {
+    new GgufError(kind, offset, reason.copy());
+  }
+}
+
+// -------- metadata values --------
+
+// The type of a metadata value, as the file names it (the numbers are the
+// format's own: 'code' answers one and 'fromCode' reads one)
+pub enum ValueType {
+  U8;
+  I8;
+  U16;
+  I16;
+  U32;
+  I32;
+  F32;
+  Bool;
+  Str;
+  Items;
+  U64;
+  I64;
+  F64;
+
+  pub fn code(self &ValueType) u32 {
+    match self {
+      case is U8 { 0u32; }
+      case is I8 { 1u32; }
+      case is U16 { 2u32; }
+      case is I16 { 3u32; }
+      case is U32 { 4u32; }
+      case is I32 { 5u32; }
+      case is F32 { 6u32; }
+      case is Bool { 7u32; }
+      case is Str { 8u32; }
+      case is Items { 9u32; }
+      case is U64 { 10u32; }
+      case is I64 { 11u32; }
+      case is F64 { 12u32; }
+    }
+  }
+
+  pub fn fromCode(code u32) Option[ValueType] {
+    if code == 0u32 { return Some[ValueType](ValueType.U8); }
+    if code == 1u32 { return Some[ValueType](ValueType.I8); }
+    if code == 2u32 { return Some[ValueType](ValueType.U16); }
+    if code == 3u32 { return Some[ValueType](ValueType.I16); }
+    if code == 4u32 { return Some[ValueType](ValueType.U32); }
+    if code == 5u32 { return Some[ValueType](ValueType.I32); }
+    if code == 6u32 { return Some[ValueType](ValueType.F32); }
+    if code == 7u32 { return Some[ValueType](ValueType.Bool); }
+    if code == 8u32 { return Some[ValueType](ValueType.Str); }
+    if code == 9u32 { return Some[ValueType](ValueType.Items); }
+    if code == 10u32 { return Some[ValueType](ValueType.U64); }
+    if code == 11u32 { return Some[ValueType](ValueType.I64); }
+    if code == 12u32 { return Some[ValueType](ValueType.F64); }
+    None;
+  }
+
+  pub fn copy(self &ValueType) ValueType {
+    match self {
+      case is U8 { ValueType.U8; }
+      case is I8 { ValueType.I8; }
+      case is U16 { ValueType.U16; }
+      case is I16 { ValueType.I16; }
+      case is U32 { ValueType.U32; }
+      case is I32 { ValueType.I32; }
+      case is F32 { ValueType.F32; }
+      case is Bool { ValueType.Bool; }
+      case is Str { ValueType.Str; }
+      case is Items { ValueType.Items; }
+      case is U64 { ValueType.U64; }
+      case is I64 { ValueType.I64; }
+      case is F64 { ValueType.F64; }
+    }
+  }
+}
+
+// One metadata value. Matching on it reaches the contents ('case imm n U32').
+// A Bool is one byte in the file, 0 or 1; the reader takes any non-zero byte as
+// true.
+pub enum Value {
+  U8(u8);
+  I8(i8);
+  U16(u16);
+  I16(i16);
+  U32(u32);
+  I32(i32);
+  F32(f32);
+  Bool(bool);
+  Str(String);
+  U64(u64);
+  I64(i64);
+  F64(f64);
+
+  // An array of values, all of one type. The type is kept for an empty array
+  // too, so a file written from what was read has the same bytes. Arrays may
+  // hold arrays.
+  struct Items {
+    pub elem ValueType;
+    pub items List[Value];
+
+    pub fn len(self &) usize { items.len(); }
+
+    pub fn get(self &, i usize) Option[&Value] { items.get(i); }
+
+    // Element i as text, when the array holds strings and i is in range
+    pub fn text(self &, i usize) Option[&str] {
+      match items.get(i) {
+        case imm v Some { v.asText(); }
+        case is None { None; }
+      }
+    }
+
+    // Element i as an integer, when it is one that fits an i64
+    pub fn int(self &, i usize) Option[i64] {
+      match items.get(i) {
+        case imm v Some { v.asI64(); }
+        case is None { None; }
+      }
+    }
+
+    // Element i as a float, when it is an F32 or F64
+    pub fn float(self &, i usize) Option[f64] {
+      match items.get(i) {
+        case imm v Some { v.asF64(); }
+        case is None { None; }
+      }
+    }
+
+    pub fn push(self &mut, v Value) { items.push(v); }
+  }
+
+  // An empty array of this element type
+  pub fn newList(elem ValueType) Value { Value.Items(elem, List[Value].empty()); }
+
+  // The value's type, as the file names it
+  pub fn valueType(self &Value) ValueType {
+    match self {
+      case is U8 { ValueType.U8; }
+      case is I8 { ValueType.I8; }
+      case is U16 { ValueType.U16; }
+      case is I16 { ValueType.I16; }
+      case is U32 { ValueType.U32; }
+      case is I32 { ValueType.I32; }
+      case is F32 { ValueType.F32; }
+      case is Bool { ValueType.Bool; }
+      case is Str { ValueType.Str; }
+      case is Items { ValueType.Items; }
+      case is U64 { ValueType.U64; }
+      case is I64 { ValueType.I64; }
+      case is F64 { ValueType.F64; }
+    }
+  }
+
+  pub fn fromText(s &str) Value { Value.Str(String.from(s)); }
+
+  // An unsigned or non-negative signed integer value, as a u64
+  pub fn asU64(self &Value) Option[u64] {
+    match self {
+      case imm x U8 { Some[u64](u64.from(*x)); }
+      case imm x U16 { Some[u64](u64.from(*x)); }
+      case imm x U32 { Some[u64](u64.from(*x)); }
+      case imm x U64 { Some[u64](*x); }
+      case imm x I8 { if *x >= 0i8 { Some[u64](u64.from(*x)); } else { None; }; }
+      case imm x I16 { if *x >= 0i16 { Some[u64](u64.from(*x)); } else { None; }; }
+      case imm x I32 { if *x >= 0i32 { Some[u64](u64.from(*x)); } else { None; }; }
+      case imm x I64 { if *x >= 0i64 { Some[u64](u64.from(*x)); } else { None; }; }
+      else { None; }
+    }
+  }
+
+  // An integer value that fits an i64 (a U64 past i64's range is None)
+  pub fn asI64(self &Value) Option[i64] {
+    match self {
+      case imm x U8 { Some[i64](i64.from(*x)); }
+      case imm x U16 { Some[i64](i64.from(*x)); }
+      case imm x U32 { Some[i64](i64.from(*x)); }
+      case imm x I8 { Some[i64](i64.from(*x)); }
+      case imm x I16 { Some[i64](i64.from(*x)); }
+      case imm x I32 { Some[i64](i64.from(*x)); }
+      case imm x I64 { Some[i64](*x); }
+      case imm x U64 { if *x <= 0x7FFFFFFFFFFFFFFFu64 { Some[i64](i64.from(*x)); } else { None; }; }
+      else { None; }
+    }
+  }
+
+  // An F32 or F64 value, as an f64
+  pub fn asF64(self &Value) Option[f64] {
+    match self {
+      case imm x F32 { Some[f64](f64.from(*x)); }
+      case imm x F64 { Some[f64](*x); }
+      else { None; }
+    }
+  }
+
+  pub fn asBool(self &Value) Option[bool] {
+    match self {
+      case imm x Bool { Some[bool](*x); }
+      else { None; }
+    }
+  }
+
+  pub fn asText(self &Value) Option[&str] {
+    match self {
+      case imm s Str { Some[&str](s.view()); }
+      else { None; }
+    }
+  }
+
+  pub fn asList(self &Value) Option[&Items] {
+    match self {
+      case imm l Items { Some[&Items](l); }
+      else { None; }
+    }
+  }
+
+  // A copy of the value, arrays and all
+  pub fn copy(self &Value) Value {
+    match self {
+      case imm x U8 { Value.U8(*x); }
+      case imm x I8 { Value.I8(*x); }
+      case imm x U16 { Value.U16(*x); }
+      case imm x I16 { Value.I16(*x); }
+      case imm x U32 { Value.U32(*x); }
+      case imm x I32 { Value.I32(*x); }
+      case imm x F32 { Value.F32(*x); }
+      case imm x Bool { Value.Bool(*x); }
+      case imm x Str { Value.Str(x.copy()); }
+      case imm x Items {
+        mut out = List[Value].withCapacity(x.items.len());
+        each v in x.items { out.push(v.copy()); }
+        Value.Items(x.elem.copy(), out);
+      }
+      case imm x U64 { Value.U64(*x); }
+      case imm x I64 { Value.I64(*x); }
+      case imm x F64 { Value.F64(*x); }
+    }
+  }
+
+  // True when both are the same type and hold the same contents (floats are
+  // equal by their bits, so a NaN equals itself and 0.0 differs from -0.0)
+  pub fn same(self &Value, other &Value) bool {
+    match self {
+      case imm a U8 { match other { case imm b U8 { return *a == *b; } else { return false; } } }
+      case imm a I8 { match other { case imm b I8 { return *a == *b; } else { return false; } } }
+      case imm a U16 { match other { case imm b U16 { return *a == *b; } else { return false; } } }
+      case imm a I16 { match other { case imm b I16 { return *a == *b; } else { return false; } } }
+      case imm a U32 { match other { case imm b U32 { return *a == *b; } else { return false; } } }
+      case imm a I32 { match other { case imm b I32 { return *a == *b; } else { return false; } } }
+      case imm a U64 { match other { case imm b U64 { return *a == *b; } else { return false; } } }
+      case imm a I64 { match other { case imm b I64 { return *a == *b; } else { return false; } } }
+      case imm a Bool { match other { case imm b Bool { return *a == *b; } else { return false; } } }
+      case imm a F32 { match other { case imm b F32 { return (*a as u32) == (*b as u32); } else { return false; } } }
+      case imm a F64 { match other { case imm b F64 { return (*a as u64) == (*b as u64); } else { return false; } } }
+      case imm a Str { match other { case imm b Str { return a.view() == b.view(); } else { return false; } } }
+      case imm a Items {
+        match other {
+          case imm b Items {
+            if a.elem.code() != b.elem.code() or a.items.len() != b.items.len() { return false; }
+            mut i = 0usize;
+            while i < a.items.len() {
+              if not a.items[i].same(b.items[i]) { return false; }
+              i = i + 1usize;
+            }
+            return true;
+          }
+          else { return false; }
+        }
+      }
+    }
+  }
+}
+
+// One key and its value
+pub struct MetaEntry {
+  pub key String;
+  pub value Value;
+}
+
+// -------- tensor types --------
+
+// How a tensor's elements are stored. 'blockSize' elements make a block of
+// 'blockBytes' bytes; F32, F16 and BF16 are blocks of one element. The block
+// layouts are described in the package's header.
+pub enum TensorType {
+  F32;
+  F16;
+  Q4_0;
+  Q8_0;
+  Q4_K;
+  Q6_K;
+  BF16;
+
+  // ggml's number for the type
+  pub fn code(self &TensorType) u32 {
+    match self {
+      case is F32 { 0u32; }
+      case is F16 { 1u32; }
+      case is Q4_0 { 2u32; }
+      case is Q8_0 { 8u32; }
+      case is Q4_K { 12u32; }
+      case is Q6_K { 14u32; }
+      case is BF16 { 30u32; }
+    }
+  }
+
+  pub fn fromCode(code u32) Option[TensorType] {
+    if code == 0u32 { return Some[TensorType](TensorType.F32); }
+    if code == 1u32 { return Some[TensorType](TensorType.F16); }
+    if code == 2u32 { return Some[TensorType](TensorType.Q4_0); }
+    if code == 8u32 { return Some[TensorType](TensorType.Q8_0); }
+    if code == 12u32 { return Some[TensorType](TensorType.Q4_K); }
+    if code == 14u32 { return Some[TensorType](TensorType.Q6_K); }
+    if code == 30u32 { return Some[TensorType](TensorType.BF16); }
+    None;
+  }
+
+  // ggml's name for the type: "F32", "Q4_K", ...
+  pub fn name(self &TensorType) &str {
+    match self {
+      case is F32 { "F32"; }
+      case is F16 { "F16"; }
+      case is Q4_0 { "Q4_0"; }
+      case is Q8_0 { "Q8_0"; }
+      case is Q4_K { "Q4_K"; }
+      case is Q6_K { "Q6_K"; }
+      case is BF16 { "BF16"; }
+    }
+  }
+
+  // Elements in one block
+  pub fn blockSize(self &TensorType) usize {
+    match self {
+      case is F32 { 1usize; }
+      case is F16 { 1usize; }
+      case is BF16 { 1usize; }
+      case is Q4_0 { 32usize; }
+      case is Q8_0 { 32usize; }
+      case is Q4_K { 256usize; }
+      case is Q6_K { 256usize; }
+    }
+  }
+
+  // Bytes in one block
+  pub fn blockBytes(self &TensorType) usize {
+    match self {
+      case is F32 { 4usize; }
+      case is F16 { 2usize; }
+      case is BF16 { 2usize; }
+      case is Q4_0 { 18usize; }
+      case is Q8_0 { 34usize; }
+      case is Q4_K { 144usize; }
+      case is Q6_K { 210usize; }
+    }
+  }
+
+  // True for the types that hold quantised blocks, not plain floats
+  pub fn isQuantized(self &TensorType) bool {
+    match self {
+      case is F32 { false; }
+      case is F16 { false; }
+      case is BF16 { false; }
+      else { true; }
+    }
+  }
+
+  pub fn copy(self &TensorType) TensorType {
+    match self {
+      case is F32 { TensorType.F32; }
+      case is F16 { TensorType.F16; }
+      case is Q4_0 { TensorType.Q4_0; }
+      case is Q8_0 { TensorType.Q8_0; }
+      case is Q4_K { TensorType.Q4_K; }
+      case is Q6_K { TensorType.Q6_K; }
+      case is BF16 { TensorType.BF16; }
+    }
+  }
+}
+
+// -------- the parsed model --------
+
+// One entry of the tensor table. 'dims' are ggml's 'ne': the first is the
+// fastest-varying (a row's length), so a matrix of 4096 rows of 11008 numbers
+// has dims [11008, 4096]. 'offset' is from the start of the tensor data
+// ('Model.dataStart'), not of the file.
+pub struct Tensor {
+  pub name String;
+  pub kind TensorType;
+  pub dims List[u64];
+  pub offset u64;
+  // Elements in all
+  pub elements u64;
+  // Bytes the tensor occupies in the file
+  pub bytes u64;
+
+  // Numbers in one row: the first dimension
+  pub fn rowLength(self &) u64 { *dims[0usize]; }
+
+  // How many rows: the product of the other dimensions
+  pub fn rowCount(self &) u64 { elements / *dims[0usize]; }
+
+  // Bytes in one row
+  pub fn rowBytes(self &) u64 {
+    (*dims[0usize] / u64.from(kind.blockSize())) * u64.from(kind.blockBytes());
+  }
+
+  pub fn copy(self &) Tensor {
+    mut d = List[u64].empty();
+    each x in dims { d.push(*x); }
+    new Tensor(name.copy(), kind.copy(), d, offset, elements, bytes);
+  }
+}
+
+// A GGUF file's header, metadata and tensor table. It holds none of the
+// tensors' bytes: those are in the file's own bytes, which the caller keeps
+// (a read buffer, or later a mapped file), and are reached with 'tensorBytes'.
+pub struct Model {
+  // The file's version: 2 or 3
+  pub version u32;
+  // The alignment tensor data and every tensor within it keep
+  pub alignment u64;
+  // Where in the file the tensor data begins
+  pub dataStart u64;
+  pub meta List[MetaEntry];
+  pub tensors List[Tensor];
+
+  pub fn empty() Model {
+    new Model(3u32, 32u64, 0u64, List[MetaEntry].empty(), List[Tensor].empty());
+  }
+
+  // -------- metadata --------
+
+  // The value of a key
+  pub fn get(self &, key &str) Option[&Value] {
+    each e in meta {
+      if e.key.view() == key { return Some[&Value](&e.value); }
+    }
+    None;
+  }
+
+  pub fn has(self &, key &str) bool {
+    match self.get(key) {
+      case is Some { true; }
+      case is None { false; }
+    }
+  }
+
+  // A string value
+  pub fn text(self &, key &str) Option[&str] {
+    match self.get(key) {
+      case imm v Some { v.asText(); }
+      case is None { None; }
+    }
+  }
+
+  // An integer value (any width, signed or not) that is not negative
+  pub fn uint(self &, key &str) Option[u64] {
+    match self.get(key) {
+      case imm v Some { v.asU64(); }
+      case is None { None; }
+    }
+  }
+
+  // An integer value that fits an i64
+  pub fn int(self &, key &str) Option[i64] {
+    match self.get(key) {
+      case imm v Some { v.asI64(); }
+      case is None { None; }
+    }
+  }
+
+  // A float value (F32 or F64) as an f64
+  pub fn float(self &, key &str) Option[f64] {
+    match self.get(key) {
+      case imm v Some { v.asF64(); }
+      case is None { None; }
+    }
+  }
+
+  pub fn flag(self &, key &str) Option[bool] {
+    match self.get(key) {
+      case imm v Some { v.asBool(); }
+      case is None { None; }
+    }
+  }
+
+  // An array value: the tokenizer's tokens, scores and merges are these
+  pub fn list(self &, key &str) Option[&Value.Items] {
+    match self.get(key) {
+      case imm v Some { v.asList(); }
+      case is None { None; }
+    }
+  }
+
+  // -------- tensors --------
+
+  // The tensor of a name, and its place in the table
+  pub fn find(self &, name &str) Option[&Tensor] {
+    each t in tensors {
+      if t.name.view() == name { return Some[&Tensor](t); }
+    }
+    None;
+  }
+
+  pub fn indexOf(self &, name &str) Option[usize] {
+    mut i = 0usize;
+    while i < tensors.len() {
+      if tensors[i].name.view() == name { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None;
+  }
+
+  // The bytes of tensor t within the file's bytes: a view of exactly 't.bytes'
+  // bytes, which 'parse' has checked lie inside the file (so 'file' must be the
+  // same bytes the model was read from).
+  pub fn tensorBytes(self &, file &'a Array[u8], t &Tensor) &'a Array[u8] {
+    imm start = usize.from(dataStart + t.offset);
+    &file[start..<start + usize.from(t.bytes)];
+  }
+}

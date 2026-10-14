@@ -1,0 +1,133 @@
+// Quantising f32 into each type and reading it back. Q8_0 and Q4_0 follow
+// ggml's reference rounding, and their bytes are pinned against a Python
+// transcription of that algorithm in float32 (half scales by numpy's
+// float16): a checksum over four blocks of 128 pseudo-random values. Q4_K and
+// Q6_K are the package's own simple quantisers, so the check there is that a
+// block comes out the right size, reads back within a bound of one
+// quantisation step, and that zeros read back as zeros.
+
+mod quants;
+
+import testing use *;
+import collections use *;
+import gguf use *;
+
+fn floats(n usize, seed u32) List[f32] {
+  mut x = seed;
+  mut out = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    x = x * 1664525u32 + 1013904223u32;
+    out.push(f32.from(i32.from((x >> 8u32) & 0xFFFFu32) - 32768i32) / 32768.0);
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn checksum(bytes &List[u8]) u32 {
+  mut s = 0u32;
+  mut i = 0usize;
+  while i < bytes.len() {
+    s = s + u32.from(*bytes[i]) * u32.from(i + 1usize);
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn quant(kind &TensorType, x &List[f32]) List[u8] {
+  mut out = List[u8].empty();
+  match quantize(kind, x.view(), &mut out) {
+    case is Ok {}
+    case imm e Error {
+      imm m = e.message();
+      expectStr(m.view(), "<quantized>", kind.name());
+    }
+  }
+  out;
+}
+
+// The largest difference between x and what its bytes read back as
+fn worst(kind &TensorType, x &List[f32]) f64 {
+  imm bytes = quant(kind, x);
+  mut back = List[f32].empty();
+  match dequantize(kind, bytes.view(), x.len(), &mut back) {
+    case is Ok {}
+    case is Error { expect(false, kind.name()); }
+  }
+  mut w = 0.0d;
+  mut i = 0usize;
+  while i < x.len() {
+    mut d = f64.from(*x[i]) - f64.from(*back[i]);
+    if d < 0.0d { d = 0.0d - d; }
+    if d > w { w = d; }
+    i = i + 1usize;
+  }
+  w;
+}
+
+fn main() i32 {
+  // sizes: n elements make n / blockSize blocks
+  imm x = floats(1024usize, 5u32);
+  imm kinds = [TensorType.F32, TensorType.F16, TensorType.BF16, TensorType.Q4_0, TensorType.Q8_0, TensorType.Q4_K, TensorType.Q6_K];
+  mut k = 0usize;
+  while k < 7usize {
+    imm bytes = quant(&kinds[k], &x);
+    expectUInt(u64.from(bytes.len()), 1024u64 / u64.from(kinds[k].blockSize()) * u64.from(kinds[k].blockBytes()), kinds[k].name());
+    k = k + 1usize;
+  }
+
+  // Q8_0 and Q4_0 against the reference transcription
+  imm y = floats(128usize, 21u32);
+  imm q8 = quant(&TensorType.Q8_0, &y);
+  expectUInt(u64.from(q8.len()), 136u64, "four Q8_0 blocks");
+  expectUInt(u64.from(checksum(&q8)), 0x12eb8du64, "Q8_0 bytes against the reference");
+  expectUInt(u64.from(*q8[0usize]), 164u64, "Q8_0 first scale byte (half of 1/127 of the largest value)");
+  imm q4 = quant(&TensorType.Q4_0, &y);
+  expectUInt(u64.from(q4.len()), 72u64, "four Q4_0 blocks");
+  expectUInt(u64.from(checksum(&q4)), 0x5b29fu64, "Q4_0 bytes against the reference");
+
+  // read back within a step
+  expectFloat(worst(&TensorType.F32, &x), 0.0d, 0.0d, "F32 is exact");
+  expectFloat(worst(&TensorType.F16, &x), 0.0d, 0.0005d, "F16 rounds to 2^-11 of the value");
+  expectFloat(worst(&TensorType.BF16, &x), 0.0d, 0.004d, "BF16 rounds to 2^-8 of the value");
+  expectFloat(worst(&TensorType.Q8_0, &x), 0.0d, 0.005d, "Q8_0 within a step (1/127)");
+  expectFloat(worst(&TensorType.Q4_0, &x), 0.0d, 0.14d, "Q4_0 within a step (1/8)");
+  expectFloat(worst(&TensorType.Q4_K, &x), 0.0d, 0.1d, "Q4_K within a step (2/15)");
+  expectFloat(worst(&TensorType.Q6_K, &x), 0.0d, 0.035d, "Q6_K within a step (1/32)");
+
+  // zero in, zero out: every type reads a quantised zero back as zero (the bytes are not
+  // all zero: Q4_0 stores the value 8 and Q6_K 32, for the 0 they stand for)
+  mut zeros = List[f32].empty();
+  mut i = 0usize;
+  while i < 512usize { zeros.push(0.0); i = i + 1usize; }
+  k = 0usize;
+  while k < 7usize {
+    expectFloat(worst(&kinds[k], &zeros), 0.0d, 0.0d, kinds[k].name());
+    k = k + 1usize;
+  }
+
+  // a block that sits exactly on the grid reads back exactly: Q4_0 values
+  // (j - 8) * 0.25 for j in 0..16 and 0..16 again with the largest at -2
+  mut grid = List[f32].empty();
+  i = 0usize;
+  while i < 32usize { grid.push(f32.from(i32.from(i % 16usize) - 8i32) * 0.25); i = i + 1usize; }
+  expectFloat(worst(&TensorType.Q4_0, &grid), 0.0d, 0.0d, "Q4_0 on its grid");
+
+  // the plain floats, by their bytes
+  mut few = List[f32].empty();
+  few.push(1.0); few.push(-2.0);
+  imm f16b = quant(&TensorType.F16, &few);
+  expectUInt(u64.from(*f16b[1usize]), 0x3cu64, "F16 1.0 high byte");
+  expectUInt(u64.from(*f16b[3usize]), 0xc0u64, "F16 -2.0 high byte");
+  imm bf16b = quant(&TensorType.BF16, &few);
+  expectUInt(u64.from(*bf16b[0usize]) + 256u64 * u64.from(*bf16b[1usize]), 0x3f80u64, "BF16 1.0");
+
+  // a count that is not whole blocks
+  mut out = List[u8].empty();
+  match quantize(&TensorType.Q8_0, few.view(), &mut out) {
+    case is Ok { expect(false, "2 values are not a Q8_0 block"); }
+    case imm er Error { expect(er.kind == ErrorKind.BadSize, "BadSize"); }
+  }
+  expectUInt(u64.from(out.len()), 0u64, "nothing appended");
+  done();
+}

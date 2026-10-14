@@ -1,0 +1,86 @@
+// Making a small model, writing it as GGUF bytes, reading it back: its
+// metadata, the tensor table, a tensor as f32 and a row of a quantised one.
+// Nothing here touches a file; a real model's bytes come from a read buffer or
+// a mapped file and go to 'parse' the same way. Every line printed is the same
+// on every machine.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import gguf;
+
+fn main() i32 {
+  // A writer for a toy model: two metadata entries and two tensors
+  mut w = gguf.Writer.make();
+  w.putText("general.architecture", "toy");
+  w.putU32("toy.block_count", 2u32);
+  imm eye = [1.0, 0.0, 0.0, 1.0];
+  imm one = w.addValues("eye", gguf.TensorType.F32, &[2u64, 2u64], &eye);
+  mut ramp = List[f32].empty();
+  mut i = 0usize;
+  while i < 64usize { ramp.push(f32.from(i32.from(i)) / 8.0 - 4.0); i = i + 1usize; }
+  imm two = w.addValues("ramp", gguf.TensorType.Q8_0, &[32u64, 2u64], ramp.view());
+
+  mut file = List[u8].empty();
+  match w.finish() {
+    case mut ok Ok { file <=> ok; }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  printStr("file: ");
+  printInt(i64.from(file.len()));
+  printStr(" bytes\n");
+
+  // Reading it back
+  match gguf.parse(file.view()) {
+    case imm model Ok {
+      match model.text("general.architecture") {
+        case imm arch Some { printStr("architecture "); printStr(arch); printStr("\n"); }
+        case is None { printStr("no architecture\n"); }
+      }
+      match model.uint("toy.block_count") {
+        case imm n Some { printStr("blocks "); printInt(i64.from(n)); printStr("\n"); }
+        case is None { printStr("no block count\n"); }
+      }
+      each t in model.tensors {
+        printStr(t.name.view());
+        printStr(" ");
+        printStr(t.kind.name());
+        printStr(" elements ");
+        printInt(i64.from(t.elements));
+        printStr(" bytes ");
+        printInt(i64.from(t.bytes));
+        printStr("\n");
+      }
+      // Row 1 of "ramp": 32 numbers, quantised to Q8_0 and read back
+      match model.find("ramp") {
+        case imm t Some {
+          mut row = List[f32].empty();
+          match gguf.rowToF32(&model, file.view(), t, 1u64, &mut row) {
+            case is Ok {
+              printStr("ramp row 1: ");
+              printInt(i64.from(row.len()));
+              printStr(" numbers, the first about ");
+              printInt(i64.from(*row[0usize] * 8.0));
+              printStr("/8\n");
+            }
+            case is Error { printStr("could not read the row\n"); }
+          }
+        }
+        case is None { printStr("no ramp\n"); }
+      }
+    }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  0i32;
+}

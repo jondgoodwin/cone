@@ -14,7 +14,8 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Not built: copying a file, reading or writing a file a piece
-		at a time (<span class="pre">fs</span> reads and writes a file whole), a file's permissions
+		at a time (<span class="pre">fs</span> reads and writes a file whole, and maps one only whole and
+		read-only), a file's permissions
 		or any time of it but its last write, and giving a program that <span class="pre">process</span>
 		starts an environment or a standard input of its own.</i></p>
 
@@ -23,7 +24,8 @@
 	<ul>
 	<li><span class="pre">path</span>: file paths taken apart and put together, as text.
 		It never asks the file system anything.</li>
-	<li><span class="pre">fs</span>: files and folders. A file is read or written whole; a folder
+	<li><span class="pre">fs</span>: files and folders. A file is read or written whole, or mapped
+		into memory for reading; a folder
 		is made, listed, walked and removed; a file's size, time and kind are asked; and the
 		current folder is read and changed.</li>
 	<li><span class="pre">env</span>: the program's environment variables, read, set and removed.</li>
@@ -232,7 +234,7 @@ normalized they meet
 </pre>
 
 	<h2 id="fs">Files and folders: the fs package</h2>
-	<p>A file is read or written whole; a folder is made, listed, walked and removed. Every function that
+	<p>A file is read or written whole, or mapped into memory for reading; a folder is made, listed, walked and removed. Every function that
 		names a file or folder takes a <span class="pre">&amp;Path</span>, and nothing else. A string literal
 		written where one is wanted is made a <span class="pre">Path</span> for the call
 		(<span class="pre">fs.readFile("notes.txt")</span>), and a <span class="pre">Path</span> in a variable
@@ -327,6 +329,81 @@ message: readFile scratch-errors/missing.txt: No such file or directory
 		<span class="pre">String</span>'s <span class="pre">view()</span>. A failure anywhere (the folder is not
 		there, the disk is full, the file is open elsewhere) answers an <span class="pre">Error</span> naming the
 		function.</p>
+
+	<h3 id="fs-map">Mapped files</h3>
+	<p><span class="pre">fs.mapFile(path)</span> maps a whole file into memory for reading and answers a
+		<span class="pre">MappedFile</span>, in the <span class="pre">Result</span> as above. Nothing is copied:
+		the OS reads a page of the file when it is first touched, so a file far larger than memory (a model's
+		weights, several gigabytes) is mapped at no cost and only what is read is loaded. Sizes and positions are
+		64 bits whole, so a file past 4 GB is mapped like any other.</p>
+	<ul>
+	<li><span class="pre">m.view()</span> is the file's bytes, in place, a <span class="pre">&amp;Array[u8]</span>
+		that lives as long as <span class="pre">m</span> is borrowed; <span class="pre">m.size()</span> is their
+		count (a <span class="pre">usize</span>) and <span class="pre">m.isEmpty()</span> asks whether there
+		are none. An empty file is mapped as an empty view.</li>
+	<li><span class="pre">m.base()</span> is the address of the first byte, a <span class="pre">*u8</span>
+		(null for an empty file), for handing the bytes on, to a GPU upload for instance.</li>
+	<li>A <span class="pre">MappedFile</span> has one owner, moved and never copied, and its death unmaps the
+		view. No file stays open. It is Sendable, and an <span class="pre">Arc[imm, MappedFile]</span> shares
+		one among threads.</li>
+	<li>A file that is not there, a folder (EISDIR), anything but a regular file (EINVAL) or a path holding a
+		NUL is refused with an <span class="pre">FsError</span> whose <span class="pre">op</span> is
+		<span class="pre">"mapFile"</span>.</li>
+	</ul>
+	<p>The map is read-only. A file made shorter while it is mapped faults when the lost part is read, and
+		Windows refuses to remove, rename or truncate a file while it is mapped, so a program lets the map go
+		first, as this one does:</p>
+	<pre>
+imm file Path = "scratch-mapped.bin";
+fs.writeFile(&amp;file, "alpha\nbeta\ngamma\nend\n");
+
+match fs.mapFile(&amp;file) {
+  case imm m Ok {
+    printStr("size ");
+    printInt(i64.from(m.size()));
+    printStr("\n");
+    // The bytes are read in place; count the lines
+    imm bytes = m.view();
+    mut lines = 0i64;
+    mut i = 0usize;
+    while i &lt; bytes.len {
+      if bytes[i] == 10u8 { lines = lines + 1i64; }
+      i = i + 1usize;
+    }
+    printStr("lines ");
+    printInt(lines);
+    printStr("\n");
+  }
+  case imm e Error {
+    imm msg = e.message();
+    printStr(msg.view());
+    printStr("\n");
+    return 1i32;
+  }
+}
+// The map has died, so the file may go
+fs.removeFile(&amp;file);
+
+match fs.mapFile("scratch-missing.bin") {
+  case imm e Error {
+    imm msg = e.message();
+    printStr(msg.view());
+    printStr("\n");
+  }
+  case is Ok { return 1i32; }
+}
+</pre>
+	<p>It prints:</p>
+	<pre>
+size 21
+lines 4
+mapFile scratch-missing.bin: No such file or directory
+</pre>
+	<p>Not built: a writable map, a map of a byte range or from an offset (take a sub-slice of the view; only
+		the pages touched are read), and the hints some systems offer (<span class="pre">madvise</span>,
+		prefetch, large pages). On Windows the map is kernel32's <span class="pre">CreateFileMappingW</span> and
+		<span class="pre">MapViewOfFile</span>, on Linux <span class="pre">mmap</span> with
+		<span class="pre">PROT_READ</span> and <span class="pre">MAP_PRIVATE</span>.</p>
 
 	<h3 id="fs-stat">Asking about a file</h3>
 	<p><span class="pre">fs.stat(path)</span> answers a <span class="pre">FileInfo</span>, following a

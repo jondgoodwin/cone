@@ -1,0 +1,462 @@
+// Files that are not valid are refused, with the right kind of fault and the
+// offset of the byte at fault, and never crash or hang. The bad files are
+// laid out by hand from the format, each with exactly one fault: a wrong
+// magic, a big-endian file, versions that are not read, counts the file
+// cannot hold, a value type that does not exist, strings and arrays that run
+// past the end, arrays nested too deep, a key written twice, an alignment that
+// is no power of two, tensors with no dimensions, five, a zero, too many
+// elements or bytes, a first dimension that is not whole blocks, a type not
+// read, an offset that is not aligned or is past the end, a tensor name twice,
+// and a file cut short at every length. Then every byte of a good file set to
+// 0x00 and to 0xFF in turn (parse must return, whatever it answers), and the
+// Writer's own refusals.
+
+mod malformed;
+
+import testing use *;
+import collections use *;
+import gguf use *;
+
+struct Bld {
+  out List[u8];
+
+  fn w8(self &mut, v u32) { out.push(u8.from(v & 255u32)); }
+  fn w32(self &mut, v u32) {
+    out.push(u8.from(v & 255u32));
+    out.push(u8.from((v >> 8u32) & 255u32));
+    out.push(u8.from((v >> 16u32) & 255u32));
+    out.push(u8.from((v >> 24u32) & 255u32));
+  }
+  fn w64(self &mut, v u64) {
+    self.w32(u32.from(v & 0xFFFFFFFFu64));
+    self.w32(u32.from(v >> 32u64));
+  }
+  fn wstr(self &mut, s &str) {
+    self.w64(u64.from(s.len()));
+    mut i = 0usize;
+    while i < s.len() { out.push(s[i]); i = i + 1usize; }
+  }
+  fn magic(self &mut) {
+    self.w8(71u32); self.w8(71u32); self.w8(85u32); self.w8(70u32);
+  }
+  fn padTo(self &mut, a usize) {
+    while out.len() % a != 0usize { out.push(0u8); }
+  }
+  fn at(self &) u64 { u64.from(out.len()); }
+  fn take(self &mut) List[u8] {
+    mut r = List[u8].empty();
+    r <=> out;
+    r;
+  }
+}
+
+fn start(tensors u64, kvs u64) Bld {
+  mut b = new Bld(List[u8].empty());
+  b.magic();
+  b.w32(3u32);
+  b.w64(tensors);
+  b.w64(kvs);
+  b;
+}
+
+fn any() u64 { 0xFFFFFFFFFFFFFFFFu64; }
+
+fn kindName(k &ErrorKind) &str {
+  if *k == ErrorKind.BadMagic { return "BadMagic"; }
+  if *k == ErrorKind.BigEndian { return "BigEndian"; }
+  if *k == ErrorKind.UnsupportedVersion { return "UnsupportedVersion"; }
+  if *k == ErrorKind.Truncated { return "Truncated"; }
+  if *k == ErrorKind.BadValueType { return "BadValueType"; }
+  if *k == ErrorKind.BadTensorType { return "BadTensorType"; }
+  if *k == ErrorKind.BadDimensions { return "BadDimensions"; }
+  if *k == ErrorKind.BadAlignment { return "BadAlignment"; }
+  if *k == ErrorKind.BadOffset { return "BadOffset"; }
+  if *k == ErrorKind.DuplicateKey { return "DuplicateKey"; }
+  if *k == ErrorKind.DuplicateTensor { return "DuplicateTensor"; }
+  if *k == ErrorKind.TooDeep { return "TooDeep"; }
+  if *k == ErrorKind.BadSize { return "BadSize"; }
+  "BadInput";
+}
+
+// The file is refused as this kind, at this offset (or any offset)
+fn refused(bytes &List[u8], kind &str, offset u64, label &str) {
+  match parse(bytes.view()) {
+    case is Ok { expectStr("<parsed>", kind, label); }
+    case imm e Error {
+      expectStr(kindName(&e.kind), kind, label);
+      if offset != any() { expectUInt(e.offset, offset, label); }
+      imm m = e.message();
+      expect(m.view().startsWith("gguf: "), label);
+      expect(e.reason.len() > 0usize, label);
+    }
+  }
+}
+
+fn accepted(bytes &List[u8], label &str) {
+  match parse(bytes.view()) {
+    case is Ok {}
+    case imm e Error {
+      imm m = e.message();
+      expectStr(m.view(), "<parsed>", label);
+    }
+  }
+}
+
+// One metadata entry that is a u32
+fn kvU32(b &mut Bld, key &str, v u32) { b.wstr(key); b.w32(4u32); b.w32(v); }
+
+// A tensor entry: name, dimensions, type, offset
+fn tensor(b &mut Bld, name &str, dims &Array[u64], kind u32, offset u64) {
+  b.wstr(name);
+  b.w32(u32.from(dims.len));
+  mut i = 0usize;
+  while i < dims.len { b.w64(dims[i]); i = i + 1usize; }
+  b.w32(kind);
+  b.w64(offset);
+}
+
+// A good file with one F32 tensor of 4 numbers (16 bytes), given the pieces that vary
+fn oneTensor(dims &Array[u64], kind u32, offset u64, dataBytes usize) List[u8] {
+  mut b = start(1u64, 0u64);
+  tensor(&mut b, "t", dims, kind, offset);
+  b.padTo(32usize);
+  mut i = 0usize;
+  while i < dataBytes { b.w8(0u32); i = i + 1usize; }
+  b.take();
+}
+
+// A good file: metadata and two tensors, for the cut and flip sweeps
+fn good() List[u8] {
+  mut b = start(2u64, 3u64);
+  b.wstr("general.architecture"); b.w32(8u32); b.wstr("x");
+  kvU32(&mut b, "n", 7u32);
+  b.wstr("a"); b.w32(9u32); b.w32(8u32); b.w64(2u64); b.wstr("p"); b.wstr("qq");
+  tensor(&mut b, "w", &[32u64], 8u32, 0u64);
+  tensor(&mut b, "v", &[4u64], 0u32, 64u64);
+  b.padTo(32usize);
+  mut i = 0usize;
+  while i < 34usize { b.w8(u32.from(i + 1usize)); i = i + 1usize; }
+  while b.out.len() % 32usize != 0usize { b.w8(0u32); }
+  i = 0usize;
+  while i < 16usize { b.w8(0u32); i = i + 1usize; }
+  b.take();
+}
+
+fn main() i32 {
+  // -------- the start of the file --------
+  mut e = List[u8].empty();
+  refused(&e, "Truncated", any(), "an empty file");
+  e.push('G'); e.push('G'); e.push('U');
+  refused(&e, "Truncated", any(), "three bytes");
+  mut m = new Bld(List[u8].empty());
+  m.w8(88u32); m.w8(71u32); m.w8(85u32); m.w8(70u32); m.w32(3u32); m.w64(0u64); m.w64(0u64);
+  imm badMagic = m.take();
+  refused(&badMagic, "BadMagic", 0u64, "a wrong first byte");
+  mut m2 = new Bld(List[u8].empty());
+  m2.magic();
+  imm magicOnly = m2.take();
+  refused(&magicOnly, "Truncated", any(), "the magic and nothing else");
+
+  // versions: big-endian 3 and 2, 1, 4, 0
+  mut v = new Bld(List[u8].empty());
+  v.magic(); v.w8(0u32); v.w8(0u32); v.w8(0u32); v.w8(3u32); v.w64(0u64); v.w64(0u64);
+  imm be3 = v.take();
+  refused(&be3, "BigEndian", 4u64, "big-endian version 3");
+  v.magic(); v.w8(0u32); v.w8(0u32); v.w8(0u32); v.w8(2u32); v.w64(0u64); v.w64(0u64);
+  imm be2 = v.take();
+  refused(&be2, "BigEndian", 4u64, "big-endian version 2");
+  mut ver = 0u32;
+  while ver < 6u32 {
+    if ver != 2u32 and ver != 3u32 {
+      v.magic(); v.w32(ver); v.w64(0u64); v.w64(0u64);
+      imm f = v.take();
+      refused(&f, "UnsupportedVersion", 4u64, "a version that is not 2 or 3");
+    }
+    ver = ver + 1u32;
+  }
+
+  // counts the file cannot hold
+  mut c1 = start(1000000000000u64, 0u64);
+  imm bigTensors = c1.take();
+  refused(&bigTensors, "Truncated", 8u64, "a tensor count of 10^12");
+  mut c2 = start(0u64, 0xFFFFFFFFFFFFFFFFu64);
+  imm bigKvs = c2.take();
+  refused(&bigKvs, "Truncated", 16u64, "a metadata count of 2^64 - 1");
+
+  // -------- metadata --------
+  mut k1 = start(0u64, 1u64);
+  k1.w64(1000u64);
+  imm longKey = k1.take();
+  refused(&longKey, "Truncated", any(), "a key longer than the file");
+
+  mut k2 = start(0u64, 1u64);
+  k2.wstr("k"); k2.w32(13u32); k2.w32(0u32);
+  imm badType = k2.take();
+  refused(&badType, "BadValueType", 24u64 + 8u64 + 1u64, "value type 13");
+
+  mut k3 = start(0u64, 1u64);
+  k3.wstr("k"); k3.w32(0xFFFFFFFFu32); k3.w32(0u32);
+  imm badType2 = k3.take();
+  refused(&badType2, "BadValueType", 24u64 + 8u64 + 1u64, "value type 2^32 - 1");
+
+  mut k4 = start(0u64, 1u64);
+  k4.wstr("k"); k4.w32(8u32); k4.w64(50u64); k4.w8(65u32);
+  imm longStr = k4.take();
+  refused(&longStr, "Truncated", any(), "a string longer than the file");
+
+  mut k5 = start(0u64, 1u64);
+  k5.wstr("k"); k5.w32(4u32); k5.w8(1u32); k5.w8(2u32);
+  imm cutU32 = k5.take();
+  refused(&cutU32, "Truncated", any(), "a u32 cut after two bytes");
+
+  mut k6 = start(0u64, 1u64);
+  k6.wstr("k"); k6.w32(9u32); k6.w32(13u32); k6.w64(0u64);
+  imm badElem = k6.take();
+  refused(&badElem, "BadValueType", 24u64 + 8u64 + 1u64 + 4u64, "an array of element type 13");
+
+  mut k7 = start(0u64, 1u64);
+  k7.wstr("k"); k7.w32(9u32); k7.w32(0u32); k7.w64(0xFFFFFFFFFFFFFFFFu64);
+  imm bigArray = k7.take();
+  refused(&bigArray, "Truncated", 24u64 + 8u64 + 1u64 + 4u64, "an array of 2^64 - 1 bytes");
+
+  mut k8 = start(0u64, 1u64);
+  k8.wstr("k"); k8.w32(9u32); k8.w32(8u32); k8.w64(3u64);
+  k8.wstr("a"); k8.wstr("b");
+  imm cutArray = k8.take();
+  refused(&cutArray, "Truncated", any(), "an array of three strings with two");
+
+  mut k9 = start(0u64, 1u64);
+  k9.wstr("k"); k9.w32(9u32); k9.w32(9u32); k9.w64(100000u64);
+  imm bigNested = k9.take();
+  refused(&bigNested, "Truncated", any(), "an array of 100000 arrays with no room");
+
+  // arrays nested 8 deep are read, 9 deep refused
+  mut d8 = start(0u64, 1u64);
+  d8.wstr("k"); d8.w32(9u32);
+  mut depth = 0u32;
+  while depth < 8u32 {
+    if depth < 7u32 { d8.w32(9u32); d8.w64(1u64); } else { d8.w32(0u32); d8.w64(0u64); }
+    depth = depth + 1u32;
+  }
+  imm deep8 = d8.take();
+  accepted(&deep8, "8 levels of arrays");
+  mut d9 = start(0u64, 1u64);
+  d9.wstr("k"); d9.w32(9u32);
+  depth = 0u32;
+  while depth < 9u32 {
+    if depth < 8u32 { d9.w32(9u32); d9.w64(1u64); } else { d9.w32(0u32); d9.w64(0u64); }
+    depth = depth + 1u32;
+  }
+  imm deep9 = d9.take();
+  refused(&deep9, "TooDeep", any(), "9 levels of arrays");
+
+  mut dup = start(0u64, 2u64);
+  kvU32(&mut dup, "same", 1u32);
+  imm secondAt = dup.at();
+  kvU32(&mut dup, "same", 2u32);
+  imm dupKey = dup.take();
+  refused(&dupKey, "DuplicateKey", secondAt, "a key written twice");
+
+  // -------- alignment --------
+  mut a0 = start(0u64, 1u64);
+  kvU32(&mut a0, "general.alignment", 0u32);
+  imm align0 = a0.take();
+  refused(&align0, "BadAlignment", any(), "alignment 0");
+  mut a3 = start(0u64, 1u64);
+  kvU32(&mut a3, "general.alignment", 3u32);
+  imm align3 = a3.take();
+  refused(&align3, "BadAlignment", any(), "alignment 3");
+  mut as1 = start(0u64, 1u64);
+  as1.wstr("general.alignment"); as1.w32(8u32); as1.wstr("32");
+  imm alignStr = as1.take();
+  refused(&alignStr, "BadAlignment", any(), "alignment given as a string");
+  mut an = start(0u64, 1u64);
+  kvU32(&mut an, "general.alignment", 0xFFFFFFFEu32);
+  imm alignNeg = an.take();
+  refused(&alignNeg, "BadAlignment", any(), "alignment 2^32 - 2");
+  mut ab = start(0u64, 1u64);
+  ab.wstr("general.alignment"); ab.w32(10u32); ab.w64(4294967296u64);
+  imm alignBig = ab.take();
+  refused(&alignBig, "BadAlignment", any(), "alignment 2^32 (past the largest accepted)");
+  mut ao = start(0u64, 1u64);
+  kvU32(&mut ao, "general.alignment", 1u32);
+  imm align1 = ao.take();
+  accepted(&align1, "alignment 1 is a power of two");
+
+  // -------- tensors --------
+  imm f4 = oneTensor(&[4u64], 0u32, 0u64, 16usize);
+  accepted(&f4, "the good tensor file");
+  imm four = [4u64];
+  imm noDims = oneTensor(&four[0usize..<0usize], 0u32, 0u64, 16usize);
+  refused(&noDims, "BadDimensions", 24u64, "no dimensions");
+  imm fiveDims = oneTensor(&[1u64, 1u64, 1u64, 1u64, 4u64], 0u32, 0u64, 16usize);
+  refused(&fiveDims, "BadDimensions", 24u64, "five dimensions");
+  imm zeroDim = oneTensor(&[4u64, 0u64], 0u32, 0u64, 16usize);
+  refused(&zeroDim, "BadDimensions", 24u64, "a dimension of zero");
+  imm manyEls = oneTensor(&[4294967296u64, 4294967296u64], 0u32, 0u64, 16usize);
+  refused(&manyEls, "BadDimensions", 24u64, "2^64 elements");
+  imm manyBytes = oneTensor(&[4611686018427387904u64], 0u32, 0u64, 16usize);
+  refused(&manyBytes, "BadDimensions", 24u64, "2^62 floats: 2^64 bytes");
+  imm partBlock = oneTensor(&[33u64], 8u32, 0u64, 16usize);
+  refused(&partBlock, "BadDimensions", 24u64, "33 elements of Q8_0");
+  imm partBlockK = oneTensor(&[255u64, 2u64], 12u32, 0u64, 16usize);
+  refused(&partBlockK, "BadDimensions", 24u64, "255 elements to a row of Q4_K");
+  imm q51 = oneTensor(&[32u64], 7u32, 0u64, 16usize);
+  refused(&q51, "BadTensorType", 24u64 + 8u64 + 1u64 + 4u64 + 8u64, "type 7 (Q5_1) is not read");
+  imm type255 = oneTensor(&[4u64], 255u32, 0u64, 16usize);
+  refused(&type255, "BadTensorType", any(), "type 255");
+  imm off1 = oneTensor(&[4u64], 0u32, 1u64, 32usize);
+  refused(&off1, "BadAlignment", any(), "an offset of 1");
+  imm offPast = oneTensor(&[4u64], 0u32, 32u64, 16usize);
+  refused(&offPast, "BadOffset", any(), "an offset past the data");
+  imm offMax = oneTensor(&[4u64], 0u32, 0xFFFFFFFFFFFFFFE0u64, 16usize);
+  refused(&offMax, "BadOffset", any(), "an offset of 2^64 - 32");
+  imm short = oneTensor(&[4u64], 0u32, 0u64, 15usize);
+  refused(&short, "BadOffset", any(), "a tensor one byte past the end");
+  imm exact = oneTensor(&[4u64], 0u32, 0u64, 16usize);
+  accepted(&exact, "a tensor ending exactly at the end");
+  imm noData = oneTensor(&[4u64], 0u32, 0u64, 0usize);
+  refused(&noData, "BadOffset", any(), "a tensor with no data at all");
+
+  mut t2 = start(2u64, 0u64);
+  tensor(&mut t2, "same", &[4u64], 0u32, 0u64);
+  imm secondTensor = t2.at();
+  tensor(&mut t2, "same", &[4u64], 0u32, 32u64);
+  t2.padTo(32usize);
+  mut z = 0usize;
+  while z < 64usize { t2.w8(0u32); z = z + 1usize; }
+  imm dupTensor = t2.take();
+  refused(&dupTensor, "DuplicateTensor", secondTensor, "a tensor name twice");
+
+  // a table with tensors but no data section: the padding is missing too
+  mut nd = start(1u64, 0u64);
+  tensor(&mut nd, "t", &[4u64], 0u32, 0u64);
+  imm cutBeforeData = nd.take();
+  refused(&cutBeforeData, "Truncated", any(), "a file that ends in the tensor table");
+
+  // a file of no tensors needs no padding after the header
+  mut none = start(0u64, 0u64);
+  imm bare = none.take();
+  accepted(&bare, "the bare header");
+
+  // -------- cut at every length --------
+  imm g = good();
+  accepted(&g, "the good file");
+  mut cuts = 0u32;
+  mut cutsRefused = 0u32;
+  mut n = 0usize;
+  while n < g.len() {
+    mut p = List[u8].withCapacity(n);
+    mut i = 0usize;
+    while i < n { p.push(*g[i]); i = i + 1usize; }
+    cuts = cuts + 1u32;
+    match parse(p.view()) {
+      case is Ok {}
+      case imm er Error {
+        if er.kind == ErrorKind.Truncated or er.kind == ErrorKind.BadOffset or er.kind == ErrorKind.BadMagic { cutsRefused = cutsRefused + 1u32; }
+      }
+    }
+    n = n + 1usize;
+  }
+  expectUInt(u64.from(cutsRefused), u64.from(cuts), "every shorter file is refused as truncated");
+
+  // -------- every byte set to 0x00 and to 0xFF: parse returns --------
+  mut flips = 0u32;
+  mut survived = 0u32;
+  n = 0usize;
+  while n < g.len() {
+    mut value = 0u32;
+    while value < 2u32 {
+      mut p = List[u8].withCapacity(g.len());
+      mut i = 0usize;
+      while i < g.len() { p.push(*g[i]); i = i + 1usize; }
+      p.set(n, if value == 0u32 { 0u8; } else { 255u8; });
+      flips = flips + 1u32;
+      match parse(p.view()) {
+        case is Ok { survived = survived + 1u32; }
+        case is Error {}
+      }
+      value = value + 1u32;
+    }
+    n = n + 1usize;
+  }
+  expectUInt(u64.from(flips), u64.from(g.len()) * 2u64, "every byte flipped twice");
+  expect(survived < flips, "some of the flips are refused");
+
+  // -------- the Writer's refusals --------
+  mut w = Writer.make();
+  match w.addTensor("a", TensorType.F32, &[4u64], List[u8].empty()) {
+    case is Ok { expect(false, "no bytes for 4 floats"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadInput", "wrong byte count"); }
+  }
+  match w.addValues("a", TensorType.Q8_0, &[33u64], &[1.0, 2.0]) {
+    case is Ok { expect(false, "33 elements of Q8_0"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadDimensions", "first dimension not whole blocks"); }
+  }
+  match w.addValues("a", TensorType.F32, &[2u64, 0u64], &[1.0, 2.0]) {
+    case is Ok { expect(false, "a dimension of zero"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadDimensions", "zero dimension"); }
+  }
+  match w.addValues("a", TensorType.F32, &[2u64], &[1.0, 2.0]) {
+    case is Ok {}
+    case is Error { expect(false, "a good tensor"); }
+  }
+  match w.addValues("a", TensorType.F32, &[2u64], &[1.0, 2.0]) {
+    case is Ok { expect(false, "a tensor name twice"); }
+    case imm er Error { expectStr(kindName(&er.kind), "DuplicateTensor", "name twice"); }
+  }
+  match w.addValues("b", TensorType.Q8_0, &[32u64], &[1.0, 2.0]) {
+    case is Ok { expect(false, "2 values for 32"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadInput", "a value count that is not whole blocks"); }
+  }
+  w.setAlignment(3u32);
+  match w.finish() {
+    case is Ok { expect(false, "alignment 3"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadAlignment", "alignment 3"); }
+  }
+  w.put("general.alignment", Value.Str(String.from("32")));
+  match w.finish() {
+    case is Ok { expect(false, "alignment as a string"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadAlignment", "alignment as a string"); }
+  }
+  mut w2 = Writer.make();
+  mut wrong = List[Value].empty();
+  wrong.push(Value.U8(1u8));
+  wrong.push(Value.U16(2u16));
+  w2.put("mixed", Value.Items(ValueType.U8, wrong));
+  match w2.finish() {
+    case is Ok { expect(false, "an array of mixed types"); }
+    case imm er Error { expectStr(kindName(&er.kind), "BadInput", "an array of mixed types"); }
+  }
+  mut w3 = Writer.make();
+  mut inner = Value.Items(ValueType.U8, List[Value].empty());
+  mut level = 0u32;
+  while level < 9u32 {
+    mut one = List[Value].empty();
+    one.push(inner);
+    inner = Value.Items(ValueType.Items, one);
+    level = level + 1u32;
+  }
+  w3.put("deep", inner);
+  match w3.finish() {
+    case is Ok { expect(false, "arrays nested 10 deep"); }
+    case imm er Error { expectStr(kindName(&er.kind), "TooDeep", "arrays nested too deep"); }
+  }
+
+  // -------- the message --------
+  match parse(badMagic.view()) {
+    case is Ok { expect(false, "bad magic"); }
+    case imm er Error {
+      imm msg = er.message();
+      expectStr(msg.view(), "gguf: the file does not start with GGUF", "a fault at offset 0 names no offset");
+    }
+  }
+  match parse(be3.view()) {
+    case is Ok { expect(false, "big-endian"); }
+    case imm er Error {
+      imm msg = er.message();
+      expectStr(msg.view(), "gguf: at offset 4: this is a big-endian GGUF file, which is not read", "a fault with an offset");
+    }
+  }
+  done();
+}

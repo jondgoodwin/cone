@@ -1,0 +1,109 @@
+// F16 and BF16 conversion, pinned against numpy's float16 (the oracle; the
+// package never calls it): hand-picked values, and checksums over every half
+// and over 20000 pseudo-random f32 bit patterns in two ranges (the second
+// is concentrated on the subnormal and overflow edges).
+
+mod half;
+
+import testing use *;
+import gguf use *;
+
+fn bitsOf(x f32) u32 { x as u32; }
+
+fn lcgNext(x u32) u32 { x * 1664525u32 + 1013904223u32; }
+
+fn main() i32 {
+  // f32 to half
+  expectUInt(u64.from(f32ToHalf(0.0)), 0x0000u64, "0");
+  expectUInt(u64.from(f32ToHalf(-0.0)), 0x8000u64, "-0");
+  expectUInt(u64.from(f32ToHalf(1.0)), 0x3c00u64, "1");
+  expectUInt(u64.from(f32ToHalf(-2.0)), 0xc000u64, "-2");
+  expectUInt(u64.from(f32ToHalf(0.5)), 0x3800u64, "0.5");
+  expectUInt(u64.from(f32ToHalf(65504.0)), 0x7bffu64, "largest half");
+  expectUInt(u64.from(f32ToHalf(65520.0)), 0x7c00u64, "65520 ties to even: infinity");
+  expectUInt(u64.from(f32ToHalf(65519.0)), 0x7bffu64, "65519 rounds down");
+  expectUInt(u64.from(f32ToHalf(70000.0)), 0x7c00u64, "overflow");
+  expectUInt(u64.from(f32ToHalf(-1.0e10)), 0xfc00u64, "negative overflow");
+  expectUInt(u64.from(f32ToHalf(6.103515625e-05)), 0x0400u64, "smallest normal");
+  expectUInt(u64.from(f32ToHalf(5.9604644775390625e-08)), 0x0001u64, "smallest subnormal");
+  expectUInt(u64.from(f32ToHalf(2.9802322387695312e-08)), 0x0000u64, "half of it ties to zero");
+  expectUInt(u64.from(f32ToHalf(0x33000001u32 as f32)), 0x0001u64, "a hair over it rounds up");
+  expectUInt(u64.from(f32ToHalf(1.0009765625)), 0x3c01u64, "1 + 2^-10");
+  expectUInt(u64.from(f32ToHalf(1.00146484375)), 0x3c02u64, "tie to the even neighbour (up)");
+  expectUInt(u64.from(f32ToHalf(1.0004882812)), 0x3c00u64, "tie to the even neighbour (down)");
+  expectUInt(u64.from(f32ToHalf(3.14159274)), 0x4248u64, "pi");
+  expectUInt(u64.from(f32ToHalf(0.1)), 0x2e66u64, "0.1");
+  expectUInt(u64.from(f32ToHalf(1.0e-8)), 0x0000u64, "underflow");
+  expectUInt(u64.from(f32ToHalf(6.1e-05)), 0x03ffu64, "largest subnormal side");
+  expectUInt(u64.from(f32ToHalf(6.097555e-05)), 0x03ffu64, "a subnormal that rounds up into 0x3ff");
+
+  // infinity and NaN
+  expectUInt(u64.from(f32ToHalf(0x7F800000u32 as f32)), 0x7c00u64, "infinity");
+  expectUInt(u64.from(f32ToHalf(0xFF800000u32 as f32)), 0xfc00u64, "-infinity");
+  imm nan = f32ToHalf(0x7FC00000u32 as f32);
+  expect((nan & 0x7C00u16) == 0x7C00u16 and (nan & 0x3FFu16) != 0u16, "NaN stays NaN");
+
+  // half to f32
+  expectUInt(u64.from(bitsOf(halfToF32(0x3c00u16))), 0x3f800000u64, "1");
+  expectUInt(u64.from(bitsOf(halfToF32(0x8000u16))), 0x80000000u64, "-0");
+  expectUInt(u64.from(bitsOf(halfToF32(0x0001u16))), 0x33800000u64, "smallest subnormal");
+  expectUInt(u64.from(bitsOf(halfToF32(0x03ffu16))), 0x387fc000u64, "largest subnormal");
+  expectUInt(u64.from(bitsOf(halfToF32(0x0400u16))), 0x38800000u64, "smallest normal");
+  expectUInt(u64.from(bitsOf(halfToF32(0x7bffu16))), 0x477fe000u64, "largest half");
+  expectUInt(u64.from(bitsOf(halfToF32(0xfc00u16))), 0xff800000u64, "-infinity");
+  // ('x != x' is false for a NaN in Cone, measured; 'not (x == x)' is the test)
+  imm nanf = halfToF32(0x7e00u16);
+  expect(not (nanf == nanf), "NaN is not equal to itself");
+  expectFloat(f64.from(halfToF32(0x2e66u16)), 0.0999755859375d, 0.0d, "0.1 as a half");
+
+  // every half: the checksum of the f32 bits, and the way back
+  mut sum = 0u32;
+  mut back = 0u32;
+  mut h = 0u32;
+  while h < 65536u32 {
+    imm x = halfToF32(u16.from(h));
+    if x == x {
+      sum = sum + bitsOf(x) * (h + 1u32);
+      if f32ToHalf(x) != u16.from(h) { back = back + 1u32; }
+    }
+    h = h + 1u32;
+  }
+  expectUInt(u64.from(sum), 0x29000000u64, "checksum of all halves as f32");
+  expectUInt(u64.from(back), 0u64, "every half converts back to itself");
+
+  // two sweeps of f32 patterns, against numpy
+  mut x = 12345u32;
+  mut s1 = 0u32;
+  mut i = 0u32;
+  while i < 20000u32 {
+    x = lcgNext(x);
+    imm f = x as f32;
+    if f == f { s1 = s1 + u32.from(f32ToHalf(f)) * (i + 1u32); }
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(s1), 0xa0b51f31u64, "sweep of random f32 patterns");
+
+  x = 777u32;
+  mut s2 = 0u32;
+  i = 0u32;
+  while i < 20000u32 {
+    x = lcgNext(x);
+    imm b = (x & 0x807FFFFFu32) | ((100u32 + (x >> 24u32) % 21u32) << 23u32);
+    s2 = s2 + u32.from(f32ToHalf(b as f32)) * (i + 1u32);
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(s2), 0xb2033b9cu64, "sweep across the subnormal edge");
+
+  // bfloat16
+  expectUInt(u64.from(f32ToBfloat(1.0)), 0x3f80u64, "bf16 1");
+  expectUInt(u64.from(f32ToBfloat(3.14159274)), 0x4049u64, "bf16 pi");
+  expectUInt(u64.from(f32ToBfloat(1.00390625)), 0x3f80u64, "bf16 tie to even (down)");
+  expectUInt(u64.from(f32ToBfloat(1.01171875)), 0x3f82u64, "bf16 tie to even (up)");
+  expectUInt(u64.from(f32ToBfloat(1.0e38)), 0x7e96u64, "bf16 1e38");
+  expectUInt(u64.from(f32ToBfloat(3.4028235e38)), 0x7f80u64, "bf16 rounds the largest f32 to infinity");
+  expectUInt(u64.from(f32ToBfloat(-0.1)), 0xbdcdu64, "bf16 -0.1");
+  expect(f32ToBfloat(0x7FC00001u32 as f32) != 0x7F80u16, "bf16 NaN stays NaN");
+  expectUInt(u64.from(bitsOf(bfloatToF32(0x3f80u16))), 0x3f800000u64, "bf16 to f32");
+  expectUInt(u64.from(bitsOf(bfloatToF32(0xbdcdu16))), 0xbdcd0000u64, "bf16 -0.1 to f32");
+  done();
+}
