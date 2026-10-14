@@ -1,0 +1,69 @@
+// ======== 16-bit floats: IEEE half (F16) and bfloat16 (BF16) ========
+//
+// The scales of the quantised blocks are halves, and F16 and BF16 are tensor
+// types of their own. Conversion to f32 is exact. Conversion from f32 rounds to
+// nearest, ties to even, as the hardware does: subnormals, overflow to
+// infinity and NaN are handled (a NaN stays a NaN, with the top bits of its
+// payload kept).
+
+// The f32 of a half, given as its 16 bits
+pub fn halfToF32(h u16) f32 {
+  imm sign = u32.from(h >> 15u16) << 31u32;
+  imm e = u32.from((h >> 10u16) & 0x1Fu16);
+  imm m = u32.from(h & 0x3FFu16);
+  if e == 0u32 {
+    if m == 0u32 { return (sign) as f32; }
+    // A subnormal half: m * 2^-24. Its top bit is at p, so the value is
+    // 2^(p-24) * 1.f, and f32's exponent field is p + 103.
+    imm p = 31u32 - m.leadingZeros();
+    imm frac = (m << (23u32 - p)) & 0x7FFFFFu32;
+    return (sign | ((p + 103u32) << 23u32) | frac) as f32;
+  }
+  if e == 31u32 { return (sign | 0x7F800000u32 | (m << 13u32)) as f32; }
+  (sign | ((e + 112u32) << 23u32) | (m << 13u32)) as f32;
+}
+
+// The 16 bits of the half nearest to x
+pub fn f32ToHalf(x f32) u16 {
+  imm bits = x as u32;
+  imm sign = (bits >> 16u32) & 0x8000u32;
+  imm e = i32.from((bits >> 23u32) & 0xFFu32);
+  imm m = bits & 0x7FFFFFu32;
+  if e == 255i32 {
+    if m == 0u32 { return u16.from(sign | 0x7C00u32); }
+    return u16.from(sign | 0x7C00u32 | 0x200u32 | (m >> 13u32));
+  }
+  imm exp = e - 127i32 + 15i32;
+  if exp >= 31i32 { return u16.from(sign | 0x7C00u32); }
+  if exp <= 0i32 {
+    // Zero or a subnormal half. Past 2^-25 below the smallest subnormal it is zero.
+    if exp < -10i32 { return u16.from(sign); }
+    imm full = m | 0x800000u32;
+    imm shift = u32.from(14i32 - exp);
+    mut r = full >> shift;
+    imm rem = full & ((1u32 << shift) - 1u32);
+    imm half = 1u32 << (shift - 1u32);
+    if rem > half or (rem == half and (r & 1u32) == 1u32) { r = r + 1u32; }
+    return u16.from(sign | r);
+  }
+  mut h = (u32.from(exp) << 10u32) | (m >> 13u32);
+  imm rem = m & 0x1FFFu32;
+  // A carry out of the mantissa raises the exponent, up to infinity: right
+  if rem > 0x1000u32 or (rem == 0x1000u32 and (h & 1u32) == 1u32) { h = h + 1u32; }
+  u16.from(sign | h);
+}
+
+// The f32 of a bfloat16, given as its 16 bits (the top half of an f32)
+pub fn bfloatToF32(b u16) f32 {
+  (u32.from(b) << 16u32) as f32;
+}
+
+// The 16 bits of the bfloat16 nearest to x
+pub fn f32ToBfloat(x f32) u16 {
+  imm bits = x as u32;
+  if (bits & 0x7FFFFFFFu32) > 0x7F800000u32 {
+    // NaN: keep it a NaN whatever the low bits were
+    return u16.from((bits >> 16u32) | 0x40u32);
+  }
+  u16.from((bits + 0x7FFFu32 + ((bits >> 16u32) & 1u32)) >> 16u32);
+}
