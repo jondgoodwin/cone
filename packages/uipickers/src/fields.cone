@@ -1,0 +1,165 @@
+// ======== Describing an object's fields ========
+//
+// An inspector is made from DATA: a TypeDesc is a name and a list of FieldDescs, each a name, a kind, and the
+// numbers that kind needs (a range, a drag speed, the options of an enum). Any object that can be described
+// this way gets an inspector with no new code, and a description can come from anywhere (written by hand,
+// read from a file, sent over a connection); Cone has no reflection yet, so the program that owns the object
+// writes the description once and maps field numbers to its object's members, which is what 'Value' is for.
+//
+// A Value is the one record every kind fits in: x for a number, a bool (0 or 1) or an enum's chosen index;
+// x y z (w) for a vector; x y z w as red, green, blue and alpha for a colour; s for text.
+
+pub const FK_FLOAT = 1u32;
+pub const FK_INT = 2u32;
+pub const FK_BOOL = 3u32;
+pub const FK_COLOR = 4u32;
+pub const FK_VEC2 = 5u32;
+pub const FK_VEC3 = 6u32;
+pub const FK_ENUM = 7u32;
+pub const FK_TEXT = 8u32;
+pub const FK_HEADER = 9u32;        // a heading that groups the fields after it; holds no value
+
+pub struct Value {
+  pub s String;
+  pub x f32 = 0.;
+  pub y f32 = 0.;
+  pub z f32 = 0.;
+  pub w f32 = 0.;
+
+  pub fn number(x f32) Value {
+    mut v = new Value(String.empty());
+    v.x = x;
+    v;
+  }
+
+  pub fn vec3(x f32, y f32, z f32) Value {
+    mut v = new Value(String.empty());
+    v.x = x;
+    v.y = y;
+    v.z = z;
+    v;
+  }
+
+  pub fn color(r f32, g f32, b f32, a f32) Value {
+    mut v = new Value(String.empty());
+    v.x = r;
+    v.y = g;
+    v.z = b;
+    v.w = a;
+    v;
+  }
+
+  pub fn text(s &str) Value {new Value(String.from(s));}
+
+  pub fn copy(self &) Value {
+    mut v = new Value(String.from(s.view()));
+    v.x = x;
+    v.y = y;
+    v.z = z;
+    v.w = w;
+    v;
+  }
+
+  // The same value (text included)
+  pub fn same(self &, o &Value) bool {
+    x == o.x and y == o.y and z == o.z and w == o.w and s.view() == o.s.view();
+  }
+}
+
+pub struct FieldDesc {
+  pub name String;
+  pub kind u32;
+  pub suffix String;                 // "deg", "m"
+  pub options List[String];          // an enum's choices
+  pub min f32 = -1000000.;
+  pub max f32 = 1000000.;
+  pub speed f32 = 0.01;              // number change per pixel dragged
+  pub step f32 = 0.;                 // 0: any; else multiples of it
+  pub decimals u32 = 2u32;
+  pub slider bool = false;           // drawn as a slider over min..max
+}
+
+pub struct TypeDesc {
+  pub name String;
+  pub fields List[FieldDesc];
+
+  pub fn make(name &str) TypeDesc {new TypeDesc(String.from(name), List[FieldDesc].empty());}
+
+  fn add(self &mut, name &str, kind u32) usize {
+    fields.push(new FieldDesc(String.from(name), kind, String.empty(), List[String].empty()));
+    fields.len() - 1usize;
+  }
+
+  pub fn header(self &mut, name &str) usize {add(name, FK_HEADER);}
+
+  // A number: dragged 'speed' per pixel, shown with 'decimals' places
+  pub fn floatField(self &mut, name &str, speed f32, decimals u32) usize {
+    imm i = add(name, FK_FLOAT);
+    fields[i].speed = speed;
+    fields[i].decimals = decimals;
+    i;
+  }
+
+  // A number in a range, drawn and set as a slider
+  pub fn sliderField(self &mut, name &str, min f32, max f32, decimals u32) usize {
+    imm i = add(name, FK_FLOAT);
+    fields[i].min = min;
+    fields[i].max = max;
+    fields[i].slider = true;
+    fields[i].decimals = decimals;
+    fields[i].speed = (max - min) / 200.;
+    i;
+  }
+
+  pub fn intField(self &mut, name &str, min f32, max f32) usize {
+    imm i = add(name, FK_INT);
+    fields[i].min = min;
+    fields[i].max = max;
+    fields[i].step = 1.;
+    fields[i].speed = 0.1;
+    fields[i].decimals = 0u32;
+    i;
+  }
+
+  pub fn boolField(self &mut, name &str) usize {add(name, FK_BOOL);}
+
+  pub fn colorField(self &mut, name &str) usize {add(name, FK_COLOR);}
+
+  pub fn vec2Field(self &mut, name &str, speed f32) usize {
+    imm i = add(name, FK_VEC2);
+    fields[i].speed = speed;
+    i;
+  }
+
+  pub fn vec3Field(self &mut, name &str, speed f32, suffix &str) usize {
+    imm i = add(name, FK_VEC3);
+    fields[i].speed = speed;
+    fields[i].suffix = String.from(suffix);
+    i;
+  }
+
+  // The options are given in one string, separated by '|' ("Stone|Wood|Glass")
+  pub fn enumField(self &mut, name &str, options &str) usize {
+    imm i = add(name, FK_ENUM);
+    mut start = 0usize;
+    mut k = 0usize;
+    while k <= options.len() {
+      if k == options.len() or options[k] == 124u8 {
+        fields[i].options.push(String.from(options.slice(start, k)));
+        start = k + 1usize;
+      }
+      k = k + 1usize;
+    }
+    i;
+  }
+
+  pub fn textField(self &mut, name &str) usize {add(name, FK_TEXT);}
+}
+
+// What the user did to one field
+pub struct Change {
+  pub field usize;
+  pub before Value;                  // the value when the gesture began
+  pub after Value;                   // the value now
+  pub live bool;                     // the gesture is still going; false for its last (the one to record)
+}

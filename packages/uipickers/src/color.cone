@@ -1,0 +1,98 @@
+// ======== Colour conversions the picker needs ========
+//
+// HSV (hue, saturation, value, each 0..1) is the picker's model, because a square of saturation against
+// value at one hue and a bar of hue are what a person steers by (Smith's hexcone model, 1978). Colours here
+// are the numbers the host gives, 0..1 per channel, in whatever space the host keeps them in: the picker
+// does not convert between sRGB and linear.
+
+// Red, green and blue (0..1) from hue, saturation, value
+pub fn hsvToRgb(h f32, s f32, v f32) Vec3 {
+  imm hh = (h - libc.floorf(h)) * 6.;
+  imm sector = i32.from(libc.floorf(hh));
+  imm f = hh - libc.floorf(hh);
+  imm p = v * (1. - s);
+  imm q = v * (1. - s * f);
+  imm t = v * (1. - s * (1. - f));
+  if sector == 0i32 {new Vec3(v, t, p);}
+  elif sector == 1i32 {new Vec3(q, v, p);}
+  elif sector == 2i32 {new Vec3(p, v, t);}
+  elif sector == 3i32 {new Vec3(p, q, v);}
+  elif sector == 4i32 {new Vec3(t, p, v);}
+  else {new Vec3(v, p, q);};
+}
+
+// Hue, saturation, value from red, green, blue. A grey has hue 0
+pub fn rgbToHsv(r f32, g f32, b f32) Vec3 {
+  imm mx = if r > g {if r > b {r;} else {b;};} else {if g > b {g;} else {b;};};
+  imm mn = if r < g {if r < b {r;} else {b;};} else {if g < b {g;} else {b;};};
+  imm d = mx - mn;
+  mut h = 0.;
+  if d > 0.000001 {
+    if mx == r {h = (g - b) / d;}
+    elif mx == g {h = 2. + (b - r) / d;}
+    else {h = 4. + (r - g) / d;}
+    h = h / 6.;
+    if h < 0. {h = h + 1.;}
+  }
+  new Vec3(h, if mx > 0.000001 {d / mx;} else {0.;}, mx);
+}
+
+fn clamp01(v f32) f32 inline {if v < 0. {0.;} elif v > 1. {1.;} else {v;};}
+
+fn to255(v f32) u32 inline {u32.from(libc.floorf(clamp01(v) * 255. + 0.5));}
+
+// The colour as a draw list colour, 0xRRGGBBAA
+pub fn packRgb(r f32, g f32, b f32, a f32) u32 {
+  (to255(r) << 24u32) | (to255(g) << 16u32) | (to255(b) << 8u32) | to255(a);
+}
+
+fn hexDigit(n u32) u8 {
+  if n < 10u32 {u8.from(48u32 + n);} else {u8.from(55u32 + n);};
+}
+
+// "#RRGGBB"
+pub fn hexOf(r f32, g f32, b f32) String {
+  mut s = String.empty();
+  s.appendByte(35u8);
+  imm rr = to255(r);
+  imm gg = to255(g);
+  imm bb = to255(b);
+  s.appendByte(hexDigit(rr >> 4u32));
+  s.appendByte(hexDigit(rr & 15u32));
+  s.appendByte(hexDigit(gg >> 4u32));
+  s.appendByte(hexDigit(gg & 15u32));
+  s.appendByte(hexDigit(bb >> 4u32));
+  s.appendByte(hexDigit(bb & 15u32));
+  s;
+}
+
+fn hexValue(c u8) i32 {
+  if c >= 48u8 and c <= 57u8 {i32.from(c) - 48i32;}
+  elif c >= 97u8 and c <= 102u8 {i32.from(c) - 87i32;}
+  elif c >= 65u8 and c <= 70u8 {i32.from(c) - 55i32;}
+  else {-1i32;};
+}
+
+// "#RRGGBB", "RRGGBB" or the short "#RGB" (each digit doubled) into 0..1 channels; 'ok' says it was one
+pub fn parseHex(text &str, ok &mut bool) Vec3 {
+  *ok = false;
+  mut start = 0usize;
+  if text.len() > 0usize and text[0usize] == 35u8 {start = 1usize;}
+  imm n = text.len() - start;
+  if n != 6usize and n != 3usize {return new Vec3(0., 0., 0.);}
+  mut vals = new Array[i32, 6] <- 0i32, 0i32, 0i32, 0i32, 0i32, 0i32;
+  mut i = 0usize;
+  while i < n {
+    imm v = hexValue(text[start + i]);
+    if v < 0i32 {return new Vec3(0., 0., 0.);}
+    vals[i] = v;
+    i = i + 1usize;
+  }
+  *ok = true;
+  if n == 3usize {
+    new Vec3(f32.from(vals[0usize] * 17i32) / 255., f32.from(vals[1usize] * 17i32) / 255., f32.from(vals[2usize] * 17i32) / 255.);
+  } else {
+    new Vec3(f32.from(vals[0usize] * 16i32 + vals[1usize]) / 255., f32.from(vals[2usize] * 16i32 + vals[3usize]) / 255.,
+      f32.from(vals[4usize] * 16i32 + vals[5usize]) / 255.);
+  }
+}

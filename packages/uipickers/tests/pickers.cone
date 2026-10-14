@@ -1,0 +1,307 @@
+// The controls, driven only through the Ui's own input functions (no window, no real input).
+//
+//   Numbers: fixedString(-0.004, 2) is "0.00" (no "-0.00"), fixedString(2.5, 0) is "3"; "12.5", "-3e2", ".5" parse and
+//     "12x" does not.
+//   Colours: hsv (0, 1, 1) is red, (1/3, 1, 1) green, (0.5, 0.5, 1) is (0.5, 1, 1); and back. "#336699" is
+//     (0.2, 0.4, 0.6) and "#fa0" is (1, 0.6667, 0).
+//   A drag-number with speed 0.1 dragged 50 pixels goes up by 5; with shift held, by 0.5; the events are live while
+//     down and one final when released, whose 'before' is the start. A click without a move, then "12.5" and Enter,
+//     sets 12.5 (one final event); Escape leaves it as it was.
+//   A slider over 0 to 10, 200 pixels wide, pressed at the middle gives 5, dragged to 3/4 gives 7.5, snapped to
+//     steps of 0.5.
+//   A colour picker 220 wide: the square's top right corner (saturation 1, value 1) at hue 0 is red; the hue bar
+//     a third of the way down is hue 1/3; typing "#336699" in the hex field and Enter gives (0.2, 0.4, 0.6) as a
+//     final event.
+//   A dropdown of three options closed at 26 high opens to 26 + 3 * 26 = 104; a click on the third row selects index
+//     2 (an event with value 2, before 0) and closes it.
+//   The inspector: a six-field description makes the controls; dragging the Y of a vector gives a live Change
+//     then a final one whose before and after differ only in y; setValues makes none; a toggle set by the program
+//     (the user's click) is a Change.
+
+mod pickerstest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import uilayout use *;
+import uipickers use *;
+
+fn near(a f32, b f32, eps f32) bool {
+  (if a > b {a - b;} else {b - a;}) < eps;
+}
+
+fn doLayout(ui &mut Ui) {
+  mut m = fn(t &str, font u32, size f32) Vec2 {new Vec2(f32.from(i32.from(t.len())) * 7., 16.);};
+  layout(ui, &mut m);
+}
+
+// Moves the pointer over (x, y), presses and holds
+fn press(ui &mut Ui, x f32, y f32, mods u32) {
+  pointerMove(ui, x, y);
+  ui.input.mods = mods;
+  pointerDown(ui, BTN_LEFT);
+}
+
+fn release(ui &mut Ui, x f32, y f32) {
+  pointerMove(ui, x, y);
+  pointerUp(ui, BTN_LEFT);
+  ui.input.mods = 0u32;
+}
+
+fn typeString(ui &mut Ui, s &str) {
+  mut i = 0usize;
+  while i < s.len() {
+    textInput(ui, u32.from(s[i]));
+    i = i + 1usize;
+  }
+}
+
+fn main() i32 {
+  // ---- numbers and colours ----
+  expectStr(fixedString(-0.004, 2u32).view(), "0.00", "no negative zero");
+  expectStr(fixedString(2.5, 0u32).view(), "3", "2.5 to no places is 3");
+  expectStr(fixedString(-12.345, 1u32).view(), "-12.3", "-12.345 to one place");
+  mut ok = false;
+  expect(near(parseNumber("12.5", &mut ok), 12.5, 0.0001) and ok, "12.5 parses");
+  expect(near(parseNumber("-3e2", &mut ok), -300., 0.01) and ok, "-3e2 parses");
+  expect(near(parseNumber(".5", &mut ok), 0.5, 0.0001) and ok, ".5 parses");
+  parseNumber("12x", &mut ok);
+  expect(!ok, "12x does not");
+  parseNumber("", &mut ok);
+  expect(!ok, "nothing does not");
+  imm red = hsvToRgb(0., 1., 1.);
+  expect(near(red.x, 1., 0.0001) and near(red.y, 0., 0.0001) and near(red.z, 0., 0.0001), "hue 0 is red");
+  imm green = hsvToRgb(1. / 3., 1., 1.);
+  expect(near(green.x, 0., 0.001) and near(green.y, 1., 0.001), "hue 1/3 is green");
+  imm pale = hsvToRgb(0.5, 0.5, 1.);
+  expect(near(pale.x, 0.5, 0.001) and near(pale.y, 1., 0.001) and near(pale.z, 1., 0.001), "hue 0.5 half saturated");
+  imm back = rgbToHsv(0.2, 0.4, 0.6);
+  imm again = hsvToRgb(back.x, back.y, back.z);
+  expect(near(again.x, 0.2, 0.001) and near(again.y, 0.4, 0.001) and near(again.z, 0.6, 0.001), "rgb to hsv and back");
+  expect(near(rgbToHsv(0.5, 0.5, 0.5).y, 0., 0.0001), "grey has no saturation");
+  imm hx = parseHex("#336699", &mut ok);
+  expect(ok and near(hx.x, 0.2, 0.001) and near(hx.y, 0.4, 0.001) and near(hx.z, 0.6, 0.001), "#336699");
+  imm sh = parseHex("fa0", &mut ok);
+  expect(ok and near(sh.x, 1., 0.001) and near(sh.y, 0.6667, 0.001) and near(sh.z, 0., 0.001), "fa0 short form");
+  parseHex("#12345", &mut ok);
+  expect(!ok, "five digits is not a colour");
+  parseHex("#12345g", &mut ok);
+  expect(!ok, "g is not a hex digit");
+  expectStr(hexOf(0.2, 0.4, 0.6).view(), "#336699", "hex of a colour");
+  expectStr(hexOf(1., 0., 0.).view(), "#FF0000", "hex of red");
+
+  // ---- a drag-number ----
+  mut ui = Ui.make(800., 600.);
+  mut kit = PickerKit.make();
+  imm dn = kit.addNumber(&mut ui, ui.root, 1., -100., 100., 0.1, 2u32, false);
+  ui.setOffsets(kit.numbers[dn].node, 20., 20., 0., 0.);
+  ui.setSize(kit.numbers[dn].node, 200., 26.);
+  doLayout(&mut ui);
+  kit.pump(&mut ui);
+  imm nx = ui.nodes[kit.numbers[dn].node].gx;
+  imm ny = ui.nodes[kit.numbers[dn].node].gy;
+  expect(near(nx, 20., 0.01) and near(ny, 20., 0.01), "the node is where it was put");
+  press(&mut ui, nx + 100., ny + 10., 0u32);
+  pointerMove(&mut ui, nx + 120., ny + 10.);
+  pointerMove(&mut ui, nx + 150., ny + 10.);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[dn].value, 6., 0.001), "dragged 50 pixels at 0.1: 1 + 5");
+  imm live = kit.takeEvents();
+  expect(live.len() >= 1usize and live[0usize].live and live[0usize].kind == PK_NUMBER, "live events while down");
+  expect(near(live[live.len() - 1usize].pa, 1., 0.0001), "they carry the start value");
+  release(&mut ui, nx + 150., ny + 10.);
+  kit.pump(&mut ui);
+  imm fin = kit.takeEvents();
+  expectInt(i64.from(fin.len()), 1i64, "one event on release");
+  expect(!fin[0usize].live and near(fin[0usize].a, 6., 0.001) and near(fin[0usize].pa, 1., 0.0001), "final: 6, from 1");
+  // shift is fine
+  press(&mut ui, nx + 100., ny + 10., MOD_SHIFT);
+  pointerMove(&mut ui, nx + 110., ny + 10.);
+  pointerMove(&mut ui, nx + 150., ny + 10.);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[dn].value, 6.5, 0.001), "shift: a tenth as far, 50 pixels is 0.5");
+  release(&mut ui, nx + 150., ny + 10.);
+  kit.pump(&mut ui);
+  kit.takeEvents();
+  // a click, then type
+  press(&mut ui, nx + 100., ny + 10., 0u32);
+  release(&mut ui, nx + 100., ny + 10.);
+  kit.pump(&mut ui);
+  typeString(&mut ui, "12.5");
+  keyDown(&mut ui, KEY_ENTER, 0u32);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[dn].value, 12.5, 0.0001), "12.5 typed");
+  imm typed = kit.takeEvents();
+  expectInt(i64.from(typed.len()), 1i64, "one event for a typed number");
+  expect(!typed[0usize].live and near(typed[0usize].pa, 6.5, 0.001), "final, from 6.5");
+  // escape leaves it
+  press(&mut ui, nx + 100., ny + 10., 0u32);
+  release(&mut ui, nx + 100., ny + 10.);
+  kit.pump(&mut ui);
+  typeString(&mut ui, "99");
+  keyDown(&mut ui, KEY_ESCAPE, 0u32);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[dn].value, 12.5, 0.0001) and kit.takeEvents().len() == 0usize, "escape abandons the typing");
+  // a value out of range is clamped
+  press(&mut ui, nx + 100., ny + 10., 0u32);
+  release(&mut ui, nx + 100., ny + 10.);
+  kit.pump(&mut ui);
+  typeString(&mut ui, "5000");
+  keyDown(&mut ui, KEY_ENTER, 0u32);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[dn].value, 100., 0.0001), "clamped to the range");
+  kit.takeEvents();
+
+  // ---- a slider ----
+  imm sl = kit.addNumber(&mut ui, ui.root, 0., 0., 10., 0.05, 2u32, true);
+  kit.numbers[sl].step = 0.5;
+  ui.setOffsets(kit.numbers[sl].node, 20., 80., 0., 0.);
+  ui.setSize(kit.numbers[sl].node, 200., 26.);
+  doLayout(&mut ui);
+  kit.pump(&mut ui);
+  press(&mut ui, 120., 90., 0u32);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[sl].value, 5., 0.0001), "pressed at the middle: 5");
+  pointerMove(&mut ui, 170., 90.);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[sl].value, 7.5, 0.0001), "dragged to three quarters: 7.5");
+  pointerMove(&mut ui, 176., 90.);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[sl].value, 8., 0.0001), "snapped to a multiple of 0.5 (7.8 is 8)");
+  pointerMove(&mut ui, 400., 90.);
+  kit.pump(&mut ui);
+  expect(near(kit.numbers[sl].value, 10., 0.0001), "clamped at the end");
+  release(&mut ui, 400., 90.);
+  kit.pump(&mut ui);
+  kit.takeEvents();
+
+  // ---- a colour picker ----
+  imm cp = kit.addColor(&mut ui, ui.root, 0.2, 0.2, 0.2, false);
+  kit.colors[cp].prefW = 220.;
+  ui.setOffsets(kit.colors[cp].node, 300., 20., 0., 0.);
+  ui.setSize(kit.colors[cp].node, 220., 154.);
+  doLayout(&mut ui);
+  kit.pump(&mut ui);
+  imm cx = ui.nodes[kit.colors[cp].node].gx;
+  imm cy = ui.nodes[kit.colors[cp].node].gy;
+  // the square is 6 .. 6 + 156 across and 6 .. 116 down; hue 0 of a grey is hue 0
+  press(&mut ui, cx + 6. + 155., cy + 7., 0u32);
+  kit.pump(&mut ui);
+  imm c1 = kit.colorOf(cp);
+  expect(near(c1.x, 1., 0.02) and near(c1.y, 0., 0.02) and near(c1.z, 0., 0.02), "the top right of the square is the pure hue (red)");
+  release(&mut ui, cx + 6. + 155., cy + 7.);
+  kit.pump(&mut ui);
+  imm ce = kit.takeEvents();
+  expect(ce.len() >= 2usize and !ce[ce.len() - 1usize].live, "live events then one final");
+  expect(near(ce[ce.len() - 1usize].pa, 0.2, 0.001), "the final one's before is the colour it began as");
+  // the hue bar: x = 6 + 156 + 8 = 170 .. 188, y 6 .. 116
+  press(&mut ui, cx + 178., cy + 6. + 110. / 3., 0u32);
+  kit.pump(&mut ui);
+  imm c2 = kit.colorOf(cp);
+  expect(near(c2.y, 1., 0.03) and near(c2.x, 0., 0.03), "a third of the way down the hue bar is green");
+  release(&mut ui, cx + 178., cy + 6. + 110. / 3.);
+  kit.pump(&mut ui);
+  kit.takeEvents();
+  // hex: the field is at (6, 6 + 110 + 8) 96 x 24
+  press(&mut ui, cx + 30., cy + 6. + 110. + 8. + 10., 0u32);
+  release(&mut ui, cx + 30., cy + 6. + 110. + 8. + 10.);
+  kit.pump(&mut ui);
+  typeString(&mut ui, "#336699");
+  keyDown(&mut ui, KEY_ENTER, 0u32);
+  kit.pump(&mut ui);
+  imm c3 = kit.colorOf(cp);
+  expect(near(c3.x, 0.2, 0.002) and near(c3.y, 0.4, 0.002) and near(c3.z, 0.6, 0.002), "#336699 typed");
+  imm he = kit.takeEvents();
+  expectInt(i64.from(he.len()), 1i64, "one event");
+  expect(!he[0usize].live and near(he[0usize].a, 0.2, 0.002) and near(he[0usize].c, 0.6, 0.002), "final, (0.2, 0.4, 0.6)");
+  // setting from outside moves it and says nothing
+  kit.setColor(cp, 1., 0.5, 0., 1.);
+  imm c4 = kit.colorOf(cp);
+  expect(near(c4.x, 1., 0.002) and near(c4.y, 0.5, 0.002), "setColor");
+  expect(kit.takeEvents().len() == 0usize, "and makes no event");
+
+  // ---- a dropdown ----
+  mut opts = List[String].empty();
+  opts.push(String.from("Stone"));
+  opts.push(String.from("Wood"));
+  opts.push(String.from("Glass"));
+  imm dd = kit.addDropdown(&mut ui, ui.root, &opts, 0i32);
+  ui.setOffsets(kit.drops[dd].node, 20., 300., 0., 0.);
+  doLayout(&mut ui);
+  kit.pump(&mut ui);
+  expect(near(ui.nodes[kit.drops[dd].node].h, 26., 0.01), "closed: one row");
+  press(&mut ui, 40., 312., 0u32);
+  release(&mut ui, 40., 312.);
+  kit.pump(&mut ui);
+  doLayout(&mut ui);
+  expect(kit.drops[dd].open, "a click on the header opens it");
+  expect(near(ui.nodes[kit.drops[dd].node].h, 104., 0.01), "open: the header and three rows");
+  press(&mut ui, 40., 300. + 26. + 26. * 2. + 10., 0u32);
+  release(&mut ui, 40., 300. + 26. + 26. * 2. + 10.);
+  kit.pump(&mut ui);
+  expectInt(i64.from(kit.drops[dd].selected), 2i64, "the third row is chosen");
+  expect(!kit.drops[dd].open, "and it closes");
+  imm de = kit.takeEvents();
+  expectInt(i64.from(de.len()), 1i64, "one event");
+  expect(de[0usize].kind == PK_DROPDOWN and near(de[0usize].a, 2., 0.0001) and near(de[0usize].pa, 0., 0.0001), "index 2, before 0");
+
+  // ---- an inspector ----
+  mut ui2 = Ui.make(800., 600.);
+  mut kit2 = PickerKit.make();
+  mut desc = TypeDesc.make("Object");
+  imm fName = desc.textField("Name");
+  imm fPos = desc.vec3Field("Position", 0.01, "m");
+  imm fRough = desc.sliderField("Roughness", 0., 1., 2u32);
+  imm fColor = desc.colorField("Colour");
+  imm fMat = desc.enumField("Material", "Stone|Wood|Glass");
+  imm fShow = desc.boolField("Visible");
+  expectInt(i64.from(desc.fields[fMat].options.len()), 3i64, "an enum's options split on |");
+  expectStr(desc.fields[fMat].options[1usize].view(), "Wood", "the second is Wood");
+  imm panelNode = ui2.create(ui2.root, K_PLAIN);
+  ui2.setOffsets(panelNode, 10., 10., 0., 0.);
+  ui2.setSize(panelNode, 420., 400.);
+  mut insp = Inspector.build(&mut kit2, &mut ui2, panelNode, &desc);
+  expectInt(i64.from(insp.kinds.len()), 6i64, "a row for each field");
+  expectInt(i64.from(kit2.numbers.len()), 4i64, "three for the vector, one for the slider");
+  expectInt(i64.from(kit2.colors.len()), 1i64, "one colour picker");
+  expectInt(i64.from(kit2.drops.len()), 1i64, "one dropdown");
+  mut vals = List[Value].empty();
+  vals.push(Value.text("Vase"));
+  vals.push(Value.vec3(1., 2., 3.));
+  vals.push(Value.number(0.4));
+  vals.push(Value.color(0.8, 0.2, 0.1, 1.));
+  vals.push(Value.number(2.));
+  vals.push(Value.number(1.));
+  insp.setValues(&mut kit2, &mut ui2, &vals);
+  doLayout(&mut ui2);
+  imm none = insp.pump(&mut kit2, &mut ui2);
+  expectInt(i64.from(none.len()), 0i64, "showing values makes no Change");
+  expect(near(kit2.numbers[1usize].value, 2., 0.0001), "the vector's Y shows 2");
+  expectInt(i64.from(kit2.drops[0usize].selected), 2i64, "the enum shows Glass");
+  expect(isChecked(&ui2, insp.nodeOf(fShow)), "the toggle is on");
+  // drag the Y component: numbers[1]
+  imm yn = kit2.numbers[1usize].node;
+  imm yx = ui2.nodes[yn].gx;
+  imm yy = ui2.nodes[yn].gy;
+  expect(ui2.nodes[yn].w > 20., "the component has a width");
+  press(&mut ui2, yx + 20., yy + 10., 0u32);
+  pointerMove(&mut ui2, yx + 30., yy + 10.);
+  pointerMove(&mut ui2, yx + 70., yy + 10.);
+  imm ch = insp.pump(&mut kit2, &mut ui2);
+  expect(ch.len() >= 1usize and ch[0usize].live and ch[0usize].field == fPos, "live Changes for the position");
+  imm last = ch[ch.len() - 1usize];
+  expect(near(last.after.y, 2. + 0.5, 0.001) and near(last.after.x, 1., 0.0001) and near(last.after.z, 3., 0.0001), "y moved by 50 pixels at 0.01");
+  expect(near(last.before.y, 2., 0.0001), "before is the start");
+  release(&mut ui2, yx + 70., yy + 10.);
+  imm fin2 = insp.pump(&mut kit2, &mut ui2);
+  expectInt(i64.from(fin2.len()), 1i64, "one final");
+  expect(!fin2[0usize].live and near(fin2[0usize].before.y, 2., 0.0001) and near(fin2[0usize].after.y, 2.5, 0.001), "final: 2 to 2.5");
+  expect(near(insp.values[fPos].y, 2.5, 0.001), "the inspector's copy follows");
+  // the program turns a toggle (as a click does)
+  setChecked(&mut ui2, insp.nodeOf(fShow), false);
+  imm tg = insp.pump(&mut kit2, &mut ui2);
+  expectInt(i64.from(tg.len()), 1i64, "a toggle is one Change");
+  expect(tg[0usize].field == fShow and near(tg[0usize].before.x, 1., 0.0001) and near(tg[0usize].after.x, 0., 0.0001), "visible, 1 to 0");
+  expectInt(i64.from(insp.pump(&mut kit2, &mut ui2).len()), 0i64, "and only once");
+  done();
+}
