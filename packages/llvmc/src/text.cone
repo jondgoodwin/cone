@@ -1,0 +1,95 @@
+// Text across the C boundary: not a header of LLVM-C but the few Cone functions that take the weight of
+// its strings. LLVM answers a 'char *' it made (a module's text, an error message, a triple) that the
+// caller must free with DisposeMessage, and sometimes answers a 'const char *' that LLVM keeps. These
+// copy it into a String and, where LLVM made it, dispose of it, so a caller holds a String and never
+// the pointer. They are inline (compiled into the importer, which therefore has 'collections' on its
+// path), and their names begin with a lower-case letter, which no LLVM-C function's does.
+
+// A 'char *' LLVM made, as a String: the text is copied and the pointer disposed of. A null pointer
+// is an empty String.
+pub fn takeMessage(msg *u8) String inline {
+  mut s = String.empty();
+  if msg != null {
+    s = String.fromCStr(msg);
+    DisposeMessage(msg);
+  }
+  s;
+}
+
+// A 'const char *' LLVM keeps, as a String: the text is copied, nothing is disposed of. A null pointer
+// is an empty String.
+pub fn copyText(text *u8) String inline {
+  mut s = String.empty();
+  if text != null {
+    s = String.fromCStr(text);
+  }
+  s;
+}
+
+// The pointer to a text's bytes, for the (pointer, length) pairs LLVM takes: 'name' and 'nameLen' of
+// SetValueName2, the strings of the debug-information builder. The bytes are not followed by a NUL
+// unless the text is a literal or a String's.
+pub fn bytesOf(text &str) *u8 inline {
+  imm b &Array[u8] = text;
+  b as *u8;
+}
+
+// The textual IR of a module, of a value, and the spelling of a type
+pub fn moduleToString(m *Module) String inline { takeMessage(PrintModuleToString(m)); }
+pub fn valueToString(v *Value) String inline { takeMessage(PrintValueToString(v)); }
+pub fn typeToString(t *Type) String inline { takeMessage(PrintTypeToString(t)); }
+
+// Whether a module is well formed: None when it is, otherwise Some of the verifier's message.
+pub fn checkModule(m *Module) Option[String] inline {
+  mut message *u8 = null;
+  imm failed = VerifyModule(m, VerifierFailureAction.ReturnStatusAction, &message);
+  mut answer Option[String] = Option.None;
+  if failed != 0i32 {
+    answer = Option.Some(takeMessage(message));
+  } else if message != null {
+    DisposeMessage(message);
+  }
+  answer;
+}
+
+// The message of an LLVMErrorRef, which GetErrorMessage consumes; the text is copied and disposed of
+// with DisposeErrorMessage
+pub fn errorMessage(err *Error) String inline {
+  mut s = String.empty();
+  if err != null {
+    imm raw = GetErrorMessage(err);
+    s = String.fromCStr(raw);
+    DisposeErrorMessage(raw);
+  }
+  s;
+}
+
+// The default target triple, the host CPU's name and its feature string (LLVM made each text)
+pub fn defaultTargetTriple() String inline { takeMessage(GetDefaultTargetTriple()); }
+pub fn hostCPUName() String inline { takeMessage(GetHostCPUName()); }
+pub fn hostCPUFeatures() String inline { takeMessage(GetHostCPUFeatures()); }
+
+// The target for a triple, or LLVM's message when it has none. The target registry is filled by
+// the Initialize... functions, so call InitializeAllTargetInfos (or a target's own) first.
+pub fn targetFromTriple(triple cstr) Result[*Target, String] inline {
+  mut target *Target = null;
+  mut message *u8 = null;
+  mut answer Result[*Target, String] = Result.Error(String.empty());
+  if GetTargetFromTriple(triple, &target, &message) == 0i32 {
+    answer = Result.Ok(target);
+  } else {
+    answer = Result.Error(takeMessage(message));
+  }
+  answer;
+}
+
+// Generate code for a module into a file (an object file for CodeGenFileType.ObjectFile): None when
+// it worked, otherwise Some of LLVM's message
+pub fn emitToFile(tm *TargetMachine, m *Module, path cstr, kind CodeGenFileType) Option[String] inline {
+  mut message *u8 = null;
+  mut answer Option[String] = Option.None;
+  if TargetMachineEmitToFile(tm, m, path, kind, &message) != 0i32 {
+    answer = Option.Some(takeMessage(message));
+  }
+  answer;
+}

@@ -1,0 +1,106 @@
+verifies
+; ModuleID = 'instructions'
+source_filename = "instructions"
+
+declare i32 @callee(i32, ptr)
+
+define i32 @sink(i32 %a, i32 %b, double %x, ptr %p) {
+entry:
+  %add = add i32 %a, %b
+  %sub = sub i32 %a, %b
+  %mul = mul i32 %a, %b
+  %sdiv = sdiv i32 %a, %b
+  %udiv = udiv i32 %a, %b
+  %exactsdiv = sdiv exact i32 %a, %b
+  %srem = srem i32 %a, %b
+  %urem = urem i32 %a, %b
+  %shl = shl i32 %a, %b
+  %lshr = lshr i32 %a, %b
+  %ashr = ashr i32 %a, %b
+  %and = and i32 %a, %b
+  %or = or i32 %a, %b
+  %xor = xor i32 %a, %b
+  %neg = sub i32 0, %a
+  %not = xor i32 %a, -1
+  %fadd = fadd double %x, %x
+  %fsub = fsub double %x, %fadd
+  %fmul = fmul double %x, %x
+  %fdiv = fdiv double %fmul, %x
+  %frem = frem double %fdiv, %x
+  %fneg = fneg double %frem
+  %eq = icmp eq i32 %a, %b
+  %ne = icmp ne i32 %a, %b
+  %ugt = icmp ugt i32 %a, %b
+  %uge = icmp uge i32 %a, %b
+  %ult = icmp ult i32 %a, %b
+  %ule = icmp ule i32 %a, %b
+  %sgt = icmp sgt i32 %a, %b
+  %sge = icmp sge i32 %a, %b
+  %slt = icmp slt i32 %a, %b
+  %sle = icmp sle i32 %a, %b
+  %oeq = fcmp oeq double %x, %fadd
+  %ogt = fcmp ogt double %x, %fadd
+  %oge = fcmp oge double %x, %fadd
+  %olt = fcmp olt double %x, %fadd
+  %ole = fcmp ole double %x, %fadd
+  %one = fcmp one double %x, %fadd
+  %une = fcmp une double %x, %fadd
+  %both = and i1 %eq, %oeq
+  %pick = select i1 %both, i32 %add, i32 %sub
+  %fpick = select i1 %slt, double %fadd, double %fsub
+  %trunc = trunc i32 %a to i8
+  %zext = zext i8 %trunc to i32
+  %sext = sext i32 %a to i64
+  %fptosi = fptosi double %x to i64
+  %fptoui = fptoui double %x to i32
+  %sitofp = sitofp i32 %a to double
+  %uitofp = uitofp i32 %b to float
+  %fptrunc = fptrunc double %x to float
+  %fpext = fpext float %fptrunc to double
+  %ptrtoint = ptrtoint ptr %p to i64
+  %inttoptr = inttoptr i64 %ptrtoint to ptr
+  %bitcast = bitcast i32 %a to float
+  %addrspacecast = addrspacecast ptr %p to ptr addrspace(1)
+  %intcast = sext i8 %trunc to i16
+  %slot = alloca i32, align 4
+  store i32 %add, ptr %slot, align 4
+  %loaded = load i32, ptr %slot, align 4
+  %gep = getelementptr [8 x i32], ptr %p, i64 0, i64 3
+  %gepib = getelementptr inbounds [8 x i32], ptr %p, i64 0, i64 3
+  %sgep = getelementptr inbounds nuw { i8, i32, i64 }, ptr %p, i32 0, i32 2
+  call void @llvm.memset.p0.i64(ptr align 1 %p, i8 0, i64 16, i1 false)
+  call void @llvm.memcpy.p0.p0.i64(ptr align 1 %p, ptr align 1 %gep, i64 8, i1 false)
+  call void @llvm.memmove.p0.p0.i64(ptr align 1 %p, ptr align 1 %gepib, i64 4, i1 false)
+  %0 = atomicrmw add ptr %slot, i32 %a seq_cst, align 4
+  %1 = cmpxchg ptr %slot, i32 %a, i32 %b acq_rel monotonic, align 4
+  %cas.old = extractvalue { i32, i1 } %1, 0
+  %isnull = icmp eq ptr %p, null
+  %isnotnull = icmp ne ptr %p, null
+  %ins0 = insertvalue { i8, i32, i64 } undef, i8 %trunc, 0
+  %ins1 = insertvalue { i8, i32, i64 } %ins0, i32 %a, 1
+  %ext1 = extractvalue { i8, i32, i64 } %ins1, 1
+  %vins = insertelement <4 x i32> undef, i32 %a, i32 2
+  %vext = extractelement <4 x i32> %vins, i32 2
+  %frozen = freeze i32 %vext
+  %call = tail call fastcc i32 @callee(i32 %frozen, ptr %p)
+  %r1 = add i32 %call, %ext1
+  %r2 = add i32 %r1, %cas.old
+  %r3 = add i32 %r2, %loaded
+  ret i32 %r3
+}
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: write)
+declare void @llvm.memset.p0.i64(ptr writeonly captures(none), i8, i64, i1 immarg) #0
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #1
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.memmove.p0.p0.i64(ptr writeonly captures(none), ptr readonly captures(none), i64, i1 immarg) #1
+
+attributes #0 = { nocallback nofree nosync nounwind willreturn memory(argmem: write) }
+attributes #1 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #1
+
+read back

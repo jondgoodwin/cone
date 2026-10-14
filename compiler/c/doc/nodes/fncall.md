@@ -719,6 +719,21 @@ Three adjustments, two of them asymmetric on purpose:
   dispatch (a name), and the RefTag branch of `fnCallTypeCheck` once
   (`ownerread`) for an operator.
   Pinned by `typemgmt_owner_self` and `typemgmt_typecheck_owner_self`.
+- **The permission retry.** A reference receiver is never borrowed from, so a
+  `&List` calling `push` finds no candidate: `self &mut` is not `&`. When that
+  is all that is wrong, the call is reported as `(*r).push(x)` is, `ErrorInvType`
+  (the method is there; the permission is what it refuses), not as the
+  `ErrorNoCandidate` of a method that is not. After the borrow retry (and the
+  index-as-mut one) found nothing, a `RefTag` receiver that is not lock-managed
+  is read through and borrowed as a value is; the probe selects only where a
+  method of that name takes the arguments, so a wrong argument, a wrong arity
+  or a missing method keeps its own report. A single `<-` is this same retry
+  (as several entries, lent a borrow once by `contentsLowerEntries`, already
+  were). A borrow that reports itself, an owner behind a `&` (`ErrorBadPerm`),
+  ends the call there, as the same call on `*r` does. The index `&x[i]` keeps
+  `fnCallRefIndexWantsMut`, and a virtual reference or a slice has no value to
+  read through, so those stay `ErrorNoCandidate`. Pinned by
+  `ref_typecheck_named_call_perm`.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
   on a pointer receiver is what skips the retry, argument included. A

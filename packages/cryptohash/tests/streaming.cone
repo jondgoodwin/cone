@@ -1,0 +1,323 @@
+// Streaming: the same digest however the message is cut. A 300-byte message of
+// a pattern (byte i is (7 i + 3) mod 256) is fed to each hasher in two pieces
+// split at every offset from 0 to 300 (so the cut falls before, on and after every
+// block edge of 64 and 128 bytes), in three pieces at every offset with nine
+// second cuts (0, 1, 2, 63, 64, 65, 127, 128 and 129 bytes after the first), one
+// byte at a time, and in ragged pieces. Every result is compared with the digest
+// Python's hashlib gives for the whole message, and the HMACs with the tag
+// Python's hmac module gives under the key "streaming key", so the one-shot
+// functions are pinned as well as the streaming. Then the hasher as a value:
+// 'finish' leaves it as it was, 'copyOf' forks it, 'reset' empties it, 'length'
+// counts, and the HMACs do the same.
+
+mod streaming;
+
+import testing use *;
+import collections use *;
+import cryptohash;
+
+fn hexOf(s &Array[u8]) String {
+  mut h = String.empty();
+  mut i = 0usize;
+  while i < s.len {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h;
+}
+
+fn pattern(n usize) List[u8] {
+  mut out = new List[u8];
+  mut i = 0usize;
+  while i < n {
+    out.push(u8.from((i * 7usize + 3usize) & 0xffusize));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn want1() &str { "2b498a2177b181ad0e5eddbd5cb58b8d52cf6941"; }
+fn want256() &str { "04773f8726c81cafcfa1a09a82664b98b00d2021031a1715bca1154f2dad3472"; }
+fn want512() &str { "46e56ad30db9ef50f8b6762ba55839737f3fba34ab47863c9daff7b3f58f97fe3465a52dd364560db47f802909ced49093322621ea0aebf8e0696b85ca8f81f0"; }
+fn wantMac1() &str { "eff80e67ce61548ecb26a417a61d3113fb28a4e3"; }
+fn wantMac256() &str { "878cab6794f2e96917bb8a6ae078fa9d450b04e283ab882fbc75894de18dece6"; }
+fn wantMac512() &str { "82f06b73d4fd864426c75a9d95ce41d3326a017e4195d27e48ef7326cfed9afbb226f4bf6601c3b2053b0f20071c978c46c303f8f1ba5e2e9df07174fa621648"; }
+
+// -------- one function per hash: feed it the pieces, answer the hex --------
+
+fn two1(msg &Array[u8], at usize) String {
+  imm parts = msg.split(at);
+  mut s = cryptohash.Sha1.make();
+  s.update(parts.0);
+  s.update(parts.1);
+  imm d = s.finish();
+  hexOf(&d);
+}
+
+fn two256(msg &Array[u8], at usize) String {
+  imm parts = msg.split(at);
+  mut s = cryptohash.Sha256.make();
+  s.update(parts.0);
+  s.update(parts.1);
+  imm d = s.finish();
+  hexOf(&d);
+}
+
+fn two512(msg &Array[u8], at usize) String {
+  imm parts = msg.split(at);
+  mut s = cryptohash.Sha512.make();
+  s.update(parts.0);
+  s.update(parts.1);
+  imm d = s.finish();
+  hexOf(&d);
+}
+
+fn three1(msg &Array[u8], at usize, gap usize) String {
+  imm a = msg.split(at);
+  imm b = a.1.split(gap);
+  mut s = cryptohash.Sha1.make();
+  s.update(a.0);
+  s.update(b.0);
+  s.update(b.1);
+  imm d = s.finish();
+  hexOf(&d);
+}
+
+fn three256(msg &Array[u8], at usize, gap usize) String {
+  imm a = msg.split(at);
+  imm b = a.1.split(gap);
+  mut s = cryptohash.Sha256.make();
+  s.update(a.0);
+  s.update(b.0);
+  s.update(b.1);
+  imm d = s.finish();
+  hexOf(&d);
+}
+
+fn three512(msg &Array[u8], at usize, gap usize) String {
+  imm a = msg.split(at);
+  imm b = a.1.split(gap);
+  mut s = cryptohash.Sha512.make();
+  s.update(a.0);
+  s.update(b.0);
+  s.update(b.1);
+  imm d = s.finish();
+  hexOf(&d);
+}
+
+fn macTwo1(msg &Array[u8], at usize) String {
+  imm parts = msg.split(at);
+  mut m = cryptohash.HmacSha1.make("streaming key");
+  m.update(parts.0);
+  m.update(parts.1);
+  imm d = m.finish();
+  hexOf(&d);
+}
+
+fn macTwo256(msg &Array[u8], at usize) String {
+  imm parts = msg.split(at);
+  mut m = cryptohash.HmacSha256.make("streaming key");
+  m.update(parts.0);
+  m.update(parts.1);
+  imm d = m.finish();
+  hexOf(&d);
+}
+
+fn macTwo512(msg &Array[u8], at usize) String {
+  imm parts = msg.split(at);
+  mut m = cryptohash.HmacSha512.make("streaming key");
+  m.update(parts.0);
+  m.update(parts.1);
+  imm d = m.finish();
+  hexOf(&d);
+}
+
+fn main() i32 {
+  imm msg = pattern(300usize);
+  imm all = msg.view();
+
+  // The one-shot functions
+  imm d1 = cryptohash.sha1(all);
+  imm h1 = hexOf(&d1);
+  expectStr(h1.view(), want1(), "sha1 one-shot");
+  imm d256 = cryptohash.sha256(all);
+  imm h256 = hexOf(&d256);
+  expectStr(h256.view(), want256(), "sha256 one-shot");
+  imm d512 = cryptohash.sha512(all);
+  imm h512 = hexOf(&d512);
+  expectStr(h512.view(), want512(), "sha512 one-shot");
+
+  // A control for the string comparison the counts below rely on: a digest
+  // is not another hash's digest
+  imm control = two1(all, 5usize);
+  expect(control.view() != want256(), "a SHA-1 digest differs from the SHA-256 one");
+  expect(control.view() == want1(), "a SHA-1 digest equals its own");
+
+  // Two pieces, split at every offset
+  mut bad1 = 0u64;
+  mut bad256 = 0u64;
+  mut bad512 = 0u64;
+  mut badMac1 = 0u64;
+  mut badMac256 = 0u64;
+  mut badMac512 = 0u64;
+  mut at = 0usize;
+  while at <= 300usize {
+    imm a = two1(all, at);
+    if a.view() != want1() { bad1 = bad1 + 1u64; }
+    imm b = two256(all, at);
+    if b.view() != want256() { bad256 = bad256 + 1u64; }
+    imm c = two512(all, at);
+    if c.view() != want512() { bad512 = bad512 + 1u64; }
+    imm ma = macTwo1(all, at);
+    if ma.view() != wantMac1() { badMac1 = badMac1 + 1u64; }
+    imm mb = macTwo256(all, at);
+    if mb.view() != wantMac256() { badMac256 = badMac256 + 1u64; }
+    imm mc = macTwo512(all, at);
+    if mc.view() != wantMac512() { badMac512 = badMac512 + 1u64; }
+    at = at + 1usize;
+  }
+  expectUInt(bad1, 0u64, "sha1 split in two at each of 301 offsets: failures");
+  expectUInt(bad256, 0u64, "sha256 split in two at each of 301 offsets: failures");
+  expectUInt(bad512, 0u64, "sha512 split in two at each of 301 offsets: failures");
+  expectUInt(badMac1, 0u64, "hmac-sha1 split in two at each of 301 offsets: failures");
+  expectUInt(badMac256, 0u64, "hmac-sha256 split in two at each of 301 offsets: failures");
+  expectUInt(badMac512, 0u64, "hmac-sha512 split in two at each of 301 offsets: failures");
+
+  // Three pieces: every first cut, and a second cut at these gaps (those that fit)
+  imm gaps = [0usize, 1usize, 2usize, 63usize, 64usize, 65usize, 127usize, 128usize, 129usize];
+  mut cuts = 0u64;
+  mut bad3 = 0u64;
+  at = 0usize;
+  while at <= 300usize {
+    mut g = 0usize;
+    while g < 9usize {
+      if at + gaps[g] <= 300usize {
+        imm a = three1(all, at, gaps[g]);
+        if a.view() != want1() { bad3 = bad3 + 1u64; }
+        imm b = three256(all, at, gaps[g]);
+        if b.view() != want256() { bad3 = bad3 + 1u64; }
+        imm c = three512(all, at, gaps[g]);
+        if c.view() != want512() { bad3 = bad3 + 1u64; }
+        cuts = cuts + 1u64;
+      }
+      g = g + 1usize;
+    }
+    at = at + 1usize;
+  }
+  expect(cuts > 2000u64, "three-piece cuts were made");
+  expectUInt(bad3, 0u64, "three-piece splits of all three hashes: failures");
+
+  // One byte at a time
+  mut s1 = cryptohash.Sha1.make();
+  mut s256 = cryptohash.Sha256.make();
+  mut s512 = cryptohash.Sha512.make();
+  mut m1 = cryptohash.HmacSha1.make("streaming key");
+  mut m256 = cryptohash.HmacSha256.make("streaming key");
+  mut m512 = cryptohash.HmacSha512.make("streaming key");
+  mut i = 0usize;
+  while i < 300usize {
+    imm one = all.split(i).1.split(1usize).0;
+    s1.update(one);
+    s256.update(one);
+    s512.update(one);
+    m1.update(one);
+    m256.update(one);
+    m512.update(one);
+    i = i + 1usize;
+  }
+  imm b1 = s1.finish();
+  imm bh1 = hexOf(&b1);
+  expectStr(bh1.view(), want1(), "sha1 a byte at a time");
+  imm b256 = s256.finish();
+  imm bh256 = hexOf(&b256);
+  expectStr(bh256.view(), want256(), "sha256 a byte at a time");
+  imm b512 = s512.finish();
+  imm bh512 = hexOf(&b512);
+  expectStr(bh512.view(), want512(), "sha512 a byte at a time");
+  imm bm1 = m1.finish();
+  imm bmh1 = hexOf(&bm1);
+  expectStr(bmh1.view(), wantMac1(), "hmac-sha1 a byte at a time");
+  imm bm256 = m256.finish();
+  imm bmh256 = hexOf(&bm256);
+  expectStr(bmh256.view(), wantMac256(), "hmac-sha256 a byte at a time");
+  imm bm512 = m512.finish();
+  imm bmh512 = hexOf(&bm512);
+  expectStr(bmh512.view(), wantMac512(), "hmac-sha512 a byte at a time");
+  expectUInt(s256.length(), 300u64, "length after 300 bytes");
+
+  // Ragged pieces: 0, 1, 3, 7, 15, 31, 63, 127, ... bytes, empty updates among them
+  mut r = cryptohash.Sha256.make();
+  mut r512 = cryptohash.Sha512.make();
+  mut pos = 0usize;
+  mut size = 0usize;
+  while pos < 300usize {
+    mut take = size;
+    if pos + take > 300usize { take = 300usize - pos; }
+    imm piece = all.split(pos).1.split(take).0;
+    r.update(piece);
+    r512.update(piece);
+    pos = pos + take;
+    size = size * 2usize + 1usize;
+    if size > 150usize { size = 0usize; }
+  }
+  imm rd = r.finish();
+  imm rh = hexOf(&rd);
+  expectStr(rh.view(), want256(), "sha256 in ragged pieces");
+  imm rd5 = r512.finish();
+  imm rh5 = hexOf(&rd5);
+  expectStr(rh5.view(), want512(), "sha512 in ragged pieces");
+
+  // finish leaves the hasher as it was: ask twice, then go on
+  mut f = cryptohash.Sha256.make();
+  f.update(all.split(100usize).0);
+  imm first = f.finish();
+  imm second = f.finish();
+  expect(cryptohash.constantTimeEq(&first, &second), "finish twice gives the same digest");
+  f.update(all.split(100usize).1);
+  imm after = f.finish();
+  imm afterHex = hexOf(&after);
+  expectStr(afterHex.view(), want256(), "taking more after a finish");
+
+  // copyOf forks: the copy and the original go on separately
+  mut orig = cryptohash.Sha512.make();
+  orig.update(all.split(150usize).0);
+  mut fork = orig.copyOf();
+  orig.update(all.split(150usize).1);
+  fork.update("different");
+  imm od = orig.finish();
+  imm oh = hexOf(&od);
+  expectStr(oh.view(), want512(), "the original after a fork");
+  imm fd = fork.finish();
+  imm expected = cryptohash.sha512("different");
+  expect(!cryptohash.constantTimeEq(&fd, &od), "the fork went its own way");
+  mut chk = cryptohash.Sha512.make();
+  chk.update(all.split(150usize).0);
+  chk.update("different");
+  imm chkd = chk.finish();
+  expect(cryptohash.constantTimeEq(&fd, &chkd), "the fork is the first half then its own bytes");
+  expect(!cryptohash.constantTimeEq(&expected, &fd), "the fork kept the first half");
+
+  // reset empties the hasher
+  mut z = cryptohash.Sha1.make();
+  z.update("something else");
+  z.reset();
+  z.update(all);
+  imm zd = z.finish();
+  imm zh = hexOf(&zd);
+  expectStr(zh.view(), want1(), "sha1 after a reset");
+  expectUInt(z.length(), 300u64, "length after a reset and 300 bytes");
+
+  // An HMAC copy forks too
+  mut hm = cryptohash.HmacSha256.make("streaming key");
+  hm.update(all.split(77usize).0);
+  mut hm2 = hm.copyOf();
+  hm.update(all.split(77usize).1);
+  hm2.update(all.split(77usize).1);
+  imm hmd = hm.finish();
+  imm hmd2 = hm2.finish();
+  imm hmh = hexOf(&hmd);
+  expectStr(hmh.view(), wantMac256(), "hmac after a copy");
+  expect(cryptohash.constantTimeEq(&hmd, &hmd2), "an hmac and its copy fed the same agree");
+
+  done();
+}

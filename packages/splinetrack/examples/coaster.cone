@@ -1,0 +1,330 @@
+// coaster: a five-car train on a track described by 33 control points, doing a lift hill, a drop, a
+// loop and a banked turn under gravity alone (the chain lift is the only motor, and a brake at the end),
+// with g-force readouts, drawn headless on a real GPU.
+//
+//   congo run --release packages/splinetrack/examples/coaster.cone -- --out PREFIX
+//   GPU_POWER_PREFERENCE=low-power congo run --release ...   (the Intel)
+//
+// It simulates the whole ride at 60 Hz (printing time, speed, height and the g-forces on the front and rear
+// car twice a second, and the largest and smallest of each), then draws six shots with the train placed at
+// the lift, the crest, the bottom of the drop, the loop's top, the banked turn and a general view, written
+// to PREFIX-<name>.bmp. It prints the CPU cost of a train step and the GPU time of drawing the frame
+// (timestamp queries, the median of 100 frames).
+
+mod coaster;
+
+import stdio use *;
+import libc;
+import time;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import splinetrack use *;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn cstrToString(s *u8) String {
+  mut r = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
+  r;
+}
+
+fn pt(x f32, y f32, z f32, roll f32) TrackPoint { new TrackPoint(new Vec3(x, y, z), roll); }
+
+// The layout: a station, a 35 degree lift to a crest at y = 38, a steep drop, a flat run, a vertical loop
+// of radius 12 (a helix: it leaves 4 m to the side of where it entered, so it does not hit itself), a
+// 180 degree banked turn of radius 40 (45 degrees of bank) and a run into the brake.
+fn layout() List[TrackPoint] {
+  mut p = List[TrackPoint].empty();
+  // station, lift and crest
+  p.push(pt(0., 1., 0., 0.)); p.push(pt(10., 1., 0., 0.)); p.push(pt(22., 6., 0., 0.)); p.push(pt(40., 22., 0., 0.));
+  p.push(pt(58., 38., 0., 0.)); p.push(pt(70., 45.5, 0., 0.)); p.push(pt(80., 44., 0., 0.));
+  // the drop and the run out
+  p.push(pt(90., 34., 0., 0.)); p.push(pt(98., 23., 0., 0.)); p.push(pt(106., 9., 0., 0.)); p.push(pt(116., 1.8, 0., 0.));
+  p.push(pt(130., 0.6, 0., 0.)); p.push(pt(145., 0.5, 0., 0.));
+  // the loop: a teardrop, as real loops are (a clothoid-like shape): the curvature is 1/30 at the bottom,
+  // where the train enters fast and the g-force would crush, and 1/8 at the top, where it is slow, and
+  // is found by integrating the heading phi from 0 to 2 pi: ds = dphi / kappa(phi), kappa between the two
+  // by (1 - cos phi) / 2. It drifts 4 m in z, so the exit passes beside the entry.
+  mut lx = 150.;
+  mut ly = 0.5;
+  imm nsteps = 720;
+  imm dphi = 6.28318530718 / f32.from(nsteps);
+  mut st = 0;
+  while st <= nsteps {
+    imm phi = dphi * f32.from(st);
+    if st % 24 == 0 { p.push(pt(lx, ly, 4. * f32.from(st) / f32.from(nsteps), 0.)); }
+    imm kappa = 1. / 30. + (1. / 8. - 1. / 30.) * (1. - libc.cosf(phi + dphi * 0.5)) * 0.5;
+    imm ds = dphi / kappa;
+    lx = lx + libc.cosf(phi + dphi * 0.5) * ds;
+    ly = ly + libc.sinf(phi + dphi * 0.5) * ds;
+    st = st + 1;
+  }
+  // run out of the loop, then a 180 degree right turn of radius 40
+  imm x0 = lx + 30.;
+  p.push(pt(lx + 14., 0.5, 4., 0.));
+  imm bank = radians(45.);
+  mut j = 0;
+  while j <= 8 {
+    imm a = 3.14159265 * f32.from(j) / 8.;
+    imm ramp = if j == 0 { 0.; } elif j == 1 { bank * 0.55; } elif j == 7 { bank * 0.55; } elif j == 8 { 0.; } else { bank; };
+    p.push(pt(x0 + 40. * libc.sinf(a), 0.5, 44. - 40. * libc.cosf(a), ramp));
+    j = j + 1;
+  }
+  // back along the return straight into the brake
+  p.push(pt(x0 - 15., 0.5, 84., 0.)); p.push(pt(x0 - 40., 0.5, 84., 0.)); p.push(pt(x0 - 70., 0.5, 84., 0.));
+  p;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut prefix = String.empty();
+  mut a = 1;
+  while a < argc {
+    if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
+      prefix = cstrToString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+  // ---- the track and the ride ----
+  imm track = Track.build(layout(), false, new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  print <- "track: "; print <- u64.from(track.points.len()); print <- " control points, "; print <- track.length; print <- " m, "; print <- u64.from(track.nodeCount()); print <- " table nodes\n";
+  // the crest: the highest point of the first part; the zone of the chain runs up to it
+  mut sCrest = 0.;
+  mut yCrest = 0.;
+  mut s = 0.;
+  while s < track.length * 0.3 {
+    imm y = track.at(s).pos.y;
+    if y > yCrest { yCrest = y; sCrest = s; }
+    s = s + 0.25;
+  }
+  mut zones = List[Zone].empty();
+  zones.push(Zone.chain(0., sCrest - 3., 3.5, 12000.));
+  zones.push(Zone.brake(track.length - 45., track.length - 1., 0., 6000.));
+  mut train = Train.uniform(CarSpec.coaster(), 5usize, 16.);
+  print <- "crest at s = "; print <- sCrest; print <- " m, y = "; print <- yCrest; print <- " m\n\n";
+  print <- "   t     s   speed  height | front car g: vert  lat   long | rear car g: vert  lat   long\n";
+  mut t = 0.;
+  mut nextPrint = 0.;
+  mut maxSpeed = 0.;
+  mut maxVert = -100.;
+  mut minVert = 100.;
+  mut maxLat = 0.;
+  mut maxLong = 0.;
+  mut stepSeconds = 0d;
+  mut steps = 0;
+  mut sTop = 0.;       // where the lead car was highest in the loop
+  mut yLoopTop = 0.;
+  mut gLoopTop = 0.;
+  mut vLoopTop = 0.;
+  mut dropBottomSpeed = 0.;
+  mut stopped = false;
+  while t < 220. and !stopped {
+    imm t0 = time.Instant.now();
+    train.step(&track, &zones, 1. / 60.);
+    stepSeconds = stepSeconds + (time.Instant.now() - t0).secondsF64();
+    steps = steps + 1;
+    t = t + 1. / 60.;
+    imm lead = track.at(train.s);
+    imm gf = train.gforce(&track, 0usize);
+    imm gr = train.gforce(&track, 4usize);
+    if train.v > maxSpeed { maxSpeed = train.v; }
+    if gf.vertical > maxVert { maxVert = gf.vertical; }
+    if gr.vertical > maxVert { maxVert = gr.vertical; }
+    if gf.vertical < minVert { minVert = gf.vertical; }
+    if gr.vertical < minVert { minVert = gr.vertical; }
+    if libc.fabsf(gf.lateral) > maxLat { maxLat = libc.fabsf(gf.lateral); }
+    if libc.fabsf(gr.lateral) > maxLat { maxLat = libc.fabsf(gr.lateral); }
+    if libc.fabsf(gf.longitudinal) > maxLong { maxLong = libc.fabsf(gf.longitudinal); }
+    if train.s > sCrest + 50. and lead.pos.y > yLoopTop { yLoopTop = lead.pos.y; sTop = train.s; gLoopTop = gf.vertical; vLoopTop = train.v; }
+    if train.s > sCrest + 20. and dropBottomSpeed == 0. and lead.pos.y < 3. { dropBottomSpeed = train.v; }
+    if t >= nextPrint {
+      print <- t; print <- "  "; print <- train.s; print <- "  "; print <- train.v; print <- "  "; print <- lead.pos.y;
+      print <- " | "; print <- gf.vertical; print <- " "; print <- gf.lateral; print <- " "; print <- gf.longitudinal;
+      print <- " | "; print <- gr.vertical; print <- " "; print <- gr.lateral; print <- " "; print <- gr.longitudinal; print <- "\n";
+      nextPrint = nextPrint + 1.;
+    }
+    if train.s > track.length * 0.9 and libc.fabsf(train.v) < 0.02 { stopped = true; }
+    if train.ended { stopped = true; }
+  }
+  print <- "\nride: "; print <- t; print <- " s, top speed "; print <- maxSpeed; print <- " m/s ("; print <- maxSpeed * 3.6; print <- " km/h), the train ended at s = "; print <- train.s; print <- " of "; print <- track.length; print <- "\n";
+  print <- "g-forces (the front and rear cars): vertical from "; print <- minVert; print <- " to "; print <- maxVert; print <- ", lateral at most "; print <- maxLat; print <- ", longitudinal at most "; print <- maxLong; print <- "\n";
+  print <- "speed at the bottom of the drop "; print <- dropBottomSpeed; print <- " m/s; the lead car's highest point in the loop y = "; print <- yLoopTop; print <- " (s = "; print <- sTop; print <- "), speed there "; print <- vLoopTop; print <- " m/s, vertical g "; print <- gLoopTop; print <- "\n";
+  print <- "CPU: a 1/60 s train step of 5 cars costs "; print <- stepSeconds / f64.from(steps) * 1.0e6d; print <- " microseconds (4 RK4 substeps)\n";
+
+  // ---- the meshes ----
+  imm spec = RailSpec.coaster(0.);
+  imm meshes = railMesh(&track, &spec);
+  print <- "rail mesh: "; print <- u64.from(meshes.rails.vertexCount()); print <- " vertices, "; print <- u64.from(meshes.rails.triangleCount());
+  print <- " triangles (rails); ties "; print <- u64.from(meshes.ties.triangleCount()); print <- " triangles; supports "; print <- u64.from(meshes.supports.triangleCount()); print <- " triangles\n";
+  print <- "description: "; print <- u64.from(track.points.len() * 16usize); print <- " bytes of control points; mesh: ";
+  print <- u64.from((meshes.rails.vertexCount() + meshes.ties.vertexCount() + meshes.supports.vertexCount()) * 24usize + (meshes.rails.indices.len() + meshes.ties.indices.len() + meshes.supports.indices.len()) * 4usize); print <- " bytes\n";
+
+  // ---- the GPU ----
+  mut instance = Instance.create("splinetrack coaster");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm W = 1280u32;
+  imm H = 720u32;
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !queries.isValid() { print <- "renderer failed\n"; return 1i32; }
+
+  mut sky = Sky.dusk(radians(35.), radians(200.));
+  sky.sunColor = new Color(30., 27., 22., 1.);
+  sky.zenith = new Color(0.14, 0.3, 0.72, 1.);
+  sky.horizon = new Color(0.6, 0.72, 0.88, 1.);
+  sky.glow = new Color(0.5, 0.4, 0.3, 1.);
+  sky.ground = new Color(0.2, 0.25, 0.3, 1.);
+  sky.cloudCover = 0.35;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
+  post.exposure = 0.9;
+  post.bloom = 0.03;
+
+  imm railMeshH = renderer.addMesh(&mut device, &meshes.rails);
+  imm tieMeshH = renderer.addMesh(&mut device, &meshes.ties);
+  imm supMeshH = renderer.addMesh(&mut device, &meshes.supports);
+  imm groundData = Mesh.plane(2, 1.);
+  imm groundMesh = renderer.addMesh(&mut device, &groundData);
+  imm cubeData = Mesh.cube(1.);
+  imm cubeMesh = renderer.addMesh(&mut device, &cubeData);
+  mut railMat = Material.shiny(new Color(0.55, 0.57, 0.6, 1.), 0.6, 60.);
+  imm railM = renderer.addMaterial(&mut device, &railMat);
+  mut tieMat = Material.plain(new Color(0.32, 0.2, 0.1, 1.));
+  imm tieM = renderer.addMaterial(&mut device, &tieMat);
+  mut supMat = Material.plain(new Color(0.7, 0.18, 0.12, 1.));
+  imm supM = renderer.addMaterial(&mut device, &supMat);
+  mut groundMat = Material.plain(new Color(0.22, 0.38, 0.14, 1.));
+  imm groundM = renderer.addMaterial(&mut device, &groundMat);
+  mut carMat = Material.shiny(new Color(0.85, 0.12, 0.1, 1.), 0.5, 50.);
+  imm carM = renderer.addMaterial(&mut device, &carMat);
+  mut carMat2 = Material.shiny(new Color(0.95, 0.75, 0.1, 1.), 0.5, 50.);
+  imm carM2 = renderer.addMaterial(&mut device, &carMat2);
+  mut riderMat = Material.plain(new Color(0.15, 0.3, 0.7, 1.));
+  imm riderM = renderer.addMaterial(&mut device, &riderMat);
+
+  // the six shots: a name, the lead car's place on the track, where the camera stands relative to the lead
+  // car, and where it looks relative to it
+  mut sLoopTop = sTop;
+  imm names = ["lift", "crest", "drop", "loop", "turn", "overview"];
+  mut sMark = List[f32].empty();
+  sMark.push(45.);
+  sMark.push(sCrest + 4.);
+  // the middle of the drop: where the lead car first passes 18 m going down
+  mut sd = sCrest;
+  while track.at(sd).pos.y > 18. { sd = sd + 0.25; }
+  sMark.push(sd);
+  sMark.push(sLoopTop);
+  // the turn: where the track is half way round, the point farthest in z
+  mut sTurn = sLoopTop;
+  while track.at(sTurn).pos.z < 44. and sTurn < track.length { sTurn = sTurn + 0.5; }
+  sMark.push(sTurn - 6.);
+  sMark.push(sCrest + 70.);
+  imm eyes = [new Vec3(8., 3., -22.), new Vec3(14., 2., -26.), new Vec3(18., 0., -28.), new Vec3(0., -13., -44.), new Vec3(16., 6., -10.), new Vec3(0., 70., -190.)];
+  imm looks = [new Vec3(-2., 0., 0.), new Vec3(-2., 1., 0.), new Vec3(0., 0., 0.), new Vec3(0., -13., 0.), new Vec3(0., 1., 0.), new Vec3(0., -5., 0.)];
+  imm origins = [0, 0, 0, 0, 0, 2];       // 0: the lead car, 2: the layout's middle
+
+  mut f1 = 0usize;
+  while f1 < 6usize {
+    // the cars at this shot
+    mut ghost = Train.uniform(CarSpec.coaster(), 5usize, *sMark[f1]);
+    mut list = DrawList.empty();
+    list.add(groundMesh, groundM, Mat4.fromTrs(new Vec3(100., -0.05, 40.), Quat.identity(), new Vec3(400., 1., 400.)));
+    list.add(railMeshH, railM, Mat4.identity());
+    list.add(tieMeshH, tieM, Mat4.identity());
+    list.add(supMeshH, supM, Mat4.identity());
+    mut c = 0usize;
+    while c < 5usize {
+      imm pose = ghost.carPose(&track, c);
+      imm up = pose.rot * new Vec3(0., 1., 0.);
+      imm body = pose.pos + up * 0.6;
+      list.add(cubeMesh, if c % 2usize == 0usize { carM; } else { carM2; }, Mat4.fromTrs(body, pose.rot, new Vec3(1.2, 0.35, 0.6)));
+      imm head1 = pose.pos + up * 1.15 + (pose.rot * new Vec3(0.5, 0., 0.));
+      imm head2 = pose.pos + up * 1.15 - (pose.rot * new Vec3(0.5, 0., 0.));
+      list.add(cubeMesh, riderM, Mat4.fromTrs(head1, pose.rot, new Vec3(0.25, 0.25, 0.4)));
+      list.add(cubeMesh, riderM, Mat4.fromTrs(head2, pose.rot, new Vec3(0.25, 0.25, 0.4)));
+      c = c + 1usize;
+    }
+    imm lead = ghost.carPose(&track, 0usize);
+    imm origin = if origins[f1] == 0 { lead.pos; } elif origins[f1] == 1 { new Vec3(150., 12.5, 2.); } else { new Vec3(110., 10., 40.); };
+    mut camera = Camera.make();
+    camera.fov = radians(55.);
+    camera.near = 0.3;
+    camera.far = 3000.;
+    camera.background = new Color(0.4, 0.55, 0.8, 1.);
+    camera.lookAt(origin + eyes[f1], origin + looks[f1], new Vec3(0., 1., 0.));
+    mut samples = List[f64].empty();
+    mut f = 0u32;
+    while f < 130u32 {
+      mut encoder = device.createCommandEncoder();
+      encoder.writeTimestamp(&queries, 0u32);
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      encoder.writeTimestamp(&queries, 1u32);
+      post.apply(&mut encoder, &out);
+      encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      encoder.copyBufferToBuffer(&resolved, 0u64, &timeBuf, 0u64, 16u64);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      if f >= 30u32 {
+        imm ticks = timeBuf.mappedRange() as *u64;
+        samples.push(f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d);
+      }
+      f = f + 1u32;
+    }
+    mut si = 1usize;
+    while si < samples.len() {
+      mut sj = si;
+      while sj > 0usize and *samples[sj - 1usize] > *samples[sj] { samples.swap(sj - 1usize, sj); sj = sj - 1usize; }
+      si = si + 1usize;
+    }
+    print <- "shot "; printStr(names[f1]); print <- ": GPU draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize];
+    print <- ", max "; print <- *samples[samples.len() - 1usize]; print <- "), "; print <- u64.from(list.len()); print <- " draws\n";
+    if prefix.len() > 0usize {
+      mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      post.apply(&mut encoder, &out);
+      encoder.copyTextureToBuffer(&out, &shot);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+      mut name = prefix.copy();
+      name <- "-"; name <- names[f1]; name <- ".bmp";
+      image.save(&filepath.Path.from(name.view()));
+      print <- "wrote "; printStr(name.view()); print <- "\n";
+    }
+    f1 = f1 + 1usize;
+  }
+  print <- "\nVulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}

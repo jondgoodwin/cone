@@ -1,0 +1,114 @@
+// The new pass manager through RunPasses: a function written the long way (a slot stored and loaded, an add
+// of zero, a multiply by one, a constant sum) is printed, run through 'mem2reg,instcombine' and printed
+// again, where it has become the one add it is. A pass pipeline LLVM does not know comes back as an
+// LLVMErrorRef, whose message is read and which is then consumed. The options object is made and
+// disposed. Also the debug-information builder: a file, a compile unit, a subroutine type and a
+// function with its subprogram, a location on the builder; the module still verifies and its text carries
+// the metadata.
+
+mod passes;
+
+import stdio use *;
+import collections use *;
+import llvmc;
+
+fn expect(ok bool, label &str) {
+  if not ok { print <- "FAILED: ", label, "\n"; }
+}
+
+fn main() i32 {
+  llvmc.InitializeAllTargetInfos();
+  llvmc.InitializeAllTargets();
+  llvmc.InitializeAllTargetMCs();
+
+  imm ctx = llvmc.ContextCreate();
+  imm m = llvmc.ModuleCreateWithNameInContext("passes", ctx);
+  imm bld = llvmc.CreateBuilderInContext(ctx);
+  imm i32t = llvmc.Int32TypeInContext(ctx);
+
+  // f(x) = ((x + 0) * 1) + (2 + 3), through a stack slot
+  mut ps Array[*llvmc.Type, 1] = [i32t];
+  imm f = llvmc.AddFunction(m, "f", llvmc.FunctionType(i32t, &ps[0], 1u32, 0i32));
+  imm x = llvmc.GetParam(f, 0u32);
+  llvmc.SetValueName2(x, llvmc.bytesOf("x"), 1usize);
+  llvmc.PositionBuilderAtEnd(bld, llvmc.AppendBasicBlockInContext(ctx, f, "entry"));
+  imm slot = llvmc.BuildAlloca(bld, i32t, "slot");
+  llvmc.BuildStore(bld, x, slot);
+  imm loaded = llvmc.BuildLoad2(bld, i32t, slot, "loaded");
+  imm plus0 = llvmc.BuildAdd(bld, loaded, llvmc.ConstInt(i32t, 0u64, 0i32), "plus0");
+  imm times1 = llvmc.BuildMul(bld, plus0, llvmc.ConstInt(i32t, 1u64, 0i32), "times1");
+  imm five = llvmc.BuildAdd(bld, llvmc.ConstInt(i32t, 2u64, 0i32), llvmc.ConstInt(i32t, 3u64, 0i32), "five");
+  llvmc.BuildRet(bld, llvmc.BuildAdd(bld, times1, five, "sum"));
+
+  print <- "before\n";
+  imm before = llvmc.moduleToString(m);
+  print <- before.view();
+
+  // a machine to optimise for (the pipeline may be run without one, but a real compile has one)
+  imm triple = llvmc.defaultTargetTriple();
+  mut target *llvmc.Target = null;
+  match llvmc.targetFromTriple(triple.cstr()) {
+    case imm t Ok { target = t; }
+    case imm why Error { print <- "no target: ", why.view(), "\n"; }
+  }
+  imm tm = llvmc.CreateTargetMachine(target, triple.cstr(), "generic", "", llvmc.CodeGenOptLevel.CodeGenLevelDefault,
+    llvmc.RelocMode.RelocDefault, llvmc.CodeModel.CodeModelDefault);
+
+  imm options = llvmc.CreatePassBuilderOptions();
+  expect(options != null, "pass builder options");
+  imm err = llvmc.RunPasses(m, "mem2reg,instcombine", tm, options);
+  expect(err == null, "the pipeline ran");
+  match llvmc.checkModule(m) {
+    case is None { print <- "verifies after\n"; }
+    case imm why Some { print <- "does not verify: ", why.view(), "\n"; }
+  }
+  print <- "after\n";
+  imm after = llvmc.moduleToString(m);
+  print <- after.view();
+
+  // a pipeline that is not one
+  imm bad = llvmc.RunPasses(m, "no-such-pass", tm, options);
+  expect(bad != null, "an unknown pass is an error");
+  if bad != null {
+    imm message = llvmc.errorMessage(bad);
+    print <- "error: ", message.view(), "\n";
+  }
+  llvmc.DisposePassBuilderOptions(options);
+
+  // ---- debug information ----
+  imm di = llvmc.CreateDIBuilder(m);
+  imm file = llvmc.DIBuilderCreateFile(di, llvmc.bytesOf("passes.cone"), 11usize, llvmc.bytesOf("/src"), 4usize);
+  imm cu = llvmc.DIBuilderCreateCompileUnit(di, llvmc.DWARFSourceLanguage.DWARFSourceLanguageC, file, llvmc.bytesOf("llvmc test"), 10usize,
+    0i32, llvmc.bytesOf(""), 0usize, 0u32, llvmc.bytesOf(""), 0usize, llvmc.DWARFEmissionKind.DWARFEmissionFull, 0u32, 0i32, 0i32,
+    llvmc.bytesOf(""), 0usize, llvmc.bytesOf(""), 0usize);
+  expect(cu != null, "a compile unit");
+  mut dts Array[*llvmc.Metadata, 1] = [null];
+  imm sty = llvmc.DIBuilderCreateSubroutineType(di, file, &dts[0], 0u32, llvmc.DIFlagZero);
+  imm sp = llvmc.DIBuilderCreateFunction(di, file, llvmc.bytesOf("f"), 1usize, llvmc.bytesOf("f"), 1usize, file, 7u32, sty,
+    0i32, 1i32, 7u32, llvmc.DIFlagPublic, 0i32);
+  llvmc.SetSubprogram(f, sp);
+  expect(llvmc.GetSubprogram(f) == sp, "the subprogram is attached");
+  imm loc = llvmc.DIBuilderCreateDebugLocation(ctx, 8u32, 3u32, sp, null);
+  llvmc.PositionBuilderBefore(bld, llvmc.GetFirstInstruction(llvmc.GetEntryBasicBlock(f)));
+  llvmc.SetCurrentDebugLocation2(bld, loc);
+  expect(llvmc.GetCurrentDebugLocation2(bld) == loc, "the builder's location");
+  imm marker = llvmc.BuildAdd(bld, x, x, "marker");
+  expect(llvmc.InstructionGetDebugLoc(marker) != null, "the new instruction has a location");
+  llvmc.InstructionEraseFromParent(marker);
+  llvmc.DIBuilderFinalize(di);
+  match llvmc.checkModule(m) {
+    case is None { print <- "verifies with debug info\n"; }
+    case imm why Some { print <- "does not verify: ", why.view(), "\n"; }
+  }
+  imm text = llvmc.moduleToString(m);
+  expect(text.view().contains("!DISubprogram(name: \"f\""), "the subprogram is in the text");
+  expect(text.view().contains("!DICompileUnit("), "and the compile unit");
+  expect(text.view().contains("!DIFile(filename: \"passes.cone\""), "and the file");
+  expect(llvmc.DIFlagPrivate == 1u32 and llvmc.DIFlagPublic == 3u32 and llvmc.DIFlagPrototyped == 256u32, "the flag values");
+
+  llvmc.DisposeTargetMachine(tm);
+  llvmc.DisposeBuilder(bld);
+  llvmc.DisposeModule(m);
+  llvmc.ContextDispose(ctx);
+  0i32;
+}

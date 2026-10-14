@@ -1,0 +1,199 @@
+// An effect played as data, on a real GPU with no window: the player turns an Effect's layers
+// into particles, lights, debris, decals and shake at the right times and in the right numbers.
+//
+// The effect (all numbers below): a burst of 100 particles at once; 100 particles a second from 0.2 s
+// for 1 s; a point light from 0.1 s lasting 0.6 s; 8 debris pieces; a decal; a camera shake.
+//
+// 1. The counts: the particles ordered over the run are 100 + 100 (a second at 100 a second, within
+//    one for the fraction carried between frames).
+// 2. The light: none before its delay, one at 0.15 s, none after 0.1 + 0.6 s (it is taken out of render's
+//    light set), and it never exceeds the intensity it was given.
+// 3. The debris: 8 pieces thrown, all above the ground after 3 s (the bounce), and the draw list has them.
+// 4. The decal is in ImageFx's list while it is alive, and is gone once its fade is done.
+// 5. The shake: the player added trauma at the camera (inside the radius), and it has decayed by the end.
+// 6. The event: the player counts the effect as playing, and as finished after the effect's length, which is
+//    what 'Effect.length' says (the longest delay + duration, or a particle's life).
+// 7. The shake model alone: trauma clamps at 1, decays by its rate, an offset is bounded and grows with the
+//    square of the trauma, and 'addAt' gives all at the origin, a quarter at half the radius, none at it.
+// 8. No Vulkan call failed and the validation layer said nothing.
+
+mod effects;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import effectsfx use *;
+
+const W = 64u32;
+const H = 64u32;
+const DT = 0.016666668;
+
+fn effectOf(box MeshHandle, wood MaterialHandle) Effect {
+  mut e = Effect.empty();
+  mut c = ParticleClass.make();
+  c.life = 2.;
+  c.sizeStart = 0.05;
+  mut burst = ParticleLayer.make(&c);
+  burst.burst = 100u32;
+  e.particles.push(burst);
+  mut stream = ParticleLayer.make(&c);
+  stream.delay = 0.2;
+  stream.rate = 100.;
+  stream.duration = 1.;
+  e.particles.push(stream);
+  mut light = LightLayer.make();
+  light.delay = 0.1;
+  light.duration = 0.6;
+  light.peak = 500.;
+  light.attack = 0.01;
+  light.decay = 0.2;
+  e.lights.push(light);
+  mut pieces = new DebrisLayer(box, wood, new Vec3(0., 0.5, 0.));
+  pieces.count = 8u32;
+  pieces.size = 0.2;
+  pieces.life = 3.;
+  e.debris.push(pieces);
+  mut mark = DecalLayer.make(0u32);
+  mark.fadeIn = 0.05;
+  mark.hold = 0.5;
+  mark.fadeOut = 0.3;
+  e.decals.push(mark);
+  e.shakes.push(new ShakeLayer(0.8, 20., 0.));
+  e;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("effectsfx effects");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut fx = ImageFx.create(&mut device, &renderer, &mut post);
+  mut player = EffectPlayer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, 4096u32);
+  require(renderer.isValid() and post.isValid() and fx.isValid() and player.isValid(), "the renderer, its passes and the player");
+  imm boxMesh = Mesh.cube(0.5);
+  imm box = renderer.addMesh(&mut device, &boxMesh);
+  imm wood = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.4, 0.25, 0.1, 1.), 0., 0.8));
+  imm effect = effectOf(box, wood);
+  expectFloat(f64.from(effect.length()), 3.2, 0.001, "the effect's length: the stream's delay, duration and a particle's life");
+  imm id = player.register(&mut device, effect);
+  player.setGround(0.);
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 2., 6.), new Vec3(0., 0.5, 0.), new Vec3(0., 1., 0.));
+
+  mut total = 0u32;
+  mut lightBefore = 0u32;
+  mut lightAt = 0u32;
+  mut lightAfter = 0u32;
+  mut maxCandela = 0f32;
+  mut debrisItems = 0usize;
+  mut decalWhileAlive = 0usize;
+  mut decalAtEnd = 99usize;
+  mut peakTrauma = 0f32;
+  mut playingAtStart = 0usize;
+  mut playingAtEnd = 99usize;
+  mut lowest = 99f32;
+  mut debrisAtOneSecond = 0u32;
+  mut f = 0u32;
+  while f < 240u32 {
+    imm now = f32.from(f) * DT;
+    mut list = DrawList.empty();
+    if f == 0u32 { player.play(id, new Vec3(0., 0.2, 0.), new Vec3(0., 1., 0.), new Vec3(0., 0., 0.), 77u32, now); }
+    player.beginFrame(&mut renderer, &mut fx, &mut list, &camera, now, DT);
+    if f == 1u32 { playingAtStart = player.playingCount(); }
+    if f == 3u32 { lightBefore = renderer.lights.count(); }
+    if f == 9u32 { lightAt = renderer.lights.count(); }
+    if f == 200u32 { lightAfter = renderer.lights.count(); }
+    if f == 30u32 { debrisItems = list.len(); }
+    if f == 60u32 { debrisAtOneSecond = player.debris.live; }
+    imm floorY = player.debris.lowest();
+    if floorY < lowest { lowest = floorY; }
+    if f == 6u32 { decalWhileAlive = fx.decals.len(); }
+    if f == 120u32 { decalAtEnd = fx.decals.len(); }
+    if player.shake.trauma > peakTrauma { peakTrauma = player.shake.trauma; }
+    mut encoder = device.createCommandEncoder();
+    fx.renderScene(&mut device, &mut encoder, &mut renderer, &mut post, &camera, &Light.directional(new Vec3(0., -1., 0.), Color.gray(1.), new Color(0.2, 0.2, 0.2, 1.)), &list);
+    player.drawEffects(&mut device, &mut encoder, &fx, &post.hdr, &camera, now, DT);
+    fx.renderFinish(&mut device, &mut encoder, &mut renderer, &mut post, &list, &out);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    total = total + player.particles.spawned;
+    if f == 200u32 { playingAtEnd = player.playingCount(); }
+    f = f + 1u32;
+  }
+  expect(total >= 199u32 and total <= 201u32, "100 at once and 100 a second for a second: 200 ordered, within one");
+  expectUInt(u64.from(lightBefore), 0u64, "no light before its delay");
+  expectUInt(u64.from(lightAt), 1u64, "a light at 0.15 s");
+  expectUInt(u64.from(lightAfter), 0u64, "the light is taken out of render's set after its time");
+  expectUInt(u64.from(player.lights.peak), 1u64, "never more than the one light at once");
+  expectUInt(u64.from(debrisItems), 8u64, "the eight debris pieces are in the draw list");
+  expectUInt(u64.from(decalWhileAlive), 1u64, "the decal is listed while it lives");
+  expectUInt(u64.from(decalAtEnd), 0u64, "and gone after its fade");
+  expect(peakTrauma > 0.3 and peakTrauma < 0.4, "the blast shook the camera by its distance: 0.8 of the trauma times (1 - 6.26 / 20) squared, less a frame's decay");
+  expect(player.shake.trauma < 0.01, "and the shake has gone");
+  expectUInt(u64.from(playingAtStart), 1u64, "the effect is playing at the start");
+  expectUInt(u64.from(playingAtEnd), 0u64, "and over after its length");
+  expectUInt(u64.from(debrisAtOneSecond), 8u64, "the eight debris pieces live on (they last 3 s)");
+  expectUInt(u64.from(player.debris.live), 0u64, "and have gone at 4 s");
+  expect(lowest > -0.001, "no debris piece ever went below the ground: it bounces and rests");
+
+  // The shake model alone
+  mut shake = CameraShake.make();
+  shake.add(0.7);
+  shake.add(0.7);
+  expectFloat(f64.from(shake.trauma), 1., 1e-6, "trauma clamps at 1");
+  shake.update(0.25);
+  expectFloat(f64.from(shake.trauma), 1. - 0.25 * 1.4, 1e-5, "and decays by its rate");
+  imm calm = CameraShake.make().offsets();
+  expectFloat(f64.from(calm.dx) + f64.from(calm.roll), 0., 1e-9, "no trauma, no shake");
+  mut big = CameraShake.make();
+  big.trauma = 1.;
+  mut small = CameraShake.make();
+  small.trauma = 0.5;
+  mut bigSum = 0f32;
+  mut smallSum = 0f32;
+  mut worst = 0f32;
+  mut t = 0;
+  while t < 400 {
+    big.time = f32.from(t) * 0.013;
+    small.time = f32.from(t) * 0.013;
+    imm b = big.offsets();
+    imm s = small.offsets();
+    bigSum = bigSum + libc.fabsf(b.dx);
+    smallSum = smallSum + libc.fabsf(s.dx);
+    if libc.fabsf(b.dx) > worst { worst = libc.fabsf(b.dx); }
+    if libc.fabsf(b.roll) > worst * 0. + big.maxAngle * 1.5 { worst = 99.; }
+    t = t + 1;
+  }
+  expect(worst <= big.maxOffset * 1.5, "an offset stays within its maximum (noise's own range included)");
+  expect(bigSum > smallSum * 3., "half the trauma shakes a quarter as much: shake goes with the square");
+  mut at = CameraShake.make();
+  at.addAt(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 1., 10.);
+  expectFloat(f64.from(at.trauma), 1., 1e-6, "an event at the camera gives all its trauma");
+  at.trauma = 0.;
+  at.addAt(new Vec3(5., 0., 0.), new Vec3(0., 0., 0.), 1., 10.);
+  expectFloat(f64.from(at.trauma), 0.25, 1e-6, "half the radius away, a quarter");
+  at.trauma = 0.;
+  at.addAt(new Vec3(10., 0., 0.), new Vec3(0., 0., 0.), 1., 10.);
+  expectFloat(f64.from(at.trauma), 0., 1e-9, "at the radius, none");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

@@ -1,0 +1,94 @@
+// A call whose method exists and fails only because the receiver's permission
+// cannot give the method's 'self' is reported as the permission's refusal
+// (ErrorInvType), whichever spelling made the call: a named method on a '&'
+// parameter, on an 'Rc[imm, ...]' or an 'Arc[imm, ...]', and '<-' (one entry, as
+// ref-held collections already report it: collection_typecheck_append_through_ref).
+// '(*l).push(1)' is the same refusal. A call that fails for another reason keeps
+// that reason: a method the type does not have, arguments no method takes, or
+// the wrong number of them are ErrorNoMbr or ErrorNoCandidate, with the permission
+// right or wrong. The lines without annotations compile.
+
+mod ref_typecheck_named_call_perm;
+
+import collections use *;
+import sync use Arc;
+
+struct Pt {
+  pub x i32;
+  pub fn look(self &) i32 { x; }
+  pub fn change(self &mut) { x = 2i32; }
+  pub fn take(self &mut, n i32) { x = n; }
+}
+
+// The permission is what is wrong
+fn pushThroughRef(l &List[i32]) {
+  l.push(1);                    //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+fn pushThroughRefExplicit(l &List[i32]) {
+  (*l).push(1);                 //~ ErrorInvType:5 "does not match declared parameter"
+}
+
+fn appendThroughRef(l &List[i32]) {
+  l <- 1;                       //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+fn pushThroughRc() {
+  mut r = new Rc[imm, List[i32]](List[i32].empty());
+  r.push(1);                    //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+fn pushThroughArc() {
+  mut a = new Arc[imm, List[i32]](List[i32].empty());
+  a.push(1);                    //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+fn changeThroughRef(p &Pt) {
+  p.change();                   //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+fn takeThroughRef(p &Pt) {
+  p.take(3);                    //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+fn changeThroughImmRef(p &imm Pt) {
+  p.change();                   //~ ErrorInvType:3 "does not match declared parameter"
+}
+
+// Some other reason is what is wrong: the report is that reason's
+fn noSuchMethod(p &Pt) {
+  p.nothing();                  //~ ErrorNoMbr:4 "Method or field `nothing` not found"
+}
+
+fn noSuchMethodOnList(l &List[i32]) {
+  l.nothing();                  //~ ErrorNoMbr:4 "Method or field `nothing` not found"
+}
+
+fn wrongArgumentType(p &mut Pt) {
+  p.take(true);                 //~ ErrorNoCandidate:4 "accepts the call's arguments"
+}
+
+fn wrongArgumentTypeAndPermission(p &Pt) {
+  p.take(true);                 //~ ErrorNoCandidate:4 "accepts the call's arguments"
+}
+
+fn wrongArity(p &mut Pt) {
+  p.take(1, 2);                 //~ ErrorNoCandidate:4 "accepts the call's arguments"
+}
+
+fn missingArgumentAndPermission(p &Pt) {
+  p.take();                     //~ ErrorNoCandidate:4 "accepts the call's arguments"
+}
+
+// The permission is enough: these compile
+fn readsThroughRef(p &Pt, l &List[i32]) i32 {
+  imm n = l.len();
+  p.look();
+}
+
+fn writesThroughMutRef(p &mut Pt, l &mut List[i32]) {
+  p.change();
+  p.take(3);
+  l.push(1);
+  l <- 2;
+}

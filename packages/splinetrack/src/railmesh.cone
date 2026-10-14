@@ -1,0 +1,127 @@
+// ======== The track's mesh: rails, ties and supports, generated from the spline ========
+//
+// railMesh(track, spec) makes three meshes (separate, so each takes its own material):
+//   rails     two tubes along the track at +- gauge/2, a ring of 'sides' points every 'ringSpacing' metres
+//             of arc length (the frame's up and right, so the tubes bank with the track); smooth normals;
+//   ties      a box across the track every 'tieSpacing' metres, below the rails; flat normals;
+//   supports  a square column from the ground up to the track every 'supportSpacing' metres, where the
+//             track is upright (its up at least 0.3 above horizontal) and more than 1.5 m above the ground:
+//             not under an inverted stretch (a loop's top), which a column would cross.
+// Everything is a function of the track's arc-length table, so a track edited and rebuilt remakes its
+// mesh; the description (control points and a RailSpec: about 40 numbers) is a few hundred bytes against
+// a mesh of tens of thousands of vertices.
+//
+// A rail ring's cost is its sides: with 8 sides and a ring every 0.4 m, a 500 m track has two tubes of
+// 1,250 rings, 20,000 triangles.
+
+pub struct RailSpec {
+  pub gauge f32;             // distance between the two rails' centres
+  pub railRadius f32;
+  pub sides i32;             // points around a rail's section
+  pub ringSpacing f32;       // arc length between a rail's rings
+  pub tieSpacing f32;
+  pub tieHalfWidth f32;      // half the length of a tie across the track
+  pub tieDrop f32;           // how far below the track line a tie's middle is
+  pub supportSpacing f32;
+  pub supportHalf f32;       // half the side of a column
+  pub ground f32;            // y of the ground the columns stand on
+
+  // A coaster's rails: 1.0 m gauge, 6 cm tubes, ties every 0.9 m, columns every 8 m on the ground at y = 0
+  pub fn coaster(ground f32) RailSpec { new RailSpec(1.0, 0.06, 8, 0.4, 0.9, 0.65, 0.16, 8., 0.18, ground); }
+}
+
+pub struct RailMeshes {
+  pub rails Mesh;
+  pub ties Mesh;
+  pub supports Mesh;
+}
+
+// A box with half sizes (hf, hu, hr) along the frame (fwd, up, right) at 'c', appended to 'm' with outward triangles
+fn addBox(m &mut Mesh, c Vec3, fwd Vec3, up Vec3, right Vec3, hf f32, hu f32, hr f32) {
+  imm base = u32.from(m.positions.len());
+  mut z = -1.;
+  while z <= 1. {
+    mut y = -1.;
+    while y <= 1. {
+      mut x = -1.;
+      while x <= 1. {
+        m.positions.push(c + fwd * (x * hf) + up * (y * hu) + right * (z * hr));
+        x = x + 2.;
+      }
+      y = y + 2.;
+    }
+    z = z + 2.;
+  }
+  // vertices numbered x + 2 y + 4 z (as bits); the frame (fwd, up, right) is right-handed like (x, y, z)
+  imm quads = [[1u32, 0u32, 2u32, 3u32], [4u32, 5u32, 7u32, 6u32], [0u32, 1u32, 5u32, 4u32], [3u32, 2u32, 6u32, 7u32],
+    [2u32, 0u32, 4u32, 6u32], [1u32, 3u32, 7u32, 5u32]];
+  mut q = 0usize;
+  while q < 6usize {
+    m.indices.push(base + quads[q][0usize]); m.indices.push(base + quads[q][1usize]); m.indices.push(base + quads[q][2usize]);
+    m.indices.push(base + quads[q][0usize]); m.indices.push(base + quads[q][2usize]); m.indices.push(base + quads[q][3usize]);
+    q = q + 1usize;
+  }
+}
+
+// One rail: a tube of rings along the track at the lateral offset 'side' (metres to the right)
+fn addRail(m &mut Mesh, track &Track, spec &RailSpec, side f32) {
+  imm n = usize.from(spec.sides);
+  imm rings = usize.from(i32.from(libc.ceilf(track.length / spec.ringSpacing)));
+  imm base = u32.from(m.positions.len());
+  mut i = 0usize;
+  while i <= rings {
+    imm p = track.at(track.length * f32.from(i) / f32.from(rings) - (if track.closed and i == rings { 0.0001; } else { 0.; }));
+    imm c = p.pos + p.right * side - p.up * 0.02;
+    mut j = 0usize;
+    while j < n {
+      imm a = 6.28318530718 * f32.from(j) / f32.from(n);
+      m.positions.push(c + p.up * (spec.railRadius * libc.cosf(a)) + p.right * (spec.railRadius * libc.sinf(a)));
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < rings {
+    mut j = 0usize;
+    while j < n {
+      imm j1 = (j + 1usize) % n;
+      imm a = base + u32.from(i * n + j);
+      imm b = base + u32.from((i + 1usize) * n + j);
+      imm c = base + u32.from((i + 1usize) * n + j1);
+      imm d = base + u32.from(i * n + j1);
+      // the ring angle runs from up toward right, forward x that is inward: so (a, c, b) and (a, d, c)
+      m.indices.push(a); m.indices.push(c); m.indices.push(b);
+      m.indices.push(a); m.indices.push(d); m.indices.push(c);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+pub fn railMesh(track &Track, spec &RailSpec) RailMeshes {
+  mut rails = Mesh.empty();
+  addRail(&mut rails, track, spec, -spec.gauge * 0.5);
+  addRail(&mut rails, track, spec, spec.gauge * 0.5);
+  rails.computeSmoothNormals();
+  mut ties = Mesh.empty();
+  mut s = spec.tieSpacing * 0.5;
+  while s < track.length {
+    imm p = track.at(s);
+    addBox(&mut ties, p.pos - p.up * spec.tieDrop, p.tangent, p.up, p.right, 0.09, 0.05, spec.tieHalfWidth);
+    s = s + spec.tieSpacing;
+  }
+  ties.computeFlatNormals();
+  mut supports = Mesh.empty();
+  s = spec.supportSpacing * 0.5;
+  while s < track.length {
+    imm p = track.at(s);
+    imm top = p.pos.y - spec.tieDrop - 0.1;
+    if p.up.y > 0.3 and top - spec.ground > 1.5 {
+      imm h = (top - spec.ground) * 0.5;
+      addBox(&mut supports, new Vec3(p.pos.x, spec.ground + h, p.pos.z), new Vec3(1., 0., 0.), new Vec3(0., 1., 0.), new Vec3(0., 0., 1.), spec.supportHalf, h, spec.supportHalf);
+    }
+    s = s + spec.supportSpacing;
+  }
+  supports.computeFlatNormals();
+  new RailMeshes(rails, ties, supports);
+}
