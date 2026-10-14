@@ -1,0 +1,342 @@
+// Layout of real text in a real font (Georgia, Georgia Bold and Italic from the Windows fonts folder;
+// the test skips when they are absent), checked by properties that are true of any correct greedy
+// layout with floats, rather than by pixels:
+//
+//   - every line's ink fits its band; the lines' byte ranges tile the block's text exactly;
+//   - greediness: the first word of a line would not have fitted on the line before it;
+//   - a justified line (not the last) spans its band to within 0.05 px;
+//   - a float's rectangle holds no text: every line whose band meets it ends before it (right float)
+//     or starts after it (left float); a line below it spans the page again;
+//   - list markers: three numbered items are "1.", "2.", "3."; a nested level restarts at "a.";
+//   - hit testing: for every character boundary of the first paragraph, the caret's x put back through
+//     posAt gives the same offset; the caret rectangle lies on the line;
+//   - selection rectangles: one a line, the first starting at the caret's x;
+//   - underlines: one rectangle under an underlined run, as wide as its glyphs.
+
+mod layouttest;
+
+import testing use *;
+import collections use *;
+import fs;
+import stdio use *;
+import path use Path;
+import msdftext use Font;
+import richtext use *;
+
+fn loadFont(file &str) Option[Font] {
+  mut out Option[Font] = None;
+  match fs.readFile(&Path.from(file)) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok { out = Some[Font](f); }
+        case is Error {}
+      }
+    }
+    case is Error {}
+  }
+  out;
+}
+
+fn makeFaces() Option[Faces] {
+  mut out Option[Faces] = None;
+  match loadFont("C:/Windows/Fonts/georgia.ttf") {
+    case imm reg Some {
+      mut f = Faces.make(reg);
+      match loadFont("C:/Windows/Fonts/georgiab.ttf") {
+        case imm b Some { f.setBold(b); }
+        case is None {}
+      }
+      match loadFont("C:/Windows/Fonts/georgiai.ttf") {
+        case imm i Some { f.setItalic(i); }
+        case is None {}
+      }
+      out = Some[Faces](f);
+    }
+    case is None {}
+  }
+  out;
+}
+
+const LOREM = "The quick brown fox jumps over the lazy dog while the five boxing wizards jump quickly, and pack my box with five dozen liquor jugs so that every line of this paragraph has something to break on.";
+
+fn lineText(l &RichLayout, blocks &List[Block], li usize) &str {
+  imm ln = l.lines[li];
+  blocks[usize.from(ln.block)].text.view().slice(usize.from(ln.start), usize.from(ln.end));
+}
+
+fn checkTiling(l &RichLayout, blocks &List[Block], label &str) {
+  mut b = 0usize;
+  mut ok = true;
+  mut i = 0usize;
+  while i < l.lines.len() {
+    imm ln = l.lines[i];
+    if usize.from(ln.block) != b {
+      // a new block's first line starts at 0 and the previous block's last ended at its length
+      if i > 0usize and usize.from((*l.lines[i - 1usize]).end) != blocks[b].text.len() { ok = false; }
+      if ln.start != 0u32 { ok = false; }
+      b = usize.from(ln.block);
+    } elif i > 0usize and ln.start != (*l.lines[i - 1usize]).end { ok = false; }
+    i = i + 1usize;
+  }
+  expect(ok, label);
+}
+
+fn main() i32 {
+  imm maybe = makeFaces();
+  match &maybe {
+    case imm faces Some { run(faces); }
+    case is None { print <- "Georgia is not installed: layout test skipped\n"; }
+  }
+  done();
+}
+
+fn run(faces &Faces) {
+  imm cfg = LayoutConfig.standard(600.0);
+  imm avail = cfg.width - 2.0 * cfg.margin;
+  imm noImages = List[ImageInfo].empty();
+
+  // ---- a plain paragraph ----
+  mut blocks = List[Block].empty();
+  blocks.push(Block.fromText(LOREM, Style.plain()));
+  imm l = layoutRich(&blocks, &noImages, faces, &cfg);
+  expect(l.lines.len() >= 3usize, "the paragraph needs several lines");
+  checkTiling(&l, &blocks, "lines tile the text");
+  mut fits = true;
+  mut greedy = true;
+  mut i = 0usize;
+  while i < l.lines.len() {
+    imm ln = l.lines[i];
+    if ln.x1 - ln.x0 > avail + 0.01 { fits = false; }
+    if ln.x0 < cfg.margin - 0.01 or ln.x1 > cfg.width - cfg.margin + 0.01 { fits = false; }
+    // greediness: the next line's first word, added to this line, would overflow
+    if i + 1usize < l.lines.len() {
+      imm nx = l.lines[i + 1usize];
+      mut g = usize.from(nx.g0);
+      mut wordEnd = g;
+      // the first word of the next line: up to its first space
+      while wordEnd < usize.from(nx.g0 + nx.gn) and ((*l.glyphs[wordEnd]).flags & GF_SPACE) == 0u32 { wordEnd = wordEnd + 1usize; }
+      mut wordW = 0.0;
+      while g < wordEnd { wordW = wordW + (*l.glyphs[g]).adv; g = g + 1usize; }
+      // this line's ink plus one space plus the word
+      imm spaceAdv = (*l.glyphs[usize.from(ln.g0 + ln.gn) - 1usize]).adv;
+      if ln.x1 - ln.x0 + wordW + spaceAdv * 0.5 <= avail { greedy = false; }
+    }
+    i = i + 1usize;
+  }
+  expect(fits, "every line fits the page between its margins");
+  expect(greedy, "no line could have taken the first word of the next");
+
+  // ---- justified ----
+  mut jb = List[Block].empty();
+  mut jblk = Block.fromText(LOREM, Style.plain());
+  jblk.align = AL_JUSTIFY;
+  jb.push(jblk);
+  imm lj = layoutRich(&jb, &noImages, faces, &cfg);
+  mut spans = true;
+  i = 0usize;
+  while i + 1usize < lj.lines.len() {
+    imm ln = lj.lines[i];
+    if absF(ln.x1 - (cfg.width - cfg.margin)) > 0.05 or absF(ln.x0 - cfg.margin) > 0.05 { spans = false; }
+    i = i + 1usize;
+  }
+  expect(spans, "every justified line but the last spans the page");
+  imm lastJ = lj.lines[lj.lines.len() - 1usize];
+  expect(lastJ.x1 < cfg.width - cfg.margin - 5.0, "the last line is not stretched");
+  expectInt(i64.from(lj.lines.len()), i64.from(l.lines.len()), "justifying changes no line breaks");
+
+  // ---- centre and right ----
+  mut cb = List[Block].empty();
+  mut cblk = Block.fromText("centred", Style.plain());
+  cblk.align = AL_CENTER;
+  cb.push(cblk);
+  imm lc = layoutRich(&cb, &noImages, faces, &cfg);
+  imm cl = lc.lines[0usize];
+  expectFloat(f64.from((cl.x0 + cl.x1) * 0.5), f64.from(cfg.width * 0.5), 0.05d, "centred text is centred");
+
+  // ---- hit testing round trip ----
+  mut rt = true;
+  mut off = 0usize;
+  mut count = 0u32;
+  while off <= blocks[0usize].text.len() {
+    imm p = pos(0usize, off);
+    imm cr = caretRect(&l, p);
+    imm back = posAt(&l, cr.x + 0.01, cr.y + cr.h * 0.5);
+    // at a wrap point the caret belongs to the start of the next line: the same offset either way
+    if back.off != off { rt = false; }
+    count = count + 1u32;
+    if off >= blocks[0usize].text.len() { break; }
+    off = nextCharOff(blocks[0usize].text.view(), off);
+  }
+  expect(rt, "every character boundary comes back from its own caret position");
+  expect(count > 100u32, "there were boundaries to test");
+  imm first = caretRect(&l, pos(0usize, 0usize));
+  expectFloat(f64.from(first.x), f64.from(cfg.margin), 0.01d, "the caret at 0 is at the margin");
+  expectFloat(f64.from(first.y), f64.from(cfg.marginTop), 0.01d, "and at the top");
+
+  // ---- selection ----
+  imm lo = pos(0usize, 10usize);
+  imm hi = pos(0usize, 112usize);
+  imm sel = selectionRects(&l, lo, hi);
+  imm loLine = lineOf(&l, lo);
+  imm hiLine = lineOf(&l, hi);
+  expectInt(i64.from(sel.len()), i64.from(hiLine - loLine + 1usize), "one selection rectangle a line");
+  expectFloat(f64.from((*sel[0usize]).x), f64.from(caretRect(&l, lo).x), 0.01d, "the first starts at the caret");
+  expectFloat(f64.from((*sel[sel.len() - 1usize]).x + (*sel[sel.len() - 1usize]).w), f64.from(caretRect(&l, hi).x), 0.01d, "the last ends at the other caret");
+
+  // ---- styles: bold and underline ----
+  mut sb = List[Block].empty();
+  mut sblk = Block.fromText("plain bold plain", Style.plain());
+  imm boldOp = new StyleOp(OP_BOLD, true, 0.0, 0u32);
+  imm ulOp = new StyleOp(OP_UNDERLINE, true, 0.0, 0u32);
+  styleRange(&mut sblk, 6usize, 10usize, &boldOp);
+  styleRange(&mut sblk, 6usize, 10usize, &ulOp);
+  sb.push(sblk);
+  imm ls = layoutRich(&sb, &noImages, faces, &cfg);
+  expectInt(i64.from(ls.rects.len()), 1i64, "one underline");
+  imm ul = ls.rects[0usize];
+  expectFloat(f64.from(ul.x), f64.from((*ls.glyphs[6usize]).x), 0.01d, "it starts under the first bold letter");
+  expectFloat(f64.from(ul.x + ul.w), f64.from((*ls.glyphs[10usize]).x), 0.01d, "and ends where the bold ends");
+  expect((*ls.glyphs[6usize]).face != (*ls.glyphs[0usize]).face, "bold uses another face than plain");
+  expect((*ls.glyphs[6usize]).adv > 0.0, "bold glyphs have width");
+
+  // ---- headings ----
+  mut hb = List[Block].empty();
+  mut h1 = Block.fromText("Title", Style.plain());
+  h1.kind = BK_H1;
+  hb.push(h1);
+  hb.push(Block.fromText("body", Style.plain()));
+  imm lh = layoutRich(&hb, &noImages, faces, &cfg);
+  expect((*lh.glyphs[0usize]).size > (*lh.glyphs[5usize]).size * 1.5, "a heading is larger than the body");
+  expect(lh.lines[1usize].top > lh.lines[0usize].top + lh.lines[0usize].height, "with a gap before the next block");
+
+  // ---- lists and numbering ----
+  mut lb = List[Block].empty();
+  mut k = 0usize;
+  while k < 5usize {
+    mut it = Block.fromText("item", Style.plain());
+    it.kind = BK_NUMBER;
+    if k == 1usize or k == 2usize { it.depth = 1u32; }
+    lb.push(it);
+    k = k + 1usize;
+  }
+  // items: 1.  a.  b.  2.  3.
+  imm lL = layoutRich(&lb, &noImages, faces, &cfg);
+  expectInt(i64.from(lL.markers.len()), 2i64 + 2i64 + 2i64 + 2i64 + 2i64, "each marker is two glyphs (a digit or letter and a full stop)");
+  imm reg = faces.font(0u32);
+  expectInt(i64.from((*lL.markers[0usize]).glyph), i64.from(reg.glyphOf(49u32)), "the first marker is 1");
+  expectInt(i64.from((*lL.markers[2usize]).glyph), i64.from(reg.glyphOf(97u32)), "the nested first is a");
+  expectInt(i64.from((*lL.markers[4usize]).glyph), i64.from(reg.glyphOf(98u32)), "the nested second is b");
+  expectInt(i64.from((*lL.markers[6usize]).glyph), i64.from(reg.glyphOf(50u32)), "the next outer is 2, after the nested ones");
+  expectInt(i64.from((*lL.markers[8usize]).glyph), i64.from(reg.glyphOf(51u32)), "then 3");
+  // the nested text is indented one level more
+  expectFloat(f64.from((*lL.lines[1usize]).x0 - (*lL.lines[0usize]).x0), f64.from(cfg.listIndent), 0.01d, "a nested item is one indent in");
+  expect((*lL.markers[0usize]).x < (*lL.lines[0usize]).x0, "the marker hangs left of the text");
+
+  // ---- a float ----
+  mut fb = List[Block].empty();
+  mut fblk = Block.fromText(LOREM, Style.plain());
+  mut images = List[ImageInfo].empty();
+  images.push(new ImageInfo(180.0, 120.0, PL_RIGHT, String.from("pic"), 0u32, 0u32, List[u8].empty()));
+  mut fs0 = Style.plain();
+  fs0.image = 1u32;
+  // the anchor character in the middle of the text
+  insertInBlock(&mut fblk, 4usize, anchorStr().view(), fs0);
+  fb.push(fblk);
+  fb.push(Block.fromText(LOREM, Style.plain()));
+  imm lf = layoutRich(&fb, &images, faces, &cfg);
+  expectInt(i64.from(lf.boxes.len()), 1i64, "one box");
+  imm bx = lf.boxes[0usize];
+  expectFloat(f64.from(bx.x + bx.w), f64.from(cfg.width - cfg.margin), 0.01d, "a right float sits at the right margin");
+  expectFloat(f64.from(bx.y), f64.from(cfg.marginTop), 0.01d, "at the top of its paragraph");
+  mut clear = true;
+  mut wrapped = 0u32;
+  mut below = 0u32;
+  i = 0usize;
+  while i < lf.lines.len() {
+    imm ln = lf.lines[i];
+    if ln.top < bx.y + bx.h and ln.top + ln.height > bx.y {
+      wrapped = wrapped + 1u32;
+      if ln.x1 > bx.x { clear = false; }
+    } elif ln.top >= bx.y + bx.h + 8.0 and ln.x1 - ln.x0 > bx.x - cfg.margin + 20.0 {
+      below = below + 1u32;
+    }
+    i = i + 1usize;
+  }
+  expect(clear, "no line that meets the float reaches it");
+  expect(wrapped >= 4u32, "several lines wrap beside the float");
+  expect(below >= 1u32, "lines below the float use the full width again");
+  checkTiling(&lf, &fb, "lines still tile the text with a float");
+  // the paragraph with the float has more lines than without (the same text is narrower for a while)
+  mut fb2 = List[Block].empty();
+  fb2.push(Block.fromText(LOREM, Style.plain()));
+  imm lnf = layoutRich(&fb2, &noImages, faces, &cfg);
+  expect(lf.lines.len() > lnf.lines.len() * 2usize - 2usize, "the wrapped text takes more lines");
+
+  // ---- a left float and the next paragraph wrapping ----
+  mut images2 = List[ImageInfo].empty();
+  images2.push(new ImageInfo(160.0, 300.0, PL_LEFT, String.from("tall"), 0u32, 0u32, List[u8].empty()));
+  mut tb = List[Block].empty();
+  mut t0 = Block.fromText("Short.", Style.plain());
+  insertInBlock(&mut t0, 0usize, anchorStr().view(), fs0);
+  tb.push(t0);
+  tb.push(Block.fromText(LOREM, Style.plain()));
+  imm lt = layoutRich(&tb, &images2, faces, &cfg);
+  imm tbx = lt.boxes[0usize];
+  mut nextWraps = true;
+  mut seen = 0u32;
+  i = 0usize;
+  while i < lt.lines.len() {
+    imm ln = lt.lines[i];
+    if ln.block == 1u32 and ln.top < tbx.y + tbx.h {
+      seen = seen + 1u32;
+      if ln.x0 < tbx.x + tbx.w - 0.01 { nextWraps = false; }
+    }
+    i = i + 1usize;
+  }
+  expect(seen >= 2u32, "the second paragraph starts beside the tall float");
+  expect(nextWraps, "and its lines there start right of it");
+
+  // ---- links, line movement, boxes ----
+  mut kb = List[Block].empty();
+  mut kblk = Block.fromText(LOREM, Style.plain());
+  imm linkOp = new StyleOp(OP_LINK, true, 0.0, 7u32);
+  styleRange(&mut kblk, 4usize, 9usize, &linkOp);
+  kb.push(kblk);
+  imm lk = layoutRich(&kb, &noImages, faces, &cfg);
+  imm linkGlyph = lk.glyphs[6usize];
+  expectInt(i64.from(linkAt(&lk, linkGlyph.x + 1.0, linkGlyph.y - 4.0)), 7i64, "a point on a linked word is the link");
+  expectInt(i64.from(linkAt(&lk, (*lk.glyphs[14usize]).x + 1.0, linkGlyph.y - 4.0)), 0i64, "and elsewhere on the line is not");
+  expect(((*lk.glyphs[6usize]).flags & GF_UNDERLINE) != 0u32, "links are underlined");
+  // movement
+  imm startP = pos(0usize, 0usize);
+  imm down = moveLine(&lk, startP, 1i32, cfg.margin + 100.0);
+  expect(lineOf(&lk, down) == 1usize, "down from the first line is on the second");
+  imm up = moveLine(&lk, down, -1i32, cfg.margin + 100.0);
+  expect(lineOf(&lk, up) == 0usize, "and up again");
+  expect(absF(caretRect(&lk, up).x - (cfg.margin + 100.0)) < 12.0, "keeping to about the same x");
+  imm ls0 = lineStartPos(&lk, down);
+  expectInt(i64.from(ls0.off), i64.from((*lk.lines[1usize]).start), "line start");
+  imm le0 = lineEndPos(&lk, down);
+  expectInt(i64.from(le0.off), i64.from((*lk.lines[1usize]).inkEnd), "line end stops before the trailing space of a wrapped line");
+  imm bottom = moveLine(&lk, pos(0usize, blocks[0usize].text.len()), 1i32, 100.0);
+  expectInt(i64.from(bottom.off), i64.from(blocks[0usize].text.len()), "down from the last line goes to the end of the text");
+  expectInt(i64.from(boxAt(&lf, bx.x + 5.0, bx.y + 5.0)), 0i64, "the float's box is found by a point inside it");
+  expectInt(i64.from(boxAt(&lf, bx.x - 5.0, bx.y + 5.0)), -1i64, "and not outside it");
+
+  // ---- an empty document ----
+  mut eb = List[Block].empty();
+  eb.push(Block.empty());
+  imm le = layoutRich(&eb, &noImages, faces, &cfg);
+  expectInt(i64.from(le.lines.len()), 1i64, "an empty block still has a line to put a caret on");
+  expect(le.height > 0.0, "and the page has height");
+}
+
+fn anchorStr() String {
+  mut s = String.empty();
+  s.appendByte(0xEFu8);
+  s.appendByte(0xBFu8);
+  s.appendByte(0xBCu8);
+  s;
+}
+
+fn absF(x f32) f32 { if x < 0.0 { -x; } else { x; }; }

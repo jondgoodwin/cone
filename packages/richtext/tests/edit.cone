@@ -1,0 +1,148 @@
+// Editing with undo, worked out by hand.
+//
+//   Type "Hello" (one undo step: a word undoes together), a space and "world" (two more steps).
+//   Enter splits: "Hello world" with the caret after "Hello" gives "Hello" and " world".
+//   Backspace at the start of the second block joins them again.
+//   Bold over 0..5 gives runs [5 bold][6 plain]; undo restores one run.
+//   A bullet over two blocks: both kind BK_BULLET; Enter on an empty item leaves the list.
+//   Delete across three blocks collapses them to one; undo brings all three back exactly.
+//   An image anchor (3 bytes) at the caret makes a run with image number 1.
+
+mod edittest;
+
+import testing use *;
+import collections use *;
+import richtext use *;
+
+fn text(e &RichEditor) String { plainText(&e.core.blocks); }
+
+fn main() i32 {
+  mut e = RichEditor.make();
+  e.insertText("H");
+  e.insertText("e");
+  e.insertText("l");
+  e.insertText("l");
+  e.insertText("o");
+  expectStr(text(&e).view(), "Hello", "typed");
+  expectInt(i64.from(e.hist.undoCount()), 1i64, "a word is one undo step");
+  e.insertText(" ");
+  e.insertText("w");
+  e.insertText("o");
+  e.insertText("r");
+  e.insertText("l");
+  e.insertText("d");
+  expectStr(text(&e).view(), "Hello world", "typed more");
+  expectInt(i64.from(e.hist.undoCount()), 3i64, "three steps: Hello, the space, world");
+  expectInt(i64.from(e.head().off), 11i64, "caret at the end");
+  e.undo();
+  expectStr(text(&e).view(), "Hello ", "undo removes the word");
+  expectInt(i64.from(e.head().off), 6i64, "and puts the caret back");
+  e.redo();
+  expectStr(text(&e).view(), "Hello world", "redo");
+
+  // Enter splits
+  e.setCaret(pos(0usize, 5usize), false);
+  e.enter();
+  expectInt(i64.from(e.blockCount()), 2i64, "two blocks");
+  expectStr(e.block(0usize).text.view(), "Hello", "first");
+  expectStr(e.block(1usize).text.view(), " world", "second");
+  expectInt(i64.from(e.head().block), 1i64, "caret on the second");
+  e.undo();
+  expectInt(i64.from(e.blockCount()), 1i64, "undo joins");
+  expectStr(text(&e).view(), "Hello world", "text back");
+  e.redo();
+  // backspace joins
+  e.backspace();
+  expectInt(i64.from(e.blockCount()), 1i64, "backspace at the start joins");
+  expectStr(text(&e).view(), "Hello world", "joined text");
+  expectInt(i64.from(e.head().off), 5i64, "caret where they met");
+  e.undo();
+  expectInt(i64.from(e.blockCount()), 2i64, "undo splits again");
+  e.undo();
+  expectInt(i64.from(e.blockCount()), 1i64, "undo the split too");
+
+  // bold
+  e.setCaret(pos(0usize, 0usize), false);
+  e.setCaret(pos(0usize, 5usize), true);
+  e.toggleStyle(OP_BOLD);
+  expectInt(i64.from(e.block(0usize).runs.len()), 2i64, "bold makes two runs");
+  expect((*e.block(0usize).runs[0usize]).style.bold, "the first is bold");
+  expectInt(i64.from((*e.block(0usize).runs[0usize]).len), 5i64, "five bytes bold");
+  e.toggleStyle(OP_BOLD);
+  expectInt(i64.from(e.block(0usize).runs.len()), 1i64, "toggling again clears it");
+  e.undo();
+  expectInt(i64.from(e.block(0usize).runs.len()), 2i64, "undo of the clearing: bold again");
+  e.undo();
+  expectInt(i64.from(e.block(0usize).runs.len()), 1i64, "undo of the bolding");
+
+  // the pending style
+  e.setCaret(pos(0usize, 11usize), false);
+  e.toggleStyle(OP_ITALIC);
+  e.insertText("!");
+  expectInt(i64.from(e.block(0usize).runs.len()), 2i64, "an italic bang");
+  expect((*e.block(0usize).runs[1usize]).style.italic, "typed text took the pending italic");
+  e.insertText("?");
+  expect(!e.pendingSet, "the pending style is used up");
+  expect((*e.block(0usize).runs[1usize]).style.italic, "and the next character follows the one before it");
+  expectInt(i64.from((*e.block(0usize).runs[1usize]).len), 2i64, "so both are in one italic run");
+  e.undo();
+  expectStr(text(&e).view(), "Hello world", "one undo takes both characters back");
+
+  // lists
+  e.setCaret(pos(0usize, 11usize), false);
+  e.enter();
+  e.insertText("second");
+  e.setCaret(pos(0usize, 0usize), false);
+  e.setCaret(pos(1usize, 3usize), true);
+  e.toggleList(BK_BULLET);
+  expectInt(i64.from(e.block(0usize).kind), i64.from(BK_BULLET), "first block is a bullet");
+  expectInt(i64.from(e.block(1usize).kind), i64.from(BK_BULLET), "second block too");
+  e.indent(1i32);
+  expectInt(i64.from(e.block(1usize).depth), 1i64, "indented");
+  e.indent(-1i32);
+  e.toggleList(BK_BULLET);
+  expectInt(i64.from(e.block(0usize).kind), i64.from(BK_PARA), "toggling again takes the list off");
+  e.undo();
+  expectInt(i64.from(e.block(0usize).kind), i64.from(BK_BULLET), "undo puts it back");
+  // Enter on an empty item leaves the list
+  e.setCaret(pos(1usize, 6usize), false);
+  e.enter();
+  expectInt(i64.from(e.blockCount()), 3i64, "a third item");
+  expectInt(i64.from(e.block(2usize).kind), i64.from(BK_BULLET), "which is a bullet");
+  e.enter();
+  expectInt(i64.from(e.block(2usize).kind), i64.from(BK_PARA), "Enter on the empty item leaves the list");
+  expectInt(i64.from(e.blockCount()), 3i64, "without a fourth block");
+
+  // delete across blocks, and undo it exactly
+  e.insertText("tail");
+  expectInt(i64.from(e.blockCount()), 3i64, "three blocks");
+  imm before = text(&e);
+  e.setCaret(pos(0usize, 2usize), false);
+  e.setCaret(pos(2usize, 2usize), true);
+  e.deleteSelection();
+  expectInt(i64.from(e.blockCount()), 1i64, "three blocks become one");
+  expectStr(text(&e).view(), "Heil", "the front of the first and the back of the last");
+  e.undo();
+  expectInt(i64.from(e.blockCount()), 3i64, "undo brings three back");
+  expectStr(text(&e).view(), before.view(), "with exactly the same text");
+  expectInt(i64.from(e.block(0usize).kind), i64.from(BK_BULLET), "and kinds");
+  expectInt(i64.from(e.block(2usize).kind), i64.from(BK_PARA), "and the last's");
+  e.redo();
+  expectStr(text(&e).view(), "Heil", "redo");
+  e.undo();
+
+  // an image anchor
+  mut info = new ImageInfo(120.0, 80.0, PL_RIGHT, String.from("a picture"), 0u32, 0u32, List[u8].empty());
+  imm img = e.addImage(info);
+  e.setCaret(pos(0usize, 5usize), false);
+  e.insertImage(img);
+  expectInt(i64.from(e.block(0usize).text.len()), 14i64, "five letters, the anchor's 3 bytes, six more");
+  expectInt(i64.from(e.block(0usize).runs.len()), 3i64, "three runs");
+  expectInt(i64.from((*e.block(0usize).runs[1usize]).style.image), 1i64, "the middle one is image 1");
+  expectInt(i64.from(e.head().off), 8i64, "caret after it");
+  e.backspace();
+  expectInt(i64.from(e.block(0usize).runs.len()), 1i64, "backspace removes the anchor");
+  e.undo();
+  expectInt(i64.from(e.block(0usize).runs.len()), 3i64, "undo puts it back");
+  done();
+}
