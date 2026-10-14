@@ -1,0 +1,237 @@
+// A train on a track (src/train.cone): gravity, friction, air, chain, launch and brake zones, g-forces,
+// each check against a number worked out by hand or from an independent method.
+//
+// ENERGY AND PERIOD (frictionless, on a circular valley of radius 25 m)
+// 1. Released at rest 12.5 m up the valley (60 degrees from the bottom), the speed at the bottom is
+//    sqrt(2 g h) within 0.3 percent (h read off the track itself).
+// 2. Released at 12 degrees, the quarter period (release to the bottom) is a quarter of the pendulum's
+//    2 pi sqrt(R / g) (1 + theta0^2 / 16), within 2 percent.
+// A LOOP (a closed vertical ring of radius 10 m, the train sent round at 25 m/s, no friction)
+// 3. The felt vertical g at the bottom is 1 + v^2 / (g r), and at the top v_top^2 / (g r) - 1, with v_top
+//    from energy: within 4 percent (the ring is 40 control points). The sideways g is zero and the
+//    energy of five laps does not drift (1 part in 10^4).
+// A BANKED TURN (a closed level circle of radius 30 m, 15 m/s)
+// 4. Banked at atan(v^2 / (g R)) = 37.4 degrees the lateral g is zero (under 0.02) and the vertical g is
+//    1 / cos(bank), 1.26; flat, the lateral g is v^2 / (g R) = 0.76, toward the right (the centre).
+// FRICTION AND AIR (a straight 20 degree slope, 3 km long)
+// 5. With air drag alone the speed reaches the terminal speed sqrt(2 m g sin(theta) / (rho CdA)) within 1 percent.
+// 6. With rolling resistance alone the acceleration is g (sin(theta) - Crr cos(theta)) within 0.5 percent
+//    (the rails' push on a slope is m g cos(theta)).
+// ZONES
+// 7. A chain lift (a 100 m, 30 degree slope, 5 cars, chain 3 m/s) brings the train to 3.00 m/s and holds it
+//    there; a chain too weak for the train's weight (200 N a car) leaves it slower than the chain's speed.
+// 8. A launch zone sends the train out at its speed (20 m/s within 0.01) and a brake zone after it stops it
+//    (under 0.01 m/s).
+// CARS
+// 9. At rest on level track the rider feels 1 g up and 0 else.
+// 10. The cars of a train on a straight are 2.8 m apart (length 2.4 + gap 0.4) and their poses point along
+//     the track: the rotation of the pose carries x to the tangent and y to up.
+
+mod traintest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import splinetrack use *;
+
+fn pt(x f32, y f32, z f32, roll f32) TrackPoint { new TrackPoint(new Vec3(x, y, z), roll); }
+fn z0() Vec3 { new Vec3(0., 0., 0.); }
+
+fn frictionless() CarSpec { new CarSpec(650., 2.4, 1.6, 0.4, 0., 0., 0.); }
+
+// an arc of a circle of radius r centred (0, r, 0): angles -a0 .. +a1 degrees from the bottom, a point every 'step' degrees
+fn valley(r f32, a0 f32, a1 f32, step f32) Track {
+  mut pts = List[TrackPoint].empty();
+  mut a = -a0;
+  while a <= a1 + 0.001 {
+    imm t = radians(a);
+    pts.push(pt(r * libc.sinf(t), r - r * libc.cosf(t), 0., 0.));
+    a = a + step;
+  }
+  Track.build(pts, false, z0(), z0());
+}
+
+fn ring(n i32, r f32, vertical bool, roll f32) Track {
+  mut pts = List[TrackPoint].empty();
+  mut i = 0;
+  while i < n {
+    imm a = 6.28318530718 * f32.from(i) / f32.from(n);
+    if vertical { pts.push(pt(r * libc.sinf(a), r - r * libc.cosf(a), 0., roll)); }
+    else { pts.push(pt(r * libc.cosf(a), 0., r * libc.sinf(a), roll)); }
+    i = i + 1;
+  }
+  Track.build(pts, true, z0(), z0());
+}
+
+fn slope(length f32, degrees f32) Track {
+  imm t = radians(degrees);
+  mut pts = List[TrackPoint].empty();
+  pts.push(pt(0., length * libc.sinf(t), 0., 0.));
+  pts.push(pt(length * 0.5 * libc.cosf(t), length * 0.5 * libc.sinf(t), 0., 0.));
+  pts.push(pt(length * libc.cosf(t), 0., 0., 0.));
+  Track.build(pts, false, z0(), z0());
+}
+
+fn main() i32 {
+  imm g = 9.81;
+  mut none = List[Zone].empty();
+
+  // 1. speed at the bottom of a valley
+  imm v1 = valley(25., 60., 60., 5.);
+  mut tr = Train.uniform(frictionless(), 1usize, 0.001);
+  imm yStart = v1.at(0.001).pos.y;
+  imm half = v1.length * 0.5;
+  mut vBottom = 0.;
+  mut guard = 0;
+  while tr.s < half and guard < 100000 {
+    tr.step(&v1, &none, 0.001);
+    guard = guard + 1;
+  }
+  // at the first step past the middle: speed at s, from energy at that place
+  imm yHere = v1.at(tr.s).pos.y;
+  expectFloat(f64.from(tr.v), f64.from((2. * g * (yStart - yHere)).sqrt()), 0.003 * 15.6, "speed at the bottom is sqrt(2 g h)");
+  expectFloat(f64.from(tr.v), 15.66, 0.1, "which for 12.5 m is 15.66 m/s");
+
+  // 2. the pendulum's quarter period
+  imm v2 = valley(25., 12., 12., 2.);
+  mut tp = Train.uniform(frictionless(), 1usize, 0.001);
+  mut time = 0.;
+  guard = 0;
+  while tp.s < v2.length * 0.5 and guard < 200000 {
+    tp.step(&v2, &none, 0.002);
+    time = time + 0.002;
+    guard = guard + 1;
+  }
+  imm th0 = radians(12.);
+  imm period = 6.28318530718 * (25. / g).sqrt() * (1. + th0 * th0 / 16.);
+  expectFloat(f64.from(time * 4.), f64.from(period), 0.02d * f64.from(period), "a valley's period is the pendulum's");
+
+  // 3. loop
+  imm lp = ring(72, 10., true, 0.);
+  mut tl = Train.uniform(frictionless(), 1usize, 0.);
+  tl.v = 25.;
+  imm e0 = tl.energy(&lp);
+  mut gBottom = 0.;
+  mut gTop = 0.;
+  mut gSide = 0.;
+  mut vTop = 0.;
+  mut drift = 0.;
+  mut stepN = 0;
+  while stepN < 3000 {
+    tl.step(&lp, &none, 0.01);
+    imm gf = tl.gforce(&lp, 0usize);
+    imm p = lp.at(tl.s);
+    if p.pos.y < 0.3 { gBottom = gf.vertical; }
+    if p.pos.y > 19.7 { gTop = gf.vertical; vTop = tl.v; }
+    if libc.fabsf(gf.lateral) > gSide { gSide = libc.fabsf(gf.lateral); }
+    imm de = libc.fabsf(tl.energy(&lp) - e0) / (0.5 * 650. * 625.);
+    if de > drift { drift = de; }
+    stepN = stepN + 1;
+  }
+  expectFloat(f64.from(gBottom), 1d + 625d / (9.81d * 10d), 0.04 * 7.37, "g at the loop's bottom is 1 + v^2 / (g r)");
+  imm vt2 = 625. - 4. * g * 10.;
+  expectFloat(f64.from(gTop), f64.from(vt2 / (g * 10.) - 1.), 0.04 * 1.4, "g at the loop's top is v^2 / (g r) - 1");
+  expectFloat(f64.from(vTop * vTop), f64.from(vt2), 0.03d * f64.from(vt2), "the speed at the top is from energy");
+  expectFloat(f64.from(gSide), 0d, 0.02, "no lateral g in a loop");
+  expectFloat(f64.from(drift), 0d, 0.0001, "five laps conserve energy to 1 part in 10^4");
+
+  // 4. banked turn
+  imm bankAngle = libc.atanf(15. * 15. / (g * 30.));
+  imm turn = ring(36, 30., false, bankAngle);
+  mut tb = Train.uniform(frictionless(), 1usize, 0.);
+  tb.v = 15.;
+  tb.step(&turn, &none, 0.1);
+  imm gb = tb.gforce(&turn, 0usize);
+  expectFloat(f64.from(gb.lateral), 0d, 0.02, "banked for its speed, a turn has no lateral g");
+  expectFloat(f64.from(gb.vertical), f64.from(1. / libc.cosf(bankAngle)), 0.03, "and 1 / cos(bank) vertical g");
+  imm flat = ring(36, 30., false, 0.);
+  mut tf = Train.uniform(frictionless(), 1usize, 0.);
+  tf.v = 15.;
+  tf.step(&flat, &none, 0.1);
+  imm gf2 = tf.gforce(&flat, 0usize);
+  expectFloat(f64.from(gf2.lateral), f64.from(15. * 15. / (g * 30.)), 0.02, "flat, the lateral g is v^2 / (g R)");
+
+  // 5. terminal speed
+  imm sl = slope(6000., 20.);
+  mut dragOnly = new CarSpec(650., 2.4, 1.6, 0.4, 1.1, 0., 0.);
+  mut td = Train.uniform(dragOnly, 1usize, 1.);
+  mut tt = 0.;
+  imm vTerm = (2. * 650. * g * libc.sinf(radians(20.)) / (1.2 * 1.1)).sqrt();
+  imm tau = vTerm / (g * libc.sinf(radians(20.)));
+  while tt < 30. { td.step(&sl, &none, 0.02); tt = tt + 0.02; }
+  // from rest the speed is v_t tanh(t / tau)
+  expectFloat(f64.from(td.v), f64.from(vTerm * (1. - libc.expf(-60. / tau)) / (1. + libc.expf(-60. / tau))), 0.005d * f64.from(vTerm), "speed under air drag follows v_t tanh(t / tau)");
+  while tt < 70. { td.step(&sl, &none, 0.02); tt = tt + 0.02; }
+  expectFloat(f64.from(td.v), f64.from(vTerm), 0.01d * f64.from(vTerm), "terminal speed under air drag");
+
+  // 6. rolling resistance
+  mut rollOnly = new CarSpec(650., 2.4, 1.6, 0.4, 0., 0.05, 0.);
+  mut tr6 = Train.uniform(rollOnly, 1usize, 1.);
+  tt = 0.;
+  while tt < 5. { tr6.step(&sl, &none, 0.01); tt = tt + 0.01; }
+  imm a6 = g * (libc.sinf(radians(20.)) - 0.05 * libc.cosf(radians(20.)));
+  expectFloat(f64.from(tr6.v), f64.from(a6 * 5.), 0.005d * f64.from(a6 * 5.), "acceleration with rolling resistance");
+
+  // 7. chain lift
+  imm lift = slope(100., -30.);
+  mut chain = List[Zone].empty();
+  chain.push(Zone.chain(0., 90., 3., 10000.));
+  mut tc = Train.uniform(CarSpec.coaster(), 5usize, 15.);
+  tt = 0.;
+  mut atSpeed = true;
+  while tt < 20. {
+    tc.step(&lift, &chain, 0.01);
+    tt = tt + 0.01;
+    if tt > 12. and libc.fabsf(tc.v - 3.) > 0.01 { atSpeed = false; }
+  }
+  expect(atSpeed, "once fully on the lift the train holds the chain's speed");
+  expectFloat(f64.from(tc.v), 3d, 0.01, "the chain's 3 m/s");
+  mut weak = List[Zone].empty();
+  weak.push(Zone.chain(0., 90., 3., 200.));
+  mut tw = Train.uniform(CarSpec.coaster(), 5usize, 15.);
+  tt = 0.;
+  while tt < 12. { tw.step(&lift, &weak, 0.01); tt = tt + 0.01; }
+  expect(tw.v < 2.5, "a chain too weak for the train's weight cannot hold the train at speed");
+
+  // 8. launch then brake
+  imm flatLine = slope(400., 0.);
+  mut lz = List[Zone].empty();
+  lz.push(Zone.launch(0., 60., 20., 20000.));
+  lz.push(Zone.brake(250., 395., 0., 20000.));
+  mut tn = Train.uniform(CarSpec.coaster(), 2usize, 5.);
+  tt = 0.;
+  mut vLaunch = 0.;
+  while tt < 60. {
+    tn.step(&flatLine, &lz, 0.01);
+    tt = tt + 0.01;
+    if tn.v > vLaunch { vLaunch = tn.v; }
+  }
+  expectFloat(f64.from(vLaunch), 20d, 0.05, "a launch zone sends the train out at its speed");
+  expectFloat(f64.from(tn.v), 0d, 0.01, "a brake zone stops it");
+  expect(tn.s < 396., "and it stops on the track");
+
+  // 9. at rest
+  imm level = slope(50., 0.);
+  mut tr9 = Train.uniform(CarSpec.coaster(), 3usize, 20.);
+  imm g9 = tr9.gforce(&level, 1usize);
+  expectFloat(f64.from(g9.vertical), 1d, 0.0001, "at rest: 1 g up");
+  expectFloat(f64.from(g9.lateral), 0d, 0.0001, "no lateral g");
+  expectFloat(f64.from(g9.longitudinal), 0d, 0.0001, "no longitudinal g");
+
+  // 10. poses
+  imm c0 = tr9.carPose(&level, 0usize);
+  imm c1 = tr9.carPose(&level, 1usize);
+  expectFloat(f64.from((c0.pos - c1.pos).length()), 2.8d, 0.01, "cars of a train are one length plus a gap apart");
+  imm fwd = c0.rot * new Vec3(1., 0., 0.);
+  imm upv = c0.rot * new Vec3(0., 1., 0.);
+  imm tang = level.at(20.).tangent;
+  expectFloat(f64.from(fwd.dot(tang)), 1d, 0.0001, "a car points along the track");
+  expectFloat(f64.from(upv.dot(level.at(20.).up)), 1d, 0.0001, "and its up is the track's up");
+  // on a banked loop too
+  mut tl2 = Train.uniform(CarSpec.coaster(), 3usize, 12.);
+  imm cp = tl2.carPose(&lp, 1usize);
+  imm sample = lp.at(tl2.carS(1usize));
+  expectFloat(f64.from((cp.rot * new Vec3(0., 1., 0.)).dot(sample.up)), 1d, 0.01, "a car on the loop has the track's up");
+  done();
+}

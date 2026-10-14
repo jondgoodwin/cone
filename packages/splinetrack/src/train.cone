@@ -1,0 +1,267 @@
+// ======== A train of coupled cars on a track, moved by gravity ========
+//
+// The cars are held to the track (a coaster's wheels run on three sides of the rail, so a car cannot
+// leave it), so a train is a ONE-DIMENSIONAL system: its state is the arc length 's' of its lead car
+// and the speed 'v' along the track. (Lagrangian mechanics with one generalised coordinate; the same
+// reduction every roller-coaster simulator makes, e.g. Pendrill, "Rollercoaster loop shapes", Phys.
+// Educ. 40, 2005.) The couplers are rigid: every car has the train's speed, and the train's
+// acceleration is the sum of the forces along the track on each car, divided by the total mass:
+//
+//   gravity     m g (T . down) at each car's own place, so a train half over a crest is pulled by both slopes;
+//   rolling     Crr N + c v, with N the force the rails push the car with (below), Coulomb friction
+//               that grows in a loop's trough, plus a bearing term linear in speed;
+//   air         1/2 rho CdA v |v|.
+//
+// THE FORCE THE RAILS PUSH WITH. The rider's acceleration is a = (dv/dt) T + v^2 kappa, with kappa the
+// curvature vector dT/ds. The rails supply a - g, the specific force (what an accelerometer reads):
+// its parts along the car's up, right and forward are the vertical, lateral and longitudinal g-forces
+// the rider feels (GForce, below), in units of g. On a level straight track at rest it is 1 g up.
+// The part perpendicular to the track is N / m, which friction scales with.
+//
+// INTEGRATION. Classical RK4 on (s, v) over steps no longer than 1/240 s (MAX_SUBSTEP): the energy of a
+// frictionless run is conserved to about a part in 10^5 over a lap (tested), which a semi-implicit
+// Euler step is not.
+//
+// POWERED ZONES (chain lifts, launches, brakes). Zones act on a train after the free dynamics of each
+// substep, as a speed servo limited in force: the cars in the zone together supply at most 'force'
+// newtons each, i.e. dv <= (sum of forces) / (total mass) dt.
+//   CHAIN   brings the train up to the chain's 'speed' and holds it there (the dogs: the chain also
+//           stops the train rolling back). A train partly on the lift, with the rest of it over the
+//           hill pulling back, climbs more slowly until more cars are on the chain.
+//   LAUNCH  accelerates to 'speed' and lets go (a linear motor or hydraulic launch).
+//   BRAKE   brings the train toward 'speed' (0: a stop; the brake holds it against a slope as long
+//           as its force is enough).
+// A zone is a range of arc length on the track [s0, s1]; a car is in it while its centre is.
+
+pub const GRAVITY = 9.81f32;
+pub const AIR_DENSITY = 1.2f32;
+pub const MAX_SUBSTEP = 1f32 / 240f32;
+
+pub const ZONE_CHAIN = 0;
+pub const ZONE_LAUNCH = 1;
+pub const ZONE_BRAKE = 2;
+
+pub struct Zone {
+  pub kind i32;
+  pub s0 f32;
+  pub s1 f32;
+  pub speed f32;       // m/s
+  pub force f32;       // N a car in the zone supplies, at most
+
+  pub fn chain(s0 f32, s1 f32, speed f32, force f32) Zone { new Zone(ZONE_CHAIN, s0, s1, speed, force); }
+  pub fn launch(s0 f32, s1 f32, speed f32, force f32) Zone { new Zone(ZONE_LAUNCH, s0, s1, speed, force); }
+  pub fn brake(s0 f32, s1 f32, speed f32, force f32) Zone { new Zone(ZONE_BRAKE, s0, s1, speed, force); }
+}
+
+// A car, as numbers
+pub struct CarSpec {
+  pub mass f32;            // kg, loaded
+  pub length f32;          // m, the body's
+  pub wheelbase f32;       // m, between its front and rear bogies (orients it on a curve)
+  pub gap f32;             // m between this car's end and the next car's
+  pub dragArea f32;        // CdA, m^2
+  pub rolling f32;         // Crr, Coulomb rolling resistance (a fraction of the rails' push)
+  pub bearing f32;         // N per (m/s) per kg: the linear term
+
+  // A four-seat coaster car: 650 kg loaded, 2.4 m long, bogies 1.6 m apart, 0.4 m between cars,
+  // CdA 1.1 m^2, Crr 0.004, bearing friction 0.002 N/(m/s)/kg
+  pub fn coaster() CarSpec { new CarSpec(650., 2.4, 1.6, 0.4, 1.1, 0.004, 0.002); }
+}
+
+// The felt acceleration, in g: along the car's up (positive presses the rider into the seat), right,
+// and forward (positive: pushed back into the seat)
+pub struct GForce {
+  pub vertical f32;
+  pub lateral f32;
+  pub longitudinal f32;
+  pub total f32;
+}
+
+pub struct CarPose {
+  pub pos Vec3;
+  pub rot Quat;       // x forward, y up, z right
+}
+
+// The rotation whose columns are x, y, z (right-handed, orthonormal): Shepperd's method
+pub fn quatFromBasis(x Vec3, y Vec3, z Vec3) Quat {
+  imm m00 = x.x; imm m10 = x.y; imm m20 = x.z;
+  imm m01 = y.x; imm m11 = y.y; imm m21 = y.z;
+  imm m02 = z.x; imm m12 = z.y; imm m22 = z.z;
+  imm tr = m00 + m11 + m22;
+  mut q = new Quat(0., 0., 0., 1.);
+  if tr > 0. {
+    imm s = 2. * (tr + 1.).sqrt();
+    q = new Quat((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, s * 0.25);
+  } elif m00 > m11 and m00 > m22 {
+    imm s = 2. * (1. + m00 - m11 - m22).sqrt();
+    q = new Quat(s * 0.25, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s);
+  } elif m11 > m22 {
+    imm s = 2. * (1. + m11 - m00 - m22).sqrt();
+    q = new Quat((m01 + m10) / s, s * 0.25, (m12 + m21) / s, (m02 - m20) / s);
+  } else {
+    imm s = 2. * (1. + m22 - m00 - m11).sqrt();
+    q = new Quat((m02 + m20) / s, (m12 + m21) / s, s * 0.25, (m10 - m01) / s);
+  }
+  q.normalize();
+}
+
+// The specific force vector (a - g) of a rider at sample 'p' moving at speed v with along-track acceleration a
+fn specificForce(p &TrackSample, v f32, a f32) Vec3 {
+  p.curvature * (v * v) + p.tangent * a + new Vec3(0., GRAVITY, 0.);
+}
+
+pub struct Train {
+  pub cars List[CarSpec];
+  pub offsets List[f32];     // arc length from the lead car's centre back to each car's centre
+  pub mass f32;              // total
+  pub s f32;                 // the lead car's centre
+  pub v f32;                 // m/s along the track (negative: rolling back)
+  pub accel f32;             // the last step's mean along-track acceleration, m/s^2
+  pub odometer f32;          // distance run, m
+  pub ended bool;            // an open track's end was reached
+
+  // A train of the given cars, the first leading, its lead car's centre at arc length s0
+  pub fn make(cars List[CarSpec], s0 f32) Train {
+    mut offs = List[f32].empty();
+    mut m = 0.;
+    mut o = 0.;
+    mut i = 0usize;
+    while i < cars.len() {
+      if i > 0usize {
+        o = o + cars[i - 1usize].length * 0.5 + cars[i - 1usize].gap + cars[i].length * 0.5;
+      }
+      offs.push(o);
+      m = m + cars[i].mass;
+      i = i + 1usize;
+    }
+    new Train(cars, offs, m, s0, 0., 0., 0., false);
+  }
+
+  // 'n' identical cars
+  pub fn uniform(spec CarSpec, n usize, s0 f32) Train {
+    mut cars = List[CarSpec].empty();
+    mut i = 0usize;
+    while i < n { cars.push(spec); i = i + 1usize; }
+    Train.make(cars, s0);
+  }
+
+  pub fn carCount(self &) usize { cars.len(); }
+
+  // Arc length of car i's centre
+  pub fn carS(self &, i usize) f32 { s - *offsets[i]; }
+
+  // The along-track acceleration of the free train (gravity, rolling resistance, air) at (s, v)
+  fn freeAccel(self &, track &Track, sl f32, vl f32) f32 {
+    mut f = 0.;
+    imm sgn = if vl > 0.0001 { 1.; } elif vl < -0.0001 { -1.; } else { vl / 0.0001; };
+    mut i = 0usize;
+    while i < cars.len() {
+      imm c = cars[i];
+      imm p = track.at(sl - *offsets[i]);
+      // gravity along the tangent
+      f = f + c.mass * GRAVITY * (-p.tangent.y);
+      // the rails' push: the specific force perpendicular to the tangent
+      imm sf = specificForce(&p, vl, 0.);
+      imm perp = sf - p.tangent * sf.dot(p.tangent);
+      imm normal = c.mass * perp.length();
+      f = f - sgn * (c.rolling * normal + c.bearing * c.mass * libc.fabsf(vl));
+      f = f - 0.5 * AIR_DENSITY * c.dragArea * vl * libc.fabsf(vl);
+      i = i + 1usize;
+    }
+    f / mass;
+  }
+
+  // The total force limit and the target of the zones the cars are in now, applied as a speed servo
+  fn applyZones(self &mut, track &Track, zones &List[Zone], dt f32) {
+    mut z = 0usize;
+    while z < zones.len() {
+      imm zone = zones[z];
+      mut force = 0.;
+      mut i = 0usize;
+      while i < cars.len() {
+        imm cs = track.wrap(s - *offsets[i]);
+        if cs >= zone.s0 and cs <= zone.s1 { force = force + zone.force; }
+        i = i + 1usize;
+      }
+      if force > 0. {
+        imm dvMax = force / mass * dt;
+        if zone.kind == ZONE_CHAIN or zone.kind == ZONE_LAUNCH {
+          if v < zone.speed { v = if v + dvMax < zone.speed { v + dvMax; } else { zone.speed; }; }
+        } else {
+          if v > zone.speed { v = if v - dvMax > zone.speed { v - dvMax; } else { zone.speed; }; }
+          elif zone.speed == 0. and v < 0. { v = if v + dvMax < 0. { v + dvMax; } else { 0.; }; }
+        }
+      }
+      z = z + 1usize;
+    }
+  }
+
+  // Advance 'dt' seconds (in substeps of at most MAX_SUBSTEP)
+  pub fn step(self &mut, track &Track, zones &List[Zone], dt f32) {
+    imm n = i32.from(libc.ceilf(dt / MAX_SUBSTEP));
+    imm h = dt / f32.from(n);
+    imm v0 = v;
+    mut k = 0;
+    while k < n {
+      // RK4 on (s, v)
+      imm a1 = freeAccel(track, s, v);
+      imm s2 = s + v * h * 0.5;
+      imm v2 = v + a1 * h * 0.5;
+      imm a2 = freeAccel(track, s2, v2);
+      imm s3 = s + v2 * h * 0.5;
+      imm v3 = v + a2 * h * 0.5;
+      imm a3 = freeAccel(track, s3, v3);
+      imm s4 = s + v3 * h;
+      imm v4 = v + a3 * h;
+      imm a4 = freeAccel(track, s4, v4);
+      imm ds = (v + 2. * v2 + 2. * v3 + v4) * h / 6.;
+      s = s + ds;
+      v = v + (a1 + 2. * a2 + 2. * a3 + a4) * h / 6.;
+      odometer = odometer + libc.fabsf(ds);
+      applyZones(track, zones, h);
+      if track.closed {
+        s = track.wrap(s);
+      } else {
+        imm tail = *offsets[offsets.len() - 1usize];
+        if s > track.length { s = track.length; if v > 0. { v = 0.; } ended = true; }
+        if s - tail < 0. { s = tail; if v < 0. { v = 0.; } ended = true; }
+      }
+      k = k + 1;
+    }
+    accel = (v - v0) / dt;
+  }
+
+  // The g-forces on a rider in car i
+  pub fn gforce(self &, track &Track, i usize) GForce {
+    imm p = track.at(s - *offsets[i]);
+    imm f = specificForce(&p, v, accel);
+    imm up = f.dot(p.up) / GRAVITY;
+    imm lat = f.dot(p.right) / GRAVITY;
+    imm lon = f.dot(p.tangent) / GRAVITY;
+    new GForce(up, lat, lon, f.length() / GRAVITY);
+  }
+
+  // The pose of car i: centred between its bogies, pointing from the rear bogie to the front
+  pub fn carPose(self &, track &Track, i usize) CarPose {
+    imm c = *cars[i];
+    imm cs = s - *offsets[i];
+    imm front = track.at(cs + c.wheelbase * 0.5);
+    imm rear = track.at(cs - c.wheelbase * 0.5);
+    imm fwd = (front.pos - rear.pos).normalize();
+    mut up = front.up + rear.up;
+    up = (up - fwd * up.dot(fwd)).normalize();
+    imm right = fwd.cross(up);
+    new CarPose((front.pos + rear.pos) * 0.5, quatFromBasis(fwd, up, right));
+  }
+
+  // The train's energy per kilogram-less joule: kinetic + potential (J), the potential from y = 0
+  pub fn energy(self &, track &Track) f32 {
+    mut e = 0.5 * mass * v * v;
+    mut i = 0usize;
+    while i < cars.len() {
+      e = e + cars[i].mass * GRAVITY * track.at(s - *offsets[i]).pos.y;
+      i = i + 1usize;
+    }
+    e;
+  }
+}
