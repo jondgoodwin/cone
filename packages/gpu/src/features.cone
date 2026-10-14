@@ -1,0 +1,304 @@
+// ---- Compute features: what a GPU offers for compute, asked for, and enabled ----
+//
+// The device 'requestDevice' makes enables only what drawing needs. Compute
+// that moves a lot of numbers (a language model's weights, quantised to 8 or
+// 4 bits a value, multiplied by 16-bit or 32-bit activations) wants more, and
+// each of it is optional in Vulkan, so a GPU is asked what it has, a program
+// asks for what it wants, and the device is made with the ones both name:
+//
+//   imm has = adapter.computeCapabilities();         // a plain value: what this GPU offers
+//   if has.float16Arithmetic and has.integerDotProduct { ... }
+//   mut device = adapter.requestComputeDevice(&ComputeRequest.all());   // or ask for some
+//   device.compute.float16Arithmetic                 // what the device was made with
+//
+// What is queried (Vulkan 1.1 to 1.3's core features and limits, through
+// vkGetPhysicalDeviceFeatures2 and vkGetPhysicalDeviceProperties2; nothing is
+// an extension):
+//   - 16-bit floats: shaderFloat16 (arithmetic), storageBuffer16BitAccess and
+//     uniformAndStorageBuffer16BitAccess (storage); 16-bit integers: shaderInt16;
+//   - 8-bit integers: shaderInt8 (arithmetic), storageBuffer8BitAccess and
+//     uniformAndStorageBuffer8BitAccess (storage);
+//   - integer dot product: shaderIntegerDotProduct, and which forms the GPU
+//     does in hardware ('dot4x8Packed...Accelerated': four signed or unsigned
+//     bytes packed in a u32, multiplied and added: Slang's dot4add_i8packed and
+//     dot4add_u8packed, SPIR-V's OpSDot and OpUDot);
+//   - shaderSubgroupExtendedTypes: subgroup operations on 16-bit and 8-bit values;
+//   - the subgroup (a GPU's warp or wave): its size, the range of sizes, the
+//     shader stages that have subgroup operations (this layer's SHADER_STAGE_...
+//     bits) and which operations (SUBGROUP_OP_... bits, Vulkan's);
+//   - limits: maxBufferSize, maxMemoryAllocationSize, maxStorageBufferRange,
+//     maxPerStageDescriptorStorageBuffers, the compute workgroup and its
+//     shared memory, the storage buffer offset alignment, and the sizes of
+//     the memory heaps ('Adapter.memoryHeaps').
+//
+// What is enabled, and when. 'requestDevice' and 'requestDeviceWith' enable
+// none of it, exactly as before (a drawing program's device is unchanged), and
+// 'device.compute' says so (its flags false, its numbers still the GPU's).
+// 'requestComputeDevice' enables a feature when it is asked for in the
+// 'ComputeRequest' AND the GPU has it; one asked for and absent is not an
+// error, 'device.compute' tells. A shader whose SPIR-V declares a capability
+// that needs a feature the device did not enable ('createShaderModule') is
+// refused, naming it, instead of leaving it to the driver.
+//
+// Large buffers. The layer holds programs to WebGPU's default limits so that
+// they run in a browser too: a storage buffer binding of at most 128 MiB, and
+// 8 storage buffers a shader stage. A model's weights do not fit them (a
+// layer's matrix is hundreds of MiB, the whole model several GiB). With
+// 'ComputeRequest.largeBuffers' the device lifts those two limits to the GPU's
+// own (maxStorageBufferRange; maxPerStageDescriptorStorageBuffers), and says
+// what it now holds programs to in 'device.maxStorageBufferBindingSize' and
+// 'device.maxStorageBuffersPerStage'. That program no longer runs in a
+// browser. Every device refuses, instead of passing to Vulkan, a buffer
+// larger than the GPU's maxBufferSize or maxMemoryAllocationSize ('createBuffer'
+// fails once and answers an invalid buffer), so an allocation over 2 GiB or
+// 4 GiB is asked of the GPU's own limits, not assumed. One buffer is one
+// allocation (this layer's rule), so a model larger than maxMemoryAllocationSize
+// is several buffers, and one bound larger than maxStorageBufferRange is bound
+// in several ranges (bind group entries take an offset and a size).
+//
+// Staging. 'queue.writeBuffer' already writes in pieces of 32 MiB
+// (MAX_STAGING_BLOCK) through at most two staging blocks (about 64 MiB), with 64-bit
+// sizes and offsets, however many bytes it is given; nothing about that
+// changed. tests/bigbuffers.cone writes 2.5 GiB in 64 MiB writes and reads words back
+// past byte 2^31, by shader, by copy and through a binding range from past it. A source
+// larger than memory (a mapped file) is written a slice at a time the same way.
+//
+// Left out, on purpose: extensions (VK_KHR_shader_float16_int8, 16bit_storage, 8bit_storage,
+// shader_integer_dot_product, subgroup_extended_types are all core since Vulkan 1.2
+// or 1.3, which this layer requires, so the core features are used);
+// subgroupSizeControl and computeFullSubgroups (a pipeline choosing its subgroup size: the
+// size is queried, a kernel that depends on 32 checks 'subgroupSize'); the cooperative-matrix
+// extensions (tensor cores: VK_KHR_cooperative_matrix) and 64-bit floats and integers;
+// 16-bit and 8-bit values in immediates (storagePushConstant16/8) and in shader inputs and
+// outputs (storageInputOutput16); VK_EXT_memory_budget (the free
+// share of a heap, not its size); the Vulkan 1.2 properties (float controls, denormal
+// behaviour: a kernel that must not flush half denormals checks the GPU itself); raising
+// the compute workgroup limit above WebGPU's 256 invocations, or the dispatch count above
+// 65535 (the GPU allows 1024 invocations and more groups; the layer still holds programs to
+// WebGPU's, and gpuwork to 8 bindings); a device that is both a compute device and has
+// ray tracing (Vulkan 1.2's feature structure includes bufferDeviceAddress, so the two
+// requests would need merging).
+
+// Subgroup operations (SUBGROUP_FEATURE_..._BIT in Vulkan; the same bits):
+// 'ComputeCapabilities.subgroupOperations' ORs those the GPU's subgroups do
+pub const SUBGROUP_OP_BASIC = 0x1u32;             // elect, barrier, invocation id and size
+pub const SUBGROUP_OP_VOTE = 0x2u32;              // all, any, all-equal
+pub const SUBGROUP_OP_ARITHMETIC = 0x4u32;        // sum, product, min, max, and, or, xor; inclusive and exclusive scans
+pub const SUBGROUP_OP_BALLOT = 0x8u32;            // ballot, broadcast, bit count
+pub const SUBGROUP_OP_SHUFFLE = 0x10u32;          // read another lane's value by index
+pub const SUBGROUP_OP_SHUFFLE_RELATIVE = 0x20u32; // read the lane some distance up or down
+pub const SUBGROUP_OP_CLUSTERED = 0x40u32;        // arithmetic over clusters of lanes
+pub const SUBGROUP_OP_QUAD = 0x80u32;             // across a 2 x 2 quad
+
+// What a GPU offers for compute, as a plain value: copied freely, compared,
+// printed. From 'Adapter.computeCapabilities' it is what the GPU has; as
+// 'Device.compute' the flags are what the device was made with and the
+// numbers are the GPU's.
+pub struct ComputeCapabilities {
+  // 16-bit values
+  pub float16Arithmetic bool = false;   // shaderFloat16: 'half' in a shader
+  pub storage16Bit bool = false;        // storageBuffer16BitAccess and uniformAndStorageBuffer16BitAccess: 16-bit values in buffers
+  pub int16Arithmetic bool = false;     // shaderInt16
+  // 8-bit values
+  pub int8Arithmetic bool = false;      // shaderInt8
+  pub storage8Bit bool = false;         // storageBuffer8BitAccess and uniformAndStorageBuffer8BitAccess: bytes in buffers
+  pub subgroupExtendedTypes bool = false;   // shaderSubgroupExtendedTypes: subgroup operations on 8-bit, 16-bit and 64-bit values
+  // Integer dot product
+  pub integerDotProduct bool = false;                   // shaderIntegerDotProduct
+  pub dot4x8PackedSignedAccelerated bool = false;       // four packed signed bytes dotted, in hardware
+  pub dot4x8PackedUnsignedAccelerated bool = false;     // the unsigned form
+  pub dot4x8PackedMixedAccelerated bool = false;        // one signed and one unsigned
+  pub dot8BitSignedAccelerated bool = false;            // the unpacked 8-bit vector form (SPIR-V's DotProductInput4x8Bit)
+  // The subgroup
+  pub subgroupSize u32 = 0u32;          // invocations in a subgroup (a compute shader's, unless its size is chosen)
+  pub subgroupMinSize u32 = 0u32;       // the range a pipeline may require (subgroupSizeControl, not enabled here)
+  pub subgroupMaxSize u32 = 0u32;
+  pub subgroupStages u32 = 0u32;        // the stages with subgroup operations: SHADER_STAGE_... bits of this layer
+  pub subgroupOperations u32 = 0u32;    // SUBGROUP_OP_... bits
+  pub subgroupQuadInAllStages bool = false;
+  // Limits
+  pub maxBufferSize u64 = 0u64;                    // the most bytes one buffer may have
+  pub maxMemoryAllocationSize u64 = 0u64;          // the most bytes one memory allocation may have (a buffer is one)
+  pub maxStorageBufferRange u64 = 0u64;            // the most bytes one storage buffer binding may range over
+  pub maxPerStageDescriptorStorageBuffers u32 = 0u32;
+  pub minStorageBufferOffsetAlignment u64 = 0u64;  // the GPU's own (this layer asks 256, WebGPU's)
+  pub maxComputeSharedMemorySize u32 = 0u32;       // a workgroup's shared memory, bytes
+  pub maxComputeWorkGroupInvocations u32 = 0u32;
+  pub maxComputeWorkGroupSizeX u32 = 0u32;
+  pub maxComputeWorkGroupSizeY u32 = 0u32;
+  pub maxComputeWorkGroupSizeZ u32 = 0u32;
+  pub maxMemoryAllocationCount u32 = 0u32;         // allocations alive at once
+  // Memory
+  pub deviceLocalBytes u64 = 0u64;                 // the GPU's own memory: the sum of the heaps that are device-local
+  pub largestDeviceLocalHeap u64 = 0u64;
+  pub otherHeapBytes u64 = 0u64;                   // the heaps that are not (the CPU's memory the GPU reads over the bus)
+  pub heapCount u32 = 0u32;
+
+  // The GPU has the subgroup operations 'ops' (SUBGROUP_OP_... OR-ed) in compute shaders
+  pub fn hasSubgroupOps(self &, ops u32) bool {
+    (subgroupStages & SHADER_STAGE_COMPUTE) != 0u32 and (subgroupOperations & ops) == ops;
+  }
+}
+
+// What a program asks of 'requestComputeDevice'. Each is enabled if the GPU has it.
+pub struct ComputeRequest {
+  pub float16 bool = false;             // 16-bit floats: float16Arithmetic and storage16Bit
+  pub int16 bool = false;               // 16-bit integers: int16Arithmetic
+  pub int8 bool = false;                // 8-bit integers: int8Arithmetic and storage8Bit
+  pub integerDotProduct bool = false;
+  pub subgroupExtendedTypes bool = false;
+  pub largeBuffers bool = false;        // lift the 128 MiB binding and 8-buffers-a-stage limits to the GPU's own
+
+  // All of it (what a model's kernels use)
+  pub fn all() ComputeRequest { new ComputeRequest(true, true, true, true, true, true); }
+
+  // Whether any 8-bit, 16-bit, dot product or subgroup-type feature is asked for
+  // (these are Vulkan 1.1 and 1.2 feature structures)
+  fn wantsFeatures(self &) bool { float16 or int16 or int8 or integerDotProduct or subgroupExtendedTypes; }
+}
+
+// One of the GPU's memory heaps
+pub struct MemoryHeapInfo {
+  pub bytes u64;
+  pub deviceLocal bool;       // the GPU's own memory
+}
+
+fn asBool(v u32) bool { v == vulkan.TRUE; }
+fn vkBool(b bool) u32 { if b { vulkan.TRUE; } else { vulkan.FALSE; }; }
+
+// This layer's shader stage bits for the stages Vulkan's mask names (the three it has)
+fn stageBits(vk u32) u32 {
+  mut r = 0u32;
+  if (vk & vulkan.SHADER_STAGE_VERTEX_BIT) != 0u32 { r = r | SHADER_STAGE_VERTEX; }
+  if (vk & vulkan.SHADER_STAGE_FRAGMENT_BIT) != 0u32 { r = r | SHADER_STAGE_FRAGMENT; }
+  if (vk & vulkan.SHADER_STAGE_COMPUTE_BIT) != 0u32 { r = r | SHADER_STAGE_COMPUTE; }
+  r;
+}
+
+// What 'physical' offers for compute: its features and limits, asked through the Vulkan 1.1 to 1.3 structures
+fn queryCompute(ifns &InstFns, physical vulkan.PhysicalDevice) ComputeCapabilities {
+  mut r = new ComputeCapabilities();
+  // Properties: Vulkan 1.1's (subgroup, allocation size), then 1.3's (subgroup range, dot products, buffer size)
+  mut p13 = zeroed[vulkan.PhysicalDeviceVulkan13Properties]();
+  p13.sType = vulkan.STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+  mut p11 = zeroed[vulkan.PhysicalDeviceVulkan11Properties]();
+  p11.sType = vulkan.STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+  p11.pNext = &mut p13 as *u8;
+  mut props = new vulkan.PhysicalDeviceProperties2(pNext: &mut p11 as *u8, properties: zeroed[vulkan.PhysicalDeviceProperties]());
+  ifns.getPhysicalDeviceProperties2(physical, &mut props);
+  // Features
+  mut f13 = new vulkan.PhysicalDeviceVulkan13Features();
+  mut f12 = new vulkan.PhysicalDeviceVulkan12Features(pNext: &mut f13 as *u8);
+  mut f11 = new vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8);
+  mut f2 = new vulkan.PhysicalDeviceFeatures2(pNext: &mut f11 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+  ifns.getPhysicalDeviceFeatures2(physical, &mut f2);
+
+  r.float16Arithmetic = asBool(f12.shaderFloat16);
+  r.storage16Bit = asBool(f11.storageBuffer16BitAccess) and asBool(f11.uniformAndStorageBuffer16BitAccess);
+  r.int16Arithmetic = asBool(f2.features.raw[vulkan.FEATURE_SHADER_INT16]);
+  r.int8Arithmetic = asBool(f12.shaderInt8);
+  r.storage8Bit = asBool(f12.storageBuffer8BitAccess) and asBool(f12.uniformAndStorageBuffer8BitAccess);
+  r.subgroupExtendedTypes = asBool(f12.shaderSubgroupExtendedTypes);
+  r.integerDotProduct = asBool(f13.shaderIntegerDotProduct);
+  r.dot4x8PackedSignedAccelerated = asBool(p13.integerDotProduct4x8BitPackedSignedAccelerated);
+  r.dot4x8PackedUnsignedAccelerated = asBool(p13.integerDotProduct4x8BitPackedUnsignedAccelerated);
+  r.dot4x8PackedMixedAccelerated = asBool(p13.integerDotProduct4x8BitPackedMixedSignednessAccelerated);
+  r.dot8BitSignedAccelerated = asBool(p13.integerDotProduct8BitSignedAccelerated);
+
+  r.subgroupSize = p11.subgroupSize;
+  r.subgroupMinSize = p13.minSubgroupSize;
+  r.subgroupMaxSize = p13.maxSubgroupSize;
+  r.subgroupStages = stageBits(p11.subgroupSupportedStages);
+  r.subgroupOperations = p11.subgroupSupportedOperations;
+  r.subgroupQuadInAllStages = asBool(p11.subgroupQuadOperationsInAllStages);
+
+  imm limits = props.properties.limits;
+  r.maxBufferSize = p13.maxBufferSize;
+  r.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
+  r.maxStorageBufferRange = u64.from(limits.maxStorageBufferRange);
+  r.maxPerStageDescriptorStorageBuffers = limits.maxPerStageDescriptorStorageBuffers;
+  r.minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment;
+  r.maxComputeSharedMemorySize = limits.maxComputeSharedMemorySize;
+  r.maxComputeWorkGroupInvocations = limits.maxComputeWorkGroupInvocations;
+  r.maxComputeWorkGroupSizeX = limits.maxComputeWorkGroupSize[0usize];
+  r.maxComputeWorkGroupSizeY = limits.maxComputeWorkGroupSize[1usize];
+  r.maxComputeWorkGroupSizeZ = limits.maxComputeWorkGroupSize[2usize];
+  r.maxMemoryAllocationCount = limits.maxMemoryAllocationCount;
+
+  mut memory = zeroed[vulkan.PhysicalDeviceMemoryProperties]();
+  ifns.getPhysicalDeviceMemoryProperties(physical, &mut memory);
+  r.heapCount = memory.memoryHeapCount;
+  mut h = 0usize;
+  while h < usize.from(memory.memoryHeapCount) and h < 16usize {
+    imm heap = memory.memoryHeaps[h];
+    if (heap.flags & vulkan.MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0u32 {
+      r.deviceLocalBytes = r.deviceLocalBytes + heap.size;
+      if heap.size > r.largestDeviceLocalHeap { r.largestDeviceLocalHeap = heap.size; }
+    } else {
+      r.otherHeapBytes = r.otherHeapBytes + heap.size;
+    }
+    h = h + 1usize;
+  }
+  r;
+}
+
+// 'has' with every flag cleared that 'request' did not ask for: what a device made with it holds
+fn enabledCompute(has &ComputeCapabilities, request &ComputeRequest) ComputeCapabilities {
+  mut r = *has;
+  r.float16Arithmetic = has.float16Arithmetic and request.float16;
+  r.storage16Bit = has.storage16Bit and request.float16;
+  r.int16Arithmetic = has.int16Arithmetic and request.int16;
+  r.int8Arithmetic = has.int8Arithmetic and request.int8;
+  r.storage8Bit = has.storage8Bit and request.int8;
+  r.subgroupExtendedTypes = has.subgroupExtendedTypes and request.subgroupExtendedTypes;
+  r.integerDotProduct = has.integerDotProduct and request.integerDotProduct;
+  r;
+}
+
+// The SPIR-V capabilities that need a device feature, and the check of a module's against what the device enabled.
+// A module's OpCapability instructions come first, after its five-word header.
+const CAP_FLOAT16 = 9u32;
+const CAP_INT16 = 22u32;
+const CAP_INT8 = 39u32;
+const CAP_STORAGE_BUFFER_16 = 4433u32;
+const CAP_UNIFORM_AND_STORAGE_16 = 4434u32;
+const CAP_STORAGE_BUFFER_8 = 4448u32;
+const CAP_UNIFORM_AND_STORAGE_8 = 4449u32;
+const CAP_DOT_PRODUCT_INPUT_ALL = 6016u32;
+const CAP_DOT_PRODUCT = 6019u32;
+
+// Whether the device 'has' enabled what each capability 'spirv' declares needs; if not, fail once, naming the first
+fn capabilitiesEnabled(spirv &Array[u32], has &ComputeCapabilities) bool {
+  mut i = 5usize;
+  while i < spirv.len {
+    imm word = spirv[i];
+    if (word & 0xFFFFu32) != 17u32 or (word >> 16u32) != 2u32 or i + 1usize >= spirv.len { return true; }
+    imm cap = spirv[i + 1usize];
+    if cap == CAP_FLOAT16 and !has.float16Arithmetic {
+      fail("createShaderModule: the shader uses 16-bit floats (Float16), which the device was not made with (ComputeRequest.float16, on a GPU that has them)");
+      return false;
+    }
+    if (cap == CAP_STORAGE_BUFFER_16 or cap == CAP_UNIFORM_AND_STORAGE_16) and !has.storage16Bit {
+      fail("createShaderModule: the shader keeps 16-bit values in buffers, which the device was not made with (ComputeRequest.float16, on a GPU that has them)");
+      return false;
+    }
+    if cap == CAP_INT16 and !has.int16Arithmetic {
+      fail("createShaderModule: the shader uses 16-bit integers (Int16), which the device was not made with (ComputeRequest.int16, on a GPU that has them)");
+      return false;
+    }
+    if cap == CAP_INT8 and !has.int8Arithmetic {
+      fail("createShaderModule: the shader uses 8-bit integers (Int8), which the device was not made with (ComputeRequest.int8, on a GPU that has them)");
+      return false;
+    }
+    if (cap == CAP_STORAGE_BUFFER_8 or cap == CAP_UNIFORM_AND_STORAGE_8) and !has.storage8Bit {
+      fail("createShaderModule: the shader keeps 8-bit values in buffers, which the device was not made with (ComputeRequest.int8, on a GPU that has them)");
+      return false;
+    }
+    if cap >= CAP_DOT_PRODUCT_INPUT_ALL and cap <= CAP_DOT_PRODUCT and !has.integerDotProduct {
+      fail("createShaderModule: the shader uses integer dot products, which the device was not made with (ComputeRequest.integerDotProduct, on a GPU that has them)");
+      return false;
+    }
+    i = i + 2usize;
+  }
+  true;
+}
