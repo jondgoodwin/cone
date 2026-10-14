@@ -1,0 +1,64 @@
+// How fast each hash runs: 64 MiB fed through each hasher in 64 KiB updates,
+// the speed printed in MB/s (million bytes a second). Run it in a release
+// build, for a debug build is many times slower:
+//
+//   congo run --release examples/throughput.cone
+
+mod throughput;
+
+import stdio use *;
+import collections use *;
+import time use *;
+import cryptohash;
+
+fn report(name &str, start Instant, bytes u64) {
+  imm secs = start.elapsed().secondsF64();
+  printStr(name);
+  printStr(" ");
+  printInt(i64.from(f64.from(bytes) / secs / 1000000.0d));
+  printStr(" MB/s\n");
+}
+
+fn main() i32 {
+  mut chunk = new List[u8];
+  mut i = 0usize;
+  while i < 65536usize {
+    chunk.push(u8.from((i * 7usize + 3usize) & 0xffusize));
+    i = i + 1usize;
+  }
+  imm rounds = 1024usize;
+  imm total = u64.from(rounds) * 65536u64;
+
+  mut s256 = cryptohash.Sha256.make();
+  mut t = Instant.now();
+  mut r = 0usize;
+  while r < rounds { s256.update(chunk.view()); r = r + 1usize; }
+  imm d256 = s256.finish();
+  report("sha256", t, total);
+
+  mut s512 = cryptohash.Sha512.make();
+  t = Instant.now();
+  r = 0usize;
+  while r < rounds { s512.update(chunk.view()); r = r + 1usize; }
+  imm d512 = s512.finish();
+  report("sha512", t, total);
+
+  mut s1 = cryptohash.Sha1.make();
+  t = Instant.now();
+  r = 0usize;
+  while r < rounds { s1.update(chunk.view()); r = r + 1usize; }
+  imm d1 = s1.finish();
+  report("sha1   ", t, total);
+
+  mut mac = cryptohash.HmacSha256.make("a key");
+  t = Instant.now();
+  r = 0usize;
+  while r < rounds { mac.update(chunk.view()); r = r + 1usize; }
+  imm dm = mac.finish();
+  report("hmac-sha256", t, total);
+
+  // The digests are printed too, so that no hash can be skipped as unused
+  printInt(i64.from(d256[0]) + i64.from(d512[0]) + i64.from(d1[0]) + i64.from(dm[0]));
+  printStr("\n");
+  0i32;
+}

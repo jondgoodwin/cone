@@ -1,2 +1,115 @@
-mod cryptohash;
+// The cryptohash package: SHA-256, SHA-512 and SHA-1 (FIPS 180-4), HMAC over
+// each (RFC 2104, FIPS 198-1), and a constant-time comparison for MACs.
+// Written in Cone, with no C library and no call to the OS.
+//
+//   mod digest;
+//   import stdio use *;
+//   import cryptohash;
+//
+//   fn main() i32 {
+//     imm d = cryptohash.sha256("abc");            // an Array[u8, 32] of the digest
+//     printInt(i64.from(d[0]));                   // 186 (0xba, the first byte of ba7816bf...)
+//
+//     mut h = cryptohash.Sha256.make();           // streaming: the state is a value
+//     h.update("a");
+//     h.update("bc");
+//     imm same = h.finish();                      // the same 32 bytes as d
+//
+//     imm tag = cryptohash.hmacSha256("a key", "a message");    // an Array[u8, 32]
+//     mut mac = cryptohash.HmacSha256.make("a key");
+//     mac.update("a message");
+//     printInt(if mac.verify(&tag) { 1i64; } else { 0i64; });   // 1: compared in constant time
+//     0i32;
+//   }
+//
+// What is here, by name:
+//
+//   Sha256, Sha512, Sha1       streaming hashers: 'make', 'update', 'finish',
+//                              'copyOf', 'reset', 'length'
+//   sha256, sha512, sha1       one call for a whole message
+//   HmacSha256, HmacSha512,    streaming MACs: 'make(key)', 'update', 'finish',
+//   HmacSha1                   'verify(tag)', 'copyOf'
+//   hmacSha256, hmacSha512,    one call for a key and a whole message
+//   hmacSha1
+//   constantTimeEq             equal strings, compared in constant time
+//
+// Digests and tags are fixed arrays: 'Array[u8, 32]' for SHA-256 and its HMAC,
+// 'Array[u8, 64]' for SHA-512 and its HMAC, 'Array[u8, 20]' for SHA-1 and its
+// HMAC. A message, key or tag is anything that lends a byte slice: a string
+// literal, a String's 'view()', a List[u8]'s 'view()', a fixed array's '&'.
+//
+// SHA-1 IS LEGACY. SHA-1 collisions can be made (SHAttered, 2017; a
+// chosen-prefix collision, 2019 and 2020), so it must not be used for a new
+// security purpose: not for signatures, certificates, or telling files apart
+// against an attacker. It is here for formats that name it (git object names,
+// the WebSocket handshake, old protocols and the RFC 2202 vectors). Use
+// SHA-256 or SHA-512 for anything new. HMAC-SHA-1 is not broken by collisions,
+// but is for the same old uses.
+//
+// These are not password hashes. A password needs a slow, memory-hard function
+// (Argon2, scrypt, bcrypt), which this package does not have; a fast hash of a
+// password is a weak way to keep one. It has no key derivation (HKDF, PBKDF2)
+// either; both are short to write over HMAC.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - Written from FIPS 180-4 in plain integer arithmetic (additions that wrap,
+//   rotates, shifts, xor, and, or): the algorithms' own operations, so the
+//   same bytes come out on every machine and every byte order. The hasher
+//   reads its input a byte at a time and builds each word big-endian itself.
+//   Left out: the SIMD and hardware paths (the x86 SHA extensions, ARM's
+//   crypto instructions, AVX2 multi-buffer), which Cone cannot spell, and
+//   which would make a second code path to test. Speed is measured, not
+//   chased: examples/throughput.cone prints it (about 225 MB/s for SHA-256,
+//   335 for SHA-512 and SHA-1, and 255 for HMAC-SHA-256 in a release build on
+//   the author's x86-64 laptop, bounds checks on).
+// - The state is a value. A hasher is a struct of its chaining words, one
+//   partly filled block, the fill and the byte count, with no global and no
+//   thread-local behind it; make one per use, hand it on as '&mut Sha256', and
+//   '&mut' keeps two threads from one. 'copyOf' forks a hash in progress (to
+//   hash a common prefix once), and 'finish' takes '&' and works on a copy, so
+//   a hasher can be asked for its digest and fed more afterwards (as Go's
+//   'Sum' and Python's 'digest' do). 'reset' empties it.
+// - The round constants are locals. SHA-256 needs 64 words and SHA-512 80; a
+//   module-level table would be a global, and globals hold. Each compression
+//   function builds its table as a local array on entry, and takes all the
+//   blocks of one 'update' call per entry, so a large update pays for the
+//   table once and a one-byte update pays for it on each full block only.
+//   Left out: a function that works each constant out on demand (it needs
+//   cube roots of primes to 64 bits of fraction), and a table held in each
+//   hasher (it would copy 256 or 640 bytes with every 'copyOf').
+// - The message length is a u64 count of bytes. SHA-256 and SHA-1 count it in
+//   bits in 64, so are limited to 2^61 bytes by the standard; SHA-512's
+//   standard length is 128 bits and here is the 64-bit byte count widened, so a
+//   message past 2^61 bytes (two exabytes) is not hashed correctly. A
+//   hasher cannot be fed that much in a lifetime.
+// - HMAC follows RFC 2104: a key longer than the hash's block (64 bytes, 128
+//   for SHA-512) is hashed first, a shorter one padded with zeros; the inner
+//   and outer pads (0x36 and 0x5c) are fed to two hashers once, in 'make', and
+//   kept, so a MAC costs its message plus two compressions however many times
+//   it is asked. An empty key is allowed (RFC 2104 does not forbid it). 'verify'
+//   answers false for a tag of the wrong length: a truncated tag is not
+//   accepted, so a protocol that sends one compares the prefix it sent
+//   itself. Left out: HMAC with other hashes, KMAC, and a one-shot that takes a
+//   truncation.
+// - The comparison ('constantTimeEq', which 'verify' calls) is written without
+//   a branch or an index that depends on the data: it xors each pair of bytes,
+//   or-s the results into one byte and tests that byte once, at the end. See
+//   the function for what an optimiser could still do to it.
+// - Key and state memory is not wiped after use. Cone has no way to say that
+//   a store must not be removed, so a wipe could be dropped by the optimiser
+//   and would promise what it cannot keep. A caller who must scrub holds its
+//   key in memory it overwrites itself.
+// - No global and no thread-local. The tests compare against NIST's published
+//   examples and RFC test vectors and against Python's hashlib as an oracle,
+//   which the package never calls.
+//
+// What the rest of the tree already has, and is not moved onto this package:
+// core's 'Hasher' is wyhash, a fast non-cryptographic hash for hash tables,
+// seeded from conestd's 'hash.cone' (the OS's entropy); 'tls' asks OpenSSL's
+// EVP_Digest for the SHA-256 of a certificate's public key (a pin), since
+// OpenSSL is TLS's only C library; Congo's Python tools hash with Python's
+// hashlib. No SHA or HMAC was in conestd or core, and no caller is migrated.
 
+mod cryptohash;
