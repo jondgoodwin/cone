@@ -1,0 +1,150 @@
+// Decoding the five block layouts, against values worked out by hand from the layouts (ggml's
+// dequantize_row_q8_0, _q4_K and _q6_K as the package header describes them): one hand-built block of each type,
+// individual elements checked against numbers computed on paper, and the whole block's sum.
+
+mod decode;
+
+import testing use *;
+import collections use List;
+import llmreference use *;
+
+fn pushHalfBits(out &mut List[u8], bits u32) {
+  out.push(u8.from(bits & 255u32));
+  out.push(u8.from(bits >> 8u32));
+}
+
+fn decodeAll(qtype u32, bytes &List[u8], cols usize) List[f32] {
+  mut out = List[f32].withCapacity(cols);
+  mut i = 0usize;
+  while i < cols { out.push(0.0); i = i + 1usize; }
+  expectBool(dequantizeRow(qtype, bytes.view(), 0usize, cols, out.viewMut()), true, "the row decodes");
+  out;
+}
+
+fn at(l &List[f32], i usize) f64 { f64.from(*l[i]); }
+
+fn main() i32 {
+  // ---- Q8_0: d = 0.5 (0x3800), qs[i] = 7 i - 100 (a signed byte): -100, -93, ..., 117 ----
+  mut q8 = List[u8].empty();
+  pushHalfBits(&mut q8, 0x3800u32);
+  mut i = 0i32;
+  while i < 32i32 { q8.push(u8.from(7i32 * i - 100i32)); i = i + 1i32; }
+  expectUInt(u64.from(q8.len()), 34u64, "a Q8_0 block is 34 bytes");
+  imm d8 = decodeAll(QTYPE_Q8_0, &q8, 32usize);
+  expectFloat(at(&d8, 0usize), -50.0d, 0.0d, "Q8_0 element 0 = 0.5 * -100");
+  expectFloat(at(&d8, 1usize), -46.5d, 0.0d, "Q8_0 element 1 = 0.5 * -93");
+  expectFloat(at(&d8, 14usize), -1.0d, 0.0d, "Q8_0 element 14 = 0.5 * -2");
+  expectFloat(at(&d8, 15usize), 2.5d, 0.0d, "Q8_0 element 15 = 0.5 * 5");
+  expectFloat(at(&d8, 31usize), 58.5d, 0.0d, "Q8_0 element 31 = 0.5 * 117");
+  // a negative-scale block and a two-block row
+  mut q8b = List[u8].empty();
+  pushHalfBits(&mut q8b, 0xb400u32);                    // d = -0.25
+  i = 0i32;
+  while i < 32i32 { q8b.push(u8.from(-128i32 + i)); i = i + 1i32; }
+  mut two = List[u8].empty();
+  i = 0i32;
+  while i < 34i32 { two.push(*q8[usize.from(i)]); i = i + 1i32; }
+  i = 0i32;
+  while i < 34i32 { two.push(*q8b[usize.from(i)]); i = i + 1i32; }
+  imm d8b = decodeAll(QTYPE_Q8_0, &two, 64usize);
+  expectFloat(at(&d8b, 32usize), 32.0d, 0.0d, "Q8_0 second block, element 0 = -0.25 * -128");
+  expectFloat(at(&d8b, 63usize), -0.25d * -97.0d, 0.0d, "Q8_0 second block, element 31 = -0.25 * -97");
+  expectFloat(at(&d8b, 0usize), -50.0d, 0.0d, "Q8_0 the first block is unchanged beside it");
+
+  // ---- Q4_K: d = 1.0 (0x3c00), dmin = 0.5 (0x3800); sub-block scales 1 2 3 4 5 6 7 8 and minimums
+  // 0 2 4 6 8 10 12 14; scales[0..3] = scale, scales[4..7] = minimum for sub-blocks 0..3, and for 4..7 the byte
+  // j + 4 = minimum << 4 | scale; qs[i] = (37 i + 11) mod 256 ----
+  mut q4 = List[u8].empty();
+  pushHalfBits(&mut q4, 0x3c00u32);
+  pushHalfBits(&mut q4, 0x3800u32);
+  q4.push(1u8); q4.push(2u8); q4.push(3u8); q4.push(4u8);
+  q4.push(0u8); q4.push(2u8); q4.push(4u8); q4.push(6u8);
+  q4.push(u8.from((8u32 << 4u32) | 5u32));
+  q4.push(u8.from((10u32 << 4u32) | 6u32));
+  q4.push(u8.from((12u32 << 4u32) | 7u32));
+  q4.push(u8.from((14u32 << 4u32) | 8u32));
+  i = 0i32;
+  while i < 128i32 { q4.push(u8.from((37i32 * i + 11i32) & 255i32)); i = i + 1i32; }
+  expectUInt(u64.from(q4.len()), 144u64, "a Q4_K block is 144 bytes");
+  imm d4 = decodeAll(QTYPE_Q4_K, &q4, 256usize);
+  // element e: group g = e / 64, nibble half (e / 32) & 1, l = e & 31, byte qs[32 g + l], sub-block 2 g + half
+  expectFloat(at(&d4, 0usize), 11.0d, 0.0d, "Q4_K element 0: low nibble 11, scale 1, min 0");
+  expectFloat(at(&d4, 32usize), -1.0d, 0.0d, "Q4_K element 32: high nibble 0, scale 2, min 2");
+  expectFloat(at(&d4, 64usize), 31.0d, 0.0d, "Q4_K element 64: qs[32] = 0xAB, low nibble 11, scale 3, min 4");
+  expectFloat(at(&d4, 96usize), 37.0d, 0.0d, "Q4_K element 96: high nibble 10, scale 4, min 6");
+  expectFloat(at(&d4, 128usize), 51.0d, 0.0d, "Q4_K element 128: qs[64] = 0x4B, low nibble 11, scale 5, min 8");
+  expectFloat(at(&d4, 160usize), 19.0d, 0.0d, "Q4_K element 160: high nibble 4, scale 6, min 10");
+  expectFloat(at(&d4, 192usize), 71.0d, 0.0d, "Q4_K element 192: qs[96] = 0xEB, low nibble 11, scale 7, min 12");
+  expectFloat(at(&d4, 224usize), 105.0d, 0.0d, "Q4_K element 224: high nibble 14, scale 8, min 14");
+  // element 33: qs[1] = 48 = 0x30, high nibble 3, sub-block 1 (scale 2, min 2): 1 * 2 * 3 - 0.5 * 2 = 5
+  expectFloat(at(&d4, 33usize), 5.0d, 0.0d, "Q4_K element 33: high nibble 3 of qs[1]");
+  // element 1: qs[1] = 48, low nibble 0, sub-block 0: 0
+  expectFloat(at(&d4, 1usize), 0.0d, 0.0d, "Q4_K element 1: low nibble 0");
+
+  // ---- Q6_K: d = 0.25 (0x3400), scales[i] = i - 8, ql[i] = (13 i + 5) mod 256, qh[i] = (7 i + 3) mod 256 ----
+  mut q6 = List[u8].empty();
+  i = 0i32;
+  while i < 128i32 { q6.push(u8.from((13i32 * i + 5i32) & 255i32)); i = i + 1i32; }
+  i = 0i32;
+  while i < 64i32 { q6.push(u8.from((7i32 * i + 3i32) & 255i32)); i = i + 1i32; }
+  i = 0i32;
+  while i < 16i32 { q6.push(u8.from(i - 8i32)); i = i + 1i32; }
+  pushHalfBits(&mut q6, 0x3400u32);
+  expectUInt(u64.from(q6.len()), 210u64, "a Q6_K block is 210 bytes");
+  imm d6 = decodeAll(QTYPE_Q6_K, &q6, 256usize);
+  // worked out with ggml's loop transcribed literally (Python), not by this package
+  expectFloat(at(&d6, 0usize), -42.0d, 0.0d, "Q6_K element 0");
+  expectFloat(at(&d6, 17usize), -3.5d, 0.0d, "Q6_K element 17");
+  expectFloat(at(&d6, 32usize), 40.5d, 0.0d, "Q6_K element 32");
+  expectFloat(at(&d6, 70usize), -5.0d, 0.0d, "Q6_K element 70");
+  expectFloat(at(&d6, 100usize), 9.5d, 0.0d, "Q6_K element 100");
+  expectFloat(at(&d6, 130usize), 0.0d, 0.0d, "Q6_K element 130");
+  expectFloat(at(&d6, 200usize), -6.0d, 0.0d, "Q6_K element 200");
+  expectFloat(at(&d6, 255usize), 12.25d, 0.0d, "Q6_K element 255");
+  mut sum6 = 0.0d;
+  mut k = 0usize;
+  while k < 256usize { sum6 = sum6 + at(&d6, k); k = k + 1usize; }
+  expectFloat(sum6, 241.0d, 0.0d, "Q6_K whole block sum");
+
+  // ---- F32 and F16 ----
+  mut f = List[u8].empty();
+  f.push(0u8); f.push(0u8); f.push(0x80u8); f.push(0x3fu8);      // 1.0f
+  f.push(0u8); f.push(0u8); f.push(0x20u8); f.push(0xc1u8);      // -10.0f
+  imm df = decodeAll(QTYPE_F32, &f, 2usize);
+  expectFloat(at(&df, 0usize), 1.0d, 0.0d, "F32 element 0");
+  expectFloat(at(&df, 1usize), -10.0d, 0.0d, "F32 element 1");
+  mut h = List[u8].empty();
+  h.push(0u8); h.push(0x3cu8);                                    // 1.0
+  h.push(0u8); h.push(0xc9u8);                                    // 0xc900 = -10.0
+  h.push(0x55u8); h.push(0x35u8);                                 // 0x3555
+  imm dh = decodeAll(QTYPE_F16, &h, 3usize);
+  expectFloat(at(&dh, 0usize), 1.0d, 0.0d, "F16 element 0");
+  expectFloat(at(&dh, 1usize), -10.0d, 0.0d, "F16 element 1");
+  expectFloat(at(&dh, 2usize), 0.333251953125d, 0.0d, "F16 element 2");
+
+  // ---- the row API: a row in the middle of a buffer, refusals ----
+  mut out = List[f32].withCapacity(64usize);
+  k = 0usize;
+  while k < 64usize { out.push(7.0); k = k + 1usize; }
+  expectBool(dequantizeRow(QTYPE_Q8_0, two.view(), 34usize, 32usize, out.viewMut()), true, "the second Q8_0 block alone");
+  expectFloat(at(&out, 0usize), 32.0d, 0.0d, "decoded from a byte offset");
+  expectFloat(at(&out, 40usize), 7.0d, 0.0d, "and nothing past the row written");
+  expectBool(dequantizeRow(QTYPE_Q8_0, two.view(), 35usize, 32usize, out.viewMut()), false, "a row past the end of the bytes");
+  expectBool(dequantizeRow(QTYPE_Q8_0, two.view(), 0usize, 48usize, out.viewMut()), false, "a row that is not whole blocks");
+  expectBool(dequantizeRow(QTYPE_Q8_0, two.view(), 0usize, 64usize, out.viewMut()), true, "two blocks");
+  expectBool(dequantizeRow(3u32, two.view(), 0usize, 32usize, out.viewMut()), false, "an unknown type");
+  match QMatrix.make(QTYPE_Q8_0, 2usize, 32usize, two) {
+    case imm m Some {
+      expectUInt(u64.from(m.stride()), 34u64, "a matrix's row stride");
+      imm r1 = m.row(1usize);
+      expectFloat(at(&r1, 0usize), 32.0d, 0.0d, "a matrix's second row");
+      expectUInt(u64.from(m.words().len()), 17u64, "68 bytes are 17 words");
+    }
+    case is None { expect(false, "a 2 x 32 Q8_0 matrix of 68 bytes"); }
+  }
+  match QMatrix.make(QTYPE_Q8_0, 3usize, 32usize, List[u8].empty()) {
+    case is Some { expect(false, "a matrix with the wrong byte count is refused"); }
+    case is None { expect(true, "a matrix with the wrong byte count is refused"); }
+  }
+  done();
+}

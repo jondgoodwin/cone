@@ -1,0 +1,206 @@
+// Block sizes, half-precision conversion (every half value round-trips; ties go to even), packing bytes
+// into words, the Q8_0 / F16 / F32 encoders, and the synthetic matrix generator.
+
+mod formats;
+
+import testing use *;
+import libc;
+import collections use List;
+import random use Rng;
+import llmreference use *;
+
+fn bitsOf(f f32) u32 { f as u32; }
+
+fn halfBits(f f32) u64 { u64.from(f32ToF16(f)); }
+
+fn main() i32 {
+  // ---- sizes ----
+  expectUInt(u64.from(blockElems(QTYPE_F32)), 1u64, "F32 block elements");
+  expectUInt(u64.from(blockElems(QTYPE_Q8_0)), 32u64, "Q8_0 block elements");
+  expectUInt(u64.from(blockElems(QTYPE_Q4_K)), 256u64, "Q4_K block elements");
+  expectUInt(u64.from(blockElems(QTYPE_Q6_K)), 256u64, "Q6_K block elements");
+  expectUInt(u64.from(blockBytes(QTYPE_F32)), 4u64, "F32 block bytes");
+  expectUInt(u64.from(blockBytes(QTYPE_F16)), 2u64, "F16 block bytes");
+  expectUInt(u64.from(blockBytes(QTYPE_Q8_0)), 34u64, "Q8_0 block bytes");
+  expectUInt(u64.from(blockBytes(QTYPE_Q4_K)), 144u64, "Q4_K block bytes");
+  expectUInt(u64.from(blockBytes(QTYPE_Q6_K)), 210u64, "Q6_K block bytes");
+  expectUInt(u64.from(rowBytes(QTYPE_Q8_0, 4096usize)), 4352u64, "a 4096-element Q8_0 row");
+  expectUInt(u64.from(rowBytes(QTYPE_Q4_K, 4096usize)), 2304u64, "a 4096-element Q4_K row");
+  expectUInt(u64.from(rowBytes(QTYPE_Q6_K, 4096usize)), 3360u64, "a 4096-element Q6_K row");
+  expectUInt(u64.from(rowBytes(QTYPE_F16, 33usize)), 66u64, "an F16 row of any length");
+  expectUInt(u64.from(rowBytes(QTYPE_Q8_0, 33usize)), 0u64, "a Q8_0 row that is not whole blocks");
+  expectUInt(u64.from(rowBytes(QTYPE_Q4_K, 128usize)), 0u64, "a Q4_K row that is not whole super-blocks");
+  expectUInt(u64.from(rowBytes(7u32, 64usize)), 0u64, "an unknown type");
+  expectBool(isQType(QTYPE_Q6_K), true, "Q6_K is one of the five");
+  expectBool(isQType(2u32), false, "Q4_0 (2) is not");
+
+  // ---- halves: values ----
+  expectUInt(u64.from(bitsOf(f16ToF32(0x3c00u16))), u64.from(bitsOf(1.0)), "half 1.0");
+  expectFloat(f64.from(f16ToF32(0xc000u16)), -2.0d, 0.0d, "half -2");
+  expectFloat(f64.from(f16ToF32(0x7bffu16)), 65504.0d, 0.0d, "largest half");
+  expectFloat(f64.from(f16ToF32(0x0400u16)), 0.00006103515625d, 0.0d, "smallest normal half, 2^-14");
+  expectFloat(f64.from(f16ToF32(0x0001u16)), 5.9604644775390625e-8d, 0.0d, "smallest subnormal half, 2^-24");
+  expectFloat(f64.from(f16ToF32(0x03ffu16)), 1023.0d / 16777216.0d, 0.0d, "largest subnormal half");
+  expectFloat(f64.from(f16ToF32(0x3555u16)), 0.333251953125d, 0.0d, "half 0x3555");
+  expectUInt(u64.from(bitsOf(f16ToF32(0x8000u16))), 0x80000000u64, "half -0 keeps its sign");
+  expectUInt(u64.from(bitsOf(f16ToF32(0x7c00u16))), 0x7f800000u64, "half +inf");
+  expectUInt(u64.from(bitsOf(f16ToF32(0xfc00u16))), 0xff800000u64, "half -inf");
+  expectUInt(u64.from(bitsOf(f16ToF32(0x7e00u16))), 0x7fc00000u64, "half NaN is the f32 quiet NaN");
+
+  // ---- f32 to half: known conversions and rounding ----
+  expectUInt(halfBits(1.0), 0x3c00u64, "1.0 to half");
+  expectUInt(halfBits(-2.0), 0xc000u64, "-2 to half");
+  expectUInt(halfBits(65504.0), 0x7bffu64, "65504 to half");
+  expectUInt(halfBits(65520.0), 0x7c00u64, "65520 rounds up to infinity");
+  expectUInt(halfBits(65519.0), 0x7bffu64, "65519 rounds down to the largest half");
+  expectUInt(halfBits(1.0e10), 0x7c00u64, "huge to infinity");
+  expectUInt(halfBits(-1.0e10), 0xfc00u64, "huge negative to -infinity");
+  expectUInt(halfBits(0.1), 0x2e66u64, "0.1 to half");
+  expectUInt(halfBits(5.9604644775390625e-8), 0x0001u64, "2^-24 to the smallest subnormal");
+  expectUInt(halfBits(2.98023223876953125e-8), 0x0000u64, "2^-25 is a tie to zero (even)");
+  expectUInt(halfBits(4.470348358154296875e-8), 0x0001u64, "1.5 * 2^-25 rounds up to the smallest subnormal");
+  expectUInt(halfBits(1.0 + 1.0 / 2048.0), 0x3c00u64, "1 + 2^-11 is a tie, to even: 1.0");
+  expectUInt(halfBits(1.0 + 3.0 / 2048.0), 0x3c02u64, "1 + 3 * 2^-11 is a tie, to even: 0x3c02");
+  expectUInt(halfBits(1.0 + 1.0 / 2048.0 + 1.0 / 1048576.0), 0x3c01u64, "just over a tie rounds up");
+  expectUInt(halfBits(0.0), 0x0000u64, "zero to half");
+  expectUInt(halfBits(0.0 - 0.0), 0x0000u64, "0 - 0 is +0");
+  expectUInt(halfBits(f32.from(0.0d) * -1.0), 0x8000u64, "-0 to half");
+  expectUInt(halfBits(0x7fc00000u32 as f32), 0x7e00u64, "the quiet NaN to half");
+
+  // every half value except NaN: to f32 and back is the same half
+  mut bad = 0u64;
+  mut h = 0u32;
+  while h < 65536u32 {
+    imm isNan = (h & 0x7c00u32) == 0x7c00u32 and (h & 0x3ffu32) != 0u32;
+    if !isNan {
+      imm back = f32ToF16(f16ToF32(u16.from(h)));
+      if u32.from(back) != h { bad = bad + 1u64; }
+    }
+    h = h + 1u32;
+  }
+  expectUInt(bad, 0u64, "every non-NaN half round-trips through f32");
+
+  // halfway cases between every pair of adjacent halves round to the even one
+  mut badTie = 0u64;
+  h = 0u32;
+  while h < 0x7bffu32 {
+    imm lo = f16ToF32(u16.from(h));
+    imm hi = f16ToF32(u16.from(h + 1u32));
+    imm mid = (f64.from(lo) + f64.from(hi)) * 0.5d;
+    imm got = u32.from(f32ToF16(f32.from(mid)));
+    // the midpoint is exact in an f32 (a half has 11 significant bits)
+    imm want = if (h & 1u32) == 0u32 { h; } else { h + 1u32; };
+    if got != want { badTie = badTie + 1u64; }
+    h = h + 1u32;
+  }
+  expectUInt(badTie, 0u64, "the midpoint of every adjacent pair of halves rounds to the even one");
+
+  // ---- words ----
+  mut bytes = List[u8].empty();
+  mut i = 1u8;
+  while i <= 7u8 { bytes.push(i); i = i + 1u8; }
+  imm w = packWords(bytes.view());
+  expectUInt(u64.from(w.len()), 2u64, "seven bytes make two words");
+  expectUInt(u64.from(*w[0usize]), 0x04030201u64, "the first word, little-endian");
+  expectUInt(u64.from(*w[1usize]), 0x00070605u64, "the second, padded with zeros");
+  expectUInt(u64.from(packWords(&bytes.view()[0usize..<0usize]).len()), 0u64, "no bytes, no words");
+
+  // ---- encoders ----
+  mut rng = Rng.fromSeed(11u64);
+  imm values = syntheticFloats(&mut rng, 96usize, 3.0);
+  imm f32bytes = encodeF32(values.view());
+  expectUInt(u64.from(f32bytes.len()), 384u64, "F32 bytes");
+  mut back = List[f32].withCapacity(96usize);
+  i = 0u8;
+  mut k = 0usize;
+  while k < 96usize { back.push(0.0); k = k + 1usize; }
+  expectBool(dequantizeRow(QTYPE_F32, f32bytes.view(), 0usize, 96usize, back.viewMut()), true, "F32 row decodes");
+  mut exact = true;
+  k = 0usize;
+  while k < 96usize { if *back[k] != *values[k] { exact = false; } k = k + 1usize; }
+  expect(exact, "F32 round-trips exactly");
+
+  imm f16bytes = encodeF16(values.view());
+  expectUInt(u64.from(f16bytes.len()), 192u64, "F16 bytes");
+  expectBool(dequantizeRow(QTYPE_F16, f16bytes.view(), 0usize, 96usize, back.viewMut()), true, "F16 row decodes");
+  mut worst = 0.0d;
+  k = 0usize;
+  while k < 96usize {
+    imm e = libc.fabs(f64.from(*back[k]) - f64.from(*values[k]));
+    if e > worst { worst = e; }
+    k = k + 1usize;
+  }
+  expect(worst <= 3.0d / 1024.0d, "F16 round-trips to within half a unit in the last place (values under 4)");
+
+  imm q8bytes = encodeQ8_0(values.view());
+  expectUInt(u64.from(q8bytes.len()), 102u64, "Q8_0 bytes: three blocks of 34");
+  expectBool(dequantizeRow(QTYPE_Q8_0, q8bytes.view(), 0usize, 96usize, back.viewMut()), true, "Q8_0 row decodes");
+  // each block's scale is max|v| / 127 (as a half): the error is at most half a step, plus the scale's half rounding
+  mut q8ok = true;
+  mut blk = 0usize;
+  while blk < 3usize {
+    mut amax = 0.0;
+    k = 0usize;
+    while k < 32usize {
+      imm a = libc.fabsf(*values[blk * 32usize + k]);
+      if a > amax { amax = a; }
+      k = k + 1usize;
+    }
+    imm step = amax / 127.0;
+    k = 0usize;
+    while k < 32usize {
+      imm e = libc.fabsf(*back[blk * 32usize + k] - *values[blk * 32usize + k]);
+      if e > step * 0.52 { q8ok = false; }
+      k = k + 1usize;
+    }
+    blk = blk + 1usize;
+  }
+  expect(q8ok, "Q8_0 round-trips to within about half a step of each block's scale");
+  expectUInt(u64.from(encodeQ8_0(&values.view()[0usize..<31usize]).len()), 0u64, "Q8_0 of a partial block: nothing");
+
+  // ---- the synthetic generator: the same seed, the same bytes ----
+  mut r1 = Rng.fromSeed(5u64);
+  mut r2 = Rng.fromSeed(5u64);
+  imm types = [QTYPE_F32, QTYPE_F16, QTYPE_Q8_0, QTYPE_Q4_K, QTYPE_Q6_K];
+  mut t = 0usize;
+  while t < 5usize {
+    imm cols = if types[t] == QTYPE_Q8_0 { 64usize; } elif types[t] == QTYPE_F32 or types[t] == QTYPE_F16 { 40usize; } else { 512usize; };
+    imm a = syntheticMatrix(&mut r1, types[t], 3usize, cols);
+    imm b = syntheticMatrix(&mut r2, types[t], 3usize, cols);
+    match a {
+      case imm ma Some {
+        match b {
+          case imm mb Some {
+            expectUInt(u64.from(ma.bytes.len()), u64.from(3usize * rowBytes(types[t], cols)), "synthetic matrix size");
+            mut same = ma.bytes.len() == mb.bytes.len();
+            k = 0usize;
+            while same and k < ma.bytes.len() { if *ma.bytes[k] != *mb.bytes[k] { same = false; } k = k + 1usize; }
+            expect(same, "the same seed gives the same synthetic matrix");
+            // every decoded weight is finite and modest
+            mut sane = true;
+            mut row = 0usize;
+            while row < 3usize {
+              imm decoded = ma.row(row);
+              k = 0usize;
+              while k < cols {
+                imm v = *decoded[k];
+                if !(v > -100.0 and v < 100.0) { sane = false; }
+                k = k + 1usize;
+              }
+              row = row + 1usize;
+            }
+            expect(sane, "synthetic weights decode to finite modest numbers");
+          }
+          case is None { expect(false, "synthetic matrix b"); }
+        }
+      }
+      case is None { expect(false, "synthetic matrix a"); }
+    }
+    t = t + 1usize;
+  }
+  match syntheticMatrix(&mut r1, QTYPE_Q4_K, 2usize, 100usize) {
+    case is Some { expect(false, "a Q4_K matrix of 100 columns is refused"); }
+    case is None { expect(true, "a Q4_K matrix of 100 columns is refused"); }
+  }
+  done();
+}

@@ -1,0 +1,277 @@
+// ======== The kernels on the GPU: made once, recorded into a gpuwork Job ========
+//
+// 'Kernels.make(&device)' makes the eleven pipelines once. Each method below RECORDS one dispatch into a Job
+// over buffers already given to it (the caller's slot numbers, from 'job.give'), uploading the kernel's small
+// by-value parameter struct itself; it answers whether it recorded (false for arguments that cannot be run:
+// an unknown type, a column count that is not a whole number of blocks, a zero size, a size or byte offset
+// that does not fit in 32 bits, a dispatch wider than the GPU's limit). Nothing is recorded then.
+// Buffers are f32 words (activations) or the weights' words (packWords); no buffer may be named twice in one
+// call (a dispatch cannot bind one buffer twice), so a kernel writes a buffer of its own, except RoPE, which
+// rotates in place, and the KV cache append, which writes into the cache.
+
+// The parameter structs, field for field the shaders' (32-bit numbers, in this order)
+struct MatvecParams {
+  rows u32;
+  cols u32;
+  rowBytes u32;
+  groupsX u32;
+  wByteOffset u32;
+  xOffset u32;
+  yOffset u32;
+  qtype u32;
+}
+
+struct MatmulParams {
+  rows u32;
+  cols u32;
+  batch u32;
+  rowBytes u32;
+  wByteOffset u32;
+  xOffset u32;
+  yOffset u32;
+  qtype u32;
+}
+
+struct RmsnormParams {
+  n u32;
+  rows u32;
+  eps f32;
+  pad u32;
+}
+
+struct RopeParams {
+  tokens u32;
+  nHeads u32;
+  headDim u32;
+  ropeDim u32;
+  pos0 u32;
+  mode u32;
+  groupsX u32;
+  pad u32;
+}
+
+struct SoftmaxParams {
+  n u32;
+  rows u32;
+  pad0 u32;
+  pad1 u32;
+}
+
+struct AttentionParams {
+  nTokens u32;
+  nHeads u32;
+  nKvHeads u32;
+  headDim u32;
+  pos0 u32;
+  maxSeq u32;
+  scale f32;
+  pad u32;
+}
+
+struct KvAppendParams {
+  nTokens u32;
+  kvDim u32;
+  pos0 u32;
+  groupsX u32;
+}
+
+// n elements, to the activation and elementwise kernels
+struct ElementParams {
+  n u32;
+  groupsX u32;
+  pad0 u32;
+  pad1 u32;
+}
+
+// The most workgroups a dispatch has across one dimension (Vulkan's guaranteed minimum for
+// maxComputeWorkGroupCount)
+const MAX_GROUPS = 65535usize;
+
+// A dispatch of 'groups' workgroups as (width, height): across, then as many rows of that width as it takes
+fn foldX(groups usize) u32 {
+  if groups > MAX_GROUPS { return u32.from(MAX_GROUPS); }
+  u32.from(groups);
+}
+
+fn foldY(groups usize) u32 {
+  imm gx = usize.from(foldX(groups));
+  if gx == 0usize { return 0u32; }
+  u32.from((groups + gx - 1usize) / gx);
+}
+
+// Whether a count fits in a 32-bit parameter
+fn fits(n usize) bool { n <= 4294967295usize; }
+
+// Upload a parameter struct and give it to the job: its slot
+fn giveParams[T](job &mut Job, device &mut Device, p &T) u32 {
+  job.give(uploadValue(device, p));
+}
+
+pub struct Kernels {
+  matvecK Kernel;
+  matmulK Kernel;
+  rmsnormK Kernel;
+  ropeK Kernel;
+  softmaxK Kernel;
+  attentionK Kernel;
+  kvAppendK Kernel;
+  siluK Kernel;
+  geluK Kernel;
+  addK Kernel;
+  mulK Kernel;
+
+  // The pipelines, made once on this device; check 'isValid'
+  pub fn make(device &Device) Kernels {
+    new Kernels(
+      Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &MATMUL_SPIRV, "matmulMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &RMSNORM_SPIRV, "rmsnormMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &ROPE_SPIRV, "ropeMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &SOFTMAX_SPIRV, "softmaxMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &ATTENTION_SPIRV, "attentionMain", &[READ, READ, READ, READ, READ_WRITE, READ_WRITE]),
+      Kernel.make(device, &KVAPPEND_SPIRV, "kvAppendMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &ACTIVATION_SPIRV, "siluMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &ACTIVATION_SPIRV, "geluMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &ELEMENTWISE_SPIRV, "addMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &ELEMENTWISE_SPIRV, "mulMain", &[READ, READ, READ, READ_WRITE]));
+  }
+
+  // Whether every pipeline was made
+  pub fn isValid(self &) bool {
+    matvecK.isValid() and matmulK.isValid() and rmsnormK.isValid() and ropeK.isValid() and softmaxK.isValid()
+      and attentionK.isValid() and kvAppendK.isValid() and siluK.isValid() and geluK.isValid() and addK.isValid()
+      and mulK.isValid();
+  }
+
+  // y = W x. 'w' holds the weight matrix's words (rows of 'cols' elements of 'qtype'), 'x' cols f32s, 'y' rows
+  // f32s. One workgroup for each row.
+  pub fn matvec(self &, job &mut Job, device &mut Device, w u32, x u32, y u32, qtype u32, rows usize, cols usize) bool {
+    self.matvecAt(job, device, w, x, y, qtype, rows, cols, 0usize, 0usize, 0usize);
+  }
+
+  // ...with the matrix's row 0 at byte 'wByteOffset' of the weights buffer, x read from element 'xOffset' of
+  // its buffer and y written from element 'yOffset' of its
+  pub fn matvecAt(self &, job &mut Job, device &mut Device, w u32, x u32, y u32, qtype u32, rows usize, cols usize,
+      wByteOffset usize, xOffset usize, yOffset usize) bool {
+    imm rb = rowBytes(qtype, cols);
+    if rb == 0usize or rows == 0usize { return false; }
+    if !fits(rows) or !fits(cols) or !fits(wByteOffset) or !fits(xOffset) or !fits(yOffset) { return false; }
+    // the last byte of the matrix must be addressable in 32 bits
+    if !fits(wByteOffset + rows * rb) { return false; }
+    imm gx = foldX(rows);
+    imm gy = foldY(rows);
+    imm p = giveParams(job, device,&new MatvecParams(u32.from(rows), u32.from(cols), u32.from(rb), gx, u32.from(wByteOffset),
+      u32.from(xOffset), u32.from(yOffset), qtype));
+    job.dispatch(device, &matvecK, &[p, w, x, y], gx, gy);
+  }
+
+  // Y = X W^T for 'batch' input vectors (rows of X, cols f32s each) giving 'batch' rows of Y (rows f32s each).
+  // A 16 x 16 tile of Y for each workgroup.
+  pub fn matmul(self &, job &mut Job, device &mut Device, w u32, x u32, y u32, qtype u32, rows usize, cols usize,
+      batch usize) bool {
+    self.matmulAt(job, device, w, x, y, qtype, rows, cols, batch, 0usize, 0usize, 0usize);
+  }
+
+  pub fn matmulAt(self &, job &mut Job, device &mut Device, w u32, x u32, y u32, qtype u32, rows usize, cols usize,
+      batch usize, wByteOffset usize, xOffset usize, yOffset usize) bool {
+    imm rb = rowBytes(qtype, cols);
+    if rb == 0usize or rows == 0usize or batch == 0usize { return false; }
+    if !fits(rows) or !fits(cols) or !fits(batch) or !fits(wByteOffset) or !fits(xOffset) or !fits(yOffset) { return false; }
+    if !fits(wByteOffset + rows * rb) or !fits(xOffset + batch * cols) or !fits(yOffset + batch * rows) { return false; }
+    imm gx = (rows + 15usize) / 16usize;
+    imm gy = (batch + 15usize) / 16usize;
+    if gx > MAX_GROUPS or gy > MAX_GROUPS { return false; }
+    imm p = giveParams(job, device,&new MatmulParams(u32.from(rows), u32.from(cols), u32.from(batch), u32.from(rb),
+      u32.from(wByteOffset), u32.from(xOffset), u32.from(yOffset), qtype));
+    job.dispatch(device, &matmulK, &[p, w, x, y], u32.from(gx), u32.from(gy));
+  }
+
+  // y = x / sqrt(mean(x^2) + eps) * w for each of 'rows' rows of 'n' (x and y rows * n f32s, w n f32s). One
+  // workgroup for each row, so at most 65535 rows.
+  pub fn rmsnorm(self &, job &mut Job, device &mut Device, x u32, w u32, y u32, n usize, rows usize, eps f32) bool {
+    if n == 0usize or rows == 0usize or rows > MAX_GROUPS or !fits(n) or !fits(n * rows) { return false; }
+    imm p = giveParams(job, device,&new RmsnormParams(u32.from(n), u32.from(rows), eps, 0u32));
+    job.dispatch(device, &rmsnormK, &[p, x, w, y], u32.from(rows));
+  }
+
+  // Rotate x ([token][head][d], tokens * nHeads * headDim f32s) in place by (pos0 + token) * freqs[pair]
+  // (freqs: ropeDim / 2 f32s, from ropeFrequencies); mode 0 pairs (2 i, 2 i + 1), mode 1 pairs (i, i + ropeDim / 2).
+  pub fn rope(self &, job &mut Job, device &mut Device, freqs u32, x u32, tokens usize, nHeads usize, headDim usize,
+      ropeDim usize, pos0 usize, mode u32) bool {
+    if tokens == 0usize or nHeads == 0usize or ropeDim == 0usize or ropeDim % 2usize != 0usize or ropeDim > headDim { return false; }
+    if mode > 1u32 or !fits(tokens * nHeads * headDim) or !fits(pos0 + tokens) { return false; }
+    imm total = tokens * nHeads * (ropeDim / 2usize);
+    imm groups = (total + 63usize) / 64usize;
+    imm gx = foldX(groups);
+    imm gy = foldY(groups);
+    if usize.from(gy) > MAX_GROUPS { return false; }
+    imm p = giveParams(job, device,&new RopeParams(u32.from(tokens), u32.from(nHeads), u32.from(headDim), u32.from(ropeDim),
+      u32.from(pos0), mode, gx, 0u32));
+    job.dispatch(device, &ropeK, &[p, freqs, x], gx, gy);
+  }
+
+  // Softmax of each of 'rows' rows of 'n' (x and y rows * n f32s). One workgroup for each row.
+  pub fn softmax(self &, job &mut Job, device &mut Device, x u32, y u32, n usize, rows usize) bool {
+    if n == 0usize or rows == 0usize or rows > MAX_GROUPS or !fits(n * rows) { return false; }
+    imm p = giveParams(job, device,&new SoftmaxParams(u32.from(n), u32.from(rows), 0u32, 0u32));
+    job.dispatch(device, &softmaxK, &[p, x, y], u32.from(rows));
+  }
+
+  // Causal attention for 'nTokens' new tokens at positions pos0 .. over caches that already hold keys and values
+  // for positions 0 .. pos0 + nTokens - 1 (q and out: nTokens * nHeads * headDim f32s; the caches: maxSeq *
+  // nKvHeads * headDim; 'scores', scratch the kernel writes: nTokens * nHeads * maxSeq). nKvHeads divides nHeads.
+  pub fn attention(self &, job &mut Job, device &mut Device, q u32, kCache u32, vCache u32, scores u32, out u32,
+      nTokens usize, nHeads usize, nKvHeads usize, headDim usize, pos0 usize, maxSeq usize, scale f32) bool {
+    if nTokens == 0usize or nHeads == 0usize or nKvHeads == 0usize or headDim == 0usize { return false; }
+    if nHeads % nKvHeads != 0usize or pos0 + nTokens > maxSeq or nHeads > MAX_GROUPS or nTokens > MAX_GROUPS { return false; }
+    if !fits(maxSeq * nKvHeads * headDim) or !fits(nTokens * nHeads * maxSeq) or !fits(nTokens * nHeads * headDim) { return false; }
+    imm p = giveParams(job, device,&new AttentionParams(u32.from(nTokens), u32.from(nHeads), u32.from(nKvHeads),
+      u32.from(headDim), u32.from(pos0), u32.from(maxSeq), scale, 0u32));
+    job.dispatch(device, &attentionK, &[p, q, kCache, vCache, scores, out], u32.from(nHeads), u32.from(nTokens));
+  }
+
+  // cache[(pos0 + t) * kvDim + i] = src[t * kvDim + i]: the new keys (or values) into the KV cache
+  pub fn kvAppend(self &, job &mut Job, device &mut Device, src u32, cache u32, nTokens usize, kvDim usize,
+      pos0 usize) bool {
+    if nTokens == 0usize or kvDim == 0usize or !fits(nTokens * kvDim) or !fits((pos0 + nTokens) * kvDim) { return false; }
+    imm groups = (nTokens * kvDim + 63usize) / 64usize;
+    imm gx = foldX(groups);
+    imm gy = foldY(groups);
+    if usize.from(gy) > MAX_GROUPS { return false; }
+    imm p = giveParams(job, device,&new KvAppendParams(u32.from(nTokens), u32.from(kvDim), u32.from(pos0), gx));
+    job.dispatch(device, &kvAppendK, &[p, src, cache], gx, gy);
+  }
+
+  // The 1-D kernels: n elements, 256 to a workgroup
+  fn element(self &, job &mut Job, device &mut Device, kernel &Kernel, slots &Array[u32], n usize) bool {
+    if n == 0usize or !fits(n) { return false; }
+    imm groups = (n + 255usize) / 256usize;
+    imm gx = foldX(groups);
+    imm gy = foldY(groups);
+    if usize.from(gy) > MAX_GROUPS { return false; }
+    imm p = giveParams(job, device,&new ElementParams(u32.from(n), gx, 0u32, 0u32));
+    // the params buffer goes first: the slots passed are the others, after it
+    if slots.len == 2usize { return job.dispatch(device, kernel, &[p, slots[0usize], slots[1usize]], gx, gy); }
+    job.dispatch(device, kernel, &[p, slots[0usize], slots[1usize], slots[2usize]], gx, gy);
+  }
+
+  // y[i] = x[i] / (1 + e^-x[i]) for i < n
+  pub fn silu(self &, job &mut Job, device &mut Device, x u32, y u32, n usize) bool {
+    self.element(job, device, &siluK, &[x, y], n);
+  }
+
+  // y[i] = the tanh GELU of x[i] for i < n
+  pub fn gelu(self &, job &mut Job, device &mut Device, x u32, y u32, n usize) bool {
+    self.element(job, device, &geluK, &[x, y], n);
+  }
+
+  // y[i] = a[i] + b[i] for i < n
+  pub fn add(self &, job &mut Job, device &mut Device, a u32, b u32, y u32, n usize) bool {
+    self.element(job, device, &addK, &[a, b, y], n);
+  }
+
+  // y[i] = a[i] * b[i] for i < n
+  pub fn mul(self &, job &mut Job, device &mut Device, a u32, b u32, y u32, n usize) bool {
+    self.element(job, device, &mulK, &[a, b, y], n);
+  }
+}

@@ -1,0 +1,285 @@
+// The CPU twins, against numbers worked out by hand and against properties they must have: a small matvec and
+// matmul by hand, every type's matvec against a dot product of its decoded rows, a Q8_0 matrix against the f32
+// values it came from, RMSNorm, RoPE (identity at position 0, a rotation by hand, both pair orders, a partial
+// rotation, norm kept), softmax (including very large inputs), attention (one position, equal scores, grouped
+// heads, causality, a cache with room to spare), the KV append, SiLU, GELU, add and multiply, and the refusals.
+
+mod twins;
+
+import libc;
+import testing use *;
+import collections use List;
+import random use Rng;
+import llmreference use *;
+
+fn floats(values &Array[f32]) List[f32] {
+  mut l = List[f32].withCapacity(values.len);
+  mut i = 0usize;
+  while i < values.len { l.push(values[i]); i = i + 1usize; }
+  l;
+}
+
+fn zeros(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l;
+}
+
+fn near(got f32, want f64, tol f64, label &Array[u8]) bool { expectFloat(f64.from(got), want, tol, label); }
+
+fn main() i32 {
+  // ---- a matvec and a matmul by hand ----
+  imm wf = floats(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+  imm w = QMatrix.make(QTYPE_F32, 2usize, 3usize, encodeF32(wf.view()));
+  match w {
+    case imm m Some {
+      mut y = zeros(2usize);
+      expectBool(matvecCpu(&m, &[1.0, 0.0, -1.0], y.viewMut()), true, "matvec runs");
+      near(*y[0usize], -2.0d, 0.0d, "matvec row 0");
+      near(*y[1usize], -2.0d, 0.0d, "matvec row 1");
+      mut y2 = zeros(4usize);
+      expectBool(matmulCpu(&m, &[1.0, 0.0, -1.0, 2.0, 1.0, 0.0], 2usize, y2.viewMut()), true, "matmul runs");
+      near(*y2[0usize], -2.0d, 0.0d, "matmul [0][0]");
+      near(*y2[1usize], -2.0d, 0.0d, "matmul [0][1]");
+      near(*y2[2usize], 4.0d, 0.0d, "matmul [1][0]");
+      near(*y2[3usize], 13.0d, 0.0d, "matmul [1][1]");
+      expectBool(matvecCpu(&m, &[1.0, 0.0], y.viewMut()), false, "matvec with x too short is refused");
+      mut shortY = zeros(1usize);
+      expectBool(matvecCpu(&m, &[1.0, 0.0, -1.0], shortY.viewMut()), false, "matvec with y too short is refused");
+      expectBool(matmulCpu(&m, &[1.0, 0.0, -1.0], 2usize, y2.viewMut()), false, "matmul with X too short is refused");
+    }
+    case is None { expect(false, "the 2 x 3 F32 matrix"); }
+  }
+
+  // ---- every type: matvec is the dot product of the decoded rows, and matmul is a matvec for each batch row ----
+  mut rng = Rng.fromSeed(2024u64);
+  imm types = [QTYPE_F32, QTYPE_F16, QTYPE_Q8_0, QTYPE_Q4_K, QTYPE_Q6_K];
+  mut t = 0usize;
+  while t < 5usize {
+    imm qt = types[t];
+    imm cols = if qt == QTYPE_F32 or qt == QTYPE_F16 { 37usize; } elif qt == QTYPE_Q8_0 { 96usize; } else { 512usize; };
+    match syntheticMatrix(&mut rng, qt, 5usize, cols) {
+      case imm m Some {
+        imm x = syntheticFloats(&mut rng, cols * 3usize, 1.0);
+        mut y = zeros(5usize);
+        matvecCpu(&m, x.view(), y.viewMut());
+        mut ok = true;
+        mut r = 0usize;
+        while r < 5usize {
+          imm row = m.row(r);
+          mut acc = 0.0d;
+          mut c = 0usize;
+          while c < cols { acc = acc + f64.from(*row[c]) * f64.from(*x[c]); c = c + 1usize; }
+          if libc.fabs(f64.from(*y[r]) - acc) > 1.0e-6d * (1.0d + libc.fabs(acc)) { ok = false; }
+          r = r + 1usize;
+        }
+        expect(ok, "matvec equals the dot product of the decoded rows");
+        mut ym = zeros(15usize);
+        matmulCpu(&m, x.view(), 3usize, ym.viewMut());
+        mut same = true;
+        mut b = 0usize;
+        while b < 3usize {
+          mut yb = zeros(5usize);
+          matvecCpu(&m, &x.view()[b * cols..<(b + 1usize) * cols], yb.viewMut());
+          r = 0usize;
+          while r < 5usize { if *yb[r] != *ym[b * 5usize + r] { same = false; } r = r + 1usize; }
+          b = b + 1usize;
+        }
+        expect(same, "matmul row b is the matvec of input row b");
+      }
+      case is None { expect(false, "a synthetic matrix"); }
+    }
+    t = t + 1usize;
+  }
+
+  // ---- a Q8_0 matrix against the f32 matrix it was made from ----
+  {
+    imm src = syntheticFloats(&mut rng, 4usize * 128usize, 1.0);
+    imm x = syntheticFloats(&mut rng, 128usize, 1.0);
+    match QMatrix.make(QTYPE_F32, 4usize, 128usize, encodeF32(src.view())) {
+      case imm mf Some {
+        match QMatrix.make(QTYPE_Q8_0, 4usize, 128usize, encodeQ8_0(src.view())) {
+          case imm mq Some {
+            mut yf = zeros(4usize);
+            mut yq = zeros(4usize);
+            matvecCpu(&mf, x.view(), yf.viewMut());
+            matvecCpu(&mq, x.view(), yq.viewMut());
+            mut ok = true;
+            mut r = 0usize;
+            while r < 4usize {
+              // 128 products, each weight off by at most about 1/254 of its block's largest: the sum within 0.5
+              if libc.fabs(f64.from(*yf[r]) - f64.from(*yq[r])) > 0.5d { ok = false; }
+              r = r + 1usize;
+            }
+            expect(ok, "a Q8_0 matvec is near the f32 matvec it was quantised from");
+          }
+          case is None { expect(false, "the Q8_0 matrix"); }
+        }
+      }
+      case is None { expect(false, "the F32 matrix"); }
+    }
+  }
+
+  // ---- RMSNorm ----
+  {
+    mut y = zeros(4usize);
+    expectBool(rmsnormCpu(&[3.0, 4.0, 0.0, 0.0], &[1.0, 2.0], 2usize, 2usize, 0.00001, y.viewMut()), true, "rmsnorm runs");
+    near(*y[0usize], 0.848528137423857d, 1.0e-5d, "rmsnorm [3,4] element 0 (3 / sqrt(12.5), eps 1e-5)");
+    near(*y[1usize], 2.262741699796952d, 1.0e-5d, "rmsnorm [3,4] element 1 (2 * 4 / sqrt(12.5), eps 1e-5)");
+    near(*y[2usize], 0.0d, 0.0d, "rmsnorm of a row of zeros stays zero (eps keeps it finite)");
+    // with eps, zeros stay zero and a constant row is the weight, scaled
+    mut y2 = zeros(3usize);
+    rmsnormCpu(&[2.0, 2.0, 2.0], &[1.0, 2.0, 3.0], 3usize, 1usize, 0.0, y2.viewMut());
+    near(*y2[0usize], 1.0d, 1.0e-6d, "rmsnorm of a constant row is the weight (1)");
+    near(*y2[2usize], 3.0d, 1.0e-6d, "rmsnorm of a constant row is the weight (3)");
+    mut y3 = zeros(2usize);
+    rmsnormCpu(&[3.0, 4.0], &[1.0, 1.0], 2usize, 1usize, 12.5, y3.viewMut());
+    near(*y3[0usize], 3.0d / libc.sqrt(25.0d), 1.0e-6d, "rmsnorm with eps: 3 / sqrt(12.5 + 12.5)");
+    expectBool(rmsnormCpu(&[3.0, 4.0], &[1.0, 1.0], 2usize, 2usize, 0.0, y.viewMut()), false, "rmsnorm with x too short is refused");
+  }
+
+  // ---- RoPE ----
+  {
+    imm f = ropeFrequencies(4usize, 10000.0);
+    expectUInt(u64.from(f.len()), 2u64, "ropeDim 4 has two frequencies");
+    near(*f[0usize], 1.0d, 1.0e-7d, "frequency 0 is 1");
+    near(*f[1usize], 0.01d, 1.0e-8d, "frequency 1 is 10000^-0.5");
+    // position 0: nothing changes
+    mut x = floats(&[1.0, 2.0, 3.0, 4.0]);
+    ropeCpu(x.viewMut(), f.view(), 1usize, 1usize, 4usize, 4usize, 0usize, 0u32);
+    expect(*x[0usize] == 1.0 and *x[1usize] == 2.0 and *x[2usize] == 3.0 and *x[3usize] == 4.0, "rope at position 0 is the identity");
+    // position 1, mode 0, pair 0 = (x[0], x[1]) = (1, 0) rotated by 1 radian
+    mut a = floats(&[1.0, 0.0, 1.0, 0.0]);
+    ropeCpu(a.viewMut(), f.view(), 1usize, 1usize, 4usize, 4usize, 1usize, 0u32);
+    near(*a[0usize], 0.5403023058681398d, 1.0e-7d, "mode 0: x0 = cos 1");
+    near(*a[1usize], 0.8414709848078965d, 1.0e-7d, "mode 0: x1 = sin 1");
+    near(*a[2usize], 0.9999500004166653d, 1.0e-7d, "mode 0: pair 1 rotated by 0.01 rad: cos");
+    near(*a[3usize], 0.009999833334166664d, 1.0e-7d, "mode 0: pair 1: sin");
+    // mode 1 pairs (0, 2) and (1, 3)
+    mut b = floats(&[1.0, 1.0, 0.0, 0.0]);
+    ropeCpu(b.viewMut(), f.view(), 1usize, 1usize, 4usize, 4usize, 1usize, 1u32);
+    near(*b[0usize], 0.5403023058681398d, 1.0e-7d, "mode 1: x0 = cos 1");
+    near(*b[2usize], 0.8414709848078965d, 1.0e-7d, "mode 1: x2 = sin 1");
+    near(*b[1usize], 0.9999500004166653d, 1.0e-7d, "mode 1: x1 = cos 0.01");
+    near(*b[3usize], 0.009999833334166664d, 1.0e-7d, "mode 1: x3 = sin 0.01");
+    // a partial rotation leaves the rest alone: ropeDim 2 of headDim 4, two heads, token 1 of 2 at pos0 = 5
+    imm f2 = ropeFrequencies(2usize, 10000.0);
+    mut c = floats(&[1.0, 0.0, 7.0, 8.0, 1.0, 0.0, 9.0, 10.0, 1.0, 0.0, 11.0, 12.0, 1.0, 0.0, 13.0, 14.0]);
+    ropeCpu(c.viewMut(), f2.view(), 2usize, 2usize, 4usize, 2usize, 5usize, 0u32);
+    near(*c[0usize], libc.cos(5.0d), 1.0e-6d, "token 0 at position 5 (head 0): cos 5");
+    near(*c[1usize], libc.sin(5.0d), 1.0e-6d, "token 0 at position 5 (head 0): sin 5");
+    expect(*c[2usize] == 7.0 and *c[3usize] == 8.0, "dimensions past ropeDim are untouched");
+    near(*c[4usize], libc.cos(5.0d), 1.0e-6d, "token 0, head 1 rotates the same");
+    near(*c[8usize], libc.cos(6.0d), 1.0e-6d, "token 1 is at position 6: cos 6");
+    near(*c[9usize], libc.sin(6.0d), 1.0e-6d, "token 1 at position 6, head 0: sin 6");
+    // lengths kept
+    mut r = Rng.fromSeed(8u64);
+    imm v = syntheticFloats(&mut r, 3usize * 4usize * 16usize, 1.0);
+    mut v2 = floats(v.view());
+    imm f3 = ropeFrequencies(16usize, 500000.0);
+    ropeCpu(v2.viewMut(), f3.view(), 3usize, 4usize, 16usize, 16usize, 100usize, 1u32);
+    mut kept = true;
+    mut p = 0usize;
+    while p < 3usize * 4usize {
+      mut n0 = 0.0d;
+      mut n1 = 0.0d;
+      mut d = 0usize;
+      while d < 16usize {
+        n0 = n0 + f64.from(*v[p * 16usize + d]) * f64.from(*v[p * 16usize + d]);
+        n1 = n1 + f64.from(*v2[p * 16usize + d]) * f64.from(*v2[p * 16usize + d]);
+        d = d + 1usize;
+      }
+      if libc.fabs(n0 - n1) > 1.0e-5d { kept = false; }
+      p = p + 1usize;
+    }
+    expect(kept, "rope keeps the length of every head's vector");
+    expectBool(ropeCpu(x.viewMut(), f.view(), 1usize, 1usize, 4usize, 3usize, 0usize, 0u32), false, "an odd ropeDim is refused");
+    expectBool(ropeCpu(x.viewMut(), f.view(), 1usize, 1usize, 4usize, 4usize, 0usize, 2u32), false, "an unknown mode is refused");
+    expectBool(ropeCpu(x.viewMut(), f.view(), 1usize, 1usize, 4usize, 6usize, 0usize, 0u32), false, "ropeDim beyond headDim is refused");
+  }
+
+  // ---- softmax ----
+  {
+    mut y = zeros(6usize);
+    expectBool(softmaxCpu(&[1.0, 2.0, 3.0, 1000.0, 1001.0, 1001.0], 3usize, 2usize, y.viewMut()), true, "softmax runs");
+    near(*y[0usize], 0.09003057317038046d, 1.0e-7d, "softmax [1,2,3] element 0");
+    near(*y[1usize], 0.24472847105479764d, 1.0e-7d, "softmax [1,2,3] element 1");
+    near(*y[2usize], 0.6652409557748219d, 1.0e-7d, "softmax [1,2,3] element 2");
+    near(*y[3usize], 0.15536240349696362d, 1.0e-7d, "softmax of 1000, 1001, 1001 does not overflow");
+    near(*y[4usize], 0.4223187982515182d, 1.0e-7d, "softmax of 1000, 1001, 1001 element 1");
+    near(*y[5usize], f64.from(*y[4usize]), 0.0d, "equal inputs, equal outputs");
+  }
+
+  // ---- attention ----
+  {
+    // headDim 2, one head, three cached positions; V rows (1,10) (2,20) (3,30)
+    imm k = floats(&[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 9.0, 9.0]);       // maxSeq 4, one spare row
+    imm v = floats(&[1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 99.0, 99.0]);
+    mut out = zeros(2usize);
+    // token at position 0, q anything: only position 0 is visible: the output is V[0]
+    expectBool(attentionCpu(&[5.0, -3.0], k.view(), v.view(), 1usize, 1usize, 1usize, 2usize, 0usize, 4usize, 1.0, out.viewMut()), true, "attention runs");
+    near(*out[0usize], 1.0d, 1.0e-6d, "one visible position: V[0] (x)");
+    near(*out[1usize], 10.0d, 1.0e-5d, "one visible position: V[0] (y)");
+    // q = 0: equal scores: the mean of the visible values, three of them at position 2
+    expectBool(attentionCpu(&[0.0, 0.0], k.view(), v.view(), 1usize, 1usize, 1usize, 2usize, 2usize, 4usize, 1.0, out.viewMut()), true, "attention at position 2");
+    near(*out[0usize], 2.0d, 1.0e-6d, "q = 0 averages the three visible values (x)");
+    near(*out[1usize], 20.0d, 1.0e-5d, "q = 0 averages the three visible values (y)");
+    // q = (ln 2, 0), scale 1: scores ln2, 0, ln2 (k . q = 1*ln2, 0, ln2): weights 2 1 2 / 5
+    mut out3 = zeros(2usize);
+    imm ln2 = 0.6931471805599453;
+    attentionCpu(&[ln2, 0.0], k.view(), v.view(), 1usize, 1usize, 1usize, 2usize, 2usize, 4usize, 1.0, out3.viewMut());
+    near(*out3[0usize], (2.0d * 1.0d + 1.0d * 2.0d + 2.0d * 3.0d) / 5.0d, 1.0e-6d, "weights 2:1:2 (x)");
+    near(*out3[1usize], (2.0d * 10.0d + 1.0d * 20.0d + 2.0d * 30.0d) / 5.0d, 1.0e-5d, "weights 2:1:2 (y)");
+    // scale halves the scores: q = (2 ln 2, 0), scale 0.5 is the same
+    mut out4 = zeros(2usize);
+    attentionCpu(&[2.0 * ln2, 0.0], k.view(), v.view(), 1usize, 1usize, 1usize, 2usize, 2usize, 4usize, 0.5, out4.viewMut());
+    near(*out4[0usize], f64.from(*out3[0usize]), 1.0e-6d, "the scale multiplies the scores");
+    // causality: two tokens at positions 0 and 1; token 0's output is V[0] whatever token 1 is
+    mut out5 = zeros(4usize);
+    expectBool(attentionCpu(&[0.0, 0.0, 3.0, 4.0], k.view(), v.view(), 2usize, 1usize, 1usize, 2usize, 0usize, 4usize, 1.0, out5.viewMut()), true, "two tokens");
+    near(*out5[0usize], 1.0d, 1.0e-6d, "token 0 sees only itself (x)");
+    near(*out5[1usize], 10.0d, 1.0e-5d, "token 0 sees only itself (y)");
+    // grouped heads: two heads share the one KV head, the same q gives the same output
+    mut out6 = zeros(4usize);
+    attentionCpu(&[ln2, 0.0, ln2, 0.0], k.view(), v.view(), 1usize, 2usize, 1usize, 2usize, 2usize, 4usize, 1.0, out6.viewMut());
+    near(*out6[0usize], f64.from(*out3[0usize]), 1.0e-6d, "head 0 of a grouped pair");
+    near(*out6[2usize], f64.from(*out3[0usize]), 1.0e-6d, "head 1 of a grouped pair reads the same KV head");
+    expectBool(attentionCpu(&[0.0, 0.0], k.view(), v.view(), 1usize, 3usize, 2usize, 2usize, 0usize, 4usize, 1.0, out.viewMut()), false, "nKvHeads must divide nHeads");
+    expectBool(attentionCpu(&[0.0, 0.0], k.view(), v.view(), 1usize, 1usize, 1usize, 2usize, 4usize, 4usize, 1.0, out.viewMut()), false, "a token beyond maxSeq is refused");
+  }
+
+  // ---- KV append ----
+  {
+    mut cache = zeros(8usize);
+    expectBool(kvAppendCpu(&[1.0, 2.0, 3.0, 4.0], cache.viewMut(), 2usize, 2usize, 1usize), true, "kv append runs");
+    expect(*cache[0usize] == 0.0 and *cache[1usize] == 0.0, "position 0 untouched");
+    expect(*cache[2usize] == 1.0 and *cache[3usize] == 2.0 and *cache[4usize] == 3.0 and *cache[5usize] == 4.0, "positions 1 and 2 hold the new rows");
+    expect(*cache[6usize] == 0.0, "position 3 untouched");
+    expectBool(kvAppendCpu(&[1.0, 2.0, 3.0, 4.0], cache.viewMut(), 2usize, 2usize, 3usize), false, "an append past the cache is refused");
+  }
+
+  // ---- activations and the elementwise pair ----
+  {
+    mut y = zeros(5usize);
+    siluCpu(&[0.0, 1.0, -1.0, 20.0, -20.0], 5usize, y.viewMut());
+    near(*y[0usize], 0.0d, 0.0d, "silu(0)");
+    near(*y[1usize], 0.7310585786300049d, 1.0e-7d, "silu(1)");
+    near(*y[2usize], -0.2689414213699951d, 1.0e-7d, "silu(-1)");
+    near(*y[3usize], 20.0d, 1.0e-6d, "silu(20)");
+    near(*y[4usize], -4.122307236380407e-8d, 1.0e-12d, "silu(-20)");
+    geluCpu(&[0.0, 1.0, -1.0, 6.0, -6.0], 5usize, y.viewMut());
+    near(*y[0usize], 0.0d, 0.0d, "gelu(0)");
+    near(*y[1usize], 0.8411919906082768d, 1.0e-7d, "gelu(1), the tanh form");
+    near(*y[2usize], -0.15880800939172324d, 1.0e-7d, "gelu(-1)");
+    near(*y[3usize], 6.0d, 1.0e-6d, "gelu(6)");
+    near(*y[4usize], 0.0d, 1.0e-6d, "gelu(-6)");
+    mut s = zeros(3usize);
+    addCpu(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 3usize, s.viewMut());
+    expect(*s[0usize] == 11.0 and *s[1usize] == 22.0 and *s[2usize] == 33.0, "add");
+    mulCpu(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 3usize, s.viewMut());
+    expect(*s[0usize] == 10.0 and *s[1usize] == 40.0 and *s[2usize] == 90.0, "mul");
+    expectBool(addCpu(&[1.0], &[1.0, 2.0], 2usize, s.viewMut()), false, "add with a short operand is refused");
+  }
+  done();
+}
