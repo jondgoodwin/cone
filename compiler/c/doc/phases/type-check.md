@@ -295,9 +295,16 @@ List[Option[Node]]; }` holds `Option[Node]` through the List's pointer as `List[
 holds `Node`, so an argument that is itself an instance of a generic
 (`fnCallTypeCheckNode`, `argsnamed`) is checked in target mode while a layout is
 in flight: the `Option[Node]` is made and its layout waits
-(`genericEnumInstanceLayout`). A plain name needs no such care, and keeps being
-checked as it was, since a trait's own members may ask what the named type is
-(`Iterator[StrCharIndex]`). Whatever holds the argument by value still demands
+(`genericEnumInstanceLayout`). So is an argument written as the name of a
+struct or an enum (`namesnamed`), when the generic's instances hold values by
+value: `struct VL { items List[V]; }` above `enum V { N(i64); L(VL); }` names V,
+which a plain check would lay out inside VL's layout, finding VL in flight
+through V's variant, though a List holds its elements behind a pointer; written
+below the enum it always compiled. A trait's argument is still checked as it was,
+since a trait's own members may ask what the named type is
+(`Iterator[StrCharIndex]`), and so is a name that is an alias. The waiting
+argument is not laid out to decide a member's `where` either
+(`genericArgWaiting`; `genericLateWhere` settles it). Whatever holds the argument by value still demands
 its layout when it asks for its size (`structTypeSettle`), so `Wrap[Option[Node]]`
 as a field of Node, a `Result[Option[Node], E]`, an array or a tuple of it are
 refused as before. A `where` that reads the argument's layout cannot wait for it:

@@ -2778,13 +2778,15 @@ static int genericTypeReadsArg(INode *generic, GenericInfo *genericinfo, Nodes *
 
 // An instance of a generic made as a reference's target, whose layout waits
 // (structTargetWait): 'Option[Node]' named inside Node's own layout. Laying it
-// out first to decide a condition would lay Node out inside itself.
+// out first to decide a condition would lay Node out inside itself. So does a
+// plain struct or enum named as the argument and not laid out yet:
+// 'List[V]' inside the struct a variant of V holds, where V's layout asks that
+// struct's, which is in flight.
 static int genericArgWaiting(INode *arg) {
     if (arg->tag == ULitTag || !isTypeNode(arg))
         return 0;
     INode *dcl = itypeGetTypeDcl(arg);
-    return dcl->tag == StructTag && !(dcl->flags & (TypeChecking | TypeChecked))
-        && itypeInstanceTypeArgs(dcl) != NULL;
+    return dcl->tag == StructTag && !(dcl->flags & (TypeChecking | TypeChecked));
 }
 
 // An instance of a generic enum made as a reference's target: laid out with

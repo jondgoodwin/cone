@@ -4169,6 +4169,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         && (node->flags & FlagIndex) && !(node->flags & (FlagCtorParen | FlagNew))
         && isTypeNode(node->objfn) && nameUseNames(node->objfn, StructTag)
         && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL;
+    // The same for an argument written as a plain type's name, but when the
+    // generic's instances hold values by value: a struct or an enum, not a trait
+    // (whose argument is checked when the trait is used)
+    int namesnamed = argsnamed && (!(nameUseGetDcl((NameUseNode*)node->objfn)->flags & TraitType)
+        || (nameUseGetDcl((NameUseNode*)node->objfn)->flags & (HasTagField | SameSize)));
     if (node->args) {
         uint32_t argi = 0;
         uint32_t ovfirst = firstparm;
@@ -4207,7 +4212,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
             if ((*argsp)->tag == ClosureTag)
                 fnCallCheckClosureArg(pstate, argsp, expect);
-            else if (argsnamed && (*argsp)->tag == FnCallTag) {
+            else if (argsnamed && ((*argsp)->tag == FnCallTag || (namesnamed && nameUseNames(*argsp, StructTag)))) {
                 structTargetEnter();
                 inodeTypeCheck(pstate, argsp, expect);
                 structTargetExit();

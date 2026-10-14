@@ -1,0 +1,23 @@
+// A generic's written type argument is named, not held (struct_layout_generic_arg_order),
+// but a generic that holds its argument by value, or a type held by value
+// round a ring, is still a cycle, with the struct written above the enum and
+// below it. The messages name the cycle type by type.
+
+mod struct_typecheck_generic_arg_cycle;
+
+import collections use *;
+
+// A struct holding itself, beside a List of its enum that is no cycle
+struct Selfish { pub s Selfish; pub kids List[Sel]; }   //~ ErrorNoSize "Selfish contains Selfish by value"
+enum Sel { Tip(i64); Hold(Selfish); }
+
+// A generic holding its argument by value: the enum's variant holds the struct,
+// which holds the generic holding the enum. The generic's field is reported
+// once, for the first instance that reaches it
+struct Holder[T] { pub v T; }       //~ ErrorNoSize "WE contains Own2 contains WH contains Holder contains WE by value"
+struct VH { pub h Holder[VE]; }
+enum VE { Num(i64); Own(VH); }      //~ ErrorNoSize "VH contains Holder contains VE contains Own contains VH by value"
+
+// The same two, the enum above
+enum WE { Num2(i64); Own2(WH); }    //~ ErrorNoSize "WE contains Own2 contains WH contains Holder contains WE by value"
+struct WH { pub h Holder[WE]; }     //~ ErrorNoSize "WE contains Own2 contains WH contains Holder contains WE by value"
