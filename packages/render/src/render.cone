@@ -341,6 +341,7 @@ const BOUND_PBRX_SKINNED = 13u32;
 const BOUND_PBRX_BLEND = 14u32;
 const BOUND_PBRX_SKINNED_BLEND = 15u32;
 const BOUND_PBRX_TANGENT = 16u32;
+const BOUND_PBRX_GLASS = 17u32;
 
 // The draw list's layers, in the order they are drawn: opaque meshes, then
 // lines, then (after the sky) what is see-through
@@ -456,6 +457,15 @@ pub struct Renderer {
   pub ext List[SceneCapture];
   // How hard screen-space reflections try ('setReflections')
   pub reflections ReflectionSettings;
+  // The ray-traced scene (raytrace.cone): one, once ray tracing was asked for on a device that has it ('setRayTracing');
+  // with it, 'ext' holds a second set of extended pipelines (ext[1]) that cast rays into it. None on a card without.
+  pub rt List[RtScene];
+  // The caustic volume 'setCaustics' last gave, for the extended pipelines made after it
+  pub causticVolume CausticVolume;
+  // Whether the extended material is ray-traced where it can be: set by 'setRayTracing'; and which of 'ext'
+  // the render in progress draws with (0 raster, 1 ray-traced)
+  pub rayTracing bool = false;
+  pub extActive usize = 0usize;
   pub frameItemsLive bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
@@ -659,7 +669,8 @@ pub struct Renderer {
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
       List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
       pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty(), Visibility.create(0.25), List[HiZ].empty(),
-      List[DrawItem].empty(), List[SceneCapture].empty(), ReflectionSettings.medium());
+      List[DrawItem].empty(), List[SceneCapture].empty(), ReflectionSettings.medium(), List[RtScene].empty(),
+      CausticVolume.none());
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -1216,17 +1227,48 @@ pub struct Renderer {
   // Make the extended material's pipelines, capture passes and tables, if they are not made (scenecapture.cone)
   fn ensureExtended(self &mut, device &mut Device) {
     if ext.len() > 0usize { return; }
+    imm noRays = RtScene.none();
     ext.push(SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout, &environmentLayout,
-      &reflections));
+      &reflections, &noRays));
   }
+
+  // Cast rays where the card can (ray-traced glass, soap film, reflections of what is off the screen, glass-tinted
+  // sunlight: raytrace.cone, rtglass.slang), or not. Chosen at run time: with 'on' and a device that has ray
+  // tracing ('device.rayTracing'), the extended material is drawn by a second set of pipelines over an
+  // acceleration structure the renderer builds each frame from the draw list; the material description is
+  // the same, and 'setRayTracing(device, false)' returns to the raster path (glass refracting the captured
+  // frame, screen-space reflections). On a card without ray tracing it does nothing and answers false: the
+  // raster path draws exactly as it always did. Answers whether the next render ray traces.
+  pub fn setRayTracing(self &mut, device &mut Device, on bool) bool {
+    rayTracing = false;
+    if !on or !device.rayTracing { return false; }
+    self.ensureExtended(device);
+    if ext.len() < 2usize {
+      if rt.len() == 0usize { rt.push(RtScene.create(device)); }
+      if !rt[0usize].isValid() { return false; }
+      mut traced = SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout,
+        &environmentLayout, &reflections, rt[0usize]);
+      if !traced.isValid() { return false; }
+      traced.forceAll = ext[0usize].forceAll;
+      traced.setCaustics(device, &causticVolume);
+      ext.push(traced);
+    }
+    rayTracing = true;
+    true;
+  }
+
+  // Whether the next render casts rays (ray tracing was asked for and the card has it)
+  pub fn isRayTracing(self &) bool { rayTracing and ext.len() > 1usize; }
 
   // Screen-space reflections ray-marched as 's' says, from the next render on (a quality tier:
   // 'ReflectionSettings.high()', 'medium()', 'low()'; scenecapture.cone)
   pub fn setReflections(self &mut, s &ReflectionSettings) {
     reflections = *s;
-    if ext.len() > 0usize {
-      mut e = &mut ext[0usize];
+    mut k = 0usize;
+    while k < ext.len() {
+      mut e = &mut ext[k];
       e.settings = *s;
+      k = k + 1usize;
     }
   }
 
@@ -1235,17 +1277,24 @@ pub struct Renderer {
   // turns it off.
   pub fn setCaustics(self &mut, device &mut Device, v &CausticVolume) {
     self.ensureExtended(device);
-    mut e = &mut ext[0usize];
-    e.setCaustics(device, v);
+    causticVolume = *v;
+    mut k = 0usize;
+    while k < ext.len() {
+      mut e = &mut ext[k];
+      e.setCaustics(device, v);
+      k = k + 1usize;
+    }
   }
 
   // Draw every physically based material with the extended pipelines, whether or not it needs them (a
   // test: the extended pipelines with all the lobes off must draw what the base ones do)
   pub fn forceExtended(self &mut, device &mut Device, on bool) {
     if on { self.ensureExtended(device); }
-    if ext.len() > 0usize {
-      mut e = &mut ext[0usize];
+    mut k = 0usize;
+    while k < ext.len() {
+      mut e = &mut ext[k];
       e.forceAll = on;
+      k = k + 1usize;
     }
   }
 
@@ -1475,6 +1524,8 @@ pub struct Renderer {
     triangles = 0u64;
     instancesDrawn = 0u32;
     frameItemsLive = false;
+    // The extended pipelines that cast rays, if ray tracing is on (setRayTracing), else the raster ones
+    extActive = if rayTracing and ext.len() > 1usize and rt.len() > 0usize { 1usize; } else { 0usize; };
     if target.width == 0u32 or target.height == 0u32 { return; }
 
     // The frame's uniforms: the camera and the light
@@ -1629,8 +1680,13 @@ pub struct Renderer {
     imm mainEnd = vis.sets[0usize].end;
     imm proj = camera.projectionMatrix(aspect);
     if ext.len() > 0usize and self.drawsPbr(drawList) {
-      mut e = &mut ext[0usize];
+      mut e = &mut ext[extActive];
       e.bake(encoder);
+    }
+    // The structure rays are cast into, built from the draw list (raytrace.cone)
+    if extActive == 1usize {
+      mut r = &mut rt[0usize];
+      r.update(device, encoder, &meshes, &materials, &drawList.items, mainItems);
     }
     // With the depth pyramid, the view is drawn in two render passes with the
     // pyramid built between them (hiz.cone); otherwise in one
@@ -1753,14 +1809,16 @@ pub struct Renderer {
           skinned = m.isSkinned();
           // A material that asks for a lobe the base shader lacks, or the frame, is drawn by the extended
           // pipelines (scenecapture.cone), which have the capture as their fourth group
-          imm extended = ext.len() > 0usize and (mslot.pbr.isExtended() or ext[0usize].forceAll);
+          imm extended = ext.len() > 0usize and (mslot.pbr.isExtended() or ext[extActive].forceAll);
+          // Glass found by rays replaces what is behind it, so it is drawn by a pipeline that writes depth
+          imm glassTraced = extended and blend and !skinned and ext[extActive].rayTraced and mslot.pbr.glass > 0.;
           // A flutter material on a mesh that carries its leaves' data
           sway = !blend and !skinned and !extended and mslot.pbr.flutter > 0. and m.sway.isValid();
           // A mesh with tangents follows them in an anisotropic highlight
           tangented = extended and !blend and !skinned and m.tangents.isValid();
           imm want = if extended {
             if blend {
-              if skinned { BOUND_PBRX_SKINNED_BLEND; } else { BOUND_PBRX_BLEND; };
+              if skinned { BOUND_PBRX_SKINNED_BLEND; } elif glassTraced { BOUND_PBRX_GLASS; } else { BOUND_PBRX_BLEND; };
             } else {
               if skinned { BOUND_PBRX_SKINNED; } elif tangented { BOUND_PBRX_TANGENT; } else { BOUND_PBRX; };
             };
@@ -1775,15 +1833,16 @@ pub struct Renderer {
             elif want == BOUND_PBR_SKINNED { pass.setPipeline(&pbrSkinnedPipeline); }
             elif want == BOUND_PBR_BLEND { pass.setPipeline(&pbrBlendPipeline); }
             elif want == BOUND_PBR_SKINNED_BLEND { pass.setPipeline(&pbrSkinnedBlendPipeline); }
-            elif want == BOUND_PBRX { pass.setPipeline(&ext[0usize].opaquePipeline); }
-            elif want == BOUND_PBRX_SKINNED { pass.setPipeline(&ext[0usize].skinnedPipeline); }
-            elif want == BOUND_PBRX_TANGENT { pass.setPipeline(&ext[0usize].tangentPipeline); }
-            elif want == BOUND_PBRX_BLEND { pass.setPipeline(&ext[0usize].blendPipeline); }
-            else { pass.setPipeline(&ext[0usize].skinnedBlendPipeline); }
+            elif want == BOUND_PBRX { pass.setPipeline(&ext[extActive].opaquePipeline); }
+            elif want == BOUND_PBRX_SKINNED { pass.setPipeline(&ext[extActive].skinnedPipeline); }
+            elif want == BOUND_PBRX_TANGENT { pass.setPipeline(&ext[extActive].tangentPipeline); }
+            elif want == BOUND_PBRX_BLEND { pass.setPipeline(&ext[extActive].blendPipeline); }
+            elif want == BOUND_PBRX_GLASS { pass.setPipeline(&ext[extActive].glassPipeline); }
+            else { pass.setPipeline(&ext[extActive].skinnedBlendPipeline); }
             pass.setBindGroup(0u32, &frameGroup);
             pass.setBindGroup(2u32, &environment.group);
             if extended {
-              pass.setBindGroup(3u32, if sceneLive { &ext[0usize].group; } else { &ext[0usize].standInGroup; });
+              pass.setBindGroup(3u32, if sceneLive { &ext[extActive].group; } else { &ext[extActive].standInGroup; });
             }
             boundProbe = 0u32;
             bound = want;
@@ -1898,7 +1957,7 @@ pub struct Renderer {
   // Capture the target and the depth as drawn so far, for the extended material to read
   fn captureFrame(self &mut, device &mut Device, encoder &mut CommandEncoder, target &TextureView, depth &TextureView,
       proj &Mat4) {
-    mut e = &mut ext[0usize];
+    mut e = &mut ext[extActive];
     e.capture(device, encoder, target, depth, target.width, target.height, proj.m[10], proj.m[14], frameNumber);
   }
 

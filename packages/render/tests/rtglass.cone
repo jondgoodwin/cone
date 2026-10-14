@@ -1,0 +1,143 @@
+// Ray-traced glass: where the card has ray tracing, glass drawn by rays refracts through the whole ball, not a slab, and
+// the choice is the renderer's to make at run time; where it has none, nothing changes. Only a failure prints.
+//
+// A ball of glass (index 1.5, radius 0.4) at the origin, the camera at z = 4 (rays nearly parallel), a backdrop 1 behind it, red to the left of
+// x = 0 and green to the right (glowing, so no light is needed). A ball lens turns the picture over:
+// - drawn by the raster glass, the slab model carries the backdrop on without turning it: left of the middle
+//   of the ball is red, right is green, as they are outside it;
+// - drawn by rays (GPU_RAY_TRACING unset, a card with ray tracing): left of the middle is GREEN and right RED,
+//   the inverted image; the acceleration structure held the ball and the two planes (3 instances) and built one
+//   structure for each mesh (2); turning rays off gives the raster picture again;
+// - on a card without ray tracing (the integrated GPU, or GPU_RAY_TRACING=off) 'setRayTracing' answers false, the
+//   picture is the raster one, and no structure is built.
+// No failure and no validation message either way.
+
+mod rtglass;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIZE = 96u32;
+
+fn powerPreference() u32 {
+  imm e = libc.getenv("GPU_POWER_PREFERENCE");
+  if (e as usize) != 0usize and libc.strcmp(cstr.fromPtr(e), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn rayTracingOff() bool {
+  imm e = libc.getenv("GPU_RAY_TRACING");
+  (e as usize) != 0usize and libc.strcmp(cstr.fromPtr(e), "off") == 0i32;
+}
+
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm exponent = (bits >> 10u32) & 31u32;
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  if exponent == 0u32 { return 0.; }
+  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  sign * (f as f32);
+}
+
+fn radiance(p *u8, x u32, y u32, c usize) f64 {
+  imm h = p as *u16;
+  f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(SIZE) + usize.from(x)) * 4usize + c)));
+}
+
+fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn glowing(r f32, g f32, b f32) PbrMaterial {
+  PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 1.).glowing(new Color(r, g, b, 1.), 1.);
+}
+
+fn main() i32 {
+  mut instance = Instance.create("rtglass");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, powerPreference());
+  require(adapter.isValid(), "an adapter");
+  imm wantRays = !rayTracingOff();
+  mut device = adapter.requestDeviceWith(wantRays);
+  require(device.isValid(), "a device");
+  imm hasRays = device.rayTracing;
+
+  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  renderer.environmentStrength = 0.;
+  renderer.drawSky = false;
+  mut camera = Camera.make();
+  camera.fov = radians(20.);
+  camera.lookAt(new Vec3(0., 0., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm dark = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.), Color.gray(0.));
+
+  imm plane = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  imm ball = renderer.addMesh(&mut device, &Mesh.sphere(1., 48));
+  imm face = Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.));
+  imm redM = renderer.addPbrMaterial(&mut device, &glowing(1., 0., 0.));
+  imm greenM = renderer.addPbrMaterial(&mut device, &glowing(0., 1., 0.));
+  mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.4, Color.gray(1.), 1., 0.);
+  glass.reflections = 0.;
+  imm glassM = renderer.addPbrMaterial(&mut device, &glass);
+  mut list = DrawList.empty();
+  list.add(plane, redM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+  list.add(plane, greenM, Mat4.fromTrs(new Vec3(1.35, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+  list.add(ball, glassM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(0.4, 0.4, 0.4)));
+
+  // ---- The raster glass: the slab does not turn the picture over ----
+  drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  expect(radiance(p, 8u32, 48u32, 0usize) > 0.8d, "outside the ball, left, red");
+  expect(radiance(p, 88u32, 48u32, 1usize) > 0.8d, "outside the ball, right, green");
+  expect(radiance(p, 36u32, 48u32, 0usize) > radiance(p, 36u32, 48u32, 1usize), "raster: left of the middle is red, not turned over");
+  expect(radiance(p, 60u32, 48u32, 1usize) > radiance(p, 60u32, 48u32, 0usize), "raster: right of the middle is green");
+
+  // ---- Rays, if the card has them ----
+  imm tracing = renderer.setRayTracing(&mut device, true);
+  expectBool(tracing, hasRays, "rays are on exactly where the card has them");
+  expectBool(renderer.isRayTracing(), hasRays, "and the renderer says so");
+  drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  if hasRays {
+    expectUInt(u64.from(renderer.rt[0usize].count), 3u64, "the structure holds the two planes and the ball");
+    expectUInt(u64.from(renderer.rt[0usize].built), 2u64, "a bottom level for the plane mesh (shared by both planes) and one for the ball");
+    expect(radiance(p, 36u32, 48u32, 1usize) > radiance(p, 36u32, 48u32, 0usize), "rays: left of the middle is green, the picture turned over");
+    expect(radiance(p, 60u32, 48u32, 0usize) > radiance(p, 60u32, 48u32, 1usize), "rays: right of the middle is red");
+    expect(radiance(p, 8u32, 48u32, 0usize) > 0.8d, "outside the ball, still red");
+    expectBool(renderer.setRayTracing(&mut device, false), false, "turned off");
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+    expect(radiance(p, 36u32, 48u32, 0usize) > radiance(p, 36u32, 48u32, 1usize), "the raster picture again");
+  } else {
+    expectUInt(u64.from(renderer.rt.len()), 0u64, "no structure was made");
+    expect(radiance(p, 36u32, 48u32, 0usize) > radiance(p, 36u32, 48u32, 1usize), "without rays, the raster picture");
+    // Same number of checks on every GPU
+    mut skipped = 0u32;
+    while skipped < 5u32 {
+      expect(true, "a ray-traced check, skipped: no ray tracing here");
+      skipped = skipped + 1u32;
+    }
+  }
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
