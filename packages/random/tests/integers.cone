@@ -1,0 +1,167 @@
+// Integers in a range: exactly uniform (Lemire's multiply-shift with rejection),
+// and the same on every platform.
+//
+// Every pinned number was computed by an independent Python transcription of
+// the algorithm (SplitMix64 seed expansion, xoshiro256**, Lemire's method with
+// Python's unbounded integers for the 128-bit product), not by this package.
+// The statistical checks are fixed by their seeds, so they cannot flake: their
+// bounds are about five standard deviations wide, and a modulo-reduced
+// generator misses them by far (see the thirds check).
+
+mod integers;
+
+import testing use *;
+import collections use List;
+import random;
+
+fn bump(counts &mut List[i64], i usize) {
+  counts.set(i, *counts[i] + 1i64);
+}
+
+fn main() i32 {
+  // below(6), seed 7
+  mut r = random.Rng.fromSeed(7u64);
+  expectUInt(r.below(6u64), 4u64, "below(6) 1");
+  expectUInt(r.below(6u64), 1u64, "below(6) 2");
+  expectUInt(r.below(6u64), 5u64, "below(6) 3");
+  expectUInt(r.below(6u64), 5u64, "below(6) 4");
+  expectUInt(r.below(6u64), 5u64, "below(6) 5");
+  expectUInt(r.below(6u64), 5u64, "below(6) 6");
+  expectUInt(r.below(6u64), 0u64, "below(6) 7");
+  expectUInt(r.below(6u64), 0u64, "below(6) 8");
+  expectUInt(r.below(6u64), 2u64, "below(6) 9");
+  expectUInt(r.below(6u64), 0u64, "below(6) 10");
+  expectUInt(r.below(6u64), 3u64, "below(6) 11");
+  expectUInt(r.below(6u64), 4u64, "below(6) 12");
+
+  // A bound over 2^63 rejects about half the draws: the 128-bit product, the
+  // threshold and the redraw loop, against the transcription
+  r = random.Rng.fromSeed(7u64);
+  expectUInt(r.below(9223372036854775809u64), 6461677535414237997u64, "below(2^63+1) 1");
+  expectUInt(r.below(9223372036854775809u64), 7744196453246319819u64, "below(2^63+1) 2");
+  expectUInt(r.below(9223372036854775809u64), 9049029322324588832u64, "below(2^63+1) 3");
+  expectUInt(r.below(9223372036854775809u64), 9139072988219048332u64, "below(2^63+1) 4");
+  expectUInt(r.below(9223372036854775809u64), 1400256439129669809u64, "below(2^63+1) 5");
+  expectUInt(r.below(9223372036854775809u64), 6750200521807187948u64, "below(2^63+1) 6");
+
+  // 3 * 2^62 rejects a quarter of the draws
+  r = random.Rng.fromSeed(7u64);
+  expectUInt(r.below(13835058055282163712u64), 9692516303121356995u64, "below(3*2^62) 1");
+  expectUInt(r.below(13835058055282163712u64), 3856539442751087005u64, "below(3*2^62) 2");
+  expectUInt(r.below(13835058055282163712u64), 11616294679869479728u64, "below(3*2^62) 3");
+  expectUInt(r.below(13835058055282163712u64), 12074878111676180790u64, "below(3*2^62) 4");
+
+  r = random.Rng.fromSeed(7u64);
+  expectUInt(r.below(1000000007u64), 700576487u64, "below(1000000007) 1");
+  expectUInt(r.below(1000000007u64), 278751231u64, "below(1000000007) 2");
+  expectUInt(r.below(1000000007u64), 839627467u64, "below(1000000007) 3");
+  expectUInt(r.below(1000000007u64), 981097731u64, "below(1000000007) 4");
+
+  r = random.Rng.fromSeed(7u64);
+  expectUInt(r.below(18446744073709551615u64), 12923355070828475993u64, "below(2^64-1) 1");
+  expectUInt(r.below(18446744073709551615u64), 5142052590334782673u64, "below(2^64-1) 2");
+  expectUInt(r.below(18446744073709551615u64), 15488392906492639637u64, "below(2^64-1) 3");
+
+  // below(1) is always 0 and draws nothing the second time; below(0) answers 0
+  mut a = random.Rng.fromSeed(7u64);
+  mut b = random.Rng.fromSeed(7u64);
+  expectUInt(a.below(1u64), 0u64, "below(1)");
+  expectUInt(a.below(0u64), 0u64, "below(0)");
+  expectUInt(b.below(1u64), 0u64, "below(1) twin");
+  // Both took one draw for below(1) (Lemire's product is the high half, 0, and
+  // its low half is never under 1); below(0) took none
+  expectUInt(a.next(), (b.next()), "below(0) draws nothing");
+
+  // Ranges
+  r = random.Rng.fromSeed(9u64);
+  expectUInt(r.rangeU64(10u64, 20u64), 10u64, "rangeU64 1");
+  expectUInt(r.rangeU64(10u64, 20u64), 12u64, "rangeU64 2");
+  expectUInt(r.rangeU64(10u64, 20u64), 11u64, "rangeU64 3");
+  expectUInt(r.rangeU64(10u64, 20u64), 17u64, "rangeU64 4");
+  expectUInt(r.rangeU64(10u64, 20u64), 19u64, "rangeU64 5");
+  expectUInt(r.rangeU64(10u64, 20u64), 17u64, "rangeU64 6");
+  expectInt(r.rangeI64(-5i64, 5i64), 1i64, "rangeI64 1");
+  expectInt(r.rangeI64(-5i64, 5i64), 0i64, "rangeI64 2");
+  expectInt(r.rangeI64(-5i64, 5i64), -4i64, "rangeI64 3");
+  expectInt(r.rangeI64(-5i64, 5i64), -1i64, "rangeI64 4");
+  expectInt(r.rangeI64(-5i64, 5i64), 2i64, "rangeI64 5");
+  expectInt(r.rangeI64(-5i64, 5i64), 4i64, "rangeI64 6");
+  expectInt(r.rangeI64(-5i64, 5i64), -4i64, "rangeI64 7");
+  expectInt(r.rangeI64(-5i64, 5i64), 2i64, "rangeI64 8");
+  // The widest half-open range an i64 can name
+  expectInt(r.rangeI64(-9223372036854775807i64 - 1i64, 9223372036854775807i64), 7979234029841325586i64, "rangeI64 widest 1");
+  expectInt(r.rangeI64(-9223372036854775807i64 - 1i64, 9223372036854775807i64), 8260407352179402867i64, "rangeI64 widest 2");
+  expectInt(r.rangeI64(-9223372036854775807i64 - 1i64, 9223372036854775807i64), -8276337242936159929i64, "rangeI64 widest 3");
+  // Closed ranges that span the whole type draw 64 bits as they are
+  expectInt(r.closedI64(-9223372036854775807i64 - 1i64, 9223372036854775807i64), 7891218203513228069i64, "closedI64 whole 1");
+  expectInt(r.closedI64(-9223372036854775807i64 - 1i64, 9223372036854775807i64), -1610260054093330110i64, "closedI64 whole 2");
+  expectInt(r.closedI64(-9223372036854775807i64 - 1i64, 9223372036854775807i64), -2951175867609413739i64, "closedI64 whole 3");
+  expectUInt(r.closedU64(0u64, 18446744073709551615u64), 13399226643196901569u64, "closedU64 whole 1");
+  expectUInt(r.closedU64(0u64, 18446744073709551615u64), 9597481405169348957u64, "closedU64 whole 2");
+  expectUInt(r.closedU64(0u64, 18446744073709551615u64), 3405452953123679863u64, "closedU64 whole 3");
+  expectInt(r.closedI64(-3i64, 3i64), -1i64, "closedI64 1");
+  expectInt(r.closedI64(-3i64, 3i64), -2i64, "closedI64 2");
+  expectInt(r.closedI64(-3i64, 3i64), 3i64, "closedI64 3");
+  expectInt(r.closedI64(-3i64, 3i64), -2i64, "closedI64 4");
+  expectInt(r.closedI64(-3i64, 3i64), -3i64, "closedI64 5");
+  expectInt(r.closedI64(-3i64, 3i64), 2i64, "closedI64 6");
+  expectInt(r.closedI64(-3i64, 3i64), -1i64, "closedI64 7");
+  expectInt(r.closedI64(-3i64, 3i64), 0i64, "closedI64 8");
+
+  // A range of one value, and an empty or reversed range, answer the low end
+  // without drawing
+  mut c = random.Rng.fromSeed(1u64);
+  mut d = random.Rng.fromSeed(1u64);
+  expectUInt(c.closedU64(5u64, 5u64), 5u64, "closedU64 of one value");
+  expectInt(c.closedI64(-7i64, -7i64), -7i64, "closedI64 of one value");
+  expectUInt(c.rangeU64(8u64, 8u64), 8u64, "empty rangeU64");
+  expectUInt(c.rangeU64(9u64, 3u64), 9u64, "reversed rangeU64");
+  expectInt(c.rangeI64(4i64, -4i64), 4i64, "reversed rangeI64");
+  expectInt(c.closedI64(4i64, -4i64), 4i64, "reversed closedI64");
+  expectUInt(c.closedU64(5u64, 5u64), 5u64, "closedU64 of one value, again");
+  expectUInt(u64.from(c.index(1usize)), 0u64, "index of 1");
+  // The three one-value ranges drew once each (below(1) takes a draw), the
+  // empty and reversed ones none: four draws in all
+  d.next();
+  d.next();
+  d.next();
+  d.next();
+  expectUInt(c.next(), d.next(), "empty ranges draw nothing");
+
+  // Uniformity: 60000 dice, expected 10000 each (standard deviation about 91)
+  mut counts = new List[i64];
+  mut k = 0usize;
+  while k < 6usize { counts.push(0i64); k = k + 1usize; }
+  mut e = random.Rng.fromSeed(1u64);
+  mut n = 0i64;
+  while n < 60000i64 {
+    bump(&mut counts, usize.from(e.below(6u64)));
+    n = n + 1i64;
+  }
+  expectInt(*counts[0usize], 10089i64, "die face 1 count");
+  expectInt(*counts[1usize], 10021i64, "die face 2 count");
+  expectInt(*counts[2usize], 9988i64, "die face 3 count");
+  expectInt(*counts[3usize], 9920i64, "die face 4 count");
+  expectInt(*counts[4usize], 10097i64, "die face 5 count");
+  expectInt(*counts[5usize], 9885i64, "die face 6 count");
+  k = 0usize;
+  while k < 6usize {
+    expect(*counts[k] > 9500i64 and *counts[k] < 10500i64, "die face within five deviations");
+    k = k + 1usize;
+  }
+
+  // No modulo bias: below(3 * 2^62) puts a third of its values under 2^62. With
+  // 'x % n' they would be half (2^64 mod n = 2^62, so those values come twice
+  // as often): 30000 draws would give about 15000, not 10000
+  e = random.Rng.fromSeed(1u64);
+  mut low = 0i64;
+  n = 0i64;
+  while n < 30000i64 {
+    if e.below(13835058055282163712u64) < 4611686018427387904u64 { low = low + 1i64; }
+    n = n + 1i64;
+  }
+  expectInt(low, 9983i64, "a third of below(3*2^62) is under 2^62");
+  expect(low > 9000i64 and low < 11000i64, "not the half a modulo gives");
+
+  done();
+}

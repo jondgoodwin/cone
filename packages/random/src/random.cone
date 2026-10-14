@@ -1,0 +1,460 @@
+// The random package: a seeded, repeatable pseudo-random generator, and what is
+// drawn from it (integers in a range, floats in [0, 1), a shuffle, a choice,
+// normal and exponential numbers). Written in Cone, with no C library beyond
+// the OS's entropy call that seeding from the OS asks.
+//
+//   mod dice;
+//   import stdio use *;
+//   import random;
+//
+//   fn main() i32 {
+//     mut rng = random.Rng.fromSeed(42u64);         // the same seed, the same numbers, anywhere
+//     printInt(i64.from(rng.below(6u64)) + 1i64);   // a die: 1 to 6, no modulo bias
+//     printStr(" ");
+//     printInt(rng.rangeI64(-10i64, 10i64));        // -10 to 9
+//     0i32;
+//   }
+//
+// The generator is a VALUE: an 'Rng' holds its own state (four u64 and the
+// spare half of a normal pair), with no global and no thread-local behind it.
+// Make one per use, hand it to the function that needs numbers as '&mut Rng',
+// give each thread its own ('jumped' makes streams that cannot overlap). The
+// same 'Rng' value is never shared between threads.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - The generator is xoshiro256** 1.0 (Blackman and Vigna, 2018,
+//   prng.di.unimi.it): 256 bits of state, period 2^256 - 1, 64 bits a step
+//   from shifts, xors, rotates and two multiplies, no division and no float.
+//   It passes the usual statistical batteries, is fast, and has a published
+//   'jump' to 2^128 steps ahead, which makes independent streams for threads
+//   or actors. Left out: PCG64 (its 128-bit multiply is two 64-bit multiplies
+//   and a carry here, and it has no equally simple jump), and a generator
+//   fit for cryptography: xoshiro256** is NOT one. Do not draw keys, tokens
+//   or session ids from it, even seeded from the OS.
+// - Seeding from a u64 ('fromSeed') expands the seed with SplitMix64, as the
+//   xoshiro authors direct: the first four outputs of SplitMix64 started at
+//   the seed are the four state words. Any seed, 0 included, gives a good
+//   state. 'fromState' takes the four words as they are (an all-zero state,
+//   which xoshiro cannot leave, is replaced by 'fromSeed(0)''s).
+// - Seeding from the OS ('fromEntropy') draws all 256 bits of the state from
+//   the OS's generator, the one conestd seeds its hashers from (packages/
+//   conestd/hash.cone): on Windows the C runtime's 'rand_s', elsewhere
+//   'getentropy'. It is not core's 'processSeed', which is one number the
+//   same for the whole process, so two generators seeded from it would be
+//   twins. The answer is an Option, None if the OS refuses (it does not in
+//   practice); 'fromEntropyOr' takes a seed to fall back to. The two externs
+//   are declared here, as conestd declares them: no C code is added.
+// - An integer in [0, n) is Lemire's multiply-shift with rejection ("Fast
+//   Random Integer Generation in an Interval", ACM TOMACS 2019): the high
+//   64 bits of a 64-bit draw times n, redrawn in the rare case the low half
+//   falls under 2^64 mod n. It is exactly uniform (no modulo bias) and
+//   divides only on that rare path. The 64 x 64 -> 128 bit product is built
+//   from four 32 x 32 products, in integers. Ranges are half-open
+//   ('rangeU64', 'rangeI64') or closed ('closedU64', 'closedI64', which can
+//   span the whole type); an empty or reversed range answers its low end.
+// - A float in [0, 1) takes the top 53 bits of a draw and multiplies by 2^-53
+//   ('unit', f64) or the top 24 bits and 2^-24 ('unitF32', f32): every value
+//   is a multiple of 2^-53 (2^-24) and exactly as likely, 1.0 never comes, and
+//   the conversion is exact. Left out: floats that reach the finest
+//   representable values near 0 (the "full precision" kind).
+// - 'shuffle' is the Fisher-Yates shuffle in Durstenfeld's form: from the
+//   last place down, swap it with a place drawn from [0, i], each by 'below'.
+//   Every order is equally likely. 'permutation(n)' is the shuffled list
+//   0, 1, ..., n - 1, to shuffle an array or anything else by index. 'choice'
+//   borrows one element of a list. Left out: sampling without replacement
+//   and weighted choice.
+// - 'normal' is the Marsaglia polar method (two draws make a point in the
+//   square, kept if inside the unit circle, and the pair of normals the point
+//   gives are one returned and one kept for the next call). Left out: the
+//   ziggurat (it needs tables, and a table here is a global; globals hold) and
+//   Box-Muller (a sine and a cosine). 'exponential' is -ln(1 - u) / rate, by
+//   inversion.
+// - Same bits on every platform. The integer path (every integer, the shuffle,
+//   the choice, the floats from 'unit') is integer arithmetic and one exact
+//   conversion and multiply, so it gives the same bits wherever it runs,
+//   and the tests pin it against the reference implementations' published
+//   numbers. 'normal' and 'exponential' need a logarithm and a square root.
+//   The square root is IEEE's, correctly rounded everywhere. The logarithm
+//   is NOT libm's 'log' (whose last bits differ between C libraries): it is
+//   written here from additions, multiplications and divisions, in one fixed
+//   order ('lnPositive', below), which are exact IEEE operations. Those give
+//   the same bits on every machine as long as the compiler neither fuses a
+//   multiply with an add nor reassociates, which conec does not (noise's
+//   README measured it: separate fmul and fadd, no fast-math, generic x86-64
+//   CPU with no FMA). It has been measured on Windows only; Linux is
+//   expected to agree and is not yet tested. The logarithm is within a few
+//   units in the last place of the true one, which a sample does not notice.
+// - Several things this package does not do: 'noise' (the procedural
+//   package) hashes with its own 'pcg' functions, a hash of coordinates and
+//   not a stream, and 'audiomixer' keeps a private 32-bit PCG 'Rng' for its
+//   noise generators. Neither is migrated; both stay as they are.
+// - No global and no thread-local: the whole generator is the value.
+
+mod random;
+
+import collections use List;
+
+// -------- the OS's entropy --------
+
+extern {
+  // The C runtime's 32 random bits from the OS: 0 if it drew them, else an error
+  fn @c("rand_s") randS(value *u32) i32;
+
+  // Fills the 'len' bytes at 'buf' (at most 256) with the kernel's random bytes:
+  // 0 if it did, else -1
+  fn @c("getentropy") getEntropy(buf *u8, len usize) i32;
+}
+
+// 64 random bits from the OS, or None if it refused
+fn osWord() Option[u64] {
+  mut low = 0u32;
+  mut high = 0u32;
+  mut bits = 0u64;
+  if isWindows() {
+    if randS(&mut low as *u32) != 0 or randS(&mut high as *u32) != 0 { return None; }
+    bits = (u64.from(high) << 32u64) | u64.from(low);
+  }
+  else {
+    if getEntropy(&mut bits as *u8, 8usize) != 0 { return None; }
+  }
+  Some[u64](bits);
+}
+
+// -------- SplitMix64 --------
+
+// One step of SplitMix64 (Steele, Lea and Flood 2014; Vigna's splitmix64.c):
+// the state moves on by an odd constant and the new state is scrambled. It is
+// what 'fromSeed' expands a seed with, and is public for a caller who wants a
+// generator of one u64 of state
+pub fn splitMix64(state &mut u64) u64 {
+  *state = *state + 0x9e3779b97f4a7c15u64;
+  mut z = *state;
+  z = (z ^ (z >> 30u64)) * 0xbf58476d1ce4e5b9u64;
+  z = (z ^ (z >> 27u64)) * 0x94d049bb133111ebu64;
+  z ^ (z >> 31u64);
+}
+
+// -------- arithmetic the draws use --------
+
+// The 128-bit product of two u64, as (high 64 bits, low 64 bits), from four
+// 32 x 32 products
+fn mulWide(a u64, b u64) (u64, u64) {
+  imm mask = 0xFFFFFFFFu64;
+  imm a0 = a & mask;
+  imm a1 = a >> 32u64;
+  imm b0 = b & mask;
+  imm b1 = b >> 32u64;
+  imm p00 = a0 * b0;
+  imm p01 = a0 * b1;
+  imm p10 = a1 * b0;
+  imm p11 = a1 * b1;
+  // The middle column: its carry into the high half is at most 2
+  imm mid = (p00 >> 32u64) + (p01 & mask) + (p10 & mask);
+  imm high = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
+  (high, a * b);
+}
+
+// The natural logarithm of a positive, normal f64 (not a denormal, infinity or
+// NaN: the draws never give one). x = m * 2^e with m in [sqrt(2)/2, sqrt(2)];
+// ln m = 2 atanh s = 2 (s + s^3/3 + s^5/5 + ...) with s = (m - 1) / (m + 1),
+// no more than 0.1716, so terms to s^21 leave less than 2^-60 of error. Only
+// additions, multiplications and divisions, in this order, so every machine
+// gets the same bits. The result is within a few ulp of the true logarithm.
+fn lnPositive(x f64) f64 {
+  imm bits = x as u64;
+  mut e = i64.from((bits >> 52u64) & 0x7FFu64) - 1023i64;
+  mut m = ((bits & 0xFFFFFFFFFFFFFu64) | 0x3FF0000000000000u64) as f64;
+  if m > 1.4142135623730951d {
+    m = m * 0.5d;
+    e = e + 1i64;
+  }
+  imm s = (m - 1.0d) / (m + 1.0d);
+  imm t = s * s;
+  mut p = 1.0d / 21.0d;
+  p = p * t + 1.0d / 19.0d;
+  p = p * t + 1.0d / 17.0d;
+  p = p * t + 1.0d / 15.0d;
+  p = p * t + 1.0d / 13.0d;
+  p = p * t + 1.0d / 11.0d;
+  p = p * t + 1.0d / 9.0d;
+  p = p * t + 1.0d / 7.0d;
+  p = p * t + 1.0d / 5.0d;
+  p = p * t + 1.0d / 3.0d;
+  p = p * t + 1.0d;
+  f64.from(e) * 0.6931471805599453d + 2.0d * s * p;
+}
+
+// The natural logarithm 'lnPositive' computes, for a test to compare with the
+// C library's
+pub fn naturalLog(x f64) f64 { lnPositive(x); }
+
+// -------- the generator --------
+
+// A xoshiro256** generator. Its fields are its whole state, so copying the
+// value (with 'copyOf') copies the stream.
+pub struct Rng {
+  s0 u64;
+  s1 u64;
+  s2 u64;
+  s3 u64;
+  // The second number of a normal pair, kept for the next 'normal' call
+  spare f64;
+  hasSpare bool;
+
+  // The generator 'seed' names, the seed expanded by SplitMix64 into four
+  // state words. The same seed gives the same numbers on every platform
+  pub fn fromSeed(seed u64) Rng {
+    mut sm = seed;
+    imm a = splitMix64(&mut sm);
+    imm b = splitMix64(&mut sm);
+    imm c = splitMix64(&mut sm);
+    imm d = splitMix64(&mut sm);
+    new Rng(a, b, c, d, 0.0d, false);
+  }
+
+  // The generator with exactly these four state words. xoshiro cannot leave
+  // the all-zero state, so that one gives 'fromSeed(0)''s instead
+  pub fn fromState(s0 u64, s1 u64, s2 u64, s3 u64) Rng {
+    if (s0 | s1 | s2 | s3) == 0u64 { return Rng.fromSeed(0u64); }
+    new Rng(s0, s1, s2, s3, 0.0d, false);
+  }
+
+  // A generator whose 256 bits of state come from the OS, or None if the OS
+  // would not give them
+  pub fn fromEntropy() Option[Rng] {
+    mut words = 0usize;
+    mut w0 = 0u64;
+    mut w1 = 0u64;
+    mut w2 = 0u64;
+    mut w3 = 0u64;
+    match osWord() { case imm v Some { w0 = v; } case is None { return None; } }
+    match osWord() { case imm v Some { w1 = v; } case is None { return None; } }
+    match osWord() { case imm v Some { w2 = v; } case is None { return None; } }
+    match osWord() { case imm v Some { w3 = v; } case is None { return None; } }
+    Some[Rng](Rng.fromState(w0, w1, w2, w3));
+  }
+
+  // 'fromEntropy', or 'fromSeed(seed)' if the OS gave nothing
+  pub fn fromEntropyOr(seed u64) Rng {
+    match Rng.fromEntropy() {
+      case mut r Some { return r; }
+      case is None { return Rng.fromSeed(seed); }
+    }
+    Rng.fromSeed(seed);
+  }
+
+  // The four state words, to save a generator and rebuild it with 'fromState'
+  // (the spare half of a normal pair is not in them)
+  pub fn state(self &) (u64, u64, u64, u64) { (s0, s1, s2, s3); }
+
+  // A generator in exactly this one's place, which goes on to give the
+  // numbers this one will
+  pub fn copyOf(self &) Rng { new Rng(s0, s1, s2, s3, spare, hasSpare); }
+
+  // The next 64 random bits
+  pub fn next(self &mut) u64 {
+    imm result = (s1 * 5u64).rotateLeft(7u32) * 9u64;
+    imm t = s1 << 17u64;
+    s2 = s2 ^ s0;
+    s3 = s3 ^ s1;
+    s1 = s1 ^ s2;
+    s0 = s0 ^ s3;
+    s2 = s2 ^ t;
+    s3 = s3.rotateLeft(45u32);
+    result;
+  }
+
+  // The next 32 random bits: the high half of a draw
+  pub fn nextU32(self &mut) u32 { u32.from(self.next() >> 32u64); }
+
+  // A fair coin
+  pub fn nextBool(self &mut) bool { (self.next() >> 63u64) == 1u64; }
+
+  // True with probability p (never for p <= 0, always for p >= 1)
+  pub fn chance(self &mut, p f64) bool { self.unit() < p; }
+
+  // Advance 2^128 steps at once, the reference 'jump': 2^128 non-overlapping
+  // streams of 2^128 draws each, one per thread or actor
+  pub fn jump(self &mut) {
+    mut a = 0u64;
+    mut b = 0u64;
+    mut c = 0u64;
+    mut d = 0u64;
+    mut word = 0usize;
+    while word < 4usize {
+      imm poly = jumpWord(word);
+      mut bit = 0u64;
+      while bit < 64u64 {
+        if (poly & (1u64 << bit)) != 0u64 {
+          a = a ^ s0;
+          b = b ^ s1;
+          c = c ^ s2;
+          d = d ^ s3;
+        }
+        self.next();
+        bit = bit + 1u64;
+      }
+      word = word + 1usize;
+    }
+    s0 = a;
+    s1 = b;
+    s2 = c;
+    s3 = d;
+    hasSpare = false;
+  }
+
+  // A generator at this one's place, while this one jumps 2^128 steps ahead:
+  // call it again for the next stream
+  pub fn jumped(self &mut) Rng {
+    imm child = self.copyOf();
+    self.jump();
+    child;
+  }
+
+  // -------- integers --------
+
+  // An integer in [0, n), every one equally likely (Lemire's method). 0 if n is 0
+  pub fn below(self &mut, n u64) u64 {
+    if n == 0u64 { return 0u64; }
+    mut m = mulWide(self.next(), n);
+    if m.1 < n {
+      // 2^64 mod n: the low halves under it come from one value too many
+      imm threshold = (0u64 - n) % n;
+      while m.1 < threshold {
+        m = mulWide(self.next(), n);
+      }
+    }
+    m.0;
+  }
+
+  // An index in [0, len) (0 for an empty length: check it first)
+  pub fn index(self &mut, len usize) usize { usize.from(self.below(u64.from(len))); }
+
+  // An integer in [lo, hi): lo if the range is empty
+  pub fn rangeU64(self &mut, lo u64, hi u64) u64 {
+    if hi <= lo { return lo; }
+    lo + self.below(hi - lo);
+  }
+
+  // An integer in [lo, hi]: lo if hi is under it; the whole type if lo is 0 and
+  // hi the largest
+  pub fn closedU64(self &mut, lo u64, hi u64) u64 {
+    if hi < lo { return lo; }
+    imm span = hi - lo + 1u64;
+    if span == 0u64 { return self.next(); }
+    lo + self.below(span);
+  }
+
+  // An integer in [lo, hi): lo if the range is empty
+  pub fn rangeI64(self &mut, lo i64, hi i64) i64 {
+    if hi <= lo { return lo; }
+    ((lo as u64) + self.below((hi as u64) - (lo as u64))) as i64;
+  }
+
+  // An integer in [lo, hi]: lo if hi is under it; the whole type if the ends
+  // are its ends
+  pub fn closedI64(self &mut, lo i64, hi i64) i64 {
+    if hi < lo { return lo; }
+    imm span = (hi as u64) - (lo as u64) + 1u64;
+    if span == 0u64 { return self.next() as i64; }
+    ((lo as u64) + self.below(span)) as i64;
+  }
+
+  // -------- floats --------
+
+  // A float in [0, 1): a multiple of 2^-53, the top 53 bits of a draw
+  pub fn unit(self &mut) f64 {
+    f64.from(self.next() >> 11u64) * (1.0d / 9007199254740992.0d);
+  }
+
+  // A float in [0, 1): a multiple of 2^-24, the top 24 bits of a draw
+  pub fn unitF32(self &mut) f32 {
+    f32.from(self.next() >> 40u64) * (1.0 / 16777216.0);
+  }
+
+  // A float in [lo, hi) (lo + (hi - lo) * unit: the top can round up to hi
+  // when the ends are far from the same size)
+  pub fn rangeF64(self &mut, lo f64, hi f64) f64 { lo + (hi - lo) * self.unit(); }
+
+  // -------- lists --------
+
+  // The list's values in a random order (Fisher-Yates), every order equally
+  // likely
+  pub fn shuffle[T](self &mut, items &mut List[T]) {
+    mut i = items.len();
+    while i > 1usize {
+      i = i - 1usize;
+      imm j = self.index(i + 1usize);
+      items.swap(i, j);
+    }
+  }
+
+  // The shuffled list 0, 1, ..., n - 1
+  pub fn permutation(self &mut, n usize) List[usize] {
+    mut order = new List[usize];
+    mut i = 0usize;
+    while i < n {
+      order.push(i);
+      i = i + 1usize;
+    }
+    self.shuffle(&mut order);
+    order;
+  }
+
+  // The index of a random element of a list of this length: None if it is empty
+  pub fn choiceIndex(self &mut, len usize) Option[usize] {
+    if len == 0usize { return None; }
+    Some[usize](self.index(len));
+  }
+
+  // A borrow of a random element of the list: None if it is empty
+  pub fn choice[T](self &mut, items &'a List[T]) Option[&'a T] {
+    if items.len() == 0usize { return None; }
+    items.get(self.index(items.len()));
+  }
+
+  // -------- normal and exponential --------
+
+  // A normal number, mean 0 and standard deviation 1 (Marsaglia's polar
+  // method): the pair a draw gives is one now and one on the next call
+  pub fn normal(self &mut) f64 {
+    if hasSpare {
+      hasSpare = false;
+      return spare;
+    }
+    mut x = 0.0d;
+    mut y = 0.0d;
+    mut q = 0.0d;
+    while true {
+      x = self.unit() * 2.0d - 1.0d;
+      y = self.unit() * 2.0d - 1.0d;
+      q = x * x + y * y;
+      if q < 1.0d and q != 0.0d { break; }
+    }
+    imm factor = (-2.0d * lnPositive(q) / q).sqrt();
+    spare = y * factor;
+    hasSpare = true;
+    x * factor;
+  }
+
+  // A normal number with this mean and standard deviation
+  pub fn normalWith(self &mut, mean f64, deviation f64) f64 { mean + deviation * self.normal(); }
+
+  // An exponential number of rate 1 (mean 1), by inversion: -ln(1 - u)
+  pub fn exponential(self &mut) f64 {
+    0.0d - lnPositive(1.0d - self.unit());
+  }
+
+  // An exponential number of this rate (mean 1 / rate)
+  pub fn exponentialWith(self &mut, rate f64) f64 { self.exponential() / rate; }
+}
+
+// The four words of xoshiro256**'s 'jump' polynomial (the reference's JUMP)
+fn jumpWord(i usize) u64 {
+  if i == 0usize { return 0x180ec6d33cfd0abau64; }
+  if i == 1usize { return 0xd5a61266f0c9392cu64; }
+  if i == 2usize { return 0xa9582618e03fc9aau64; }
+  0x39abdc4529b1661cu64;
+}
