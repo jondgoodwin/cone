@@ -215,6 +215,64 @@ pub struct Track {
         i = i + 1usize;
       }
     }
+    // LEVELLING. A rotation-minimising frame is neutral, not level: a track that climbs, turns and loops
+    // arrives with its up vector twisted about the tangent by the path's holonomy (an angle the path itself
+    // decides), so "roll 0" would not mean "the rails are level". At every node whose tangent is within
+    // about 45 degrees of the horizontal, find the turn about the tangent that makes the up vector
+    // vertical, taking the nearer of up and down (so an inverted stretch, the top of a loop, stays
+    // inverted, not flipped); between those nodes (the steep parts, where "vertical" has no meaning) the
+    // turn is interpolated along the arc length, and beyond the first or last it is held. Roll is then
+    // the banking away from level.
+    mut valid = List[bool].empty();
+    mut level = List[f32].empty();
+    i = 0usize;
+    while i < count {
+      imm tn = *tans[i];
+      if libc.fabsf(tn.y) < 0.7 {
+        imm href = (new Vec3(0., 1., 0.) - tn * tn.y).normalize();
+        imm a = *frameUp[i];
+        mut phi = libc.atan2f(tn.dot(a.cross(href)), a.dot(href));
+        if phi > 1.5707963 { phi = phi - 3.14159265; }
+        if phi < -1.5707963 { phi = phi + 3.14159265; }
+        valid.push(true);
+        level.push(phi);
+      } else {
+        valid.push(false);
+        level.push(0.);
+      }
+      i = i + 1usize;
+    }
+    mut anyValid = false;
+    i = 0usize;
+    while i < count { if *valid[i] { anyValid = true; } i = i + 1usize; }
+    if anyValid {
+      i = 0usize;
+      while i < count {
+        if !*valid[i] {
+          // the nearest valid nodes either side
+          mut lo = i;
+          while lo > 0usize and !*valid[lo] { lo = lo - 1usize; }
+          mut hi = i;
+          while hi + 1usize < count and !*valid[hi] { hi = hi + 1usize; }
+          imm hasLo = *valid[lo];
+          imm hasHi = *valid[hi];
+          if hasLo and hasHi {
+            imm f = (*ts[i] - *ts[lo]) / (*ts[hi] - *ts[lo]);
+            level[i] = *level[lo] * (1. - f) + *level[hi] * f;
+          } elif hasLo {
+            level[i] = *level[lo];
+          } elif hasHi {
+            level[i] = *level[hi];
+          }
+        }
+        i = i + 1usize;
+      }
+      i = 0usize;
+      while i < count {
+        frameUp[i] = (Quat.angleAxis(*level[i], *tans[i]) * *frameUp[i]).normalize();
+        i = i + 1usize;
+      }
+    }
     // the banking: roll each up about its tangent
     mut ups = List[Vec3].empty();
     i = 0usize;
