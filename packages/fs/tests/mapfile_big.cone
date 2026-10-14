@@ -1,0 +1,163 @@
+// A mapped file larger than 4 GB: sizes and offsets past 32 bits are whole
+// (Windows takes a size and a position as two 32-bit halves). The file is
+// sparse, so it costs the disk next to nothing: its length is set by writing
+// one marker at 5 GiB + 3 (the last bytes of the file), after making the file
+// sparse where the system must be told to (NTFS: FSCTL_SET_SPARSE; POSIX file
+// systems leave a hole by default). Markers are also written at the start and
+// astride the 4 GiB boundary (the high half of an offset changes in the middle
+// of the marker). The file is mapped; its size and each marker are read back,
+// and so are bytes in the holes between them, which are zeros.
+//
+// If the file system cannot make a sparse file (the DeviceIoControl fails), the
+// test writes 'skipped: ...' to the error stream and passes without the
+// checks, so a disk that would have to write 5 GB for real is never asked to.
+//
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-fs-test-mapfile-big', and removes it, the file included, at the end.
+
+mod mapfilebig;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import libc;
+import path use Path;
+import fs;
+
+extern {
+  // Windows: the stream's handle, made sparse; a position past 32 bits
+  fn @c _fileno(stream *libc.FILE) i32;
+  fn @c _get_osfhandle(fd i32) isize;
+  fn @c(system) DeviceIoControl(h usize, code u32, inBuf *u8, inLen u32, outBuf *u8, outLen u32,
+    returned &mut u32, overlapped *u8) i32;
+  fn @c _fseeki64(stream *libc.FILE, offset i64, whence i32) i32;
+  // Linux
+  fn @c fseeko(stream *libc.FILE, offset i64, whence i32) i32;
+}
+
+const fsctlSetSparse = 0x000900C4u32;
+
+// The test's folder: TEMP's absolute path and the name, after checking
+// that it is that and nothing shorter
+fn makeRoot(name &str) Path {
+  mut variable cstr = "TMPDIR";
+  if isWindows() { variable = "TEMP"; }
+  imm temp = libc.getenv(variable);
+  require(temp != null or not isWindows(), "TEMP is set");
+  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
+  mut root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case imm t Ok { root = t.join(name); }
+    case is Error { require(false, "TEMP has an absolute path"); }
+  }
+  imm up = root.parent();
+  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root;
+}
+
+// Seek a stream to a position of 64 bits: whether it worked
+fn seekTo(f *libc.FILE, at i64) bool {
+  if isWindows() {_fseeki64(f, at, 0i32) == 0i32;} else {fseeko(f, at, 0i32) == 0i32;}
+}
+
+// Write bytes at a position of the stream
+fn putAt(f *libc.FILE, at i64, bytes &Array[u8]) bool {
+  seekTo(f, at) and libc.fwrite(bytes as *u8, 1usize, bytes.len, f) == bytes.len;
+}
+
+// Whether the map holds these bytes at the position
+fn markerAt(v &Array[u8], at usize, bytes &Array[u8]) bool {
+  mut i = 0usize;
+  mut same = true;
+  while i < bytes.len {
+    if v[at + i] != bytes[i] { same = false; }
+    i = i + 1usize;
+  }
+  same;
+}
+
+// Whether every byte from 'from' (inclusive) to 'to' is zero, looking at one
+// byte in every 'step'
+fn zeroBetween(v &Array[u8], from usize, to usize, step usize) bool {
+  mut i = from;
+  mut zero = true;
+  while i < to {
+    if v[i] != 0u8 { zero = false; }
+    i = i + step;
+  }
+  zero;
+}
+
+fn bigFile(root &Path) {
+  imm p = root.join("big.bin");
+  mut c = String.from(p.view());
+  imm f = libc.fopen(c.cstr(), "wb");
+  require(f != null, "open the big file for writing");
+  mut sparse = true;
+  if isWindows() {
+    mut returned = 0u32;
+    imm h = _get_osfhandle(_fileno(f)) as usize;
+    sparse = DeviceIoControl(h, fsctlSetSparse, null, 0u32, null, 0u32, &mut returned, null) != 0i32;
+  }
+  imm head &Array[u8] = "HEAD-MARKER";
+  imm straddle &Array[u8] = "ACROSS-4GiB";
+  imm tail &Array[u8] = "TAIL-AT-5GiB";
+  // 4 GiB - 4: the marker's first four bytes are below the boundary and the rest above
+  imm straddleAt = 4294967292usize;
+  // 5 GiB + 3
+  imm tailAt = 5368709123usize;
+  mut wrote = false;
+  if sparse {
+    wrote = putAt(f, 0i64, head) and putAt(f, i64.from(straddleAt), straddle)
+      and putAt(f, i64.from(tailAt), tail);
+  }
+  imm closed = libc.fclose(f);
+  if not sparse or not wrote {
+    // Never write 5 GB for real: say so and leave
+    eprintStr("skipped: the file system cannot make a sparse file here\n");
+    // As many checks as the real run makes, so the output is the same
+    mut k = 0u32;
+    while k < 11u32 { expect(true, "skipped: no sparse file"); k = k + 1u32; }
+    fs.removeFile(&p);
+    return;
+  }
+  expectInt(i64.from(closed), 0, "close the big file");
+
+  imm expected = tailAt + tail.len;
+  match fs.stat(&p) {
+    case imm s Ok { expectInt(s.size, i64.from(expected), "stat sees a file past 4 GB"); }
+    case is Error { expect(false, "stat of the big file"); }
+  }
+  match fs.mapFile(&p) {
+    case imm m Ok {
+      expectUInt(u64.from(m.size()), u64.from(expected), "the map's size is past 4 GB");
+      imm v = m.view();
+      expectUInt(u64.from(v.len), u64.from(expected), "the view's length is past 4 GB");
+      expect(markerAt(v, 0usize, head), "the marker at the start");
+      expect(markerAt(v, straddleAt, straddle), "the marker astride 4 GiB");
+      expect(markerAt(v, tailAt, tail), "the marker past 5 GiB");
+      expect(v[4294967296usize] == straddle[4usize], "the byte at exactly 4 GiB");
+      expect(v[expected - 1usize] == tail[tail.len - 1usize], "the last byte of the file");
+      expect(zeroBetween(v, 4096usize, straddleAt, 1048573usize), "a hole below 4 GiB reads zeros");
+      expect(zeroBetween(v, straddleAt + straddle.len, tailAt, 1048573usize),
+        "a hole above 4 GiB reads zeros");
+    }
+    case is Error {
+      expect(false, "map a file past 4 GB");
+    }
+  }
+}
+
+fn main() i32 {
+  imm root = makeRoot("cone-fs-test-mapfile-big");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
+
+  bigFile(&root);
+
+  imm removed = fs.removeAll(&root);
+  expect(removed is Ok, "remove the test's folder, the big file with it");
+  expect(not fs.exists(&root), "the test's folder is gone");
+  done();
+}
