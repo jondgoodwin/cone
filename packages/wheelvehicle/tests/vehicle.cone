@@ -33,6 +33,11 @@
 //     road speed.
 // 12. The truck steers about the middle of its tandem axle: at 5 m/s with 0.2 of the lock the yaw rate is
 //     v tan(delta) / L, L = 3.9 m, within 12 percent.
+// 13. A manual gearbox (`shiftTo`) stays in the gear it is put in (first gear, full throttle: still first, under the
+//     limiter, at the road speed first gear allows), and the engine's speed follows the road (third gear at 20 m/s:
+//     3,021 rpm within 8 percent).
+// 14. The handbrake locks the rear wheels (spin under 2 rad/s), the front ones keep turning, and the car slows at
+//     over 0.25 g.
 
 mod vehicletest;
 
@@ -318,6 +323,54 @@ fn main() i32 {
   imm lockT = 0.35 * (1. - 5. / 20.) + 0.1 * 5. / 20.;
   imm expectedYawT = 5. * libc.tanf(0.2 * lockT) / 3.9;
   expectFloat(f64.from(-yawT), f64.from(expectedYawT), 0.12d * f64.from(expectedYawT), "the truck's yaw rate is v tan(delta) / L about its tandem axle's middle");
+
+  // 13. a manual gearbox stays in the gear it is put in: first gear, full throttle for 12 s: still first, never over the
+  //     limiter, and it cannot pass the road speed first gear allows (6800 rpm: 19.2 m/s)
+  mut w14 = flatWorld();
+  mut c14 = Vehicle.create(&mut w14, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w14, &mut c14, 1.);
+  c14.shiftTo(1);
+  c14.drive(1., 0., 0.);
+  t = 0.;
+  mut maxRpm14 = 0.;
+  mut gearChanged = false;
+  while t < 12. {
+    c14.apply(&mut w14, (x, z) => 1., dt);
+    w14.step(dt);
+    t = t + dt;
+    if c14.rpm > maxRpm14 { maxRpm14 = c14.rpm; }
+    if c14.gear != 1 { gearChanged = true; }
+  }
+  c14.speed = w14.linearVelocity(c14.body).dot(w14.rotationOf(c14.body) * new Vec3(1., 0., 0.));
+  expect(!gearChanged and maxRpm14 < 6800., "a manual gearbox stays in first and never passes the limiter");
+  expect(c14.speed < 20. and c14.speed > 17., "and the speed is what first gear's limit allows (about 19 m/s)");
+  // and the engine's speed in a given gear follows the road: third gear at 20 m/s is 3,021 rpm
+  mut w15 = flatWorld();
+  mut c15 = Vehicle.create(&mut w15, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w15, &mut c15, 1.);
+  w15.setLinearVelocity(c15.body, new Vec3(20., 0., 0.));
+  i = 0usize;
+  while i < 4usize { c15.wheels[i].omega = 20. / 0.33; i = i + 1usize; }
+  c15.shiftTo(3);
+  c15.drive(0.3, 0., 0.);
+  dry(&mut w15, &mut c15, 0.8);
+  imm rpm3 = 20. / 0.33 * 1.45 * 3.6 * 9.5492966;
+  expectFloat(f64.from(c15.rpm), f64.from(rpm3), 0.08d * f64.from(rpm3), "third gear at 20 m/s: the engine turns at the wheels' speed times the ratio");
+
+  // 14. the handbrake: at 15 m/s with it on and no throttle, the rear wheels lock (spin under 2 rad/s within 1.5 s),
+  //     the front ones keep turning (over 70 percent of the road's), and the car slows at over 0.25 g
+  mut w16 = flatWorld();
+  mut c16 = Vehicle.create(&mut w16, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
+  dry(&mut w16, &mut c16, 1.);
+  w16.setLinearVelocity(c16.body, new Vec3(15., 0., 0.));
+  i = 0usize;
+  while i < 4usize { c16.wheels[i].omega = 15. / 0.33; i = i + 1usize; }
+  c16.handbrake = true;
+  dry(&mut w16, &mut c16, 1.5);
+  imm v16 = w16.linearVelocity(c16.body).x;
+  expect(libc.fabsf(c16.wheels[2].omega) < 2. and libc.fabsf(c16.wheels[3].omega) < 2., "the handbrake locks the rear wheels");
+  expect(c16.wheels[0].omega * 0.33 > 0.7 * v16, "the front wheels keep turning");
+  expect((15. - v16) / 1.5 > 0.25 * g, "and the car slows at over 0.25 g");
   done();
 }
 

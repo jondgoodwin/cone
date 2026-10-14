@@ -93,6 +93,7 @@ pub struct Vehicle {
   pub shiftTimer f32;
   pub rpm f32;
   pub speed f32;             // m/s along the chassis's forward axis
+  pub automatic bool;        // the gearbox shifts itself (true), or only on 'shiftTo' (false)
 
   // A vehicle of 'spec' at 'pos' (its centre of mass), orientation 'rot', at rest
   pub fn create(world &mut World, spec VehicleSpec, pos Vec3, rot Quat) Vehicle {
@@ -119,7 +120,7 @@ pub struct Vehicle {
     }
     imm rear = if rearCount > 0. { rearSum / rearCount; } else { 0.; };
     imm idle = spec.engine.idle;
-    new Vehicle(id, spec, ws, front - rear, rear, 0., 0., 0., false, false, 0., 1, 0., idle, 0.);
+    new Vehicle(id, spec, ws, front - rear, rear, 0., 0., 0., false, false, 0., 1, 0., idle, 0., true);
   }
 
   // The controls: throttle and brake 0 to 1, steering -1 to 1 (right positive)
@@ -131,6 +132,16 @@ pub struct Vehicle {
 
   // Surface grip at one wheel: forget it with 1
   pub fn gearCount(self &) i32 { i32.from(spec.gearbox.ratios.len()); }
+
+  // Take the gearbox out of automatic and put it in gear 'g' (1 .. gearCount; 0 neutral); the shift takes the
+  // gearbox's shiftTime with no torque. 'automatic = true' hands it back.
+  pub fn shiftTo(self &mut, g i32) {
+    automatic = false;
+    if g != gear {
+      gear = if g > gearCount() { gearCount(); } elif g < 0 { 0; } else { g; };
+      shiftTimer = spec.gearbox.shiftTime;
+    }
+  }
 
   // The chassis's pose and speed, in km/h
   pub fn kmh(self &) f32 { speed * 3.6; }
@@ -237,13 +248,13 @@ pub struct Vehicle {
     // gear selection
     if reverse and gear >= 0 and libc.fabsf(speed) < 1.5 { gear = -1; shiftTimer = 0.2; }
     if !reverse and gear < 0 { gear = 1; shiftTimer = 0.2; }
-    if gear == 0 and !reverse { gear = 1; }
+    if gear == 0 and !reverse and automatic { gear = 1; }
     mut ratio = 0.;
     if gear > 0 { ratio = *spec.gearbox.ratios[usize.from(gear - 1)] * spec.gearbox.finalDrive; }
     if gear < 0 { ratio = -spec.gearbox.reverse * spec.gearbox.finalDrive; }
     imm rpmWheels = libc.fabsf(omegaDrive * ratio) * 9.5492966;
     if shiftTimer > 0. { shiftTimer = shiftTimer - dt; }
-    if gear > 0 and shiftTimer <= 0. {
+    if gear > 0 and shiftTimer <= 0. and automatic {
       if rpmWheels > spec.gearbox.upRpm and throttle > 0.2 and gear < i32.from(spec.gearbox.ratios.len()) {
         gear = gear + 1; shiftTimer = spec.gearbox.shiftTime;
       } elif rpmWheels < spec.gearbox.downRpm and gear > 1 {
