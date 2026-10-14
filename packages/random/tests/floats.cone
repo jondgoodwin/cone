@@ -1,0 +1,86 @@
+// Floats in [0, 1): the top 53 bits of a draw times 2^-53 (f64), the top 24
+// bits times 2^-24 (f32). Integer arithmetic and one exact conversion and
+// multiply, so the bits are the same on every platform: the pins below are bit
+// patterns, computed by an independent Python transcription.
+
+mod floats;
+
+import testing use *;
+import random;
+
+fn main() i32 {
+  mut r = random.Rng.fromSeed(3u64);
+  expectUInt((r.unit()) as u64, 0x3fe619b57b5cacd1u64, "unit 1 bits");
+  expectUInt((r.unit()) as u64, 0x3fe47fa3bd4bc30cu64, "unit 2 bits");
+  expectUInt((r.unit()) as u64, 0x3fcbf0057d9914fcu64, "unit 3 bits");
+  expectUInt((r.unit()) as u64, 0x3fe11636b1646de7u64, "unit 4 bits");
+  expectUInt((r.unit()) as u64, 0x3fdb2c9323ec8926u64, "unit 5 bits");
+
+  r = random.Rng.fromSeed(3u64);
+  expectUInt(u64.from((r.unitF32()) as u32), 0x3f30cdabu64, "unitF32 1 bits");
+  expectUInt(u64.from((r.unitF32()) as u32), 0x3f23fd1du64, "unitF32 2 bits");
+  expectUInt(u64.from((r.unitF32()) as u32), 0x3e5f8028u64, "unitF32 3 bits");
+  expectUInt(u64.from((r.unitF32()) as u32), 0x3f08b1b5u64, "unitF32 4 bits");
+  expectUInt(u64.from((r.unitF32()) as u32), 0x3ed96498u64, "unitF32 5 bits");
+
+  // 'unit' is a draw's top 53 bits scaled: against the integer draw itself
+  mut a = random.Rng.fromSeed(77u64);
+  mut b = random.Rng.fromSeed(77u64);
+  mut n = 0i64;
+  mut agree = true;
+  while n < 1000i64 {
+    imm word = b.next();
+    imm want = f64.from(word >> 11u64) / 9007199254740992.0d;
+    if a.unit() != want { agree = false; }
+    n = n + 1i64;
+  }
+  expect(agree, "unit is (draw >> 11) / 2^53 exactly, 1000 times");
+
+  // In range, and the mean of 100000 is near a half (standard deviation of the
+  // mean 0.0009; the bound is 0.005)
+  r = random.Rng.fromSeed(5u64);
+  mut sum = 0.0d;
+  mut inRange = true;
+  mut sumF = 0.0d;
+  n = 0i64;
+  while n < 100000i64 {
+    imm x = r.unit();
+    if x < 0.0d or x >= 1.0d { inRange = false; }
+    sum = sum + x;
+    imm y = r.unitF32();
+    if y < 0.0 or y >= 1.0 { inRange = false; }
+    sumF = sumF + f64.from(y);
+    n = n + 1i64;
+  }
+  expect(inRange, "every float is in [0, 1)");
+  expectFloat(sum / 100000.0d, 0.5d, 0.005d, "unit mean");
+  expectFloat(sumF / 100000.0d, 0.5d, 0.005d, "unitF32 mean");
+
+  // rangeF64 and chance
+  r = random.Rng.fromSeed(6u64);
+  mut lo = 1000.0d;
+  mut hi = -1000.0d;
+  n = 0i64;
+  while n < 10000i64 {
+    imm x = r.rangeF64(-2.0d, 3.0d);
+    if x < lo { lo = x; }
+    if x > hi { hi = x; }
+    n = n + 1i64;
+  }
+  expect(lo >= -2.0d and lo < -1.99d, "rangeF64 reaches its low end");
+  expect(hi < 3.0d and hi > 2.99d, "rangeF64 reaches its high end");
+  mut yes = 0i64;
+  mut heads = 0i64;
+  n = 0i64;
+  while n < 100000i64 {
+    if r.chance(0.25d) { yes = yes + 1i64; }
+    if r.nextBool() { heads = heads + 1i64; }
+    n = n + 1i64;
+  }
+  expect(yes > 24000i64 and yes < 26000i64, "chance(0.25) is a quarter");
+  expect(heads > 49000i64 and heads < 51000i64, "nextBool is a half");
+  expect(not r.chance(0.0d), "chance(0) is never");
+  expect(r.chance(1.0d), "chance(1) is always");
+
+  done();
+}

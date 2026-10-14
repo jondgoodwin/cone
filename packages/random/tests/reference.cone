@@ -1,0 +1,96 @@
+// The generator against its published reference numbers.
+//
+// Sources of the vectors:
+// - SplitMix64, seed 1234567: the first five outputs, 6457827717110365317 ...
+//   16408922859458223821, as the Rust rand_xoshiro crate's tests record them
+//   (rust-random/rngs, rand_xoshiro/src/splitmix64.rs), produced there with
+//   Vigna's reference splitmix64.c (prng.di.unimi.it).
+// - xoshiro256**, state (1, 2, 3, 4): the first ten outputs, 11520, 0,
+//   1509978240, ... 2904607092377533576, from the same crate's tests
+//   (rand_xoshiro/src/xoshiro256starstar.rs, 'reference'), produced there
+//   "with the reference implementation" of Blackman and Vigna (the C source
+//   prng.di.unimi.it/xoshiro256starstar.c).
+// Both were also reproduced here by an independent Python transcription of the
+// reference C code, which produced every other number pinned in these tests
+// that no publication gives (seed 42, seed 0's expansion).
+// - 'jump': the reference's polynomial applied to a state is the state advanced
+//   2^128 steps. The expected words below were computed by a separate route,
+//   the GF(2) matrix of one step raised to the 2^128 power (a Python script,
+//   not the reference polynomial), so the constants and the code that applies
+//   them are both checked.
+
+mod reference;
+
+import testing use *;
+import random;
+
+fn main() i32 {
+  // SplitMix64 from seed 1234567
+  mut sm = 1234567u64;
+  expectUInt(random.splitMix64(&mut sm), 6457827717110365317u64, "splitmix64 output 1");
+  expectUInt(random.splitMix64(&mut sm), 3203168211198807973u64, "splitmix64 output 2");
+  expectUInt(random.splitMix64(&mut sm), 9817491932198370423u64, "splitmix64 output 3");
+  expectUInt(random.splitMix64(&mut sm), 4593380528125082431u64, "splitmix64 output 4");
+  expectUInt(random.splitMix64(&mut sm), 16408922859458223821u64, "splitmix64 output 5");
+
+  // xoshiro256** from state (1, 2, 3, 4)
+  mut x = random.Rng.fromState(1u64, 2u64, 3u64, 4u64);
+  expectUInt(x.next(), 11520u64, "xoshiro256** output 1");
+  expectUInt(x.next(), 0u64, "xoshiro256** output 2");
+  expectUInt(x.next(), 1509978240u64, "xoshiro256** output 3");
+  expectUInt(x.next(), 1215971899390074240u64, "xoshiro256** output 4");
+  expectUInt(x.next(), 1216172134540287360u64, "xoshiro256** output 5");
+  expectUInt(x.next(), 607988272756665600u64, "xoshiro256** output 6");
+  expectUInt(x.next(), 16172922978634559625u64, "xoshiro256** output 7");
+  expectUInt(x.next(), 8476171486693032832u64, "xoshiro256** output 8");
+  expectUInt(x.next(), 10595114339597558777u64, "xoshiro256** output 9");
+  expectUInt(x.next(), 2904607092377533576u64, "xoshiro256** output 10");
+
+  // The all-zero state is replaced by fromSeed(0)'s
+  mut z = random.Rng.fromState(0u64, 0u64, 0u64, 0u64);
+  mut z0 = random.Rng.fromSeed(0u64);
+  expectUInt(z.next(), z0.next(), "zero state is seed 0 (1)");
+  expectUInt(z.next(), z0.next(), "zero state is seed 0 (2)");
+
+  // fromSeed(s) is SplitMix64's first four outputs as the state
+  imm st = random.Rng.fromSeed(1234567u64).state();
+  expectUInt(st.0, 6457827717110365317u64, "seed expansion word 1");
+  expectUInt(st.1, 3203168211198807973u64, "seed expansion word 2");
+  expectUInt(st.2, 9817491932198370423u64, "seed expansion word 3");
+  expectUInt(st.3, 4593380528125082431u64, "seed expansion word 4");
+  imm s0 = random.Rng.fromSeed(0u64).state();
+  expectUInt(s0.0, 0xe220a8397b1dcdafu64, "seed 0 word 1");
+  expectUInt(s0.1, 0x6e789e6aa1b965f4u64, "seed 0 word 2");
+  expectUInt(s0.2, 0x06c45d188009454fu64, "seed 0 word 3");
+  expectUInt(s0.3, 0xf88bb8a8724c81ecu64, "seed 0 word 4");
+
+  // From seed 42, pinned from the Python transcription
+  mut r = random.Rng.fromSeed(42u64);
+  expectUInt(r.next(), 1546998764402558742u64, "seed 42 output 1");
+  expectUInt(r.next(), 6990951692964543102u64, "seed 42 output 2");
+  expectUInt(r.next(), 12544586762248559009u64, "seed 42 output 3");
+  expectUInt(r.next(), 17057574109182124193u64, "seed 42 output 4");
+
+  // nextU32 is the high half; nextBool the top bit
+  mut a = random.Rng.fromSeed(42u64);
+  expectUInt(u64.from(a.nextU32()), 1546998764402558742u64 >> 32u64, "nextU32 is the high half");
+  expect(not a.nextBool(), "nextBool is the top bit (6990951692964543102 < 2^63)");
+
+  // Jump from state (1, 2, 3, 4)
+  mut j = random.Rng.fromState(1u64, 2u64, 3u64, 4u64);
+  j.jump();
+  imm js = j.state();
+  expectUInt(js.0, 0x8c7a153956b5f3d1u64, "jump word 0");
+  expectUInt(js.1, 0x701f1a713401d85eu64, "jump word 1");
+  expectUInt(js.2, 0x6527f66a65469085u64, "jump word 2");
+  expectUInt(js.3, 0x8386b786c4408050u64, "jump word 3");
+
+  // 'jumped' hands out the place before the jump and moves on
+  mut k = random.Rng.fromState(1u64, 2u64, 3u64, 4u64);
+  mut child = k.jumped();
+  expectUInt(child.next(), 11520u64, "jumped child starts where the parent was");
+  imm ks = k.state();
+  expectUInt(ks.0, 0x8c7a153956b5f3d1u64, "jumped parent word 0");
+
+  done();
+}
