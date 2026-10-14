@@ -1,0 +1,82 @@
+// Writing events, as a server sends them: the lines in their order, a 'data'
+// line for each line of the data, the empty line; a name or an id that would
+// inject a field has its line breaks dropped; comments; and what an Event
+// writes, a Reader reads back as the same event, whatever the pieces.
+
+mod writer;
+
+import testing use *;
+import collections use List, String;
+import sse use Event, Reader, comment;
+
+fn main() i32 {
+  expectStr(Event.message("hi").encode().view(), "data: hi\n\n", "a message");
+  expectStr(Event.named("tick", "3").encode().view(), "event: tick\ndata: 3\n\n", "a named event");
+  expectStr(Event.named("e", "a\nb").withId("7").withRetry(500i64).encode().view(),
+    "event: e\nid: 7\nretry: 500\ndata: a\ndata: b\n\n", "every field, a two-line data");
+  expectStr(Event.message("").encode().view(), "data:\n\n", "empty data is one empty data line");
+  expectStr(Event.message("a\r\nb\rc\nd").encode().view(), "data: a\ndata: b\ndata: c\ndata: d\n\n",
+    "CRLF, CR and LF all split the data");
+  expectStr(Event.message("a\n").encode().view(), "data: a\ndata:\n\n", "a trailing line feed is an empty last line");
+  expectStr(Event.named("ev\nid: 1", "x").encode().view(), "event: evid: 1\ndata: x\n\n",
+    "a line feed in a name cannot inject a field");
+  expectStr(Event.message("x").withId("a\r\nretry: 1").encode().view(), "id: aretry: 1\ndata: x\n\n",
+    "...nor can one in an id");
+  expectStr(Event.message("x").kind(), "message", "the default type is message");
+  expectStr(Event.named("tick", "x").kind(), "tick", "a named type");
+
+  mut out = String.from("before ");
+  Event.message("z").encodeInto(&mut out);
+  expectStr(out.view(), "before data: z\n\n", "encodeInto appends");
+
+  expectStr(comment("ping").view(), ": ping\n\n", "a comment");
+  expectStr(comment("").view(), ":\n\n", "an empty comment");
+  expectStr(comment("a\nb").view(), ": a\n: b\n\n", "a two-line comment");
+
+  // What is written is read back
+  mut sent = List[Event].empty();
+  sent.push(Event.message("hello"));
+  sent.push(Event.named("update", "one\ntwo\nthree").withId("42"));
+  sent.push(Event.message(""));
+  sent.push(Event.named("x", "trailing\n").withRetry(2500i64));
+  sent.push(Event.message("  leading spaces kept"));
+  sent.push(Event.message("colon: inside"));
+  mut wire = String.empty();
+  mut i = 0usize;
+  while i < sent.len() {
+    sent[i].encodeInto(&mut wire);
+    wire.append(comment("heartbeat").view());
+    i = i + 1usize;
+  }
+  // in pieces of every size from 1 to 9 bytes
+  mut size = 1usize;
+  mut allSame = true;
+  while size <= 9usize {
+    mut r = Reader.make();
+    mut got = List[Event].empty();
+    imm b = wire.view() as &Array[u8];
+    mut at = 0usize;
+    while at < b.len {
+      imm end = if at + size < b.len {at + size;} else {b.len;};
+      r.feed(&b[at ..< end], &mut got);
+      at = end;
+    }
+    if got.len() != sent.len() {
+      allSame = false;
+    } else {
+      mut j = 0usize;
+      while j < got.len() {
+        if got[j].name != sent[j].name or got[j].data != sent[j].data or got[j].retry != sent[j].retry {
+          allSame = false;
+        }
+        j = j + 1usize;
+      }
+      // ids are the stream's last id: 42 from the second event on
+      if got[0usize].id.view() != "" or got[1usize].id.view() != "42" or got[5usize].id.view() != "42" {allSame = false;}
+    }
+    size = size + 1usize;
+  }
+  expect(allSame, "six events with heartbeats between read back the same in pieces of 1 to 9 bytes");
+
+  done();
+}
