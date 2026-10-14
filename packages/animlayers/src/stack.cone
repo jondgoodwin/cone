@@ -1,0 +1,125 @@
+// Layers and their composition.
+
+pub const LAYER_ADDITIVE = 0u32;   // 'pose' is a delta: identity rotations and zero translations are nothing
+pub const LAYER_OVERRIDE = 1u32;   // 'pose' is a whole pose, blended over what is below
+
+// The pose of nothing: every bone turned by the identity and moved by nothing. An additive layer's pose starts as this.
+pub fn zeroPose(count usize) Pose {
+  mut p = Pose.empty();
+  mut i = 0usize;
+  while i < count {
+    p.locals.push(Transform3.identity());
+    i = i + 1usize;
+  }
+  p;
+}
+
+// Add a turn to a delta pose: bone 'b' turns by 'q' more, in its parent's frame, after what it already has
+pub fn deltaRotate(p &mut Pose, b usize, q Quat) {
+  p.setRotation(b, (q * p.rotation(b)).normalize());
+}
+
+// Add a move to a delta pose: bone 'b' moves by 'v' more, in its parent's frame
+pub fn deltaTranslate(p &mut Pose, b usize, v Vec3) {
+  p.setTranslation(b, (*p.locals[b]).translation + v);
+}
+
+// Put every bone of a delta pose back to nothing
+pub fn deltaClear(p &mut Pose) {
+  mut i = 0usize;
+  while i < p.count() {
+    p.locals.set(i, Transform3.identity());
+    i = i + 1usize;
+  }
+}
+
+pub struct Layer {
+  pub name String;
+  pub kind u32;
+  pub weight f32;        // now
+  pub goal f32;          // the weight it is fading to
+  pub seconds f32;       // the fade's time to get within 1% of the goal
+  pub mask BoneMask;
+  pub pose Pose;         // a delta (LAYER_ADDITIVE) or a whole pose (LAYER_OVERRIDE); the caller rewrites it each frame
+}
+
+// The layers over a base pose, in order: each is applied to what the ones below left
+pub struct LayerStack {
+  pub layers List[Layer];
+  pub zero Pose;         // the reference pose of every additive layer
+  pub bones usize;
+
+  pub fn make(skel &Skeleton) LayerStack {
+    new LayerStack(List[Layer].empty(), zeroPose(skel.boneCount()), skel.boneCount());
+  }
+
+  pub fn count(self &) usize { layers.len(); }
+
+  // A layer on top of the stack, at weight 1; its number. An additive layer starts as nothing, an override one as 'start'
+  pub fn add(self &mut, name &str, kind u32, mask BoneMask, start &Pose) usize {
+    layers.push(new Layer(String.from(name), kind, 1., 1., 0.25, mask, start.copy()));
+    layers.len() - 1usize;
+  }
+
+  pub fn addAdditive(self &mut, name &str, mask BoneMask) usize {
+    imm z = zero.copy();
+    self.add(name, LAYER_ADDITIVE, mask, &z);
+  }
+
+  pub fn addOverride(self &mut, name &str, mask BoneMask, start &Pose) usize {
+    self.add(name, LAYER_OVERRIDE, mask, start);
+  }
+
+  // Layer 'i''s pose replaced
+  pub fn setPose(self &mut, i usize, p Pose) { layers[i].pose = p; }
+
+  pub fn setMask(self &mut, i usize, m BoneMask) { layers[i].mask = m; }
+
+  // Layer 'i''s weight set now, with no fade
+  pub fn setWeight(self &mut, i usize, w f32) {
+    layers[i].weight = w;
+    layers[i].goal = w;
+  }
+
+  // Layer 'i' fades to 'goal' over 'seconds' (within 1% of the way in that time)
+  pub fn fadeTo(self &mut, i usize, goal f32, seconds f32) {
+    layers[i].goal = goal;
+    layers[i].seconds = seconds;
+  }
+
+  // Layer weights move towards their goals: exponentially, which is smooth in speed at both ends, and
+  // never overshoots, whatever the step
+  pub fn update(self &mut, dt f32) {
+    mut i = 0usize;
+    while i < layers.len() {
+      imm l = layers[i];
+      if l.weight != l.goal {
+        imm k = if l.seconds <= 0.0001 { 1.; } else { 1. - libc.expf(-4.6 * dt / l.seconds); };
+        mut w = l.weight + (l.goal - l.weight) * k;
+        if (w - l.goal) * (w - l.goal) < 0.00000001 { w = l.goal; }
+        layers[i].weight = w;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // The base pose with every layer applied, in order
+  pub fn compose(self &, base &Pose) Pose {
+    mut out = base.copy();
+    mut i = 0usize;
+    while i < layers.len() {
+      imm l = layers[i];
+      if l.weight > 0.00001 {
+        if l.kind == LAYER_ADDITIVE {
+          // addPose at weight 1 puts the whole delta on; the masked blend then scales it by weight times mask
+          imm added = addPose(&out, &zero, &l.pose, 1.);
+          out = blendMasked(&out, &added, l.weight, &l.mask.w);
+        } else {
+          out = blendMasked(&out, &l.pose, l.weight, &l.mask.w);
+        }
+      }
+      i = i + 1usize;
+    }
+    out;
+  }
+}

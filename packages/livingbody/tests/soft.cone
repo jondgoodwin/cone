@@ -1,0 +1,221 @@
+// Soft regions: where they find the skin, what their targets move, and the spring.
+//
+// THE MESH is an upright cylinder of radius 0.15 m round the y axis, 1 m tall, 24 sides (a vertex every 15 degrees, one
+// straight out along -z), 20 rings 0.05 m apart. A region on the one bone, from (0, 0.52, 0) out along -z, finds the skin
+// 0.15 m along the ray, a hair under it for the facet (0.1489 at its middle, 0.15 at a vertex): 0.1485 to 0.1501.
+// Its breath target moves the vertex nearest the landmark one centimetre out: (0, 0, -0.01) times the falloff, which is
+// 1 - smoothstep(0, 1, d) and d is the vertex's distance in the ellipsoid, here under 0.2 for a ring 0.02 from the landmark
+// of radius 0.12 (d = 0.17, falloff 0.92). On the far side of the cylinder (0.3 m behind) it moves nothing. The axis targets
+// are the same shape along x, y and z.
+//
+// THE SPRING (3 Hz, damping ratio 0.2): the damped frequency is 3 x sqrt(1 - 0.04) = 2.940 Hz, a period of 0.3402 s, and every
+// period the swing falls to exp(-2 pi 0.2 / sqrt(0.96)) = 0.2773 of what it was. Anchored still, there is no offset. Moving
+// at a steady speed it lags nothing (the anchor's velocity is part of the spring). Stopped hard, it overshoots. The
+// frame rate does not change when the peaks come, to within 4 per cent.
+//
+// THE MAP. The offset the spring makes in the world, turned into the bind pose's frame and skinned by the bone's turn since
+// rest, is the same world offset: R_current R_rest^-1 b = offset.
+
+mod soft;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import bonepose use *;
+import facerig use *;
+import livingbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn cylinder() Mesh {
+  mut m = Mesh.empty();
+  imm sides = 24usize;
+  imm rings = 21usize;
+  mut r = 0usize;
+  while r < rings {
+    mut k = 0usize;
+    while k < sides {
+      imm a = 2. * pi * f32.from(k) / f32.from(sides);
+      // angle 0 is +x; a vertex out along -z is at 3 pi / 2 (k = 18)
+      m.positions.push(new Vec3(0.15 * cos(a), 0.05 * f32.from(r), 0.15 * sin(a)));
+      m.normals.push(new Vec3(cos(a), 0., sin(a)));
+      m.uvs.push(new Vec2(f32.from(k) / f32.from(sides), f32.from(r) / f32.from(rings - 1usize)));
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  r = 0usize;
+  while r + 1usize < rings {
+    mut k = 0usize;
+    while k < sides {
+      imm a = u32.from(r * sides + k);
+      imm b = u32.from(r * sides + (k + 1usize) % sides);
+      imm c = u32.from((r + 1usize) * sides + k);
+      imm d = u32.from((r + 1usize) * sides + (k + 1usize) % sides);
+      m.indices.push(a); m.indices.push(b); m.indices.push(c);
+      m.indices.push(b); m.indices.push(d); m.indices.push(c);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  m;
+}
+
+fn nearestVertex(m &Mesh, p Vec3) usize {
+  mut best = 0usize;
+  mut bd = 1.0e9;
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm d = (*m.positions[i] - p).length();
+    if d < bd { bd = d; best = i; }
+    i = i + 1usize;
+  }
+  best;
+}
+
+fn oneBone() List[Transform3] {
+  mut l = List[Transform3].empty();
+  l.push(Transform3.identity());
+  l;
+}
+
+fn testTargets() {
+  imm mesh = cylinder();
+  imm rest = oneBone();
+  mut regions = List[SoftRegion].empty();
+  regions.push(SoftRegion.make("front", 0usize, new Vec3(0., 0.52, 0.), new Vec3(0., 0., -1.), new Vec3(0.12, 0.12, 0.08)).breathing(REGION_CHEST, 1.));
+  regions.push(SoftRegion.make("lower", 0usize, new Vec3(0., 0.22, 0.), new Vec3(0., 0., -1.), new Vec3(0.12, 0.12, 0.08)).jiggling(3., 0.2, 0.03, new Vec3(1., 1., 1.)));
+  imm tg = buildRegionTargets(&mesh, &rest, &regions);
+  expectInt(i64.from(tg.count()), 4i64, "one breath target and three axis targets");
+  expectInt(i64.from(*tg.breathTarget[0usize]), 0i64, "the first region's breath target is 0");
+  expectInt(i64.from(*tg.breathTarget[1usize]), -1i64, "the second breathes not");
+  expectInt(i64.from(*tg.axisTarget[0usize]), -1i64, "nor does the first jiggle");
+  expectBool(*tg.axisTarget[3usize] >= 0i32, true, "the second has axis targets");
+  imm lm = *tg.landmarks[0usize];
+  expectBool(lm.z < -0.1485 and lm.z > -0.1501, true, "the landmark is on the skin");
+  near(lm.y, 0.52, 0.0001, "at its height");
+  imm v = nearestVertex(&mesh, new Vec3(0., 0.5, -0.15));
+  imm dBreath = tg.targets.displacement(usize.from(*tg.breathTarget[0usize]), v);
+  near(dBreath.z, -0.01 * 0.92, 0.0015, "the breath moves the skin out about a centimetre");
+  near(dBreath.x, 0., 0.0001, "straight out");
+  imm back = nearestVertex(&mesh, new Vec3(0., 0.5, 0.15));
+  near(tg.targets.displacement(usize.from(*tg.breathTarget[0usize]), back).length(), 0., 0.00001, "and the back not at all");
+  // the second region's axes: its landmark is at y 0.22
+  imm v2 = nearestVertex(&mesh, new Vec3(0., 0.2, -0.15));
+  imm dx = tg.targets.displacement(usize.from(*tg.axisTarget[3usize]), v2);
+  imm dy = tg.targets.displacement(usize.from(*tg.axisTarget[4usize]), v2);
+  imm dz = tg.targets.displacement(usize.from(*tg.axisTarget[5usize]), v2);
+  near(dx.x, 0.0092, 0.0015, "the x axis target moves along x");
+  near(dy.y, 0.0092, 0.0015, "y");
+  near(dz.z, 0.0092, 0.0015, "z");
+  near(dx.y, 0., 0.0001, "and only along it");
+  // the targets keep their normals unit length
+  expectBool(tg.targets.dNor.len() > 0usize, true, "with normals");
+}
+
+// Peaks of a signal: the times a sample is a maximum of the offset's x
+fn peakTimes(dt f32, freq f32, zeta f32, seconds f32) List[f32] {
+  mut sp = new Spring(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, new Vec3(0., 0., 0.));
+  sp.step(new Vec3(0., 0., 0.), dt, freq, zeta);
+  mut peaks = List[f32].empty();
+  mut t = 0.;
+  mut a = 0.;
+  mut prevOff = 0.;
+  mut prev2 = 0.;
+  // the anchor jumps 0.1 m in one frame at 0.5 s and then holds
+  while t < seconds {
+    t = t + dt;
+    if t >= 0.5 { a = 0.1; }
+    sp.step(new Vec3(a, 0., 0.), dt, freq, zeta);
+    imm off = sp.offset.x;
+    if t > 0.5 + 2. * dt and prevOff > prev2 and prevOff > off and prevOff > 0. { peaks.push(t - dt); }
+    prev2 = prevOff;
+    prevOff = off;
+  }
+  peaks;
+}
+
+fn testSpring() {
+  mut sp = new Spring(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, new Vec3(0., 0., 0.));
+  mut t = 0;
+  while t < 120 { sp.step(new Vec3(1., 2., 3.), 1. / 60., 3., 0.2); t = t + 1; }
+  near(sp.offset.length(), 0., 0.00001, "anchored still: no offset");
+  // steady speed
+  mut sp2 = new Spring(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, new Vec3(0., 0., 0.));
+  mut x = 0.;
+  t = 0;
+  while t < 300 { x = x + 1. / 60.; sp2.step(new Vec3(x, 0., 0.), 1. / 60., 3., 0.2); t = t + 1; }
+  near(sp2.offset.length(), 0., 0.002, "at a steady 1 m/s: no lag");
+  // stopped hard: it overshoots
+  mut overshoot = 0.;
+  t = 0;
+  while t < 60 {
+    sp2.step(new Vec3(x, 0., 0.), 1. / 60., 3., 0.2);
+    if sp2.offset.x > overshoot { overshoot = sp2.offset.x; }
+    t = t + 1;
+  }
+  expectBool(overshoot > 0.02, true, "stopped hard from 1 m/s: it carries on a couple of centimetres");
+  // the ring
+  imm p60 = peakTimes(1. / 60., 3., 0.2, 2.5);
+  expectBool(p60.len() >= 3usize, true, "at least three peaks in two seconds");
+  near(*p60[1usize] - *p60[0usize], 0.3402, 0.012, "the period is 1 / (3 sqrt(1 - 0.04))");
+  near(*p60[2usize] - *p60[1usize], 0.3402, 0.012, "and holds");
+  imm p120 = peakTimes(1. / 120., 3., 0.2, 2.5);
+  imm p30 = peakTimes(1. / 30., 3., 0.2, 2.5);
+  near(*p120[1usize] - *p120[0usize], 0.3402, 0.012, "at 120 Hz the same period");
+  near(*p30[1usize] - *p30[0usize], 0.3402, 0.02, "and at 30");
+  near(*p120[0usize], *p60[0usize], 0.5 * 0.04, "the first peak comes at the same time at either rate");
+  // a jump bigger than 0.6 m is a teleport: no ring
+  mut sp3 = new Spring(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, new Vec3(0., 0., 0.));
+  sp3.step(new Vec3(0., 0., 0.), 1. / 60., 3., 0.2);
+  sp3.step(new Vec3(5., 0., 0.), 1. / 60., 3., 0.2);
+  near(sp3.offset.length(), 0., 0.00001, "a teleport resets it");
+}
+
+fn testMap() {
+  // two bones: the root, and a child that is turned 90 degrees about y in the pose, rest rotation turned 90 about z
+  mut skel = Skeleton.empty();
+  imm id = Transform3.identity();
+  skel.addBone(-1i32, id);
+  imm restRot = Quat.angleAxis(radians(90.), new Vec3(0., 0., 1.));
+  skel.addBone(0i32, new Transform3(new Vec3(0., 0.5, 0.), restRot, new Vec3(1., 1., 1.)));
+  imm rp = skel.restPose();
+  mut restModels = List[Transform3].empty();
+  skel.modelTransforms(&rp, &mut restModels);
+  mut regions = List[SoftRegion].empty();
+  regions.push(SoftRegion.make("r", 1usize, new Vec3(0., 0., 0.), new Vec3(0., 0., -1.), new Vec3(0.12, 0.12, 0.12)).jiggling(3., 0.2, 0.05, new Vec3(1., 1., 1.)));
+  imm mesh = cylinder();
+  imm tg = buildRegionTargets(&mesh, &restModels, &regions);
+  mut sr = SoftRegions.make(regions, tg, &restModels);
+  // pose it: the child turned 40 degrees about y more
+  mut pose = skel.restPose();
+  pose.setRotation(1usize, Quat.angleAxis(radians(40.), new Vec3(0., 1., 0.)) * restRot);
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(&pose, &mut models);
+  imm world = new Transform3(new Vec3(1., 0., 0.), Quat.angleAxis(radians(25.), new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
+  imm st = new BreathState(0., 0., 1., 0.22, 0., 0., true, 0., 0., 0., 0., 0.);
+  // first frame sets the spring; then jump the world 0.02 m in x
+  sr.update(1. / 60., &world, &models, &st);
+  imm world2 = new Transform3(new Vec3(1.02, 0., 0.), world.rotation, new Vec3(1., 1., 1.));
+  sr.update(1. / 60., &world2, &models, &st);
+  imm off = sr.springs[0usize].offset;
+  expectBool(off.length() > 0.0001, true, "the spring lags the jump");
+  imm b = new Vec3(*sr.weights[usize.from(*sr.tg.axisTarget[0usize])], *sr.weights[usize.from(*sr.tg.axisTarget[1usize])],
+    *sr.weights[usize.from(*sr.tg.axisTarget[2usize])]) * 0.01;
+  // skinning turns it by (current * rest^-1); that must be the world offset
+  imm cur = world2.rotation * (*models[1usize]).rotation;
+  imm skinned = cur * (restRot.conjugate() * b);
+  near(skinned.x, off.x, 0.00002, "the skinned displacement is the world offset: x");
+  near(skinned.y, off.y, 0.00002, "y");
+  near(skinned.z, off.z, 0.00002, "z");
+}
+
+fn main() i32 {
+  testTargets();
+  testSpring();
+  testMap();
+  done();
+}
