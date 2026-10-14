@@ -51,6 +51,7 @@ data = {
     "letters40000": letters(40000, 4),                   # six symbols: dynamic Huffman pays
     "structured60000": structured(60000, 5),
     "far": block + randbytes(10, 6) + block[:30000],     # a repeat from the window's far edge
+    "repeat9": block[:32000] * 9,                        # 288000 bytes, each match 32000 back (zlib's reach is a little under 32768)
 }
 streams = []
 
@@ -72,6 +73,9 @@ for ds in ["empty", "one", "hello", "words3000", "words40000", "zeros70000", "le
 for ds in ["exact32768", "far", "structured60000"]:
     add("z6-" + ds, ds, 1, zl(data[ds], 6, 15))
 add("z1-structured60000", "structured60000", 1, zl(data["structured60000"], 1, 15))
+# output past 98304 bytes with every match reaching back 32768: a streaming inflater trims its history there
+add("z6-repeat9", "repeat9", 1, zl(data["repeat9"], 6, 15))
+add("gz6-repeat9", "repeat9", 2, pygzip.compress(data["repeat9"], 6, mtime=0))
 for ds in ["empty", "one", "hello", "words3000"]:
     add("raw0-" + ds, ds, 0, zl(data[ds], 0, -15))
     add("z0-" + ds, ds, 1, zl(data[ds], 0, 15))

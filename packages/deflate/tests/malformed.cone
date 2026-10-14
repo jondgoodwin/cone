@@ -63,24 +63,24 @@ fn newBits() Bits { new Bits(List[u8].empty(), 0u64, 0u32); }
 
 // 0 inflated to the end; 1 to 8 failed with that kind of reason (below);
 // 100 stuck waiting for input that was all given
-const kBadHeader = 1;
-const kBadBlock = 2;
-const kBadCode = 3;
-const kBadDistance = 4;
-const kTruncated = 5;
-const kBadChecksum = 6;
-const kTooLarge = 7;
-const kTrailing = 8;
+fn kBadHeader() i32 { 1; }
+fn kBadBlock() i32 { 2; }
+fn kBadCode() i32 { 3; }
+fn kBadDistance() i32 { 4; }
+fn kTruncated() i32 { 5; }
+fn kBadChecksum() i32 { 6; }
+fn kTooLarge() i32 { 7; }
+fn kTrailing() i32 { 8; }
 
 fn kindNumber(k &ErrorKind) i32 {
-  if k == ErrorKind.BadHeader { return kBadHeader; }
-  if k == ErrorKind.BadBlock { return kBadBlock; }
-  if k == ErrorKind.BadCode { return kBadCode; }
-  if k == ErrorKind.BadDistance { return kBadDistance; }
-  if k == ErrorKind.Truncated { return kTruncated; }
-  if k == ErrorKind.BadChecksum { return kBadChecksum; }
-  if k == ErrorKind.TooLarge { return kTooLarge; }
-  kTrailing;
+  if k == ErrorKind.BadHeader { return kBadHeader(); }
+  if k == ErrorKind.BadBlock { return kBadBlock(); }
+  if k == ErrorKind.BadCode { return kBadCode(); }
+  if k == ErrorKind.BadDistance { return kBadDistance(); }
+  if k == ErrorKind.Truncated { return kTruncated(); }
+  if k == ErrorKind.BadChecksum { return kBadChecksum(); }
+  if k == ErrorKind.TooLarge { return kTooLarge(); }
+  kTrailing();
 }
 
 // Feed s[0, split) then s[split, end) (the second is skipped when split is
@@ -186,19 +186,19 @@ fn main() i32 {
   mut b = newBits();
   b.put(1u32, 1u32);
   b.put(3u32, 2u32);
-  rawBits(&mut b, kBadBlock, "block type 3");
+  rawBits(&mut b, kBadBlock(), "block type 3");
 
   // stored, LEN and NLEN that are not complements
   imm s1 Array[u8, 10] = [1u8, 5u8, 0u8, 0u8, 0u8, 97u8, 97u8, 97u8, 97u8, 97u8];
-  refusedEverywhere(Format.Raw, &s1, kBadBlock, "stored LEN against NLEN");
+  refusedEverywhere(Format.Raw, &s1, kBadBlock(), "stored LEN against NLEN");
   // stored, cut in the middle of the data
   imm s2 Array[u8, 7] = [1u8, 5u8, 0u8, 250u8, 255u8, 97u8, 98u8];
-  refusedEverywhere(Format.Raw, &s2, kTruncated, "stored data cut short");
+  refusedEverywhere(Format.Raw, &s2, kTruncated(), "stored data cut short");
   // stored, cut in the length
   imm s3 Array[u8, 4] = [1u8, 5u8, 0u8, 250u8];
-  refusedEverywhere(Format.Raw, &s3, kTruncated, "stored length cut short");
+  refusedEverywhere(Format.Raw, &s3, kTruncated(), "stored length cut short");
   // nothing at all
-  refusedEverywhere(Format.Raw, "", kTruncated, "an empty raw stream");
+  refusedEverywhere(Format.Raw, "", kTruncated(), "an empty raw stream");
 
   // an over-subscribed code-length code: 19 codes of length 1
   b = newBits();
@@ -210,7 +210,7 @@ fn main() i32 {
   mut i = 0u32;
   while i < 19u32 { b.put(1u32, 3u32); i += 1u32; }
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadBlock, "an over-subscribed code-length code");
+  rawBits(&mut b, kBadBlock(), "an over-subscribed code-length code");
 
   // an over-subscribed literal/length code: four symbols of length 1
   b = newBits();
@@ -223,7 +223,7 @@ fn main() i32 {
   clSym(&mut b, 1u32);          // symbol 256
   clSym(&mut b, 1u32);          // the one distance code
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadBlock, "an over-subscribed literal/length code");
+  rawBits(&mut b, kBadBlock(), "an over-subscribed literal/length code");
 
   // an incomplete literal/length code of two symbols (97 and 256)
   b = newBits();
@@ -235,7 +235,7 @@ fn main() i32 {
   clSym(&mut b, 1u32);          // symbol 256: length 1
   clSym(&mut b, 1u32);          // the one distance code
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadBlock, "an incomplete literal/length code");
+  rawBits(&mut b, kBadBlock(), "an incomplete literal/length code");
 
   // no end-of-block code
   b = newBits();
@@ -246,7 +246,7 @@ fn main() i32 {
   clZeros(&mut b, 117u32);      // symbols 2 to 256: 255 zeros
   clSym(&mut b, 1u32);          // the one distance code
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadBlock, "a block with no end-of-block code");
+  rawBits(&mut b, kBadBlock(), "a block with no end-of-block code");
 
   // the first code length asks to repeat the one before it: symbol 16 first
   b = newBits();
@@ -265,7 +265,7 @@ fn main() i32 {
   b.code(2u32, 2u32);           // symbol 16 (code 10)
   b.put(0u32, 2u32);
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadBlock, "a length repeat with nothing before it");
+  rawBits(&mut b, kBadBlock(), "a length repeat with nothing before it");
 
   // ---------------- raw: symbols ----------------
   // fixed block: 'a', then a match of length 3 at distance 5 (one byte of output)
@@ -277,7 +277,7 @@ fn main() i32 {
   b.code(4u32, 5u32);           // distance code 4: 5 or 6 (one extra bit)
   b.put(0u32, 1u32);
   b.fixedSym(256u32);
-  rawBits(&mut b, kBadDistance, "a match reaching before the start");
+  rawBits(&mut b, kBadDistance(), "a match reaching before the start");
 
   // the same with the distance exactly the output so far: fine
   b = newBits();
@@ -297,7 +297,7 @@ fn main() i32 {
   b.fixedSym(257u32);
   b.code(30u32, 5u32);
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadCode, "distance symbol 30");
+  rawBits(&mut b, kBadCode(), "distance symbol 30");
   b = newBits();
   b.put(1u32, 1u32);
   b.put(1u32, 2u32);
@@ -305,7 +305,7 @@ fn main() i32 {
   b.fixedSym(257u32);
   b.code(31u32, 5u32);
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadCode, "distance symbol 31");
+  rawBits(&mut b, kBadCode(), "distance symbol 31");
 
   // length symbol 286 (and 287) does not exist
   b = newBits();
@@ -314,13 +314,13 @@ fn main() i32 {
   b.fixedSym(97u32);
   b.fixedSym(286u32);
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadCode, "length symbol 286");
+  rawBits(&mut b, kBadCode(), "length symbol 286");
   b = newBits();
   b.put(1u32, 1u32);
   b.put(1u32, 2u32);
   b.fixedSym(287u32);
   b.put(0u32, 16u32);
-  rawBits(&mut b, kBadCode, "length symbol 287");
+  rawBits(&mut b, kBadCode(), "length symbol 287");
 
   // a fixed block that never ends
   b = newBits();
@@ -328,7 +328,7 @@ fn main() i32 {
   b.put(1u32, 2u32);
   b.fixedSym(97u32);
   b.fixedSym(98u32);
-  rawBits(&mut b, kTruncated, "a fixed block with no end");
+  rawBits(&mut b, kTruncated(), "a fixed block with no end");
 
   // ---------------- zlib ----------------
   // a good stream: zlib's "hello hello hello"
@@ -340,24 +340,24 @@ fn main() i32 {
 
   mut t = copyList(z.view());
   t.set(0usize, 0x79u8);
-  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: method 9");
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader(), "zlib: method 9");
   // window of 2^16 (CINFO 8), with a valid check
   t = copyList(z.view());
   t.set(0usize, 0x88u8);
   t.set(1usize, u8.from((31u32 - (0x8800u32 % 31u32)) % 31u32));
-  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: window over 32 KiB");
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader(), "zlib: window over 32 KiB");
   // a check that fails
   t = copyList(z.view());
   t.set(1usize, 0x9Du8);
-  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: header check");
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader(), "zlib: header check");
   // a preset dictionary (FDICT), with a valid check
   t = copyList(z.view());
   t.set(1usize, u8.from(0x20u32 + (31u32 - ((0x7800u32 + 0x20u32) % 31u32)) % 31u32));
-  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: preset dictionary");
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader(), "zlib: preset dictionary");
   // a changed checksum
   t = copyList(z.view());
   t.set(15usize, *t[15usize] ^ 1u8);
-  refusedEverywhere(Format.Zlib, t.view(), kBadChecksum, "zlib: Adler-32 changed");
+  refusedEverywhere(Format.Zlib, t.view(), kBadChecksum(), "zlib: Adler-32 changed");
   // a changed data byte (the checksum no longer matches, or the stream breaks)
   t = copyList(z.view());
   t.set(5usize, *t[5usize] ^ 0x10u8);
@@ -368,7 +368,7 @@ fn main() i32 {
   mut cutAt = 0usize;
   while cutAt < z.len() {
     imm prefix = &z.view()[0usize..<cutAt];
-    if outcome(Format.Zlib, prefix, cutAt, 1073741824u64, true) != kTruncated { cutWrong += 1usize; }
+    if outcome(Format.Zlib, prefix, cutAt, 1073741824u64, true) != kTruncated() { cutWrong += 1usize; }
     cutAt += 1usize;
   }
   expectInt(i64.from(cutWrong), 0i64, "zlib: every strict prefix is Truncated");
@@ -393,22 +393,22 @@ fn main() i32 {
 
   t = copyList(g.view());
   t.set(0usize, 0x1Eu8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: bad first magic byte");
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader(), "gzip: bad first magic byte");
   t = copyList(g.view());
   t.set(1usize, 0x8Cu8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: bad second magic byte");
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader(), "gzip: bad second magic byte");
   t = copyList(g.view());
   t.set(2usize, 7u8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: method 7");
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader(), "gzip: method 7");
   t = copyList(g.view());
   t.set(3usize, 0x28u8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: a reserved flag");
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader(), "gzip: a reserved flag");
   t = copyList(g.view());
   t.set(glen - 8usize, *t[glen - 8usize] ^ 1u8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadChecksum, "gzip: CRC-32 changed");
+  refusedEverywhere(Format.Gzip, t.view(), kBadChecksum(), "gzip: CRC-32 changed");
   t = copyList(g.view());
   t.set(glen - 4usize, 16u8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadChecksum, "gzip: size changed");
+  refusedEverywhere(Format.Gzip, t.view(), kBadChecksum(), "gzip: size changed");
   // the header check flag with a wrong CRC-16 (the flag 2 in place of the name's 8; the name is then part of the data)
   t = copyList(g.view());
   t.set(3usize, 2u8);
@@ -418,7 +418,7 @@ fn main() i32 {
   cutAt = 0usize;
   while cutAt < glen {
     imm prefix = &g.view()[0usize..<cutAt];
-    if outcome(Format.Gzip, prefix, cutAt, 1073741824u64, true) != kTruncated { cutWrong += 1usize; }
+    if outcome(Format.Gzip, prefix, cutAt, 1073741824u64, true) != kTruncated() { cutWrong += 1usize; }
     cutAt += 1usize;
   }
   expectInt(i64.from(cutWrong), 0i64, "gzip: every strict prefix is Truncated");
@@ -429,16 +429,16 @@ fn main() i32 {
   refusedEverywhere(Format.Gzip, t.view(), 0, "gzip: zero padding after the member");
   t = copyList(g.view());
   t.push(7u8); t.push(7u8); t.push(7u8);
-  refusedEverywhere(Format.Gzip, t.view(), kTrailing, "gzip: garbage after the member");
+  refusedEverywhere(Format.Gzip, t.view(), kTrailing(), "gzip: garbage after the member");
   t = copyList(g.view());
   t.push(0x1Fu8);
-  refusedEverywhere(Format.Gzip, t.view(), kTrailing, "gzip: one stray byte after the member");
+  refusedEverywhere(Format.Gzip, t.view(), kTrailing(), "gzip: one stray byte after the member");
   // a second member that is itself broken
   t = copyList(g.view());
   i = 0u32;
   while usize.from(i) < glen { t.push(*g[usize.from(i)]); i += 1u32; }
   t.set(glen + 2usize, 9u8);
-  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: a broken second member");
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader(), "gzip: a broken second member");
   // one member only: what follows is left, not looked at
   t = copyList(g.view());
   t.push(7u8); t.push(7u8);
@@ -451,13 +451,13 @@ fn main() i32 {
   while i < 70000u32 { zeros.push(0u8); i += 1u32; }
   imm zstream = zlibCompress(zeros.view(), 1);
   expectInt(i64.from(outcome(Format.Zlib, zstream.view(), zstream.len(), 70000u64, true)), 0i64, "a limit equal to the output is fine");
-  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), zstream.len(), 69999u64, true)), i64.from(kTooLarge), "a limit one under the output");
-  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), 100usize, 1000u64, true)), i64.from(kTooLarge), "a limit that falls inside a match");
-  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), 0usize, 0u64, true)), i64.from(kTooLarge), "a limit of zero");
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), zstream.len(), 69999u64, true)), i64.from(kTooLarge()), "a limit one under the output");
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), 100usize, 1000u64, true)), i64.from(kTooLarge()), "a limit that falls inside a match");
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), 0usize, 0u64, true)), i64.from(kTooLarge()), "a limit of zero");
   // stored data
   imm sstream = zlibCompress(zeros.view(), 0);
   expectInt(i64.from(outcome(Format.Zlib, sstream.view(), sstream.len(), 70000u64, true)), 0i64, "stored: a limit equal to the output");
-  expectInt(i64.from(outcome(Format.Zlib, sstream.view(), sstream.len(), 69999u64, true)), i64.from(kTooLarge), "stored: a limit one under the output");
+  expectInt(i64.from(outcome(Format.Zlib, sstream.view(), sstream.len(), 69999u64, true)), i64.from(kTooLarge()), "stored: a limit one under the output");
   // the one-shot helpers: 'expected' is a limit too
   match zlibDecompress(zstream.view(), 69999usize) {
     case imm ok Ok { expect(false, "one-shot expected size too small is refused"); }

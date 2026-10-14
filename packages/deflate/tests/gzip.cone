@@ -59,6 +59,11 @@ fn readAll(s &Array[u8], out &mut List[u8]) Inflater {
 
 fn same(a &Array[u8], b &Array[u8]) bool { a == b; }
 
+fn let_append(out &mut List[u8], piece &List[u8]) {
+  mut k = 0usize;
+  while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+}
+
 fn main() i32 {
   mut file = String.empty();
   match fs.readFile(&Path.from("../../../../tests/data/zoo.bin")) {
@@ -132,6 +137,29 @@ fn main() i32 {
   match gzipDecompress(padded.view(), 0usize) {
     case imm ok Ok { expect(same(ok.view(), out.view()), "multi: zero padding at the end is ignored"); }
     case imm e Error { expect(false, "multi: zero padding at the end is ignored"); }
+  }
+  // the four members fed split in two at every offset (a split inside a header, a trailer, between members)
+  {
+    mut badSplit = 0usize;
+    mut at = 0usize;
+    while at <= multi.len() {
+      mut sp = Inflater.make(Format.Gzip);
+      mut got = List[u8].empty();
+      mut piece = List[u8].empty();
+      mut st Status = Status.NeedInput;
+      if at > 0usize {
+        sp.feed(&multi.view()[0usize..<at]);
+        st = Status.MoreOutput;
+        while st == Status.MoreOutput { piece.clear(); st = sp.pull(&mut piece, 700usize); let_append(&mut got, &piece); }
+      }
+      if at < multi.len() { sp.feed(&multi.view()[at..<multi.len()]); }
+      sp.finish();
+      st = Status.MoreOutput;
+      while st == Status.MoreOutput { piece.clear(); st = sp.pull(&mut piece, 700usize); let_append(&mut got, &piece); }
+      if st != Status.Done or not same(got.view(), out.view()) or sp.memberCount() != 4u32 { badSplit += 1usize; }
+      at += 1usize;
+    }
+    expectInt(i64.from(badSplit), 0i64, "multi: split at every offset gives the same data and four members");
   }
 
   // one member at a time: Done after the first without 'finish', the rest taken
