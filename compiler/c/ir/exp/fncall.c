@@ -1926,10 +1926,17 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
     }
 
-    // A '<-' on a reference that does not permit the write is refused as '*r <- x'
-    // and the entries of a list are: through the borrow the value is lent with
-    // (contentsLowerEntries), so one entry and several are reported alike
-    if (selected == NULL && status == OverloadNone && methsym == lessDashName && (callnode->flags & FlagOpAssgn)) {
+    // A call on a reference that does not permit what the method's 'self' borrows
+    // is refused as '(*r).m(x)' is, and as a '<-' on it, one entry or several
+    // (contentsLowerEntries), is: the method exists and only the permission is
+    // wrong, so the call gets the permission's error (ErrorInvType), not the
+    // 'no candidate' of a method that is not there. The receiver is read through
+    // and borrowed as a value is (fnCallBorrowReceiver), which finds a method only
+    // where one by that name takes the arguments, so a call that fails for
+    // another reason still reports it. The index '&x[i]' of a read-only receiver
+    // keeps its own explanation (fnCallRefIndexWantsMut), which says what to write.
+    if (selected == NULL && status == OverloadNone
+        && !(methsym == refIndexName && (callnode->flags & FlagIndex))) {
         INode *refobjtype = iexpGetTypeDcl(obj);
         INode *derefobj = obj;
         if (refobjtype->tag == RefTag && !permIsLock(((RefNode*)refobjtype)->perm) && derefInject(&derefobj)) {
