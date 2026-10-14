@@ -1,0 +1,63 @@
+// A type holding itself by value through an Option stays refused as infinitely
+// sized, though a List of an Option of it is accepted (move_recursive_option_list):
+// the List holds its elements through a pointer and the Option, held by value,
+// does not. The type argument of a generic is a name, but whatever holds the
+// instance by value lays it out itself, so every holder below still meets the
+// cycle: an Option directly, a generic struct's field, a Result, an array, a
+// tuple, an Option of an Option, a variant's payload, and a generic whose own
+// 'where' reads its argument.
+//
+// The error is reported inside core's Option (its payload holds the type by
+// value), where an annotation cannot reach, so the scenario counts them: one
+// per holder.
+
+mod move_recover_recursive_option_value;
+
+struct Wrap[T] {
+  pub v T;
+}
+
+struct Direct {
+  pub id i64;
+  pub next Option[Direct];
+}
+
+struct ViaWrap {
+  pub id i64;
+  pub w Wrap[Option[ViaWrap]];
+}
+
+struct ViaResult {
+  pub id i64;
+  pub r Result[Option[ViaResult], i64];
+}
+
+struct ViaArray {
+  pub id i64;
+  pub a Array[Option[ViaArray], 2];
+}
+
+struct ViaTuple {
+  pub id i64;
+  pub t (i64, Option[ViaTuple]);
+}
+
+// A generic whose own 'where' reads the argument cannot wait for its layout
+struct Pointed[T] where T is Copy {
+  pub p *T;
+}
+
+struct ViaWhere {
+  pub id i64;
+  pub w Pointed[Option[ViaWhere]];
+}
+
+enum Twice {
+  Leaf(i64);
+  Branch(Option[Option[Twice]]);
+}
+
+enum Payload {
+  Leaf(i64);
+  Branch(Wrap[Option[Payload]]);
+}
