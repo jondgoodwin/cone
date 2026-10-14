@@ -1,0 +1,67 @@
+// What `print <-` and `eprint <-` do with a borrowed byte and what the stream's C-string
+// entry takes. A `&u8` (an `each` over a List[u8], or a borrow of one byte) is a number, not
+// the start of a C string: `print <- n` writes the byte's value as an integer, and never reads
+// past it looking for a zero. A C string is a `cstr`, which promises the zero that ends it, and
+// reaches the stream by name, `print.appendCStr(c)`; a literal, a String's `cstr()`, an owner
+// of text's, a raw pointer the caller vouches for (`cstr.fromPtr`) and what a C function
+// answers all are one. Standard output here and standard error in the .err, the same text.
+// What is refused is in module_stdio_cstr_reject.
+//
+// - a List of bytes holding a zero, `each`ed: each byte is its number, the zero a `0`;
+// - a lone `&u8`, and a borrow of that borrow;
+// - the cstr entry: a literal, a String's, an owner's, `cstr.fromPtr` of a literal's bytes
+//   and a C call's answer (strerror);
+// - the str entries beside them as before.
+
+mod module_stdio_cstr;
+
+import stdio use *;
+import collections use List, String;
+import libc;
+
+fn bytes(err bool) {
+  mut l = List[u8].empty();
+  l.push(72u8);
+  l.push(105u8);
+  l.push(0u8);
+  l.push(255u8);
+  each n in l {
+    if err {eprint <- "[", n, "]";} else {print <- "[", n, "]";}
+  }
+  if err {eprint <- "\n";} else {print <- "\n";}
+
+  imm b = 7u8;
+  imm r = &b;
+  imm rr = &r;
+  if err {eprint <- "lone [", r, "] [", rr, "]\n";} else {print <- "lone [", r, "] [", rr, "]\n";}
+}
+
+fn cstrs(err bool) {
+  imm s = String.from("from a String");
+  imm owner So[str] = "from an owner";
+  imm lit = &"from raw bytes" as *u8;
+  if err {
+    eprint.appendCStr("from a literal"); eprint <- "\n";
+    eprint.appendCStr(s.cstr()); eprint <- "\n";
+    eprint.appendCStr(owner.cstr()); eprint <- "\n";
+    eprint.appendCStr(cstr.fromPtr(lit)); eprint <- "\n";
+    eprint.appendCStr(libc.strerror(2i32)); eprint <- "\n";
+    eprint <- "as a str: ", libc.strerror(2i32).view(), "\n";
+  } else {
+    print.appendCStr("from a literal"); print <- "\n";
+    print.appendCStr(s.cstr()); print <- "\n";
+    print.appendCStr(owner.cstr()); print <- "\n";
+    print.appendCStr(cstr.fromPtr(lit)); print <- "\n";
+    print.appendCStr(libc.strerror(2i32)); print <- "\n";
+    print <- "as a str: ", libc.strerror(2i32).view(), "\n";
+  }
+}
+
+fn main() {
+  bytes(false);
+  cstrs(false);
+  print.flush();
+  bytes(true);
+  cstrs(true);
+  eprint.flush();
+}
