@@ -22,7 +22,7 @@
 		<span class="pre">actorhttp</span>, <a href="refconcio.html#await-io-http">HTTP an actor awaits</a>); and a TLS
 		back end other than OpenSSL.</i></p>
 
-	<p>Six library packages speak HTTP and its parts:</p>
+	<p>Seven library packages speak HTTP and its parts:</p>
 	<ul>
 	<li><span class="pre">url</span>: a URL read from text, resolved against another, and written back.</li>
 	<li><span class="pre">http</span>: HTTP's messages as data &mdash; methods, statuses, header fields,
@@ -37,6 +37,7 @@
 		server, retries, redirects, and a queue that orders what is fetched.</li>
 	<li><span class="pre">tls</span>: TLS 1.2 and 1.3 over OpenSSL, client and server. It does no I/O of its own,
 		and the operating system decides whether a server's certificate can be trusted.</li>
+	<li><span class="pre">sse</span>: server-sent events, read and written as bytes, described <a href="#sse">below</a>.</li>
 	</ul>
 	<p>A program reaches them with <span class="pre">import url use *;</span>, <span class="pre">import http use *;</span>,
 		<span class="pre">import httpconn use *;</span> and so on. <span class="pre">httpconn</span>,
@@ -1255,6 +1256,29 @@ fn main() {
 		<span class="pre">maxTotal</span>, <span class="pre">idleTimeout</span>, <span class="pre">maxQueued</span>,
 		<span class="pre">maxRetries</span>, <span class="pre">maxRedirects</span> and
 		<span class="pre">userAgent</span> (<span class="pre">cone-httpclient/0.1</span>), each a public field.</p>
+
+	<h2 id="sse">Server-sent events: the sse package</h2>
+	<p>Server-sent events (<span class="pre">Content-Type: text/event-stream</span>, the HTML standard's section 9.2) are
+		a response that never needs to end: the server writes events as lines of text, and the client reads them as
+		they come. The <span class="pre">sse</span> package is the format alone, with no I/O: a
+		<span class="pre">Reader</span> is fed the bytes of a stream in pieces of any size
+		(<span class="pre">reader.feed(bytes, &amp;mut events)</span>, which appends the events they complete to a list), and an
+		<span class="pre">Event</span> writes itself as a server sends it (<span class="pre">event.encode()</span>;
+		<span class="pre">sse.comment(text)</span> is the heartbeat). An event has a <span class="pre">name</span> (the
+		event type; empty is the default, <span class="pre">message</span>), its <span class="pre">data</span> (the
+		<span class="pre">data</span> lines joined with line feeds), the stream's last event <span class="pre">id</span> and the
+		<span class="pre">retry</span> time its block set (or -1). The Reader follows the standard's rules: CR, LF and CRLF
+		line endings, even split between two pieces; a byte order mark; comments; one space after the colon dropped;
+		an event with no <span class="pre">data</span> line not dispatched; an event cut off at the stream's end
+		discarded. It holds at most one line and one event's data, 1 MiB unless given another bound, and stops past
+		it. A name or id written with a line break in it has the break dropped, so a program cannot inject a field.</p>
+	<p>An actor serves events with <span class="pre">actorhttp</span>'s Exchange
+		(<span class="pre">startEvents()</span>, then <span class="pre">await ex.sendEvent(&amp;event)</span> and
+		<span class="pre">finish()</span>) and reads them with its client
+		(<span class="pre">await client.events(request)</span>, then <span class="pre">await stream.next()</span>); a
+		program using <span class="pre">httpclient</span> directly feeds a Reader each
+		<span class="pre">Data</span> event's bytes.
+		<a href="refconcio.html#await-io-http">HTTP an actor awaits</a> describes both.</p>
 
 	<h2 id="tls">TLS: the tls package</h2>
 	<p>A TLS <span class="pre">Session</span> is one connection's state and never touches a socket: its owner hands

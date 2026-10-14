@@ -1,0 +1,318 @@
+// The service thread's side of the streams: the record kept for each response
+// an actor reads as it arrives, how a fetch's events feed it, and the jobs
+// the stream handles post (actorhttp.cone's header, STREAMS).
+
+// A Wait that belongs to no stream
+const noStream = 0xFFFFFFFFFFFFFFFFusize;
+
+// Events or chunks held for a reader before the connection is told to stop
+// sending (the bytes behind them are not released until the queue has room)
+const streamQueueHigh = 64usize;
+
+// A response read as it arrives: its pieces waiting for the actor, and the
+// actor waiting for a piece
+struct StreamRec {
+  used bool;
+  id u64;
+  asEvents bool;                  // read as events (else as chunks of bytes)
+  fetch httpclient.FetchId;
+  openReply actors.Reply;         // the answer to 'stream' or 'events', until the head arrives
+  opening bool;
+  status u16;
+  headers Headers;
+  url String;
+  reader sse.Reader;
+  events List[sse.Event];         // parsed events, from ehead on
+  ehead usize;
+  chunks List[String];            // body pieces, from chead on
+  chead usize;
+  owed usize;                     // body bytes taken from the client but not yet released
+  ended bool;                     // the fetch's final answer has come
+  outcome httpclient.EventKind;
+  failure httpclient.Failure;
+  limited bool;                   // an event passed the reader's limit and the fetch was cancelled for it
+  readReply actors.Reply;
+  reading bool;                   // an actor awaits the next piece
+  gone bool;                      // its handle has gone
+}
+
+fn blankStream() StreamRec {
+  new StreamRec(used: false, id: 0u64, asEvents: false, fetch: httpclient.FetchId.none(), openReply: new actors.Reply(),
+    opening: false, status: 0u16, headers: Headers.empty(), url: String.empty(), reader: sse.Reader.make(),
+    events: List[sse.Event].empty(), ehead: 0usize, chunks: List[String].empty(), chead: 0usize, owed: 0usize,
+    ended: false, outcome: httpclient.EventKind.Failed, failure: httpclient.Failure.none(), limited: false,
+    readReply: new actors.Reply(), reading: false, gone: false);
+}
+
+// Where the live stream is (its slot's record), or null
+fn streamOf(rec &ClientRec, slot u32, id u64) *StreamRec {
+  imm s = usize.from(slot);
+  if s >= rec.streams.len() {return null;}
+  imm x = rec.streams.at(s);
+  if (*x).used and (*x).id == id {return x;}
+  null;
+}
+
+fn freeStream(rec &mut ClientRec, slot usize) {
+  imm s = rec.streams.at(slot) as &mut StreamRec;
+  *s = blankStream();
+  rec.streams.put(slot);
+}
+
+// A handle to a client dropped: the last one's going ends the client, every
+// fetch of it answered Cancelled, its connections reset
+fn unrefClient(rec &mut ClientRec, lp &mut Loop) {
+  rec.refs = rec.refs - 1u32;
+  if rec.refs == 0u32 {
+    rec.dying = true;
+    rec.client.abortAll(lp);
+  }
+}
+
+// How a stream's reads end once its pieces are all taken: None for a clean
+// end, else the error
+fn endOf[T](s &StreamRec) Result[Option[T], FetchError] {
+  imm k = s.outcome;
+  if s.limited {
+    return Error[Option[T], FetchError](FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
+      ErrorKind.TooLarge, "an event is longer than the reader's limit")));
+  }
+  if k == httpclient.EventKind.Done {
+    Ok[Option[T], FetchError](None);
+  } elif k == httpclient.EventKind.Failed {
+    Error[Option[T], FetchError](FetchError.failed(s.failure.copy()));
+  } elif k == httpclient.EventKind.TimedOut {
+    Error[Option[T], FetchError](FetchError.timedOut());
+  } else {
+    Error[Option[T], FetchError](FetchError.cancelled());
+  }
+}
+
+// The queue holds enough: the client is not told to send more yet
+fn queued(s &StreamRec) usize {
+  if s.asEvents {s.events.len() - s.ehead;} else {s.chunks.len() - s.chead;};
+}
+
+// Release the body bytes owed to the client, once the queue has room
+fn releaseOwed(rec &mut ClientRec, s &mut StreamRec) {
+  if s.owed > 0usize and not s.ended and queued(s) < streamQueueHigh {
+    rec.client.release(s.fetch, s.owed);
+    s.owed = 0usize;
+  }
+}
+
+// An actor awaiting a piece gets the next, or the end
+fn serveRead(rec &mut ClientRec, s &mut StreamRec) {
+  if not s.reading {return;}
+  if s.asEvents {
+    if s.ehead < s.events.len() {
+      mut ev = sse.Event.message("");
+      imm slot = &mut s.events[s.ehead];
+      ev <=> *slot;
+      s.ehead = s.ehead + 1usize;
+      if s.ehead == s.events.len() {
+        s.events.clear();
+        s.ehead = 0usize;
+      }
+      s.reading = false;
+      answerTo[Result[Option[sse.Event], FetchError]](&mut s.readReply,
+        Ok[Option[sse.Event], FetchError](Some[sse.Event](ev)));
+      releaseOwed(rec, s);
+    } elif s.ended {
+      s.reading = false;
+      answerTo[Result[Option[sse.Event], FetchError]](&mut s.readReply, endOf[sse.Event](s));
+    }
+  } else {
+    if s.chead < s.chunks.len() {
+      mut piece = String.empty();
+      imm slot = &mut s.chunks[s.chead];
+      piece <=> *slot;
+      s.chead = s.chead + 1usize;
+      if s.chead == s.chunks.len() {
+        s.chunks.clear();
+        s.chead = 0usize;
+      }
+      s.reading = false;
+      answerTo[Result[Option[String], FetchError]](&mut s.readReply,
+        Ok[Option[String], FetchError](Some[String](piece)));
+      releaseOwed(rec, s);
+    } elif s.ended {
+      s.reading = false;
+      answerTo[Result[Option[String], FetchError]](&mut s.readReply, endOf[String](s));
+    }
+  }
+}
+
+// A fetch event of a Wait that belongs to a stream
+fn onStreamEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event, wslot usize, w &mut Wait) {
+  imm sslot = w.stream;
+  imm s = rec.streams.at(sslot) as &mut StreamRec;
+  imm k = e.kind;
+  if k == httpclient.EventKind.Response {
+    s.status = e.response.status;
+    s.headers <=> e.response.headers;
+    s.url <=> e.url;
+    s.opening = false;
+    mut hs = Headers.empty();
+    hs <=> s.headers;
+    mut url = String.empty();
+    url <=> s.url;
+    if s.asEvents {
+      answerTo[Result[EventStream, FetchError]](&mut s.openReply, Ok[EventStream, FetchError](
+        new EventStream(rec.id, u32.from(sslot), s.id, s.status, hs, url)));
+    } else {
+      answerTo[Result[BodyStream, FetchError]](&mut s.openReply, Ok[BodyStream, FetchError](
+        new BodyStream(rec.id, u32.from(sslot), s.id, s.status, hs, url)));
+    }
+  } elif k == httpclient.EventKind.Data {
+    imm n = e.buf.len();
+    if s.gone or s.limited {
+      rec.client.release(e.id, n);
+    } else {
+      if s.asEvents {
+        s.reader.feed(e.buf.view(), &mut s.events);
+        if s.reader.overflowed() {
+          s.limited = true;
+          rec.client.cancel(lp, s.fetch);
+        }
+      } else {
+        s.chunks.push(String.fromBytes(e.buf.view()));
+      }
+      s.owed = s.owed + n;
+      serveRead(rec, s);
+      releaseOwed(rec, s);
+    }
+  } elif e.isTerminal() {
+    s.ended = true;
+    s.outcome = k;
+    s.owed = 0usize;
+    if k == httpclient.EventKind.Failed {s.failure = e.failure.copy();}
+    if s.opening {
+      s.opening = false;
+      imm err = if k == httpclient.EventKind.Failed {FetchError.failed(e.failure.copy());}
+        elif k == httpclient.EventKind.TimedOut {FetchError.timedOut();}
+        else {FetchError.cancelled();};
+      if s.asEvents {
+        answerTo[Result[EventStream, FetchError]](&mut s.openReply, Error[EventStream, FetchError](err));
+      } else {
+        answerTo[Result[BodyStream, FetchError]](&mut s.openReply, Error[BodyStream, FetchError](err));
+      }
+    }
+    serveRead(rec, s);
+    clearWait(w);
+    rec.waits.put(wslot);
+    if s.gone {freeStream(rec, sslot);}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The jobs
+// ---------------------------------------------------------------------------
+
+// A fetch whose response an actor reads as it comes: the request, whether as
+// events, and the reply the head's arrival answers
+struct StreamOpenJob {
+  pub id u64;
+  pub req httpclient.Request;
+  pub asEvents bool;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    imm k = sv.findClient(id);
+    if k >= sv.clients.len() {
+      if asEvents {
+        answerTo[Result[EventStream, FetchError]](&mut rp, Error[EventStream, FetchError](FetchError.cancelled()));
+      } else {
+        answerTo[Result[BodyStream, FetchError]](&mut rp, Error[BodyStream, FetchError](FetchError.cancelled()));
+      }
+      return;
+    }
+    imm rec = sv.clientAt(k) as &mut ClientRec;
+    imm sslot = rec.streams.take(blankStream());
+    imm s = rec.streams.at(sslot) as &mut StreamRec;
+    s.used = true;
+    s.id = newId();
+    s.asEvents = asEvents;
+    s.opening = true;
+    s.openReply <=> rp;
+    imm wslot = rec.waits.take(blankWait());
+    imm w = rec.waits.at(wslot) as &mut Wait;
+    w.stream = sslot;
+    rec.refs = rec.refs + 1u32;
+    mut r = httpclient.Request.get("");
+    r <=> req;
+    s.fetch = rec.client.send(lp, r, httpclient.Sink.Here(u64.from(wslot)));
+    w.fetch = s.fetch;
+  }
+}
+
+// The next piece of a stream, for the reply that awaits it
+struct StreamReadJob {
+  pub client u64;
+  pub slot u32;
+  pub id u64;
+  pub asEvents bool;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    imm k = sv.findClient(client);
+    mut s = null as *StreamRec;
+    if k < sv.clients.len() {
+      s = streamOf(sv.clientAt(k) as &ClientRec, slot, id);
+    }
+    if s as usize == 0usize {
+      if asEvents {
+        answerTo[Result[Option[sse.Event], FetchError]](&mut rp,
+          Error[Option[sse.Event], FetchError](FetchError.cancelled()));
+      } else {
+        answerTo[Result[Option[String], FetchError]](&mut rp,
+          Error[Option[String], FetchError](FetchError.cancelled()));
+      }
+      return;
+    }
+    imm rec = sv.clientAt(k) as &mut ClientRec;
+    imm st = s as &mut StreamRec;
+    if st.reading {
+      // One read at a time: a second is refused
+      if asEvents {
+        answerTo[Result[Option[sse.Event], FetchError]](&mut rp,
+          Error[Option[sse.Event], FetchError](FetchError.cancelled()));
+      } else {
+        answerTo[Result[Option[String], FetchError]](&mut rp,
+          Error[Option[String], FetchError](FetchError.cancelled()));
+      }
+      return;
+    }
+    st.readReply <=> rp;
+    st.reading = true;
+    serveRead(rec, st);
+  }
+}
+
+// A stream's handle dropped: the rest of the fetch is cancelled, and the
+// client loses the hold the stream had on it
+struct StreamDropJob {
+  pub client u64;
+  pub slot u32;
+  pub id u64;
+
+  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+    imm k = sv.findClient(client);
+    if k >= sv.clients.len() {return;}
+    imm rec = sv.clientAt(k) as &mut ClientRec;
+    imm s = streamOf(rec as &ClientRec, slot, id);
+    if s as usize == 0usize {return;}
+    imm st = s as &mut StreamRec;
+    st.gone = true;
+    if st.ended {
+      freeStream(rec, usize.from(slot));
+    } else {
+      rec.client.cancel(lp, st.fetch);
+    }
+    unrefClient(rec, lp);
+  }
+}
