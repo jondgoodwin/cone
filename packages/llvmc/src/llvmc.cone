@@ -1,0 +1,84 @@
+// llvmc: LLVM's C API (LLVM-C), declared by hand, so that a Cone program can build LLVM IR, check it,
+// print it, optimise it, and have LLVM write an object file. This is the groundwork for writing the
+// compiler's code generator in Cone: the declarations cover every LLVM-C function the C compiler calls
+// (conec's genllvm/, 332 of them, with the same arguments), and a few more.
+//
+// It is a C binding, the one package that is. There is no way yet to read a C header, so each function
+// below was written from LLVM 23.1.2's headers (llvm-c/*.h) and checked against them: a function whose
+// declaration does not agree with its header fails tests/check_headers.py, and one that LLVM does not
+// export fails to link in tests/symbols.cone.
+//
+// NAMES. 'mod @c("LLVM") llvmc' makes this a C-named module: a function is called by its C name without the
+// prefix (LLVMBuildAdd is llvmc.BuildAdd, LLVMVerifyModule is llvmc.VerifyModule). A function of this
+// package whose name begins with a lower-case letter (takeMessage, moduleToString, checkModule, ...) is
+// not LLVM's; they are in text.cone, below.
+//
+// HANDLES. LLVM hands out pointers to objects it does not show. Each kind is a pointer to a type of
+// its own that nothing can look inside (@opaque, types.cone and the other files), so LLVMValueRef is
+// *llvmc.Value and LLVMTypeRef is *llvmc.Type, and passing a Value where a Type is wanted is refused (error
+// 1013), as are a Context for a Module and the rest. A null handle is null. The handles are not owned: nothing
+// is freed by itself, and a Dispose... function is called as in C.
+//
+// NUMBERS. C's 'unsigned' is u32, 'int' i32, 'unsigned long long' and 'uint64_t' u64, 'size_t' usize,
+// 'double' f64. LLVMBool is i32 (it is a C int; zero is false), not bool: LLVM answers and takes
+// an int, and a bool would be one byte of it.
+//
+// ENUMS. A C enum a function takes or answers as such is a Cone enum with the tag type u32 and
+// the enumerators' own values (the C enum's size is that of an int): TypeKind, Opcode, Linkage, Visibility,
+// UnnamedAddr, DLLStorageClass, IntPredicate, RealPredicate, AtomicOrdering, AtomicRMWBinOp,
+// VerifierFailureAction, ComdatSelectionKind, CodeGenOptLevel, RelocMode, CodeModel, CodeGenFileType,
+// DWARFSourceLanguage and DWARFEmissionKind. A variant is spelled as the enumerator without LLVM, so
+// that the C name is the Cone name: LLVMIntEQ is IntPredicate.IntEQ, LLVMStructTypeKind is
+// TypeKind.StructTypeKind. They cross as C's enums do (by value, as one int), and compare with ==, so
+// 'GetTypeKind(t) == TypeKind.StructTypeKind' and a match both read as the C switch does. The reason for an enum
+// rather than i32 constants is that a Linkage is then refused where an IntPredicate is wanted. Each
+// enum carries a comment naming its header lines, and each value is what LLVM 23.1.2's header gives it (a C
+// program compiled against the header printed them). A C enum no declared function takes or answers is not
+// declared (ValueKind and the rest of Core.h's enums; add one when a function needs it).
+// Two exceptions are u32 constants, not enums, because the C function takes an 'unsigned': the calling
+// conventions (FastCallConv, ...; SetFunctionCallConv takes the number) with the attribute indices
+// (AttributeReturnIndex, AttributeFunctionIndex), and DIFlags (DIFlagPublic, ...), a set of bits that are
+// combined with | and whose values are not all different. A Cone enum holds only the values it lists, so a
+// future LLVM that adds an enumerator needs a new line here: this package is for LLVM 23.1.
+//
+// STRINGS. A 'const char *' LLVM only reads is a cstr (a literal is one: llvmc.AddFunction(m, "add", t)).
+// Where it is followed by its own length (the pair LLVM does not promise a NUL after) it is a *u8, and
+// bytesOf("text") makes one from a literal. A 'char *' LLVM made, which the caller must free with
+// DisposeMessage (PrintModuleToString, VerifyModule's message, GetDefaultTargetTriple, ...), is a *u8 as C
+// has it, and takeMessage(p) copies it into a String and disposes it. A 'const char *' LLVM keeps
+// (GetTarget, GetSection, GetBufferStart, ...) is a *u8 too, null when there is none, and copyText(p) copies it.
+// An error from LLVMErrorRef is read with errorMessage. In text.cone, with the common whole jobs
+// done in one call (moduleToString, valueToString, typeToString, checkModule, defaultTargetTriple,
+// targetFromTriple, emitToFile); they are inline, so a program that uses them imports collections for String.
+//
+// OUT-PARAMETERS are pointers, as C has them: a 'char **' is **u8 and an 'LLVMTargetRef *' is **Target, and a
+// call passes the address of a variable (&message). An array LLVM reads or fills ('LLVMTypeRef *') is a **Type, and a
+// call passes the address of its first element (&params[0]).
+//
+// INITIALISERS. The five LLVMInitializeAll... functions are not symbols of any library (they are 'static
+// inline' in Target.h and expand a list the LLVM build writes). They are Cone functions here, in target.cone,
+// calling the per-target initialisers for X86, WebAssembly and SPIRV, the targets the compiler build links on
+// Windows (and the ones its CLAUDE.md names for Linux). Call them before asking for a target.
+//
+// LINKING. The program links LLVM's C library, the DLL on Windows with its import library: congo.toml
+// names LLVM-C and looks for it in C:/LLVM/23/lib, the folder the compiler's own build is pointed at
+// (-DLLVM_DIR=C:\LLVM\23\lib\cmake\llvm), and copies LLVM-C.dll from C:/LLVM/23/bin beside every program
+// (the 'runtime' list; the DLL is found through [link] paths first). LLVM installed elsewhere: put its lib
+// folder on LIB and its bin folder on PATH, where the linker and Congo look next. On Linux it links libLLVM
+// (the shared library the Linux build can use) from /usr/lib/llvm-23/lib (apt.llvm.org's llvm-23-dev); the
+// loader finds it among the system's libraries. The tests run under Congo with no Visual Studio
+// environment of the caller's.
+//
+// LEFT OUT. What the compiler does not use and nothing here needed: most of Core.h beyond the builder
+// calls above (the other value subclasses' casts, the rest of the constants, aliases, ifuncs, operand
+// bundles, inline assembly, named metadata, module flags, diagnostics, the old typed-pointer calls), the
+// whole of BitReader.h, IRReader.h, Linker.h, Object.h, Disassembler.h, Remarks.h, lto.h, Orc.h, LLJIT.h and
+// ExecutionEngine.h (but LinkInMCJIT, which a JIT user calls), and everything in Target.h, TargetMachine.h,
+// DebugInfo.h and PassBuilder.h beyond the functions the compiler calls and a few that complete
+// them. Core.h's LLVMValueKind, LLVMDiagnosticSeverity and the other enums no declared function takes are
+// not declared. The old pass managers (Transforms/*.h other than PassBuilder.h) are gone from LLVM 23.
+
+mod @c("LLVM") llvmc;
+
+import core use Option, Result;
+import collections use *;

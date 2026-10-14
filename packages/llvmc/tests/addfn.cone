@@ -1,0 +1,71 @@
+// Build 'int add(int a, int b) { return a + b; }' through the declarations: a context, a module, the
+// function type, the function, a block, the builder; name the parameters; verify the module (it is
+// well formed); print its IR and check the text; read the pieces back (the type kinds, the width, the
+// parameter count, the opcode of the instruction before the terminator, the linkage).
+
+mod addfn;
+
+import stdio use *;
+import collections use *;
+import llvmc;
+
+fn expect(ok bool, label &str) {
+  if not ok { print <- "FAILED: ", label, "\n"; }
+}
+
+fn main() i32 {
+  imm ctx = llvmc.ContextCreate();
+  imm m = llvmc.ModuleCreateWithNameInContext("addmod", ctx);
+  imm i32t = llvmc.Int32TypeInContext(ctx);
+
+  mut params Array[*llvmc.Type, 2] = [i32t, i32t];
+  imm fty = llvmc.FunctionType(i32t, &params[0], 2u32, 0i32);
+  imm f = llvmc.AddFunction(m, "add", fty);
+  imm a = llvmc.GetParam(f, 0u32);
+  imm b = llvmc.GetParam(f, 1u32);
+  llvmc.SetValueName2(a, llvmc.bytesOf("a"), 1usize);
+  llvmc.SetValueName2(b, llvmc.bytesOf("b"), 1usize);
+
+  imm entry = llvmc.AppendBasicBlockInContext(ctx, f, "entry");
+  imm builder = llvmc.CreateBuilderInContext(ctx);
+  llvmc.PositionBuilderAtEnd(builder, entry);
+  imm sum = llvmc.BuildAdd(builder, a, b, "sum");
+  imm ret = llvmc.BuildRet(builder, sum);
+
+  // Verified: the module is well formed
+  match llvmc.checkModule(m) {
+    case is None { print <- "verifies\n"; }
+    case imm why Some { print <- "does not verify: ", why.view(), "\n"; }
+  }
+
+  // The IR, whole
+  imm text = llvmc.moduleToString(m);
+  print <- text.view();
+
+  // What the handles read back
+  expect(llvmc.GetTypeKind(i32t) == llvmc.TypeKind.IntegerTypeKind, "i32 is an integer type");
+  expect(llvmc.GetTypeKind(fty) == llvmc.TypeKind.FunctionTypeKind, "the function type is a function type");
+  expect(llvmc.GetTypeKind(llvmc.TypeOf(sum)) == llvmc.TypeKind.IntegerTypeKind, "the sum is an integer");
+  expect(llvmc.GetIntTypeWidth(i32t) == 32u32, "i32 is 32 bits wide");
+  expect(llvmc.CountParams(f) == 2u32, "two parameters");
+  expect(llvmc.CountParamTypes(fty) == 2u32, "two parameter types");
+  expect(llvmc.GetInstructionOpcode(sum) == llvmc.Opcode.Add, "the sum is an add");
+  expect(llvmc.GetInstructionOpcode(ret) == llvmc.Opcode.Ret, "the terminator is a ret");
+  expect(llvmc.GetLinkage(f) == llvmc.Linkage.ExternalLinkage, "external linkage");
+  expect(llvmc.IsDeclaration(f) == 0i32, "the function has a body");
+  expect(llvmc.CountBasicBlocks(f) == 1u32, "one block");
+  expect(llvmc.GetNumOperands(sum) == 2i32, "an add has two operands");
+  expect(llvmc.GetOperand(sum, 0u32) == a, "its first operand is a");
+  expect(llvmc.IsAInstruction(sum) != null, "the sum is an instruction");
+  expect(llvmc.IsAConstantInt(sum) == null, "the sum is no constant int");
+  expect(llvmc.IsAFunction(f) != null, "the function is a function");
+  expect(llvmc.IsAArgument(a) != null, "a is an argument");
+  expect(llvmc.GetNamedFunction(m, "add") == f, "the function is found by name");
+  expect(llvmc.GetNamedFunction(m, "sub") == null, "no function named sub");
+  print <- "read back\n";
+
+  llvmc.DisposeBuilder(builder);
+  llvmc.DisposeModule(m);
+  llvmc.ContextDispose(ctx);
+  0i32;
+}
