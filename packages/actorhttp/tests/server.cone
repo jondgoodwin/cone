@@ -7,8 +7,9 @@
 // length but no body; a 204; an error status; an exchange dropped without an
 // answer (500); a streamed chunked response; a streamed response of a
 // declared length; a large response (600,000 bytes, checked byte by byte); a
-// second request on the connection of the first (kept alive); a streamed
-// response of 40 writes of 64 KiB, each awaited; two hundred requests
+// second request on the connection of the first (kept alive); a POST of
+// 60,000 bytes of three-byte characters (a piece the client sends ends inside
+// one); a streamed response of 40 writes of 64 KiB, each awaited; two hundred requests
 // from four actors at once; a server with a small body limit (413 for a body
 // over it, 200 under it); a server with room for two waiting requests and no
 // actor to take them (the other two requests get 503, the two that waited
@@ -80,6 +81,10 @@ actor Handler {
       t.appendUInt(u64.from(ex.request.body.len()));
       t.append("|");
       t.append(ex.request.body.view());
+      ex.text(200u16, t.view());
+    } elif p == "/count" {
+      mut t = String.empty();
+      t.appendUInt(u64.from(ex.request.body.len()));
       ex.text(200u16, t.view());
     } elif p == "/head" {
       ex.respond(ResponseHead.make(200u16), String.from("hello"));
@@ -231,6 +236,29 @@ actor Prober {
     post.headers.add("Content-Type", "text/plain");
     post.body = String.from("hello world");
     say2("post", await client.send(post));
+
+    // A body of three-byte characters, longer than a piece the client sends: a
+    // piece ends inside a character
+    mut euros = Request.make("POST", url(port, "/count").view());
+    euros.body = String.empty();
+    mut e = 0usize;
+    while e < 20000usize {
+      euros.body.appendByte(0xE2u8);
+      euros.body.appendByte(0x82u8);
+      euros.body.appendByte(0xACu8);
+      e = e + 1usize;
+    }
+    imm euros2 = euros.body.copy();
+    say2("euros posted, bytes", await client.send(euros));
+    // ...and on a connection of the actor's own, whose request body the service thread cuts into pieces
+    imm cr = await actorhttp.connect("127.0.0.1", port);
+    match cr {
+      case imm c Ok {
+        say2("euros posted on a connection, bytes",
+          await c.request(RequestHead.make("POST", "/count", "127.0.0.1"), euros2));
+      }
+      case imm er Error {printStr("connect failed\n");}
+    }
 
     imm head = await client.send(Request.make("HEAD", url(port, "/head").view()));
     match &head {
@@ -409,7 +437,7 @@ fn main() i32 {
     imm busy = new Acceptor(Server.none(), ftx.clone());
     busy.open(cfg, ptx.clone());
     imm bport = take[u16](&mut prx, 0u16);
-    // Four requests, each from a client of its own, given half a second
+    // Four requests, each from a client of its own, given a second and a half
     mut stx Sender[u64];
     mut srx Receiver[u64];
     stx, srx = Channel[u64].make();
@@ -417,7 +445,7 @@ fn main() i32 {
     mut s = 0u64;
     while s < 4u64 {
       imm one = new Single(Client.standard());
-      one.run(bport, 500i64, stx.clone());
+      one.run(bport, 1500i64, stx.clone());
       singles.push(one);
       s = s + 1u64;
     }
@@ -436,7 +464,7 @@ fn main() i32 {
     say("flood: abandoned by the client:", timedCount);
     say("flood: anything else:", otherCount);
     // Let the server see the two abandoned connections go
-    thread.sleep(Duration.fromMillis(300i64));
+    thread.sleep(Duration.fromMillis(500i64));
     // Only now does an actor ask for requests: the two that waited were
     // abandoned by their clients, so it gets the next new one
     busy.serve(etx.clone());
