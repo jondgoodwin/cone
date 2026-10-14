@@ -1,0 +1,286 @@
+// Morph targets built from rules, and the test head they are built on.
+//
+// Worked out here:
+// 1. The head's size: crown at y = 0.125, the neck's end at -0.23, the ears' outer
+//    edges at x = +-0.084 (0.0775 + the ear's 0.0065), the nose tip in front of
+//    the face by about 0.015 from the face's plane at z = -0.0985..-0.12.
+// 2. Landmarks: the eyes' centres at x = +-0.031 (0.062 apart: the face scale),
+//    y = 0.02, z = -0.0702; the mouth line on a grid row.
+// 3. Symmetry: the lathe has a vertex at the front and the grid is built
+//    symmetrically, so vertex (i, j) and (cols - i, j) are mirror images, and
+//    the L and R targets of a unit mirror too: the displacement's x flips,
+//    y and z agree.
+// 4. AU12 (lip corner puller): at the right mouth corner the corner rule moves
+//    by (0.22, 0.22, 0.07) face scales = (13.6, 13.6, 4.3) mm, with the lip
+//    rules' share on top; the corner goes out (+x), up (+y) and back (+z).
+// 5. Gates: AU10's upper lip rule never acts below the mouth line (the gate is
+//    1.9 mm soft), and no vertex of AU16 (lower lip depressor) moves in the
+//    upper lip.
+// 6. The lids turn about the eyeball's centre: a vertex of AU43 keeps its
+//    distance to the centre, and the upper lid's edge turns by exactly the
+//    spec's upperClosing (0.505 rad) at full weight; both lids' edges end at
+//    the closing line, within 1 mm of each other, measured on the vertices.
+// 7. Any face: the same table on the head scaled 1.3 times (positions, landmarks,
+//    scale) moves the same vertices by 1.3 times as much.
+// 8. A rule naming a landmark the spec lacks is dropped; a unit with no rule
+//    left makes no target.
+
+mod targets;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import mesh use Mesh;
+import facerig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+const ROWS = 100usize;
+const COLS = 128usize;
+
+fn targetOf(units &List[UnitDef], t &FaceTargets, au u32, side u32) usize {
+  usize.from(*t.unitTarget[usize.from(findUnit(units, au, side))]);
+}
+
+// The vertex nearest to a point
+fn nearest(m &Mesh, p Vec3) usize {
+  mut best = 1000000.;
+  mut at = 0usize;
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm d = (*m.positions[v]).distanceSquared(p);
+    if d < best { best = d; at = v; }
+    v = v + 1usize;
+  }
+  at;
+}
+
+fn testHead(h &TestHead) {
+  imm b = h.mesh.bounds();
+  near(b.max.y, 0.125, 0.0001, "the crown is at 0.125");
+  near(b.min.y, -0.23, 0.0001, "the neck ends at -0.23");
+  near(b.max.x, 0.084, 0.001, "the ears' outer edge");
+  near(b.min.x, -0.084, 0.001, "and the left's");
+  expect(b.min.z < -0.11 and b.min.z > -0.125, "the nose tip is 0.11 to 0.125 in front of the middle");
+  expectUInt(u64.from(h.mesh.positions.len()), u64.from((ROWS + 1usize) * (COLS + 1usize) + 2usize * 197usize), "vertex count: the grid and two ears");
+  expect(h.mesh.normals.len() == h.mesh.positions.len(), "a normal for every vertex");
+  expect(h.mesh.uvs.len() == h.mesh.positions.len(), "and a uv");
+  near(h.spec.point("eyeCenterR").x - h.spec.point("eyeCenterL").x, 0.062, 0.0001, "the eyes are 0.062 apart");
+  near(h.spec.point("eyeCenterR").y, 0.02, 0.0001, "at 0.02");
+  near(h.spec.scale, 0.062, 0.000001, "the face scale is the same");
+  expect(h.spec.has("mouthCornerR") and h.spec.has("lipContact") and h.spec.has("chinTip"), "the mouth's landmarks");
+  expectInt(i64.from(h.spec.index("nowhere")), -1i64, "a landmark that is not there");
+  // The mouth line is on a grid row
+  imm dy = 0.355 / f32.from(ROWS);
+  imm rowF = (0.125 - h.grooveY) / dy;
+  near(rowF, libc.floorf(rowF + 0.5), 0.0001, "the mouth line is on a grid row");
+  expect(h.spec.point("lipContact").y == h.grooveY, "and lipContact is on it");
+  // Surface landmarks lie on the surface
+  imm corner = h.spec.point("mouthCornerR");
+  near((*h.mesh.positions[nearest(&h.mesh, corner)]).distance(corner), 0., 0.0001, "the mouth corner is a vertex");
+}
+
+fn testWinding(h &TestHead) {
+  // Triangles of the front of the head face the way the head's surface does: away from the axis
+  mut out = 0usize;
+  mut count = 0usize;
+  mut t = 0usize;
+  while t < h.mesh.triangleCount() {
+    imm a = usize.from(*h.mesh.indices[3usize * t]);
+    imm centre = *h.mesh.positions[a];
+    if centre.z < -0.05 and centre.y > -0.1 and centre.y < 0.1 and absf(centre.x) < 0.06 {
+      imm n = h.mesh.triangleNormal(t);
+      if n.z < 0. { out = out + 1usize; }
+      count = count + 1usize;
+    }
+    t = t + 1usize;
+  }
+  expect(count > 500usize, "there are triangles on the face to look at");
+  // (the rest are the steep walls of the eye openings and the mouth slot, which face across or into them)
+  expect(f32.from(out) / f32.from(count) > 0.88, "nearly every one faces forward, out of the head");
+}
+
+fn testSymmetry(h &TestHead) {
+  mut worst = 0.;
+  mut j = 0usize;
+  while j <= ROWS {
+    mut i = 0usize;
+    while i <= COLS {
+      imm a = *h.mesh.positions[j * (COLS + 1usize) + i];
+      imm b = *h.mesh.positions[j * (COLS + 1usize) + (COLS - i)];
+      imm d = absf(a.x + b.x) + absf(a.y - b.y) + absf(a.z - b.z);
+      if d > worst { worst = d; }
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  near(worst, 0., 0.00001, "the skin is mirror-symmetric");
+}
+
+fn testMirrorTargets(h &TestHead, units &List[UnitDef], t &FaceTargets) {
+  imm aus = [AU_LIP_CORNER_PULLER, AU_BROW_LOWERER, AU_NOSE_WRINKLER, AU_CHEEK_RAISER, AU_EYES_CLOSED, AU_LIP_PUCKER];
+  mut worst = 0.;
+  mut a = 0usize;
+  while a < 6usize {
+    imm tr = targetOf(units, t, aus[a], SIDE_RIGHT);
+    imm tl = targetOf(units, t, aus[a], SIDE_LEFT);
+    mut j = 0usize;
+    while j <= ROWS {
+      mut i = 0usize;
+      while i <= COLS {
+        imm vr = j * (COLS + 1usize) + i;
+        imm vl = j * (COLS + 1usize) + (COLS - i);
+        imm dr = t.displacement(tr, vr);
+        imm dl = t.displacement(tl, vl);
+        imm d = absf(dr.x + dl.x) + absf(dr.y - dl.y) + absf(dr.z - dl.z);
+        if d > worst { worst = d; }
+        i = i + 1usize;
+      }
+      j = j + 1usize;
+    }
+    a = a + 1usize;
+  }
+  near(worst, 0., 0.00002, "the left unit's target mirrors the right's, vertex for vertex");
+}
+
+fn testAu12(h &TestHead, units &List[UnitDef], t &FaceTargets) {
+  imm tr = targetOf(units, t, AU_LIP_CORNER_PULLER, SIDE_RIGHT);
+  imm v = nearest(&h.mesh, h.spec.point("mouthCornerR"));
+  imm d = t.displacement(tr, v);
+  expect(d.x > 0.010 and d.x < 0.022, "the right corner goes out by 10 to 22 mm");
+  expect(d.y > 0.010 and d.y < 0.022, "up by 10 to 22 mm");
+  expect(d.z > 0.002 and d.z < 0.010, "and back by 2 to 10 mm");
+  // Nothing on the left half of the face moves much (the lips' rules reach a little across)
+  imm vl = nearest(&h.mesh, h.spec.point("mouthCornerL"));
+  imm dl = t.displacement(tr, vl);
+  expect(dl.length() < 0.001, "the left corner is not moved by the right unit");
+  expect(t.maxMove[tr] < 0.03, "no vertex moves more than 3 cm");
+}
+
+fn testGates(h &TestHead, units &List[UnitDef], t &FaceTargets) {
+  imm t10 = targetOf(units, t, AU_UPPER_LIP_RAISER, SIDE_RIGHT);
+  imm yg = h.grooveY;
+  mut movedBelow = 0.;
+  mut k = usize.from(*t.start[t10]);
+  while k < usize.from(*t.start[t10 + 1usize]) {
+    imm p = *h.mesh.positions[usize.from(*t.vertex[k])];
+    // the upper lip rule only: below the mouth line and above the nose wing's reach
+    if p.y < yg - 0.006 and p.y > -0.09 { if (*t.dPos[k]).length() > movedBelow { movedBelow = (*t.dPos[k]).length(); } }
+    k = k + 1usize;
+  }
+  near(movedBelow, 0., 0.0002, "AU10 moves nothing below the mouth line");
+  imm t16 = targetOf(units, t, AU_LOWER_LIP_DEPRESSOR, SIDE_RIGHT);
+  mut movedAbove = 0.;
+  k = usize.from(*t.start[t16]);
+  while k < usize.from(*t.start[t16 + 1usize]) {
+    imm p = *h.mesh.positions[usize.from(*t.vertex[k])];
+    if p.y > yg + 0.006 { if (*t.dPos[k]).length() > movedAbove { movedAbove = (*t.dPos[k]).length(); } }
+    k = k + 1usize;
+  }
+  near(movedAbove, 0., 0.0002, "AU16 moves nothing above the lip line");
+}
+
+fn testLids(h &TestHead, units &List[UnitDef], t &FaceTargets) {
+  imm t43 = targetOf(units, t, AU_EYES_CLOSED, SIDE_RIGHT);
+  imm c = h.spec.point("eyeCenterR");
+  // A vertex of the upper lid, at its edge
+  imm vu = nearest(&h.mesh, h.spec.point("lidUpperR"));
+  imm pu = *h.mesh.positions[vu];
+  imm du = t.displacement(t43, vu);
+  near((pu + du - c).length(), (pu - c).length(), 0.00002, "the lid turns about the eyeball: its distance to the centre is kept");
+  // The angle it turns by
+  imm before = pu - c;
+  imm after = pu + du - c;
+  near(before.angle(after), -h.spec.upperClosing(), 0.02, "by the upper lid's closing turn");
+  expect(du.y < 0., "downwards");
+  imm vl = nearest(&h.mesh, h.spec.point("lidLowerR"));
+  imm dl = t.displacement(t43, vl);
+  expect(dl.y > 0., "the lower lid goes up");
+  // Both edges end on the closing line: compare their elevations after
+  imm pl = *h.mesh.positions[vl];
+  imm eu = atan2((pu + du).y - c.y, (c.z - (pu + du).z));
+  imm el = atan2((pl + dl).y - c.y, (c.z - (pl + dl).z));
+  near(eu, el, 0.07, "the two lids' edges meet (to 4 degrees)");
+  near(eu, h.spec.closingLine, 0.07, "on the closing line");
+}
+
+fn testScaled(h &TestHead, units &List[UnitDef], t &FaceTargets) {
+  // The same head 1.3 times as large, with its spec scaled: the same table gives the same shapes, 1.3 times as big
+  mut mesh2 = Mesh.empty();
+  mut v = 0usize;
+  while v < h.mesh.positions.len() {
+    mesh2.positions.push(*h.mesh.positions[v] * 1.3);
+    mesh2.normals.push(*h.mesh.normals[v]);
+    v = v + 1usize;
+  }
+  mut k = 0usize;
+  while k < h.mesh.indices.len() { mesh2.indices.push(*h.mesh.indices[k]); k = k + 1usize; }
+  mut spec2 = FaceSpec.empty();
+  k = 0usize;
+  while k < h.spec.names.len() { spec2.add(h.spec.names[k].view(), *h.spec.points[k] * 1.3); k = k + 1usize; }
+  spec2.scale = h.spec.scale * 1.3;
+  spec2.eyeRadius = h.spec.eyeRadius * 1.3;
+  spec2.upperLidEdge = h.spec.upperLidEdge;
+  spec2.lowerLidEdge = h.spec.lowerLidEdge;
+  spec2.closingLine = h.spec.closingLine;
+  spec2.jawPivot = h.spec.jawPivot * 1.3;
+  imm t2 = buildTargets(&mesh2, &spec2, units);
+  expectUInt(u64.from(t2.count()), u64.from(t.count()), "the same number of targets");
+  mut worst = 0.;
+  mut shown = 0usize;
+  imm aus = [AU_LIP_CORNER_PULLER, AU_BROW_LOWERER, AU_EYES_CLOSED, AU_CHIN_RAISER];
+  mut a = 0usize;
+  while a < 4usize {
+    imm tt = targetOf(units, t, aus[a], SIDE_RIGHT);
+    mut e = usize.from(*t.start[tt]);
+    while e < usize.from(*t.start[tt + 1usize]) {
+      imm vtx = usize.from(*t.vertex[e]);
+      imm d1 = *t.dPos[e] * 1.3;
+      imm d2 = t2.displacement(tt, vtx);
+      imm err = (d1 - d2).length();
+      if err > worst { worst = err; }
+      shown = shown + 1usize;
+      e = e + 1usize;
+    }
+    a = a + 1usize;
+  }
+  expect(shown > 500usize, "many vertices compared");
+  near(worst, 0., 0.00005, "every displacement is 1.3 times as large on the larger head");
+}
+
+fn testMissingLandmarks(h &TestHead, units &List[UnitDef]) {
+  // A face with eyes only: the eyelid units get targets, the mouth's do not
+  mut spec = FaceSpec.empty();
+  imm names = ["eyeCenterR", "eyeCenterL", "lidUpperR", "lidUpperL", "lidLowerR", "lidLowerL"];
+  mut k = 0usize;
+  while k < 6usize { spec.add(names[k], h.spec.point(names[k])); k = k + 1usize; }
+  spec.upperLidEdge = h.spec.upperLidEdge;
+  spec.lowerLidEdge = h.spec.lowerLidEdge;
+  spec.closingLine = h.spec.closingLine;
+  imm t = buildTargets(&h.mesh, &spec, units);
+  expect(*t.unitTarget[usize.from(findUnit(units, AU_EYES_CLOSED, SIDE_RIGHT))] >= 0i32, "AU43 still has a target");
+  expectInt(i64.from(*t.unitTarget[usize.from(findUnit(units, AU_LIP_CORNER_PULLER, SIDE_RIGHT))]), -1i64, "AU12 has none: its landmarks are missing");
+  expectInt(i64.from(*t.unitTarget[usize.from(findUnit(units, AU_JAW_DROP, SIDE_BOTH))]), -1i64, "the jaw unit has no target");
+  // the brow lowerer, cheek raiser, lid tightener, eyes closed, lid raiser and the two following units: each side's seven
+  expectUInt(u64.from(t.count()), 14u64, "the units that have a rule left: seven a side");
+}
+
+fn main() i32 {
+  imm h = makeTestHead(ROWS, COLS);
+  imm units = standardUnits();
+  imm t = buildTargets(&h.mesh, &h.spec, &units);
+  testHead(&h);
+  testWinding(&h);
+  testSymmetry(&h);
+  testMirrorTargets(&h, &units, &t);
+  testAu12(&h, &units, &t);
+  testGates(&h, &units, &t);
+  testLids(&h, &units, &t);
+  testScaled(&h, &units, &t);
+  testMissingLandmarks(&h, &units);
+  done();
+}
