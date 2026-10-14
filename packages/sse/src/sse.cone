@@ -1,0 +1,348 @@
+// The sse package: server-sent events (the WHATWG HTML standard, section
+// 9.2, "text/event-stream"), as bytes, sans-IO: a Reader is fed the bytes of
+// an event stream as they arrive, in pieces of any size, and gives the
+// events they hold; an Event writes itself as the bytes a server sends. It
+// opens no connection and reads no clock: httpclient's and actorhttp's
+// responses carry the bytes in, and actorhttp's server writes them out.
+//
+//   mod watch;
+//   import collections use List;
+//   import sse use Event, Reader;
+//
+//   fn main() {
+//     mut reader = Reader.make();
+//     mut events = List[Event].empty();
+//     // for each piece of the response body that arrives:
+//     imm piece = "event: tick\ndata: 1\n\n: a comment\nid: 7\ndata: two\ndata: lines\n\n";
+//     reader.feed(piece, &mut events);
+//     // events[0].name "tick", .data "1"; events[1].name "" (a message), .data "two\nlines", .id "7"
+//     imm text = Event.named("tick", "3").encode();     // "event: tick\ndata: 3\n\n"
+//   }
+//
+//   Event.message(data)  Event.named(name, data)  e.name e.data e.id e.retry   (EVENTS)
+//     e.withId(id)  e.withRetry(ms)  e.kind()  e.encode()  e.encodeInto(out)
+//   comment(text)                                                      (COMMENTS)
+//   Reader.make()  Reader.withLimit(bytes)  r.feed(bytes, out)         (READING)
+//     r.lastId()  r.retryMillis()  r.overflowed()  r.pending()
+//
+// EVENTS. An event is what the standard dispatches: its type ('name', empty
+// for the default type "message"), its data (the 'data' lines joined with a
+// line feed, the last one's line feed dropped), and the stream's last event id
+// as it stood ('id', empty before any was seen). 'retry' is the reconnection
+// time in milliseconds this event's block set, or -1 when it set none; the
+// stream's current value is the Reader's 'retryMillis()'.
+//
+// READING. The Reader follows the standard's parsing rules: a line ends in a
+// line feed, a carriage return or both (a CR at the end of one piece and the
+// LF at the start of the next are one ending); a UTF-8 byte order mark at the
+// start of the stream is dropped; a line starting with a colon is a comment
+// and is ignored; a line is a field name, then a colon and a value (one space
+// after the colon is dropped), or a name alone with an empty value; the fields
+// are 'event', 'data', 'id' (ignored if its value holds a NUL) and 'retry'
+// (ignored unless all digits); any other field is ignored; and an empty line
+// dispatches the event gathered, unless no 'data' line was seen (the block's
+// event type is then forgotten, and 'id' and 'retry' have still taken effect).
+// A stream that ends in the middle of an event discards it, as the standard
+// says: the Reader has nothing to do at the end. Bytes are kept as they
+// arrived: nothing checks they are UTF-8 (the standard decodes with
+// replacement characters; here the program that wants text decides).
+//
+// A BOUND (invariant I9). A Reader holds one line and the data gathered for
+// one event; past 'limit' bytes of both (1 MiB by default, 'withLimit') it
+// stops, 'overflowed()' says so, and it takes no more: a hostile stream costs
+// that much memory, never more. 'pending()' is the bytes it holds now.
+//
+// WRITING. 'encode' writes the event as a server sends it: an 'event' line
+// when the name is not empty, an 'id' line when there is one, a 'retry' line
+// when 'retry' is not -1, a 'data' line for each line of the data (split at
+// LF, CR or CRLF; an empty data is one empty 'data' line, so that it
+// dispatches), then the empty line. A name or an id holding a CR or an LF
+// would end its line and let the program that wrote it inject fields: they
+// are dropped from it (and an id's NULs too). 'comment(text)' is a comment
+// block, one ':' line for each line of text and an empty line after: the
+// heartbeat a server sends to keep a connection from idling out.
+//
+// Not here: the client that reconnects with a Last-Event-ID (the program
+// reads 'lastId()' and 'retryMillis()' and decides); UTF-8 checking.
+
+mod sse;
+
+import collections use List, String;
+
+const lf = 10u8;
+const cr = 13u8;
+
+// What a stream holds by default
+pub const defaultLimit = 1048576usize;
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// An event (see the package's header, EVENTS)
+pub struct Event {
+  pub name String;      // the event type; empty is "message"
+  pub data String;
+  pub id String;        // the stream's last event id when it was dispatched; empty if none
+  pub retry i64;        // the reconnection time this event's block set, in milliseconds; -1 for none
+
+  // An event of the default type
+  pub fn message(data &str) Event {
+    new Event(String.empty(), String.from(data), String.empty(), -1i64);
+  }
+
+  // An event of a type
+  pub fn named(name &str, data &str) Event {
+    new Event(String.from(name), String.from(data), String.empty(), -1i64);
+  }
+
+  // The same with an id
+  pub fn withId(self, id &str) Event {
+    mut e = self;
+    e.id = String.from(id);
+    e;
+  }
+
+  // The same telling the client to reconnect after ms milliseconds
+  pub fn withRetry(self, ms i64) Event {
+    mut e = self;
+    e.retry = ms;
+    e;
+  }
+
+  // Its type, "message" for the default
+  pub fn kind(self &) &str {
+    if name.len() == 0usize {"message";} else {name.view();};
+  }
+
+  // The bytes a server sends for it
+  pub fn encode(self &) String {
+    mut out = String.empty();
+    self.encodeInto(&mut out);
+    out;
+  }
+
+  // The same, appended to out
+  pub fn encodeInto(self &, out &mut String) {
+    if name.len() > 0usize {
+      imm clean = cleaned(name.view(), false);
+      out.append("event: ");
+      out.append(clean.view());
+      out.appendByte(lf);
+    }
+    if id.len() > 0usize {
+      imm clean = cleaned(id.view(), true);
+      out.append("id: ");
+      out.append(clean.view());
+      out.appendByte(lf);
+    }
+    if retry >= 0i64 {
+      out.append("retry: ");
+      out.appendUInt(u64.from(retry));
+      out.appendByte(lf);
+    }
+    imm lines = linesOf("data", data.view());
+    out.append(lines.view());
+    out.appendByte(lf);
+  }
+}
+
+// text without its CRs and LFs (and NULs, for an id)
+fn cleaned(text &Array[u8], dropNul bool) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < text.len {
+    imm c = text[i];
+    if c != lf and c != cr and not (dropNul and c == 0u8) {out.appendByte(c);}
+    i = i + 1usize;
+  }
+  out;
+}
+
+// One 'field: line' line for each line of text (at least one)
+fn linesOf(field &str, text &Array[u8]) String {
+  mut out = String.empty();
+  mut start = 0usize;
+  mut i = 0usize;
+  while true {
+    if i >= text.len or text[i] == lf or text[i] == cr {
+      out.append(field);
+      out.appendByte(':');
+      if i > start {
+        out.appendByte(' ');
+        out.appendBytes(&text[start ..< i]);
+      }
+      out.appendByte(lf);
+      if i >= text.len {break;}
+      if text[i] == cr and i + 1usize < text.len and text[i + 1usize] == lf {i = i + 1usize;}
+      i = i + 1usize;
+      start = i;
+    } else {
+      i = i + 1usize;
+    }
+  }
+  out;
+}
+
+// A comment block (see the package's header, COMMENTS): ':' lines and an empty line
+pub fn comment(text &str) String {
+  mut out = linesOf("", text);
+  out.appendByte(lf);
+  out;
+}
+
+// ---------------------------------------------------------------------------
+// The Reader
+// ---------------------------------------------------------------------------
+
+// Reads an event stream a piece at a time (see the package's header, READING)
+pub struct Reader {
+  line String;           // the line being read
+  eventType String;      // the block's event field
+  dataBuf String;        // the block's data lines, each followed by an LF
+  dataSet bool;          // a data line was seen in the block
+  seenId String;         // the stream's last event id
+  blockRetry i64;        // the block's retry, or -1
+  reconnect i64;         // the stream's reconnection time, or -1
+  afterCr bool;          // the last byte was a CR: an LF now is the same line ending
+  first bool;            // the first line has not been read: a byte order mark may start it
+  limit usize;
+  over bool;
+
+  // A Reader with the default bound
+  pub fn make() Reader {Reader.withLimit(defaultLimit);}
+
+  // A Reader holding at most limit bytes of line and gathered data
+  pub fn withLimit(limit usize) Reader {
+    new Reader(String.empty(), String.empty(), String.empty(), false, String.empty(), -1i64, -1i64, false, true,
+      limit, false);
+  }
+
+  // The id of the last event the stream set (empty if none)
+  pub fn lastId(self &) &str {seenId.view();}
+
+  // The reconnection time the stream set, in milliseconds; -1 if it set none
+  pub fn retryMillis(self &) i64 {reconnect;}
+
+  // Whether the stream passed the bound: the Reader takes no more
+  pub fn overflowed(self &) bool {over;}
+
+  // The bytes held now: a partial line and the data gathered
+  pub fn pending(self &) usize {line.len() + dataBuf.len();}
+
+  // Take the next bytes of the stream; the events they complete are appended to out
+  pub fn feed(self &mut, bytes &Array[u8], out &mut List[Event]) {
+    mut i = 0usize;
+    while i < bytes.len {
+      if over {return;}
+      imm c = bytes[i];
+      i = i + 1usize;
+      if afterCr {
+        afterCr = false;
+        if c == lf {continue;}
+      }
+      if c == cr or c == lf {
+        afterCr = c == cr;
+        self.endLine(out);
+      } else {
+        line.appendByte(c);
+        if line.len() + dataBuf.len() > limit {over = true;}
+      }
+    }
+  }
+
+  // A line is whole
+  fn endLine(self &mut, out &mut List[Event]) {
+    // The line is moved out so that the fields can be changed while it is read
+    mut cur = String.empty();
+    cur <=> line;
+    imm raw = cur.view() as &Array[u8];
+    mut text = raw;
+    if first {
+      first = false;
+      if text.len >= 3usize and text[0usize] == 0xEFu8 and text[1usize] == 0xBBu8 and text[2usize] == 0xBFu8 {
+        text = &raw[3usize ..];
+      }
+    }
+    if text.len == 0usize {
+      self.dispatch(out);
+    } elif text[0usize] != ':' {
+      mut colon = 0usize;
+      while colon < text.len and text[colon] != ':' {colon = colon + 1usize;}
+      imm name = &text[0usize ..< colon];
+      mut value = &text[0usize ..< 0usize];
+      if colon < text.len {
+        mut v = colon + 1usize;
+        if v < text.len and text[v] == ' ' {v = v + 1usize;}
+        value = &text[v ..];
+      }
+      self.field(name, value);
+    }
+  }
+
+  fn field(self &mut, name &Array[u8], value &Array[u8]) {
+    if same(name, "data") {
+      dataBuf.appendBytes(value);
+      dataBuf.appendByte(lf);
+      dataSet = true;
+      if dataBuf.len() > limit {over = true;}
+    } elif same(name, "event") {
+      eventType.clear();
+      eventType.appendBytes(value);
+    } elif same(name, "id") {
+      mut nul = false;
+      mut k = 0usize;
+      while k < value.len {
+        if value[k] == 0u8 {nul = true;}
+        k = k + 1usize;
+      }
+      if not nul {
+        seenId.clear();
+        seenId.appendBytes(value);
+      }
+    } elif same(name, "retry") {
+      if value.len > 0usize and value.len <= 15usize {
+        mut n = 0i64;
+        mut ok = true;
+        mut k = 0usize;
+        while k < value.len {
+          if value[k] < '0' or value[k] > '9' {ok = false;}
+          else {n = n * 10i64 + i64.from(value[k] - '0');}
+          k = k + 1usize;
+        }
+        if ok {
+          blockRetry = n;
+          reconnect = n;
+        }
+      }
+    }
+  }
+
+  // An empty line: the block's event, if it had data
+  fn dispatch(self &mut, out &mut List[Event]) {
+    if dataSet {
+      mut d = String.empty();
+      d <=> dataBuf;
+      d.truncate(d.len() - 1usize);
+      mut name = String.empty();
+      name <=> eventType;
+      out.push(new Event(name, d, seenId.copy(), blockRetry));
+    }
+    eventType.clear();
+    dataBuf.clear();
+    dataSet = false;
+    blockRetry = -1i64;
+  }
+}
+
+// Whether a field name is the lower-case word
+fn same(name &Array[u8], word &str) bool {
+  imm w = word as &Array[u8];
+  if name.len != w.len {return false;}
+  mut i = 0usize;
+  while i < w.len {
+    if name[i] != w[i] {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
