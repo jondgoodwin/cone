@@ -201,8 +201,18 @@
 // fallback, invalidated by each 'mappedRange', and coherent uncached memory
 // the last. Staging is a
 // block per frame in flight, handed out from its start (a bump allocator)
-// and reset when the frame comes round; a write too big for the block
-// retires it until then and takes a bigger one. Suballocating buffers and
+// and reset when the frame comes round. A write too big for what is left
+// retires the block until then and takes one twice the size, up to 32 MiB;
+// a block of that size is not outgrown: the uploads recorded so far are
+// submitted and waited for, and the block is handed out from its start
+// again (the GPU idles the CPU for that, once per 32 MiB uploaded in one
+// frame). So a frame uploads any number of bytes through at most about
+// 64 MiB of staging memory, and 'queue.writeBuffer' splits a larger write
+// into pieces of 32 MiB. Only a texture written in one piece larger than
+// that gets a block of its own size. A block that a frame comes round to
+// using a quarter of, by an estimate of the last few frames' uploads
+// (halving each frame), is given back and made again at the estimate's size.
+// Suballocating buffers and
 // textures from larger blocks, as the Vulkan Memory Allocator (VMA) does, is
 // the refinement for when there are hundreds of them: Vulkan guarantees only
 // 4096 allocations.
@@ -210,11 +220,12 @@
 // Lifetimes. An object's finalizer destroys it once the device is idle, so
 // one dropped while a frame in flight may still use it is safe; this waits,
 // which dropping objects in a frame loop would feel. A buffer given to
-// 'queue.releaseBuffer' (WebGPU's 'buffer.destroy()') is instead retired to
-// the frame in flight, and destroyed when that frame comes round again, its
-// fence waited on: the deletion queue, for replacing what is drawn frame by
-// frame without a stall. The other objects' retiring the same way is the
-// refinement.
+// 'queue.releaseBuffer' (WebGPU's 'buffer.destroy()'), a texture given to
+// 'queue.releaseTexture' or a bind group given to 'queue.releaseBindGroup' is
+// instead retired to the frame in flight, and destroyed when that frame comes
+// round again, its fence waited on: the deletion queue, for replacing what is
+// drawn frame by frame, or giving back a whole world's, without a stall. The
+// other objects' retiring the same way is the refinement.
 //
 // Errors. Every Vulkan call that answers a VkResult is checked; a failure is
 // written to stderr with the result's name ("gpu: vkQueuePresentKHR failed:

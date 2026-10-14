@@ -1,0 +1,62 @@
+// A small deterministic random source and smooth noise for the rig's clocks.
+//
+// Everything in the rig that looks random (when a blink starts, where a
+// small saccade lands, how a brow drifts) comes from here, so a run is a
+// function of its seed: the same seed and the same calls give the same
+// face, which a test, a recorded shot and a network peer all need.
+// The generator is O'Neill's PCG hash (the RXS-M-XS output permutation over
+// a counter), the same function the noise package uses; it is repeated here
+// so this package needs no other.
+
+fn pcg(v u32) u32 {
+  imm state = v * 747796405u32 + 2891336453u32;
+  imm word = ((state >> ((state >> 28u32) + 4u32)) ^ state) * 277803737u32;
+  (word >> 22u32) ^ word;
+}
+
+pub fn fmax(a f32, b f32) f32 { if a > b { return a; } b; }
+pub fn fmin(a f32, b f32) f32 { if a < b { return a; } b; }
+
+pub struct Rng {
+  pub counter u32;
+
+  pub fn make(seed u32) Rng { new Rng(pcg(seed + 1013904223u32)); }
+
+  pub fn nextU32(self &mut) u32 {
+    counter = counter + 2654435769u32;
+    pcg(counter);
+  }
+
+  // A number in [0, 1)
+  pub fn unit(self &mut) f32 { f32.from(self.nextU32() >> 8u32) * 0.000000059604644775390625; }
+
+  pub fn range(self &mut, lo f32, hi f32) f32 { lo + (hi - lo) * self.unit(); }
+
+  // An exponential draw of the given mean
+  pub fn exponential(self &mut, mean f32) f32 {
+    imm u = 1. - self.unit();
+    -mean * libc.logf(u);
+  }
+
+  // A normal draw (Box and Muller)
+  pub fn normal(self &mut, mean f32, sd f32) f32 {
+    imm u1 = 1. - self.unit();
+    imm u2 = self.unit();
+    mean + sd * (-2. * libc.logf(u1)).sqrt() * cos(2. * pi * u2);
+  }
+
+  pub fn chance(self &mut, p f32) bool { self.unit() < p; }
+}
+
+// A smooth noise in [-1, 1] along one axis: random values at whole numbers,
+// joined by a smoothstep, so it is continuous and has no preferred rhythm
+// finer than one unit. 'x' is in cycles; 'seed' picks the noise.
+pub fn smoothNoise(x f32, seed u32) f32 {
+  imm i0 = libc.floorf(x);
+  imm f = x - i0;
+  imm k = i32.from(i0);
+  imm a = f32.from(pcg(u32.from(k) * 2246822519u32 + seed * 3266489917u32) >> 8u32) * 0.00000011920928955078125 - 1.;
+  imm b = f32.from(pcg(u32.from(k + 1) * 2246822519u32 + seed * 3266489917u32) >> 8u32) * 0.00000011920928955078125 - 1.;
+  imm s = f * f * (3. - 2. * f);
+  a + (b - a) * s;
+}

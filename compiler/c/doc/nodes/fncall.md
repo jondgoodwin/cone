@@ -519,7 +519,11 @@ every `<-` candidate agrees on (`fnCallArgAgreed`), so `x == None` types the
 `None`, and so does `list <- None`. A call among the arguments of an overload set
 is likewise expected to be the type every candidate that could take the call (the
 rest having defaults) declares at its position, when none is generic and they
-agree; any other argument is checked with no expectation as before.
+agree; any other argument is checked with no expectation as before. A receiver
+that is a construction only its place can type, `None == x`, is checked after the
+argument, wanted as the argument's type. A construction among the arguments of a
+generic is checked last (see [generic](generic.md), "An argument that is itself a
+construction").
 
 **A variant is constructed by a call, `Some(5)` and `Some[i32](5)`, or by its name
 alone when it is empty** (`Lamp.Red`, `None`, `None[i32]`). A call whose callee
@@ -688,11 +692,13 @@ Three adjustments, two of them asymmetric on purpose:
   argument that is not a borrow of such a value, and an index (`FlagIndex`,
   which is not an operator), are left alone.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
-  reaches a method declaring `self &` or `self &mut`: it is probed as a `ro`
+  reaches a method declaring `self &`, `self &mut` or `self &uni`: it is probed as a `ro`
   borrow, then (for a receiver whose type declares `Immutable`, whose `self &`
-  is `&imm`) an `imm` one, then a `mut` one, and the first that selects a
+  is `&imm`) an `imm` one, then a `mut` one, then a `uni` one, and the first that selects a
   candidate is made by `borrowMutRef`, so the permission check and the lifetime are a written
-  `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable, and the
+  `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable — or, for `uni`, a
+  written `&uni v`'s (`borrowLocalLendsUni`: a `mut` local or a part of one held by
+  value lends it, anything else is `ErrorBadPerm`, "cannot obtain this permission"), and the
   borrow's scope carried into a returned borrow. It runs only after both
   selections above found nothing, so a by-value candidate is always preferred.
   A temporary is borrowed where it is (`borrowTempRef`), with the block's

@@ -17,8 +17,7 @@
 		groups and the blocking pool), <span class="pre">iobuf</span>, <span class="pre">aio</span>,
 		<span class="pre">actorhttp</span> and the HTTP and
 		TLS packages over them run on Windows and on Linux. Batching
-		of datagrams (many in one call) is not here yet. A timer joined to a cancel group is not yet timed out by
-		the group's deadline: it answers at its own time.</i></p>
+		of datagrams (many in one call) is not here yet.</i></p>
 
 	<h2 id="io-packages">The I/O packages</h2>
 	<p>What is built is in library packages, which <a href="refstdlib.html#asyncio">the standard
@@ -52,10 +51,11 @@
 		URL in one call, with connection pooling, retries and redirects.</li>
 	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may
 		<span class="pre">await</span> a socket's operation &mdash; listen, accept, connect, read,
-		write &mdash; or a file's &mdash; open, read at an offset, write at an offset &mdash; and
+		write &mdash; or a file's &mdash; open, read at an offset, write at an offset &mdash; or
+		a timer (<span class="pre">aio.sleep(d)</span>), and
 		pauses there until the operation's answer comes, as it pauses for another
 		actor's reply (<a href="refawait.html#await">Awaiting a reply</a>; below,
-		<a href="#await-io">Awaiting I/O</a>). TCP sockets and files.</li>
+		<a href="#await-io">Awaiting I/O</a>). TCP sockets, UDP sockets and files.</li>
 	<li><b>HTTP an actor awaits:</b> <span class="pre">actorhttp</span>. An actor's behaviour may
 		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for
 		<span class="pre">http://</span> or <span class="pre">https://</span>, and gets the whole response
@@ -208,7 +208,9 @@ await ...', and match on it.
 		<span class="pre">kind()</span>, an <span class="pre">IoErrorKind</span>:
 		<span class="pre">Os</span> for a failure of the system (its <span class="pre">code</span> and
 		<span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span> or
-		<span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0). The kind is what
+		<span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or
+		<span class="pre">Truncated</span> (a datagram cut to the room that took it, below; its
+		<span class="pre">code</span> is the system's, 10040). The kind is what
 		<span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> read, and
 		<span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
 		questions; so no system error, whatever its number, is taken for either. The buffer an
@@ -216,9 +218,11 @@ await ...', and match on it.
 	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes a
 		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
 		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>,
-		<span class="pre">aio.connectIn(addr, lim)</span>, and a file's
+		<span class="pre">aio.connectIn(addr, lim)</span>, a file's
 		<span class="pre">f.readAtIn(offset, buf, lim)</span> and
-		<span class="pre">f.writeAtIn(offset, buf, lim)</span>. A <span class="pre">IoLimits</span> holds
+		<span class="pre">f.writeAtIn(offset, buf, lim)</span>, and a UDP socket's
+		<span class="pre">u.recvFromIn(buf, lim)</span> and
+		<span class="pre">u.sendToIn(addr, buf, lim)</span>. A <span class="pre">IoLimits</span> holds
 		a <a href="#cancel-groups">cancel group</a> and an absolute deadline, an
 		<span class="pre">Instant</span>: <span class="pre">IoLimits.within(group)</span>,
 		<span class="pre">IoLimits.until(deadline)</span>, or both with
@@ -264,6 +268,57 @@ actor Reader {
 		(<a href="refawait.html#await-cross">What crosses an await</a>), so it stays open
 		until the behaviour ends.</p>
 
+	<h3 id="await-io-udp">UDP sockets</h3>
+	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system
+		choose one, which <span class="pre">u.localAddr()</span> tells) and answers a
+		<span class="pre">UdpSocket</span>, out of the <span class="pre">Result</span> by a swap as a
+		<span class="pre">Socket</span> is. A <span class="pre">UdpSocket</span> is a kind of its own beside
+		<span class="pre">Socket</span> and <span class="pre">File</span>: <span class="pre">read</span>,
+		<span class="pre">write</span> and <span class="pre">accept</span> are not on it, and
+		<span class="pre">recvFrom</span> and <span class="pre">sendTo</span> are not on the others, so a call
+		of the wrong kind does not compile. It is not connected: each datagram names where it goes.</p>
+	<ul>
+	<li><span class="pre">u.recvFrom(buf)</span>: one datagram, appended to the buffer, which is moved in. The
+		answer is a <span class="pre">Datagram</span>, whose <span class="pre">buf</span> is the buffer given
+		back, its length grown by the datagram's, and whose <span class="pre">from</span> is the sender's
+		<span class="pre">SocketAddr</span>. A datagram of no bytes is a datagram, not an end: the length does not
+		grow. A buffer with no room fails with 122, as a read's does.</li>
+	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Error</span> whose
+		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span>
+		(<span class="pre">aio.isTruncated(e)</span> or <span class="pre">e.isTruncated()</span>; its
+		<span class="pre">code</span> is 10040, <span class="pre">WSAEMSGSIZE</span>, on both systems). The
+		rest of the datagram is lost, the next one is whole, and the buffer goes home to its pool as a
+		failed read's does, the bytes that fitted with it.</li>
+	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to
+		<span class="pre">addr</span>, the count its length, the buffer going home. UDP promises no
+		delivery: the answer says the system took the datagram. One too large for the network fails
+		with 10040.</li>
+	</ul>
+	<p>Both take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span> and
+		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A
+		<span class="pre">UdpSocket</span> moves and closes when dropped, as a <span class="pre">Socket</span>
+		does. One receive at a time per socket is the supported use; datagrams that arrive while none
+		is outstanding wait in the socket's buffer, which the operating system bounds.</p>
+<pre>
+actor Echo {
+  pool Pool;
+
+  pub async do once(self, u UdpSocket) {                   // u: bound earlier, by bindUdp
+    imm r = await u.recvFrom(pool.mustTake(1500usize));
+    match r {
+      case imm d Ok {
+        mut reply = pool.mustTake(64usize);
+        reply.append("got it");
+        imm sent = await u.sendTo(d.from, reply);          // back to the sender
+      }
+      case imm e Error {
+        if aio.isTruncated(e) {...the datagram was longer than 1500 bytes...}
+      }
+    }
+  }
+}
+</pre>
+
 	<h3 id="await-io-files">Files</h3>
 	<p><span class="pre">aio.openFile(path, access)</span> opens a file on the I/O thread, with
 		<span class="pre">iocore</span>'s <span class="pre">Access</span>: <span class="pre">Read</span>
@@ -301,6 +356,35 @@ actor Patcher {
 		on a thread of the blocking pool (<span class="pre">pread</span> and <span class="pre">pwrite</span>),
 		and answer the same. <span class="pre">fileio</span>, the file service with classes and a queue-depth
 		governor, is a package of its own, to come.</p>
+
+	<h3 id="await-io-sleep">Sleeping</h3>
+	<p><span class="pre">aio.sleep(d)</span> and <span class="pre">aio.sleepUntil(at)</span> are timers an
+		actor awaits: the behaviour pauses, its actor and its worker go on with other messages, and the
+		rest of the behaviour runs when the time comes. <span class="pre">d</span> is a
+		<span class="pre">Duration</span>, counted from the <span class="pre">await</span>;
+		<span class="pre">at</span> is an absolute <span class="pre">Instant</span> (one already past is
+		answered at once, as is a zero <span class="pre">Duration</span>). Both answer
+		<span class="pre">Result[void, IoError]</span>: <span class="pre">Ok</span> when the time has come, an
+		<span class="pre">Error</span> of kind <span class="pre">Cancelled</span> or
+		<span class="pre">TimedOut</span> when the limits ended it first. Their
+		<span class="pre">In</span> forms, <span class="pre">aio.sleepIn(d, lim)</span> and
+		<span class="pre">aio.sleepUntilIn(at, lim)</span>, take the
+		<a href="#await-io-limits"><span class="pre">IoLimits</span></a> of the other operations. A group's
+		cancel ends the sleep as <span class="pre">Cancelled</span>, at once if the group is cancelled already.
+		A sleep due after the deadline (the limits' own, or the group's, the tighter) is answered
+		<span class="pre">TimedOut</span> at the deadline instead; one due at or before it is
+		<span class="pre">Ok</span> at its time, as <span class="pre">iocore</span>'s timer in a cancel group is
+		(<a href="refstdtime.html">the time chapter</a> shows the same on a loop).</p>
+<pre>
+  pub async do pause(self, group CancelGroup) {
+    // Half a second, unless the group is cancelled first
+    imm r = await aio.sleepIn(Duration.fromMillis(500i64), IoLimits.within(group));
+    match r {
+      case imm e Error {say("cancelled", 0u64);}
+      else {say("half a second has passed", 0u64);}
+    }
+  }
+</pre>
 
 	<h3 id="await-io-http">HTTP an actor awaits</h3>
 	<p>The <span class="pre">actorhttp</span> package (a working name, as <span class="pre">netmsg</span> is; the
@@ -388,7 +472,7 @@ actor Weather {
 
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>
-	<li>The blocking pool's other work (file metadata, name lookup), UDP, and a socket's half-close, awaited;
+	<li>The blocking pool's other work (file metadata, name lookup), and a socket's half-close, awaited;
 		<span class="pre">fileio</span>, the file service.</li>
 	<li>More than one I/O thread.</li>
 	<li>A response's body handed to the actor as it arrives (it comes whole, up to a limit), a request's body
@@ -525,7 +609,9 @@ cancel again
 	<li><span class="pre">group.child()</span> is cancelled with <span class="pre">group</span> and by its own
 		cancel, which does not reach <span class="pre">group</span>.</li>
 	<li><span class="pre">CancelGroup.until(deadline)</span> is a group whose operations answer
-		<span class="pre">TimedOut</span> by the deadline. <span class="pre">group.childUntil(d)</span> is a child whose
+		<span class="pre">TimedOut</span> by the deadline, a timer among them: one due after the deadline answers
+		<span class="pre">TimedOut</span> at it, one due before answers <span class="pre">Done</span> at its own time.
+		<span class="pre">group.childUntil(d)</span> is a child whose
 		deadline is the tighter of its parent's and <span class="pre">d</span>, so deadlines are inherited as the
 		tighter, all the way down.</li>
 	<li><span class="pre">group.shield(d)</span> is for cleanup after a cancel: the group's cancel and deadline do not

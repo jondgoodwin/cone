@@ -399,6 +399,72 @@ static void pgmInstanceOrder(ProgramNode *pgm, Nodes *instances) {
     }
 }
 
+// The modules a module depends on, as pgmModuleOrder follows them: what it
+// extends, what it imports, and its own submodules
+static Nodes *pgmDependencies(ProgramNode *pgm, ModuleNode *mod) {
+    Nodes *deps = newNodes(8);
+    INode **nodesp;
+    uint32_t cnt;
+    if (mod->extends && mod->extends->module)
+        nodesAdd(&deps, (INode*)mod->extends->module);
+    for (nodesFor(mod->imports, cnt, nodesp)) {
+        ImportNode *import = (ImportNode*)*nodesp;
+        if (import->module)
+            nodesAdd(&deps, (INode*)import->module);
+        else if (import->binding)
+            nodesAdd(&deps, mod->dclinfo.owner);
+    }
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        if ((ModuleNode*)((ModuleNode*)*nodesp)->dclinfo.owner == mod)
+            nodesAdd(&deps, *nodesp);
+    }
+    return deps;
+}
+
+// The first module with an 'init' of its own, not C-named, that a module
+// depends on, however far, or NULL. 'seen' holds the modules already walked.
+static ModuleNode *pgmConeInitDependency(ProgramNode *pgm, ModuleNode *mod, Nodes **seen) {
+    Nodes *deps = pgmDependencies(pgm, mod);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(deps, cnt, nodesp)) {
+        ModuleNode *dep = (ModuleNode*)*nodesp;
+        if (dep == NULL || dep->tag != ModuleTag || dep == mod)
+            continue;
+        INode **seenp;
+        uint32_t seencnt;
+        int walked = 0;
+        for (nodesFor(*seen, seencnt, seenp))
+            walked |= *seenp == (INode*)dep;
+        if (walked)
+            continue;
+        nodesAdd(seen, (INode*)dep);
+        if (dep->initfn && !(dep->dclinfo.facts & DclCName))
+            return dep;
+        ModuleNode *found = pgmConeInitDependency(pgm, dep, seen);
+        if (found)
+            return found;
+    }
+    return NULL;
+}
+
+// A C-named module's 'init' is run by the C runtime before the program's
+// 'main', as the object holding it is loaded (genlCtors), ahead of the
+// stitched init that runs every other module's. So it cannot rely on another
+// module's 'init' having run: a module it depends on that has an 'init' of its
+// own is refused, unless that module is C-named too, which runs ahead of it
+// in the same order.
+static void pgmCInitCheck(ProgramNode *pgm, ModuleNode *mod) {
+    if (!(mod->dclinfo.facts & DclCName) || mod->initfn == NULL || !(mod->flags & FlagGenMod))
+        return;
+    Nodes *seen = newNodes(8);
+    ModuleNode *dep = pgmConeInitDependency(pgm, mod, &seen);
+    if (dep)
+        errorMsgNode((INode*)mod->initfn, ErrorModLifecycle,
+            "A C-named module's init runs before the program starts, ahead of every other module's, so it may not depend on %s, which has an init of its own. Move what they share into a module with no init, or make %s C-named too.",
+            &dep->namesym->namestr, &dep->namesym->namestr);
+}
+
 // Type check the program node.
 //
 // Each instance of a generic module is made, and type checked, where a body
@@ -411,6 +477,8 @@ void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *pgm) {
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, nodesp);
     }
+    for (nodesFor(pgm->modules, cnt, nodesp))
+        pgmCInitCheck(pgm, (ModuleNode*)*nodesp);
     Nodes *instances = modInstanceList();
     if (instances == NULL)
         return;

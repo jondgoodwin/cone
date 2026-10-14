@@ -290,6 +290,21 @@ generic enum made there, with its variants (`genericEnumInstanceLayout`).
 Outside any layout — a function's body — a target is laid out at once, as
 before: nothing in flight can meet it there.
 
+**A generic type's type arguments are named, not held.** `struct Node { kids
+List[Option[Node]]; }` holds `Option[Node]` through the List's pointer as `List[Node]`
+holds `Node`, so an argument that is itself an instance of a generic
+(`fnCallTypeCheckNode`, `argsnamed`) is checked in target mode while a layout is
+in flight: the `Option[Node]` is made and its layout waits
+(`genericEnumInstanceLayout`). A plain name needs no such care, and keeps being
+checked as it was, since a trait's own members may ask what the named type is
+(`Iterator[StrCharIndex]`). Whatever holds the argument by value still demands
+its layout when it asks for its size (`structTypeSettle`), so `Wrap[Option[Node]]`
+as a field of Node, a `Result[Option[Node], E]`, an array or a tuple of it are
+refused as before. A `where` that reads the argument's layout cannot wait for it:
+a condition on the generic, its enum or an `is` entry still lays out the
+argument it reads first (`genericTypeReadsArg`), so it is refused at the cycle
+it would close.
+
 **Every check that reads a target's layout waits too**, and runs once no
 layout is in flight (`structWorkQueues`), after the waiting layouts and before
 any type's members (`structDeferCheck`):

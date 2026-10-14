@@ -21,8 +21,8 @@
 //   fn main() {
 //     mut lp = Loop.mustMake();
 //     mut drv = Driver.make(Config.make(), Pool.make());
-//     imm conn = drv.connect(&mut lp, "example.com", 80u16, Sink.Here[1u64]);
-//     drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), Sink.Here[2u64]);
+//     imm conn = drv.connect(&mut lp, "example.com", 80u16, Sink.Here(1u64));
+//     drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), Sink.Here(2u64));
 //     mut events = List[Event].empty();
 //     mut going = true;
 //     while going {
@@ -52,9 +52,9 @@
 //   d.release(req, n)                                                   (CREDIT)
 //   d.cancel(lp, req)                                                   (CANCEL)
 //   d.poll(lp, until, events)  d.complete(lp, c)  d.pump(lp, events)  d.wakeAt()  (DRIVING)
-//   d.owns(token)  d.upperToken(kind, n)  d.isUpperToken(token)
+//   d.owns(token)  d.upperToken(lp, kind, n)  d.isUpperToken(token)
 //   d.stats()  d.live()  d.held()  d.abortAll(lp)
-//   Sink.Here[token]  Sink.Chan[token, tx]                             (SINKS)
+//   Sink.Here(token)  Sink.Chan(token, tx)                             (SINKS)
 //   Event: e.kind e.token e.conn e.req, and per kind e.peer e.clean e.failure  (EVENTS)
 //     e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
 //   EventKind: Connected Accepted Closed Request Response Interim Data End
@@ -78,10 +78,16 @@
 // loop, each completion offered to one after another until one says true:
 // every live driver has a number of its own in its tokens (at most 1024
 // drivers alive at once; one more is a panic), so none says true of
-// another's. The layer above a driver
-// (httpclient) submits its own with 'upperToken(kind, n)', tokens in the
+// another's. A dead driver's number comes round again while the loop may
+// still answer what it had in flight, so a driver also takes a generation
+// from its loop (Loop.nextDriverGen, eight bits) at its first connect or
+// listen and carries it in its tokens: 'complete' says false of a token with
+// another driver's generation. The layer above a driver
+// (httpclient) submits its own with 'upperToken(lp, kind, n)', tokens in the
 // driver's space whose completions its 'complete' leaves (false), for that
-// layer to take. 'wakeAt()' is the latest
+// layer to take; its 'n' is 40 bits, the driver's generation (taken from
+// 'lp' there if it has none yet) the eight above, and 'isUpperToken' is
+// false of a token with another driver's generation. 'wakeAt()' is the latest
 // instant the program's own poll may wait to: forever, unless the driver has
 // work ready (now) or events held for a full channel (a millisecond on).
 //
@@ -136,8 +142,8 @@
 // read when the answer before it is whole.
 //
 // SINKS. Where events go, and the token they carry back (plain data the
-// driver never reads, as iocore's targets are). Sink.Here[token]: to this
-// thread, appended by pump or poll. Sink.Chan[token, tx]: sent on a sync
+// driver never reads, as iocore's targets are). Sink.Here(token): to this
+// thread, appended by pump or poll. Sink.Chan(token, tx): sent on a sync
 // channel (a Sender[Event]) to another thread, never waiting: when the
 // channel is full the event is held, the connection's later events wait
 // behind it, its reading stops, and it is tried again at every pump --

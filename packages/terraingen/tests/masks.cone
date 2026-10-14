@@ -1,0 +1,174 @@
+// Masks, biomes, the signals groundcover reads, and tiles (src/masks.cone, src/landscape.cone).
+//
+// 1. A plane inclined 30 degrees: the slope mask reads 30 within 0.3 degrees everywhere.
+// 2. Exposure: flat ground in a 45 degree sun is 1 everywhere; a 40 m wall east of it, with the sun
+//    to the east, shades the cells within 40 m of the wall (the ray rises 1 m a metre) and no others.
+// 3. Biomes: the weights of every sample add to 1, the id is the weights' maximum, and on the inclined plane a
+//    steep biome (over 20 degrees) wins everywhere against a flat one.
+// 4. Distance to water: from a single wet cell, straight along a row it is exact, on a diagonal exact,
+//    and anywhere within 8.25 percent of the Euclidean distance (the chamfer's bound, 8.2).
+// 5. groundSignals: eight channels of res x res, groundcover's units: height at a texel centre is the
+//    field's there (the plane's formula), slope 30 degrees, path and object distance 64, canopy 0,
+//    water distance as the mask.
+// 6. Tiles: neighbouring tiles share their edge samples bit for bit, a border adds one sample all round
+//    and the interior is the field's, and tileCount covers the field.
+
+mod maskstest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import terraingen use *;
+
+fn biomeTable() List[Biome] {
+  mut b = List[Biome].empty();
+  b.push(Biome.make("steep", 20., 90., -10000., 100000., 0., 1., new Color(0.3, 0.3, 0.3, 1.)));
+  b.push(Biome.make("flat", 0., 20., -10000., 100000., 0., 1., new Color(0.1, 0.5, 0.1, 1.)));
+  b;
+}
+
+// The masks of a field with no rivers and a table
+fn masksOf(hf &Heightfield, spec &MaskSpec, biomes &List[Biome]) MaskSet {
+  mut copy = hf.tile(0, 0, hf.w, hf.h);
+  imm hy = analyze(&copy, 0.0005, 1., 40.);
+  imm none = new RiverSpec(1.0e30, 0., 0., 0., 0.);
+  imm maps = carveRivers(&mut copy, &hy, &none);
+  computeMasks(&copy, &hy, &maps, spec, biomes);
+}
+
+fn main() i32 {
+  // 1. the plane
+  imm rise = 0.57735027;
+  mut plane = Heightfield.make(40usize, 40usize, 4., 0., 0., 0.);
+  mut iz = 0usize;
+  while iz < 40usize {
+    mut ix = 0usize;
+    while ix < 40usize { plane.set(ix, iz, rise * 4. * f32.from(ix) + 10.); ix = ix + 1usize; }
+    iz = iz + 1usize;
+  }
+  imm table = biomeTable();
+  imm spec = MaskSpec.standard();
+  imm m = masksOf(&plane, &spec, &table);
+  mut worst = 0.;
+  iz = 0usize;
+  while iz < 40usize {
+    mut ix = 1usize;
+    while ix < 39usize {
+      imm d = libc.fabsf(*m.slope[iz * 40usize + ix] - 30.);
+      if d > worst { worst = d; }
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  expectFloat(f64.from(worst), 0., 0.3, "the slope mask of a 30 degree plane reads 30 within 0.3 degrees");
+
+  // 3. biome weights
+  mut sumsOk = true;
+  mut argOk = true;
+  mut steepWins = true;
+  mut i = 0usize;
+  while i < 40usize * 40usize {
+    imm w0 = *m.weights[i * 2usize];
+    imm w1 = *m.weights[i * 2usize + 1usize];
+    if libc.fabsf(w0 + w1 - 1.) > 0.0001 { sumsOk = false; }
+    imm best = if w0 >= w1 { 0usize; } else { 1usize; };
+    if usize.from(*m.biome[i]) != best { argOk = false; }
+    i = i + 1usize;
+  }
+  iz = 0usize;
+  while iz < 40usize {
+    mut ix = 1usize;
+    while ix < 39usize {
+      if *m.biome[iz * 40usize + ix] != 0u8 { steepWins = false; }
+      ix = ix + 1usize;
+    }
+    iz = iz + 1usize;
+  }
+  expect(sumsOk, "the biome weights of every sample add to 1");
+  expect(argOk, "the biome id is the weights' maximum");
+  expect(steepWins, "on a 30 degree plane the steep biome wins everywhere");
+
+  // 2. exposure
+  mut sun = spec;
+  sun.sunDirection = new Vec3(1., 1., 0.);
+  sun.shadowReach = 400.;
+  mut walled = Heightfield.make(64usize, 24usize, 5., 0., 0., 0.);
+  iz = 0usize;
+  while iz < 24usize {
+    mut ix = 20usize;
+    while ix < 64usize { walled.set(ix, iz, 40.); ix = ix + 1usize; }
+    iz = iz + 1usize;
+  }
+  imm me = masksOf(&walled, &sun, &table);
+  imm row = 12usize * 64usize;
+  expectFloat(f64.from(*me.exposure[row + 3usize]), 1., 0.001, "ground far west of the wall is in full sun");
+  expectFloat(f64.from(*me.exposure[row + 8usize]), 1., 0.001, "and at 60 m from it");
+  expectFloat(f64.from(*me.exposure[row + 13usize]), 0., 0.001, "ground 35 m from the wall is in its shadow");
+  expectFloat(f64.from(*me.exposure[row + 18usize]), 0., 0.001, "and 10 m from it");
+  expectFloat(f64.from(*me.exposure[row + 40usize]), 1., 0.15, "the wall's top is in the sun");
+
+  // 4. distance to water, through a hand-built water map
+  mut flatF = Heightfield.make(41usize, 41usize, 2., 0., 0., 5.);
+  mut copy = flatF.tile(0, 0, 41usize, 41usize);
+  imm hyF = analyze(&copy, 0.0005, 1., 40.);
+  imm none = new RiverSpec(1.0e30, 0., 0., 0., 0.);
+  mut mapsF = carveRivers(&mut copy, &hyF, &none);
+  mapsF.waterDepth.set(20usize * 41usize + 20usize, 1.);
+  imm mw = computeMasks(&copy, &hyF, &mapsF, &spec, &table);
+  imm c0 = 20usize * 41usize + 20usize;
+  expectFloat(f64.from(*mw.waterDistance[c0 + 10usize]), 20., 0.001, "10 cells along a row of 2 m cells is 20 m");
+  expectFloat(f64.from(*mw.waterDistance[c0 + 7usize * 41usize + 7usize]), 7. * 1.41421356 * 2., 0.001, "7 cells on the diagonal is 19.8 m");
+  mut within = true;
+  mut dz = -9;
+  while dz <= 9 {
+    mut dx = -9;
+    while dx <= 9 {
+      imm eu = (f32.from(dx * dx + dz * dz)).sqrt() * 2.;
+      imm got = *mw.waterDistance[usize.from(20 + dz) * 41usize + usize.from(20 + dx)];
+      if eu > 0.5 and libc.fabsf(got - eu) > 0.0825 * eu { within = false; }
+      dx = dx + 1;
+    }
+    dz = dz + 1;
+  }
+  expect(within, "everywhere within 9 cells the chamfer distance is within 8.25 percent of the Euclidean (the weights' known worst case, 8.2 percent, at 22.5 degrees)");
+
+  // 5. groundSignals on a plane h = 3 x
+  mut ramp = Heightfield.make(64usize, 64usize, 2., 0., 0., 0.);
+  iz = 0usize;
+  while iz < 64usize {
+    mut ix = 0usize;
+    while ix < 64usize { ramp.set(ix, iz, 3. * 2. * f32.from(ix)); ix = ix + 1usize; }
+    iz = iz + 1usize;
+  }
+  imm mr = masksOf(&ramp, &spec, &table);
+  imm gs = groundSignals(&ramp, &mr, 20., 30., 64., 16u32);
+  expectUInt(u64.from(gs.channels.len()), 8u64, "groundSignals has eight channels");
+  expectUInt(u64.from(gs.channels[0usize].len()), 256u64, "each res x res");
+  // texel (5, 2): x = 20 + 5.5 * 4 = 42, z = 30 + 2.5 * 4 = 40; height 3 x = 126
+  expectFloat(f64.from(*gs.channels[0usize][2usize * 16usize + 5usize]), 126., 0.01, "the height channel at a texel centre is the field's there (3 x = 126)");
+  expectFloat(f64.from(*gs.channels[1usize][2usize * 16usize + 5usize]), f64.from(degrees(atan2(3., 1.))), 0.1, "the slope channel is in degrees (atan 3 = 71.57)");
+  expectFloat(f64.from(*gs.channels[4usize][100usize]), 64., 0.0001, "the path distance is 'none near', 64 m");
+  expectFloat(f64.from(*gs.channels[6usize][100usize]), 0., 0.0001, "the canopy 0");
+  expectFloat(f64.from(*gs.channels[7usize][100usize]), 64., 0.0001, "the object distance 64 m");
+
+  // 6. tiles
+  imm field = generate(&alpine(65usize, 65usize, 20., 3u32).shape, 65usize, 65usize, 20., 0., 0.);
+  imm t0 = cutTile(&field, 0usize, 0usize, 17usize, 0usize);
+  imm t1 = cutTile(&field, 1usize, 0usize, 17usize, 0usize);
+  imm below = cutTile(&field, 0usize, 1usize, 17usize, 0usize);
+  mut shared = true;
+  mut k = 0usize;
+  while k < 17usize {
+    if t0.at(16usize, k) != t1.at(0usize, k) { shared = false; }
+    if t0.at(k, 16usize) != below.at(k, 0usize) { shared = false; }
+    k = k + 1usize;
+  }
+  expect(shared, "neighbouring tiles share their edge samples bit for bit");
+  imm bordered = cutTile(&field, 1usize, 1usize, 17usize, 1usize);
+  expectUInt(u64.from(bordered.w), 19u64, "a border of one adds two samples a side");
+  expect(bordered.at(1usize, 1usize) == field.at(16usize, 16usize) and bordered.at(17usize, 17usize) == field.at(32usize, 32usize), "and the interior is the field's");
+  expectUInt(u64.from(tileCount(65usize, 17usize)), 4u64, "65 samples are covered by 4 tiles of 17");
+  expect(bordered.originX == field.originX + 15. * 20., "a tile knows where it is in the world");
+  done();
+}

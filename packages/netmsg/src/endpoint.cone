@@ -1,17 +1,52 @@
-// A UDP endpoint: the actor that owns a socket (through the pump thread),
-// opens connections, and routes each datagram to the actor of the connection
-// it belongs to. A server's endpoint accepts any number of clients (up to
-// NetConfig.maxClients); a client's has the one connection it dialed.
+// A UDP endpoint: the actor that owns a socket, opens connections, and routes
+// each datagram to the actor of the connection it belongs to. A server's
+// endpoint accepts any number of clients (up to NetConfig.maxClients); a
+// client's has the one connection it dialed.
 //
 //   imm server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), handler);
 //   imm client = mustConnect(SocketAddr.localhost(server.port), NetConfig.defaults(), handler2);
 //   ...
 //   server.endpoint.shutdown();
 //   client.endpoint.shutdown();
+//
+// THE SOCKET IS AIO'S. The endpoint holds an aio.UdpSocket, a handle on one of
+// the I/O thread's sockets (one thread for every aio user in the program), and
+// does its I/O by awaiting, as any actor does. Nothing of the protocol is in
+// that; it moves bytes and time between the socket and the connections:
+//
+//   receive   one behaviour that loops: 'await sock.recvFromIn(buf, ...)', then
+//             the datagram is handled in place (onDatagram). It is paused
+//             at the await, so the actor handles its other messages meanwhile.
+//   send      a message to the endpoint (Connection.run sends one per packet):
+//             'await sock.sendTo(addr, buf)'. Several are in flight at once.
+//   timer     'wake(at)': 'await aio.sleepUntil(at)', then the due connections
+//             are ticked. At most one timer is armed: the earliest deadline any
+//             connection (or the dialer) has asked for; asking for an earlier
+//             one cancels the armed one's cancel group.
+//   shutdown  closes the connections, waits (300 ms at most) for the datagrams
+//             handed to the socket, cancels 'group' (which ends the receive and
+//             the timer) and drops the socket, which closes it.
+//
+// DEFAULTS CHOSEN HERE (the move from a thread of its own per endpoint, which
+// had its own iocore Loop, to aio): the socket is bound by a first message,
+// 'open', and listen/connect wait for its answer on a Oneshot (so they block
+// their caller until the socket is bound, as they did while the pump thread
+// started; called from a behaviour they need a second worker to bind on, and
+// panic with one worker rather than deadlock). A datagram longer than
+// recvRoom is Truncated (aio.isTruncated): it is dropped, and does not count
+// toward the failures that end the receive. 1000 failures in a row end the
+// receive, as they ended the pump. A program that ends in the instant it
+// calls shutdown() (without waiting for the peers to hear it) may lose the
+// disconnect datagrams still queued for the I/O thread: an actor paused on I/O
+// is not "running", so the program's end does not wait for it (aio's header,
+// THE PROGRAM'S END); the peers then time out as for any lost datagram.
+//
+// STILL SHARED: events reach the application through one EventHandler closure
+// under Arc[Mutex] for all connections, because actors cannot yet be generic or
+// take a trait; it becomes direct actor messages once they can.
 
-// A connection an endpoint holds (public only because an actor's include file
-// names the types of its state; nothing outside reaches it)
-pub struct ConnectionSlot {
+// A connection an endpoint holds
+struct ConnectionSlot {
   key String;             // the other end's address as text
   id u32;
   conn Connection;
@@ -22,16 +57,30 @@ pub struct ConnectionSlot {
 // The deadline of a connection that has not asked for one
 const farFuture = 0x7FFFFFFFFFFFFFFFi64;
 
+// The room asked of the pool for each receive (its smallest buffer holds 4 KiB,
+// and that is what a datagram may be): a longer one is Truncated
+const recvRoom = 2048usize;
+
+// The most receives that fail one after the other before the endpoint stops receiving
+const maxFailures = 1000u32;
+
+// How long shutdown waits for the datagrams already handed to the socket
+const flushMillis = 300i64;
+
 pub actor Endpoint {
   server bool;
   cfg NetConfig;
   handler EventHandler;
-  outbox PumpOutbox;
-  done Receiver[u32];          // the pump says it has ended
+  pool Pool;
+  sock UdpSocket;             // bound by 'open'; UdpSocket.none() before, and after shutdown
+  group CancelGroup;           // cancelled by shutdown: ends the receive and the timer
+  timer CancelGroup;           // the armed timer's group, a child of 'group'
+  timerGen u32;                // which timer is the armed one
+  inflight usize;              // datagrams handed to the socket and not yet sent
   gate ChallengeGate;
   slots List[ConnectionSlot];
   nextId u32;
-  armed i64;                   // the instant the pump will next wake us; -1 none
+  armed i64;                   // the instant the timer will next wake us; -1 none
   stopped bool;
 
   // a client's
@@ -40,19 +89,17 @@ pub actor Endpoint {
   remote SocketAddr;
   remoteKey String;
 
-  fn init(self &new, server bool, cfg NetConfig, handler EventHandler, outbox PumpOutbox, done Receiver[u32],
-      remote SocketAddr, seed u64) {
+  fn init(self &new, server bool, cfg NetConfig, handler EventHandler, remote SocketAddr, seed u64) {
     mut rng = Rng.make(seed);
     imm salt = rng.next();
     imm gateSeed = rng.next();
-    *self = new Self(server: server, cfg: cfg, handler: handler, outbox: outbox, done: done,
+    imm g = CancelGroup.make();
+    *self = new Self(server: server, cfg: cfg, handler: handler, pool: Pool.make(), sock: UdpSocket.none(),
+      group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
       gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
       armed: -1i64, stopped: false,
       dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: not server,
       remote: remote, remoteKey: remote.text());
-    if not server {
-      self.rearm();   // a client starts dialing
-    }
   }
 
   // How many connections are open now
@@ -60,9 +107,8 @@ pub actor Endpoint {
     u32.from(slots.len());
   }
 
-  // End every connection (each tells its peer), send what is queued, stop the
-  // socket's thread, and wait for it. Call it before the program ends: the
-  // thread sends messages, which must stop before the actors' runtime does.
+  // End every connection (each tells its peer), send what is queued, close the
+  // socket. Call it before the program ends.
   pub async do shutdown(self) {
     if stopped {return;}
     stopped = true;
@@ -78,68 +124,91 @@ pub actor Endpoint {
         case is None[Connection] {}
       }
     }
-    outbox.stop();
-    done.recv();
+    // The disconnect datagrams are in flight: wait for the socket to take them
+    imm limit = Instant.now() + Duration.fromMillis(flushMillis);
+    while inflight > 0usize and Instant.now() < limit {
+      imm z = await aio.sleep(Duration.fromMillis(1i64));
+    }
+    imm c = group.cancel();
+    mut dead = UdpSocket.none();
+    dead <=> sock;
   }
 
   // ------------------------------------------------------------------
-  // From the pump thread
+  // The socket
   // ------------------------------------------------------------------
 
-  // A datagram arrived, from 'from'
-  async do datagram(self, from SocketAddr, data List[u8]) {
-    if stopped {return;}
-    imm key = from.text();
-    if not server and key != remoteKey {return;}
-    imm kind = if data.len() > 4usize {*data[4usize];} else {255u8;};
-    if kind == kindPayload or kind == kindDisconnect {
-      imm k = self.find(key.view());
-      if k != notFound {
-        slots[k].conn.packet(copyBytes(data.view()));
-      }
-      if dialing {
-        self.dial(data);
+  // Bind the socket at 'bind' and say what it got (the address, with the port
+  // the system chose when port 0 was asked) or why it could not; then receive.
+  // The first message the endpoint is sent
+  async do open(self, bind SocketAddr, up OneshotSender[Result[SocketAddr, IoError]]) {
+    mut tx = up;
+    mut made = await aio.bindUdp(bind);
+    match &mut made {
+      case mut ok &mut Ok { sock <=> *ok; }
+      else {}
+    }
+    if sock.isNone() {
+      match &made {
+        case imm e &Error { tx.send(Error[SocketAddr, IoError](*e)); }
+        else { tx.send(Error[SocketAddr, IoError](new IoError(1u32))); }
       }
       return;
     }
+    // What the system bound: the address asked for, and the port it chose
+    mut bound = bind;
+    imm la = await sock.localAddr();
+    match &la {
+      case imm a &Ok { bound = *a; }
+      else {}
+    }
+    tx.send(Ok[SocketAddr, IoError](bound));
     if not server {
-      self.dial(data);
-      return;
+      self.rearm();   // a client starts dialing
     }
-    mut reply = List[u8].empty();
-    imm verdict = gate.handle(key.view(), data.view(), Instant.now(), &mut reply);
-    match verdict {
-      case is Ignore {}
-      case is Reply { self.transmit(from, reply); }
-      case imm a Accept { self.admit(from, key.view(), a.session, reply, data.view()); }
+    selfactor.receive();
+  }
+
+  // Receive datagrams, one at a time, until shutdown cancels the receive
+  async do receive(self) {
+    mut failures = 0u32;
+    while not stopped and failures <= maxFailures {
+      imm r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      match &r {
+        case imm ok &Ok {
+          failures = 0u32;
+          self.onDatagram(ok.from, copyBytes(ok.buf.view()));
+        }
+        case imm e &Error {
+          if aio.isCancelled(*e) {return;}
+          if not aio.isTruncated(*e) {failures = failures + 1u32;}
+        }
+      }
     }
   }
 
-  // The pump's timer: some connection, or the dialer, is due
-  async do tick(self) {
-    if stopped {return;}
-    armed = -1i64;
-    imm now = Instant.now();
-    if dialing {
-      mut out = List[List[u8]].empty();
-      dialer.poll(now, &mut out);
-      each p in out.drain() { outbox.send(remote, p); }
-      if dialer.isFailed() {
-        dialing = false;
-        (&mut *handler).call(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused;} else {CloseReason.NoAnswer;}));
-      }
-    }
-    mut i = 0usize;
-    while i < slots.len() {
-      imm s = &mut slots[i];
-      if s.due <= now.nanos() {
-        s.due = farFuture;
-        s.conn.tick();
-      }
-      i = i + 1usize;
-    }
-    self.rearm();
+  // A packet to send: one datagram to 'addr'
+  async do send(self, addr SocketAddr, data List[u8]) {
+    if sock.isNone() {return;}
+    mut b = pool.mustTake(max(data.len(), 1usize));
+    b.append(data.view());
+    inflight = inflight + 1usize;
+    imm r = await sock.sendTo(addr, b);
+    inflight = inflight - 1usize;
   }
+
+  // The timer 'g' of generation 'gen' is for the instant 'at': when it comes,
+  // the connections and the dialer that are due are ticked
+  async do wake(self, at i64, gen u32, g CancelGroup) {
+    imm r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
+    if slept(r) and gen == timerGen and not stopped {
+      self.fire();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // From the connections
+  // ------------------------------------------------------------------
 
   // A connection says when it next needs a tick
   async do deadline(self, id u32, at i64) {
@@ -170,6 +239,60 @@ pub actor Endpoint {
   // Inside
   // ------------------------------------------------------------------
 
+  // A datagram arrived, from 'from'
+  fn onDatagram(self, from SocketAddr, data List[u8]) {
+    if stopped {return;}
+    imm key = from.text();
+    if not server and key != remoteKey {return;}
+    imm kind = if data.len() > 4usize {*data[4usize];} else {255u8;};
+    if kind == kindPayload or kind == kindDisconnect {
+      imm k = self.find(key.view());
+      if k != notFound {
+        slots[k].conn.packet(copyBytes(data.view()));
+      }
+      if dialing {
+        self.dial(data);
+      }
+      return;
+    }
+    if not server {
+      self.dial(data);
+      return;
+    }
+    mut reply = List[u8].empty();
+    imm verdict = gate.handle(key.view(), data.view(), Instant.now(), &mut reply);
+    match verdict {
+      case is Ignore {}
+      case is Reply { self.transmit(from, reply); }
+      case imm a Accept { self.admit(from, key.view(), a.session, reply, data.view()); }
+    }
+  }
+
+  // The timer is due: some connection, or the dialer, is due
+  fn fire(self) {
+    armed = -1i64;
+    imm now = Instant.now();
+    if dialing {
+      mut out = List[List[u8]].empty();
+      dialer.poll(now, &mut out);
+      each p in out.drain() { self.transmit(remote, p); }
+      if dialer.isFailed() {
+        dialing = false;
+        (&mut *handler).call(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused;} else {CloseReason.NoAnswer;}));
+      }
+    }
+    mut i = 0usize;
+    while i < slots.len() {
+      imm s = &mut slots[i];
+      if s.due <= now.nanos() {
+        s.due = farFuture;
+        s.conn.tick();
+      }
+      i = i + 1usize;
+    }
+    self.rearm();
+  }
+
   fn find(self &, key &str) usize {
     mut i = 0usize;
     while i < slots.len() {
@@ -179,12 +302,15 @@ pub actor Endpoint {
     notFound;
   }
 
+  // Queue a datagram for the socket (a message to ourselves, as a connection's are)
   fn transmit(self, to SocketAddr, data List[u8]) {
-    outbox.send(to, data);
+    selfactor.send(to, data);
   }
 
-  // Ask the pump to wake us at the earliest deadline there is
+  // Arm the timer for the earliest deadline there is, if it is earlier than
+  // the one armed: the armed one's group is cancelled
   fn rearm(self) {
+    if stopped {return;}
     mut at = farFuture;
     if dialing {
       at = dialer.nextDeadline().nanos();
@@ -196,7 +322,10 @@ pub actor Endpoint {
     }
     if at != farFuture and (armed < 0i64 or at < armed) {
       armed = at;
-      outbox.wakeAt(at);
+      imm c = timer.cancel();
+      timer = group.child();
+      timerGen = timerGen + 1u32;
+      selfactor.wake(at, timerGen, timer);
     }
   }
 
@@ -221,7 +350,7 @@ pub actor Endpoint {
     imm id = nextId;
     nextId = nextId + 1u32;
     imm conn = new Connection(connUdp, id, handler, cfg, session, from,
-      Some[PumpOutbox](outbox.clone()), Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
+      Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
     slots.push(new ConnectionSlot(String.from(key), id, conn, session, Instant.now().nanos()));
     self.transmit(from, accept);
   }
@@ -233,7 +362,7 @@ pub actor Endpoint {
       case is Connected {
         imm id = 1u32;
         imm conn = new Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
-          Some[PumpOutbox](outbox.clone()), Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
+          Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
         slots.push(new ConnectionSlot(String.from(remoteKey.view()), id, conn, dialer.sessionId(), Instant.now().nanos()));
         dialing = false;
         // The datagram that connected us may be a payload packet
@@ -245,6 +374,18 @@ pub actor Endpoint {
       }
       case is Nothing {}
     }
+  }
+}
+
+fn max(a usize, b usize) usize {
+  if a > b {a;} else {b;}
+}
+
+// Whether a timer ran its course: not cancelled, and not failed
+fn slept(r Result[void, IoError]) bool {
+  match r {
+    case imm e Error {false;}
+    else {true;}
   }
 }
 
@@ -265,62 +406,34 @@ pub struct BoundEndpoint {
   pub fn localAddress(self &) SocketAddr { bound; }
 }
 
-// The pump's thread: say when it ends
-struct PumpRun is Sendable {
-  pub args PumpArgs;
-  pub done Sender[u32];
+// Binding takes a second worker when the caller is one: the endpoint binds on
+// the I/O thread and answers from a worker, and this call waits for it
+fn requireAWorker() {
+  if actors.workerIndex() != actors.noWorker and actors.stats().workers < 2u32 {
+    panic("netmsg: listen and connect called from a behaviour need a second worker to bind the socket");
+  }
 }
 
-fn pumpThread(mut r PumpRun) u32 {
-  imm code = pumpMain(&mut r.args);
-  r.done.send(code);
-  code;
-}
-
-// Start the pump thread: the error that stopped it binding (0 for none), the
-// address the socket got, how to reach it, how to hear it end, and where to
-// hand it its endpoint
-fn startPump(bind SocketAddr) u32, SocketAddr, Option[PumpOutbox], Receiver[u32], Sender[Endpoint] {
-  mut cmdTx Sender[PumpCommand];
-  mut cmdRx Receiver[PumpCommand];
-  cmdTx, cmdRx = Channel[PumpCommand].make();
-  mut upTx Sender[Started];
-  mut upRx Receiver[Started];
-  upTx, upRx = Channel[Started].make();
-  mut epTx Sender[Endpoint];
-  mut epRx Receiver[Endpoint];
-  epTx, epRx = Channel[Endpoint].make();
-  mut doneTx Sender[u32];
-  mut doneRx Receiver[u32];
-  doneTx, doneRx = Channel[u32].make();
-  mut th = thread.startWith(new thread.Options(name: "netmsg pump"),
-    new PumpRun(new PumpArgs(bind, cmdRx, upTx, epRx), doneTx), &pumpThread);
-  th.detach();
-  mut code = 1u32;
-  mut bound = bind;
-  mut outbox Option[PumpOutbox] = None;
-  match upRx.recv() {
-    case imm s Some {
-      match s {
-        case imm up Up {
-          code = 0u32;
-          bound = up.addr;
-          outbox = Some[PumpOutbox](new PumpOutbox(cmdTx, up.waker));
-        }
-        case imm down Down { code = down.code; }
+// The endpoint, its socket bound at 'bind' (the other end of a client's is
+// 'remote'): the error that stopped it binding, or the endpoint and the
+// address the socket got
+fn start(server bool, bind SocketAddr, remote SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
+  requireAWorker();
+  imm ep = new Endpoint(server, cfg, h, remote, freshSeed());
+  mut tx OneshotSender[Result[SocketAddr, IoError]];
+  mut rx OneshotReceiver[Result[SocketAddr, IoError]];
+  tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
+  ep.open(bind, tx);
+  match rx.recv() {
+    case imm answer Some {
+      match &answer {
+        case imm a &Ok { return Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, a.port(), *a)); }
+        case imm e &Error { return Error[BoundEndpoint, IoError](*e); }
       }
     }
-    case is None[Started] {}
+    case is None[Result[SocketAddr, IoError]] {}
   }
-  code, bound, outbox, doneRx, epTx;
-}
-
-fn outboxOf(o &Option[PumpOutbox]) PumpOutbox {
-  match o {
-    case imm x &Some[PumpOutbox] { return x.clone(); }
-    else {}
-  }
-  panic("netmsg: no outbox");
+  Error[BoundEndpoint, IoError](new IoError(1u32));
 }
 
 // What a client binds its UDP socket to, port 0, for a server at 'server': the
@@ -347,67 +460,31 @@ fn clientBindAddress(server &SocketAddr) SocketAddr {
 // says which). Every client's events go to 'h'. Call 'endpoint.shutdown()'
 // before the program ends.
 pub fn listen(bind SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
-  mut code = 0u32;
-  mut bound = bind;
-  mut outbox Option[PumpOutbox] = None;
-  mut done Receiver[u32];
-  mut epTx Sender[Endpoint];
-  code, bound, outbox, done, epTx = startPump(bind);
-  if code != 0u32 {
-    return Error[BoundEndpoint, IoError](new IoError(code));
-  }
-  imm ep = new Endpoint(true, cfg, h, outboxOf(&outbox), done, bind, freshSeed());
-  epTx.send(ep);
-  Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, bound.port(), bound));
+  start(true, bind, bind, cfg, h);
 }
 
 // Connect to the server at 'server': the handshake runs in the background,
 // and 'h' hears Joined when it is done, or Left (NoAnswer or Refused) if it
 // fails. Call 'endpoint.shutdown()' before the program ends.
 pub fn connect(server SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
-  mut code = 0u32;
-  mut bound = server;
-  mut outbox Option[PumpOutbox] = None;
-  mut done Receiver[u32];
-  mut epTx Sender[Endpoint];
-  code, bound, outbox, done, epTx = startPump(clientBindAddress(&server));
-  if code != 0u32 {
-    return Error[BoundEndpoint, IoError](new IoError(code));
-  }
-  imm ep = new Endpoint(false, cfg, h, outboxOf(&outbox), done, server, freshSeed());
-  epTx.send(ep);
-  Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, bound.port(), bound));
+  start(false, clientBindAddress(&server), server, cfg, h);
 }
 
 // Like listen and connect, but a panic if the socket cannot be bound. (They do
 // not unwrap the Result: Cone moves no value out of a matched variant's
 // field.)
 pub fn mustListen(bind SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
-  mut code = 0u32;
-  mut bound = bind;
-  mut outbox Option[PumpOutbox] = None;
-  mut done Receiver[u32];
-  mut epTx Sender[Endpoint];
-  code, bound, outbox, done, epTx = startPump(bind);
-  if code != 0u32 {
-    panic("netmsg: cannot bind the server's UDP socket");
+  match &start(true, bind, bind, cfg, h) {
+    case imm b &Ok { return *b; }
+    else {}
   }
-  imm ep = new Endpoint(true, cfg, h, outboxOf(&outbox), done, bind, freshSeed());
-  epTx.send(ep);
-  new BoundEndpoint(ep, bound.port(), bound);
+  panic("netmsg: cannot bind the server's UDP socket");
 }
 
 pub fn mustConnect(server SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
-  mut code = 0u32;
-  mut bound = server;
-  mut outbox Option[PumpOutbox] = None;
-  mut done Receiver[u32];
-  mut epTx Sender[Endpoint];
-  code, bound, outbox, done, epTx = startPump(clientBindAddress(&server));
-  if code != 0u32 {
-    panic("netmsg: cannot bind the client's UDP socket");
+  match &start(false, clientBindAddress(&server), server, cfg, h) {
+    case imm b &Ok { return *b; }
+    else {}
   }
-  imm ep = new Endpoint(false, cfg, h, outboxOf(&outbox), done, server, freshSeed());
-  epTx.send(ep);
-  new BoundEndpoint(ep, bound.port(), bound);
+  panic("netmsg: cannot bind the client's UDP socket");
 }

@@ -1,0 +1,298 @@
+// ======== TextBuffer: a text buffer for large files ========
+//
+// METHOD: a PIECE TABLE (Bravo / Charles Crowley's "Data Structures for Text Sequences"; VS Code's
+// text buffer is a piece table too). The file as loaded is kept once, unchanged, in 'orig'; every
+// insertion is appended to 'add' and never moves; the text is a list of PIECES, each a (source,
+// start, length) window onto one of the two. An edit changes the piece list, never the text
+// already stored, so opening a file costs one copy, an edit costs O(pieces) however long the text
+// is, and typing at one place extends one piece. Each piece knows where it starts in the document,
+// and is found by binary search.
+//
+// LINES are a second index: 'lineStarts' holds the offset of every line's first byte. A line ends
+// at '\n'; a '\r' just before it is not part of the line's text (so CRLF files load, show and save
+// unchanged, byte for byte). Offsets are BYTES of UTF-8; the caller keeps them on character
+// boundaries (every function that moves by a character, in caret.cone, does).
+//
+// COST. An edit shifts the line index after it: O(lines) in the worst case (a 100 MB file of 2
+// million lines moves 16 MB per edit near its top), which is not the balanced piece tree VS Code
+// uses; a tree with line counts in its nodes makes it O(log n). Recorded in Design\textedit.md.
+
+pub struct Piece {
+  pub src u8;                   // 0: the original text, 1: the added text
+  pub start usize;              // where the window starts in its source
+  pub len usize;
+  pub at usize;                 // where the piece starts in the document
+}
+
+pub struct TextBuffer {
+  orig String;
+  add String;
+  pieces List[Piece];
+  lineStarts List[usize];
+  total usize = 0usize;
+
+  pub fn empty() TextBuffer {
+    mut b = new TextBuffer(String.empty(), String.empty(), List[Piece].empty(), List[usize].empty());
+    b.lineStarts.push(0usize);
+    b;
+  }
+
+  // A buffer holding a copy of 'text'
+  pub fn fromText(text &str) TextBuffer {
+    mut b = new TextBuffer(String.from(text), String.empty(), List[Piece].empty(), List[usize].empty());
+    b.lineStarts.push(0usize);
+    if text.len() > 0usize {
+      b.pieces.push(new Piece(0u8, 0usize, text.len(), 0usize));
+      b.total = text.len();
+      mut i = 0usize;
+      while i < text.len() {
+        if text[i] == 10u8 {b.lineStarts.push(i + 1usize);}
+        i = i + 1usize;
+      }
+    }
+    b;
+  }
+
+  pub fn len(self &) usize {total;}
+  pub fn pieceCount(self &) usize {pieces.len();}
+  pub fn lineCount(self &) usize {lineStarts.len();}
+
+  fn srcOf(self &, p &Piece) &str {
+    if p.src == 0u8 {orig.view();} else {add.view();};
+  }
+
+  // The index of the piece holding offset 'off' (pieces.len() when off is the end)
+  fn locate(self &, off usize) usize {
+    mut lo = 0usize;
+    mut hi = pieces.len();
+    while lo < hi {
+      imm mid = (lo + hi) / 2usize;
+      imm p = pieces[mid];
+      if off < p.at {hi = mid;}
+      elif off >= p.at + p.len {lo = mid + 1usize;}
+      else {return mid;}
+    }
+    pieces.len();
+  }
+
+  // The byte at offset 'off' (which must be inside the text)
+  pub fn byteAt(self &, off usize) u8 {
+    imm i = locate(off);
+    imm p = pieces[i];
+    imm s = srcOf(p);
+    s[p.start + (off - p.at)];
+  }
+
+  // The longest stretch of text starting at 'off' that lies in one piece (empty at the end)
+  pub fn chunk(self &, off usize) &str {
+    imm i = locate(off);
+    if i >= pieces.len() {return "";}
+    imm p = pieces[i];
+    imm s = srcOf(p);
+    s.slice(p.start + (off - p.at), p.start + p.len);
+  }
+
+  // The text from lo up to hi, copied
+  pub fn text(self &, lo usize, hi usize) String {
+    mut out = String.withCapacity(hi - lo);
+    mut at = lo;
+    while at < hi {
+      imm c = chunk(at);
+      if c.len() == 0usize {return out;}
+      imm take = minUsize(c.len(), hi - at);
+      out.append(c.slice(0usize, take));
+      at = at + take;
+    }
+    out;
+  }
+
+  pub fn all(self &) String {text(0usize, total);}
+
+  // ---- lines ----
+
+  // The line holding offset 'off' (the last line for the end of the text)
+  pub fn lineOf(self &, off usize) usize {
+    mut lo = 0usize;
+    mut hi = lineStarts.len();
+    while hi - lo > 1usize {
+      imm mid = (lo + hi) / 2usize;
+      if *lineStarts[mid] <= off {lo = mid;} else {hi = mid;}
+    }
+    lo;
+  }
+
+  pub fn lineStart(self &, line usize) usize {*lineStarts[line];}
+
+  // Where the line's text ends: before its '\n', and before a '\r' that comes just before that
+  pub fn lineEnd(self &, line usize) usize {
+    mut e = if line + 1usize < lineStarts.len() {*lineStarts[line + 1usize] - 1usize;} else {total;};
+    if e > *lineStarts[line] and byteAt(e - 1usize) == 13u8 and line + 1usize < lineStarts.len() {e = e - 1usize;}
+    e;
+  }
+
+  // The start of the next line, or the end of the text for the last line (its '\n' included)
+  pub fn lineEndWithBreak(self &, line usize) usize {
+    if line + 1usize < lineStarts.len() {*lineStarts[line + 1usize];} else {total;};
+  }
+
+  pub fn lineLen(self &, line usize) usize {lineEnd(line) - lineStart(line);}
+  pub fn lineText(self &, line usize) String {text(lineStart(line), lineEnd(line));}
+
+  // True when the text uses CRLF line ends (decided by the first line break)
+  pub fn usesCrlf(self &) bool {
+    if lineStarts.len() < 2usize {return false;}
+    imm e = *lineStarts[1usize] - 1usize;
+    e > 0usize and byteAt(e - 1usize) == 13u8;
+  }
+
+  // ---- editing ----
+
+  // Inserts 's' so that it starts at offset 'off'
+  pub fn insert(self &mut, off usize, s &str) {
+    if s.len() == 0usize {return;}
+    imm addAt = add.len();
+    add.append(s);
+    imm piece = new Piece(1u8, addAt, s.len(), off);
+    imm i = locate(off);
+    // typing: the piece that ends at 'off' is the tail of 'add', so it simply grows
+    imm before = if i >= pieces.len() {pieces.len();} elif pieces[i].at == off {i;} else {0usize;};
+    if before > 0usize {
+      imm q = pieces[before - 1usize];
+      if q.src == 1u8 and q.start + q.len == addAt {
+        pieces.set(before - 1usize, new Piece(1u8, q.start, q.len + s.len(), q.at));
+        fixAt(before);
+        total = total + s.len();
+        indexInsert(off, s);
+        return;
+      }
+    }
+    // otherwise the piece list is made again around the new piece (a piece holding 'off' is split)
+    mut fresh = List[Piece].withCapacity(pieces.len() + 2usize);
+    mut placed = false;
+    mut k = 0usize;
+    while k < pieces.len() {
+      imm p = pieces[k];
+      if !placed and p.at == off {
+        fresh.push(piece);
+        placed = true;
+        fresh.push(*p);
+      }
+      elif !placed and off > p.at and off < p.at + p.len {
+        imm cut = off - p.at;
+        fresh.push(new Piece(p.src, p.start, cut, p.at));
+        fresh.push(piece);
+        fresh.push(new Piece(p.src, p.start + cut, p.len - cut, off));
+        placed = true;
+      }
+      else {fresh.push(*p);}
+      k = k + 1usize;
+    }
+    if !placed {fresh.push(piece);}
+    pieces = fresh;
+    fixAt(0usize);
+    total = total + s.len();
+    indexInsert(off, s);
+  }
+
+  // Recomputes the 'at' of every piece from index 'from' on
+  fn fixAt(self &mut, from usize) {
+    mut at = if from == 0usize {0usize;} else {pieces[from - 1usize].at + pieces[from - 1usize].len;};
+    mut k = from;
+    while k < pieces.len() {
+      imm p = *pieces[k];
+      pieces.set(k, new Piece(p.src, p.start, p.len, at));
+      at = at + p.len;
+      k = k + 1usize;
+    }
+  }
+
+  // The line index after 'off' gained s
+  fn indexInsert(self &mut, off usize, s &str) {
+    // the line starts after 'off' move; one at 'off' itself belongs to a line that keeps its start
+    imm first = lineOf(off) + 1usize;
+    mut nl = 0usize;
+    mut i = 0usize;
+    while i < s.len() {
+      if s[i] == 10u8 {nl = nl + 1usize;}
+      i = i + 1usize;
+    }
+    if nl == 0usize {
+      mut k = first;
+      while k < lineStarts.len() {
+        lineStarts.set(k, *lineStarts[k] + s.len());
+        k = k + 1usize;
+      }
+      return;
+    }
+    mut fresh = List[usize].withCapacity(lineStarts.len() + nl);
+    mut k = 0usize;
+    while k < first {
+      fresh.push(*lineStarts[k]);
+      k = k + 1usize;
+    }
+    i = 0usize;
+    while i < s.len() {
+      if s[i] == 10u8 {fresh.push(off + i + 1usize);}
+      i = i + 1usize;
+    }
+    while k < lineStarts.len() {
+      fresh.push(*lineStarts[k] + s.len());
+      k = k + 1usize;
+    }
+    lineStarts = fresh;
+  }
+
+  // Removes the text from lo up to hi
+  pub fn remove(self &mut, lo usize, hi usize) {
+    if hi <= lo {return;}
+    imm n = hi - lo;
+    mut fresh = List[Piece].withCapacity(pieces.len() + 1usize);
+    mut k = 0usize;
+    while k < pieces.len() {
+      imm p = pieces[k];
+      imm pe = p.at + p.len;
+      if pe <= lo or p.at >= hi {fresh.push(*p);}
+      else {
+        if p.at < lo {fresh.push(new Piece(p.src, p.start, lo - p.at, p.at));}
+        if pe > hi {fresh.push(new Piece(p.src, p.start + (hi - p.at), pe - hi, 0usize));}
+      }
+      k = k + 1usize;
+    }
+    pieces = fresh;
+    fixAt(0usize);
+    total = total - n;
+    // the line index: starts in (lo, hi] are gone, later ones move up
+    mut w = 0usize;
+    k = 0usize;
+    while k < lineStarts.len() {
+      imm st = *lineStarts[k];
+      if st <= lo {
+        lineStarts.set(w, st);
+        w = w + 1usize;
+      }
+      elif st > hi {
+        lineStarts.set(w, st - n);
+        w = w + 1usize;
+      }
+      k = k + 1usize;
+    }
+    lineStarts.truncate(w);
+  }
+
+  // Replaces the text from lo up to hi by 's'
+  pub fn replace(self &mut, lo usize, hi usize, s &str) {
+    remove(lo, hi);
+    insert(lo, s);
+  }
+
+  // Joins the pieces into one (after many edits, or before a save)
+  pub fn compact(self &mut) {
+    imm t = all();
+    orig = t;
+    add.clear();
+    pieces.clear();
+    if total > 0usize {pieces.push(new Piece(0u8, 0usize, total, 0usize));}
+  }
+}
+
+fn minUsize(a usize, b usize) usize {if a < b {a;} else {b;};}

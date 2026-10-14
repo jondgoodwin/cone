@@ -1,0 +1,126 @@
+// The command history with a made-up editor that is NOT text: a counter that commands add to.
+// That is the point: History knows nothing of what a command is.
+//
+//   Add(5), Add(7), Add(1)  -> 13;  undo -> 12;  undo -> 5;  redo -> 12;  a new Add(100) after an
+//   undo drops the redo stack: 5 + 100 = 105 and redo has nothing.
+//   A group of three Adds (open ... close) undoes as one step.
+//   Typing-like merging: Add(1) then Add(2) with the same tag merge to Add(3) = one step;
+//   a different tag, or a breakMerge, does not merge.
+//   Save point: dirty after a push, clean after undo back to it, still dirty if a push follows an
+//   undo past it.
+
+mod histtest;
+
+import testing use *;
+import collections use *;
+import textedit use *;
+
+struct Add {
+  n i64;
+}
+
+struct Counter {
+  value i64 = 0i64;
+}
+
+fn applyAdd(c &mut Counter, cmd &Add, undoing bool) {
+  if undoing {c.value = c.value - cmd.n;} else {c.value = c.value + cmd.n;}
+}
+
+fn mergeAdd(prev &mut Add, next &Add) bool {
+  prev.n = prev.n + next.n;
+  true;
+}
+
+fn doAdd(c &mut Counter, h &mut History[Add], n i64, tag u32) {
+  c.value = c.value + n;
+  h.push(new Add(n), tag);
+}
+
+fn main() i32 {
+  mut c = new Counter;
+  mut h = History[Add].make();
+  doAdd(&mut c, &mut h, 5i64, 1u32);
+  doAdd(&mut c, &mut h, 7i64, 1u32);
+  doAdd(&mut c, &mut h, 1i64, 1u32);
+  expectInt(c.value, 13i64, "three adds");
+  expectInt(i64.from(h.undoCount()), 3i64, "three steps");
+  expect(h.undo(&mut c, &applyAdd), "undo");
+  expectInt(c.value, 12i64, "after one undo");
+  expect(h.undo(&mut c, &applyAdd), "undo again");
+  expectInt(c.value, 5i64, "after two undos");
+  expect(h.canRedo(), "redo is possible");
+  expect(h.redo(&mut c, &applyAdd), "redo");
+  expectInt(c.value, 12i64, "after a redo");
+  doAdd(&mut c, &mut h, 100i64, 1u32);
+  expectInt(c.value, 112i64, "a new add");
+  expect(!h.canRedo(), "a new command drops the redo stack");
+  expectInt(i64.from(h.undoCount()), 3i64, "5, 7, 100");
+  expect(!h.redo(&mut c, &applyAdd), "redo has nothing");
+  while h.undo(&mut c, &applyAdd) {}
+  expectInt(c.value, 0i64, "undone to the start");
+  expect(!h.undo(&mut c, &applyAdd), "nothing more to undo");
+
+  // groups
+  mut c2 = new Counter;
+  mut g = History[Add].make();
+  g.open(2u32);
+  doAdd(&mut c2, &mut g, 1i64, 2u32);
+  g.open(2u32);                        // nested: no new group
+  doAdd(&mut c2, &mut g, 10i64, 2u32);
+  g.close();
+  doAdd(&mut c2, &mut g, 100i64, 2u32);
+  expect(!g.undo(&mut c2, &applyAdd), "no undo while a group is open");
+  g.close();
+  expectInt(i64.from(g.undoCount()), 1i64, "one step for the group");
+  expectInt(c2.value, 111i64, "all three applied");
+  expect(g.undo(&mut c2, &applyAdd), "undo the group");
+  expectInt(c2.value, 0i64, "all three undone together");
+  expect(g.redo(&mut c2, &applyAdd), "redo the group");
+  expectInt(c2.value, 111i64, "all three redone together");
+  g.open(3u32);
+  g.close();
+  expectInt(i64.from(g.undoCount()), 1i64, "an empty group leaves no step");
+
+  // merging
+  mut c3 = new Counter;
+  mut m = History[Add].make();
+  c3.value = c3.value + 1i64;
+  m.pushMerging(new Add(1i64), 7u32, &mergeAdd);
+  c3.value = c3.value + 2i64;
+  m.pushMerging(new Add(2i64), 7u32, &mergeAdd);
+  expectInt(i64.from(m.undoCount()), 1i64, "same tag merges");
+  c3.value = c3.value + 4i64;
+  m.pushMerging(new Add(4i64), 8u32, &mergeAdd);
+  expectInt(i64.from(m.undoCount()), 2i64, "another tag does not");
+  m.breakMerge();
+  c3.value = c3.value + 8i64;
+  m.pushMerging(new Add(8i64), 8u32, &mergeAdd);
+  expectInt(i64.from(m.undoCount()), 3i64, "a broken merge does not");
+  m.undo(&mut c3, &applyAdd);
+  m.undo(&mut c3, &applyAdd);
+  expectInt(c3.value, 3i64, "undo of 8 and 4 leaves the merged 1+2");
+  m.undo(&mut c3, &applyAdd);
+  expectInt(c3.value, 0i64, "the merged step undoes as one");
+
+  // save point
+  mut c4 = new Counter;
+  mut s = History[Add].make();
+  expect(!s.isDirty(), "new history is clean");
+  doAdd(&mut c4, &mut s, 1i64, 1u32);
+  expect(s.isDirty(), "dirty after a push");
+  s.markSaved();
+  expect(!s.isDirty(), "clean once saved");
+  doAdd(&mut c4, &mut s, 2i64, 1u32);
+  expect(s.isDirty(), "dirty again");
+  s.undo(&mut c4, &applyAdd);
+  expect(!s.isDirty(), "undo back to the save point is clean");
+  s.undo(&mut c4, &applyAdd);
+  expect(s.isDirty(), "undo past it is dirty");
+  doAdd(&mut c4, &mut s, 9i64, 1u32);
+  s.redo(&mut c4, &applyAdd);
+  s.undo(&mut c4, &applyAdd);
+  s.undo(&mut c4, &applyAdd);
+  expect(s.isDirty(), "the saved state is unreachable after a new push");
+  done();
+}

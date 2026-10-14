@@ -865,7 +865,8 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 if (why)
                     errorMsgNode(*argsp, whycode, "%s", why);
                 else
-                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
+                        iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));
             }
         }
         parmp++;
@@ -1184,7 +1185,8 @@ static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 // already a reference or a pointer: a pointer is not borrowed from.
 //
 // The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self &'
-// method borrows for reading even from a mutable variable, then 'mut'. The
+// method borrows for reading even from a mutable variable, then 'mut', then
+// 'uni' (a 'self &uni' method, which a local lends as '&uni' does). The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
 // hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
 // ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
@@ -1207,12 +1209,17 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         return NULL;
     // A type declaring Immutable has 'self &' as 'self &imm', which a 'ro'
     // borrow is not accepted as, so 'imm' is tried between the two
-    PermNode *perms[3];
+    // A method declaring 'self &uni' is reached last: a local is unique, so
+    // lending it 'uni' is the one borrow left, and the borrow keeps every other
+    // name from reaching it while the call runs (doc/reference/refperm.html,
+    // "From 'uni'")
+    PermNode *perms[4];
     int nperms = 0;
     perms[nperms++] = roPerm;
     if (itypeIsImmutable(objtype))
         perms[nperms++] = immPerm;
     perms[nperms++] = mutPerm;
+    perms[nperms++] = uniPerm;
     for (int i = 0; i < nperms; ++i) {
         INode *perm = newPermUseNode(perms[i]);
         INode *probe = newBorrowMutRef(obj, objtype, perm);
@@ -1228,7 +1235,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         if (iexpIsLval(obj)) {
             // 'u.fields[i].adv.push(x)': a place checked for reading, reached
             // through an index, is lent mutably to a method that writes it
-            if (perms[i] == mutPerm) {
+            if (perms[i] == mutPerm || perms[i] == uniPerm) {
                 INode *lvalperm = (INode*)immPerm;
                 uint16_t scope;
                 iexpGetLvalInfo(obj, &lvalperm, &scope);
@@ -3646,6 +3653,51 @@ static int fnCallArgMayInfer(INode *arg) {
     return arg->tag == FnCallTag;
 }
 
+// A variant of a generic enum constructed with its type arguments left to be
+// inferred ('Some(5)', 'None', 'Some(None)'): what the generic it is given to
+// wants of it may fix them ('Some(5)' wanted as an 'Option[i64]' holds an i64).
+// Such an argument is checked after the others, wanted as the type its parameter
+// has by then (genericFnArgExpect). Only a construction, never a function call:
+// the order a call's arguments are checked in is what narrowing sees
+// (narrowCallMade).
+static int fnCallArgIsCtor(INode *arg) {
+    if (arg->tag == NamedValTag)
+        arg = ((NamedValNode*)arg)->val;
+    if (arg->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)arg;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return 0;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    return variant != NULL && variant->genericinfo != NULL;
+}
+
+// Is this a construction only where it goes can type: a variant of a generic enum
+// that has a type parameter none of its values names, with its type arguments not
+// written ('None'), or one holding such a construction ('Some(None)')? As the
+// receiver of '==', it is typed as the other side is.
+static int fnCallArgNeedsExpected(INode *arg) {
+    if (arg->tag == NamedValTag)
+        arg = ((NamedValNode*)arg)->val;
+    if (arg->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)arg;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return 0;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    if (variant == NULL || variant->genericinfo == NULL)
+        return 0;
+    if (genericVariantParmUnnamed(variant))
+        return 1;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if (fnCallArgNeedsExpected(*argp))
+                return 1;
+    return 0;
+}
+
 // A name that stands as a value term (the parser's mark) and names an empty
 // variant, 'Lamp.Red' or 'None', or names one with its type arguments, 'None[i32]',
 // is that variant constructed. It is built here as the literal the variant was
@@ -4031,6 +4083,13 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         if (littype->tag == StructTag)
             litstruct = (StructNode*)littype;
     }
+    // A generic variant constructed, 'Some(None)': its values are wanted as the
+    // type its fields have once the other values and where it goes say what
+    // its type parameters are, so a construction among them waits for those
+    StructNode *genlit = NULL;
+    if (node->methfld == NULL && (node->flags & FlagIndex) && (node->flags & FlagCtorParen) && node->args
+        && fnCallVariantNamed(node->objfn) && fnCallVariantNamed(node->objfn)->genericinfo)
+        genlit = fnCallVariantNamed(node->objfn);
 
     // An operator whose one argument is a call, 'x == None' or 'xs <- make()',
     // is checked receiver first, as a method call is, so the argument can be
@@ -4072,6 +4131,16 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // declares there when they all agree on one.
     INode **argsp;
     uint32_t cnt;
+    // A generic type's written type arguments are named, not held: whatever
+    // holds one by value lays it out itself (structTypeSettle), so while a
+    // layout is in flight an argument that is itself an instance is checked as
+    // a reference's target is (refTargetTypeCheck). 'List[Option[Node]]' in a
+    // field of Node makes the 'Option[Node]' without laying it out, as
+    // 'List[Node]' makes 'Node'.
+    int argsnamed = structValueInFlight() && node->methfld == NULL && node->args
+        && (node->flags & FlagIndex) && !(node->flags & (FlagCtorParen | FlagNew))
+        && isTypeNode(node->objfn) && nameUseNames(node->objfn, StructTag)
+        && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL;
     if (node->args) {
         uint32_t argi = 0;
         uint32_t ovfirst = firstparm;
@@ -4101,11 +4170,39 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 ++argi;
                 continue;
             }
+            // So does a construction only its place can type ('None'), given to a
+            // generic function or variant: the other arguments, and where the call's
+            // value goes, may say what its type parameters are
+            if ((gengeneric || genlit) && fnCallArgIsCtor(*argsp)) {
+                ++argi;
+                continue;
+            }
             if ((*argsp)->tag == ClosureTag)
                 fnCallCheckClosureArg(pstate, argsp, expect);
+            else if (argsnamed && (*argsp)->tag == FnCallTag) {
+                structTargetEnter();
+                inodeTypeCheck(pstate, argsp, expect);
+                structTargetExit();
+            }
             else
                 inodeTypeCheck(pstate, argsp, expect);
             ++argi;
+        }
+        if (gengeneric || genlit) {
+            argi = 0;
+            for (nodesFor(node->args, cnt, argsp)) {
+                if (fnCallArgIsCtor(*argsp)) {
+                    INode *wanted = gengeneric
+                        ? genericFnArgExpect(pstate, gengeneric, node->args, argi, firstparm, expectType)
+                        : genericStructArgExpect(pstate, genlit, node->args, argi, expectType);
+                    inodeTypeCheck(pstate, argsp, wanted ? wanted : unknownType);
+                    // Its type is the enum its parameter takes, not the variant it
+                    // is: the call reads its type parameters off the arguments
+                    if (wanted && isExpNode(*argsp) && !inodeIsError(*argsp))
+                        iexpCoerceIn(pstate, argsp, wanted);
+                }
+                ++argi;
+            }
         }
         if (gengeneric || overloadset) {
             if (!fnCallClosureArgs(pstate, node, gengeneric, overloadset, firstparm)) {
@@ -4119,7 +4216,21 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     if (genericSubstitute(pstate, nodep, expectType))
         return;
 
-    if (!calleeIsOverload && !objfnChecked)
+    // 'None == x': a construction only its place can type, as the receiver of a
+    // comparison, is typed as the other side is, which is checked by now
+    INode *rcvexpect = NULL;
+    if (!calleeIsOverload && !objfnChecked && argopname && (argopname == eqName || argopname == neName)
+        && node->args && node->args->used == 1 && fnCallArgNeedsExpected(node->objfn)) {
+        INode *other = nodesGet(node->args, 0);
+        if (isExpNode(other) && !inodeIsError(other) && ((IExpNode*)other)->vtype != unknownType
+            && ((IExpNode*)other)->vtype != NULL)
+            rcvexpect = iexpGetDerefTypeDcl(other);
+    }
+    if (rcvexpect) {
+        inodeTypeCheck(pstate, &node->objfn, rcvexpect);
+        objfnChecked = 1;
+    }
+    else if (!calleeIsOverload && !objfnChecked)
         inodeTypeCheckAny(pstate, &node->objfn);
 
     // A callee already reported as bad -- a generic that could not be

@@ -1,0 +1,127 @@
+// Particles in a mirror's picture, on a real GPU with no window. A reflected camera at
+// (3, 0, 4) looking at the origin, the mirror the plane x = 0, draws the world reflected
+// (its projection turns clip x round to keep the triangles' winding, camera.cone); that is
+// exactly what a plain camera at (-3, 0, 4) looking at the origin sees of the world itself.
+// So the reflected camera's 64 x 64 picture of the particles must be the plain camera's,
+// pixel for pixel. The particles are on the camera's side of the plane (at x = 1): sprites
+// stretched along their motion (up), and rising ribbon trails, both of which are faced or
+// stretched across the camera's view, so a particle pass that took the wrong eye for a
+// reflected camera (its placement's, not its reflection) draws them differently (before
+// the fix: 61 of the 73 lit pixels differed). The one line printed is the lit and
+// differing counts.
+//
+// 1. The plain camera's picture has particles lit.
+// 2. The reflected camera's picture has no pixel more than 12 of 765 away from it.
+// 3. No Vulkan call failed, and the validation layer said nothing.
+
+mod viewmirror;
+
+import testing use *;
+import libc;
+import stdio use *;
+import geomath use *;
+import collections use *;
+import gpu use *;
+import render use *;
+import vfx use *;
+
+const SIZE = 64u32;
+
+fn luma(p *u8, x usize, y usize) i64 {
+  imm at = p + (y * usize.from(SIZE) + x) * 4usize;
+  i64.from(*at) + i64.from(*(at + 1usize)) + i64.from(*(at + 2usize));
+}
+
+// Draw the particles into the view's picture seen by 'cam', and copy the picture into 'readback'
+fn picture(view &mut RenderView, renderer &mut Renderer, device &mut Device, particles &mut ParticleRenderer, cam &Camera,
+    light &Light, readback &Buffer) {
+  imm empty = DrawList.empty();
+  require(view.render(renderer, device, cam, light, &empty, 1u32), "the view drawn");
+  mut encoder = device.createCommandEncoder();
+  particles.render(device, &mut encoder, view.texture(renderer), &view.depth, cam);
+  encoder.copyTextureToBuffer(view.texture(renderer), readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn main() i32 {
+  mut instance = Instance.create("vfx view mirror");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  renderer.keepDepth = true;
+  mut particles = ParticleRenderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid() and particles.isValid(), "the renderers");
+  mut view = RenderView.create(&mut renderer, &mut device, SIZE, SIZE);
+  require(view.isValid(), "a view");
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  imm light = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.5707963), new Color(0.2, 0.2, 0.2, 1.));
+
+  mut moving = Emitter.make();
+  moving.rate = 50.;
+  moving.speed = 1.;
+  moving.shape = SHAPE_SPHERE;
+  moving.radius = 0.05;
+  moving.sizeStart = 0.2;
+  moving.sizeEnd = 0.2;
+  moving.fadeOut = 0.;
+  moving.colors = [new Color(1., 0.8, 0.6, 2.), new Color(1., 0.8, 0.6, 2.), new Color(1., 0.8, 0.6, 2.),
+    new Color(1., 0.8, 0.6, 2.)];
+  mut rising = moving;
+  rising.rate = 20.;
+  rising.sizeStart = 0.15;
+  rising.sizeEnd = 0.15;
+  rising.trailTime = 0.5;
+  imm movers = particles.addEmitter(&mut device, STYLE_SPRITES);
+  imm trailer = particles.addEmitter(&mut device, STYLE_TRAILS);
+  imm moverEvent = Event.at(5u32, 0d, Mat4.fromTranslation(new Vec3(1., -0.4, 0.)));
+  imm trailEvent = Event.at(6u32, 0d, Mat4.fromTranslation(new Vec3(1., -0.4, 0.5)));
+  particles.update(&mut device, movers, &moving, &moverEvent, 2d);
+  particles.update(&mut device, trailer, &rising, &trailEvent, 2d);
+
+  mut plain = Camera.make();
+  plain.lookAt(new Vec3(-3., 0., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  mut seer = Camera.make();
+  seer.lookAt(new Vec3(3., 0., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm plane = mirrorPlane(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(3., 0., 4.));
+  imm reflected = seer.reflectedAbout(plane);
+
+  mut plainLuma = new Array[i64, 4096] <- fill 0i64;
+  picture(&mut view, &mut renderer, &mut device, &mut particles, &plain, &light, &readback);
+  mut lit = 0u32;
+  mut i = 0usize;
+  while i < 4096usize {
+    plainLuma[i] = luma(p, i % 64usize, i / 64usize);
+    if plainLuma[i] > 30i64 { lit = lit + 1u32; }
+    i = i + 1usize;
+  }
+  picture(&mut view, &mut renderer, &mut device, &mut particles, &reflected, &light, &readback);
+  mut differing = 0u32;
+  i = 0usize;
+  while i < 4096usize {
+    imm d = luma(p, i % 64usize, i / 64usize) - plainLuma[i];
+    imm a = if d < 0i64 { 0i64 - d; } else { d; };
+    if a > 12i64 { differing = differing + 1u32; }
+    i = i + 1usize;
+  }
+  print <- "lit "; print <- lit; print <- " differing "; print <- differing; print <- "\n";
+  expect(lit > 40u32, "the plain camera's picture has particles lit");
+  expectUInt(u64.from(differing), 0u64, "the reflected camera's picture is the plain camera's");
+
+  view.release(&mut renderer, &mut device);
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

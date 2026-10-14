@@ -1,0 +1,112 @@
+// What stays refused when a String appended to is a field of another struct than the viewed one's
+// owner (collection_reshape_receiver_other_struct_success holds what is accepted). The receiver is
+// known to be another value only when it is written as a by-value field of a struct that is not the
+// struct the view is into; each function here is a program that read freed memory when the two
+// strings were one value, which the call's arguments can make them:
+//   - the same struct through two references ('a' and 'b' may be one), or the same generic instance;
+//   - a receiver that is a name, a list's element, or a field that holds a reference;
+//   - a view reached through a name, or through a field that holds a reference;
+//   - a variant of an enum, whose sibling variants share its storage.
+
+mod collection_flow_reshape_receiver_other_struct;
+
+import collections use *;
+
+struct Input { pub clipboard String; pub n i32; }
+struct Ui { pub texts List[String]; pub input Input; pub msg Msg; }
+struct Item { pub label String; pub nums List[i64]; }
+struct Doc { pub items List[Item]; pub note Input; }
+struct Ed { pub items List[Item]; }
+struct RefHold { pub s &mut String; }
+struct Box[T] { pub v T; pub n i32; }
+struct Pair[A, B] { pub x A; pub y B; }
+
+enum Msg {
+  struct Text { pub s String; }
+  struct Note { pub s String; pub n i32; }
+}
+
+// The same struct through two references
+fn sameItem(a &mut Ed, b &mut Ed) {
+  a.items[0usize].label.append(b.items[0usize].label.view());      //~ ErrorShapeReshape
+}
+
+fn sameInput(a &mut Doc, b &mut Doc) {
+  a.note.clipboard.append(b.note.clipboard.view());                //~ ErrorShapeReshape
+}
+
+fn sameList(a &mut Ui, b &mut Ui) {
+  a.texts[0usize].append(b.texts[0usize].view());                  //~ ErrorShapeReshape
+}
+
+fn sameBox(p &mut Box[String], q &mut Box[String]) {
+  p.v.append(q.v.view());                                          //~ ErrorShapeReshape
+}
+
+fn samePair(p &mut Pair[String, i32], q &mut Pair[String, i32]) {
+  p.x.append(q.x.view());                                          //~ ErrorShapeReshape
+}
+
+fn sameLists(a &mut Doc, b &mut Doc) i64 {
+  imm r = b.items[0usize].nums[0usize];
+  a.items[0usize].nums.push(1);                                    //~ ErrorShapeReshape
+  *r;
+}
+
+// A receiver that says nothing of where it is held
+fn nameReceiver(s &mut String, ui &mut Ui) {
+  s.append(ui.texts[0usize].view());                               //~ ErrorShapeReshape
+}
+
+fn elementReceiver(ui &mut Ui) {
+  ui.texts[1usize].append(ui.texts[0usize].view());                //~ ErrorShapeReshape
+}
+
+fn refFieldReceiver(ui &mut Ui, r &mut RefHold) {
+  r.s.append(ui.input.clipboard.view());                           //~ ErrorShapeReshape
+}
+
+// A view that says nothing of where it is held
+fn nameView(ui &mut Ui, s &mut String) {
+  ui.input.clipboard.append(s.view());                             //~ ErrorShapeReshape
+}
+
+fn refFieldView(ui &mut Ui, r &mut RefHold) {
+  ui.input.clipboard.append(r.s.view());                           //~ ErrorShapeReshape
+}
+
+// Variants of one enum share storage
+fn siblingVariants(a &mut Msg, b &mut Msg) {
+  match a {
+    case mut x Text {
+      match b {
+        case mut y Note { x.s.append(y.s.view()); }                //~ ErrorShapeReshape
+        else { }
+      }
+    }
+    else { }
+  }
+}
+
+fn variantReceiver(ui &mut Ui) {
+  match &mut ui.msg {
+    case mut y Note { y.s.append(ui.input.clipboard.view()); }     //~ ErrorShapeReshape
+    else { }
+  }
+}
+
+// A method: the clipboard is another struct's, the list's element is not another list's
+struct Pad {
+  pub texts List[String];
+  pub input Input;
+  pub fn dup(self &mut, i usize) { texts[0usize].append(texts[i].view()); }  //~ ErrorShapeReshape
+}
+
+// A borrow held in a name: a change to the very list is still refused
+fn heldList(d &mut Doc) {
+  imm r = d.items[0usize].nums[0usize];
+  d.items[0usize].nums.push(1);                                    //~ ErrorShapeReshape
+  *r;
+}
+
+fn main() {}

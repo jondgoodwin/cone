@@ -25,11 +25,18 @@
 
 // A token: the driver's mark (the top bit, and its number in the next ten:
 // no two live drivers have the same), the operation's kind (five bits: the
-// layer above's, 'upperToken', has the top one set), the record's
-// generation and index
+// layer above's, 'upperToken', has the top one set), the driver's
+// generation on its loop (eight bits: a later driver that took a dead
+// one's number has another, so it does not claim the dead one's late
+// completions), the record's generation (sixteen bits) and index (twenty-four).
+// An upper token has the driver's generation too, and the layer above's own
+// forty bits where the record's generation and index are
 const tokTop = 0x8000000000000000u64;
 const numberShift = 53u64;           // the mark's number: bits 53 to 62
 const kindShift = 48u64;
+const dgenShift = 40u64;             // the driver's generation: bits 40 to 47
+const dgenMask = 0xFFu64;
+const upperMask = 0xFFFFFFFFFFu64;   // the layer above's own part of an upper token: bits 0 to 39
 const upperKind = 16u64;             // the kind bit that is the layer above's
 const kRecv = 1u64;
 const kReady = 2u64;
@@ -40,7 +47,8 @@ const kAccept = 6u64;
 const kTimer = 7u64;
 const kWatch = 8u64;
 const kCall = 9u64;          // a layer's work on the blocking pool
-const genMask = 0xFFFFFFu32;
+const genMask = 0xFFFFu32;           // a record's generation: bits 24 to 39
+const indexMask = 0xFFFFFFu32;
 
 // A connection's state
 const cFree = 0u32;
@@ -196,7 +204,15 @@ pub struct Driver {
   pub fn owns(self &, token u64) bool {(token >> numberShift) == (tokBase >> numberShift);}
 
   fn tok(self &, kind u64, index u32, gen u32) u64 {
-    tokBase | (kind << kindShift) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
+    tokBase | (kind << kindShift) | (u64.from(gen & genMask) << 24u64) | u64.from(index & indexMask);
+  }
+
+  // Take the driver's generation from its loop, at its first operation
+  // (a connect or a listen); later ones keep it
+  fn stamp(self &mut, lp &mut Loop) {
+    if ((tokBase >> dgenShift) & dgenMask) == 0u64 {
+      tokBase = tokBase | (lp.nextDriverGen() << dgenShift);
+    }
   }
 
   // A token in this driver's space for the layer above it, to submit its
@@ -204,14 +220,23 @@ pub struct Driver {
   // groups): its kind has the top of its five bits set, which no operation
   // of the driver's has, so 'complete' leaves its completion (false) and
   // 'owns' is true of it. 'kind' is the layer's own, 0 to 15 (a larger one
-  // is a panic); 'n' is the layer's own, its low 48 bits kept
-  pub fn upperToken(self &, kind u8, n u64, file &Array[u8] = srcFile(), line u32 = srcLine()) u64 {
+  // is a panic); 'n' is the layer's own, its low 40 bits kept: the driver's
+  // generation takes the eight above them. The generation is taken from
+  // 'lp', the loop the token goes to, if the driver has none yet (as a
+  // connect or a listen takes it)
+  pub fn upperToken(self &mut, lp &mut Loop, kind u8, n u64, file &Array[u8] = srcFile(), line u32 = srcLine()) u64 {
     if kind >= 16u8 {panic("httpconn: an upper token's kind is 0 to 15", file, line);}
-    tokBase | ((u64.from(kind) | upperKind) << kindShift) | (n & 0xFFFFFFFFFFFFu64);
+    self.stamp(lp);
+    tokBase | ((u64.from(kind) | upperKind) << kindShift) | (n & upperMask);
   }
 
-  // Whether a token is one 'upperToken' made, and its kind and n
-  pub fn isUpperToken(self &, token u64) bool {self.owns(token) and ((token >> kindShift) & upperKind) != 0u64;}
+  // Whether a token is one this driver's 'upperToken' made: its number and
+  // its generation are this driver's (a dead driver's with the same number
+  // had another)
+  pub fn isUpperToken(self &, token u64) bool {
+    self.owns(token) and ((token >> kindShift) & upperKind) != 0u64
+      and ((token >> dgenShift) & dgenMask) == ((tokBase >> dgenShift) & dgenMask);
+  }
 
   // ---------------------------------------------------------------------------
   // The tables
@@ -1052,7 +1077,10 @@ pub struct Driver {
     if not self.owns(token) {return false;}
     imm kind = (token >> kindShift) & 31u64;
     if kind >= upperKind {return false;}  // the layer above's (upperToken)
-    imm index = u32.from(token & u64.from(genMask));
+    // A dead driver's number comes round again: its late completion has
+    // that driver's generation, not this one's, and is not this driver's
+    if ((token >> dgenShift) & dgenMask) != ((tokBase >> dgenShift) & dgenMask) {return false;}
+    imm index = u32.from(token & u64.from(indexMask));
     imm gen = u32.from((token >> 24u64) & u64.from(genMask));
     imm now = Instant.now();
     if kind == kAccept {
@@ -1184,6 +1212,7 @@ pub struct Driver {
   // A client connection whose bytes pass through layer (see LAYERS)
   pub fn connectWith(self &mut, lp &mut Loop, host &str, port u16, layer So[Layer], sink Sink) ConnId {
     imm now = Instant.now();
+    self.stamp(lp);
     imm i = self.openClient(lp, layer, sink, now);
     imm c = self.connAt(i) as &mut Conn;
     imm id = self.connIdOf(i);
@@ -1212,6 +1241,7 @@ pub struct Driver {
 
   // A client connection to an address, with no lookup
   pub fn connectAddr(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) ConnId {
+    self.stamp(lp);
     imm i = self.openClient(lp, plainLayer(), sink, Instant.now());
     imm c = self.connAt(i) as &mut Conn;
     imm id = self.connIdOf(i);
@@ -1354,6 +1384,7 @@ pub struct Driver {
   // Listen, each accepted connection's bytes passing through a layer 'make'
   // makes (see LAYERS)
   pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make So[LayerMaker + ShapeKeeping], sink Sink) Result[ListenerId, IoError] {
+    self.stamp(lp);
     mut h = Handle.none();
     match lp.listen(addr) {
       case imm r Ok {h = r;}

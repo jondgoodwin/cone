@@ -1204,8 +1204,10 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
         if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
             continue;
         // A generic default is no requirement: nothing is compared of it, and its
-        // signature (a step naming 'Self') is made only where it is called
-        if (((FnDclNode*)*nodesp)->genericinfo && ((FnDclNode*)*nodesp)->value)
+        // signature (a step naming 'Self') is made only where it is called. Nor is
+        // an 'inline' one, which fills no slot of the trait either
+        if (((FnDclNode*)*nodesp)->value
+            && (((FnDclNode*)*nodesp)->genericinfo || (((FnDclNode*)*nodesp)->flags & FlagInline)))
             continue;
         if (!((*nodesp)->flags & (TypeChecked | TypeChecking))) {
             TypeCheckState tstate;
@@ -2688,9 +2690,15 @@ static int genericWhereReadsLayout(Nodes *where) {
 
 // Does a condition decide anything about this generic's instances: a 'where'
 // on the generic, on its enum, or on a member of either or of a variant?
-static int genericMembersConditioned(StructNode *type) {
+//
+// 'typelevel' asks only for those that cannot wait: a member's clause can, when
+// an argument is unsettled (genericAbsentMembers, 'late'); an 'is' entry's and
+// the generic's own cannot.
+static int genericMembersConditioned(StructNode *type, int typelevel) {
     if (type->condis)
         return 1;
+    if (typelevel)
+        return 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->nodelist, cnt, nodesp)) {
@@ -2700,29 +2708,83 @@ static int genericMembersConditioned(StructNode *type) {
     return 0;
 }
 
-static int genericConditioned(INode *generic, GenericInfo *genericinfo) {
+static int genericConditioned(INode *generic, GenericInfo *genericinfo, int typelevel) {
     if (generic->tag == FnDclTag)
         return genericWhereReadsLayout(((FnDclNode*)generic)->where);
     if (generic->tag != StructTag)
         return 0;
     StructNode *type = (StructNode*)generic;
-    if (genericWhereReadsLayout(genericinfo->where) || genericMembersConditioned(type))
+    if (genericWhereReadsLayout(genericinfo->where) || genericMembersConditioned(type, typelevel))
         return 1;
     StructNode *owner = (type->flags & HasTagField) ? structGetBaseTrait(type) : NULL;
     if (owner == NULL)
         return 0;
     if ((owner->genericinfo && genericWhereReadsLayout(owner->genericinfo->where))
-        || genericMembersConditioned(owner))
+        || genericMembersConditioned(owner, typelevel))
         return 1;
     if (owner->derived) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(owner->derived, cnt, nodesp)) {
-            if (genericMembersConditioned((StructNode*)*nodesp))
+            if (genericMembersConditioned((StructNode*)*nodesp, typelevel))
                 return 1;
         }
     }
     return 0;
+}
+
+// Does a 'where' list, a type parameter's bound among it, ask about argument 'i'?
+// A clause not of the form 'T is Trait' is taken to ask about every argument.
+static int genericWhereNamesArg(Nodes *where, Nodes *parms, Nodes *args, uint32_t i) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        if ((*nodesp)->tag != IsTag)
+            return 1;
+        if (genericNamedTrait(((CastNode*)*nodesp)->typ) == sendableTrait)
+            continue;
+        GenVarDclNode *parm;
+        genericClauseType((CastNode*)*nodesp, parms, args, &parm);
+        if (parm == NULL || parm == (GenVarDclNode*)nodesGet(parms, i))
+            return 1;
+    }
+    return 0;
+}
+
+// Does a condition the instance cannot wait for -- its own 'where', its
+// enum's, or an 'is' entry's -- read argument 'i' of the generic's instance?
+static int genericTypeReadsArg(INode *generic, GenericInfo *genericinfo, Nodes *args, uint32_t i) {
+    if (generic->tag != StructTag)
+        return 1;
+    StructNode *type = (StructNode*)generic;
+    StructNode *owner = (type->flags & HasTagField) ? structGetBaseTrait(type) : NULL;
+    if (genericMembersConditioned(type, 1) || (owner && genericMembersConditioned(owner, 1)))
+        return 1;
+    if (owner && owner->derived) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(owner->derived, cnt, nodesp))
+            if (genericMembersConditioned((StructNode*)*nodesp, 1))
+                return 1;
+    }
+    if (genericWhereReadsLayout(genericinfo->where)
+        && genericWhereNamesArg(genericinfo->where, genericinfo->parms, args, i))
+        return 1;
+    if (owner && owner->genericinfo && genericWhereReadsLayout(owner->genericinfo->where)
+        && genericWhereNamesArg(owner->genericinfo->where, owner->genericinfo->parms, args, i))
+        return 1;
+    return 0;
+}
+
+// An instance of a generic made as a reference's target, whose layout waits
+// (structTargetWait): 'Option[Node]' named inside Node's own layout. Laying it
+// out first to decide a condition would lay Node out inside itself.
+static int genericArgWaiting(INode *arg) {
+    if (arg->tag == ULitTag || !isTypeNode(arg))
+        return 0;
+    INode *dcl = itypeGetTypeDcl(arg);
+    return dcl->tag == StructTag && !(dcl->flags & (TypeChecking | TypeChecked))
+        && itypeInstanceTypeArgs(dcl) != NULL;
 }
 
 // An instance of a generic enum made as a reference's target: laid out with
@@ -2870,11 +2932,25 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // layouts. Named as a reference's target, an argument's layout may be
     // waiting (structTargetWait), so where a condition decides anything about
     // the instance, the arguments are laid out first.
-    if (structTargetDeferring() && genericConditioned(nodetoclone, genericinfo)) {
+    //
+    // An argument that is an instance still waiting is left so when only a
+    // member's clause reads it: that member is decided once no layout is in
+    // flight (genericLateWhere), as it is for an argument in flight. A
+    // condition the instance cannot wait for lays it out wherever the instance
+    // is made, since an argument written as an instance waits whatever the
+    // instance is made as (fnCallTypeCheckNode).
+    int typecond = genericConditioned(nodetoclone, genericinfo, 1);
+    if ((structTargetDeferring() && genericConditioned(nodetoclone, genericinfo, 0)) || typecond) {
+        int deferring = structTargetDeferring();
         uint32_t target = structTargetSuspend();
-        for (nodesFor(written, cnt, nodesp))
-            if ((*nodesp)->tag != ULitTag)
+        uint32_t argi = 0;
+        for (nodesFor(written, cnt, nodesp)) {
+            uint32_t i = argi++;
+            if ((*nodesp)->tag == ULitTag)
+                continue;
+            if (genericArgWaiting(*nodesp) ? (typecond && genericTypeReadsArg(nodetoclone, genericinfo, written, i)) : deferring)
                 structTypeSettle(pstate, *nodesp);
+        }
         structTargetResume(target);
     }
 
@@ -3433,6 +3509,121 @@ FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *
     if (inodeIsError(copy) || itypeGetTypeDcl(copy)->tag != FnSigTag)
         return NULL;
     return (FnSigNode*)itypeGetTypeDcl(copy);
+}
+
+// The type argument 'argi' of a call of a generic is wanted as, when the other
+// arguments and the type expected of the call's value say every type parameter
+// that parameter names. 'ptypes' are the generic's parameter (or field) types,
+// as written in its type parameters, one for each written argument (NULL where
+// none is certain). The others are read as the call's own inference will read
+// them, quietly, into a scratch call; an argument not yet checked, or this one,
+// says nothing. This is what lets 'Some(None)' and 'id2(None, 5)' give their
+// 'None' the type its place needs: the parameter's type with those parameters
+// replaced. NULL when some parameter is still unsaid, or the copy is refused.
+static INode *genericArgExpect(TypeCheckState *pstate, GenericInfo *info, Nodes *where, INode *result,
+        INode **ptypes, Nodes *args, uint32_t argi, INode *expectType) {
+    if (ptypes[argi] == NULL)
+        return NULL;
+    FnCallNode *known = newFnCallNode((INode*)newNameUseNode(anonName), info->parms->used);
+    uint32_t j;
+    for (j = 0; j < info->parms->used; ++j)
+        nodesAdd(&known->args, (INode*)NULL);
+    ++genericExpectMode;
+    for (j = 0; j < args->used; ++j) {
+        INode *arg = nodesGet(args, j);
+        INode *val = arg->tag == NamedValTag ? ((NamedValNode*)arg)->val : arg;
+        if (j == argi || ptypes[j] == NULL || val->tag == ClosureTag || !isExpNode(val) || inodeIsError(val))
+            continue;
+        INode *argtype = ((IExpNode*)val)->vtype;
+        if (argtype == NULL || argtype == unknownType || litIsUntypedNull(val) || genericArgIsAdaptable(val, ptypes[j]))
+            continue;
+        genericInferType(known, info->parms, ptypes[j], argtype);
+    }
+    genericInferFromBounds(info->parms, where, known);
+    genericInferFromExpected(info->parms, result, expectType, known);
+    for (j = 0; j < args->used; ++j) {
+        INode *arg = nodesGet(args, j);
+        INode *val = arg->tag == NamedValTag ? ((NamedValNode*)arg)->val : arg;
+        if (j == argi || ptypes[j] == NULL || !isExpNode(val) || !genericArgIsAdaptable(val, ptypes[j]))
+            continue;
+        if (genericCapturedType(known, info->parms, ptypes[j]) == NULL && ((IExpNode*)val)->vtype != unknownType)
+            genericInferType(known, info->parms, ptypes[j], ((IExpNode*)val)->vtype);
+    }
+    --genericExpectMode;
+    if (!genericTypeArgsKnown(ptypes[argi], info->parms, known->args))
+        return NULL;
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, ptypes[argi], NULL, 0, info->parms, known->args);
+    INode *copy = cloneNode(&cstate, ptypes[argi]);
+    clonePopState();
+    cloneDclPop(dclpos);
+    inodeTypeCheckAny(pstate, &copy);
+    if (inodeIsError(copy) || !isTypeNode(copy))
+        return NULL;
+    return copy;
+}
+
+// What argument 'argi' of a call of generic function or method 'generic' is
+// wanted as, from the other arguments (checked) and 'expectType', the type
+// wanted of the call's value; 'firstparm' is 1 for a method called on a receiver.
+INode *genericFnArgExpect(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t argi,
+        uint32_t firstparm, INode *expectType) {
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    if (gsig == NULL || gsig->tag != FnSigTag || firstparm + args->used > gsig->parms->used)
+        return NULL;
+    INode *ptypes[16];
+    if (args->used > 16)
+        return NULL;
+    for (uint32_t j = 0; j < args->used; ++j)
+        ptypes[j] = ((VarDclNode*)nodesGet(gsig->parms, firstparm + j))->vtype;
+    return genericArgExpect(pstate, generic->genericinfo, generic->where, gsig->rettype, ptypes, args, argi, expectType);
+}
+
+// The same for argument 'argi' of a generic variant's (or struct's) literal,
+// 'Some(None)': the field it fills is the parameter, the enum it makes the result.
+INode *genericStructArgExpect(TypeCheckState *pstate, StructNode *generic, Nodes *args, uint32_t argi,
+        INode *expectType) {
+    GenericInfo *info = generic->genericinfo;
+    INode *result = info ? genericResultTemplate(generic, info) : NULL;
+    INode *ptypes[16];
+    if (info == NULL || result == NULL || args->used > 16)
+        return NULL;
+    for (uint32_t j = 0; j < args->used; ++j) {
+        FieldDclNode *field = fnCallTypeLitField(generic, args, j);
+        ptypes[j] = field ? field->vtype : NULL;
+    }
+    return genericArgExpect(pstate, info, info->where, result, ptypes, args, argi, expectType);
+}
+
+// Does a generic variant have a type parameter that none of its fields names:
+// 'None' of 'Option[T]'? Such a construction can only be typed from where its
+// value goes.
+int genericVariantParmUnnamed(StructNode *variant) {
+    GenericInfo *info = variant->genericinfo;
+    if (info == NULL || info->parms == NULL)
+        return 0;
+    Nodes *blank = newNodes(info->parms->used);
+    for (uint32_t k = 0; k < info->parms->used; ++k)
+        nodesAdd(&blank, (INode*)unknownType);
+    for (uint32_t k = 0; k < info->parms->used; ++k) {
+        if (((GenVarDclNode*)nodesGet(info->parms, k))->valtype)
+            continue;
+        nodesGet(blank, k) = NULL;
+        int named = 0;
+        INode **fldp;
+        uint32_t cnt;
+        for (nodelistFor(&variant->fields, cnt, fldp)) {
+            FieldDclNode *field = (FieldDclNode*)*fldp;
+            if (!(field->flags & (IsTagField | IsMixin)) && field->vtype
+                && !genericTypeArgsKnown(field->vtype, info->parms, blank))
+                named = 1;
+        }
+        nodesGet(blank, k) = unknownType;
+        if (!named)
+            return 1;
+    }
+    return 0;
 }
 
 // Can a call passing 'self' (NULL if none) and 'args', all of them checked, call

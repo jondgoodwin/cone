@@ -62,7 +62,8 @@ struct Rec {
   kind u32;
   asked u32;              // askedCancel, askedDeadline: a cancel has been asked, and why
   hit bool;               // its deadline has passed: the grace is running, or has run
-  abandon bool;           // decided TimedOut while the kernel or the pool still holds it
+  lapses bool;            // a timer: its wheel entry is its group's deadline, earlier than its own time
+  abandon bool;          // decided TimedOut while the kernel or the pool still holds it
   nextFree u32;
   handle usize;           // the OS handle the operation is on, for CancelIoEx
   newSock usize;          // Accept's or Connect's new socket, until registered
@@ -98,7 +99,7 @@ fn blankRec(index u32, next u32) Rec {
     ov: new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize),
     wsa: new WsaBuf(0u32, null),
     flags: 0u32, index: index, gen: 1u32, state: stFree, kind: 0u32, asked: askedNone,
-    hit: false, abandon: false,
+    hit: false, lapses: false, abandon: false,
     nextFree: next, handle: 0usize, newSock: invalidHandle, newHandle: Handle.none(),
     family: 0u16, sock: Handle.none(), at: 0u64,
     peer: new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32),
@@ -159,6 +160,7 @@ const heldRetryNs = 1000000i64;
 // thread
 pub struct Loop {
   loopId u64;
+  driverGen u32;          // the last generation 'nextDriverGen' handed out
   port Arc[imm, Port];
   portHandle usize;
   blocks List[*Rec];
@@ -235,7 +237,7 @@ pub struct Loop {
     imm shared = new Arc[imm, Port](new Port(if isWindows() {port;} else {wake;}, Atomic[bool].of(false),
       Atomic[u32].of(0u32), Mutex.make(), null, null));
     new Loop(
-      loopId: diag.nextLoopId(), port: shared, portHandle: port,
+      loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
       grouped: 0u32, groupsDirty: false,
       decided: List[u32].empty(), cancels: List[u64].empty(),
@@ -249,6 +251,17 @@ pub struct Loop {
 
   // Its id, unique in the process, as its diagnostics records name it
   pub fn id(self &) u64 {loopId;}
+
+  // A generation, 1 to 255, in turn, for a layer above that gives its
+  // tokens a mark of its own on this loop (httpconn's drivers): two that
+  // ask in turn have different ones until 255 more have asked in between,
+  // so a late completion of a layer that is gone does not look like the
+  // answer a later one with the same mark is waiting for. Per loop; no
+  // global
+  pub fn nextDriverGen(self &mut) u64 {
+    driverGen = if driverGen >= 255u32 {1u32;} else {driverGen + 1u32;};
+    u64.from(driverGen);
+  }
 
   // Operations and timers submitted and not yet answered
   pub fn inFlight(self &) u64 {stats.inFlight;}
@@ -549,6 +562,7 @@ pub struct Loop {
     r.state = stFlight;
     r.asked = askedNone;
     r.hit = false;
+    r.lapses = false;
     r.abandon = false;
     r.submitted = Instant.now();
     r.dequeued = r.submitted;
@@ -915,9 +929,24 @@ pub struct Loop {
     r.token = token;
     r.target <=> t;
     imm gen = r.gen;
+    // A timer due after its group's deadline answers TimedOut at the
+    // deadline instead; one due at or before it answers Done at its time
+    mut dl = forever();
+    match group {
+      case imm s Some {dl = s.deadline();}
+      else {}
+    }
     if self.join(i, group) {
       stats.atSubmit = stats.atSubmit + 1u64;
       self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
+    } elif dl < at {
+      if dl <= r.submitted {
+        stats.atSubmit = stats.atSubmit + 1u64;
+        self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
+      } else {
+        r.lapses = true;
+        r.timer = wheel.insert(dl, self.tokenOf(i));
+      }
     } else {
       r.timer = wheel.insert(at, self.tokenOf(i));
     }
@@ -1469,7 +1498,8 @@ pub struct Loop {
     }
   }
 
-  // Fire what the wheel says is due by now: a timer answers Done; an
+  // Fire what the wheel says is due by now: a timer answers Done (TimedOut,
+  // when it is its group's deadline that is due, not its own time); an
   // operation's deadline asks its cancel and starts its grace; a grace run
   // out answers TimedOut without the buffer
   fn fireTimers(self &mut, now Instant) {
@@ -1487,7 +1517,7 @@ pub struct Loop {
       r.timer = TimerId.none();
       if r.kind == diag.kindTimer {
         r.dequeued = now;
-        self.decide(i, diag.outcomeDone, 0usize, 0u32);
+        self.decide(i, if r.lapses {diag.outcomeTimedOut;} else {diag.outcomeDone;}, 0usize, 0u32);
       } elif not r.hit {
         // The deadline
         r.hit = true;

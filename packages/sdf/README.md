@@ -55,6 +55,12 @@ unit `Quat`s (`float4` x, y, z, w). "Exact" is the Euclidean distance; a
 `cylinder(p, halfHeight, radius)`, `cone(p, halfHeight, bottom, top)`,
 `roundCone(p, bottom, top, height)`, `plane(p, n, offset)`: exact.
 `ellipsoid(p, radii)`: Quilez's approximation, not a bound (below).
+Placed between given points: `taperedCapsule(p, a, b, ra, rb)` (the hull of
+a ball of radius ra at a and one of rb at b) and `triangle(p, a, b, c)` (a
+two-sided sheet, no thickness): exact. `membrane(p, a0, a1, b0, b1,
+scallop)`, the bilinear patch between two spars, its free edge scalloped
+back by `scallop`: exact where its Gauss-Newton steps converge, otherwise
+never less than the true distance.
 
 **Operators on distances** (`operator.cone`): `union`, `subtract`,
 `intersect`; `smoothUnion(a, b, k)`, `smoothSubtract`, `smoothIntersect`,

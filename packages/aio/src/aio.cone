@@ -19,7 +19,7 @@
 //     mut res = r;
 //     mut s = Socket.none();
 //     match &mut res {
-//       case mut ok &mut Ok {s <=> ok.value;}
+//       case mut ok &mut Ok {s <=> *ok;}
 //       else {}
 //     }
 //     s;
@@ -34,8 +34,8 @@
 //       buf.append("hello");
 //       imm sent = await conn.write(buf);          // pauses until all of it is sent
 //       match sent {
-//         case imm n Ok {...n.value bytes were sent...}
-//         case imm e Error {...e.value.code is Windows' error number...}
+//         case imm n Ok {...n bytes were sent...}
+//         case imm e Error {...e.code is Windows' error number...}
 //       }
 //     }                                           // conn closes here
 //   }
@@ -56,15 +56,27 @@
 //   f.readAt(at, buf)       what is in the file from byte offset at, appended to buf
 //                                                                Result[IoBuf, IoError]
 //   f.writeAt(at, buf)      all of buf, at byte offset at         Result[usize, IoError]
+//   aio.bindUdp(addr)      a UDP socket bound to addr            Result[UdpSocket, IoError]
+//   u.recvFrom(buf)        one datagram, appended to buf, an IoBuf moved in, and its sender
+//                                                                Result[Datagram, IoError]
+//   u.sendTo(addr, buf)    all of buf as one datagram to addr    Result[usize, IoError]
+//   u.localAddr()          the address u is bound to             Result[SocketAddr, IoError]
 //   aio.connectIn(addr, lim)  s.acceptIn(lim)  s.readIn(buf, lim)  s.writeIn(buf, lim)
 //   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
-//                           the same six, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
+//   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)
+//                           the same eight, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  new IoLimits(group, deadline)
-//   aio.isCancelled(e)  aio.isTimedOut(e)      what an IoError says of how an operation ended
-//   Socket.none()  File.none()   a Socket or File naming nothing: to swap one out of a Result
-//   s.isNone()  s.handle()  f.isNone()  f.handle()
+//   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
+//                                                                Result[void, IoError]
+//   aio.sleepIn(d, lim)  aio.sleepUntilIn(at, lim)   the same two, limited by lim     (SLEEPING)
+//   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
+//                           what an IoError says of how an operation ended
+//   Socket.none()  File.none()  UdpSocket.none()
+//                           a Socket, File or UdpSocket naming nothing: to swap one out of a Result
+//   s.isNone()  s.handle()  f.isNone()  f.handle()  u.isNone()  u.handle()
+//   Datagram {buf, from}    what a recvFrom answers: the datagram's bytes and its sender
 //
-// Each of the first nine makes an OPERATION, an actors.Awaitable[R], which
+// Each of the operations (and each sleep) makes an OPERATION, an actors.Awaitable[R], which
 // does nothing until an 'await' in a behaviour starts it; the 'await''s value
 // is its R. Made and never awaited, it is dropped, and nothing is done.
 //
@@ -79,7 +91,7 @@
 // than a count alone; a failed read's buffer goes home to its pool. A write's
 // success is the count written, all of the buffer, which goes home. Accept's,
 // connect's and listen's is the new Socket, which comes out of the Result by
-// a swap ('s <=> ok.value', with 's' a Socket.none()), since Cone does not
+// a swap ('s <=> *ok', with 's' a Socket.none()), since Cone does not
 // yet move a value out of a matched variant's field.
 //
 // CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
@@ -87,7 +99,8 @@
 // Cancelled or TimedOut. The last two are errors too, an IoError of a kind of
 // its own (iocore's IoErrorKind: Os for a failure of the system, Cancelled,
 // TimedOut), which 'isCancelled' and 'isTimedOut' read; their code is 0, and a
-// genuine system error is never mistaken for either. The buffer a
+// genuine system error is never mistaken for either. (A fourth kind,
+// Truncated, is a datagram cut to the room, UDP's.) The buffer a
 // read or a write was given goes home to its pool. What limits an operation is
 // a IoLimits, given to the 'In' form of the call: a cancel group (iocore's
 // CancelGroup, a value that is copied, sent to other actors or threads, and
@@ -143,6 +156,28 @@
 // finalizer waits for quiet again (a finalizer that ran may have sent a
 // message) and stops the workers.
 //
+// A UDP SOCKET is a UdpSocket, a kind of its own beside Socket and File: a
+// stream operation on it (read, write, accept), or a datagram one on a Socket,
+// does not compile. Like a Socket it is plain data that moves, and dropping it
+// closes the socket behind the operations queued before the close, every one
+// then in flight on it cancelled. 'bindUdp' binds by iocore's 'bindUdp' on the
+// I/O thread (port 0 has the system choose one, which 'localAddr' tells), as
+// 'listen' listens; it has no 'In' form. The socket is not connected: each
+// datagram names its other end. 'recvFrom' is iocore's RecvFrom: ONE datagram,
+// appended to the buffer's room, the answer a Datagram, its 'buf' the buffer
+// given (its length grown by the datagram's) and its 'from' the sender. A
+// datagram of no bytes is a datagram, not an end: the buffer's length does not
+// grow. A buffer with no room fails (122), as a read's does. A datagram longer
+// than the room fails with an IoError of the kind Truncated ('aio.isTruncated',
+// code 10040, WSAEMSGSIZE, on both systems): the rest of it is lost, the next
+// one is whole, and the buffer, as a failed read's, goes home to its pool, the
+// bytes that fitted with it. 'sendTo' is iocore's SendTo: all of the buffer as
+// ONE datagram, the buffer going home; the count is its length; UDP promises no
+// delivery, so the answer says the system took the datagram. A datagram too
+// large for the network fails (10040, an Os error). One receive at a time per
+// socket is the supported use, as iocore says; datagrams that arrive while none
+// is outstanding wait in the socket's buffer, which the OS bounds.
+//
 // A FILE is the same for a file the I/O thread's Loop holds: plain data that
 // moves, and dropping it closes the file, behind the operations queued before
 // the close, every one then in flight on it cancelled. 'openFile' opens by
@@ -162,11 +197,25 @@
 // system that iocore does not hold in flight, so there is nothing to cancel
 // once it has started; the two operations on a file have theirs.
 //
-// On Windows and Linux, as iocore is; TCP sockets and files (a socket does one
-// operation at a time per direction, as iocore's do; a file many at once, at
-// any offsets). Not here: 'fileio', the file service with classes and a
-// queue-depth governor (a package of its own, to come), the blocking pool's
-// other work (file metadata, name lookup), UDP, and a socket's half-close.
+// SLEEPING. 'sleep(d)' and 'sleepUntil(at)' are iocore's timers ('after',
+// 'afterIn') awaited: the behaviour pauses, and the I/O thread's Loop answers
+// when the time comes. 'd' counts from the moment the I/O thread starts the
+// timer, a moment after the 'await'; 'at' is absolute, and one already past is
+// answered at once. The success holds nothing (Result[void, IoError]). The 'In'
+// forms take an IoLimits as the other operations do, and honour the group's
+// deadline as iocore's 'afterIn' does: a sleep due after the deadline (lim's,
+// or its group's, the tighter) is answered TimedOut at the deadline, one due
+// at or before it is Done at its time; the group's cancel answers Cancelled,
+// at once if the group is cancelled already. lim's deadline is given to the
+// timer as a group of its own (a child of lim's group, or a new one), since
+// iocore's timer takes a group alone. Dropped unawaited, a sleep does nothing.
+//
+// On Windows and Linux, as iocore is; TCP sockets, UDP sockets and files (a
+// socket does one operation at a time per direction, as iocore's do; a file
+// many at once, at any offsets). Not here: 'fileio', the file service with
+// classes and a queue-depth governor (a package of its own, to come), the
+// blocking pool's other work (file metadata, name lookup), and a socket's
+// half-close.
 
 mod aio;
 
@@ -175,7 +224,7 @@ import thread;
 import sync use Mutex;
 import collections use List;
 import iobuf use IoBuf;
-import time use Instant;
+import time use Instant, Duration;
 import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, forever;
 import path use Path;
 import actors;
@@ -439,6 +488,9 @@ pub fn isCancelled(e IoError) bool {e.isCancelled();}
 // Whether an operation ended because its deadline passed
 pub fn isTimedOut(e IoError) bool {e.isTimedOut();}
 
+// Whether a receive ended because the datagram was longer than the buffer's room
+pub fn isTruncated(e IoError) bool {e.isTruncated();}
+
 // An iocore operation, awaited: the Op, what limits it, the reply its answer
 // goes back in, and the function that makes the answer an R
 struct OpJob[R] {
@@ -522,8 +574,71 @@ fn socketAnswer(c &mut Completion) Result[Socket, IoError] {
   Error[Socket, IoError](endError(c));
 }
 
+// WSAEMSGSIZE, the code iocore answers a datagram longer than the room with
+fn msgSizeCode() u32 {10040u32;}
+
+// A receive's answer: the datagram, in its buffer, and who sent it. A datagram
+// cut to the room is the error Truncated, and its buffer, like a failed read's,
+// goes home to its pool
+fn datagramAnswer(c &mut Completion) Result[Datagram, IoError] {
+  if c.status == diag.outcomeDone {
+    mut b = IoBuf.empty();
+    b <=> c.buf;
+    return Ok[Datagram, IoError](new Datagram(b, c.peer));
+  }
+  if c.status == diag.outcomeFailed and c.code == msgSizeCode() {
+    return Error[Datagram, IoError](IoError.truncated());
+  }
+  Error[Datagram, IoError](endError(c));
+}
+
+// A timer's: Done is the success, a Result with nothing in it
+fn sleepAnswer(c &mut Completion) Result[void, IoError] {
+  if c.status == diag.outcomeDone {
+    return Ok[void, IoError](nil);
+  }
+  Error[void, IoError](endError(c));
+}
+
 fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, limits IoLimits) actors.Awaitable[R] {
   awaitable[OpJob[R], R](new OpJob[R](op, limits, new actors.Reply(), answer));
+}
+
+// A timer, started on the I/O thread's Loop: it answers Done at 'at' (or, if
+// 'relative', 'after' from the moment the I/O thread starts it, a moment after
+// the 'await'), unless lim ends it first. lim's group is the timer's cancel
+// group, and lim's deadline narrows that group's (a group made for the purpose
+// when there is none): a timer due after the deadline answers TimedOut at the
+// deadline, as iocore's 'afterIn' does
+struct SleepJob {
+  pub at Instant;
+  pub after Duration;
+  pub relative bool;
+  pub limits IoLimits;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    imm due = if relative {Instant.now() + after;} else {at;};
+    imm to = Target.Hook(0u64, Sink.make(waiting[Result[void, IoError]](rp, &sleepAnswer)));
+    match limits.group {
+      case imm g Some {
+        if limits.deadline < forever() {
+          lp.afterIn(due, to, g.childUntil(limits.deadline));
+        } else {
+          lp.afterIn(due, to, g);
+        }
+      }
+      else {
+        if limits.deadline < due {
+          lp.afterIn(due, to, CancelGroup.until(limits.deadline));
+        } else {
+          lp.after(due, to);
+        }
+      }
+    }
+  }
 }
 
 // A listening socket, made on the I/O thread's Loop, which holds it
@@ -537,6 +652,21 @@ struct ListenJob {
     match lp.listen(addr) {
       case imm ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](new Socket(ok)));}
       case imm e Error {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
+    }
+  }
+}
+
+// A UDP socket bound on the I/O thread's Loop, which holds it
+struct BindUdpJob {
+  pub addr SocketAddr;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    match lp.bindUdp(addr) {
+      case imm ok Ok {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](new UdpSocket(ok)));}
+      case imm e Error {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
     }
   }
 }
@@ -644,6 +774,72 @@ pub struct Socket is Move {
 }
 
 // ---------------------------------------------------------------------------
+// UDP sockets
+// ---------------------------------------------------------------------------
+
+// A datagram received: its bytes, in the buffer the receive was given, and the
+// address it came from
+pub struct Datagram {
+  pub buf IoBuf;
+  pub from SocketAddr;
+}
+
+// A UDP socket the I/O thread holds (the package's header, A UDP SOCKET): a
+// kind of its own beside Socket and File, so that a stream operation on it, or
+// a datagram operation on a TCP socket, does not compile. It moves, and
+// dropping it closes the socket
+pub struct UdpSocket is Move {
+  h Handle;
+
+  // A UdpSocket naming nothing, which closes nothing: to swap one out of a
+  // Result, or into a field before one is there
+  pub fn none() UdpSocket {new UdpSocket(Handle.none());}
+
+  pub fn isNone(self &) bool {h.isNone();}
+
+  // The iocore handle it names, on the I/O thread's Loop
+  pub fn handle(self &) Handle {h;}
+
+  // The next datagram to arrive, appended to buf, which is moved in and comes
+  // back in the answer with the sender's address. A datagram of no bytes is a
+  // datagram (the buffer's length is unchanged). A datagram longer than buf's
+  // room is the error Truncated (code 10040, WSAEMSGSIZE), the rest of it lost,
+  // and the buffer goes home to its pool, as a failed read's does. A buf with
+  // no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
+  pub fn recvFrom(self &, buf IoBuf) actors.Awaitable[Result[Datagram, IoError]] {
+    self.recvFromIn(buf, IoLimits.none());
+  }
+
+  // A receive ended if lim says so; then the buffer goes home to its pool
+  pub fn recvFromIn(self &, buf IoBuf, lim IoLimits) actors.Awaitable[Result[Datagram, IoError]] {
+    opAwaitable[Result[Datagram, IoError]](Op.RecvFrom(h, buf), &datagramAnswer, lim);
+  }
+
+  // All of buf as one datagram to addr, buf moved in and going home once sent:
+  // the count, its length. UDP promises no delivery: the answer says the
+  // system took the datagram. One too large for the network fails (10040)
+  pub fn sendTo(self &, addr SocketAddr, buf IoBuf) actors.Awaitable[Result[usize, IoError]] {
+    self.sendToIn(addr, buf, IoLimits.none());
+  }
+
+  // A send ended if lim says so
+  pub fn sendToIn(self &, addr SocketAddr, buf IoBuf, lim IoLimits) actors.Awaitable[Result[usize, IoError]] {
+    opAwaitable[Result[usize, IoError]](Op.SendTo(h, addr, buf), &writeAnswer, lim);
+  }
+
+  // The address the socket is bound to: its port, where the system chose it
+  pub fn localAddr(self &) actors.Awaitable[Result[SocketAddr, IoError]] {
+    awaitable[LocalAddrJob, Result[SocketAddr, IoError]](new LocalAddrJob(h, new actors.Reply()));
+  }
+
+  fn final(self &uni) {
+    if not h.isNone() {
+      enqueue(newJob[CloseJob](new CloseJob(h)));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
 
@@ -703,6 +899,12 @@ pub fn listen(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
   awaitable[ListenJob, Result[Socket, IoError]](new ListenJob(addr, new actors.Reply()));
 }
 
+// A UDP socket bound to addr, for recvFrom and sendTo; port 0 has the system
+// choose one, which localAddr tells
+pub fn bindUdp(addr SocketAddr) actors.Awaitable[Result[UdpSocket, IoError]] {
+  awaitable[BindUdpJob, Result[UdpSocket, IoError]](new BindUdpJob(addr, new actors.Reply()));
+}
+
 // A TCP socket connected to addr
 pub fn connect(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
   connectIn(addr, IoLimits.none());
@@ -711,4 +913,24 @@ pub fn connect(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 // A TCP socket connected to addr, ended if lim says so
 pub fn connectIn(addr SocketAddr, lim IoLimits) actors.Awaitable[Result[Socket, IoError]] {
   opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, lim);
+}
+
+// Pauses for d, counted from the 'await': Ok(nil) when it has passed
+pub fn sleep(d Duration) actors.Awaitable[Result[void, IoError]] {
+  sleepIn(d, IoLimits.none());
+}
+
+// A sleep ended if lim says so (the package's header, SLEEPING)
+pub fn sleepIn(d Duration, lim IoLimits) actors.Awaitable[Result[void, IoError]] {
+  awaitable[SleepJob, Result[void, IoError]](new SleepJob(Instant.now(), d, true, lim, new actors.Reply()));
+}
+
+// Pauses until the instant 'at' (one already past is Ok at once): Ok(nil)
+pub fn sleepUntil(at Instant) actors.Awaitable[Result[void, IoError]] {
+  sleepUntilIn(at, IoLimits.none());
+}
+
+// A sleepUntil ended if lim says so (the package's header, SLEEPING)
+pub fn sleepUntilIn(at Instant, lim IoLimits) actors.Awaitable[Result[void, IoError]] {
+  awaitable[SleepJob, Result[void, IoError]](new SleepJob(at, Duration.zero(), false, lim, new actors.Reply()));
 }

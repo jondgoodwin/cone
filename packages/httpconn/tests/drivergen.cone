@@ -1,0 +1,129 @@
+// A dead driver's late completion is not claimed by a later driver that
+// took the same number.
+//
+// A driver's number is handed out round-robin from 1024, so once 1023
+// others have come and gone the next driver has a dead driver's number
+// again. The dead driver's sockets are still the loop's, with operations in
+// flight: its accept, here, completes when a client connects to the port it
+// listened on. That completion carries the dead driver's token. The new
+// driver, made with the same number and a listener of its own at the same
+// table index and generation, must not claim it: it was never the new
+// driver's operation, and the socket it brings would turn into a connection
+// of the new driver's, announced to the new driver's sink.
+//
+// Checked: that the new driver took the dead one's number (the probe is
+// sound), that it claimed no completion of the dead driver's, that it gave
+// its sink no Accepted event, and that the completion went unclaimed.
+
+mod drivergen;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Completion, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+import diag;
+
+const tokOld = 100u64;
+const tokNew = 200u64;
+const tokConn = 1u64;
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+
+  // The old driver listens, and dies, with its accept in flight
+  mut oldPort = 0u16;
+  mut oldToken = 0u64;
+  {
+    mut old = Driver.make(Config.make(), pool);
+    oldToken = old.upperToken(&mut lp, 3u8, 0u64);
+    match old.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokOld)) {
+      case imm r Ok {
+        match old.localAddr(&lp, r) {
+          case imm a Ok {oldPort = a.port();}
+          case imm e Error {}
+        }
+      }
+      case imm e Error {}
+    }
+  }
+  require(oldPort != 0u16, "the old driver listened on a port");
+
+  // 1023 more come and go: the next number is the old driver's again
+  {
+    mut i = 0u32;
+    while i < 1023u32 {
+      imm other = Driver.make(Config.make(), pool);
+      i = i + 1u32;
+    }
+  }
+  mut nw = Driver.make(Config.make(), pool);
+  require(nw.owns(oldToken), "the new driver took the dead driver's number");
+  mut newPort = 0u16;
+  match nw.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokNew)) {
+    case imm r Ok {
+      match nw.localAddr(&lp, r) {
+        case imm a Ok {newPort = a.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  require(newPort != 0u16, "the new driver listens on a port");
+  expect(not nw.isUpperToken(oldToken), "the new driver does not take the dead driver's upper token for its own");
+
+  // A client connects to the dead driver's port
+  mut cli = Driver.make(Config.make(), pool);
+  imm conn = cli.connect(&mut lp, "127.0.0.1", oldPort, Sink.Here(tokConn));
+
+  mut claimedOld = 0u64;
+  mut accepted = 0u64;
+  mut connected = 0u64;
+  mut unclaimed = 0u64;
+  mut events = List[Event].empty();
+  mut comps = List[Completion].empty();
+  imm giveUp = Instant.now() + Duration.fromSeconds(1i64);
+  while connected == 0u64 and Instant.now() < giveUp {
+    nw.pump(&mut lp, &mut events);
+    cli.pump(&mut lp, &mut events);
+    mut w = nw.wakeAt();
+    if cli.wakeAt() < w {w = cli.wakeAt();}
+    if events.len() > 0usize {w = new Instant();}
+    lp.poll(if w < giveUp {w;} else {giveUp;}, &mut comps);
+    mut k = 0usize;
+    while k < comps.len() {
+      imm c = &mut comps[k];
+      k = k + 1usize;
+      // The accept's token is the old driver's: only the new driver, with
+      // its number, could say it owns it
+      imm isAccept = c.kind == diag.kindAccept;
+      if nw.complete(&mut lp, c) {
+        if isAccept {claimedOld = claimedOld + 1u64;}
+      } elif not cli.complete(&mut lp, c) {
+        unclaimed = unclaimed + 1u64;
+      }
+    }
+    comps.clear();
+    nw.pump(&mut lp, &mut events);
+    cli.pump(&mut lp, &mut events);
+    k = 0usize;
+    while k < events.len() {
+      imm e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokNew and e.kind == EventKind.Accepted {accepted = accepted + 1u64;}
+      if e.token == tokConn and e.kind == EventKind.Connected {connected = connected + 1u64;}
+    }
+    events.clear();
+  }
+  requireUInt(connected, 1u64, "the client connected to the dead driver's port");
+  expectUInt(claimedOld, 0u64, "the new driver claimed none of the dead driver's accepts");
+  expectUInt(accepted, 0u64, "the new driver's sink was told of no connection it did not accept");
+  expectUInt(unclaimed, 1u64, "the dead driver's accept went unclaimed");
+  cli.abortAll(&mut lp);
+  nw.abortAll(&mut lp);
+  events.clear();
+  done();
+}

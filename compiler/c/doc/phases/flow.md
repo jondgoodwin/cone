@@ -1348,6 +1348,11 @@ an importer takes a non-generic type from an include file as it says
 its instances are read where they are used. `ShapeChanging` written in the
 source only asserts: `shapeDeclaredCheck` refuses (`ErrorShapeMark`) a declaring
 type that the methods do not show to be so, wherever their bodies are visible.
+The same file records `ShapeKeeping` (`shapeKeepRecordable`) on each non-generic
+type of the package that has a method a trait could dispatch to and all of whose
+such methods the package's compile found to reshape nothing a caller borrows
+(`skMethod`, below); an importer takes the type from the include file as it
+says (`skAsk`), and `structCheck` lets a generated include file declare the marker.
 
 The answer is read from typed bodies, and type check is demand-driven, so a
 body the question needs may not be checked yet, or may be suspended further up
@@ -1573,11 +1578,22 @@ a field by a struct that is not the owner is another value and is not reached. T
 `dl.text(ui.items[0usize].label.view())` is accepted for a `Dl` that holds a `String` and no
 `Item`, and `ed.grow(...)` for an `Ed` that holds the `List[Item]` is not. No owner is recorded
 (and the check asks for any value of the container's type, as before) for a receiver that is no
-field and no such element (`s.view()`), for a field of a trait or an enum (a type that
+field and no such element (`s.view()`), for a field that holds a reference or pointer
+(`r.s.view()` with `s &mut String`: the `String` is some other struct's, which the reference may
+point at, so the struct with the reference field is not its owner), for a field of a trait or an enum (a type that
 implements it holds the same field), for an element a call returned from other borrows, and for
 a free function's borrowed argument. The receiver of a call that is the container itself, a
-`String` appended to, is asked as before, and so are stores (`reshapeStoreHits`) and globals.
-`collection_flow_reshape_owner` pins what stays refused, by every route to the owner.
+`String` appended to, is asked as before unless it is another value than the viewed one: it is
+written as a field the struct holds by value (`pwReceiverFieldOwner`: `ui.input.clipboard`, through
+borrows and conversions; not a name, an element a call returned, a field holding a reference, a
+variant of an enum), the viewed value is a field held by value or an element of such a list
+(`loanShapeOwnerByValue`, from `pwViewOwner`), and the two structs differ (`reshapeCall`'s
+`recvowner`): a value is the field of one struct only. Stores (`reshapeStoreHits`) and globals
+are asked as before. `collection_reshape_receiver_other_struct_success` and
+`collection_flow_reshape_receiver_other_struct` pin both sides.
+`collection_flow_reshape_owner` pins what stays refused, by every route to the owner, and
+`collection_flow_reshape_reffield_owner` and `collection_reshape_reffield_owner_success` pin the
+view through a reference field (refused) beside the view through a by-value field (accepted).
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
@@ -2165,7 +2181,7 @@ droppable noted as holding nothing is never finalized.
 | `ir/shapeinfer.c` | `shapeChanging`, `siSettle`, `siInferStruct`, `siMethod` | whether a type changes shape: declared, or found from its methods (a writable `self` method that writes storage, one that returns a borrow); the answer cached on `StructNode.shapeinf` |
 | | `siParamWrites`, `siCall`, `siWriteHits`, `siReadsStorage`, `siRooted`, `siHoldsStorage`, `siVisible` | whether a function's body writes storage through one of its parameters: its own assignments, what it lends writable to its callees (asked in turn), storage handed to code it cannot read; memoised, a recursion guessed no |
 | | `siAsk`, `shapeParamReshapes`, `shapeTypeReshapes`, `siCallType`, `siTypeWriteHits`, `shapeDemandCallees`, `shapeUnsettled` | the same engine in its other modes (`SiMode`): any field of a parameter's pointee written (a method reshapes); a value of a collection type that is no local replaced, a header field written, or reshaped by a callee, through a parameter or only through a global (a call reshapes). Memoised by function, parameter, mode and type; callees never asked for are checked first; a body not checked yet answers not yet |
-| | `shapeKeepsVia`, `shapeKeepFnRef`, `shapeKeepDeferred`, `shapeKeepingCall`, `skMethod`, `skReached`, `skCollect` | `+ ShapeKeeping` on a virtual reference: where a closure, struct or plain function becomes one, each method the trait dispatches to is asked (`SiModeType`) of every shape-changing type its parameters, and for a closure what it borrows, reach through a reference that writes by a shared path (`skWritingHop`: not `uni`, not read-only; the receiver's own state is its own); one that reshapes one is `ErrorNotShapeKeeping` naming the call or store (`siHitNode`). A body not checked yet, or a type whose shape is not settled, accepts and asks again at the end of type check (`conec.c`); the answer for a pair is kept |
+| | `shapeKeepsVia`, `shapeKeepFnRef`, `shapeKeepDeferred`, `shapeKeepingCall`, `shapeKeepRecordable`, `skMethod`, `skReached`, `skCollect` | `+ ShapeKeeping` on a virtual reference: where a closure, struct or plain function becomes one, each method the trait dispatches to is asked (`SiModeType`) of every shape-changing type its parameters, and for a closure what it borrows, reach through a reference that writes by a shared path (`skWritingHop`: not `uni`, not read-only; the receiver's own state is its own); one that reshapes one is `ErrorNotShapeKeeping` naming the call or store (`siHitNode`). A body not checked yet, or a type whose shape is not settled, accepts and asks again at the end of type check (`conec.c`); the answer for a pair is kept |
 | `ir/reshape.c` | `reshapeCall`, `reshapeReach`, `reshapeReachMode`, `reshapeUniqueLocal`, `reshapeStoreHits`, `reshapeIsSum` | could this call reshape a value of a collection type or an enum: its receiver, its other arguments by what their types reach, a global; could this store; a read-only reference followed only to the `mut` references it holds, a local the function owns whole excused ([A change through another name](#a-change-through-another-name)) |
 | `ir/flowpath.c` | `pwShapeBorrow`, `pwShapeCall`, `pwShapeStore`, `pwNarrowShared`, `Place.shwrite`, `flowWalkFinal`, `flowShapeRetry` | mark a borrow into a shape-changing value, or a reference narrowed into an enum's variant, through a path others may write by; ask every call and store made while it is held; a verdict that waits for an unchecked body |
 | `ir/flowloan.c` | `loanShapeMark`, `loanShapePend`, `loanShapeNow`, `loanShapeInFlight`, `loanShapeSamePlace`, `loanShapeFrozen`, `loanExcludesWriters` | the marked loans, the pending conflict (`PendingShape`) or immediate report (`ErrorShapeReshape`, `ErrorShapeStore`, `ErrorVariantReshape`) of a call or store that could reshape one |

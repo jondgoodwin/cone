@@ -17,6 +17,17 @@
 //   of detail, sculpted at run time, need. A dynamic mesh
 //   ('addDynamicMesh') is room for a mesh rewritten in place frame by frame
 //   ('writeDynamicMesh').
+// - Giving back, for a world that is replaced by another: every handle is
+//   released one by one, as 'removeMesh' does a mesh -- 'removeMaterial',
+//   'removeTexture' (the textures a material was made with are the caller's
+//   to remove: render keeps no list, and a texture may serve several
+//   materials), 'RenderView.release' -- and the handle reaches nothing at
+//   once. Nothing waits: the GPU memory is destroyed when the GPU has
+//   finished the frames that may have used it (gpu's deletion queue,
+//   'queue.releaseTexture'). Scene items and draws that still name a
+//   removed material are skipped. 'resourceUse' counts what the renderer
+//   holds (meshes, textures, materials, pipelines and their bytes).
+//   Pipelines are not per world and have no release.
 // - Custom pipelines (custom.cone): shaders of the caller's own
 //   ('addPipeline'), importing renderframe.slang, whose materials
 //   ('addCustomMaterial') bind parameters and textures of their own (an
@@ -325,6 +336,34 @@ const BOUND_PBR_SWAY = 11u32;
 const LAYER_OPAQUE = 0u32;
 const LAYER_LINES = 1u32;
 const LAYER_BLEND = 2u32;
+
+// What a renderer holds ('Renderer.resourceUse'): the counts of each kind of
+// resource it hands out handles to, and the bytes of mesh buffers and texture
+// levels
+pub struct ResourceUse {
+  pub meshes usize;
+  pub meshBytes u64;
+  pub textures usize;
+  pub textureBytes u64;
+  pub materials usize;
+  pub pipelines usize;
+}
+
+// The bytes of a texture's levels, all of them
+fn textureBytes(t &Texture) u64 {
+  imm texel = if t.format == TEXTURE_FORMAT_RGBA16_FLOAT { 8u64; } else { 4u64; };
+  mut w = u64.from(t.width);
+  mut h = u64.from(t.height);
+  mut total = 0u64;
+  mut level = 0u32;
+  while level < t.mipLevelCount {
+    total = total + w * h * texel * u64.from(t.depthOrArrayLayers);
+    w = if w > 1u64 { w / 2u64; } else { 1u64; };
+    h = if h > 1u64 { h / 2u64; } else { 1u64; };
+    level = level + 1u32;
+  }
+  total;
+}
 
 // What each render pass draws with: the renderer's pipelines, bind groups and
 // the resources it hands out handles to
@@ -937,6 +976,42 @@ pub struct Renderer {
     meshes[h.slot].version;
   }
 
+  // What the renderer holds right now, counted from its pools: how many
+  // meshes, textures, materials and custom pipelines, and the bytes of the
+  // mesh buffers and of the textures (every mip level of each)
+  pub fn resourceUse(self &mut) ResourceUse {
+    mut held = new ResourceUse(0usize, 0u64, 0usize, 0u64, 0usize, 0usize);
+    {
+      mut it = meshes.gcTraceElements();
+      mut more = true;
+      while more {
+        match it.next() {
+          case imm s Some {
+            held.meshes = held.meshes + 1usize;
+            held.meshBytes = held.meshBytes + s.a.bufferBytes() + s.b.bufferBytes();
+          }
+          else { more = false; }
+        }
+      }
+    }
+    {
+      mut it = textures.gcTraceElements();
+      mut more = true;
+      while more {
+        match it.next() {
+          case imm s Some {
+            held.textures = held.textures + 1usize;
+            held.textureBytes = held.textureBytes + textureBytes(&s.texture);
+          }
+          else { more = false; }
+        }
+      }
+    }
+    held.materials = materials.len();
+    held.pipelines = pipelines.len();
+    held;
+  }
+
   // Swap in the replacements made in an earlier frame, releasing what they
   // replace. 'render' does this first; a program drawing no frame need not.
   pub fn update(self &mut, device &mut Device) {
@@ -1030,6 +1105,36 @@ pub struct Renderer {
       }
     }
     new TextureHandle(textures.add(new TextureSlot(texture)));
+  }
+
+  // Take the texture 'h' away, as 'removeMesh' does a mesh: its image and
+  // memory are destroyed once the GPU has finished with the frames that may
+  // have sampled it (no stall), and the handle reaches nothing. A material
+  // made with it is not changed: remove those materials too
+  // ('removeMaterial'), before they are drawn again. False for a handle that
+  // reaches nothing, and for the white texture, which the renderer keeps.
+  pub fn removeTexture(self &mut, device &mut Device, h TextureHandle) bool {
+    if !textures.alive(h.slot) or h.slot == white.slot { return false; }
+    {
+      mut slot = &mut textures[h.slot];
+      device.queue.releaseTexture(&mut slot.texture);
+    }
+    textures.remove(h.slot);
+  }
+
+  // Take the material 'h' away, whatever its kind: its uniform buffer and
+  // bind group are destroyed once the GPU has finished with the frames that
+  // may have drawn with it (no stall), and the handle reaches nothing. A
+  // draw or scene item that still names it is skipped. The textures it was
+  // made with stay: remove each with 'removeTexture'.
+  pub fn removeMaterial(self &mut, device &mut Device, h MaterialHandle) bool {
+    if !materials.alive(h.slot) { return false; }
+    {
+      mut slot = &mut materials[h.slot];
+      device.queue.releaseBuffer(&mut slot.uniforms);
+      device.queue.releaseBindGroup(&mut slot.group);
+    }
+    materials.remove(h.slot);
   }
 
   // A material to draw with: its parameters in a uniform buffer of its own,
@@ -1254,6 +1359,25 @@ pub struct Renderer {
       return false;
     }
     device.queue.writeTexture(&slot.texture, &values[0] as *u8, width * 4u32);
+    true;
+  }
+
+  // Write the 'width' x 'height' numbers 'values' (row by row from the first)
+  // into the field 'h' at ('x', 'y'), ahead of the next submission, keeping
+  // the rest of it: an atlas of patches filled as they are wanted
+  // ('queue.writeTextureRegion'; the field must have been written whole once,
+  // by 'addFieldTexture' with all its values or 'writeFieldTexture'). False
+  // for a handle that reaches nothing, a texture that is not a field, a
+  // region outside it or too few values.
+  pub fn writeFieldRegion(self &mut, device &mut Device, h TextureHandle, x u32, y u32, width u32, height u32,
+      values &Array[f32]) bool {
+    if !textures.alive(h.slot) { return false; }
+    imm slot = textures[h.slot];
+    if slot.texture.format != TEXTURE_FORMAT_R32_FLOAT or x + width > slot.texture.width
+        or y + height > slot.texture.height or values.len < usize.from(width * height) or values.len == 0usize {
+      return false;
+    }
+    device.queue.writeTextureRegion(&slot.texture, &values[0] as *u8, width * 4u32, x, y, width, height);
     true;
   }
 

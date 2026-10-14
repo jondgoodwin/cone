@@ -510,16 +510,22 @@ has not been generated yet.
 **A payload-less variant standing as its enum is a constant**
 (`litIsEnumVariant`): `Kind.Os` wanted as a `Kind` is type check's plain recast
 of the variant's type literal, which holds only the tag, to the enum. It is
-accepted only when every variant of the enum holds nothing but the tag
-(`IsTagField`): an enum with a field in common, or with a variant that holds a
-value, is padded wider than the variant, so the two are not one LLVM layout and
-`None` of an `Option` is not a constant. Where the two are one layout,
-`genlRecast` of a constant struct in a global's initializer (no function, so no
-stack slot) re-types the constant's fields as the enum's (`LLVMConstNamedStruct`);
-inside a function it keeps the store and load it always had, so no generated
-code there changed. This is what lets the variant be a named constant's, a
-global's, a parameter's or a field's default, and an element of an array or
-struct literal in those, wherever `litIsLiteral` is asked.
+accepted when the variant named holds nothing but the tag (`IsTagField`), whatever
+the enum's other variants hold, so `None` of an `Option` is a constant; a
+variant with a field of its own, or any variant of an enum with a field in
+common (the common field is in every variant), is not. `genlRecast` of a
+constant in a global's initializer (no function, so no stack slot to
+reinterpret through) makes the enum's constant three ways: where the variant and
+the enum are one layout, it re-types the constant's fields as the enum's
+(`LLVMConstNamedStruct`); where the enum is wider (padded out to its largest
+variant) it is the enum's own layout, every field zero but the tag at the
+enum's tag index; and where the enum is a nullable pointer or a reference with
+no tag (`NullablePtr`), `None` is already the null constant of the enum's LLVM
+type and is returned as is. Inside a function the recast keeps the store and
+load it always had, so no generated code there changed (its padding stays
+undefined, a global's is zero). This is what lets the variant be a named
+constant's, a global's, a parameter's or a field's default, and an element of an
+array or struct literal in those, wherever `litIsLiteral` is asked.
 
 **A borrowed constant array literal is a constant, as a borrowed string literal
 is.** Neither is an lval of a variable, so `borrowTypeCheck` asks

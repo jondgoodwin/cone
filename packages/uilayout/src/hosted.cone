@@ -1,0 +1,92 @@
+// ======== Hosted widgets: a node whose logic lives above uilayout ========
+//
+// uilayout cannot know every widget (a code editor needs a text buffer, a syntax highlighter and an
+// undo history, none of which a layout toolkit should depend on). A HOSTED node is the seam:
+//
+//   - it is an ordinary node for layout, hit testing, focus, clipping and drawing order;
+//   - the events that reach it (pointer down, up and move while held, double click, wheel, key down,
+//     text, focus in and out) are not interpreted but QUEUED, as HostEvents, for its owner to take
+//     with 'takeHostEvents' (the owner is a package above uilayout, run once a frame);
+//   - what it looks like is a DrawList the owner hands it with 'hostedSetDraw', copied into the frame's
+//     list at the node's place in the drawing order (so a window above it still covers it).
+//
+// A hosted node takes the pointer on a press until the release (so a drag that leaves it keeps
+// arriving) and is focusable (so keys and text arrive). Nothing else about it is special.
+
+pub struct HostEvent {
+  pub node usize;
+  pub ev Ev;
+}
+
+pub struct HostedWidget {
+  pub node usize;
+  pub list DrawList;
+}
+
+// Makes a hosted node under 'parent', focusable, clipping, taking the pointer
+pub fn hostedNode(ui &mut Ui, parent usize) usize {
+  imm id = made(ui, parent, K_HOSTED, "base");
+  ui.nodes[id].pointer = PM_STOP;
+  ui.nodes[id].focusable = true;
+  ui.nodes[id].clip = true;
+  ui.nodes[id].data = ui.input.hosted.len();
+  ui.input.hosted.push(new HostedWidget(id, DrawList.make()));
+  id;
+}
+
+// The draw commands this node shows from now on (the owner makes them in the Ui's pixels, as drawUi does)
+pub fn hostedSetDraw(ui &mut Ui, node usize, list &DrawList) {
+  imm d = ui.nodes[node].data;
+  ui.input.hosted[d].list.clear();
+  ui.input.hosted[d].list.append(list);
+}
+
+// The events queued for a node, oldest first; they are removed from the queue
+pub fn takeHostEvents(ui &mut Ui, node usize) List[Ev] {
+  mut out = List[Ev].empty();
+  mut keep = List[HostEvent].empty();
+  mut i = 0usize;
+  while i < ui.input.hostEvents.len() {
+    imm h = ui.input.hostEvents[i];
+    if h.node == node {out.push(h.ev);} else {keep.push(*h);}
+    i = i + 1usize;
+  }
+  ui.input.hostEvents = keep;
+  out;
+}
+
+// Whether any event is queued for a node
+pub fn hasHostEvents(ui &Ui, node usize) bool {
+  mut i = 0usize;
+  while i < ui.input.hostEvents.len() {
+    if ui.input.hostEvents[i].node == node {return true;}
+    i = i + 1usize;
+  }
+  false;
+}
+
+fn hostedEvent(ui &mut Ui, node usize, ev &Ev) bool {
+  imm k = ev.kind;
+  if k == EK_DOWN or k == EK_CLICK or k == EK_DBLCLICK or k == EK_WHEEL or k == EK_KEY_DOWN or k == EK_TEXT {
+    if k == EK_DOWN {ui.input.capture = node;}
+    ui.input.hostEvents.push(new HostEvent(node, *ev));
+    return true;
+  }
+  if k == EK_UP {
+    if ui.input.capture == node {ui.input.capture = NIL;}
+    ui.input.hostEvents.push(new HostEvent(node, *ev));
+    return true;
+  }
+  if k == EK_MOVE and ui.input.capture == node {
+    ui.input.hostEvents.push(new HostEvent(node, *ev));
+    return true;
+  }
+  if k == EK_FOCUS_IN or k == EK_FOCUS_OUT {
+    ui.input.hostEvents.push(new HostEvent(node, *ev));
+  }
+  false;
+}
+
+fn drawHosted(ui &Ui, id usize, out &mut DrawList) {
+  out.append(&ui.input.hosted[ui.nodes[id].data].list);
+}

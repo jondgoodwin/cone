@@ -1716,6 +1716,8 @@ static void genlOwnerNarrowCheck(GenState *gen, CastNode *node) {
             fromat, toat);
 }
 
+static FieldDclNode *genlTagField(StructNode *structtype);
+
 // Reinterpret a value as if it were another type
 LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
@@ -1729,7 +1731,11 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     // In a global's initializer, which has no memory to reinterpret a value through,
     // a constant struct wanted as another struct of the same fields, a payload-less
     // variant as its enum, is that constant re-typed (litIsEnumVariant)
-    if (gen->fn == NULL && totype->tag == StructTag && LLVMIsConstant(genexp) && LLVMGetTypeKind(LLVMTypeOf(genexp)) == LLVMStructTypeKind) {
+    if (gen->fn == NULL && totype->tag == StructTag && LLVMIsConstant(genexp)
+        && genlType(gen, totype) == LLVMTypeOf(genexp))
+        return genexp;
+    if (gen->fn == NULL && totype->tag == StructTag && LLVMIsConstant(genexp) && LLVMGetTypeKind(LLVMTypeOf(genexp)) == LLVMStructTypeKind
+        && LLVMGetTypeKind(genlType(gen, totype)) == LLVMStructTypeKind) {
         LLVMTypeRef tollvm = genlType(gen, totype);
         unsigned nfields = LLVMCountStructElementTypes(tollvm);
         if (LLVMCountStructElementTypes(LLVMTypeOf(genexp)) == nfields) {
@@ -1742,6 +1748,21 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
             }
             if (same)
                 return LLVMConstNamedStruct(tollvm, elems, nfields);
+        }
+        // A payload-less variant of an enum with variants that hold values: the enum is
+        // wider than the variant, so the constant is built at the enum's own layout,
+        // every field zero but the tag, which is the variant's.
+        INode *fromdcl = ((IExpNode*)exp)->vtype ? itypeGetTypeDcl(((IExpNode*)exp)->vtype) : NULL;
+        FieldDclNode *fromtag = fromdcl && fromdcl->tag == StructTag ? genlTagField((StructNode*)fromdcl) : NULL;
+        FieldDclNode *totag = genlTagField((StructNode*)totype);
+        if (fromtag && totag) {
+            LLVMValueRef tagval = LLVMGetAggregateElement(genexp, fromtag->index);
+            if (tagval != NULL && LLVMTypeOf(tagval) == LLVMStructGetTypeAtIndex(tollvm, totag->index)) {
+                LLVMValueRef *elems = (LLVMValueRef *)memAllocBlk((nfields ? nfields : 1) * sizeof(LLVMValueRef));
+                for (unsigned i = 0; i < nfields; ++i)
+                    elems[i] = i == totag->index ? tagval : LLVMConstNull(LLVMStructGetTypeAtIndex(tollvm, i));
+                return LLVMConstNamedStruct(tollvm, elems, nfields);
+            }
         }
     }
     if (totype->tag == StructTag || totype->tag == ArrayTag) {

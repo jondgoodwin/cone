@@ -9,6 +9,8 @@
 //                                       build the package, run each program in
 //                                       its tests/ and build each in examples/
 //     congo clean [file.cone]           delete what a build wrote
+//     congo publish [--registry URL]    point an index registry at this package's
+//                                       current commit
 //
 // build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 // mechanism whose final design is open), passed to every conec compile.
@@ -34,7 +36,8 @@
 // package), header.cone (the header scan and the names a module may not
 // have), paths.cone (paths and the environment as congo.py's pathlib and
 // os.path read them), registry.cone (manifests, the machine config, the
-// registry), modules.cone (a package's module tree and its loops), order.cone
+// registry), index.cone (index registries: a package fetched by name, and
+// 'congo publish'), modules.cone (a package's module tree and its loops), order.cone
 // (the build order and the build descriptions), linker.cone (conec, conestd
 // and Microsoft's linker), build.cone (the compiles, the link and a build),
 // gpu.cone (the GPU build: a marked package's kernels, and its imports
@@ -92,6 +95,7 @@ fn commandUsage(command &str) String {
   elif command == "build" { usage <- " [--release] [-D NAME[=INT]]"; }
   elif command == "run" { usage <- " [--release] [-D NAME[=INT]] [file]"; }
   elif command == "test" { usage <- " [--release] [-D NAME[=INT]] [--bless] [name]"; }
+  elif command == "publish" { usage <- " [--registry URL]"; }
   else { usage <- " [file]"; }
   usage;
 }
@@ -134,7 +138,9 @@ fn topHelp() i32 {
   printStr("    new       make a package folder\n    build     build this package\n");
   printStr("    run       build this package or a lone file, and run it\n");
   printStr("    test      build this package, run its tests and build its examples\n");
-  printStr("    clean     delete what a build wrote\n\noptions:\n  -h, --help  show this help message and exit\n");
+  printStr("    clean     delete what a build wrote\n");
+  printStr("    publish   point an index registry at this package's current commit\n");
+  printStr("\noptions:\n  -h, --help  show this help message and exit\n");
   0i32;
 }
 
@@ -175,6 +181,11 @@ fn commandHelp(command &str) i32 {
     printStr("  --bless               write the expected output of a test that has none,\n");
     printStr("                        from a run; check it by hand against the source\n");
   }
+  elif command == "publish" {
+    printStr("options:\n  -h, --help      show this help message and exit\n");
+    printStr("  --registry URL  the index to publish to (default: the first [registry]\n");
+    printStr("                  indexes)\n");
+  }
   else {
     printStr("positional arguments:\n  file        a lone .cone file whose build to delete\n\noptions:\n");
     printStr("  -h, --help  show this help message and exit\n");
@@ -206,9 +217,9 @@ fn main() i32 {
   }
   if at == argv.len() { return usageError(String.from("the following arguments are required: command")); }
   imm command = argv[at].view();
-  if not (command == "new" or command == "build" or command == "run" or command == "test" or command == "clean") {
+  if not (command == "new" or command == "build" or command == "run" or command == "test" or command == "clean" or command == "publish") {
     return usageError(cat("argument command: invalid choice: '", command,
-      "' (choose from new, build, run, test, clean)"));
+      "' (choose from new, build, run, test, clean, publish)"));
   }
   // new name [path] [--lib]; build [--release] [-D NAME[=INT]]; run
   // [--release] [-D NAME[=INT]] [file]; test [name] [--release]
@@ -219,15 +230,33 @@ fn main() i32 {
   mut bless = false;
   mut defines = List[String].empty();
   mut positionals = List[String].empty();
+  mut registryUrl = String.empty();
+  mut hasRegistry = false;
   mut most = 1usize;
   if command == "new" { most = 2usize; }
-  elif command == "build" { most = 0usize; }
+  elif command == "build" or command == "publish" { most = 0usize; }
   imm hasRelease = command == "build" or command == "run" or command == "test";
   i = at + 1usize;
   while i < argv.len() {
     imm arg = argv[i].view();
     if isHelp(arg) { return commandHelp(command); }
     imm eq = findByte(arg, '=', 0usize);
+    // publish --registry URL: its value follows it, or is attached with '='
+    if command == "publish" and isOption(arg, "--registry") {
+      if i + 1usize >= argv.len() or looksLikeOption(argv[i + 1usize].view()) {
+        return commandError(command, String.from("argument --registry: expected one argument"));
+      }
+      registryUrl = argv[i + 1usize].copy();
+      hasRegistry = true;
+      i = i + 2usize;
+      continue;
+    }
+    if command == "publish" and eq < arg.len() and isOption(&arg[..<eq], "--registry") {
+      registryUrl = String.from(&arg[eq + 1usize..]);
+      hasRegistry = true;
+      i = i + 1usize;
+      continue;
+    }
     // TEMPORARY, a provisional mechanism whose final design is open: '-D',
     // repeatable, handed to conec as it is given, which checks it. Its value
     // follows it ('-D NAME', '--define NAME', abbreviated as far as
@@ -283,6 +312,7 @@ fn main() i32 {
     return cmdNew(positionals[0usize].view(), "", lib);
   }
   if command == "build" { return cmdBuild(release, &defines); }
+  if command == "publish" { return cmdPublish(registryUrl.view(), hasRegistry); }
   if command == "test" {
     if positionals.len() > 0usize { return cmdTest(positionals[0usize].view(), true, release, bless, &defines); }
     return cmdTest("", false, release, bless, &defines);

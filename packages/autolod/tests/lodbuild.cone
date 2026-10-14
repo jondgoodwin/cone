@@ -1,0 +1,472 @@
+// The autolod package's mesh levels, checked with the testing package. Only a
+// failure prints.
+//
+// - The octahedral maths: decode and encode are inverses over a grid of
+//   directions (both maps), the frame grid's corners and edges land where they
+//   should, the blend weights sum to 1 and are 1 at a frame, the basis is
+//   orthonormal with up as near +y as it can be.
+// - A UV sphere (32 segments, 1984 triangles, radius 1) built to three levels:
+//   the triangle counts fall, the thresholds descend, each level stays within its
+//   error budget of level 0 (measured both ways), the uv of every vertex is a uv
+//   the source has, the normals are unit, and the sphere's own seam (a column of
+//   doubled vertices, a uv discontinuity) is still a seam in the coarsest level.
+// - A cube (its faces' normals differ): every level keeps 12 triangles and 24
+//   vertices, i.e. its hard edges, and no normal is smeared.
+// - A plane with a border (open edges): the border stays put, within the budget.
+// - A mesh with two material groups keeps both groups, each triangle in the
+//   group of its source.
+// - A double-sided card (each triangle twice, wound the other way) and three
+//   triangles on one edge are neither dropped nor refused: the triangle count of a
+//   level 0 is the source's.
+
+mod lodbuild;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use { Mesh };
+import autolod use *;
+
+fn closeTo(a Vec3, b Vec3, d f32) bool { (a - b).length() <= d; }
+
+fn octahedralMaths() {
+  // decode (encode d) = d, over a spread of directions, both maps
+  mut bad = 0u32;
+  mut worst = 0.;
+  mut i = 0;
+  while i < 200 {
+    imm a = f32.from(i) * 0.6180339 * 6.2831853;
+    imm y = ((f32.from(i % 40) + 0.5) / 40.) * 2. - 1.;
+    imm r = (1. - y * y).sqrt();
+    imm d = new Vec3(r * a.cos(), y, r * a.sin());
+    mut hemi = 0;
+    while hemi < 2 {
+      imm h = hemi == 1;
+      imm target = if h and d.y < 0. { new Vec3(d.x, 0., d.z).normalize(); } else { d; };
+      imm uv = octEncode(d, h);
+      imm back = octDecode(uv.x, uv.y, h);
+      imm err = (back - target).length();
+      if err > worst { worst = err; }
+      if uv.x < -0.0001 or uv.x > 1.0001 or uv.y < -0.0001 or uv.y > 1.0001 { bad = bad + 1u32; }
+      hemi = hemi + 1;
+    }
+    i = i + 1;
+  }
+  expectUInt(u64.from(bad), 0u64, "every encoded direction lies in the unit square");
+  expectFloat(f64.from(worst), 0d, 0.0001d, "decode inverts encode, both maps");
+
+  // the corners and edges of a hemisphere's grid are on the horizon, the middle is up
+  expect(closeTo(octDecode(0.5, 0.5, true), new Vec3(0., 1., 0.), 0.0001), "the hemisphere's middle is straight up");
+  expect(libc.fabsf(octDecode(0., 0., true).y) < 0.0001, "its corner is on the horizon");
+  expect(libc.fabsf(octDecode(1., 0.5, true).y) < 0.0001, "its edge is on the horizon");
+  expect(closeTo(octDecode(0.5, 0.5, false), new Vec3(0., 1., 0.), 0.0001), "the sphere's middle is straight up");
+  expect(closeTo(octDecode(0., 0., false), new Vec3(0., -1., 0.), 0.0001), "the sphere's corner is straight down");
+  expect(closeTo(frameDirection(3u32, 3u32, 7u32, true), new Vec3(0., 1., 0.), 0.0001), "frame (3,3) of 7 is the top");
+
+  // blends
+  mut weightsOk = true;
+  mut atFrame = true;
+  i = 0;
+  while i < 300 {
+    imm a = f32.from(i) * 2.399963;
+    imm y = f32.from(i % 31) / 30.;
+    imm r = (1. - y * y).sqrt();
+    imm d = new Vec3(r * a.cos(), y, r * a.sin());
+    imm b = pickFrames(d, 8u32, true);
+    imm sum = b.w0 + b.w1 + b.w2;
+    if libc.fabsf(sum - 1.) > 0.0001 or b.w0 < -0.0001 or b.w1 < -0.0001 or b.w2 < -0.0001 { weightsOk = false; }
+    if b.i0 > 7u32 or b.j0 > 7u32 or b.i1 > 7u32 or b.j1 > 7u32 or b.i2 > 7u32 or b.j2 > 7u32 { weightsOk = false; }
+    // the blend of the three frames' directions is near the direction asked for
+    // (barycentric weights: they put the frames' grid points on the direction's own point of the square)
+    imm uv = octEncode(d, true);
+    imm mx = (f32.from(b.i0) * b.w0 + f32.from(b.i1) * b.w1 + f32.from(b.i2) * b.w2) / 7.;
+    imm my = (f32.from(b.j0) * b.w0 + f32.from(b.j1) * b.w1 + f32.from(b.j2) * b.w2) / 7.;
+    if libc.fabsf(mx - uv.x) > 0.0001 or libc.fabsf(my - uv.y) > 0.0001 { weightsOk = false; }
+    i = i + 1;
+  }
+  expect(weightsOk, "three weights, nonnegative, summing to 1; frames in range; their mix points the way asked");
+  // exactly at a frame, that frame has weight 1
+  mut gi = 0u32;
+  while gi < 8u32 {
+    mut gj = 0u32;
+    while gj < 8u32 {
+      imm d = frameDirection(gi, gj, 8u32, true);
+      imm b = pickFrames(d, 8u32, true);
+      imm top = if b.w0 >= b.w1 and b.w0 >= b.w2 { b.w0; } elif b.w1 >= b.w2 { b.w1; } else { b.w2; };
+      if top < 0.999 { atFrame = false; }
+      gj = gj + 1u32;
+    }
+    gi = gi + 1u32;
+  }
+  expect(atFrame, "at a frame's own direction its weight is 1");
+
+  // basis
+  mut basisOk = true;
+  i = 0;
+  while i < 100 {
+    imm a = f32.from(i) * 2.399963;
+    imm y = f32.from(i % 21) / 10. - 1.;
+    imm r = (1. - y * y).sqrt();
+    imm d = new Vec3(r * a.cos(), y, r * a.sin());
+    imm bs = frameBasis(d);
+    if libc.fabsf(bs.right.length() - 1.) > 0.001 or libc.fabsf(bs.up.length() - 1.) > 0.001 { basisOk = false; }
+    if libc.fabsf(bs.right.dot(bs.up)) > 0.001 or libc.fabsf(bs.right.dot(d)) > 0.001 or libc.fabsf(bs.up.dot(d)) > 0.001 {
+      basisOk = false;
+    }
+    // right-handed: right x up = the direction to the camera
+    if bs.right.cross(bs.up).dot(d) < 0.99 { basisOk = false; }
+    i = i + 1;
+  }
+  expect(basisOk, "the frame basis is orthonormal and right-handed about the view direction");
+  imm side = frameBasis(new Vec3(0., 0., 1.));
+  expect(closeTo(side.right, new Vec3(1., 0., 0.), 0.0001) and closeTo(side.up, new Vec3(0., 1., 0.), 0.0001),
+    "a camera on +z looks with x to the right and y up");
+}
+
+fn countGroup(m &Mesh, slot u32) u32 {
+  mut n = 0u32;
+  mut g = 0usize;
+  while g < m.groups.len() {
+    if m.groups[g].material == slot { n = n + m.groups[g].count / 3u32; }
+    g = g + 1usize;
+  }
+  n;
+}
+
+fn sphereLevels() {
+  imm sphere = Mesh.sphere(1., 32);
+  mut s = new LodSettings();
+  s.measure = true;
+  imm set = buildLods(&sphere, &s, 0., 0., false);
+  expect(set.levels.len() >= 2usize, "a sphere gets at least one coarser level");
+  expectUInt(u64.from(set.levels[0usize].triangles), u64.from(sphere.triangleCount()), "level 0 is the source");
+  mut falling = true;
+  mut descending = true;
+  mut withinBudget = true;
+  mut i = 1usize;
+  while i < set.levels.len() {
+    if set.levels[i].triangles >= set.levels[i - 1usize].triangles { falling = false; }
+    if set.levels[i].minSize >= set.levels[i - 1usize].minSize { descending = false; }
+    // The measured largest distance may exceed the root-mean-square budget, but not by much on a smooth sphere
+    if set.levels[i].measured > set.levels[i].budget * 2.5 + 0.0001 { withinBudget = false; }
+    i = i + 1usize;
+  }
+  expect(falling, "the triangle counts fall level by level");
+  expect(descending, "the thresholds descend");
+  expect(withinBudget, "each level lies within 2.5 x its error budget of level 0 (measured)");
+  expect(set.levels[0usize].minSize > set.levels[set.levels.len() - 1usize].minSize, "level 0 is drawn from the largest size");
+  // every vertex of every level: unit normal, uv in the source's range, on the sphere within the budget
+  mut ok = true;
+  mut seamKept = false;
+  i = 1usize;
+  while i < set.levels.len() {
+    imm m = &set.levels[i].mesh;
+    if m.normals.len() != m.positions.len() or m.uvs.len() != m.positions.len() { ok = false; }
+    mut v = 0usize;
+    while v < m.positions.len() {
+      if libc.fabsf(m.normals[v].length() - 1.) > 0.001 { ok = false; }
+      if m.uvs[v].x < -0.0001 or m.uvs[v].x > 1.0001 or m.uvs[v].y < -0.0001 or m.uvs[v].y > 1.0001 { ok = false; }
+      imm r = m.positions[v].length();
+      if libc.fabsf(r - 1.) > set.levels[i].budget * 2.5 + 0.001 { ok = false; }
+      v = v + 1usize;
+    }
+    // The seam: two vertices at one position with u near 0 and u near 1
+    if i + 1usize == set.levels.len() {
+      mut a = 0usize;
+      while a < m.positions.len() {
+        mut b = a + 1usize;
+        while b < m.positions.len() {
+          if (*m.positions[a] - *m.positions[b]).length() < 0.00001 and libc.fabsf(m.uvs[a].x - m.uvs[b].x) > 0.5 {
+            seamKept = true;
+          }
+          b = b + 1usize;
+        }
+        a = a + 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+  expect(ok, "the levels' normals are unit, uvs in range, vertices near the sphere");
+  expect(seamKept, "the uv seam is still a seam in the coarsest level");
+}
+
+fn cubeLevels() {
+  imm cube = Mesh.cube(1.);
+  mut s = new LodSettings();
+  s.pixelError = 4.;
+  s.minShare = 1.;
+  imm set = buildLods(&cube, &s, 0., 0., false);
+  mut ok = true;
+  mut i = 1usize;
+  while i < set.levels.len() {
+    imm m = &set.levels[i].mesh;
+    if m.triangleCount() != 12usize or m.positions.len() != 24usize { ok = false; }
+    // each vertex's normal is axis-aligned: not smeared across an edge
+    mut v = 0usize;
+    while v < m.normals.len() {
+      imm n = *m.normals[v];
+      imm axis = libc.fabsf(n.x) + libc.fabsf(n.y) + libc.fabsf(n.z);
+      if libc.fabsf(axis - 1.) > 0.001 { ok = false; }
+      v = v + 1usize;
+    }
+    i = i + 1usize;
+  }
+  expect(set.levels.len() >= 2usize, "a cube keeps its levels when asked to (minShare 1)");
+  expect(ok, "a cube's levels keep 12 triangles, 24 vertices and axis-aligned normals: hard edges are seams");
+}
+
+fn borderKept() {
+  // a plane of 16 x 16 cells, y = 0, 1 unit wide: decimation merges the flat inside, the border stays
+  imm plane = Mesh.plane(16, 1.);
+  mut s = new LodSettings();
+  s.pixelError = 3.;
+  s.measure = true;
+  imm set = buildLods(&plane, &s, 0., 0., false);
+  expect(set.levels.len() >= 2usize, "a flat plane loses triangles");
+  imm lastIndex = set.levels.len() - 1usize;
+  expect(set.levels[lastIndex].triangles < set.levels[0usize].triangles / 4u32, "a flat plane keeps a small share of its triangles");
+  imm bb = set.levels[lastIndex].mesh.bounds();
+  imm bb0 = plane.bounds();
+  expect(closeTo(bb.min, bb0.min, 0.0001) and closeTo(bb.max, bb0.max, 0.0001), "the border holds: the bounds are the source's");
+  expectFloat(f64.from(set.levels[lastIndex].measured), 0d, 0.0001d, "a flat plane loses nothing");
+}
+
+fn groupsKept() {
+  mut m = Mesh.sphere(1., 24);
+  // lower half material 0, upper 1: cut the index list by triangle centroid
+  mut lower = List[u32].empty();
+  mut upper = List[u32].empty();
+  mut t = 0usize;
+  while t < m.triangleCount() {
+    imm a = *m.positions[usize.from(*m.indices[t * 3usize])];
+    imm b = *m.positions[usize.from(*m.indices[t * 3usize + 1usize])];
+    imm c = *m.positions[usize.from(*m.indices[t * 3usize + 2usize])];
+    imm up = (a.y + b.y + c.y) > 0.;
+    mut k = 0usize;
+    while k < 3usize {
+      if up { upper.push(*m.indices[t * 3usize + k]); } else { lower.push(*m.indices[t * 3usize + k]); }
+      k = k + 1usize;
+    }
+    t = t + 1usize;
+  }
+  m.indices.clear();
+  mut k = 0usize;
+  while k < lower.len() { m.indices.push(*lower[k]); k = k + 1usize; }
+  m.addGroup(0u32, u32.from(lower.len()), 0u32);
+  k = 0usize;
+  while k < upper.len() { m.indices.push(*upper[k]); k = k + 1usize; }
+  m.addGroup(u32.from(lower.len()), u32.from(upper.len()), 1u32);
+  imm defaults = new LodSettings();
+  imm set = buildLods(&m, &defaults, 0., 0., false);
+  expect(set.levels.len() >= 2usize, "the grouped sphere has a coarser level");
+  imm c = &set.levels[1usize].mesh;
+  expectUInt(u64.from(c.groups.len()), 2u64, "both groups survive");
+  expectUInt(u64.from(countGroup(c, 0u32) + countGroup(c, 1u32)), u64.from(c.triangleCount()), "every triangle is in a group");
+  // every triangle of group 1 is in the upper half (its centroid has y > -0.1: the decimated surface moved a little)
+  mut right = true;
+  mut g = 0usize;
+  while g < c.groups.len() {
+    imm gr = c.groups[g];
+    mut tri = gr.start / 3u32;
+    while tri < (gr.start + gr.count) / 3u32 {
+      imm a = *c.positions[usize.from(*c.indices[usize.from(tri) * 3usize])];
+      imm b = *c.positions[usize.from(*c.indices[usize.from(tri) * 3usize + 1usize])];
+      imm cc = *c.positions[usize.from(*c.indices[usize.from(tri) * 3usize + 2usize])];
+      imm y = (a.y + b.y + cc.y) / 3.;
+      if gr.material == 1u32 and y < -0.15 { right = false; }
+      if gr.material == 0u32 and y > 0.15 { right = false; }
+      tri = tri + 1u32;
+    }
+    g = g + 1usize;
+  }
+  expect(right, "each triangle stays in the group of the half it came from");
+}
+
+fn awkwardMeshes() {
+  // a double-sided card: one triangle, and the same wound the other way
+  mut card = Mesh.empty();
+  card.positions.push(new Vec3(0., 0., 0.));
+  card.positions.push(new Vec3(1., 0., 0.));
+  card.positions.push(new Vec3(0., 1., 0.));
+  card.normals.push(new Vec3(0., 0., 1.));
+  card.normals.push(new Vec3(0., 0., 1.));
+  card.normals.push(new Vec3(0., 0., 1.));
+  card.indices.push(0u32); card.indices.push(1u32); card.indices.push(2u32);
+  card.indices.push(0u32); card.indices.push(2u32); card.indices.push(1u32);
+  imm defaults = new LodSettings();
+  imm set = buildLods(&card, &defaults, 0., 0., false);
+  expectUInt(u64.from(set.levels[0usize].triangles), 2u64, "a double-sided card keeps both sides at level 0");
+  expectUInt(u64.from(set.degenerate), 0u64, "neither is degenerate");
+  // three triangles on one edge (a book's spine): none dropped
+  mut book = Mesh.empty();
+  book.positions.push(new Vec3(0., 0., 0.));
+  book.positions.push(new Vec3(1., 0., 0.));
+  book.positions.push(new Vec3(0., 1., 0.));
+  book.positions.push(new Vec3(0., -1., 0.));
+  book.positions.push(new Vec3(0., 0., 1.));
+  mut k = 0usize;
+  while k < 5usize { book.normals.push(new Vec3(0., 0., 1.)); k = k + 1usize; }
+  book.indices.push(0u32); book.indices.push(1u32); book.indices.push(2u32);
+  book.indices.push(0u32); book.indices.push(3u32); book.indices.push(1u32);
+  book.indices.push(0u32); book.indices.push(1u32); book.indices.push(4u32);
+  imm bookSet = buildLods(&book, &defaults, 0., 0., false);
+  expectUInt(u64.from(bookSet.levels[0usize].triangles), 3u64, "three triangles on an edge are all kept");
+  // a degenerate triangle is dropped and counted
+  mut flat = Mesh.empty();
+  flat.positions.push(new Vec3(0., 0., 0.));
+  flat.positions.push(new Vec3(1., 0., 0.));
+  flat.positions.push(new Vec3(2., 0., 0.));
+  flat.positions.push(new Vec3(0., 1., 0.));
+  flat.indices.push(0u32); flat.indices.push(1u32); flat.indices.push(2u32);
+  flat.indices.push(0u32); flat.indices.push(1u32); flat.indices.push(3u32);
+  imm flatSet = buildLods(&flat, &defaults, 0., 0., false);
+  expectUInt(u64.from(flatSet.degenerate), 1u64, "a triangle with no area is counted");
+}
+
+// A flat-shaded sphere (every corner its own normal, so every edge is a seam of the normal channel):
+// the first attempt saves nothing, so the level is made again with the normals recomputed by crease angle
+fn flatShadedSphere() {
+  mut sphere = Mesh.sphere(1., 24);
+  // every triangle its own three vertices and its face's normal
+  mut flat = Mesh.empty();
+  mut t = 0usize;
+  while t < sphere.triangleCount() {
+    imm base = u32.from(flat.positions.len());
+    imm n = sphere.triangleNormal(t);
+    mut k = 0usize;
+    while k < 3usize {
+      imm v = usize.from(*sphere.indices[t * 3usize + k]);
+      flat.positions.push(*sphere.positions[v]);
+      flat.uvs.push(*sphere.uvs[v]);
+      flat.normals.push(n);
+      flat.indices.push(base + u32.from(k));
+      k = k + 1usize;
+    }
+    t = t + 1usize;
+  }
+  mut s = new LodSettings();
+  imm set = buildLods(&flat, &s, 0., 0., false);
+  expect(set.levels.len() >= 2usize, "a flat-shaded sphere is simplified though every edge is a seam of its normals");
+  if set.levels.len() >= 2usize {
+    expect(set.levels[1usize].recomputed, "its level was made with the normals recomputed");
+    expect(set.levels[1usize].triangles * 10u32 < set.levels[0usize].triangles * 7u32, "and has under 70% of the triangles");
+    imm m = &set.levels[1usize].mesh;
+    mut smooth = true;
+    mut v = 0usize;
+    while v < m.positions.len() {
+      // the facets were under the crease angle, so the normals are the sphere's own, near radial
+      if (*m.normals[v]).dot((*m.positions[v]).normalize()) < 0.93 { smooth = false; }
+      v = v + 1usize;
+    }
+    expect(smooth, "the recomputed normals are smooth, near radial");
+  }
+  // with the fallback off the sphere stays as it is
+  mut off = new LodSettings();
+  off.recomputeNormals = false;
+  imm noFallback = buildLods(&flat, &off, 0., 0., false);
+  expectUInt(u64.from(noFallback.levels.len()), 1u64, "without the fallback a flat-shaded sphere has no coarser level");
+  expectUInt(u64.from(noFallback.refused), 2u64, "both its levels refused for saving nothing");
+}
+
+// A scatter of 120 small quads in a ball: thinned by pieces, each level keeps about the share asked, the kept
+// ones larger to hold the area, and the ones kept at a coarser level are among those of the finer
+fn thinning() {
+  mut scatter = Mesh.empty();
+  mut i = 0;
+  while i < 120 {
+    // a quad 0.2 across at a place on a golden-angle spiral through a ball of radius 3
+    imm a = f32.from(i) * 2.399963;
+    imm y = (f32.from(i) / 119.) * 2. - 1.;
+    imm r = (1. - y * y).sqrt() * 2.8;
+    imm c = new Vec3(r * a.cos(), y * 2.8, r * a.sin());
+    imm base = u32.from(scatter.positions.len());
+    scatter.positions.push(c + new Vec3(-0.1, -0.1, 0.));
+    scatter.positions.push(c + new Vec3(0.1, -0.1, 0.));
+    scatter.positions.push(c + new Vec3(0.1, 0.1, 0.));
+    scatter.positions.push(c + new Vec3(-0.1, 0.1, 0.));
+    mut k = 0;
+    while k < 4 { scatter.normals.push(new Vec3(0., 0., 1.)); k = k + 1; }
+    scatter.indices.push(base); scatter.indices.push(base + 1u32); scatter.indices.push(base + 2u32);
+    scatter.indices.push(base); scatter.indices.push(base + 2u32); scatter.indices.push(base + 3u32);
+    i = i + 1;
+  }
+  imm settings = new LodSettings();
+  imm set = buildLods(&scatter, &settings, 0., 0., true);
+  expectUInt(u64.from(set.pieces), 120u64, "120 pieces found");
+  expectUInt(u64.from(set.smallPieces), 120u64, "all of them small");
+  expectUInt(u64.from(set.levels.len()), 3u64, "three levels");
+  if set.levels.len() == 3usize {
+    imm t0 = f32.from(set.levels[0usize].triangles);
+    imm t1 = f32.from(set.levels[1usize].triangles);
+    imm t2 = f32.from(set.levels[2usize].triangles);
+    expect(t1 > t0 * 0.35 and t1 < t0 * 0.65, "level 1 keeps about half the pieces");
+    expect(t2 > t0 * 0.12 and t2 < t0 * 0.40, "level 2 about a quarter");
+    // the area is held: the kept ones are larger
+    mut area0 = 0.;
+    mut area1 = 0.;
+    mut area2 = 0.;
+    mut t = 0usize;
+    while t < set.levels[0usize].mesh.triangleCount() { area0 = area0 + (set.levels[0usize].mesh.triangleNormal(t)).length() * 0. + triArea(&set.levels[0usize].mesh, t); t = t + 1usize; }
+    t = 0usize;
+    while t < set.levels[1usize].mesh.triangleCount() { area1 = area1 + triArea(&set.levels[1usize].mesh, t); t = t + 1usize; }
+    t = 0usize;
+    while t < set.levels[2usize].mesh.triangleCount() { area2 = area2 + triArea(&set.levels[2usize].mesh, t); t = t + 1usize; }
+    expect(area1 > area0 * 0.65 and area1 < area0 * 1.35, "level 1 has about level 0's area");
+    expect(area2 > area0 * 0.5 and area2 < area0 * 1.5, "and level 2");
+    // nested: each level 2 quad's middle is a level 1 quad's middle
+    mut nested = true;
+    mut q = 0usize;
+    while q + 5usize < set.levels[2usize].mesh.indices.len() {
+      imm c2 = quadMiddle(&set.levels[2usize].mesh, q);
+      mut found = false;
+      mut r2 = 0usize;
+      while r2 + 5usize < set.levels[1usize].mesh.indices.len() {
+        if (quadMiddle(&set.levels[1usize].mesh, r2) - c2).length() < 0.0001 { found = true; }
+        r2 = r2 + 6usize;
+      }
+      if !found { nested = false; }
+      q = q + 6usize;
+    }
+    expect(nested, "the pieces kept at level 2 are among those kept at level 1");
+  }
+  // not asked to thin: no thinning (the quads are loose pieces, there is nothing to collapse them into)
+  imm plain = buildLods(&scatter, &settings, 0., 0., false);
+  mut allKept = true;
+  mut l = 1usize;
+  while l < plain.levels.len() {
+    if plain.levels[l].kept != 1. { allKept = false; }
+    l = l + 1usize;
+  }
+  expect(allKept, "without the flag no piece is thinned");
+}
+
+fn triArea(m &Mesh, t usize) f32 {
+  imm a = *m.positions[usize.from(*m.indices[t * 3usize])];
+  imm b = *m.positions[usize.from(*m.indices[t * 3usize + 1usize])];
+  imm c = *m.positions[usize.from(*m.indices[t * 3usize + 2usize])];
+  (b - a).cross(c - a).length() * 0.5;
+}
+
+// The middle of the quad whose first index is q (six indices, two triangles)
+fn quadMiddle(m &Mesh, q usize) Vec3 {
+  mut sum = new Vec3(0., 0., 0.);
+  mut k = 0usize;
+  while k < 6usize {
+    sum = sum + *m.positions[usize.from(*m.indices[q + k])];
+    k = k + 1usize;
+  }
+  sum * (1. / 6.);
+}
+
+fn main() i32 {
+  octahedralMaths();
+  flatShadedSphere();
+  thinning();
+  sphereLevels();
+  cubeLevels();
+  borderKept();
+  groupsKept();
+  awkwardMeshes();
+  done();
+}

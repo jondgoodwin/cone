@@ -136,6 +136,10 @@ imm squares = new Dict[i32, i32] &lt;- each k, v in xs.iter().map(x =&gt; (*x, *
 		closure reads the list while it grows (its <span class="pre">len</span>, an item's value) is allowed. A dictionary takes pairs by <span class="pre">yield k: v</span>
 		in the header form; the bare form <span class="pre">new Dict[K, V] &lt;- each pairs</span> is not built for any source.
 		<span class="pre">new List[T] &lt;- parallel each chain</span> is refused: a chain cannot be split (<a href="refparallel.html#parallelbuilder">on its own page</a>).</p>
+	<p>A cursor whose <span class="pre">next</span> names no lifetime <i>lends</i>: each item is a borrow of the cursor
+		itself, gone at the next step. A chain over one feeds the entry the same way when each entry is a value made from the
+		item (a number copied, <span class="pre">map(x =&gt; *x + 1)</span>, a field read). A list that would keep the lent
+		items themselves (of a struct holding the borrow) is refused, whatever adapters sit in the chain.</p>
 
 	<h2>Iterators</h2>
 	<p><span class="pre">each</span> supports several ways to iterate over a sequence of values:</p>
@@ -278,6 +282,20 @@ each i, name in names.indexed() {   // i is a usize, name a borrow of the item
 <pre>
 each i, p in buf.mutItems().indexed() {
   *p = f(i);                        // p is a &amp;mut of the item
+}
+</pre>
+	<p>Every other cursor that declares <span class="pre">is Iterator[T]</span> has an
+		<span class="pre">indexed()</span> too: a generator, a chain, a cursor of one's own. Its
+		item is the same pair, the position (a <span class="pre">usize</span>, counted from 0 as the cursor is walked)
+		and what the cursor gives. Positions count what the cursor wrapped gives, so after a
+		<span class="pre">filter</span> they number what is left, and an <span class="pre">indexed()</span> before the
+		<span class="pre">filter</span> keeps the original positions. A cursor that lends its items (one whose
+		<span class="pre">next</span> names no lifetime, so an item is gone at the next step) still lends once
+		numbered: the borrow is inside the pair, and every use that would keep it past the next step is refused as
+		it is without the numbering.</p>
+<pre>
+each i, y in xs.iter().map(x =&gt; *x * 2).filter(y =&gt; *y &gt; 20).indexed() {
+  printInt(i64.from(i) * y);        // i counts the items the filter kept
 }
 </pre>
 

@@ -1,0 +1,78 @@
+// A call through a reference to a C-named function passes and returns a struct
+// by value as a direct call does, whatever the struct's size: the reference is
+// '&fn @c (...)' (inferred here from '&f', never written), and Cone calls it
+// with the C ABI's convention. Every function is called directly and then
+// through its reference, and the two columns of the output must agree. Small
+// (3, 4, 8 bytes), 16-byte and over-16-byte (24, 32) structs go both ways, as
+// an argument and as a returned value. What C itself passes and returns across
+// the boundary is module_c_byvalue; the refusals are module_c_fnref_reject.
+mod module_c_fnref_byvalue;
+import stdio use *;
+
+struct Rgb { pub r u8; pub g u8; pub b u8; }             // 3 bytes
+struct Rgba { pub r u8; pub g u8; pub b u8; pub a u8; }  // 4 bytes
+struct Ext2 { pub a i32; pub b i32; }                    // 8 bytes
+struct Vec4 { pub x f32; pub y f32; pub z f32; pub w f32; }  // 16 bytes
+struct Big3 { pub a i64; pub b i64; pub c i64; }         // 24 bytes
+struct Big4 { pub a i64; pub b i64; pub c i64; pub d i64; }  // 32 bytes
+
+pub fn @c rev3(c Rgb) Rgb { new Rgb(c.b, c.g, c.r); }
+pub fn @c rev4(c Rgba) Rgba { new Rgba(c.a, c.b, c.g, c.r); }
+pub fn @c swap(e Ext2) Ext2 { new Ext2(e.b, e.a); }
+pub fn @c scaled(v Vec4, k f32) Vec4 {
+  new Vec4(v.x * k, v.y * k, v.z * k, v.w * k);
+}
+pub fn @c rot3(b Big3, n i64) Big3 { new Big3(b.b + n, b.c + n, b.a + n); }
+pub fn @c rot4(b Big4) Big4 { new Big4(b.d, b.a, b.b, b.c); }
+pub fn @c sum4(k i32, b Big4, e Ext2) i64 {
+  i64.from(k) * 1000000 + b.a * 100000 + b.b * 10000 + b.c * 1000 + b.d * 100
+    + i64.from(e.a) * 10 + i64.from(e.b);
+}
+
+fn show(label &str, n i64) {
+  printStr(label); printStr(" "); printInt(n); printStr("\n");
+}
+
+fn main() {
+  imm c3 = new Rgb(1, 2, 3);
+  imm c4 = new Rgba(1, 2, 3, 4);
+  imm e = new Ext2(3, 4);
+  imm v = new Vec4(1., 2., 3., 4.);
+  imm b3 = new Big3(1, 2, 3);
+  imm b4 = new Big4(1, 2, 3, 4);
+
+  imm d3 = rev3(c3);
+  imm d4 = rev4(c4);
+  imm de = swap(e);
+  imm dv = scaled(v, 2.);
+  imm d5 = rot3(b3, 10);
+  imm d6 = rot4(b4);
+  show("direct rev3", i64.from(d3.r) * 100 + i64.from(d3.g) * 10 + i64.from(d3.b));
+  show("direct rev4", i64.from(d4.r) * 1000 + i64.from(d4.g) * 100 + i64.from(d4.b) * 10 + i64.from(d4.a));
+  show("direct swap", i64.from(de.a) * 10 + i64.from(de.b));
+  show("direct scaled", i64.from(dv.x) * 1000 + i64.from(dv.y) * 100 + i64.from(dv.z) * 10 + i64.from(dv.w));
+  show("direct rot3", d5.a * 10000 + d5.b * 100 + d5.c);
+  show("direct rot4", d6.a * 1000 + d6.b * 100 + d6.c * 10 + d6.d);
+  show("direct sum4", sum4(7, b4, e));
+
+  imm f3 = &rev3;
+  imm f4 = &rev4;
+  imm fe = &swap;
+  imm fv = &scaled;
+  imm f5 = &rot3;
+  imm f6 = &rot4;
+  imm fs = &sum4;
+  imm r3 = f3(c3);
+  imm r4 = f4(c4);
+  imm re = fe(e);
+  imm rv = fv(v, 2.);
+  imm r5 = f5(b3, 10);
+  imm r6 = f6(b4);
+  show("ref rev3", i64.from(r3.r) * 100 + i64.from(r3.g) * 10 + i64.from(r3.b));
+  show("ref rev4", i64.from(r4.r) * 1000 + i64.from(r4.g) * 100 + i64.from(r4.b) * 10 + i64.from(r4.a));
+  show("ref swap", i64.from(re.a) * 10 + i64.from(re.b));
+  show("ref scaled", i64.from(rv.x) * 1000 + i64.from(rv.y) * 100 + i64.from(rv.z) * 10 + i64.from(rv.w));
+  show("ref rot3", r5.a * 10000 + r5.b * 100 + r5.c);
+  show("ref rot4", r6.a * 1000 + r6.b * 100 + r6.c * 10 + r6.d);
+  show("ref sum4", fs(7, b4, e));
+}

@@ -34,6 +34,16 @@
 // layer the view's mask leaves out, and the picture inside the picture is
 // last frame's, one frame behind, not a second pass.
 //
+// FOG. A view can have the volumetric fog of fog.cone over its picture, so that a
+// mirror or a portal shows the air the main view does: 'enableFog' makes the view's
+// own passes and volume (the size of its picture), and the view's 'fog' settings, read
+// every picture, say what the air is and whether it is drawn ('fog.enabled'). The
+// fog is recorded into the picture's own submission, after the scene, over the picture's
+// depth (which 'render' keeps for it), and reads the cascades and the shadow parameters
+// the picture's own render has just written for its camera. The camera's eye is its
+// position (a reflected camera's reflection) and its distances are planar, so the fog of
+// a mirror's picture is the plain fog of the camera at the reflected eye.
+//
 // PLANAR MIRRORS and WATER. The camera that sees in a mirror is
 // 'camera.reflectedAbout(plane)' (camera.cone): the world reflected about
 // the plane before the camera sees it, the near plane replaced by the mirror
@@ -70,6 +80,18 @@ pub struct RenderView {
   queries QuerySet;            // GPU timestamps round its picture, once 'enableTiming' made them
   resolved Buffer;
   readback Buffer;
+  fogPass List[FogPass];       // volumetric fog for its picture: empty, or the one 'enableFog' made
+  fogFrame Buffer;             // fxcommon.slang's FxFrame for the fog, written each picture
+  fogPrevious Mat4;            // the last fogged picture's view-projection
+  // The fog (fog.cone), drawn over each picture, as the camera sees the scene, when 'enabled' and
+  // 'enableFog' made its passes. Read every picture: a weather system may set the density at will.
+  // Its 'tileSize' and 'slices' are the grid the volume is made for and a change remakes it (with a
+  // stall, as ImageFx.configure does); 'temporal' blends in the view's last picture's volume.
+  pub fog FogSettings = new FogSettings();
+  fogTile u32 = 0u32;          // the grid 'fog' had when the volume was made
+  fogSlices u32 = 0u32;
+  fogPictures u32 = 0u32;      // pictures fogged: the volume's jitter index
+  fogHavePrevious bool = false;
   pub layerMask u32 = 0xffffffffu32;   // the items it draws: those on one of these layers
   pub nest u32 = 0u32;         // how many views deep it sits
   pub drawn u32 = 0u32;        // how many times it has been drawn
@@ -89,12 +111,42 @@ pub struct RenderView {
     imm desc = new TextureDescriptor(width, height, renderer.colorFormat, usage);
     mut texture = device.createTexture(&desc);
     imm handle = new TextureHandle(renderer.textures.add(new TextureSlot(texture)));
-    imm depthDesc = new TextureDescriptor(width, height, renderer.depthFormat, TEXTURE_USAGE_RENDER_ATTACHMENT);
+    // The depth is sampled by the fog, once 'enableFog' made it
+    imm depthDesc = new TextureDescriptor(width, height, renderer.depthFormat,
+      TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     mut depth = device.createTexture(&depthDesc);
-    new RenderView(handle, depth, width, height, QuerySet.none(), Buffer.none(), Buffer.none());
+    new RenderView(handle, depth, width, height, QuerySet.none(), Buffer.none(), Buffer.none(), List[FogPass].empty(),
+      Buffer.none(), Mat4.identity());
   }
 
   pub fn isValid(self &) bool { depth.isValid() and !color.isNone(); }
+
+  // The texture holding the view's picture (not valid once the view is released). With
+  // 'depth', it is what a later pass of the program's own draws into the picture, such
+  // as a particle renderer's, after 'render' has drawn the scene into it. Record that
+  // pass in an encoder of its own and submit it after 'render' returns ('render'
+  // submits its picture before it returns), and set 'renderer.keepDepth' while the
+  // scene is drawn, or the depth test has nothing to read.
+  pub fn texture(self &, renderer &Renderer) &Texture {
+    &renderer.textures[color.slot].texture;
+  }
+
+  // Give the view's picture and depth texture back, as 'removeTexture' does
+  // (no stall: they are destroyed once the GPU has finished the frames that
+  // may have drawn into them or sampled them). A material that shows the
+  // picture is removed with 'removeMaterial', which the caller does, as
+  // for any texture's materials. The view is not valid afterwards. (A view with
+  // fog drops its fog passes, which waits for the device to be idle.)
+  pub fn release(self &mut, renderer &mut Renderer, device &mut Device) {
+    renderer.removeTexture(device, color);
+    device.queue.releaseTexture(&mut depth);
+    color = TextureHandle.none();
+    device.queue.releaseBuffer(&mut resolved);
+    device.queue.releaseBuffer(&mut readback);
+    queries = QuerySet.none();
+    fogPass = List[FogPass].empty();
+    device.queue.releaseBuffer(&mut fogFrame);
+  }
 
   // Time every later picture on the GPU ('gpuNanoseconds'); false if the
   // device keeps no timestamps
@@ -105,6 +157,32 @@ pub struct RenderView {
     readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     queries.isValid();
   }
+
+  // Make the passes of the view's fog ('fog'), whose volume is the size of its picture
+  // (about 12 MB for 1080 lines at the high tier). Every later picture is fogged while
+  // 'fog.enabled'. False, and no fog, if the renderer's colour format is not RGBA16_FLOAT
+  // (the fog pipelines' format).
+  pub fn enableFog(self &mut, renderer &mut Renderer, device &mut Device) bool {
+    if renderer.colorFormat != TEXTURE_FORMAT_RGBA16_FLOAT { return false; }
+    if fogPass.len() > 0usize { return true; }
+    fogFrame = device.createBuffer(FX_FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    imm depthView = depth.createView();
+    mut pass = FogPass.create(device, &renderer.shadow, &fogFrame, &depthView);
+    // The tiny volumes it began with, about to be replaced, may be named by commands not yet run
+    mut flush = device.createCommandEncoder();
+    device.queue.submit(flush.finish());
+    device.waitIdle();
+    pass.remake(device, true, width, height, &fog, &renderer.shadow, &fogFrame, &depthView);
+    fogTile = fog.tileSize;
+    fogSlices = fog.slices;
+    fogPass.push(pass);
+    fogHavePrevious = false;
+    fogPass[0usize].isValid();
+  }
+
+  // The next picture's fog starts afresh, with none of the last picture's volume (the view's
+  // camera has cut to somewhere else)
+  pub fn cutFog(self &mut) { fogHavePrevious = false; }
 
   // The GPU time of the last picture drawn, in nanoseconds, once the device
   // is idle ('device.waitIdle()'); 0 if timing is off
@@ -123,16 +201,23 @@ pub struct RenderView {
     imm sub = onLayers(list, layerMask);
     imm target = renderer.textures[color.slot].texture.createView();
     imm depthView = depth.createView();
+    imm fogged = fog.enabled and fogPass.len() > 0usize;
+    if fogged { self.remakeFog(renderer, device); } else { fogHavePrevious = false; }
     mut encoder = device.createCommandEncoder();
     if queries.isValid() { encoder.writeTimestamp(&queries, 0u32); }
     // The scene (visibility.cone) is seen through the same layers, by this view's own camera
     renderer.vis.layerMask = layerMask;
     renderer.vis.lodSlot = lodSlot;
     renderer.vis.cameraBias = lodBias;
+    // The fog reads the picture's depth, so it is kept
+    imm keptBefore = renderer.keepDepth;
+    if fogged { renderer.keepDepth = true; }
     renderer.renderTo(device, &mut encoder, target, depthView, camera, light, &sub);
+    renderer.keepDepth = keptBefore;
     renderer.vis.layerMask = LAYERS_ALL;
     renderer.vis.lodSlot = 0usize;
     renderer.vis.cameraBias = 1.;
+    if fogged { self.recordFog(renderer, device, &mut encoder, camera, light); }
     if queries.isValid() {
       encoder.writeTimestamp(&queries, 1u32);
       encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
@@ -143,6 +228,40 @@ pub struct RenderView {
     drawCalls = renderer.drawCalls;
     triangles = renderer.triangles;
     true;
+  }
+
+  // Make the fog's volumes again if 'fog' now asks for another grid (before the picture's
+  // commands are recorded: the volumes about to be replaced may be named by commands not yet
+  // run, so let them run)
+  fn remakeFog(self &mut, renderer &mut Renderer, device &mut Device) {
+    if fog.tileSize == fogTile and fog.slices == fogSlices { return; }
+    imm depthView = depth.createView();
+    mut flush = device.createCommandEncoder();
+    device.queue.submit(flush.finish());
+    device.waitIdle();
+    fogPass[0usize].remake(device, true, width, height, &fog, &renderer.shadow, &fogFrame, &depthView);
+    fogTile = fog.tileSize;
+    fogSlices = fog.slices;
+    fogHavePrevious = false;
+  }
+
+  // The fog over the picture just recorded into 'encoder' (same encoder: the cascades the
+  // view's own render drew, and the shadow parameters it wrote for its camera, are what the
+  // fog reads). The frame uniform is the camera's own, the eye a reflected camera's reflection.
+  fn recordFog(self &mut, renderer &mut Renderer, device &mut Device, encoder &mut CommandEncoder, camera &Camera,
+      light &Light) {
+    imm depthView = depth.createView();
+    mut base = *camera;
+    base.jitterX = 0.;
+    base.jitterY = 0.;
+    imm history = fogHavePrevious;
+    imm viewProjection = writeFxFrame(device, &fogFrame, &base, f32.from(width) / f32.from(height), width, height,
+      fogPrevious, history, 0., 0., 0., 0., light, renderer.exposure, renderer.time, 0.016666668, fogPictures, !history);
+    fogPass[0usize].record(device, encoder, &renderer.shadow, &fogFrame, &depthView, &renderer.textures[color.slot].texture,
+      &fog, fogPictures, history);
+    fogPrevious = viewProjection;
+    fogHavePrevious = true;
+    fogPictures = fogPictures + 1u32;
   }
 }
 

@@ -114,6 +114,9 @@ int actorIsState(INode *type);
 // The actor whose state 'type' is, or NULL
 ActorInfo *actorOfState(INode *type);
 
+// The actor whose handle 'type' is, or NULL
+ActorInfo *actorOfHandle(INode *type);
+
 // Is this function the 'allocRegion' the compiler generated in an actor's state,
 // which 'new self[T](...)' is a call of: the way to the actor's own region?
 int actorIsAllocator(FnDclNode *fn);
