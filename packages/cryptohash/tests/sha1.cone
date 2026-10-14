@@ -1,0 +1,110 @@
+// SHA-1 (LEGACY) against published and independently computed digests.
+//
+// Sources of the vectors:
+// - NIST, "Example Values" for SHA-1 (csrc.nist.gov, the SHA-1 example page,
+//   from FIPS 180-4's appendix A): the one-block message "abc" (A.1), the
+//   two-block 448-bit message (A.2) and the million-'a' message (A.3). The
+//   896-bit message's digest is from NIST's SHA2_Additional example page.
+// - NIST CAVP, SHA-1 byte-oriented test vectors, SHAVS 'SHA1ShortMsg': the
+//   entries Len = 0 (the empty message), 8 (36) and 16 (195a). Only these
+//   samples are here; the long-message files are not.
+// - Lengths on either side of the 55/56/57, 63/64/65 and 119/120-byte block and
+//   padding edges, and 200 to 256 bytes: the message is that many 'a' bytes,
+//   and the expected digest comes from Python's hashlib (OpenSSL), not from
+//   this package.
+// Each digest was also checked against hashlib when written into this file.
+
+mod sha1;
+
+import testing use *;
+import collections use *;
+import cryptohash;
+
+fn hexOf(s &Array[u8]) String {
+  mut h = String.empty();
+  mut i = 0usize;
+  while i < s.len {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h;
+}
+
+fn hexVal(c u8) u8 {
+  if c >= 97u8 { return c - 87u8; }
+  c - 48u8;
+}
+
+// The bytes the hex text names
+fn fromHex(hex &str) List[u8] {
+  mut out = new List[u8];
+  mut i = 0usize;
+  while i < hex.len {
+    out.push(hexVal(hex[i]) * 16u8 + hexVal(hex[i + 1usize]));
+    i = i + 2usize;
+  }
+  out;
+}
+
+// n copies of the byte
+fn repeated(b u8, n usize) List[u8] {
+  mut out = new List[u8];
+  mut i = 0usize;
+  while i < n {
+    out.push(b);
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn check(label &str, msg &Array[u8], want &str) {
+  imm d = cryptohash.sha1(msg);
+  imm got = hexOf(&d);
+  expectStr(got.view(), want, label);
+}
+
+fn checkA(n usize, want &str) {
+  imm msg = repeated(97u8, n);
+  mut label = String.from("sha1 of 'a' x ");
+  label.appendInt(i64.from(n));
+  check(label.view(), msg.view(), want);
+}
+
+fn main() i32 {
+  // FIPS 180-4 / NIST examples
+  check("empty (CAVP Len 0)", "", "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+  check("abc (FIPS 180-4 A.1)", "abc", "a9993e364706816aba3e25717850c26c9cd0d89d");
+  check("448 bits (FIPS 180-4 A.2)", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+        "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+  check("896 bits (NIST additional example)",
+        "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+        "a49b2446a02c645bf419f995b67091253a04a259");
+
+  // CAVP SHA1ShortMsg
+  imm m1 = fromHex("36");
+  check("CAVP Len 8", m1.view(), "c1dfd96eea8cc2b62785275bca38ac261256e278");
+  imm m2 = fromHex("195a");
+  check("CAVP Len 16", m2.view(), "0a1c2d555bbe431ad6288af5a54f93e0449c9232");
+
+  // One million 'a', in one piece (FIPS 180-4 A.3)
+  imm million = repeated(97u8, 1000000usize);
+  check("one million a (FIPS 180-4 A.3)", million.view(), "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+
+  // Block and padding edges
+  checkA(1usize, "86f7e437faa5a7fce15d1ddcb9eaeaea377667b8");
+  checkA(2usize, "e0c9035898dd52fc65c41454cec9c4d2611bfb37");
+  checkA(3usize, "7e240de74fb1ed08fa08d38063f6a6a91462a815");
+  checkA(55usize, "c1c8bbdc22796e28c0e15163d20899b65621d65a");
+  checkA(56usize, "c2db330f6083854c99d4b5bfb6e8f29f201be699");
+  checkA(57usize, "f08f24908d682555111be7ff6f004e78283d989a");
+  checkA(63usize, "03f09f5b158a7a8cdad920bddc29b81c18a551f5");
+  checkA(64usize, "0098ba824b5c16427bd7a1122a5a442a25ec644d");
+  checkA(65usize, "11655326c708d70319be2610e8a57d9a5b959d3b");
+  checkA(119usize, "ee971065aaa017e0632a8ca6c77bb3bf8b1dfc56");
+  checkA(120usize, "f34c1488385346a55709ba056ddd08280dd4c6d6");
+  checkA(200usize, "e61cfffe0d9195a525fc6cf06ca2d77119c24a40");
+  checkA(255usize, "5afd9729928ad946eee5610434e66b5f95accbaf");
+  checkA(256usize, "9c78512ad150c8b5d8918395ad0e5169397d2b62");
+
+  done();
+}
