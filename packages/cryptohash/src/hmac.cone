@@ -1,0 +1,216 @@
+// -------- constant-time comparison --------
+
+// Whether two byte strings are equal, for comparing a MAC or any other secret
+// against what was received. The time it takes depends on the length and on
+// nothing else: it reads every byte of both, folds the differences together
+// with xor and or, and looks at the one folded byte at the end. The loop has
+// no exit and no branch on a byte, and no index comes from a byte. Strings of
+// different lengths are not equal, answered at once: a length is not a secret
+// here, and a MAC's is fixed.
+//
+// What the compiler could still do: this is source that has no branch on the
+// data, not an instruction sequence the language promises. An optimiser may
+// legally turn the fold into an early exit at the first difference, or
+// replace it by a library comparison that stops early, and Cone has no
+// barrier (no 'volatile', no black-box) to forbid that. conec's optimiser has
+// not been seen to (the loop stays a fold over every byte), but nothing in the
+// language says it never will; check the machine code of a build that matters.
+pub fn constantTimeEq(a &Array[u8], b &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  mut diff = 0u8;
+  mut i = 0usize;
+  while i < a.len {
+    diff = diff | (a[i] ^ b[i]);
+    i = i + 1usize;
+  }
+  diff == 0u8;
+}
+
+// -------- HMAC (RFC 2104 and FIPS 198-1) --------
+
+// HMAC-SHA-256. The key is spread into the two padded blocks once, in 'make';
+// the hasher keeps the inner and outer hash already fed their block, so each
+// message costs the message itself and two more compressions. It is a value
+// like the hashes it is made of: 'copyOf' copies a MAC in progress.
+pub struct HmacSha256 {
+  inner Sha256;
+  outer Sha256;
+
+  // A MAC under this key. A key of any length: one longer than the 64-byte
+  // block is hashed down first, as RFC 2104 says
+  pub fn make(key &Array[u8]) HmacSha256 {
+    mut kb = new Array[u8, 64] <- fill 0u8;
+    if key.len > 64usize {
+      imm dg = sha256(key);
+      mut j = 0usize;
+      while j < 32usize { kb[j] = dg[j]; j = j + 1usize; }
+    }
+    else {
+      mut j = 0usize;
+      while j < key.len { kb[j] = key[j]; j = j + 1usize; }
+    }
+    mut ip = new Array[u8, 64] <- fill 0u8;
+    mut op = new Array[u8, 64] <- fill 0u8;
+    mut i = 0usize;
+    while i < 64usize {
+      ip[i] = kb[i] ^ 0x36u8;
+      op[i] = kb[i] ^ 0x5cu8;
+      i = i + 1usize;
+    }
+    mut inner = Sha256.make();
+    inner.update(&ip);
+    mut outer = Sha256.make();
+    outer.update(&op);
+    new HmacSha256(inner, outer);
+  }
+
+  pub fn copyOf(self &) HmacSha256 { new HmacSha256(inner.copyOf(), outer.copyOf()); }
+
+  // Takes more of the message
+  pub fn update(self &mut, data &Array[u8]) { inner.update(data); }
+
+  // The tag for everything taken. The MAC itself is left as it was
+  pub fn finish(self &) Array[u8, 32] {
+    imm innerTag = inner.finish();
+    mut o = outer.copyOf();
+    o.update(&innerTag);
+    o.finish();
+  }
+
+  // Whether this tag is the one for everything taken, compared in constant
+  // time. A tag of any other length is not (a truncated tag is not accepted)
+  pub fn verify(self &, tag &Array[u8]) bool {
+    imm mine = self.finish();
+    constantTimeEq(&mine, tag);
+  }
+}
+
+// The HMAC-SHA-256 tag of a whole message
+pub fn hmacSha256(key &Array[u8], data &Array[u8]) Array[u8, 32] {
+  mut m = HmacSha256.make(key);
+  m.update(data);
+  m.finish();
+}
+
+// HMAC-SHA-512, as HmacSha256 is made, over the 128-byte block
+pub struct HmacSha512 {
+  inner Sha512;
+  outer Sha512;
+
+  // A MAC under this key. A key of any length: one longer than the 128-byte
+  // block is hashed down first
+  pub fn make(key &Array[u8]) HmacSha512 {
+    mut kb = new Array[u8, 128] <- fill 0u8;
+    if key.len > 128usize {
+      imm dg = sha512(key);
+      mut j = 0usize;
+      while j < 64usize { kb[j] = dg[j]; j = j + 1usize; }
+    }
+    else {
+      mut j = 0usize;
+      while j < key.len { kb[j] = key[j]; j = j + 1usize; }
+    }
+    mut ip = new Array[u8, 128] <- fill 0u8;
+    mut op = new Array[u8, 128] <- fill 0u8;
+    mut i = 0usize;
+    while i < 128usize {
+      ip[i] = kb[i] ^ 0x36u8;
+      op[i] = kb[i] ^ 0x5cu8;
+      i = i + 1usize;
+    }
+    mut inner = Sha512.make();
+    inner.update(&ip);
+    mut outer = Sha512.make();
+    outer.update(&op);
+    new HmacSha512(inner, outer);
+  }
+
+  pub fn copyOf(self &) HmacSha512 { new HmacSha512(inner.copyOf(), outer.copyOf()); }
+
+  // Takes more of the message
+  pub fn update(self &mut, data &Array[u8]) { inner.update(data); }
+
+  // The tag for everything taken. The MAC itself is left as it was
+  pub fn finish(self &) Array[u8, 64] {
+    imm innerTag = inner.finish();
+    mut o = outer.copyOf();
+    o.update(&innerTag);
+    o.finish();
+  }
+
+  // Whether this tag is the one for everything taken, compared in constant
+  // time. A tag of any other length is not
+  pub fn verify(self &, tag &Array[u8]) bool {
+    imm mine = self.finish();
+    constantTimeEq(&mine, tag);
+  }
+}
+
+// The HMAC-SHA-512 tag of a whole message
+pub fn hmacSha512(key &Array[u8], data &Array[u8]) Array[u8, 64] {
+  mut m = HmacSha512.make(key);
+  m.update(data);
+  m.finish();
+}
+
+// HMAC-SHA-1, as HmacSha256 is made. LEGACY with SHA-1, though HMAC-SHA-1 is
+// not broken the way SHA-1 collisions are: RFC 2202 vectors, old protocols
+pub struct HmacSha1 {
+  inner Sha1;
+  outer Sha1;
+
+  // A MAC under this key. A key of any length: one longer than the 64-byte
+  // block is hashed down first
+  pub fn make(key &Array[u8]) HmacSha1 {
+    mut kb = new Array[u8, 64] <- fill 0u8;
+    if key.len > 64usize {
+      imm dg = sha1(key);
+      mut j = 0usize;
+      while j < 20usize { kb[j] = dg[j]; j = j + 1usize; }
+    }
+    else {
+      mut j = 0usize;
+      while j < key.len { kb[j] = key[j]; j = j + 1usize; }
+    }
+    mut ip = new Array[u8, 64] <- fill 0u8;
+    mut op = new Array[u8, 64] <- fill 0u8;
+    mut i = 0usize;
+    while i < 64usize {
+      ip[i] = kb[i] ^ 0x36u8;
+      op[i] = kb[i] ^ 0x5cu8;
+      i = i + 1usize;
+    }
+    mut inner = Sha1.make();
+    inner.update(&ip);
+    mut outer = Sha1.make();
+    outer.update(&op);
+    new HmacSha1(inner, outer);
+  }
+
+  pub fn copyOf(self &) HmacSha1 { new HmacSha1(inner.copyOf(), outer.copyOf()); }
+
+  // Takes more of the message
+  pub fn update(self &mut, data &Array[u8]) { inner.update(data); }
+
+  // The tag for everything taken. The MAC itself is left as it was
+  pub fn finish(self &) Array[u8, 20] {
+    imm innerTag = inner.finish();
+    mut o = outer.copyOf();
+    o.update(&innerTag);
+    o.finish();
+  }
+
+  // Whether this tag is the one for everything taken, compared in constant
+  // time. A tag of any other length is not
+  pub fn verify(self &, tag &Array[u8]) bool {
+    imm mine = self.finish();
+    constantTimeEq(&mine, tag);
+  }
+}
+
+// The HMAC-SHA-1 tag of a whole message. LEGACY: see Sha1
+pub fn hmacSha1(key &Array[u8], data &Array[u8]) Array[u8, 20] {
+  mut m = HmacSha1.make(key);
+  m.update(data);
+  m.finish();
+}
