@@ -32,6 +32,36 @@
 //
 // (tests/manual.cone, the reference manual's example, is this and a server, run.)
 //
+// The other way round, an actor serves: it listens, awaits each request as an
+// Exchange, and answers it, a whole response or a streamed one, including
+// server-sent events; and a client reads a response as it arrives, in chunks
+// or as events (A SERVER and STREAMS, below):
+//
+//   actor Front {
+//     server Server;
+//     pub async do run(self) {
+//       imm r = await actorhttp.listen(SocketAddr.localhost(8080u16), ServerConfig.make());
+//       ...                                          // server <=> the Ok(server)
+//       while true {
+//         match await server.next() {
+//           case mut ok Ok {imm h = new Handler(ok); h.run();}   // an actor of its own for each request
+//           case imm e Error {break;}                            // the server was closed
+//         }
+//       }
+//     }
+//   }
+//   actor Handler {
+//     ex Exchange;
+//     pub async do run(self) {
+//       ex.startEvents();                              // 200, text/event-stream, chunked
+//       imm w = await ex.sendEvent(&sse.Event.named("tick", "1"));   // Closed once the client has left
+//       ...
+//       imm f = await ex.finish();
+//     }
+//   }
+//
+// (tests/server.cone and tests/events.cone are these, run; examples/serve.cone is a server to try.)
+//
 // What there is:
 //
 //   Client.standard()  Client.make(cfg, maxBody)   a client of http:// and https:// servers   (A CLIENT)
@@ -48,6 +78,25 @@
 //   FetchError: e.kind() (FetchErrorKind: Failed, Cancelled, TimedOut)  e.isCancelled()  e.isTimedOut()
 //     e.failure (Failed: httpclient.Failure: its stage, code, HTTP error)  e.message()
 //   defaultMaxBody                the most body bytes a client takes unless made with another limit
+//   c.stream(request)  c.streamIn(request, lim)     a response read as it arrives, in chunks   (STREAMS)
+//                                                               Result[BodyStream, FetchError]
+//   c.events(request)  c.eventsIn(request, lim)     a response read as server-sent events      (STREAMS)
+//                                                               Result[EventStream, FetchError]
+//   bs.read()   BodyStream: bs.status bs.headers bs.url bs.isOk()    Result[Option[String], FetchError]
+//   es.next()   EventStream: es.status es.headers es.url es.isOk() es.isEventStream()
+//                                                               Result[Option[sse.Event], FetchError]
+//   actorhttp.listen(addr, cfg)                          a listening server                   (A SERVER)
+//                                                               Result[Server, ServerError]
+//   ServerConfig.make()  cfg.secure(tlsServerConfig)  cfg.maxBody cfg.maxPending cfg.conn
+//   server.next()  server.close()  server.clone()  server.port() localAddr() isSecure()
+//   Server.none()  server.isNone()          next(): the next request, an Exchange  Result[Exchange, ServerError]
+//   ex.request (Request: head body peer secure; path() query() methodName() header(name))
+//   ex.respond(head, body)  ex.text(status, text)                  a whole response (not awaited)
+//   ex.start(head, length)  ex.startEvents()  ex.startEventsWith(head)   a streamed one (not awaited)
+//   ex.write(bytes)  ex.sendEvent(event)  ex.sendComment(text)     Result[usize, ServerError]
+//   ex.finish()                                                    Result[u64, ServerError]
+//   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  e.message()
+//   defaultMaxRequestBody         the most request body bytes a server takes unless configured
 //
 // Each of the first four and the two of a connection makes an OPERATION, an
 // actors.Awaitable[R], which does nothing until an 'await' in a behaviour
@@ -147,27 +196,124 @@
 // paused behaviour held are finalized; the rest of the behaviour never runs.
 // An exchange awaited after that is abandoned the same way at once.
 //
-// On Windows and Linux, as httpclient and httpconn are. Not here: a response's
-// body streamed to the actor, a request's body streamed from it (a request
-// carries its body whole), a server (httpconn's listen and respond, awaited),
-// a Conn made with its driver's other settings (maxWaiting and the rest are
-// httpconn.Config's defaults), a client's reprioritize and closeIdle, a
-// connect with an 'In' form, and httpclient and httpconn running on aio's
-// own sockets.
+// STREAMS. 'client.stream(request)' and 'client.events(request)' are answered
+// when the response's HEAD arrives (not its body) with a handle that moves, a
+// BodyStream or an EventStream, which carries the status, the header fields
+// and the answering URL. An HTTP error status is an answer, as for 'get': the
+// program reads 'isOk()' (a 2xx) and, for events, 'isEventStream()' (a 200 of
+// Content-Type text/event-stream). Then 'bs.read()' awaits the next piece of
+// the body (the bytes of one receive, any size) and 'es.next()' the next event;
+// each answers Ok(Some(piece or event)), Ok(None) when the body is whole, or an
+// Error, a FetchError (cancelled, timed out, or failed with httpclient's
+// Failure), once the pieces already taken are read. The sse package's Reader
+// runs on the service thread as the bytes arrive (its comments and unknown
+// fields dropped, its limit of 1 MiB for one event a fetch failure at
+// Stage.Limit) and the events wait there for the actor. The handle holds a
+// count of its client, so a stream outlives the last Client handle that made
+// it; dropping the handle cancels the rest of the fetch and lets the connection
+// go. CREDIT (invariant I9): a piece is released to the connection as it is
+// handed over (and not before more than 64 events or pieces wait), so a reader
+// that awaits slowly slows the sender through TCP, and memory stays bounded.
+// 'events' asks for 'Accept: text/event-stream' and 'Cache-Control: no-cache'
+// unless the request has them; a 'Last-Event-ID' is a field the request
+// carries, as any, and reconnecting after the stream breaks is the program's
+// (the event's 'id' and the stream's retry time are in each event). The 'In'
+// forms limit the whole stream: the deadline ends it TimedOut wherever it is,
+// and httpclient's bodyTimeout (30 s, httpclient.Config.conn.protocol) still
+// ends one that sends nothing for that long, so a server of events sends a
+// comment now and then (Exchange.sendComment).
+//
+// A SERVER. 'actorhttp.listen(addr, cfg)' answers a Server when it is
+// listening (port 0 takes any free port, 'server.port()' says which), or why it
+// could not: a ServerError of kind Failed (the address in use, a certificate or
+// key that could not be loaded). The listener, its connections and its
+// requests live on the service thread, in an httpconn.Driver of the server's
+// own, so ServerConfig's 'conn' (httpconn.Config: the protocol's bounds and
+// timeouts, the buffers, maxConnections) is its own; 'cfg.secure(tls.ServerConfig)'
+// makes every connection TLS, through the same httpconn layer the client uses
+// (tls.Server's stream), with OpenSSL still TLS's only C dependency.
+//
+// A request is READ whole before an actor sees it: 'server.next()' answers an
+// Exchange holding the Request (head, body up to cfg.maxBody, 1 MiB by default,
+// the client's address, whether it came through TLS) once the head and the
+// whole body are in. A request past the limit is answered 413 by the server at
+// once (a declared Content-Length over it before a byte of the body is read; a
+// chunked body when it passes it), 'Connection: close', and no actor sees it.
+// An 'Expect: 100-continue' is answered 100 for a request within the limit. A
+// request that has no actor to take it waits in the server, up to
+// cfg.maxPending (1024); past it the server answers 503 at once, which is the
+// BACKPRESSURE on arrivals (the actors' own: an actor that takes a request
+// only when it has room awaits 'next' only then). Any number of actors may
+// await 'next' at once, each request going to the one waiting longest. A
+// request whose client left while it waited is dropped, never handed out. HOW
+// A REQUEST REACHES AN ACTOR: by the Exchange, plain data that moves, in the
+// answer to 'next', which the receiving actor passes to the actor that will
+// answer it (an Exchange may be sent in a message or held in a field); this
+// needs no generic actor, and is the shape of aio's 'accept'.
+//
+// The program ANSWERS an Exchange exactly once, by one of: 'respond(head, body)'
+// or 'text(status, body)', a whole response with its Content-Length; 'start(head,
+// length)' then 'write' (any number) and 'finish', a streamed one, its body
+// sized (BodyLength.sized(n): exactly n bytes) or not (BodyLength.unsized():
+// chunked); or 'startEvents()' then 'sendEvent' and 'sendComment' and 'finish',
+// a stream of server-sent events (200, 'Content-Type: text/event-stream',
+// 'Cache-Control: no-cache', chunked, each event one chunk written at once).
+// 'respond' and 'start' are not awaited (they only queue the head; made and
+// not awaited is still done); 'write' and 'finish' are Awaitables and so, as
+// every Awaitable, do nothing unless awaited. A 'write' is answered, with the
+// byte count, when the connection has taken ALL of its bytes (the core's
+// watermark, 256 KiB queued, holds the rest back and the driver says when
+// there is room): an actor that awaits each write is slowed to its peer's
+// speed, the backpressure on a streaming response. 'finish' is answered, with
+// the response's body byte count, when the response has gone to the connection
+// whole. A peer that has left (the connection reset or closed) answers Closed
+// to a write or a finish pending or later, which is how a stream of events
+// learns its reader is gone; the response is then not an error to raise, and
+// nothing more is sent. A call the Exchange's state forbids (a second answer,
+// 'write' before 'start' or after 'finish', a status outside 200 to 599, a
+// Content-Length or Transfer-Encoding field of the program's, more bytes than a
+// sized body's length, 'finish' short of it) is a program error: a panic at
+// the line of the call, as the client's are. A response to a HEAD request, or a
+// 204 or 304, sends the head (with the Content-Length 'respond' computed) and no
+// body: its writes answer 0. Dropping an Exchange without answering answers 500;
+// dropping one that is streaming an unsized body ends the body cleanly (so a
+// stream of events closes), a sized one short of its length resets the
+// connection. The Date and Server fields are not added: the program writes the
+// fields it wants. HTTP/1.1 keep-alive is the core's: a connection serves one
+// request at a time and the next once the response is whole, until the client or
+// 'Connection: close' ends it.
+//
+// 'server.close()' (and the last handle's going) stops listening, answers every
+// 'next' waiting Closed and every request still waiting for an actor 503, and
+// lets the exchanges already taken finish; the server's idle connections are
+// then reset. A Server handle, as a Client, is plain data that moves and
+// 'clone's.
+//
+// On Windows and Linux, as httpclient and httpconn are. Not here: a request's
+// body streamed to the actor (a request is delivered whole, up to maxBody), a
+// request's body streamed from a client actor (a request carries its body
+// whole), a client's 'stream' and 'events' reconnecting, SSE's Last-Event-ID
+// resuming on the server (the program reads the field and chooses), WebSocket
+// and other Upgrades, HTTP/2, routing (the program matches 'request.path()'),
+// an 'In' form of 'next', a Conn made with its driver's other settings
+// (maxWaiting and the rest are httpconn.Config's defaults), a client's
+// reprioritize and closeIdle, a connect with an 'In' form, and httpclient and
+// httpconn running on aio's own sockets.
 
 mod actorhttp;
 
 import libc;
 import thread;
 import sync use Mutex;
-import collections use List, String;
+import collections use List, String, Dict;
 import iobuf use IoBuf, Pool;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Completion, SocketAddr, CancelGroup, forever;
+import iocore use Loop, Waker, Completion, SocketAddr, CancelGroup, IoError, forever;
 import http use *;
 import httpconn;
 import httpclient;
 import tls;
+import sse;
 import aio use IoLimits;
 import actors;
 
@@ -524,11 +670,56 @@ pub struct Client is Move {
     awaitable[FetchJob, Result[httpclient.Response, FetchError]](new FetchJob(id, r, new actors.Reply()));
   }
 
+  // A request whose response the actor reads as it arrives, body chunk by
+  // chunk (the package's header, STREAMS): answered when the response's head
+  // arrives, with a BodyStream whose 'read' awaits each piece
+  pub fn stream(self &, req httpclient.Request, file &Array[u8] = srcFile(), line u32 = srcLine())
+      actors.Awaitable[Result[BodyStream, FetchError]] {
+    self.streamIn(req, IoLimits.none(), file, line);
+  }
+
+  // The same, the whole fetch ended if lim says so, and the request's own deadline and group too
+  pub fn streamIn(self &, req httpclient.Request, lim IoLimits, file &Array[u8] = srcFile(), line u32 = srcLine())
+      actors.Awaitable[Result[BodyStream, FetchError]] {
+    imm r = limitedRequest(req, lim, file, line);
+    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](new StreamOpenJob(id, r, false, new actors.Reply()));
+  }
+
+  // A request whose response is read as server-sent events (STREAMS): it asks
+  // for 'Accept: text/event-stream' and 'Cache-Control: no-cache' unless the
+  // request has them, and is answered when the head arrives with an
+  // EventStream whose 'next' awaits each event. It is no GET only: any method
+  pub fn events(self &, req httpclient.Request, file &Array[u8] = srcFile(), line u32 = srcLine())
+      actors.Awaitable[Result[EventStream, FetchError]] {
+    self.eventsIn(req, IoLimits.none(), file, line);
+  }
+
+  // The same, the whole stream ended if lim says so, and the request's own deadline and group too
+  pub fn eventsIn(self &, req httpclient.Request, lim IoLimits, file &Array[u8] = srcFile(), line u32 = srcLine())
+      actors.Awaitable[Result[EventStream, FetchError]] {
+    mut r = limitedRequest(req, lim, file, line);
+    if not r.headers.has("Accept") {r.headers.add("Accept", "text/event-stream");}
+    if not r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
+    awaitable[StreamOpenJob, Result[EventStream, FetchError]](new StreamOpenJob(id, r, true, new actors.Reply()));
+  }
+
   fn final(self &uni) {
     if id != 0u64 {
       post[RefJob](new RefJob(id, false));
     }
   }
+}
+
+// A request checked, with lim's group and deadline put on it: the tighter deadline, lim's group if it has one
+fn limitedRequest(req httpclient.Request, lim IoLimits, file &Array[u8], line u32) httpclient.Request {
+  checkRequest(&req, file, line);
+  mut r = req;
+  match lim.group {
+    case imm g Some {r.group = Some[CancelGroup](g);}
+    else {}
+  }
+  if lim.deadline < r.deadline {r.deadline = lim.deadline;}
+  r;
 }
 
 // What httpconn would panic at in a request's head, found where the call is made

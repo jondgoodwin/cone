@@ -1,0 +1,479 @@
+// Server-sent events both ways on loopback (the package's header, A SERVER and
+// STREAMS): a Feed actor writes a stream of events from the server side, and a
+// Reader actor reads them with the package's client, an EventStream. Checked:
+// the first event reaches the reader while the response is still open (the
+// rest is not sent until the reader has the first, so a response held back
+// until it ended would never get there); every field of the events as they
+// arrive, a comment between them dropped, the stream ending cleanly; a
+// Last-Event-ID the client sent, and the Accept it asks for; a response that
+// is no event stream ('isEventStream' says so) and an error status; a stream
+// whose reader leaves (its EventStream dropped), which the server finds by a
+// write answering Closed; the same body read as raw chunks (BodyStream); and
+// a stream that stays silent, read under a deadline.
+
+mod events;
+
+import stdio use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import sse;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, EventStream, BodyStream;
+import aio use IoLimits;
+
+fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+fn yes(b bool) &str {if b {"yes";} else {"NO";};}
+
+// ---------------------------------------------------------------------------
+// The server's side
+// ---------------------------------------------------------------------------
+
+// Writes the events of "/events": the first at once, the rest when told
+actor Feed {
+  ex Exchange;
+
+  pub async do start(self) {
+    ex.startEvents();
+    imm e1 = sse.Event.named("hello", "first").withId("1");
+    imm r = await ex.sendEvent(&e1);
+  }
+
+  pub async do rest(self) {
+    imm e2 = sse.Event.message("two\nlines").withId("2");
+    imm r2 = await ex.sendEvent(&e2);
+    imm r3 = await ex.sendComment("ping");
+    imm e3 = sse.Event.named("done", "last").withId("3").withRetry(1000i64);
+    imm r4 = await ex.sendEvent(&e3);
+    imm f = await ex.finish();
+  }
+}
+
+// Writes events every few milliseconds until its reader has gone
+actor Endless {
+  ex Exchange;
+
+  pub async do run(self, left Sender[u64]) {
+    ex.startEvents();
+    mut n = 0u64;
+    mut going = true;
+    while going {
+      mut line = String.from("event ");
+      line.appendUInt(n);
+      imm e = sse.Event.message(line.view());
+      imm w = await ex.sendEvent(&e);
+      match w {
+        case imm ok Ok {n = n + 1u64;}
+        case imm er Error {going = false;}
+      }
+      thread.sleep(Duration.fromMillis(5i64));
+    }
+    left.send(n);
+  }
+}
+
+// One event: the request's Last-Event-ID and Accept, as data
+actor Resumer {
+  ex Exchange;
+
+  pub async do run(self) {
+    mut body = String.from("Last-Event-ID=");
+    body.appendBytes(ex.request.header("last-event-id"));
+    body.append(" Accept=");
+    body.appendBytes(ex.request.header("accept"));
+    ex.startEvents();
+    imm e = sse.Event.message(body.view()).withId("42");
+    imm w = await ex.sendEvent(&e);
+    imm f = await ex.finish();
+  }
+}
+
+// A stream that says nothing
+actor Silent {
+  ex Exchange;
+
+  pub async do run(self) {
+    ex.startEvents();
+  }
+}
+
+// Three chunks of a body: the first at once, the others when told
+actor Chunker {
+  ex Exchange;
+
+  pub async do start(self) {
+    ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+    imm a = await ex.write(String.from("alpha "));
+  }
+
+  pub async do rest(self) {
+    imm b = await ex.write(String.from("beta "));
+    imm c = await ex.write(String.from("gamma"));
+    imm f = await ex.finish();
+  }
+}
+
+actor Acceptor {
+  server Server;
+  feeds List[Feed];
+  chunkers List[Chunker];
+  silents List[Silent];
+  left Sender[u64];
+
+  pub async do open(self, ports Sender[u16]) {
+    imm r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    mut res = r;
+    match &mut res {
+      case mut ok &mut Ok {server <=> *ok;}
+      case imm e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+    }
+    ports.send(server.port());
+  }
+
+  // The "/events" stream may go on
+  pub async do release(self) {
+    if feeds.len() > 0usize {feeds[0usize].rest();}
+  }
+
+  // The "/chunks" body may go on
+  pub async do releaseChunks(self) {
+    if chunkers.len() > 0usize {chunkers[0usize].rest();}
+  }
+
+  pub async do serve(self) {
+    while true {
+      imm n = await server.next();
+      match n {
+        case mut ok Ok {self.route(ok);}
+        case imm e Error {break;}
+      }
+    }
+  }
+
+  pub async do stop(self) {
+    server.close();
+  }
+
+  fn route(self, ex Exchange) {
+    imm path = String.from(ex.request.path());
+    imm p = path.view();
+    if p == "/events" {
+      imm f = new Feed(ex);
+      f.start();
+      feeds.push(f);
+    } elif p == "/resume" {
+      imm r = new Resumer(ex);
+      r.run();
+    } elif p == "/endless" {
+      imm e = new Endless(ex);
+      e.run(left.clone());
+    } elif p == "/silent" {
+      imm s = new Silent(ex);
+      s.run();
+      silents.push(s);          // kept: an exchange dropped would end its stream
+    } elif p == "/chunks" {
+      imm c = new Chunker(ex);
+      c.start();
+      chunkers.push(c);
+    } elif p == "/plain" {
+      mut ex2 = ex;
+      ex2.text(200u16, "just text");
+    } else {
+      mut ex2 = ex;
+      ex2.text(404u16, "not here");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn url(port u16, path &str) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+// 'name|data|id|retry', the data's line feeds as '/'
+fn show(ev &sse.Event) {
+  printStr("  ");
+  printStr(ev.name.view());
+  printStr("|");
+  imm d = ev.data.view() as &Array[u8];
+  mut k = 0usize;
+  while k < d.len {
+    if d[k] == '\n' {printStr("/");} else {printChar(u64.from(d[k]));}
+    k = k + 1usize;
+  }
+  printStr("|");
+  printStr(ev.id.view());
+  printStr("|");
+  printInt(ev.retry);
+  printStr("\n");
+}
+
+fn why(e &FetchError) &str {
+  if e.isTimedOut() {"timed out";} elif e.isCancelled() {"cancelled";} else {"failed";}
+}
+
+actor Reader {
+  client Client;
+
+  // "/events": every event, the stream ended cleanly
+  pub async do ordered(self, port u16, acceptor Acceptor, done OneshotSender[u64]) {
+    imm r = await client.events(Request.get(url(port, "/events").view()));
+    match r {
+      case imm es Ok {
+        printStr("events: status ");
+        printUInt(u64.from(es.status));
+        printStr(", event stream: ");
+        printStr(yes(es.isEventStream()));
+        printStr("\n");
+        mut count = 0u64;
+        mut going = true;
+        while going {
+          imm n = await es.next();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm ev Some {
+                  show(&ev);
+                  count = count + 1u64;
+                  if count == 1u64 {acceptor.release();}
+                }
+                case is None[sse.Event] {going = false;}
+              }
+            }
+            case imm er Error {
+              printStr("  error: ");
+              printStr(why(&er));
+              printStr("\n");
+              going = false;
+            }
+          }
+        }
+        say("events read:", count);
+      }
+      case imm e Error {printStr("events failed\n");}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // "/resume": the Last-Event-ID the client sent comes back as data
+  pub async do resume(self, port u16, done OneshotSender[u64]) {
+    mut req = Request.get(url(port, "/resume").view());
+    req.headers.add("Last-Event-ID", "41");
+    imm r = await client.events(req);
+    match r {
+      case imm es Ok {
+        imm n = await es.next();
+        match n {
+          case imm ok Ok {
+            match ok {
+              case imm ev Some {show(&ev);}
+              case is None[sse.Event] {printStr("  no event\n");}
+            }
+          }
+          case imm er Error {printStr("  error\n");}
+        }
+      }
+      case imm e Error {printStr("resume failed\n");}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // Two paths that are no event stream
+  pub async do notStreams(self, port u16, done OneshotSender[u64]) {
+    imm r = await client.events(Request.get(url(port, "/plain").view()));
+    match r {
+      case imm es Ok {
+        printStr("plain: status ");
+        printUInt(u64.from(es.status));
+        printStr(", event stream: ");
+        printStr(yes(es.isEventStream()));
+        printStr("\n");
+        imm n = await es.next();
+        match n {
+          case imm ok Ok {
+            match ok {
+              case imm ev Some {printStr("  an event?\n");}
+              case is None[sse.Event] {printStr("  ended with no events\n");}
+            }
+          }
+          case imm er Error {printStr("  error\n");}
+        }
+      }
+      case imm e Error {printStr("plain failed\n");}
+    }
+    imm r2 = await client.events(Request.get(url(port, "/other").view()));
+    match r2 {
+      case imm es Ok {
+        printStr("other: status ");
+        printUInt(u64.from(es.status));
+        printStr(", event stream: ");
+        printStr(yes(es.isEventStream()));
+        printStr(", ok: ");
+        printStr(yes(es.isOk()));
+        printStr("\n");
+      }
+      case imm e Error {printStr("other failed\n");}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // Reads two events of "/endless" and goes: the EventStream is dropped
+  pub async do leave(self, port u16, done OneshotSender[u64]) {
+    {
+      imm r = await client.events(Request.get(url(port, "/endless").view()));
+      match r {
+        case imm es Ok {
+          mut got = 0u64;
+          while got < 2u64 {
+            imm n = await es.next();
+            match n {
+              case imm ok Ok {got = got + 1u64;}
+              case imm er Error {got = 100u64;}
+            }
+          }
+          say("endless: events read before leaving:", got);
+        }
+        case imm e Error {printStr("endless failed\n");}
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // A body in chunks
+  pub async do chunks(self, port u16, acceptor Acceptor, done OneshotSender[u64]) {
+    imm r = await client.stream(Request.get(url(port, "/chunks").view()));
+    match r {
+      case imm bs Ok {
+        printStr("chunks: status ");
+        printUInt(u64.from(bs.status));
+        printStr(", ok: ");
+        printStr(yes(bs.isOk()));
+        printStr("\n");
+        mut all = String.empty();
+        mut pieces = 0u64;
+        mut going = true;
+        while going {
+          imm n = await bs.read();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm piece Some {
+                  all.append(piece.view());
+                  pieces = pieces + 1u64;
+                  if pieces == 1u64 {acceptor.releaseChunks();}
+                }
+                case is None[String] {going = false;}
+              }
+            }
+            case imm er Error {
+              printStr("  error\n");
+              going = false;
+            }
+          }
+        }
+        printStr("  body: ");
+        printStr(all.view());
+        printStr("\n");
+        printStr("  arrived in several pieces: ");
+        printStr(yes(pieces >= 2u64));
+        printStr("\n");
+      }
+      case imm e Error {printStr("chunks failed\n");}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // A stream that says nothing, read for a second
+  pub async do silent(self, port u16, done OneshotSender[u64]) {
+    imm lim = IoLimits.until(Instant.now() + Duration.fromMillis(1000i64));
+    imm r = await client.eventsIn(Request.get(url(port, "/silent").view()), lim);
+    match r {
+      case imm es Ok {
+        printStr("silent: opened, ");
+        imm n = await es.next();
+        match n {
+          case imm ok Ok {printStr("something arrived or it ended\n");}
+          case imm er Error {printStr(why(&er)); printStr("\n");}
+        }
+      }
+      case imm er Error {printStr("silent: "); printStr(why(&er)); printStr(" before it opened\n");}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn take[T](rx &mut Receiver[T], dflt T) T {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {dflt;}
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut ptx Sender[u16];
+  mut prx Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  mut ltx Sender[u64];
+  mut lrx Receiver[u64];
+  ltx, lrx = Channel[u64].make();
+  {
+    imm acceptor = new Acceptor(Server.none(), List[Feed].empty(), List[Chunker].empty(), List[Silent].empty(), ltx.clone());
+    acceptor.open(ptx.clone());
+    imm port = take[u16](&mut prx, 0u16);
+    acceptor.serve();
+    imm reader = new Reader(Client.standard());
+    mut tx OneshotSender[u64];
+    mut rx OneshotReceiver[u64];
+
+    tx, rx = Oneshot[u64].make();
+    reader.ordered(port, acceptor, tx);
+    rx.recv();
+
+    tx, rx = Oneshot[u64].make();
+    reader.resume(port, tx);
+    rx.recv();
+
+    tx, rx = Oneshot[u64].make();
+    reader.notStreams(port, tx);
+    rx.recv();
+
+    tx, rx = Oneshot[u64].make();
+    reader.chunks(port, acceptor, tx);
+    rx.recv();
+
+    tx, rx = Oneshot[u64].make();
+    reader.silent(port, tx);
+    rx.recv();
+
+    tx, rx = Oneshot[u64].make();
+    reader.leave(port, tx);
+    rx.recv();
+    // The server finds out by a write that answers Closed
+    match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+      case imm n Some {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
+      case is None[u64] {printStr("endless: the server never saw its reader leave\n");}
+    }
+    acceptor.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32;
+}

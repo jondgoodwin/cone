@@ -174,7 +174,9 @@ fn main() {
 	<tr><td><span class="pre">actorhttp</span><br><span class="pre">import actorhttp;</span></td>
 		<td>HTTP and HTTPS an actor awaits: a behaviour <span class="pre">await</span>s
 		<span class="pre">client.get(url)</span>, or a request on a connection, and pauses until the whole response
-		comes. A fetch may join a cancel group and carry a deadline. A working name.</td></tr>
+		comes, or reads a response as it arrives, in chunks or as server-sent events. A fetch may join a cancel
+		group and carry a deadline. The other way round, an actor serves: it awaits each request of a listening
+		server, plain or through TLS, and answers it, whole or streamed (server-sent events too). A working name.</td></tr>
 	<tr><td><span class="pre">diag</span><br><span class="pre">import diag;</span></td>
 		<td>Records of where an I/O operation's time went: one record per operation, a loop's counters,
 		latency histograms.</td></tr>
@@ -196,8 +198,11 @@ fn main() {
 		<td>Fetching an <span class="pre">http://</span> or <span class="pre">https://</span> URL in one call.</td></tr>
 	<tr><td><span class="pre">tls</span><br><span class="pre">import tls;</span></td>
 		<td>TLS 1.2 and 1.3 over OpenSSL, with no I/O of its own.</td></tr>
+	<tr><td><span class="pre">sse</span><br><span class="pre">import sse;</span></td>
+		<td>Server-sent events (<span class="pre">text/event-stream</span>) read from bytes as they arrive, and written,
+		in Cone, with no I/O of its own.</td></tr>
 	</table>
-	<p>All six are on <a href="refstdhttp.html">their own page</a>.</p>
+	<p>All seven are on <a href="refstdhttp.html">their own page</a>.</p>
 
 	<h3 id="gamenet">Game networking</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -568,6 +573,70 @@ fn main() i32 {
 the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
 </pre>
 
+	<h3 id="ggufpkg">Model files: GGUF</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">gguf</span><br><span class="pre">import gguf;</span></td>
+		<td>GGUF files, the container that llama.cpp's language models come in, read and written over a byte slice:
+		the header, the metadata (every value type, arrays and arrays of arrays, so a tokenizer's vocabulary and
+		merges), the tensor table, and a tensor's elements read as f32 for F32, F16, BF16, Q4_0, Q8_0, Q4_K and
+		Q6_K. A <span class="pre">Writer</span> makes synthetic models for tests. Written in Cone, with no C
+		library; groundwork for running small open models locally, it runs none.</td></tr>
+	</table>
+
+	<h3 id="gguf">gguf</h3>
+	<p><span class="pre">parse(bytes)</span> answers a <span class="pre">Result[Model, GgufError]</span>. A
+		<span class="pre">Model</span> holds the metadata in file order (<span class="pre">text(key)</span>,
+		<span class="pre">uint(key)</span>, <span class="pre">int(key)</span>, <span class="pre">float(key)</span>,
+		<span class="pre">flag(key)</span> and <span class="pre">list(key)</span> answer an Option of that kind of
+		value; <span class="pre">get(key)</span> the whole <span class="pre">Value</span>) and a table of
+		<span class="pre">Tensor</span>s (<span class="pre">name</span>, <span class="pre">kind</span>,
+		<span class="pre">dims</span>, <span class="pre">offset</span>, <span class="pre">elements</span>,
+		<span class="pre">bytes</span>), found by <span class="pre">find(name)</span>. It does not hold the tensors'
+		bytes: they stay in the bytes that were parsed (a buffer read from a file, or later a mapped file), and
+		<span class="pre">tensorBytes(file, t)</span> is a view of one. <span class="pre">tensorToF32</span>,
+		<span class="pre">rowToF32</span> and <span class="pre">dequantize</span> read tensors as f32. Every field of the
+		file is checked, and a fault is a <span class="pre">GgufError</span> with a <span class="pre">kind</span>, the
+		<span class="pre">offset</span> of the byte at fault and a <span class="pre">reason</span>: a wrong magic, a
+		big-endian file, a version other than 2 and 3, a count the file cannot hold, a string or array past the end, a
+		tensor whose dimensions overflow or are not whole blocks, a tensor outside the file or off its alignment.
+		The package's header lists the block layouts, each method chosen and what was left out (other quantised types
+		are refused as a whole file), and says which parts of the Q4_K and Q6_K layouts were checked only against
+		values worked out by hand.</p>
+<pre>
+mod toy;
+
+import stdio use *;
+import collections use *;
+import gguf;
+
+fn main() i32 {
+  mut w = gguf.Writer.make();
+  w.putText("general.architecture", "toy");
+  w.addValues("eye", gguf.TensorType.F32, &amp;[2u64, 2u64], &amp;[1.0, 0.0, 0.0, 1.0]);
+  mut file = List[u8].empty();
+  match w.finish() {
+    case mut ok Ok { file &lt;=&gt; ok; }
+    case is Error { return 1i32; }
+  }
+  match gguf.parse(file.view()) {
+    case imm model Ok {
+      each t in model.tensors {
+        printStr(t.name.view());
+        printStr(" ");
+        printStr(t.kind.name());
+        printStr(" ");
+        printInt(i64.from(t.bytes));
+        printStr("\n");
+      }
+    }
+    case is Error { return 1i32; }
+  }
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">eye F32 16</span>.</p>
+
 	<h3 id="bpetokenizepkg">Language-model tokens</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
@@ -686,6 +755,8 @@ fn main() i32 {
 		<span class="pre">/usr/lib/llvm-23</span> on Linux); its tests pass on both, with the same IR text and answers.</p>
 	<p><span class="pre">deflate</span> calls nothing of the system's; its tests, and those of
 		<span class="pre">imagedecode</span> over it, have been run on both, and write the same bytes.</p>
+	<p><span class="pre">gguf</span> calls nothing of the system's; its tests pass on Windows and on Linux
+		(Ubuntu 24.04), and write and read the same bytes.</p>
 	<p><span class="pre">bpetokenize</span> calls nothing of the system's; its tests pass on Windows and on Linux
 		(Ubuntu 24.04), with the same token ids.</p>
 	<p>The others use nothing that belongs to Windows alone. Of these,

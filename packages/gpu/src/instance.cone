@@ -313,7 +313,35 @@ pub struct Adapter {
   // The same, with ray tracing asked for or not: a device made with 'false' draws as one on a GPU
   // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
   // ray tracing either; check 'device.rayTracing'.
-  pub fn requestDeviceWith(self &, rayTracing bool) Device {
+  pub fn requestDeviceWith(self &, rayTracing bool) Device { self.makeDevice(rayTracing, &new ComputeRequest()); }
+
+  // What this GPU offers for compute (features.cone): 16-bit floats, 8-bit storage, the integer dot product,
+  // the subgroup, and its buffer and memory limits, as a plain value
+  pub fn computeCapabilities(self &) ComputeCapabilities {
+    if !self.isValid() { return new ComputeCapabilities(); }
+    queryCompute(&backend.fns, backend.physical);
+  }
+
+  // The GPU's memory heaps, in the order Vulkan lists them
+  pub fn memoryHeaps(self &) List[MemoryHeapInfo] {
+    mut heaps = List[MemoryHeapInfo].empty();
+    if !self.isValid() { return heaps; }
+    mut memory = zeroed[vulkan.PhysicalDeviceMemoryProperties]();
+    backend.fns.getPhysicalDeviceMemoryProperties(backend.physical, &mut memory);
+    mut h = 0usize;
+    while h < usize.from(memory.memoryHeapCount) and h < 16usize {
+      heaps.push(new MemoryHeapInfo(memory.memoryHeaps[h].size, (memory.memoryHeaps[h].flags & vulkan.MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0u32));
+      h = h + 1usize;
+    }
+    heaps;
+  }
+
+  // A device made with the compute features 'request' asks for, each enabled if this GPU has it
+  // (features.cone says what, and what 'device.compute' then answers). Ray tracing is not asked for.
+  // Check 'isValid'.
+  pub fn requestComputeDevice(self &, request &ComputeRequest) Device { self.makeDevice(false, request); }
+
+  fn makeDevice(self &, rayTracing bool, request &ComputeRequest) Device {
     mut result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
       new vulkan.RayFns()), new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
@@ -325,8 +353,23 @@ pub struct Adapter {
     mut rqf = new vulkan.PhysicalDeviceRayQueryFeaturesKHR(rayQuery: vulkan.TRUE);
     mut accelf = new vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rqf as *u8, accelerationStructure: vulkan.TRUE);
     mut addressf = new vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accelf as *u8, bufferDeviceAddress: vulkan.TRUE);
-    imm f13 = new vulkan.PhysicalDeviceVulkan13Features(pNext: if useRay { &mut addressf as *u8; } else { null; },
-      synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE);
+
+    // The compute features: those asked for that the GPU has (features.cone). Vulkan 1.1 and 1.2's feature
+    // structures are chained only when one is asked for, so a device asking for none is made exactly as it
+    // always was (and, as Vulkan 1.2's structure includes bufferDeviceAddress, never together with ray
+    // tracing's own structure: 'requestComputeDevice' asks for no ray tracing).
+    imm has = queryCompute(&backend.fns, backend.physical);
+    imm on = enabledCompute(&has, request);
+    imm chained = request.wantsFeatures() and !useRay;
+    mut f12 = new vulkan.PhysicalDeviceVulkan12Features(
+      storageBuffer8BitAccess: vkBool(on.storage8Bit), uniformAndStorageBuffer8BitAccess: vkBool(on.storage8Bit),
+      shaderFloat16: vkBool(on.float16Arithmetic), shaderInt8: vkBool(on.int8Arithmetic),
+      shaderSubgroupExtendedTypes: vkBool(on.subgroupExtendedTypes));
+    mut f11 = new vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8,
+      storageBuffer16BitAccess: vkBool(on.storage16Bit), uniformAndStorageBuffer16BitAccess: vkBool(on.storage16Bit));
+    imm f13 = new vulkan.PhysicalDeviceVulkan13Features(
+      pNext: if useRay { &mut addressf as *u8; } elif chained { &mut f11 as *u8; } else { null; },
+      synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE, shaderIntegerDotProduct: vkBool(on.integerDotProduct));
     imm exts Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
       &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8];
     // Anisotropic filtering, the one optional core feature asked for: on
@@ -340,6 +383,19 @@ pub struct Adapter {
     if available.features.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] == vulkan.TRUE and props.limits.maxSamplerAnisotropy >= 1. {
       enabled.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] = vulkan.TRUE;
       result.maxAnisotropy = props.limits.maxSamplerAnisotropy;
+    }
+    if on.int16Arithmetic { enabled.raw[vulkan.FEATURE_SHADER_INT16] = vulkan.TRUE; }
+    // What the device is made with and held to (features.cone): the layer's WebGPU-default limits, or with
+    // 'largeBuffers' the GPU's own; never above what the GPU allows
+    result.compute = on;
+    result.maxStorageBufferBindingSize = if request.largeBuffers { has.maxStorageBufferRange; } else { MAX_STORAGE_BUFFER_BINDING_SIZE; };
+    if result.maxStorageBufferBindingSize > has.maxStorageBufferRange { result.maxStorageBufferBindingSize = has.maxStorageBufferRange; }
+    result.maxStorageBuffersPerStage = if request.largeBuffers { has.maxPerStageDescriptorStorageBuffers; } else { MAX_STORAGE_BUFFERS_PER_SHADER_STAGE; };
+    if result.maxStorageBuffersPerStage > has.maxPerStageDescriptorStorageBuffers {
+      result.maxStorageBuffersPerStage = has.maxPerStageDescriptorStorageBuffers;
+    }
+    if request.largeBuffers and result.maxStorageBuffersPerStage > MAX_BIND_GROUPS * MAX_BINDINGS {
+      result.maxStorageBuffersPerStage = MAX_BIND_GROUPS * MAX_BINDINGS;       // a layer has at most 4 groups of 16 bindings
     }
     imm dci = new vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
