@@ -1,0 +1,171 @@
+// Shuffle (Fisher-Yates), permutation and choice. The pinned orders come from
+// an independent Python transcription of the same swaps; the uniformity check
+// counts all six orders of three values over 60000 shuffles (expected 10000
+// each, standard deviation about 91).
+
+mod lists;
+
+import testing use *;
+import collections use *;
+import random;
+
+fn joined(l &List[i64]) String {
+  mut s = String.from("");
+  mut i = 0usize;
+  while i < l.len() {
+    if i > 0usize { s.append(" "); }
+    s.appendInt(*l[i]);
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn joinedU(l &List[usize]) String {
+  mut s = String.from("");
+  mut i = 0usize;
+  while i < l.len() {
+    if i > 0usize { s.append(" "); }
+    s.appendInt(i64.from(*l[i]));
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn ten() List[i64] {
+  mut l = new List[i64];
+  mut i = 0i64;
+  while i < 10i64 { l.push(i); i = i + 1i64; }
+  l;
+}
+
+fn main() i32 {
+  // Shuffles of 0..9
+  mut r = random.Rng.fromSeed(5u64);
+  mut l = ten();
+  r.shuffle(&mut l);
+  expectStr(joined(&l).view(), "1 0 4 9 6 3 7 8 5 2", "shuffle seed 5");
+  l = ten();
+  r.shuffle(&mut l);
+  expectStr(joined(&l).view(), "0 1 5 9 6 4 7 2 8 3", "second shuffle, same generator");
+
+  r = random.Rng.fromSeed(4u64);
+  l = ten();
+  r.shuffle(&mut l);
+  expectStr(joined(&l).view(), "4 0 9 5 7 1 6 3 8 2", "shuffle seed 4");
+
+  // permutation(n) is the same swaps on 0..n-1
+  r = random.Rng.fromSeed(5u64);
+  imm p = r.permutation(10usize);
+  expectStr(joinedU(&p).view(), "1 0 4 9 6 3 7 8 5 2", "permutation seed 5");
+  r = random.Rng.fromSeed(8u64);
+  imm q = r.permutation(6usize);
+  expectStr(joinedU(&q).view(), "1 0 5 2 3 4", "permutation(6) seed 8");
+
+  // Short lists
+  mut e = new List[i64];
+  r.shuffle(&mut e);
+  expectUInt(u64.from(e.len()), 0u64, "shuffle of an empty list");
+  e.push(42i64);
+  r.shuffle(&mut e);
+  expectInt(*e[0usize], 42i64, "shuffle of one");
+  expectUInt(u64.from(r.permutation(0usize).len()), 0u64, "permutation(0)");
+
+  // A shuffle keeps exactly the values it was given (a list of Strings: a
+  // value that cannot be copied)
+  mut names = new List[String];
+  mut i = 0i64;
+  while i < 50i64 {
+    mut s = String.from("n");
+    s.appendInt(i);
+    names.push(s);
+    i = i + 1i64;
+  }
+  r.shuffle(&mut names);
+  mut seen = new List[i64];
+  i = 0i64;
+  while i < 50i64 { seen.push(0i64); i = i + 1i64; }
+  mut total = 0usize;
+  mut j = 0usize;
+  while j < names.len() {
+    total = total + names[j].len();
+    // 'n' then 1 or 2 digits: the number is the last one or two bytes
+    imm v = names[j].view();
+    mut value = 0i64;
+    mut k = 1usize;
+    while k < v.len { value = value * 10i64 + i64.from(v[k] - 48u8); k = k + 1usize; }
+    seen.set(usize.from(value), *seen[usize.from(value)] + 1i64);
+    j = j + 1usize;
+  }
+  mut once = true;
+  j = 0usize;
+  while j < 50usize { if *seen[j] != 1i64 { once = false; } j = j + 1usize; }
+  expect(once, "every name once after the shuffle");
+  expectUInt(u64.from(names.len()), 50u64, "shuffle keeps the length");
+  expectUInt(u64.from(total), 140u64, "shuffle keeps the strings");
+
+  // All six orders of three values, equally likely
+  r = random.Rng.fromSeed(2u64);
+  mut counts = new List[i64];
+  j = 0usize;
+  while j < 6usize { counts.push(0i64); j = j + 1usize; }
+  i = 0i64;
+  while i < 60000i64 {
+    mut t = new List[i64];
+    t.push(0i64);
+    t.push(1i64);
+    t.push(2i64);
+    r.shuffle(&mut t);
+    // The order as a number 0 to 5: the first value picks a pair, the second
+    // which of the two
+    imm first = *t[0usize];
+    imm second = *t[1usize];
+    mut slot = usize.from(first) * 2usize;
+    if second > *t[2usize] { slot = slot + 1usize; }
+    counts.set(slot, *counts[slot] + 1i64);
+    i = i + 1i64;
+  }
+  // (0,1,2) (0,2,1) (1,0,2) (1,2,0) (2,0,1) (2,1,0) in the slot order 0..5
+  expectInt(*counts[0usize], 10104i64, "order 012");
+  expectInt(*counts[1usize], 9964i64, "order 021");
+  expectInt(*counts[2usize], 9866i64, "order 102");
+  expectInt(*counts[3usize], 10103i64, "order 120");
+  expectInt(*counts[4usize], 9989i64, "order 201");
+  expectInt(*counts[5usize], 9974i64, "order 210");
+
+  // Choice
+  mut five = new List[i64];
+  five.push(10i64);
+  five.push(20i64);
+  five.push(30i64);
+  five.push(40i64);
+  five.push(50i64);
+  r = random.Rng.fromSeed(21u64);
+  expectChoice(&mut r, &five, 10i64, "choice 1");
+  expectChoice(&mut r, &five, 50i64, "choice 2");
+  expectChoice(&mut r, &five, 40i64, "choice 3");
+  expectChoice(&mut r, &five, 20i64, "choice 4");
+  expectChoice(&mut r, &five, 40i64, "choice 5");
+  expectChoice(&mut r, &five, 10i64, "choice 6");
+  imm none = new List[i64];
+  match r.choice(&none) {
+    case is Some { expect(false, "choice of an empty list is None"); }
+    case is None { expect(true, "choice of an empty list is None"); }
+  }
+  match r.choiceIndex(0usize) {
+    case is Some { expect(false, "choiceIndex of 0 is None"); }
+    case is None { expect(true, "choiceIndex of 0 is None"); }
+  }
+  match r.choiceIndex(1usize) {
+    case imm k Some { expectUInt(u64.from(k), 0u64, "choiceIndex of 1"); }
+    case is None { expect(false, "choiceIndex of 1"); }
+  }
+
+  done();
+}
+
+fn expectChoice(r &mut random.Rng, l &List[i64], want i64, label &str) {
+  match r.choice(l) {
+    case imm v Some { expectInt(*v, want, label); }
+    case is None { expect(false, label); }
+  }
+}
