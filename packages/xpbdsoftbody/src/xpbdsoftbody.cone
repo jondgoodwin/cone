@@ -15,16 +15,24 @@
 // constraint.
 //
 // - body.cone      SoftBody: particles (position, velocity, mass; pinned;
-//                  attached to a moving frame), the constraint records, the
-//                  colliders and the settings; Collider and Heightfield
-// - solve.cone     the step, and the stretch, bending (dihedral), rope
-//                  curvature, long range tether and pressure projections,
-//                  and strain limiting
-// - wind.cone      aerodynamic drag and lift on each triangle (and drag on a
-//                  rope's segments), from a wind velocity the caller passes
+//                  attached to a moving frame or to a rigid body), the
+//                  constraint records (breakable), the colliders and the
+//                  settings; Collider, Heightfield and Coupled (a rigid body)
+// - step.cone      the step: substeps, colour batches, rigid body coupling,
+//                  breaking; beginStep, substep, endStep
+// - kernels.cone   the inner loops over raw pointers: aerodynamic drag and lift
+//                  on each triangle (from a wind velocity the caller passes),
+//                  prediction, stretch, bending (dihedral) and rope curvature
+//                  projections, the velocity update
+// - batch.cone     graph colouring of the constraints into batches that share
+//                  no particle, and the triangles around each particle
+// - workers.cone   Workers: a small pool of threads that share the batches
+// - solve.cone     dihedral angle and gradient, volume and pressure, strain
+//                  limiting, long range tethers, the moving anchor frame
 // - collide.cone   contacts against spheres, capsules, boxes, planes, a
-//                  heightfield and a caller's field closure, with friction;
-//                  optional self collision in a hash grid
+//                  heightfield and a caller's field closure, with friction,
+//                  and against shapes of coupled rigid bodies, which are
+//                  pushed back; optional self collision in a hash grid
 // - generate.cone  clothGrid, fromMesh (welded vertices, edges to constraints),
 //                  rope, ropeBetween, chain, pressureBody, addTethers
 // - output.cone    writeMesh and writeTube: positions and normals into a
@@ -46,13 +54,15 @@
 // the wind coefficients and 'selfCollide'.
 //
 // What is not here: collisions between a cloth's triangles and a shape (only
-// particles collide: the thickness is the margin), tearing, or the plasticity
-// of a rope; self collision is particle against particle and only on request;
-// the step is one thread's, in order, and not yet SIMD or coloured for threads.
+// particles collide: the thickness is the margin), or the plasticity of a
+// rope; self collision is particle against particle and only on request; no
+// SIMD, and a GPU path is not built (the rigid body coupling needs the
+// particles on the CPU every substep).
 
 mod xpbdsoftbody;
 
 import libc;
+import thread;
 import collections use *;
 import geomath use *;
 import mesh use Mesh;

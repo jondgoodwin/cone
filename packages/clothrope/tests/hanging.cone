@@ -1,0 +1,148 @@
+// A crate hung from a beam by a rope, the soft and the rigid body stepped together.
+//
+//   weight    a 20 kg crate on a 2 m rope hangs still: the rope pulls it up by exactly
+//             its weight, so the crate neither falls nor rises. It settles where the
+//             rope's stretch (compliance times tension) puts it, within 2 cm of 2 m
+//             below the beam, and is still to 2 cm/s
+//   pendulum  the crate on a 1.5 m chain, let go 0.1 rad off the vertical, swings with
+//             a simple pendulum's period T = 2 pi sqrt(L / g) = 2.4559 s within 3%
+//             (the chain's weight, 1% of the crate's, and the crate's size, are
+//             small effects). A pendulum has two ways to be wrong in a coupling: a
+//             rope that gives (a long period) or one that adds energy (a growing swing)
+//   momentum  with gravity off, a rope with a crate tied to its end: the crate set
+//             moving at 2 m/s drags the rope along; the total momentum of the
+//             crate and the rope's particles stays what it was (the coupling hands
+//             on exactly what the cloth was moved by)
+
+mod hanging;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import xpbdsoftbody use *;
+import clothrope use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+// A world with a crate (half-size 0.25, 125 kg... scaled to 'mass' by density) at 'at'
+fn crateWorld(at Vec3, mass f32) (World, u32) {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm s = w.addShape(Shape.single(Prim.box(new Vec3(0.25, 0.25, 0.25))));
+  mut d = BodyDef.dynamicAt(s, at);
+  d.mass = mass;
+  d.linearDamping = 0.; d.angularDamping = 0.;
+  imm id = w.createBody(d);
+  (w, id);
+}
+
+fn testWeight() {
+  imm beam = new Vec3(0., 5., 0.);
+  mut w = crateWorld(new Vec3(0., 3., 0.), 20.);
+  imm crate = w.1;
+  mut rope = ropeBetween(beam, new Vec3(0., 3.25, 0.), 20u32, 0.1, 1e-6, -1., 0.01);
+  rope.pin(0u32);
+  rope.gravity = new Vec3(0., -9.81, 0.);
+  rope.substeps = 20u32;
+  rope.damping = 1.;
+  mut coupler = Coupler.make(1u32);
+  coupler.anchor(&mut rope, &w.0, 20u32, crate, new Vec3(0., 3.25, 0.), -1.);
+  coupler.couple(&mut rope, &w.0, crate, true);
+  addTethers(&mut rope, 1.);
+  mut i = 0;
+  while i < 360 {
+    coupler.step(&mut rope, &mut w.0, 1. / 60., new Vec3(0., 0., 0.));
+    i = i + 1;
+  }
+  imm y = w.0.positionOf(crate).y;
+  near(y, 3., 0.02, "the crate hangs 2 m below the beam");
+  near(w.0.linearVelocity(crate).length(), 0., 0.02, "and is still");
+  expectBool(w.0.angularVelocity(crate).length() < 0.05, true, "and does not spin");
+}
+
+fn testPendulum() {
+  imm beam = new Vec3(0., 5., 0.);
+  imm th0 = 0.1;
+  imm len = 1.5;
+  imm hook = beam + new Vec3(sin(th0), -cos(th0), 0.) * len;
+  mut w = crateWorld(hook, 20.);
+  imm crate = w.1;
+  mut pts = List[Vec3].empty();
+  mut k = 0;
+  while k <= 15 {
+    pts.push(beam.lerp(hook, f32.from(k) / 15.));
+    k = k + 1;
+  }
+  mut rope = chain(pts.view(), 0.1, 1e-6, 0.01);
+  rope.pin(0u32);
+  rope.substeps = 20u32;
+  rope.damping = 0.;
+  rope.airDensity = 0.;
+  mut coupler = Coupler.make(1u32);
+  coupler.anchor(&mut rope, &w.0, 15u32, crate, hook, -1.);
+  addTethers(&mut rope, 1.);
+  // find the zero crossings of the crate's x about the beam
+  mut crossings = List[f32].empty();
+  mut prev = hook.x;
+  mut i = 0;
+  while i < 60 * 9 {
+    coupler.step(&mut rope, &mut w.0, 1. / 60., new Vec3(0., 0., 0.));
+    imm x = w.0.positionOf(crate).x;
+    if prev > 0. and x <= 0. { crossings.push((f32.from(i) + prev / (prev - x)) / 60.); }
+    prev = x;
+    i = i + 1;
+  }
+  // successive downward crossings are one period apart
+  expectBool(crossings.len() >= 3usize, true, "at least three swings in 9 s");
+  if crossings.len() >= 3usize {
+    imm period = (*crossings[2usize] - *crossings[0usize]) / 2.;
+    near(period, 2.4559, 0.075, "the period is a simple pendulum's, 2 pi sqrt(L / g)");
+  }
+  imm swing = (w.0.positionOf(crate) - beam).length();
+  near(swing, len, 0.03, "and the rope is still its length");
+}
+
+fn testMomentum() {
+  mut w = crateWorld(new Vec3(0., 0., 0.), 10.);
+  w.0.gravity = new Vec3(0., 0., 0.);
+  imm crate = w.1;
+  w.0.setLinearVelocity(crate, new Vec3(2., 0., 0.));
+  mut rope = ropeBetween(new Vec3(-4., 0.25, 0.), new Vec3(0., 0.25, 0.), 20u32, 0.25, 1e-6, -1., 0.01);
+  rope.gravity = new Vec3(0., 0., 0.);
+  rope.airDensity = 0.;
+  rope.substeps = 20u32;
+  rope.damping = 0.;
+  // the rope is slack and trails; its end is tied to the crate
+  mut coupler = Coupler.make(1u32);
+  coupler.anchor(&mut rope, &w.0, 20u32, crate, new Vec3(0., 0.25, 0.), -1.);
+  mut ropeMass = 0.;
+  mut i = 0usize;
+  while i < rope.mass.len() { ropeMass = ropeMass + *rope.mass[i]; i = i + 1usize; }
+  near(ropeMass, 1., 0.01, "the rope weighs 4 m of 0.25 kg/m");
+  mut s = 0;
+  while s < 120 {
+    coupler.step(&mut rope, &mut w.0, 1. / 60., new Vec3(0., 0., 0.));
+    s = s + 1;
+  }
+  // total momentum: the crate and every free particle of the rope
+  mut p = w.0.linearVelocity(crate) * 10.;
+  i = 0usize;
+  while i < rope.pos.len() {
+    if *rope.invMass[i] > 0. { p = p + *rope.vel[i] * *rope.mass[i]; }
+    i = i + 1usize;
+  }
+  near(p.x, 20., 0.6, "momentum along x is the crate's 10 kg * 2 m/s");
+  near(p.y, 0., 0.3, "none appears along y");
+  expectBool(w.0.positionOf(crate).x > 1.5, true, "and the crate has moved on");
+}
+
+fn main() i32 {
+  testWeight();
+  testPendulum();
+  testMomentum();
+  done();
+}

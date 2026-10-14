@@ -107,11 +107,75 @@ fn resolveContact(b &mut SoftBody, i usize, p Vec3, nn Vec3, depth f32) Vec3 {
   q;
 }
 
+// A contact with a shape of a rigid body: the particle is pushed out by its
+// share of the depth, depth / (w_particle + w_body) times its own inverse mass,
+// and the body gets the equal and opposite impulse (the particle's mass times its
+// displacement over the substep). Friction is Coulomb's on the particle's sliding
+// over the body's surface point, limited by the normal share, and its impulse
+// goes to the body too. 'sd' is the signed distance to the surface, nn its
+// outward normal.
+fn resolveBodyContact(b &mut SoftBody, i usize, p Vec3, nn Vec3, sd f32, bi usize) Vec3 {
+  imm h = b.stepH;
+  imm depth = b.thickness - sd;
+  imm c = *b.bodies[bi];
+  imm cp = p - nn * sd;
+  imm wP = *b.invMass[i];
+  imm moves = c.invMass > 0.;
+  imm wB = if moves {c.invMassAlong(cp, nn) * f32.from(maxU32(c.couplings, 1u32));} else {0.;};
+  imm lam = depth / (wP + wB);
+  mut q = p + nn * (lam * wP);
+  mut j = nn * (-lam / h);
+  if b.friction > 0. {
+    imm move = (q - *b.prev[i]) - c.velocityAt(cp) * h;
+    imm tang = move - nn * move.dot(nn);
+    imm tl = tang.length();
+    if tl > 1e-9 {
+      imm k = fmin(1., b.friction * lam * wP / tl);
+      q = q - tang * k;
+      j = j + tang * (k / (wP * h));
+    }
+  }
+  if moves {
+    b.bodies[bi].impulse = b.bodies[bi].impulse + j;
+    b.bodies[bi].angImpulse = b.bodies[bi].angImpulse + (cp - c.pos).cross(j);
+  }
+  q;
+}
+
+// Count the particles in contact with each coupled body, for mass splitting
+fn countBodyContacts(b &mut SoftBody) {
+  mut i = 0usize;
+  while i < b.bodies.len() {
+    b.bodies[i].couplings = b.bodies[i].anchored;
+    i = i + 1usize;
+  }
+  imm n = b.pos.len();
+  imm nc = b.colliders.len();
+  imm r = b.thickness;
+  i = 0usize;
+  while i < n {
+    if *b.invMass[i] > 0. {
+      imm p = *b.pos[i];
+      mut c = 0usize;
+      while c < nc {
+        imm bi = b.colliders[c].body;
+        if bi != NO_BODY {
+          imm sd = colliderDistance(&*b.colliders[c], p);
+          if sd.w < r { b.bodies[usize.from(bi)].couplings = b.bodies[usize.from(bi)].couplings + 1u32; }
+        }
+        c = c + 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+}
+
 fn collideAll(b &mut SoftBody, field &<fn(p Vec3) Vec4) {
   imm n = b.pos.len();
   imm nc = b.colliders.len();
   imm nh = b.heightfields.len();
   imm r = b.thickness;
+  if b.bodies.len() > 0usize { countBodyContacts(b); }
   mut i = 0usize;
   while i < n {
     if *b.invMass[i] > 0. {
@@ -119,7 +183,15 @@ fn collideAll(b &mut SoftBody, field &<fn(p Vec3) Vec4) {
       mut c = 0usize;
       while c < nc {
         imm sd = colliderDistance(&*b.colliders[c], p);
-        if sd.w < r { p = resolveContact(b, i, p, new Vec3(sd.x, sd.y, sd.z), r - sd.w); }
+        if sd.w < r {
+          imm nrm = new Vec3(sd.x, sd.y, sd.z);
+          imm bi = b.colliders[c].body;
+          if bi == NO_BODY {
+            p = resolveContact(b, i, p, nrm, r - sd.w);
+          } else {
+            p = resolveBodyContact(b, i, p, nrm, sd.w, usize.from(bi));
+          }
+        }
         c = c + 1usize;
       }
       c = 0usize;

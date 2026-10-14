@@ -1,0 +1,167 @@
+// Cloth and rope against rigid bodies: contact, support, momentum, and letting go.
+//
+//   anchor    a 20 kg crate hung by a rope whose anchor lets go at 150 N (the crate weighs
+//             196 N) comes away within a second, with a BREAK_ANCHOR event naming the particle
+//             and the body, and falls; at 400 N it hangs on
+//   momentum  with gravity off, a 1 kg cloth moving 2 m/s down onto a 2 kg box at rest: the
+//             total momentum along y after the cloth has settled on the box is the cloth's,
+//             -2 kg m/s, within 8%, and the box has been given a share of it
+//   support   a deck strip between two pins sags farther under a 12 kg crate dropped on it
+//             than it does empty, by at least 5 cm, and the crate rests on it: above where
+//             the deck was, nearly still
+//   sleeping  a crate at rest on the deck is not lost to sleep: with sleeping on it is
+//             still held up (the cloth's impulses wake it every substep)
+
+mod bodies;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import xpbdsoftbody use *;
+import clothrope use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Rig {
+  w World;
+  id u32;
+  soft SoftBody;
+  coupler Coupler;
+}
+
+// A world with one dynamic box and an empty soft body to fill in
+fn crateRig(at Vec3, mass f32, half f32) Rig {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm s = w.addShape(Shape.single(Prim.box(new Vec3(half, half, half))));
+  mut d = BodyDef.dynamicAt(s, at);
+  d.mass = mass;
+  d.linearDamping = 0.; d.angularDamping = 0.;
+  imm id = w.createBody(d);
+  new Rig(w, id, SoftBody.empty(), Coupler.make(1u32));
+}
+
+fn advance(r &mut Rig, steps i32) {
+  mut s = 0;
+  while s < steps { r.coupler.step(&mut r.soft, &mut r.w, 1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+}
+
+fn hang(limit f32) Rig {
+  mut r = crateRig(new Vec3(0., 3., 0.), 20., 0.25);
+  r.soft = ropeBetween(new Vec3(0., 5., 0.), new Vec3(0., 3.25, 0.), 20u32, 0.1, 1e-6, -1., 0.01);
+  r.soft.pin(0u32);
+  r.soft.substeps = 20u32;
+  r.soft.damping = 1.;
+  r.coupler.anchor(&mut r.soft, &r.w, 20u32, r.id, new Vec3(0., 3.25, 0.), limit);
+  addTethers(&mut r.soft, 1.);
+  r;
+}
+
+fn testAnchor() {
+  mut a = hang(150.);
+  advance(&mut a, 60);
+  expectInt(i64.from(a.soft.breaks.len()), 1i64, "an anchor of 150 N lets go of a 196 N crate");
+  if a.soft.breaks.len() == 1usize {
+    imm e = *a.soft.breaks[0usize];
+    expectUInt(u64.from(e.kind), u64.from(BREAK_ANCHOR), "the event says an anchor");
+    expectUInt(u64.from(e.a), 20u64, "names the particle");
+    expectBool(e.force > 150., true, "and the pull that did it");
+  }
+  expectBool(a.w.positionOf(a.id).y < 2.5, true, "and the crate has fallen");
+  mut b = hang(400.);
+  advance(&mut b, 120);
+  expectInt(i64.from(b.soft.breaks.len()), 0i64, "at 400 N it holds");
+  near(b.w.positionOf(b.id).y, 3., 0.03, "and the crate hangs where it did");
+}
+
+fn testMomentum() {
+  mut r = crateRig(new Vec3(0., 0.2, 0.), 2., 0.2);
+  r.w.gravity = new Vec3(0., 0., 0.);
+  mut mf = Fabric.light();
+  mf.density = 1. / 0.36;     // 1 kg over 0.6 x 0.6 m
+  r.soft = clothGrid(new Vec3(-0.3, 0.55, -0.3), new Vec3(0.6, 0., 0.), new Vec3(0., 0., 0.6), 12u32, 12u32, &mf);
+  r.soft.gravity = new Vec3(0., 0., 0.);
+  r.soft.airDensity = 0.;
+  r.soft.substeps = 10u32;
+  r.soft.damping = 0.;
+  r.soft.thickness = 0.02;
+  r.soft.friction = 0.8;
+  mut i = 0usize;
+  while i < r.soft.vel.len() { r.soft.vel.set(i, new Vec3(0., -2., 0.)); i = i + 1usize; }
+  r.coupler.couple(&mut r.soft, &r.w, r.id, true);
+  mut mass = 0.;
+  i = 0usize;
+  while i < r.soft.mass.len() { mass = mass + *r.soft.mass[i]; i = i + 1usize; }
+  near(mass, 1., 0.01, "the cloth weighs 1 kg");
+  advance(&mut r, 90);
+  mut py = r.w.linearVelocity(r.id).y * 2.;
+  i = 0usize;
+  while i < r.soft.pos.len() { py = py + (*r.soft.vel[i]).y * *r.soft.mass[i]; i = i + 1usize; }
+  near(py, -2., 0.16, "momentum along y is what the cloth brought");
+  expectBool(r.w.linearVelocity(r.id).y < -0.3, true, "and the box has been given a share of it");
+}
+
+fn deckRig(withCrate bool) Rig {
+  mut r = crateRig(new Vec3(0., 1.9, 0.), 12., 0.2);
+  if !withCrate { r.w.setTransform(r.id, new Vec3(0., 50., 0.), Quat.identity()); r.w.gravity = new Vec3(0., 0., 0.); }
+  mut f = Fabric.heavy();
+  f.density = 3.;
+  f.stretch = 1e-6;
+  f.shear = 1e-5;
+  f.bend = 5.;
+  f.thickness = 0.05;
+  r.soft = clothGrid(new Vec3(-2., 1.2, -0.5), new Vec3(4., 0., 0.), new Vec3(0., 0., 1.), 16u32, 4u32, &f);
+  mut jj = 0u32;
+  while jj <= 4u32 { r.soft.pin(jj * 17u32); r.soft.pin(jj * 17u32 + 16u32); jj = jj + 1u32; }
+  // slack: the ends are brought in 15 cm, so it hangs
+  mut i = 0usize;
+  while i < r.soft.pos.len() {
+    imm p = *r.soft.pos[i];
+    imm q = new Vec3(p.x * (3.7 / 4.), p.y, p.z);
+    r.soft.pos.set(i, q);
+    r.soft.rest.set(i, q);
+    r.soft.prev.set(i, q);
+    i = i + 1usize;
+  }
+  r.soft.substeps = 10u32;
+  r.soft.damping = 2.;
+  r.soft.friction = 0.6;
+  r.soft.thickness = 0.05;
+  r.soft.airDensity = 0.;
+  addTethers(&mut r.soft, 1.02);
+  r.coupler.couple(&mut r.soft, &r.w, r.id, true);
+  r;
+}
+
+fn testSupport() {
+  mut empty = deckRig(false);
+  advance(&mut empty, 240);
+  imm sagEmpty = 1.2 - (*empty.soft.pos[2usize * 17usize + 8usize]).y;
+  mut loaded = deckRig(true);
+  advance(&mut loaded, 240);
+  imm sagLoaded = 1.2 - (*loaded.soft.pos[2usize * 17usize + 8usize]).y;
+  expectBool(sagLoaded > sagEmpty + 0.05, true, "the deck sags at least 5 cm farther under the crate");
+  imm p = loaded.w.positionOf(loaded.id);
+  expectBool(p.y > 1.2 - sagLoaded, true, "the crate is above the deck's lowest point");
+  expectBool(loaded.w.linearVelocity(loaded.id).length() < 0.3, true, "and nearly still");
+  expectBool(p.y > 0.2, true, "and has not gone through");
+}
+
+fn testSleeping() {
+  mut r = deckRig(true);
+  r.w.settings.sleepEnabled = true;
+  advance(&mut r, 360);
+  expectBool(r.w.positionOf(r.id).y > 0.2, true, "with sleeping on the crate is still held up");
+}
+
+fn main() i32 {
+  testAnchor();
+  testMomentum();
+  testSupport();
+  testSleeping();
+  done();
+}
