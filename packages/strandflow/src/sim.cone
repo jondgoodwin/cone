@@ -1,0 +1,299 @@
+// The medium a strand moves in, and the simulation of groups of strands in it.
+
+// Air or water: plain data
+pub struct Medium {
+  pub flow WindField;       // the mean flow, its gusts and its swirl
+  pub surge Vec3;           // an oscillating flow added to it, metres a second at its peak (waves)
+  pub surgeHz f32;
+  pub surgeWavelength f32;  // metres along the surge's direction; 0: all of space surges together
+  pub density f32;          // kg/m3
+  pub gravity Vec3;
+
+  // Air with a wind
+  pub fn air(wind WindField) Medium {
+    new Medium(wind, new Vec3(0., 0., 0.), 0., 0., 1.2, new Vec3(0., -9.81, 0.));
+  }
+
+  // Water with a current and a surge
+  pub fn water(current WindField, surge Vec3, hz f32, wavelength f32) Medium {
+    new Medium(current, surge, hz, wavelength, 1000., new Vec3(0., -9.81, 0.));
+  }
+
+  // The fluid's velocity at a place and a time
+  pub fn velocityAt(self &, p Vec3, t f32) Vec3 {
+    mut v = flow.velocityAt(p, t);
+    if surge.lengthSquared() > 0. {
+      imm dir = surge.normalize();
+      imm phase = if surgeWavelength > 0.0001 { p.dot(dir) / surgeWavelength; } else { 0.; };
+      v = v + surge * sin(2. * pi * (surgeHz * t - phase));
+    }
+    v;
+  }
+}
+
+// A strand in its group
+pub struct Strand {
+  pub first usize;        // its first particle (the ghost) in the group's body
+  pub count usize;        // particles, the ghost and the root among them
+  pub normal Vec3;        // the way a card faces at the root, in the group's frame
+  pub seed u32;
+  pub widthScale f32;     // this strand's width over the style's
+}
+
+// The strands of one style that ride one frame
+pub struct Group {
+  pub frame Transform3;         // the frame now; the program sets it
+  pub style StrandStyle;
+  pub body SoftBody;
+  pub goalLocal List[Vec3];     // for each particle: where it is in the frame in the styled shape
+  pub goalK List[f32];          // and the style spring there
+  pub strands List[Strand];
+}
+
+fn lerpTransform(a &Transform3, b &Transform3, t f32) Transform3 {
+  new Transform3(a.translation.lerp(b.translation, t), a.rotation.slerp(b.rotation, t).normalize(), new Vec3(1., 1., 1.));
+}
+
+pub struct StrandSim {
+  pub groups List[Group];
+  pub medium Medium;
+  pub time f32;
+  pub workers Workers;
+  pub gridSize u32 = 4u32;
+
+  pub fn make(medium Medium, threads u32) StrandSim {
+    new StrandSim(List[Group].empty(), medium, 0., Workers.make(threads));
+  }
+
+  pub fn stop(self &mut) { workers.stop(); }
+
+  // A group of strands of 'style' riding 'frame'; its number
+  pub fn addGroup(self &mut, frame Transform3, style StrandStyle) usize {
+    mut body = SoftBody.empty();
+    body.frameFrom = frame;
+    body.frameTo = frame;
+    body.airDensity = 0.;
+    body.substeps = style.substeps;
+    body.damping = style.damping;
+    body.thickness = style.thickness;
+    body.friction = 0.2;
+    // one Gauss-Seidel pass a substep leaves a chain stretched under a strong wind (13 per cent at 4 m/s with 6 substeps); the
+    // strain limit (Provot 1995) caps it
+    body.strainLimit = 0.015;
+    body.limitPasses = 4u32;
+    body.gravity = style.apparentGravity(medium.gravity, medium.density) * (1. - style.hold);
+    groups.push(new Group(frame, style, body, List[Vec3].empty(), List[f32].empty(), List[Strand].empty()));
+    groups.len() - 1usize;
+  }
+
+  pub fn groupCount(self &) usize { groups.len(); }
+
+  pub fn strandCount(self &) usize {
+    mut n = 0usize;
+    mut g = 0usize;
+    while g < groups.len() { n = n + groups[g].strands.len(); g = g + 1usize; }
+    n;
+  }
+
+  pub fn particleCount(self &) usize {
+    mut n = 0usize;
+    mut g = 0usize;
+    while g < groups.len() { n = n + groups[g].body.pos.len(); g = g + 1usize; }
+    n;
+  }
+
+  // Grow strands from roots (each names its group). The strands start in their styled shape, at rest.
+  pub fn addStrands(self &mut, roots &List[StrandRoot]) {
+    mut i = 0usize;
+    while i < roots.len() {
+      self.addStrand(roots[i]);
+      i = i + 1usize;
+    }
+    // each group's wind lattice
+    mut g = 0usize;
+    while g < groups.len() {
+      imm b = &mut groups[g].body;
+      if b.windGrid.len() == 0usize {
+        b.setWindGrid(new Vec3(0., 0., 0.), 1., gridSize, gridSize, gridSize);
+      }
+      b.ropeRadius = 0.;
+      g = g + 1usize;
+    }
+  }
+
+  fn addStrand(self &mut, root &StrandRoot) {
+    imm g = root.group;
+    imm style = groups[g].style;
+    imm frame = groups[g].frame;
+    imm shape = styledCurve(root, &style);
+    mut world = List[Vec3].empty();
+    mut k = 0usize;
+    while k < shape.len() { world.push(frame.transformPoint(*shape[k])); k = k + 1usize; }
+    imm n = usize.from(style.segments);
+    // a strand's mass a metre: its own, and the fluid it carries along (a cylinder's added mass equals the fluid it displaces)
+    imm lin = style.linearMass + medium.density * pi * style.dragRadius * style.dragRadius;
+    mut strandBody = rope(world.view(), lin, style.stretch, style.bend, style.thickness);
+    // softer toward the tip
+    mut c = 0usize;
+    while c < strandBody.curves.len() {
+      imm t = f32.from(c) / f32.from(n);
+      strandBody.curves[c].compliance = style.bend * (1. + (style.bendTip - 1.) * t);
+      c = c + 1usize;
+    }
+    imm count = strandBody.pos.len();
+    imm base = usize.from(groups[g].body.merge(strandBody));
+    // the ghost and the root ride the frame
+    groups[g].body.attachAt(u32.from(base), *shape[0usize]);
+    groups[g].body.attachAt(u32.from(base + 1usize), *shape[1usize]);
+    mut j = 0usize;
+    while j < count {
+      groups[g].goalLocal.push(*shape[j]);
+      imm t = if j < 2usize { 0.; } else { f32.from(j - 1usize) / f32.from(n); };
+      groups[g].goalK.push(if j < 2usize { 0.; } else { style.goal + (style.goalTip - style.goal) * t; });
+      j = j + 1usize;
+    }
+    mut r = Rand.make(root.seed + 99u32);
+    groups[g].strands.push(new Strand(base, count, root.normal, root.seed, 1. + 0.18 * r.signed()));
+  }
+
+  pub fn setFrame(self &mut, g usize, frame Transform3) { groups[g].frame = frame; }
+
+  // The shapes group 'g''s strands are pushed out of, in the world
+  pub fn setColliders(self &mut, g usize, shapes &List[Collider]) {
+    imm b = &mut groups[g].body;
+    b.colliders.clear();
+    mut i = 0usize;
+    while i < shapes.len() { b.colliders.push(*shapes[i]); i = i + 1usize; }
+  }
+
+  // The position of particle 'j' of strand 'k' of group 'g' (0: the ghost, 1: the root)
+  pub fn particle(self &, g usize, k usize, j usize) Vec3 {
+    *groups[g].body.pos[groups[g].strands[k].first + j];
+  }
+
+  // Advance 'dt' seconds
+  pub fn step(self &mut, dt f32) {
+    mut g = 0usize;
+    while g < groups.len() {
+      self.stepGroup(g, dt);
+      g = g + 1usize;
+    }
+    time = time + dt;
+  }
+
+  fn fillFlow(self &mut, g usize) {
+    imm b = &mut groups[g].body;
+    imm box = b.bounds();
+    imm lo = box.0 - new Vec3(0.05, 0.05, 0.05);
+    imm span = (box.1 + new Vec3(0.05, 0.05, 0.05)) - lo;
+    mut big = span.x;
+    if span.y > big { big = span.y; }
+    if span.z > big { big = span.z; }
+    imm n = gridSize;
+    imm cell = big / f32.from(n - 1u32);
+    b.gridOrigin = lo;
+    b.gridCell = if cell > 0.001 { cell; } else { 0.001; };
+    mut z = 0u32;
+    while z < n {
+      mut y = 0u32;
+      while y < n {
+        mut x = 0u32;
+        while x < n {
+          imm p = lo + new Vec3(f32.from(x), f32.from(y), f32.from(z)) * b.gridCell;
+          b.windGrid.set(usize.from(z * n * n + y * n + x), medium.velocityAt(p, time));
+          x = x + 1u32;
+        }
+        y = y + 1u32;
+      }
+      z = z + 1u32;
+    }
+  }
+
+  fn stepGroup(self &mut, g usize, dt f32) {
+    if groups[g].strands.len() == 0usize { return; }
+    self.fillFlow(g);
+    // The substep is the solver's own unit and its result depends on it, so it is held: 'substeps' is the number in a sixtieth of a
+    // second, and a step of another length takes as many as keep the substep the same (a step of 1/120 s takes half of them)
+    imm want = dt * 60. * f32.from(groups[g].style.substeps);
+    imm count = i32.from(libc.ceilf(want - 0.001));
+    groups[g].body.substeps = if count < 1 { 1u32; } else { u32.from(count); };
+    groups[g].body.moveAnchors(groups[g].frame);
+    groups[g].body.beginSteps(&mut workers, dt, new Vec3(0., 0., 0.));
+    while groups[g].body.substepsLeft() > 0u32 {
+      groups[g].body.nextSubstep(&mut workers);
+      self.followTheLeader(g);
+      self.relax(g);
+    }
+    groups[g].body.endSteps();
+  }
+
+  // After each substep, FOLLOW THE LEADER (Muller, Kim, Chentanez, Mukherjee, Gross and Pettre 2012, "Simulation of Hair: Dynamic
+  // Follow-The-Leader"): from the root outward, each particle is put back at its link's rest length from the one before it,
+  // along the line between them. One Gauss-Seidel pass of the XPBD solve leaves a strand squashed in places where a wind
+  // pushes it back on itself (alternate links absorb the error: 14 per cent at 4 m/s); this pass takes the error out exactly
+  // and in order, which a pass of the solver cannot do along a chain. The position change is not given to the velocity (the
+  // solver has made it already), so it only removes error and puts no energy in.
+  fn followTheLeader(self &mut, g usize) {
+    imm b = &mut groups[g].body;
+    mut s = 0usize;
+    while s < groups[g].strands.len() {
+      imm st = groups[g].strands[s];
+      mut j = 2usize;
+      while j < st.count {
+        imm i = st.first + j;
+        imm rest = (*groups[g].goalLocal[i] - *groups[g].goalLocal[i - 1usize]).length();
+        imm lead = *b.pos[i - 1usize];
+        imm d = *b.pos[i] - lead;
+        imm len = d.length();
+        if len > 0.000001 { b.pos.set(i, lead + d * (rest / len)); }
+        j = j + 1usize;
+      }
+      s = s + 1usize;
+    }
+  }
+
+  // After each substep: the fluid's drag on every free particle, and the style spring (impulses on the velocities)
+  fn relax(self &mut, g usize) {
+    imm b = &mut groups[g].body;
+    imm style = groups[g].style;
+    imm h = b.substepSeconds();
+    imm fraction = f32.from(b.stepIndex) / f32.from(b.stepSubs);
+    imm frame = lerpTransform(&b.frameFrom, &b.frameTo, fraction);
+    imm grid = b.windGrid.view() as *Vec3;
+    imm inv = 1. / b.gridCell;
+    imm rho = medium.density;
+    imm width = 2. * style.dragRadius;
+    mut s = 0usize;
+    while s < groups[g].strands.len() {
+      imm st = groups[g].strands[s];
+      mut j = 2usize;
+      while j < st.count {
+        imm i = st.first + j;
+        imm p = *b.pos[i];
+        imm prev = *b.pos[i - 1usize];
+        imm next = if j + 1usize < st.count { *b.pos[i + 1usize]; } else { p; };
+        imm span = next - prev;
+        imm tl = span.length();
+        imm t = if tl > 0.000001 { span * (1. / tl); } else { new Vec3(0., -1., 0.); };
+        imm ell = if j + 1usize < st.count { tl * 0.5; } else { tl; };
+        imm u = sampleWindGrid(grid, b.gridOrigin, inv, b.gridNx, b.gridNy, b.gridNz, p);
+        imm v = *b.vel[i];
+        imm vr = u - v;
+        imm along = t * vr.dot(t);
+        imm vperp = vr - along;
+        imm sp = vperp.length();
+        imm m = *b.mass[i];
+        // across the strand: relaxed towards the fluid's velocity; along it, a little (skin friction)
+        imm kappa = 0.5 * rho * style.dragCd * width * ell * sp / m;
+        imm kt = 0.04 * 0.5 * rho * style.dragCd * width * ell * along.length() / m;
+        mut dv = vperp * (1. - libc.expf(-kappa * h)) + along * (1. - libc.expf(-kt * h));
+        // the style spring
+        imm goal = frame.transformPoint(*groups[g].goalLocal[i]);
+        dv = dv + (goal - p) * (*groups[g].goalK[i] * h);
+        b.vel.set(i, v + dv);
+        j = j + 1usize;
+      }
+      s = s + 1usize;
+    }
+  }
+}

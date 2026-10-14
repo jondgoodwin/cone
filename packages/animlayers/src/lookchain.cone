@@ -1,0 +1,69 @@
+// LookChain: turn a chain of bones so the last of them faces a point.
+//
+// This is poseik's lookAt, for any skeleton. The wanted direction (from the eye to the target) is taken in the body's
+// frame, its yaw and pitch held to what a body can do, and the turn that brings the head's forward to it is shared among
+// the chain's bones by fractions that sum to 1, each taking its share by spherical interpolation from no turn: the
+// "weighted joint chain" look-at of Unreal's and Unity's, by directions and not Euler angles, so there is no gimbal.
+// The head and neck take most of it, the trunk a little, as a person turns the eyes and head before the body.
+
+pub struct LookChain {
+  pub bones List[usize];      // from the trunk up to the head, a parent before its child
+  pub shares List[f32];       // the turn's shares, one a bone; they sum to 1
+  pub frame usize;            // the bone whose orientation is the body's frame (the pelvis, or a spine bone)
+  pub eye Vec3;               // the aim point, in the last bone's frame
+  pub forward Vec3;           // the last bone's forward, in its own frame (-z for a being at rest)
+  pub maxYaw f32;             // radians each side of the body's forward
+  pub maxUp f32;
+  pub maxDown f32;
+
+  // A chain over 'bones' sharing the turn by 'shares', aimed from 'eye' (in the head's frame), 80 degrees of yaw each
+  // side, 50 up and 45 down
+  pub fn make(bones List[usize], shares List[f32], frame usize, eye Vec3) LookChain {
+    new LookChain(bones, shares, frame, eye, new Vec3(0., 0., -1.), radians(80.), radians(50.), radians(45.));
+  }
+
+  // The bones' shares made to sum to 1
+  pub fn normalized(self &mut) {
+    mut s = 0.;
+    mut i = 0usize;
+    while i < shares.len() { s = s + *shares[i]; i = i + 1usize; }
+    if s <= 0.00001 { return; }
+    i = 0usize;
+    while i < shares.len() { shares.set(i, *shares[i] / s); i = i + 1usize; }
+  }
+
+  // Turn the chain to face 'target' (model space) at 'weight' (0 none, 1 all the way). 'models' must be current for the
+  // pose and is brought up to date. Returns the yaw and pitch aimed at after the clamp, and whether it was clamped.
+  pub fn aim(self &, skel &Skeleton, pose &mut Pose, models &mut List[Transform3], target Vec3, weight f32) LookResult {
+    imm head = *bones[bones.len() - 1usize];
+    imm eyeW = (*models[head]).transformPoint(eye);
+    imm body = (*models[frame]).rotation;
+    imm dirB = body.conjugate() * (target - eyeW).normalize();
+    mut yaw = atan2(-dirB.x, -dirB.z);
+    mut pitch = asin(clampf(dirB.y, -1., 1.));
+    imm y0 = yaw;
+    imm p0 = pitch;
+    yaw = clampf(yaw, -maxYaw, maxYaw);
+    pitch = clampf(pitch, -maxDown, maxUp);
+    imm wantB = new Vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch));
+    imm want = body * wantB;
+    imm fwd = (*models[head]).rotation * forward;
+    imm whole = Quat.identity().slerp(Quat.fromVectors(fwd, want), weight);
+    imm id = Quat.identity();
+    mut i = 0usize;
+    while i < bones.len() {
+      lookTurnBone(skel, pose, models, *bones[i], id.slerp(whole, *shares[i]));
+      i = i + 1usize;
+    }
+    new LookResult(yaw, pitch, y0 != yaw or p0 != pitch);
+  }
+}
+
+// Turn 'bone' by the model-space rotation 'delta' about its own origin, its children going with it
+fn lookTurnBone(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], bone usize, delta Quat) {
+  imm p = skel.parentOf(bone);
+  imm pm = if p >= 0i32 { (*models[usize.from(p)]).rotation; } else { Quat.identity(); };
+  imm own = pose.rotation(bone);
+  pose.setRotation(bone, (pm.conjugate() * delta * pm * own).normalize());
+  skel.recompose(pose, models, bone);
+}
