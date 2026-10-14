@@ -381,6 +381,48 @@ fn eulerOf(q Quat) Vec3 {
   }
 }
 
+// A second kind of thing to inspect, with nothing written for it but this description and the function that
+// takes a Change into the camera
+fn describeCamera() TypeDesc {
+  mut d = TypeDesc.make("Camera");
+  d.textField("Label");
+  d.header("Lens");
+  d.sliderField("Field of view", 20., 100., 1u32);
+  d.floatField("Near plane", 0.01, 2u32);
+  d.floatField("Far plane", 1., 1u32);
+  d.enumField("Projection", "Perspective|Orthographic");
+  d.header("View");
+  d.vec2Field("Lens shift", 0.005);
+  d.colorField("Background");
+  d.boolField("Depth of field");
+  d;
+}
+
+fn cameraValues() List[Value] {
+  mut v = List[Value].empty();
+  v.push(Value.text("Main camera"));
+  v.push(new Value(String.empty()));
+  v.push(Value.number(45.));
+  v.push(Value.number(0.1));
+  v.push(Value.number(80.));
+  v.push(Value.number(0.));
+  v.push(new Value(String.empty()));
+  v.push(Value.vec3(0., 0., 0.));
+  v.push(Value.color(0.02, 0.03, 0.06, 1.));
+  v.push(Value.number(0.));
+  v;
+}
+
+// Only the field of view does anything to the picture: it is the camera's, and the gizmo's view is made again
+fn applyCameraChange(app &mut App, c &Change) {
+  app.camChanges = app.camChanges + 1usize;
+  if c.field == 2usize {
+    app.camera.fov = radians(c.after.x);
+    app.view = GizmoView.make(app.camera.position(), app.camera.viewMatrix(), app.camera.projectionMatrix(f32.from(W) / f32.from(H)),
+      app.camera.fov, f32.from(W), f32.from(H));
+  }
+}
+
 fn valuesOf(o &EditObject) List[Value] {
   mut v = List[Value].empty();
   v.push(Value.text(o.name.view()));
@@ -426,6 +468,11 @@ struct App {
   light rd.Light;
   view GizmoView;
   dragStart Transform3;
+  insp2 Inspector;
+  panel2 usize = 0usize;
+  btnCamera usize = 0usize;
+  showCamera bool = false;
+  camChanges usize = 0usize;
   btnMove usize = 0usize;
   btnRotate usize = 0usize;
   btnScale usize = 0usize;
@@ -597,6 +644,7 @@ fn toolbarClick(app &mut App, node usize) {
   elif node == app.btnSnap {app.gizmo.snap.enabled = !app.gizmo.snap.enabled;}
   elif node == app.btnUndo {app.scene.undo();}
   elif node == app.btnRedo {app.scene.redo();}
+  elif node == app.btnCamera {app.showCamera = !app.showCamera;}
 }
 
 // ---- a frame ----
@@ -625,7 +673,14 @@ fn updateEditor(app &mut App, gfx &mut Gfx, rig &mut Rig, device &mut Device) {
       app.gizmo.setTarget(app.scene.transformOf(id));
     }
   }
-  app.ui.setVisible(app.panelNode, id != 0u32);
+  app.ui.setVisible(app.panelNode, id != 0u32 and !app.showCamera);
+  app.ui.setVisible(app.panel2, app.showCamera);
+  imm camChanges = app.insp2.pump(&mut app.kit, &mut app.ui);
+  mut cc = 0usize;
+  while cc < camChanges.len() {
+    applyCameraChange(app, camChanges[cc]);
+    cc = cc + 1usize;
+  }
   // each object's material from its properties
   mut i = 0usize;
   while i < app.scene.core.objects.len() {
@@ -781,6 +836,7 @@ fn makeScene(gfx &mut Gfx, device &mut Device) App {
   imm bSnap = button(&mut ui, tb, "Snap");
   imm bUndo = button(&mut ui, tb, "Undo");
   imm bRedo = button(&mut ui, tb, "Redo");
+  imm bCamera = button(&mut ui, tb, "Camera");
   imm status = label(&mut ui, ui.root, "");
   ui.setOffsets(status, 18., 54., 0., 0.);
   imm panelNode = panel(&mut ui, ui.root, "panel");
@@ -788,6 +844,14 @@ fn makeScene(gfx &mut Gfx, device &mut Device) App {
   ui.setSize(panelNode, 396., AUTO);
   imm desc = describeObject();
   mut insp = Inspector.build(&mut kit, &mut ui, panelNode, &desc);
+  // a second kind of thing, described in the same way: the same code makes its inspector
+  imm panel2 = panel(&mut ui, ui.root, "panel");
+  ui.setOffsets(panel2, 872., 56., 0., 0.);
+  ui.setSize(panel2, 396., AUTO);
+  imm camDesc = describeCamera();
+  mut insp2 = Inspector.build(&mut kit, &mut ui, panel2, &camDesc);
+  insp2.setValues(&mut kit, &mut ui, &cameraValues());
+  ui.setVisible(panel2, false);
   mut camera = rd.Camera.make();
   camera.fov = radians(45.);
   camera.near = 0.1;
@@ -798,7 +862,9 @@ fn makeScene(gfx &mut Gfx, device &mut Device) App {
   mut gizmo = Gizmo.make();
   gizmo.snap.moveStep = 0.25;
   imm light = rd.Light.directional(new Vec3(-0.4, -0.8, -0.45).normalize(), new Color(3., 2.8, 2.4, 1.), new Color(0.1, 0.12, 0.16, 1.));
-  mut app = new App(scene, handles, mats, keys, ui, kit, insp, gizmo, camera, light, view, Transform3.identity());
+  mut app = new App(scene, handles, mats, keys, ui, kit, insp, gizmo, camera, light, view, Transform3.identity(), insp2);
+  app.panel2 = panel2;
+  app.btnCamera = bCamera;
   app.btnMove = bMove;
   app.btnRotate = bRotate;
   app.btnScale = bScale;
@@ -1005,9 +1071,29 @@ fn session(device &mut Device, rig &mut Rig, outPath &filepath.Path) usize {
   shot(&mut app, &mut gfx, rig, device, outPath, "11-three-redone.png", "three redone: moved, turned and scaled again");
   check(&mut app, "redo brought the move back", near(app.scene.transformOf(1u32).translation.x, -0.5, 0.001));
 
+  // 12. a second kind of thing, inspected by the same code from its own description: the camera
+  clickAt(&mut app, centreOf(&app.ui, app.btnCamera).x, centreOf(&app.ui, app.btnCamera).y);
+  step(&mut app, &mut gfx, rig, device);
+  step(&mut app, &mut gfx, rig, device);
+  check(&mut app, "the camera's inspector is showing", app.showCamera);
+  imm fovNode = app.kit.numbers[11usize].node;
+  imm fx = app.ui.nodes[fovNode].gx;
+  imm fy = app.ui.nodes[fovNode].gy;
+  imm fw = app.ui.nodes[fovNode].w;
+  mMove(&mut app, fx + 0.31 * fw, fy + 12.);
+  mDown(&mut app, 0u32);
+  mMove(&mut app, fx + 0.2 * fw, fy + 12.);
+  mUp(&mut app);
+  step(&mut app, &mut gfx, rig, device);
+  print <- "  the camera's field of view is now ", degrees(app.camera.fov), " degrees (", u64.from(app.camChanges), " changes reached the camera)\n";
+  check(&mut app, "the field of view slider changed the camera", near(degrees(app.camera.fov), 36., 0.2));
+  shot(&mut app, &mut gfx, rig, device, outPath, "12-camera-inspector.png", "a second description, the same inspector code: a camera's lens, its field of view dragged to 36 degrees (the picture narrows)");
+  clickAt(&mut app, centreOf(&app.ui, app.btnCamera).x, centreOf(&app.ui, app.btnCamera).y);
+
   // the cost of a frame in this state
   mut cpu = List[i64].empty();
   mut edit = List[i64].empty();
+  mut prepList = List[i64].empty();
   mut total = List[i64].empty();
   mut f = 0;
   while f < 120 {
@@ -1018,6 +1104,7 @@ fn session(device &mut Device, rig &mut Rig, outPath &filepath.Path) usize {
     imm c = sdl.GetTicksNS();
     if f >= 20 {
       edit.push(i64.from(b - a));
+      prepList.push(rig.prepNs);
       cpu.push(prep);
       total.push(i64.from(c - a));
     }
@@ -1025,6 +1112,7 @@ fn session(device &mut Device, rig &mut Rig, outPath &filepath.Path) usize {
   }
   print <- "frame cost (p50 of 100): update (layout, inspector, gizmo, materials) ", p50(&edit) / 1000i64, " us; build and record the frame ",
     p50(&cpu) / 1000i64, " us; whole frame with the GPU wait ", p50(&total) / 1000i64, " us\n";
+  print <- "  of that, the demo renderer's preparation of the overlay (laying out the glyphs, packing the shapes): ", p50(&prepList) / 1000i64, " us\n";
   print <- "  the overlay: ", u64.from(rig.prims), " shapes, ", u64.from(rig.glyphs), " glyphs; layout nodes measured ", u64.from(app.ui.stats.measured),
     ", arranged ", u64.from(app.ui.stats.arranged), "\n";
   // the same frame without the editor drawn over it, for what the overlay costs

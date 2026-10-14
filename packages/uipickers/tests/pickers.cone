@@ -303,5 +303,27 @@ fn main() i32 {
   expectInt(i64.from(tg.len()), 1i64, "a toggle is one Change");
   expect(tg[0usize].field == fShow and near(tg[0usize].before.x, 1., 0.0001) and near(tg[0usize].after.x, 0., 0.0001), "visible, 1 to 0");
   expectInt(i64.from(insp.pump(&mut kit2, &mut ui2).len()), 0i64, "and only once");
+
+  // two inspectors on one kit: the first one's pump leaves the second one's events for it
+  mut desc3 = TypeDesc.make("Other");
+  imm gGain = desc3.floatField("Gain", 0.1, 2u32);
+  mut insp3 = Inspector.build(&mut kit2, &mut ui2, panelNode, &desc3);
+  mut vals3 = List[Value].empty();
+  vals3.push(Value.number(1.));
+  insp3.setValues(&mut kit2, &mut ui2, &vals3);
+  doLayout(&mut ui2);
+  insp3.pump(&mut kit2, &mut ui2);
+  imm gn = kit2.numbers[4usize].node;
+  imm gx = ui2.nodes[gn].gx;
+  imm gy = ui2.nodes[gn].gy;
+  press(&mut ui2, gx + 20., gy + 10., 0u32);
+  pointerMove(&mut ui2, gx + 30., gy + 10.);
+  pointerMove(&mut ui2, gx + 60., gy + 10.);
+  expectInt(i64.from(insp.pump(&mut kit2, &mut ui2).len()), 0i64, "the first inspector has nothing of its own to report");
+  imm others = insp3.pump(&mut kit2, &mut ui2);
+  expect(others.len() >= 1usize and others[0usize].field == gGain, "the second inspector still gets its events");
+  expect(near(others[others.len() - 1usize].after.x, 1. + 4., 0.01), "40 pixels at 0.1: 1 + 4");
+  release(&mut ui2, gx + 60., gy + 10.);
+  insp3.pump(&mut kit2, &mut ui2);
   done();
 }
