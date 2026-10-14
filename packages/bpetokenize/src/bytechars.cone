@@ -1,0 +1,139 @@
+// ======== Bytes as characters (GPT-2's table) and UTF-8 ========
+//
+// A byte-level BPE vocabulary is written in text, so each of the 256 byte
+// values needs a printable character to stand for it. GPT-2's table (the
+// 'bytes_to_unicode' of its encoder.py) gives the bytes that are already
+// printable (33 to 126, 161 to 172 and 174 to 255) their own code point, and
+// the other 68, in order, the code points 256 to 323. So the space (32) is
+// U+0120 'Ġ', a line feed (10) is U+010A 'Ċ', and a byte of a multi-byte UTF-8
+// character is a letter of its own.
+//
+// The table is computed, not written out: the 68 bytes that move are three runs
+// (0 to 32, 127 to 160 and 173), so a byte's place in the order is a sum.
+
+// The code point that stands for byte b
+fn byteCodePoint(b u8) u32 {
+  imm n = u32.from(b);
+  if n >= 33u32 and n <= 126u32 { return n; }
+  if n >= 161u32 and n <= 172u32 { return n; }
+  if n >= 174u32 { return n; }
+  // The moved bytes in order: 0..32 are places 0..32, 127..160 are 33..66, 173 is 67
+  if n <= 32u32 { return 256u32 + n; }
+  if n <= 160u32 { return 256u32 + 33u32 + (n - 127u32); }
+  256u32 + 67u32;
+}
+
+// The byte that code point cp stands for, or -1 when it stands for none
+fn codePointByte(cp u32) i32 {
+  if cp >= 33u32 and cp <= 126u32 { return i32.from(cp); }
+  if cp >= 161u32 and cp <= 172u32 { return i32.from(cp); }
+  if cp >= 174u32 and cp <= 255u32 { return i32.from(cp); }
+  if cp < 256u32 or cp > 323u32 { return -1i32; }
+  imm n = cp - 256u32;
+  if n <= 32u32 { return i32.from(n); }
+  if n <= 66u32 { return i32.from(127u32 + (n - 33u32)); }
+  173i32;
+}
+
+// -------- UTF-8 --------
+
+// A code point, appended in UTF-8
+fn appendCodePoint(out &mut List[u8], cp u32) {
+  if cp < 0x80u32 {
+    out.push(u8.from(cp));
+  }
+  elif cp < 0x800u32 {
+    out.push(0xC0u8 | u8.from(cp >> 6u32));
+    out.push(0x80u8 | u8.from(cp & 0x3Fu32));
+  }
+  elif cp < 0x10000u32 {
+    out.push(0xE0u8 | u8.from(cp >> 12u32));
+    out.push(0x80u8 | u8.from((cp >> 6u32) & 0x3Fu32));
+    out.push(0x80u8 | u8.from(cp & 0x3Fu32));
+  }
+  else {
+    out.push(0xF0u8 | u8.from(cp >> 18u32));
+    out.push(0x80u8 | u8.from((cp >> 12u32) & 0x3Fu32));
+    out.push(0x80u8 | u8.from((cp >> 6u32) & 0x3Fu32));
+    out.push(0x80u8 | u8.from(cp & 0x3Fu32));
+  }
+}
+
+// The length (1 to 4) of the well-formed UTF-8 character at pos, or 0 when the
+// bytes there are not one: no overlong form, no surrogate, nothing beyond
+// U+10FFFF, no cut-off character
+fn utf8Length(t &Array[u8], pos usize) usize {
+  imm b = t[pos];
+  if b < 0x80u8 { return 1usize; }
+  mut more = 0usize;
+  mut cp = 0u32;
+  mut least = 0u32;
+  if b >= 0xC2u8 and b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
+  elif b >= 0xE0u8 and b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
+  elif b >= 0xF0u8 and b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
+  else { return 0usize; }
+  if pos + more >= t.len { return 0usize; }
+  mut k = 1usize;
+  while k <= more {
+    imm c = t[pos + k];
+    if (c & 0xC0u8) != 0x80u8 { return 0usize; }
+    cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
+    k = k + 1usize;
+  }
+  if cp < least or cp > 0x10FFFFu32 or (cp >= 0xD800u32 and cp <= 0xDFFFu32) { return 0usize; }
+  more + 1usize;
+}
+
+// The code point of the well-formed character at pos that takes len bytes
+fn utf8Decode(t &Array[u8], pos usize, len usize) u32 {
+  imm b = u32.from(t[pos]);
+  if len == 1usize { return b; }
+  mut cp = if len == 2usize { b & 0x1Fu32; } elif len == 3usize { b & 0x0Fu32; } else { b & 0x07u32; };
+  mut k = 1usize;
+  while k < len {
+    cp = (cp << 6u32) | (u32.from(t[pos + k]) & 0x3Fu32);
+    k = k + 1usize;
+  }
+  cp;
+}
+
+// -------- the vocabulary's spelling of bytes --------
+
+// The text a vocabulary spells bytes with: each byte as the character the table
+// gives it. 'toByteLevel("hi there")' is "hiĠthere"
+pub fn toByteLevel(bytes &Array[u8]) String {
+  mut out = List[u8].withCapacity(bytes.len * 2usize);
+  mut i = 0usize;
+  while i < bytes.len {
+    appendCodePoint(&mut out, byteCodePoint(bytes[i]));
+    i = i + 1usize;
+  }
+  String.fromBytes(out.view());
+}
+
+// The bytes a vocabulary's spelling stands for: the inverse of 'toByteLevel'.
+// A character the table has no byte for (U+0144 and up, an emoji, say, which a
+// byte-level vocabulary never spells a byte with) is copied through as its own
+// UTF-8, and so is a byte that is not UTF-8 at all, so no text is refused.
+pub fn fromByteLevel(text &Array[u8]) List[u8] {
+  mut out = List[u8].withCapacity(text.len);
+  mut i = 0usize;
+  while i < text.len {
+    imm len = utf8Length(text, i);
+    if len == 0usize {
+      out.push(text[i]);
+      i = i + 1usize;
+    }
+    else {
+      imm cp = utf8Decode(text, i, len);
+      imm b = codePointByte(cp);
+      if b >= 0i32 { out.push(u8.from(b)); }
+      else {
+        mut k = 0usize;
+        while k < len { out.push(text[i + k]); k = k + 1usize; }
+      }
+      i = i + len;
+    }
+  }
+  out;
+}
