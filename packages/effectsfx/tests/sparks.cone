@@ -1,0 +1,173 @@
+// GPU particles colliding with the scene's depth buffer, on a real GPU with no window.
+//
+// A floor under a camera that looks down at it, and a burst of 400 sparks thrown up from 1.5 m
+// above it, simulated by the compute kernel through ImageFx (whose scene half leaves the depth).
+//
+// 1. With depth collision on, after 1.2 s no living particle that is in the camera's view is
+//    below the floor (the floor's surface is where the depth buffer says it is), and many have
+//    bounced.
+// 2. With it off and no ground plane, the same burst falls through the floor (so the check
+//    above can fail).
+// 3. With the ground plane on and depth off, nothing is below the floor anywhere, in view or not.
+// 4. A bounce loses energy: the sparks' mean speed after bouncing is under what they fell with.
+// 5. The spawn count: 400 particles ordered are 400 born (the ring's first 400 slots), and a
+//    second burst takes the next 400.
+// 6. No Vulkan call failed and the validation layer said nothing.
+
+mod sparks;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import effectsfx use *;
+
+const W = 320u32;
+const H = 200u32;
+const CAP = 2048u32;
+
+struct Counts {
+  alive u32;
+  inViewBelow u32;       // alive, projected into the view, more than 6 cm under the floor
+  below u32;             // alive and more than 6 cm under the floor anywhere
+  bounced u32;
+  rows u32;              // slots holding a particle at all (age < life or the birth's own)
+}
+
+fn sparkClass() ParticleClass {
+  mut c = ParticleClass.make();
+  c.shape = EMIT_POINT;
+  c.spread = radians(70.);
+  c.speed = 3.;
+  c.speedJitter = 0.3;
+  c.life = 2.5;
+  c.sizeStart = 0.05;
+  c.sizeEnd = 0.04;
+  c.stretch = 0.03;
+  c.collide = true;
+  c.restitution = 0.5;
+  c.friction = 0.2;
+  c.colors = [new Color(1., 0.8, 0.4, 5.), new Color(1., 0.6, 0.2, 4.), new Color(1., 0.3, 0.1, 2.), new Color(0.4, 0.05, 0.02, 0.)];
+  c;
+}
+
+// Run the burst for 'frames' frames and count what is where
+fn runCase(device &mut Device, renderer &mut Renderer, post &mut Post, fx &mut ImageFx, out &Texture, camera &Camera,
+    light &Light, list &DrawList, depth bool, ground bool, frames u32, bursts u32, spawnedFirst &mut u32) Counts {
+  mut ps = ParticleSystem.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, CAP);
+  require(ps.isValid(), "a particle system");
+  ps.depthCollision = depth;
+  ps.groundOn = ground;
+  ps.groundNormal = new Vec3(0., 1., 0.);
+  ps.groundOffset = 0.;
+  imm cls = ps.addClass(&sparkClass());
+  mut readback = device.createBuffer(u64.from(CAP) * 48u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm viewProjection = camera.projectionMatrix(f32.from(W) / f32.from(H)) * camera.viewMatrix();
+  mut f = 0u32;
+  while f < frames {
+    if f == 0u32 { ps.emit(cls, new Vec3(0., 1.5, 0.), new Vec3(0., 1., 0.), new Vec3(0., 0., 0.), 400u32, 7u32); }
+    if f == 5u32 and bursts > 1u32 { ps.emit(cls, new Vec3(0.5, 1.5, 0.), new Vec3(0., 1., 0.), new Vec3(0., 0., 0.), 400u32, 8u32); }
+    mut encoder = device.createCommandEncoder();
+    fx.renderScene(device, &mut encoder, renderer, post, camera, light, list);
+    ps.simulate(device, &mut encoder, fx, camera, f32.from(f) / 60., 1. / 60.);
+    if f == 0u32 { *spawnedFirst = ps.spawned; }
+    ps.render(&mut encoder, &post.hdr);
+    fx.renderFinish(device, &mut encoder, renderer, post, list, out);
+    if f + 1u32 == frames { encoder.copyBufferToBuffer(&ps.pool, 0u64, &readback, 0u64, u64.from(CAP) * 48u64); }
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    f = f + 1u32;
+  }
+  mut counts = new Counts(0u32, 0u32, 0u32, 0u32, 0u32);
+  imm p = readback.mappedRange() as *f32;
+  mut i = 0usize;
+  while i < usize.from(CAP) {
+    imm a = p + i * 12usize;
+    imm x = *a;
+    imm y = *(a + 1usize);
+    imm z = *(a + 2usize);
+    imm age = *(a + 3usize);
+    imm life = *(a + 7usize);
+    imm bounces = *(a + 10usize);
+    if life > 0. { counts.rows = counts.rows + 1u32; }
+    if life > 0. and age < life {
+      counts.alive = counts.alive + 1u32;
+      if bounces >= 1. { counts.bounced = counts.bounced + 1u32; }
+      if y < -0.06 { counts.below = counts.below + 1u32; }
+      imm clip = viewProjection * new Vec4(x, y, z, 1.);
+      imm nx = clip.x / clip.w;
+      imm ny = clip.y / clip.w;
+      if clip.w > 0. and nx > -0.9 and nx < 0.9 and ny > -0.9 and ny < 0.9 and y < -0.06 {
+        counts.inViewBelow = counts.inViewBelow + 1u32;
+      }
+    }
+    i = i + 1usize;
+  }
+  counts;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("effectsfx sparks");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut fx = ImageFx.create(&mut device, &renderer, &mut post);
+  require(renderer.isValid() and post.isValid() and fx.isValid(), "the renderer and its passes");
+
+  imm floorMesh = Mesh.plane(1, 1.);
+  imm floorId = renderer.addMesh(&mut device, &floorMesh);
+  imm boxMesh = Mesh.cube(0.5);
+  imm boxId = renderer.addMesh(&mut device, &boxMesh);
+  imm dark = PbrMaterial.standard(new Color(0.2, 0.2, 0.22, 1.), 0.8, 0.4);
+  imm darkM = renderer.addPbrMaterial(&mut device, &dark);
+  mut list = DrawList.empty();
+  list.add(floorId, darkM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(20., 1., 20.)));
+  list.add(boxId, darkM, Mat4.fromTrs(new Vec3(-1.6, 0.4, -0.5), Quat.identity(), new Vec3(0.8, 0.8, 0.8)));
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.1;
+  camera.far = 60.;
+  camera.lookAt(new Vec3(0., 2.2, 5.), new Vec3(0., 0.5, 0.), new Vec3(0., 1., 0.));
+  imm sky = Sky.dusk(radians(30.), radians(200.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(2., 1.8, 1.5, 1.), new Color(0.1, 0.1, 0.12, 1.));
+
+  mut spawnedFirst = 0u32;
+  imm on = runCase(&mut device, &mut renderer, &mut post, &mut fx, &out, &camera, &light, &list, true, false, 72u32, 1u32, &mut spawnedFirst);
+  expectUInt(u64.from(spawnedFirst), 400u64, "400 ordered, 400 born");
+  expect(on.alive > 100u32, "sparks still alive after 1.2 s");
+  print <- "depth on: alive "; print <- on.alive; print <- ", bounced "; print <- on.bounced; print <- ", in view under the floor "; print <- on.inViewBelow; print <- ", under anywhere "; print <- on.below; print <- "\n";
+  expect(on.inViewBelow * 100u32 <= on.alive, "depth collision: at most one in a hundred of the living in view is under the floor");
+  expect(on.bounced > 60u32, "depth collision: many have bounced");
+
+  imm off = runCase(&mut device, &mut renderer, &mut post, &mut fx, &out, &camera, &light, &list, false, false, 72u32, 1u32, &mut spawnedFirst);
+  expect(off.below > 60u32, "no collision at all: the burst falls through the floor");
+
+  imm plane = runCase(&mut device, &mut renderer, &mut post, &mut fx, &out, &camera, &light, &list, false, true, 72u32, 1u32, &mut spawnedFirst);
+  expectUInt(u64.from(plane.below), 0u64, "ground plane: nothing under the floor anywhere");
+  expect(plane.bounced > 60u32, "ground plane: many have bounced");
+
+  imm two = runCase(&mut device, &mut renderer, &mut post, &mut fx, &out, &camera, &light, &list, true, true, 20u32, 2u32, &mut spawnedFirst);
+  expectUInt(u64.from(two.rows), 800u64, "two bursts of 400 fill 800 slots");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

@@ -1,0 +1,384 @@
+// ======== Effects as data, and the player that plays them ========
+//
+// An Effect is lists of layers of the kinds this package has: particles, flipbook explosions,
+// lights, distortions, debris, decals and camera shake. Each layer carries its own delay (seconds
+// after the effect starts). Nothing about a muzzle flash or a blast is in the library; the
+// examples build their effects as values of these types.
+//
+// An EffectPlayer registers effects once ('register': it registers their particle classes and
+// bakes their flipbooks) and plays any number of them ('play': an event, an effect id, a place,
+// an axis, a velocity, a seed and a start; every particle and billboard follows from the
+// event, as in vfx). A frame is
+//
+//   player.beginFrame(&mut renderer, &mut fx, &mut list, &camera, now, dt);   // before the scene
+//   fx.renderScene(...);
+//   player.drawEffects(&mut device, &mut encoder, &fx, &post.hdr, &camera, now, dt);
+//   fx.renderFinish(...);
+//
+// The effect's own frame is (side, axis, across): 'axis' is the effect's +y (the direction a
+// muzzle flash points, a blast's up, the normal of the surface a spark shower leaves), and the
+// layers' offsets and axes are in it.
+
+pub struct ParticleLayer {
+  pub cls ParticleClass;
+  pub offset Vec3;                  // where it is born, in the effect's frame
+  pub axis Vec3;                    // its launch axis, in the effect's frame (unit)
+  pub delay f32 = 0.;
+  pub burst u32 = 0u32;             // particles at once at 'delay'
+  pub rate f32 = 0.;                // and particles a second from 'delay' for 'duration'
+  pub duration f32 = 0.;
+
+  pub fn make(cls &ParticleClass) ParticleLayer {
+    new ParticleLayer(*cls, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  }
+}
+
+pub struct FlipbookLayer {
+  pub desc FlipbookDesc;
+  pub tint Color;
+  pub offset Vec3;
+  pub delay f32 = 0.;
+  pub size f32 = 2.;                // the billboard's half width, metres
+  pub duration f32 = 1.6;
+  pub roll f32 = 6.2831855;         // a random roll within this many radians, from the seed
+
+  pub fn make(desc &FlipbookDesc) FlipbookLayer {
+    new FlipbookLayer(*desc, new Color(1., 1., 1., 1.), new Vec3(0., 0., 0.));
+  }
+}
+
+pub struct DistortionLayer {
+  pub kind u32;
+  pub offset Vec3;
+  pub delay f32 = 0.;
+  pub duration f32 = 0.8;
+  pub radius f32 = 3.;
+  pub strength f32 = 0.08;
+  pub width f32 = 0.22;
+  pub rise f32 = 1.;
+
+  pub fn ring(radius f32, duration f32, strength f32) DistortionLayer {
+    new DistortionLayer(DISTORT_RING, new Vec3(0., 0., 0.), 0., duration, radius, strength);
+  }
+
+  pub fn haze(radius f32, duration f32, strength f32) DistortionLayer {
+    new DistortionLayer(DISTORT_HAZE, new Vec3(0., 0., 0.), 0., duration, radius, strength);
+  }
+}
+
+pub struct Effect {
+  pub particles List[ParticleLayer];
+  pub flipbooks List[FlipbookLayer];
+  pub lights List[LightLayer];
+  pub distortions List[DistortionLayer];
+  pub debris List[DebrisLayer];
+  pub decals List[DecalLayer];
+  pub shakes List[ShakeLayer];
+
+  pub fn empty() Effect {
+    new Effect(List[ParticleLayer].empty(), List[FlipbookLayer].empty(), List[LightLayer].empty(),
+      List[DistortionLayer].empty(), List[DebrisLayer].empty(), List[DecalLayer].empty(), List[ShakeLayer].empty());
+  }
+
+  // How long until nothing of it remains (the longest layer's delay and duration, a particle's life)
+  pub fn length(self &) f32 {
+    mut t = 0.;
+    mut i = 0usize;
+    while i < particles.len() {
+      imm l = particles[i];
+      imm end = l.delay + l.duration + l.cls.life * (1. + l.cls.lifeJitter);
+      if end > t { t = end; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < flipbooks.len() {
+      if flipbooks[i].delay + flipbooks[i].duration > t { t = flipbooks[i].delay + flipbooks[i].duration; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < lights.len() {
+      if lights[i].delay + lights[i].duration > t { t = lights[i].delay + lights[i].duration; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < distortions.len() {
+      if distortions[i].delay + distortions[i].duration > t { t = distortions[i].delay + distortions[i].duration; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < debris.len() {
+      if debris[i].delay + debris[i].life > t { t = debris[i].delay + debris[i].life; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < shakes.len() {
+      if shakes[i].delay + 2. > t { t = shakes[i].delay + 2.; }
+      i = i + 1usize;
+    }
+    t;
+  }
+}
+
+struct Registered {
+  effect Effect;
+  classIds List[u32];
+  atlasIds List[u32];
+  length f32;
+}
+
+// An effect that is playing: its event
+struct Playing {
+  id u32;
+  origin Vec3;
+  axis Vec3;
+  side Vec3;
+  across Vec3;
+  velocity Vec3;
+  seed u32;
+  start f32;
+  done bool;
+  carry Array[f32, 12];             // a particle layer's fraction of a particle not yet born
+  fired Array[bool, 24];            // a particle burst (0..11), a debris throw (12..17) or a shake (18..23) done
+}
+
+// The most layers of each kind an effect may have where the player keeps a per-layer state
+pub const MAX_PARTICLE_LAYERS = 12usize;
+pub const MAX_DEBRIS_LAYERS = 6usize;
+pub const MAX_SHAKE_LAYERS = 6usize;
+
+struct ActiveDecal {
+  layer DecalLayer;
+  origin Vec3;
+  axis Vec3;
+  start f32;
+  roll f32;
+}
+
+pub struct EffectPlayer {
+  pub particles ParticleSystem;
+  pub flipbooks FlipbookSystem;
+  pub distortion DistortionSystem;
+  pub lights EffectLights;
+  pub debris DebrisSet;
+  pub shake CameraShake;
+  registered List[Registered];
+  playing List[Playing];
+  decals List[ActiveDecal];
+  counter u32 = 0u32;
+  pub played u32 = 0u32;            // effects played so far
+
+  // A player into frames of 'colorFormat' (the HDR frame's), its particle pool 'capacity' strong
+  pub fn create(device &mut Device, colorFormat u32, capacity u32) EffectPlayer {
+    new EffectPlayer(ParticleSystem.create(device, colorFormat, capacity), FlipbookSystem.create(device, colorFormat),
+      DistortionSystem.create(device, colorFormat), EffectLights.create(), DebrisSet.create(), CameraShake.make(),
+      List[Registered].empty(), List[Playing].empty(), List[ActiveDecal].empty());
+  }
+
+  pub fn isValid(self &) bool { particles.isValid() and flipbooks.isValid() and distortion.isValid(); }
+
+  // The ground the particles and debris bounce on (a horizontal plane at height 'y')
+  pub fn setGround(self &mut, y f32) {
+    particles.groundOn = true;
+    particles.groundNormal = new Vec3(0., 1., 0.);
+    particles.groundOffset = -y;
+    debris.groundY = y;
+  }
+
+  // Register 'effect': its particle classes join the pool's table and its flipbooks are baked.
+  // Answers its id, what 'play' takes.
+  pub fn register(self &mut, device &mut Device, effect Effect) u32 {
+    mut classIds = List[u32].empty();
+    mut i = 0usize;
+    while i < effect.particles.len() {
+      classIds.push(particles.addClass(&effect.particles[i].cls));
+      i = i + 1usize;
+    }
+    mut atlasIds = List[u32].empty();
+    i = 0usize;
+    while i < effect.flipbooks.len() {
+      atlasIds.push(flipbooks.addFlipbook(device, &effect.flipbooks[i].desc));
+      i = i + 1usize;
+    }
+    imm length = effect.length();
+    registered.push(new Registered(effect, classIds, atlasIds, length));
+    u32.from(registered.len() - 1usize);
+  }
+
+  fn nextSeed(self &mut, base u32, salt u32) u32 {
+    counter = counter + 1u32;
+    imm h = pcg4d(new UVec4(base, salt, counter, 0x9e3779b9u32));
+    h.x;
+  }
+
+  // Play effect 'id' now (clock 'now'): at 'origin', its axis 'axis' (unit), the emitter moving
+  // at 'velocity' (what a class's 'inherit' takes), its random numbers from 'seed'
+  pub fn play(self &mut, id u32, origin Vec3, axis Vec3, velocity Vec3, seed u32, now f32) {
+    if usize.from(id) >= registered.len() { return; }
+    imm ri = usize.from(id);
+    imm a = axis.normalize();
+    imm basisA = if libc.fabsf(a.y) < 0.9 { new Vec3(0., 1., 0.); } else { new Vec3(1., 0., 0.); };
+    imm side = basisA.cross(a).normalize();
+    imm across = a.cross(side).normalize();
+    // What is set going now and runs itself: lights, flipbooks, distortions, decals
+    mut i = 0usize;
+    while i < registered[ri].effect.lights.len() {
+      imm l = *registered[ri].effect.lights[i];
+      lights.add(&l, origin + localToWorld(l.offset, side, a, across), now, seed + u32.from(i));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < registered[ri].effect.flipbooks.len() {
+      imm l = *registered[ri].effect.flipbooks[i];
+      imm roll = (toUnit(pcg4d(new UVec4(seed, u32.from(i), 77u32, 1u32)).x) - 0.5) * l.roll;
+      flipbooks.play(*registered[ri].atlasIds[i], origin + localToWorld(l.offset, side, a, across), l.size,
+        now + l.delay, l.duration, roll, l.tint);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < registered[ri].effect.distortions.len() {
+      imm l = *registered[ri].effect.distortions[i];
+      distortion.add(new DistortionSprite(origin + localToWorld(l.offset, side, a, across), l.radius, now + l.delay,
+        l.duration, l.kind, l.strength, l.width, l.rise, seed + 31u32 * u32.from(i)));
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < registered[ri].effect.decals.len() {
+      imm l = *registered[ri].effect.decals[i];
+      imm roll = l.roll + toUnit(pcg4d(new UVec4(seed, u32.from(i), 79u32, 2u32)).x) * 2. * pi;
+      decals.push(new ActiveDecal(l, origin + localToWorld(l.offset, side, a, across), a, now + l.delay, roll));
+      i = i + 1usize;
+    }
+    imm ev = new Playing(id, origin, a, side, across, velocity, seed, now, false,
+      new Array[f32, 12] <- fill 0f, new Array[bool, 24] <- fill false);
+    // A finished slot is reused before the list grows
+    mut s = 0usize;
+    mut placed = false;
+    while s < playing.len() and !placed {
+      if playing[s].done {
+        playing.set(s, ev);
+        placed = true;
+      }
+      s = s + 1usize;
+    }
+    if !placed { playing.push(ev); }
+    played = played + 1u32;
+  }
+
+  // Everything that happens on the CPU before the scene is drawn: layers whose time has come
+  // order their particles and throw their debris, lights are set, debris moves and joins the
+  // draw list, decals join the image passes' list, the camera shake decays
+  pub fn beginFrame(self &mut, renderer &mut Renderer, fx &mut ImageFx, list &mut DrawList, camera &Camera, now f32, dt f32) {
+    mut p = 0usize;
+    while p < playing.len() {
+      if !playing[p].done {
+        mut pl = *playing[p];
+        imm ri = usize.from(pl.id);
+        imm t = now - pl.start;
+        imm tPrev = t - dt;
+        mut j = 0usize;
+        while j < registered[ri].effect.particles.len() and j < MAX_PARTICLE_LAYERS {
+          imm l = *registered[ri].effect.particles[j];
+          imm cls = *registered[ri].classIds[j];
+          imm origin = pl.origin + localToWorld(l.offset, pl.side, pl.axis, pl.across);
+          imm dir = localToWorld(l.axis, pl.side, pl.axis, pl.across).normalize();
+          if l.burst > 0u32 and !pl.fired[j] and t >= l.delay {
+            pl.fired[j] = true;
+            particles.emit(cls, origin, dir, pl.velocity, l.burst, self.nextSeed(pl.seed, u32.from(j)));
+          }
+          if l.rate > 0. {
+            imm from = if tPrev > l.delay { tPrev; } else { l.delay; };
+            imm to = if t < l.delay + l.duration { t; } else { l.delay + l.duration; };
+            if to > from {
+              imm owed = pl.carry[j] + l.rate * (to - from);
+              imm whole = libc.floorf(owed);
+              pl.carry[j] = owed - whole;
+              if whole >= 1. {
+                particles.emit(cls, origin, dir, pl.velocity, u32.from(whole), self.nextSeed(pl.seed, u32.from(j) + 50u32));
+              }
+            }
+          }
+          j = j + 1usize;
+        }
+        // Debris and shakes are done once, when their time comes
+        mut k = 0usize;
+        while k < registered[ri].effect.debris.len() and k < MAX_DEBRIS_LAYERS {
+          imm l = *registered[ri].effect.debris[k];
+          imm slot = 12usize + k;
+          if !pl.fired[slot] and t >= l.delay {
+            pl.fired[slot] = true;
+            debris.throwFrom(&l, pl.origin + localToWorld(l.offset, pl.side, pl.axis, pl.across), pl.axis, pl.side, pl.across,
+              now, self.nextSeed(pl.seed, 100u32 + u32.from(k)));
+          }
+          k = k + 1usize;
+        }
+        k = 0usize;
+        while k < registered[ri].effect.shakes.len() and k < MAX_SHAKE_LAYERS {
+          imm l = *registered[ri].effect.shakes[k];
+          imm slot = 18usize + k;
+          if !pl.fired[slot] and t >= l.delay {
+            pl.fired[slot] = true;
+            shake.addAt(camera.position(), pl.origin, l.trauma, l.radius);
+          }
+          k = k + 1usize;
+        }
+        if t >= registered[ri].length { pl.done = true; }
+        playing.set(p, pl);
+      }
+      p = p + 1usize;
+    }
+    lights.update(&mut renderer.lights, now);
+    debris.update(now, dt);
+    debris.draw(list, now);
+    shake.update(dt);
+    // Decals: each frame's list is the image passes', emptied by them
+    mut d = 0usize;
+    while d < decals.len() {
+      imm a = *decals[d];
+      imm age = now - a.start;
+      imm total = a.layer.fadeIn + a.layer.hold + a.layer.fadeOut;
+      if age >= total {
+        decals.swap(d, decals.len() - 1usize);
+        imm gone = decals.pop();
+      } else {
+        if age >= 0. {
+          mut k = 1.;
+          if age < a.layer.fadeIn { k = age / a.layer.fadeIn; }
+          elif age > a.layer.fadeIn + a.layer.hold { k = 1. - (age - a.layer.fadeIn - a.layer.hold) / a.layer.fadeOut; }
+          imm q = Quat.angleAxis(a.roll, a.axis) * Quat.fromVectors(new Vec3(0., 1., 0.), a.axis);
+          mut decal = Decal.at(a.layer.material, Mat4.fromTrs(a.origin + a.axis * (a.layer.depth * 0.3), q,
+            new Vec3(a.layer.size, a.layer.depth, a.layer.size)));
+          decal.tint = a.layer.tint;
+          decal.fade = k;
+          decal.order = a.layer.order;
+          fx.decals.add(decal);
+        }
+        d = d + 1usize;
+      }
+    }
+  }
+
+  // After the scene is in the HDR frame (ImageFx's 'renderScene'): simulate the particles
+  // against its depth, then add the flipbooks, the particles and the distortions into 'target'
+  pub fn drawEffects(self &mut, device &mut Device, encoder &mut CommandEncoder, fx &ImageFx, target &Texture,
+      camera &Camera, now f32, dt f32) {
+    particles.simulate(device, encoder, fx, camera, now, dt);
+    flipbooks.render(device, encoder, fx, target, camera, now);
+    particles.render(encoder, target);
+    distortion.render(device, encoder, fx, target, camera, now);
+  }
+
+  pub fn playingCount(self &) usize {
+    mut n = 0usize;
+    mut s = 0usize;
+    while s < playing.len() {
+      if !playing[s].done { n = n + 1usize; }
+      s = s + 1usize;
+    }
+    n;
+  }
+}
+
+// A point or direction given in an effect's frame (side, axis, across), in the world
+fn localToWorld(v Vec3, side Vec3, axis Vec3, across Vec3) Vec3 {
+  side * v.x + axis * v.y + across * v.z;
+}
