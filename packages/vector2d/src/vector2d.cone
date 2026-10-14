@@ -1,0 +1,50 @@
+// The vector2d package (a working name; the owner names packages): 2-D vector
+// graphics drawn on the GPU, anti-aliased, with text. A program reaches it
+// with 'import vector2d', and gets:
+//
+// - Path, Mat2D, flatten (path.cone, flatten.cone): move, line, quadratic and
+//   cubic curves, arcs, rounded rectangles, ellipses and circles; affine
+//   transforms; curves cut to lines within a pixel tolerance.
+// - Canvas (canvas.cone): fill, stroke (width, caps, joins, miter limit,
+//   dashes) with solid or linear-gradient paint, arrowheads (triangle, open,
+//   diamond, circle, bar; solid or hollow), text. A Canvas only records.
+// - Batch, Paint, StrokeStyle, ArrowStyle (batch.cone), strokePolyline,
+//   dashPolyline (stroke.cone), fillPolygon (fill.cone): the tessellator, on the
+//   CPU, tested on the CPU.
+// - VectorRenderer, measureText (render.cone, vector2d.slang): the recording
+//   put on a texture, text by msdftext.
+//
+// RENDERING METHOD. CPU tessellation to triangles with analytic edge coverage:
+// every shape is triangles whose edges have a one-pixel fringe, coverage
+// falling from 1 to 0 across it, centred on the true edge; the fragment
+// shader draws colour times coverage, premultiplied. Curves are flattened to
+// within 0.1 px first (Wang's segment count). After NanoVG and Skia's
+// tessellating path; the alternatives (stencil-then-cover, Loop-Blinn curve
+// triangles, SDF per primitive) are named in Design\vector2d.md.
+//
+// A frame:
+//   mut canvas = Canvas.make(960., 600.);
+//   canvas.fillRoundRect(40., 40., 200., 80., 10., &Paint.solid(new Color(0.2, 0.4, 0.8, 1.)));
+//   canvas.text("Hello", 140., 80., 0.5, 0.5, 24., new Color(1., 1., 1., 1.));
+//   renderer.render(&mut device, &mut encoder, &target, &canvas, &font, &mut atlas, true, new Color(0.1, 0.1, 0.12, 1.));
+//
+// Conventions: pixels, x right, y down; colours straight alpha.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   path.cone     Mat2D, VectorPath, Subpath
+//   flatten.cone  flatten
+//   batch.cone    Batch, Paint, StrokeStyle, ArrowStyle
+//   stroke.cone   strokePolyline, dashPolyline
+//   fill.cone     fillPolygon
+//   canvas.cone   Canvas, TextOp
+//   render.cone   VectorRenderer, measureText; vector2d.slang's SPIR-V
+
+mod vector2d;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use triangulatePolygon;
+import gpu use *;
+import msdftext use *;

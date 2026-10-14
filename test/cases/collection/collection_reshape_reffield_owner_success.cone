@@ -1,0 +1,87 @@
+// A view taken through a field the struct holds BY VALUE is into that struct's own String, so a call
+// handed only another struct's String cannot reshape it; and a view through a reference field is
+// harmless where the call is handed nothing that reaches a String or can only read one.
+// collection_flow_reshape_reffield_owner holds what stays refused beside these (a view through a
+// field that holds a reference, handed a call that appends to a String the reference may point at).
+
+mod collection_reshape_reffield_owner_success;
+
+import stdio use *;
+import collections use *;
+
+struct Dl {
+  pub chars String;
+  pub n i32;
+  pub fn text(self &mut, s &str) { chars.append(s); }
+  pub fn size(self &, s &str) usize { chars.len() + s.len(); }
+}
+struct Counter {
+  pub total usize;
+  pub fn bump(self &mut, s &str) { total = total + s.len(); }
+}
+struct V { pub s String; }
+struct Inner { pub s String; }
+struct R { pub s &mut String; }
+struct Via { pub a &mut Inner; }
+struct Wrap { pub v V; }
+
+fn show(label &str, s &str) {
+  printStr(label);
+  printStr(" = ");
+  printStr(s);
+  printStr("\n");
+}
+
+// The String is the struct's own, the Dl's is another value
+fn byValue(v &mut V, dl &mut Dl) {
+  dl.text(v.s.view());
+}
+
+fn byValueNested(w &mut Wrap, dl &mut Dl) {
+  dl.text(w.v.s.view());
+}
+
+// The String is the pointee's own (a by-value field of the struct the reference field points at)
+fn throughRefHop(r &mut Via, dl &mut Dl) {
+  dl.text(r.a.s.view());
+}
+
+// A reference field, the call handed nothing that holds a String
+fn refFieldCounter(r &mut R, c &mut Counter) {
+  c.bump(r.s.view());
+}
+
+// A reference field, the call handed a String it only reads
+fn refFieldRead(r &mut R, dl &Dl) usize {
+  dl.size(r.s.view());
+}
+
+fn main() {
+  mut dl = new Dl(String.from("dl:"), 0);
+  mut v = new V(String.from("abc"));
+  byValue(&mut v, &mut dl);
+  show("byValue", dl.chars.view());
+
+  mut w = new Wrap(new V(String.from("xyz")));
+  byValueNested(&mut w, &mut dl);
+  show("byValueNested", dl.chars.view());
+
+  mut inner = new Inner(String.from("123"));
+  mut via = new Via(&mut inner);
+  throughRefHop(&mut via, &mut dl);
+  show("throughRefHop", dl.chars.view());
+
+  mut s = String.from("hello");
+  mut r = new R(&mut s);
+  mut c = new Counter(0);
+  refFieldCounter(&mut r, &mut c);
+  refFieldCounter(&mut r, &mut c);
+  printStr("refFieldCounter = ");
+  printInt(i64.from(c.total));
+  printStr("\n");
+
+  imm sz = refFieldRead(&mut r, &dl);
+  printStr("refFieldRead = ");
+  printInt(i64.from(sz));
+  printStr("\n");
+}

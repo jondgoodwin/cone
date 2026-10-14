@@ -1,0 +1,449 @@
+// Numbers are kept as written and read on request. This pins the grammar
+// (RFC 8259 section 6), the exact i64 and u64 reads and where they refuse, the
+// f64 reads at their hard cases (halfway ties, the ends of the range, the
+// denormals) by bit pattern, 400-digit numbers, and the writer's shortest text
+// for an f64. The f64 reads and writes are also compared with the C library's
+// 'strtod' on thousands of numbers, which is an oracle of this test only: the
+// package itself calls no C.
+
+mod numbers;
+
+import testing use *;
+import collections use *;
+import json;
+
+extern {
+  fn strtod(s cstr, end *u8) f64;
+}
+
+fn describe(r Result[i64, json.NumberError]) String {
+  match r {
+    case imm n Ok {
+      mut s = String.from("ok ");
+      s.appendInt(n);
+      s;
+    }
+    case imm e Error {
+      match e {
+        case is NotANumber { String.from("not a number"); }
+        case is NotInteger { String.from("not an integer"); }
+        case is OutOfRange { String.from("out of range"); }
+      }
+    }
+  }
+}
+
+fn describeU(r Result[u64, json.NumberError]) String {
+  match r {
+    case imm n Ok {
+      mut s = String.from("ok ");
+      s.appendUInt(n);
+      s;
+    }
+    case imm e Error {
+      match e {
+        case is NotANumber { String.from("not a number"); }
+        case is NotInteger { String.from("not an integer"); }
+        case is OutOfRange { String.from("out of range"); }
+      }
+    }
+  }
+}
+
+fn int(text &str, want &str) {
+  imm got = describe(json.numberI64(text));
+  expectStr(got.view(), want, text);
+}
+
+fn uint(text &str, want &str) {
+  imm got = describeU(json.numberU64(text));
+  expectStr(got.view(), want, text);
+}
+
+// The f64 the text reads as, its bits
+fn bitsOf(text &str) u64 {
+  match json.numberF64(text) {
+    case imm x Ok { x as u64; }
+    case is Error { 0xDEADBEEFDEADBEEFu64; }
+  }
+}
+
+fn float(text &str, want u64) {
+  expectUInt(bitsOf(text), want, text);
+}
+
+fn outOfRange(text &str) {
+  match json.numberF64(text) {
+    case is Ok { expect(false, text); }
+    case imm e Error {
+      match e {
+        case is OutOfRange { expect(true, text); }
+        else { expect(false, text); }
+      }
+    }
+  }
+}
+
+fn grammar(text &str, ok bool) {
+  expectBool(json.isNumberText(text), ok, text);
+}
+
+fn shortest(x f64, want &str) {
+  match json.formatF64(x) {
+    case imm s Some { expectStr(s.view(), want, want); }
+    case is None { expectStr("<none>", want, want); }
+  }
+}
+
+fn shortestBits(bits u64, want &str) {
+  shortest(bits as f64, want);
+}
+
+// A repeatable generator: splitmix64, its state passed in and out
+fn next(state &mut u64) u64 {
+  *state = *state + 0x9E3779B97F4A7C15u64;
+  mut z = *state;
+  z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
+  z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
+  z ^ (z >> 31u64);
+}
+
+fn strtodBits(text &str) u64 {
+  imm s = String.from(text);
+  strtod(s.cstr(), null) as u64;
+}
+
+// The text read by this package and by strtod must be the same f64
+fn agree(text &str, label &str) bool {
+  match json.numberF64(text) {
+    case imm x Ok { return expectUInt(x as u64, strtodBits(text), label); }
+    case is Error { return expect(false, label); }
+  }
+  false;
+}
+
+fn main() i32 {
+  // -------- the grammar --------
+  grammar("0", true);
+  grammar("-0", true);
+  grammar("7", true);
+  grammar("-7", true);
+  grammar("10", true);
+  grammar("1.5", true);
+  grammar("-1.5", true);
+  grammar("0.5", true);
+  grammar("0.000", true);
+  grammar("1e5", true);
+  grammar("1E5", true);
+  grammar("1e+5", true);
+  grammar("1e-5", true);
+  grammar("1.5e5", true);
+  grammar("0e0", true);
+  grammar("123456789012345678901234567890.123456789e-100", true);
+  grammar("", false);
+  grammar("-", false);
+  grammar("+1", false);
+  grammar("01", false);
+  grammar("00", false);
+  grammar("-01", false);
+  grammar("1.", false);
+  grammar(".5", false);
+  grammar("1.e5", false);
+  grammar("1e", false);
+  grammar("1e+", false);
+  grammar("1E-", false);
+  grammar("0x10", false);
+  grammar("1_000", false);
+  grammar("Infinity", false);
+  grammar("-Infinity", false);
+  grammar("NaN", false);
+  grammar("1 ", false);
+  grammar(" 1", false);
+  grammar("--1", false);
+  grammar("1-", false);
+  grammar("1e5.5", false);
+  grammar("1,5", false);
+  grammar("0b1", false);
+
+  // -------- i64, exactly --------
+  int("0", "ok 0");
+  int("-0", "ok 0");
+  int("42", "ok 42");
+  int("-42", "ok -42");
+  int("9223372036854775807", "ok 9223372036854775807");
+  int("9223372036854775808", "out of range");
+  int("-9223372036854775808", "ok -9223372036854775808");
+  int("-9223372036854775809", "out of range");
+  int("1e3", "ok 1000");
+  int("1E3", "ok 1000");
+  int("1e+3", "ok 1000");
+  int("2.50e1", "ok 25");
+  int("10.0", "ok 10");
+  int("10.000000000000000000000", "ok 10");
+  int("100e-2", "ok 1");
+  int("0.5", "not an integer");
+  int("1e-1", "not an integer");
+  int("-0.001", "not an integer");
+  int("1.0000000000000000000001", "not an integer");
+  int("9.223372036854775807e18", "ok 9223372036854775807");
+  int("92233720368547758070e-1", "ok 9223372036854775807");
+  int("-9.223372036854775808e18", "ok -9223372036854775808");
+  int("9.223372036854775808e18", "out of range");
+  int("123456789012345678901234567890", "out of range");
+  int("1e19", "out of range");
+  int("1e100000000000", "out of range");
+  int("0e999999999", "ok 0");
+  int("0.0e5", "ok 0");
+  int("-0e-5", "ok 0");
+  int("00", "not a number");
+  int("1.", "not a number");
+  int("abc", "not a number");
+  int("", "not a number");
+  int(" 1", "not a number");
+
+  // -------- u64, exactly --------
+  uint("0", "ok 0");
+  uint("-0", "ok 0");
+  uint("18446744073709551615", "ok 18446744073709551615");
+  uint("18446744073709551616", "out of range");
+  uint("1.8446744073709551615e19", "ok 18446744073709551615");
+  uint("1.8446744073709551616e19", "out of range");
+  uint("-1", "out of range");
+  uint("5e0", "ok 5");
+  uint("0.25", "not an integer");
+  uint("1e20", "out of range");
+  uint("+1", "not a number");
+
+  // -------- f64, by bit pattern --------
+  float("0", 0x0000000000000000u64);
+  float("-0", 0x8000000000000000u64);
+  float("0.0", 0x0000000000000000u64);
+  float("-0.0e10", 0x8000000000000000u64);
+  float("1", 0x3FF0000000000000u64);
+  float("-1", 0xBFF0000000000000u64);
+  float("2", 0x4000000000000000u64);
+  float("1.5", 0x3FF8000000000000u64);
+  float("0.5", 0x3FE0000000000000u64);
+  float("0.1", 0x3FB999999999999Au64);
+  float("0.2", 0x3FC999999999999Au64);
+  float("0.3", 0x3FD3333333333333u64);
+  float("3.141592653589793", 0x400921FB54442D18u64);
+  float("1e22", 0x4480F0CF064DD592u64);
+  float("1e23", 0x44B52D02C7E14AF6u64);
+  float("123456789", 123456789d as u64);
+  // 2^53 + 1 is halfway between two f64s: to the even one, 2^53
+  float("9007199254740993", 0x4340000000000000u64);
+  // 2^53 + 3 is halfway: to the even one, 2^53 + 4
+  float("9007199254740995", 0x4340000000000002u64);
+  // A tie broken only by a digit far out
+  float("9007199254740993.0000000000000000000000000000001", 0x4340000000000001u64);
+  float("9007199254740992.9999999999999999999999999999999", 0x4340000000000000u64);
+  // The ends of the range
+  float("1.7976931348623157e308", 0x7FEFFFFFFFFFFFFFu64);
+  float("1.7976931348623158e308", 0x7FEFFFFFFFFFFFFFu64);
+  outOfRange("1.7976931348623159e308");
+  outOfRange("1e309");
+  outOfRange("-1e309");
+  outOfRange("1e100000000000");
+  mut huge = String.from("1");
+  mut z = 0usize;
+  while z < 309usize {
+    huge.appendByte('0');
+    z = z + 1usize;
+  }
+  outOfRange(huge.view());
+  // 308 zeros is 1e308, which is in range
+  huge.truncate(309usize);
+  float(huge.view(), 1e308d as u64);
+  float("2.2250738585072014e-308", 0x0010000000000000u64);
+  // The denormals: the largest, the one that once hung a famous program, the smallest
+  float("2.2250738585072011e-308", 0x000FFFFFFFFFFFFFu64);
+  float("2.2250738585072012e-308", 0x0010000000000000u64);
+  float("5e-324", 0x0000000000000001u64);
+  float("4.9406564584124654e-324", 0x0000000000000001u64);
+  float("2.4703282292062327e-324", 0x0000000000000000u64);
+  float("2.4703282292062328e-324", 0x0000000000000001u64);
+  float("1e-400", 0x0000000000000000u64);
+  float("-1e-400", 0x8000000000000000u64);
+  float("1e-100000000000", 0x0000000000000000u64);
+  // Many digits, a long way from the exponent
+  float("0.0000000000000000000000000000000000000000000001", 1e-46d as u64);
+  float("12345678901234567890123456789012345678901234567890e-30", 12345678901234567890d as u64);
+
+  // 400-digit numbers are kept whole
+  mut big = String.from("1");
+  z = 0usize;
+  while z < 399usize {
+    big.appendByte('0');
+    z = z + 1usize;
+  }
+  match json.parse(big.view()) {
+    case imm doc Ok {
+      match doc.numberText() {
+        case imm t Some { expectStr(t, big.view(), "a 400 digit number is kept as written"); }
+        case is None { expect(false, "400 digit number text"); }
+      }
+      match doc.toText() {
+        case imm t Ok { expectStr(t.view(), big.view(), "and written as it was"); }
+        case imm e Error { expect(false, "400 digit write"); }
+      }
+      match doc.asI64() {
+        case is Ok { expect(false, "400 digits is no i64"); }
+        case imm e Error { expect(true, "400 digits is no i64"); }
+      }
+      match doc.asF64() {
+        case is Ok { expect(false, "400 digits is no f64"); }
+        case imm e Error { expect(true, "400 digits is no f64"); }
+      }
+    }
+    case imm e Error { expect(false, "400 digit parse"); }
+  }
+  // 1 followed by 300 zeros is an f64
+  mut big300 = String.from("1");
+  z = 0usize;
+  while z < 300usize {
+    big300.appendByte('0');
+    z = z + 1usize;
+  }
+  float(big300.view(), 1e300d as u64);
+  agree(big300.view(), "300 digits against strtod");
+  // A long fraction: 1000 digits after the point, still the nearest f64
+  mut longFraction = String.from("0.");
+  z = 0usize;
+  while z < 1000usize {
+    longFraction.appendByte(if z % 3usize == 0usize {'1';} else {'7';});
+    z = z + 1usize;
+  }
+  agree(longFraction.view(), "a 1000 digit fraction against strtod");
+  // A tie broken by a 1 after 700 zeros: strtod reads that far
+  mut longTie = String.from("9007199254740993.");
+  z = 0usize;
+  while z < 700usize {
+    longTie.appendByte('0');
+    z = z + 1usize;
+  }
+  longTie.appendByte('1');
+  float(longTie.view(), 0x4340000000000001u64);
+  agree(longTie.view(), "a tie broken 700 digits out against strtod");
+  // and after 900, past the 800 digits kept: the dropped digit still counts
+  // (the C library of this machine reads at most 768 digits, so it is not asked)
+  mut longerTie = String.from("9007199254740993.");
+  z = 0usize;
+  while z < 900usize {
+    longerTie.appendByte('0');
+    z = z + 1usize;
+  }
+  longerTie.appendByte('1');
+  float(longerTie.view(), 0x4340000000000001u64);
+  // The same with the 1 left out: a true tie, to the even one
+  longerTie.truncate(longerTie.len() - 1usize);
+  float(longerTie.view(), 0x4340000000000000u64);
+
+  // -------- the writer's shortest text --------
+  shortest(0d, "0");
+  shortest(-(0d), "-0");
+  shortest(1d, "1");
+  shortest(-1d, "-1");
+  shortest(100d, "100");
+  shortest(1.5d, "1.5");
+  shortest(-2.5d, "-2.5");
+  shortest(0.1d, "0.1");
+  shortest(0.5d, "0.5");
+  shortest(0.1d + 0.2d, "0.30000000000000004");
+  shortest(1d / 3d, "0.3333333333333333");
+  shortest(2d / 3d, "0.6666666666666666");
+  shortest(4.35d, "4.35");
+  shortest(123456789.125d, "123456789.125");
+  shortest(3.141592653589793d, "3.141592653589793");
+  shortest(9007199254740992d, "9007199254740992");
+  shortest(1e20d, "100000000000000000000");
+  shortest(1e21d, "1e+21");
+  shortest(1e22d, "1e+22");
+  shortest(1.5e300d, "1.5e+300");
+  shortest(123456789012345680000d, "123456789012345680000");
+  shortest(0.000001d, "0.000001");
+  shortest(0.0000001d, "1e-7");
+  shortest(0.000123d, "0.000123");
+  shortest(1.234e-9d, "1.234e-9");
+  shortestBits(0x0000000000000001u64, "5e-324");
+  shortestBits(0x000FFFFFFFFFFFFFu64, "2.225073858507201e-308");
+  shortestBits(0x0010000000000000u64, "2.2250738585072014e-308");
+  shortestBits(0x7FEFFFFFFFFFFFFFu64, "1.7976931348623157e+308");
+  shortestBits(0xFFEFFFFFFFFFFFFFu64, "-1.7976931348623157e+308");
+  // NaN and infinity cannot be written
+  shortestBits(0x7FF0000000000000u64, "<none>");
+  shortestBits(0xFFF0000000000000u64, "<none>");
+  shortestBits(0x7FF8000000000000u64, "<none>");
+
+  // -------- thousands of numbers against strtod --------
+  mut state = 12345u64;
+  mut n = 0usize;
+  mut disagree = 0usize;
+  while n < 3000usize {
+    // Any 64 bits that make a finite f64: write it shortest, read it back, and
+    // read the same text with strtod
+    mut bits = next(&mut state);
+    if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 { bits = bits & 0x800FFFFFFFFFFFFFu64; }
+    imm x = bits as f64;
+    match json.formatF64(x) {
+      case imm t Some {
+        if bitsOf(t.view()) != bits {
+          disagree = disagree + 1usize;
+          expectStr(t.view(), "<reads back as the same f64>", "round trip");
+        }
+        if strtodBits(t.view()) != bits {
+          disagree = disagree + 1usize;
+          expectStr(t.view(), "<strtod reads it back as the same f64>", "strtod round trip");
+        }
+      }
+      case is None { disagree = disagree + 1usize; expect(false, "a finite f64 is written"); }
+    }
+    n = n + 1usize;
+  }
+  expectUInt(u64.from(disagree), 0u64, "3000 random f64s round trip and agree with strtod");
+
+  // Decimal strings of every length and exponent: a mantissa of 1 to 25 digits,
+  // a point somewhere in it, an exponent from -330 to 310
+  n = 0usize;
+  disagree = 0usize;
+  while n < 3000usize {
+    imm digits = 1usize + usize.from(next(&mut state) % 25u64);
+    mut s = String.empty();
+    mut k = 0usize;
+    while k < digits {
+      imm d = u8.from(next(&mut state) % 10u64);
+      // No leading zero
+      s.appendByte('0' + if k == 0usize and d == 0u8 {1u8;} else {d;});
+      k = k + 1usize;
+    }
+    if digits > 1usize and next(&mut state) % 2u64 == 0u64 {
+      imm at = 1usize + usize.from(next(&mut state) % u64.from(digits - 1usize));
+      s.insert(at, ".");
+    }
+    imm e = i64.from(next(&mut state) % 641u64) - 330i64;
+    if next(&mut state) % 4u64 != 0u64 {
+      s.append("e");
+      s.appendInt(e);
+    }
+    match json.numberF64(s.view()) {
+      case imm x Ok {
+        if (x as u64) != strtodBits(s.view()) {
+          disagree = disagree + 1usize;
+          expectStr(s.view(), "<same as strtod>", "decimal against strtod");
+        }
+      }
+      case is Error {
+        // strtod makes infinity of what is too large
+        imm c = strtod(s.cstr(), null) as u64;
+        if ((c >> 52u64) & 0x7FFu64) != 0x7FFu64 {
+          disagree = disagree + 1usize;
+          expectStr(s.view(), "<in range>", "decimal refused though strtod finds it finite");
+        }
+      }
+    }
+    n = n + 1usize;
+  }
+  expectUInt(u64.from(disagree), 0u64, "3000 random decimals agree with strtod");
+
+  done();
+}
