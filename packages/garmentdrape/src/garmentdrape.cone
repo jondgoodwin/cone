@@ -1,0 +1,62 @@
+// garmentdrape: clothing for any body, defined as data.
+//
+// A GARMENT is described, not modelled, in one of two ways, and fitted to a body that is only a skeleton (bonepose) and a
+// skinned mesh (render's `Skin`): nothing in the package names a humanoid.
+//
+//   SEWING PATTERNS (pattern.cone, parse.cone, drape.cone): flat 2-D panels, each four edges (a Coons patch), stitched to
+//     each other by seams, placed on the body by an axis, a facing and an arc, and DRAPED: wrapped on the body's collision
+//     proxies and let fall under gravity with their tight places pinned (XPBD, xpbdsoftbody). The cloth's rest lengths
+//     are the pattern's flat lengths, so a wide panel hangs in folds and a narrow one is held. A pattern is a few
+//     hundred bytes of text (`parsePattern`; samples.cone has a tunic, an apron, a long coat and a cape).
+//   SHELLS (shell.cone): a surface made from the body's own mesh, pushed out along its normals and smoothed, taking the
+//     body vertices' skin. Tight cloth (a shirt, breeches, a waistcoat) with no simulation at all.
+//
+// THE BODY (rig.cone): `BodyRig` is a skeleton, a bind-pose mesh and its skin, plus COLLISION PROXIES fitted to it, a
+// capsule or an oriented box for each bone from the principal axes of the vertices it owns (what Unreal's physics asset
+// generator does). `humanoidMannequin` and `tubeBody` (mannequin.cone) make a plain test body of any skeleton from a table
+// of tubes.
+//
+// THE HYBRID (outfit.cone): each particle of a draped garment has a LOOSENESS from its pattern (0 tight, 1 free) and the
+// skin of the nearest body vertex it can see. Every frame the tight ones are the skinned mesh (pinned at their skinned
+// places), the free ones are simulated against the moving proxies, and the part-loose ones are drawn toward the skin and
+// held within a reach of it. `Outfit` steps all of a body's garments in order of LAYER.
+//
+// LAYERS (layers.cone, outfit.cone): an outer garment drapes and moves over the layers beneath it, collides with the
+// proxies grown by their thickness, and is pushed out of their triangles (a one-way point-triangle contact on a grid).
+//
+// CLOTH (cloth.cone, cloth.slang): a render custom pipeline that draws woven cloth (plain, twill or satin, at its real
+// thread size, from the flat pattern coordinates), with a velvet-like sheen (a stand-in for the PBR sheen lobe),
+// wear and dirt painted from rules on the pattern sheet.
+//
+//   mut rig = humanoidMannequin(1.75);                                // or BodyRig.make(skeleton, mesh, skin)
+//   imm names = humanoidNames();
+//   mut pat = parsePattern(tunicBody(), &names);                      // a garment as text
+//   imm dressing = dress(&rig, &shells, &patterns, 1u32);             // drape every layer, in order
+//   outfit.snap(&rig, &worldBones);  outfit.step(&rig, &worldBones, dt, wind, &mut workers);   // each frame
+//
+//   garmentdrape.cone  this overview and the imports
+//   rig.cone           BodyRig, proxies fitted by PCA, colliders, signed distance
+//   mannequin.cone     plain test bodies from tubes
+//   pattern.cone       Pattern, Panel, Seam, Placement, edges, the flat Coons grid
+//   parse.cone         the text form
+//   drape.cone         wrapping, sewing, draping, the Garment, skin transfer
+//   shell.cone         shell garments
+//   layers.cone        LayerSurface (the grid and the push), layering measures
+//   outfit.cone        Outfit (the frame), `dress`
+//   cloth.cone         ClothLook, the pattern sheet, the pipeline, GarmentView
+//   cloth.slang        the shader
+//   samples.cone       sample patterns as text
+//
+// Conventions are geomath's: right-handed, y up, metres, f32. A being faces -z; its left is -x.
+
+mod garmentdrape;
+
+import libc;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import bonepose use *;
+import xpbdsoftbody use *;
+import gpu use *;
+import render use *;
