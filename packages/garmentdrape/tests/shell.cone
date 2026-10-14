@@ -1,0 +1,145 @@
+// Shell garments: a worn surface generated from the body's own shape.
+//
+// 1. A shirt shell (the trunk's and the arms' bones) takes only the body's vertices whose weight is on those bones, and
+//    the triangles whose three corners are in; its vertices, uvs and skin are the body's.
+// 2. A cut keeps only the side its normal points to: a plane at the waist keeps nothing below it.
+// 3. The offset: every vertex stands off the body by about the ease (4 mm), smoothed over the surface, and a layer worn
+//    over another stands off by the thickness beneath it as well: a waistcoat over the shirt is further out.
+// 4. It moves as the body does: with the left elbow bent, a forearm vertex of the shell is where the body's own skinning
+//    puts it (shifted by the offset), and the CPU's posed vertices equal render's skinning sums.
+// 5. It works on a body that is not a humanoid: a coat shell on the four-legged test body.
+
+mod shell;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import mesh use Mesh;
+import render use Skin;
+import garmentdrape use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn shirt(layer u32) ShellSpec {
+  mut sh = ShellSpec.make("shirt");
+  sh.bones.push(SPINE); sh.bones.push(CHEST); sh.bones.push(CLAVICLE_L); sh.bones.push(CLAVICLE_R);
+  sh.bones.push(UPPER_ARM_L); sh.bones.push(UPPER_ARM_R); sh.bones.push(FOREARM_L); sh.bones.push(FOREARM_R);
+  sh.layer = layer;
+  sh;
+}
+
+// The mean distance from a shell's vertices to the body vertices they came from
+fn meanOffset(s &Shell, rig &BodyRig) f32 {
+  mut sum = 0.;
+  mut v = 0usize;
+  while v < s.mesh.positions.len() {
+    sum = sum + (*s.mesh.positions[v] - *rig.mesh.positions[usize.from(*s.source[v])]).length();
+    v = v + 1usize;
+  }
+  sum / f32.from(s.mesh.positions.len());
+}
+
+fn main() i32 {
+  imm rig = humanoidMannequin(1.75);
+  imm spec = shirt(0u32);
+  imm sh = buildShell(&spec, &rig, 0.);
+  expectBool(sh.vertexCount() > 600usize and sh.vertexCount() < rig.mesh.vertexCount(), true, "a shirt takes part of the body's vertices (hundreds, not all)");
+  expectUInt(u64.from(sh.skin.len()), u64.from(sh.vertexCount()), "one skin entry a vertex");
+  expectUInt(u64.from(sh.mesh.uvs.len()), u64.from(sh.vertexCount()), "and a uv");
+  expectUInt(u64.from(sh.mesh.normals.len()), u64.from(sh.vertexCount()), "and a normal");
+  expectBool(sh.mesh.indices.len() > 1500usize, true, "with triangles");
+  mut allOnBones = true;
+  mut v = 0usize;
+  while v < sh.vertexCount() {
+    imm src = usize.from(*sh.source[v]);
+    mut w = 0.;
+    mut k = 0usize;
+    while k < 4usize {
+      imm j = rig.skin.joint(src, k);
+      if j == SPINE or j == CHEST or j == CLAVICLE_L or j == CLAVICLE_R or j == UPPER_ARM_L or j == UPPER_ARM_R or j == FOREARM_L or j == FOREARM_R { w = w + rig.skin.weight(src, k); }
+      k = k + 1usize;
+    }
+    if w < 0.5 { allOnBones = false; }
+    // its skin is the source vertex's
+    if sh.skin.joint(v, 0usize) != rig.skin.joint(src, 0usize) or sh.skin.weight(v, 0usize) != rig.skin.weight(src, 0usize) { allOnBones = false; }
+    v = v + 1usize;
+  }
+  expectBool(allOnBones, true, "every vertex is half or more on the listed bones and has the body vertex's skin");
+  mut tris = true;
+  mut t = 0usize;
+  while t < sh.mesh.indices.len() { if usize.from(*sh.mesh.indices[t]) >= sh.vertexCount() { tris = false; } t = t + 1usize; }
+  expectBool(tris, true, "every triangle is over the shell's own vertices");
+
+  // 2. a cut: nothing below the waist (y = 1.1 m), the side the normal (0, 1, 0) points to is kept
+  mut cutSpec = shirt(0u32);
+  cutSpec.cuts.push(new Cut(new Vec3(0., 1.15, 0.), new Vec3(0., 1., 0.)));
+  imm cut = buildShell(&cutSpec, &rig, 0.);
+  mut lowest = 1e9;
+  v = 0usize;
+  while v < cut.vertexCount() { lowest = fminf(lowest, (*rig.mesh.positions[usize.from(*cut.source[v])]).y); v = v + 1usize; }
+  expectBool(lowest >= 1.15 - 1e-5, true, "a cut keeps only the vertices on the side its normal points to");
+  expectBool(cut.vertexCount() < sh.vertexCount(), true, "and so fewer vertices");
+
+  // 3. the offset, and layering
+  near(meanOffset(&sh, &rig), 0.004, 0.0015, "a shirt stands off the body by about its ease, 4 mm");
+  mut wc = ShellSpec.make("waistcoat");
+  wc.bones.push(SPINE); wc.bones.push(CHEST);
+  wc.layer = 1u32;
+  imm over = buildShell(&wc, &rig, 0.004);
+  near(meanOffset(&over, &rig), 0.008, 0.002, "a waistcoat over it stands off by the shirt's thickness and its own ease, 8 mm");
+
+  // 4. bend the left elbow 90 degrees: the posed vertices follow the body
+  mut pose = rig.skeleton.restPose();
+  pose.setRotation(FOREARM_L, Quat.angleAxis(1.5707964, new Vec3(1., 0., 0.)));
+  mut models = List[Transform3].empty();
+  rig.skeleton.modelTransforms(&pose, &mut models);
+  mut matrices = List[Mat4].empty();
+  rig.skinMatrices(&models, &mut matrices);
+  // pose a copy: the shell's own `pose` writes its `posed` list
+  mut mine = buildShell(&spec, &rig, 0.);
+  mine.pose(&matrices);
+  mut worst = 0.;
+  mut moved = 0.;
+  v = 0usize;
+  while v < mine.vertexCount() {
+    imm via = sh.skin.skinPoint(v, matrices.view(), *sh.mesh.positions[v]);
+    worst = fmaxf(worst, (*mine.posed[v] - via).length());
+    moved = fmaxf(moved, (*mine.posed[v] - *sh.mesh.positions[v]).length());
+    v = v + 1usize;
+  }
+  near(worst, 0., 1e-5, "the CPU's posed vertices are render's skinning sums");
+  expectBool(moved > 0.15, true, "and under a bent elbow a forearm vertex has moved a long way (over 15 cm)");
+  // a forearm vertex far from the elbow goes where the forearm bone takes the body's vertex, plus the offset turned
+  mut far = 0usize;
+  mut farD = 0.;
+  v = 0usize;
+  while v < sh.vertexCount() {
+    if sh.skin.joint(v, 0usize) == FOREARM_L and sh.skin.weight(v, 0usize) > 0.99 {
+      imm d = (*sh.mesh.positions[v] - (*rig.restModels[FOREARM_L]).translation).length();
+      if d > farD { farD = d; far = v; }
+    }
+    v = v + 1usize;
+  }
+  imm bodyPoint = rig.skinnedPoint(&matrices, usize.from(*sh.source[far]), *rig.mesh.positions[usize.from(*sh.source[far])]);
+  near((*mine.posed[far] - bodyPoint).length(), 0.004, 0.003, "a forearm vertex far from the elbow is the body vertex's posed place, 4 mm out");
+
+  // 5. not a humanoid: a coat over a body of two spine bones and four legs
+  mut sk = Skeleton.empty();
+  imm root = sk.addBone(-1i32, new Transform3(new Vec3(0., 0.9, 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+  imm front = sk.addBone(i32.from(root), new Transform3(new Vec3(0., 0., -0.5), Quat.identity(), new Vec3(1., 1., 1.)));
+  mut tubes = List[Tube].empty();
+  tubes.push(new Tube(root, i32.from(front), new Vec3(0., 0., 0.), 0., 0.18, 0.2, 0.9, true, false));
+  tubes.push(new Tube(front, -1i32, new Vec3(0., 0., -1.), 0.3, 0.2, 0.12, 0.9, false, true));
+  imm beast = tubeBody(sk, &tubes);
+  mut blanket = ShellSpec.make("blanket");
+  blanket.bones.push(root);
+  imm bs = buildShell(&blanket, &beast, 0.);
+  expectBool(bs.vertexCount() > 100usize and bs.vertexCount() < beast.mesh.vertexCount(), true, "a shell is made on a body that is not a humanoid, from the bones it is given");
+  expectUInt(u64.from(bs.skin.len()), u64.from(bs.vertexCount()), "with its skin");
+
+  done();
+}

@@ -1,0 +1,324 @@
+// ======== A pattern as text ========
+//
+// The same data as a Pattern, written so a file or a message can carry it. A line's first word says what it is; a '#'
+// ends a line; indentation means nothing.
+//
+//   garment tunic layer 0
+//   fabric density 0.25 stretch 2e-6 shear 2e-5 bend 200 thick 0.006 damping 0.6 air 1.2
+//   sees ignore clavicle_l clavicle_r              # bones whose subtrees the garment does not see
+//   sees only clavicle_l clavicle_r                # or the only ones it sees
+//   panel body grid 24 16 axis neck pelvis shift 0.12 face front arc 360 gap 0.012 flare 0.1 minr 0.03 reach 0.2
+//     top    line 0 0 1.35 0 24                    # edge, then: line x0 y0 x1 y1 n
+//     bottom line -0.27 0.5 1.62 0.5 24
+//     left   line 0 0 -0.27 0.5 16
+//     right  line 1.35 0 1.62 0.5 16
+//     top    arc cx cy r a0 a1 n                   # degrees, 0 along +x, 90 down
+//     top    quad x0 y0 cx cy x1 y1 n              # a quadratic Bezier
+//     top    cubic x0 y0 ax ay bx by x1 y1 n
+//     top    poly x y x y x y ...
+//     loose  0 0   0.3 0   0.45 1   1 1            # looseness against v: pairs of (v, looseness)
+//   seam body.left body.right [reverse]
+//
+// A panel's `face` is a direction (x y z, or front back left right up down); `axis` takes bone names (the lower-case
+// names the program gives, such as pelvis or upper_arm_l) or numbers. An edge named twice continues itself. Panel and
+// edge lines go with the last `panel` line.
+
+pub struct PatternParse {
+  pub pattern Pattern;
+  pub ok bool;
+  pub error String;
+  pub line u32;            // the line the error is on (1 is the first)
+
+  // The pattern, moved out (what is left is an empty one)
+  pub fn take(self &mut) Pattern {
+    mut out = Pattern.make("");
+    out <=> pattern;
+    out;
+  }
+}
+
+pub struct Number {
+  pub ok bool;
+  pub value f32;
+}
+
+fn blankByte(c u8) bool { c == ' ' or c == '\t' or c == '\r'; }
+fn digitByte(c u8) bool { c >= '0' and c <= '9'; }
+
+fn words(line &str) List[String] {
+  imm bytes &Array[u8] = line;
+  mut out = List[String].empty();
+  mut i = 0usize;
+  while i < bytes.len {
+    while i < bytes.len and blankByte(bytes[i]) { i = i + 1usize; }
+    if i < bytes.len and bytes[i] == '#' { return out; }
+    imm start = i;
+    while i < bytes.len and !blankByte(bytes[i]) and bytes[i] != '#' { i = i + 1usize; }
+    if i > start { out.push(String.fromBytes(&bytes[start..<i])); }
+  }
+  out;
+}
+
+// A decimal number: an optional sign, digits, an optional '.' and digits, an optional 'e' and exponent
+pub fn parseNumber(s &str) Number {
+  imm t &Array[u8] = s;
+  mut i = 0usize;
+  mut neg = false;
+  if t.len > 0usize and (t[0usize] == '-' or t[0usize] == '+') { neg = t[0usize] == '-'; i = 1usize; }
+  mut digits = 0usize;
+  mut v f64 = 0.;
+  while i < t.len and digitByte(t[i]) { v = v * 10. + f64.from(t[i] - '0'); i = i + 1usize; digits = digits + 1usize; }
+  if i < t.len and t[i] == '.' {
+    i = i + 1usize;
+    mut scale f64 = 0.1;
+    while i < t.len and digitByte(t[i]) { v = v + scale * f64.from(t[i] - '0'); scale = scale * 0.1; i = i + 1usize; digits = digits + 1usize; }
+  }
+  if digits == 0usize { return new Number(false, 0.); }
+  if i < t.len and (t[i] == 'e' or t[i] == 'E') {
+    i = i + 1usize;
+    mut eneg = false;
+    if i < t.len and (t[i] == '-' or t[i] == '+') { eneg = t[i] == '-'; i = i + 1usize; }
+    mut e = 0i32;
+    mut ed = 0usize;
+    while i < t.len and digitByte(t[i]) { e = e * 10i32 + i32.from(t[i] - '0'); i = i + 1usize; ed = ed + 1usize; }
+    if ed == 0usize { return new Number(false, 0.); }
+    mut k = 0i32;
+    while k < e { if eneg { v = v * 0.1; } else { v = v * 10.; } k = k + 1i32; }
+  }
+  if i != t.len { return new Number(false, 0.); }
+  new Number(true, f32.from(if neg { -v; } else { v; }));
+}
+
+fn lower(s &str) String {
+  imm bytes &Array[u8] = s;
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < bytes.len {
+    imm c = bytes[i];
+    out.appendByte(if c >= 'A' and c <= 'Z' { c - 'A' + 'a'; } else { c; });
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A bone given as a name from `names` (any case) or a number: its index, or -1
+fn boneNamed(names &List[String], word &str) i32 {
+  imm n = parseNumber(word);
+  if n.ok { return i32.from(n.value); }
+  imm w = lower(word);
+  mut i = 0usize;
+  while i < names.len() {
+    if lower(names[i].view()).view() == w.view() { return i32.from(i); }
+    i = i + 1usize;
+  }
+  -1i32;
+}
+
+fn parseFailed(p Pattern, why &str, line usize) PatternParse {
+  new PatternParse(p, false, String.from(why), u32.from(line));
+}
+
+// A facing: a word or three numbers
+fn faceWord(w &str) i32 {
+  if w == "front" { return 0i32; }
+  if w == "back" { return 1i32; }
+  if w == "left" { return 2i32; }
+  if w == "right" { return 3i32; }
+  if w == "up" { return 4i32; }
+  if w == "down" { return 5i32; }
+  -1i32;
+}
+
+fn faceVector(k i32) Vec3 {
+  if k == 0i32 { return new Vec3(0., 0., -1.); }
+  if k == 1i32 { return new Vec3(0., 0., 1.); }
+  if k == 2i32 { return new Vec3(-1., 0., 0.); }
+  if k == 3i32 { return new Vec3(1., 0., 0.); }
+  if k == 4i32 { return new Vec3(0., 1., 0.); }
+  new Vec3(0., -1., 0.);
+}
+
+fn edgeNumber(w &str) i32 {
+  if w == "top" { return 0i32; }
+  if w == "bottom" { return 1i32; }
+  if w == "left" { return 2i32; }
+  if w == "right" { return 3i32; }
+  -1i32;
+}
+
+// Numbers of words from `at`, `count` of them, into `out`; false if one is not a number
+fn numbers(w &List[String], at usize, count usize, out &mut List[f32]) bool {
+  out.clear();
+  if at + count > w.len() { return false; }
+  mut i = 0usize;
+  while i < count {
+    imm n = parseNumber(w[at + i].view());
+    if !n.ok { return false; }
+    out.push(n.value);
+    i = i + 1usize;
+  }
+  true;
+}
+
+// "panel.edge" read into a panel number and an edge number
+fn seamEnd(p &Pattern, word &str) (i32, i32) {
+  imm dot = word.find(".");
+  match dot {
+    case imm k Some {
+      imm pn = p.find(word.slice(0usize, k));
+      imm en = edgeNumber(word.sliceFrom(k + 1usize));
+      (pn, en);
+    }
+    case is None { (-1i32, -1i32); }
+  }
+}
+
+pub fn parsePattern(text &str, names &List[String]) PatternParse {
+  mut pat = Pattern.make("garment");
+  imm all = String.from(text).lines();
+  mut cur = -1i32;
+  mut ln = 0usize;
+  mut nums = List[f32].empty();
+  while ln < all.len() {
+    imm w = words(all[ln].view());
+    ln = ln + 1usize;
+    if w.len() == 0usize { continue; }
+    imm head = w[0usize].view();
+    if head == "garment" {
+      if w.len() < 2usize { return parseFailed(pat, "garment needs a name", ln); }
+      pat.name = String.from(w[1usize].view());
+      if w.len() >= 4usize and w[2usize].view() == "layer" {
+        imm n = parseNumber(w[3usize].view());
+        if !n.ok { return parseFailed(pat, "layer needs a number", ln); }
+        pat.layer = u32.from(n.value);
+      }
+    } elif head == "fabric" {
+      mut i = 1usize;
+      while i + 1usize < w.len() {
+        imm n = parseNumber(w[i + 1usize].view());
+        if !n.ok { return parseFailed(pat, "a fabric value is not a number", ln); }
+        imm k = w[i].view();
+        if k == "density" { pat.density = n.value; }
+        elif k == "stretch" { pat.stretch = n.value; }
+        elif k == "shear" { pat.shear = n.value; }
+        elif k == "bend" { pat.bend = n.value; }
+        elif k == "thick" { pat.thickness = n.value; }
+        elif k == "damping" { pat.damping = n.value; }
+        elif k == "air" { pat.airDensity = n.value; }
+        else { return parseFailed(pat, "fabric knows density stretch shear bend thick damping air", ln); }
+        i = i + 2usize;
+      }
+    } elif head == "sees" {
+      if w.len() < 3usize { return parseFailed(pat, "sees needs only or ignore, then bones", ln); }
+      imm which = w[1usize].view();
+      if which != "only" and which != "ignore" { return parseFailed(pat, "sees takes only or ignore", ln); }
+      mut i = 2usize;
+      while i < w.len() {
+        imm b = boneNamed(names, w[i].view());
+        if b < 0i32 { return parseFailed(pat, "sees names a bone that is not there", ln); }
+        if which == "only" { pat.only.push(usize.from(b)); } else { pat.ignore.push(usize.from(b)); }
+        i = i + 1usize;
+      }
+    } elif head == "panel" {
+      if w.len() < 2usize { return parseFailed(pat, "panel needs a name", ln); }
+      mut p = newPanel(w[1usize].view(), 12u32, 12u32);
+      mut i = 2usize;
+      while i < w.len() {
+        imm k = w[i].view();
+        if k == "grid" {
+          if !numbers(&w, i + 1usize, 2usize, &mut nums) { return parseFailed(pat, "grid needs two numbers", ln); }
+          p.nu = u32.from(*nums[0usize]);
+          p.nv = u32.from(*nums[1usize]);
+          i = i + 3usize;
+        } elif k == "axis" {
+          if i + 2usize >= w.len() { return parseFailed(pat, "axis needs two bones", ln); }
+          imm a = boneNamed(names, w[i + 1usize].view());
+          imm b = boneNamed(names, w[i + 2usize].view());
+          if a < 0i32 or b < 0i32 { return parseFailed(pat, "axis names a bone that is not there", ln); }
+          p.place.axisFrom = usize.from(a);
+          p.place.axisTo = usize.from(b);
+          i = i + 3usize;
+        } elif k == "face" {
+          if i + 1usize >= w.len() { return parseFailed(pat, "face needs a direction", ln); }
+          imm fw = faceWord(w[i + 1usize].view());
+          if fw >= 0i32 {
+            p.place.face = faceVector(fw);
+            i = i + 2usize;
+          } else {
+            if !numbers(&w, i + 1usize, 3usize, &mut nums) { return parseFailed(pat, "face needs a word or three numbers", ln); }
+            p.place.face = new Vec3(*nums[0usize], *nums[1usize], *nums[2usize]);
+            i = i + 4usize;
+          }
+        } else {
+          if i + 1usize >= w.len() { return parseFailed(pat, "a panel setting needs a value", ln); }
+          imm n = parseNumber(w[i + 1usize].view());
+          if !n.ok { return parseFailed(pat, "a panel setting's value is not a number", ln); }
+          if k == "shift" { p.place.shift = n.value; }
+          elif k == "arc" { p.place.arc = radians(n.value); }
+          elif k == "gap" { p.place.gap = n.value; }
+          elif k == "flare" { p.place.flare = n.value; }
+          elif k == "minr" { p.place.minRadius = n.value; }
+          elif k == "reach" { p.reach = n.value; }
+          else { return parseFailed(pat, "a panel knows grid axis shift face arc gap flare minr reach", ln); }
+          i = i + 2usize;
+        }
+      }
+      cur = i32.from(pat.addPanel(p));
+    } elif edgeNumber(head) >= 0i32 {
+      if cur < 0i32 { return parseFailed(pat, "an edge before any panel", ln); }
+      if w.len() < 2usize { return parseFailed(pat, "an edge needs line, arc, quad, cubic or poly", ln); }
+      imm which = edgeNumber(head);
+      imm kind = w[1usize].view();
+      imm pi_ = usize.from(cur);
+      if kind == "poly" {
+        if (w.len() - 2usize) % 2usize != 0usize or w.len() < 6usize { return parseFailed(pat, "poly needs pairs of numbers, at least two", ln); }
+        if !numbers(&w, 2usize, w.len() - 2usize, &mut nums) { return parseFailed(pat, "poly has a word that is not a number", ln); }
+        mut j = 0usize;
+        while j + 1usize < nums.len() {
+          imm pt = new Vec2(*nums[j], *nums[j + 1usize]);
+          if which == 0i32 { pat.panels[pi_].top.push(pt); }
+          elif which == 1i32 { pat.panels[pi_].bottom.push(pt); }
+          elif which == 2i32 { pat.panels[pi_].left.push(pt); }
+          else { pat.panels[pi_].right.push(pt); }
+          j = j + 2usize;
+        }
+      } else {
+        imm need = if kind == "line" { 5usize; } elif kind == "arc" { 6usize; } elif kind == "quad" { 7usize; } elif kind == "cubic" { 9usize; } else { 0usize; };
+        if need == 0usize { return parseFailed(pat, "an edge is line, arc, quad, cubic or poly", ln); }
+        if !numbers(&w, 2usize, need, &mut nums) { return parseFailed(pat, "an edge has the wrong number of numbers", ln); }
+        imm n = u32.from(*nums[need - 1usize]);
+        if n == 0u32 { return parseFailed(pat, "an edge needs at least one segment", ln); }
+        if which == 0i32 { drawEdge(&mut pat.panels[pi_].top, kind, &nums, n); }
+        elif which == 1i32 { drawEdge(&mut pat.panels[pi_].bottom, kind, &nums, n); }
+        elif which == 2i32 { drawEdge(&mut pat.panels[pi_].left, kind, &nums, n); }
+        else { drawEdge(&mut pat.panels[pi_].right, kind, &nums, n); }
+      }
+    } elif head == "loose" or head == "looseu" {
+      if cur < 0i32 { return parseFailed(pat, "loose before any panel", ln); }
+      if (w.len() - 1usize) % 2usize != 0usize or w.len() < 3usize { return parseFailed(pat, "loose needs pairs: v looseness (looseu: u looseness)", ln); }
+      if !numbers(&w, 1usize, w.len() - 1usize, &mut nums) { return parseFailed(pat, "loose has a word that is not a number", ln); }
+      mut j = 0usize;
+      while j + 1usize < nums.len() {
+        if head == "loose" { pat.panels[usize.from(cur)].loose.push(new Vec2(*nums[j], *nums[j + 1usize])); }
+        else { pat.panels[usize.from(cur)].looseU.push(new Vec2(*nums[j], *nums[j + 1usize])); }
+        j = j + 2usize;
+      }
+    } elif head == "seam" {
+      if w.len() < 3usize { return parseFailed(pat, "seam needs two panel.edge ends", ln); }
+      imm a = seamEnd(&pat, w[1usize].view());
+      imm b = seamEnd(&pat, w[2usize].view());
+      if a.0 < 0i32 or a.1 < 0i32 or b.0 < 0i32 or b.1 < 0i32 { return parseFailed(pat, "a seam end is panel.edge naming a panel and top, bottom, left or right", ln); }
+      pat.stitch(usize.from(a.0), u32.from(a.1), usize.from(b.0), u32.from(b.1), w.len() >= 4usize and w[3usize].view() == "reverse");
+    } else {
+      return parseFailed(pat, "a line begins with garment, fabric, sees, panel, top, bottom, left, right, loose or seam", ln);
+    }
+  }
+  new PatternParse(pat, true, String.empty(), 0u32);
+}
+
+fn drawEdge(edge &mut List[Vec2], kind &str, v &List[f32], n u32) {
+  if kind == "line" { addLine(edge, *v[0usize], *v[1usize], *v[2usize], *v[3usize], n); }
+  elif kind == "arc" { addArc(edge, *v[0usize], *v[1usize], *v[2usize], *v[3usize], *v[4usize], n); }
+  elif kind == "quad" { addQuad(edge, *v[0usize], *v[1usize], *v[2usize], *v[3usize], *v[4usize], *v[5usize], n); }
+  else { addCubic(edge, *v[0usize], *v[1usize], *v[2usize], *v[3usize], *v[4usize], *v[5usize], *v[6usize], *v[7usize], n); }
+}
