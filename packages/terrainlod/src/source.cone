@@ -1,0 +1,84 @@
+// ======== Heightmap tiles as a height source ========
+//
+// The terrain asks a closure 'fn(x f32, z f32) f32' for heights, so a
+// procedural function needs nothing from this package. Heightmaps stored
+// as tiles do: 'HeightTiles' holds them and 'sample' is such a function.
+//
+// A tile is (tileCells + 1) x (tileCells + 1) samples of 'cell' metres, the
+// edge samples shared with the neighbour's (the form terrain exporters
+// write), row by row from the lowest z, each row from the lowest x. Tile
+// (tx, tz) has its first sample at (originX + tx tileCells cell, originZ +
+// tz tileCells cell). A tile can be left out or set later (streaming it in);
+// where there is none the height is 'outside'. Between samples the height is
+// bilinear, and the finest level of the terrain, if its cells are 'cell',
+// draws exactly the samples.
+
+pub struct HeightTiles {
+  pub originX f32;
+  pub originZ f32;
+  pub cell f32;
+  pub tileCells u32;
+  pub tilesX u32;
+  pub tilesZ u32;
+  pub outside f32;
+  tiles List[List[f32]];
+
+  pub fn make(originX f32, originZ f32, cell f32, tileCells u32, tilesX u32, tilesZ u32, outside f32) HeightTiles {
+    mut t = List[List[f32]].empty();
+    mut n = 0u32;
+    while n < tilesX * tilesZ {
+      t.push(List[f32].empty());
+      n = n + 1u32;
+    }
+    new HeightTiles(originX, originZ, cell, tileCells, tilesX, tilesZ, outside, t);
+  }
+
+  // Set tile (tx, tz) from its samples, (tileCells + 1)^2 of them. False if
+  // the tile is outside the grid or the count is wrong.
+  pub fn setTile(self &mut, tx u32, tz u32, samples List[f32]) bool {
+    if tx >= tilesX or tz >= tilesZ { return false; }
+    imm side = usize.from(tileCells + 1u32);
+    if samples.len() != side * side { return false; }
+    tiles.set(usize.from(tz * tilesX + tx), samples);
+    true;
+  }
+
+  // Take tile (tx, tz) out (unloading it)
+  pub fn clearTile(self &mut, tx u32, tz u32) {
+    if tx >= tilesX or tz >= tilesZ { return; }
+    tiles.set(usize.from(tz * tilesX + tx), List[f32].empty());
+  }
+
+  pub fn hasTile(self &, tx u32, tz u32) bool {
+    if tx >= tilesX or tz >= tilesZ { return false; }
+    tiles[usize.from(tz * tilesX + tx)].len() > 0usize;
+  }
+
+  fn at(self &, tx u32, tz u32, i u32, j u32) f32 {
+    imm side = usize.from(tileCells + 1u32);
+    *(*tiles[usize.from(tz * tilesX + tx)])[usize.from(j) * side + usize.from(i)];
+  }
+
+  // The height at (x, z): bilinear between the samples; 'outside' beyond
+  // the grid or over a tile that is not set
+  pub fn sample(self &, x f32, z f32) f32 {
+    imm gx = (x - originX) / cell;
+    imm gz = (z - originZ) / cell;
+    imm total = f32.from(tileCells);
+    if gx < 0. or gz < 0. or gx >= total * f32.from(tilesX) or gz >= total * f32.from(tilesZ) { return outside; }
+    imm a = u32.from(libc.floorf(gx));
+    imm b = u32.from(libc.floorf(gz));
+    imm tx = a / tileCells;
+    imm tz = b / tileCells;
+    if !self.hasTile(tx, tz) { return outside; }
+    imm i = a - tx * tileCells;
+    imm j = b - tz * tileCells;
+    imm u = gx - f32.from(a);
+    imm v = gz - f32.from(b);
+    imm h00 = self.at(tx, tz, i, j);
+    imm h10 = self.at(tx, tz, i + 1u32, j);
+    imm h01 = self.at(tx, tz, i, j + 1u32);
+    imm h11 = self.at(tx, tz, i + 1u32, j + 1u32);
+    (h00 * (1. - u) + h10 * u) * (1. - v) + (h01 * (1. - u) + h11 * u) * v;
+  }
+}

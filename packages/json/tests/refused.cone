@@ -1,0 +1,287 @@
+// Malformed texts are refused with an error that says what kind of trouble
+// it is, where it is (byte offset, line and column), and what was expected
+// there: unfinished texts, bad structure, bad numbers, bad strings and escapes,
+// lone surrogates, UTF-8 that is not, control characters, text after the
+// value, and the things other formats allow and JSON does not (comments,
+// trailing commas, single quotes, NaN, bare words). Then the same failure is
+// answered again by the same Reader, and the options that tighten reading.
+
+mod refused;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn kindName(k &json.ErrorKind) &str {
+  match k {
+    case is UnexpectedEnd { "UnexpectedEnd"; }
+    case is UnexpectedByte { "UnexpectedByte"; }
+    case is BadNumber { "BadNumber"; }
+    case is BadEscape { "BadEscape"; }
+    case is BadSurrogate { "BadSurrogate"; }
+    case is BadUtf8 { "BadUtf8"; }
+    case is ControlChar { "ControlChar"; }
+    case is TooDeep { "TooDeep"; }
+    case is TrailingText { "TrailingText"; }
+    case is DuplicateKey { "DuplicateKey"; }
+    case is WriteOrder { "WriteOrder"; }
+    case is WriteValue { "WriteValue"; }
+    case is Shape { "Shape"; }
+  }
+}
+
+// text must be refused with that kind, at that line and column, the reason
+// holding that phrase
+fn refuse(text &str, kind &str, line u32, col u32, phrase &str) {
+  match json.parse(text) {
+    case is Ok { expectStr("<parsed>", kind, text); }
+    case imm e Error {
+      expectStr(kindName(&e.kind), kind, text);
+      expectUInt(u64.from(e.line), u64.from(line), text);
+      expectUInt(u64.from(e.column), u64.from(col), text);
+      if not e.reason.view().contains(phrase) { expectStr(e.reason.view(), phrase, text); }
+    }
+  }
+}
+
+fn accept(text &str) {
+  match json.parse(text) {
+    case is Ok { expect(true, text); }
+    case imm e Error {
+      imm m = e.message();
+      expectStr(m.view(), "<parsed>", text);
+    }
+  }
+}
+
+fn main() i32 {
+  // -------- unfinished --------
+  refuse("", "UnexpectedEnd", 1u32, 1u32, "where a value was expected");
+  refuse("   ", "UnexpectedEnd", 1u32, 4u32, "where a value was expected");
+  refuse("[", "UnexpectedEnd", 1u32, 2u32, "where a value was expected");
+  refuse("[1", "UnexpectedEnd", 1u32, 3u32, "inside an array");
+  refuse("[1,", "UnexpectedEnd", 1u32, 4u32, "where a value was expected");
+  refuse("{", "UnexpectedEnd", 1u32, 2u32, "expected a key");
+  refuse("{\"a\"", "UnexpectedEnd", 1u32, 5u32, "expected ':'");
+  refuse("{\"a\":", "UnexpectedEnd", 1u32, 6u32, "where a value was expected");
+  refuse("{\"a\":1", "UnexpectedEnd", 1u32, 7u32, "inside an object");
+  refuse("{\"a\":1,", "UnexpectedEnd", 1u32, 8u32, "expected a key");
+  refuse("\"abc", "UnexpectedEnd", 1u32, 5u32, "not closed");
+  refuse("\"abc\\", "UnexpectedEnd", 1u32, 6u32, "inside an escape");
+
+  // -------- structure --------
+  refuse("[1,]", "UnexpectedByte", 1u32, 4u32, "just before ']'");
+  refuse("{\"a\":1,}", "UnexpectedByte", 1u32, 8u32, "just before '}'");
+  refuse("[,1]", "UnexpectedByte", 1u32, 2u32, "expected a value");
+  refuse("[1 2]", "UnexpectedByte", 1u32, 4u32, "expected ',' or ']'");
+  refuse("[1;2]", "UnexpectedByte", 1u32, 3u32, "expected ',' or ']'");
+  refuse("[1}", "UnexpectedByte", 1u32, 3u32, "expected ',' or ']'");
+  refuse("{\"a\":1]", "UnexpectedByte", 1u32, 7u32, "expected ',' or '}'");
+  refuse("{\"a\":1 \"b\":2}", "UnexpectedByte", 1u32, 8u32, "expected ',' or '}'");
+  refuse("{\"a\"}", "UnexpectedByte", 1u32, 5u32, "expected ':'");
+  refuse("{\"a\" 1}", "UnexpectedByte", 1u32, 6u32, "expected ':'");
+  refuse("{\"a\":}", "UnexpectedByte", 1u32, 6u32, "expected a value");
+  refuse("{\"a\":]", "UnexpectedByte", 1u32, 6u32, "expected a value");
+  refuse("[{\"a\":]", "UnexpectedByte", 1u32, 7u32, "expected a value");
+  refuse("{a:1}", "UnexpectedByte", 1u32, 2u32, "expected a key");
+  refuse("{'a':1}", "UnexpectedByte", 1u32, 2u32, "expected a key");
+  refuse("{1:2}", "UnexpectedByte", 1u32, 2u32, "expected a key");
+  refuse("{,}", "UnexpectedByte", 1u32, 2u32, "expected a key");
+  refuse("]", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("}", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse(",", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse(":", "UnexpectedByte", 1u32, 1u32, "expected a value");
+
+  // -------- text after the value --------
+  refuse("1 2", "TrailingText", 1u32, 3u32, "after the JSON value");
+  refuse("[] []", "TrailingText", 1u32, 4u32, "after the JSON value");
+  refuse("{}x", "TrailingText", 1u32, 3u32, "after the JSON value");
+  refuse("null null", "TrailingText", 1u32, 6u32, "after the JSON value");
+  refuse("nullx", "TrailingText", 1u32, 5u32, "after the JSON value");
+  refuse("truefalse", "TrailingText", 1u32, 5u32, "after the JSON value");
+  refuse("\"a\"\"b\"", "TrailingText", 1u32, 4u32, "after the JSON value");
+  refuse("1,2", "TrailingText", 1u32, 2u32, "after the JSON value");
+  refuse("[1]]", "TrailingText", 1u32, 4u32, "after the JSON value");
+  refuse("{}\n\n  {}", "TrailingText", 3u32, 3u32, "after the JSON value");
+
+  // -------- literals --------
+  refuse("tru", "UnexpectedByte", 1u32, 1u32, "true, false or null");
+  refuse("nul", "UnexpectedByte", 1u32, 1u32, "true, false or null");
+  refuse("fals", "UnexpectedByte", 1u32, 1u32, "true, false or null");
+  refuse("True", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("NULL", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("undefined", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("nan", "UnexpectedByte", 1u32, 1u32, "true, false or null");
+  refuse("NaN", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("Infinity", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("[truee]", "UnexpectedByte", 1u32, 6u32, "expected ',' or ']'");
+
+  // -------- numbers --------
+  refuse("01", "BadNumber", 1u32, 2u32, "leading zero");
+  refuse("-01", "BadNumber", 1u32, 3u32, "leading zero");
+  refuse("[00]", "BadNumber", 1u32, 3u32, "leading zero");
+  refuse("-", "BadNumber", 1u32, 2u32, "needs a digit");
+  refuse("-a", "BadNumber", 1u32, 2u32, "needs a digit");
+  refuse("-Infinity", "BadNumber", 1u32, 2u32, "needs a digit");
+  refuse("- 1", "BadNumber", 1u32, 2u32, "needs a digit");
+  refuse("1.", "BadNumber", 1u32, 3u32, "after the '.'");
+  refuse("1.e3", "BadNumber", 1u32, 3u32, "after the '.'");
+  refuse("[1.]", "BadNumber", 1u32, 4u32, "after the '.'");
+  refuse("1e", "BadNumber", 1u32, 3u32, "exponent needs a digit");
+  refuse("1e+", "BadNumber", 1u32, 4u32, "exponent needs a digit");
+  refuse("1E-x", "BadNumber", 1u32, 4u32, "exponent needs a digit");
+  refuse(".5", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("+1", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("0x1F", "TrailingText", 1u32, 2u32, "after the JSON value");
+  refuse("1.5.5", "TrailingText", 1u32, 4u32, "after the JSON value");
+  refuse("1e5e5", "TrailingText", 1u32, 4u32, "after the JSON value");
+  refuse("1_000", "TrailingText", 1u32, 2u32, "after the JSON value");
+
+  // -------- strings and escapes --------
+  refuse("'a'", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("\"a\nb\"", "ControlChar", 1u32, 3u32, "U+000a");
+  refuse("\"a\tb\"", "ControlChar", 1u32, 3u32, "U+0009");
+  refuse("\"a\rb\"", "ControlChar", 1u32, 3u32, "U+000d");
+  refuse("\"a\x01b\"", "ControlChar", 1u32, 3u32, "U+0001");
+  refuse("\"\x1F\"", "ControlChar", 1u32, 2u32, "U+001f");
+  refuse("\"\\x41\"", "BadEscape", 1u32, 2u32, "bad escape");
+  refuse("\"\\a\"", "BadEscape", 1u32, 2u32, "bad escape");
+  refuse("\"\\'\"", "BadEscape", 1u32, 2u32, "bad escape");
+  refuse("\"\\0\"", "BadEscape", 1u32, 2u32, "bad escape");
+  refuse("\"ab\\Z\"", "BadEscape", 1u32, 4u32, "bad escape");
+  refuse("\"\\u\"", "BadEscape", 1u32, 2u32, "4 hex digits");
+  refuse("\"\\u12\"", "BadEscape", 1u32, 2u32, "4 hex digits");
+  refuse("\"\\u12G4\"", "BadEscape", 1u32, 2u32, "4 hex digits");
+  refuse("\"\\u 123\"", "BadEscape", 1u32, 2u32, "4 hex digits");
+  refuse("\"\\U0041\"", "BadEscape", 1u32, 2u32, "bad escape");
+  refuse("\"\\ud800\"", "BadSurrogate", 1u32, 2u32, "must be followed by a low one");
+  refuse("\"\\ud800x\"", "BadSurrogate", 1u32, 2u32, "must be followed by a low one");
+  refuse("\"\\ud800\\u0041\"", "BadSurrogate", 1u32, 2u32, "must be followed by a low one");
+  refuse("\"\\ud800\\ud800\"", "BadSurrogate", 1u32, 2u32, "must be followed by a low one");
+  refuse("\"\\uDBFF\"", "BadSurrogate", 1u32, 2u32, "must be followed by a low one");
+  refuse("\"\\udc00\"", "BadSurrogate", 1u32, 2u32, "must follow a high one");
+  refuse("\"\\uDFFF\"", "BadSurrogate", 1u32, 2u32, "must follow a high one");
+  refuse("\"ab\\udc00\"", "BadSurrogate", 1u32, 4u32, "must follow a high one");
+  refuse("\"\\u0041\\ud800\"", "BadSurrogate", 1u32, 8u32, "must be followed by a low one");
+
+  // -------- UTF-8 that is not --------
+  refuse("\"\xFF\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xFE\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xC0\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xC1\xBF\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xE0\x80\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xED\xA0\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xED\xBF\xBF\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xF0\x80\x80\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xF4\x90\x80\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xF5\x80\x80\x80\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xC3\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xE2\x82\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xF0\x9F\x98\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"\xC3\x28\"", "BadUtf8", 1u32, 2u32, "not valid UTF-8");
+  refuse("\"ab\xE2\x28\xA1\"", "BadUtf8", 1u32, 4u32, "not valid UTF-8");
+  refuse("{\"k\xFF\":1}", "BadUtf8", 1u32, 4u32, "not valid UTF-8");
+  refuse("\xFF", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  // The well-formed ones, at the ends of each range
+  accept("\"\xC2\x80\"");
+  accept("\"\xDF\xBF\"");
+  accept("\"\xE0\xA0\x80\"");
+  accept("\"\xED\x9F\xBF\"");
+  accept("\"\xEE\x80\x80\"");
+  accept("\"\xEF\xBF\xBF\"");
+  accept("\"\xF0\x90\x80\x80\"");
+  accept("\"\xF4\x8F\xBF\xBF\"");
+
+  // -------- what other formats allow --------
+  refuse("// comment\n1", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("/* c */ 1", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("[1] // c", "TrailingText", 1u32, 5u32, "after the JSON value");
+  refuse("[1, /* c */ 2]", "UnexpectedByte", 1u32, 5u32, "expected a value");
+  refuse("# c\n1", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("\xC2\xA01", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("\x0B1", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("\x0C1", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("\x001", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("\x1A", "UnexpectedByte", 1u32, 1u32, "expected a value");
+  refuse("[1,2,3,]", "UnexpectedByte", 1u32, 8u32, "just before ']'");
+  refuse("{\"a\":1,\"b\":2,}", "UnexpectedByte", 1u32, 14u32, "just before '}'");
+  refuse("[\"a\" \"b\"]", "UnexpectedByte", 1u32, 6u32, "expected ',' or ']'");
+  refuse("{\"a\":1,,\"b\":2}", "UnexpectedByte", 1u32, 8u32, "expected a key");
+
+  // -------- line and column --------
+  refuse("{\n  \"a\": 1,\n  \"b\": ?\n}", "UnexpectedByte", 3u32, 8u32, "expected a value");
+  refuse("{\r\n  \"a\": 1,\r\n  \"b\": ?\r\n}", "UnexpectedByte", 3u32, 8u32, "expected a value");
+  refuse("[\n\n\n  1,\n  2 3\n]", "UnexpectedByte", 5u32, 5u32, "expected ',' or ']'");
+  refuse("[1,\n2,\n", "UnexpectedEnd", 3u32, 1u32, "where a value was expected");
+  // Columns count bytes: a two-byte character moves the column by two
+  refuse("[\"\xC3\xA9\", ?]", "UnexpectedByte", 1u32, 8u32, "expected a value");
+
+  // -------- the message --------
+  match json.parse("[1,\n 2 3]") {
+    case is Ok { expect(false, "message"); }
+    case imm e Error {
+      imm m = e.message();
+      expectStr(m.view(), "json: line 2, column 4: expected ',' or ']' after an array's element", "the message names line and column");
+      expectUInt(u64.from(e.offset), 7u64, "the offset");
+    }
+  }
+
+  // -------- a Reader that has failed fails the same way again --------
+  imm bad = "[1, ?]";
+  mut r = json.reader(bad);
+  mut steps = 0usize;
+  mut firstMessage = String.empty();
+  mut againMessage = String.empty();
+  while true {
+    match r.next() {
+      case is Ok { steps = steps + 1usize; }
+      case imm e Error {
+        firstMessage = e.message();
+        break;
+      }
+    }
+  }
+  match r.next() {
+    case is Ok { expect(false, "a failed reader answers its failure again"); }
+    case imm e Error { againMessage = e.message(); }
+  }
+  expectUInt(u64.from(steps), 2u64, "two events before the failure");
+  expectStr(againMessage.view(), firstMessage.view(), "the failure is answered again");
+  expectUInt(u64.from(r.offset()), 4u64, "the reader's offset");
+
+  // -------- options --------
+  imm dups = "{\"a\":1,\"b\":{\"c\":1,\"c\":2},\"a\":3}";
+  match json.parse(dups) {
+    case is Ok { expect(true, "duplicates are kept by default"); }
+    case is Error { expect(false, "duplicates are kept by default"); }
+  }
+  imm strict = new json.Options(512usize, true);
+  match json.parseWith(dups, &strict) {
+    case is Ok { expect(false, "duplicate names refused"); }
+    case imm e Error {
+      expectStr(kindName(&e.kind), "DuplicateKey", "duplicate kind");
+      // The inner repeat comes first, at its name
+      expectUInt(u64.from(e.column), 19u64, "duplicate column");
+      expect(e.reason.view().contains("\"c\""), "duplicate reason names it");
+    }
+  }
+  match json.parseWith("{\"a\":{\"a\":1},\"b\":[{\"a\":1},{\"a\":2}]}", &strict) {
+    case is Ok { expect(true, "the same name at different depths is no duplicate"); }
+    case is Error { expect(false, "the same name at different depths is no duplicate"); }
+  }
+  imm shallow = new json.Options(2usize, false);
+  match json.parseWith("[[1]]", &shallow) {
+    case is Ok { expect(true, "depth 2 allowed at maxDepth 2"); }
+    case is Error { expect(false, "depth 2 allowed at maxDepth 2"); }
+  }
+  match json.parseWith("[[[1]]]", &shallow) {
+    case is Ok { expect(false, "depth 3 refused at maxDepth 2"); }
+    case imm e Error {
+      expectStr(kindName(&e.kind), "TooDeep", "depth kind");
+      expectUInt(u64.from(e.column), 3u64, "depth column");
+    }
+  }
+
+  done();
+}

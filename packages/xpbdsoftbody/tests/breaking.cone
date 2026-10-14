@@ -1,0 +1,119 @@
+// Breakable constraints: a stretch constraint gives way when the force the solver
+// puts on it passes its break force.
+//
+// The force is XPBD's own, the substep's multiplier over the substep squared. It is
+// the tension when the solve has converged: a 10 kg weight on ten 0.1 m links hanging
+// from a pin pulls the top link with its weight plus the links', 108 N; the
+// multiplier gives 72% of that at 10 substeps, 104% at 40 (the weight's inertia
+// is a Gauss-Seidel pass behind), so these tests use 40.
+//
+//   holds     with a break force of 400 N nothing breaks in 4 s
+//   breaks    with 60 N the top link goes at once (the first to carry the whole
+//             weight), a BREAK_DISTANCE event names its two particles and a force
+//             above 60 N, and the weight falls freely afterwards (it has dropped
+//             1.2 m, g t^2 / 2, half a second on)
+//   tear      a cloth hung by its top edge with 3 kg on one lower particle and a
+//             break force of 3 N tears: edges go, the triangles on them go with them
+//             (the index count of the output falls to match), and nothing is
+//             not-a-number
+
+mod breaking;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import xpbdsoftbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn weightOnRope(limit f32) SoftBody {
+  mut pts = List[Vec3].empty();
+  mut i = 0;
+  while i <= 10 { pts.push(new Vec3(0., 5. - 0.1 * f32.from(i), 0.)); i = i + 1; }
+  mut r = rope(pts.view(), 0.1, 1e-5, -1., 0.01);
+  r.pin(0u32);
+  r.mass.set(10usize, 10.);
+  r.invMass.set(10usize, 0.1);
+  r.substeps = 40u32;
+  r.damping = 0.5;
+  r.airDensity = 0.;
+  r.setBreakForce(limit);
+  r;
+}
+
+fn testHolds() {
+  mut r = weightOnRope(400.);
+  mut s = 0;
+  while s < 240 { r.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  expectInt(i64.from(r.breaks.len()), 0i64, "nothing breaks under a limit of four times the weight");
+  expectInt(i64.from(r.dist.len()), 10i64, "all ten links are there");
+  near((*r.pos[10usize]).y, 4., 0.06, "the weight hangs a metre down (the Gauss-Seidel pass leaves 4% of stretch)");
+}
+
+fn testBreaks() {
+  mut r = weightOnRope(60.);
+  mut s = 0;
+  // the weight takes up the rope's tension over the first tenth of a second or so
+  while s < 90 and r.breaks.len() == 0usize { r.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  expectBool(r.breaks.len() >= 1usize, true, "a limit of 60 N breaks a rope that carries 108 N");
+  expectBool(s < 20, true, "within a third of a second");
+  if r.breaks.len() >= 1usize {
+    imm e = *r.breaks[0usize];
+    expectUInt(u64.from(e.kind), u64.from(BREAK_DISTANCE), "the event says a stretch constraint");
+    expectBool(e.force > 60., true, "and the force it carried passed the limit");
+    expectBool(e.a == 0u32 or e.b == 0u32, true, "and it is the top link, which carries everything");
+  }
+  imm y0 = (*r.pos[10usize]).y;
+  imm t0 = s;
+  while s < t0 + 30 { r.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  imm drop = y0 - (*r.pos[10usize]).y;
+  expectBool(r.dist.len() < 10usize, true, "the links that broke are gone from the list");
+  near(drop, 1.226, 0.4, "and the weight falls freely: half a second is 1.2 m");
+}
+
+fn testTear() {
+  mut f = Fabric.light();
+  f.stretch = 1e-4;
+  mut c = clothGrid(new Vec3(0., 2., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 8u32, 8u32, &f);
+  mut i = 0u32;
+  while i <= 8u32 { c.pin(i); i = i + 1u32; }
+  // 3 kg on a particle near the bottom
+  imm heavy = 7usize * 9usize + 4usize;
+  c.mass.set(heavy, 3.);
+  c.invMass.set(heavy, 1. / 3.);
+  c.substeps = 30u32;
+  c.damping = 0.5;
+  c.airDensity = 0.;
+  c.setBreakForce(3.);
+  imm trisBefore = c.tris.len() / 3usize;
+  mut out = Mesh.empty();
+  mut scratch = List[Vec3].empty();
+  writeMesh(&c, &mut out, false, &mut scratch);
+  expectInt(i64.from(out.indices.len()), i64.from(3usize * trisBefore), "the mesh has every triangle");
+  mut s = 0;
+  while s < 120 { c.step(1. / 60., new Vec3(0., 0., 0.)); s = s + 1; }
+  expectBool(c.breaks.len() > 0usize, true, "the weight tears the cloth");
+  expectBool(c.tris.len() / 3usize < trisBefore, true, "triangles on the torn edges are gone");
+  writeMesh(&c, &mut out, false, &mut scratch);
+  expectInt(i64.from(out.indices.len()), i64.from(c.tris.len()), "and the output has just the triangles that are left");
+  mut bad = 0;
+  i = 0u32;
+  while usize.from(i) < c.pos.len() {
+    imm p = *c.pos[usize.from(i)];
+    if p.x != p.x or p.y != p.y or p.z != p.z { bad = bad + 1; }
+    i = i + 1u32;
+  }
+  expectInt(i64.from(bad), 0i64, "no particle is not-a-number");
+  expectBool((*c.pos[heavy]).y < 0.5, true, "and the weight has fallen away");
+}
+
+fn main() i32 {
+  testHolds();
+  testBreaks();
+  testTear();
+  done();
+}

@@ -1,0 +1,517 @@
+// scenes: four scenes of cloth and rope that push and pull on the world, simulated on the CPU
+// (xpbdsoftbody with rigiddynamics, joined by clothrope) and drawn offscreen on a real GPU:
+//
+//   banner  a 64 x 64 banner hung from a pole in a gusting wind (no rigid bodies; the cost scene)
+//   bridge  a rope-and-plank bridge between two posts; three crates are dropped onto it, it sags
+//           and sways under their weight (the crates are rigid bodies the deck holds up)
+//   chain   a heavy ball on a chain from a beam, let go 60 degrees out, swinging (the ball is a
+//           rigid body and the chain pulls it round)
+//   snap    a crate hangs from a rope; a second is dropped onto it and the rope snaps
+//
+//   congo run --release packages/clothrope/examples/scenes.cone
+//   CLOTHROPE_SHOT=prefix congo run --release packages/clothrope/examples/scenes.cone
+//
+// With CLOTHROPE_SHOT set to a prefix it writes <prefix>-<scene>-<n>.bmp. It prints, for each
+// scene, the step cost (median and fastest, microseconds, soft body + rigid world) and numbers it
+// checks (and exits 1 if a check fails): the banner is finite and downwind, the bridge holds the
+// crates (they rest above the ground, still), the ball reaches the far side of its swing, the rope
+// snaps and the crate falls away. GPU_POWER_PREFERENCE=low-power picks an integrated GPU.
+// It needs a GPU with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod scenes;
+
+import stdio use *;
+import libc;
+import time use Instant;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import xpbdsoftbody use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+import clothrope use *;
+import gpu use *;
+import render use *;
+import path use Path;
+
+const W = 800u32;
+const H = 560u32;
+
+fn pixelOk(p *u8, camera &Camera, world Vec3) (i32, i32, i32) {
+  imm vp = camera.projectionMatrix(f32.from(W) / f32.from(H)) * camera.viewMatrix();
+  imm ndc = vp.projectPoint(world);
+  // a point off the picture reads as black rather than past the end of the buffer
+  if ndc.x < -0.99 or ndc.x > 0.99 or ndc.y < -0.99 or ndc.y > 0.99 { return (0, 0, 0); }
+  imm px = usize.from((ndc.x + 1.) * 0.5 * f32.from(W));
+  imm py = usize.from((1. - ndc.y) * 0.5 * f32.from(H));
+  imm at = (py * usize.from(W) + px) * 4usize;
+  (i32.from(*(p + at)), i32.from(*(p + at + 1usize)), i32.from(*(p + at + 2usize)));
+}
+
+fn save(prefix *u8, scene &str, n i32, p *u8) bool {
+  mut file = String.empty();
+  mut i = 0usize;
+  while *(prefix + i) != 0u8 { file.appendByte(*(prefix + i)); i = i + 1usize; }
+  file.append("-");
+  file.append(scene);
+  file.append("-");
+  file.append(if n == 1 {"1";} elif n == 2 {"2";} elif n == 3 {"3";} else {"4";});
+  file.append(".bmp");
+  imm img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
+  if img.save(&Path.from(file.view())) { print <- "wrote "; printStr(file.view()); print <- "\n"; return true; }
+  false;
+}
+
+fn sortInto(v &mut List[i64]) {
+  mut i = 1usize;
+  while i < v.len() {
+    imm x = *v[i];
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > x {
+      v.set(j, *v[j - 1usize]);
+      j = j - 1usize;
+    }
+    v.set(j, x);
+    i = i + 1usize;
+  }
+}
+
+fn cost(scene &str, times &mut List[i64]) {
+  sortInto(times);
+  print <- scene; print <- ": step p50 "; print <- *times[times.len() / 2usize]; print <- " us, min "; print <- *times[0usize];
+  print <- " us, p95 "; print <- *times[times.len() * 95usize / 100usize]; print <- " us\n";
+}
+
+fn tube() Mesh {
+  mut m = Mesh.empty();
+  imm sides = 14usize;
+  mut k = 0usize;
+  while k < sides {
+    imm a = 2. * pi * f32.from(k) / f32.from(sides);
+    m.positions.push(new Vec3(cos(a), 0., sin(a)));
+    m.normals.push(new Vec3(cos(a), 0., sin(a)));
+    m.positions.push(new Vec3(cos(a), 1., sin(a)));
+    m.normals.push(new Vec3(cos(a), 0., sin(a)));
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < sides {
+    imm k1 = (k + 1usize) % sides;
+    imm v0 = u32.from(2usize * k);
+    imm v1 = u32.from(2usize * k + 1usize);
+    imm v2 = u32.from(2usize * k1 + 1usize);
+    imm v3 = u32.from(2usize * k1);
+    m.indices.push(v0); m.indices.push(v2); m.indices.push(v1);
+    m.indices.push(v0); m.indices.push(v3); m.indices.push(v2);
+    k = k + 1usize;
+  }
+  m;
+}
+
+fn limb(a Vec3, b Vec3, r f32) Mat4 {
+  imm d = b - a;
+  Mat4.fromTrs(a, Quat.fromVectors(new Vec3(0., 1., 0.), d), new Vec3(r, d.length(), r));
+}
+fn slab(center Vec3, size Vec3) Mat4 { Mat4.fromTrs(center, Quat.identity(), size); }
+fn ball(p Vec3, r f32) Mat4 { Mat4.fromTrs(p, Quat.identity(), new Vec3(r, r, r)); }
+fn crateAt(w &World, id u32, half f32) Mat4 {
+  Mat4.fromTrs(w.positionOf(id), w.rotationOf(id), new Vec3(half * 2., half * 2., half * 2.));
+}
+
+// ======== the scenes' state and drawing ========
+
+struct Gfx {
+  renderer Renderer;
+  color Texture;
+  depth Texture;
+  readback Buffer;
+  tubeMesh MeshHandle;
+  ballMesh MeshHandle;
+  cubeMesh MeshHandle;
+  grass MaterialHandle;
+  wood MaterialHandle;
+  cloth MaterialHandle;
+  cloth2 MaterialHandle;
+  rope MaterialHandle;
+  stone MaterialHandle;
+  metal MaterialHandle;
+  sun Light;
+  prefix *u8;
+}
+
+fn shoot(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList, scene &str, n i32, check Vec3) bool {
+  mut encoder = device.createCommandEncoder();
+  g.renderer.render(device, &mut encoder, &g.color, &g.depth, camera, &g.sun, list);
+  encoder.copyTextureToBuffer(&g.color, &g.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm p = g.readback.mappedRange();
+  imm px = pixelOk(p, camera, check);
+  print <- scene; print <- " "; print <- n; print <- ": pixel at the checked point "; print <- px.0; print <- ", "; print <- px.1; print <- ", "; print <- px.2; print <- "\n";
+  mut ok = true;
+  // the checked point must not be the sky (0.55, 0.70, 0.90)
+  if px.2 > 200 and px.0 < 170 and px.1 > 150 { print <- "FAIL: the checked point shows sky\n"; ok = false; }
+  if (g.prefix as usize) != 0usize { if !save(g.prefix, scene, n, p) { ok = false; } }
+  ok;
+}
+
+fn camera(eye Vec3, at Vec3) Camera {
+  mut c = Camera.make();
+  c.lookAt(eye, at, new Vec3(0., 1., 0.));
+  c.background = new Color(0.55, 0.70, 0.90, 1.);
+  c;
+}
+
+// ======== banner ========
+
+fn banner(g &mut Gfx, device &mut Device) bool {
+  mut ok = true;
+  mut flag = clothGrid(new Vec3(0., 3., 0.), new Vec3(2., 0., 0.), new Vec3(0., -2., 0.), 64u32, 64u32, &Fabric.light());
+  mut j = 0u32;
+  while j <= 64u32 { flag.pin(j * 65u32); j = j + 1u32; }
+  flag.useCurvatureBending();
+  addTethers(&mut flag, 1.02);
+  flag.strainLimit = 0.05;
+  flag.limitPasses = 3u32;
+  flag.substeps = 8u32;
+  flag.damping = 0.3;
+  mut workers = Workers.make(4u32);
+  imm wind = WindField.breeze(new Vec3(5., 0., 1.));
+  mut times = List[i64].empty();
+  mut m = Mesh.empty();
+  mut scratch = List[Vec3].empty();
+  imm h = g.renderer.addDynamicMesh(device, u32.from(outputVertexCount(&flag, true)), u32.from(outputIndexCount(&flag, true)));
+  mut s = 0;
+  while s < 420 {
+    imm t = f32.from(s) / 60.;
+    wind.fill(&mut flag, t);
+    imm t0 = Instant.now();
+    flag.stepPool(&mut workers, 1. / 60., wind.mean);
+    times.push(t0.elapsed().nanos() / 1000i64);
+    if s == 240 or s == 300 or s == 390 {
+      writeMesh(&flag, &mut m, true, &mut scratch);
+      g.renderer.writeDynamicMesh(device, h, &m);
+      mut list = DrawList.empty();
+      list.add(g.cubeMesh, g.grass, slab(new Vec3(0., -0.05, 0.), new Vec3(12., 0.1, 8.)));
+      list.add(g.tubeMesh, g.wood, limb(new Vec3(0., 0., 0.), new Vec3(0., 3.2, 0.), 0.045));
+      list.add(g.ballMesh, g.metal, ball(new Vec3(0., 3.24, 0.), 0.08));
+      list.add(h, g.cloth, Mat4.identity());
+      imm cam = camera(new Vec3(3.4, 1.9, 5.2), new Vec3(1., 2., 0.));
+      imm n = if s == 240 {1;} elif s == 300 {2;} else {3;};
+      if !shoot(g, device, &cam, &list, "banner", n, *flag.pos[32usize * 65usize + 32usize]) { ok = false; }
+    }
+    s = s + 1;
+  }
+  cost("banner 64x64, 8 substeps, curvature bending, 4 threads", &mut times);
+  imm tip = *flag.pos[flag.pos.len() - 1usize];
+  print <- "banner: far corner "; print <- tip.x; print <- " "; print <- tip.y; print <- " "; print <- tip.z; print <- "\n";
+  if tip.x != tip.x or tip.x < 0.8 { print <- "FAIL: the banner is not downwind of its pole\n"; ok = false; }
+  g.renderer.removeMesh(device, h);
+  workers.stop();
+  ok;
+}
+
+// ======== bridge ========
+
+fn bridge(g &mut Gfx, device &mut Device) bool {
+  mut ok = true;
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm ground = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(ground, new Vec3(0., -4., 0.)));
+  imm crateShape = w.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.2, 0.2))));
+  imm lrest = 8.3;
+  mut f = Fabric.heavy();
+  f.density = 3.0;
+  f.stretch = 1e-6;
+  f.shear = 1e-5;
+  f.bend = 5.;
+  f.thickness = 0.05;
+  mut deck = clothGrid(new Vec3(-lrest * 0.5, 0., -0.6), new Vec3(lrest, 0., 0.), new Vec3(0., 0., 1.2), 34u32, 4u32, &f);
+  mut i = 0usize;
+  while i < deck.pos.len() {
+    imm p = *deck.pos[i];
+    imm x = p.x * (8. / lrest);
+    imm q = new Vec3(x, deckY(x), p.z);
+    deck.pos.set(i, q);
+    deck.rest.set(i, q);
+    deck.prev.set(i, q);
+    i = i + 1usize;
+  }
+  // a handrail along each side, hung from the deck's edge by a short rigid hanger at every column
+  mut rails = List[u32].empty();
+  mut side = 0u32;
+  while side < 2u32 {
+    imm row = side * 4u32;
+    mut pts = List[Vec3].empty();
+    mut c = 0u32;
+    while c < 35u32 {
+      imm e = *deck.pos[usize.from(row * 35u32 + c)];
+      pts.push(e + new Vec3(0., 0.5, 0.));
+      c = c + 1u32;
+    }
+    imm base = deck.merge(ropeFrom(pts.view()));
+    rails.push(base);
+    c = 0u32;
+    while c < 35u32 {
+      deck.addDistance(row * 35u32 + c, base + c, 1e-6);
+      c = c + 1u32;
+    }
+    deck.pin(base);
+    deck.pin(base + 34u32);
+    side = side + 1u32;
+  }
+  mut jj = 0u32;
+  while jj <= 4u32 { deck.pin(jj * 35u32); deck.pin(jj * 35u32 + 34u32); jj = jj + 1u32; }
+  deck.substeps = 10u32;
+  deck.damping = 1.5;
+  deck.friction = 0.6;
+  deck.thickness = 0.05;
+  deck.airDensity = 0.;
+  addTethers(&mut deck, 1.02);
+  mut coupler = Coupler.make(1u32);
+  mut crates = List[u32].empty();
+  mut times = List[i64].empty();
+  mut m = Mesh.empty();
+  mut scratch = List[Vec3].empty();
+  mut mr = Mesh.empty();
+  imm dh = g.renderer.addDynamicMesh(device, u32.from(outputVertexCount(&deck, true)), u32.from(outputIndexCount(&deck, true)));
+  imm r0 = g.renderer.addDynamicMesh(device, 35u32 * 8u32, 34u32 * 8u32 * 6u32);
+  imm r1 = g.renderer.addDynamicMesh(device, 35u32 * 8u32, 34u32 * 8u32 * 6u32);
+  mut s = 0;
+  while s < 600 {
+    if s == 60 or s == 200 or s == 330 {
+      imm k = if s == 60 {0.;} elif s == 200 {1.;} else {2.;};
+      imm x = -1.3 + 1.3 * k;
+      mut d = BodyDef.dynamicAt(crateShape, new Vec3(x, deckY(x) + 0.75, 0.03 * k));
+      d.mass = 12.;
+      d.material = PhysMaterial.wood();
+      imm id = w.createBody(d);
+      coupler.couple(&mut deck, &w, id, true);
+      crates.push(id);
+    }
+    imm t0 = Instant.now();
+    coupler.step(&mut deck, &mut w, 1. / 60., new Vec3(0., 0., 0.));
+    times.push(t0.elapsed().nanos() / 1000i64);
+    if s == 40 or s == 180 or s == 590 {
+      writeMesh(&deck, &mut m, true, &mut scratch);
+      g.renderer.writeDynamicMesh(device, dh, &m);
+      writeTubeRange(&deck, usize.from(*rails[0usize]), 35usize, &mut mr, 0.035, 8u32);
+      g.renderer.writeDynamicMesh(device, r0, &mr);
+      writeTubeRange(&deck, usize.from(*rails[1usize]), 35usize, &mut mr, 0.035, 8u32);
+      g.renderer.writeDynamicMesh(device, r1, &mr);
+      mut list = DrawList.empty();
+      list.add(g.cubeMesh, g.grass, slab(new Vec3(0., -3.05, 0.), new Vec3(30., 0.1, 30.)));
+      list.add(g.cubeMesh, g.wood, slab(new Vec3(-4.1, 0.8, 0.), new Vec3(0.35, 3.6, 0.5)));
+      list.add(g.cubeMesh, g.wood, slab(new Vec3(4.1, 0.8, 0.), new Vec3(0.35, 3.6, 0.5)));
+      list.add(dh, g.cloth2, Mat4.identity());
+      list.add(r0, g.rope, Mat4.identity());
+      list.add(r1, g.rope, Mat4.identity());
+      mut c = 0usize;
+      while c < crates.len() { list.add(g.cubeMesh, g.stone, crateAt(&w, *crates[c], 0.2)); c = c + 1usize; }
+      imm cam = camera(new Vec3(1.5, 3.6, 8.0), new Vec3(0., 0.8, 0.));
+      imm n = if s == 40 {1;} elif s == 180 {2;} else {3;};
+      if !shoot(g, device, &cam, &list, "bridge", n, *deck.pos[2usize * 35usize + 17usize]) { ok = false; }
+    }
+    s = s + 1;
+  }
+  cost("bridge: 10 substeps, deck 35x5 + 3 crates, coupled", &mut times);
+  mut k = 0usize;
+  while k < crates.len() {
+    imm p = w.positionOf(*crates[k]);
+    print <- "bridge: crate "; print <- i64.from(k); print <- " at "; print <- p.x; print <- " "; print <- p.y; print <- " "; print <- p.z;
+    print <- ", speed "; print <- w.linearVelocity(*crates[k]).length(); print <- "\n";
+    if p.y < -1. { print <- "FAIL: the crate fell through or off the bridge\n"; ok = false; }
+    k = k + 1usize;
+  }
+  imm mid = *deck.pos[2usize * 35usize + 17usize];
+  print <- "bridge: the deck's middle is at y "; print <- mid.y; print <- " (empty: "; print <- deckY(0.); print <- ")\n";
+  g.renderer.removeMesh(device, dh);
+  g.renderer.removeMesh(device, r0);
+  g.renderer.removeMesh(device, r1);
+  ok;
+}
+
+fn ropeFrom(points &Array[Vec3]) SoftBody { rope(points, 0.3, 1e-6, -1., 0.035); }
+
+fn deckY(x f32) f32 { 2.0 - 0.95 * (1. - (x / 4.) * (x / 4.)); }
+
+// ======== chain ========
+
+fn chainScene(g &mut Gfx, device &mut Device) bool {
+  mut ok = true;
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm bs = w.addShape(Shape.single(Prim.sphere(0.3)));
+  imm beam = new Vec3(0., 4., 0.);
+  imm len = 2.4;
+  imm ang = pi / 3.;
+  imm hook = beam + new Vec3(sin(ang), -cos(ang), 0.) * len;
+  mut d = BodyDef.dynamicAt(bs, hook);
+  d.mass = 30.;
+  d.linearDamping = 0.02;
+  d.angularDamping = 0.02;
+  imm weight = w.createBody(d);
+  mut pts = List[Vec3].empty();
+  mut k = 0;
+  while k <= 24 { pts.push(beam.lerp(hook, f32.from(k) / 24.)); k = k + 1; }
+  mut chn = chain(pts.view(), 0.8, 1e-6, 0.02);
+  chn.pin(0u32);
+  chn.substeps = 16u32;
+  chn.damping = 0.1;
+  chn.airDensity = 0.;
+  mut coupler = Coupler.make(1u32);
+  coupler.anchor(&mut chn, &w, 24u32, weight, hook, -1.);
+  addTethers(&mut chn, 1.);
+  mut times = List[i64].empty();
+  mut m = Mesh.empty();
+  imm ch = g.renderer.addDynamicMesh(device, 25u32 * 8u32, 24u32 * 8u32 * 6u32);
+  mut maxX = -10.;
+  mut minX = 10.;
+  mut s = 0;
+  while s < 300 {
+    imm t0 = Instant.now();
+    coupler.step(&mut chn, &mut w, 1. / 60., new Vec3(0., 0., 0.));
+    times.push(t0.elapsed().nanos() / 1000i64);
+    imm x = w.positionOf(weight).x;
+    if x > maxX { maxX = x; }
+    if x < minX { minX = x; }
+    if s == 5 or s == 55 or s == 100 {
+      writeTube(&chn, &mut m, 0.04, 8u32);
+      g.renderer.writeDynamicMesh(device, ch, &m);
+      mut list = DrawList.empty();
+      list.add(g.cubeMesh, g.grass, slab(new Vec3(0., -0.55, 0.), new Vec3(12., 0.1, 8.)));
+      list.add(g.cubeMesh, g.wood, slab(new Vec3(-0.6, 4.1, 0.), new Vec3(2.2, 0.2, 0.3)));
+      list.add(g.cubeMesh, g.wood, slab(new Vec3(-1.5, 1.8, 0.), new Vec3(0.3, 4.6, 0.3)));
+      list.add(ch, g.rope, Mat4.identity());
+      list.add(g.ballMesh, g.metal, ball(w.positionOf(weight), 0.3));
+      imm cam = camera(new Vec3(0.5, 2.2, 8.5), new Vec3(0.6, 2.2, 0.));
+      imm n = if s == 5 {1;} elif s == 55 {2;} else {3;};
+      if !shoot(g, device, &cam, &list, "chain", n, w.positionOf(weight)) { ok = false; }
+    }
+    s = s + 1;
+  }
+  cost("chain: 16 substeps, 24 links + 30 kg ball, coupled", &mut times);
+  print <- "chain: the ball swung from x "; print <- minX; print <- " to "; print <- maxX; print <- "\n";
+  if maxX < 1.5 or minX > -1.0 { print <- "FAIL: the ball did not swing through to the far side\n"; ok = false; }
+  g.renderer.removeMesh(device, ch);
+  ok;
+}
+
+// ======== snap ========
+
+fn snapScene(g &mut Gfx, device &mut Device) bool {
+  mut ok = true;
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm cs = w.addShape(Shape.single(Prim.box(new Vec3(0.3, 0.3, 0.3))));
+  imm beam = new Vec3(0., 4., 0.);
+  mut d = BodyDef.dynamicAt(cs, new Vec3(0., 1.9, 0.));
+  d.mass = 25.;
+  imm crateA = w.createBody(d);
+  mut pts = List[Vec3].empty();
+  mut k = 0;
+  while k <= 16 { pts.push(beam.lerp(new Vec3(0., 2.2, 0.), f32.from(k) / 16.)); k = k + 1; }
+  mut r = rope(pts.view(), 0.4, 1e-6, -1., 0.03);
+  r.pin(0u32);
+  r.substeps = 40u32;
+  r.iterations = 2u32;
+  r.damping = 0.3;
+  r.airDensity = 0.;
+  mut coupler = Coupler.make(1u32);
+  coupler.anchor(&mut r, &w, 16u32, crateA, new Vec3(0., 2.2, 0.), -1.);
+  coupler.couple(&mut r, &w, crateA, true);
+  mut crateB = 0u32;
+  mut times = List[i64].empty();
+  mut m = Mesh.empty();
+  imm rh = g.renderer.addDynamicMesh(device, 17u32 * 8u32, 16u32 * 8u32 * 6u32);
+  mut brokeAt = -1;
+  mut s = 0;
+  while s < 240 {
+    // the rope takes up the first crate's weight (the load builds over the first tenth of a second and
+    // overshoots) before its links are given a break force
+    // a rope gives at its weakest place: one link is set to 750 N, the rest to twice that
+    if s == 40 { r.setBreakForce(1500.); r.setBreakForceBetween(8u32, 9u32, 750.); }
+    if s == 90 {
+      mut db = BodyDef.dynamicAt(cs, new Vec3(0., 2.9, 0.));
+      db.mass = 25.;
+      crateB = w.createBody(db);
+    }
+    imm t0 = Instant.now();
+    coupler.step(&mut r, &mut w, 1. / 60., new Vec3(0., 0., 0.));
+    times.push(t0.elapsed().nanos() / 1000i64);
+    if brokeAt < 0 and r.breaks.len() > 0usize { brokeAt = s; }
+    if s == 60 or (brokeAt >= 0 and s == brokeAt + 4) or s == 220 {
+      writeTube(&r, &mut m, 0.03, 8u32);
+      g.renderer.writeDynamicMesh(device, rh, &m);
+      mut list = DrawList.empty();
+      list.add(g.cubeMesh, g.grass, slab(new Vec3(0., -0.55, 0.), new Vec3(12., 0.1, 8.)));
+      list.add(g.cubeMesh, g.wood, slab(new Vec3(0., 4.1, 0.), new Vec3(2.0, 0.2, 0.3)));
+      list.add(rh, g.rope, Mat4.identity());
+      list.add(g.cubeMesh, g.stone, crateAt(&w, crateA, 0.3));
+      if s > 90 { list.add(g.cubeMesh, g.metal, crateAt(&w, crateB, 0.3)); }
+      imm cam = camera(new Vec3(0.8, 2.0, 7.5), new Vec3(0., 1.9, 0.));
+      imm n = if s == 60 {1;} elif s == 220 {3;} else {2;};
+      if !shoot(g, device, &cam, &list, "snap", n, w.positionOf(crateA)) { ok = false; }
+    }
+    s = s + 1;
+  }
+  cost("snap: 40 substeps x2 iterations, 16-link rope + 2 crates, coupled", &mut times);
+  if r.breaks.len() > 0usize {
+    imm e = *r.breaks[0usize];
+    print <- "snap: first link to go joined particles "; print <- i64.from(e.a); print <- " and "; print <- i64.from(e.b);
+    print <- ", carrying "; print <- e.force; print <- " N\n";
+  }
+  print <- "snap: the rope broke at step "; print <- brokeAt; print <- " ("; print <- i64.from(r.breaks.len()); print <- " links), crate A at y "; print <- w.positionOf(crateA).y; print <- "\n";
+  if brokeAt < 90 { print <- "FAIL: the rope broke before the second crate came, or never\n"; ok = false; }
+  if w.positionOf(crateA).y > 0.0 { print <- "FAIL: the crate did not fall away\n"; ok = false; }
+  g.renderer.removeMesh(device, rh);
+  ok;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("clothrope scenes");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
+  imm target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  imm depth = device.createTexture(&depthDesc);
+  imm readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
+  imm tubeMesh = renderer.addMesh(&mut device, &tube());
+  imm ballMesh = renderer.addMesh(&mut device, &Mesh.sphere(1., 24));
+  imm cubeMesh = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  imm grass = renderer.addMaterial(&mut device, &Material.plain(new Color(0.30, 0.42, 0.28, 1.)));
+  imm wood = renderer.addMaterial(&mut device, &Material.plain(new Color(0.45, 0.30, 0.18, 1.)));
+  imm cloth = renderer.addMaterial(&mut device, &Material.shiny(new Color(0.80, 0.12, 0.10, 1.), 0.1, 16.));
+  imm cloth2 = renderer.addMaterial(&mut device, &Material.shiny(new Color(0.62, 0.50, 0.30, 1.), 0.1, 16.));
+  imm rope = renderer.addMaterial(&mut device, &Material.plain(new Color(0.70, 0.60, 0.40, 1.)));
+  imm stone = renderer.addMaterial(&mut device, &Material.plain(new Color(0.62, 0.60, 0.58, 1.)));
+  imm metal = renderer.addMaterial(&mut device, &Material.shiny(new Color(0.55, 0.58, 0.65, 1.), 0.4, 48.));
+  imm sun = Light.directional(new Vec3(0.3, -0.6, -0.5).normalize(), Color.gray(1.8), Color.gray(0.5));
+  mut g = new Gfx(renderer, color, depth, readback, tubeMesh, ballMesh, cubeMesh, grass, wood, cloth, cloth2,
+    rope, stone, metal, sun, libc.getenv("CLOTHROPE_SHOT"));
+  mut ok = true;
+  // CLOTHROPE_SCENE=banner|bridge|chain|snap runs just one
+  imm only = libc.getenv("CLOTHROPE_SCENE");
+  imm all = (only as usize) == 0usize;
+  if all or libc.strcmp(cstr.fromPtr(only), "banner") == 0i32 { if !banner(&mut g, &mut device) { ok = false; } }
+  if all or libc.strcmp(cstr.fromPtr(only), "bridge") == 0i32 { if !bridge(&mut g, &mut device) { ok = false; } }
+  if all or libc.strcmp(cstr.fromPtr(only), "chain") == 0i32 { if !chainScene(&mut g, &mut device) { ok = false; } }
+  if all or libc.strcmp(cstr.fromPtr(only), "snap") == 0i32 { if !snapScene(&mut g, &mut device) { ok = false; } }
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0i32; }
+  1i32;
+}

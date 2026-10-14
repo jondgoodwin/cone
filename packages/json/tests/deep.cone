@@ -1,0 +1,224 @@
+// Deep and wide texts. Nesting is read with no recursion, so a hostile text
+// costs memory and is refused at the depth limit (512 by default) before it
+// has built anything deep: 512 levels of arrays and of objects read and write
+// back, the 513th is refused at its own column, and a million opening
+// brackets are refused as fast as one. A Reader, which builds nothing, goes a
+// million levels down and back. Then wide texts: 200 000 elements, 20 000
+// members, and a megabyte of string.
+
+mod deep;
+
+import testing use *;
+import collections use *;
+import json;
+
+fn arrays(n usize) String {
+  mut s = String.withCapacity(2usize * n + 1usize);
+  mut i = 0usize;
+  while i < n { s.appendByte('['); i = i + 1usize; }
+  s.append("1");
+  i = 0usize;
+  while i < n { s.appendByte(']'); i = i + 1usize; }
+  s;
+}
+
+fn objects(n usize) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < n { s.append("{\"a\":"); i = i + 1usize; }
+  s.append("1");
+  i = 0usize;
+  while i < n { s.appendByte('}'); i = i + 1usize; }
+  s;
+}
+
+fn mixed(n usize) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < n {
+    if i % 2usize == 0usize { s.appendByte('['); } else { s.append("{\"k\":"); }
+    i = i + 1usize;
+  }
+  s.append("null");
+  i = n;
+  while i > 0usize {
+    i = i - 1usize;
+    if i % 2usize == 0usize { s.appendByte(']'); } else { s.appendByte('}'); }
+  }
+  s;
+}
+
+// The text read and written again is the same text
+fn roundTrips(text &str, label &str) {
+  match json.parse(text) {
+    case imm doc Ok {
+      match doc.toText() {
+        case imm t Ok { expect(t.view() == text, label); }
+        case imm e Error { expectStr(e.message().view(), "<written>", label); }
+      }
+    }
+    case imm e Error { expectStr(e.message().view(), "<parsed>", label); }
+  }
+}
+
+// text must be refused as too deep, at that column
+fn tooDeep(text &str, col u32, label &str) {
+  match json.parse(text) {
+    case is Ok { expect(false, label); }
+    case imm e Error {
+      expect(e.kind is TooDeep, label);
+      expectUInt(u64.from(e.column), u64.from(col), label);
+      expect(e.reason.view().contains("nested deeper than 512 levels"), label);
+    }
+  }
+}
+
+fn main() i32 {
+  // -------- the depth limit --------
+  roundTrips(arrays(1usize).view(), "1 level of arrays");
+  roundTrips(arrays(100usize).view(), "100 levels of arrays");
+  roundTrips(arrays(512usize).view(), "512 levels of arrays");
+  tooDeep(arrays(513usize).view(), 513u32, "513 levels of arrays");
+  roundTrips(objects(512usize).view(), "512 levels of objects");
+  tooDeep(objects(513usize).view(), 2561u32, "513 levels of objects");
+  roundTrips(mixed(512usize).view(), "512 levels of both");
+  tooDeep(mixed(513usize).view(), 1537u32, "513 levels of both");
+
+  // A text that only opens: refused at the limit, not at its end
+  mut opens = String.empty();
+  mut i = 0usize;
+  while i < 1000000usize { opens.appendByte('['); i = i + 1usize; }
+  tooDeep(opens.view(), 513u32, "a million opening brackets");
+
+  // A limit of one, of zero, of a million
+  imm one = new json.Options(1usize, false);
+  expect(json.parseWith("[1]", &one) is Ok, "[1] at maxDepth 1");
+  expect(json.parseWith("[[1]]", &one) is Error, "[[1]] at maxDepth 1");
+  expect(json.parseWith("1", &one) is Ok, "a scalar at maxDepth 1");
+  imm zero = new json.Options(0usize, false);
+  expect(json.parseWith("1", &zero) is Ok, "a scalar at maxDepth 0");
+  expect(json.parseWith("[]", &zero) is Error, "[] at maxDepth 0");
+  imm deeper = new json.Options(1000usize, false);
+  tooDeep(arrays(900usize).view(), 513u32, "900 levels needs the limit raised");
+  match json.parseWith(arrays(900usize).view(), &deeper) {
+    case is Ok { expect(true, "900 levels at maxDepth 1000"); }
+    case is Error { expect(false, "900 levels at maxDepth 1000"); }
+  }
+
+  // -------- a Reader goes as deep as memory lets it --------
+  imm million = new json.Options(2000000usize, false);
+  imm deepText = arrays(1000000usize);
+  mut r = json.readerWith(deepText.view(), &million);
+  mut starts = 0usize;
+  mut ends = 0usize;
+  mut numbers = 0usize;
+  mut maxDepth = 0usize;
+  mut finished = false;
+  mut failed = false;
+  while not finished and not failed {
+    match r.next() {
+      case imm ev Ok {
+        if ev == json.Event.StartArray {
+          starts = starts + 1usize;
+          if r.depth() > maxDepth { maxDepth = r.depth(); }
+        }
+        elif ev == json.Event.EndArray { ends = ends + 1usize; }
+        elif ev == json.Event.Number { numbers = numbers + 1usize; }
+        elif ev == json.Event.Done { finished = true; }
+      }
+      case is Error { failed = true; }
+    }
+  }
+  expect(finished and not failed, "a million levels read as events");
+  expectUInt(u64.from(starts), 1000000u64, "a million starts");
+  expectUInt(u64.from(ends), 1000000u64, "a million ends");
+  expectUInt(u64.from(numbers), 1u64, "one number inside");
+  expectUInt(u64.from(maxDepth), 1000000u64, "the depth reached");
+  expectUInt(u64.from(r.depth()), 0u64, "and back to zero");
+
+  // -------- wide --------
+  mut wide = String.from("[");
+  i = 0usize;
+  while i < 200000usize {
+    if i > 0usize { wide.appendByte(','); }
+    wide.appendUInt(u64.from(i));
+    i = i + 1usize;
+  }
+  wide.appendByte(']');
+  match json.parse(wide.view()) {
+    case imm doc Ok {
+      expectUInt(u64.from(doc.len()), 200000u64, "200 000 elements");
+      mut sum = 0u64;
+      i = 0usize;
+      while i < doc.len() {
+        match doc.at(i) {
+          case imm v Some {
+            match v.asU64() {
+              case imm n Ok { sum = sum + n; }
+              case is Error { expect(false, "an element is a number"); }
+            }
+          }
+          case is None { expect(false, "an element is there"); }
+        }
+        i = i + 1usize;
+      }
+      expectUInt(sum, 19999900000u64, "their sum");
+      match doc.toText() {
+        case imm t Ok { expect(t.view() == wide.view(), "and written back as they were"); }
+        case imm e Error { expect(false, "wide write"); }
+      }
+    }
+    case imm e Error { expectStr(e.message().view(), "<parsed>", "wide"); }
+  }
+
+  mut members = String.from("{");
+  i = 0usize;
+  while i < 20000usize {
+    if i > 0usize { members.appendByte(','); }
+    members.append("\"key");
+    members.appendUInt(u64.from(i));
+    members.append("\":");
+    members.appendUInt(u64.from(i * 2usize));
+    i = i + 1usize;
+  }
+  members.appendByte('}');
+  match json.parse(members.view()) {
+    case imm doc Ok {
+      expectUInt(u64.from(doc.len()), 20000u64, "20 000 members");
+      expectInt(doc.i64Or("key0", -1i64), 0i64, "the first member");
+      expectInt(doc.i64Or("key19999", -1i64), 39998i64, "the last member");
+      expectInt(doc.i64Or("key12345", -1i64), 24690i64, "one between");
+      expectInt(doc.i64Or("key20000", -1i64), -1i64, "one that is not there");
+    }
+    case imm e Error { expectStr(e.message().view(), "<parsed>", "members"); }
+  }
+
+  // A megabyte of string, with escapes now and then
+  mut longText = String.from("\"");
+  i = 0usize;
+  while i < 100000usize {
+    longText.append("0123456789");
+    i = i + 1usize;
+  }
+  longText.append("\\n\\u00e9\\ud83d\\ude00\"");
+  match json.parse(longText.view()) {
+    case imm doc Ok {
+      match doc.asText() {
+        case imm s Some {
+          expectUInt(u64.from(s.len), 1000000u64 + 1u64 + 2u64 + 4u64, "a megabyte of string");
+          match doc.toText() {
+            case imm t Ok {
+              // Written, the é and the face are raw UTF-8, the newline an escape
+              expectUInt(u64.from(t.len()), 1000000u64 + 2u64 + 2u64 + 2u64 + 4u64, "written back");
+            }
+            case imm e Error { expect(false, "long string write"); }
+          }
+        }
+        case is None { expect(false, "long string is text"); }
+      }
+    }
+    case imm e Error { expectStr(e.message().view(), "<parsed>", "long string"); }
+  }
+
+  done();
+}

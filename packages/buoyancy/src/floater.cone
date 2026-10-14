@@ -1,0 +1,77 @@
+// ======== A floating body in a rigiddynamics World ========
+//
+// A Floater joins a Hull (the buoyancy's mesh) to a rigid body of the World: the body's collision
+// shape is the hull's convex hull (rigidcollide's), its mass is given or worked out from a density,
+// and 'apply' adds the water's force and torque to it once each step. Call it before every 'World.step'
+// (forces are cleared by a step); a floating body must not be allowed to sleep, since the sea moves
+// under it (the body is made with sleeping off).
+//
+// THE FORCE IS EVALUATED AT THE MIDDLE OF THE STEP. The World integrates a step in sub-steps with the
+// force it was given held constant; applied from the state at the start of the step, a restoring force
+// as stiff as buoyancy's pumps energy into the oscillation (the map from one step to the next has a
+// determinant of 1 + 0.375 (w dt)^2, above 1: a floating barge's roll grew 12 percent a second, measured).
+// So 'apply' predicts the pose half a step ahead (the position by the velocity, the orientation by the
+// spin) and takes the water's force there, which is the explicit midpoint method and makes the
+// determinant 1 - 0.125 (w dt)^2: a little damping, no gain. The 'dt' to give it is the step's.
+//
+// The water is a function: 'water(x, z)' the surface's height. An ocean's height query, a lake's flat
+// level, a river's sloping surface; nothing here knows which. A body is not given the water's
+// velocity (only a constant current in WaterProps): the orbital motion of a wave's water, which
+// carries a floating body a little forward at the crest and back in the trough, is left out.
+
+// The angular damping a floating body is given (per second, the World's own damping of spin): the
+// energy a rolling hull loses to the waves it radiates and the eddies at its bilges, which Kerner's drag
+// (on the hull's triangles, by their velocity) does not make. Measured on the barge of the tests, drag
+// alone takes a 15 degree roll down 6 percent a second; with this, to under 2 degrees in 12 s. A judgement
+// call: lower it for a hull that should keep rolling.
+pub const ROLL_DAMPING = 0.6f32;
+
+// Where a body is: the shape's origin, its orientation and its centre of mass
+pub struct Pose {
+  pub pos Vec3;
+  pub rot Quat;
+  pub com Vec3;
+}
+
+// The pose of body 'id' half a step ('dt' seconds in all) from now, moving at its present velocities
+pub fn predictedPose(world &World, id u32, dt f32) Pose {
+  imm xf = world.transformOf(id);
+  imm com = world.centerOfMass(id);
+  imm w = world.angularVelocity(id);
+  imm speed = w.length();
+  imm half = dt * 0.5;
+  imm rot = if speed > 0.000001 { (Quat.angleAxis(speed * half, w * (1. / speed)) * xf.rot).normalize(); } else { xf.rot; };
+  // the shape's origin keeps its place in the body: its offset from the centre of mass, in the body's frame
+  imm offset = xf.rot.conjugate() * (xf.pos - com);
+  imm com2 = com + world.linearVelocity(id) * half;
+  new Pose(com2 + rot * offset, rot, com2);
+}
+
+pub struct Floater {
+  pub body u32;            // the World's body
+  pub hull Hull;
+  pub mass f32;
+  pub last HullForces;     // the last 'apply''s forces
+
+  // A floating body of 'hull' at 'pos' with orientation 'rot', of mass 'mass' kg (0: the hull's
+  // volume times 'density'), in the world. The body's own damping is off: the water's drag is its damping.
+  pub fn create(world &mut World, hull Hull, pos Vec3, rot Quat, mass f32, density f32) Floater {
+    imm shape = world.addShape(Shape.single(convexHull(hull.pointArray())));
+    mut def = BodyDef.dynamicAt(shape, pos);
+    def.rot = rot;
+    def.mass = if mass > 0. { mass; } else { hull.volume * density; };
+    def.linearDamping = 0.;
+    def.angularDamping = ROLL_DAMPING;
+    def.allowSleep = false;
+    imm id = world.createBody(def);
+    new Floater(id, hull, world.massOf(id), new HullForces(zero3(), zero3(), zero3(), zero3(), 0., 0.));
+  }
+
+  // Add the water's forces for the step of 'dt' seconds about to be taken to the body
+  pub fn apply[F fn(x f32, z f32) f32](self &mut, world &mut World, water &F, props &WaterProps, dt f32) {
+    imm p = predictedPose(world, body, dt);
+    last = hullForces(&hull, p.pos, p.rot, world.linearVelocity(body), world.angularVelocity(body), p.com, water, props);
+    world.applyForce(body, last.force);
+    world.applyTorque(body, last.torque);
+  }
+}

@@ -1,0 +1,304 @@
+// ======== Force-directed layout, in the plane or in space ========
+//
+// Fruchterman and Reingold, "Graph drawing by force-directed placement" (1991):
+// every pair of nodes repels with k^2/d, every edge pulls its ends together
+// with d^2/k, k the ideal edge length; each node moves by its net force limited
+// to a temperature that cools linearly to a few percent of its start. Added: a weak
+// pull of each node to the centroid (gravity: keeps disconnected pieces
+// from drifting away), a pull of a group's members to the group's centroid, and
+// at the end an overlap removal that pushes overlapping boxes apart along the axis of
+// least overlap. O(n^2) a step: tens to a few hundred nodes; Barnes-Hut or a grid
+// would be the way past that, and is not built.
+//
+// INCREMENTAL: a node that has a position ('placed') starts there and is limited to a
+// step of (1 - stability) times the temperature; a new node starts at the centroid of
+// its placed neighbours (else on a circle) with the full temperature. A small change
+// therefore moves the new node and what is next to it, not the whole picture.
+// Deterministic: no randomness but a hash of the node's id.
+
+pub struct ForceOptions {
+  pub iterations u32;
+  pub idealLength f32;
+  pub gravity f32;
+  pub groupPull f32;
+  pub stability f32;
+  pub space bool;                  // true: in 3-D (z too); false: the plane
+  pub separate bool;               // remove box overlap at the end
+  pub gap f32;                     // the clear space overlap removal leaves between boxes (the router wants twice its margin)
+
+  pub fn make() ForceOptions { new ForceOptions(300u32, 140., 0.06, 0.05, 0.85, false, true, 30.); }
+}
+
+pub struct ForceStats {
+  pub iterations u32;
+  pub overlapsLeft u32;
+}
+
+fn hash01(n u32, salt u32) f32 {
+  mut h = n * 2654435761u32 + salt * 40503u32;
+  h = h ^ (h >> 15u32);
+  h = h * 2246822519u32;
+  h = h ^ (h >> 13u32);
+  f32.from(h & 0xffffu32) / 65535.;
+}
+
+// Lays out the live nodes of 'g' (writing x, y and, in space, z)
+pub fn layoutForce(g &mut Graph, o &ForceOptions) ForceStats {
+  imm n = g.nodes.len();
+  mut pos = List[Vec3].empty();
+  mut limit = List[f32].empty();
+  mut live = List[usize].empty();
+  mut i = 0usize;
+  while i < n {
+    pos.push(new Vec3(g.nodes[i].x, g.nodes[i].y, g.nodes[i].z));
+    limit.push(1.);
+    if g.nodes[i].alive { live.push(i); }
+    i = i + 1usize;
+  }
+  if live.len() == 0usize { return new ForceStats(0u32, 0u32); }
+  mut startPlaced = List[bool].empty();
+  i = 0usize;
+  while i < n { startPlaced.push(g.nodes[i].placed); i = i + 1usize; }
+  imm k = o.idealLength;
+  // starting positions for the unplaced
+  mut cx = 0.0f;
+  mut cy = 0.0f;
+  mut placedCount = 0u32;
+  i = 0usize;
+  while i < live.len() {
+    imm v = *live[i];
+    if g.nodes[v].placed { cx = cx + g.nodes[v].x; cy = cy + g.nodes[v].y; placedCount = placedCount + 1u32; }
+    i = i + 1usize;
+  }
+  if placedCount > 0u32 { cx = cx / f32.from(placedCount); cy = cy / f32.from(placedCount); }
+  mut pass = 0u32;
+  while pass < 3u32 {
+    i = 0usize;
+    while i < live.len() {
+      imm v = *live[i];
+      if !g.nodes[v].placed {
+        mut sx = 0.0f;
+        mut sy = 0.0f;
+        mut sz = 0.0f;
+        mut c = 0u32;
+        mut e = 0usize;
+        while e < g.edges.len() {
+          if g.edges[e].alive {
+            mut other = -1i32;
+            if usize.from(g.edges[e].from) == v { other = i32.from(g.edges[e].to); }
+            elif usize.from(g.edges[e].to) == v { other = i32.from(g.edges[e].from); }
+            if other >= 0 and g.nodes[usize.from(other)].placed {
+              sx = sx + (*pos[usize.from(other)]).x;
+              sy = sy + (*pos[usize.from(other)]).y;
+              sz = sz + (*pos[usize.from(other)]).z;
+              c = c + 1u32;
+            }
+          }
+          e = e + 1usize;
+        }
+        if c > 0u32 {
+          imm a = hash01(u32.from(v), 1u32) * 6.2831855;
+          pos.set(v, new Vec3(sx / f32.from(c) + cos(a) * k * 0.5, sy / f32.from(c) + sin(a) * k * 0.5,
+            if o.space { sz / f32.from(c) + (hash01(u32.from(v), 2u32) - 0.5) * k; } else { 0.; }));
+          g.nodes[v].placed = true;
+        }
+      }
+      i = i + 1usize;
+    }
+    pass = pass + 1u32;
+  }
+  // nodes that had a position when the call began move by a reduced step
+  i = 0usize;
+  while i < live.len() {
+    if *startPlaced[*live[i]] { limit.set(*live[i], maxf2(1. - o.stability, 0.03)); }
+    i = i + 1usize;
+  }
+  // the rest start on a circle
+  mut ring = 0u32;
+  i = 0usize;
+  while i < live.len() {
+    imm v = *live[i];
+    if !g.nodes[v].placed {
+      imm a = f32.from(ring) * 2.3999632;      // golden angle
+      imm r = k * 0.6 * (f32.from(ring) + 1.).sqrt();
+      pos.set(v, new Vec3(cx + cos(a) * r, cy + sin(a) * r, if o.space { (hash01(u32.from(v), 3u32) - 0.5) * k; } else { 0.; }));
+      ring = ring + 1u32;
+    }
+    i = i + 1usize;
+  }
+  // a node with no edge has only gravity to hold it
+  mut linked = List[bool].empty();
+  i = 0usize;
+  while i < n { linked.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < g.edges.len() {
+    if g.edges[i].alive and g.edges[i].from != g.edges[i].to {
+      linked.set(usize.from(g.edges[i].from), true);
+      linked.set(usize.from(g.edges[i].to), true);
+    }
+    i = i + 1usize;
+  }
+  imm t0 = k * 0.5;
+  mut it = 0u32;
+  mut force = List[Vec3].empty();
+  i = 0usize;
+  while i < n { force.push(new Vec3(0., 0., 0.)); i = i + 1usize; }
+  // group centroids are recomputed each step
+  while it < o.iterations {
+    i = 0usize;
+    while i < n { force.set(i, new Vec3(0., 0., 0.)); i = i + 1usize; }
+    // repulsion
+    mut a = 0usize;
+    while a < live.len() {
+      mut b = a + 1usize;
+      while b < live.len() {
+        imm va = *live[a];
+        imm vb = *live[b];
+        mut d = *pos[va] - *pos[vb];
+        mut len = d.length();
+        if len < 0.01 {
+          d = new Vec3(hash01(u32.from(va), 5u32) - 0.5, hash01(u32.from(vb), 6u32) - 0.5, 0.);
+          len = maxf2(d.length(), 0.01);
+        }
+        // distance between the boxes' borders along the line, so big boxes keep further apart
+        imm radius = (g.nodes[va].w + g.nodes[va].h + g.nodes[vb].w + g.nodes[vb].h) * 0.25;
+        imm eff = maxf2(len - radius * 0.5, 1.);
+        imm f = k * k / eff;
+        imm push = d * (f / len);
+        force.set(va, *force[va] + push);
+        force.set(vb, *force[vb] - push);
+        b = b + 1usize;
+      }
+      a = a + 1usize;
+    }
+    // attraction
+    mut e = 0usize;
+    while e < g.edges.len() {
+      if g.edges[e].alive and g.edges[e].from != g.edges[e].to {
+        imm va = usize.from(g.edges[e].from);
+        imm vb = usize.from(g.edges[e].to);
+        if g.nodes[va].alive and g.nodes[vb].alive {
+          imm d = *pos[vb] - *pos[va];
+          imm len = maxf2(d.length(), 0.01);
+          imm f = len * len / k;
+          imm pull = d * (f / len);
+          force.set(va, *force[va] + pull);
+          force.set(vb, *force[vb] - pull);
+        }
+      }
+      e = e + 1usize;
+    }
+    // gravity and group pull
+    mut mx = 0.0f;
+    mut my = 0.0f;
+    mut mz = 0.0f;
+    a = 0usize;
+    while a < live.len() { mx = mx + (*pos[*live[a]]).x; my = my + (*pos[*live[a]]).y; mz = mz + (*pos[*live[a]]).z; a = a + 1usize; }
+    imm cen = new Vec3(mx / f32.from(live.len()), my / f32.from(live.len()), mz / f32.from(live.len()));
+    a = 0usize;
+    while a < live.len() {
+      imm v = *live[a];
+      force.set(v, *force[v] + (cen - *pos[v]) * (o.gravity * k * 0.05 * (if *linked[v] { 1.0f; } else { 12.0f; })));
+      a = a + 1usize;
+    }
+    mut gi = 0usize;
+    while gi < g.groups.len() {
+      if g.groups[gi].alive {
+        mut gc = new Vec3(0., 0., 0.);
+        mut gn = 0u32;
+        a = 0usize;
+        while a < live.len() {
+          if g.nodes[*live[a]].group == i32.from(gi) { gc = gc + *pos[*live[a]]; gn = gn + 1u32; }
+          a = a + 1usize;
+        }
+        if gn > 1u32 {
+          gc = gc * (1. / f32.from(gn));
+          a = 0usize;
+          while a < live.len() {
+            imm v = *live[a];
+            if g.nodes[v].group == i32.from(gi) { force.set(v, *force[v] + (gc - *pos[v]) * (o.groupPull * k * 0.1)); }
+            a = a + 1usize;
+          }
+        }
+      }
+      gi = gi + 1usize;
+    }
+    // move
+    imm temp = t0 * (1. - f32.from(it) / f32.from(o.iterations)) + t0 * 0.02;
+    a = 0usize;
+    while a < live.len() {
+      imm v = *live[a];
+      if !g.nodes[v].pinned {
+        mut f = *force[v];
+        if !o.space { f = new Vec3(f.x, f.y, 0.); }
+        imm len = f.length();
+        imm lim = temp * *limit[v];
+        if len > 0.0001 { pos.set(v, *pos[v] + f * (minf2(len, lim) / len)); }
+      }
+      a = a + 1usize;
+    }
+    it = it + 1u32;
+  }
+  // overlap removal
+  mut overlaps = 0u32;
+  if o.separate {
+    mut round = 0u32;
+    while round < 60u32 {
+      overlaps = 0u32;
+      mut a = 0usize;
+      while a < live.len() {
+        mut b = a + 1usize;
+        while b < live.len() {
+          imm va = *live[a];
+          imm vb = *live[b];
+          imm gap = o.gap;
+          imm dx = (*pos[vb]).x - (*pos[va]).x;
+          imm dy = (*pos[vb]).y - (*pos[va]).y;
+          imm ox = (g.nodes[va].w + g.nodes[vb].w) * 0.5 + gap - absf2(dx);
+          imm oy = (g.nodes[va].h + g.nodes[vb].h) * 0.5 + gap - absf2(dy);
+          imm dz = (*pos[vb]).z - (*pos[va]).z;
+          imm sameDepth = !o.space or absf2(dz) < 40.;
+          if ox > 0. and oy > 0. and sameDepth {
+            overlaps = overlaps + 1u32;
+            if ox < oy {
+              imm s = if dx >= 0. { 1.0f; } else { -1.0f; };
+              if !g.nodes[va].pinned { pos.set(va, *pos[va] + new Vec3(-s * ox * 0.5, 0., 0.)); }
+              if !g.nodes[vb].pinned { pos.set(vb, *pos[vb] + new Vec3(s * ox * 0.5, 0., 0.)); }
+            } else {
+              imm s = if dy >= 0. { 1.0f; } else { -1.0f; };
+              if !g.nodes[va].pinned { pos.set(va, *pos[va] + new Vec3(0., -s * oy * 0.5, 0.)); }
+              if !g.nodes[vb].pinned { pos.set(vb, *pos[vb] + new Vec3(0., s * oy * 0.5, 0.)); }
+            }
+          }
+          b = b + 1usize;
+        }
+        a = a + 1usize;
+      }
+      if overlaps == 0u32 { break; }
+      round = round + 1u32;
+    }
+  }
+  // write, then put the picture's top left at the margin unless it was placed before
+  mut lo = new Vec2(1.0e30, 1.0e30);
+  i = 0usize;
+  while i < live.len() {
+    imm v = *live[i];
+    g.nodes[v].x = (*pos[v]).x;
+    g.nodes[v].y = (*pos[v]).y;
+    g.nodes[v].z = (*pos[v]).z;
+    lo = lo.min(new Vec2(g.left(v), g.top(v)));
+    i = i + 1usize;
+  }
+  if placedCount == 0u32 {
+    i = 0usize;
+    while i < live.len() {
+      imm v = *live[i];
+      g.nodes[v].x = g.nodes[v].x - lo.x + 24.;
+      g.nodes[v].y = g.nodes[v].y - lo.y + 24.;
+      i = i + 1usize;
+    }
+  }
+  i = 0usize;
+  while i < live.len() { g.nodes[*live[i]].placed = true; i = i + 1usize; }
+  new ForceStats(it, overlaps);
+}

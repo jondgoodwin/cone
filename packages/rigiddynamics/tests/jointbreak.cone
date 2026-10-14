@@ -1,0 +1,140 @@
+// Breakable joints: a joint gives way when the force or torque it carries passes
+// its limit, and not before.
+//
+// The body is a box of half-size 0.25 and density 1000 (125 kg, 1226 N of
+// weight), hung from a static box 5 m up.
+//
+//   load      a point joint under the body carries its weight: the load the joint
+//             reports is m g within 10%
+//   holds     with a break force of twice the weight the joint holds for 3 s
+//   breaks    with half the weight it gives way at once, reports an
+//             EvJointBroken event naming the joint and both bodies, and the body
+//             falls (free fall: 4.9 m in the first second, less 0.5 m of pose)
+//   torque    a fixed joint holding the box 1 m out along x carries the weight's
+//             torque m g * 1 m = 1226 N m; a torque limit above it holds, below it
+//             breaks, and a force limit alone is not tripped by the torque
+//   never     a joint with no limit never breaks
+
+mod jointbreak;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Rig {
+  w World;
+  anchor u32;
+  body u32;
+  joint u32;
+}
+
+// the body hangs 'out' metres along x from the anchor and 'down' below it, joined at the anchor
+fn rig(fixed bool, out f32, down f32) Rig {
+  mut w = World.make();
+  w.settings.sleepEnabled = false;
+  imm sa = w.addShape(Shape.single(Prim.box(new Vec3(0.2, 0.2, 0.2))));
+  imm sb = w.addShape(Shape.single(Prim.box(new Vec3(0.25, 0.25, 0.25))));
+  imm p = new Vec3(0., 5., 0.);
+  imm a = w.createBody(BodyDef.staticAt(sa, p));
+  mut bd = BodyDef.dynamicAt(sb, p + new Vec3(out, -down, 0.));
+  bd.linearDamping = 0.; bd.angularDamping = 0.;
+  imm b = w.createBody(bd);
+  imm j = if fixed {w.addFixedJoint(a, b, p);} else {w.addPointJoint(a, b, p);};
+  w.setJointCollide(j, false);
+  new Rig(w, a, b, j);
+}
+
+fn run(w &mut World, steps i32) {
+  mut i = 0;
+  while i < steps { w.step(1. / 60.); i = i + 1; }
+}
+
+fn brokenCount(w &mut World) i32 {
+  imm ev = w.takeEvents();
+  mut n = 0;
+  mut k = 0usize;
+  while k < ev.len() {
+    if ev[k].kind == EvJointBroken { n = n + 1; }
+    k = k + 1usize;
+  }
+  n;
+}
+
+fn testLoad() {
+  mut r = rig(false, 0., 1.);
+  run(&mut r.w, 120);
+  imm load = r.w.jointLoad(r.joint);
+  near(load.0, 1226.25, 120., "the joint carries the body's weight, N");
+}
+
+fn testHolds() {
+  mut r = rig(false, 0., 1.);
+  r.w.setJointBreak(r.joint, 2452., -1.);
+  run(&mut r.w, 180);
+  expectInt(i64.from(brokenCount(&mut r.w)), 0i64, "a joint with twice the weight as its limit holds for 3 s");
+  near(r.w.positionOf(r.body).y, 4., 0.02, "and the body hangs where it was");
+}
+
+fn testBreaks() {
+  mut r = rig(false, 0., 1.);
+  r.w.setJointBreak(r.joint, 613., -1.);
+  run(&mut r.w, 3);
+  imm ev = r.w.takeEvents();
+  mut found = 0;
+  mut k = 0usize;
+  while k < ev.len() {
+    if ev[k].kind == EvJointBroken {
+      found = found + 1;
+      expectUInt(u64.from(ev[k].id), u64.from(r.joint), "the event names the joint");
+      expectUInt(u64.from(ev[k].a), u64.from(r.anchor), "and its first body");
+      expectUInt(u64.from(ev[k].b), u64.from(r.body), "and its second");
+      expectBool(ev[k].depth > 613., true, "and the load that broke it passed the limit");
+    }
+    k = k + 1usize;
+  }
+  expectInt(i64.from(found), 1i64, "a joint with half the weight as its limit gives way, once");
+  run(&mut r.w, 57);
+  imm drop = 4. - r.w.positionOf(r.body).y;
+  near(drop, 4.9, 0.5, "and the body falls freely: 4.9 m in the next second");
+}
+
+fn testTorque() {
+  mut r = rig(true, 1., 0.);
+  run(&mut r.w, 60);
+  imm load = r.w.jointLoad(r.joint);
+  near(load.1, 1226.25, 150., "a fixed joint carries the weight's torque, N m");
+  // a torque limit above it holds; the force limit alone does not trip on a torque
+  mut a = rig(true, 1., 0.);
+  a.w.setJointBreak(a.joint, 3000., 2000.);
+  run(&mut a.w, 180);
+  expectInt(i64.from(brokenCount(&mut a.w)), 0i64, "torque limit above the load holds");
+  mut b = rig(true, 1., 0.);
+  b.w.setJointBreak(b.joint, 3000., 800.);
+  run(&mut b.w, 30);
+  expectInt(i64.from(brokenCount(&mut b.w)), 1i64, "torque limit below the load breaks");
+  mut c = rig(true, 1., 0.);
+  c.w.setJointBreak(c.joint, 3000., -1.);
+  run(&mut c.w, 180);
+  expectInt(i64.from(brokenCount(&mut c.w)), 0i64, "a force limit alone ignores the torque");
+}
+
+fn testNever() {
+  mut r = rig(false, 0., 1.);
+  run(&mut r.w, 600);
+  expectInt(i64.from(brokenCount(&mut r.w)), 0i64, "a joint with no limit never breaks");
+}
+
+fn main() i32 {
+  testLoad();
+  testHolds();
+  testBreaks();
+  testTorque();
+  testNever();
+  done();
+}
