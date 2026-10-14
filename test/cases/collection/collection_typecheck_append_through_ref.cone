@@ -1,0 +1,56 @@
+// '<-' through a reference needs the reference to permit the write, whatever the
+// variable that holds it: an 'Arc[imm, ...]' or an 'Rc[imm, ...]' in a 'mut'
+// variable is refused, as is a '&' parameter, and an 'imm' in-memory collection
+// (collection_append_through_ref accepts the 'mut' owners and a '&mut'
+// parameter). '=' is the same: a store through an 'Arc[imm, ...]', through
+// a '&' parameter and into an 'imm' variable's field is refused. A list of
+// entries is refused at each entry.
+
+mod collection_typecheck_append_through_ref;
+
+import collections use *;
+import sync use Arc;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn arcImm() {
+  mut a = new Arc[imm, List[i32]](List[i32].empty());
+  a <- 1;                //~ ErrorNoCandidate:5 "accepts the call's arguments"
+  a <- 2, 3;             //~ ErrorInvType:8 "does not match declared parameter"
+                         //~^ ErrorInvType:11 "does not match declared parameter"
+}
+
+fn rcImm() {
+  mut r = new Rc[imm, List[i32]](List[i32].empty());
+  r <- 1;                //~ ErrorNoCandidate:5 "accepts the call's arguments"
+  r <- 2, 3;             //~ ErrorInvType:8 "does not match declared parameter"
+                         //~^ ErrorInvType:11 "does not match declared parameter"
+}
+
+fn readOnlyParam(l &List[i32]) {
+  l <- 1;                //~ ErrorNoCandidate:5 "accepts the call's arguments"
+  l <- 2, 3;             //~ ErrorInvType:8 "does not match declared parameter"
+                         //~^ ErrorInvType:11 "does not match declared parameter"
+}
+
+fn immList() {
+  imm l = List[i32].empty();
+  l <- 1;                //~ ErrorBadPerm:3 "Cannot borrow a mutable reference"
+  l <- 2, 3;             //~ ErrorBadPerm:3 "Cannot borrow a mutable reference"
+                         //~^ ErrorBadPerm:3 "cannot obtain this permission" follow-on
+}
+
+fn assignArcImm() {
+  mut a = new Arc[imm, Pt](new Pt(1, 2));
+  a.x = 5;               //~ ErrorNoMut:4 "permission to modify"
+  *a = new Pt(3, 4);     //~ ErrorNoMut:3 "permission to modify"
+}
+
+fn assignReadOnlyParam(p &Pt) {
+  p.x = 5;               //~ ErrorNoMut:4 "permission to modify"
+}
+
+fn assignImmVar() {
+  imm p = new Pt(1, 2);
+  p.x = 5;               //~ ErrorNoMut:4 "permission to modify"
+}

@@ -1,0 +1,45 @@
+// A '<-' whose method takes 'self &mut' still needs a receiver that may be
+// written. Only 'self &' appends through an 'imm' variable or global
+// (collection_append_borrow); the others are refused where they are written,
+// one entry or several, and for a receiver lent read-only.
+
+mod collection_typecheck_append_perm;
+
+struct Total {
+  pub n i64;
+  pub fn add overload `<-`(self &mut, i i64) { n += i; }
+}
+
+// Both permissions among the overloads: the number needs the write
+struct Tally {
+  pub n i64;
+  pub fn show overload `<-`(self &, s &str) { }
+  pub fn add overload `<-`(self &mut, i i64) { n += i; }
+}
+
+pub imm total = new Total(0);
+
+fn oneEntry() {
+  imm t = new Total(0);
+  t <- 1;                //~ ErrorBadPerm:3 "Cannot borrow a mutable reference"
+}
+
+fn severalEntries() {
+  imm t = new Total(0);
+  t <- 1, 2;             //~ ErrorBadPerm:3 "Cannot borrow a mutable reference"
+                         //~^ ErrorBadPerm:3 "cannot obtain this permission" follow-on
+}
+
+fn aGlobal() {
+  total <- 3;            //~ ErrorBadPerm:3 "Cannot borrow a mutable reference"
+}
+
+fn lentReadOnly(t &Total) {
+  t <- 4;                //~ ErrorNoCandidate:5 "accepts the call's arguments"
+}
+
+fn theWritingOverload() {
+  imm t = new Tally(0);
+  t <- "reads";
+  t <- 5;                //~ ErrorBadPerm:3 "Cannot borrow a mutable reference"
+}

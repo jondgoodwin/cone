@@ -1,0 +1,61 @@
+// '<-' borrows its receiver with the permission the method it selects declares
+// for 'self' (refmethop.html, "<- Append Operator"), not always mutably: an
+// overload taking 'self &' appends through an 'imm' variable, an 'imm' global
+// and a parameter lent read-only, while one taking 'self &mut' still needs a
+// receiver that may be written (collection_typecheck_append_perm refuses it
+// on an 'imm' one). A list of entries borrows once, as strongly as the
+// strongest 'self' of the type's '<-' methods needs, and no more than the
+// receiver allows.
+
+mod collection_append_borrow;
+
+import stdio use *;
+
+// A stream that writes through C and keeps nothing: every '<-' takes 'self &'
+struct Sink {
+  pub fd i32;
+  pub fn putInt overload `<-`(self &, i i64) { printInt(i); printStr(";"); }
+  pub fn putStr overload `<-`(self &, s &str) { printStr(s); printStr(";"); }
+}
+
+pub imm sink = new Sink(1i32);
+
+// Lent read-only, the receiver is appended to as it always could be
+fn viaRef(s &Sink) {
+  s <- 7;
+}
+
+// A counter: a string is only read, a number is added, so its overloads differ
+struct Tally {
+  pub n i64;
+  pub fn show overload `<-`(self &, s &str) { printStr(s); printStr("="); printInt(n); printStr(";"); }
+  pub fn add overload `<-`(self &mut, i i64) { n += i; }
+}
+
+pub imm frozen = new Tally(40);
+
+fn main() {
+  // One entry, then several, through an 'imm' variable
+  imm here = new Sink(1i32);
+  here <- 1;
+  here <- 2, "two", 3;
+
+  // The same through a 'mut' variable, which could be written but is not
+  mut writable = new Sink(1i32);
+  writable <- 4;
+  writable <- 5, 6;
+
+  // Through an 'imm' global, directly and lent
+  sink <- 8, 9;
+  viaRef(&sink);
+  printStr("\n");
+
+  // Two permissions among the overloads: the string reads, the number writes
+  mut t = new Tally(10);
+  t <- 5;
+  t <- "t";
+  t <- 1, 2;
+  t <- "t", 3, "t";
+  frozen <- "frozen";
+  printStr("\n");
+}

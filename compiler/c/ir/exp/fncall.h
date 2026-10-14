@@ -101,6 +101,11 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype);
 // call of an instance, which the caller carries on checking.
 int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep);
 
+// The permission of the borrow a '<-' list takes of its receiver, once, for all
+// its entries: what the strongest 'self' among the type's '<-' methods needs,
+// and no more than the receiver may give (contentsLowerEntries).
+PermNode *fnCallAppendBorrowPerm(INode *lval, INode *colltype);
+
 // A properly lowered call -- objfn names a function, args are all given --
 // gets its returned type and its arguments coerced to the parameters. The type
 // check state is NULL where the call is injected by a coercion, which has none.
