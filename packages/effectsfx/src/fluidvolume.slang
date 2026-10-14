@@ -86,7 +86,9 @@ float3 fireRamp(float heat) {
 [shader("fragment")]
 float4 volumeFragment(FullscreenOutput input) : SV_Target {
     float2 pixel = input.position.xy;
-    float2 uv = pixel * fx.screen.zw;
+    // (a draw into a layer of half the frame's size has a scale of 2: its pixel is two of the frame's)
+    float scale = asfloat(imm.pad0);
+    float2 uv = (pixel * scale) * fx.screen.zw;
     float3 nearP = worldPosition(fx, uv, 0.0);
     float3 farP = worldPosition(fx, uv, 1.0);
     float3 eye = fx.cameraPosition.xyz;
@@ -100,7 +102,7 @@ float4 volumeFragment(FullscreenOutput input) : SV_Target {
     float3 tmax3 = max(t0, t1);
     float tmin = max(max(tmin3.x, tmin3.y), max(tmin3.z, 0.0));
     float tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
-    float z = sceneDepth.Load(int3(int2(pixel), 0));
+    float z = sceneDepth.Load(int3(int2(pixel * scale), 0));
     if (z < 1.0) {
         float3 w = worldPosition(fx, uv, z);
         tmax = min(tmax, dot(w - eye, dir));
