@@ -3688,6 +3688,10 @@ static int fnCallArgMayInfer(INode *arg) {
 // has by then (genericFnArgExpect). Only a construction, never a function call:
 // the order a call's arguments are checked in is what narrowing sees
 // (narrowCallMade).
+// A variant of a non-generic enum, 'Fault.SoldOut' or 'Fault.Short(3)', is one
+// too when no call is among its values: given to a generic ('Error(Fault.SoldOut)')
+// it names no type parameter of its own, so where it goes may say it is the enum,
+// 'Fault', which it is then coerced to as a variant passed to an enum parameter is.
 static int fnCallArgIsCtor(INode *arg) {
     if (arg->tag == NamedValTag)
         arg = ((NamedValNode*)arg)->val;
@@ -3697,7 +3701,17 @@ static int fnCallArgIsCtor(INode *arg) {
     if (call->methfld != NULL || (call->flags & FlagOperator))
         return 0;
     StructNode *variant = fnCallVariantNamed(call->objfn);
-    return variant != NULL && variant->genericinfo != NULL;
+    if (variant == NULL)
+        return 0;
+    if (variant->genericinfo != NULL)
+        return 1;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if ((*argp)->tag == FnCallTag && !fnCallArgIsCtor(*argp))
+                return 0;
+    return 1;
 }
 
 // Is this a construction only where it goes can type: a variant of a generic enum
