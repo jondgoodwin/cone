@@ -1940,10 +1940,17 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         INode *refobjtype = iexpGetTypeDcl(obj);
         INode *derefobj = obj;
         if (refobjtype->tag == RefTag && !permIsLock(((RefNode*)refobjtype)->perm) && derefInject(&derefobj)) {
+            int errsbefore = errors;
             callnode->objfn = derefobj;
             selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
             if (selected == NULL)
                 callnode->objfn = obj;
+            else if (errors != errsbefore) {
+                // The borrow said what the permission refuses (an owner behind a
+                // '&'), as the same call on '*r' does: that is the report
+                callnode->vtype = errorType;
+                return -1;
+            }
         }
     }
 
