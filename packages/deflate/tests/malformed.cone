@@ -1,0 +1,471 @@
+// Streams that are not valid must be refused, with the right kind of
+// reason, and never crash or hang: a bad zlib or gzip header, a bad
+// checksum, a block type that does not exist, an over-subscribed or
+// incomplete Huffman code, a code-length repeat with nothing to repeat, a
+// length or distance symbol that does not exist, a match reaching back
+// before the start of the output, a cut stream, bytes after a gzip file. The
+// raw streams here are written bit by bit by the test, so each carries
+// exactly the one fault it is named for; the others are a valid stream with
+// a byte changed or cut. Every stream is also fed split at EVERY offset in
+// two pieces, and must be refused the same way (the refusal does not depend
+// on where the input was cut).
+
+mod malformed;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+
+// -------- a bit writer for hand-made blocks --------
+
+struct Bits {
+  out List[u8];
+  acc u64;
+  n u32;
+
+  fn put(self &mut, value u32, bits u32) {
+    acc = acc | (u64.from(value) << u64.from(n));
+    n = n + bits;
+    while n >= 8u32 {
+      out.push(u8.from(acc & 255u64));
+      acc = acc >> 8u64;
+      n = n - 8u32;
+    }
+  }
+
+  // A Huffman code, most significant bit first
+  fn code(self &mut, value u32, bits u32) {
+    mut rev = 0u32;
+    mut i = 0u32;
+    while i < bits { rev = (rev << 1u32) | ((value >> i) & 1u32); i += 1u32; }
+    self.put(rev, bits);
+  }
+
+  // A literal/length symbol of the fixed code (RFC 1951 3.2.6)
+  fn fixedSym(self &mut, sym u32) {
+    if sym < 144u32 { self.code(0x30u32 + sym, 8u32); }
+    elif sym < 256u32 { self.code(0x190u32 + sym - 144u32, 9u32); }
+    elif sym < 280u32 { self.code(sym - 256u32, 7u32); }
+    else { self.code(0xC0u32 + sym - 280u32, 8u32); }
+  }
+
+  fn bytes(self &mut) List[u8] {
+    if n > 0u32 { self.put(0u32, 8u32 - n); }
+    mut r = List[u8].empty();
+    r <=> out;
+    r;
+  }
+}
+
+fn newBits() Bits { new Bits(List[u8].empty(), 0u64, 0u32); }
+
+// -------- running a stream --------
+
+// 0 inflated to the end; 1 to 8 failed with that kind of reason (below);
+// 100 stuck waiting for input that was all given
+const kBadHeader = 1;
+const kBadBlock = 2;
+const kBadCode = 3;
+const kBadDistance = 4;
+const kTruncated = 5;
+const kBadChecksum = 6;
+const kTooLarge = 7;
+const kTrailing = 8;
+
+fn kindNumber(k &ErrorKind) i32 {
+  if k == ErrorKind.BadHeader { return kBadHeader; }
+  if k == ErrorKind.BadBlock { return kBadBlock; }
+  if k == ErrorKind.BadCode { return kBadCode; }
+  if k == ErrorKind.BadDistance { return kBadDistance; }
+  if k == ErrorKind.Truncated { return kTruncated; }
+  if k == ErrorKind.BadChecksum { return kBadChecksum; }
+  if k == ErrorKind.TooLarge { return kTooLarge; }
+  kTrailing;
+}
+
+// Feed s[0, split) then s[split, end) (the second is skipped when split is
+// the end), finish, and pull to the end
+fn outcome(fmt Format, s &Array[u8], split usize, limit u64, multi bool) i32 {
+  mut inf = Inflater.make(fmt);
+  inf.setLimit(limit);
+  inf.setMultiMember(multi);
+  mut piece = List[u8].empty();
+  mut st Status = Status.NeedInput;
+  if split > 0usize {
+    inf.feed(&s[0usize..<split]);
+    st = Status.MoreOutput;
+    while st == Status.MoreOutput { piece.clear(); st = inf.pull(&mut piece, 4096usize); }
+    if st == Status.Failed { return kindOf(&inf); }
+  }
+  if split < s.len { inf.feed(&s[split..<s.len]); }
+  inf.finish();
+  st = Status.MoreOutput;
+  while st == Status.MoreOutput { piece.clear(); st = inf.pull(&mut piece, 4096usize); }
+  if st == Status.Failed {
+    imm k = kindOf(&inf);
+    // a failed inflater stays failed, with the same reason
+    imm again = inf.pull(&mut piece, 10usize);
+    if again != Status.Failed or kindOf(&inf) != k { return 101; }
+    return k;
+  }
+  if st == Status.Done { return 0; }
+  100;
+}
+
+// The outcome must be 'want' with the stream whole and split at every offset
+fn refusedEverywhere(fmt Format, s &Array[u8], want i32, label &str) {
+  imm whole = outcome(fmt, s, s.len, 1073741824u64, true);
+  expectInt(i64.from(whole), i64.from(want), label);
+  mut wrong = 0usize;
+  mut at = 0usize;
+  while at <= s.len {
+    if outcome(fmt, s, at, 1073741824u64, true) != want { wrong += 1usize; }
+    at += 1usize;
+  }
+  expectInt(i64.from(wrong), 0i64, label);
+}
+
+// The bits written so far, as a raw stream
+fn rawBits(b &mut Bits, want i32, label &str) {
+  imm s = b.bytes();
+  refusedEverywhere(Format.Raw, s.view(), want, label);
+}
+
+fn copyList(a &Array[u8]) List[u8] {
+  mut out = List[u8].empty();
+  mut i = 0usize;
+  while i < a.len { out.push(a[i]); i += 1usize; }
+  out;
+}
+
+fn kindOf(inf &Inflater) i32 {
+  imm e = inf.error();
+  kindNumber(&e.kind);
+}
+
+// -------- hand-made dynamic blocks --------
+
+// A code-length code of four 2-bit codes: symbols 0, 1, 3 and 18 (codes 00,
+// 01, 10, 11 in that order). Writes the block header up to and with the code
+// lengths of that code, BFINAL set.
+fn dynamicHeader(b &mut Bits, hlit u32, hdist u32) {
+  b.put(1u32, 1u32);
+  b.put(2u32, 2u32);
+  b.put(hlit, 5u32);
+  b.put(hdist, 5u32);
+  b.put(14u32, 4u32);           // 18 code-length code lengths: through symbol 1 (index 17)
+  // in the order 16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1
+  mut i = 0u32;
+  while i < 18u32 {
+    imm sym = if i == 0u32 {16u32;} elif i == 1u32 {17u32;} elif i == 2u32 {18u32;} elif i == 3u32 {0u32;}
+      elif i == 4u32 {8u32;} elif i == 5u32 {7u32;} elif i == 6u32 {9u32;} elif i == 7u32 {6u32;}
+      elif i == 8u32 {10u32;} elif i == 9u32 {5u32;} elif i == 10u32 {11u32;} elif i == 11u32 {4u32;}
+      elif i == 12u32 {12u32;} elif i == 13u32 {3u32;} elif i == 14u32 {13u32;} elif i == 15u32 {2u32;}
+      elif i == 16u32 {14u32;} else {1u32;};
+    b.put(if sym == 0u32 or sym == 1u32 or sym == 3u32 or sym == 18u32 {2u32;} else {0u32;}, 3u32);
+    i += 1u32;
+  }
+}
+
+// One code-length symbol of that code (0, 1, 3 or 18, the last with its extra
+// bits: 'zeros' is 11 to 138)
+fn clSym(b &mut Bits, sym u32) {
+  if sym == 0u32 { b.code(0u32, 2u32); }
+  elif sym == 1u32 { b.code(1u32, 2u32); }
+  elif sym == 3u32 { b.code(2u32, 2u32); }
+}
+
+fn clZeros(b &mut Bits, zeros u32) {
+  b.code(3u32, 2u32);
+  b.put(zeros - 11u32, 7u32);
+}
+
+fn main() i32 {
+  // ---------------- raw: block level ----------------
+  // block type 3 does not exist
+  mut b = newBits();
+  b.put(1u32, 1u32);
+  b.put(3u32, 2u32);
+  rawBits(&mut b, kBadBlock, "block type 3");
+
+  // stored, LEN and NLEN that are not complements
+  imm s1 Array[u8, 10] = [1u8, 5u8, 0u8, 0u8, 0u8, 97u8, 97u8, 97u8, 97u8, 97u8];
+  refusedEverywhere(Format.Raw, &s1, kBadBlock, "stored LEN against NLEN");
+  // stored, cut in the middle of the data
+  imm s2 Array[u8, 7] = [1u8, 5u8, 0u8, 250u8, 255u8, 97u8, 98u8];
+  refusedEverywhere(Format.Raw, &s2, kTruncated, "stored data cut short");
+  // stored, cut in the length
+  imm s3 Array[u8, 4] = [1u8, 5u8, 0u8, 250u8];
+  refusedEverywhere(Format.Raw, &s3, kTruncated, "stored length cut short");
+  // nothing at all
+  refusedEverywhere(Format.Raw, "", kTruncated, "an empty raw stream");
+
+  // an over-subscribed code-length code: 19 codes of length 1
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(2u32, 2u32);
+  b.put(0u32, 5u32);
+  b.put(0u32, 5u32);
+  b.put(15u32, 4u32);
+  mut i = 0u32;
+  while i < 19u32 { b.put(1u32, 3u32); i += 1u32; }
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadBlock, "an over-subscribed code-length code");
+
+  // an over-subscribed literal/length code: four symbols of length 1
+  b = newBits();
+  dynamicHeader(&mut b, 0u32, 0u32);
+  clSym(&mut b, 1u32);
+  clSym(&mut b, 1u32);
+  clSym(&mut b, 1u32);
+  clZeros(&mut b, 138u32);
+  clZeros(&mut b, 115u32);      // symbols 3 to 255: 253 zeros
+  clSym(&mut b, 1u32);          // symbol 256
+  clSym(&mut b, 1u32);          // the one distance code
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadBlock, "an over-subscribed literal/length code");
+
+  // an incomplete literal/length code of two symbols (97 and 256)
+  b = newBits();
+  dynamicHeader(&mut b, 0u32, 0u32);
+  clZeros(&mut b, 97u32);       // symbols 0 to 96
+  clSym(&mut b, 3u32);          // symbol 97: length 3
+  clZeros(&mut b, 138u32);
+  clZeros(&mut b, 20u32);       // symbols 98 to 255: 158 zeros
+  clSym(&mut b, 1u32);          // symbol 256: length 1
+  clSym(&mut b, 1u32);          // the one distance code
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadBlock, "an incomplete literal/length code");
+
+  // no end-of-block code
+  b = newBits();
+  dynamicHeader(&mut b, 0u32, 0u32);
+  clSym(&mut b, 1u32);          // symbol 0: length 1
+  clSym(&mut b, 1u32);          // symbol 1: length 1
+  clZeros(&mut b, 138u32);
+  clZeros(&mut b, 117u32);      // symbols 2 to 256: 255 zeros
+  clSym(&mut b, 1u32);          // the one distance code
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadBlock, "a block with no end-of-block code");
+
+  // the first code length asks to repeat the one before it: symbol 16 first
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(2u32, 2u32);
+  b.put(0u32, 5u32);
+  b.put(0u32, 5u32);
+  b.put(14u32, 4u32);
+  // code-length code of 16, 0, 1 and 18, 2 bits each
+  i = 0u32;
+  while i < 18u32 {
+    // indices 0 (16), 2 (18), 3 (0) and 17 (1)
+    b.put(if i == 0u32 or i == 2u32 or i == 3u32 or i == 17u32 {2u32;} else {0u32;}, 3u32);
+    i += 1u32;
+  }
+  b.code(2u32, 2u32);           // symbol 16 (code 10)
+  b.put(0u32, 2u32);
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadBlock, "a length repeat with nothing before it");
+
+  // ---------------- raw: symbols ----------------
+  // fixed block: 'a', then a match of length 3 at distance 5 (one byte of output)
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(97u32);
+  b.fixedSym(257u32);           // length 3
+  b.code(4u32, 5u32);           // distance code 4: 5 or 6 (one extra bit)
+  b.put(0u32, 1u32);
+  b.fixedSym(256u32);
+  rawBits(&mut b, kBadDistance, "a match reaching before the start");
+
+  // the same with the distance exactly the output so far: fine
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(97u32);
+  b.fixedSym(257u32);
+  b.code(0u32, 5u32);           // distance 1
+  b.fixedSym(256u32);
+  rawBits(&mut b, 0, "a match at distance 1 after one byte is valid");
+
+  // distance symbol 30 (and 31) does not exist
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(97u32);
+  b.fixedSym(257u32);
+  b.code(30u32, 5u32);
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadCode, "distance symbol 30");
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(97u32);
+  b.fixedSym(257u32);
+  b.code(31u32, 5u32);
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadCode, "distance symbol 31");
+
+  // length symbol 286 (and 287) does not exist
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(97u32);
+  b.fixedSym(286u32);
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadCode, "length symbol 286");
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(287u32);
+  b.put(0u32, 16u32);
+  rawBits(&mut b, kBadCode, "length symbol 287");
+
+  // a fixed block that never ends
+  b = newBits();
+  b.put(1u32, 1u32);
+  b.put(1u32, 2u32);
+  b.fixedSym(97u32);
+  b.fixedSym(98u32);
+  rawBits(&mut b, kTruncated, "a fixed block with no end");
+
+  // ---------------- zlib ----------------
+  // a good stream: zlib's "hello hello hello"
+  imm good Array[u8, 16] = [120u8, 218u8, 203u8, 72u8, 205u8, 201u8, 201u8, 87u8, 200u8, 64u8, 144u8, 0u8, 58u8, 46u8, 6u8, 125u8];
+  mut z = List[u8].empty();
+  i = 0u32;
+  while i < 16u32 { z.push(good[usize.from(i)]); i += 1u32; }
+  refusedEverywhere(Format.Zlib, z.view(), 0, "the good zlib stream");
+
+  mut t = copyList(z.view());
+  t.set(0usize, 0x79u8);
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: method 9");
+  // window of 2^16 (CINFO 8), with a valid check
+  t = copyList(z.view());
+  t.set(0usize, 0x88u8);
+  t.set(1usize, u8.from((31u32 - (0x8800u32 % 31u32)) % 31u32));
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: window over 32 KiB");
+  // a check that fails
+  t = copyList(z.view());
+  t.set(1usize, 0x9Du8);
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: header check");
+  // a preset dictionary (FDICT), with a valid check
+  t = copyList(z.view());
+  t.set(1usize, u8.from(0x20u32 + (31u32 - ((0x7800u32 + 0x20u32) % 31u32)) % 31u32));
+  refusedEverywhere(Format.Zlib, t.view(), kBadHeader, "zlib: preset dictionary");
+  // a changed checksum
+  t = copyList(z.view());
+  t.set(15usize, *t[15usize] ^ 1u8);
+  refusedEverywhere(Format.Zlib, t.view(), kBadChecksum, "zlib: Adler-32 changed");
+  // a changed data byte (the checksum no longer matches, or the stream breaks)
+  t = copyList(z.view());
+  t.set(5usize, *t[5usize] ^ 0x10u8);
+  expect(outcome(Format.Zlib, t.view(), t.len(), 1073741824u64, true) != 0, "zlib: a data byte changed is refused");
+  // cut: every strict prefix is refused (as Truncated, or for a prefix of the
+  // header alone, as Truncated too)
+  mut cutWrong = 0usize;
+  mut cutAt = 0usize;
+  while cutAt < z.len() {
+    imm prefix = &z.view()[0usize..<cutAt];
+    if outcome(Format.Zlib, prefix, cutAt, 1073741824u64, true) != kTruncated { cutWrong += 1usize; }
+    cutAt += 1usize;
+  }
+  expectInt(i64.from(cutWrong), 0i64, "zlib: every strict prefix is Truncated");
+
+  // ---------------- gzip ----------------
+  // a good member: hello, with a name
+  mut g = List[u8].empty();
+  g.push(0x1Fu8); g.push(0x8Bu8); g.push(8u8); g.push(8u8);          // magic, deflate, FNAME
+  g.push(0u8); g.push(0u8); g.push(0u8); g.push(0u8);               // time
+  g.push(0u8); g.push(255u8);                                       // XFL, OS
+  g.push(97u8); g.push(0u8);                                        // name "a"
+  // "hello hello hello" as a stored block (final)
+  g.push(1u8); g.push(17u8); g.push(0u8); g.push(238u8); g.push(255u8);
+  imm hello = "hello hello hello";
+  i = 0u32;
+  while usize.from(i) < hello.len { g.push(hello[usize.from(i)]); i += 1u32; }
+  imm crcv = crc32(hello);
+  g.push(u8.from(crcv & 255u32)); g.push(u8.from((crcv >> 8u32) & 255u32)); g.push(u8.from((crcv >> 16u32) & 255u32)); g.push(u8.from(crcv >> 24u32));
+  g.push(17u8); g.push(0u8); g.push(0u8); g.push(0u8);
+  refusedEverywhere(Format.Gzip, g.view(), 0, "the good gzip member");
+  imm glen = g.len();
+
+  t = copyList(g.view());
+  t.set(0usize, 0x1Eu8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: bad first magic byte");
+  t = copyList(g.view());
+  t.set(1usize, 0x8Cu8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: bad second magic byte");
+  t = copyList(g.view());
+  t.set(2usize, 7u8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: method 7");
+  t = copyList(g.view());
+  t.set(3usize, 0x28u8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: a reserved flag");
+  t = copyList(g.view());
+  t.set(glen - 8usize, *t[glen - 8usize] ^ 1u8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadChecksum, "gzip: CRC-32 changed");
+  t = copyList(g.view());
+  t.set(glen - 4usize, 16u8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadChecksum, "gzip: size changed");
+  // the header check flag with a wrong CRC-16 (the flag 2 in place of the name's 8; the name is then part of the data)
+  t = copyList(g.view());
+  t.set(3usize, 2u8);
+  expect(outcome(Format.Gzip, t.view(), t.len(), 1073741824u64, true) != 0, "gzip: a header CRC-16 that is wrong is refused");
+  // a cut member: every strict prefix is refused as Truncated
+  cutWrong = 0usize;
+  cutAt = 0usize;
+  while cutAt < glen {
+    imm prefix = &g.view()[0usize..<cutAt];
+    if outcome(Format.Gzip, prefix, cutAt, 1073741824u64, true) != kTruncated { cutWrong += 1usize; }
+    cutAt += 1usize;
+  }
+  expectInt(i64.from(cutWrong), 0i64, "gzip: every strict prefix is Truncated");
+
+  // after the member: zeros are padding, anything else must be a member
+  t = copyList(g.view());
+  t.push(0u8); t.push(0u8); t.push(0u8);
+  refusedEverywhere(Format.Gzip, t.view(), 0, "gzip: zero padding after the member");
+  t = copyList(g.view());
+  t.push(7u8); t.push(7u8); t.push(7u8);
+  refusedEverywhere(Format.Gzip, t.view(), kTrailing, "gzip: garbage after the member");
+  t = copyList(g.view());
+  t.push(0x1Fu8);
+  refusedEverywhere(Format.Gzip, t.view(), kTrailing, "gzip: one stray byte after the member");
+  // a second member that is itself broken
+  t = copyList(g.view());
+  i = 0u32;
+  while usize.from(i) < glen { t.push(*g[usize.from(i)]); i += 1u32; }
+  t.set(glen + 2usize, 9u8);
+  refusedEverywhere(Format.Gzip, t.view(), kBadHeader, "gzip: a broken second member");
+  // one member only: what follows is left, not looked at
+  t = copyList(g.view());
+  t.push(7u8); t.push(7u8);
+  expectInt(i64.from(outcome(Format.Gzip, t.view(), t.len(), 1073741824u64, false)), 0i64, "gzip, single-member mode: garbage after the member is left alone");
+
+  // ---------------- the output limit ----------------
+  // 70000 zeros, deflated at level 1: one stream whose matches are long
+  mut zeros = List[u8].empty();
+  i = 0u32;
+  while i < 70000u32 { zeros.push(0u8); i += 1u32; }
+  imm zstream = zlibCompress(zeros.view(), 1);
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), zstream.len(), 70000u64, true)), 0i64, "a limit equal to the output is fine");
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), zstream.len(), 69999u64, true)), i64.from(kTooLarge), "a limit one under the output");
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), 100usize, 1000u64, true)), i64.from(kTooLarge), "a limit that falls inside a match");
+  expectInt(i64.from(outcome(Format.Zlib, zstream.view(), 0usize, 0u64, true)), i64.from(kTooLarge), "a limit of zero");
+  // stored data
+  imm sstream = zlibCompress(zeros.view(), 0);
+  expectInt(i64.from(outcome(Format.Zlib, sstream.view(), sstream.len(), 70000u64, true)), 0i64, "stored: a limit equal to the output");
+  expectInt(i64.from(outcome(Format.Zlib, sstream.view(), sstream.len(), 69999u64, true)), i64.from(kTooLarge), "stored: a limit one under the output");
+  // the one-shot helpers: 'expected' is a limit too
+  match zlibDecompress(zstream.view(), 69999usize) {
+    case imm ok Ok { expect(false, "one-shot expected size too small is refused"); }
+    case imm e Error { expect(e.kind == ErrorKind.TooLarge, "one-shot expected size too small is refused"); }
+  }
+  match zlibDecompress(zstream.view(), 70000usize) {
+    case imm ok Ok { expectInt(i64.from(ok.len()), 70000i64, "one-shot expected size exact"); }
+    case imm e Error { expect(false, "one-shot expected size exact"); }
+  }
+  done();
+}
