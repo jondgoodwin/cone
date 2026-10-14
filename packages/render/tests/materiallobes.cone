@@ -1,0 +1,620 @@
+// The extended material's lobes on a real GPU with no window: sheen,
+// anisotropy, subsurface scattering and wet darkening, drawn by the extended
+// pipelines (pbrx.slang's fragmentExtended) into a 64 x 64 half-float target,
+// read back as linear radiance (exposure 1) and checked against values worked
+// out on the CPU in double precision by an independent route. Only a failure
+// prints. Every scene is lit by the sun alone (the environment's strength 0,
+// no sky drawn), so a pixel is the direct lighting and nothing else.
+//
+// The flat scene is a square facing the camera, which stands at (0, 0, 3) looking
+// down -z; its centre pixel has the normal and the view both (0, 0, 1) to within
+// 0.6 degrees (the pixel's own centre is half a pixel off the axis). The sun
+// has an irradiance of pi, so a Lambert surface of albedo a gives a x cos.
+//
+// 1. PARITY. With every lobe off, the extended pipelines draw what the base ones
+//    do: a coated, a plain and an iridescent sphere under the sun, a point light
+//    and the sky, each pixel within 2% (and 0.003 in radiance). The base shader
+//    is untouched by the extended one's existence: it is the same SPIR-V.
+// 2. THE TABLES, read back from the GPU, against integrals made on the CPU:
+//    - the sheen albedo E(n.v, r) = int D V cos over the hemisphere, by a 400 x 800
+//      midpoint rule, at five (n.v, roughness) points, within 2%;
+//    - the diffusion table at (n.l, 1/rho): the ring integral of Penner and
+//      Borshukov with the green skin profile's five Gaussians (d'Eon and
+//      Luebke), by 400,000 steps of x = pi s^6, at six points (0.01 absolute): flat
+//      surfaces give saturate(n.l) exactly; a curved one lifts the dark side
+//      and lowers the lit side.
+// 3. SHEEN. A black base of roughness 0.5 under the sun 60 degrees off the normal
+//    (n.l 0.5, n.h = n.v-ish 0.866), with and without a sheen of (1, 0.5, 0.25) and
+//    roughness 0.5: L(with) = sheenColor D V n.l E + (1 - max(sheenColor) E(n.v)) L(without), D
+//    Charlie's distribution and V Neubelt's, within 3% in each channel.
+// 4. ANISOTROPY. A white metal of roughness 0.5 and anisotropy 0.5, the sun 40 degrees off the normal
+//    in the plane of the grain's tangent (x: the u of the square's uvs), then in the plane
+//    across it (y): everything the two share (the Fresnel, the cosines, the energy) is equal, so
+//    the radiance ratio is the ratio of D V of the anisotropic lobe, which the CPU
+//    computes (about 24), within 4%. Turned a quarter turn (anisotropyRotation pi / 2), the
+//    ratio inverts. A mesh with tangents (Mesh.computeTangents) draws the same radiance, by
+//    the tangent pipeline, as the derivative frame does on the square.
+// 5. SUBSURFACE. On a sphere lit from the side, a pixel past the terminator has no light
+//    from Lambert's cosine and some from the table; a wider scattering gives more.
+// 6. WET. A white diffuse square under the sun at 45 degrees, wet all over and darkening by
+//    0.5: its radiance is 0.5 x the dry one's x (1 - the coat's Fresnel), 0.48 within 0.02.
+// 7. THE DESCRIPTION. 'coated', 'iridescent', 'wet', 'velvet', 'brushed', 'skin', 'glassOf' set the fields
+//    they name, and a material is extended when it uses any new lobe.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation and
+// synchronization validation are on, and must say nothing.
+
+mod materiallobes;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIZE = 64u32;
+
+// The discrete GPU, or the integrated one if GPU_POWER_PREFERENCE is low-power
+fn powerPreference() u32 {
+  imm e = libc.getenv("GPU_POWER_PREFERENCE");
+  if (e as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(e), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm exponent = (bits >> 10u32) & 31u32;
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  if exponent == 0u32 { return 0.; }
+  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  sign * (f as f32);
+}
+
+// Channel 'c' of pixel ('x', 'y') of the half-float frame at 'p', 'width' texels wide
+fn radiance(p *u8, width u32, x u32, y u32, c usize) f64 {
+  imm h = p as *u16;
+  f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(width) + usize.from(x)) * 4usize + c)));
+}
+
+// One frame of 'list' into 'color' (half-float, readable), read back
+fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// The mean of the four pixels round the middle of the frame: the one point on the camera's axis
+fn centre(p *u8, c usize) f64 {
+  (radiance(p, SIZE, 31u32, 31u32, c) + radiance(p, SIZE, 32u32, 31u32, c) + radiance(p, SIZE, 31u32, 32u32, c)
+    + radiance(p, SIZE, 32u32, 32u32, c)) * 0.25d;
+}
+
+fn within(got f64, want f64, relative f64, absolute f64) bool {
+  imm d = if got < want { want - got; } else { got - want; };
+  d <= absolute + relative * (if want < 0d { -want; } else { want; });
+}
+
+// ---- The CPU's side ----
+
+fn square(x f64) f64 { x * x; }
+
+// Charlie's sheen distribution and Neubelt's visibility
+fn sheenD(noh f64, alpha f64) f64 {
+  imm invA = 1d / alpha;
+  imm sin2h = if 1d - noh * noh > 0.0078125d { 1d - noh * noh; } else { 0.0078125d; };
+  (2d + invA) * libc.pow(sin2h, invA * 0.5d) / (2d * 3.14159265358979d);
+}
+fn sheenV(nov f64, nol f64) f64 {
+  imm v = 1d / (4d * (nol + nov - nol * nov));
+  if v > 1d { 1d; } else { v; };
+}
+
+// The sheen lobe's directional albedo: its integral over the hemisphere of light directions (midpoint rule)
+fn sheenAlbedo(nov f64, roughness f64) f64 {
+  imm alpha = roughness * roughness;
+  imm vx = libc.sqrt(1d - nov * nov);
+  mut sum = 0d;
+  mut i = 0;
+  while i < 400 {
+    imm cosL = (f64.from(i) + 0.5d) / 400d;
+    imm sinL = libc.sqrt(1d - cosL * cosL);
+    mut j = 0;
+    while j < 800 {
+      imm phi = (f64.from(j) + 0.5d) / 800d * 6.283185307179586d;
+      imm lx = sinL * libc.cos(phi);
+      imm ly = sinL * libc.sin(phi);
+      imm hx = vx + lx;
+      imm hy = ly;
+      imm hz = nov + cosL;
+      imm hl = libc.sqrt(hx * hx + hy * hy + hz * hz);
+      sum = sum + sheenD(hz / hl, alpha) * sheenV(nov, cosL) * cosL;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  sum / 400d * (6.283185307179586d / 800d);
+}
+
+// d'Eon and Luebke's green skin profile, a sum of five Gaussians (variances in mm2)
+fn profile(r f64) f64 {
+  mut sum = 0d;
+  mut i = 0;
+  while i < 5 {
+    imm v = if i == 0 { 0.0064d; } elif i == 1 { 0.0484d; } elif i == 2 { 0.187d; } elif i == 3 { 0.567d; } else { 1.99d; };
+    imm w = if i == 0 { 0.455d; } elif i == 1 { 0.336d; } elif i == 2 { 0.198d; } elif i == 3 { 0.007d; } else { 0.004d; };
+    sum = sum + w * libc.exp(-r * r / (2d * v)) / (6.283185307179586d * v);
+    i = i + 1;
+  }
+  sum;
+}
+
+// Penner and Borshukov's ring integral for the light's cosine 'nol' and a ring of radius 1 / perMm millimetres
+fn diffusion(nol f64, perMm f64) f64 {
+  imm theta = libc.acos(nol);
+  if perMm < 0.0001d {
+    return if nol > 0d { nol; } else { 0d; };
+  }
+  imm rho = 1d / perMm;
+  mut lit = 0d;
+  mut total = 0d;
+  mut i = 0;
+  while i < 400000 {
+    imm s0 = f64.from(i) / 400000d;
+    imm s1 = f64.from(i + 1) / 400000d;
+    imm x0 = 3.14159265358979d * libc.pow(s0, 6d);
+    imm x1 = 3.14159265358979d * libc.pow(s1, 6d);
+    imm x = 0.5d * (x0 + x1);
+    imm dx = x1 - x0;
+    imm r = 2d * rho * libc.sin(0.5d * x);
+    imm weight = profile(r) * dx;
+    imm a = libc.cos(theta + x);
+    imm b = libc.cos(theta - x);
+    lit = lit + weight * ((if a > 0d { a; } else { 0d; }) + (if b > 0d { b; } else { 0d; }));
+    total = total + weight * 2d;
+    i = i + 1;
+  }
+  lit / total;
+}
+
+// How much the caustic volume 'v' (strength 1, the surface height 'top') brightens the sun at the
+// world point (x, 0, z) for the sun direction 'l', at 'time': scenecapture.slang's causticLight, from
+// the physics (the Jacobian of the ray map of four crossing waves), in double precision
+fn causticFactor(wx f64, wz f64, lx f64, ly f64, lz f64, top f64, height f64, wavelength f64, ior f64, time f64) f64 {
+  imm depth = top;
+  imm sx = wx + lx * (depth / ly);
+  imm sz = wz + lz * (depth / ly);
+  imm k0 = 6.283185307179586d / wavelength;
+  mut hxx = 0d;
+  mut hzz = 0d;
+  mut hxz = 0d;
+  mut i = 0;
+  while i < 4 {
+    imm angle = 0.7d + 1.9d * f64.from(i);
+    imm dx = libc.cos(angle);
+    imm dz = libc.sin(angle);
+    imm k = k0 * (1d + 0.55d * f64.from(i));
+    imm a = height / (1d + 0.8d * f64.from(i));
+    imm phase = k * (dx * sx + dz * sz) + time * libc.sqrt(1d + 0.55d * f64.from(i)) + 2.1d * f64.from(i);
+    imm c = -a * k * k * libc.sin(phase);
+    hxx = hxx + c * dx * dx;
+    hzz = hzz + c * dz * dz;
+    hxz = hxz + c * dx * dz;
+    i = i + 1;
+  }
+  imm kk = depth * (1d - 1d / ior);
+  imm det = (1d - kk * hxx) * (1d - kk * hzz) - kk * kk * hxz * hxz;
+  imm absDet = if det < 0d { -det; } else { det; };
+  imm focus0 = 1d / (if absDet > 0.2d { absDet; } else { 0.2d; });
+  imm focus = if focus0 > 5d { 5d; } else { focus0; };
+  imm fade0 = 1d - depth / (6d * wavelength);
+  imm fade = if fade0 < 0d { 0d; } elif fade0 > 1d { 1d; } else { fade0; };
+  1d + fade * (focus - 1d);
+}
+
+// The anisotropic lobe's D V (lobes.slang), in double precision
+fn anisotropicDV(at f64, ab f64, toh f64, boh f64, noh f64, tov f64, bov f64, tol f64, bol f64, nov f64, nol f64) f64 {
+  imm a2 = at * ab;
+  imm d2 = square(ab * toh) + square(at * boh) + square(a2 * noh);
+  imm b2 = a2 / d2;
+  imm d = a2 * b2 * b2 / 3.14159265358979d;
+  imm lambdaV = nol * libc.sqrt(square(at * tov) + square(ab * bov) + nov * nov);
+  imm lambdaL = nov * libc.sqrt(square(at * tol) + square(ab * bol) + nol * nol);
+  imm v = 0.5d / (lambdaV + lambdaL);
+  d * (if v > 1d { 1d; } else { v; });
+}
+
+fn main() i32 {
+  mut instance = Instance.create("materiallobes");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, powerPreference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm pi64 = 3.14159265358979d;
+
+  // The square (a plane turned to face +z; its uv's u runs along +x), and a sphere
+  imm square1 = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  mut tangentSquare = Mesh.plane(1, 1.);
+  tangentSquare.computeTangents();
+  expectFloat(f64.from(tangentSquare.tangents[0usize].x), 1d, 0.0001d, "the square's tangent runs along +x (increasing u)");
+  expectFloat(f64.from(tangentSquare.tangents[0usize].y), 0d, 0.0001d, "and has no y");
+  imm square2 = renderer.addMesh(&mut device, &tangentSquare);
+  imm ball = renderer.addMesh(&mut device, &Mesh.sphere(0.5, 64));
+  imm faceZ = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)), new Vec3(1.6, 1., 1.6));
+  mut list = DrawList.empty();
+
+  // ---- 1. Parity ----
+  {
+    mut sky = Sky.dusk(radians(25.), radians(30.));
+    sky.cloud = new Color(0.4, 0.4, 0.45, 1.);
+    sky.cloudCover = 0.5;
+    sky.cloudScale = 3.;
+    renderer.setSky(&mut device, &sky);
+    renderer.environmentStrength = 1.;
+    renderer.lights.addPoint(new Vec3(1.2, 0.8, 1.5), new Color(1., 0.8, 0.6, 1.), 3., 6.);
+    imm sun = sky.sunLight(new Color(2.4, 1.8, 1.2, 1.), new Color(0.1, 0.1, 0.1, 1.));
+    mut materials = new Array[PbrMaterial, 3] <- fill PbrMaterial.standard(Color.gray(1.), 0., 0.5);
+    materials[0usize] = PbrMaterial.standard(new Color(0.8, 0.35, 0.15, 1.), 0., 0.5);
+    materials[1usize] = PbrMaterial.standard(new Color(0.8, 0.8, 0.8, 1.), 0., 0.3).coated(1., 0.05);
+    materials[2usize] = PbrMaterial.chitin(300., 600., 7u32);
+    mut m = 0usize;
+    while m < 3usize {
+      imm handle = renderer.addPbrMaterial(&mut device, &materials[m]);
+      list.clear();
+      list.add(ball, handle, Mat4.identity());
+      renderer.forceExtended(&mut device, false);
+      drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
+      mut base = List[f64].empty();
+      mut i = 0u32;
+      while i < SIZE * SIZE * 4u32 {
+        base.push(radiance(p, SIZE, (i / 4u32) % SIZE, (i / 4u32) / SIZE, usize.from(i % 4u32)));
+        i = i + 1u32;
+      }
+      renderer.forceExtended(&mut device, true);
+      drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
+      mut worst = 0d;
+      mut bright = 0d;
+      i = 0u32;
+      while i < SIZE * SIZE * 4u32 {
+        imm a = *base[usize.from(i)];
+        imm b = radiance(p, SIZE, (i / 4u32) % SIZE, (i / 4u32) / SIZE, usize.from(i % 4u32));
+        imm d = if a > b { a - b; } else { b - a; };
+        imm scale = if a > 0.003d { a; } else { 0.003d; };
+        if d / scale > worst and d > 0.003d { worst = d / scale; }
+        if a > bright { bright = a; }
+        i = i + 1u32;
+      }
+      expect(worst < 0.02d, "the extended pipelines with every lobe off draw what the base ones do");
+      expect(bright > 0.2d, "and the scene was lit");
+      renderer.forceExtended(&mut device, false);
+      m = m + 1usize;
+    }
+    // The base shader draws every later test's reference: set the sun alone
+    renderer.environmentStrength = 0.;
+    renderer.lights.clear();
+    renderer.setSky(&mut device, &Sky.dusk(radians(25.), radians(30.)));
+    renderer.drawSky = false;
+  }
+
+  // ---- 2. The tables ----
+  {
+    // The extended pipelines (and their tables) are made by the first extended material
+    imm warm = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.5), 0., 0.5).velvet(Color.gray(0.5), 0.5));
+    list.clear();
+    list.add(square1, warm, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &Light.directional(new Vec3(0., 0., -1.), Color.gray(1.), Color.gray(0.)), &list);
+    require(renderer.ext.len() == 1usize, "the extended machinery exists once an extended material was added");
+    mut tableBack = device.createBuffer(u64.from(128u32 * 64u32 * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    mut sheenBack = device.createBuffer(u64.from(32u32 * 32u32 * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    mut encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer(&renderer.ext[0usize].diffusion, &tableBack);
+    encoder.copyTextureToBuffer(&renderer.ext[0usize].sheen, &sheenBack);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm tp = tableBack.mappedRange();
+    imm sp = sheenBack.mappedRange();
+    // The sheen albedo at (n.v, roughness): texel (x, y) is at ((x + 0.5) / 32, (y + 0.5) / 32)
+    imm cases Array[u32, 10] = [31u32, 15u32,  15u32, 7u32,  24u32, 20u32,  8u32, 28u32,  20u32, 3u32];
+    mut c = 0usize;
+    while c < 5usize {
+      imm x = cases[c * 2usize];
+      imm y = cases[c * 2usize + 1usize];
+      imm nov = (f64.from(x) + 0.5d) / 32d;
+      imm r = (f64.from(y) + 0.5d) / 32d;
+      imm rough = if r < 0.07d { 0.07d; } else { r; };
+      imm want = sheenAlbedo(nov, rough);
+      imm got = radiance(sp, 32u32, x, y, 0usize);
+      expect(within(got, want, 0.02d, 0.001d), "the sheen table matches the CPU's integral of D V cos");
+      if !within(got, want, 0.02d, 0.001d) { eprint <- "  at n.v "; eprint <- nov; eprint <- " roughness "; eprint <- rough; eprint <- ": table "; eprint <- got; eprint <- ", integral "; eprint <- want; eprint <- "\n"; }
+      c = c + 1usize;
+    }
+    // The diffusion table: texel (x, y) is n.l = (x + 0.5) / 64 - 1 and v = (y + 0.5) / 64, 1/rho = v^2 / 2 per mm
+    imm cases2 Array[u32, 12] = [96u32, 0u32,  100u32, 20u32,  64u32, 24u32,  40u32, 32u32,  70u32, 45u32,  20u32, 40u32];
+    c = 0usize;
+    while c < 6usize {
+      imm x = cases2[c * 2usize];
+      imm y = cases2[c * 2usize + 1usize];
+      imm nol = (f64.from(x) + 0.5d) / 64d - 1d;
+      imm v = (f64.from(y) + 0.5d) / 64d;
+      imm perMm = v * v * 0.5d;
+      imm want = diffusion(nol, perMm);
+      imm got = radiance(tp, 128u32, x, y, 0usize);
+      expect(within(got, want, 0d, 0.01d), "the diffusion table matches the CPU's ring integral");
+      if !within(got, want, 0d, 0.01d) { eprint <- "  at n.l "; eprint <- nol; eprint <- " 1/rho "; eprint <- perMm; eprint <- ": table "; eprint <- got; eprint <- ", integral "; eprint <- want; eprint <- "\n"; }
+      c = c + 1usize;
+    }
+    // A flat surface (v about 0): the clamped cosine
+    expect(within(radiance(tp, 128u32, 96u32, 0u32, 0usize), (96d + 0.5d) / 64d - 1d, 0d, 0.02d), "a flat surface keeps the cosine");
+    expect(radiance(tp, 128u32, 40u32, 0u32, 0usize) < 0.03d, "a flat surface leaves its dark side dark");
+    // A sharply curved surface lifts the dark side and lowers the lit side
+    // (the green profile is narrow: a 2 mm ring leaks light across 11 degrees of the terminator)
+    imm farCurved = radiance(tp, 128u32, 60u32, 60u32, 0usize);
+    imm farFlat = radiance(tp, 128u32, 60u32, 0u32, 0usize);
+    expect(farCurved > farFlat + 0.004d, "a curved surface lights its far side");
+    if !(farCurved > farFlat + 0.004d) { eprint <- "  far side: curved "; eprint <- farCurved; eprint <- ", flat "; eprint <- farFlat; eprint <- "\n"; }
+    expect(radiance(tp, 128u32, 120u32, 60u32, 0usize) < radiance(tp, 128u32, 120u32, 0u32, 0usize),
+      "and takes some from its lit one");
+  }
+
+  // The sun: irradiance pi, so a Lambert surface of albedo a gives a x n.l
+  imm pi32 = 3.14159265;
+
+  // ---- 3. Sheen ----
+  {
+    imm l = new Vec3(0.8660254, 0., 0.5);
+    imm sun = Light.directional(new Vec3(-l.x, -l.y, -l.z), Color.gray(pi32), Color.gray(0.));
+    imm blackBase = PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 0.5);
+    imm plain = renderer.addPbrMaterial(&mut device, &blackBase);
+    imm sheenColor = new Color(1., 0.5, 0.25, 1.);
+    imm cloth = renderer.addPbrMaterial(&mut device, &blackBase.velvet(sheenColor, 0.5));
+    list.clear();
+    list.add(square1, plain, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
+    mut without Array[f64, 3] = [radiance(p, SIZE, 32u32, 32u32, 0usize), radiance(p, SIZE, 32u32, 32u32, 1usize),
+      radiance(p, SIZE, 32u32, 32u32, 2usize)];
+    list.clear();
+    list.add(square1, cloth, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
+    // The geometry at the middle pixel: n.v 1 (to 0.6 degrees), n.l 0.5, h between them
+    imm nov = 1d;
+    imm nol = 0.5d;
+    imm hx = 0.8660254d;
+    imm hz = 1.5d;
+    imm hl = libc.sqrt(hx * hx + hz * hz);
+    imm noh = hz / hl;
+    imm term = sheenD(noh, 0.25d) * sheenV(nov, nol) * nol * 3.14159265d;
+    imm scale = 1d - 1d * sheenAlbedo(nov, 0.5d);
+    mut ch = 0usize;
+    while ch < 3usize {
+      imm c = if ch == 0usize { 1d; } elif ch == 1usize { 0.5d; } else { 0.25d; };
+      imm want = term * c + scale * without[ch];
+      imm got = radiance(p, SIZE, 32u32, 32u32, ch);
+      expect(within(got, want, 0.03d, 0.0003d), "sheen: the Charlie lobe plus the base it leaves");
+      if !within(got, want, 0.03d, 0.0003d) { eprint <- "  channel "; eprint <- ch; eprint <- ": got "; eprint <- got; eprint <- ", wanted "; eprint <- want; eprint <- " (term "; eprint <- term * c; eprint <- ", scale "; eprint <- scale; eprint <- ", base "; eprint <- without[ch]; eprint <- ")\n"; }
+      ch = ch + 1usize;
+    }
+    expect(radiance(p, SIZE, 32u32, 32u32, 0usize) > without[0usize] * 1.5d, "the sheen made the base brighter at this angle");
+  }
+
+  // ---- 4. Anisotropy ----
+  {
+    mut metal = PbrMaterial.standard(Color.gray(1.), 1., 0.5).brushed(0.5, 0.);
+    imm grain = renderer.addPbrMaterial(&mut device, &metal);
+    metal.anisotropyRotation = pi32 / 2.;
+    imm turned = renderer.addPbrMaterial(&mut device, &metal);
+    // The sun 40 degrees off the normal, in the x-z plane and then in the y-z plane
+    imm s40 = 0.6427876;
+    imm c40 = 0.7660444;
+    imm sunX = Light.directional(new Vec3(-s40, 0., -c40), Color.gray(pi32), Color.gray(0.));
+    imm sunY = Light.directional(new Vec3(0., -s40, -c40), Color.gray(pi32), Color.gray(0.));
+    list.clear();
+    list.add(square1, grain, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunX, &list);
+    imm lx = centre(p, 1usize);
+    imm lxTexel = lx;
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunY, &list);
+    imm ly = centre(p, 1usize);
+    // The CPU's ratio: h at 20 degrees to the normal; the alphas 0.25 x 1.5 and 0.25 x 0.5
+    imm at = 0.375d;
+    imm ab = 0.125d;
+    imm sh = 0.3420201d;
+    imm ch = 0.9396926d;
+    imm dvX = anisotropicDV(at, ab, sh, 0d, ch, 0d, 0d, 0.6427876d, 0d, 1d, 0.7660444d);
+    imm dvY = anisotropicDV(at, ab, 0d, sh, ch, 0d, 0d, 0d, 0.6427876d, 1d, 0.7660444d);
+    expect(lx > 0.05d and ly > 0d, "both highlights exist");
+    expect(within(lx / ly, dvX / dvY, 0.04d, 0d), "anisotropy: the highlight along the grain over the one across it is the lobe's");
+    if !within(lx / ly, dvX / dvY, 0.04d, 0d) { eprint <- "  ratio "; eprint <- lx / ly; eprint <- ", wanted "; eprint <- dvX / dvY; eprint <- " (x "; eprint <- lx; eprint <- ", y "; eprint <- ly; eprint <- ")\n"; }
+    // Turned a quarter turn: inverted
+    list.clear();
+    list.add(square1, turned, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunX, &list);
+    imm tx = centre(p, 1usize);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunY, &list);
+    imm ty = centre(p, 1usize);
+    expect(within(ty / tx, dvX / dvY, 0.04d, 0d), "turned by a quarter turn the highlights swap");
+    // The mesh's own tangents: the tangent pipeline draws what the derivative frame does
+    list.clear();
+    list.add(square2, grain, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunX, &list);
+    expect(within(centre(p, 1usize), lxTexel, 0.015d, 0.0001d), "a mesh with tangents draws the same highlight (x)");
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunY, &list);
+    expect(within(centre(p, 1usize), ly, 0.015d, 0.0001d), "and across the grain (y)");
+  }
+
+  // ---- 5. Subsurface ----
+  {
+    // A sphere of radius 0.5 (a pixel is 0.034 m across at its distance, so its disc is 29 pixels wide) lit from +x
+    // (light travelling -x), the camera on +z: the terminator is the plane x = 0; the pixel 30, 1.5 pixels left
+    // of the middle, has n.l about -0.1 (5.7 degrees past it) and the pixel 44 is well lit
+    imm side = Light.directional(new Vec3(-1., 0., 0.), Color.gray(pi32), Color.gray(0.));
+    imm lambert = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.8), 0., 0.9));
+    // (a ball of half a metre needs a scattering of hundreds of skin widths to soften its terminator)
+    mut skinA = PbrMaterial.standard(Color.gray(0.8), 0., 0.9).scattering(1., new Color(1., 1., 1., 1.), 60.);
+    mut skinB = PbrMaterial.standard(Color.gray(0.8), 0., 0.9).scattering(1., new Color(1., 1., 1., 1.), 400.);
+    imm narrow = renderer.addPbrMaterial(&mut device, &skinA);
+    imm wide = renderer.addPbrMaterial(&mut device, &skinB);
+    list.clear();
+    list.add(ball, lambert, Mat4.identity());
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &side, &list);
+    imm dark = radiance(p, SIZE, 30u32, 32u32, 0usize);
+    imm litSide = radiance(p, SIZE, 44u32, 32u32, 0usize);
+    expect(dark < 0.001d, "Lambert: nothing past the terminator");
+    expect(litSide > 0.1d, "and light before it");
+    list.clear();
+    list.add(ball, narrow, Mat4.identity());
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &side, &list);
+    imm darkNarrow = radiance(p, SIZE, 30u32, 32u32, 0usize);
+    list.clear();
+    list.add(ball, wide, Mat4.identity());
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &side, &list);
+    imm darkWide = radiance(p, SIZE, 30u32, 32u32, 0usize);
+    imm litWide = radiance(p, SIZE, 44u32, 32u32, 0usize);
+    expect(darkWide > dark + 0.003d, "subsurface: light reaches past the terminator");
+    if !(darkWide > dark + 0.003d) { eprint <- "  dark: lambert "; eprint <- dark; eprint <- ", narrow "; eprint <- darkNarrow; eprint <- ", wide "; eprint <- darkWide; eprint <- "\n"; }
+    expect(darkWide > darkNarrow, "more scattering reaches further");
+    expect(litWide < litSide, "and takes from the lit side");
+  }
+
+  // ---- 6. Wet ----
+  {
+    // The sun 45 degrees off the normal: n.l 0.7071, n.h = cos 22.5 degrees, far from the coat's peak
+    imm s45 = 0.70710678;
+    imm sun = Light.directional(new Vec3(-s45, 0., -s45), Color.gray(pi32), Color.gray(0.));
+    imm dry = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.8), 0., 0.9));
+    imm soaked = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.8), 0., 0.9).soaked(1.));
+    list.clear();
+    list.add(square1, dry, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
+    imm dryL = centre(p, 1usize);
+    list.clear();
+    list.add(square1, soaked, faceZ);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
+    imm wetL = centre(p, 1usize);
+    expect(dryL > 0.2d, "the dry square is lit");
+    expectFloat(wetL / dryL, 0.48d, 0.02d, "wet darkens by half, less the coat's Fresnel");
+  }
+
+  // ---- 6b. Caustics ----
+  {
+    // The camera straight down from (0, 3, 0), up towards -z, 40 degrees across: pixel (px, py) sees the floor
+    // point x = (px + 0.5 - 32) / 32 x 3 tan 20, z = (py + 0.5 - 32) / 32 x 3 tan 20. The sun 40 degrees off the
+    // vertical, from (+x, +z); a rippled surface at y = 0.4 over the floor, ripples 0.02 high, 0.3 long.
+    mut down = Camera.make();
+    down.fov = radians(40.);
+    down.lookAt(new Vec3(0., 3., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
+    down.background = new Color(0., 0., 0., 1.);
+    imm s = 0.6427876;
+    imm c = 0.7660444;
+    imm sun = Light.directional(new Vec3(-s * 0.8, -c, -s * 0.6), Color.gray(pi32), Color.gray(0.));
+    imm lx = 0.8d * 0.6427876d;
+    imm ly = 0.7660444d;
+    imm lz = 0.6d * 0.6427876d;
+    imm plain = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.7), 0., 1.));
+    imm seabed = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.7), 0., 1.).causticReceiver(1.));
+    mut v = CausticVolume.none();
+    v.boxMin = new Vec3(-2., -1., -2.);
+    v.boxMax = new Vec3(2., 1., 2.);
+    v.surfaceHeight = 0.4;
+    v.strength = 1.;
+    v.rippleHeight = 0.02;
+    v.wavelength = 0.3;
+    v.speed = 1.;
+    v.ior = 1.33;
+    renderer.setCaustics(&mut device, &v);
+    renderer.time = 0.7;
+    list.clear();
+    list.add(square1, plain, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &down, &sun, &list);
+    mut dry = new Array[f64, 64] <- fill 0d;
+    mut samples = 0usize;
+    mut q = 0usize;
+    while q < 64usize {
+      imm px = 8u32 + u32.from(q % 8usize) * 6u32;
+      imm py = 8u32 + u32.from(q / 8usize) * 6u32;
+      dry[q] = radiance(p, SIZE, px, py, 1usize);
+      q = q + 1usize;
+    }
+    list.clear();
+    list.add(square1, seabed, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &down, &sun, &list);
+    mut worst = 0d;
+    mut lowest = 100d;
+    mut highest = 0d;
+    mut total = 0d;
+    q = 0usize;
+    while q < 64usize {
+      imm px = 8u32 + u32.from(q % 8usize) * 6u32;
+      imm py = 8u32 + u32.from(q / 8usize) * 6u32;
+      imm wx = (f64.from(px) + 0.5d - 32d) / 32d * 3d * 0.36397023d;
+      imm wz = (f64.from(py) + 0.5d - 32d) / 32d * 3d * 0.36397023d;
+      imm want = causticFactor(wx, wz, lx, ly, lz, 0.4d, 0.02d, 0.3d, 1.33d, 0.7d);
+      imm got = radiance(p, SIZE, px, py, 1usize) / dry[q];
+      imm e = if got > want { got - want; } else { want - got; };
+      if e / want > worst { worst = e / want; }
+      if got < lowest { lowest = got; }
+      if got > highest { highest = got; }
+      total = total + got;
+      q = q + 1usize;
+    }
+    expect(worst < 0.04d, "caustics: the sun's brightness on the seabed is the CPU's focus of the four-wave field at every sample");
+    if !(worst < 0.04d) { eprint <- "  worst relative error "; eprint <- worst; eprint <- "\n"; }
+    expect(highest > 1.5d and lowest < 0.8d, "bright lines and dim gaps: the light is focused, not just scaled");
+    expect(total / 64d > 0.7d and total / 64d < 1.6d, "and its mean is about the unfocused light");
+    if !(highest > 1.5d and lowest < 0.8d and total / 64d > 0.7d and total / 64d < 1.6d) { eprint <- "  factor from "; eprint <- lowest; eprint <- " to "; eprint <- highest; eprint <- ", mean "; eprint <- total / 64d; eprint <- "\n"; }
+    // A surface that is not a receiver is lit as before
+    list.clear();
+    list.add(square1, plain, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &down, &sun, &list);
+    // (pixel (20, 20) is sample 18 of the grid: column 2, row 2)
+    expectFloat(radiance(p, SIZE, 20u32, 20u32, 1usize), dry[18usize], 0.0001d, "a floor that is not a receiver is lit as before");
+    renderer.setCaustics(&mut device, &CausticVolume.none());
+  }
+
+  // ---- 7. The description ----
+  {
+    imm m = PbrMaterial.standard(Color.gray(0.5), 0., 0.5);
+    expect(!m.isExtended(), "a plain material is not extended");
+    imm c = m.coated(0.7, 0.1);
+    expectFloat(f64.from(c.clearcoat), 0.7d, 0.0001d, "coated sets the coat");
+    expect(!c.isExtended(), "a coat is not an extended lobe (the base shader has it)");
+    imm i = m.iridescent(200., 500., 1.7, 3u32);
+    expect(i.film and i.clearcoat > 0. and i.filmSeed == 3u32, "iridescent sets a film, and lays a coat for it");
+    imm w = m.wet(2., 0.1, 0.05, 0.4, 9u32);
+    expect(w.wetScale == 2. and w.wetDarken == 0.4 and w.clearcoat == 1., "wet sets the patches, the darkening and the coat");
+    expect(w.isExtended(), "wet darkening is extended");
+    expect(m.velvet(Color.gray(1.), 0.4).isExtended(), "velvet is extended");
+    expect(m.brushed(0.5, 0.).isExtended(), "brushed is extended");
+    expect(m.skin().isExtended() and m.wax().isExtended(), "skin and wax are extended");
+    expect(m.reflective(1.).isExtended() and m.reflective(1.).readsFrame(), "reflective reads the frame");
+    imm g = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.01, new Color(0.5, 0.5, 1., 1.), 0.1, 2.);
+    expect(g.glass == 1. and g.ior == 1.5 and g.dispersion == 2. and g.alphaMode == ALPHA_BLEND and g.readsFrame(),
+      "glassOf describes see-through glass that reads the frame");
+  }
+  done();
+}
