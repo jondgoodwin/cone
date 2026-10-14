@@ -1,0 +1,213 @@
+// ======== Stroking: a polyline to triangles ========
+//
+// Each segment is a strip of triangles across its width with a one-pixel
+// fringe either side (coverage 1 inside radius hw - 1/2, falling to 0 at
+// hw + 1/2) and, at an open end, a one-pixel ramp along (butt and square
+// caps). Joins and round caps are separate pieces on the outer side of a turn:
+// a fan of fully covered triangles from the vertex and a fringe ring outside it.
+// Pieces overlap their neighbours only inside the stroke, so an opaque stroke is
+// exact; a translucent one is a little darker where pieces overlap (at joins).
+// A line thinner than a pixel is drawn one pixel wide with its alpha scaled
+// by the width (the usual stand-in).
+// Method: CPU tessellation with analytic edge coverage, after NanoVG and Skia's
+// stroker (miter, bevel and round joins; miter limit as SVG: miter length over
+// width).
+
+fn cover(c f32) Vec2 { new Vec2(c, 1.); }
+
+// A cross-section of a segment at 'p': the four points across and their coverages
+fn strip(batch &mut Batch, paint &Paint, fade f32, pa Vec2, pb Vec2, n Vec2, rIn f32, rOut f32, ca f32, cb f32) {
+  // Across: -rOut (0), -rIn (1), +rIn (1), +rOut (0), at p_a and p_b along
+  imm a0 = pa - n * rOut;
+  imm a1 = pa - n * rIn;
+  imm a2 = pa + n * rIn;
+  imm a3 = pa + n * rOut;
+  imm b0 = pb - n * rOut;
+  imm b1 = pb - n * rIn;
+  imm b2 = pb + n * rIn;
+  imm b3 = pb + n * rOut;
+  imm o = new Vec2(0., ca);
+  imm i = new Vec2(1., ca);
+  imm ob = new Vec2(0., cb);
+  imm ib = new Vec2(1., cb);
+  batch.quad(paint, fade, a0, o, b0, ob, b1, ib, a1, i);
+  batch.quad(paint, fade, a1, i, b1, ib, b2, ib, a2, i);
+  batch.quad(paint, fade, a2, i, b2, ib, b3, ob, a3, o);
+}
+
+// A fan and a fringe ring about 'p' turning the direction 'from' through 'ang' radians
+fn arcPiece(batch &mut Batch, paint &Paint, fade f32, p Vec2, from Vec2, ang f32, rIn f32, rOut f32) {
+  imm step0 = 2. * acos(clampf(1. - 0.1 / maxf(rOut, 0.2), -1., 1.));
+  mut n = u32.from(libc.ceilf(absf(ang) / maxf(step0, 0.05)));
+  if n < 1u32 { n = 1u32; }
+  if n > 64u32 { n = 64u32; }
+  mut k = 0u32;
+  while k < n {
+    imm d0 = from.rotate(ang * f32.from(k) / f32.from(n));
+    imm d1 = from.rotate(ang * f32.from(k + 1u32) / f32.from(n));
+    imm i0 = p + d0 * rIn;
+    imm i1 = p + d1 * rIn;
+    imm o0 = p + d0 * rOut;
+    imm o1 = p + d1 * rOut;
+    batch.tri(paint, fade, p, new Vec2(1., 1.), i0, new Vec2(1., 1.), i1, new Vec2(1., 1.));
+    batch.quad(paint, fade, i0, new Vec2(1., 1.), i1, new Vec2(1., 1.), o1, new Vec2(0., 1.), o0, new Vec2(0., 1.));
+    k = k + 1u32;
+  }
+}
+
+fn joinPiece(batch &mut Batch, paint &Paint, fade f32, p Vec2, d0 Vec2, d1 Vec2, rIn f32, rOut f32, join u32, miterLimit f32) {
+  imm cr = d0.cross(d1);
+  imm dt = d0.dot(d1);
+  if absf(cr) < 0.0005 and dt > 0. { return; }
+  // The outer side: d1 turning towards +n (left) makes the left the inner side
+  imm s = if cr > 0. { -1.0f; } else { 1.0f; };
+  imm na = d0.perp() * s;
+  imm nb = d1.perp() * s;
+  if join == JOIN_ROUND {
+    arcPiece(batch, paint, fade, p, na, na.signedAngle(nb), rIn, rOut);
+    return;
+  }
+  imm one = new Vec2(1., 1.);
+  imm zero = new Vec2(0., 1.);
+  imm aIn = p + na * rIn;
+  imm bIn = p + nb * rIn;
+  imm aOut = p + na * rOut;
+  imm bOut = p + nb * rOut;
+  imm sum = na + nb;
+  imm cosh = sum.length() * 0.5;
+  if join == JOIN_MITER and cosh > 0.0001 and 1. / cosh <= miterLimit {
+    imm m = sum.normalize();
+    imm tipIn = p + m * (rIn / cosh);
+    imm tipOut = p + m * (rOut / cosh);
+    batch.tri(paint, fade, p, one, aIn, one, tipIn, one);
+    batch.tri(paint, fade, p, one, tipIn, one, bIn, one);
+    batch.quad(paint, fade, aIn, one, tipIn, one, tipOut, zero, aOut, zero);
+    batch.quad(paint, fade, tipIn, one, bIn, one, bOut, zero, tipOut, zero);
+  } else {
+    batch.tri(paint, fade, p, one, aIn, one, bIn, one);
+    batch.quad(paint, fade, aIn, one, bIn, one, bOut, zero, aOut, zero);
+  }
+}
+
+// Strokes the polyline 'pts' (already in pixel space) into 'batch'
+pub fn strokePolyline(batch &mut Batch, pts &List[Vec2], closed bool, width f32, cap u32, join u32, miterLimit f32, paint &Paint) {
+  imm n = pts.len();
+  if n < 2usize or width <= 0. { return; }
+  mut hw = width * 0.5;
+  mut fade = 1.0f;
+  if hw < 0.5 { fade = width; hw = 0.5; }
+  imm rIn = hw - 0.5;
+  imm rOut = hw + 0.5;
+  imm segs = if closed { n; } else { n - 1usize; };
+  // Directions
+  mut dirs = List[Vec2].withCapacity(segs);
+  mut i = 0usize;
+  while i < segs {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % n];
+    dirs.push((b - a).normalize());
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < segs {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % n];
+    imm d = *dirs[i];
+    imm nrm = d.perp();
+    imm startOpen = !closed and i == 0usize;
+    imm endOpen = !closed and i + 1usize == segs;
+    mut pa = a;
+    mut pb = b;
+    if startOpen and cap == CAP_SQUARE { pa = a - d * hw; }
+    if endOpen and cap == CAP_SQUARE { pb = b + d * hw; }
+    imm rampStart = startOpen and cap != CAP_ROUND;
+    imm rampEnd = endOpen and cap != CAP_ROUND;
+    if rampStart {
+      strip(batch, paint, fade, pa - d * 0.5, pa + d * 0.5, nrm, rIn, rOut, 0., 1.);
+      pa = pa + d * 0.5;
+    }
+    if rampEnd {
+      strip(batch, paint, fade, pa, pb - d * 0.5, nrm, rIn, rOut, 1., 1.);
+      strip(batch, paint, fade, pb - d * 0.5, pb + d * 0.5, nrm, rIn, rOut, 1., 0.);
+    } else {
+      strip(batch, paint, fade, pa, pb, nrm, rIn, rOut, 1., 1.);
+    }
+    i = i + 1usize;
+  }
+  // Joins
+  i = 0usize;
+  while i < segs {
+    imm nextSeg = (i + 1usize) % segs;
+    if closed or i + 1usize < segs {
+      imm p = *pts[(i + 1usize) % n];
+      joinPiece(batch, paint, fade, p, *dirs[i], *dirs[nextSeg], rIn, rOut, join, miterLimit);
+    }
+    i = i + 1usize;
+  }
+  // Round caps
+  if !closed and cap == CAP_ROUND {
+    imm dFirst = *dirs[0usize];
+    imm dLast = *dirs[segs - 1usize];
+    arcPiece(batch, paint, fade, *pts[0usize], dFirst.perp(), V2_PI, rIn, rOut);
+    arcPiece(batch, paint, fade, *pts[n - 1usize], dLast.perp(), 0. - V2_PI, rIn, rOut);
+  }
+}
+
+// The pieces of a polyline cut by a dash pattern (dash, gap, dash, ...), beginning 'phase' into it
+pub fn dashPolyline(pts &List[Vec2], closed bool, pattern &List[f32], phase f32) List[List[Vec2]] {
+  mut out = List[List[Vec2]].empty();
+  mut total = 0.0f;
+  mut k = 0usize;
+  while k < pattern.len() { total = total + *pattern[k]; k = k + 1usize; }
+  if pattern.len() < 2usize or total <= 0.001 {
+    mut whole = List[Vec2].empty();
+    k = 0usize;
+    while k < pts.len() { whole.push(*pts[k]); k = k + 1usize; }
+    if closed and pts.len() > 0usize { whole.push(*pts[0usize]); }
+    out.push(whole);
+    return out;
+  }
+  // Where in the pattern the line begins
+  mut idx = 0usize;
+  mut left = 0.0f;
+  mut ph = phase - total * libc.floorf(phase / total);
+  mut guard = 0usize;
+  while ph >= *pattern[idx] and guard < pattern.len() {
+    ph = ph - *pattern[idx];
+    idx = (idx + 1usize) % pattern.len();
+    guard = guard + 1usize;
+  }
+  left = maxf(*pattern[idx] - ph, 0.01);
+  mut on = idx % 2usize == 0usize;
+  mut cur = List[Vec2].empty();
+  imm n = pts.len();
+  imm segs = if closed { n; } else { n - 1usize; };
+  if on and n > 0usize { cur.push(*pts[0usize]); }
+  mut i = 0usize;
+  while i < segs {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % n];
+    imm len = a.distance(b);
+    mut used = 0.0f;
+    while len - used > left {
+      used = used + left;
+      imm p = a.lerp(b, used / len);
+      if on {
+        cur.push(p);
+        out.push(cur);
+        cur = List[Vec2].empty();
+      } else {
+        cur = List[Vec2].empty();
+        cur.push(p);
+      }
+      on = !on;
+      idx = (idx + 1usize) % pattern.len();
+      left = maxf(*pattern[idx], 0.01);
+    }
+    left = left - (len - used);
+    if on { cur.push(b); }
+    i = i + 1usize;
+  }
+  if on and cur.len() > 1usize { out.push(cur); }
+  out;
+}

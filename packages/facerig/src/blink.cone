@@ -1,0 +1,116 @@
+// The blink: when it comes, how long it takes, how far the lids go.
+//
+// METHOD: A RENEWAL PROCESS WITH A PUBLISHED PROFILE. Spontaneous blinks of a
+// resting adult come about 15 to 20 times a minute (Bentivoglio et al. 1997:
+// 17 a minute at rest, 26 in conversation, 4.5 reading), the gaps between
+// them irregular and skewed (a short gap is common, a long one rare): the
+// next gap here is a minimum plus an exponential draw, so the mean is the
+// mean asked for and no gap is shorter than the minimum. A blink's lids
+// close faster than they open (Evinger et al. 1991: the upper lid falls in
+// about 70 ms and rises in about 150 ms, with a moment shut between), so the
+// profile is a smoothstep down, a hold, and a longer smoothstep up. Some
+// blinks are partial (the lids do not meet), some come in pairs. A blink is
+// also triggered by a large gaze shift (Evinger: gaze-evoked blinks), which
+// the rig asks for with 'request'.
+//
+// The rig asks for the closure each frame: 0 open, 1 shut.
+
+pub struct BlinkParams {
+  pub meanInterval f32;     // the mean gap between blinks, seconds
+  pub minInterval f32;      // the shortest gap
+  pub closeTime f32;        // the lids falling
+  pub holdTime f32;         // shut
+  pub openTime f32;         // the lids rising
+  pub partialChance f32;    // the chance that a blink does not close fully
+  pub doubleChance f32;     // the chance that a blink is followed at once by another
+  pub gazeChance f32;       // the chance that a large gaze shift brings a blink
+  pub gazeThreshold f32;    // the shift (radians) that counts as large
+
+  pub fn standard() BlinkParams {
+    new BlinkParams(3.5, 0.9, 0.07, 0.02, 0.15, 0.12, 0.07, 0.7, 0.35);
+  }
+}
+
+pub struct Blinker {
+  pub params BlinkParams;
+  pub timer f32;            // seconds until the next spontaneous blink
+  pub t f32;                // seconds into the blink in progress, or -1
+  pub amplitude f32;        // how far the lids go in it
+  pub follow bool;          // a second blink is to follow this one
+  pub count u32;            // blinks begun
+
+  pub fn make(params BlinkParams, rng &mut Rng) Blinker {
+    mut b = new Blinker(params, 0., -1., 1., false, 0u32);
+    b.timer = b.nextGap(rng) * 0.5;
+    b;
+  }
+
+  // The gap to the next blink
+  pub fn nextGap(self &, rng &mut Rng) f32 {
+    params.minInterval + rng.exponential(params.meanInterval - params.minInterval);
+  }
+
+  // The whole blink's length
+  pub fn length(self &) f32 { params.closeTime + params.holdTime + params.openTime; }
+
+  pub fn active(self &) bool { t >= 0.; }
+
+  // Begin a blink now of the given amplitude, unless one is under way
+  pub fn start(self &mut, amp f32) {
+    if t >= 0. { return; }
+    t = 0.;
+    amplitude = amp;
+    count = count + 1u32;
+  }
+
+  // A blink asked for from outside (a gaze shift of 'shift' radians, a phrase's end)
+  pub fn request(self &mut, rng &mut Rng) {
+    if t >= 0. { return; }
+    self.begin(rng);
+  }
+
+  fn begin(self &mut, rng &mut Rng) {
+    mut a = 1.;
+    if rng.chance(params.partialChance) { a = rng.range(0.55, 0.85); }
+    self.start(a);
+    follow = rng.chance(params.doubleChance);
+  }
+
+  // The lids' closure at the blink's time 't': 0 open, 1 shut (before the amplitude)
+  pub fn profile(self &, at f32) f32 {
+    if at < 0. { return 0.; }
+    if at < params.closeTime { return smoothstep(0., 1., at / params.closeTime); }
+    imm shut = params.closeTime + params.holdTime;
+    if at < shut { return 1.; }
+    imm u = (at - shut) / params.openTime;
+    if u >= 1. { return 0.; }
+    1. - smoothstep(0., 1., u);
+  }
+
+  // The closure now, 0 to 1
+  pub fn closure(self &) f32 {
+    if t < 0. { return 0.; }
+    amplitude * self.profile(t);
+  }
+
+  // Advance 'dt' seconds; the closure after
+  pub fn update(self &mut, dt f32, rng &mut Rng) f32 {
+    if t >= 0. {
+      t = t + dt;
+      if t >= self.length() {
+        t = -1.;
+        if follow {
+          follow = false;
+          self.start(0.9);
+          t = 0.;
+        } else {
+          timer = self.nextGap(rng);
+        }
+      }
+    } else {
+      timer = timer - dt;
+      if timer <= 0. { self.begin(rng); }
+    }
+    self.closure();
+  }
+}

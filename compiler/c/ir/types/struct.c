@@ -3965,6 +3965,26 @@ static void structHashCheck(StructNode *node) {
     }
 }
 
+// Is this method of a type the copy of an 'inline' default of a trait it declares
+// (structInheritTrait)? A copy is the same source as the default it came from; a
+// method the type declares itself under that name replaces the default instead.
+static int structIsInheritedInlineDefault(StructNode *node, FnDclNode *fn) {
+    if ((node->flags & TraitType) || fn->value == NULL || !(fn->flags & FlagInline)
+        || fn->genericinfo || node->traits == NULL)
+        return 0;
+    INode **traitp;
+    uint32_t cnt;
+    for (nodesFor(node->traits, cnt, traitp)) {
+        if ((*traitp)->tag != StructTag)
+            continue;
+        INode *dflt = namespaceFind(&((StructNode*)*traitp)->namespace, fn->namesym);
+        if (dflt != NULL && dflt->tag == FnDclTag && ((FnDclNode*)dflt)->srcp == fn->srcp
+            && (((FnDclNode*)dflt)->flags & FlagInline))
+            return 1;
+    }
+    return 0;
+}
+
 // Check a laid-out type's members: its methods, static functions and statics,
 // then every overload set it declares, then what the traits taken into it require
 // of those members. Every layout the program has begun is finished by now.
@@ -3990,9 +4010,17 @@ static void structCheckMembers(StructNode *node) {
         INode *meth = nodelistGet(&node->nodelist, pos);
         // A generic default of a trait is a template for the types that declare the
         // trait: its signature (a step that names 'Self') is made for each of them,
-        // never for the trait, where 'Self' is the trait and holds nothing by value
-        if ((node->flags & TraitType) && meth->tag == FnDclTag && ((FnDclNode*)meth)->genericinfo
-            && ((FnDclNode*)meth)->value)
+        // never for the trait, where 'Self' is the trait and holds nothing by value.
+        // So is an 'inline' default, which fills no slot either: a step that takes
+        // 'self' by value and names 'Self' ('indexed') is made for each type
+        if ((node->flags & TraitType) && meth->tag == FnDclTag && ((FnDclNode*)meth)->value
+            && (((FnDclNode*)meth)->genericinfo || (((FnDclNode*)meth)->flags & FlagInline)))
+            continue;
+        // The copy of such a default in a type that declares the trait is made when a
+        // call reaches it (fnCallDemandCandidates), as a generic one is: made for every
+        // type, it would make 'indexed''s cursor of every cursor's items, of a cursor
+        // with items no generic holds (a brand), of a cursor of ... without end
+        if (meth->tag == FnDclTag && structIsInheritedInlineDefault(node, (FnDclNode*)meth))
             continue;
         inodeTypeCheckAny(&tstate, &nodelistGet(&node->nodelist, pos));
     }

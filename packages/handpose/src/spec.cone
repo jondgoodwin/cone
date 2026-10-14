@@ -1,0 +1,166 @@
+// A hand as data: the palm, five fingers and their joints, and a pose of them.
+//
+// A HandSpec says where each finger starts (its first joint), how long its
+// three segments are, how thick, which way it points at rest, and which way
+// it bends; the palm's place and size. A HandPose is 25 numbers: for each of
+// the five fingers, a SPREAD (the finger swung in the palm's plane), three
+// FLEXIONS (the joints that bend it into the palm: for a finger, the knuckle
+// (MCP), the middle joint (PIP) and the end joint (DIP); for the thumb, its
+// base (CMC), knuckle (MCP) and tip joint (IP)) and a TWIST (the thumb's
+// turn about its own long axis, which swings the thumb's bending plane round
+// to face the fingers: OPPOSITION; unused by the fingers).
+//
+// FRAME: the hand's own, which is bonepose's hand bone of its humanoid: the
+// wrist at the origin, the fingers pointing -y, the palm of the right hand
+// facing -x (the left's +x), the thumb on the -z side (a being faces -z, so
+// its thumbs are forward when its arms hang). Metres, right-handed. A left
+// hand is the right hand's mirror in x.
+//
+// THE NUMBERS are an adult hand's (Buchholz et al. 1992, "Anthropometric data
+// for describing the kinematics of the human hand", Ergonomics 35: the
+// phalanges' lengths as fractions of the hand's length; Garrett 1971 for the
+// breadth), scaled by the hand's length (0.19 m wrist to middle fingertip). A
+// finger's three segments are its proximal, middle and distal phalanges; the
+// thumb's are its metacarpal, proximal and distal. A joint's range is the
+// usual (Cobb and Claremont 1995; Kapandji): MCP -20 to 90 degrees, PIP 0 to
+// 110, DIP 0 to 80, the thumb's CMC 0 to 50 of flexion, its MCP 0 to 60, IP -10
+// to 80. The DIP's flexion follows the PIP's by about two thirds when a
+// finger bends freely (Lee and Kroemer 1991); the grip shapes use that.
+
+pub const THUMB = 0usize;
+pub const INDEX = 1usize;
+pub const MIDDLE = 2usize;
+pub const RING = 3usize;
+pub const PINKY = 4usize;
+pub const FINGERS = 5usize;
+
+// A pose's five numbers a finger: spread, three flexions, twist
+pub const DOF = 5usize;
+pub const SPREAD = 0usize;
+pub const FLEX0 = 1usize;
+pub const FLEX1 = 2usize;
+pub const FLEX2 = 3usize;
+pub const TWIST = 4usize;
+
+pub struct FingerSpec {
+  pub base Vec3;            // the first joint's place, hand frame
+  pub dir Vec3;             // the finger's rest direction, a unit vector
+  pub len Array[f32, 3];    // the three segments' lengths
+  pub radius Array[f32, 3]; // the flesh's radius along each segment (the pad at its end)
+  pub flexAxis Vec3;        // the axis every bending turns about: turns 'dir' towards the palm
+  pub spreadSign f32;       // +1 or -1: which way a positive spread swings it, for the right hand
+  pub flexMin Array[f32, 3];
+  pub flexMax Array[f32, 3];
+  pub spreadMax f32;
+  pub twistMax f32;
+}
+
+pub struct HandSpec {
+  pub right bool;
+  pub h f32;                 // +1 the right hand, -1 the left
+  pub length f32;            // wrist to middle fingertip, metres
+  pub palmNormal Vec3;       // out of the palm
+  pub palmCentre Vec3;       // the middle of the palm's surface
+  pub gripCentre Vec3;       // where a handle lies in a power grip: on the palm's surface near the knuckles, in the crook the fingers close round
+  pub palmHalf Vec3;         // half the palm's thickness, length and breadth
+  pub palmBone Vec3;         // the middle of the palm's box in the bone plane
+  pub fingers List[FingerSpec];
+
+  pub fn finger(self &, f usize) &FingerSpec { fingers[f]; }
+}
+
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+
+// One finger from the rest direction and the numbers
+fn makeFinger(spec &HandSpec, base Vec3, dir Vec3, l0 f32, l1 f32, l2 f32, r0 f32, r1 f32, r2 f32, spread f32, thumb bool) FingerSpec {
+  imm d = dir.normalize();
+  imm axis = d.cross(spec.palmNormal).normalize();
+  imm deg = pi / 180.;
+  imm flexMin = if thumb { [0., 0., -10. * deg]; } else { [-20. * deg, 0., 0.]; };
+  imm flexMax = if thumb { [50. * deg, 60. * deg, 80. * deg]; } else { [90. * deg, 110. * deg, 80. * deg]; };
+  new FingerSpec(base, d, [l0, l1, l2], [r0, r1, r2], axis, spread, flexMin, flexMax, if thumb { 60. * deg; } else { 22. * deg; },
+    if thumb { 70. * deg; } else { 0.; });
+}
+
+// An adult hand of 'length' metres from wrist to middle fingertip, right or left
+pub fn standardHand(length f32, right bool) HandSpec {
+  imm h = if right { 1.; } else { -1.; };
+  imm s = length / 0.19;
+  mut spec = new HandSpec(right, h, length, v3(-h, 0., 0.), v3(-h * 0.0145 * s, -0.052 * s, 0.), v3(-h * 0.0145 * s, -0.088 * s, 0.),
+    v3(0.0145 * s, 0.050 * s, 0.0435 * s), v3(0., -0.052 * s, 0.), List[FingerSpec].empty());
+  imm n = spec.palmNormal;
+  // The knuckles (MCP) lie along a gentle arc across the palm: z across, y down from the wrist
+  // Thumb: the CMC joint at the base of the palm on the thumb's side, pointing forward, out and a little to the palm
+  imm thumbDir = new Vec3(-h * 0.04, -0.88, -0.47);
+  spec.fingers.push(makeFinger(&spec, v3(-h * 0.010 * s, -0.026 * s, -0.021 * s), thumbDir, 0.046 * s, 0.033 * s, 0.027 * s,
+    0.0108 * s, 0.0100 * s, 0.0090 * s, -1., true));
+  // Index: knuckle 0.095 down, 0.0285 to the thumb's side
+  spec.fingers.push(makeFinger(&spec, v3(0., -0.095 * s, -0.0285 * s), v3(0., -1., 0.), 0.041 * s, 0.024 * s, 0.020 * s,
+    0.0088 * s, 0.0078 * s, 0.0070 * s, -1., false));
+  spec.fingers.push(makeFinger(&spec, v3(0., -0.098 * s, -0.0095 * s), v3(0., -1., 0.), 0.045 * s, 0.028 * s, 0.021 * s,
+    0.0092 * s, 0.0082 * s, 0.0072 * s, -0.4, false));
+  spec.fingers.push(makeFinger(&spec, v3(0., -0.093 * s, 0.0105 * s), v3(0., -1., 0.), 0.042 * s, 0.026 * s, 0.021 * s,
+    0.0086 * s, 0.0076 * s, 0.0068 * s, 1., false));
+  spec.fingers.push(makeFinger(&spec, v3(0., -0.085 * s, 0.0290 * s), v3(0., -1., 0.), 0.033 * s, 0.019 * s, 0.018 * s,
+    0.0076 * s, 0.0066 * s, 0.0060 * s, 1., false));
+  spec;
+}
+
+// A hand's pose: 25 numbers, five a finger
+pub struct HandPose {
+  pub v List[f32];
+
+  pub fn zero() HandPose {
+    mut p = new HandPose(List[f32].empty());
+    p.v.resize(FINGERS * DOF, 0.);
+    p;
+  }
+
+  pub fn get(self &, f usize, k usize) f32 { *v[f * DOF + k]; }
+
+  pub fn set(self &mut, f usize, k usize, value f32) { v.set(f * DOF + k, value); }
+
+  pub fn copy(self &) HandPose {
+    mut p = HandPose.zero();
+    mut i = 0usize;
+    while i < v.len() { p.v.set(i, *v[i]); i = i + 1usize; }
+    p;
+  }
+
+  // Finger 'f' set to a spread, three flexions and a twist
+  pub fn putFinger(self, f usize, spread f32, a f32, b f32, c f32, twist f32) HandPose {
+    mut p = self;
+    p.set(f, SPREAD, spread);
+    p.set(f, FLEX0, a);
+    p.set(f, FLEX1, b);
+    p.set(f, FLEX2, c);
+    p.set(f, TWIST, twist);
+    p;
+  }
+}
+
+// The pose a fraction 't' of the way from 'a' to 'b'
+pub fn lerpPose(a &HandPose, b &HandPose, t f32) HandPose {
+  mut p = HandPose.zero();
+  mut i = 0usize;
+  while i < p.v.len() { p.v.set(i, *a.v[i] + (*b.v[i] - *a.v[i]) * t); i = i + 1usize; }
+  p;
+}
+
+// A pose held to each joint's range
+pub fn clampPose(spec &HandSpec, pose &HandPose) HandPose {
+  mut p = pose.copy();
+  mut f = 0usize;
+  while f < FINGERS {
+    imm fs = spec.fingers[f];
+    p.set(f, SPREAD, clampf(pose.get(f, SPREAD), -fs.spreadMax, fs.spreadMax));
+    mut k = 0usize;
+    while k < 3usize {
+      p.set(f, FLEX0 + k, clampf(pose.get(f, FLEX0 + k), fs.flexMin[k], fs.flexMax[k]));
+      k = k + 1usize;
+    }
+    p.set(f, TWIST, clampf(pose.get(f, TWIST), -fs.twistMax, fs.twistMax));
+    f = f + 1usize;
+  }
+  p;
+}

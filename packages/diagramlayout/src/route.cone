@@ -1,0 +1,522 @@
+// ======== Orthogonal connector routing ========
+//
+// Each edge becomes a polyline of horizontal and vertical segments that leaves
+// its source and enters its target square to the box's side and keeps clear of
+// every box by a margin.
+//
+// PORTS: an edge uses its port's side if it has one; else the side facing the
+// other node (vertical sides when the flow is top-to-bottom and the nodes are in
+// different rows, and so on). The edges sharing one side are spread along it, in
+// the order of where their other ends are, so they do not leave from one point.
+//
+// METHOD: a sparse visibility grid (Wybrow, Marriott and Stuckey, "Orthogonal
+// connector routing", 2009, in the manner of libavoid): the vertical and
+// horizontal lines through every box's inflated edges and through the stub
+// points, and the grid points that lie outside every inflated box. A* over
+// (point, heading) states, the cost the length plus a bend penalty plus a
+// congestion penalty for each grid segment an earlier edge already uses, which
+// moves later edges onto neighbouring lines. The routes are then thinned of
+// collinear points. Not done: nudging that separates two routes sharing a line
+// inside one channel (the congestion penalty only discourages it), and routes
+// that cross each other are not minimised.
+
+pub const FLOW_ANY = 0u32;
+pub const FLOW_VERTICAL = 1u32;
+pub const FLOW_HORIZONTAL = 2u32;
+
+pub struct RouteOptions {
+  pub margin f32;                  // clearance round boxes, and the stub's length
+  pub bendCost f32;
+  pub congestion f32;
+  pub flow u32;
+
+  pub fn make() RouteOptions { new RouteOptions(12., 40., 14., FLOW_VERTICAL); }
+}
+
+pub struct RouteStats {
+  pub routed u32;
+  pub fallback u32;                // edges for which no clear route was found (drawn as a straight Z)
+  pub bends u32;
+  pub length f32;
+}
+
+fn dirX(d u32) f32 { if d == 0u32 { return 1.; } if d == 2u32 { return -1.; } 0.; }
+fn dirY(d u32) f32 { if d == 1u32 { return 1.; } if d == 3u32 { return -1.; } 0.; }
+fn sideDir(side u32) u32 {
+  if side == SIDE_EAST { return 0u32; }
+  if side == SIDE_SOUTH { return 1u32; }
+  if side == SIDE_WEST { return 2u32; }
+  3u32;
+}
+
+fn sideFor(g &Graph, a usize, b usize, flow u32) u32 {
+  imm dx = g.nodes[b].x - g.nodes[a].x;
+  imm dy = g.nodes[b].y - g.nodes[a].y;
+  mut vertical = absf2(dy) * (g.nodes[a].w + g.nodes[b].w) >= absf2(dx) * (g.nodes[a].h + g.nodes[b].h);
+  if flow == FLOW_VERTICAL {
+    vertical = absf2(dy) > (g.nodes[a].h + g.nodes[b].h) * 0.25 + 1.;
+  } elif flow == FLOW_HORIZONTAL {
+    vertical = !(absf2(dx) > (g.nodes[a].w + g.nodes[b].w) * 0.25 + 1.);
+  }
+  if vertical { if dy >= 0. { return SIDE_SOUTH; } return SIDE_NORTH; }
+  if dx >= 0. { return SIDE_EAST; }
+  SIDE_WEST;
+}
+
+fn opposite(side u32) u32 {
+  if side == SIDE_SOUTH { return SIDE_NORTH; }
+  if side == SIDE_NORTH { return SIDE_SOUTH; }
+  if side == SIDE_EAST { return SIDE_WEST; }
+  SIDE_EAST;
+}
+
+// The point on 'side' of node n, 'frac' of the way along it
+fn sidePoint(g &Graph, n usize, side u32, frac f32) Vec2 {
+  imm l = g.left(n);
+  imm r = g.right(n);
+  imm t = g.top(n);
+  imm b = g.bottom(n);
+  if side == SIDE_NORTH { return new Vec2(l + (r - l) * frac, t); }
+  if side == SIDE_SOUTH { return new Vec2(l + (r - l) * frac, b); }
+  if side == SIDE_EAST { return new Vec2(r, t + (b - t) * frac); }
+  new Vec2(l, t + (b - t) * frac);
+}
+
+// ---- A* heap ----
+
+struct Heap {
+  f List[f32];
+  s List[usize];
+
+  fn push(self &mut, cost f32, state usize) {
+    f.push(cost);
+    s.push(state);
+    mut i = f.len() - 1usize;
+    while i > 0usize {
+      imm p = (i - 1usize) / 2usize;
+      if *f[p] <= *f[i] { break; }
+      f.swap(p, i);
+      s.swap(p, i);
+      i = p;
+    }
+  }
+
+  fn pop(self &mut) usize {
+    imm top = *s[0usize];
+    imm n = f.len() - 1usize;
+    f.set(0usize, *f[n]);
+    s.set(0usize, *s[n]);
+    f.pop();
+    s.pop();
+    mut i = 0usize;
+    while true {
+      imm l = 2usize * i + 1usize;
+      imm r = l + 1usize;
+      mut m = i;
+      if l < f.len() and *f[l] < *f[m] { m = l; }
+      if r < f.len() and *f[r] < *f[m] { m = r; }
+      if m == i { break; }
+      f.swap(m, i);
+      s.swap(m, i);
+      i = m;
+    }
+    top;
+  }
+}
+
+fn uniqueSorted(v &List[f32]) List[f32] {
+  mut idx = List[usize].empty();
+  mut i = 0usize;
+  while i < v.len() { idx.push(i); i = i + 1usize; }
+  sortByKey(&mut idx, v);
+  mut out = List[f32].empty();
+  i = 0usize;
+  while i < idx.len() {
+    imm x = *v[*idx[i]];
+    if out.len() == 0usize or x - *out[out.len() - 1usize] > 0.05 { out.push(x); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn indexOfCoord(v &List[f32], x f32) usize {
+  mut best = 0usize;
+  mut bd = 1.0e30f;
+  mut i = 0usize;
+  while i < v.len() {
+    imm d = absf2(*v[i] - x);
+    if d < bd { bd = d; best = i; }
+    i = i + 1usize;
+  }
+  best;
+}
+
+struct Grid {
+  xs List[f32];
+  ys List[f32];
+  free List[bool];
+  hOpen List[bool];                // the segment from (i, j) to (i + 1, j) clears every box (its middle is outside them)
+  vOpen List[bool];                // from (i, j) to (i, j + 1)
+  hUsed List[f32];                 // the segment from (i, j) to (i + 1, j)
+  vUsed List[f32];                 // from (i, j) to (i, j + 1)
+}
+
+// A route from 'a' (leaving in heading 'da') to 'b' (arriving heading 'db'), points of 'grid'; empty if none
+fn search(grid &Grid, ai usize, aj usize, da u32, bi usize, bj usize, db u32, o &RouteOptions) List[Vec2] {
+  imm nx = grid.xs.len();
+  imm ny = grid.ys.len();
+  imm total = nx * ny * 4usize;
+  mut g = List[f32].withCapacity(total);
+  mut came = List[i32].withCapacity(total);
+  mut closed = List[bool].withCapacity(total);
+  mut k = 0usize;
+  while k < total { g.push(1.0e30); came.push(-1); closed.push(false); k = k + 1usize; }
+  mut heap = new Heap(List[f32].empty(), List[usize].empty());
+  imm start = (aj * nx + ai) * 4usize + usize.from(da);
+  g.set(start, 0.);
+  imm goalX = *grid.xs[bi];
+  imm goalY = *grid.ys[bj];
+  heap.push(absf2(*grid.xs[ai] - goalX) + absf2(*grid.ys[aj] - goalY), start);
+  mut found = -1i32;
+  while heap.f.len() > 0usize {
+    imm st = heap.pop();
+    if *closed[st] { continue; }
+    closed.set(st, true);
+    imm d = u32.from(st % 4usize);
+    imm cell = st / 4usize;
+    imm i = cell % nx;
+    imm j = cell / nx;
+    if i == bi and j == bj {
+      // arriving: the heading must be the target's inward one, or pay the turn
+      found = i32.from(st);
+      break;
+    }
+    mut nd = 0u32;
+    while nd < 4u32 {
+      // no U-turns
+      if (nd + 2u32) % 4u32 != d {
+        mut ni = i;
+        mut nj = j;
+        mut ok = true;
+        if nd == 0u32 { if i + 1usize < nx { ni = i + 1usize; } else { ok = false; } }
+        elif nd == 2u32 { if i > 0usize { ni = i - 1usize; } else { ok = false; } }
+        elif nd == 1u32 { if j + 1usize < ny { nj = j + 1usize; } else { ok = false; } }
+        else { if j > 0usize { nj = j - 1usize; } else { ok = false; } }
+        if ok {
+          if nd == 0u32 { ok = *grid.hOpen[j * nx + i]; }
+          elif nd == 2u32 { ok = *grid.hOpen[j * nx + ni]; }
+          elif nd == 1u32 { ok = *grid.vOpen[j * nx + i]; }
+          else { ok = *grid.vOpen[nj * nx + i]; }
+        }
+        if ok and *grid.free[nj * nx + ni] {
+          imm len = absf2(*grid.xs[ni] - *grid.xs[i]) + absf2(*grid.ys[nj] - *grid.ys[j]);
+          mut cost = len;
+          if nd != d { cost = cost + o.bendCost; }
+          // congestion on the segment
+          mut u = 0.0f;
+          if nd == 0u32 { u = *grid.hUsed[j * nx + i]; }
+          elif nd == 2u32 { u = *grid.hUsed[j * nx + ni]; }
+          elif nd == 1u32 { u = *grid.vUsed[j * nx + i]; }
+          else { u = *grid.vUsed[nj * nx + i]; }
+          cost = cost + u * o.congestion;
+          // arriving at the goal in a heading other than the target's costs a bend
+          if ni == bi and nj == bj and nd != db { cost = cost + o.bendCost; }
+          imm ns = (nj * nx + ni) * 4usize + usize.from(nd);
+          imm ng = *g[st] + cost;
+          if ng < *g[ns] {
+            g.set(ns, ng);
+            came.set(ns, i32.from(st));
+            imm h = absf2(*grid.xs[ni] - goalX) + absf2(*grid.ys[nj] - goalY);
+            heap.push(ng + h, ns);
+          }
+        }
+      }
+      nd = nd + 1u32;
+    }
+  }
+  mut pts = List[Vec2].empty();
+  if found < 0 { return pts; }
+  mut st = usize.from(found);
+  while true {
+    imm cell = st / 4usize;
+    pts.push(new Vec2(*grid.xs[cell % nx], *grid.ys[cell / nx]));
+    if *came[st] < 0 { break; }
+    st = usize.from(*came[st]);
+  }
+  // reverse
+  mut out = List[Vec2].withCapacity(pts.len());
+  mut r = pts.len();
+  while r > 0usize { r = r - 1usize; out.push(*pts[r]); }
+  out;
+}
+
+fn markUsed(grid &mut Grid, pts &List[Vec2]) {
+  imm nx = grid.xs.len();
+  mut p = 1usize;
+  while p < pts.len() {
+    imm a = *pts[p - 1usize];
+    imm b = *pts[p];
+    if absf2(a.y - b.y) < 0.01 {
+      imm j = indexOfCoord(&grid.ys, a.y);
+      mut i0 = indexOfCoord(&grid.xs, minf2(a.x, b.x));
+      imm i1 = indexOfCoord(&grid.xs, maxf2(a.x, b.x));
+      while i0 < i1 { grid.hUsed.set(j * nx + i0, *grid.hUsed[j * nx + i0] + 1.); i0 = i0 + 1usize; }
+    } else {
+      imm i = indexOfCoord(&grid.xs, a.x);
+      mut j0 = indexOfCoord(&grid.ys, minf2(a.y, b.y));
+      imm j1 = indexOfCoord(&grid.ys, maxf2(a.y, b.y));
+      while j0 < j1 { grid.vUsed.set(j0 * nx + i, *grid.vUsed[j0 * nx + i] + 1.); j0 = j0 + 1usize; }
+    }
+    p = p + 1usize;
+  }
+}
+
+// Drops points that lie on the line between their neighbours, and repeated ones
+fn thin(pts &List[Vec2]) List[Vec2] {
+  mut out = List[Vec2].empty();
+  mut i = 0usize;
+  while i < pts.len() {
+    imm p = *pts[i];
+    if out.len() > 0usize and out[out.len() - 1usize].distance(p) < 0.01 { i = i + 1usize; continue; }
+    if out.len() >= 2usize {
+      imm a = *out[out.len() - 2usize];
+      imm b = *out[out.len() - 1usize];
+      if absf2((b - a).cross(p - b)) < 0.01 { out.pop(); }
+    }
+    out.push(p);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Routes every live edge of 'g' (self loops get a small loop on the east side)
+pub fn routeEdges(g &mut Graph, o &RouteOptions) RouteStats {
+  mut stats = new RouteStats(0u32, 0u32, 0u32, 0.);
+  imm m = o.margin;
+  // 1. sides and spread
+  imm ne = g.edges.len();
+  mut sSide = List[u32].empty();
+  mut tSide = List[u32].empty();
+  mut sFrac = List[f32].empty();
+  mut tFrac = List[f32].empty();
+  mut e = 0usize;
+  while e < ne {
+    sSide.push(SIDE_AUTO);
+    tSide.push(SIDE_AUTO);
+    sFrac.push(-1.);
+    tFrac.push(-1.);
+    if g.edges[e].alive and g.edges[e].from != g.edges[e].to {
+      imm a = usize.from(g.edges[e].from);
+      imm b = usize.from(g.edges[e].to);
+      mut ss = sideFor(g, a, b, o.flow);
+      mut ts = sideFor(g, b, a, o.flow);
+      if g.edges[e].fromPort >= 0 {
+        imm p = g.nodes[a].ports[usize.from(g.edges[e].fromPort)];
+        if p.side != SIDE_AUTO { ss = p.side; }
+        sFrac.set(e, p.offset);
+      }
+      if g.edges[e].toPort >= 0 {
+        imm p = g.nodes[b].ports[usize.from(g.edges[e].toPort)];
+        if p.side != SIDE_AUTO { ts = p.side; }
+        tFrac.set(e, p.offset);
+      }
+      sSide.set(e, ss);
+      tSide.set(e, ts);
+    }
+    e = e + 1usize;
+  }
+  // spread: for each (node, side), the attached ends ordered by the other end's coordinate
+  mut n = 0usize;
+  while n < g.nodes.len() {
+    if g.nodes[n].alive {
+      mut side = 1u32;
+      while side <= 4u32 {
+        mut ends = List[usize].empty();         // edge * 2 + (0: source end, 1: target end)
+        mut key = List[f32].empty();
+        e = 0usize;
+        while e < ne {
+          if g.edges[e].alive and g.edges[e].from != g.edges[e].to {
+            if usize.from(g.edges[e].from) == n and *sSide[e] == side and *sFrac[e] < 0. {
+              ends.push(e * 2usize);
+              imm o2 = usize.from(g.edges[e].to);
+              key.push(if side == SIDE_NORTH or side == SIDE_SOUTH { g.nodes[o2].x; } else { g.nodes[o2].y; });
+            }
+            if usize.from(g.edges[e].to) == n and *tSide[e] == side and *tFrac[e] < 0. {
+              ends.push(e * 2usize + 1usize);
+              imm o2 = usize.from(g.edges[e].from);
+              key.push(if side == SIDE_NORTH or side == SIDE_SOUTH { g.nodes[o2].x; } else { g.nodes[o2].y; });
+            }
+          }
+          e = e + 1usize;
+        }
+        mut order = List[usize].empty();
+        mut q = 0usize;
+        while q < ends.len() { order.push(q); q = q + 1usize; }
+        sortByKey(&mut order, &key);
+        q = 0usize;
+        while q < order.len() {
+          imm id = *ends[*order[q]];
+          imm frac = f32.from(q + 1usize) / f32.from(order.len() + 1usize);
+          if id % 2usize == 0usize { sFrac.set(id / 2usize, frac); } else { tFrac.set(id / 2usize, frac); }
+          q = q + 1usize;
+        }
+        side = side + 1u32;
+      }
+    }
+    n = n + 1usize;
+  }
+  // 2. the grid
+  mut rx0 = List[f32].empty();
+  mut ry0 = List[f32].empty();
+  mut rx1 = List[f32].empty();
+  mut ry1 = List[f32].empty();
+  mut xs = List[f32].empty();
+  mut ys = List[f32].empty();
+  n = 0usize;
+  while n < g.nodes.len() {
+    if g.nodes[n].alive {
+      rx0.push(g.left(n) - m);
+      rx1.push(g.right(n) + m);
+      ry0.push(g.top(n) - m);
+      ry1.push(g.bottom(n) + m);
+      xs.push(g.left(n) - m);
+      xs.push(g.right(n) + m);
+      ys.push(g.top(n) - m);
+      ys.push(g.bottom(n) + m);
+    }
+    n = n + 1usize;
+  }
+  imm bb = g.bounds();
+  xs.push(bb.min.x - m * 2.);
+  xs.push(bb.max.x + m * 2.);
+  ys.push(bb.min.y - m * 2.);
+  ys.push(bb.max.y + m * 2.);
+  // stubs
+  mut sStub = List[Vec2].empty();
+  mut tStub = List[Vec2].empty();
+  mut sPort = List[Vec2].empty();
+  mut tPort = List[Vec2].empty();
+  e = 0usize;
+  while e < ne {
+    if g.edges[e].alive and g.edges[e].from != g.edges[e].to {
+      imm a = usize.from(g.edges[e].from);
+      imm b = usize.from(g.edges[e].to);
+      imm pa = sidePoint(g, a, *sSide[e], *sFrac[e]);
+      imm pb = sidePoint(g, b, *tSide[e], *tFrac[e]);
+      imm da = sideDir(*sSide[e]);
+      imm db = sideDir(*tSide[e]);
+      sPort.push(pa);
+      tPort.push(pb);
+      sStub.push(new Vec2(pa.x + dirX(da) * m, pa.y + dirY(da) * m));
+      tStub.push(new Vec2(pb.x + dirX(db) * m, pb.y + dirY(db) * m));
+      xs.push((*sStub[sStub.len() - 1usize]).x);
+      xs.push((*tStub[tStub.len() - 1usize]).x);
+      ys.push((*sStub[sStub.len() - 1usize]).y);
+      ys.push((*tStub[tStub.len() - 1usize]).y);
+    } else {
+      sPort.push(new Vec2(0., 0.));
+      tPort.push(new Vec2(0., 0.));
+      sStub.push(new Vec2(0., 0.));
+      tStub.push(new Vec2(0., 0.));
+    }
+    e = e + 1usize;
+  }
+  mut grid = new Grid(uniqueSorted(&xs), uniqueSorted(&ys), List[bool].empty(), List[bool].empty(), List[bool].empty(),
+    List[f32].empty(), List[f32].empty());
+  imm nx = grid.xs.len();
+  imm ny = grid.ys.len();
+  mut j = 0usize;
+  while j < ny {
+    mut i = 0usize;
+    while i < nx {
+      imm px = *grid.xs[i];
+      imm py = *grid.ys[j];
+      mut ok = true;
+      mut r = 0usize;
+      while r < rx0.len() {
+        if px > *rx0[r] + 0.02 and px < *rx1[r] - 0.02 and py > *ry0[r] + 0.02 and py < *ry1[r] - 0.02 { ok = false; break; }
+        r = r + 1usize;
+      }
+      grid.free.push(ok);
+      // the segments to the right and below: is their middle outside every box
+      mut hOk = true;
+      mut vOk = true;
+      if i + 1usize < nx {
+        imm mx = (px + *grid.xs[i + 1usize]) * 0.5;
+        mut r2 = 0usize;
+        while r2 < rx0.len() {
+          if mx > *rx0[r2] + 0.02 and mx < *rx1[r2] - 0.02 and py > *ry0[r2] + 0.02 and py < *ry1[r2] - 0.02 { hOk = false; break; }
+          r2 = r2 + 1usize;
+        }
+      }
+      if j + 1usize < ny {
+        imm my = (py + *grid.ys[j + 1usize]) * 0.5;
+        mut r3 = 0usize;
+        while r3 < rx0.len() {
+          if px > *rx0[r3] + 0.02 and px < *rx1[r3] - 0.02 and my > *ry0[r3] + 0.02 and my < *ry1[r3] - 0.02 { vOk = false; break; }
+          r3 = r3 + 1usize;
+        }
+      }
+      grid.hOpen.push(hOk);
+      grid.vOpen.push(vOk);
+      grid.hUsed.push(0.);
+      grid.vUsed.push(0.);
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  // a segment between two free points must itself be clear: the inflated edges are grid lines, so a
+  // segment is either wholly inside a box or wholly outside; test its middle
+  // (done in 'search' through 'free' of its end points: both ends outside and on the grid imply the middle
+  // is outside unless the segment crosses a whole box, which a grid line through the box's inflated edge
+  // prevents because that line's points inside are not free and the segment would pass through them)
+  // 3. route
+  e = 0usize;
+  while e < ne {
+    if g.edges[e].alive {
+      mut route = List[Vec2].empty();
+      if g.edges[e].from == g.edges[e].to {
+        imm a = usize.from(g.edges[e].from);
+        imm l = g.right(a);
+        imm t = g.top(a);
+        route.push(new Vec2(l, t + g.nodes[a].h * 0.3));
+        route.push(new Vec2(l + m, t + g.nodes[a].h * 0.3));
+        route.push(new Vec2(l + m, t + g.nodes[a].h * 0.7));
+        route.push(new Vec2(l, t + g.nodes[a].h * 0.7));
+        stats.routed = stats.routed + 1u32;
+      } else {
+        imm pa = *sPort[e];
+        imm pb = *tPort[e];
+        imm da = sideDir(*sSide[e]);
+        imm db = sideDir(*tSide[e]);
+        imm sa = *sStub[e];
+        imm sb = *tStub[e];
+        imm path = search(&grid, indexOfCoord(&grid.xs, sa.x), indexOfCoord(&grid.ys, sa.y), da,
+          indexOfCoord(&grid.xs, sb.x), indexOfCoord(&grid.ys, sb.y), (db + 2u32) % 4u32, o);
+        mut pts = List[Vec2].empty();
+        pts.push(pa);
+        if path.len() > 0usize {
+          mut p = 0usize;
+          while p < path.len() { pts.push(*path[p]); p = p + 1usize; }
+        } else {
+          // no clear route: a Z through the middle
+          stats.fallback = stats.fallback + 1u32;
+          pts.push(sa);
+          if da == 0u32 or da == 2u32 { pts.push(new Vec2((sa.x + sb.x) * 0.5, sa.y)); pts.push(new Vec2((sa.x + sb.x) * 0.5, sb.y)); }
+          else { pts.push(new Vec2(sa.x, (sa.y + sb.y) * 0.5)); pts.push(new Vec2(sb.x, (sa.y + sb.y) * 0.5)); }
+          pts.push(sb);
+        }
+        pts.push(pb);
+        route = thin(&pts);
+        markUsed(&mut grid, &route);
+        stats.routed = stats.routed + 1u32;
+        if route.len() > 2usize { stats.bends = stats.bends + u32.from(route.len() - 2usize); }
+        mut p = 1usize;
+        while p < route.len() { stats.length = stats.length + route[p].distance(*route[p - 1usize]); p = p + 1usize; }
+      }
+      g.edges[e].route = route;
+    }
+    e = e + 1usize;
+  }
+  stats;
+}

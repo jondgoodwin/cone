@@ -1,0 +1,198 @@
+// An actor sends and receives datagrams on real UDP sockets: two UdpSockets
+// bound on loopback (port 0, the system's choice, which localAddr tells), one
+// actor, each step an 'await'.
+//
+// 1. A round trip: a sends "ping over udp" to b's port, b's recvFrom answers
+//    a Datagram holding those bytes and the sender, a's address.
+// 2. An empty datagram is a datagram, not an end: Done, length 0, the sender named.
+// 3. Truncation: a datagram of 40 bytes to a receive whose buffer has 6 bytes of
+//    room fails, an Error of kind Truncated (aio.isTruncated, code 10040), and
+//    the buffer goes home to its pool: the pool's lent count is 0 at the end.
+//    The next datagram is whole.
+// 4. A receive with no room fails (ERROR_INSUFFICIENT_BUFFER, 122), and a
+//    receive with a deadline already past answers TimedOut.
+//
+// What each 'await' found is kept in Got, checked by main once Peer is done.
+
+mod udp;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, Pool;
+import iocore use SocketAddr, IoError, IoErrorKind;
+import time use Instant;
+import actors;
+import aio use UdpSocket, IoLimits;
+
+struct Got {
+  pub ports Atomic[u64];         // 1 if both sockets were bound to a port of the system's choice
+  pub sent Atomic[u64];          // what a's send answered
+  pub len Atomic[u64];           // the first datagram's length
+  pub text Atomic[u64];          // 1 if it was "ping over udp"
+  pub from Atomic[u64];          // 1 if it named a's port
+  pub emptyOk Atomic[u64];       // 1 if the empty datagram was Done, length 0, from a
+  pub cut Atomic[u64];           // 1 if the long datagram was the error Truncated
+  pub cutCode Atomic[u64];       // its code
+  pub osKind Atomic[u64];        // 1 if a system failure is not taken for Truncated
+  pub whole Atomic[u64];         // the length of the datagram after the cut one
+  pub noRoom Atomic[u64];        // the error code of a receive with no room
+  pub late Atomic[u64];          // 1 if a deadline already past answered TimedOut
+}
+
+imm got Got;
+
+fn @initpure init() {
+  got = new Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
+}
+
+// The UdpSocket a Result holds, swapped out of it; UdpSocket.none() for a failure
+fn udpOf(r Result[UdpSocket, IoError]) UdpSocket {
+  mut res = r;
+  mut s = UdpSocket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> *ok;}
+    else {}
+  }
+  s;
+}
+
+fn portOf(r Result[SocketAddr, IoError]) u16 {
+  match r {
+    case imm a Ok {a.port();}
+    else {0u16;}
+  }
+}
+
+fn same(a &Array[u8], b &Array[u8]) bool {
+  if a.len != b.len {return false;}
+  mut i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+// n bytes of the pattern 1, 2, 3, ... in a buffer of pool's
+fn datagram(pool &Pool, n usize) IoBuf {
+  mut b = pool.mustTake(64usize);
+  imm w = b.whole();
+  mut j = 0usize;
+  while j < n {
+    w[j] = u8.from(j + 1usize);
+    j = j + 1usize;
+  }
+  b.setLen(n);
+  b;
+}
+
+actor Peer {
+  pool Pool;
+
+  pub async do run(self, done OneshotSender[u64]) {
+    imm a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    imm b = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    imm pa = portOf(await a.localAddr());
+    imm pb = portOf(await b.localAddr());
+    if pa != 0u16 and pb != 0u16 and pa != pb {got.ports.store(1u64);}
+    imm to = SocketAddr.localhost(pb);
+
+    // 1. A round trip
+    mut m = pool.mustTake(64usize);
+    m.append("ping over udp");
+    imm sent = await a.sendTo(to, m);
+    match sent {
+      case imm n Ok {got.sent.store(u64.from(n));}
+      case imm e Error {got.sent.store(1000000u64 + u64.from(e.code));}
+    }
+    mut r = await b.recvFrom(pool.mustTake(4096usize));
+    match &mut r {
+      case mut ok &mut Ok {
+        mut buf = IoBuf.empty();
+        buf <=> ok.buf;
+        got.len.store(u64.from(buf.len()));
+        if same(buf.view(), "ping over udp") {got.text.store(1u64);}
+        if ok.from.port() == pa {got.from.store(1u64);}
+      }
+      else {}
+    }
+
+    // 2. An empty datagram
+    imm sentEmpty = await a.sendTo(to, pool.mustTake(64usize));
+    mut e0 = await b.recvFrom(pool.mustTake(4096usize));
+    match &mut e0 {
+      case mut ok &mut Ok {
+        if ok.buf.len() == 0usize and ok.from.port() == pa {got.emptyOk.store(1u64);}
+      }
+      else {}
+    }
+
+    // 3. A datagram longer than the room: the error Truncated, the buffer home
+    imm sentLong = await a.sendTo(to, datagram(&pool, 40usize));
+    mut small = pool.mustTake(64usize);
+    small.setLen(small.capacity() - 6usize);
+    imm cut = await b.recvFrom(small);
+    match cut {
+      case imm e Error {
+        if aio.isTruncated(e) and e.kind() == IoErrorKind.Truncated {got.cut.store(1u64);}
+        got.cutCode.store(u64.from(e.code));
+        if not aio.isCancelled(e) and not aio.isTimedOut(e) {got.osKind.store(1u64);}
+      }
+      else {}
+    }
+    imm sentNext = await a.sendTo(to, datagram(&pool, 12usize));
+    mut next = await b.recvFrom(pool.mustTake(4096usize));
+    match &mut next {
+      case mut ok &mut Ok {got.whole.store(u64.from(ok.buf.len()));}
+      else {}
+    }
+
+    // 4. No room, and a deadline already past
+    imm none = await b.recvFrom(IoBuf.empty());
+    match none {
+      case imm e Error {got.noRoom.store(u64.from(e.code));}
+      else {}
+    }
+    imm timed = await b.recvFromIn(pool.mustTake(4096usize), IoLimits.until(Instant.fromNanos(1i64)));
+    match timed {
+      case imm e Error {if aio.isTimedOut(e) {got.late.store(1u64);}}
+      else {}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  imm pool = Pool.make();
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm peer = new Peer(pool);
+    peer.run(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the peer said it was done");}
+    else {}
+  }
+  finalAll();
+  expectUInt(got.ports.load(), 1u64, "bindUdp: two sockets, two ports the system chose, which localAddr told");
+  expectUInt(got.sent.load(), 13u64, "sendTo answered the count: all of the datagram");
+  expectUInt(got.len.load(), 13u64, "recvFrom: the datagram arrived whole");
+  expectUInt(got.text.load(), 1u64, "with its bytes");
+  expectUInt(got.from.load(), 1u64, "and the sender's address, a's port");
+  expectUInt(got.emptyOk.load(), 1u64, "a datagram of no bytes is Done, length 0, from a: not an end");
+  expectUInt(got.cut.load(), 1u64, "a datagram longer than the room is the error Truncated");
+  expectUInt(got.cutCode.load(), 10040u64, "whose code is WSAEMSGSIZE");
+  expectUInt(got.osKind.load(), 1u64, "and not Cancelled or TimedOut");
+  expectUInt(got.whole.load(), 12u64, "the next datagram is whole");
+  expectUInt(got.noRoom.load(), 122u64, "a receive with no room fails: ERROR_INSUFFICIENT_BUFFER");
+  expectUInt(got.late.load(), 1u64, "a receive whose deadline has passed answers TimedOut");
+  expectUInt(pool.stats().lent, 0u64, "every buffer came home to its pool, the truncated receive's among them");
+  done();
+}

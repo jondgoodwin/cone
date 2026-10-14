@@ -1,0 +1,705 @@
+// The json package: JSON (RFC 8259) read and written in Cone, with no C
+// library. A reader and a writer, a value tree, a streaming reader that builds
+// no tree, and the accessors a hand-written mapping to structs is made of.
+//
+//   mod config;
+//   import stdio use *;
+//   import json;
+//
+//   fn main() i32 {
+//     mut doc json.Json = json.Json.Null;
+//     match json.parse("{\"name\": \"hello\", \"size\": 12, \"tags\": [\"a\", \"b\"]}") {
+//       case mut ok Ok { doc <=> ok; }                // the tree moved out
+//       case imm e Error {
+//         imm m = e.message();                       // 'json: line 1, column 9: ...'
+//         printStr(m.view());
+//         return 1i32;
+//       }
+//     }
+//     match doc.getText("name") {                    // None: not there, or not a string
+//       case imm n Some { printStr(n); }             // a &str borrowed from doc: hello
+//       case is None { printStr("no name"); }
+//     }
+//     printInt(doc.i64Or("size", -1i64));            // 12: the number's text read as an
+//     0i32;                                          // i64, or the fallback
+//   }
+//
+// Writing: 'doc.toText()' and 'doc.toPretty(2usize)' answer a Result[String,
+// JsonError]; a 'Writer' writes the same text without a tree ('beginObject',
+// 'key', 'string', 'int', ..., 'finish'). A 'Reader' answers a text's events
+// one at a time, with no tree. There is no reflection yet, so mapping a
+// struct to JSON and back is written by hand, with the accessors and the
+// 'require' functions: 'examples/mapping.cone' is one, 'examples/tour.cone' the
+// example above.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says
+// what was chosen and what was left out.
+//
+// - The text is read as bytes held in memory: 'parse' reads all of it into a
+//   tree, and 'Reader' pulls events from it (start and end of an array or
+//   object, a key, a string, a number, true, false, null, done). Left out: a
+//   reader that is fed chunks as they arrive and stops and resumes inside a
+//   token, reading from a file or socket as it goes, and several values
+//   in one text (JSON Lines: split the lines first). One value per text; a
+//   scalar alone is a value, as RFC 8259 says.
+// - One grammar. The tree reader is the event reader plus an explicit stack,
+//   so reading never recurses and a text's depth costs memory, not the stack.
+//   A depth limit (512 arrays and objects open at once, 'Options.maxDepth')
+//   refuses a hostile text early, before a deep tree is built. The limit also
+//   guards the two things that do recurse, dropping a tree and writing one: a
+//   debug build's stack holds about 2000 levels of either, so a program that
+//   raises the limit past 1000 raises its stack too (a Reader never recurses,
+//   and goes a million levels down). 'Reader.line' and 'column' scan the text
+//   from its start: they are for errors, not for every token.
+// - Numbers are kept as the text written ('Json.Number(String)'), validated
+//   against RFC 8259's grammar and never rounded on the way in: '1.10',
+//   '1E2', '-0' and a 400-digit integer all come out as written. Asking is
+//   what converts: 'asI64' and 'asU64' are exact (a whole value in range,
+//   '1e3' included, else NotInteger or OutOfRange), 'asF64' is the nearest f64
+//   with the even one on a tie, as C's 'strtod' answers (a number past the f64
+//   range is OutOfRange, not infinity). Left out: a fixed-width decimal, and
+//   a lossy mode that reads every number as an f64.
+// - The f64 conversions are exact: up to 15 digits and a power of ten within
+//   22 are one correctly rounded multiply or divide; everything else goes
+//   through an exact decimal of up to 800 digits shifted by powers of two (the
+//   method of Go's 'strconv'; decimal.cone). Writing an f64 gives the shortest
+//   text that reads back as the same f64, by the same decimal. Left out:
+//   Eisel-Lemire and Ryu, which are faster and take large tables (a table is a
+//   global here, and globals hold).
+// - Strings are UTF-8, checked: a byte sequence that is not well-formed (an
+//   overlong form, a surrogate, beyond U+10FFFF, a cut-off character) is an
+//   error with its offset, on reading and on writing. A '\u' escape names a
+//   character, a high and a low surrogate escape together name one beyond the
+//   BMP, and a lone surrogate escape is an error: the String that holds the
+//   text could not hold it. An unescaped control character in a string is an
+//   error. '\u0000' is allowed and is a NUL byte in the String. A leading
+//   UTF-8 byte-order mark is passed over when reading (RFC 8259 allows it) and
+//   never written.
+// - An object is a list of members in the order written, duplicates and all
+//   (RFC 8259 says names SHOULD be unique and leaves the rest open). 'get'
+//   answers the first member of a name. 'Options.rejectDuplicateKeys' makes
+//   a repeated name an error while reading, which costs a scan of the
+//   object's members for each new one. Left out: a hash table behind large
+//   objects; 'get' is a scan, quick for the size of objects configurations and
+//   API messages have.
+// - Writing is compact by default; 'toPretty(n)' (or a Writer with an indent)
+//   puts each element on a line, indented by n spaces a level, and writes
+//   '[]' and '{}' for empty ones. 'WriteOptions.asciiOnly' writes every
+//   character past U+007F as '\u' escapes, in pairs where needed. Otherwise
+//   they are written as UTF-8, and only '"', '\' and the controls are
+//   escaped ('/' is not). NaN and infinity cannot be written: 'Json.fromF64'
+//   makes them null (as JavaScript's JSON.stringify does) and a Writer's
+//   'float' fails.
+// - Failure is a core 'Result' with a JsonError: its 'kind', byte 'offset',
+//   'line' (from 1, counting '\n') and 'column' (from 1, in bytes), and a
+//   'reason' that says what was expected; 'message()' is the one line. Cone
+//   has no '?' yet, so a caller matches the Result, moving the value out of
+//   a matched 'Ok' by swapping an empty one in ('doc <=> ok'). The accessors
+//   ask nothing of the caller beyond that: a missing or mistyped member is an
+//   Option's None, not a failure.
+// - Mapping to structs is by hand. There is no reflection and no derive, so
+//   the package offers the accessors ('get', 'at', 'getText', 'getI64', ...),
+//   'require' versions that name the member in a Shape error, the builders
+//   ('Json.newObject', 'set', 'push', 'fromText', ...) and the event reader;
+//   a struct writes its own 'fromJson' and 'toJson'. The accessors are
+//   methods "over the whole enum" (refenum.html): the enum has no copy of
+//   them in each variant. Left out: a schema, JSON Pointer and Path, JSON5
+//   and comments, and a SAX-style callback interface (the pull reader does
+//   that job).
+// - Written in Cone with no C call, no global and no thread-local. The
+//   tests compare the f64 reads and writes with the C library's 'strtod' as
+//   an oracle, which the package never calls.
+
+mod json;
+
+import collections use String, List;
+
+// -------- failure --------
+
+// What kind of thing was wrong
+pub enum ErrorKind {
+  // The text ended where more was needed
+  UnexpectedEnd;
+  // A byte that cannot come here
+  UnexpectedByte;
+  // A number that breaks RFC 8259's grammar
+  BadNumber;
+  // A bad escape in a string
+  BadEscape;
+  // A '\u' surrogate that is not half of a pair
+  BadSurrogate;
+  // A byte sequence that is not UTF-8
+  BadUtf8;
+  // An unescaped control character in a string
+  ControlChar;
+  // More arrays and objects open than 'Options.maxDepth'
+  TooDeep;
+  // Text after the value
+  TrailingText;
+  // A name repeated in an object, when 'Options.rejectDuplicateKeys' is set
+  DuplicateKey;
+  // Writing: a call out of order (a value where a key belongs, an end with
+  // nothing open, a second top-level value, a 'finish' with something open)
+  WriteOrder;
+  // Writing: a value JSON cannot hold (NaN or infinity, a number's text that
+  // is not a number, a string that is not UTF-8)
+  WriteValue;
+  // Mapping by hand: a member that is missing or is not of the kind the
+  // mapping wants ('requireText' and its kin, or a mapping's own check)
+  Shape;
+}
+
+// Why a text could not be read or a value written. A reading failure holds
+// where, in bytes from the start of the text, and the line and column of that
+// byte; a writing one holds line 0.
+pub struct JsonError {
+  pub kind ErrorKind;
+  pub offset usize;
+  pub line u32;
+  pub column u32;
+  pub reason String;
+
+  // An error that says nothing, the value a Reader holds until it fails
+  pub fn none() JsonError {
+    new JsonError(ErrorKind.UnexpectedEnd, 0usize, 0u32, 0u32, String.empty());
+  }
+
+  // A mapping's complaint about the shape of a tree: no position, since the
+  // tree no longer knows where in the text it was
+  pub fn shape(reason &str) JsonError {
+    new JsonError(ErrorKind.Shape, 0usize, 0u32, 0u32, String.from(reason));
+  }
+
+  // One line for a person: 'json: line 1, column 9: expected a value ...'
+  pub fn message(self &) String {
+    mut out = String.from("json: ");
+    if line > 0u32 {
+      out.append("line ");
+      out.appendUInt(u64.from(line));
+      out.append(", column ");
+      out.appendUInt(u64.from(column));
+      out.append(": ");
+    }
+    out.append(reason.view());
+    out;
+  }
+
+  pub fn copy(self &) JsonError {
+    new JsonError(kind, offset, line, column, reason.copy());
+  }
+}
+
+// -------- options --------
+
+// How a text is read
+pub struct Options {
+  // The most arrays and objects open at once; a text that nests deeper is a
+  // TooDeep error
+  pub maxDepth usize;
+  // A name repeated in an object is a DuplicateKey error
+  pub rejectDuplicateKeys bool;
+
+  // 512 levels, duplicate names kept
+  pub fn standard() Options { new Options(512usize, false); }
+}
+
+// How a value is written
+pub struct WriteOptions {
+  // Spaces a level indents by; 0 is compact, one line with no space at all
+  pub indent usize;
+  // Every character past U+007F as '\u' escapes
+  pub asciiOnly bool;
+
+  // Compact, UTF-8
+  pub fn standard() WriteOptions { new WriteOptions(0usize, false); }
+}
+
+// -------- the tree --------
+
+// One member of an object
+pub struct Member {
+  pub key String;
+  pub value Json;
+}
+
+// A JSON value. A number holds its text as written. An object holds its
+// members in the order written. Matching on it reaches the contents
+// ('case imm a Array'); the methods below do the common asking.
+pub enum Json {
+  Null;
+  Bool(bool);
+  Number(String);
+  Text(String);
+  Array(List[Json]);
+  Object(List[Member]);
+
+  // -------- building --------
+
+  pub fn fromText(s &str) Json { Json.Text(String.from(s)); }
+
+  pub fn fromBool(b bool) Json { Json.Bool(b); }
+
+  pub fn fromI64(n i64) Json {
+    mut s = String.empty();
+    s.appendInt(n);
+    Json.Number(s);
+  }
+
+  pub fn fromU64(n u64) Json {
+    mut s = String.empty();
+    s.appendUInt(n);
+    Json.Number(s);
+  }
+
+  // The shortest text that reads back as x; null for NaN and infinity
+  pub fn fromF64(x f64) Json {
+    match formatF64(x) {
+      case mut t Some {
+        mut s = String.empty();
+        s <=> t;
+        Json.Number(s);
+      }
+      case is None { Json.Null; }
+    }
+  }
+
+  // A number given as its text, which must be RFC 8259's grammar
+  pub fn fromNumberText(s &str) Result[Json, NumberError] {
+    if not isNumberText(s) { return Error[Json, NumberError](NumberError.NotANumber); }
+    Ok[Json, NumberError](Json.Number(String.from(s)));
+  }
+
+  pub fn newArray() Json { Json.Array(List[Json].empty()); }
+
+  pub fn newObject() Json { Json.Object(List[Member].empty()); }
+
+  // Add an element to an array; false (and v dropped) for anything else
+  pub fn push(self &mut Json, v Json) bool {
+    match self {
+      case mut a Array {
+        a.push(v);
+        true;
+      }
+      else { false; }
+    }
+  }
+
+  // Set a member of an object: the first member of that name takes v, or it
+  // is added at the end. False (and v dropped) for anything but an object.
+  pub fn set(self &mut Json, key &str, v Json) bool {
+    match self {
+      case mut o Object {
+        mut i = 0usize;
+        while i < o.len() {
+          if o[i].key.view() == key {
+            o.set(i, new Member(String.from(key), v));
+            return true;
+          }
+          i = i + 1usize;
+        }
+        o.push(new Member(String.from(key), v));
+        true;
+      }
+      else { false; }
+    }
+  }
+
+  // -------- asking --------
+
+  pub fn isNull(self &Json) bool { self is Null; }
+  pub fn isBool(self &Json) bool { self is Bool; }
+  pub fn isNumber(self &Json) bool { self is Number; }
+  pub fn isText(self &Json) bool { self is Text; }
+  pub fn isArray(self &Json) bool { self is Array; }
+  pub fn isObject(self &Json) bool { self is Object; }
+
+  // An array's elements or an object's members; 0 for anything else
+  pub fn len(self &Json) usize {
+    match self {
+      case imm a Array { a.len(); }
+      case imm o Object { o.len(); }
+      else { 0usize; }
+    }
+  }
+
+  // Element i of an array
+  pub fn at(self &Json, i usize) Option[&Json] {
+    match self {
+      case imm a Array { a.get(i); }
+      else { None; }
+    }
+  }
+
+  // The value of the first member named key in an object
+  pub fn get(self &Json, key &str) Option[&Json] {
+    match self {
+      case imm o Object {
+        each m in o {
+          if m.key.view() == key { return Some[&Json](&m.value); }
+        }
+        None;
+      }
+      else { None; }
+    }
+  }
+
+  pub fn has(self &Json, key &str) bool {
+    match self.get(key) {
+      case is Some { true; }
+      case is None { false; }
+    }
+  }
+
+  // The name of member i of an object
+  pub fn keyAt(self &Json, i usize) Option[&str] {
+    match self {
+      case imm o Object {
+        match o.get(i) {
+          case imm m Some { Some[&str](m.key.view()); }
+          case is None { None; }
+        }
+      }
+      else { None; }
+    }
+  }
+
+  // The value of member i of an object
+  pub fn valueAt(self &Json, i usize) Option[&Json] {
+    match self {
+      case imm o Object {
+        match o.get(i) {
+          case imm m Some { Some[&Json](&m.value); }
+          case is None { None; }
+        }
+      }
+      else { None; }
+    }
+  }
+
+  pub fn asBool(self &Json) Option[bool] {
+    match self {
+      case imm b Bool { Some[bool](*b); }
+      else { None; }
+    }
+  }
+
+  // A string's text, escapes decoded
+  pub fn asText(self &Json) Option[&str] {
+    match self {
+      case imm t Text { Some[&str](t.view()); }
+      else { None; }
+    }
+  }
+
+  // A number's text, as written
+  pub fn numberText(self &Json) Option[&str] {
+    match self {
+      case imm t Number { Some[&str](t.view()); }
+      else { None; }
+    }
+  }
+
+  // The number as an i64, exactly; NotANumber for another kind of value
+  pub fn asI64(self &Json) Result[i64, NumberError] {
+    match self {
+      case imm t Number { numberI64(t.view()); }
+      else { Error[i64, NumberError](NumberError.NotANumber); }
+    }
+  }
+
+  pub fn asU64(self &Json) Result[u64, NumberError] {
+    match self {
+      case imm t Number { numberU64(t.view()); }
+      else { Error[u64, NumberError](NumberError.NotANumber); }
+    }
+  }
+
+  // The nearest f64 to the number
+  pub fn asF64(self &Json) Result[f64, NumberError] {
+    match self {
+      case imm t Number { numberF64(t.view()); }
+      else { Error[f64, NumberError](NumberError.NotANumber); }
+    }
+  }
+
+  // -------- asking for a member --------
+  //
+  // Each answers None for a name that is not there, for a value of another
+  // kind, and, for a number, for one that does not convert exactly.
+
+  pub fn getText(self &Json, key &str) Option[&str] {
+    match self.get(key) {
+      case imm v Some { v.asText(); }
+      case is None { None; }
+    }
+  }
+
+  pub fn getBool(self &Json, key &str) Option[bool] {
+    match self.get(key) {
+      case imm v Some { v.asBool(); }
+      case is None { None; }
+    }
+  }
+
+  pub fn getI64(self &Json, key &str) Option[i64] {
+    match self.get(key) {
+      case imm v Some {
+        match v.asI64() {
+          case imm n Ok { Some[i64](n); }
+          case is Error { None; }
+        }
+      }
+      case is None { None; }
+    }
+  }
+
+  pub fn getU64(self &Json, key &str) Option[u64] {
+    match self.get(key) {
+      case imm v Some {
+        match v.asU64() {
+          case imm n Ok { Some[u64](n); }
+          case is Error { None; }
+        }
+      }
+      case is None { None; }
+    }
+  }
+
+  pub fn getF64(self &Json, key &str) Option[f64] {
+    match self.get(key) {
+      case imm v Some {
+        match v.asF64() {
+          case imm n Ok { Some[f64](n); }
+          case is Error { None; }
+        }
+      }
+      case is None { None; }
+    }
+  }
+
+  // A member, or fallback when it is missing or not of that kind
+  pub fn boolOr(self &Json, key &str, fallback bool) bool {
+    match self.getBool(key) {
+      case imm b Some { b; }
+      case is None { fallback; }
+    }
+  }
+
+  pub fn i64Or(self &Json, key &str, fallback i64) i64 {
+    match self.getI64(key) {
+      case imm n Some { n; }
+      case is None { fallback; }
+    }
+  }
+
+  pub fn f64Or(self &Json, key &str, fallback f64) f64 {
+    match self.getF64(key) {
+      case imm n Some { n; }
+      case is None { fallback; }
+    }
+  }
+
+  // -------- requiring a member --------
+  //
+  // For a mapping that must have the member: a Shape error that names it, in
+  // the words "the member "age" is missing" or "the member "age" is not a
+  // string" (or whole number, number, true or false, ...)
+
+  pub fn require(self &Json, key &str) Result[&Json, JsonError] {
+    match self.get(key) {
+      case imm v Some { Ok[&Json, JsonError](v); }
+      case is None {
+        if self.isObject() { Error[&Json, JsonError](memberError(key, "is missing")); }
+        else { Error[&Json, JsonError](JsonError.shape("expected an object")); }
+      }
+    }
+  }
+
+  pub fn requireText(self &Json, key &str) Result[String, JsonError] {
+    match self.require(key) {
+      case imm v Ok {
+        match v.asText() {
+          case imm s Some { Ok[String, JsonError](String.from(s)); }
+          case is None { Error[String, JsonError](memberError(key, "is not a string")); }
+        }
+      }
+      case imm e Error { Error[String, JsonError](e.copy()); }
+    }
+  }
+
+  pub fn requireBool(self &Json, key &str) Result[bool, JsonError] {
+    match self.require(key) {
+      case imm v Ok {
+        match v.asBool() {
+          case imm b Some { Ok[bool, JsonError](b); }
+          case is None { Error[bool, JsonError](memberError(key, "is not true or false")); }
+        }
+      }
+      case imm e Error { Error[bool, JsonError](e.copy()); }
+    }
+  }
+
+  pub fn requireI64(self &Json, key &str) Result[i64, JsonError] {
+    match self.require(key) {
+      case imm v Ok {
+        match v.asI64() {
+          case imm n Ok { Ok[i64, JsonError](n); }
+          case imm why Error { Error[i64, JsonError](numberMemberError(key, &why)); }
+        }
+      }
+      case imm e Error { Error[i64, JsonError](e.copy()); }
+    }
+  }
+
+  pub fn requireU64(self &Json, key &str) Result[u64, JsonError] {
+    match self.require(key) {
+      case imm v Ok {
+        match v.asU64() {
+          case imm n Ok { Ok[u64, JsonError](n); }
+          case imm why Error { Error[u64, JsonError](numberMemberError(key, &why)); }
+        }
+      }
+      case imm e Error { Error[u64, JsonError](e.copy()); }
+    }
+  }
+
+  pub fn requireF64(self &Json, key &str) Result[f64, JsonError] {
+    match self.require(key) {
+      case imm v Ok {
+        match v.asF64() {
+          case imm x Ok { Ok[f64, JsonError](x); }
+          case imm why Error { Error[f64, JsonError](numberMemberError(key, &why)); }
+        }
+      }
+      case imm e Error { Error[f64, JsonError](e.copy()); }
+    }
+  }
+
+  // -------- writing --------
+
+  // The compact text; fails only for a tree built by hand holding what JSON
+  // cannot (a Number whose text is not a number, a Text that is not UTF-8)
+  pub fn toText(self &Json) Result[String, JsonError] {
+    mut w = new Writer(WriteOptions.standard());
+    w.value(self);
+    w.finish();
+  }
+
+  // The text with each element on a line, indent spaces a level
+  pub fn toPretty(self &Json, indent usize) Result[String, JsonError] {
+    mut w = new Writer(new WriteOptions(indent, false));
+    w.value(self);
+    w.finish();
+  }
+}
+
+// -------- reading a tree --------
+
+// What an open container is while it is read
+struct Frame {
+  pub value Json;
+  pub key String;
+}
+
+// Read text as JSON: the tree it holds, or why it cannot be read. The text is
+// taken as bytes (a '&str' is also accepted), and a leading UTF-8 byte-order
+// mark is passed over.
+pub fn parse(text &Array[u8]) Result[Json, JsonError] {
+  imm opts = Options.standard();
+  parseWith(text, &opts);
+}
+
+pub fn parseWith(text &Array[u8], opts &Options) Result[Json, JsonError] {
+  mut r = readerWith(text, opts);
+  mut stack = List[Frame].empty();
+  mut root Json = Json.Null;
+  while true {
+    mut ev Event = Event.Done;
+    match r.next() {
+      case imm e Error { return Error[Json, JsonError](e.copy()); }
+      case imm got Ok { ev = got; }
+    }
+    if ev == Event.Done { break; }
+    if ev == Event.Key {
+      imm top = stack.len() - 1usize;
+      if opts.rejectDuplicateKeys and hasMember(&stack[top].value, r.text()) {
+        mut m = String.from("the name \"");
+        m.append(r.text());
+        m.append("\" is already in this object");
+        return Error[Json, JsonError](errorAt(text, r.offset(), ErrorKind.DuplicateKey, m.view()));
+      }
+      stack[top].key = String.from(r.text());
+      continue;
+    }
+    mut v Json = Json.Null;
+    if ev == Event.StartObject {
+      stack.push(new Frame(Json.newObject(), String.empty()));
+      continue;
+    }
+    if ev == Event.StartArray {
+      stack.push(new Frame(Json.newArray(), String.empty()));
+      continue;
+    }
+    if ev == Event.EndObject or ev == Event.EndArray {
+      match stack.pop() {
+        case mut f Some { v <=> f.value; }
+        case is None { }
+      }
+    }
+    elif ev == Event.Text { v = Json.Text(String.from(r.text())); }
+    elif ev == Event.Number { v = Json.Number(String.from(r.text())); }
+    elif ev == Event.True { v = Json.Bool(true); }
+    elif ev == Event.False { v = Json.Bool(false); }
+    // Null stays
+    if stack.len() == 0usize {
+      root <=> v;
+    }
+    else {
+      imm top = stack.len() - 1usize;
+      attach(&mut stack[top], v);
+    }
+  }
+  Ok[Json, JsonError](root);
+}
+
+// Whether an object holds a member named key
+fn hasMember(j &Json, key &str) bool {
+  match j {
+    case imm o Object {
+      each m in o {
+        if m.key.view() == key { return true; }
+      }
+      false;
+    }
+    else { false; }
+  }
+}
+
+// A finished value into the container being read
+fn attach(f &mut Frame, v Json) {
+  mut key = String.empty();
+  key <=> f.key;
+  match &mut f.value {
+    case mut a Array { a.push(v); }
+    case mut o Object { o.push(new Member(key, v)); }
+    else { }
+  }
+}
+
+// "the member "k" is missing"
+fn memberError(key &str, what &str) JsonError {
+  mut m = String.from("the member \"");
+  m.append(key);
+  m.append("\" ");
+  m.append(what);
+  JsonError.shape(m.view());
+}
+
+// A member that would not convert to the number asked for
+fn numberMemberError(key &str, e &NumberError) JsonError {
+  match e {
+    case is NotANumber { memberError(key, "is not a number"); }
+    case is NotInteger { memberError(key, "is not a whole number"); }
+    case is OutOfRange { memberError(key, "is beyond the range of the type asked for"); }
+  }
+}

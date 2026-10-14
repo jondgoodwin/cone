@@ -169,7 +169,7 @@ fn main() {
 		datagram, wake at a time) and later get
 		exactly one answer. Jobs may carry a deadline and join a cancel group.</td></tr>
 	<tr><td><span class="pre">aio</span><br><span class="pre">import aio;</span></td>
-		<td>I/O an actor awaits: a behaviour <span class="pre">await</span>s a socket's or a file's operation and pauses
+		<td>I/O an actor awaits: a behaviour <span class="pre">await</span>s a socket's (TCP or UDP) or a file's operation, or a timer, and pauses
 		until the answer comes. An operation may join a cancel group and carry a deadline.</td></tr>
 	<tr><td><span class="pre">actorhttp</span><br><span class="pre">import actorhttp;</span></td>
 		<td>HTTP and HTTPS an actor awaits: a behaviour <span class="pre">await</span>s
@@ -209,7 +209,7 @@ fn main() {
 	</table>
 	<p><a href="refstdnetmsg.html">Game Networking</a> describes it.</p>
 
-	<h3 id="textpkgs">Text: textdiff and toml</h3>
+	<h3 id="textpkgs">Text: textdiff, toml and json</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
 	<tr><td><span class="pre">textdiff</span><br><span class="pre">import textdiff;</span></td>
@@ -218,6 +218,9 @@ fn main() {
 	<tr><td><span class="pre">toml</span><br><span class="pre">import toml;</span></td>
 		<td>A reader for a subset of TOML: tables, and string, integer, boolean and list-of-string values.
 		It reads Congo's manifests, and suits any small configuration file that keeps to the subset.</td></tr>
+	<tr><td><span class="pre">json</span><br><span class="pre">import json;</span></td>
+		<td>JSON (RFC 8259) read and written: a value tree, a streaming reader of events, a writer, numbers kept as
+		written and read as i64 or f64 on request, UTF-8 checked. Written in Cone, with no C library.</td></tr>
 	</table>
 
 	<h3 id="textdiff">textdiff</h3>
@@ -284,6 +287,71 @@ fn main() i32 {
 }
 </pre>
 	<p>prints <span class="pre">hello</span>.</p>
+
+	<h3 id="json">json</h3>
+	<p><span class="pre">json.parse(text)</span> answers a <span class="pre">Result[Json, JsonError]</span>. A
+		<span class="pre">Json</span> is an enum (<span class="pre">Null</span>, <span class="pre">Bool</span>,
+		<span class="pre">Number</span>, <span class="pre">Text</span>, <span class="pre">Array</span>,
+		<span class="pre">Object</span>) that can be matched, and answers the common questions as methods:
+		<span class="pre">get</span> and <span class="pre">at</span> reach a member or an element, and
+		<span class="pre">getText</span>, <span class="pre">getI64</span>, <span class="pre">getF64</span> and
+		<span class="pre">getBool</span> answer an <span class="pre">Option</span> that is
+		<span class="pre">None</span> when the member is missing or of another kind
+		(<span class="pre">i64Or</span> and its kin take a fallback; <span class="pre">requireText</span> and its kin
+		answer an error that names the member). A number is kept as the text it was written in, and is read as an
+		integer or an f64 only when asked: <span class="pre">asI64</span> is exact and refuses a fraction or a value
+		out of range, <span class="pre">asF64</span> is the nearest f64. <span class="pre">toText()</span> and
+		<span class="pre">toPretty(2usize)</span> write a tree back. A <span class="pre">Reader</span> answers a
+		text's events one at a time with no tree built, and a <span class="pre">Writer</span> writes without one.
+		Nesting is limited to 512 levels by default, so a hostile text is refused early. There is no reflection yet:
+		mapping a struct to JSON and back is written by hand (the package's <span class="pre">examples/mapping.cone</span>
+		is one). The package's header lists what it chose and what it left out.</p>
+<pre>
+mod tour;
+
+import stdio use *;
+import json;
+
+fn main() i32 {
+  mut doc json.Json = json.Json.Null;
+  match json.parse("{\"name\": \"hello\", \"size\": 12, \"tags\": [\"a\", \"b\"]}") {
+    case mut ok Ok { doc &lt;=&gt; ok; }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  match doc.getText("name") {
+    case imm n Some { printStr(n); printStr("\n"); }
+    case is None { printStr("no name\n"); }
+  }
+  printInt(doc.i64Or("size", -1i64));
+  printStr("\n");
+  match doc.toPretty(2usize) {
+    case imm t Ok { printStr(t.view()); printStr("\n"); }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  0i32;
+}
+</pre>
+	<p>prints:</p>
+<pre>
+hello
+12
+{
+  "name": "hello",
+  "size": 12,
+  "tags": [
+    "a",
+    "b"
+  ]
+}
+</pre>
 
 	<h3 id="testpkg">Testing</h3>
 	<table border="1" cellpadding="4" cellspacing="0">

@@ -1,0 +1,204 @@
+// Units, expressions, and how the rig composes them.
+//
+// Worked out here:
+// 1. FACS letters: A 0.15, B 0.30, C 0.55, D 0.80, E 1.0.
+// 2. Happiness is AU6 at 0.7 and AU12 at 0.9 (plus a part of AU25 and a
+//    little jaw). With the idle off, a blink not running and the expression
+//    weight 1, after 1 s the eased weight is 1 - exp(-4.6 / 0.5 * 1)? no: the
+//    expression is asked for in 0.5 s, so its rate is 4.6 / 0.5 = 9.2 a second
+//    and after 1 s the weight is 1 - e^-9.2 = 0.9999, the unit 0.9 x that.
+// 3. Half happiness and half sadness: units are the weighted sum, so AU12 is
+//    0.45 and AU15 0.35 (sadness has AU15 at 0.7).
+// 4. The jaw: AU26 at 1 opens the jaw by the spec's maximum, 0.45 rad;
+//    AU27 at 1 by 1.35 times that; AU29 thrusts 0.14 face scales (0.00868 m).
+// 5. A hand-set unit adds to an expression's and the sum is held to 1.
+// 6. The blink unit (AU45) and eyes-closed unit (AU43) of a side drive the
+//    same morph target; weights add and are held to 1.
+// 7. Contempt is one-sided: AU12 on the right only.
+
+mod expressions;
+
+import testing use *;
+import libc;
+import collections use List;
+import geomath use *;
+import mesh use Mesh;
+import facerig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+struct Rigged {
+  head TestHead;
+  units List[UnitDef];
+  targets FaceTargets;
+}
+
+fn rigged() Rigged {
+  imm head = makeTestHead(60usize, 80usize);
+  imm units = standardUnits();
+  imm targets = buildTargets(&head.mesh, &head.spec, &units);
+  new Rigged(head, units, targets);
+}
+
+fn quiet(r &Rigged, seed u32) FaceRig {
+  mut rig = FaceRig.make(&r.head.spec, &r.units, &r.targets, seed);
+  rig.idleAmount = 0.;
+  rig.blinking = false;
+  rig;
+}
+
+fn unitValue(r &Rigged, f &FaceFrame, au u32, side u32) f32 {
+  imm i = findUnit(&r.units, au, side);
+  *f.units[usize.from(i)];
+}
+
+fn run(rig &mut FaceRig, f &mut FaceFrame, seconds f32) {
+  mut t = 0.;
+  while t < seconds { rig.update(1. / 60., f); t = t + 1. / 60.; }
+}
+
+fn testLetters() {
+  near(intensity('A'), 0.15, 0.000001, "A");
+  near(intensity('B'), 0.30, 0.000001, "B");
+  near(intensity('C'), 0.55, 0.000001, "C");
+  near(intensity('D'), 0.80, 0.000001, "D");
+  near(intensity('E'), 1.00, 0.000001, "E");
+}
+
+fn testTable(r &Rigged) {
+  expect(r.units.len() > 50usize, "the table has more than fifty units");
+  expect(findUnit(&r.units, AU_LIP_CORNER_PULLER, SIDE_RIGHT) >= 0i32, "AU12 right");
+  expect(findUnit(&r.units, AU_LIP_CORNER_PULLER, SIDE_LEFT) >= 0i32, "AU12 left");
+  expect(findUnit(&r.units, AU_JAW_DROP, SIDE_BOTH) >= 0i32, "AU26");
+  expectInt(i64.from(findUnit(&r.units, AU_LIP_CORNER_PULLER, SIDE_BOTH)), -1i64, "AU12 has no central unit");
+  // Every bilateral AU has both sides
+  mut paired = true;
+  mut i = 0usize;
+  while i < r.units.len() {
+    imm u = r.units[i];
+    if u.side == SIDE_RIGHT {
+      if findUnit(&r.units, u.au, SIDE_LEFT) < 0i32 { paired = false; }
+    }
+    i = i + 1usize;
+  }
+  expectBool(paired, true, "every right-hand unit has a left-hand one");
+  // The blink shares the closed eyes' target
+  imm closedR = findUnit(&r.units, AU_EYES_CLOSED, SIDE_RIGHT);
+  imm blinkR = findUnit(&r.units, AU_BLINK, SIDE_RIGHT);
+  expect(*r.targets.unitTarget[usize.from(closedR)] >= 0i32, "AU43 has a target");
+  expectInt(i64.from(*r.targets.unitTarget[usize.from(blinkR)]), i64.from(*r.targets.unitTarget[usize.from(closedR)]),
+    "AU45 shares AU43's target");
+}
+
+fn testExpressionBlend(r &Rigged) {
+  imm exprs = standardExpressions();
+  expectInt(i64.from(findExpression(&exprs, "happiness")), i64.from(EXPR_HAPPINESS), "happiness is where it is said to be");
+  mut rig = quiet(r, 1u32);
+  mut f = rig.newFrame();
+  rig.express(EXPR_HAPPINESS, 1., 0.5);
+  run(&mut rig, &mut f, 1.);
+  near(unitValue(r, &f, AU_LIP_CORNER_PULLER, SIDE_RIGHT), 0.9, 0.002, "happiness: AU12 right at 0.9");
+  near(unitValue(r, &f, AU_LIP_CORNER_PULLER, SIDE_LEFT), 0.9, 0.002, "and left");
+  near(unitValue(r, &f, AU_CHEEK_RAISER, SIDE_RIGHT), 0.7, 0.002, "AU6 at 0.7");
+  // Easing: after 0.1 s the weight is 1 - exp(-9.2 * 0.1) = 0.6015
+  mut rig2 = quiet(r, 1u32);
+  mut f2 = rig2.newFrame();
+  rig2.express(EXPR_HAPPINESS, 1., 0.5);
+  mut i = 0;
+  while i < 6 { rig2.update(1. / 60., &mut f2); i = i + 1; }
+  near(unitValue(r, &f2, AU_LIP_CORNER_PULLER, SIDE_RIGHT), 0.9 * (1. - libc.expf(-9.2 * 0.1)), 0.003, "eased: 60% after a tenth of a second");
+  // A blend
+  mut rig3 = quiet(r, 1u32);
+  mut f3 = rig3.newFrame();
+  rig3.express(EXPR_HAPPINESS, 0.5, 0.1);
+  rig3.express(EXPR_SADNESS, 0.5, 0.1);
+  run(&mut rig3, &mut f3, 1.);
+  near(unitValue(r, &f3, AU_LIP_CORNER_PULLER, SIDE_RIGHT), 0.45, 0.002, "half happiness half sadness: AU12 0.45");
+  near(unitValue(r, &f3, AU_LIP_CORNER_DEPRESSOR, SIDE_RIGHT), 0.35, 0.002, "AU15 0.35");
+  // Clearing
+  rig3.clearExpressions(0.1);
+  run(&mut rig3, &mut f3, 1.);
+  near(unitValue(r, &f3, AU_LIP_CORNER_PULLER, SIDE_RIGHT), 0., 0.001, "cleared: back to neutral");
+  // Contempt is one-sided
+  mut rig4 = quiet(r, 1u32);
+  mut f4 = rig4.newFrame();
+  rig4.express(EXPR_CONTEMPT, 1., 0.1);
+  run(&mut rig4, &mut f4, 1.);
+  near(unitValue(r, &f4, AU_LIP_CORNER_PULLER, SIDE_RIGHT), 0.55, 0.002, "contempt: AU12 right");
+  near(unitValue(r, &f4, AU_LIP_CORNER_PULLER, SIDE_LEFT), 0., 0.001, "and not left");
+}
+
+fn testJaw(r &Rigged) {
+  mut rig = quiet(r, 2u32);
+  mut f = rig.newFrame();
+  rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 1.);
+  rig.update(1. / 60., &mut f);
+  near(f.jawPitch, 0.45, 0.0001, "AU26: the jaw opens 0.45 rad");
+  // The jaw rotation takes the chin down and back
+  imm chin = new Vec3(0., -0.105, -0.07);
+  imm pivot = r.head.spec.jawPivot;
+  imm moved = f.jawRot * (chin - pivot) + pivot;
+  expect(moved.y < chin.y - 0.02, "the chin drops");
+  expect(moved.z > chin.z, "and goes back");
+  near((moved - pivot).length(), (chin - pivot).length(), 0.00001, "on an arc about the hinge");
+  rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
+  rig.setUnit(AU_MOUTH_STRETCH, SIDE_BOTH, 1.);
+  rig.update(1. / 60., &mut f);
+  near(f.jawPitch, 0.45 * 1.35, 0.0001, "AU27: 1.35 times");
+  rig.setUnit(AU_MOUTH_STRETCH, SIDE_BOTH, 0.);
+  rig.setUnit(AU_JAW_THRUST, SIDE_BOTH, 1.);
+  rig.update(1. / 60., &mut f);
+  near(f.jawThrust, 0.14 * 0.062, 0.00001, "AU29: the jaw thrusts 0.14 face scales");
+  near(f.jawPitch, 0., 0.0001, "and does not open");
+}
+
+fn testLimitsAndSharing(r &Rigged) {
+  mut rig = quiet(r, 3u32);
+  mut f = rig.newFrame();
+  rig.express(EXPR_HAPPINESS, 1., 0.05);
+  rig.setUnit(AU_LIP_CORNER_PULLER, SIDE_BOTH, 0.5);
+  run(&mut rig, &mut f, 1.);
+  near(unitValue(r, &f, AU_LIP_CORNER_PULLER, SIDE_RIGHT), 1., 0.0001, "0.9 + 0.5 is held to 1");
+  // The blink and the closed eyes share a target: 0.7 + 0.7 gives 1.2 at most
+  mut rig2 = quiet(r, 4u32);
+  mut f2 = rig2.newFrame();
+  rig2.setUnit(AU_EYES_CLOSED, SIDE_RIGHT, 0.7);
+  rig2.blinking = true;
+  rig2.blinker.start(1.);
+  // Run until the blink is fully shut
+  mut i = 0;
+  while i < 5 { rig2.update(1. / 60., &mut f2); i = i + 1; }
+  near(f2.blink, 1., 0.001, "the blink is shut 0.083 s in");
+  imm t = *r.targets.unitTarget[usize.from(findUnit(&r.units, AU_EYES_CLOSED, SIDE_RIGHT))];
+  near(*f2.weights[usize.from(t)], 1., 0.0001, "0.7 closed plus a full blink is held to 1");
+}
+
+fn testWeightsShape(r &Rigged) {
+  mut rig = quiet(r, 5u32);
+  mut f = rig.newFrame();
+  expectUInt(u64.from(f.weights.len()), u64.from(r.targets.count()), "one weight per target");
+  expectUInt(u64.from(f.units.len()), u64.from(r.units.len()), "one value per unit");
+  rig.update(1. / 60., &mut f);
+  // (the eyes' micro-movement turns the lids' following a hair, so "none" is a hundredth)
+  mut largest = 0.;
+  mut k = 0usize;
+  while k < f.weights.len() { if *f.weights[k] > largest { largest = *f.weights[k]; } k = k + 1usize; }
+  expect(largest < 0.01, "a neutral face asks for no target but the lids' hair of following");
+  // The unit quaternions are unit
+  near(f.eyeL.length(), 1., 0.0001, "an eye's rotation is a unit quaternion");
+  near(f.jawRot.length(), 1., 0.0001, "and the jaw's");
+  near(f.head.length(), 1., 0.0001, "and the head's");
+}
+
+fn main() i32 {
+  imm r = rigged();
+  testLetters();
+  testTable(&r);
+  testExpressionBlend(&r);
+  testJaw(&r);
+  testLimitsAndSharing(&r);
+  testWeightsShape(&r);
+  done();
+}
