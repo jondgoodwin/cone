@@ -1,0 +1,54 @@
+// A box apart from a triangle by less than the speculative margin gets the nearest points' normal and gap, not
+// a box face's.
+//
+// A flat triangle (y = 0.1, from x = 2.268 on, z over -2 to 2) lies ahead of a box (half-sizes 2.1, 0.3, 0.85,
+// bottom at y = 0.25, front face at x = 2.1) and below it: 0.168 m ahead of the front face along x, 0.15 m under the
+// bottom face along y, 0.225 m away by the nearest points. The best separating axis is the front face's, which gave
+// "a gap of 0.168 m along x": a wall at the box's nose within a 0.2 m margin, which a box moving along x at 22 m/s
+// stopped against. Within 0.2 m it is no contact; within 0.3 m it is one on the diagonal, nearly 0.225 m deep apart.
+
+mod speculativebox;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import stdio use *;
+import rigidcollide use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn aheadAndBelow() Shape {
+  mut verts = List[Vec3].empty();
+  verts.push(new Vec3(2.268, 0.1, -2.));
+  verts.push(new Vec3(6.268, 0.1, -2.));
+  verts.push(new Vec3(6.268, 0.1, 2.));
+  verts.push(new Vec3(2.268, 0.1, 2.));
+  mut idx = List[u32].empty();
+  idx.push(0u32); idx.push(2u32); idx.push(1u32);
+  idx.push(0u32); idx.push(3u32); idx.push(2u32);
+  Shape.single(meshPrim(verts, idx));
+}
+
+fn testAhead() {
+  imm tri = aheadAndBelow();
+  imm box = Shape.single(Prim.box(new Vec3(2.1, 0.3, 0.85)));
+  mut out = List[Manifold].empty();
+  collide(&tri, Rigid.identity(), &box, Rigid.at(new Vec3(0., 0.55, 0.)), 0.2, &mut out);
+  expectInt(i64.from(out.len()), 0, "0.225 m away by the nearest points, margin 0.2: no contact (not a wall 0.168 m ahead)");
+  mut wide = List[Manifold].empty();
+  collide(&tri, Rigid.identity(), &box, Rigid.at(new Vec3(0., 0.55, 0.)), 0.3, &mut wide);
+  expectBool(wide.len() > 0usize, true, "margin 0.3: in reach");
+  if wide.len() > 0usize {
+    imm m = *wide[0usize];
+    // the normal runs from the triangle (A) to the box (B): up and back
+    expectBool(absf(m.normal.x) < 0.9 and m.normal.y > 0.4, true, "the normal is the diagonal, not the box's front face");
+    near(m.deepest(), -0.225, 0.01, "apart by 0.225 m");
+  }
+}
+
+fn main() i32 {
+  testAhead();
+  done();
+}
