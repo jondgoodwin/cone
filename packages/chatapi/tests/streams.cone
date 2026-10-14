@@ -1,0 +1,622 @@
+// Streamed replies, against a mock chat-completions server on actorhttp's
+// server (127.0.0.1 only), the stream a ChatStream actor reads. The mock
+// answers by the request's model: 'basic' sends the API's chunks as events
+// (the role, four pieces of text, the finish reason, the usage when the request
+// asked for it, '[DONE]'); 'split' sends the same bytes cut into pieces that end
+// inside a line, inside the JSON, between a CR and its LF, with a pause between
+// them and no Content-Type (read as events all the same); 'keepalive' puts comments and an empty event between the chunks. The
+// failures: a chunk that is not JSON, an error object as a chunk, a stream cut
+// off before the reply was whole, a stream whose last chunk has the finish
+// reason but no '[DONE]' (accepted), a 200 that is no event stream, a 429 and a
+// 401 answered to the streamed request, a stream that goes silent (ended by a
+// deadline), and a reader that leaves an endless stream (the server finds out by
+// a write answering Closed). 'collect' gathers a whole reply from a stream. The
+// request the mock saw must say "stream":true. No error message holds the key.
+
+mod streams;
+
+import stdio use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr, CancelGroup;
+import http use ResponseHead, BodyLength;
+import json;
+import env;
+import sse;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import aio use IoLimits;
+import chatapi use *;
+
+fn theKey() &str {"sk-test-chatapi-0002";}
+
+// ---------------------------------------------------------------------------
+// The mock server
+// ---------------------------------------------------------------------------
+
+fn textOf(j &json.Json) String {
+  match j.toText() {
+    case mut t Ok {
+      mut s = String.empty();
+      s <=> t;
+      s;
+    }
+    case imm e Error {String.from("(unwritable)");}
+  }
+}
+
+// One chunk of a stream. role and content are left out when empty strings are
+// not meant: hasContent says the delta has a "content" member
+fn chunkJson(role &str, hasContent bool, content &str, finish &str) String {
+  mut delta = json.Json.newObject();
+  if role.len() > 0usize {delta.set("role", json.Json.fromText(role));}
+  if hasContent {delta.set("content", json.Json.fromText(content));}
+  mut choice = json.Json.newObject();
+  choice.set("index", json.Json.fromI64(0i64));
+  choice.set("delta", delta);
+  if finish.len() > 0usize {choice.set("finish_reason", json.Json.fromText(finish));}
+  else {choice.set("finish_reason", json.Json.Null);}
+  mut choices = json.Json.newArray();
+  choices.push(choice);
+  mut o = json.Json.newObject();
+  o.set("id", json.Json.fromText("chatcmpl-s1"));
+  o.set("object", json.Json.fromText("chat.completion.chunk"));
+  o.set("created", json.Json.fromI64(1700000001i64));
+  o.set("model", json.Json.fromText("mock-served"));
+  o.set("choices", choices);
+  textOf(&o);
+}
+
+fn usageChunk() String {
+  imm s = "{\"id\":\"chatcmpl-s1\",\"object\":\"chat.completion.chunk\",\"model\":\"mock-served\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4,\"total_tokens\":9}}";
+  String.from(s);
+}
+
+// The chunks of the standard reply 'Hello world', each as the data of an event
+fn standardChunks(withUsage bool) List[String] {
+  mut l = List[String].empty();
+  l.push(chunkJson("assistant", true, "", ""));
+  l.push(chunkJson("", true, "Hel", ""));
+  l.push(chunkJson("", true, "lo", ""));
+  l.push(chunkJson("", true, " wor", ""));
+  l.push(chunkJson("", true, "ld", ""));
+  l.push(chunkJson("", false, "", "stop"));
+  if withUsage {l.push(usageChunk());}
+  l;
+}
+
+fn errorJson(message &str, code &str) String {
+  mut inner = json.Json.newObject();
+  inner.set("message", json.Json.fromText(message));
+  inner.set("type", json.Json.fromText("invalid_request_error"));
+  inner.set("code", json.Json.fromText(code));
+  mut o = json.Json.newObject();
+  o.set("error", inner);
+  textOf(&o);
+}
+
+// The stream as bytes, one event to a block, the line ends as given
+fn streamBytes(chunks &List[String], eol &str, done bool) String {
+  mut s = String.empty();
+  each c in chunks {
+    s.append("data: ");
+    s.append(c.view());
+    s.append(eol);
+    s.append(eol);
+  }
+  if done {
+    s.append("data: [DONE]");
+    s.append(eol);
+    s.append(eol);
+  }
+  s;
+}
+
+// Answers one request
+actor Handler {
+  ex Exchange;
+  left Sender[u64];
+
+  fn answer(self, status u16, body &str) {
+    mut head = ResponseHead.make(status);
+    head.headers.add("Content-Type", "application/json");
+    ex.respond(head, String.from(body));
+  }
+
+  pub async do run(self) {
+    imm path = String.from(ex.request.path());
+    if path.view() != "/v1/chat/completions" or ex.request.methodName() != "POST" {
+      ex.text(404u16, "no such path");
+      return;
+    }
+    imm auth = String.fromBytes(ex.request.header("authorization"));
+    mut want = String.from("Bearer ");
+    want.append(theKey());
+    if auth.view() != want.view() {
+      self.answer(401u16, errorJson("Incorrect API key provided.", "invalid_api_key").view());
+      return;
+    }
+    mut doc json.Json = json.Json.Null;
+    match json.parse(ex.request.body.view()) {
+      case mut ok Ok {doc <=> ok;}
+      case imm e Error {
+        self.answer(400u16, errorJson("the body is not JSON", "bad_body").view());
+        return;
+      }
+    }
+    if not doc.boolOr("stream", false) {
+      self.answer(400u16, errorJson("this mock streams only", "not_streamed").view());
+      return;
+    }
+    mut withUsage = false;
+    match doc.get("stream_options") {
+      case imm so Some {withUsage = so.boolOr("include_usage", false);}
+      case is None {}
+    }
+    mut model = String.empty();
+    match doc.getText("model") {
+      case imm s Some {model = String.from(s);}
+      case is None {}
+    }
+    imm m = model.view();
+    if m == "basic" {
+      imm chunks = standardChunks(withUsage);
+      ex.startEvents();
+      mut at = 0usize;
+      while at < chunks.len() {
+        imm e = sse.Event.message(chunks[at].view());
+        imm w = await ex.sendEvent(&e);
+        at = at + 1usize;
+      }
+      imm e = sse.Event.message("[DONE]");
+      imm w = await ex.sendEvent(&e);
+      imm f = await ex.finish();
+    } elif m == "split" {
+      // The same stream with CRLF line ends, in pieces of 37 bytes
+      imm all = streamBytes(&standardChunks(withUsage), "\r\n", true);
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      mut at = 0usize;
+      while at < all.len() {
+        mut end = at + 37usize;
+        if end > all.len() {end = all.len();}
+        imm w = await ex.write(all.sub(at, end));
+        thread.sleep(Duration.fromMillis(8i64));
+        at = end;
+      }
+      imm f = await ex.finish();
+    } elif m == "keepalive" {
+      ex.startEvents();
+      imm c1 = await ex.sendComment("ping");
+      imm chunks = standardChunks(false);
+      mut k = 0usize;
+      while k < chunks.len() {
+        imm e = sse.Event.message(chunks[k].view());
+        imm w = await ex.sendEvent(&e);
+        imm c2 = await ex.sendComment("ping");
+        imm empty = sse.Event.message("");
+        imm w2 = await ex.sendEvent(&empty);
+        k = k + 1usize;
+      }
+      imm e = sse.Event.message("[DONE]");
+      imm w = await ex.sendEvent(&e);
+      imm f = await ex.finish();
+    } elif m == "badchunk" {
+      ex.startEvents();
+      imm a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      imm w1 = await ex.sendEvent(&a);
+      imm b = sse.Event.message(chunkJson("", true, "ok", "").view());
+      imm w2 = await ex.sendEvent(&b);
+      imm bad = sse.Event.message("{this is not json");
+      imm w3 = await ex.sendEvent(&bad);
+      imm c = sse.Event.message(chunkJson("", true, "never read", "").view());
+      imm w4 = await ex.sendEvent(&c);
+      imm f = await ex.finish();
+    } elif m == "errorchunk" {
+      ex.startEvents();
+      imm a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      imm w1 = await ex.sendEvent(&a);
+      imm err = sse.Event.message(errorJson("The context length was exceeded", "context_length_exceeded").view());
+      imm w2 = await ex.sendEvent(&err);
+      imm f = await ex.finish();
+    } elif m == "truncated" {
+      ex.startEvents();
+      imm a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      imm w1 = await ex.sendEvent(&a);
+      imm b = sse.Event.message(chunkJson("", true, "Hel", "").view());
+      imm w2 = await ex.sendEvent(&b);
+      imm f = await ex.finish();
+    } elif m == "nodone" {
+      ex.startEvents();
+      imm a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      imm w1 = await ex.sendEvent(&a);
+      imm b = sse.Event.message(chunkJson("", true, "Hi", "").view());
+      imm w2 = await ex.sendEvent(&b);
+      imm c = sse.Event.message(chunkJson("", false, "", "stop").view());
+      imm w3 = await ex.sendEvent(&c);
+      imm f = await ex.finish();
+    } elif m == "plainjson" {
+      self.answer(200u16, "{\"choices\":[{\"message\":{\"content\":\"not a stream\"}}]}");
+    } elif m == "ratelimit" {
+      self.answer(429u16, errorJson("Rate limit reached", "rate_limit_exceeded").view());
+    } elif m == "endless" {
+      ex.startEvents();
+      mut n = 0u64;
+      mut going = true;
+      while going {
+        mut piece = String.from("event ");
+        piece.appendUInt(n);
+        imm c = chunkJson("", true, piece.view(), "");
+        imm e = sse.Event.message(c.view());
+        imm w = await ex.sendEvent(&e);
+        match w {
+          case imm ok Ok {n = n + 1u64;}
+          case imm er Error {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(5i64));
+      }
+      left.send(n);
+    } else {
+      self.answer(400u16, errorJson("unknown model", "model_not_found").view());
+    }
+  }
+}
+
+// A stream that says nothing, kept so it is not dropped
+actor Silent {
+  ex Exchange;
+
+  pub async do start(self) {
+    ex.startEvents();
+  }
+}
+
+actor Acceptor {
+  server Server;
+  left Sender[u64];
+  held List[Silent];
+
+  pub async do open(self, ports Sender[u16]) {
+    imm r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    mut res = r;
+    match &mut res {
+      case mut ok &mut Ok {server <=> *ok;}
+      case imm e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async do serve(self) {
+    while true {
+      imm n = await server.next();
+      match n {
+        case mut ok Ok {self.route(ok);}
+        case imm e Error {break;}
+      }
+    }
+  }
+
+  pub async do stop(self) {
+    server.close();
+  }
+
+  fn route(self, ex Exchange) {
+    if ex.request.body.view().contains("\"model\":\"silent\"") {
+      imm s = new Silent(ex);
+      s.start();
+      held.push(s);
+      return;
+    }
+    imm h = new Handler(ex, left.clone());
+    h.run();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn baseUrl(port u16) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/v1");
+  u;
+}
+
+fn yes(b bool) &str {if b {"yes";} else {"NO";};}
+
+// Text on one line: line feeds as '/'
+fn flat(s &str) String {
+  mut out = String.empty();
+  imm b = s as &Array[u8];
+  mut k = 0usize;
+  while k < b.len {
+    if b[k] == '\n' {out.appendByte('/');}
+    elif b[k] == '\r' {out.append("\\r");}
+    else {out.appendByte(b[k]);}
+    k = k + 1usize;
+  }
+  out;
+}
+
+fn showError(e &ChatError) {
+  printStr("  error ");
+  // The json package's own words, where it says where and why, are not pinned here
+  imm text = e.message();
+  match text.view().find("json: line") {
+    case imm at Some {
+      printStr(text.sub(0usize, at + 5usize).view());
+      printStr(" ...");
+      match text.view().find(" (chunk") {
+        case imm k Some {printStr(text.sub(k, text.len()).view());}
+        case is None {}
+      }
+    }
+    case is None {printStr(text.view());}
+  }
+  if e.message().view().contains(theKey()) {printStr(" (THE KEY LEAKED)");}
+  printStr("\n");
+}
+
+fn showDelta(d &Delta) {
+  printStr("  delta");
+  if d.role.len() > 0usize {
+    printStr(" role=");
+    printStr(d.role.view());
+  }
+  if d.content.len() > 0usize {
+    printStr(" text=[");
+    printStr(flat(d.content.view()).view());
+    printStr("]");
+  }
+  if d.finishReason.len() > 0usize {
+    printStr(" finish=");
+    printStr(d.finishReason.view());
+  }
+  match &d.usage {
+    case imm u &Some {
+      printStr(" usage=");
+      printUInt(u.promptTokens);
+      printStr("/");
+      printUInt(u.completionTokens);
+      printStr("/");
+      printUInt(u.totalTokens);
+    }
+    case is &None {}
+  }
+  printStr("\n");
+}
+
+fn request(model &str, usage bool) ChatRequest {
+  mut r = ChatRequest.make(model);
+  r.addUser("hi");
+  r.includeUsage = usage;
+  r;
+}
+
+actor Reader {
+  chat Chat;
+
+  // Open a stream and print every delta, then how it ended
+  pub async do read(self, label String, model String, usage bool, ms i64, done OneshotSender[u64]) {
+    printStr(label.view());
+    printStr(":\n");
+    mut lim = IoLimits.none();
+    if ms > 0i64 {lim = IoLimits.until(Instant.now() + Duration.fromMillis(ms));}
+    imm opened = await chat.streamIn(request(model.view(), usage), lim);
+    match opened {
+      case imm cs Ok {
+        mut count = 0u64;
+        mut going = true;
+        while going {
+          imm n = await cs.next();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm d Some {
+                  showDelta(&d);
+                  count = count + 1u64;
+                }
+                case is None[Delta] {
+                  printStr("  end of stream\n");
+                  going = false;
+                }
+              }
+            }
+            case imm er Error {
+              showError(&er);
+              going = false;
+            }
+          }
+        }
+        // After an error or the end, there is nothing more
+        imm after = await cs.next();
+        match after {
+          case imm ok Ok {
+            match ok {
+              case imm d Some {printStr("  MORE after the end\n");}
+              case is None[Delta] {printStr("  and nothing after\n");}
+            }
+          }
+          case imm er Error {printStr("  ERROR after the end\n");}
+        }
+      }
+      case imm er Error {
+        printStr("  open failed:\n");
+        showError(&er);
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // A silent stream, ended by its cancel group's cancel (from main)
+  pub async do cancelled(self, group CancelGroup, done OneshotSender[u64]) {
+    printStr("silent, ended by a cancel:\n");
+    imm opened = await chat.streamIn(request("silent", false), IoLimits.within(group));
+    match opened {
+      case imm cs Ok {
+        imm n = await cs.next();
+        match n {
+          case imm ok Ok {printStr("  something arrived or it ended\n");}
+          case imm er Error {showError(&er);}
+        }
+      }
+      case imm er Error {
+        printStr("  open failed:\n");
+        showError(&er);
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // The rest of a stream gathered into one reply
+  pub async do whole(self, done OneshotSender[u64]) {
+    printStr("collect:\n");
+    imm opened = await chat.stream(request("basic", true));
+    match opened {
+      case imm cs Ok {
+        imm r = await cs.collect();
+        match r {
+          case imm ok Ok {
+            printStr("  id=");
+            printStr(ok.id.view());
+            printStr(" model=");
+            printStr(ok.model.view());
+            printStr(" role=");
+            printStr(ok.role.view());
+            printStr(" finish=");
+            printStr(ok.finishReason.view());
+            printStr(" text=[");
+            printStr(ok.content.view());
+            printStr("] usage=");
+            match &ok.usage {
+              case imm u &Some {printUInt(u.totalTokens);}
+              case is &None {printStr("none");}
+            }
+            printStr("\n");
+          }
+          case imm er Error {showError(&er);}
+        }
+      }
+      case imm er Error {printStr("  open failed\n");}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+
+  // Reads two deltas of an endless stream and goes: the ChatStream is dropped
+  pub async do leave(self, done OneshotSender[u64]) {
+    {
+      imm opened = await chat.stream(request("endless", false));
+      match opened {
+        case imm cs Ok {
+          mut got = 0u64;
+          while got < 2u64 {
+            imm n = await cs.next();
+            match n {
+              case imm ok Ok {got = got + 1u64;}
+              case imm er Error {got = 100u64;}
+            }
+          }
+          printStr("endless: deltas read before leaving: ");
+          printUInt(got);
+          printStr("\n");
+        }
+        case imm er Error {printStr("endless failed\n");}
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn take[T](rx &mut Receiver[T], dflt T) T {
+  match rx.recv() {
+    case imm v Some {v;}
+    else {dflt;}
+  }
+}
+
+fn run1(r &Reader, label &str, model &str, usage bool, ms i64) {
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  r.read(String.from(label), String.from(model), usage, ms, tx);
+  rx.recv();
+}
+
+fn main() i32 {
+  initAll();
+  env.set("CHATAPI_TEST_KEY", theKey());
+  env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
+  mut ptx Sender[u16];
+  mut prx Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  mut ltx Sender[u64];
+  mut lrx Receiver[u64];
+  ltx, lrx = Channel[u64].make();
+  {
+    imm acceptor = new Acceptor(Server.none(), ltx.clone(), List[Silent].empty());
+    acceptor.open(ptx.clone());
+    imm port = take[u16](&mut prx, 0u16);
+    acceptor.serve();
+    imm reader = new Reader(new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY")));
+
+    run1(&reader, "basic", "basic", true, 0i64);
+    run1(&reader, "basic, no usage asked", "basic", false, 0i64);
+    run1(&reader, "split", "split", true, 0i64);
+    run1(&reader, "keepalive", "keepalive", false, 0i64);
+    run1(&reader, "bad chunk", "badchunk", false, 0i64);
+    run1(&reader, "error chunk", "errorchunk", false, 0i64);
+    run1(&reader, "truncated", "truncated", false, 0i64);
+    run1(&reader, "no [DONE]", "nodone", false, 0i64);
+    run1(&reader, "plain json", "plainjson", false, 0i64);
+    run1(&reader, "rate limit", "ratelimit", false, 0i64);
+    run1(&reader, "silent, ended by a deadline", "silent", false, 400i64);
+
+    {
+      imm group = CancelGroup.make();
+      mut tx OneshotSender[u64];
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.cancelled(group, tx);
+      thread.sleep(Duration.fromMillis(400i64));
+      group.cancel();
+      rx.recv();
+    }
+
+    {
+      mut tx OneshotSender[u64];
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.whole(tx);
+      rx.recv();
+    }
+
+    // A wrong key
+    {
+      imm wrong = new Reader(new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_WRONGKEY")));
+      run1(&wrong, "wrong key", "basic", false, 0i64);
+    }
+
+    // A reader that leaves: the server finds out by a write answering Closed
+    {
+      mut tx OneshotSender[u64];
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.leave(tx);
+      rx.recv();
+      match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+        case imm n Some {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
+        case is None[u64] {printStr("endless: the server never saw its reader leave\n");}
+      }
+    }
+    acceptor.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32;
+}

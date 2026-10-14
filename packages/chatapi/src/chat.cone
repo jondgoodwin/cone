@@ -100,14 +100,17 @@ pub actor Chat {
   }
 }
 
-// Whether a response's Content-Type says it is an event stream
+// Whether a response may be an event stream: its Content-Type says so, or it
+// says nothing (a server that streams without naming the type is read as
+// events; one that names another, as a server that ignored 'stream' does with
+// application/json, is not)
 fn isEventStream(h &http.Headers) bool {
   match h.get("Content-Type") {
     case imm v Some {
       imm t = String.fromBytes(v);
       t.view().startsWith("text/event-stream");
     }
-    case is None[&Array[u8]] {false;}
+    case is None[&Array[u8]] {true;}
   }
 }
 
@@ -226,7 +229,7 @@ pub actor ChatStream {
       at = at + 1usize;
       imm data = queue[k].data.view().trim();
       if data.len() == 0usize {continue;}
-      if data == "[DONE]" {
+      if isDone(data) {
         over = true;
         return Step.End;
       }
@@ -240,10 +243,10 @@ pub actor ChatStream {
         }
         case imm e Error {
           over = true;
-          mut m = String.from("chunk ");
+          mut m = e.detail.copy();
+          m.append(" (chunk ");
           m.appendUInt(chunks);
-          m.append(": ");
-          m.append(e.detail.view());
+          m.append(")");
           mut c = e.copy();
           c.detail = m;
           return Step.Fail(c);
