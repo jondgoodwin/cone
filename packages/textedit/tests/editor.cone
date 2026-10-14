@@ -1,0 +1,143 @@
+// The editor widget in a uilayout Ui, driven only by the Ui's own input functions (keyDown, textInput,
+// pointerDown ...), with a fixed-width measure of 8 px a character and 20 px lines.
+//
+// Layout of the numbers: the node is 400 x 200 at the Ui's (0, 0). Font size 14, line height 20, so
+// 10 lines are visible. The gutter for a file under 1000 lines is 3 digits * 8 + 2 * 8 padding = 40 px; the
+// text starts at x = 40 + 8 = 48. So column c of a line is at x = 48 + 8c, and line l at y = 20 l.
+// Clicking at (48 + 8*3 + 1, 20*2 + 5) puts the caret at column 3 of line 2.
+
+mod editortest;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import uilayout use *;
+import textedit use *;
+
+fn fileText() String {
+  mut s = String.empty();
+  mut i = 0u32;
+  while i < 100u32 {
+    s.append("line ");
+    s.appendUInt(u64.from(i));
+    s.append(" fn f(a u32) { a + 1; }\n");
+    i = i + 1u32;
+  }
+  s;
+}
+
+fn main() i32 {
+  mut m = fn(t &str, font u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 20.); };
+  imm tok = &coneTokenizer;
+  mut ui = Ui.make(800., 600.);
+  mut ed = Editor.make(&mut ui, ui.root, fileText().view());
+  ui.setSize(ed.node, 400., 200.);
+  layout(&mut ui, &mut m);
+  ed.style.lineHeight = 20.;
+  expectInt(i64.from(ed.doc.lineCount()), 101i64, "100 lines and the empty one after the last newline");
+
+  // the first draw
+  expect(ed.refresh(&mut ui, &mut m, tok), "the first refresh draws");
+  expectInt(i64.from(ed.rebuilds), 1i64, "one draw list so far");
+  expect(!ed.refresh(&mut ui, &mut m, tok), "nothing changed: no new draw list");
+  expectInt(i64.from(ed.rebuilds), 1i64, "still one");
+  mut list = DrawList.make();
+  drawUi(&ui, &mut list);
+  expect(list.count(DC_TEXT) > 30usize, "the text of the visible lines and their numbers is in the list");
+  // 11 lines are made (10 and one partly seen); each has 12 tokens, plus a gutter number
+  expect(list.count(DC_TEXT) < 220usize, "and only the visible lines");
+
+  // click at column 3 of line 2, focus, and type
+  pointerMove(&mut ui, 48. + 8. * 3. + 1., 45.);
+  pointerDown(&mut ui, BTN_LEFT);
+  pointerUp(&mut ui, BTN_LEFT);
+  ed.pump(&mut ui, &mut m, tok);
+  expectInt(i64.from(ed.doc.caret(0usize).head), i64.from(ed.doc.buffer().lineStart(2usize) + 3usize), "a click puts the caret at line 2 column 3");
+  expect(ed.focused, "the click focused the editor");
+  textInput(&mut ui, 88u32);
+  textInput(&mut ui, 89u32);
+  ed.pump(&mut ui, &mut m, tok);
+  expectStr(ed.doc.buffer().lineText(2usize).view(), "linXYe 2 fn f(a u32) { a + 1; }", "typed letters are inserted");
+  expectInt(i64.from(ed.doc.hist.undoCount()), 1i64, "typed as one undo step");
+  keyDown(&mut ui, KEY_Z, MOD_CTRL);
+  ed.pump(&mut ui, &mut m, tok);
+  expectStr(ed.doc.buffer().lineText(2usize).view(), "line 2 fn f(a u32) { a + 1; }", "ctrl+Z undoes it");
+
+  // keys: end, shift+down selects, delete
+  keyDown(&mut ui, KEY_END, 0u32);
+  keyDown(&mut ui, KEY_RIGHT, 0u32);
+  expectInt(i64.from(ed.doc.buffer().lineOf(ed.doc.caret(0usize).head)), 2i64, "queued, not yet applied: still line 2");
+  ed.pump(&mut ui, &mut m, tok);
+  expectInt(i64.from(ed.doc.buffer().lineOf(ed.doc.caret(0usize).head)), 3i64, "end then right goes to the start of line 3");
+  keyDown(&mut ui, KEY_DOWN, MOD_SHIFT);
+  ed.pump(&mut ui, &mut m, tok);
+  expect(ed.doc.hasSelection(), "shift+down selects");
+  keyDown(&mut ui, KEY_BACKSPACE, 0u32);
+  ed.pump(&mut ui, &mut m, tok);
+  expect(!ed.doc.hasSelection(), "backspace deleted it");
+  expectInt(i64.from(ed.doc.lineCount()), 100i64, "one line fewer");
+
+  // copy and paste through the editor's own clipboard
+  keyDown(&mut ui, KEY_HOME, 0u32);
+  keyDown(&mut ui, KEY_END, MOD_SHIFT);
+  keyDown(&mut ui, KEY_C, MOD_CTRL);
+  ed.pump(&mut ui, &mut m, tok);
+  expect(ed.clipboardWritten, "copy wrote the clipboard");
+  expectStr(ed.clipboard.view(), "line 4 fn f(a u32) { a + 1; }", "the copied line");
+  keyDown(&mut ui, KEY_END, 0u32);
+  keyDown(&mut ui, KEY_ENTER, 0u32);
+  keyDown(&mut ui, KEY_V, MOD_CTRL);
+  expect(ed.needsClipboard(&ui), "a paste is waiting");
+  ed.pump(&mut ui, &mut m, tok);
+  expectStr(ed.doc.buffer().lineText(4usize).view(), "line 4 fn f(a u32) { a + 1; }", "the pasted line, after an auto-indented empty one");
+
+  // scrolling: the wheel, and the caret kept in view
+  pointerMove(&mut ui, 100., 100.);
+  wheel(&mut ui, 0., -2.);
+  ed.pump(&mut ui, &mut m, tok);
+  expectFloat(f64.from(ed.scrollY), 120., 0.01, "two wheel notches down is 6 lines = 120 px");
+  keyDown(&mut ui, KEY_END, MOD_CTRL);
+  ed.pump(&mut ui, &mut m, tok);
+  ed.refresh(&mut ui, &mut m, tok);
+  expect(ed.scrollY > 1500., "ctrl+End scrolls to the end");
+  keyDown(&mut ui, KEY_HOME, MOD_CTRL);
+  ed.pump(&mut ui, &mut m, tok);
+  ed.refresh(&mut ui, &mut m, tok);
+  expectFloat(f64.from(ed.scrollY), 0., 0.01, "ctrl+Home scrolls back to the top");
+
+  // bracket match: put the caret just after the first "(" of line 0
+  ed.doc.setCaret(ed.doc.buffer().lineStart(0usize) + 12usize);
+  ed.dirtyAll();
+  ed.refresh(&mut ui, &mut m, tok);
+  expectInt(i64.from(ed.matchA), i64.from(ed.doc.buffer().lineStart(0usize) + 11usize), "the bracket before the caret");
+  expectInt(i64.from(ed.matchB), i64.from(ed.doc.buffer().lineStart(0usize) + 17usize), "its partner on the same line");
+  // a bracket in a string is not matched
+  mut ed2 = Editor.make(&mut ui, ui.root, "f(\")\", x)");
+  ui.setSize(ed2.node, 400., 200.);
+  layout(&mut ui, &mut m);
+  ed2.doc.setCaret(2usize);
+  ed2.dirtyAll();
+  ed2.refresh(&mut ui, &mut m, tok);
+  expectInt(i64.from(ed2.matchA), 1i64, "the ( is matched");
+  expectInt(i64.from(ed2.matchB), 8i64, "with the ) after the string, not the one inside it");
+
+  // a Cone-highlighted line has several colours
+  expect(list.count(DC_TEXT) > 0usize, "text commands exist");
+  mut colors = List[u32].empty();
+  mut i = 0usize;
+  while i < list.cmds.len() {
+    if list.cmds[i].kind == DC_TEXT {
+      imm c = list.cmds[i].color;
+      mut seen = false;
+      mut j = 0usize;
+      while j < colors.len() {
+        if *colors[j] == c {seen = true;}
+        j = j + 1usize;
+      }
+      if !seen {colors.push(c);}
+    }
+    i = i + 1usize;
+  }
+  expect(colors.len() >= 5usize, "at least five colours in a screen of Cone");
+  done();
+}
