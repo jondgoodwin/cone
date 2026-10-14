@@ -1,0 +1,316 @@
+// Idle motion: the small things a body does when it is standing: shifting its weight, fidgeting, looking around.
+//
+// All of it is authored as DELTAS for an additive layer (animlayers), so it lies on a stand or a pose alike, and the
+// layer's mask and weight say where and how much. Nothing here knows a skeleton except the bone numbers in an
+// IdleSpec (a table; humanoidIdleSpec is bonepose's 19-bone figure).
+//
+// - WEIGHT SHIFT. A person standing at ease carries most of the weight on one leg and changes sides every few seconds.
+//   The pelvis moves over the loaded foot (a few centimetres), tilts so that the unloaded hip drops (contrapposto,
+//   about three degrees) and the spine curves back the other way so the head stays level. The shift is a smooth
+//   change of side (a smoothstep over about 1.4 s) at intervals of 3.5 to 9 s drawn from the seeded generator. The feet
+//   do not move, so after the layers a LimbPin brings each planted foot back to its place and the knees give.
+// - FIDGETS. A table of short gestures (a shrug, a head tilt, an arm adjusting, a neck stretch, a shoulder roll), each a
+//   few bone turns scaled by an envelope: eased in, held, eased out (a smoothstep up over the first 30 per cent, down
+//   over the last 35). They come at random: a gap of 2.5 s plus an exponential of mean 5 s, only while the body is calm.
+// - ATTENTION. Looking around: a direction held for a dwell time (a short one most of the time, now and then a long one),
+//   then a new direction. Most are close to ahead; some sweep wide; if the caller names things of interest, half of the
+//   choices are one of those. The result is a point in front of the body; the face rig turns the eyes and the head
+//   towards it (the head takes a share and the eyes the rest: facerig's Gaze), and the head's turn is carried down the
+//   neck and spine by a look-at chain.
+
+pub struct IdleSpec {
+  pub pelvis i32;
+  pub spine i32;
+  pub chest i32;
+  pub neck i32;
+  pub head i32;
+  pub clavicleL i32;
+  pub clavicleR i32;
+  pub upperArmL i32;
+  pub upperArmR i32;
+  pub forearmL i32;
+  pub forearmR i32;
+  pub size f32;           // the body's height over 1.75 m
+}
+
+pub fn humanoidIdleSpec(height f32) IdleSpec {
+  new IdleSpec(i32.from(PELVIS), i32.from(SPINE), i32.from(CHEST), i32.from(NECK), i32.from(HEAD), i32.from(CLAVICLE_L),
+    i32.from(CLAVICLE_R), i32.from(UPPER_ARM_L), i32.from(UPPER_ARM_R), i32.from(FOREARM_L), i32.from(FOREARM_R), height / 1.75);
+}
+
+// One bone's part of a gesture: at the gesture's peak the bone is turned 'degrees' about 'axis' and moved by 'move'
+pub struct FidgetKey {
+  pub bone i32;
+  pub axis Vec3;
+  pub degrees f32;
+  pub move Vec3;
+}
+
+pub struct Fidget {
+  pub name String;
+  pub length f32;          // seconds
+  pub chance f32;          // its share of the draws
+  pub keys List[FidgetKey];
+  pub breath f32;          // a breath it takes with it: 0 none, 1 a sigh
+
+  pub fn make(name &str, length f32, chance f32) Fidget {
+    new Fidget(String.from(name), length, chance, List[FidgetKey].empty(), 0.);
+  }
+
+  pub fn turn(self &mut, bone i32, axis Vec3, degrees f32) {
+    keys.push(new FidgetKey(bone, axis, degrees, new Vec3(0., 0., 0.)));
+  }
+
+  pub fn move(self &mut, bone i32, v Vec3) {
+    keys.push(new FidgetKey(bone, new Vec3(1., 0., 0.), 0., v));
+  }
+}
+
+// The gestures of a standing person
+pub fn humanoidFidgets(sp &IdleSpec) List[Fidget] {
+  imm s = sp.size;
+  imm x = new Vec3(1., 0., 0.);
+  imm y = new Vec3(0., 1., 0.);
+  imm z = new Vec3(0., 0., 1.);
+  mut out = List[Fidget].empty();
+  // A shrug: both shoulders up and in, the neck down between them
+  mut shrug = Fidget.make("shrug", 1.5, 1.0);
+  shrug.move(sp.clavicleL, new Vec3(0., 0.016 * s, 0.));
+  shrug.move(sp.clavicleR, new Vec3(0., 0.016 * s, 0.));
+  shrug.turn(sp.neck, x, -2.5);
+  shrug.breath = 0.6;
+  out.push(shrug);
+  // A tilt of the head to one side, with a turn of the neck after it
+  mut tilt = Fidget.make("head tilt", 2.6, 1.2);
+  tilt.turn(sp.head, z, 7.);
+  tilt.turn(sp.neck, z, 3.5);
+  tilt.turn(sp.neck, y, 3.);
+  out.push(tilt);
+  // The right arm moves: the elbow bends a little and the upper arm swings forward
+  mut adjust = Fidget.make("arm adjust", 1.9, 0.9);
+  adjust.turn(sp.upperArmR, x, -14.);
+  adjust.turn(sp.forearmR, x, 24.);
+  adjust.turn(sp.chest, y, -2.);
+  out.push(adjust);
+  // The same on the left
+  mut adjustL = Fidget.make("arm adjust left", 1.9, 0.9);
+  adjustL.turn(sp.upperArmL, x, -12.);
+  adjustL.turn(sp.forearmL, x, 20.);
+  adjustL.turn(sp.chest, y, 2.);
+  out.push(adjustL);
+  // A neck stretch: the chin lifts and the shoulders drop away
+  mut stretch = Fidget.make("neck stretch", 2.2, 0.7);
+  stretch.turn(sp.neck, x, 6.);
+  stretch.turn(sp.head, x, 5.);
+  stretch.turn(sp.chest, x, 2.);
+  stretch.breath = 1.;
+  out.push(stretch);
+  // A shoulder roll: the right shoulder up, back and down
+  mut roll = Fidget.make("shoulder roll", 1.7, 0.8);
+  roll.turn(sp.clavicleR, y, -9.);
+  roll.move(sp.clavicleR, new Vec3(0., 0.012 * s, 0.));
+  roll.turn(sp.chest, y, 1.5);
+  out.push(roll);
+  out;
+}
+
+// The eased gesture shape: 0 to 1 over the first 30 per cent, held, then back to 0 over the last 35
+pub fn fidgetEnvelope(u f32) f32 {
+  if u <= 0. or u >= 1. { return 0.; }
+  smoothstep(0., 0.3, u) * (1. - smoothstep(0.65, 1., u));
+}
+
+pub struct IdleMotion {
+  pub spec IdleSpec;
+  pub fidgets List[Fidget];
+  pub rng Rng;
+  pub time f32;
+  // the weight shift: the side now is shiftFrom, easing to shiftTo from shiftStart; the next change at shiftNext
+  pub shiftFrom f32;       // -1 weight on the body's left (-x) leg, +1 on the right, 0 even
+  pub shiftTo f32;
+  pub shiftStart f32;
+  pub shiftNext f32;
+  pub shiftTime f32;       // seconds a change takes
+  pub shiftAmount f32;     // 1 is the standard 3.5 cm and 3 degrees
+  // the gesture in progress
+  pub active i32;
+  pub gestureStart f32;
+  pub nextFidget f32;
+  pub calmNow f32;
+  // a breath a gesture asks for, read once and cleared by the caller
+  pub breathRequest f32;
+
+  pub fn make(spec IdleSpec, fidgets List[Fidget], seed u32) IdleMotion {
+    mut rng = Rng.make(seed + 77u32);
+    imm firstShift = 2. + rng.unit() * 3.;
+    imm firstFidget = 2.5 + rng.exponential(4.);
+    new IdleMotion(spec, fidgets, rng, 0., 0., 0., -100., firstShift, 1.4, 1., -1i32, 0., firstFidget, 1., 0.);
+  }
+
+  pub fn humanoid(height f32, seed u32) IdleMotion {
+    imm sp = humanoidIdleSpec(height);
+    imm f = humanoidFidgets(&sp);
+    IdleMotion.make(sp, f, seed);
+  }
+
+  // The side the weight is on now: -1 to 1
+  pub fn side(self &) f32 {
+    shiftFrom + (shiftTo - shiftFrom) * smoothstep(0., shiftTime, time - shiftStart);
+  }
+
+  fn pickFidget(self &mut) i32 {
+    mut total = 0.;
+    mut i = 0usize;
+    while i < fidgets.len() { total = total + fidgets[i].chance; i = i + 1usize; }
+    mut r = rng.unit() * total;
+    i = 0usize;
+    while i < fidgets.len() {
+      r = r - fidgets[i].chance;
+      if r <= 0. { return i32.from(i); }
+      i = i + 1usize;
+    }
+    i32.from(fidgets.len() - 1usize);
+  }
+
+  // Advance 'dt' seconds. 'calm' is 1 for a body standing and 0 for one walking (the shift fades with it and no new
+  // gesture starts below a half). The deltas are ADDED to 'out'.
+  pub fn update(self &mut, dt f32, calm f32, out &mut Pose) {
+    time = time + dt;
+    calmNow = calm;
+    // the weight shift's schedule
+    if time >= shiftNext and calm > 0.5 {
+      shiftFrom = self.side();
+      shiftStart = time;
+      mut to = shiftTo;
+      // a different side from the one it is on
+      mut guard = 0;
+      while guard < 6 and absf(to - shiftTo) < 0.5 {
+        imm pick = rng.unit();
+        to = if pick < 0.4 { -1.; } elif pick < 0.8 { 1.; } else { 0.; };
+        guard = guard + 1;
+      }
+      shiftTo = to;
+      shiftNext = time + 3.5 + 5.5 * rng.unit();
+    }
+    imm sh = self.side() * calm * shiftAmount;
+    imm sp = spec;
+    imm s = sp.size;
+    imm roll = sh * radians(3.);
+    imm z = new Vec3(0., 0., 1.);
+    if sp.pelvis >= 0i32 {
+      deltaTranslate(out, usize.from(sp.pelvis), new Vec3(sh * 0.035 * s, 0. - absf(sh) * 0.006 * s, 0.));
+      deltaRotate(out, usize.from(sp.pelvis), Quat.angleAxis(roll, z));
+    }
+    if sp.spine >= 0i32 { deltaRotate(out, usize.from(sp.spine), Quat.angleAxis(-0.5 * roll, z)); }
+    if sp.chest >= 0i32 { deltaRotate(out, usize.from(sp.chest), Quat.angleAxis(-0.4 * roll, z)); }
+    if sp.neck >= 0i32 { deltaRotate(out, usize.from(sp.neck), Quat.angleAxis(-0.1 * roll, z)); }
+    // the gesture
+    if active >= 0i32 {
+      imm f = fidgets[usize.from(active)];
+      imm u = (time - gestureStart) / f.length;
+      if u >= 1. {
+        active = -1i32;
+        nextFidget = time + 2.5 + rng.exponential(5.);
+      } else {
+        imm env = fidgetEnvelope(u) * calm;
+        mut k = 0usize;
+        while k < f.keys.len() {
+          imm key = f.keys[k];
+          if key.bone >= 0i32 {
+            if key.degrees != 0. { deltaRotate(out, usize.from(key.bone), Quat.angleAxis(radians(key.degrees * env), key.axis)); }
+            if key.move.lengthSquared() > 0. { deltaTranslate(out, usize.from(key.bone), key.move * env); }
+          }
+          k = k + 1usize;
+        }
+      }
+    } elif time >= nextFidget and calm > 0.5 and fidgets.len() > 0usize {
+      active = self.pickFidget();
+      gestureStart = time;
+      breathRequest = fidgets[usize.from(active)].breath;
+    }
+  }
+
+  // Take the breath a gesture asked for, if it did
+  pub fn takeBreathRequest(self &mut) f32 {
+    imm r = breathRequest;
+    breathRequest = 0.;
+    r;
+  }
+
+  // The name of the gesture in progress, or ""
+  pub fn gestureName(self &) String {
+    if active < 0i32 { return String.empty(); }
+    fidgets[usize.from(active)].name.copy();
+  }
+}
+
+// ---- attention ----
+
+pub struct AttentionParams {
+  pub dwellMin f32;
+  pub dwellMax f32;
+  pub aheadChance f32;     // the share of choices that are close to straight ahead
+  pub wideYaw f32;         // a wide choice's yaw range, radians each side
+  pub nearYaw f32;         // a near-ahead choice's
+  pub pitchUp f32;
+  pub pitchDown f32;
+  pub distance f32;        // metres to the point
+  pub longChance f32;      // the share of holds that are long
+  pub interestChance f32;  // the share of choices that go to something of interest, when there is any
+
+  pub fn standard() AttentionParams {
+    new AttentionParams(0.6, 3.6, 0.45, 1.1, 0.22, 0.20, 0.14, 4., 0.14, 0.5);
+  }
+}
+
+pub struct Attention {
+  pub params AttentionParams;
+  pub rng Rng;
+  pub timer f32;         // seconds left of this hold
+  pub yaw f32;           // the direction held, in the body's frame: yaw positive to the left, pitch positive up
+  pub pitch f32;
+  pub distance f32;
+  pub changed bool;      // the last update chose a new direction
+  pub holding i32;       // the interest it is on, or -1
+
+  pub fn make(params AttentionParams, seed u32) Attention {
+    new Attention(params, Rng.make(seed + 1234u32), 1.5, 0., 0., params.distance, false, -1i32);
+  }
+
+  // The unit direction held, in the body's frame (forward is -z)
+  pub fn direction(self &) Vec3 {
+    new Vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch));
+  }
+
+  // Advance 'dt' seconds. 'interests' are directions (unit, body frame) of things worth a look. Returns true when a new
+  // direction was chosen.
+  pub fn update(self &mut, dt f32, interests &List[Vec3]) bool {
+    changed = false;
+    timer = timer - dt;
+    if timer > 0. { return false; }
+    holding = -1i32;
+    if interests.len() > 0usize and rng.chance(params.interestChance) {
+      imm k = usize.from(rng.unit() * f32.from(interests.len())) % interests.len();
+      imm d = *interests[k];
+      yaw = atan2(-d.x, -d.z);
+      pitch = asin(clampf(d.y, -1., 1.));
+      holding = i32.from(k);
+    } elif rng.chance(params.aheadChance) {
+      yaw = (rng.unit() * 2. - 1.) * params.nearYaw;
+      pitch = rng.range(-0.04, 0.08);
+    } else {
+      // a wide look, not back where it was
+      mut tries = 0;
+      mut ny = yaw;
+      while tries < 4 and absf(ny - yaw) < 0.3 {
+        ny = (rng.unit() * 2. - 1.) * params.wideYaw;
+        tries = tries + 1;
+      }
+      yaw = ny;
+      pitch = rng.range(-params.pitchDown, params.pitchUp);
+    }
+    timer = if rng.chance(params.longChance) { rng.range(3., 6.); } else { clampf(params.dwellMin + rng.exponential(1.0), params.dwellMin, params.dwellMax); };
+    changed = true;
+    true;
+  }
+}

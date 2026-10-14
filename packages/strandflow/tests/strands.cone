@@ -1,0 +1,538 @@
+// Strands in a flow: the curve, the roots, the solver in air and water, and the cards.
+//
+// THE CURVE. A strand of 8 links has 10 points (the ghost, the root, 8 more). With no wave and no jitter in a style that holds
+// its first direction for a third of its length and then turns, the first links run along the root's direction and the last
+// links point (nearly) at 'fall'. Link length is length / 8. The ghost is one link behind the root along its direction reversed.
+//
+// ROOTS. A disc of 200 roots from radius 0 to 0.1 has half of them inside 0.1 / sqrt 2 = 0.0707 (equal area, Vogel's
+// pattern). A path roots spaced evenly by length. A mesh's roots only where the density says (here y above 0.5), their
+// directions on the outward side of the normal.
+//
+// THE SOLVER. Root particles are exactly at the frame's places. Links stay within 1.5 per cent of their rest length (XPBD with
+// 6 substeps and a stiff stretch). In calm air a lock settles within 7 cm of its styled shape (the style spring against gravity:
+// g / omega^2 at the tip, the curvature constraint helping). A steady 5 m/s wind moves the tips downwind by over 5 cm more than
+// 2 m/s does, which moves them over 1 cm. A sphere in the way is never entered by more than a fifth of the strand's own thickness.
+// A frame moved 1 m in a second takes the roots exactly and leaves the tips behind (lag over 2 cm in the transient) and
+// they catch up within 3 cm of the styled shape three seconds after it stops. The same sim twice gives the same bits; one
+// thread and three give the same bits.
+//
+// WATER. Kelp (density 960 against the water's 1000) floats: its apparent gravity points up, g (1 - 1000/960) = -0.41 m/s2, and a
+// rooted blade stands up: its tip ends over 80 per cent of its length above its root. An anemone's tentacle (density 1030)
+// stays up, within the current's push: a steady 0.3 m/s current moves its tips over 1 cm downstream; a surge of 0.5 m/s
+// at 0.25 Hz makes them sway (their position along the surge has a swing of over 1 cm) and the run is stable for 30 s
+// (speeds under 3 m/s, no NaN).
+//
+// THE CARDS. The card counts equal the mesh sizes; every normal is a unit vector; a front triangle's winding agrees with its
+// vertices' normals and a back one's disagrees; a card at the root is cardWidth * its widthScale wide; the facing normals of
+// neighbouring particles of a still strand differ by under 20 degrees (no twist); a tube's vertices are its radius from the
+// strand's axis.
+
+mod strands;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import xpbdsoftbody use Collider;
+import clothrope use WindField;
+import strandflow use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn absf(x f32) f32 { if x < 0. { -x; } else { x; }; }
+fn clampf(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
+
+fn finite(p Vec3) bool { p.x == p.x and p.y == p.y and p.z == p.z and p.x < 1.0e6 and p.x > -1.0e6 and p.y < 1.0e6 and p.y > -1.0e6; }
+
+fn testCurve() {
+  mut style = StrandStyle.hair();
+  style.lengthVar = 0.;
+  style.waveAmp = 0.;
+  style.rootHold = 0.33;
+  style.length = 0.4;
+  style.bendRate = 12.;
+  imm root = new StrandRoot(0usize, new Vec3(1., 2., 3.), new Vec3(0., 0., -1.), new Vec3(0., 0., -1.), 77u32);
+  imm c = styledCurve(&root, &style);
+  expectInt(i64.from(c.len()), 10i64, "ten points");
+  imm ds = 0.4 / 8.;
+  near((*c[1usize] - *c[0usize]).length(), ds, 0.003, "the ghost is a link behind");
+  near(((*c[1usize] - *c[0usize]).normalize()).z, -1., 0.05, "along the root's direction");
+  mut ok = true;
+  mut k = 1usize;
+  while k + 1usize < c.len() {
+    imm l = (*c[k + 1usize] - *c[k]).length();
+    if absf(l - ds) > 0.0015 { ok = false; }
+    k = k + 1usize;
+  }
+  expectBool(ok, true, "every link is length / 8");
+  imm d1 = (*c[2usize] - *c[1usize]).normalize();
+  near(d1.z, -1., 0.05, "the first link runs along the root's direction");
+  imm dl = (*c[9usize] - *c[8usize]).normalize();
+  expectBool(dl.y < -0.75, true, "the last link points down");
+  mut lens = List[f32].empty();
+  mut s = 0u32;
+  while s < 50u32 {
+    mut r = new StrandRoot(0usize, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), new Vec3(0., 1., 0.), s * 31u32 + 5u32);
+    lens.push(strandLength(&StrandStyle.hair(), r.seed));
+    s = s + 1u32;
+  }
+  mut lo = 9.; mut hi = 0.;
+  k = 0usize;
+  while k < lens.len() { if *lens[k] < lo { lo = *lens[k]; } if *lens[k] > hi { hi = *lens[k]; } k = k + 1usize; }
+  expectBool(lo >= 0.26 * 0.82 - 0.0001 and hi <= 0.26 * 1.18 + 0.0001, true, "lengths vary within the style's 18 per cent");
+  expectBool(hi - lo > 0.02, true, "and do vary");
+}
+
+fn highOnly(p Vec3, n Vec3) f32 { if p.y > 0.5 { 1.; } else { 0.; }; }
+
+fn tube(sides usize, rings usize, radius f32, height f32) Mesh {
+  mut m = Mesh.empty();
+  mut r = 0usize;
+  while r < rings {
+    mut k = 0usize;
+    while k < sides {
+      imm a = 2. * pi * f32.from(k) / f32.from(sides);
+      m.positions.push(new Vec3(radius * cos(a), height * f32.from(r) / f32.from(rings - 1usize), radius * sin(a)));
+      m.normals.push(new Vec3(cos(a), 0., sin(a)));
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  r = 0usize;
+  while r + 1usize < rings {
+    mut k = 0usize;
+    while k < sides {
+      imm a = u32.from(r * sides + k);
+      imm b = u32.from(r * sides + (k + 1usize) % sides);
+      imm c = u32.from((r + 1usize) * sides + k);
+      imm d = u32.from((r + 1usize) * sides + (k + 1usize) % sides);
+      m.indices.push(a); m.indices.push(b); m.indices.push(c);
+      m.indices.push(b); m.indices.push(d); m.indices.push(c);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  m;
+}
+
+fn testRoots() {
+  imm disc = rootsOnDisc(0usize, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), 0., 0.1, 200usize, 0.3, 5u32);
+  expectInt(i64.from(disc.len()), 200i64, "200 roots on the disc");
+  mut inner = 0;
+  mut inside = true;
+  mut k = 0usize;
+  while k < disc.len() {
+    imm r = new Vec2(disc[k].pos.x, disc[k].pos.z).length();
+    if r < 0.0707 { inner = inner + 1; }
+    if r > 0.1001 { inside = false; }
+    k = k + 1usize;
+  }
+  expectBool(inside, true, "all within the radius");
+  expectBool(inner >= 95 and inner <= 105, true, "half inside r / sqrt 2: equal area");
+  near(disc[10usize].dir.y, cos(0.3), 0.0001, "tilted 0.3 rad from up");
+  // path
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(0., 0., 0.)); pts.push(new Vec3(1., 0., 0.)); pts.push(new Vec3(1., 0., 2.));
+  mut dirs = List[Vec3].empty();
+  dirs.push(new Vec3(0., 1., 0.)); dirs.push(new Vec3(0., 1., 0.)); dirs.push(new Vec3(0., 1., 0.));
+  imm path = rootsAlongPath(1usize, &pts, &dirs, &dirs, 30usize, 0., 3u32);
+  expectInt(i64.from(path.len()), 30i64, "30 along the path");
+  near(path[0usize].pos.x, 0.05, 0.001, "the first is half a spacing in (3 m / 30 / 2)");
+  near(path[29usize].pos.z, 2. - 0.05, 0.001, "the last half a spacing from the end");
+  expectInt(i64.from(path[5usize].group), 1i64, "in the group asked for");
+  // mesh
+  imm cyl = tube(16usize, 11usize, 0.1, 1.);
+  imm mr = rootsOnMesh(2usize, &cyl, 100usize, &highOnly, new Vec3(0., -1., 0.), 0.5, 9u32);
+  expectInt(i64.from(mr.len()), 100i64, "100 on the mesh");
+  mut high = true;
+  mut outward = true;
+  k = 0usize;
+  while k < mr.len() {
+    if mr[k].pos.y < 0.5 { high = false; }
+    imm radial = new Vec3(mr[k].pos.x, 0., mr[k].pos.z).normalize();
+    if mr[k].dir.dot(radial) < 0.3 { outward = false; }
+    near(mr[k].dir.length(), 1., 0.001, "unit direction");
+    k = k + 1usize;
+  }
+  expectBool(high, true, "only where the density says");
+  expectBool(outward, true, "leaving the surface, combed down");
+  expectBool(mr[0usize].dir.y < 0., true, "combed towards down");
+}
+
+// A small head of hair: 'count' strands on a disc, on a group at the origin
+fn hairSim(medium Medium, count usize, threads u32) StrandSim {
+  mut sim = StrandSim.make(medium, threads);
+  imm g = sim.addGroup(Transform3.identity(), StrandStyle.hair());
+  imm roots = rootsOnDisc(g, new Vec3(0., 1.7, 0.), new Vec3(0., 1., 0.), 0.0, 0.08, count, 1.0, 4u32);
+  sim.addStrands(&roots);
+  sim;
+}
+
+fn tipOf(sim &StrandSim, g usize, k usize) Vec3 {
+  imm n = sim.groups[g].strands[k].count;
+  sim.particle(g, k, n - 1usize);
+}
+
+fn styledTip(sim &StrandSim, g usize, k usize) Vec3 {
+  imm n = sim.groups[g].strands[k].count;
+  sim.groups[g].frame.transformPoint(*sim.groups[g].goalLocal[sim.groups[g].strands[k].first + n - 1usize]);
+}
+
+fn run(sim &mut StrandSim, seconds f32, dt f32) {
+  imm steps = i32.from(seconds / dt + 0.5);
+  mut i = 0;
+  while i < steps { sim.step(dt); i = i + 1; }
+}
+
+fn testCalm() {
+  mut sim = hairSim(Medium.air(WindField.calm()), 20usize, 1u32);
+  expectInt(i64.from(sim.strandCount()), 20i64, "twenty strands");
+  expectInt(i64.from(sim.particleCount()), 20i64 * 10i64, "of ten particles");
+  run(&mut sim, 3., 1. / 60.);
+  mut worst = 0.;
+  mut rootErr = 0.;
+  mut stretch = 0.;
+  mut allFinite = true;
+  mut k = 0usize;
+  while k < 20usize {
+    imm d = (tipOf(&sim, 0usize, k) - styledTip(&sim, 0usize, k)).length();
+    if d > worst { worst = d; }
+    imm n = sim.groups[0usize].strands[k].count;
+    imm rootAt = sim.particle(0usize, k, 1usize);
+    imm want = sim.groups[0usize].frame.transformPoint(*sim.groups[0usize].goalLocal[sim.groups[0usize].strands[k].first + 1usize]);
+    if (rootAt - want).length() > rootErr { rootErr = (rootAt - want).length(); }
+    mut j = 1usize;
+    while j + 1usize < n {
+      imm a = sim.particle(0usize, k, j);
+      imm b = sim.particle(0usize, k, j + 1usize);
+      if !finite(a) { allFinite = false; }
+      imm rest = (*sim.groups[0usize].goalLocal[sim.groups[0usize].strands[k].first + j + 1usize] - *sim.groups[0usize].goalLocal[sim.groups[0usize].strands[k].first + j]).length();
+      imm e = absf((b - a).length() - rest) / rest;
+      if e > stretch { stretch = e; }
+      j = j + 1usize;
+    }
+    k = k + 1usize;
+  }
+  expectBool(allFinite, true, "nothing is NaN");
+  near(rootErr, 0., 0.00001, "the roots are exactly at the frame's places");
+  expectBool(stretch < 0.015, true, "no link is stretched or squashed by 1.5 per cent");
+  expectBool(worst < 0.07, true, "a lock settles within 7 cm of its styled shape");
+}
+
+fn meanTipX(sim &StrandSim) f32 {
+  mut s = 0.;
+  mut k = 0usize;
+  while k < sim.groups[0usize].strands.len() { s = s + tipOf(sim, 0usize, k).x - styledTip(sim, 0usize, k).x; k = k + 1usize; }
+  s / f32.from(sim.groups[0usize].strands.len());
+}
+
+fn testWind() {
+  mut calm = hairSim(Medium.air(WindField.calm()), 20usize, 1u32);
+  mut w2 = hairSim(Medium.air(WindField.steady(new Vec3(2., 0., 0.))), 20usize, 1u32);
+  mut w5 = hairSim(Medium.air(WindField.steady(new Vec3(5., 0., 0.))), 20usize, 1u32);
+  run(&mut calm, 3., 1. / 60.);
+  run(&mut w2, 3., 1. / 60.);
+  run(&mut w5, 3., 1. / 60.);
+  imm c = meanTipX(&calm);
+  imm a = meanTipX(&w2);
+  imm b = meanTipX(&w5);
+  expectBool(a - c > 0.01, true, "2 m/s moves the tips downwind by over a centimetre");
+  expectBool(b - a > 0.05, true, "5 m/s by over 5 cm more");
+}
+
+fn testCollide() {
+  mut sim = hairSim(Medium.air(WindField.steady(new Vec3(3., 0., 0.))), 20usize, 1u32);
+  mut shapes = List[Collider].empty();
+  shapes.push(Collider.sphere(new Vec3(0., 1.62, 0.), 0.1));
+  sim.setColliders(0usize, &shapes);
+  run(&mut sim, 4., 1. / 60.);
+  mut worst = 1.;
+  mut k = 0usize;
+  while k < 20usize {
+    mut j = 2usize;
+    while j < sim.groups[0usize].strands[k].count {
+      imm d = (sim.particle(0usize, k, j) - new Vec3(0., 1.62, 0.)).length() - 0.1;
+      if d < worst { worst = d; }
+      j = j + 1usize;
+    }
+    k = k + 1usize;
+  }
+  expectBool(worst > 0.0065 * 0.8 - 0.0013, true, "no particle is more than a fifth of its thickness into the sphere");
+}
+
+fn testFrame() {
+  mut sim = hairSim(Medium.air(WindField.calm()), 12usize, 1u32);
+  run(&mut sim, 2., 1. / 60.);
+  // the frame moves 1 m in x in a second
+  mut lag = 0.;
+  mut t = 0;
+  while t < 60 {
+    imm x = f32.from(t + 1) / 60.;
+    sim.setFrame(0usize, new Transform3(new Vec3(x, 0., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+    sim.step(1. / 60.);
+    mut k = 0usize;
+    while k < 12usize {
+      imm d = styledTip(&sim, 0usize, k).x - tipOf(&sim, 0usize, k).x;
+      if d > lag { lag = d; }
+      k = k + 1usize;
+    }
+    t = t + 1;
+  }
+  mut rootErr = 0.;
+  mut k = 0usize;
+  while k < 12usize {
+    imm want = sim.groups[0usize].frame.transformPoint(*sim.groups[0usize].goalLocal[sim.groups[0usize].strands[k].first + 1usize]);
+    if (sim.particle(0usize, k, 1usize) - want).length() > rootErr { rootErr = (sim.particle(0usize, k, 1usize) - want).length(); }
+    k = k + 1usize;
+  }
+  near(rootErr, 0., 0.00001, "the roots rode the frame exactly");
+  expectBool(lag > 0.02, true, "the tips lagged by over 2 cm");
+  run(&mut sim, 3., 1. / 60.);
+  mut worst = 0.;
+  k = 0usize;
+  while k < 12usize {
+    imm d = (tipOf(&sim, 0usize, k) - styledTip(&sim, 0usize, k)).length();
+    if d > worst { worst = d; }
+    k = k + 1usize;
+  }
+  expectBool(worst < 0.07, true, "three seconds after it stopped the tips are back within 7 cm of their shape");
+}
+
+fn tipsXZ(sim &StrandSim) List[f32] {
+  mut out = List[f32].empty();
+  mut g = 0usize;
+  while g < sim.groups.len() {
+    mut k = 0usize;
+    while k < sim.groups[g].strands.len() {
+      mut j = 0usize;
+      while j < sim.groups[g].strands[k].count {
+        imm p = sim.particle(g, k, j);
+        out.push(p.x); out.push(p.y); out.push(p.z);
+        j = j + 1usize;
+      }
+      k = k + 1usize;
+    }
+    g = g + 1usize;
+  }
+  out;
+}
+
+fn testDeterminism() {
+  mut a = hairSim(Medium.air(WindField.breeze(new Vec3(4., 0., 1.))), 30usize, 1u32);
+  mut b = hairSim(Medium.air(WindField.breeze(new Vec3(4., 0., 1.))), 30usize, 1u32);
+  mut c = hairSim(Medium.air(WindField.breeze(new Vec3(4., 0., 1.))), 30usize, 3u32);
+  run(&mut a, 2., 1. / 60.);
+  run(&mut b, 2., 1. / 60.);
+  run(&mut c, 2., 1. / 60.);
+  imm pa = tipsXZ(&a);
+  imm pb = tipsXZ(&b);
+  imm pc = tipsXZ(&c);
+  mut same = true;
+  mut same3 = true;
+  mut i = 0usize;
+  while i < pa.len() {
+    if *pa[i] != *pb[i] { same = false; }
+    if *pa[i] != *pc[i] { same3 = false; }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "the same simulation twice is the same bits");
+  expectBool(same3, true, "and on three threads");
+  a.stop(); b.stop(); c.stop();
+}
+
+fn testStepSize() {
+  mut a = hairSim(Medium.air(WindField.steady(new Vec3(4., 0., 0.))), 12usize, 1u32);
+  mut b = hairSim(Medium.air(WindField.steady(new Vec3(4., 0., 0.))), 12usize, 1u32);
+  run(&mut a, 3., 1. / 60.);
+  run(&mut b, 3., 1. / 120.);
+  mut worst = 0.;
+  mut k = 0usize;
+  while k < 12usize {
+    imm d = (tipOf(&a, 0usize, k) - tipOf(&b, 0usize, k)).length();
+    if d > worst { worst = d; }
+    k = k + 1usize;
+  }
+  expectBool(worst < 0.03, true, "60 and 120 steps a second give tips within 3 cm");
+}
+
+fn testWater() {
+  // kelp floats
+  mut sim = StrandSim.make(Medium.water(WindField.calm(), new Vec3(0., 0., 0.), 0., 0.), 1u32);
+  imm g = sim.addGroup(Transform3.identity(), StrandStyle.kelp());
+  imm roots = rootsOnDisc(g, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), 0., 0.3, 8usize, 0.4, 2u32);
+  sim.addStrands(&roots);
+  near(sim.groups[0usize].body.gravity.y, 9.81 * (1000. / 960. - 1.), 0.01, "kelp's apparent gravity points up");
+  run(&mut sim, 20., 1. / 60.);
+  mut minUp = 9.;
+  mut finiteAll = true;
+  mut k = 0usize;
+  while k < 8usize {
+    imm tip = tipOf(&sim, 0usize, k);
+    imm root = sim.particle(0usize, k, 1usize);
+    imm len = StrandStyle.kelp().length * 0.75;
+    if (tip.y - root.y) / len < minUp { minUp = (tip.y - root.y) / len; }
+    if !finite(tip) { finiteAll = false; }
+    k = k + 1usize;
+  }
+  expectBool(finiteAll, true, "kelp finite");
+  expectBool(minUp > 0.8, true, "kelp stands up: tips over 80 per cent of the shortest length above the roots");
+
+  // anemone in a current and a surge
+  mut an = StrandSim.make(Medium.water(WindField.steady(new Vec3(0.3, 0., 0.)), new Vec3(0.5, 0., 0.), 0.25, 0.), 1u32);
+  imm ag = an.addGroup(Transform3.identity(), StrandStyle.anemone());
+  imm ar = rootsOnDisc(ag, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), 0.01, 0.07, 40usize, 0.5, 8u32);
+  an.addStrands(&ar);
+  mut still = StrandSim.make(Medium.water(WindField.calm(), new Vec3(0., 0., 0.), 0., 0.), 1u32);
+  imm sg = still.addGroup(Transform3.identity(), StrandStyle.anemone());
+  imm sr = rootsOnDisc(sg, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), 0.01, 0.07, 40usize, 0.5, 8u32);
+  still.addStrands(&sr);
+  run(&mut still, 10., 1. / 60.);
+  mut minX = 9.; mut maxX = -9.; mut fastest = 0.;
+  mut t = 0.;
+  mut ok = true;
+  while t < 30. {
+    an.step(1. / 60.);
+    t = t + 1. / 60.;
+    if t > 10. {
+      mut sum = 0.;
+      mut k = 0usize;
+      while k < 40usize {
+        sum = sum + tipOf(&an, 0usize, k).x;
+        imm v = *an.groups[0usize].body.vel[an.groups[0usize].strands[k].first + 9usize];
+        if v.length() > fastest { fastest = v.length(); }
+        if !finite(tipOf(&an, 0usize, k)) { ok = false; }
+        k = k + 1usize;
+      }
+      imm mean = sum / 40.;
+      if mean < minX { minX = mean; }
+      if mean > maxX { maxX = mean; }
+    }
+  }
+  mut stillX = 0.;
+  mut kk = 0usize;
+  while kk < 40usize { stillX = stillX + tipOf(&still, 0usize, kk).x; kk = kk + 1usize; }
+  stillX = stillX / 40.;
+  expectBool(ok, true, "anemone finite for 30 s");
+  expectBool(fastest < 3., true, "and no tip ever above 3 m/s");
+  expectBool(0.5 * (minX + maxX) - stillX > 0.01, true, "the current moves the tips downstream by over a centimetre");
+  expectBool(maxX - minX > 0.01, true, "the surge makes them sway over a centimetre");
+  sim.stop(); an.stop(); still.stop();
+}
+
+fn testCards() {
+  mut sim = hairSim(Medium.air(WindField.calm()), 15usize, 1u32);
+  run(&mut sim, 1., 1. / 60.);
+  mut m = Mesh.empty();
+  writeCards(&sim, &mut m, 4u32, 1.);
+  imm cnt = cardCounts(&sim);
+  expectInt(i64.from(m.positions.len()), i64.from(cnt.0), "card vertex count");
+  expectInt(i64.from(m.indices.len()), i64.from(cnt.1), "card index count");
+  expectInt(i64.from(m.normals.len()), i64.from(m.positions.len()), "a normal each");
+  expectInt(i64.from(m.uvs.len()), i64.from(m.positions.len()), "a uv each");
+  expectInt(i64.from(cnt.0), 15i64 * 9i64 * 4i64, "15 strands of 9 drawn particles, 4 vertices each");
+  mut unit = true;
+  mut i = 0usize;
+  while i < m.normals.len() {
+    if absf((*m.normals[i]).length() - 1.) > 0.001 { unit = false; }
+    i = i + 1usize;
+  }
+  expectBool(unit, true, "unit normals");
+  // winding: a front triangle (the first 6 indices of a segment) agrees with its normals, a back one disagrees
+  mut frontOk = true;
+  mut backOk = true;
+  mut seg = 0usize;
+  while seg < m.indices.len() / 12usize {
+    mut t = 0usize;
+    while t < 4usize {
+      imm base = seg * 12usize + t * 3usize;
+      imm a = usize.from(*m.indices[base]);
+      imm b = usize.from(*m.indices[base + 1usize]);
+      imm c = usize.from(*m.indices[base + 2usize]);
+      imm face = (*m.positions[b] - *m.positions[a]).cross(*m.positions[c] - *m.positions[a]);
+      imm vn = *m.normals[a] + *m.normals[b] + *m.normals[c];
+      imm d = face.dot(vn);
+      if t < 2usize { if d <= 0. { frontOk = false; } } else { if d <= 0. { backOk = false; } }
+      t = t + 1usize;
+    }
+    seg = seg + 1usize;
+  }
+  expectBool(frontOk, true, "front triangles face their normals");
+  expectBool(backOk, true, "and so do the back ones, whose vertices carry the reversed normals");
+  // width at the root and no twist
+  imm style = sim.groups[0usize].style;
+  imm st = sim.groups[0usize].strands[0usize];
+  imm w = (*m.positions[1usize] - *m.positions[0usize]).length();
+  near(w, style.cardWidth * st.widthScale, 0.0005, "the card is cardWidth wide at the root");
+  mut twist = 0.;
+  mut s = 0usize;
+  while s < 15usize {
+    mut j = 0usize;
+    while j + 1usize < 9usize {
+      imm a = s * 9usize * 4usize + j * 4usize;
+      imm na = (*m.positions[a + 1usize] - *m.positions[a]).normalize();
+      imm nb = (*m.positions[a + 5usize] - *m.positions[a + 4usize]).normalize();
+      imm ang = acos(clampf(na.dot(nb), -1., 1.));
+      if ang > twist { twist = ang; }
+      j = j + 1usize;
+    }
+    s = s + 1usize;
+  }
+  expectBool(twist < radians(20.), true, "neighbouring cards' sides turn by under 20 degrees: no twist");
+  // tubes
+  mut tm = Mesh.empty();
+  writeTubes(&sim, &mut tm, 6usize);
+  imm tc = tubeCounts(&sim, 6usize);
+  expectInt(i64.from(tm.positions.len()), i64.from(tc.0), "tube vertex count");
+  expectInt(i64.from(tm.indices.len()), i64.from(tc.1), "tube index count");
+  // the first ring of the first strand: all tubeRadius * widthScale from the root particle
+  imm root = sim.particle(0usize, 0usize, 1usize);
+  near((*tm.positions[0usize] - root).length(), style.tubeRadius * st.widthScale, 0.0002, "a tube's radius at the root");
+  sim.stop();
+}
+
+fn testTexture() {
+  imm px = paintFibers(4, 64, 128, 12, 3u32);
+  expectInt(i64.from(px.rgba.len()), i64.from(4 * 64 * 128 * 4), "the atlas has its pixels");
+  mut cover = 0;
+  mut total = 0;
+  mut i = 3usize;
+  while i < px.rgba.len() {
+    if *px.rgba[i] > 127u8 { cover = cover + 1; }
+    total = total + 1;
+    i = i + 4usize;
+  }
+  expectBool(cover * 100 > total * 20 and cover * 100 < total * 75, true, "fibres cover a fifth to three quarters of the card");
+  // the root's end (row 0, the bottom) is darker than the middle
+  mut rootLum = 0.;
+  mut midLum = 0.;
+  mut n = 0;
+  mut x = 0;
+  while x < 64 {
+    imm r = usize.from((0 * 256 + x) * 4);
+    imm mi = usize.from((64 * 256 + x) * 4);
+    if *px.rgba[r + 3usize] > 127u8 and *px.rgba[mi + 3usize] > 127u8 {
+      rootLum = rootLum + f32.from(*px.rgba[r]);
+      midLum = midLum + f32.from(*px.rgba[mi]);
+      n = n + 1;
+    }
+    x = x + 1;
+  }
+  expectBool(n > 3 and rootLum < midLum, true, "darker at the root than half way down");
+}
+
+fn main() i32 {
+  testCurve();
+  testRoots();
+  testCalm();
+  testWind();
+  testCollide();
+  testFrame();
+  testDeterminism();
+  testStepSize();
+  testWater();
+  testCards();
+  testTexture();
+  done();
+}

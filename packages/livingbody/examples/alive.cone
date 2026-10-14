@@ -1,0 +1,626 @@
+// alive: bodies that look alive, drawn headless on a real GPU.
+//
+//   congo run --release packages/livingbody/examples/alive.cone -- --out DIR [--scene man|horse|all]
+//   GPU_POWER_PREFERENCE=low-power congo run --release packages/livingbody/examples/alive.cone -- --out DIR
+//
+// SCENE 1, THE MANNEQUIN. garmentdrape's plain test mannequin (a 1.75 m figure of tapered tubes on bonepose's 19-bone
+// skeleton). It stands idle for eight seconds: it breathes (livingbody's one clock; the chest and belly are soft-region morph
+// targets under render's skinning), shifts its weight from foot to foot, fidgets, and looks around (an attention that
+// picks directions, a face rig that splits each shift between eyes and head, a look-at chain that carries the head's turn
+// down the neck and spine); a head of hair (strandflow: cards on strands solved by xpbdsoftbody's rope) hangs and swings in a
+// gusty breeze; then it walks briskly for ten seconds (walkgait, with its own sine breath and weight shift switched off, ours
+// layered on instead), and stops out of breath: the breath is fast and deep, the shoulders lift, the belly is drawn in on the
+// exhalation, the mouth opens, a posture (a poseik state machine over a blend space of delta poses) takes it forward, and over
+// the next ten seconds everything settles back. Exertion's time constants are the 'quick' ones (a sixth of the body's own).
+//
+// SCENE 2, A FOUR-LEGGED TEST BODY (creaturerig's plainBody, not a species) walking and trotting in a wind, with a mane (strands
+// riding the neck's bones) and a tail (strands riding the tail's), a barrel and a flank that breathe and lag, and its head
+// turning to look about.
+//
+// Each picture is a BMP, OUT/NAME.bmp. It prints the cost of a frame, by phase (microseconds a frame, the 50th percentile of a
+// soak), and the GPU time of a frame. With the Vulkan SDK, validation is on and must say nothing; the process exits 1 if it
+// does, if a Vulkan call failed, or if a check below fails.
+
+mod alive;
+
+import stdio use *;
+import libc;
+import time use Instant;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import sdf use taperedCapsule, smoothUnion;
+import sdfmesh use surfaceNet;
+import gpu use *;
+import render use *;
+import path as filepath;
+import bonepose use *;
+import poseik use *;
+import walkgait use Walker;
+import creaturerig use *;
+import leggedgait use *;
+import garmentdrape use BodyRig, humanoidMannequin;
+import xpbdsoftbody use Collider;
+import clothrope use WindField;
+import strandflow use *;
+import animlayers use *;
+import livingbody use *;
+
+const W = 640u32;
+const H = 512u32;
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+// ------------------------------------------------------------------------------ timing
+
+fn sortInto(v &mut List[i64]) {
+  mut i = 1usize;
+  while i < v.len() {
+    imm x = *v[i];
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > x { v.set(j, *v[j - 1usize]); j = j - 1usize; }
+    v.set(j, x);
+    i = i + 1usize;
+  }
+}
+
+struct Phase {
+  name String;
+  micros List[i64];
+}
+
+struct Costs {
+  phases List[Phase];
+
+  fn make() Costs { new Costs(List[Phase].empty()); }
+
+  fn add(self &mut, name &str, micros i64) {
+    mut i = 0usize;
+    while i < phases.len() {
+      if phases[i].name.view() == name { phases[i].micros.push(micros); return; }
+      i = i + 1usize;
+    }
+    mut p = new Phase(String.from(name), List[i64].empty());
+    p.micros.push(micros);
+    phases.push(p);
+  }
+
+  fn report(self &mut, label &str) {
+    printStr(label); print <- ": p50 microseconds a frame\n";
+    mut total i64 = 0i64;
+    mut i = 0usize;
+    while i < phases.len() {
+      sortInto(&mut phases[i].micros);
+      imm m = *phases[i].micros[phases[i].micros.len() / 2usize];
+      total = total + m;
+      print <- "  "; printStr(phases[i].name.view()); print <- " "; print <- m; print <- "\n";
+      i = i + 1usize;
+    }
+    print <- "  (sum of the p50s) "; print <- total; print <- "\n";
+  }
+}
+
+// ------------------------------------------------------------------------------ the stage
+
+struct Stage {
+  out Texture;
+  depth Texture;
+  renderer Renderer;
+  post Post;
+  queries QuerySet;
+  resolved Buffer;
+  tick Buffer;
+  shot Buffer;
+  light Light;
+  groundMesh MeshHandle;
+  groundMat MaterialHandle;
+  morpher Morpher;
+}
+
+fn checkerImage() Image {
+  Image.checker(256, 256, 8, 8, new Color(0.30, 0.36, 0.20, 1.), new Color(0.26, 0.32, 0.18, 1.));
+}
+
+fn slab(center Vec3, size Vec3) Mat4 { Mat4.fromTrs(center, Quat.identity(), size); }
+
+fn makeStage(device &mut Device) Stage {
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut tick = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut sky = Sky.dusk(radians(48.), radians(215.));
+  sky.zenith = new Color(0.14, 0.28, 0.62, 1.);
+  sky.horizon = new Color(0.55, 0.62, 0.74, 1.);
+  sky.sunColor = new Color(40., 36., 30., 1.);
+  sky.glow = new Color(0.35, 0.28, 0.16, 1.);
+  sky.ground = new Color(0.10, 0.12, 0.08, 1.);
+  renderer.setSky(device, &sky);
+  imm light = sky.sunLight(new Color(2.2, 2.0, 1.75, 1.), new Color(0.08, 0.1, 0.14, 1.));
+  imm settings = ShadowSettings.medium();
+  renderer.setShadows(device, &settings);
+  imm img = checkerImage();
+  imm tex = renderer.addTexture(device, &img);
+  mut gm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.9);
+  gm.texture = tex;
+  imm groundMat = renderer.addPbrMaterial(device, &gm);
+  imm gmesh = Mesh.cube(0.5);
+  imm groundMesh = renderer.addMesh(device, &gmesh);
+  mut morpher = Morpher.create(device);
+  new Stage(out, depth, renderer, post, queries, resolved, tick, shot, light, groundMesh, groundMat, morpher);
+}
+
+// One frame drawn (after the morph pre-pass); the GPU time of 'render' in ms, and the picture written if `name` is not empty
+fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, name &str) f64 {
+  mut encoder = device.createCommandEncoder();
+  st.morpher.update(device, &mut encoder, &st.renderer);
+  encoder.writeTimestamp(&st.queries, 0u32);
+  st.renderer.render(device, &mut encoder, &st.post.hdr, &st.depth, camera, &st.light, list);
+  encoder.writeTimestamp(&st.queries, 1u32);
+  st.post.apply(&mut encoder, &st.out);
+  encoder.resolveQuerySet(&st.queries, 0u32, 2u32, &st.resolved, 0u64);
+  encoder.copyBufferToBuffer(&st.resolved, 0u64, &st.tick, 0u64, 16u64);
+  if name.len() > 0usize { encoder.copyTextureToBuffer(&st.out, &st.shot); }
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm ticks = st.tick.mappedRange() as *u64;
+  imm ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+  if name.len() > 0usize {
+    imm image = Image.fromTexels(st.shot.mappedRange(), i32.from(W), i32.from(H), false);
+    if !image.save(&filepath.Path.from(name)) { print <- "COULD NOT WRITE "; printStr(name); print <- "\n"; }
+  }
+  ms;
+}
+
+fn fileName(dir &str, name &str) String {
+  mut s = String.from(dir);
+  s <- "/";
+  s <- name;
+  s <- ".bmp";
+  s;
+}
+
+fn numbered(base &str, i i32) String {
+  mut s = String.from(base);
+  s <- "-";
+  if i < 10 { s <- "0"; }
+  s <- i64.from(i);
+  s;
+}
+
+fn camera(eye Vec3, at Vec3, fov f32) Camera {
+  mut c = Camera.make();
+  c.fov = radians(fov);
+  c.near = 0.05;
+  c.far = 200.;
+  c.lookAt(eye, at, new Vec3(0., 1., 0.));
+  c.background = new Color(0.5, 0.65, 0.9, 1.);
+  c;
+}
+
+// ------------------------------------------------------------------------------ the mannequin
+
+fn flat(x f32, z f32) f32 { 0.; }
+
+struct Person {
+  rig BodyRig;
+  walker Walker;
+  life LivingHumanoid;
+  anim Animator;
+  pWinded usize;
+  pSpeed usize;
+  morphed MorphHandle;
+  bodyMesh MeshHandle;
+  bodyMat MaterialHandle;
+  base Pose;
+  baseModels List[Transform3];
+  pose Pose;
+  models List[Transform3];
+  bones List[Transform3];       // the bones in the world
+  mats List[Mat4];
+  pins List[LimbPin];
+  weights usize;
+  flags u32;
+  hair StrandSim;
+  hairMesh MeshHandle;
+  hairMat MaterialHandle;
+  hairScratch Mesh;
+  hairSeen List[bool];
+  hairColliders List[Collider];
+  eyeMesh MeshHandle;
+  pupilMesh MeshHandle;
+  eyeMat MaterialHandle;
+  pupilMat MaterialHandle;
+  eyeCentreL Vec3;
+  eyeCentreR Vec3;
+}
+
+// Where the hair grows: the crown and the sides and back of the head, not the face (model space of the 1.75 m mannequin,
+// whose head joint is at y 1.5225 and whose head tube rises 0.166 m from it)
+fn scalp(p Vec3, n Vec3) f32 {
+  imm lower = if p.z > 0.02 { 1.57; } else { 1.60; };
+  imm up = smoothstep(lower, lower + 0.03, p.y);
+  imm forehead = if p.z < -0.04 { smoothstep(1.645, 1.67, p.y); } else { 1.; };
+  up * forehead;
+}
+
+fn regionTable() List[SoftRegion] {
+  mut r = List[SoftRegion].empty();
+  // the belly: below the chest, in front, breathing with the belly and lagging at 3 Hz
+  r.push(SoftRegion.make("belly", SPINE, new Vec3(0., 0.03, 0.), new Vec3(0., 0., -1.), new Vec3(0.17, 0.10, 0.11))
+    .breathing(REGION_BELLY, 1.).jiggling(3., 0.2, 0.03, new Vec3(0.6, 1., 0.8)));
+  // the chest wall in front, at the sides and behind
+  r.push(SoftRegion.make("chest front", CHEST, new Vec3(0., 0.05, 0.), new Vec3(0., 0., -1.), new Vec3(0.17, 0.11, 0.11))
+    .breathing(REGION_CHEST, 1.).jiggling(4.5, 0.25, 0.012, new Vec3(0.5, 1., 0.6)));
+  r.push(SoftRegion.make("chest left", CHEST, new Vec3(0., 0.0, 0.), new Vec3(-1., 0., 0.), new Vec3(0.10, 0.12, 0.12)).breathing(REGION_CHEST, 0.6));
+  r.push(SoftRegion.make("chest right", CHEST, new Vec3(0., 0.0, 0.), new Vec3(1., 0., 0.), new Vec3(0.10, 0.12, 0.12)).breathing(REGION_CHEST, 0.6));
+  r.push(SoftRegion.make("back", CHEST, new Vec3(0., 0.0, 0.), new Vec3(0., 0., 1.), new Vec3(0.17, 0.12, 0.10)).breathing(REGION_CHEST, 0.35));
+  r;
+}
+
+// The posture layer's deltas: neutral, slumped, bent over with the hands towards the knees
+fn postureClip(kind i32, count usize) Clip {
+  mut p = zeroPose(count);
+  imm x = new Vec3(1., 0., 0.);
+  if kind == 1 {
+    deltaRotate(&mut p, SPINE, Quat.angleAxis(radians(-9.), x));
+    deltaRotate(&mut p, CHEST, Quat.angleAxis(radians(-7.), x));
+    deltaRotate(&mut p, NECK, Quat.angleAxis(radians(5.), x));
+    deltaRotate(&mut p, UPPER_ARM_L, Quat.angleAxis(radians(8.), x));
+    deltaRotate(&mut p, UPPER_ARM_R, Quat.angleAxis(radians(8.), x));
+  }
+  if kind == 2 {
+    deltaRotate(&mut p, PELVIS, Quat.angleAxis(radians(-14.), x));
+    deltaRotate(&mut p, SPINE, Quat.angleAxis(radians(-18.), x));
+    deltaRotate(&mut p, CHEST, Quat.angleAxis(radians(-12.), x));
+    deltaRotate(&mut p, NECK, Quat.angleAxis(radians(12.), x));
+    deltaRotate(&mut p, HEAD, Quat.angleAxis(radians(8.), x));
+    deltaRotate(&mut p, UPPER_ARM_L, Quat.angleAxis(radians(40.), x));
+    deltaRotate(&mut p, UPPER_ARM_R, Quat.angleAxis(radians(40.), x));
+    deltaRotate(&mut p, FOREARM_L, Quat.angleAxis(radians(16.), x));
+    deltaRotate(&mut p, FOREARM_R, Quat.angleAxis(radians(16.), x));
+    deltaTranslate(&mut p, PELVIS, new Vec3(0., -0.03, 0.));
+  }
+  mut c = Clip.make(1., true);
+  c.addKey(0., &p);
+  c;
+}
+
+fn makePerson(device &mut Device, st &mut Stage, seed u32) Person {
+  mut rig = humanoidMannequin(1.75);
+  imm skel = humanoid(1.75);
+  imm regions = regionTable();
+  imm tg = buildRegionTargets(&rig.mesh, &rig.restModels, &regions);
+  imm nTargets = tg.count();
+  imm sr = SoftRegions.make(regionTable(), tg, &rig.restModels);
+  imm life = LivingHumanoid.make(&skel, 1.75, ExertionParams.quick(), seed, sr);
+  // the morph set for the body: the regions' targets
+  mut mt = MorphTargets.empty(rig.mesh.positions.len());
+  imm noTan = List[Vec3].empty();
+  mut t = 0usize;
+  while t < nTargets {
+    mt.addSparse(&life.regions.tg.targets.indicesOf(t), &life.regions.tg.targets.positionsOf(t), &life.regions.tg.targets.normalsOf(t), &noTan);
+    t = t + 1usize;
+  }
+  imm set = st.morpher.addSet(device, &mt, &rig.mesh);
+  imm baseMesh = st.renderer.addSkinnedMesh(device, &rig.mesh, &rig.skin);
+  mut enc0 = device.createCommandEncoder();
+  imm copy = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, baseMesh, set, false);
+  device.queue.submit(enc0.finish());
+  device.endFrame();
+  device.waitIdle();
+  mut bm = PbrMaterial.standard(new Color(0.74, 0.55, 0.44, 1.), 0., 0.55);
+  imm bodyMat = st.renderer.addPbrMaterial(device, &bm);
+  // the posture state machine: upright, or tired (a blend space of the deltas, by how winded)
+  imm zero = zeroPose(skel.boneCount());
+  mut anim = Animator.make(&zero);
+  imm cNeutral = anim.addClip(postureClip(0, skel.boneCount()));
+  imm cSlump = anim.addClip(postureClip(1, skel.boneCount()));
+  imm cBent = anim.addClip(postureClip(2, skel.boneCount()));
+  mut space = BlendSpace1D.empty();
+  space.add(0., postureClip(0, skel.boneCount()));
+  space.add(0.55, postureClip(1, skel.boneCount()));
+  space.add(1., postureClip(2, skel.boneCount()));
+  imm iSpace = anim.addSpace(space);
+  imm pWinded = anim.addParam(0.);
+  imm pSpeed = anim.addParam(0.);
+  imm sUpright = anim.addClipState(cNeutral, 1.);
+  imm sTired = anim.addSpaceState(iSpace, pWinded, 1.);
+  imm toTired = anim.addTransition(i32.from(sUpright), sTired, 1.4, -1.);
+  anim.addCondition(toTired, pWinded, CMP_GREATER, 0.45);
+  anim.addCondition(toTired, pSpeed, CMP_LESS, 0.3);
+  imm toUpright = anim.addTransition(i32.from(sTired), sUpright, 2.5, -1.);
+  anim.addCondition(toUpright, pWinded, CMP_LESS, 0.2);
+  mut walker = Walker.make(1.75, seed);
+  walker.ownIdle = false;
+  imm rp = skel.restPose();
+  // the hair: strands rooted on the scalp in the head bone's frame, a gusty breeze
+  mut hairStyle = StrandStyle.hair();
+  hairStyle.length = 0.34;
+  hairStyle.cardWidth = 0.024;
+  hairStyle.cardTipWidth = 0.009;
+  mut sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(0.9, 0., 0.5))), 1u32);
+  imm headRest = *rig.restModels[HEAD];
+  imm hg = sim.addGroup(headRest, hairStyle);
+  imm roots0 = rootsOnMesh(hg, &rig.mesh, 320usize, &scalp, new Vec3(0., -1., 0.35), 0.9, 77u32);
+  mut roots = List[StrandRoot].empty();
+  imm inv = headRest.inverse();
+  mut ri = 0usize;
+  while ri < roots0.len() {
+    imm r = roots0[ri];
+    roots.push(new StrandRoot(hg, inv.transformPoint(r.pos), (inv.rotation * r.dir).normalize(), (inv.rotation * r.normal).normalize(), r.seed));
+    ri = ri + 1usize;
+  }
+  sim.addStrands(&roots);
+  imm cnt = cardCounts(&sim);
+  imm hairMesh = st.renderer.addDynamicMesh(device, u32.from(cnt.0), u32.from(cnt.1));
+  imm fibres = paintFibers(4, 64, 256, 14, 5u32);
+  mut img = new Image(fibres.width, fibres.height, 4, List[u8].empty());
+  mut q = 0usize;
+  while q < fibres.rgba.len() { img.pixels.push(*fibres.rgba[q]); q = q + 1usize; }
+  imm hairTex = st.renderer.addCutoutTexture(device, &img, 0.45);
+  mut hm = PbrMaterial.standard(new Color(0.16, 0.085, 0.04, 1.), 0., 0.42);
+  hm.texture = hairTex;
+  hm.alphaMode = ALPHA_MASK;
+  hm.alphaCutoff = 0.45;
+  hm.specularScale = 0.6;
+  imm hairMat = st.renderer.addPbrMaterial(device, &hm);
+  // which bones the hair meets
+  mut seen = List[bool].empty();
+  mut b = 0usize;
+  while b < rig.boneCount() {
+    seen.push(b == HEAD or b == NECK or b == CHEST);
+    b = b + 1usize;
+  }
+  // eyes: two spheres and their pupils, on the head bone, turned by the face rig
+  imm eyeMesh = st.renderer.addMesh(device, &Mesh.sphere(0.0155, 16));
+  imm pupilMesh = st.renderer.addMesh(device, &Mesh.sphere(0.0072, 12));
+  mut em = PbrMaterial.standard(new Color(0.92, 0.9, 0.86, 1.), 0., 0.25);
+  em.clearcoat = 1.;
+  em.clearcoatRoughness = 0.04;
+  imm eyeMat = st.renderer.addPbrMaterial(device, &em);
+  mut pm = PbrMaterial.standard(new Color(0.03, 0.025, 0.02, 1.), 0., 0.1);
+  pm.clearcoat = 1.;
+  pm.clearcoatRoughness = 0.03;
+  imm pupilMat = st.renderer.addPbrMaterial(device, &pm);
+  imm socket = skel.sockets[SOCKET_EYE].offset.translation;
+  new Person(rig, walker, life, anim, pWinded, pSpeed, copy, st.morpher.mesh(copy), bodyMat, rp.copy(), List[Transform3].empty(), rp.copy(),
+    List[Transform3].empty(), List[Transform3].empty(), List[Mat4].empty(), List[LimbPin].empty(), nTargets, 0u32,
+    sim, hairMesh, hairMat, Mesh.empty(), seen, List[Collider].empty(), eyeMesh, pupilMesh, eyeMat, pupilMat,
+    socket + new Vec3(-0.032, 0., 0.003), socket + new Vec3(0.032, 0., 0.003));
+}
+
+// The feet the walker has planted, as pins in the model's space (the model faces yaw 0 here)
+fn footPins(p &mut Person, at Vec3) {
+  p.pins.clear();
+  mut side = 0;
+  while side < 2 {
+    imm f = if side == 0 { p.walker.left; } else { p.walker.right; };
+    imm sgn = if side == 0 { -1.; } else { 1.; };
+    imm thigh = if side == 0 { THIGH_L; } else { THIGH_R; };
+    imm rot = Quat.angleAxis(f.yaw, new Vec3(0., 1., 0.)) * Quat.angleAxis(f.pitch * (1. - p.walker.air), new Vec3(1., 0., 0.));
+    p.pins.push(new LimbPin(thigh, f.ankle - at, rot, new Vec3(sgn * 0.12, 0., -1.).normalize(), 0.5235988, 1.));
+    side = side + 1;
+  }
+}
+
+// A frame of the person at ground point `at` moving `speed` m/s along -z doing `work`
+fn stepPerson(p &mut Person, at Vec3, speed f32, work f32, dt f32) {
+  p.walker.update(&p.rig.skeleton, &mut p.base, &mut p.baseModels, at, 0., speed, 0., true, &flat, dt);
+  imm calm = 1. - smoothstep(0.05, 0.4, speed);
+  p.life.tick(&p.rig.skeleton, dt, work, calm);
+  // the posture
+  p.anim.setParam(p.pWinded, p.life.state.winded);
+  p.anim.setParam(p.pSpeed, speed);
+  imm posture = p.anim.update(dt);
+  p.life.setPosture(posture);
+  p.life.fadePosture(1., 0.1);
+  footPins(p, at);
+  imm world = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
+  p.life.compose(&p.rig.skeleton, &p.base, &world, &p.pins, &mut p.pose, &mut p.models);
+  p.bones.clear();
+  mut i = 0usize;
+  while i < p.models.len() { p.bones.push(world * *p.models[i]); i = i + 1usize; }
+}
+
+// The hair a frame: its frame is the head bone's, its colliders the head, neck, shoulders and trunk where they are now
+fn stepHair(p &mut Person, dt f32) {
+  p.hair.setFrame(0usize, *p.bones[HEAD]);
+  p.rig.collidersSeen(&p.bones, 0.004, &p.hairSeen, &mut p.hairColliders);
+  if libc.getenv("NOHAIRCOL") == (0usize as *u8) { p.hair.setColliders(0usize, &p.hairColliders); }
+  p.hair.step(dt);
+}
+
+fn drawPerson(st &mut Stage, device &mut Device, p &mut Person, list &mut DrawList) {
+  p.rig.skinMatrices(&p.bones, &mut p.mats);
+  st.morpher.setWeights(&mut st.renderer, p.morphed, &p.life.regions.weights);
+  list.addSkinned(p.bodyMesh, p.bodyMat, Mat4.identity(), p.mats.view());
+  // the eyes: each turned by the face rig's rotation for it
+  imm head = (*p.bones[HEAD]).toMat4();
+  mut side = 0;
+  while side < 2 {
+    imm centre = if side == 0 { p.eyeCentreL; } else { p.eyeCentreR; };
+    imm q = if side == 0 { p.life.frame.eyeL; } else { p.life.frame.eyeR; };
+    imm m = head * Mat4.fromTranslation(centre) * Mat4.fromQuat(q);
+    list.add(p.eyeMesh, p.eyeMat, m);
+    list.add(p.pupilMesh, p.pupilMat, m * Mat4.fromTranslation(new Vec3(0., 0., -0.0132)));
+    side = side + 1;
+  }
+  // the hair
+  writeCards(&p.hair, &mut p.hairScratch, 4u32, 1.);
+  st.renderer.writeDynamicMesh(device, p.hairMesh, &p.hairScratch);
+  list.add(p.hairMesh, p.hairMat, Mat4.identity());
+}
+
+fn manSpeed(t f32) f32 {
+  if t < 8. { return 0.; }
+  if t < 9.4 { return 1.9 * smoothstep(8., 9.4, t); }
+  if t < 17.5 { return 1.9; }
+  if t < 18.6 { return 1.9 * (1. - smoothstep(17.5, 18.6, t)); }
+  0.;
+}
+
+fn manWork(t f32) f32 { if t >= 8. and t < 18. { 0.9; } else { 0.; }; }
+
+fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
+  mut ok = true;
+  mut p = makePerson(device, st, 11u32);
+  imm dt = 1. / 60.;
+  mut z f32 = 0.;
+  mut t f32 = 0.;
+  mut frame = 0;
+  mut shots = 0;
+  mut costs = Costs.make();
+  mut maxChest f32 = 0.;
+  mut minBelly f32 = 0.;
+  mut gpuMs f64 = 0d;
+  mut gpuFrames = 0;
+  mut sceneList = DrawList.empty();
+  while t < 36. {
+    imm speed = manSpeed(t);
+    z = z - speed * dt;
+    imm at = new Vec3(0., 0., z);
+    imm c0 = Instant.now();
+    stepPerson(&mut p, at, speed, manWork(t), dt);
+    costs.add("person: walker, life, layers, pins, look-at, springs", c0.elapsed().nanos() / 1000i64);
+    imm c1 = Instant.now();
+    stepHair(&mut p, dt);
+    costs.add("hair: strand step", c1.elapsed().nanos() / 1000i64);
+    if p.life.state.chest > maxChest { maxChest = p.life.state.chest; }
+    if p.life.state.belly < minBelly { minBelly = p.life.state.belly; }
+    // pictures: the lungs empty and full (standing and winded) from the side; sequences; the hair close
+    imm fill = p.life.state.fill;
+    mut name = String.empty();
+    mut cam = camera(new Vec3(3.4, 1.2, z - 0.4), new Vec3(0., 1.0, z), 30.);
+    if t >= 3. and t < 7.5 {
+      if fill < 0.02 and !hasShot(&p, 0) { name = String.from("stand-empty"); markShot(&mut p, 0); }
+      if fill > 0.995 and !hasShot(&p, 1) { name = String.from("stand-full"); markShot(&mut p, 1); }
+    }
+    if t >= 21. and t < 30. {
+      if fill < 0.03 and !hasShot(&p, 2) { name = String.from("winded-empty"); markShot(&mut p, 2); }
+      if fill > 0.99 and !hasShot(&p, 3) { name = String.from("winded-full"); markShot(&mut p, 3); }
+    }
+    // the torso close, empty and full, side on
+    if t >= 3. and t < 7.5 {
+      if fill < 0.02 and !hasShot(&p, 4) { name = String.from("torso-empty"); markShot(&mut p, 4); cam = camera(new Vec3(1.7, 1.2, z - 0.1), new Vec3(0., 1.2, z), 30.); }
+      if fill > 0.995 and !hasShot(&p, 5) { name = String.from("torso-full"); markShot(&mut p, 5); cam = camera(new Vec3(1.7, 1.2, z - 0.1), new Vec3(0., 1.2, z), 30.); }
+    }
+    if t >= 6.0 and !hasShot(&p, 6) { name = String.from("hair-stand-back"); markShot(&mut p, 6); cam = camera(new Vec3(0.55, 1.5, z + 1.2), new Vec3(0., 1.45, z), 30.); }
+    if t >= 13.0 and !hasShot(&p, 7) { name = String.from("hair-walk-side"); markShot(&mut p, 7); cam = camera(new Vec3(1.5, 1.5, z - 0.2), new Vec3(0., 1.45, z - 0.1), 30.); }
+    if t >= 24.0 and !hasShot(&p, 8) { name = String.from("hair-winded"); markShot(&mut p, 8); cam = camera(new Vec3(-0.7, 1.45, z - 1.3), new Vec3(0., 1.35, z), 30.); }
+    imm seqStand = t >= 1.0 and t < 7.0 and frame % 45 == 0;
+    imm seqWalk = t >= 11.0 and t < 12.2 and frame % 9 == 0;
+    imm seqWinded = t >= 18.6 and t < 30.6 and frame % 90 == 0;
+    if seqStand or seqWalk or seqWinded {
+      mut nm = String.from(if seqStand { "seq-stand"; } elif seqWalk { "seq-walk"; } else { "seq-winded"; });
+      nm <- "-";
+      nm <- i64.from(frame);
+      name = nm.copy();
+      cam = if seqWalk { camera(new Vec3(3.6, 1.15, z - 0.6), new Vec3(0., 0.95, z - 0.2), 34.); }
+        else { camera(new Vec3(-1.9, 1.3, z - 3.0), new Vec3(0., 1.0, z), 30.); };
+    }
+    if name.len() > 0usize {
+      mut list = DrawList.empty();
+      list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
+      drawPerson(st, device, &mut p, &mut list);
+      drawFrame(device, st, &cam, &list, fileName(outDir, name.view()).view());
+      shots = shots + 1;
+    }
+    t = t + dt;
+    frame = frame + 1;
+  }
+  print <- "man: "; print <- i64.from(shots); print <- " pictures; largest chest travel "; print <- maxChest * 1000.; print <- " mm; belly drawn in to ";
+  print <- minBelly * 1000.; print <- " mm\n";
+
+  // the soak: 600 more frames of the brisk walk (work 0.9), all of it drawn, a frame at a time
+  mut soak = Costs.make();
+  mut gpuSum f64 = 0d;
+  mut gpuN = 0;
+  mut k = 0;
+  while k < 700 {
+    z = z - 1.9 * dt;
+    imm at = new Vec3(0., 0., z);
+    imm a0 = Instant.now();
+    stepPerson(&mut p, at, 1.9, 0.9, dt);
+    soak.add("person: walker, life, layers, pins, look-at, springs", a0.elapsed().nanos() / 1000i64);
+    imm a1 = Instant.now();
+    stepHair(&mut p, dt);
+    soak.add("hair: strand step", a1.elapsed().nanos() / 1000i64);
+    imm a2 = Instant.now();
+    mut list = DrawList.empty();
+    list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
+    drawPerson(st, device, &mut p, &mut list);
+    soak.add("draw list: skin matrices, morph weights, hair cards written and uploaded", a2.elapsed().nanos() / 1000i64);
+    imm cam = camera(new Vec3(3.4, 1.2, z - 0.4), new Vec3(0., 1.0, z), 30.);
+    imm a3 = Instant.now();
+    imm ms = drawFrame(device, st, &cam, &list, "");
+    soak.add("render call, the wait for the GPU, readback of the timestamps", a3.elapsed().nanos() / 1000i64);
+    if k >= 60 { gpuSum = gpuSum + ms; gpuN = gpuN + 1; }
+    k = k + 1;
+  }
+  soak.report("man (soak of 700 frames)");
+  print <- "  GPU time of a frame (skinned morphed body, eyes, hair cards, shadows, post), mean: "; print <- gpuSum / f64.from(gpuN); print <- " ms\n";
+  imm cnt = cardCounts(&p.hair);
+  print <- "  hair: "; print <- i64.from(p.hair.strandCount()); print <- " strands, "; print <- i64.from(p.hair.particleCount()); print <- " particles, "; print <- i64.from(cnt.0);
+  print <- " card vertices, "; print <- i64.from(cnt.1 / 3usize); print <- " triangles\n";
+  p.hair.stop();
+  ok;
+}
+
+fn hasShot(p &Person, k i32) bool { (p.flags & (1u32 << u32.from(k))) != 0u32; }
+fn markShot(p &mut Person, k i32) { p.flags = p.flags | (1u32 << u32.from(k)); }
+
+fn main(argc i32, argv **u8) i32 {
+  mut outDir = String.from(".");
+  mut scene = String.from("all");
+  mut a = 1;
+  while a < argc {
+    if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
+      outDir = String.empty();
+      mut q = 0usize;
+      imm s = *(argv + usize.from(a + 1));
+      while *(s + q) != 0u8 { outDir.appendByte(*(s + q)); q = q + 1usize; }
+      a = a + 1;
+    }
+    if cstrEquals(*(argv + usize.from(a)), "--scene") and a + 1 < argc {
+      scene = String.empty();
+      mut q = 0usize;
+      imm s = *(argv + usize.from(a + 1));
+      while *(s + q) != 0u8 { scene.appendByte(*(s + q)); q = q + 1usize; }
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+  mut instance = Instance.create("livingbody alive");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
+  mut st = makeStage(&mut device);
+  if !st.renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
+  mut ok = true;
+  if scene.view() == "all" or scene.view() == "man" { if !runMan(&mut device, &mut st, outDir.view()) { ok = false; } }
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0i32; }
+  1i32;
+}
