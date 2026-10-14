@@ -1,0 +1,210 @@
+// -------- SHA-512 (FIPS 180-4, section 6.4) --------
+
+// A SHA-512 hasher. Its fields are its whole state (eight chaining words, the
+// block being filled, how much of it is filled, and the bytes taken so far),
+// so copying the value ('copyOf') copies the hash in progress. The message
+// length is kept as a u64 count of bytes: a message past 2^61 bytes (two
+// exabytes) would need the 128-bit length FIPS 180-4 allows, and is not held.
+pub struct Sha512 {
+  h Array[u64, 8];
+  buf Array[u8, 128];
+  used usize;
+  total u64;
+
+  // A hasher that has taken nothing
+  pub fn make() Sha512 {
+    new Sha512([0x6a09e667f3bcc908u64, 0xbb67ae8584caa73bu64,
+                0x3c6ef372fe94f82bu64, 0xa54ff53a5f1d36f1u64,
+                0x510e527fade682d1u64, 0x9b05688c2b3e6c1fu64,
+                0x1f83d9abfb41bd6bu64, 0x5be0cd19137e2179u64],
+               new Array[u8, 128] <- fill 0u8, 0usize, 0u64);
+  }
+
+  // A hasher in exactly this one's state, which goes on to give what this one
+  // will
+  pub fn copyOf(self &) Sha512 { new Sha512(h, buf, used, total); }
+
+  // Back to a hasher that has taken nothing
+  pub fn reset(self &mut) {
+    h = [0x6a09e667f3bcc908u64, 0xbb67ae8584caa73bu64,
+         0x3c6ef372fe94f82bu64, 0xa54ff53a5f1d36f1u64,
+         0x510e527fade682d1u64, 0x9b05688c2b3e6c1fu64,
+         0x1f83d9abfb41bd6bu64, 0x5be0cd19137e2179u64];
+    used = 0usize;
+    total = 0u64;
+  }
+
+  // How many bytes the hasher has taken
+  pub fn length(self &) u64 { total; }
+
+  // Takes more of the message
+  pub fn update(self &mut, data &Array[u8]) {
+    imm n = data.len;
+    mut at = 0usize;
+    total = total + u64.from(n);
+    // Finish a block begun by an earlier call
+    if used > 0usize {
+      while at < n and used < 128usize {
+        buf[used] = data[at];
+        used = used + 1usize;
+        at = at + 1usize;
+      }
+      if used == 128usize {
+        imm block = buf;
+        sha512Blocks(&mut h, &block, 0usize, 1usize);
+        used = 0usize;
+      }
+    }
+    // Whole blocks straight from the message
+    imm whole = (n - at) / 128usize;
+    if whole > 0usize {
+      sha512Blocks(&mut h, data, at, whole);
+      at = at + whole * 128usize;
+    }
+    // What is left waits for the next call
+    while at < n {
+      buf[used] = data[at];
+      used = used + 1usize;
+      at = at + 1usize;
+    }
+  }
+
+  // The hash of everything taken. The hasher itself is left as it was, so it
+  // can take more and be asked again
+  pub fn finish(self &) Array[u8, 64] {
+    mut t = self.copyOf();
+    t.pad();
+    mut out = new Array[u8, 64] <- fill 0u8;
+    mut i = 0usize;
+    while i < 8usize {
+      mut j = 0usize;
+      while j < 8usize {
+        out[i * 8usize + j] = u8.from((t.h[i] >> (56u64 - 8u64 * u64.from(j))) & 0xffu64);
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // The padding: a 1 bit, zeros, and the message's length in bits as 128 bits
+  fn pad(self &mut) {
+    imm bitsLow = total << 3u64;
+    imm bitsHigh = total >> 61u64;
+    buf[used] = 0x80u8;
+    used = used + 1usize;
+    if used > 112usize {
+      while used < 128usize { buf[used] = 0u8; used = used + 1usize; }
+      imm block = buf;
+      sha512Blocks(&mut h, &block, 0usize, 1usize);
+      used = 0usize;
+    }
+    while used < 112usize { buf[used] = 0u8; used = used + 1usize; }
+    mut i = 0usize;
+    while i < 8usize {
+      buf[112usize + i] = u8.from((bitsHigh >> (56u64 - 8u64 * u64.from(i))) & 0xffu64);
+      buf[120usize + i] = u8.from((bitsLow >> (56u64 - 8u64 * u64.from(i))) & 0xffu64);
+      i = i + 1usize;
+    }
+    imm block = buf;
+    sha512Blocks(&mut h, &block, 0usize, 1usize);
+    used = 0usize;
+  }
+}
+
+// Takes the SHA-512 of a whole message
+pub fn sha512(data &Array[u8]) Array[u8, 64] {
+  mut s = Sha512.make();
+  s.update(data);
+  s.finish();
+}
+
+// The compression function over 'count' blocks of 128 bytes that start at
+// 'start' in 'data', folded into the chaining words 'h'. The 80 round
+// constants (the first 64 bits of the fractional parts of the cube roots of
+// the first 80 primes) are a local here, as SHA-256's are: a module-level
+// table would be a global, and globals hold
+fn sha512Blocks(h &mut Array[u64, 8], data &Array[u8], start usize, count usize) {
+  imm k Array[u64, 80] = [
+    0x428a2f98d728ae22u64, 0x7137449123ef65cdu64, 0xb5c0fbcfec4d3b2fu64, 0xe9b5dba58189dbbcu64,
+    0x3956c25bf348b538u64, 0x59f111f1b605d019u64, 0x923f82a4af194f9bu64, 0xab1c5ed5da6d8118u64,
+    0xd807aa98a3030242u64, 0x12835b0145706fbeu64, 0x243185be4ee4b28cu64, 0x550c7dc3d5ffb4e2u64,
+    0x72be5d74f27b896fu64, 0x80deb1fe3b1696b1u64, 0x9bdc06a725c71235u64, 0xc19bf174cf692694u64,
+    0xe49b69c19ef14ad2u64, 0xefbe4786384f25e3u64, 0x0fc19dc68b8cd5b5u64, 0x240ca1cc77ac9c65u64,
+    0x2de92c6f592b0275u64, 0x4a7484aa6ea6e483u64, 0x5cb0a9dcbd41fbd4u64, 0x76f988da831153b5u64,
+    0x983e5152ee66dfabu64, 0xa831c66d2db43210u64, 0xb00327c898fb213fu64, 0xbf597fc7beef0ee4u64,
+    0xc6e00bf33da88fc2u64, 0xd5a79147930aa725u64, 0x06ca6351e003826fu64, 0x142929670a0e6e70u64,
+    0x27b70a8546d22ffcu64, 0x2e1b21385c26c926u64, 0x4d2c6dfc5ac42aedu64, 0x53380d139d95b3dfu64,
+    0x650a73548baf63deu64, 0x766a0abb3c77b2a8u64, 0x81c2c92e47edaee6u64, 0x92722c851482353bu64,
+    0xa2bfe8a14cf10364u64, 0xa81a664bbc423001u64, 0xc24b8b70d0f89791u64, 0xc76c51a30654be30u64,
+    0xd192e819d6ef5218u64, 0xd69906245565a910u64, 0xf40e35855771202au64, 0x106aa07032bbd1b8u64,
+    0x19a4c116b8d2d0c8u64, 0x1e376c085141ab53u64, 0x2748774cdf8eeb99u64, 0x34b0bcb5e19b48a8u64,
+    0x391c0cb3c5c95a63u64, 0x4ed8aa4ae3418acbu64, 0x5b9cca4f7763e373u64, 0x682e6ff3d6b2b8a3u64,
+    0x748f82ee5defb2fcu64, 0x78a5636f43172f60u64, 0x84c87814a1f0ab72u64, 0x8cc702081a6439ecu64,
+    0x90befffa23631e28u64, 0xa4506cebde82bde9u64, 0xbef9a3f7b2c67915u64, 0xc67178f2e372532bu64,
+    0xca273eceea26619cu64, 0xd186b8c721c0c207u64, 0xeada7dd6cde0eb1eu64, 0xf57d4f7fee6ed178u64,
+    0x06f067aa72176fbau64, 0x0a637dc5a2c898a6u64, 0x113f9804bef90daeu64, 0x1b710b35131c471bu64,
+    0x28db77f523047d84u64, 0x32caab7b40c72493u64, 0x3c9ebe0a15c9bebcu64, 0x431d67c49c100d4cu64,
+    0x4cc5d4becb3e42b6u64, 0x597f299cfc657e2au64, 0x5fcb6fab3ad6faecu64, 0x6c44198c4a475817u64];
+  mut w = new Array[u64, 80] <- fill 0u64;
+  mut at = start;
+  mut blk = 0usize;
+  while blk < count {
+    mut i = 0usize;
+    while i < 16usize {
+      imm p = at + i * 8usize;
+      mut v = 0u64;
+      mut j = 0usize;
+      while j < 8usize {
+        v = (v << 8u64) | u64.from(data[p + j]);
+        j = j + 1usize;
+      }
+      w[i] = v;
+      i = i + 1usize;
+    }
+    while i < 80usize {
+      imm x = w[i - 15usize];
+      imm y = w[i - 2usize];
+      imm s0 = x.rotateRight(1u32) ^ x.rotateRight(8u32) ^ (x >> 7u64);
+      imm s1 = y.rotateRight(19u32) ^ y.rotateRight(61u32) ^ (y >> 6u64);
+      w[i] = w[i - 16usize] + s0 + w[i - 7usize] + s1;
+      i = i + 1usize;
+    }
+    mut a = h[0];
+    mut b = h[1];
+    mut c = h[2];
+    mut d = h[3];
+    mut e = h[4];
+    mut f = h[5];
+    mut g = h[6];
+    mut hh = h[7];
+    i = 0usize;
+    while i < 80usize {
+      imm s1 = e.rotateRight(14u32) ^ e.rotateRight(18u32) ^ e.rotateRight(41u32);
+      imm ch = (e & f) ^ ((e ^ 0xffffffffffffffffu64) & g);
+      imm t1 = hh + s1 + ch + k[i] + w[i];
+      imm s0 = a.rotateRight(28u32) ^ a.rotateRight(34u32) ^ a.rotateRight(39u32);
+      imm maj = (a & b) ^ (a & c) ^ (b & c);
+      imm t2 = s0 + maj;
+      hh = g;
+      g = f;
+      f = e;
+      e = d + t1;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2;
+      i = i + 1usize;
+    }
+    h[0] = h[0] + a;
+    h[1] = h[1] + b;
+    h[2] = h[2] + c;
+    h[3] = h[3] + d;
+    h[4] = h[4] + e;
+    h[5] = h[5] + f;
+    h[6] = h[6] + g;
+    h[7] = h[7] + hh;
+    at = at + 128usize;
+    blk = blk + 1usize;
+  }
+}

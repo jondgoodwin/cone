@@ -1,0 +1,95 @@
+// ======== Point lights spawned by effects ========
+//
+// A muzzle flash or a blast lights the room: an effect's LightLayer is a point light in
+// render's clustered light set ('renderer.lights', a LightSet), given an intensity over time:
+// a linear attack, then an exponential decay (the way a flash of burning gas dies), a colour
+// that cools from the flash's to the glow's, and an optional flicker.
+//
+// COST (measured in Design\effectsfx.md). The light set takes at most 1,024 lights and 64 to a
+// froxel cluster; a light is a row of four float4s and costs the clusters it reaches
+// (a sphere of 'range' metres), so what an effect light costs is its range squared, not its
+// number: a blast of range 25 m over a room is the expensive kind, a muzzle flash of 6 m
+// is nearly free. Lights are made when an effect's layer starts and removed when it ends.
+
+// One light of an effect
+pub struct LightLayer {
+  pub color Color;                  // at the flash
+  pub fadeColor Color;              // the colour it cools to
+  pub offset Vec3;                  // from the effect's origin, in its own frame (x across, y along the axis, z across)
+  pub delay f32 = 0.;               // seconds after the effect starts
+  pub attack f32 = 0.01;            // seconds to reach its peak
+  pub decay f32 = 0.25;             // then e-folds in this many seconds
+  pub duration f32 = 1.5;           // and is taken out after this long
+  pub peak f32 = 2000.;             // candela at the peak
+  pub range f32 = 12.;              // metres it reaches
+  pub flicker f32 = 0.;             // a fraction of the intensity the light wavers by
+  pub radius f32 = 0.15;            // the source's radius, for the highlight
+
+  pub fn make() LightLayer {
+    new LightLayer(color: new Color(1., 0.8, 0.5, 1.), fadeColor: new Color(1., 0.35, 0.1, 1.), offset: new Vec3(0., 0., 0.));
+  }
+}
+
+struct ActiveLight {
+  handle LightHandle;
+  layer LightLayer;
+  start f32;
+  origin Vec3;
+  seed u32;
+}
+
+pub struct EffectLights {
+  active List[ActiveLight];
+  pub peak u32 = 0u32;              // the most lights effects have had at once
+  pub live u32 = 0u32;              // the lights they have now
+
+  pub fn create() EffectLights { new EffectLights(List[ActiveLight].empty()); }
+
+  // A light for 'layer' of an effect that started at 'start', whose frame puts it at 'origin'
+  pub fn add(self &mut, layer &LightLayer, origin Vec3, start f32, seed u32) {
+    active.push(new ActiveLight(LightHandle.none(), *layer, start, origin, seed));
+  }
+
+  // Bring every light to 'now': make the ones that have begun, set the intensity and colour of
+  // the ones lit, take out the ones whose time is up
+  pub fn update(self &mut, lights &mut LightSet, now f32) {
+    mut i = 0usize;
+    while i < active.len() {
+      imm age = now - active[i].start - active[i].layer.delay;
+      if age > active[i].layer.duration {
+        if !active[i].handle.isNone() { lights.remove(active[i].handle); }
+        active.swap(i, active.len() - 1usize);
+        imm gone = active.pop();
+      } else {
+        if age >= 0. {
+          mut a = &mut active[i];
+          mut env = 1.;
+          if age < a.layer.attack { env = age / a.layer.attack; } else { env = libc.expf(-(age - a.layer.attack) / a.layer.decay); }
+          if a.layer.flicker > 0. {
+            imm n = value2(new Vec2(age * 31., f32.from(a.seed % 997u32)), a.seed).value;
+            env = env * (1. + a.layer.flicker * n);
+          }
+          imm cool = 1. - libc.expf(-age / (a.layer.decay * 1.5));
+          imm c = new Color(a.layer.color.red + (a.layer.fadeColor.red - a.layer.color.red) * cool,
+            a.layer.color.green + (a.layer.fadeColor.green - a.layer.color.green) * cool,
+            a.layer.color.blue + (a.layer.fadeColor.blue - a.layer.color.blue) * cool, 1.);
+          if a.handle.isNone() {
+            a.handle = lights.addPoint(a.origin, c, a.layer.peak * env, a.layer.range);
+            if !a.handle.isNone() { lights.setSourceRadius(a.handle, a.layer.radius); }
+          } else {
+            lights.setLight(a.handle, c, a.layer.peak * env);
+          }
+        }
+        i = i + 1usize;
+      }
+    }
+    mut lit = 0u32;
+    i = 0usize;
+    while i < active.len() {
+      if !active[i].handle.isNone() { lit = lit + 1u32; }
+      i = i + 1usize;
+    }
+    live = lit;
+    if lit > peak { peak = lit; }
+  }
+}

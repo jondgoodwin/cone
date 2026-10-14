@@ -1,0 +1,134 @@
+// flipbookatlas: bakes one explosion's flipbook (the blast demo's description by default) and writes the
+// atlas as a picture: each frame tone-mapped (x / (1 + x)) and laid over a dark grey, so the fireball's
+// turn into smoke can be read frame by frame. Offscreen, no window.
+//
+//   congo run packages/effectsfx/examples/flipbookatlas.cone -- atlas.bmp
+//   congo run packages/effectsfx/examples/flipbookatlas.cone -- atlas.bmp --seed 7 --turbulence 0.8 --brightness 30
+//
+// It prints how long the bake took on the GPU, wall clock (the bake is a start-up cost, paid once per explosion).
+
+mod flipbookatlas;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import gpu use *;
+import time use *;
+import path as filepath;
+import render use Image;
+import effectsfx use *;
+
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  imm exp = i32.from((bits >> 10u32) & 31u32);
+  imm mant = f32.from(bits & 1023u32);
+  if exp == 0 { return sign * mant * 5.9604645e-8; }
+  if exp == 31 { return sign * 65504.; }
+  sign * (1. + mant / 1024.) * libc.powf(2., f32.from(exp - 15));
+}
+
+fn cstrEquals(a *u8, b &Array[u8]) bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn number(s *u8) f32 {
+  mut v = 0.;
+  mut i = 0usize;
+  mut scale = 0.;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c == '.' { scale = 0.1; }
+    elif c >= '0' and c <= '9' {
+      imm d = f32.from(i32.from(c) - 48);
+      if scale == 0. { v = v * 10. + d; } else { v = v + d * scale; scale = scale * 0.1; }
+    }
+    i = i + 1usize;
+  }
+  v;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut out = String.empty();
+  mut desc = FlipbookDesc.make();
+  desc.seed = 21u32;
+  desc.startRadius = 0.10;
+  desc.endRadius = 0.72;
+  desc.growth = 4.5;
+  desc.rise = 0.30;
+  desc.turbulence = 0.62;
+  desc.cooling = 3.0;
+  desc.brightness = 24.;
+  desc.sootStart = 0.10;
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--seed") and a + 1 < argc { desc.seed = u32.from(number(*(argv + usize.from(a + 1)))); a = a + 1; }
+    elif cstrEquals(arg, "--turbulence") and a + 1 < argc { desc.turbulence = number(*(argv + usize.from(a + 1))); a = a + 1; }
+    elif cstrEquals(arg, "--brightness") and a + 1 < argc { desc.brightness = number(*(argv + usize.from(a + 1))); a = a + 1; }
+    elif cstrEquals(arg, "--cell") and a + 1 < argc { desc.cell = u32.from(number(*(argv + usize.from(a + 1)))); a = a + 1; }
+    else {
+      imm s = arg;
+      mut i = 0usize;
+      while *(s + i) != 0u8 { out.appendByte(*(s + i)); i = i + 1usize; }
+    }
+    a = a + 1;
+  }
+  if out.len() == 0usize {
+    print <- "Use: flipbookatlas FILE.bmp [--seed N] [--turbulence X] [--brightness X] [--cell N]\n";
+    return 2;
+  }
+  mut instance = Instance.create("effectsfx flipbookatlas");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(powerEnv), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() { print <- "No GPU\n"; return 1; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  mut system = FlipbookSystem.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT);
+  imm started = Instant.now();
+  imm id = system.addFlipbook(&mut device, &desc);
+  imm elapsed = started.elapsed();
+  print <- "Baked "; print <- u64.from(desc.grid); print <- " x "; print <- u64.from(desc.grid); print <- " frames of ";
+  print <- u64.from(desc.cell); print <- " pixels in "; print <- elapsed.millis(); print <- " ms (wall clock, including the wait)\n";
+  imm side = desc.grid * desc.cell;
+  mut readback = device.createBuffer(u64.from(side) * u64.from(side) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer(system.atlasTexture(usize.from(id)), &readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm p = readback.mappedRange() as *u16;
+  mut texels = List[u8].withCapacity(usize.from(side) * usize.from(side) * 4usize);
+  mut i = 0usize;
+  while i < usize.from(side) * usize.from(side) {
+    imm r = halfToFloat(*(p + i * 4usize));
+    imm g = halfToFloat(*(p + i * 4usize + 1usize));
+    imm b = halfToFloat(*(p + i * 4usize + 2usize));
+    imm al = halfToFloat(*(p + i * 4usize + 3usize));
+    imm bg = 0.12;
+    // premultiplied over the grey: rgb + bg (1 - a), then tone mapped
+    imm cr = (r + bg * (1. - al)); imm cg = (g + bg * (1. - al)); imm cb = (b + bg * (1. - al));
+    texels.push(u8.from(255. * libc.powf(cr / (1. + cr), 0.45)));
+    texels.push(u8.from(255. * libc.powf(cg / (1. + cg), 0.45)));
+    texels.push(u8.from(255. * libc.powf(cb / (1. + cb), 0.45)));
+    texels.push(255u8);
+    i = i + 1usize;
+  }
+  imm tv = texels.view();
+  imm image = Image.fromTexels(&tv[0], i32.from(side), i32.from(side), false);
+  imm written = image.save(&filepath.Path.from(out.view()));
+  print <- "Atlas: "; printStr(out.view()); if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+  print <- "Vulkan failures: "; print <- u64.from(failures()); print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0;
+}

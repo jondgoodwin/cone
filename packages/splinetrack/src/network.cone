@@ -1,0 +1,194 @@
+// ======== Junctions and switches: a network of tracks ========
+//
+// A TrackNetwork is several open tracks and the JOINS between them: the end of one track continues onto the
+// start of one of several tracks (a switch: 'selected' says which), or onto a single track (a merge, where
+// several tracks' joins name the same one). A track may join onto itself, which makes a ring with a siding.
+// Where tracks meet, they should meet in place and in direction (the second track's first point at the
+// first's last, with the end tangent given to Track.build): 'joinGap' and 'joinBend' measure how well.
+//
+// A NetTrain runs a Train over the network by running it on a ROUTE: one Track made by concatenating the
+// legs the train occupies, the track it is on, the track behind (while a car is still on it) and the track
+// ahead once the lead car is within 'lookahead' metres of the route's end. The Train's own dynamics are
+// untouched; the route is one track to it, so gravity, friction, the g-forces and the car poses come out
+// the same on a join as anywhere else. A leg is dropped from the back when the last car has left it (the route
+// stays a few legs long however far the train runs: a ring can be circled for ever).
+//
+// THE SWITCH IS READ ONCE: when the lead car comes within the lookahead of the end of its leg, the join's
+// 'selected' is read and the next leg appended. A switch thrown after that does not reroute the train (a real
+// switch is locked ahead of a train). A switch thrown before it does.
+//
+// ZONES belong to a track (NetZone: the track's index and the zone in that track's arc length); the route's
+// zones are those of its legs, moved by each leg's place on the route.
+//
+// NOT HERE: a train running backward over a join (the route is built forward only), a train longer than
+// two legs, two trains on the same network seeing each other (no signals, no collisions).
+
+pub struct Join {
+  pub from usize;               // the track whose END this is
+  pub to List[usize];           // the tracks whose START it may continue onto
+  pub selected usize;           // which of them, an index into 'to'
+}
+
+pub struct NetZone {
+  pub track usize;
+  pub zone Zone;
+}
+
+pub struct TrackNetwork {
+  pub tracks List[Track];
+  pub joins List[Join];
+  pub zones List[NetZone];
+
+  pub fn make() TrackNetwork { new TrackNetwork(List[Track].empty(), List[Join].empty(), List[NetZone].empty()); }
+
+  // Add a track, its number
+  pub fn addTrack(self &mut, t Track) usize { tracks.push(t); tracks.len() - 1usize; }
+
+  // The end of 'from' continues onto the start of each of 'to' (the first selected)
+  pub fn addJoin(self &mut, from usize, to List[usize]) { joins.push(new Join(from, to, 0usize)); }
+
+  // Set the switch at the end of 'from' to its k-th option
+  pub fn throwSwitch(self &mut, from usize, k usize) {
+    mut i = 0usize;
+    while i < joins.len() {
+      if joins[i].from == from and k < joins[i].to.len() { joins[i].selected = k; }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn addZone(self &mut, track usize, z Zone) { zones.push(new NetZone(track, z)); }
+
+  // The track the end of 'from' leads to now (its number), or -1 when it leads nowhere
+  pub fn next(self &, from usize) i64 {
+    mut i = 0usize;
+    while i < joins.len() {
+      if joins[i].from == from and joins[i].to.len() > 0usize {
+        return i64.from(*joins[i].to[joins[i].selected]);
+      }
+      i = i + 1usize;
+    }
+    -1i64;
+  }
+
+  // How far apart the end of 'a' and the start of 'b' are (metres), and the angle between their tangents (radians)
+  pub fn joinGap(self &, a usize, b usize) f32 {
+    imm ea = tracks[a].at(tracks[a].length);
+    imm sb = tracks[b].at(0.);
+    (ea.pos - sb.pos).length();
+  }
+  pub fn joinBend(self &, a usize, b usize) f32 {
+    imm ea = tracks[a].at(tracks[a].length);
+    imm sb = tracks[b].at(0.);
+    libc.acosf(fclampN(ea.tangent.dot(sb.tangent), -1., 1.));
+  }
+}
+
+fn fclampN(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
+
+// One track's place on the route
+pub struct Leg {
+  pub track usize;
+  pub nodes usize;      // how many of the route's nodes it holds
+  pub start f32;        // the route's arc length where it begins
+  pub length f32;
+}
+
+pub struct NetTrain {
+  pub train Train;
+  pub route Track;
+  pub legs List[Leg];
+  pub lookahead f32;
+
+  // A train of 'cars' with its lead car at arc length 's0' of track 'first' of the network
+  pub fn make(net &TrackNetwork, first usize, cars List[CarSpec], s0 f32) NetTrain {
+    mut route = Track.empty();
+    mut legs = List[Leg].empty();
+    appendLeg(&mut route, &mut legs, net, first);
+    new NetTrain(Train.make(cars, s0), route, legs, 30.);
+  }
+
+  // The track the lead car is on and its arc length on it
+  pub fn lead(self &) (usize, f32) {
+    mut i = legs.len() - 1usize;
+    while i > 0usize and train.s < legs[i].start { i = i - 1usize; }
+    (legs[i].track, train.s - legs[i].start);
+  }
+
+  // Advance 'dt' seconds on the network
+  pub fn step(self &mut, net &TrackNetwork, dt f32) {
+    // the route ahead of the lead car: its end must be a lookahead away, if there is a track to continue onto
+    mut guard = 0;
+    while route.length - train.s < lookahead + 12. and guard < 4 {
+      imm last = legs[legs.len() - 1usize].track;
+      imm nx = net.next(last);
+      if nx >= 0i64 { appendLeg(&mut route, &mut legs, net, usize.from(nx)); } else { guard = 100; }
+      guard = guard + 1;
+    }
+    // the zones of the legs, in the route's arc length
+    mut zs = List[Zone].empty();
+    mut z = 0usize;
+    while z < net.zones.len() {
+      mut l = 0usize;
+      while l < legs.len() {
+        if legs[l].track == net.zones[z].track {
+          imm zn = net.zones[z].zone;
+          zs.push(new Zone(zn.kind, zn.s0 + legs[l].start, zn.s1 + legs[l].start, zn.speed, zn.force));
+        }
+        l = l + 1usize;
+      }
+      z = z + 1usize;
+    }
+    train.step(&route, &zs, dt);
+    // drop the first leg once the last car is well past it
+    imm tailS = train.s - *train.offsets[train.offsets.len() - 1usize] - train.cars[train.cars.len() - 1usize].length;
+    if legs.len() > 1usize and tailS > legs[1usize].start + 2. { dropFirstLeg(&mut route, &mut legs, &mut train); }
+  }
+}
+
+fn appendLeg(route &mut Track, legs &mut List[Leg], net &TrackNetwork, idx usize) {
+  imm t = net.tracks[idx];
+  imm base = if route.ts.len() > 0usize { *route.ts[route.ts.len() - 1usize] + (t.at(0.).pos - *route.ps[route.ps.len() - 1usize]).length(); } else { 0.; };
+  mut k = 0usize;
+  while k < t.ts.len() {
+    route.ts.push(base + *t.ts[k]);
+    route.ps.push(*t.ps[k]);
+    route.tans.push(*t.tans[k]);
+    route.ups.push(*t.ups[k]);
+    route.kaps.push(*t.kaps[k]);
+    route.rolls.push(*t.rolls[k]);
+    k = k + 1usize;
+  }
+  route.length = *route.ts[route.ts.len() - 1usize];
+  legs.push(new Leg(idx, t.ts.len(), base, t.length));
+}
+
+fn dropFirstLeg(route &mut Track, legs &mut List[Leg], train &mut Train) {
+  imm n = legs[0usize].nodes;
+  imm shift = *route.ts[n];
+  mut ts = List[f32].empty();
+  mut ps = List[Vec3].empty();
+  mut tans = List[Vec3].empty();
+  mut ups = List[Vec3].empty();
+  mut kaps = List[Vec3].empty();
+  mut rolls = List[f32].empty();
+  mut k = n;
+  while k < route.ts.len() {
+    ts.push(*route.ts[k] - shift);
+    ps.push(*route.ps[k]);
+    tans.push(*route.tans[k]);
+    ups.push(*route.ups[k]);
+    kaps.push(*route.kaps[k]);
+    rolls.push(*route.rolls[k]);
+    k = k + 1usize;
+  }
+  route.ts = ts; route.ps = ps; route.tans = tans; route.ups = ups; route.kaps = kaps; route.rolls = rolls;
+  route.length = *route.ts[route.ts.len() - 1usize];
+  mut nl = List[Leg].empty();
+  mut i = 1usize;
+  while i < legs.len() {
+    nl.push(new Leg(legs[i].track, legs[i].nodes, legs[i].start - shift, legs[i].length));
+    i = i + 1usize;
+  }
+  *legs = nl;
+  train.s = train.s - shift;
+}
