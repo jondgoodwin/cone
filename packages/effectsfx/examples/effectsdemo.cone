@@ -487,7 +487,47 @@ fn sceneList(ids &Ids, stackUp bool) DrawList {
   }
   list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(26., 0.2, 0.), Quat.angleAxis(0.6, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
   list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(26., 0.2, 0.), Quat.angleAxis(-0.7, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
+  // The same pit for the fluid fire
+  k = 0;
+  while k < 8 {
+    imm a = f32.from(k) * 0.785398;
+    list.add(ids.box, ids.stone, Mat4.fromTrs(new Vec3(38. + 0.9 * cos(a), 0.15, 0.9 * sin(a)), Quat.angleAxis(a, new Vec3(0., 1., 0.)),
+      new Vec3(0.35, 0.3, 0.5)));
+    k = k + 1;
+  }
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(38., 0.2, 0.), Quat.angleAxis(0.6, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(38., 0.2, 0.), Quat.angleAxis(-0.7, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
   list;
+}
+
+// The effect that goes with the fluid fire: its glow, a drift of embers and the heat over it
+fn gridFireEffect() Effect {
+  mut e = Effect.empty();
+  mut em = embers();
+  em.life = 3.;
+  em.speed = 1.6;
+  em.radius = 0.25;
+  em.gravity = new Vec3(0., 1.4, 0.);
+  mut el = ParticleLayer.make(&em);
+  el.offset = new Vec3(0., 0.5, 0.);
+  el.rate = 16.;
+  el.duration = 14.;
+  e.particles.push(el);
+  mut haze = DistortionLayer.haze(1.4, 14.5, 0.06);
+  haze.offset = new Vec3(0., 2., 0.);
+  e.distortions.push(haze);
+  mut light = LightLayer.make();
+  light.color = new Color(1., 0.55, 0.22, 1.);
+  light.fadeColor = new Color(1., 0.5, 0.2, 1.);
+  light.peak = 38.;
+  light.range = 14.;
+  light.attack = 0.4;
+  light.decay = 1000.;
+  light.duration = 14.;
+  light.flicker = 0.35;
+  light.offset = new Vec3(0., 0.9, 0.);
+  e.lights.push(light);
+  e;
 }
 
 // One effect's staging: where it plays, its axis, the camera, and the moments the shots are taken
@@ -503,21 +543,25 @@ struct Stage {
   playCount u32;
   seconds f32;              // how long a run lasts
   crates bool;              // whether the crate stack stands until the first play
+  fluid bool;               // whether the fluid fire burns in this stage
 }
 
 fn stageOf(which i32) Stage {
   if which == 0 {
     new Stage(String.from("blast"), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), new Vec3(1.2, 2.4, 10.), new Vec3(0.2, 1.9, 0.),
-      radians(50.), [0.52, 0.62, 0.9, 1.4, 2.4, 4.2], [0.5, 0., 0., 0., 0., 0.], 1u32, 4.6, true);
+      radians(50.), [0.52, 0.62, 0.9, 1.4, 2.4, 4.2], [0.5, 0., 0., 0., 0., 0.], 1u32, 4.6, true, false);
   } elif which == 1 {
     new Stage(String.from("muzzle"), new Vec3(-10.5, 1.34, 1.5), new Vec3(1., 0., 0.), new Vec3(-7.2, 1.7, 6.6), new Vec3(-9.2, 1.3, 1.5),
-      radians(40.), [0.51, 0.56, 0.63, 0.75, 0.87, 1.1], [0.5, 0.62, 0.74, 0.86, 0.98, 1.1], 6u32, 1.8, false);
+      radians(40.), [0.51, 0.56, 0.63, 0.75, 0.87, 1.1], [0.5, 0.62, 0.74, 0.86, 0.98, 1.1], 6u32, 1.8, false, false);
   } elif which == 2 {
     new Stage(String.from("sparks"), new Vec3(13.2, 0.08, 1.), new Vec3(0., 1., 0.), new Vec3(15.4, 2.1, 6.), new Vec3(14.2, 0.4, 1.),
-      radians(46.), [0.35, 0.45, 0.8, 1.2, 1.8, 2.4], [0.3, 0., 0., 0., 0., 0.], 1u32, 3.4, false);
-  } else {
+      radians(46.), [0.35, 0.45, 0.8, 1.2, 1.8, 2.4], [0.3, 0., 0., 0., 0., 0.], 1u32, 3.4, false, false);
+  } elif which == 3 {
     new Stage(String.from("fire"), new Vec3(26., 0.1, 0.), new Vec3(0., 1., 0.), new Vec3(26., 2.4, 7.5), new Vec3(26., 1.5, 0.),
-      radians(50.), [1.0, 2.0, 3.5, 5.0, 8.0, 10.], [0.3, 0., 0., 0., 0., 0.], 1u32, 10.5, false);
+      radians(50.), [1.0, 2.0, 3.5, 5.0, 8.0, 10.], [0.3, 0., 0., 0., 0., 0.], 1u32, 10.5, false, false);
+  } else {
+    new Stage(String.from("grid"), new Vec3(38., 0.1, 0.), new Vec3(0., 1., 0.), new Vec3(38., 2.4, 7.5), new Vec3(38., 1.9, 0.),
+      radians(50.), [1.0, 2.0, 3.5, 5.0, 8.0, 12.], [0.3, 0., 0., 0., 0., 0.], 1u32, 12.5, false, true);
   }
 }
 
@@ -543,6 +587,7 @@ fn named(prefix &String, effect &String, n u32) String {
 // The rig: everything a frame needs; the device last (fields end in order)
 struct Rig {
   player EffectPlayer;
+  fluid FluidSmoke;
   renderer Renderer;
   post Post;
   fx ImageFx;
@@ -570,7 +615,9 @@ fn drawFrame(rig &mut Rig, st &Stage, now f32, crates bool, timed bool, readShot
   rig.fx.renderScene(&mut rig.device, &mut encoder, &mut rig.renderer, &mut rig.post, &rig.camera, &rig.light, &list);
   if timed { encoder.writeTimestamp(&rig.queries, 1u32); }
   rig.player.simulate(&mut rig.device, &mut encoder, &rig.fx, &rig.camera, now, DT);
+  if st.fluid { rig.fluid.step(&mut rig.device, &mut encoder, DT); }
   if timed { encoder.writeTimestamp(&rig.queries, 2u32); }
+  if st.fluid { rig.fluid.render(&mut rig.device, &mut encoder, &rig.fx, &rig.post.hdr, &rig.camera); }
   rig.player.drawLayers(&mut rig.device, &mut encoder, &rig.fx, &rig.post.hdr, &rig.camera, now);
   if timed { encoder.writeTimestamp(&rig.queries, 3u32); }
   rig.player.distort(&mut rig.device, &mut encoder, &rig.fx, &rig.post.hdr, &rig.camera, now);
@@ -746,9 +793,10 @@ fn main(argc i32, argv **u8) i32 {
       elif cstrEquals(s, "muzzle") { which = 1; }
       elif cstrEquals(s, "sparks") { which = 2; }
       elif cstrEquals(s, "fire") { which = 3; }
-      elif cstrEquals(s, "all") { which = 4; }
+      elif cstrEquals(s, "grid") { which = 4; }
+      elif cstrEquals(s, "all") { which = 5; }
       else {
-        print <- "--effect is blast, muzzle, sparks, fire or all\n";
+        print <- "--effect is blast, muzzle, sparks, fire, grid or all\n";
         return 2;
       }
       a = a + 1;
@@ -758,7 +806,7 @@ fn main(argc i32, argv **u8) i32 {
       while *(s + i) != 0u8 { prefix.appendByte(*(s + i)); i = i + 1usize; }
       a = a + 1;
     } else {
-      print <- "Use --effect blast|muzzle|sparks|fire|all, --shots PREFIX, --cost\n";
+      print <- "Use --effect blast|muzzle|sparks|fire|grid|all, --shots PREFIX, --cost\n";
       return 2;
     }
     a = a + 1;
@@ -826,13 +874,20 @@ fn main(argc i32, argv **u8) i32 {
   imm smallDecal = fx.addDecalMaterial(&mut device, &renderer, smallScorch, TextureHandle.none(), TextureHandle.none());
 
   // The effects: registered once (the flipbooks baked now)
-  imm bakeStart = device.timestampPeriod;
-  mut ids4 = new Array[u32, 4] <- fill 0u32;
-  if which == 0 or which == 4 { ids4[0] = player.register(&mut device, blastEffect(box, wood, steel, bigDecal)); }
-  if which == 1 or which == 4 { ids4[1] = player.register(&mut device, muzzleEffect()); }
-  if which == 2 or which == 4 { ids4[2] = player.register(&mut device, sparksEffect(smallDecal)); }
-  if which == 3 or which == 4 { ids4[3] = player.register(&mut device, fireEffect()); }
+  mut ids5 = new Array[u32, 5] <- fill 0u32;
+  if which == 0 or which == 5 { ids5[0] = player.register(&mut device, blastEffect(box, wood, steel, bigDecal)); }
+  if which == 1 or which == 5 { ids5[1] = player.register(&mut device, muzzleEffect()); }
+  if which == 2 or which == 5 { ids5[2] = player.register(&mut device, sparksEffect(smallDecal)); }
+  if which == 3 or which == 5 { ids5[3] = player.register(&mut device, fireEffect()); }
+  if which == 4 or which == 5 { ids5[4] = player.register(&mut device, gridFireEffect()); }
   player.setGround(0.);
+  // The fluid fire's box: 3 m x 4.8 m x 3 m over the second fire pit
+  imm fluidDesc = FluidDesc.make(new Vec3(36.38, 0., -1.62), new Vec3(38., 0.4, 0.));
+  mut fluid = FluidSmoke.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, &fluidDesc);
+  if !fluid.isValid() {
+    print <- "The fluid fire could not be made\n";
+    return 1;
+  }
   print <- "Flipbooks baked: "; print <- u64.from(player.flipbooks.atlasCount()); print <- ", "; print <- player.flipbooks.atlasBytes() / 1048576u64; print <- " MiB of atlas\n";
 
   imm queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 6u32);
@@ -843,18 +898,18 @@ fn main(argc i32, argv **u8) i32 {
   camera.near = 0.1;
   camera.far = 120.;
   camera.background = new Color(0.02, 0.025, 0.05, 1.);
-  mut rig = new Rig(player, renderer, post, fx, out, shot, queries, resolved, ticks, camera, light, ids, device);
+  mut rig = new Rig(player, fluid, renderer, post, fx, out, shot, queries, resolved, ticks, camera, light, ids, device);
 
   mut base = 0.5;
   mut stage = 0i32;
-  while stage < 4 {
-    if which == 4 or which == stage {
+  while stage < 5 {
+    if which == 5 or which == stage {
       imm st = stageOf(stage);
       rig.camera.lookAt(st.eye, st.target, new Vec3(0., 1., 0.));
       if cost {
-        base = costOf(&mut rig, &st, ids4[usize.from(u32.from(stage))], base);
+        base = costOf(&mut rig, &st, ids5[usize.from(u32.from(stage))], base);
       } else {
-        base = runStage(&mut rig, &st, ids4[usize.from(u32.from(stage))], base, &prefix);
+        base = runStage(&mut rig, &st, ids5[usize.from(u32.from(stage))], base, &prefix);
       }
     }
     stage = stage + 1;
