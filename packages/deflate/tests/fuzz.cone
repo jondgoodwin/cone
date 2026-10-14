@@ -1,0 +1,150 @@
+// Damaged and made-up streams must be refused or inflated, never crash, hang
+// or leave the Inflater in a state that does not answer. Three kinds of
+// damage, over valid raw, zlib and gzip streams of 600 bytes of text:
+//   - every bit of every byte flipped, one at a time;
+//   - every strict prefix;
+//   - pseudo-random bytes (with a valid zlib or gzip header on half of them,
+//     so the DEFLATE decoder sees them too), 300 of each length class.
+// Each is run whole and split in two. The answer must be Done, or Failed with
+// a reason; never "stuck" (all input given and finished, still NeedInput).
+// For the zlib and gzip streams a flipped bit must be refused except where
+// it falls somewhere a checksum cannot see (the bit padding at the end of the
+// DEFLATE data, the gzip header's time, XFL and system bytes, the zlib FLEVEL
+// bits): those few flips are counted, and the count is pinned.
+
+mod fuzz;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+
+fn words(n usize) List[u8] {
+  imm w Array[&str, 6] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon ", "zeta "];
+  mut d = List[u8].empty();
+  mut s = 5u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    imm piece = w[usize.from((s >> 40u64) % 6u64)];
+    mut i = 0usize;
+    while i < piece.len { d.push(piece[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d;
+}
+
+// 0 Done, 1 Failed, 100 stuck, 101 a Failed that did not stay failed
+fn run(fmt Format, s &Array[u8], split usize) i32 {
+  mut inf = Inflater.make(fmt);
+  inf.setLimit(100000u64);
+  mut piece = List[u8].empty();
+  mut st Status = Status.NeedInput;
+  if split > 0usize {
+    inf.feed(&s[0usize..<split]);
+    st = Status.MoreOutput;
+    while st == Status.MoreOutput { piece.clear(); st = inf.pull(&mut piece, 700usize); }
+    if st == Status.Failed { return 1; }
+  }
+  if split < s.len { inf.feed(&s[split..<s.len]); }
+  inf.finish();
+  st = Status.MoreOutput;
+  while st == Status.MoreOutput { piece.clear(); st = inf.pull(&mut piece, 700usize); }
+  if st == Status.Done { return 0; }
+  if st == Status.Failed {
+    if inf.pull(&mut piece, 700usize) != Status.Failed { return 101; }
+    return 1;
+  }
+  100;
+}
+
+fn copyOf(a &Array[u8]) List[u8] {
+  mut out = List[u8].empty();
+  mut i = 0usize;
+  while i < a.len { out.push(a[i]); i += 1usize; }
+  out;
+}
+
+// Flip every bit; count the answers that were not a refusal
+fn flipAll(fmt Format, good &Array[u8]) usize {
+  mut notRefused = 0usize;
+  mut bad = 0usize;
+  mut t = copyOf(good);
+  mut i = 0usize;
+  while i < good.len {
+    mut b = 0u8;
+    while b < 8u8 {
+      t.set(i, good[i] ^ (1u8 << b));
+      imm a = run(fmt, t.view(), 0usize);
+      imm c = run(fmt, t.view(), t.len() / 2usize);
+      if a >= 100 or c >= 100 or a != c { bad += 1usize; }
+      if a == 0 { notRefused += 1usize; }
+      b += 1u8;
+    }
+    t.set(i, good[i]);
+    i += 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "no flipped bit gets a stuck or an inconsistent answer, split or not");
+  notRefused;
+}
+
+fn main() i32 {
+  imm text = words(600usize);
+  imm raw = rawDeflate(text.view(), 2);
+  imm zl = zlibCompress(text.view(), 2);
+  imm gz = gzipCompress(text.view(), 2);
+
+  // Bit flips. Raw has no checksum, so many flips still inflate to something.
+  imm rawOk = flipAll(Format.Raw, raw.view());
+  expect(rawOk < raw.len() * 8usize, "raw: some flipped bits are refused");
+  // zlib: only the padding bits at the end of the data and the FLEVEL bits are invisible
+  imm zlOk = flipAll(Format.Zlib, zl.view());
+  expect(zlOk <= 20usize, "zlib: a flipped bit is refused but for the padding and FLEVEL bits");
+  // gzip: the time, XFL and system bytes (6 bytes) and the padding
+  imm gzOk = flipAll(Format.Gzip, gz.view());
+  expect(gzOk <= 60usize, "gzip: a flipped bit is refused but for the header's time, XFL, system and the padding");
+
+  // Prefixes
+  mut stuck = 0usize;
+  mut f = 0;
+  while f < 3 {
+    imm fmt = if f == 0 {Format.Raw;} elif f == 1 {Format.Zlib;} else {Format.Gzip;};
+    imm s = if f == 0 {raw.view();} elif f == 1 {zl.view();} else {gz.view();};
+    mut n = 0usize;
+    while n < s.len {
+      imm a = run(fmt, &s[0usize..<n], n);
+      imm c = run(fmt, &s[0usize..<n], n / 3usize);
+      if a != 1 or c != 1 { stuck += 1usize; }
+      n += 1usize;
+    }
+    f += 1;
+  }
+  expectInt(i64.from(stuck), 0i64, "every strict prefix is refused, split or not");
+
+  // Pseudo-random bytes
+  mut seed = 99u64;
+  mut odd = 0usize;
+  mut round = 0usize;
+  while round < 300usize {
+    mut len = 1usize + (round * 7usize) % 400usize;
+    mut g = List[u8].empty();
+    mut k = 0usize;
+    while k < len {
+      seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+      g.push(u8.from((seed >> 40u64) & 255u64));
+      k += 1usize;
+    }
+    // Half get a valid header in front, so the DEFLATE decoder is reached
+    if round % 2usize == 1usize and len >= 12usize {
+      g.set(0usize, if round % 4usize == 1usize {0x78u8;} else {0x1Fu8;});
+      g.set(1usize, if round % 4usize == 1usize {0x9Cu8;} else {0x8Bu8;});
+      g.set(2usize, 8u8);
+      g.set(3usize, 0u8);
+    }
+    imm hdrFmt = if round % 4usize == 1usize {Format.Zlib;} elif round % 4usize == 3usize {Format.Gzip;} else {Format.Raw;};
+    imm a = run(hdrFmt, g.view(), 0usize);
+    imm c = run(hdrFmt, g.view(), len / 2usize);
+    if a >= 100 or c >= 100 or a != c { odd += 1usize; }
+    round += 1usize;
+  }
+  expectInt(i64.from(odd), 0i64, "random bytes: always refused or inflated, the same split or not");
+  done();
+}

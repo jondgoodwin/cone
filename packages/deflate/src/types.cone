@@ -1,0 +1,101 @@
+// ======== Formats, status, failure, the gzip header ========
+
+// The framing around the DEFLATE data (RFC 1951)
+pub enum Format {
+  // The bare DEFLATE stream, no header and no checksum
+  Raw;
+  // RFC 1950: a two-byte header, the stream, the Adler-32 of the data
+  Zlib;
+  // RFC 1952: a header of 10 bytes or more, the stream, the CRC-32 and the
+  // size of the data (modulo 2^32); several members one after another
+  Gzip;
+}
+
+// What a 'pull' found. For an Inflater and a Deflater alike.
+pub enum Status {
+  // All the input fed so far is used: feed more, or 'finish'
+  NeedInput;
+  // The output limit of this pull was reached; more is ready, pull again
+  MoreOutput;
+  // The stream is complete: every byte of it has been delivered
+  Done;
+  // An Inflater only: the input is not valid; 'error()' says why
+  Failed;
+}
+
+// What kind of thing was wrong with a compressed stream
+pub enum ErrorKind {
+  // The zlib or gzip header is wrong, or asks for something not supported
+  BadHeader;
+  // A block header or a Huffman code description is invalid
+  BadBlock;
+  // A symbol that is not in the code, or a length or distance code that
+  // does not exist
+  BadCode;
+  // A match that reaches back before the start of the output
+  BadDistance;
+  // The input ended before the stream did
+  Truncated;
+  // The Adler-32, the CRC-32 or the gzip size does not match
+  BadChecksum;
+  // More output than the limit allows
+  TooLarge;
+  // Bytes after the last gzip member that are not another member
+  TrailingData;
+}
+
+// Why a stream could not be inflated: what kind, how many bytes of input had
+// been used when it was noticed, and a sentence.
+pub struct DeflateError {
+  pub kind ErrorKind;
+  pub offset u64;
+  pub reason String;
+
+  pub fn make(kind ErrorKind, offset u64, reason &str) DeflateError {
+    new DeflateError(kind, offset, String.from(reason));
+  }
+
+  // The reason, as one line for a person
+  pub fn message(self &) String { reason.copy(); }
+
+  pub fn copy(self &) DeflateError {
+    new DeflateError(kind, offset, reason.copy());
+  }
+}
+
+// The fields of a gzip member's header (RFC 1952 section 2.3). The reader
+// keeps all of them (the header's CRC-16 is checked and then dropped); the
+// writer writes all of them but the CRC-16.
+pub struct GzipHeader {
+  // Seconds since 1970-01-01 UTC the file was last changed; 0 means none
+  pub mtime u32;
+  // The compressor's note: 2 maximum compression, 4 fastest, else 0
+  pub xfl u8;
+  // The system that made it: 3 Unix, 0 FAT, 11 NTFS, 255 unknown
+  pub os u8;
+  // FTEXT: the data is probably text
+  pub text bool;
+  // The original file name, ISO 8859-1 bytes; empty when there is none
+  pub name List[u8];
+  // A comment, ISO 8859-1 bytes; empty when there is none
+  pub comment List[u8];
+  // The extra field's bytes (subfields, RFC 1952 section 2.3.1.1); empty
+  // when there is none
+  pub extra List[u8];
+
+  // A header that says nothing: no time, no name, system unknown
+  pub fn plain() GzipHeader {
+    new GzipHeader(0u32, 0u8, 255u8, false, List[u8].empty(), List[u8].empty(), List[u8].empty());
+  }
+
+  pub fn copy(self &) GzipHeader {
+    new GzipHeader(mtime, xfl, os, text, copyBytes(name.view()), copyBytes(comment.view()), copyBytes(extra.view()));
+  }
+}
+
+fn copyBytes(a &Array[u8]) List[u8] {
+  mut out = List[u8].withCapacity(a.len);
+  mut i = 0usize;
+  while i < a.len { out.push(a[i]); i += 1usize; }
+  out;
+}
