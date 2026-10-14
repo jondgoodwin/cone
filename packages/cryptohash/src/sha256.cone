@@ -1,0 +1,192 @@
+// -------- SHA-256 (FIPS 180-4, section 6.2) --------
+
+// A SHA-256 hasher. Its fields are its whole state (eight chaining words, the
+// block being filled, how much of it is filled, and the bytes taken so far),
+// so copying the value ('copyOf') copies the hash in progress.
+pub struct Sha256 {
+  h Array[u32, 8];
+  buf Array[u8, 64];
+  used usize;
+  total u64;
+
+  // A hasher that has taken nothing
+  pub fn make() Sha256 {
+    new Sha256([0x6a09e667u32, 0xbb67ae85u32, 0x3c6ef372u32, 0xa54ff53au32,
+                0x510e527fu32, 0x9b05688cu32, 0x1f83d9abu32, 0x5be0cd19u32],
+               new Array[u8, 64] <- fill 0u8, 0usize, 0u64);
+  }
+
+  // A hasher in exactly this one's state, which goes on to give what this one
+  // will
+  pub fn copyOf(self &) Sha256 { new Sha256(h, buf, used, total); }
+
+  // Back to a hasher that has taken nothing
+  pub fn reset(self &mut) {
+    h = [0x6a09e667u32, 0xbb67ae85u32, 0x3c6ef372u32, 0xa54ff53au32,
+         0x510e527fu32, 0x9b05688cu32, 0x1f83d9abu32, 0x5be0cd19u32];
+    used = 0usize;
+    total = 0u64;
+  }
+
+  // How many bytes the hasher has taken
+  pub fn length(self &) u64 { total; }
+
+  // Takes more of the message
+  pub fn update(self &mut, data &Array[u8]) {
+    imm n = data.len;
+    mut at = 0usize;
+    total = total + u64.from(n);
+    // Finish a block begun by an earlier call
+    if used > 0usize {
+      while at < n and used < 64usize {
+        buf[used] = data[at];
+        used = used + 1usize;
+        at = at + 1usize;
+      }
+      if used == 64usize {
+        imm block = buf;
+        sha256Blocks(&mut h, &block, 0usize, 1usize);
+        used = 0usize;
+      }
+    }
+    // Whole blocks straight from the message
+    imm whole = (n - at) / 64usize;
+    if whole > 0usize {
+      sha256Blocks(&mut h, data, at, whole);
+      at = at + whole * 64usize;
+    }
+    // What is left waits for the next call
+    while at < n {
+      buf[used] = data[at];
+      used = used + 1usize;
+      at = at + 1usize;
+    }
+  }
+
+  // The hash of everything taken. The hasher itself is left as it was, so it
+  // can take more and be asked again
+  pub fn finish(self &) Array[u8, 32] {
+    mut t = self.copyOf();
+    t.pad();
+    mut out = new Array[u8, 32] <- fill 0u8;
+    mut i = 0usize;
+    while i < 8usize {
+      out[i * 4usize] = u8.from(t.h[i] >> 24u32);
+      out[i * 4usize + 1usize] = u8.from((t.h[i] >> 16u32) & 0xffu32);
+      out[i * 4usize + 2usize] = u8.from((t.h[i] >> 8u32) & 0xffu32);
+      out[i * 4usize + 3usize] = u8.from(t.h[i] & 0xffu32);
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // The padding: a 1 bit, zeros, and the message's length in bits as 64 bits
+  fn pad(self &mut) {
+    imm bits = total << 3u64;
+    buf[used] = 0x80u8;
+    used = used + 1usize;
+    if used > 56usize {
+      while used < 64usize { buf[used] = 0u8; used = used + 1usize; }
+      imm block = buf;
+      sha256Blocks(&mut h, &block, 0usize, 1usize);
+      used = 0usize;
+    }
+    while used < 56usize { buf[used] = 0u8; used = used + 1usize; }
+    mut i = 0usize;
+    while i < 8usize {
+      buf[56usize + i] = u8.from((bits >> (56u64 - 8u64 * u64.from(i))) & 0xffu64);
+      i = i + 1usize;
+    }
+    imm block = buf;
+    sha256Blocks(&mut h, &block, 0usize, 1usize);
+    used = 0usize;
+  }
+}
+
+// Takes the SHA-256 of a whole message
+pub fn sha256(data &Array[u8]) Array[u8, 32] {
+  mut s = Sha256.make();
+  s.update(data);
+  s.finish();
+}
+
+// The compression function over 'count' blocks of 64 bytes that start at
+// 'start' in 'data', folded into the chaining words 'h'. The 64 round
+// constants (the first 32 bits of the fractional parts of the cube roots of
+// the first 64 primes) are a local here: a module-level table would be a
+// global, and globals hold
+fn sha256Blocks(h &mut Array[u32, 8], data &Array[u8], start usize, count usize) {
+  imm k Array[u32, 64] = [
+    0x428a2f98u32, 0x71374491u32, 0xb5c0fbcfu32, 0xe9b5dba5u32,
+    0x3956c25bu32, 0x59f111f1u32, 0x923f82a4u32, 0xab1c5ed5u32,
+    0xd807aa98u32, 0x12835b01u32, 0x243185beu32, 0x550c7dc3u32,
+    0x72be5d74u32, 0x80deb1feu32, 0x9bdc06a7u32, 0xc19bf174u32,
+    0xe49b69c1u32, 0xefbe4786u32, 0x0fc19dc6u32, 0x240ca1ccu32,
+    0x2de92c6fu32, 0x4a7484aau32, 0x5cb0a9dcu32, 0x76f988dau32,
+    0x983e5152u32, 0xa831c66du32, 0xb00327c8u32, 0xbf597fc7u32,
+    0xc6e00bf3u32, 0xd5a79147u32, 0x06ca6351u32, 0x14292967u32,
+    0x27b70a85u32, 0x2e1b2138u32, 0x4d2c6dfcu32, 0x53380d13u32,
+    0x650a7354u32, 0x766a0abbu32, 0x81c2c92eu32, 0x92722c85u32,
+    0xa2bfe8a1u32, 0xa81a664bu32, 0xc24b8b70u32, 0xc76c51a3u32,
+    0xd192e819u32, 0xd6990624u32, 0xf40e3585u32, 0x106aa070u32,
+    0x19a4c116u32, 0x1e376c08u32, 0x2748774cu32, 0x34b0bcb5u32,
+    0x391c0cb3u32, 0x4ed8aa4au32, 0x5b9cca4fu32, 0x682e6ff3u32,
+    0x748f82eeu32, 0x78a5636fu32, 0x84c87814u32, 0x8cc70208u32,
+    0x90befffau32, 0xa4506cebu32, 0xbef9a3f7u32, 0xc67178f2u32];
+  mut w = new Array[u32, 64] <- fill 0u32;
+  mut at = start;
+  mut blk = 0usize;
+  while blk < count {
+    mut i = 0usize;
+    while i < 16usize {
+      imm p = at + i * 4usize;
+      w[i] = (u32.from(data[p]) << 24u32) | (u32.from(data[p + 1usize]) << 16u32)
+           | (u32.from(data[p + 2usize]) << 8u32) | u32.from(data[p + 3usize]);
+      i = i + 1usize;
+    }
+    while i < 64usize {
+      imm x = w[i - 15usize];
+      imm y = w[i - 2usize];
+      imm s0 = x.rotateRight(7u32) ^ x.rotateRight(18u32) ^ (x >> 3u32);
+      imm s1 = y.rotateRight(17u32) ^ y.rotateRight(19u32) ^ (y >> 10u32);
+      w[i] = w[i - 16usize] + s0 + w[i - 7usize] + s1;
+      i = i + 1usize;
+    }
+    mut a = h[0];
+    mut b = h[1];
+    mut c = h[2];
+    mut d = h[3];
+    mut e = h[4];
+    mut f = h[5];
+    mut g = h[6];
+    mut hh = h[7];
+    i = 0usize;
+    while i < 64usize {
+      imm s1 = e.rotateRight(6u32) ^ e.rotateRight(11u32) ^ e.rotateRight(25u32);
+      imm ch = (e & f) ^ ((e ^ 0xffffffffu32) & g);
+      imm t1 = hh + s1 + ch + k[i] + w[i];
+      imm s0 = a.rotateRight(2u32) ^ a.rotateRight(13u32) ^ a.rotateRight(22u32);
+      imm maj = (a & b) ^ (a & c) ^ (b & c);
+      imm t2 = s0 + maj;
+      hh = g;
+      g = f;
+      f = e;
+      e = d + t1;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2;
+      i = i + 1usize;
+    }
+    h[0] = h[0] + a;
+    h[1] = h[1] + b;
+    h[2] = h[2] + c;
+    h[3] = h[3] + d;
+    h[4] = h[4] + e;
+    h[5] = h[5] + f;
+    h[6] = h[6] + g;
+    h[7] = h[7] + hh;
+    at = at + 64usize;
+    blk = blk + 1usize;
+  }
+}

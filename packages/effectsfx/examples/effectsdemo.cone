@@ -1,0 +1,944 @@
+// effectsdemo: four effects built from the effectsfx package's data, offscreen (no window), on either GPU.
+//
+//   congo run packages/effectsfx/examples/effectsdemo.cone -- --effect blast --shots C:\src\effectsfx-shots\blast
+//   congo run packages/effectsfx/examples/effectsdemo.cone -- --effect all --shots C:\src\effectsfx-shots\fx
+//   congo run packages/effectsfx/examples/effectsdemo.cone -- --effect blast --cost
+//
+// '--effect' is one of blast, muzzle, sparks, fire or all. '--shots PREFIX' writes PREFIX-<effect>-<n>.bmp, one
+// frame at each of the moments listed below for the effect. '--cost' plays the effect over and over and prints
+// the GPU time of each stage of the frame (the scene, the particle simulation, the drawing of the particles and
+// flipbooks, the distortion, the finish), the median of 240 frames, next to the same frames with nothing playing.
+// GPU_POWER_PREFERENCE=low-power picks the Intel GPU. Nothing here reads a key or the mouse.
+//
+// THE EFFECTS, each only a value of effectsfx's Effect (lists of layers); none is code in the library:
+// - blast: a crate stack goes up. A baked fireball that billows into smoke, a shock ring and heat haze, 220 hot
+//   sparks that bounce off the floor and the crates behind, 90 floating embers, a column of lit smoke, a ring of
+//   dust, crate debris, a point light that lights the room and cools, a scorch decal on the floor, camera shake.
+// - muzzle: a gun fires six times, 0.12 s apart: a short cone of streaks, a side flash, a quick baked flash, a
+//   light that flickers the wall, a wisp of smoke.
+// - sparks: a ricochet off a steel plate and then a grinding spray, the sparks skittering across the plate and the
+//   floor (depth-buffer collision), a flickering orange light, a tiny scorch.
+// - fire: a campfire that burns for ten seconds: additive flame sprites, smoke that rises and eddies (curl noise),
+//   rising embers, heat haze over the flame, a flickering light.
+
+mod effectsdemo;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import effectsfx use *;
+
+const W = 1280u32;
+const H = 720u32;
+const DT = 0.016666668;
+
+// ---------------------------------------------------------------------------------------------------------
+// The effects, as data
+// ---------------------------------------------------------------------------------------------------------
+
+fn hotSparks(count u32, speed f32, spread f32, collide bool) ParticleClass {
+  mut c = ParticleClass.make();
+  c.shape = EMIT_POINT;
+  c.spread = spread;
+  c.speed = speed;
+  c.speedJitter = 0.55;
+  c.life = 1.7;
+  c.lifeJitter = 0.4;
+  c.drag = 0.35;
+  c.sizeStart = 0.055;
+  c.sizeEnd = 0.03;
+  c.sizeJitter = 0.4;
+  c.stretch = 0.03;
+  c.fadeOut = 0.35;
+  c.collide = collide;
+  c.restitution = 0.5;
+  c.friction = 0.25;
+  c.bounceLifeLoss = 0.06;
+  c.colors = [new Color(1., 0.9, 0.6, 9.), new Color(1., 0.55, 0.15, 6.), new Color(1., 0.28, 0.05, 3.), new Color(0.5, 0.06, 0.02, 0.)];
+  c.colorAt = [0., 0.2, 0.6, 1.];
+  c;
+}
+
+fn embers() ParticleClass {
+  mut c = ParticleClass.make();
+  c.shape = EMIT_SPHERE;
+  c.radius = 0.5;
+  c.spread = radians(70.);
+  c.speed = 3.;
+  c.speedJitter = 0.6;
+  c.life = 3.2;
+  c.lifeJitter = 0.4;
+  c.drag = 0.8;
+  c.gravity = new Vec3(0., 0.7, 0.);
+  c.turbulence = 3.5;
+  c.turbulenceScale = 0.9;
+  c.sizeStart = 0.05;
+  c.sizeEnd = 0.02;
+  c.stretch = 0.012;
+  c.fadeIn = 0.04;
+  c.fadeOut = 0.4;
+  c.colors = [new Color(1., 0.6, 0.2, 4.), new Color(1., 0.4, 0.08, 3.), new Color(0.9, 0.2, 0.04, 1.5), new Color(0.3, 0.05, 0.01, 0.)];
+  c.colorAt = [0., 0.3, 0.7, 1.];
+  c;
+}
+
+fn columnSmoke() ParticleClass {
+  mut c = ParticleClass.make();
+  c.style = PARTICLE_SMOKE;
+  c.shape = EMIT_SPHERE;
+  c.radius = 0.6;
+  c.spread = radians(35.);
+  c.speed = 3.4;
+  c.speedJitter = 0.4;
+  c.life = 5.5;
+  c.lifeJitter = 0.35;
+  c.drag = 1.3;
+  c.gravity = new Vec3(0., 0.7, 0.);
+  c.turbulence = 2.2;
+  c.turbulenceScale = 0.55;
+  c.turbulenceSpeed = 0.4;
+  c.sizeStart = 1.0;
+  c.sizeEnd = 4.2;
+  c.sizeJitter = 0.35;
+  c.fadeIn = 0.22;
+  c.fadeOut = 0.65;
+  c.colors = [new Color(0.55, 0.38, 0.24, 0.55), new Color(0.30, 0.27, 0.25, 0.6), new Color(0.2, 0.19, 0.18, 0.45), new Color(0.12, 0.12, 0.12, 0.)];
+  c.colorAt = [0., 0.12, 0.5, 1.];
+  c;
+}
+
+fn dustRing() ParticleClass {
+  mut c = ParticleClass.make();
+  c.style = PARTICLE_SMOKE;
+  c.shape = EMIT_DISC;
+  c.radius = 0.5;
+  c.spread = radians(88.);
+  c.speed = 7.;
+  c.speedJitter = 0.3;
+  c.life = 2.4;
+  c.lifeJitter = 0.3;
+  c.drag = 2.6;
+  c.gravity = new Vec3(0., 0.15, 0.);
+  c.turbulence = 1.5;
+  c.sizeStart = 0.8;
+  c.sizeEnd = 3.0;
+  c.fadeIn = 0.05;
+  c.fadeOut = 0.7;
+  c.colors = [new Color(0.55, 0.48, 0.38, 0.5), new Color(0.5, 0.44, 0.36, 0.4), new Color(0.4, 0.37, 0.33, 0.25), new Color(0.3, 0.3, 0.3, 0.)];
+  c.colorAt = [0., 0.2, 0.6, 1.];
+  c;
+}
+
+fn blastEffect(boxMesh MeshHandle, woodM MaterialHandle, steelM MaterialHandle, scorch u32) Effect {
+  mut e = Effect.empty();
+  mut fb = FlipbookDesc.make();
+  fb.seed = 21u32;
+  fb.startRadius = 0.10;
+  fb.endRadius = 0.72;
+  fb.growth = 4.5;
+  fb.rise = 0.30;
+  fb.turbulence = 0.62;
+  fb.cooling = 3.0;
+  fb.brightness = 24.;
+  fb.sootStart = 0.10;
+  mut fl = FlipbookLayer.make(&fb);
+  fl.size = 3.6;
+  fl.duration = 2.2;
+  fl.offset = new Vec3(0., 1.5, 0.);
+  e.flipbooks.push(fl);
+  // The shock ring and the heat over the fire
+  mut ring = DistortionLayer.ring(5.5, 0.75, 0.12);
+  ring.offset = new Vec3(0., 1., 0.);
+  e.distortions.push(ring);
+  mut haze = DistortionLayer.haze(1.9, 2.6, 0.07);
+  haze.offset = new Vec3(0., 1.8, 0.);
+  haze.delay = 0.1;
+  e.distortions.push(haze);
+  // Sparks and embers
+  mut sp = ParticleLayer.make(&hotSparks(220u32, 10., radians(80.), true));
+  sp.offset = new Vec3(0., 0.8, 0.);
+  sp.delay = 0.02;
+  sp.burst = 220u32;
+  e.particles.push(sp);
+  mut sp2 = ParticleLayer.make(&hotSparks(80u32, 5., radians(85.), true));
+  sp2.offset = new Vec3(0., 0.6, 0.);
+  sp2.delay = 0.05;
+  sp2.burst = 80u32;
+  e.particles.push(sp2);
+  mut em = ParticleLayer.make(&embers());
+  em.offset = new Vec3(0., 1., 0.);
+  em.delay = 0.05;
+  em.burst = 90u32;
+  e.particles.push(em);
+  mut smoke = ParticleLayer.make(&columnSmoke());
+  smoke.offset = new Vec3(0., 0.9, 0.);
+  smoke.delay = 0.25;
+  smoke.burst = 30u32;
+  smoke.rate = 60.;
+  smoke.duration = 0.9;
+  e.particles.push(smoke);
+  mut dust = ParticleLayer.make(&dustRing());
+  dust.offset = new Vec3(0., 0.15, 0.);
+  dust.delay = 0.03;
+  dust.burst = 60u32;
+  e.particles.push(dust);
+  // Debris: crate planks and metal shards
+  mut planks = new DebrisLayer(boxMesh, woodM, new Vec3(0., 0.9, 0.));
+  planks.count = 22u32;
+  planks.speed = 8.;
+  planks.spread = 1.0;
+  planks.size = 0.26;
+  planks.delay = 0.02;
+  e.debris.push(planks);
+  mut shards = new DebrisLayer(boxMesh, steelM, new Vec3(0., 0.9, 0.));
+  shards.count = 36u32;
+  shards.speed = 13.;
+  shards.spread = 1.15;
+  shards.size = 0.08;
+  shards.spin = 16.;
+  shards.delay = 0.02;
+  e.debris.push(shards);
+  // Light: the flash, then the fire's glow
+  mut flash = LightLayer.make();
+  flash.peak = 1000.;
+  flash.range = 26.;
+  flash.attack = 0.012;
+  flash.decay = 0.35;
+  flash.duration = 2.2;
+  flash.offset = new Vec3(0., 1.6, 0.);
+  e.lights.push(flash);
+  mut glow = LightLayer.make();
+  glow.color = new Color(1., 0.5, 0.2, 1.);
+  glow.fadeColor = new Color(0.8, 0.15, 0.04, 1.);
+  glow.peak = 90.;
+  glow.range = 18.;
+  glow.attack = 0.15;
+  glow.decay = 1.8;
+  glow.duration = 5.;
+  glow.flicker = 0.25;
+  glow.offset = new Vec3(0., 0.9, 0.);
+  e.lights.push(glow);
+  mut mark = DecalLayer.make(scorch);
+  mark.size = 5.;
+  mark.depth = 2.;
+  mark.tint = new Color(1., 1., 1., 1.);
+  mark.delay = 0.05;
+  mark.hold = 40.;
+  e.decals.push(mark);
+  e.shakes.push(new ShakeLayer(0.85, 40., 0.02));
+  e;
+}
+
+fn muzzleEffect() Effect {
+  mut e = Effect.empty();
+  mut flash = hotSparks(40u32, 30., radians(7.), false);
+  flash.life = 0.075;
+  flash.lifeJitter = 0.2;
+  flash.drag = 0.;
+  flash.gravity = new Vec3(0., 0., 0.);
+  flash.sizeStart = 0.2;
+  flash.sizeEnd = 0.07;
+  flash.stretch = 0.025;
+  flash.fadeOut = 0.5;
+  flash.colors = [new Color(1., 0.95, 0.75, 4.5), new Color(1., 0.7, 0.3, 2.8), new Color(1., 0.4, 0.1, 1.), new Color(0.6, 0.1, 0.02, 0.)];
+  mut fl = ParticleLayer.make(&flash);
+  fl.burst = 16u32;
+  e.particles.push(fl);
+  mut side = hotSparks(20u32, 7., radians(88.), false);
+  side.life = 0.05;
+  side.lifeJitter = 0.2;
+  side.drag = 0.;
+  side.gravity = new Vec3(0., 0., 0.);
+  side.sizeStart = 0.16;
+  side.sizeEnd = 0.05;
+  side.stretch = 0.03;
+  side.colors = [new Color(1., 0.85, 0.5, 3.), new Color(1., 0.55, 0.2, 2.), new Color(1., 0.3, 0.1, 0.8), new Color(0.5, 0.1, 0.02, 0.)];
+  mut sl = ParticleLayer.make(&side);
+  sl.burst = 10u32;
+  e.particles.push(sl);
+  mut sparks = hotSparks(30u32, 12., radians(22.), true);
+  sparks.life = 0.5;
+  sparks.sizeStart = 0.035;
+  mut ss = ParticleLayer.make(&sparks);
+  ss.burst = 18u32;
+  e.particles.push(ss);
+  mut wisp = columnSmoke();
+  wisp.radius = 0.04;
+  wisp.spread = radians(22.);
+  wisp.speed = 2.4;
+  wisp.drag = 2.;
+  wisp.gravity = new Vec3(0., 0.1, 0.);
+  wisp.turbulence = 1.2;
+  wisp.life = 1.8;
+  wisp.sizeStart = 0.14;
+  wisp.sizeEnd = 0.8;
+  wisp.colors = [new Color(0.6, 0.55, 0.5, 0.3), new Color(0.5, 0.48, 0.46, 0.22), new Color(0.4, 0.4, 0.4, 0.1), new Color(0.3, 0.3, 0.3, 0.)];
+  mut wl = ParticleLayer.make(&wisp);
+  wl.delay = 0.03;
+  wl.burst = 12u32;
+  e.particles.push(wl);
+  mut fb = FlipbookDesc.make();
+  fb.seed = 5u32;
+  fb.startRadius = 0.22;
+  fb.endRadius = 0.5;
+  fb.growth = 9.;
+  fb.rise = 0.02;
+  fb.turbulence = 0.25;
+  fb.cooling = 7.;
+  fb.brightness = 9.;
+  fb.sootStart = 0.45;
+  fb.smokeOpacity = 0.4;
+  mut fbl = FlipbookLayer.make(&fb);
+  fbl.size = 0.75;
+  fbl.duration = 0.13;
+  fbl.offset = new Vec3(0., 0.35, 0.);
+  e.flipbooks.push(fbl);
+  mut light = LightLayer.make();
+  light.peak = 260.;
+  light.range = 10.;
+  light.attack = 0.002;
+  light.decay = 0.035;
+  light.duration = 0.2;
+  light.flicker = 0.3;
+  light.offset = new Vec3(0., 0.5, 0.);
+  e.lights.push(light);
+  e.shakes.push(new ShakeLayer(0.12, 6., 0.));
+  e;
+}
+
+fn sparksEffect(scorch u32) Effect {
+  mut e = Effect.empty();
+  // The ricochet: a burst thrown at a grazing angle off the plate
+  mut ric = hotSparks(160u32, 7., radians(32.), true);
+  ric.life = 1.6;
+  mut rl = ParticleLayer.make(&ric);
+  rl.offset = new Vec3(0., 0.12, 0.);
+  rl.axis = new Vec3(0.55, 0.7, 0.2).normalize();
+  rl.burst = 160u32;
+  e.particles.push(rl);
+  // The grinding spray, 1.4 s of it
+  mut grind = hotSparks(0u32, 4.2, radians(30.), true);
+  grind.life = 1.1;
+  grind.sizeStart = 0.04;
+  grind.stretch = 0.025;
+  mut gl = ParticleLayer.make(&grind);
+  gl.offset = new Vec3(0., 0.15, 0.);
+  gl.axis = new Vec3(0.8, 0.55, 0.).normalize();
+  gl.delay = 0.35;
+  gl.rate = 260.;
+  gl.duration = 1.4;
+  e.particles.push(gl);
+  mut dust = columnSmoke();
+  dust.radius = 0.1;
+  dust.speed = 1.2;
+  dust.life = 1.8;
+  dust.sizeStart = 0.12;
+  dust.sizeEnd = 0.7;
+  dust.gravity = new Vec3(0., 0.4, 0.);
+  dust.colors = [new Color(0.6, 0.55, 0.5, 0.25), new Color(0.5, 0.47, 0.45, 0.2), new Color(0.4, 0.4, 0.4, 0.1), new Color(0.3, 0.3, 0.3, 0.)];
+  mut dl = ParticleLayer.make(&dust);
+  dl.offset = new Vec3(0., 0.1, 0.);
+  dl.burst = 8u32;
+  dl.rate = 12.;
+  dl.delay = 0.1;
+  dl.duration = 1.5;
+  e.particles.push(dl);
+  mut light = LightLayer.make();
+  light.color = new Color(1., 0.62, 0.25, 1.);
+  light.fadeColor = new Color(1., 0.5, 0.15, 1.);
+  light.peak = 45.;
+  light.range = 9.;
+  light.attack = 0.01;
+  light.decay = 1.4;
+  light.duration = 1.9;
+  light.flicker = 0.4;
+  light.offset = new Vec3(0., 0.5, 0.);
+  e.lights.push(light);
+  mut mark = DecalLayer.make(scorch);
+  mark.size = 0.7;
+  mark.depth = 0.5;
+  mark.delay = 0.02;
+  mark.hold = 30.;
+  e.decals.push(mark);
+  e;
+}
+
+fn fireEffect() Effect {
+  mut e = Effect.empty();
+  mut flame = ParticleClass.make();
+  flame.shape = EMIT_DISC;
+  flame.radius = 0.28;
+  flame.spread = radians(10.);
+  flame.speed = 2.2;
+  flame.speedJitter = 0.4;
+  flame.life = 0.8;
+  flame.lifeJitter = 0.35;
+  flame.drag = 0.8;
+  flame.gravity = new Vec3(0., 6., 0.);
+  flame.turbulence = 4.;
+  flame.turbulenceScale = 1.4;
+  flame.turbulenceSpeed = 1.2;
+  flame.sizeStart = 0.75;
+  flame.sizeEnd = 0.2;
+  flame.sizeJitter = 0.35;
+  flame.fadeIn = 0.08;
+  flame.fadeOut = 0.5;
+  flame.colors = [new Color(1., 0.8, 0.4, 0.4), new Color(1., 0.45, 0.1, 0.4), new Color(0.9, 0.2, 0.04, 0.22), new Color(0.3, 0.04, 0.01, 0.)];
+  flame.colorAt = [0., 0.25, 0.6, 1.];
+  mut fl = ParticleLayer.make(&flame);
+  fl.offset = new Vec3(0., 0.25, 0.);
+  fl.rate = 330.;
+  fl.duration = 10.;
+  e.particles.push(fl);
+  mut smoke = columnSmoke();
+  smoke.radius = 0.2;
+  smoke.spread = radians(14.);
+  smoke.speed = 1.4;
+  smoke.gravity = new Vec3(0., 1.6, 0.);
+  smoke.drag = 0.7;
+  smoke.turbulence = 3.;
+  smoke.turbulenceScale = 0.5;
+  smoke.life = 6.;
+  smoke.sizeStart = 0.8;
+  smoke.sizeEnd = 3.2;
+  smoke.fadeIn = 0.3;
+  smoke.colors = [new Color(0.3, 0.27, 0.25, 0.0), new Color(0.28, 0.26, 0.24, 0.3), new Color(0.2, 0.19, 0.18, 0.26), new Color(0.12, 0.12, 0.12, 0.)];
+  smoke.colorAt = [0., 0.15, 0.5, 1.];
+  mut sl = ParticleLayer.make(&smoke);
+  sl.offset = new Vec3(0., 1.3, 0.);
+  sl.rate = 55.;
+  sl.duration = 10.;
+  e.particles.push(sl);
+  mut em = embers();
+  em.life = 2.6;
+  em.speed = 1.8;
+  em.radius = 0.25;
+  em.gravity = new Vec3(0., 1.6, 0.);
+  mut el = ParticleLayer.make(&em);
+  el.offset = new Vec3(0., 0.4, 0.);
+  el.rate = 14.;
+  el.duration = 10.;
+  e.particles.push(el);
+  mut haze = DistortionLayer.haze(1.3, 10.5, 0.07);
+  haze.offset = new Vec3(0., 1.5, 0.);
+  e.distortions.push(haze);
+  mut light = LightLayer.make();
+  light.color = new Color(1., 0.55, 0.22, 1.);
+  light.fadeColor = new Color(1., 0.5, 0.2, 1.);
+  light.peak = 38.;
+  light.range = 14.;
+  light.attack = 0.4;
+  light.decay = 1000.;
+  light.duration = 10.;
+  light.flicker = 0.35;
+  light.offset = new Vec3(0., 0.9, 0.);
+  e.lights.push(light);
+  e;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The scene: a plain test yard (floor, wall, crates, a steel plate, a gun, a fire pit)
+// ---------------------------------------------------------------------------------------------------------
+
+struct Ids {
+  plane MeshHandle;
+  box MeshHandle;
+  concrete MaterialHandle;
+  wood MaterialHandle;
+  steel MaterialHandle;
+  dark MaterialHandle;
+  stone MaterialHandle;
+}
+
+fn sceneList(ids &Ids, stackUp bool) DrawList {
+  mut list = DrawList.empty();
+  list.add(ids.plane, ids.concrete, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(60., 1., 60.)));
+  list.add(ids.box, ids.concrete, Mat4.fromTrs(new Vec3(0., 3., -10.), Quat.identity(), new Vec3(60., 6., 0.6)));
+  // The blast stage: a stack of crates
+  if stackUp {
+    list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(-0.6, 0.45, 0.), Quat.identity(), new Vec3(1.0, 0.9, 1.0)));
+    list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(0.55, 0.45, 0.2), Quat.angleAxis(0.3, new Vec3(0., 1., 0.)), new Vec3(1.0, 0.9, 1.0)));
+    list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(0., 1.35, 0.1), Quat.angleAxis(-0.2, new Vec3(0., 1., 0.)), new Vec3(1.0, 0.9, 1.0)));
+    list.add(ids.box, ids.steel, Mat4.fromTrs(new Vec3(1.8, 0.5, -0.8), Quat.identity(), new Vec3(0.7, 1.0, 0.7)));
+  }
+  // Things to bounce sparks off, and stand behind the blast
+  list.add(ids.box, ids.stone, Mat4.fromTrs(new Vec3(-4., 0.5, -3.5), Quat.identity(), new Vec3(1.6, 1.0, 1.6)));
+  list.add(ids.box, ids.stone, Mat4.fromTrs(new Vec3(4.2, 0.35, -3.), Quat.identity(), new Vec3(2.2, 0.7, 1.2)));
+  // The muzzle stage: a plain gun on a block, a steel plate on the wall
+  list.add(ids.box, ids.dark, Mat4.fromTrs(new Vec3(-12., 0.6, 1.5), Quat.identity(), new Vec3(0.5, 1.2, 0.5)));
+  list.add(ids.box, ids.dark, Mat4.fromTrs(new Vec3(-11.7, 1.3, 1.5), Quat.identity(), new Vec3(0.9, 0.22, 0.14)));
+  list.add(ids.box, ids.dark, Mat4.fromTrs(new Vec3(-11., 1.33, 1.5), Quat.identity(), new Vec3(0.9, 0.08, 0.08)));
+  list.add(ids.box, ids.steel, Mat4.fromTrs(new Vec3(-5.5, 1.5, 1.5), Quat.identity(), new Vec3(0.12, 3., 3.)));
+  // The sparks stage: a steel plate on the floor with a crate beside it
+  list.add(ids.box, ids.steel, Mat4.fromTrs(new Vec3(14., 0.04, 1.), Quat.identity(), new Vec3(4., 0.08, 4.)));
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(16.4, 0.4, 0.6), Quat.angleAxis(0.4, new Vec3(0., 1., 0.)), new Vec3(0.8, 0.8, 0.8)));
+  // The fire pit: a ring of stones and two logs
+  mut k = 0;
+  while k < 8 {
+    imm a = f32.from(k) * 0.785398;
+    list.add(ids.box, ids.stone, Mat4.fromTrs(new Vec3(26. + 0.9 * cos(a), 0.15, 0.9 * sin(a)), Quat.angleAxis(a, new Vec3(0., 1., 0.)),
+      new Vec3(0.35, 0.3, 0.5)));
+    k = k + 1;
+  }
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(26., 0.2, 0.), Quat.angleAxis(0.6, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(26., 0.2, 0.), Quat.angleAxis(-0.7, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
+  // The same pit for the fluid fire
+  k = 0;
+  while k < 8 {
+    imm a = f32.from(k) * 0.785398;
+    list.add(ids.box, ids.stone, Mat4.fromTrs(new Vec3(38. + 0.9 * cos(a), 0.15, 0.9 * sin(a)), Quat.angleAxis(a, new Vec3(0., 1., 0.)),
+      new Vec3(0.35, 0.3, 0.5)));
+    k = k + 1;
+  }
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(38., 0.2, 0.), Quat.angleAxis(0.6, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
+  list.add(ids.box, ids.wood, Mat4.fromTrs(new Vec3(38., 0.2, 0.), Quat.angleAxis(-0.7, new Vec3(0., 1., 0.)), new Vec3(1.2, 0.18, 0.2)));
+  list;
+}
+
+// The effect that goes with the fluid fire: its glow, a drift of embers and the heat over it
+fn gridFireEffect() Effect {
+  mut e = Effect.empty();
+  mut em = embers();
+  em.life = 3.;
+  em.speed = 1.6;
+  em.radius = 0.25;
+  em.gravity = new Vec3(0., 1.4, 0.);
+  mut el = ParticleLayer.make(&em);
+  el.offset = new Vec3(0., 0.5, 0.);
+  el.rate = 16.;
+  el.duration = 14.;
+  e.particles.push(el);
+  mut haze = DistortionLayer.haze(1.4, 14.5, 0.06);
+  haze.offset = new Vec3(0., 2., 0.);
+  e.distortions.push(haze);
+  mut light = LightLayer.make();
+  light.color = new Color(1., 0.55, 0.22, 1.);
+  light.fadeColor = new Color(1., 0.5, 0.2, 1.);
+  light.peak = 38.;
+  light.range = 14.;
+  light.attack = 0.4;
+  light.decay = 1000.;
+  light.duration = 14.;
+  light.flicker = 0.35;
+  light.offset = new Vec3(0., 0.9, 0.);
+  e.lights.push(light);
+  e;
+}
+
+// One effect's staging: where it plays, its axis, the camera, and the moments the shots are taken
+struct Stage {
+  name String;
+  origin Vec3;
+  axis Vec3;
+  eye Vec3;
+  target Vec3;
+  fov f32;
+  shots Array[f32, 6];      // the moments (seconds into the run) a shot is taken
+  plays Array[f32, 6];      // the times the effect is played (the muzzle: six rounds)
+  playCount u32;
+  seconds f32;              // how long a run lasts
+  crates bool;              // whether the crate stack stands until the first play
+  fluid bool;               // whether the fluid fire burns in this stage
+}
+
+fn stageOf(which i32) Stage {
+  if which == 0 {
+    new Stage(String.from("blast"), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), new Vec3(1.2, 2.4, 10.), new Vec3(0.2, 1.9, 0.),
+      radians(50.), [0.52, 0.62, 0.9, 1.4, 2.4, 4.2], [0.5, 0., 0., 0., 0., 0.], 1u32, 4.6, true, false);
+  } elif which == 1 {
+    new Stage(String.from("muzzle"), new Vec3(-10.5, 1.34, 1.5), new Vec3(1., 0., 0.), new Vec3(-7.2, 1.7, 6.6), new Vec3(-9.2, 1.3, 1.5),
+      radians(40.), [0.51, 0.56, 0.63, 0.75, 0.87, 1.1], [0.5, 0.62, 0.74, 0.86, 0.98, 1.1], 6u32, 1.8, false, false);
+  } elif which == 2 {
+    new Stage(String.from("sparks"), new Vec3(13.2, 0.08, 1.), new Vec3(0., 1., 0.), new Vec3(15.4, 2.1, 6.), new Vec3(14.2, 0.4, 1.),
+      radians(46.), [0.35, 0.45, 0.8, 1.2, 1.8, 2.4], [0.3, 0., 0., 0., 0., 0.], 1u32, 3.4, false, false);
+  } elif which == 3 {
+    new Stage(String.from("fire"), new Vec3(26., 0.1, 0.), new Vec3(0., 1., 0.), new Vec3(26., 2.4, 7.5), new Vec3(26., 1.5, 0.),
+      radians(50.), [1.0, 2.0, 3.5, 5.0, 8.0, 10.], [0.3, 0., 0., 0., 0., 0.], 1u32, 10.5, false, false);
+  } else {
+    new Stage(String.from("grid"), new Vec3(38., 0.1, 0.), new Vec3(0., 1., 0.), new Vec3(38., 2.4, 7.5), new Vec3(38., 1.9, 0.),
+      radians(50.), [1.0, 2.0, 3.5, 5.0, 8.0, 12.], [0.3, 0., 0., 0., 0., 0.], 1u32, 12.5, false, true);
+  }
+}
+
+// The effect without its lights, when '--nolights' asks (to measure what they cost)
+fn strip(mut e Effect, noLights bool) Effect {
+  if noLights { e.lights.clear(); }
+  e;
+}
+
+fn cstrEquals(a *u8, b &Array[u8]) bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn named(prefix &String, effect &String, n u32) String {
+  mut s = prefix.copy();
+  s <- "-";
+  s <- effect.view();
+  s <- "-";
+  s <- u64.from(n);
+  s <- ".bmp";
+  s;
+}
+
+// The rig: everything a frame needs; the device last (fields end in order)
+struct Rig {
+  player EffectPlayer;
+  fluid FluidSmoke;
+  renderer Renderer;
+  post Post;
+  fx ImageFx;
+  out Texture;
+  shot Buffer;
+  queries QuerySet;
+  resolved Buffer;
+  ticks Buffer;
+  camera Camera;
+  light Light;
+  ids Ids;
+  device Device;
+}
+
+// Draw one frame at clock 'now'. When 'timed', the milliseconds of the stages go to 'ms': the scene, the
+// particle simulation, the particles and flipbooks drawn, the distortion, the finish.
+fn drawFrame(rig &mut Rig, st &Stage, now f32, crates bool, timed bool, readShot bool, ms &mut Array[f64, 5]) {
+  mut list = sceneList(&rig.ids, crates);
+  rig.renderer.time = now;
+  rig.camera.fov = st.fov;
+  rig.player.beginFrame(&mut rig.renderer, &mut rig.fx, &mut list, &rig.camera, now, DT);
+  rig.player.shake.applyTo(&mut rig.camera, st.eye, st.target, new Vec3(0., 1., 0.));
+  mut encoder = rig.device.createCommandEncoder();
+  if timed { encoder.writeTimestamp(&rig.queries, 0u32); }
+  rig.fx.renderScene(&mut rig.device, &mut encoder, &mut rig.renderer, &mut rig.post, &rig.camera, &rig.light, &list);
+  if timed { encoder.writeTimestamp(&rig.queries, 1u32); }
+  rig.player.simulate(&mut rig.device, &mut encoder, &rig.fx, &rig.camera, now, DT);
+  if st.fluid { rig.fluid.step(&mut rig.device, &mut encoder, DT); }
+  if timed { encoder.writeTimestamp(&rig.queries, 2u32); }
+  if st.fluid { rig.fluid.render(&mut rig.device, &mut encoder, &rig.fx, &rig.post.hdr, &rig.camera); }
+  rig.player.drawLayers(&mut rig.device, &mut encoder, &rig.fx, &rig.post.hdr, &rig.camera, now);
+  if timed { encoder.writeTimestamp(&rig.queries, 3u32); }
+  rig.player.distort(&mut rig.device, &mut encoder, &rig.fx, &rig.post.hdr, &rig.camera, now);
+  if timed { encoder.writeTimestamp(&rig.queries, 4u32); }
+  rig.fx.renderFinish(&mut rig.device, &mut encoder, &mut rig.renderer, &mut rig.post, &list, &rig.out);
+  if timed {
+    encoder.writeTimestamp(&rig.queries, 5u32);
+    encoder.resolveQuerySet(&rig.queries, 0u32, 6u32, &rig.resolved, 0u64);
+    encoder.copyBufferToBuffer(&rig.resolved, 0u64, &rig.ticks, 0u64, 48u64);
+  }
+  if readShot { encoder.copyTextureToBuffer(&rig.out, &rig.shot); }
+  rig.device.queue.submit(encoder.finish());
+  rig.device.endFrame();
+  rig.device.waitIdle();
+  if timed {
+    imm t = rig.ticks.mappedRange() as *u64;
+    mut s = 0usize;
+    while s < 5usize {
+      ms[s] = f64.from(*(t + s + 1usize) - *(t + s)) * f64.from(rig.device.timestampPeriod) * 1.0e-6d;
+      s = s + 1usize;
+    }
+  }
+}
+
+// The median of 'v' (sorted by the way)
+fn medianOf(v &mut List[f64]) f64 {
+  if v.len() == 0usize { return 0d; }
+  mut i = 1usize;
+  while i < v.len() {
+    imm x = *v[i];
+    mut j = i;
+    while j > 0usize and *v[j - 1usize] > x {
+      v.set(j, *v[j - 1usize]);
+      j = j - 1usize;
+    }
+    v.set(j, x);
+    i = i + 1usize;
+  }
+  *v[v.len() / 2usize];
+}
+
+// Play a stage once from clock 'base', writing its shots; answers the clock it ended at
+fn runStage(rig &mut Rig, st &Stage, id u32, base f32, prefix &String) f32 {
+  imm frames = u32.from(st.seconds * 60.);
+  mut nextPlay = 0u32;
+  mut ms Array[f64, 5] = [0d, 0d, 0d, 0d, 0d];
+  rig.player.shake.trauma = 0.;
+  mut f = 0u32;
+  mut shotsWritten = 0u32;
+  while f < frames {
+    imm t = f32.from(f) * DT;
+    imm now = base + t;
+    if nextPlay < st.playCount and t >= st.plays[usize.from(nextPlay)] - 0.0001 {
+      rig.player.play(id, st.origin, st.axis, new Vec3(0., 0., 0.), 1000u32 + nextPlay * 17u32, now);
+      nextPlay = nextPlay + 1u32;
+    }
+    // A shot is taken on the frame nearest each moment
+    mut k = 0usize;
+    mut wantShot = false;
+    while k < 6usize {
+      if prefix.len() > 0usize and f == u32.from(st.shots[k] * 60. + 0.5) { wantShot = true; }
+      k = k + 1usize;
+    }
+    imm crates = st.crates and nextPlay == 0u32;
+    drawFrame(rig, st, now, crates, false, wantShot, &mut ms);
+    if wantShot {
+      imm image = Image.fromTexels(rig.shot.mappedRange(), i32.from(W), i32.from(H), false);
+      imm name = named(prefix, &st.name, shotsWritten);
+      imm written = image.save(&filepath.Path.from(name.view()));
+      print <- "Screenshot: "; printStr(name.view()); print <- " (t = "; print <- t; print <- " s)";
+      if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+      shotsWritten = shotsWritten + 1u32;
+    }
+    f = f + 1u32;
+  }
+  base + f32.from(frames) * DT + 0.5;
+}
+
+// The cost: the effect played over and over for 'rounds' windows, and the same number of frames with nothing playing
+fn costOf(rig &mut Rig, st &Stage, id u32, base f32) f32 {
+  imm window = u32.from(st.seconds * 60.);
+  imm rounds = 2u32;
+  mut stageMs Array[List[f64], 5] = [List[f64].empty(), List[f64].empty(), List[f64].empty(), List[f64].empty(), List[f64].empty()];
+  mut baseMs Array[List[f64], 5] = [List[f64].empty(), List[f64].empty(), List[f64].empty(), List[f64].empty(), List[f64].empty()];
+  mut totals = List[f64].empty();
+  mut baseTotals = List[f64].empty();
+  mut ms Array[f64, 5] = [0d, 0d, 0d, 0d, 0d];
+  mut now = base;
+  rig.player.shake.trauma = 0.;
+  // Warm up the clocks
+  mut f = 0u32;
+  while f < 60u32 {
+    drawFrame(rig, st, now, false, false, false, &mut ms);
+    now = now + DT;
+    f = f + 1u32;
+  }
+  // With nothing playing
+  f = 0u32;
+  while f < 240u32 {
+    drawFrame(rig, st, now, false, true, false, &mut ms);
+    mut sum = 0d;
+    mut s = 0usize;
+    while s < 5usize { baseMs[s].push(ms[s]); sum = sum + ms[s]; s = s + 1usize; }
+    baseTotals.push(sum);
+    now = now + DT;
+    f = f + 1u32;
+  }
+  // With the effect playing: every frame of its first 3 seconds, in each round
+  mut r = 0u32;
+  while r < rounds {
+    f = 0u32;
+    while f < window {
+      if f == 0u32 {
+        mut p = 0u32;
+        while p < st.playCount {
+          p = p + 1u32;
+        }
+        rig.player.play(id, st.origin, st.axis, new Vec3(0., 0., 0.), 3000u32 + r, now);
+      }
+      if st.playCount > 1u32 {
+        mut p = 1u32;
+        while p < st.playCount {
+          if f == u32.from(st.plays[usize.from(p)] * 60. - st.plays[0usize] * 60.) {
+            rig.player.play(id, st.origin, st.axis, new Vec3(0., 0., 0.), 3000u32 + r + p * 13u32, now);
+          }
+          p = p + 1u32;
+        }
+      }
+      drawFrame(rig, st, now, false, true, false, &mut ms);
+      if f >= 6u32 and f < 180u32 {
+        mut sum = 0d;
+        mut s = 0usize;
+        while s < 5usize { stageMs[s].push(ms[s]); sum = sum + ms[s]; s = s + 1usize; }
+        totals.push(sum);
+      }
+      now = now + DT;
+      f = f + 1u32;
+    }
+    r = r + 1u32;
+  }
+  print <- "Cost of "; printStr(st.name.view()); print <- ", GPU ms, median of "; print <- totals.len(); print <- " frames while it plays (nothing playing in brackets):\n";
+  mut s = 0usize;
+  mut names Array[&str, 5] = ["scene", "particle simulation", "particles and flipbooks drawn", "distortion", "finish (fog, tone map, FXAA)"];
+  while s < 5usize {
+    imm eff = medianOf(&mut stageMs[s]);
+    imm idle = medianOf(&mut baseMs[s]);
+    print <- "  "; printStr(names[s]); print <- ": "; print <- eff; print <- "  ("; print <- idle; print <- ")\n";
+    s = s + 1usize;
+  }
+  imm total = medianOf(&mut totals);
+  imm idleTotal = medianOf(&mut baseTotals);
+  print <- "  frame total: "; print <- total; print <- "  ("; print <- idleTotal; print <- ")  adds "; print <- total - idleTotal; print <- " ms\n";
+  print <- "  lights at once (peak): "; print <- u64.from(rig.player.lights.peak);
+  print <- ", particles ordered last frame: "; print <- u64.from(rig.player.particles.spawned);
+  print <- ", flipbook billboards drawn: "; print <- u64.from(rig.player.flipbooks.drawn);
+  print <- ", distortion sprites: "; print <- u64.from(rig.player.distortion.drawn);
+  print <- ", debris live: "; print <- u64.from(rig.player.debris.live); print <- "\n";
+  now + 6.;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut which = 0i32;
+  mut prefix = String.empty();
+  mut cost = false;
+  mut fluidSteps = 56u32;
+  mut noLights = false;
+  mut half = false;
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--cost") {
+      cost = true;
+    } elif cstrEquals(arg, "--effect") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      if cstrEquals(s, "blast") { which = 0; }
+      elif cstrEquals(s, "muzzle") { which = 1; }
+      elif cstrEquals(s, "sparks") { which = 2; }
+      elif cstrEquals(s, "fire") { which = 3; }
+      elif cstrEquals(s, "grid") { which = 4; }
+      elif cstrEquals(s, "all") { which = 5; }
+      else {
+        print <- "--effect is blast, muzzle, sparks, fire, grid or all\n";
+        return 2;
+      }
+      a = a + 1;
+    } elif cstrEquals(arg, "--shots") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 { prefix.appendByte(*(s + i)); i = i + 1usize; }
+      a = a + 1;
+    } elif cstrEquals(arg, "--nolights") {
+      noLights = true;
+    } elif cstrEquals(arg, "--half") {
+      half = true;
+    } elif cstrEquals(arg, "--steps") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut n = 0u32;
+      mut i = 0usize;
+      while *(s + i) != 0u8 { n = n * 10u32 + u32.from(*(s + i) - 48u8); i = i + 1usize; }
+      fluidSteps = n;
+      a = a + 1;
+    } else {
+      print <- "Use --effect blast|muzzle|sparks|fire|grid|all, --shots PREFIX, --cost, --steps N (the fluid volume's ray-march steps)\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+
+  mut instance = Instance.create("effectsdemo");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(powerEnv), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut fx = ImageFx.create(&mut device, &renderer, &mut post);
+  mut player = EffectPlayer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, 65536u32);
+  if !renderer.isValid() or !post.isValid() or !fx.isValid() or !player.isValid() {
+    print <- "The renderer, its passes or the effects could not be made\n";
+    return 1;
+  }
+  player.halfResolution = half;
+  post.bloom = 0.12;
+  post.exposure = 1.0;
+  mut settings = FxSettings.off();
+  settings.aa = AA_FXAA;
+  fx.configure(&settings);
+
+  mut sky = Sky.dusk(radians(9.), radians(200.));
+  sky.zenith = new Color(0.06, 0.09, 0.2, 1.);
+  sky.horizon = new Color(0.35, 0.26, 0.26, 1.);
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(1.0, 0.72, 0.5, 1.), new Color(0.045, 0.055, 0.085, 1.));
+  renderer.setShadows(&mut device, &ShadowSettings.medium());
+
+  // The test yard's materials and meshes
+  imm planeMesh = Mesh.plane(1, 24.);
+  imm plane = renderer.addMesh(&mut device, &planeMesh);
+  imm boxMesh = Mesh.cube(0.5);
+  imm box = renderer.addMesh(&mut device, &boxMesh);
+  imm chess = renderer.addTexture(&mut device, &Image.checker(256, 256, 8, 8, new Color(0.34, 0.33, 0.31, 1.), new Color(0.27, 0.26, 0.25, 1.)));
+  mut concreteLook = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.85);
+  concreteLook.texture = chess;
+  imm concrete = renderer.addPbrMaterial(&mut device, &concreteLook);
+  imm wood = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.34, 0.2, 0.1, 1.), 0., 0.8));
+  imm steel = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.62, 0.63, 0.66, 1.), 0.95, 0.32));
+  imm dark = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.05, 0.05, 0.055, 1.), 0.8, 0.4));
+  imm stone = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.3, 0.28, 0.25, 1.), 0., 0.9));
+  imm ids = new Ids(plane, box, concrete, wood, steel, dark, stone);
+  // The scorch decals' textures
+  imm bigScorch = renderer.addTexture(&mut device, &scorchImage(256, 11u32, 0.6, 0.6, new Color(0.03, 0.025, 0.02, 1.)));
+  imm smallScorch = renderer.addTexture(&mut device, &scorchImage(128, 31u32, 0.5, 0.5, new Color(0.05, 0.035, 0.025, 1.)));
+  imm bigDecal = fx.addDecalMaterial(&mut device, &renderer, bigScorch, TextureHandle.none(), TextureHandle.none());
+  imm smallDecal = fx.addDecalMaterial(&mut device, &renderer, smallScorch, TextureHandle.none(), TextureHandle.none());
+
+  // The effects: registered once (the flipbooks baked now)
+  mut ids5 = new Array[u32, 5] <- fill 0u32;
+  if which == 0 or which == 5 { ids5[0] = player.register(&mut device, strip(blastEffect(box, wood, steel, bigDecal), noLights)); }
+  if which == 1 or which == 5 { ids5[1] = player.register(&mut device, strip(muzzleEffect(), noLights)); }
+  if which == 2 or which == 5 { ids5[2] = player.register(&mut device, strip(sparksEffect(smallDecal), noLights)); }
+  if which == 3 or which == 5 { ids5[3] = player.register(&mut device, strip(fireEffect(), noLights)); }
+  if which == 4 or which == 5 { ids5[4] = player.register(&mut device, strip(gridFireEffect(), noLights)); }
+  player.setGround(0.);
+  // The fluid fire's box: 3 m x 4.8 m x 3 m over the second fire pit
+  mut fluidDesc = FluidDesc.make(new Vec3(36.38, 0., -1.62), new Vec3(38., 0.4, 0.));
+  fluidDesc.steps = fluidSteps;
+  mut fluid = FluidSmoke.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, &fluidDesc);
+  if !fluid.isValid() {
+    print <- "The fluid fire could not be made\n";
+    return 1;
+  }
+  fluid.halfResolution = half;
+  print <- "Flipbooks baked: "; print <- u64.from(player.flipbooks.atlasCount()); print <- ", "; print <- player.flipbooks.atlasBytes() / 1048576u64; print <- " MiB of atlas\n";
+
+  imm queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 6u32);
+  imm resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  imm ticks = device.createBuffer(64u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut camera = Camera.make();
+  camera.near = 0.1;
+  camera.far = 120.;
+  camera.background = new Color(0.02, 0.025, 0.05, 1.);
+  mut rig = new Rig(player, fluid, renderer, post, fx, out, shot, queries, resolved, ticks, camera, light, ids, device);
+
+  mut base = 0.5;
+  mut stage = 0i32;
+  while stage < 5 {
+    if which == 5 or which == stage {
+      imm st = stageOf(stage);
+      rig.camera.lookAt(st.eye, st.target, new Vec3(0., 1., 0.));
+      if cost {
+        base = costOf(&mut rig, &st, ids5[usize.from(u32.from(stage))], base);
+      } else {
+        base = runStage(&mut rig, &st, ids5[usize.from(u32.from(stage))], base, &prefix);
+      }
+    }
+    stage = stage + 1;
+  }
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  0;
+}

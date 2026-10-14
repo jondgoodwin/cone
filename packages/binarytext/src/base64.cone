@@ -1,0 +1,462 @@
+// ======== Base64 (RFC 4648 sections 4 and 5) ========
+//
+// A text of base64 is a stream of 6-bit digits, four digits to three bytes.
+// 'Base64Format' says the alphabet, whether '=' padding is written (and, for a
+// decoder, required), and the decoder's opt-ins; a streaming encoder and
+// decoder are made from one; the one-shot decoders are made of the streaming
+// one, so there is one grammar. See the package's header for the choices.
+
+// The 64 digits. They differ in the last two
+pub enum Alphabet {
+  // 'A'-'Z', 'a'-'z', '0'-'9', '+' and '/' (RFC 4648 section 4)
+  Standard;
+  // The same with '-' and '_', safe in a URL and a file name (section 5)
+  UrlSafe;
+}
+
+// How a base64 text is written and read. The fields are public: make one with
+// a ready constructor and set what differs, or build it with 'new
+// Base64Format(...)'.
+pub struct Base64Format {
+  pub alphabet Alphabet;
+  // Encoding: write the '=' that bring the text to a multiple of 4 characters.
+  // Decoding: require them (and, if false, refuse any '=' unless
+  // 'optionalPadding' is set)
+  pub padded bool;
+  // Decoding only: take the text padded or not. A partly padded one is still
+  // refused
+  pub optionalPadding bool;
+  // Decoding only: pass over a space, tab, carriage return or line feed
+  pub skipWhitespace bool;
+  // Decoding only: do not refuse a last character whose unused low bits are
+  // not zero
+  pub allowTrailingBits bool;
+
+  // Standard alphabet, padded: what RFC 4648 section 10 writes
+  pub fn standard() Base64Format {
+    new Base64Format(Alphabet.Standard, true, false, false, false);
+  }
+
+  // URL-safe alphabet, padded
+  pub fn urlSafe() Base64Format {
+    new Base64Format(Alphabet.UrlSafe, true, false, false, false);
+  }
+
+  // Standard alphabet, no padding
+  pub fn standardUnpadded() Base64Format {
+    new Base64Format(Alphabet.Standard, false, false, false, false);
+  }
+
+  // URL-safe alphabet, no padding: what a JWT writes
+  pub fn urlSafeUnpadded() Base64Format {
+    new Base64Format(Alphabet.UrlSafe, false, false, false, false);
+  }
+
+  // True for the URL-safe alphabet
+  pub fn isUrlSafe(self &) bool {
+    match alphabet {
+      case is UrlSafe { true; }
+      case is Standard { false; }
+    }
+  }
+
+  // This format with whitespace passed over when decoding
+  pub fn acceptingWhitespace(self &) Base64Format {
+    mut f = self.copy();
+    f.skipWhitespace = true;
+    f;
+  }
+
+  // This format with padding optional when decoding
+  pub fn acceptingAnyPadding(self &) Base64Format {
+    mut f = self.copy();
+    f.optionalPadding = true;
+    f;
+  }
+
+  // This format with non-zero trailing bits accepted when decoding
+  pub fn acceptingTrailingBits(self &) Base64Format {
+    mut f = self.copy();
+    f.allowTrailingBits = true;
+    f;
+  }
+
+  pub fn copy(self &) Base64Format {
+    new Base64Format(self.alphabetCopy(), padded, optionalPadding, skipWhitespace, allowTrailingBits);
+  }
+
+  fn alphabetCopy(self &) Alphabet {
+    match alphabet {
+      case is UrlSafe { Alphabet.UrlSafe; }
+      case is Standard { Alphabet.Standard; }
+    }
+  }
+}
+
+// -------- the digits --------
+
+// The character of a 6-bit value, in ranges and not from a table
+fn sextetChar(v u32, urlSafe bool) u8 {
+  if v < 26u32 { return 'A' + u8.from(v); }
+  if v < 52u32 { return 'a' + u8.from(v - 26u32); }
+  if v < 62u32 { return '0' + u8.from(v - 52u32); }
+  if v == 62u32 {
+    if urlSafe { return '-'; }
+    return '+';
+  }
+  if urlSafe { return '_'; }
+  '/';
+}
+
+// The 6-bit value of a character, or -1 if it is not a digit of the alphabet
+fn sextetValue(c u8, urlSafe bool) i32 {
+  if c >= 'A' and c <= 'Z' { return i32.from(c - 'A'); }
+  if c >= 'a' and c <= 'z' { return i32.from(c - 'a') + 26i32; }
+  if c >= '0' and c <= '9' { return i32.from(c - '0') + 52i32; }
+  if urlSafe {
+    if c == '-' { return 62i32; }
+    if c == '_' { return 63i32; }
+  } else {
+    if c == '+' { return 62i32; }
+    if c == '/' { return 63i32; }
+  }
+  -1i32;
+}
+
+// The characters of a group of 1, 2 or 3 bytes, held in the 24 bits of 'v'
+// from the top (the first byte in bits 16-23), padded to 4 characters if asked
+fn emitGroup(out &mut String, v u32, bytes u32, urlSafe bool, padded bool) {
+  out.appendByte(sextetChar((v >> 18u32) & 63u32, urlSafe));
+  out.appendByte(sextetChar((v >> 12u32) & 63u32, urlSafe));
+  if bytes >= 2u32 { out.appendByte(sextetChar((v >> 6u32) & 63u32, urlSafe)); }
+  elif padded { out.appendByte('='); }
+  if bytes >= 3u32 { out.appendByte(sextetChar(v & 63u32, urlSafe)); }
+  elif padded { out.appendByte('='); }
+}
+
+// -------- encoding --------
+
+// Appends the base64 text of data to out
+pub fn appendBase64(out &mut String, data &Array[u8], fmt &Base64Format) {
+  imm urlSafe = fmt.isUrlSafe();
+  mut i = 0usize;
+  while i + 3usize <= data.len {
+    imm v = (u32.from(data[i]) << 16u32) | (u32.from(data[i + 1usize]) << 8u32) | u32.from(data[i + 2usize]);
+    emitGroup(out, v, 3u32, urlSafe, fmt.padded);
+    i = i + 3usize;
+  }
+  imm rest = data.len - i;
+  if rest == 1usize {
+    emitGroup(out, u32.from(data[i]) << 16u32, 1u32, urlSafe, fmt.padded);
+  } elif rest == 2usize {
+    emitGroup(out, (u32.from(data[i]) << 16u32) | (u32.from(data[i + 1usize]) << 8u32), 2u32, urlSafe, fmt.padded);
+  }
+}
+
+// The base64 text of data in this format
+pub fn encodeBase64With(data &Array[u8], fmt &Base64Format) String {
+  mut out = String.withCapacity((data.len + 2usize) / 3usize * 4usize);
+  appendBase64(&mut out, data, fmt);
+  out;
+}
+
+// The standard alphabet, padded
+pub fn encodeBase64(data &Array[u8]) String {
+  imm fmt = Base64Format.standard();
+  encodeBase64With(data, &fmt);
+}
+
+// The URL-safe alphabet, padded
+pub fn encodeBase64Url(data &Array[u8]) String {
+  imm fmt = Base64Format.urlSafe();
+  encodeBase64With(data, &fmt);
+}
+
+// A streaming encoder: feed it chunks of bytes split anywhere, and it appends
+// the text of every whole group and keeps the 0, 1 or 2 bytes that are left
+// over. 'finish' writes the last group (and the padding, if the format pads)
+// and readies it for the next text.
+pub struct Base64Encoder {
+  urlSafe bool;
+  padded bool;
+  // The pending bytes, the first the highest
+  acc u32;
+  have u32;
+
+  // An encoder writing this format
+  pub fn forFormat(fmt &Base64Format) Base64Encoder {
+    new Base64Encoder(fmt.isUrlSafe(), fmt.padded, 0u32, 0u32);
+  }
+
+  // An encoder for the standard alphabet, padded
+  pub fn standard() Base64Encoder {
+    new Base64Encoder(false, true, 0u32, 0u32);
+  }
+
+  // Appends the text of the whole groups chunk completes
+  pub fn update(self &mut, chunk &Array[u8], out &mut String) {
+    mut i = 0usize;
+    while i < chunk.len {
+      self.acc = (self.acc << 8u32) | u32.from(chunk[i]);
+      self.have = self.have + 1u32;
+      if self.have == 3u32 {
+        emitGroup(out, self.acc, 3u32, self.urlSafe, self.padded);
+        self.acc = 0u32;
+        self.have = 0u32;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Appends the last group; the encoder starts the next text afresh
+  pub fn finish(self &mut, out &mut String) {
+    if self.have == 1u32 {
+      emitGroup(out, self.acc << 16u32, 1u32, self.urlSafe, self.padded);
+    } elif self.have == 2u32 {
+      emitGroup(out, self.acc << 8u32, 2u32, self.urlSafe, self.padded);
+    }
+    self.acc = 0u32;
+    self.have = 0u32;
+  }
+
+  // Bytes held back for the next group (0, 1 or 2)
+  pub fn pending(self &) usize { usize.from(have); }
+}
+
+// -------- decoding --------
+
+// A streaming decoder: feed it chunks of text split anywhere, and it appends
+// the bytes of every whole group and keeps up to 3 digits of the one in
+// progress. 'finish' checks the end (padding, length, trailing bits), appends
+// the last bytes and readies it for the next text. Once a call has failed,
+// every later one answers the same error until 'reset()'.
+pub struct Base64Decoder {
+  urlSafe bool;
+  padded bool;
+  optionalPadding bool;
+  skipWhitespace bool;
+  allowTrailingBits bool;
+  // The digits of the group in progress, and how many
+  acc u32;
+  count u32;
+  // The first '=' has been read and 'padLeft' more are owed
+  sealed bool;
+  padLeft u32;
+  // Bytes read so far, and where the last digit was
+  offset usize;
+  lastData usize;
+  lastByte u8;
+  // The failure, once there is one
+  failed bool;
+  failKind DecodeErrorKind;
+  failOffset usize;
+  failByte u8;
+  failReason String;
+
+  // A decoder reading this format
+  pub fn forFormat(fmt &Base64Format) Base64Decoder {
+    new Base64Decoder(fmt.isUrlSafe(), fmt.padded, fmt.optionalPadding, fmt.skipWhitespace, fmt.allowTrailingBits,
+      0u32, 0u32, false, 0u32, 0usize, 0usize, 0u8,
+      false, DecodeErrorKind.BadCharacter, 0usize, 0u8, String.empty());
+  }
+
+  // A decoder for the standard alphabet, padded, strict
+  pub fn standard() Base64Decoder {
+    imm fmt = Base64Format.standard();
+    Base64Decoder.forFormat(&fmt);
+  }
+
+  // Forget the text so far and any failure, to read a new text
+  pub fn reset(self &mut) {
+    self.acc = 0u32;
+    self.count = 0u32;
+    self.sealed = false;
+    self.padLeft = 0u32;
+    self.offset = 0usize;
+    self.lastData = 0usize;
+    self.lastByte = 0u8;
+    self.failed = false;
+    self.failKind = DecodeErrorKind.BadCharacter;
+    self.failOffset = 0usize;
+    self.failByte = 0u8;
+    self.failReason = String.empty();
+  }
+
+  // Bytes of text read since the start of this text
+  pub fn consumed(self &) usize { offset; }
+
+  fn fail(self &mut, kind DecodeErrorKind, at usize, byte u8, why &str) DecodeError {
+    mut reason = String.empty();
+    if byte != 0u8 or kind.isCharacterFault() {
+      describeByte(&mut reason, byte);
+      reason.append(" ");
+    }
+    reason.append(why);
+    self.failed = true;
+    self.failKind = kind.copy();
+    self.failOffset = at;
+    self.failByte = byte;
+    self.failReason = reason.copy();
+    new DecodeError(kind, at, byte, reason);
+  }
+
+  fn failure(self &) DecodeError {
+    new DecodeError(self.failKind.copy(), failOffset, failByte, failReason.copy());
+  }
+
+  // Writes the bytes of the 2 or 3 digits in progress, checking that the
+  // unused low bits are zero. None if it did; else the error
+  fn flushPartial(self &mut, out &mut List[u8]) Option[DecodeError] {
+    if self.count == 2u32 {
+      if not self.allowTrailingBits and (self.acc & 15u32) != 0u32 {
+        return Some[DecodeError](self.fail(DecodeErrorKind.NonCanonical, self.lastData, self.lastByte,
+          "is not canonical: its unused low 4 bits are not zero"));
+      }
+      out.push(u8.from((self.acc >> 4u32) & 255u32));
+    } else {
+      if not self.allowTrailingBits and (self.acc & 3u32) != 0u32 {
+        return Some[DecodeError](self.fail(DecodeErrorKind.NonCanonical, self.lastData, self.lastByte,
+          "is not canonical: its unused low 2 bits are not zero"));
+      }
+      out.push(u8.from((self.acc >> 10u32) & 255u32));
+      out.push(u8.from((self.acc >> 2u32) & 255u32));
+    }
+    self.acc = 0u32;
+    self.count = 0u32;
+    None;
+  }
+
+  // Reads a chunk of text, appending the bytes it completes to out. Answers
+  // how many bytes it appended, or the first fault (bytes appended before it
+  // stay)
+  pub fn update(self &mut, chunk &Array[u8], out &mut List[u8]) Result[usize, DecodeError] {
+    if self.failed { return Error[usize, DecodeError](self.failure()); }
+    imm start = out.len();
+    mut i = 0usize;
+    while i < chunk.len {
+      imm c = chunk[i];
+      imm at = self.offset;
+      self.offset = self.offset + 1usize;
+      i = i + 1usize;
+      if self.skipWhitespace and isSpace(c) { continue; }
+      if c == '=' {
+        if not self.padded and not self.optionalPadding {
+          return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding, which this format does not use"));
+        }
+        if self.sealed {
+          if self.padLeft == 0u32 {
+            return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is more padding than the text needs"));
+          }
+          self.padLeft = self.padLeft - 1u32;
+          continue;
+        }
+        if self.count < 2u32 {
+          return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding where no padding can be"));
+        }
+        imm owed = 3u32 - self.count;
+        match self.flushPartial(out) {
+          case imm e Some { return Error[usize, DecodeError](e.copy()); }
+          case is None { }
+        }
+        self.sealed = true;
+        self.padLeft = owed;
+        continue;
+      }
+      if self.sealed {
+        if self.padLeft > 0u32 {
+          return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes where more padding is owed"));
+        }
+        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes after the padding that ends the text"));
+      }
+      imm v = sextetValue(c, self.urlSafe);
+      if v < 0i32 {
+        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadCharacter, at, c, "is not in the alphabet"));
+      }
+      self.acc = (self.acc << 6u32) | u32.from(v);
+      self.count = self.count + 1u32;
+      self.lastData = at;
+      self.lastByte = c;
+      if self.count == 4u32 {
+        out.push(u8.from((self.acc >> 16u32) & 255u32));
+        out.push(u8.from((self.acc >> 8u32) & 255u32));
+        out.push(u8.from(self.acc & 255u32));
+        self.acc = 0u32;
+        self.count = 0u32;
+      }
+    }
+    Ok[usize, DecodeError](out.len() - start);
+  }
+
+  // The end of the text: checks the padding and the length, appends the last
+  // bytes, and readies the decoder for the next text (a failure stays until
+  // 'reset()'). Answers how many bytes it appended
+  pub fn finish(self &mut, out &mut List[u8]) Result[usize, DecodeError] {
+    if self.failed { return Error[usize, DecodeError](self.failure()); }
+    imm start = out.len();
+    if self.sealed {
+      if self.padLeft > 0u32 {
+        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends with padding still owed"));
+      }
+    } elif self.count == 1u32 {
+      return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadLength, self.offset, 0u8,
+        "the text ends after a single digit of a group, which cannot make a byte"));
+    } elif self.count > 0u32 {
+      if self.padded and not self.optionalPadding {
+        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends without its padding"));
+      }
+      match self.flushPartial(out) {
+        case imm e Some { return Error[usize, DecodeError](e.copy()); }
+        case is None { }
+      }
+    }
+    imm written = out.len() - start;
+    self.reset();
+    Ok[usize, DecodeError](written);
+  }
+}
+
+// -------- one-shot decoding --------
+
+// Decodes text in this format, appending the bytes to out. Answers how many;
+// on a fault, out is left as it was
+pub fn decodeBase64Into(text &Array[u8], fmt &Base64Format, out &mut List[u8]) Result[usize, DecodeError] {
+  imm start = out.len();
+  mut d = Base64Decoder.forFormat(fmt);
+  match d.update(text, out) {
+    case imm e Error {
+      out.truncate(start);
+      return Error[usize, DecodeError](e.copy());
+    }
+    case is Ok { }
+  }
+  match d.finish(out) {
+    case imm e Error {
+      out.truncate(start);
+      return Error[usize, DecodeError](e.copy());
+    }
+    case is Ok { }
+  }
+  Ok[usize, DecodeError](out.len() - start);
+}
+
+// The bytes text names in this format
+pub fn decodeBase64With(text &Array[u8], fmt &Base64Format) Result[List[u8], DecodeError] {
+  mut out = List[u8].withCapacity(text.len / 4usize * 3usize + 3usize);
+  match decodeBase64Into(text, fmt, &mut out) {
+    case imm e Error { return Error[List[u8], DecodeError](e.copy()); }
+    case is Ok { }
+  }
+  Ok[List[u8], DecodeError](out);
+}
+
+// The standard alphabet, padded, strict
+pub fn decodeBase64(text &Array[u8]) Result[List[u8], DecodeError] {
+  imm fmt = Base64Format.standard();
+  decodeBase64With(text, &fmt);
+}
+
+// The URL-safe alphabet, padded, strict
+pub fn decodeBase64Url(text &Array[u8]) Result[List[u8], DecodeError] {
+  imm fmt = Base64Format.urlSafe();
+  decodeBase64With(text, &fmt);
+}
