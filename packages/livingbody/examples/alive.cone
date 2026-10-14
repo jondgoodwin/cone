@@ -350,8 +350,9 @@ fn makePerson(device &mut Device, st &mut Stage, seed u32) Person {
   // the hair: strands rooted on the scalp in the head bone's frame, a gusty breeze
   mut hairStyle = StrandStyle.hair();
   hairStyle.length = 0.34;
-  hairStyle.cardWidth = 0.024;
-  hairStyle.cardTipWidth = 0.009;
+  hairStyle.cardWidth = 0.034;
+  hairStyle.cardTipWidth = 0.013;
+  hairStyle.rootHold = 0.04;
   mut sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(0.9, 0., 0.5))), 1u32);
   imm headRest = *rig.restModels[HEAD];
   imm hg = sim.addGroup(headRest, hairStyle);
@@ -372,11 +373,11 @@ fn makePerson(device &mut Device, st &mut Stage, seed u32) Person {
   mut q = 0usize;
   while q < fibres.rgba.len() { img.pixels.push(*fibres.rgba[q]); q = q + 1usize; }
   imm hairTex = st.renderer.addCutoutTexture(device, &img, 0.45);
-  mut hm = PbrMaterial.standard(new Color(0.16, 0.085, 0.04, 1.), 0., 0.42);
+  mut hm = PbrMaterial.standard(new Color(0.34, 0.17, 0.07, 1.), 0., 0.6);
   hm.texture = hairTex;
   hm.alphaMode = ALPHA_MASK;
   hm.alphaCutoff = 0.45;
-  hm.specularScale = 0.6;
+  hm.specularScale = 0.35;
   imm hairMat = st.renderer.addPbrMaterial(device, &hm);
   // which bones the hair meets
   mut seen = List[bool].empty();
@@ -439,8 +440,15 @@ fn stepPerson(p &mut Person, at Vec3, speed f32, work f32, dt f32) {
 // The hair a frame: its frame is the head bone's, its colliders the head, neck, shoulders and trunk where they are now
 fn stepHair(p &mut Person, dt f32) {
   p.hair.setFrame(0usize, *p.bones[HEAD]);
-  p.rig.collidersSeen(&p.bones, 0.004, &p.hairSeen, &mut p.hairColliders);
-  if libc.getenv("NOHAIRCOL") == (0usize as *u8) { p.hair.setColliders(0usize, &p.hairColliders); }
+  // three capsules (a box costs several times a capsule's contact test): the skull, the neck, the shoulders and upper back
+  p.hairColliders.clear();
+  imm hb = *p.bones[HEAD];
+  imm nb = *p.bones[NECK];
+  imm cb = *p.bones[CHEST];
+  p.hairColliders.push(Collider.capsule(hb.transformPoint(new Vec3(0., 0.05, 0.004)), hb.transformPoint(new Vec3(0., 0.125, 0.004)), 0.094));
+  p.hairColliders.push(Collider.capsule(nb.transformPoint(new Vec3(0., -0.03, 0.)), hb.transformPoint(new Vec3(0., 0.02, 0.)), 0.075));
+  p.hairColliders.push(Collider.capsule(cb.transformPoint(new Vec3(-0.12, 0.09, 0.02)), cb.transformPoint(new Vec3(0.12, 0.09, 0.02)), 0.085));
+  if (libc.getenv("NOHAIRCOL") as usize) == 0usize { p.hair.setColliders(0usize, &p.hairColliders); }
   p.hair.step(dt);
 }
 
@@ -504,21 +512,21 @@ fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
     // pictures: the lungs empty and full (standing and winded) from the side; sequences; the hair close
     imm fill = p.life.state.fill;
     mut name = String.empty();
-    mut cam = camera(new Vec3(3.4, 1.2, z - 0.4), new Vec3(0., 1.0, z), 30.);
-    if t >= 3. and t < 7.5 {
-      if fill < 0.02 and !hasShot(&p, 0) { name = String.from("stand-empty"); markShot(&mut p, 0); }
-      if fill > 0.995 and !hasShot(&p, 1) { name = String.from("stand-full"); markShot(&mut p, 1); }
+    mut cam = camera(new Vec3(4.4, 1.0, z - 0.4), new Vec3(0., 0.88, z), 30.);
+    if t >= 2. and t < 7.9 {
+      if fill < 0.03 and !hasShot(&p, 0) { name = String.from("stand-empty"); markShot(&mut p, 0); }
+      if fill > 0.97 and !hasShot(&p, 1) { name = String.from("stand-full"); markShot(&mut p, 1); }
     }
     if t >= 21. and t < 30. {
       if fill < 0.03 and !hasShot(&p, 2) { name = String.from("winded-empty"); markShot(&mut p, 2); }
       if fill > 0.99 and !hasShot(&p, 3) { name = String.from("winded-full"); markShot(&mut p, 3); }
     }
     // the torso close, empty and full, side on
-    if t >= 3. and t < 7.5 {
-      if fill < 0.02 and !hasShot(&p, 4) { name = String.from("torso-empty"); markShot(&mut p, 4); cam = camera(new Vec3(1.7, 1.2, z - 0.1), new Vec3(0., 1.2, z), 30.); }
-      if fill > 0.995 and !hasShot(&p, 5) { name = String.from("torso-full"); markShot(&mut p, 5); cam = camera(new Vec3(1.7, 1.2, z - 0.1), new Vec3(0., 1.2, z), 30.); }
+    if t >= 2. and t < 7.9 {
+      if fill < 0.03 and hasShot(&p, 0) and !hasShot(&p, 4) and name.len() == 0usize { name = String.from("torso-empty"); markShot(&mut p, 4); cam = camera(new Vec3(1.3, 1.3, z - 1.6), new Vec3(0., 1.2, z), 30.); }
+      if fill > 0.97 and hasShot(&p, 1) and !hasShot(&p, 5) and name.len() == 0usize { name = String.from("torso-full"); markShot(&mut p, 5); cam = camera(new Vec3(1.3, 1.3, z - 1.6), new Vec3(0., 1.2, z), 30.); }
     }
-    if t >= 6.0 and !hasShot(&p, 6) { name = String.from("hair-stand-back"); markShot(&mut p, 6); cam = camera(new Vec3(0.55, 1.5, z + 1.2), new Vec3(0., 1.45, z), 30.); }
+    if t >= 6.3 and !hasShot(&p, 6) { name = String.from("hair-stand-back"); markShot(&mut p, 6); cam = camera(new Vec3(0.55, 1.5, z + 1.2), new Vec3(0., 1.45, z), 30.); }
     if t >= 13.0 and !hasShot(&p, 7) { name = String.from("hair-walk-side"); markShot(&mut p, 7); cam = camera(new Vec3(1.5, 1.5, z - 0.2), new Vec3(0., 1.45, z - 0.1), 30.); }
     if t >= 24.0 and !hasShot(&p, 8) { name = String.from("hair-winded"); markShot(&mut p, 8); cam = camera(new Vec3(-0.7, 1.45, z - 1.3), new Vec3(0., 1.35, z), 30.); }
     imm seqStand = t >= 1.0 and t < 7.0 and frame % 45 == 0;
@@ -564,7 +572,7 @@ fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
     list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
     drawPerson(st, device, &mut p, &mut list);
     soak.add("draw list: skin matrices, morph weights, hair cards written and uploaded", a2.elapsed().nanos() / 1000i64);
-    imm cam = camera(new Vec3(3.4, 1.2, z - 0.4), new Vec3(0., 1.0, z), 30.);
+    imm cam = camera(new Vec3(4.4, 1.0, z - 0.4), new Vec3(0., 0.88, z), 30.);
     imm a3 = Instant.now();
     imm ms = drawFrame(device, st, &cam, &list, "");
     soak.add("render call, the wait for the GPU, readback of the timestamps", a3.elapsed().nanos() / 1000i64);
@@ -582,6 +590,346 @@ fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
 
 fn hasShot(p &Person, k i32) bool { (p.flags & (1u32 << u32.from(k))) != 0u32; }
 fn markShot(p &mut Person, k i32) { p.flags = p.flags | (1u32 << u32.from(k)); }
+
+// ------------------------------------------------------------------------------ the four-legged test body
+
+struct BodyField {
+  a List[Vec3];
+  b List[Vec3];
+  ra List[f32];
+  rb List[f32];
+  k f32;
+
+  pub fn distance(self &, p Vec3) f32 {
+    mut d = 3.0e38;
+    mut i = 0usize;
+    while i < a.len() {
+      imm c = taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]);
+      d = if i == 0usize { c; } else { smoothUnion(d, c, k); };
+      i = i + 1usize;
+    }
+    d;
+  }
+}
+
+// The body: a capsule on every segment of the rig (a joint to its child), meshed by surface nets
+fn bodyMesh(rig &Rig, cell f32, blend f32) Mesh {
+  mut f = new BodyField(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), blend);
+  mut lo = new Vec3(1.0e9, 1.0e9, 1.0e9);
+  mut hi = new Vec3(-1.0e9, -1.0e9, -1.0e9);
+  mut big f32 = 0.;
+  mut i = 0usize;
+  while i < rig.boneCount() {
+    imm p = rig.skeleton.parentOf(i);
+    if p >= 0i32 {
+      imm pa = rig.restPosition(usize.from(p));
+      imm pb = rig.restPosition(i);
+      f.a.push(pa); f.b.push(pb);
+      f.ra.push(*rig.radii[usize.from(p)]); f.rb.push(*rig.radii[i]);
+      lo = lo.min(pa.min(pb));
+      hi = hi.max(pa.max(pb));
+      if *rig.radii[i] > big { big = *rig.radii[i]; }
+      if *rig.radii[usize.from(p)] > big { big = *rig.radii[usize.from(p)]; }
+    }
+    i = i + 1usize;
+  }
+  imm m = new Vec3(big + 0.05, big + 0.05, big + 0.05);
+  imm net = surfaceNet(&f, new Aabb3(lo - m, hi + m), cell, 1u32, false);
+  net.toMesh();
+}
+
+fn makeSkin(w &VertexWeights) Skin {
+  mut s = Skin.empty();
+  mut v = 0usize;
+  while v < w.vertexCount() {
+    s.push(u32.from(w.joint(v, 0usize)), u32.from(w.joint(v, 1usize)), u32.from(w.joint(v, 2usize)), u32.from(w.joint(v, 3usize)),
+      w.weight(v, 0usize), w.weight(v, 1usize), w.weight(v, 2usize), w.weight(v, 3usize));
+    v = v + 1usize;
+  }
+  s;
+}
+
+struct Horse {
+  rig Rig;
+  loco Locomotion;
+  morphed MorphHandle;
+  bodyMesh MeshHandle;
+  bodyMat MaterialHandle;
+  breathing Breathing;
+  regions SoftRegions;
+  attention Attention;
+  look LookChain;
+  headBone usize;
+  bodyBone usize;
+  pose Pose;
+  models List[Transform3];
+  mats List[Mat4];
+  strands StrandSim;
+  strandMesh MeshHandle;
+  strandMat MaterialHandle;
+  scratch Mesh;
+  groupBone List[usize];
+  colliders List[Collider];
+  neckBones List[usize];
+  tailBones List[usize];
+  spineBones List[usize];
+  state BreathState;
+  flags u32;
+}
+
+fn horseRegions(rig &Rig) List[SoftRegion] {
+  imm s0 = usize.from(rig.boneIndex("spine/s0"));
+  imm s1 = usize.from(rig.boneIndex("spine/s1"));
+  mut r = List[SoftRegion].empty();
+  r.push(SoftRegion.make("barrel left", s1, new Vec3(0., 0., 0.), new Vec3(-1., 0., 0.), new Vec3(0.12, 0.17, 0.26)).breathing(REGION_CHEST, 1.));
+  r.push(SoftRegion.make("barrel right", s1, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0.12, 0.17, 0.26)).breathing(REGION_CHEST, 1.));
+  r.push(SoftRegion.make("belly", s1, new Vec3(0., 0., 0.), new Vec3(0., -1., 0.), new Vec3(0.17, 0.12, 0.26)).breathing(REGION_BELLY, 0.8)
+    .jiggling(2.6, 0.18, 0.035, new Vec3(0.5, 1., 0.6)));
+  r.push(SoftRegion.make("flank left", s0, new Vec3(0., 0., 0.), new Vec3(-1., 0., 0.), new Vec3(0.12, 0.15, 0.22)).jiggling(3.2, 0.2, 0.03, new Vec3(1., 1., 0.7)));
+  r.push(SoftRegion.make("flank right", s0, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0.12, 0.15, 0.22)).jiggling(3.2, 0.2, 0.03, new Vec3(1., 1., 0.7)));
+  r;
+}
+
+fn chainBones(rig &Rig, name &str) List[usize] {
+  mut out = List[usize].empty();
+  imm c = rig.chainIndex(name);
+  if c < 0i32 { return out; }
+  mut i = 0usize;
+  while i < rig.chains[usize.from(c)].bones.len() { out.push(*rig.chains[usize.from(c)].bones[i]); i = i + 1usize; }
+  out;
+}
+
+fn makeHorse(device &mut Device, st &mut Stage, seed u32) Horse {
+  mut built = buildRig(&plainBody(&BodyParams.quadruped()));
+  imm rig = built.take();
+  imm mesh = bodyMesh(&rig, 0.03, 0.02);
+  imm params = WeightParams.standard();
+  imm w = heatWeights(&rig, &mesh, &params);
+  imm skin = makeSkin(&w);
+  imm regions = horseRegions(&rig);
+  imm tg = buildRegionTargets(&mesh, &rig.restModels, &regions);
+  imm nT = tg.count();
+  imm sr = SoftRegions.make(horseRegions(&rig), tg, &rig.restModels);
+  mut mt = MorphTargets.empty(mesh.positions.len());
+  imm noTan = List[Vec3].empty();
+  mut t = 0usize;
+  while t < nT {
+    mt.addSparse(&sr.tg.targets.indicesOf(t), &sr.tg.targets.positionsOf(t), &sr.tg.targets.normalsOf(t), &noTan);
+    t = t + 1usize;
+  }
+  imm set = st.morpher.addSet(device, &mt, &mesh);
+  imm baseMesh = st.renderer.addSkinnedMesh(device, &mesh, &skin);
+  mut enc0 = device.createCommandEncoder();
+  imm copy = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, baseMesh, set, false);
+  device.queue.submit(enc0.finish());
+  device.endFrame();
+  device.waitIdle();
+  mut bm = PbrMaterial.standard(new Color(0.30, 0.17, 0.09, 1.), 0., 0.62);
+  imm bodyMat = st.renderer.addPbrMaterial(device, &bm);
+  imm spine = chainBones(&rig, "spine");
+  imm neck = chainBones(&rig, "neck");
+  imm tail = chainBones(&rig, "tail");
+  imm head = chainBones(&rig, "head");
+  // look-at: the front of the spine, the neck, the head
+  mut lb = List[usize].empty();
+  mut ls = List[f32].empty();
+  lb.push(*spine[spine.len() - 1usize]); ls.push(0.05);
+  mut k = 0usize;
+  while k < neck.len() { lb.push(*neck[k]); ls.push(0.15 + 0.1 * f32.from(k)); k = k + 1usize; }
+  lb.push(*head[0usize]); ls.push(0.4);
+  mut look = LookChain.make(lb, ls, *spine[0usize], new Vec3(0., 0., -0.08));
+  look.normalized();
+  look.maxYaw = radians(70.);
+  // strands: a mane on each neck bone's stretch of the crest, a tail on each tail bone's
+  mut sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(2.8, 0., 1.2))), 1u32);
+  mut gb = List[usize].empty();
+  mut roots = List[StrandRoot].empty();
+  k = 0usize;
+  while k < neck.len() {
+    imm b = *neck[k];
+    imm nextB = if k + 1usize < neck.len() { *neck[k + 1usize]; } else { *head[0usize]; };
+    mut mst = StrandStyle.mane();
+    mst.fall = new Vec3(0.9, -1., 0.15).normalize();
+    imm g = sim.addGroup(*rig.restModels[b], mst);
+    gb.push(b);
+    imm up = new Vec3(0., *rig.radii[b] * 0.8, 0.);
+    mut pts = List[Vec3].empty(); mut dirs = List[Vec3].empty(); mut nrm = List[Vec3].empty();
+    pts.push(rig.restPosition(b) + up); pts.push(rig.restPosition(nextB) + up);
+    dirs.push(new Vec3(0., 0.9, 0.4).normalize()); dirs.push(new Vec3(0., 0.9, 0.4).normalize());
+    nrm.push(new Vec3(1., 0., 0.)); nrm.push(new Vec3(1., 0., 0.));
+    imm rs = rootsAlongPath(g, &pts, &dirs, &nrm, 22usize, 0.8, seed + u32.from(k) * 13u32);
+    imm inv = (*rig.restModels[b]).inverse();
+    mut i = 0usize;
+    while i < rs.len() {
+      roots.push(new StrandRoot(g, inv.transformPoint(rs[i].pos), (inv.rotation * rs[i].dir).normalize(), (inv.rotation * rs[i].normal).normalize(), rs[i].seed));
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < tail.len() {
+    imm b = *tail[k];
+    imm nextB = if k + 1usize < tail.len() { *tail[k + 1usize]; } else { b; };
+    mut tst = StrandStyle.tail();
+    tst.length = 0.62;
+    imm g = sim.addGroup(*rig.restModels[b], tst);
+    gb.push(b);
+    mut pts = List[Vec3].empty(); mut dirs = List[Vec3].empty(); mut nrm = List[Vec3].empty();
+    imm a = rig.restPosition(b);
+    imm bpos = if nextB != b { rig.restPosition(nextB); } else { a + new Vec3(0., 0., 0.06); };
+    pts.push(a); pts.push(bpos);
+    dirs.push(new Vec3(0., -0.35, 1.).normalize()); dirs.push(new Vec3(0., -0.35, 1.).normalize());
+    nrm.push(new Vec3(1., 0., 0.)); nrm.push(new Vec3(1., 0., 0.));
+    imm rs = rootsAlongPath(g, &pts, &dirs, &nrm, 16usize, 0.9, seed + 500u32 + u32.from(k) * 17u32);
+    imm inv = (*rig.restModels[b]).inverse();
+    mut i = 0usize;
+    while i < rs.len() {
+      roots.push(new StrandRoot(g, inv.transformPoint(rs[i].pos), (inv.rotation * rs[i].dir).normalize(), (inv.rotation * rs[i].normal).normalize(), rs[i].seed));
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  sim.addStrands(&roots);
+  imm cnt = cardCounts(&sim);
+  imm strandMesh = st.renderer.addDynamicMesh(device, u32.from(cnt.0), u32.from(cnt.1));
+  imm fibres = paintFibers(4, 64, 256, 14, 9u32);
+  mut img = new Image(fibres.width, fibres.height, 4, List[u8].empty());
+  mut q = 0usize;
+  while q < fibres.rgba.len() { img.pixels.push(*fibres.rgba[q]); q = q + 1usize; }
+  imm tex = st.renderer.addCutoutTexture(device, &img, 0.45);
+  mut hm = PbrMaterial.standard(new Color(0.05, 0.035, 0.025, 1.), 0., 0.6);
+  hm.texture = tex;
+  hm.alphaMode = ALPHA_MASK;
+  hm.alphaCutoff = 0.45;
+  hm.specularScale = 0.4;
+  imm strandMat = st.renderer.addPbrMaterial(device, &hm);
+  imm loco = Locomotion.make(&rig);
+  new Horse(rig, loco, copy, st.morpher.mesh(copy), bodyMat, Breathing.make(ExertionParams.quick(), 1.5, seed), sr,
+    Attention.make(AttentionParams.standard(), seed), look, *head[0usize], *spine[0usize], Pose.empty(), List[Transform3].empty(), List[Mat4].empty(),
+    sim, strandMesh, strandMat, Mesh.empty(), gb, List[Collider].empty(), neck, tail, spine,
+    new BreathState(0., 0., 1., 0.22, 0., 0., true, 0., 0., 0., 0., 0.), 0u32);
+}
+
+fn horseSpeed(t0 f32) f32 {
+  imm t = t0 - 4.;
+  if t < 3. { return 0.; }
+  if t < 5. { return 1.35 * smoothstep(3., 5., t); }
+  if t < 11. { return 1.35; }
+  if t < 13. { return 1.35 + (3.2 - 1.35) * smoothstep(11., 13., t); }
+  if t < 22. { return 3.2; }
+  if t < 25. { return 3.2 * (1. - smoothstep(22., 25., t)); }
+  0.;
+}
+
+fn horseWork(speed f32) f32 { clampf(speed / 4., 0., 1.) * 1.1; }
+
+fn stepHorse(h &mut Horse, x f32, z f32, speed f32, dt f32) {
+  h.loco.update(&h.rig, dt, x, z, 0., &flat);
+  h.pose = h.loco.pose.copy();
+  h.rig.skeleton.modelTransforms(&h.pose, &mut h.models);
+  h.state = h.breathing.update(dt, horseWork(speed));
+  // looking: the attention's direction from the head, in the body's frame
+  h.attention.update(dt, &List[Vec3].empty());
+  imm headW = (*h.models[h.headBone]).transformPoint(new Vec3(0., 0., -0.08));
+  imm bodyRot = (*h.models[h.bodyBone]).rotation;
+  h.look.aim(&h.rig.skeleton, &mut h.pose, &mut h.models, headW + bodyRot * h.attention.direction() * 4., 0.8);
+  h.regions.update(dt, &h.loco.world, &h.models, &h.state);
+  // the strands: each group on its bone, the body's capsules as colliders
+  h.colliders.clear();
+  mut i = 0usize;
+  while i < h.rig.boneCount() {
+    imm p = h.rig.skeleton.parentOf(i);
+    imm isTrunk = h.rig.boneChain[i] == h.rig.boneChain[h.bodyBone] or i == *h.neckBones[0usize] or i == h.headBone;
+    if p >= 0i32 and isTrunk {
+      imm a = h.loco.world.transformPoint((*h.models[usize.from(p)]).translation);
+      imm b = h.loco.world.transformPoint((*h.models[i]).translation);
+      h.colliders.push(Collider.capsule(a, b, *h.rig.radii[usize.from(p)] * 0.98));
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < h.groupBone.len() {
+    h.strands.setFrame(i, h.loco.world * *h.models[*h.groupBone[i]]);
+    h.strands.setColliders(i, &h.colliders);
+    i = i + 1usize;
+  }
+  h.strands.step(dt);
+}
+
+fn drawHorse(st &mut Stage, device &mut Device, h &mut Horse, list &mut DrawList) {
+  h.mats.clear();
+  imm sk = skinTransforms(&h.rig, &h.models);
+  mut i = 0usize;
+  while i < sk.len() { h.mats.push(sk[i].toMat4()); i = i + 1usize; }
+  st.morpher.setWeights(&mut st.renderer, h.morphed, &h.regions.weights);
+  list.addSkinned(h.bodyMesh, h.bodyMat, h.loco.world.toMat4(), h.mats.view());
+  writeCards(&h.strands, &mut h.scratch, 4u32, 1.);
+  st.renderer.writeDynamicMesh(device, h.strandMesh, &h.scratch);
+  list.add(h.strandMesh, h.strandMat, Mat4.identity());
+}
+
+fn runHorse(device &mut Device, st &mut Stage, outDir &str) bool {
+  mut h = makeHorse(device, st, 5u32);
+  imm dt = 1. / 60.;
+  mut t f32 = 0.;
+  mut z f32 = 0.;
+  mut frame = 0;
+  mut shots = 0;
+  mut maxBelly f32 = 0.;
+  while t < 30. {
+    imm speed = horseSpeed(t);
+    z = z - speed * dt;
+    stepHorse(&mut h, 0., z, speed, dt);
+    if h.state.belly > maxBelly { maxBelly = h.state.belly; }
+    mut name = String.empty();
+    mut cam = camera(new Vec3(5.2, 1.3, z - 0.6), new Vec3(0., 0.8, z - 0.6), 36.);
+    imm fill = h.state.fill;
+    if t < 6.5 and fill < 0.02 and t > 0.5 and (h.flags & 1u32) == 0u32 { name = String.from("horse-empty"); h.flags = h.flags | 1u32; cam = camera(new Vec3(3.2, 1.0, z - 0.1), new Vec3(0., 0.8, z - 0.1), 34.); }
+    if t < 6.5 and fill > 0.995 and t > 0.5 and (h.flags & 2u32) == 0u32 { name = String.from("horse-full"); h.flags = h.flags | 2u32; cam = camera(new Vec3(3.2, 1.0, z - 0.1), new Vec3(0., 0.8, z - 0.1), 34.); }
+    if t >= 2.5 and t < 2.6 and (h.flags & 4u32) == 0u32 { name = String.from("horse-stand-3q"); h.flags = h.flags | 4u32; cam = camera(new Vec3(-2.6, 1.5, z - 3.2), new Vec3(0., 0.9, z), 34.); }
+    if t >= 12. and t < 12.6 and frame % 9 == 0 { name = String.from("horse-walk"); name <- "-"; name <- i64.from(frame); }
+    if t >= 20. and t < 20.6 and frame % 6 == 0 { name = String.from("horse-trot"); name <- "-"; name <- i64.from(frame); }
+    if name.len() > 0usize {
+      mut list = DrawList.empty();
+      list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
+      drawHorse(st, device, &mut h, &mut list);
+      drawFrame(device, st, &cam, &list, fileName(outDir, name.view()).view());
+      shots = shots + 1;
+    }
+    t = t + dt;
+    frame = frame + 1;
+  }
+  print <- "horse: "; print <- i64.from(shots); print <- " pictures\n";
+  // the soak: a trot, all drawn
+  mut soak = Costs.make();
+  mut gpuSum f64 = 0d;
+  mut gpuN = 0;
+  mut k = 0;
+  while k < 600 {
+    z = z - 3.2 * dt;
+    imm a0 = Instant.now();
+    stepHorse(&mut h, 0., z, 3.2, dt);
+    soak.add("horse: locomotion, breath, look, soft regions, strands (mane and tail)", a0.elapsed().nanos() / 1000i64);
+    imm a2 = Instant.now();
+    mut list = DrawList.empty();
+    list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
+    drawHorse(st, device, &mut h, &mut list);
+    soak.add("draw list: skin matrices, morph weights, strand cards written and uploaded", a2.elapsed().nanos() / 1000i64);
+    imm cam = camera(new Vec3(5.2, 1.3, z - 0.6), new Vec3(0., 0.8, z - 0.6), 36.);
+    imm a3 = Instant.now();
+    imm ms = drawFrame(device, st, &cam, &list, "");
+    soak.add("render call and the wait for the GPU", a3.elapsed().nanos() / 1000i64);
+    if k >= 60 { gpuSum = gpuSum + ms; gpuN = gpuN + 1; }
+    k = k + 1;
+  }
+  soak.report("horse (soak of 600 frames at a trot)");
+  print <- "  GPU time of a frame, mean: "; print <- gpuSum / f64.from(gpuN); print <- " ms\n";
+  imm cnt = cardCounts(&h.strands);
+  print <- "  strands: "; print <- i64.from(h.strands.strandCount()); print <- " in "; print <- i64.from(h.strands.groupCount()); print <- " groups, ";
+  print <- i64.from(h.strands.particleCount()); print <- " particles, "; print <- i64.from(cnt.1 / 3usize); print <- " card triangles\n";
+  h.strands.stop();
+  true;
+}
 
 fn main(argc i32, argv **u8) i32 {
   mut outDir = String.from(".");
@@ -619,6 +967,7 @@ fn main(argc i32, argv **u8) i32 {
   if !st.renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
   mut ok = true;
   if scene.view() == "all" or scene.view() == "man" { if !runMan(&mut device, &mut st, outDir.view()) { ok = false; } }
+  if scene.view() == "all" or scene.view() == "horse" { if !runHorse(&mut device, &mut st, outDir.view()) { ok = false; } }
   if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
   if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
   if ok { print <- "ok\n"; return 0i32; }
