@@ -394,6 +394,54 @@ fn main() i32 {
 </pre>
 	<p>prints <span class="pre">1 -3</span> on every machine.</p>
 
+	<h3 id="cryptohashpkg">Hashes and message authentication</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">cryptohash</span><br><span class="pre">import cryptohash;</span></td>
+		<td>SHA-256, SHA-512 and SHA-1 (legacy, not for new security uses), HMAC over each, and a constant-time
+		comparison for MACs. A hasher is a value fed with <span class="pre">update</span>; one call hashes a whole
+		message. Written in Cone with no C library; the same bytes on Windows and Linux; checked against NIST's
+		and the RFCs' published vectors. Not a password hash.</td></tr>
+	</table>
+
+	<h3 id="cryptohash">cryptohash</h3>
+	<p><span class="pre">sha256(data)</span>, <span class="pre">sha512(data)</span> and
+		<span class="pre">sha1(data)</span> hash a byte slice (a string literal, a
+		<span class="pre">String</span>'s or <span class="pre">List[u8]</span>'s <span class="pre">view()</span>)
+		and answer the digest as a fixed array, <span class="pre">Array[u8, 32]</span>,
+		<span class="pre">Array[u8, 64]</span> and <span class="pre">Array[u8, 20]</span>. To hash a message in
+		pieces, make a hasher, <span class="pre">Sha256.make()</span> (or <span class="pre">Sha512</span>,
+		<span class="pre">Sha1</span>), feed it with <span class="pre">update(data)</span> as many times as needed
+		and ask <span class="pre">finish()</span>. The hasher holds its own state, with no global behind it;
+		<span class="pre">finish</span> leaves it as it was, so it can take more and be asked again,
+		<span class="pre">copyOf()</span> forks one in progress, and <span class="pre">reset()</span> empties it.
+		<span class="pre">HmacSha256.make(key)</span> (and <span class="pre">HmacSha512</span>,
+		<span class="pre">HmacSha1</span>) is the same for a keyed MAC, with <span class="pre">hmacSha256(key, data)</span>
+		for one call; <span class="pre">verify(tag)</span> compares a received tag with the right one in constant time
+		(<span class="pre">constantTimeEq(a, b)</span> does it for any two byte strings). SHA-1 collisions can
+		be made: use it only for a format that names it. The package's header lists each method chosen and what was
+		left out, and what the compiler could still do to the constant-time loop.</p>
+<pre>
+mod digest;
+
+import stdio use *;
+import cryptohash;
+
+fn main() i32 {
+  imm d = cryptohash.sha256("abc");
+  printInt(i64.from(d[0]));
+  imm tag = cryptohash.hmacSha256("a key", "a message");
+  mut mac = cryptohash.HmacSha256.make("a key");
+  mac.update("a message");
+  printStr(" ");
+  printInt(if mac.verify(&amp;tag) { 1i64; } else { 0i64; });
+  printStr("\n");
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">186 1</span> on every machine (186 is 0xba, the first byte of SHA-256 of "abc",
+		<span class="pre">ba7816bf...</span>).</p>
+
 	<h3 id="testpkg">Testing</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
@@ -421,6 +469,8 @@ fn main() i32 {
 	<p><span class="pre">random</span> asks the OS for one thing, entropy to seed from
 		(<span class="pre">rand_s</span> on Windows, <span class="pre">getentropy</span> elsewhere, as the hash seed
 		is drawn). Its numbers from a seed are the same on both, and have been run on Windows only.</p>
+	<p><span class="pre">cryptohash</span> asks the OS for nothing; its tests pass on Windows and on Linux
+		(Ubuntu 24.04), with the same digests and tags.</p>
 	<p>The others use nothing that belongs to Windows alone. Of these,
 		<span class="pre">sync</span>, <span class="pre">thread</span>, <span class="pre">actors</span> and
 		<span class="pre">time</span> are the ones that have been run on Linux so far, with <span class="pre">core</span>
