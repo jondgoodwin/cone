@@ -1,0 +1,417 @@
+// ======== Hydrology: depressions, drainage, rivers and lakes ========
+//
+// PRIORITY-FLOOD (Barnes, Lehman and Mulla, "Priority-Flood: An Optimal Depression-Filling and
+// Watershed-Labeling Algorithm for Digital Elevation Models", Computers and Geosciences 2014), the
+// epsilon variant: starting from the grid's border, always take the lowest cell of the frontier and
+// raise each unvisited neighbour to at least that cell plus a small epsilon. What comes out is the
+// surface water would fill the land to ('filled'), strictly increasing away from the outlets, so every
+// cell has a lower neighbour and no flat or pit remains to confuse the flow. A cell where filled is
+// above the ground is under a LAKE of that depth.
+//
+// FLOW DIRECTION is D8 (O'Callaghan and Mark 1984): to the neighbour of steepest descent on the filled
+// surface (diagonals by their longer run). FLOW ACCUMULATION is the number of cells draining through a
+// cell, summed by visiting cells from highest filled surface to lowest (the reverse of the flood's
+// pop order, which is non-decreasing in height). Multiplied by the cell area it is the drainage area,
+// and rivers are the cells whose area exceeds a threshold (the usual "contributing area" definition
+// of a channel head, Montgomery and Foufoula-Georgiou 1993).
+//
+// RIVER CARVING cuts a channel into the ground along those cells: a depth that grows with the square
+// root of the drainage area (so a big river is deeper, not linearly so) up to a limit, spread over a
+// width that grows the same way, with a smooth bank profile. Lakes get a flat water surface at the
+// filled height.
+
+pub const NO_CELL = 0xFFFFFFFFu32;
+
+// A min-heap of u64s: the high word is the order key of a height, the low word the cell
+struct MinHeap {
+  a List[u64];
+
+  fn push(self &mut, v u64) {
+    a.push(v);
+    mut i = a.len() - 1usize;
+    while i > 0usize {
+      imm parent = (i - 1usize) / 2usize;
+      if *a[parent] <= *a[i] { break; }
+      a.swap(parent, i);
+      i = parent;
+    }
+  }
+
+  fn pop(self &mut) u64 {
+    imm top = *a[0usize];
+    imm last = a.len() - 1usize;
+    a.swap(0usize, last);
+    a.truncate(last);
+    imm n = a.len();
+    mut i = 0usize;
+    while true {
+      imm l = 2usize * i + 1usize;
+      imm r = l + 1usize;
+      mut m = i;
+      if l < n and *a[l] < *a[m] { m = l; }
+      if r < n and *a[r] < *a[m] { m = r; }
+      if m == i { break; }
+      a.swap(m, i);
+      i = m;
+    }
+    top;
+  }
+}
+
+// An f32's bits remapped so unsigned order is numeric order
+fn orderKey(f f32) u32 {
+  imm b = f as u32;
+  if (b & 0x80000000u32) != 0u32 { 0xFFFFFFFFu32 ^ b; } else { b | 0x80000000u32; };
+}
+
+pub struct Hydrology {
+  pub w usize;
+  pub h usize;
+  pub cell f32;
+  pub filled List[f32];        // the surface water fills the land to (>= the ground)
+  pub down List[u32];          // the cell each drains to; NO_CELL at an outlet on the border
+  pub accum List[f32];         // cells draining through, itself included
+  pub lakeDepth List[f32];     // filled - ground where deeper than the lake threshold, else 0
+  pub order List[u32];         // cells from lowest filled surface to highest
+
+  pub fn maxAccum(self &) f32 {
+    mut m = 0.;
+    mut i = 0usize;
+    while i < accum.len() {
+      if *accum[i] > m { m = *accum[i]; }
+      i = i + 1usize;
+    }
+    m;
+  }
+}
+
+// Analyse the field. 'eps' (metres) is the flood's tilt, 0.0005 typically; 'lakeMin' (metres) the
+// shallowest fill that counts as a lake.
+pub fn analyze(hf &Heightfield, eps f32, lakeMin f32, lakeMax f32) Hydrology {
+  imm w = hf.w;
+  imm h = hf.h;
+  imm n = w * h;
+  mut filled = List[f32].withCapacity(n);
+  mut down = List[u32].withCapacity(n);
+  mut closed = List[u8].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    filled.push(*hf.data[i]);
+    down.push(NO_CELL);
+    closed.push(0u8);
+    i = i + 1usize;
+  }
+  mut heap = new MinHeap(List[u64].withCapacity(n));
+  mut order = List[u32].withCapacity(n);
+  mut x = 0usize;
+  while x < w {
+    i = x;
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    i = (h - 1usize) * w + x;
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    x = x + 1usize;
+  }
+  mut z = 0usize;
+  while z < h {
+    i = z * w;
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    i = z * w + w - 1usize;
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    z = z + 1usize;
+  }
+  while heap.a.len() > 0usize {
+    imm top = heap.pop();
+    imm c = usize.from(u32.from(top & 0xFFFFFFFFu64));
+    order.push(u32.from(c));
+    imm cx = c % w;
+    imm cz = c / w;
+    mut dz = -1;
+    while dz <= 1 {
+      mut dx = -1;
+      while dx <= 1 {
+        imm nx = i32.from(cx) + dx;
+        imm nz = i32.from(cz) + dz;
+        if (dx != 0 or dz != 0) and nx >= 0 and nz >= 0 and nx < i32.from(w) and nz < i32.from(h) {
+          imm ni = usize.from(nz) * w + usize.from(nx);
+          if *closed[ni] == 0u8 {
+            closed.set(ni, 1u8);
+            imm lowest = *filled[c] + eps;
+            if *filled[ni] < lowest { filled.set(ni, lowest); }
+            heap.push((u64.from(orderKey(*filled[ni])) << 32u64) | u64.from(u32.from(ni)));
+          }
+        }
+        dx = dx + 1;
+      }
+      dz = dz + 1;
+    }
+  }
+  // D8 on the filled surface
+  mut c = 0usize;
+  while c < n {
+    imm cx = c % w;
+    imm cz = c / w;
+    if cx > 0usize and cz > 0usize and cx + 1usize < w and cz + 1usize < h {
+      mut best = 0.;
+      mut bestIdx = NO_CELL;
+      mut dz = -1;
+      while dz <= 1 {
+        mut dx = -1;
+        while dx <= 1 {
+          if dx != 0 or dz != 0 {
+            imm ni = usize.from(i32.from(cz) + dz) * w + usize.from(i32.from(cx) + dx);
+            imm run = if dx != 0 and dz != 0 { 1.41421356; } else { 1.; };
+            imm slope = (*filled[c] - *filled[ni]) / run;
+            if slope > best { best = slope; bestIdx = u32.from(ni); }
+          }
+          dx = dx + 1;
+        }
+        dz = dz + 1;
+      }
+      down.set(c, bestIdx);
+    }
+    c = c + 1usize;
+  }
+  mut lake = List[f32].withCapacity(n);
+  i = 0usize;
+  while i < n { lake.push(0.); i = i + 1usize; }
+  // Label the depressions. A depression's cells flow, along 'down', to its pour point, so visiting the
+  // cells from the lowest filled surface up, a raised cell joins the lake of the raised cell it flows
+  // into if their filled surfaces differ by about one epsilon (the flood's tilt inside one lake), and
+  // otherwise starts a lake of its own. A lake deeper than 'lakeMax' at its deepest is a dry basin:
+  // water would stand in it only in a country with no outlets, and the picture of a huge lake
+  // flooding a whole valley is not the one the terrain's author meant, so it is left dry.
+  mut label = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n { label.push(NO_CELL); i = i + 1usize; }
+  // (union-find over raised cells: neighbours join if their filled surfaces differ by a few epsilons)
+  mut labelDepth = List[f32].withCapacity(n);
+  mut labelArea = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n { labelDepth.push(0.); labelArea.push(0u32); label.set(i, u32.from(i)); i = i + 1usize; }
+  i = 0usize;
+  while i < n {
+    imm depth = *filled[i] - *hf.data[i];
+    if depth > 4. * eps {
+      imm cx = i % w;
+      imm cz = i / w;
+      mut dz = -1;
+      while dz <= 1 {
+        mut dx = -1;
+        while dx <= 1 {
+          imm nx = i32.from(cx) + dx;
+          imm nz = i32.from(cz) + dz;
+          if (dx != 0 or dz != 0) and nx >= 0 and nz >= 0 and nx < i32.from(w) and nz < i32.from(h) {
+            imm ni = usize.from(nz) * w + usize.from(nx);
+            imm nd = *filled[ni] - *hf.data[ni];
+            imm diff = *filled[i] - *filled[ni];
+            if nd > 4. * eps and diff < 3. * eps + 0.00001 and diff > -3. * eps - 0.00001 {
+              // union
+              mut ra = u32.from(i);
+              while *label[usize.from(ra)] != ra { ra = *label[usize.from(ra)]; }
+              mut rb = u32.from(ni);
+              while *label[usize.from(rb)] != rb { rb = *label[usize.from(rb)]; }
+              if ra != rb { label.set(usize.from(rb), ra); }
+            }
+          }
+          dx = dx + 1;
+        }
+        dz = dz + 1;
+      }
+    }
+    i = i + 1usize;
+  }
+  // roots: each raised cell's label is its root; the root accumulates depth and area
+  i = 0usize;
+  while i < n {
+    imm depth = *filled[i] - *hf.data[i];
+    if depth > 4. * eps {
+      mut r = u32.from(i);
+      while *label[usize.from(r)] != r { r = *label[usize.from(r)]; }
+      label.set(i, r);
+      imm ri = usize.from(r);
+      if depth > *labelDepth[ri] { labelDepth.set(ri, depth); }
+      labelArea.set(ri, *labelArea[ri] + 1u32);
+    } else {
+      label.set(i, NO_CELL);
+    }
+    i = i + 1usize;
+  }
+  // classes: a puddle (shallower than lakeMin or under 6 cells) is filled for the drainage and shows
+  // no water; a lake is shown; a dry basin (deeper than lakeMax) drains to its own pit
+  mut dry = List[u8].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    mut d = 0u8;
+    if *label[i] != NO_CELL {
+      imm id = usize.from(*label[i]);
+      imm depthMax = *labelDepth[id];
+      if depthMax > lakeMax { d = 1u8; }
+      elif depthMax >= lakeMin and *labelArea[id] >= 6u32 { lake.set(i, *filled[i] - *hf.data[i]); }
+    }
+    dry.push(d);
+    i = i + 1usize;
+  }
+  // The drainage surface: the filled surface, but a dry basin's own ground, so water runs down
+  // the basin to its pit and stops there (D8 again, on that surface; a cell with nothing lower
+  // and not on the border is a sink)
+  mut surf = List[f32].withCapacity(n);
+  i = 0usize;
+  // (a sliver of the fill is kept, so flat ground inside a basin still drains toward the outlet)
+  while i < n { surf.push(if *dry[i] == 1u8 { *hf.data[i] + 0.001 * (*filled[i] - *hf.data[i]); } else { *filled[i]; }); i = i + 1usize; }
+  c = 0usize;
+  while c < n {
+    imm cx = c % w;
+    imm cz = c / w;
+    down.set(c, NO_CELL);
+    if cx > 0usize and cz > 0usize and cx + 1usize < w and cz + 1usize < h {
+      mut best = 0.;
+      mut bestIdx = NO_CELL;
+      mut dz = -1;
+      while dz <= 1 {
+        mut dx = -1;
+        while dx <= 1 {
+          if dx != 0 or dz != 0 {
+            imm ni = usize.from(i32.from(cz) + dz) * w + usize.from(i32.from(cx) + dx);
+            imm run = if dx != 0 and dz != 0 { 1.41421356; } else { 1.; };
+            imm slope = (*surf[c] - *surf[ni]) / run;
+            if slope > best { best = slope; bestIdx = u32.from(ni); }
+          }
+          dx = dx + 1;
+        }
+        dz = dz + 1;
+      }
+      down.set(c, bestIdx);
+    }
+    c = c + 1usize;
+  }
+  // visit from the highest surface to the lowest: every cell is added to the one it drains to
+  // after all that drain to it
+  mut heap2 = new MinHeap(List[u64].withCapacity(n));
+  i = 0usize;
+  while i < n { heap2.push((u64.from(orderKey(*surf[i])) << 32u64) | u64.from(u32.from(i))); i = i + 1usize; }
+  mut asc = List[u32].withCapacity(n);
+  while heap2.a.len() > 0usize { asc.push(u32.from(heap2.pop() & 0xFFFFFFFFu64)); }
+  mut accum = List[f32].withCapacity(n);
+  i = 0usize;
+  while i < n { accum.push(1.); i = i + 1usize; }
+  i = n;
+  while i > 0usize {
+    i = i - 1usize;
+    imm cc = usize.from(*asc[i]);
+    imm d = *down[cc];
+    if d != NO_CELL { accum.set(usize.from(d), *accum[usize.from(d)] + *accum[cc]); }
+  }
+  order = asc;
+  new Hydrology(w, h, hf.cell, filled, down, accum, lake, order);
+}
+
+// How rivers are cut
+pub struct RiverSpec {
+  pub minArea f32;       // square metres a cell must drain to be a river
+  pub depthScale f32;    // metres of depth at 'minArea'... (depth = depthScale * sqrt(area / minArea))
+  pub maxDepth f32;
+  pub widthScale f32;    // metres of half-width at minArea
+  pub maxWidth f32;      // metres of half-width at most
+
+  pub fn standard() RiverSpec { new RiverSpec(40000., 2.2, 16., 4.5, 28.); }
+}
+
+// What carving leaves besides the lowered ground
+pub struct RiverMaps {
+  pub carve List[f32];        // metres cut at each cell
+  pub river List[f32];        // 0..1: 1 in the channel's middle, falling across the bank
+  pub waterDepth List[f32];   // metres of water over the (carved) ground in rivers and lakes
+  pub surface List[f32];      // the water surface height where there is water, else the ground's
+}
+
+fn smooth01(t f32) f32 { imm c = if t < 0. { 0.; } elif t > 1. { 1.; } else { t; }; c * c * (3. - 2. * c); }
+
+// Carve the rivers of 'hy' into 'hf' (the heights are lowered) and report where the water is. Lakes
+// of 'hy' are given their flat surface. Call 'analyze' on the field first, and again on the result if
+// the carved flow is wanted.
+pub fn carveRivers(hf &mut Heightfield, hy &Hydrology, spec &RiverSpec) RiverMaps {
+  imm w = hf.w;
+  imm h = hf.h;
+  imm n = w * h;
+  imm area = hf.cell * hf.cell;
+  mut depthAt = List[f32].withCapacity(n);
+  mut halfWidth = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm a = *hy.accum[i] * area;
+    if a >= spec.minArea and *hy.lakeDepth[i] <= 0. {
+      imm r = (a / spec.minArea).sqrt();
+      mut d = spec.depthScale * r;
+      if d > spec.maxDepth { d = spec.maxDepth; }
+      mut hw = spec.widthScale * r;
+      if hw > spec.maxWidth { hw = spec.maxWidth; }
+      depthAt.push(d);
+      halfWidth.push(hw);
+    } else {
+      depthAt.push(0.);
+      halfWidth.push(0.);
+    }
+    i = i + 1usize;
+  }
+  mut carve = List[f32].withCapacity(n);
+  mut river = List[f32].withCapacity(n);
+  carve.resize(n, 0.);
+  river.resize(n, 0.);
+  // stamp each channel cell's profile into the neighbourhood: the deepest cut wins
+  mut c = 0usize;
+  while c < n {
+    imm d = *depthAt[c];
+    if d > 0. {
+      imm hw = *halfWidth[c];
+      imm reach = i32.from(libc.ceilf(hw * 1.6 / hf.cell)) + 1;
+      imm cx = i32.from(c % w);
+      imm cz = i32.from(c / w);
+      mut dz = -reach;
+      while dz <= reach {
+        mut dx = -reach;
+        while dx <= reach {
+          imm nx = cx + dx;
+          imm nz = cz + dz;
+          if nx >= 0 and nz >= 0 and nx < i32.from(w) and nz < i32.from(h) {
+            imm dist = (f32.from(dx * dx + dz * dz)).sqrt() * hf.cell;
+            // bed flat to half the half-width, then a smooth bank out to 1.6 half-widths
+            imm t = (dist - hw * 0.5) / (hw * 1.1 + 0.001);
+            imm prof = 1. - smooth01(t);
+            imm cut = d * prof;
+            imm ni = usize.from(nz) * w + usize.from(nx);
+            if cut > *carve[ni] { carve.set(ni, cut); }
+            imm rv = 1. - smooth01((dist - hw * 0.5) / (hw * 0.7 + 0.001));
+            if rv > *river[ni] { river.set(ni, rv); }
+          }
+          dx = dx + 1;
+        }
+        dz = dz + 1;
+      }
+    }
+    c = c + 1usize;
+  }
+  mut waterDepth = List[f32].withCapacity(n);
+  mut surface = List[f32].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    hf.data.set(i, *hf.data[i] - *carve[i]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    imm ground = *hf.data[i];
+    if *hy.lakeDepth[i] > 0. {
+      waterDepth.push(*hy.lakeDepth[i]);
+      surface.push(*hy.filled[i]);
+    } elif *river[i] > 0.6 and *carve[i] > 0.3 {
+      // a river holds water to a third of the depth cut there
+      waterDepth.push(*carve[i] * 0.35);
+      surface.push(ground + *carve[i] * 0.35);
+    } else {
+      waterDepth.push(0.);
+      surface.push(ground);
+    }
+    i = i + 1usize;
+  }
+  new RiverMaps(carve, river, waterDepth, surface);
+}

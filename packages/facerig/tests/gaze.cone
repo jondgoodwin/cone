@@ -1,0 +1,169 @@
+// Eyes and head: saccades, the head's share of a gaze shift, vergence, limits.
+//
+// Worked out here:
+// 1. The main sequence, D = 0.037 + 0.0027 A (A in degrees): 10 degrees take
+//    0.064 s, 40 degrees take 0.145 s.
+// 2. A minimum-jerk saccade covers its amplitude A in D with peak speed
+//    1.875 A / D at the middle: 8 degrees (0.139626 rad) in 0.0586 s peaks at
+//    4.4674 rad/s.
+// 3. A target 8 degrees to the left, inside the head's 10 degree dead zone:
+//    the eyes alone turn, to 8 degrees of yaw; the head stays.
+// 4. A target 40 degrees left: the head takes 0.75 (40 - 9.74) = 22.7 degrees
+//    (the dead zone is 0.17 rad = 9.74 degrees), the eyes the rest, 17.3; the
+//    gaze (head plus eye) is 40 degrees. The eyes arrive before the head.
+// 5. A target 0.30 m ahead of the eyes' middle, the eyes 0.062 m apart: each
+//    eye turns in by atan(0.031 / 0.30), so their yaws differ by
+//    2 atan(0.031/0.30) = 0.20598 rad.
+// 6. A target far to the side is out of the eyes' range: they stop at the limit.
+
+mod gaze;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import bonepose use *;
+import facerig use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn make() Gaze {
+  mut p = GazeParams.standard();
+  p.microAmp = 0.;
+  p.idleMean = 1000.;
+  Gaze.make(p, new Vec3(-0.031, 0.02, -0.07), new Vec3(0.031, 0.02, -0.07), 5u32);
+}
+
+// A point at 'yaw' (left positive) and 'pitch' radians from the eyes' middle, 'dist' away
+fn pointAt(yaw f32, pitch f32, dist f32) Vec3 {
+  imm o = new Vec3(0., 0.02, -0.07);
+  imm dir = new Vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch));
+  o + dir * dist;
+}
+
+fn testMainSequence() {
+  near(saccadeDuration(radians(10.)), 0.064, 0.0001, "10 degrees: 64 ms");
+  near(saccadeDuration(radians(40.)), 0.145, 0.0001, "40 degrees: 145 ms");
+  near(minimumJerk(0.5), 0.5, 0.000001, "minimum jerk is half way at half time");
+  near(minimumJerk(0.), 0., 0.000001, "starts at 0");
+  near(minimumJerk(1.), 1., 0.000001, "ends at 1");
+  // Peak slope at the middle: 1.875
+  near((minimumJerk(0.5001) - minimumJerk(0.4999)) / 0.0002, 1.875, 0.001, "peak slope 1.875");
+}
+
+fn testSmallShift() {
+  mut g = make();
+  mut rng = Rng.make(1u32);
+  g.lookAt(pointAt(radians(8.), 0., 2.));
+  // Step in milliseconds, tracking the fastest the eye goes
+  mut peak = 0.;
+  mut last = g.eyeYaw;
+  mut launchedAmp = 0.;
+  mut i = 0;
+  while i < 600 {
+    g.update(0.001, &mut rng);
+    if g.launched > 0. { launchedAmp = g.launched; }
+    imm v = absf(g.eyeYaw - last) / 0.001;
+    if v > peak { peak = v; }
+    last = g.eyeYaw;
+    i = i + 1;
+  }
+  near(g.eyeYaw, radians(8.), 0.003, "the eyes turn 8 degrees");
+  near(g.headYaw, 0., 0.0001, "the head stays put inside the dead zone");
+  near(launchedAmp, radians(8.), 0.003, "one saccade of 8 degrees");
+  imm want = 1.875 * radians(8.) / saccadeDuration(radians(8.));
+  near(peak, want, want * 0.03, "peak speed is 1.875 A / D");
+}
+
+fn testLargeShift() {
+  mut g = make();
+  mut rng = Rng.make(2u32);
+  g.lookAt(pointAt(radians(40.), 0., 2.));
+  mut eyeLeadsHead = false;
+  mut i = 0;
+  while i < 2000 {
+    g.update(0.001, &mut rng);
+    if i == 120 and g.eyeYaw > g.headYaw { eyeLeadsHead = true; }
+    i = i + 1;
+  }
+  expectBool(eyeLeadsHead, true, "0.12 s in, the eyes have turned further than the head");
+  imm wantHead = 0.75 * (radians(40.) - 0.17);
+  near(g.headYaw, wantHead, 0.01, "the head takes 0.75 of the shift beyond the dead zone");
+  near(g.eyeYaw + g.headYaw, radians(40.), 0.01, "head plus eye is on the target");
+  expect(g.eyeYaw < 0.62, "inside the eye's range");
+  expect(absf(g.headVelYaw) < 0.001, "and the head has settled");
+}
+
+fn testVergence() {
+  mut g = make();
+  mut rng = Rng.make(3u32);
+  g.lookAt(pointAt(0., 0., 0.30));
+  mut i = 0;
+  while i < 500 { g.update(0.001, &mut rng); i = i + 1; }
+  imm l = g.eyeAngles(false, 0.);
+  imm r = g.eyeAngles(true, 0.);
+  // The right eye turns to the being's left (positive yaw), the left eye to its right
+  near(r.x - l.x, 2. * atan2(0.031, 0.30), 0.002, "the eyes converge by 2 atan(0.031 / 0.30)");
+  expect(r.x > 0. and l.x < 0., "each turns towards the nose");
+}
+
+fn testLimit() {
+  mut g = make();
+  mut rng = Rng.make(4u32);
+  g.lookAt(pointAt(radians(85.), 0., 2.));
+  mut i = 0;
+  while i < 3000 { g.update(0.001, &mut rng); i = i + 1; }
+  expect(g.eyeAngles(true, 0.).x <= 0.6201, "the right eye stops at its limit");
+  expect(g.eyeAngles(false, 0.).x <= 0.6201, "and the left");
+}
+
+fn testPitchAndQuat() {
+  mut g = make();
+  mut rng = Rng.make(5u32);
+  g.lookAt(pointAt(0., radians(20.), 2.));
+  mut i = 0;
+  while i < 800 { g.update(0.001, &mut rng); i = i + 1; }
+  // 20 degrees up is inside the head's pitch dead zone (0.10 rad = 5.7 degrees)? no: the head takes 0.5 of the excess
+  imm wantHead = 0.5 * (radians(20.) - 0.10);
+  near(g.headPitch, wantHead, 0.01, "the head's share of a pitch is 0.5 of the excess");
+  near(g.eyePitch + g.headPitch, radians(20.), 0.01, "head plus eye is on the target");
+  // The eye's quaternion turns -z to the pitch direction
+  imm q = eyeQuat(0., radians(20.));
+  imm d = q * new Vec3(0., 0., -1.);
+  near(d.y, sin(radians(20.)), 0.0001, "an eye pitched 20 degrees looks up by sin 20");
+  imm q2 = eyeQuat(radians(30.), 0.);
+  imm d2 = q2 * new Vec3(0., 0., -1.);
+  near(d2.x, -sin(radians(30.)), 0.0001, "an eye yawed 30 degrees looks to the left (-x)");
+}
+
+fn testIdleSaccades() {
+  mut p = GazeParams.standard();
+  p.microAmp = 0.;
+  mut g = Gaze.make(p, new Vec3(-0.031, 0.02, -0.07), new Vec3(0.031, 0.02, -0.07), 5u32);
+  mut rng = Rng.make(8u32);
+  g.lookAt(pointAt(0., 0., 2.));
+  mut launched = 0;
+  mut worst = 0.;
+  mut i = 0;
+  while i < 60000 {
+    g.update(0.001, &mut rng);
+    if g.launched > 0. { launched = launched + 1; }
+    imm off = (g.offYaw * g.offYaw + g.offPitch * g.offPitch).sqrt();
+    if off > worst { worst = off; }
+    i = i + 1;
+  }
+  expect(launched >= 12 and launched <= 60, "idle saccades come about once or twice a second");
+  expect(worst <= p.idleMax + 0.0001 + 0.035, "and never go far off the target");
+}
+
+fn main() i32 {
+  testMainSequence();
+  testSmallShift();
+  testLargeShift();
+  testVergence();
+  testLimit();
+  testPitchAndQuat();
+  testIdleSaccades();
+  done();
+}
