@@ -1,0 +1,434 @@
+// A rich document on a real GPU, headless: a page with a heading, paragraphs with bold, italic, underline and
+// a link, a nested bulleted list, a numbered list with a nested level, a justified paragraph, and a picture
+// floated right with the text wrapping round it; then a selection made by hit testing; then a scripted
+// edit (a word made bold and italic, a paragraph made a list item, typing, a line break) with its undo and
+// redo; then the same document on a narrower page, and the costs of a 1,000-paragraph document.
+//
+//   congo run --release examples/richdemo.cone -- <out folder>
+//   GPU_POWER_PREFERENCE=low-power congo run ...      the same on the integrated GPU
+//
+// Everything the "user" does goes through the editor's functions (insertText, enter, toggleStyle, setCaret
+// from a point found by posAt): no window exists, so no real keystroke or mouse input is involved.
+
+mod richdemo;
+
+import libc;
+import fs;
+import path use Path;
+import stdio use *;
+import process;
+import sdl;
+import collections use *;
+import geomath use *;
+import gpu use *;
+import msdftext use *;
+import imagedecode use *;
+import richtext use *;
+
+const W = 1000u32;
+const H = 1060u32;
+
+fn loadFont(file &str) Option[Font] {
+  mut out Option[Font] = None;
+  match fs.readFile(&Path.from(file)) {
+    case imm bytes Ok {
+      match Font.load(bytes.view()) {
+        case imm f Ok { out = Some[Font](f); }
+        case is Error {}
+      }
+    }
+    case is Error {}
+  }
+  out;
+}
+
+fn makeFaces() Option[Faces] {
+  mut out Option[Faces] = None;
+  match loadFont("C:/Windows/Fonts/georgia.ttf") {
+    case imm reg Some {
+      mut f = Faces.make(reg);
+      match loadFont("C:/Windows/Fonts/georgiab.ttf") { case imm b Some { f.setBold(b); } case is None {} }
+      match loadFont("C:/Windows/Fonts/georgiai.ttf") { case imm i Some { f.setItalic(i); } case is None {} }
+      match loadFont("C:/Windows/Fonts/georgiaz.ttf") { case imm z Some { f.setBoldItalic(z); } case is None {} }
+      out = Some[Faces](f);
+    }
+    case is None {}
+  }
+  out;
+}
+
+// ---- the picture: a small landscape, made by a formula (90 x 60 pixels, shown at 2x) ----
+
+fn landscape() ImageInfo {
+  imm w = 90u32;
+  imm h = 60u32;
+  mut px = List[u8].withCapacity(usize.from(w * h * 4u32));
+  mut y = 0u32;
+  while y < h {
+    mut x = 0u32;
+    while x < w {
+      imm fx = f32.from(x) / f32.from(w);
+      imm fy = f32.from(y) / f32.from(h);
+      // sky: pale at the horizon
+      mut r = 0.45 + 0.4 * fy;
+      mut g = 0.65 + 0.28 * fy;
+      mut b = 0.95 - 0.05 * fy;
+      // the sun
+      imm dx = (fx - 0.72) * 1.5;
+      imm dy = fy - 0.24;
+      imm d = (dx * dx + dy * dy).sqrt();
+      if d < 0.09 { r = 1.0; g = 0.93; b = 0.62; }
+      elif d < 0.16 { imm k = 1.0 - (d - 0.09) / 0.07; r = r + (1.0 - r) * k * 0.5; g = g + (0.95 - g) * k * 0.5; b = b + (0.7 - b) * k * 0.3; }
+      // two ranges of hills
+      imm far = 0.56 + 0.06 * (fx * 9.0).sin() + 0.03 * (fx * 23.0 + 1.0).sin();
+      imm near = 0.72 + 0.07 * (fx * 5.0 + 2.0).sin() + 0.02 * (fx * 31.0).sin();
+      if fy > far { r = 0.36; g = 0.52; b = 0.44; }
+      if fy > near { r = 0.30; g = 0.50; b = 0.22 + 0.10 * (fy - near) * 4.0; }
+      // a tree on the near hill
+      imm tx = (fx - 0.28) * 90.0;
+      imm ty = (fy - 0.50) * 60.0;
+      if tx > -1.0 and tx < 1.0 and ty > 0.0 and ty < 9.0 { r = 0.35; g = 0.24; b = 0.14; }
+      if tx * tx + (ty + 3.0) * (ty + 3.0) < 30.0 and ty < 4.0 { r = 0.16; g = 0.40; b = 0.16; }
+      px.push(u8.from(u32.from(r * 255.0)));
+      px.push(u8.from(u32.from(g * 255.0)));
+      px.push(u8.from(u32.from(b * 255.0)));
+      px.push(255u8);
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  new ImageInfo(180.0, 120.0, PL_RIGHT, String.from("A landscape: hills, a tree and a low sun"), w, h, px);
+}
+
+// ---- the program's use of the editor ----
+
+const NOT_FOUND = 18446744073709551615usize;
+
+fn find(e &RichEditor, block usize, needle &str) usize {
+  match e.block(block).text.view().find(needle) {
+    case imm i Some { i; }
+    case is None { NOT_FOUND; }
+  }
+}
+
+// Select 'needle' in a block, as a drag over it would
+fn selectText(e &mut RichEditor, block usize, needle &str) {
+  imm i = find(e, block, needle);
+  if i == NOT_FOUND { print <- "not found: ", needle, "\n"; return; }
+  e.setCaret(pos(block, i), false);
+  e.setCaret(pos(block, i + needle.len()), true);
+}
+
+fn bold(e &mut RichEditor, block usize, needle &str) { selectText(e, block, needle); e.toggleStyle(OP_BOLD); }
+fn italic(e &mut RichEditor, block usize, needle &str) { selectText(e, block, needle); e.toggleStyle(OP_ITALIC); }
+fn underline(e &mut RichEditor, block usize, needle &str) { selectText(e, block, needle); e.toggleStyle(OP_UNDERLINE); }
+fn link(e &mut RichEditor, block usize, needle &str) {
+  selectText(e, block, needle);
+  imm op = new StyleOp(OP_LINK, true, 0.0, 1u32);
+  e.styleSelection(&op);
+}
+fn colour(e &mut RichEditor, block usize, needle &str, c u32) {
+  selectText(e, block, needle);
+  imm op = new StyleOp(OP_COLOR, true, 0.0, c);
+  e.styleSelection(&op);
+}
+
+fn item(e &mut RichEditor, kind u32, depth u32, text &str) {
+  // a new block of the kind and depth, typed into
+  e.setBlockKind(kind);
+  e.setListDepth(depth);
+  e.insertText(text);
+  e.enter();
+}
+
+// The document, made the way a person would: typing, Enter, and the list and heading commands
+fn buildDocument(e &mut RichEditor) {
+  e.setBlockKind(BK_H1);
+  e.insertText("Notes on a Weekend Loaf");
+  e.enter();
+  e.insertText("A good loaf starts the evening before. Mix the flour, water and a pinch of yeast, cover the bowl and leave it alone; by morning the dough has doubled, smells faintly of beer, and asks for very little more than a hot oven and some patience. This page is a short, honest record of how that goes, set in a rich text document with styles, lists and a picture.");
+  e.enter();
+  e.setBlockKind(BK_H2);
+  e.insertText("What you need");
+  e.enter();
+  item(e, BK_BULLET, 0u32, "500 g strong white flour, plus a little for dusting");
+  item(e, BK_BULLET, 0u32, "A wet dough needs three things:");
+  item(e, BK_BULLET, 1u32, "375 g of water, cool from the tap");
+  item(e, BK_BULLET, 1u32, "10 g of fine salt, added after the first rest");
+  item(e, BK_BULLET, 1u32, "a quarter teaspoon of dried yeast, no more");
+  item(e, BK_BULLET, 0u32, "A heavy lidded pot that can take 240 degrees");
+  // leave the list: Enter on the empty bullet
+  e.enter();
+  e.setBlockKind(BK_H2);
+  e.insertText("The method");
+  e.enter();
+  item(e, BK_NUMBER, 0u32, "Stir everything to a shaggy dough and cover it.");
+  item(e, BK_NUMBER, 0u32, "After twelve hours, fold the dough over itself:");
+  item(e, BK_NUMBER, 1u32, "wet your hand so nothing sticks");
+  item(e, BK_NUMBER, 1u32, "lift an edge and fold it to the middle, four times");
+  item(e, BK_NUMBER, 0u32, "Shape it, rest it for an hour, and heat the pot.");
+  item(e, BK_NUMBER, 0u32, "Bake covered for thirty minutes, then uncovered until it is deep brown.");
+  e.enter();
+  e.setBlockKind(BK_H2);
+  e.insertText("Why it works");
+  e.enter();
+  e.insertText("Long, cool fermentation does the kneading for you: the gluten strengthens on its own, the flavour deepens, and the crumb comes out open and glossy. A covered pot traps the steam the dough gives off, which keeps the crust thin and soft for the first half of the bake and lets it crisp and blister in the second. Nothing in the method asks for skill, only for time, which is the one ingredient that cannot be bought.");
+  // blocks: 0 title, 1 intro, 2 heading, 3-8 bullets, 9 heading, 10-15 numbers, 16 heading, 17 the last paragraph
+  e.setCaret(pos(17usize, 0usize), false);
+  e.setAlign(AL_JUSTIFY);
+  bold(e, 1usize, "very little more than a hot oven and some patience");
+  italic(e, 1usize, "rich text document");
+  underline(e, 1usize, "short, honest record");
+  link(e, 1usize, "styles, lists and a picture");
+  bold(e, 8usize, "heavy lidded pot");
+  colour(e, 8usize, "240 degrees", 0xA03020ffu32);
+  italic(e, 17usize, "Long, cool fermentation");
+  bold(e, 17usize,"time, which is the one ingredient that cannot be bought");
+  // the picture, anchored at the start of the introduction
+  imm img = e.addImage(landscape());
+  e.setCaret(pos(1usize, 0usize), false);
+  e.insertImage(img);
+  e.setCaret(pos(0usize, 0usize), false);
+}
+
+// ---- the renderer's rig: a target, a read-back, a PNG ----
+
+struct Shot {
+  target Texture;
+  readback Buffer;
+}
+
+fn makeShot(device &mut Device) Shot {
+  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  new Shot(target, readback);
+}
+
+fn savePng(shot &Shot, file &Path) {
+  imm px = shot.readback.mappedRange();
+  mut samples = List[u16].withCapacity(usize.from(W * H * 4u32));
+  mut i = 0usize;
+  while i < usize.from(W * H * 4u32) {
+    samples.push(u16.from(*(px + i)));
+    i = i + 1usize;
+  }
+  imm opts = PngWrite.make(6u8, 8u8);
+  imm bytes = encodePngSamples(i32.from(W), i32.from(H), samples.view(), &opts);
+  fs.writeFile(file, bytes.view());
+}
+
+struct Times {
+  layoutNs List[i64];
+  prepNs List[i64];
+  recordNs List[i64];
+  waitNs List[i64];
+}
+
+fn p50(v &List[i64]) i64 {
+  mut c = List[i64].empty();
+  mut i = 0usize;
+  while i < v.len() {
+    c.push(*v[i]);
+    i = i + 1usize;
+  }
+  c.sortBy(fn(a &i64, b &i64) i32 { if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; }; });
+  if c.len() == 0usize { 0i64; } else { *c[c.len() / 2usize]; };
+}
+
+fn view(pageWidth f32, scroll f32, caret bool) RichView {
+  new RichView(f32.from(W), f32.from(H), (f32.from(W) - pageWidth) * 0.5, scroll, 0x3a3d44ffu32, 0xfbf9f4ffu32, 0x4a8cd850u32,
+    0x1a1a1affu32, pageWidth, caret);
+}
+
+// Lay out, draw and (if 'out' is given) save. Times go to 't'
+fn present(device &mut Device, r &mut RichRenderer, shot &Shot, faces &Faces, e &RichEditor, cfg &LayoutConfig, scroll f32, showCaret bool,
+    outDir &str, out &str, t &mut Times) RichLayout {
+  imm t0 = sdl.GetTicksNS();
+  imm l = layoutRich(&e.core.blocks, &e.core.images, faces, cfg);
+  imm t1 = sdl.GetTicksNS();
+  imm sel = selectionRects(&l, e.lo(), e.hi());
+  imm caret = caretRect(&l, e.head());
+  mut encoder = device.createCommandEncoder();
+  r.draw(device, &mut encoder, &shot.target, &view(cfg.width, scroll, showCaret), faces, &l, &e.core.images, &sel, &caret);
+  imm t2 = sdl.GetTicksNS();
+  if out.len() > 0usize { encoder.copyTextureToBuffer(&shot.target, &shot.readback); }
+  device.queue.submit(encoder.finish());
+  imm t3 = sdl.GetTicksNS();
+  device.endFrame();
+  device.waitIdle();
+  imm t4 = sdl.GetTicksNS();
+  t.layoutNs.push(i64.from(t1 - t0));
+  t.prepNs.push(i64.from(t2 - t1));
+  t.recordNs.push(i64.from(t3 - t2));
+  t.waitNs.push(i64.from(t4 - t3));
+  if out.len() > 0usize {
+    imm file = Path.from(outDir).join(out);
+    savePng(shot, &file);
+  }
+  l;
+}
+
+fn describe(label &str, l &RichLayout, e &RichEditor) {
+  print <- label, ": ", u64.from(e.blockCount()), " blocks, ", u64.from(l.lines.len()), " lines, ", u64.from(l.glyphs.len()), " glyphs, ",
+    u64.from(l.boxes.len()), " image boxes, page height ", u64.from(u32.from(l.height)), " px\n";
+}
+
+fn main() i32 {
+  imm args = process.args();
+  mut out = String.from("richtext-shots");
+  if args.len() > 1usize { out = String.from((*args[1usize]).view()); }
+  mut instance = Instance.create("richtext demo");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  mut device = adapter.requestDevice();
+  print <- "adapter ", adapter.name.view(), "\n";
+  imm maybe = makeFaces();
+  match &maybe {
+    case imm faces Some { run(&mut device, out.view(), faces); }
+    case is None { print <- "Georgia is not installed\n"; }
+  }
+  0;
+}
+
+fn run(device &mut Device, outDir &str, faces &Faces) {
+  imm outPath = Path.from(outDir);
+  fs.makeDirAll(&outPath);
+  mut r = RichRenderer.create(device, faces, TEXTURE_FORMAT_RGBA8_UNORM);
+  imm shot = makeShot(device);
+  mut times = new Times(List[i64].empty(), List[i64].empty(), List[i64].empty(), List[i64].empty());
+  mut cfg = LayoutConfig.standard(820.0);
+  cfg.marginTop = 44.0;
+  cfg.margin = 52.0;
+  mut e = RichEditor.make();
+  buildDocument(&mut e);
+  print <- "document built: ", u64.from(e.blockCount()), " blocks, ", u64.from(e.hist.undoCount()), " undo steps\n";
+
+  // 1. the page
+  imm l1 = present(device, &mut r, &shot, faces, &e, &cfg, 0.0, false, outDir, "01-page.png", &mut times);
+  describe("1 page", &l1, &e);
+  print <- "  glyph groups ", u64.from(r.groupsDrawn), ", glyph quads ", u64.from(r.glyphsDrawn), ", image rectangles ", u64.from(r.cellsDrawn), "\n";
+  // warm the cost numbers: the same frame 40 times
+  mut n = 0u32;
+  while n < 40u32 {
+    present(device, &mut r, &shot, faces, &e, &cfg, 0.0, false, outDir, "", &mut times);
+    n = n + 1u32;
+  }
+
+  // 2. a selection by hit testing: a drag from inside the introduction to inside the numbered list
+  imm ox = (f32.from(W) - cfg.width) * 0.5;
+  imm a = posAt(&l1, 150.0, 190.0);
+  imm b = posAt(&l1, 300.0, 690.0);
+  e.setCaret(a, false);
+  e.setCaret(b, true);
+  print <- "selection from block ", u64.from(a.block), " offset ", u64.from(a.off), " to block ", u64.from(b.block), " offset ", u64.from(b.off), "\n";
+  present(device, &mut r, &shot, faces, &e, &cfg, 0.0, false, outDir, "02-selection.png", &mut times);
+
+  // 3. a scripted edit: the word "dough" in the first list item's sentence made bold italic, a new item typed, a line break
+  e.setCaret(pos(0usize, 0usize), false);
+  imm i0 = find(&e, 1usize, "dough");
+  e.setCaret(pos(1usize, i0), false);
+  e.setCaret(pos(1usize, i0 + 5usize), true);
+  e.toggleStyle(OP_BOLD);
+  e.toggleStyle(OP_ITALIC);
+  // a new numbered item at the end of the numbered list (after block 14), typed
+  e.setCaret(pos(15usize, e.block(15usize).text.len()), false);
+  e.enter();
+  e.insertText("Let it cool on a rack before cutting, however hard that is.");
+  e.enter();
+  e.enter();
+  e.insertText("Total undo steps so far: ");
+  imm steps = e.hist.undoCount();
+  mut stepsText = String.empty();
+  stepsText.appendUInt(u64.from(steps));
+  e.insertText(stepsText.view());
+  print <- "after the edit: ", u64.from(e.blockCount()), " blocks, ", u64.from(steps), " undo steps\n";
+  imm l3 = present(device, &mut r, &shot, faces, &e, &cfg, 0.0, true, outDir, "03-edit.png", &mut times);
+  describe("3 edit", &l3, &e);
+
+  // 4. undo it all, step by step, back to the first state of the edit; then redo two
+  mut undone = 0u32;
+  while undone < 8u32 and e.undo() { undone = undone + 1u32; }
+  print <- "undone ", u64.from(undone), " steps: ", u64.from(e.blockCount()), " blocks\n";
+  imm l4 = present(device, &mut r, &shot, faces, &e, &cfg, 0.0, true, outDir, "04-undo.png", &mut times);
+  describe("4 undo", &l4, &e);
+  e.redo();
+  e.redo();
+  present(device, &mut r, &shot, faces, &e, &cfg, 0.0, true, outDir, "05-redo.png", &mut times);
+
+  // 6. the same document on a narrower page, so the float and the wrapping move
+  cfg.width = 560.0;
+  cfg.margin = 40.0;
+  e.setCaret(pos(1usize, 0usize), false);
+  imm l6 = present(device, &mut r, &shot, faces, &e, &cfg, 0.0, false, outDir, "06-narrow.png", &mut times);
+  describe("6 narrow", &l6, &e);
+
+  // costs: the 40 warm frames of shot 1
+  print <- "frame at 820 px wide (", u64.from(l1.glyphs.len()), " glyphs): layout ", p50(&times.layoutNs) / 1000i64, " us, prepare ", p50(&times.prepNs) / 1000i64,
+    " us, record+submit ", p50(&times.recordNs) / 1000i64, " us, wait for the GPU ", p50(&times.waitNs) / 1000i64, " us (p50 of all frames)\n";
+  bench(device, &mut r, &shot, faces, outDir);
+}
+
+// A document of 1,000 paragraphs: the cost of laying it out, of a keystroke, and of a frame
+fn bench(device &mut Device, r &mut RichRenderer, shot &Shot, faces &Faces, outDir &str) {
+  mut e = RichEditor.make();
+  imm para = "The quick brown fox jumps over the lazy dog while the five boxing wizards jump quickly, and pack my box with five dozen liquor jugs so that every line of this paragraph has something to break on. ";
+  mut b = List[Block].empty();
+  mut i = 0u32;
+  while i < 1000u32 {
+    mut blk = Block.fromText(para, Style.plain());
+    if i % 7u32 == 0u32 { blk.kind = BK_H3; }
+    b.push(blk);
+    i = i + 1u32;
+  }
+  e = RichEditor.fromBlocks(b);
+  imm cfg = LayoutConfig.standard(820.0);
+  imm t0 = sdl.GetTicksNS();
+  mut l = layoutRich(&e.core.blocks, &e.core.images, faces, &cfg);
+  imm t1 = sdl.GetTicksNS();
+  print <- "1000 paragraphs: ", u64.from(l.lines.len()), " lines, ", u64.from(l.glyphs.len()), " glyphs, page ", u64.from(u32.from(l.height)), " px; layout ", (t1 - t0) / 1000000u64, " ms\n";
+  // a keystroke in the middle: edit, layout again, find the caret
+  mut ks = List[i64].empty();
+  mut edit = List[i64].empty();
+  e.setCaret(pos(500usize, 20usize), false);
+  mut k = 0u32;
+  while k < 30u32 {
+    imm a0 = sdl.GetTicksNS();
+    e.insertText("x");
+    imm a1 = sdl.GetTicksNS();
+    imm l2 = layoutRich(&e.core.blocks, &e.core.images, faces, &cfg);
+    caretRect(&l2, e.head());
+    imm a2 = sdl.GetTicksNS();
+    edit.push(i64.from(a1 - a0));
+    ks.push(i64.from(a2 - a0));
+    k = k + 1u32;
+  }
+  print <- "a keystroke in paragraph 500: edit ", p50(&edit) / 1000i64, " us; edit and a full layout ", p50(&ks) / 1000i64, " us (p50 of 30)\n";
+  // frames scrolled to the middle of the document
+  mut t = new Times(List[i64].empty(), List[i64].empty(), List[i64].empty(), List[i64].empty());
+  l = layoutRich(&e.core.blocks, &e.core.images, faces, &cfg);
+  imm mid = l.lines[l.lines.len() / 2usize].top;
+  mut f = 0u32;
+  while f < 30u32 {
+    imm lf = present(device, r, shot, faces, &e, &cfg, mid, true, outDir, if f == 29u32 { "07-long.png"; } else { ""; }, &mut t);
+    f = f + 1u32;
+  }
+  print <- "a frame in the middle of the long document: layout ", p50(&t.layoutNs) / 1000i64, " us, prepare ", p50(&t.prepNs) / 1000i64, " us, record+submit ",
+    p50(&t.recordNs) / 1000i64, " us, wait ", p50(&t.waitNs) / 1000i64, " us\n";
+  // hit testing
+  mut h = List[i64].empty();
+  mut q = 0u32;
+  while q < 200u32 {
+    imm h0 = sdl.GetTicksNS();
+    posAt(&l, 300.0 + f32.from(q), mid + 120.0);
+    imm h1 = sdl.GetTicksNS();
+    h.push(i64.from(h1 - h0));
+    q = q + 1u32;
+  }
+  print <- "hit test in the long document: ", p50(&h) / 1000i64, " us (p50; a linear scan of the lines)\n";
+}
