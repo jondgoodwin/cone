@@ -1662,11 +1662,25 @@ static int fnCallBorrowTypeReadsThrough(INode *type) {
     RefNode *ref = (RefNode*)type;
     if (itypeGetTypeDcl(ref->region) != borrowRef || permIsLock(ref->perm) || lifeIsKey(type) || refIsFat(ref))
         return 0;
+    // A borrow of a borrow reads through every level to the value, so long as
+    // every level is itself a borrow that reads through ('&&i64')
+    INode *held = itypeGetTypeDcl(ref->vtexp);
+    if (held->tag == RefTag)
+        return fnCallBorrowTypeReadsThrough(held);
     return fnCallCopiesFreely(ref->vtexp);
 }
 
 static int fnCallBorrowReadsThrough(INode *operand) {
     return fnCallBorrowTypeReadsThrough(iexpGetTypeDcl(operand));
+}
+
+// Read an operand that fnCallBorrowReadsThrough accepted through every level of
+// borrow, to the value. Answers whether it read through any.
+static int fnCallReadThroughAll(INode **operandp) {
+    int read = 0;
+    while (iexpGetTypeDcl(*operandp)->tag == RefTag && derefInject(operandp))
+        read = 1;
+    return read;
 }
 
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
@@ -1900,7 +1914,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         if (objread)
             selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
         if (selected == NULL && status == OverloadNone && argp) {
-            derefInject(argp);
+            fnCallReadThroughAll(argp);
             selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
             if (selected == NULL && status == OverloadNone && objread) {
                 callnode->objfn = obj;
@@ -1917,6 +1931,23 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // 'self &mut' by being borrowed (fnCallBorrowReceiver)
     if (selected == NULL && status == OverloadNone)
         selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+
+    // An operator's argument that is a borrow of a value that copies freely is
+    // read through for a receiver that has to be borrowed as well, 'print <- n'
+    // for an 'n' borrowed by 'each': the read-through retry above ran with the
+    // receiver as it is, which a method declaring 'self &' does not accept, so
+    // it is tried again here against the borrowed receiver. Reached only when
+    // nothing accepted the arguments as written.
+    if (selected == NULL && status == OverloadNone && !opOnPointer && (callnode->flags & FlagOperator)
+        && callnode->args && callnode->args->used == 1 && fnCallBorrowReadsThrough(nodesGet(callnode->args, 0))) {
+        INode **argp = &nodesGet(callnode->args, 0);
+        INode *arg = *argp;
+        if (fnCallReadThroughAll(argp)) {
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                *argp = arg;
+        }
+    }
 
     // 'x[i].m()' where no 'm' takes the element's read-only borrow: the index
     // is in set position, so a type declaring '&[]' lends its mutable borrow
@@ -2351,7 +2382,7 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     // shallower, '&str': only the owner's side is read through, as '&str ==
     // &So[str]' already reads through the owner when it takes its other side, so
     // the comparison does not depend on operand order
-    if (referent->tag == RefTag) {
+    if (referent->tag == RefTag && iexpGetTypeDcl(*argp)->tag == RefTag) {
         INode *otherreferent = itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp);
         if (otherreferent->tag != RefTag && otherreferent->tag != PtrTag && otherreferent->tag != ArrayRefTag
             && fnCallTextOf(iexpGetTypeDcl(node->objfn)) != NULL && fnCallTextOf(iexpGetTypeDcl(*argp)) != NULL) {
@@ -2362,7 +2393,10 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
     if (referent->tag == PtrTag || referent->tag == RefTag || referent->tag == ArrayRefTag) {
         fnCallDerefOperand(&node->objfn, node);
-        fnCallDerefOperand(argp, node);
+        // The other side is a value where a borrow of a borrow was read through
+        // against it (fnCallBorrowReadsThrough): nothing there to read
+        if (iexpGetTypeDcl(*argp)->tag == RefTag)
+            fnCallDerefOperand(argp, node);
         if (referent->tag == RefTag)
             fnCallLowerRefCompare(pstate, node);
         else if (referent->tag == ArrayRefTag)
@@ -3688,6 +3722,10 @@ static int fnCallArgMayInfer(INode *arg) {
 // has by then (genericFnArgExpect). Only a construction, never a function call:
 // the order a call's arguments are checked in is what narrowing sees
 // (narrowCallMade).
+// A variant of a non-generic enum, 'Fault.SoldOut' or 'Fault.Short(3)', is one
+// too when no call is among its values: given to a generic ('Error(Fault.SoldOut)')
+// it names no type parameter of its own, so where it goes may say it is the enum,
+// 'Fault', which it is then coerced to as a variant passed to an enum parameter is.
 static int fnCallArgIsCtor(INode *arg) {
     if (arg->tag == NamedValTag)
         arg = ((NamedValNode*)arg)->val;
@@ -3697,7 +3735,17 @@ static int fnCallArgIsCtor(INode *arg) {
     if (call->methfld != NULL || (call->flags & FlagOperator))
         return 0;
     StructNode *variant = fnCallVariantNamed(call->objfn);
-    return variant != NULL && variant->genericinfo != NULL;
+    if (variant == NULL)
+        return 0;
+    if (variant->genericinfo != NULL)
+        return 1;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if ((*argp)->tag == FnCallTag && !fnCallArgIsCtor(*argp))
+                return 0;
+    return 1;
 }
 
 // Is this a construction only where it goes can type: a variant of a generic enum
@@ -4169,6 +4217,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         && (node->flags & FlagIndex) && !(node->flags & (FlagCtorParen | FlagNew))
         && isTypeNode(node->objfn) && nameUseNames(node->objfn, StructTag)
         && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL;
+    // The same for an argument written as a plain type's name, but when the
+    // generic's instances hold values by value: a struct or an enum, not a trait
+    // (whose argument is checked when the trait is used)
+    int namesnamed = argsnamed && (!(nameUseGetDcl((NameUseNode*)node->objfn)->flags & TraitType)
+        || (nameUseGetDcl((NameUseNode*)node->objfn)->flags & (HasTagField | SameSize)));
     if (node->args) {
         uint32_t argi = 0;
         uint32_t ovfirst = firstparm;
@@ -4207,7 +4260,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
             if ((*argsp)->tag == ClosureTag)
                 fnCallCheckClosureArg(pstate, argsp, expect);
-            else if (argsnamed && (*argsp)->tag == FnCallTag) {
+            else if (argsnamed && ((*argsp)->tag == FnCallTag || (namesnamed && nameUseNames(*argsp, StructTag)))) {
                 structTargetEnter();
                 inodeTypeCheck(pstate, argsp, expect);
                 structTargetExit();
@@ -4618,6 +4671,15 @@ dispatch:
                     derefInject(&node->objfn);
                     objtype = iexpGetTypeDcl(node->objfn);
                     ownerread = 1;
+                    goto dispatch;
+                }
+                // An operator on a borrow of a borrow of a value that copies freely
+                // ('&&i64'): read through a level, as the comparisons are, and
+                // dispatched again on the borrow it leaves
+                else if ((node->flags & FlagOperator) && objdereftype->tag == RefTag
+                    && fnCallBorrowReadsThrough(node->objfn)) {
+                    derefInject(&node->objfn);
+                    objtype = iexpGetTypeDcl(node->objfn);
                     goto dispatch;
                 }
                 else

@@ -1,0 +1,167 @@
+// A generic type's written type argument is named, not held, so naming it does
+// not lay it out: a 'List[V]' in a struct's field names V, and V holds that
+// struct by value through a variant, but the List holds its elements behind a
+// pointer, so there is no cycle. It used to be refused as one (ErrorNoSize, "VL
+// contains V contains L contains VL by value") when the struct was written
+// above the enum, and compiled when it was written below it: the argument V was
+// laid out in the middle of VL's layout, and V found VL in flight.
+//
+// Every shape is written with the struct above its enum (the order that was
+// refused) and with the enum above (which always compiled), and each is built,
+// matched and dropped, since whether the layouts came out whole is what the
+// values read back through them show. The by-value cycles that must stay
+// refused are struct_typecheck_generic_arg_cycle.
+
+mod struct_layout_generic_arg_order;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- A struct holding a List of the enum whose variant holds it --------
+
+struct VL1 { pub items List[V1]; }
+enum V1 { N1(i64); L1(VL1); }
+
+enum V2 { N2(i64); L2(VL2); }
+struct VL2 { pub items List[V2]; }
+
+fn sum1(v &V1) i64 {
+  match v {
+    case imm n N1 { *n; }
+    case imm l L1 {
+      mut s = 0i64;
+      each k in l.items { s = s + sum1(k); }
+      s;
+    }
+  }
+}
+
+fn sum2(v &V2) i64 {
+  match v {
+    case imm n N2 { *n; }
+    case imm l L2 {
+      mut s = 0i64;
+      each k in l.items { s = s + sum2(k); }
+      s;
+    }
+  }
+}
+
+// -------- The List nested in an Option, and the struct nested in a struct --------
+
+struct Opt1 { pub maybe Option[List[W1]]; }
+enum W1 { Leaf1(i64); Hold1(Opt1); }
+
+struct Mid1 { pub kids List[X1]; }
+struct Outer1 { pub mid Mid1; }
+enum X1 { Tip1(i64); Branch1(Outer1); }
+
+fn sumW1(w &W1) i64 {
+  match w {
+    case imm n Leaf1 { *n; }
+    case imm h Hold1 {
+      match &h.maybe {
+        case imm xs &Some[List[W1]] {
+          mut s = 0i64;
+          each k in *xs { s = s + sumW1(k); }
+          s;
+        }
+        else { 0i64; }
+      }
+    }
+  }
+}
+
+fn sumX1(x &X1) i64 {
+  match x {
+    case imm n Tip1 { *n; }
+    case imm b Branch1 {
+      mut s = 0i64;
+      each k in b.mid.kids { s = s + sumX1(k); }
+      s;
+    }
+  }
+}
+
+// -------- A generic of our own holding its argument behind a pointer --------
+
+struct Cell[T] { pub p *T; pub n usize; }
+struct Holder1 { pub c Cell[Item1]; pub k i64; }
+enum Item1 { Plain1(i64); Held1(Holder1); }
+
+enum Item2 { Plain2(i64); Held2(Holder2); }
+struct Holder2 { pub c Cell[Item2]; pub k i64; }
+
+// -------- A List of the struct, held by the enum's variant directly --------
+
+struct VW { pub more List[VL3]; }
+struct VL3 { pub items List[V3]; pub tag i64; }
+enum V3 { N3(i64); L3(VW); }
+
+fn sumV3(v &V3) i64 {
+  match v {
+    case imm n N3 { *n; }
+    case imm w L3 {
+      mut s = 0i64;
+      each vl in w.more {
+        s = s + vl.tag;
+        each k in vl.items { s = s + sumV3(k); }
+      }
+      s;
+    }
+  }
+}
+
+fn main() {
+  mut inner1 = List[V1].empty();
+  inner1.push(V1.N1(3));
+  inner1.push(V1.N1(4));
+  mut outer1 = List[V1].empty();
+  outer1.push(V1.N1(1));
+  outer1.push(V1.L1(new VL1(inner1)));
+  imm top1 = V1.L1(new VL1(outer1));
+  show("List of V1 in a struct, struct first", sum1(&imm top1));
+
+  mut inner2 = List[V2].empty();
+  inner2.push(V2.N2(30));
+  inner2.push(V2.N2(40));
+  mut outer2 = List[V2].empty();
+  outer2.push(V2.N2(10));
+  outer2.push(V2.L2(new VL2(inner2)));
+  imm top2 = V2.L2(new VL2(outer2));
+  show("List of V2 in a struct, enum first", sum2(&imm top2));
+
+  mut ws = List[W1].empty();
+  ws.push(W1.Leaf1(5));
+  ws.push(W1.Leaf1(6));
+  imm w = W1.Hold1(new Opt1(Some(ws)));
+  show("Option of List of W1", sumW1(&imm w));
+  imm none = W1.Hold1(new Opt1(None));
+  show("Option of List of W1, None", sumW1(&imm none));
+
+  mut xs = List[X1].empty();
+  xs.push(X1.Tip1(7));
+  xs.push(X1.Tip1(8));
+  imm x = X1.Branch1(new Outer1(new Mid1(xs)));
+  show("List of X1 two structs down", sumX1(&imm x));
+
+  show("sizeof Cell[Item1]", i64.from(mem.sizeof[Cell[Item1]]()));
+  show("sizeof Holder1", i64.from(mem.sizeof[Holder1]()));
+  show("sizeof Holder2", i64.from(mem.sizeof[Holder2]()));
+  show("sizeof Item1", i64.from(mem.sizeof[Item1]()));
+  show("sizeof Item2", i64.from(mem.sizeof[Item2]()));
+
+  mut leaves = List[V3].empty();
+  leaves.push(V3.N3(100));
+  mut vls = List[VL3].empty();
+  vls.push(new VL3(leaves, 1000));
+  imm v3 = V3.L3(new VW(vls));
+  show("List of VL3 in a struct in a variant", sumV3(&imm v3));
+}

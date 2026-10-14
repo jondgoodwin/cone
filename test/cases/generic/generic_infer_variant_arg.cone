@@ -1,0 +1,177 @@
+// A variant given to a generic variant, 'Error(Fault.SoldOut)', 'Ok(Drink.Tea)',
+// 'Some(Color.Red)', is the enum its place says when the type expected of the
+// whole says one. Such a variant names no type parameter of its own, so it is
+// wanted as the type its parameter has once where the call goes is read, and
+// coerced to it as a variant passed to an enum parameter is: 'Error(Fault.SoldOut)'
+// wanted as a 'Result[Drink, Fault]' holds a 'Fault', not a 'Fault.SoldOut'.
+//
+// The sources of the expected type are those of generic_infer_expected: a return,
+// an argument, a declared variable, an assignment, a struct's field, the branches
+// of an 'if', a construction in a construction, a user generic enum and a generic
+// function; and the variant may hold a value ('Fault.Short(3)'). Written type
+// arguments, 'Error[Drink, Fault](Fault.SoldOut)', still name the instance.
+//
+// With no expected type nothing says the enum: that case is generic_typecheck_variant_arg.
+//
+// Each printed value was checked by hand against the source.
+
+mod generic_infer_variant_arg;
+
+import stdio use *;
+
+enum Drink { Tea; Coffee; }
+enum Fault { SoldOut; Short(i32); Jam; }
+enum Color { Red; Green; }
+
+struct Slot {
+  pub r Result[Drink, Fault];
+}
+
+// A generic enum of the program's own
+enum Tree[T] { Leaf; Node(T); }
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn faultNum(f Fault) i64 {
+  match f {
+    case imm n Short { i64.from(n) + 100; }
+    case is SoldOut { 200; }
+    else { 300; }
+  }
+}
+
+// 1 for tea and 2 for coffee, 100 more than a shortage's count or 200 or 300 for a fault
+fn resNum(r Result[Drink, Fault]) i64 {
+  match r {
+    case imm d Ok { if d is Tea {1;} else {2;} }
+    case imm f Error { faultNum(f); }
+  }
+}
+
+fn colorNum(o Option[Color]) i64 {
+  match o {
+    case imm c Some { if c is Red {1;} else {2;} }
+    else { 0; }
+  }
+}
+
+fn treeNum(t Tree[Color]) i64 {
+  match t {
+    case imm c Node { if c is Red {1;} else {2;} }
+    else { 0; }
+  }
+}
+
+// A return, in each of its spellings
+fn returned() Result[Drink, Fault] { return Error(Fault.SoldOut); }
+fn returnedOk() Result[Drink, Fault] { return Ok(Drink.Tea); }
+fn returnedSome() Option[Color] { return Some(Color.Red); }
+fn lastValue() Result[Drink, Fault] { Error(Fault.Jam); }
+fn withValue() Result[Drink, Fault] { return Error(Fault.Short(3)); }
+fn written() Result[Drink, Fault] { return Error[Drink, Fault](Fault.SoldOut); }
+
+// A call's argument
+fn arguments() {
+  show("arg error", resNum(Error(Fault.SoldOut)));
+  show("arg ok", resNum(Ok(Drink.Coffee)));
+  show("arg some", colorNum(Some(Color.Green)));
+  show("arg short", resNum(Error(Fault.Short(7))));
+}
+
+// A declared variable, and an assignment to one
+fn variables() {
+  imm a Result[Drink, Fault] = Error(Fault.Jam);
+  show("var error", resNum(a));
+  imm b Result[Drink, Fault] = Ok(Drink.Tea);
+  show("var ok", resNum(b));
+  imm c Option[Color] = Some(Color.Red);
+  show("var some", colorNum(c));
+  imm d Result[Drink, Fault] = Error(Fault.Short(4));
+  show("var short", resNum(d));
+  mut e Result[Drink, Fault] = Ok(Drink.Coffee);
+  show("before", resNum(e));
+  e = Error(Fault.SoldOut);
+  show("assigned", resNum(e));
+  mut o Option[Color] = None;
+  show("none", colorNum(o));
+  o = Some(Color.Green);
+  show("assigned some", colorNum(o));
+}
+
+// A struct's field
+fn fields() {
+  imm s = new Slot(Error(Fault.SoldOut));
+  show("field error", resNum(s.r));
+  imm t = new Slot(Ok(Drink.Tea));
+  show("field ok", resNum(t.r));
+}
+
+// The branches of an 'if'
+fn branches(b bool) Result[Drink, Fault] {
+  if b { Ok(Drink.Tea); } else { Error(Fault.SoldOut); }
+}
+
+fn branchVariable(b bool) i64 {
+  imm r Result[Drink, Fault] = if b { Ok(Drink.Coffee); } else { Error(Fault.Jam); };
+  resNum(r);
+}
+
+// A construction in a construction
+fn nestedOk() Option[Result[Drink, Fault]] { Some(Ok(Drink.Tea)); }
+fn nestedError() Option[Result[Drink, Fault]] { Some(Error(Fault.SoldOut)); }
+
+fn unwrap(o Option[Result[Drink, Fault]]) i64 {
+  match o {
+    case imm r Some { resNum(r); }
+    else { 0; }
+  }
+}
+
+fn nestedSome() {
+  imm x Option[Option[Color]] = Some(Some(Color.Red));
+  match x {
+    case imm inner Some { show("nested some", colorNum(inner)); }
+    else { show("nested some", -1); }
+  }
+}
+
+// A user's generic enum, and a generic function making an Option
+fn userEnum() {
+  imm t Tree[Color] = Tree.Node(Color.Red);
+  show("tree", treeNum(t));
+  show("tree arg", treeNum(Tree.Node(Color.Green)));
+  show("tree leaf", treeNum(Tree.Leaf));
+}
+
+fn wrap[T](x T) Option[T] { Some(x); }
+
+fn wrapped() {
+  imm o Option[Color] = wrap(Color.Red);
+  show("wrapped", colorNum(o));
+}
+
+fn main() {
+  show("return", resNum(returned()));
+  show("return ok", resNum(returnedOk()));
+  show("return some", colorNum(returnedSome()));
+  show("last", resNum(lastValue()));
+  show("with value", resNum(withValue()));
+  show("written", resNum(written()));
+  arguments();
+  variables();
+  fields();
+  show("if", resNum(branches(true)));
+  show("else", resNum(branches(false)));
+  show("if variable", branchVariable(true));
+  show("else variable", branchVariable(false));
+  show("nested ok", unwrap(nestedOk()));
+  show("nested error", unwrap(nestedError()));
+  nestedSome();
+  userEnum();
+  wrapped();
+}

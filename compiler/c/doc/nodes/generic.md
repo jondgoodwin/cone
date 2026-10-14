@@ -565,6 +565,17 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    or `!=`, is checked after the other operand and wanted as its type, so `None == x`
    types the `None` as `x == None` does.
 
+   **A variant of a non-generic enum given to a generic** (`Error(Fault.SoldOut)`,
+   `Ok(Drink.Tea)`, `Some(Fault.Short(3))`) is held back the same way:
+   `fnCallArgIsCtor` is true for it too, so long as no function call is among its
+   values (a call would change the order narrowing sees). It names no type parameter of
+   its own, so where the call goes may say its place is the enum: `genericFnArgExpect`
+   / `genericStructArgExpect` answer `Fault`, and `iexpCoerceIn` widens the variant
+   to it before the call's inference reads the argument's type, so `E` is `Fault`
+   and not `Fault.SoldOut`, as when a variant is passed to a parameter of its enum.
+   With no expected type the answer is none, the argument is checked as it always
+   was, and the type argument is the variant's own type.
+
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known
 only from the receiver's type ([fncall](fncall.md), "Selecting a candidate"):
