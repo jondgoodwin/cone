@@ -1,0 +1,150 @@
+// What a request is written as: the JSON body the API takes, byte for byte,
+// and the HTTP request that carries it. The key is read from the environment
+// variable the endpoint names and goes in the Authorization field only; a
+// variable that is not set, or one holding a value no header can carry, is an
+// error that names the variable and never holds a key.
+
+mod request;
+
+import testing use *;
+import collections use List, String;
+import env;
+import http;
+import chatapi use *;
+
+// A header field's value, or "(none)"
+fn field(h &http.Headers, name &str) String {
+  match h.get(name) {
+    case imm v Some {String.fromBytes(v);}
+    case is None[&Array[u8]] {String.from("(none)");}
+  }
+}
+
+fn bodyOf(req &ChatRequest, stream bool, completionName bool) String {
+  match req.toJson(stream, completionName).toText() {
+    case mut t Ok {
+      mut s = String.empty();
+      s <=> t;
+      s;
+    }
+    case imm e Error {String.from("(unwritable)");}
+  }
+}
+
+fn main() i32 {
+  // The smallest request
+  mut r = ChatRequest.make("gpt-x");
+  r.addUser("Hello");
+  expectStr(bodyOf(&r, false, false).view(), "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}",
+    "model and one message; nothing else is sent");
+
+  // Every setting, every role
+  mut f = ChatRequest.make("m");
+  f.addSystem("Be brief.");
+  f.addUser("Say \"hi\"\nthen \\ go é 世");
+  f.addAssistant("hi");
+  f.addTool("call_7", "{\"ok\":true}");
+  f.add(new Message(Role.User, String.from("who?"), String.from("ann"), String.empty()));
+  f.temperature = Some[f64](0.7d);
+  f.topP = Some[f64](0.95d);
+  f.maxTokens = Some[u64](256u64);
+  f.addStop("###");
+  f.addStop("\n\n");
+  mut want = String.from("{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"Be brief.\"},");
+  want.append("{\"role\":\"user\",\"content\":\"Say \\\"hi\\\"\\nthen \\\\ go é 世\"},");
+  want.append("{\"role\":\"assistant\",\"content\":\"hi\"},");
+  want.append("{\"role\":\"tool\",\"content\":\"{\\\"ok\\\":true}\",\"tool_call_id\":\"call_7\"},");
+  want.append("{\"role\":\"user\",\"content\":\"who?\",\"name\":\"ann\"}],");
+  want.append("\"temperature\":0.7,\"top_p\":0.95,\"max_tokens\":256,\"stop\":[\"###\",\"\\n\\n\"]}");
+  expectStr(bodyOf(&f, false, false).view(), want.view(), "every setting; escapes; UTF-8 kept as it is");
+
+  // Streamed, with the token counts asked for; and the newer name of the limit
+  mut s = ChatRequest.make("m");
+  s.addUser("x");
+  s.maxTokens = Some[u64](5u64);
+  s.includeUsage = true;
+  mut wantS = String.from("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"max_completion_tokens\":5,");
+  wantS.append("\"stream\":true,\"stream_options\":{\"include_usage\":true}}");
+  expectStr(bodyOf(&s, true, true).view(), wantS.view(), "a streamed request; max_completion_tokens");
+  expectStr(bodyOf(&s, false, false).view(),
+    "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"max_tokens\":5}",
+    "includeUsage matters only to a streamed request");
+
+  // Problems that stop a request before it is written
+  imm noModel = ChatRequest.make("");
+  expectStr(noModel.problem(), "the request names no model", "no model");
+  imm noMessages = ChatRequest.make("m");
+  expectStr(noMessages.problem(), "the request has no messages", "no messages");
+  expectStr(r.problem(), "", "a request that is fine");
+
+  // The endpoint's URL
+  expectStr(Endpoint.make("https://api.openai.com/v1", "").url().view(), "https://api.openai.com/v1/chat/completions", "the URL");
+  expectStr(Endpoint.make("http://h:1/v1///", "").url().view(), "http://h:1/v1/chat/completions", "trailing slashes in the base are dropped");
+  expectStr(Endpoint.loopback(8080u16).url().view(), "http://127.0.0.1:8080/v1/chat/completions", "a loopback endpoint");
+  expectStr(Endpoint.openai().keyEnv.view(), "OPENAI_API_KEY", "OpenAI's key variable");
+
+  // The HTTP request: method, URL, body, fields, and the key
+  env.set("CHATAPI_TEST_KEY", "sk-test-0123456789");
+  imm ep = Endpoint.make("http://127.0.0.1:9/v1", "CHATAPI_TEST_KEY");
+  match httpRequest(&ep, &r, false) {
+    case imm ok Ok {
+      expectStr(ok.methodName(), "POST", "posted");
+      expectStr(ok.body.view(), bodyOf(&r, false, false).view(), "the body is the JSON");
+      expectStr(field(&ok.headers, "Content-Type").view(), "application/json", "Content-Type is JSON");
+      expectStr(field(&ok.headers, "Accept").view(), "application/json", "a whole reply is asked for as JSON");
+      expectStr(field(&ok.headers, "Authorization").view(), "Bearer sk-test-0123456789", "the key goes in Authorization");
+    }
+    case imm e Error {expect(false, "a request with a key set is built");}
+  }
+  match httpRequest(&ep, &r, true) {
+    case imm ok Ok {
+      expectStr(field(&ok.headers, "Accept").view(), "text/event-stream", "a stream is asked for as events");
+    }
+    case imm e Error {expect(false, "a streamed request is built");}
+  }
+
+  // No variable named: no Authorization field
+  imm open = Endpoint.loopback(1234u16);
+  match httpRequest(&open, &r, false) {
+    case imm ok Ok {expect(not ok.headers.has("Authorization"), "no key is named: none is sent");}
+    case imm e Error {expect(false, "a keyless request is built");}
+  }
+
+  // A variable that is not set
+  imm missing = Endpoint.make("http://127.0.0.1:9/v1", "CHATAPI_TEST_NO_SUCH_VARIABLE");
+  match httpRequest(&missing, &r, false) {
+    case imm ok Ok {expect(false, "an unset key variable is refused");}
+    case imm e Error {
+      expect(e.kind == ChatErrorKind.NoKey, "the error is NoKey");
+      expectStr(e.message().view(), "nokey: the environment variable CHATAPI_TEST_NO_SUCH_VARIABLE holds no API key", "...and names the variable");
+    }
+  }
+
+  // A key that no header can carry; the message never holds it
+  env.set("CHATAPI_TEST_BADKEY", "sk-secret\nInjected: 1");
+  imm bad = Endpoint.make("http://127.0.0.1:9/v1", "CHATAPI_TEST_BADKEY");
+  match httpRequest(&bad, &r, false) {
+    case imm ok Ok {expect(false, "a key with a line break is refused");}
+    case imm e Error {
+      expect(e.kind == ChatErrorKind.Request, "the error is Request");
+      expect(not e.message().view().contains("sk-secret"), "the error never holds the key");
+    }
+  }
+
+  // A request that cannot be written
+  match httpRequest(&ep, &noModel, false) {
+    case imm ok Ok {expect(false, "a request with no model is refused");}
+    case imm e Error {expectStr(e.message().view(), "request: the request names no model", "its message");}
+  }
+
+  // A message that is not UTF-8 cannot be JSON
+  mut broken = ChatRequest.make("m");
+  mut bytes = String.empty();
+  bytes.appendByte(0xFFu8);
+  broken.addUser(bytes.view());
+  match httpRequest(&ep, &broken, false) {
+    case imm ok Ok {expect(false, "text that is not UTF-8 is refused");}
+    case imm e Error {expect(e.kind == ChatErrorKind.Request, "text that is not UTF-8 is a Request error");}
+  }
+  done();
+}
