@@ -1,0 +1,333 @@
+// From IR to running code, with no linker. Four functions are built through the declarations (add; max,
+// with a branch and a phi; sumto, a loop; classify, a switch), verified, and printed. Then the module
+// goes to a TargetMachine for the host triple, which writes it as an object file, and as a memory buffer:
+// the two must hold the same bytes. The object's code is then run: its symbol table (COFF on
+// Windows, ELF on Linux) says where each function begins, the file is copied into executable memory
+// (these four are leaves, so their code has no relocations to apply: the test checks there are none),
+// and each is called through a C function reference. That is what a linker would have put in an
+// executable, and the answers are checked against the arithmetic.
+
+mod object;
+
+import stdio use *;
+import collections use *;
+import libc;
+import llvmc;
+
+extern {
+  fn @c(system) VirtualAlloc(addr *u8, size usize, kind u32, protect u32) *u8;
+  fn @c mmap(addr *u8, size usize, protect i32, flags i32, fd i32, offset i64) *u8;
+}
+
+fn expect(ok bool, label &str) {
+  if not ok { print <- "FAILED: ", label, "\n"; }
+}
+
+// ---- the IR ----
+
+fn param2(ret *llvmc.Type, a *llvmc.Type, b *llvmc.Type) *llvmc.Type {
+  mut params Array[*llvmc.Type, 2] = [a, b];
+  llvmc.FunctionType(ret, &params[0], 2u32, 0i32);
+}
+
+fn namedParams(f *llvmc.Value, a &str, b &str) {
+  llvmc.SetValueName2(llvmc.GetParam(f, 0u32), llvmc.bytesOf(a), a.len());
+  if b.len() > 0usize {
+    llvmc.SetValueName2(llvmc.GetParam(f, 1u32), llvmc.bytesOf(b), b.len());
+  }
+}
+
+fn buildAdd(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
+  imm f = llvmc.AddFunction(m, "add", param2(i32t, i32t, i32t));
+  namedParams(f, "a", "b");
+  llvmc.PositionBuilderAtEnd(bld, llvmc.AppendBasicBlockInContext(ctx, f, "entry"));
+  llvmc.BuildRet(bld, llvmc.BuildAdd(bld, llvmc.GetParam(f, 0u32), llvmc.GetParam(f, 1u32), "sum"));
+}
+
+// max(a, b): a compare, a branch to two blocks that join in a phi
+fn buildMax(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
+  imm f = llvmc.AddFunction(m, "max", param2(i32t, i32t, i32t));
+  namedParams(f, "a", "b");
+  imm a = llvmc.GetParam(f, 0u32);
+  imm b = llvmc.GetParam(f, 1u32);
+  imm entry = llvmc.AppendBasicBlockInContext(ctx, f, "entry");
+  imm first = llvmc.AppendBasicBlockInContext(ctx, f, "first");
+  imm second = llvmc.AppendBasicBlockInContext(ctx, f, "second");
+  imm join = llvmc.AppendBasicBlockInContext(ctx, f, "join");
+  llvmc.PositionBuilderAtEnd(bld, entry);
+  imm bigger = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSGT, a, b, "bigger");
+  llvmc.BuildCondBr(bld, bigger, first, second);
+  llvmc.PositionBuilderAtEnd(bld, first);
+  llvmc.BuildBr(bld, join);
+  llvmc.PositionBuilderAtEnd(bld, second);
+  llvmc.BuildBr(bld, join);
+  llvmc.PositionBuilderAtEnd(bld, join);
+  imm phi = llvmc.BuildPhi(bld, i32t, "result");
+  mut values Array[*llvmc.Value, 2] = [a, b];
+  mut blocks Array[*llvmc.BasicBlock, 2] = [first, second];
+  llvmc.AddIncoming(phi, &values[0], &blocks[0], 2u32);
+  llvmc.BuildRet(bld, phi);
+}
+
+// sumto(n): 0 + 1 + ... + (n - 1), a loop with two phis
+fn buildSumTo(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
+  mut params Array[*llvmc.Type, 1] = [i32t];
+  imm f = llvmc.AddFunction(m, "sumto", llvmc.FunctionType(i32t, &params[0], 1u32, 0i32));
+  namedParams(f, "n", "");
+  imm n = llvmc.GetParam(f, 0u32);
+  imm entry = llvmc.AppendBasicBlockInContext(ctx, f, "entry");
+  imm loop = llvmc.AppendBasicBlockInContext(ctx, f, "loop");
+  imm done = llvmc.AppendBasicBlockInContext(ctx, f, "done");
+  imm zero = llvmc.ConstInt(i32t, 0u64, 0i32);
+  imm one = llvmc.ConstInt(i32t, 1u64, 0i32);
+  llvmc.PositionBuilderAtEnd(bld, entry);
+  llvmc.BuildBr(bld, loop);
+  llvmc.PositionBuilderAtEnd(bld, loop);
+  imm i = llvmc.BuildPhi(bld, i32t, "i");
+  imm acc = llvmc.BuildPhi(bld, i32t, "acc");
+  imm acc2 = llvmc.BuildAdd(bld, acc, i, "acc2");
+  imm i2 = llvmc.BuildAdd(bld, i, one, "i2");
+  imm more = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSLT, i2, n, "more");
+  llvmc.BuildCondBr(bld, more, loop, done);
+  mut iv Array[*llvmc.Value, 2] = [zero, i2];
+  mut av Array[*llvmc.Value, 2] = [zero, acc2];
+  mut bb Array[*llvmc.BasicBlock, 2] = [entry, loop];
+  llvmc.AddIncoming(i, &iv[0], &bb[0], 2u32);
+  llvmc.AddIncoming(acc, &av[0], &bb[0], 2u32);
+  llvmc.PositionBuilderAtEnd(bld, done);
+  llvmc.BuildRet(bld, acc2);
+}
+
+// classify(n): a switch, 0 -> 100, 1 -> 200, 5 -> 500, anything else 7
+fn buildClassify(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
+  mut params Array[*llvmc.Type, 1] = [i32t];
+  imm f = llvmc.AddFunction(m, "classify", llvmc.FunctionType(i32t, &params[0], 1u32, 0i32));
+  namedParams(f, "n", "");
+  imm entry = llvmc.AppendBasicBlockInContext(ctx, f, "entry");
+  imm other = llvmc.AppendBasicBlockInContext(ctx, f, "other");
+  imm c0 = llvmc.AppendBasicBlockInContext(ctx, f, "c0");
+  imm c1 = llvmc.AppendBasicBlockInContext(ctx, f, "c1");
+  imm c5 = llvmc.AppendBasicBlockInContext(ctx, f, "c5");
+  imm join = llvmc.AppendBasicBlockInContext(ctx, f, "join");
+  llvmc.PositionBuilderAtEnd(bld, entry);
+  imm sw = llvmc.BuildSwitch(bld, llvmc.GetParam(f, 0u32), other, 3u32);
+  llvmc.AddCase(sw, llvmc.ConstInt(i32t, 0u64, 0i32), c0);
+  llvmc.AddCase(sw, llvmc.ConstInt(i32t, 1u64, 0i32), c1);
+  llvmc.AddCase(sw, llvmc.ConstInt(i32t, 5u64, 0i32), c5);
+  expect(llvmc.GetNumSuccessors(sw) == 4u32, "the switch has the default and three cases");
+  llvmc.PositionBuilderAtEnd(bld, other);
+  llvmc.BuildBr(bld, join);
+  llvmc.PositionBuilderAtEnd(bld, c0);
+  llvmc.BuildBr(bld, join);
+  llvmc.PositionBuilderAtEnd(bld, c1);
+  llvmc.BuildBr(bld, join);
+  llvmc.PositionBuilderAtEnd(bld, c5);
+  llvmc.BuildBr(bld, join);
+  llvmc.PositionBuilderAtEnd(bld, join);
+  imm phi = llvmc.BuildPhi(bld, i32t, "answer");
+  mut vals Array[*llvmc.Value, 4] = [llvmc.ConstInt(i32t, 7u64, 0i32), llvmc.ConstInt(i32t, 100u64, 0i32),
+    llvmc.ConstInt(i32t, 200u64, 0i32), llvmc.ConstInt(i32t, 500u64, 0i32)];
+  mut blks Array[*llvmc.BasicBlock, 4] = [other, c0, c1, c5];
+  llvmc.AddIncoming(phi, &vals[0], &blks[0], 4u32);
+  llvmc.BuildRet(bld, phi);
+}
+
+// ---- the object's bytes ----
+
+fn le16(p *u8, at usize) usize { usize.from(p[at]) | (usize.from(p[at + 1usize]) << 8usize); }
+fn le32(p *u8, at usize) usize { le16(p, at) | (le16(p, at + 2usize) << 16usize); }
+fn le64(p *u8, at usize) usize { le32(p, at) | (le32(p, at + 4usize) << 32usize); }
+
+// Whether the zero-ended text at 'at' is 'name'; 'inline' is a COFF short name, whose 8 bytes have no
+// zero after them when the name fills them
+fn nameIs(p *u8, at usize, name &str, inline8 bool) bool {
+  imm want &Array[u8] = name;
+  mut i = 0usize;
+  mut same = true;
+  while same and i < want.len {
+    same = p[at + i] == want[i];
+    i = i + 1usize;
+  }
+  same and ((inline8 and want.len == 8usize) or p[at + want.len] == 0u8);
+}
+
+// Where in the object file the code of the function 'name' begins, and 0 when the object has no such
+// function or its section has relocations (which this test does not apply)
+fn codeOffset(obj *u8, name &str) usize {
+  mut found = 0usize;
+  if isWindows() {
+    // COFF: a 20-byte header, 40-byte section headers, 18-byte symbols, then the string table
+    imm symbols = le32(obj, 8usize);
+    imm count = le32(obj, 12usize);
+    imm strings = symbols + count * 18usize;
+    mut i = 0usize;
+    while i < count {
+      imm s = symbols + i * 18usize;
+      imm section = le16(obj, s + 12usize);
+      imm longName = le32(obj, s) == 0usize;
+      imm nameAt = if longName { strings + le32(obj, s + 4usize); } else { s; };
+      if section > 0usize and section < 0x8000usize and nameIs(obj, nameAt, name, not longName) {
+        imm header = 20usize + (section - 1usize) * 40usize;
+        if le16(obj, header + 32usize) == 0usize {
+          found = le32(obj, header + 20usize) + le32(obj, s + 8usize);
+        }
+      }
+      i = i + 1usize + usize.from(obj[s + 17usize]);
+    }
+  } else {
+    // ELF64: section headers at e_shoff; the symbol table is the section of type 2
+    imm shoff = le64(obj, 0x28usize);
+    imm shentsize = le16(obj, 0x3Ausize);
+    imm shnum = le16(obj, 0x3Cusize);
+    mut k = 0usize;
+    while k < shnum {
+      imm sh = shoff + k * shentsize;
+      if le32(obj, sh + 4usize) == 2usize {
+        imm symoff = le64(obj, sh + 24usize);
+        imm count = le64(obj, sh + 32usize) / 24usize;
+        imm strsh = shoff + le32(obj, sh + 40usize) * shentsize;
+        imm stroff = le64(obj, strsh + 24usize);
+        mut j = 0usize;
+        while j < count {
+          imm s = symoff + j * 24usize;
+          imm shndx = le16(obj, s + 6usize);
+          if shndx > 0usize and shndx < 0xFF00usize and nameIs(obj, stroff + le32(obj, s), name, false) {
+            // any relocation section (type 4 RELA, 9 REL) for the symbol's section?
+            mut relocated = false;
+            mut r = 0usize;
+            while r < shnum {
+              imm rh = shoff + r * shentsize;
+              imm kind = le32(obj, rh + 4usize);
+              if (kind == 4usize or kind == 9usize) and le32(obj, rh + 44usize) == shndx {
+                relocated = true;
+              }
+              r = r + 1usize;
+            }
+            if not relocated {
+              found = le64(obj, shoff + shndx * shentsize + 24usize) + le64(obj, s + 8usize);
+            }
+          }
+          j = j + 1usize;
+        }
+      }
+      k = k + 1usize;
+    }
+  }
+  found;
+}
+
+// ---- running it ----
+
+fn executableCopy(obj *u8, size usize) *u8 {
+  mut block *u8 = null;
+  if isWindows() {
+    block = VirtualAlloc(null, size, 0x3000u32, 0x40u32);          // commit and reserve, execute-read-write
+  } else {
+    block = mmap(null, size, 7i32, 0x22i32, 0i32 - 1i32, 0i64);    // read-write-execute, private, anonymous
+  }
+  if block != null {
+    libc.memcpy(block, obj, size);
+  }
+  block;
+}
+
+fn main() i32 {
+  llvmc.InitializeAllTargetInfos();
+  llvmc.InitializeAllTargets();
+  llvmc.InitializeAllTargetMCs();
+  llvmc.InitializeAllAsmPrinters();
+  llvmc.InitializeAllAsmParsers();
+
+  imm ctx = llvmc.ContextCreate();
+  imm m = llvmc.ModuleCreateWithNameInContext("object", ctx);
+  imm bld = llvmc.CreateBuilderInContext(ctx);
+  imm i32t = llvmc.Int32TypeInContext(ctx);
+  buildAdd(ctx, m, bld, i32t);
+  buildMax(ctx, m, bld, i32t);
+  buildSumTo(ctx, m, bld, i32t);
+  buildClassify(ctx, m, bld, i32t);
+
+  match llvmc.checkModule(m) {
+    case is None { print <- "verifies\n"; }
+    case imm why Some { print <- "does not verify: ", why.view(), "\n"; }
+  }
+  imm text = llvmc.moduleToString(m);
+  print <- text.view();
+
+  // A machine for the host, and the module laid out for it
+  imm triple = llvmc.defaultTargetTriple();
+  expect(triple.len() > 0usize, "the host has a default triple");
+  mut target *llvmc.Target = null;
+  match llvmc.targetFromTriple(triple.cstr()) {
+    case imm t Ok { target = t; }
+    case imm why Error { print <- "no target: ", why.view(), "\n"; }
+  }
+  expect(target != null, "a target for the host triple");
+  imm tm = llvmc.CreateTargetMachine(target, triple.cstr(), "generic", "", llvmc.CodeGenOptLevel.CodeGenLevelDefault,
+    llvmc.RelocMode.RelocDefault, llvmc.CodeModel.CodeModelDefault);
+  expect(tm != null, "a target machine");
+  imm layout = llvmc.CreateTargetDataLayout(tm);
+  llvmc.SetModuleDataLayout(m, layout);
+  llvmc.SetTarget(m, triple.cstr());
+  expect(llvmc.PointerSize(layout) == 8u32, "the host has 8-byte pointers");
+
+  // The object file, and the same object in a memory buffer
+  match llvmc.emitToFile(tm, m, "object-test.o", llvmc.CodeGenFileType.ObjectFile) {
+    case is None { print <- "object file written\n"; }
+    case imm why Some { print <- "emit failed: ", why.view(), "\n"; }
+  }
+  mut buffer *llvmc.MemoryBuffer = null;
+  mut message *u8 = null;
+  imm failed = llvmc.TargetMachineEmitToMemoryBuffer(tm, m, llvmc.CodeGenFileType.ObjectFile, &message, &buffer);
+  expect(failed == 0i32, "the object in a memory buffer");
+  imm size = llvmc.GetBufferSize(buffer);
+  imm bytes = llvmc.GetBufferStart(buffer);
+  expect(size > 100usize, "the object is more than a header");
+
+  // The file read back is the buffer
+  imm file = libc.fopen("object-test.o", "rb");
+  expect(file != null, "the object file opens");
+  mut onDisk List[u8] = List[u8].empty();
+  onDisk.resize(size + 1usize, 0u8);
+  imm got = libc.fread(onDisk.viewMut() as *u8, 1usize, size + 1usize, file);
+  libc.fclose(file);
+  expect(got == size, "the file holds as many bytes as the buffer");
+  mut same = got == size;
+  mut at = 0usize;
+  while same and at < size {
+    same = onDisk[at] == bytes[at];
+    at = at + 1usize;
+  }
+  expect(same, "the file and the buffer hold the same bytes");
+
+  // Run the four functions from the object's own code
+  imm image = executableCopy(bytes, size);
+  expect(image != null, "executable memory");
+  imm addAt = codeOffset(bytes, "add");
+  imm maxAt = codeOffset(bytes, "max");
+  imm sumAt = codeOffset(bytes, "sumto");
+  imm classAt = codeOffset(bytes, "classify");
+  expect(addAt > 0usize and maxAt > 0usize and sumAt > 0usize and classAt > 0usize, "all four symbols found, with no relocations");
+  if image != null and addAt > 0usize and maxAt > 0usize and sumAt > 0usize and classAt > 0usize {
+    imm add = (image + addAt) as &fn @c (a i32, b i32) i32;
+    imm max = (image + maxAt) as &fn @c (a i32, b i32) i32;
+    imm sumto = (image + sumAt) as &fn @c (n i32) i32;
+    imm classify = (image + classAt) as &fn @c (n i32) i32;
+    print <- "add(20, 22) = ", add(20i32, 22i32), "\n";
+    print <- "add(-5, 3) = ", add(0i32 - 5i32, 3i32), "\n";
+    print <- "max(3, 9) = ", max(3i32, 9i32), "\n";
+    print <- "max(9, 3) = ", max(9i32, 3i32), "\n";
+    print <- "max(-4, -7) = ", max(0i32 - 4i32, 0i32 - 7i32), "\n";
+    print <- "sumto(10) = ", sumto(10i32), "\n";
+    print <- "sumto(1) = ", sumto(1i32), "\n";
+    print <- "classify(0, 1, 5, 3) = ", classify(0i32), " ", classify(1i32), " ", classify(5i32), " ", classify(3i32), "\n";
+  }
+
+  llvmc.DisposeMemoryBuffer(buffer);
+  llvmc.DisposeTargetData(layout);
+  llvmc.DisposeTargetMachine(tm);
+  llvmc.DisposeBuilder(bld);
+  llvmc.DisposeModule(m);
+  llvmc.ContextDispose(ctx);
+  0i32;
+}
