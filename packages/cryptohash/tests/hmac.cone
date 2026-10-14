@@ -1,0 +1,263 @@
+// HMAC over SHA-256, SHA-512 and SHA-1, and the constant-time comparison.
+//
+// Sources of the vectors:
+// - RFC 4231 (HMAC-SHA-224/256/384/512 identifiers and test values), section 4:
+//   test cases 1 to 4, 6 and 7 in full for SHA-256 and SHA-512, and case 5 (the
+//   "Test With Truncation" message) on the first 128 bits, which is all the RFC
+//   gives for it. Case 6 and 7 use a 131-byte key, longer than both blocks,
+//   so the key is hashed first.
+// - RFC 2202 (HMAC-SHA-1 and HMAC-MD5 test cases), section 3: HMAC-SHA-1 test
+//   cases 1 to 7 (case 5 on its 96-bit truncation's source, the full tag).
+//   Cases 6 and 7 use an 80-byte key, longer than the 64-byte block.
+// - A 300-byte message of a pattern, under a short key and under a 200-byte key,
+//   with the tags from Python's hmac and hashlib modules, not from this package.
+// The expected tags were also reproduced with Python's hmac module when
+// written into this file.
+
+mod hmac;
+
+import testing use *;
+import collections use *;
+import cryptohash;
+
+fn hexOf(s &Array[u8]) String {
+  mut h = String.empty();
+  mut i = 0usize;
+  while i < s.len {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h;
+}
+
+// n copies of the byte
+fn repeated(b u8, n usize) List[u8] {
+  mut out = new List[u8];
+  mut i = 0usize;
+  while i < n {
+    out.push(b);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The bytes 1, 2, ..., 25 (RFC 4231 and 2202's fourth key)
+fn counting() List[u8] {
+  mut out = new List[u8];
+  mut i = 1u8;
+  while i <= 25u8 {
+    out.push(i);
+    i = i + 1u8;
+  }
+  out;
+}
+
+// The pattern the pattern tests hash: byte i is (7 i + 3) mod 256
+fn pattern(n usize) List[u8] {
+  mut out = new List[u8];
+  mut i = 0usize;
+  while i < n {
+    out.push(u8.from((i * 7usize + 3usize) & 0xffusize));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The key 0, 3, 6, ... (3 i mod 256), n bytes
+fn threes(n usize) List[u8] {
+  mut out = new List[u8];
+  mut i = 0usize;
+  while i < n {
+    out.push(u8.from((i * 3usize) & 0xffusize));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn t256(label &str, key &Array[u8], msg &Array[u8], want &str) {
+  imm d = cryptohash.hmacSha256(key, msg);
+  imm got = hexOf(&d);
+  expectStr(got.view(), want, label);
+}
+
+fn t512(label &str, key &Array[u8], msg &Array[u8], want &str) {
+  imm d = cryptohash.hmacSha512(key, msg);
+  imm got = hexOf(&d);
+  expectStr(got.view(), want, label);
+}
+
+fn t1(label &str, key &Array[u8], msg &Array[u8], want &str) {
+  imm d = cryptohash.hmacSha1(key, msg);
+  imm got = hexOf(&d);
+  expectStr(got.view(), want, label);
+}
+
+// The hex of the first n bytes
+fn hexOfFirst(s &Array[u8], n usize) String {
+  mut h = String.empty();
+  mut i = 0usize;
+  while i < n {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h;
+}
+
+// The first n bytes of the tag, in hex
+fn prefix256(key &Array[u8], msg &Array[u8], n usize) String {
+  imm d = cryptohash.hmacSha256(key, msg);
+  hexOfFirst(&d, n);
+}
+
+fn prefix512(key &Array[u8], msg &Array[u8], n usize) String {
+  imm d = cryptohash.hmacSha512(key, msg);
+  hexOfFirst(&d, n);
+}
+
+fn main() i32 {
+  // RFC 4231 test case 1: a 20-byte key, "Hi There"
+  imm k1 = repeated(0x0bu8, 20usize);
+  t256("RFC 4231 case 1, SHA-256", k1.view(), "Hi There",
+       "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+  t512("RFC 4231 case 1, SHA-512", k1.view(), "Hi There",
+       "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854");
+
+  // Case 2: the key "Jefe"
+  t256("RFC 4231 case 2, SHA-256", "Jefe", "what do ya want for nothing?",
+       "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+  t512("RFC 4231 case 2, SHA-512", "Jefe", "what do ya want for nothing?",
+       "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737");
+
+  // Case 3: a 20-byte 0xaa key, 50 bytes of 0xdd
+  imm k3 = repeated(0xaau8, 20usize);
+  imm m3 = repeated(0xddu8, 50usize);
+  t256("RFC 4231 case 3, SHA-256", k3.view(), m3.view(),
+       "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe");
+  t512("RFC 4231 case 3, SHA-512", k3.view(), m3.view(),
+       "fa73b0089d56a284efb0f0756c890be9b1b5dbdd8ee81a3655f83e33b2279d39bf3e848279a722c806b485a47e67c807b946a337bee8942674278859e13292fb");
+
+  // Case 4: the 25-byte key 0x01 to 0x19, 50 bytes of 0xcd
+  imm k4 = counting();
+  imm m4 = repeated(0xcdu8, 50usize);
+  t256("RFC 4231 case 4, SHA-256", k4.view(), m4.view(),
+       "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b");
+  t512("RFC 4231 case 4, SHA-512", k4.view(), m4.view(),
+       "b0ba465637458c6990e5a8c5f61d4af7e576d97ff94b872de76f8050361ee3dba91ca5c11aa25eb4d679275cc5788063a5f19741120c4f2de2adebeb10a298dd");
+
+  // Case 5: a 20-byte 0x0c key, "Test With Truncation"; the RFC gives the
+  // first 128 bits
+  imm k5 = repeated(0x0cu8, 20usize);
+  imm p256 = prefix256(k5.view(), "Test With Truncation", 16usize);
+  expectStr(p256.view(), "a3b6167473100ee06e0c796c2955552b", "RFC 4231 case 5, SHA-256, first 128 bits");
+  imm p512 = prefix512(k5.view(), "Test With Truncation", 16usize);
+  expectStr(p512.view(), "415fad6271580a531d4179bc891d87a6", "RFC 4231 case 5, SHA-512, first 128 bits");
+
+  // Case 6: a 131-byte key, longer than the block
+  imm k6 = repeated(0xaau8, 131usize);
+  t256("RFC 4231 case 6, SHA-256", k6.view(), "Test Using Larger Than Block-Size Key - Hash Key First",
+       "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+  t512("RFC 4231 case 6, SHA-512", k6.view(), "Test Using Larger Than Block-Size Key - Hash Key First",
+       "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598");
+
+  // Case 7: the same key, and data longer than a block
+  t256("RFC 4231 case 7, SHA-256", k6.view(),
+       "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.",
+       "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2");
+  t512("RFC 4231 case 7, SHA-512", k6.view(),
+       "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.",
+       "e37b6a775dc87dbaa4dfa9f96e5e3ffddebd71f8867289865df5a32d20cdc944b6022cac3c4982b10d5eeb55c3e4de15134676fb6de0446065c97440fa8c6a58");
+
+  // RFC 2202 HMAC-SHA-1, test cases 1 to 7
+  t1("RFC 2202 case 1", k1.view(), "Hi There", "b617318655057264e28bc0b6fb378c8ef146be00");
+  t1("RFC 2202 case 2", "Jefe", "what do ya want for nothing?", "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79");
+  t1("RFC 2202 case 3", k3.view(), m3.view(), "125d7342b9ac11cd91a39af48aa17b4f63f175d3");
+  t1("RFC 2202 case 4", k4.view(), m4.view(), "4c9007f4026250c6bc8414f9bf50c86c2d7235da");
+  t1("RFC 2202 case 5", k5.view(), "Test With Truncation", "4c1a03424b55e07fe7f27be1d58bb9324a9a5a04");
+  imm k67 = repeated(0xaau8, 80usize);
+  t1("RFC 2202 case 6", k67.view(), "Test Using Larger Than Block-Size Key - Hash Key First",
+     "aa4ae5e15272d00e95705637ce8a3b55ed402112");
+  t1("RFC 2202 case 7", k67.view(), "Test Using Larger Than Block-Size Key and Larger Than One Block-Size Data",
+     "e8e99d0f45237d786d6bbaa7965c7808bbff1a91");
+
+  // A pattern message under a short key and under a key past both blocks
+  imm pm = pattern(300usize);
+  imm longKey = threes(200usize);
+  t256("pattern, SHA-256", "streaming key", pm.view(), "878cab6794f2e96917bb8a6ae078fa9d450b04e283ab882fbc75894de18dece6");
+  t256("pattern, long key, SHA-256", longKey.view(), pm.view(), "117fbccd0ecdc7c534acfbaa775da7bed0bb0817d847e18abf80e2b2292294af");
+  t512("pattern, SHA-512", "streaming key", pm.view(),
+       "82f06b73d4fd864426c75a9d95ce41d3326a017e4195d27e48ef7326cfed9afbb226f4bf6601c3b2053b0f20071c978c46c303f8f1ba5e2e9df07174fa621648");
+  t512("pattern, long key, SHA-512", longKey.view(), pm.view(),
+       "eb52e202cd4ba8169a5ea35abec9b676599329c41e4751912bcd08298722092e3177ff583865a48f2f061fe2aa96262d162faa764b76d282c573aeff5ebe42b9");
+  t1("pattern, SHA-1", "streaming key", pm.view(), "eff80e67ce61548ecb26a417a61d3113fb28a4e3");
+  t1("pattern, long key, SHA-1", longKey.view(), pm.view(), "596282e1db9cc5a8c75dd9e1da1312b998cb19d7");
+
+  // An empty key and an empty message are keys and messages
+  imm empty = new List[u8];
+  t256("empty key, empty message, SHA-256", empty.view(), empty.view(),
+       "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad");
+  t1("empty key, empty message, SHA-1", empty.view(), empty.view(), "fbdb1d1b18aa6c08324b7d64b71fb76370690e1d");
+
+  // verify: the right tag, a tag with one bit changed, a short tag, a long tag
+  mut mac = cryptohash.HmacSha256.make("Jefe");
+  mac.update("what do ya want for nothing?");
+  imm tag = mac.finish();
+  expect(mac.verify(&tag), "verify accepts the tag");
+  mut bad = tag;
+  bad[31] = bad[31] ^ 1u8;
+  expect(!mac.verify(&bad), "verify refuses a tag with the last bit changed");
+  mut bad0 = tag;
+  bad0[0] = bad0[0] ^ 0x80u8;
+  expect(!mac.verify(&bad0), "verify refuses a tag with the first bit changed");
+  imm shortTag = repeated(0u8, 16usize);
+  expect(!mac.verify(shortTag.view()), "verify refuses a 16-byte tag");
+  expect(!mac.verify(empty.view()), "verify refuses an empty tag");
+  mut mac5 = cryptohash.HmacSha512.make("Jefe");
+  mac5.update("what do ya want for nothing?");
+  imm tag5 = mac5.finish();
+  expect(mac5.verify(&tag5), "SHA-512 verify accepts the tag");
+  mut bad5 = tag5;
+  bad5[63] = bad5[63] ^ 4u8;
+  expect(!mac5.verify(&bad5), "SHA-512 verify refuses a changed tag");
+  mut mac1 = cryptohash.HmacSha1.make("Jefe");
+  mac1.update("what do ya want for nothing?");
+  imm tag1 = mac1.finish();
+  expect(mac1.verify(&tag1), "SHA-1 verify accepts the tag");
+  mut bad1 = tag1;
+  bad1[10] = bad1[10] ^ 0x10u8;
+  expect(!mac1.verify(&bad1), "SHA-1 verify refuses a changed tag");
+
+  // constantTimeEq
+  imm ea = repeated(7u8, 32usize);
+  imm eb = repeated(7u8, 32usize);
+  expect(cryptohash.constantTimeEq(ea.view(), eb.view()), "equal strings are equal");
+  mut ec = repeated(7u8, 32usize);
+  ec[31] = 8u8;
+  expect(!cryptohash.constantTimeEq(ea.view(), ec.view()), "a difference in the last byte");
+  mut ed = repeated(7u8, 32usize);
+  ed[0] = 6u8;
+  expect(!cryptohash.constantTimeEq(ea.view(), ed.view()), "a difference in the first byte");
+  imm ee = repeated(7u8, 31usize);
+  expect(!cryptohash.constantTimeEq(ea.view(), ee.view()), "different lengths");
+  expect(cryptohash.constantTimeEq(empty.view(), empty.view()), "two empty strings are equal");
+  mut ef = repeated(7u8, 32usize);
+  ef[5] = 7u8 ^ 0x80u8;
+  ef[20] = 7u8 ^ 0x01u8;
+  expect(!cryptohash.constantTimeEq(ea.view(), ef.view()), "differences in the top and bottom bit");
+  // Every single-bit difference at every position of a 16-byte string is seen
+  imm base = repeated(0x5au8, 16usize);
+  mut allSeen = true;
+  mut pos = 0usize;
+  while pos < 16usize {
+    mut bit = 0u8;
+    while bit < 8u8 {
+      mut other = repeated(0x5au8, 16usize);
+      other[pos] = other[pos] ^ (1u8 << bit);
+      if cryptohash.constantTimeEq(base.view(), other.view()) { allSeen = false; }
+      bit = bit + 1u8;
+    }
+    pos = pos + 1usize;
+  }
+  expect(allSeen, "each of the 128 single-bit differences is seen");
+
+  done();
+}
