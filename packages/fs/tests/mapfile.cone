@@ -1,0 +1,237 @@
+// Mapped files: 'fs.mapFile' maps a file's bytes read-only, in place. A file
+// written here is mapped and compared byte for byte (text, every byte value
+// with NULs among them, three megabytes whose neighbouring blocks differ), an
+// empty file is an empty view, two maps of one file coexist, a map may be moved
+// to another function and still be good, and a map's death lets go of the file
+// (Windows refuses to remove a file that is still mapped, so removing it
+// afterwards is the check that the view was unmapped), and a map shared by an
+// 'Arc' is read by two threads. The failures are the
+// ones 'readFile' gives: a file not there, a folder, a NUL in a path.
+//
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-fs-test-mapfile', as files.cone does with its own, and removes it at
+// the end. Paths are printed with the folder shown as '<root>'. A file larger
+// than 4 GB is mapfile_big.cone's.
+
+mod mapfile;
+
+import testing use *;
+import collections use *;
+import libc;
+import path use Path;
+import fs;
+import sync use Arc;
+import thread;
+
+// The test's folder: TEMP's absolute path and the name, after checking
+// that it is that and nothing shorter
+fn makeRoot(name &str) Path {
+  mut variable cstr = "TMPDIR";
+  if isWindows() { variable = "TEMP"; }
+  imm temp = libc.getenv(variable);
+  require(temp != null or not isWindows(), "TEMP is set");
+  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
+  mut root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case imm t Ok { root = t.join(name); }
+    case is Error { require(false, "TEMP has an absolute path"); }
+  }
+  imm up = root.parent();
+  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root;
+}
+
+// A message with the test's folder shown as '<root>'
+fn shown(root &Path, message &String) String {
+  mut out = message.copy();
+  out.replace(root.view(), "<root>" as &str);
+  out;
+}
+
+// The message of a Result that must have failed, or "<succeeded>"
+fn messageOf[T](root &Path, r Result[T, fs.FsError]) String {
+  match r {
+    case imm e Error { imm m = e.message(); shown(root, &m); }
+    case is Ok { String.from("<succeeded>"); }
+  }
+}
+
+fn ok[T](r Result[T, fs.FsError], label &Array[u8]) bool {
+  imm m = messageOf("", r);
+  expectStr(m.view(), "<succeeded>", label);
+}
+
+fn failsWith[T](root &Path, r Result[T, fs.FsError], want &Array[u8], label &Array[u8]) bool {
+  imm m = messageOf(root, r);
+  expectStr(m.view(), want, label);
+}
+
+// The byte the large file holds at n: no two neighbouring 64 KB blocks alike
+fn patternAt(n u32) u8 { u8.from((n * 7u32 + n / 65536u32) & 255u32); }
+
+// Whether the map holds exactly these bytes
+fn holds(m &fs.MappedFile, want &Array[u8]) bool {
+  imm v = m.view();
+  v.len == want.len and m.size() == want.len and v == want;
+}
+
+// Write data to name, map it, and check the map holds it
+fn mapsAs(root &Path, name &str, data &Array[u8], label &Array[u8]) {
+  imm p = root.join(name);
+  ok(fs.writeFile(&p, data), label);
+  match fs.mapFile(&p) {
+    case imm m Ok {
+      expect(holds(&m, data), label);
+      expectBool(m.isEmpty(), data.len == 0usize, label);
+    }
+    case is Error { expect(false, label); }
+  }
+}
+
+// A map handed to another function (moved) is still the same bytes
+fn takeAndCheck(m fs.MappedFile, want &Array[u8]) bool {
+  holds(&m, want);
+}
+
+fn maps(root &Path) {
+  mapsAs(root, "text.txt", "one\ntwo\r\nthree", "map a text file");
+
+  // Every byte value, 0 to 255, twice
+  mut bytes = String.empty();
+  mut i = 0u32;
+  while i < 512u32 { bytes.appendByte(u8.from(i & 255u32)); i = i + 1u32; }
+  mapsAs(root, "bytes.bin", bytes.view(), "map every byte value, NULs included");
+
+  // Three megabytes: the map is compared with a pattern computed on the spot
+  imm size = 3145728u32;
+  mut large = String.withCapacity(usize.from(size));
+  mut n = 0u32;
+  while n < size {
+    large.appendByte(patternAt(n));
+    n = n + 1u32;
+  }
+  imm largePath = root.join("large.bin");
+  ok(fs.writeFile(&largePath, large.view()), "write three megabytes");
+  match fs.mapFile(&largePath) {
+    case imm m Ok {
+      expectUInt(u64.from(m.size()), u64.from(size), "size of three megabytes");
+      imm v = m.view();
+      mut same = true;
+      mut k = 0u32;
+      while k < size {
+        if v[usize.from(k)] != patternAt(k) { same = false; }
+        k = k + 1u32;
+      }
+      expect(same, "three megabytes, every byte against the pattern");
+      expect(holds(&m, large.view()), "three megabytes against the written copy");
+      expect(m.base() as usize != 0usize, "a non-empty map has an address");
+    }
+    case is Error { expect(false, "map three megabytes"); }
+  }
+
+  // An empty file: no bytes, no address
+  imm emptyPath = root.join("empty.txt");
+  ok(fs.writeFile(&emptyPath, ""), "write an empty file");
+  match fs.mapFile(&emptyPath) {
+    case imm m Ok {
+      expectUInt(u64.from(m.size()), 0u64, "an empty file has size 0");
+      expect(m.isEmpty(), "an empty file is empty");
+      expectUInt(u64.from(m.view().len), 0u64, "an empty file has an empty view");
+      expect(m.base() as usize == 0usize, "an empty file has no address");
+    }
+    case is Error { expect(false, "map an empty file"); }
+  }
+
+  // Two maps of one file at once, and a map moved to another function
+  match fs.mapFile(&largePath) {
+    case imm a Ok {
+      match fs.mapFile(&largePath) {
+        case imm b Ok {
+          expect(a.view() == b.view(), "two maps of one file hold the same bytes");
+          expect(a.base() as usize != b.base() as usize, "and are two views");
+        }
+        case is Error { expect(false, "map a file a second time"); }
+      }
+      expect(holds(&a, large.view()), "the first map after the second has gone");
+    }
+    case is Error { expect(false, "map a file twice"); }
+  }
+  match fs.mapFile(&largePath) {
+    case mut moved Ok { expect(takeAndCheck(moved, large.view()), "a moved map is still good"); }
+    case is Error { expect(false, "map to move"); }
+  }
+
+  // A map that has died has let go of its file: Windows would refuse this
+  // while the file is mapped
+  ok(fs.removeFile(&largePath), "remove a file once its maps have died");
+  expect(not fs.exists(&largePath), "and it is gone");
+}
+
+// The sum of every byte of a map two threads share
+fn sumOf(m Arc[imm, fs.MappedFile]) u64 {
+  imm v = m.view();
+  mut sum = 0u64;
+  mut i = 0usize;
+  while i < v.len {
+    sum = sum + u64.from(v[i]);
+    i = i + 1usize;
+  }
+  sum;
+}
+
+// A map is Sendable, and shared by an Arc among threads
+fn threads(root &Path) {
+  imm p = root.join("shared.bin");
+  mut data = String.empty();
+  mut expected = 0u64;
+  mut n = 0u32;
+  while n < 100000u32 {
+    imm b = patternAt(n);
+    data.appendByte(b);
+    expected = expected + u64.from(b);
+    n = n + 1u32;
+  }
+  ok(fs.writeFile(&p, data.view()), "write the file two threads will read");
+  match fs.mapFile(&p) {
+    case mut got Ok {
+      imm shared = new Arc[imm, fs.MappedFile](got);
+      imm a = thread.start(shared, &sumOf);
+      imm b = thread.start(shared, &sumOf);
+      expectUInt(a.join(), expected, "the first thread summed the shared map");
+      expectUInt(b.join(), expected, "and so did the second");
+      expectUInt(sumOf(shared), expected, "and so does main, after them");
+    }
+    case is Error { expect(false, "map the file two threads will read"); }
+  }
+}
+
+fn failures(root &Path) {
+  imm missing = root.join("missing.txt");
+  failsWith(root, fs.mapFile(&missing),
+    "mapFile <root>/missing.txt: No such file or directory", "map a file not there");
+  imm nowhere = root.join("nowhere/x.txt");
+  failsWith(root, fs.mapFile(&nowhere),
+    "mapFile <root>/nowhere/x.txt: No such file or directory", "map in a folder not there");
+  failsWith(root, fs.mapFile(root), "mapFile <root>: Is a directory", "map a folder");
+  failsWith(root, fs.mapFile("bad\x00name"), "mapFile bad\x00name: Invalid argument",
+    "a NUL in a path is EINVAL");
+  match fs.mapFile(&missing) {
+    case imm e Error { expect(e.notFound(), "a missing file is notFound"); }
+    case is Ok { expect(false, "a missing file fails"); }
+  }
+}
+
+fn main() i32 {
+  imm root = makeRoot("cone-fs-test-mapfile");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
+
+  maps(&root);
+  threads(&root);
+  failures(&root);
+
+  ok(fs.removeAll(&root), "remove the test's folder");
+  expect(not fs.exists(&root), "the test's folder is gone");
+  done();
+}
