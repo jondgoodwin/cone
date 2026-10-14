@@ -597,6 +597,17 @@ A type argument is the use's own source, resolved where it is written: `cloneNod
 clones one substituted for a generic parameter with no `selftype`, so a `Self` in it
 (a default naming `Step[T, Self]`) stays the type the default was taken into and is not
 repointed at the instance being made (`Step`).
+An `inline` default of a trait with a body is a template too, as a generic one is:
+it is not type checked for the trait (`structCheckMembers`: `Self` is the trait there,
+which holds nothing by value, so a default taking `self` by value and naming `Self` in
+its result, `Iterator`'s `indexed`, would be refused), not compared when a type meets
+the trait structurally (`genericDemandMatch`), and its copy in a type that declares the
+trait is type checked when a call reaches it (`structIsInheritedInlineDefault`,
+`fnCallDemandCandidates`), not with the type. Made for every type it would make a cursor of
+every cursor's items (`IterIndexed[T, Self]`, whose own `indexed` is a cursor of it),
+without end, and would refuse a cursor whose items hold a brand (a `List` of
+`&'=a mut R`) for a method nobody called. A method the type declares itself under the
+name still replaces the default, as for a generic one.
 Not yet built: a trait's public generic method met by a generic method the type
 declares itself. `structCheckTraitReqs` compares the requirement with that
 method by `fnSigVrefEqual`, and `itypeIsSame` finds no two
@@ -891,7 +902,12 @@ declared one, so a type or a constraint asking before the instance is laid out
 is answered. An entry not met leaves the instance without it, and so, for Move,
 copying unless another rule makes it move: the entry can add Move, never remove
 it. `genericConditioned` counts a `condis` as reading the arguments' layouts, so
-an instance made as a reference's target settles its arguments first. An unmet
+an instance made as a reference's target settles its arguments first. When only
+a member's clause reads them (`genericConditioned` with `typelevel` set is false), an
+argument that is itself an instance still waiting to be laid out
+(`genericArgWaiting`: `Option[Node]` in `List[Option[Node]]`, made inside Node's
+own layout) is left unsettled, and the member is decided late as it is for an
+argument in flight: settling it would lay Node out inside itself. An unmet
 requirement whose argument is such an instance says why
 (`genericCondIsWhy`): the entry's condition is false there, or, asked for
 `Copy`, an `is Move if` condition is true.

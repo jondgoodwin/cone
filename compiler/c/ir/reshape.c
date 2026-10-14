@@ -557,7 +557,7 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
 }
 
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
-        ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
+        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
     FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
@@ -598,6 +598,12 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             first = 1;
             INode *selft = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
             int writes = selft->tag == RefTag && (permGetFlags(((RefNode *)selft)->perm) & MayWrite) != 0;
+            // The receiver is a field of one struct, the borrow is into a field of another (or an
+            // element of a list that is no field of the receiver's struct): two values, whatever
+            // paths reach the structs. The borrow's value is the receiver only if it is the same
+            // struct's field (or a name or call result, which says nothing of where it is held)
+            if (owner && recvowner && owner != recvowner && !itypeIsSame(owner, recvowner))
+                writes = 0;
             if (writes && !recvunique && !visible) {
                 verdict->why = ReshapeReceiverUnseen;
                 return 1;
@@ -663,9 +669,9 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
     return 0;
 }
 
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
-        ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
-    if (reshapeCallBody(call, meth, recvunique, cont, owner, verdict, mine, nmine, skiprecv))
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
+        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv))
         return 1;
     // The borrow points into a 'mut' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call
