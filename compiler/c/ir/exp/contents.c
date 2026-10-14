@@ -426,7 +426,8 @@ static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
 // The entries of a '<-' on a value that is not a construction become a block
 // that borrows the receiver once and applies each entry against that borrow:
 //   { imm recv = &mut xs; *recv <- 1; ... }
-// A receiver that is already a reference is held as it is, so its permission,
+// The borrow is as strong as the type's '<-' methods need (fnCallAppendBorrowPerm),
+// and each application takes of it what its own method's 'self' declares. A receiver that is already a reference is held as it is, so its permission,
 // not the binding's, is what each application is checked against.
 //
 // This is lowering, so it belongs to type check: the borrow needs the
@@ -443,10 +444,12 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     }
     INode *lval = node->objfn;
     INode *lvaltype = iexpGetTypeDcl(node->objfn);
-    if (!(lvaltype->tag == RefTag || lvaltype->tag == VirtRefTag || lvaltype->tag == ArrayRefTag))
-        borrowMutRef(&lval, lvaltype, (INode*)mutPerm);
     // The type whose methods the entries are applied through
     INode *colltype = lvaltype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)lvaltype)->vtexp) : lvaltype;
+    // The borrow is as strong as the strongest 'self' of the type's '<-' methods
+    // needs, so each entry takes from it what its own method declares
+    if (!(lvaltype->tag == RefTag || lvaltype->tag == VirtRefTag || lvaltype->tag == ArrayRefTag))
+        borrowMutRef(&lval, lvaltype, newPermUseNode(fnCallAppendBorrowPerm(lval, colltype)));
 
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)node);
