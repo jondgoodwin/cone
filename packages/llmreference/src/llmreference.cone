@@ -1,0 +1,69 @@
+// llmreference: the CPU side of running a Llama-family model: the weight block layouts (GGUF's F32, F16, Q8_0,
+// Q4_K and Q6_K), their decoders and the encoders a test needs, seeded synthetic weights, and a CPU twin of each
+// GPU kernel in llmkernels (matvec, matmul, RMSNorm, RoPE, softmax, attention over a KV cache, the cache append,
+// SiLU, GELU, add, multiply). Written in Cone with no GPU and no call of the OS, so it builds and its tests run on
+// Linux, where llmkernels (which needs the GPU packages) does not. A later package that reads a GGUF file shares
+// these layouts rather than copying them.
+//
+//   mut rng = random.Rng.fromSeed(7u64);
+//   match syntheticMatrix(&mut rng, QTYPE_Q6_K, 4usize, 512usize) {      // 4 rows of 2 Q6_K super-blocks
+//     case imm m Some {
+//       imm x = syntheticFloats(&mut rng, 512usize, 1.0);
+//       mut y = zeroFloats(4usize);
+//       matvecCpu(&m, x.view(), y.viewMut());                            // y[r] = row r . x
+//       ...
+//
+// examples/tour.cone is that, whole: it builds a matrix, takes it apart again, and checks one row by hand.
+//
+//   QTYPE_F32 QTYPE_F16 QTYPE_Q8_0 QTYPE_Q4_K QTYPE_Q6_K     the types, GGUF's ggml_type numbers
+//   blockElems(t) blockBytes(t) rowBytes(t, cols)               sizes (0 for an unknown type or a partial block)
+//   f16ToF32(h) f32ToF16(f)                                     half-precision conversion, in integers
+//   dequantizeRow(t, bytes, at, cols, out)                      one row decoded to f32
+//   encodeF32 encodeF16 encodeQ8_0                              bytes of values (Q8_0 as ggml's reference rounds)
+//   packWords(bytes)                                            little-endian 32-bit words, for a GPU buffer
+//   QMatrix.make(t, rows, cols, bytes)  m.row(r)  m.words()  m.stride()       a weight matrix
+//   syntheticMatrix(&mut rng, t, rows, cols)  syntheticFloats(&mut rng, n, amplitude)  zeroFloats(n)
+//   matvecCpu matmulCpu rmsnormCpu ropeFrequencies ropeCpu softmaxCpu attentionCpu kvAppendCpu
+//   siluCpu geluCpu addCpu mulCpu siluValue geluValue            the twins (each documents its layout)
+//   matvecMagnitudeCpu matmulMagnitudeCpu sumTolerance           the bound a sum of products is tested to
+//
+// METHOD CHOICES. These are defaults a later design may revisit.
+//
+// - THE LAYOUTS. F32 and F16 are plain little-endian arrays. Q8_0, Q4_K and Q6_K are GGUF's (ggml's) blocks,
+//   in llmkernels.cone's header with their sizes and the formula for an element. Their decoders here are
+//   written the way ggml's dequantize_row_q8_0, _q4_K and _q6_K are (a loop over blocks and their groups); the
+//   shader's (llmcommon.slang) decodes one element, or one unit of 32, at a time, so the tests comparing the
+//   two cross-check the layout. UNCERTAIN: no copy of ggml and no model file was to hand, so the Q4_K and Q6_K
+//   layouts are written from knowledge of ggml and checked against numbers worked out by hand from it
+//   (tests/decode.cone: one block of each type, with Q6_K's values computed by a literal transcription of
+//   ggml's loop in Python) and against the gguf package's independent transcription; reading a real model's
+//   tensor and comparing it with llama.cpp's is the one check that remains.
+// - TWINS ARE REFERENCES. A twin works in f64 where it sums or takes a transcendental, in the order the layout
+//   gives, and rounds once to f32; the numbers that DEFINE a result (a dequantised weight, the f32 product
+//   that is a RoPE angle, an f32 add) are computed in f32 as the shader does. So a GPU result's difference
+//   from its twin is the GPU's own f32 error, which the tests bound (llmkernels.cone's header names each
+//   tolerance and why). A twin that emulated the GPU's rounding would be tested against its own mirror.
+// - 'sumTolerance(n, absSum)' is (n + 4) * 2^-24 * absSum: the standard bound on an f32 sum of n products, in
+//   any order, given the sum of the products' absolute values ('matvecMagnitudeCpu' and 'matmulMagnitudeCpu'
+//   compute it for each output).
+// - SYNTHETIC WEIGHTS are random blocks (every byte pattern in a nibble, a signed byte or a six-bit scale is a
+//   valid value), with the half-precision scales set small enough that decoded weights are O(0.1 .. 1) and
+//   a dot product over thousands of them is O(1 .. 10). They are real blocks, not near-misses. The same seed
+//   gives the same bytes on every platform (random's generator).
+// - THE ENCODERS are the three the tests need. Q8_0 follows ggml's reference rounding (the scale max|v| / 127
+//   as a half, each value divided by that half and rounded half away from zero). Left out: encoders for the
+//   K-quants (the tests fill blocks with random bytes instead; the gguf package has simple ones), Q4_0, Q5_x,
+//   the IQ types and BF16.
+// - HALVES are converted by integer arithmetic (no libm, no 16-bit float type): every finite half converts
+//   exactly, f32 to half rounds to nearest with ties to even (checked on all 65536 halves and on the midpoint
+//   of every adjacent pair), overflow goes to infinity, tiny values to a subnormal half or zero.
+// - THE ATTENTION TWIN is one sequence with grouped-query heads and a causal mask, over f32 caches laid out
+//   [position][kvHead][d]. Left out, as in the kernel: batching, several sequences, flash attention, sliding
+//   windows and biases other than causal, f16 activations or cache.
+// - No global and no thread-local: every function is of its arguments.
+
+mod llmreference;
+
+import libc;
+import collections use List;
+import random use Rng;

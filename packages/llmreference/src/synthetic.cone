@@ -1,0 +1,73 @@
+// ======== Synthetic weights and activations (seeded, for tests: no model is needed) ========
+
+// n values uniform in [-amplitude, amplitude), from the generator
+pub fn syntheticFloats(rng &mut Rng, n usize, amplitude f32) List[f32] {
+  mut out = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push((rng.unitF32() * 2.0 - 1.0) * amplitude);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// n zeros, a buffer for a twin to write
+pub fn zeroFloats(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l;
+}
+
+fn randomByte(rng &mut Rng) u8 { u8.from(rng.nextU32() & 255u32); }
+
+// A scale (a half) uniform in [lo, lo + span)
+fn randomHalf(rng &mut Rng, lo f32, span f32) u16 { f32ToF16(lo + span * rng.unitF32()); }
+
+// One random block of the type, appended to 'out': random quantised values, and scales (halves) small enough
+// that the decoded weights are O(0.1 .. 1), so a dot product over a few thousand of them is O(1 .. 10). Every
+// byte pattern in a quantised field is a valid value (a nibble, a signed byte, a six-bit scale), so these are
+// real blocks, not near-misses.
+fn randomBlock(rng &mut Rng, qtype u32, out &mut List[u8]) {
+  if qtype == QTYPE_F32 {
+    pushF32(out, (rng.unitF32() * 2.0 - 1.0));
+    return;
+  }
+  if qtype == QTYPE_F16 {
+    pushHalf(out, f32ToF16(rng.unitF32() * 2.0 - 1.0));
+    return;
+  }
+  if qtype == QTYPE_Q8_0 {
+    pushHalf(out, randomHalf(rng, 0.002, 0.006));
+    mut i = 0usize;
+    while i < 32usize { out.push(randomByte(rng)); i = i + 1usize; }
+    return;
+  }
+  if qtype == QTYPE_Q4_K {
+    pushHalf(out, randomHalf(rng, 0.0005, 0.0015));
+    pushHalf(out, randomHalf(rng, 0.0005, 0.0015));
+    mut i = 0usize;
+    while i < 140usize { out.push(randomByte(rng)); i = i + 1usize; }
+    return;
+  }
+  // QTYPE_Q6_K: ql and qh whole, the scales signed bytes in [-32, 31], then the half
+  mut i = 0usize;
+  while i < 192usize { out.push(randomByte(rng)); i = i + 1usize; }
+  i = 0usize;
+  while i < 16usize { out.push(u8.from(i32.from(rng.nextU32() & 63u32) - 32i32)); i = i + 1usize; }
+  pushHalf(out, randomHalf(rng, 0.0003, 0.0007));
+}
+
+// A weight matrix of random blocks, or None if the type is not one of the five or 'cols' is not a whole number
+// of its blocks. The same seed's generator gives the same bytes, on every platform.
+pub fn syntheticMatrix(rng &mut Rng, qtype u32, rows usize, cols usize) Option[QMatrix] {
+  imm rb = rowBytes(qtype, cols);
+  if rb == 0usize { return None; }
+  mut bytes = List[u8].withCapacity(rows * rb);
+  mut blocks = rows * (cols / blockElems(qtype));
+  while blocks > 0usize {
+    randomBlock(rng, qtype, &mut bytes);
+    blocks = blocks - 1usize;
+  }
+  QMatrix.make(qtype, rows, cols, bytes);
+}

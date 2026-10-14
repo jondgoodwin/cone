@@ -1,0 +1,338 @@
+// Times each kernel on the GPU at the sizes of a Llama-7B layer (4096-wide, 11008-wide feed-forward, 32 heads of
+// 128 over 8 key-value heads, a 32000-word vocabulary), on synthetic weights. It does not check the answers
+// (the tests do that); it prints the time of one dispatch, microseconds, and what that time means as memory
+// bandwidth (matvec: the weights read) or arithmetic (matmul: multiply-adds).
+//
+// A dispatch's time is measured in a job of 51 dispatches of the kernel over the same buffers and in a job of
+// 1, each timed from submit until the waiting thread holds the answer, and (t51 - t1) / 50 taken, the median of
+// 5 repeats: the fixed cost of a job (the frame's end, the fence, the wake) cancels. The buffers are uploaded
+// by a first, untimed job and move from each job to the next. Not optimised: the kernels are written for
+// correctness (one invocation reads its bytes a word at a time, no subgroup operations, no 16-bit loads).
+//
+//   congo run bench --release        (GPU_POWER_PREFERENCE=low-power for the integrated GPU)
+
+mod bench;
+
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import time use Instant;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+// A buffer to make: these words uploaded, or (when 'words' is empty) this many zero words
+struct BufSpec {
+  words List[u32];
+  zeros usize;
+}
+
+// What a case records: six numbers and a type
+struct Shape {
+  a usize;
+  b usize;
+  c usize;
+  d usize;
+  e usize;
+  f usize;
+  qt u32;
+}
+
+fn spec(words List[u32]) BufSpec { new BufSpec(words, 0usize); }
+
+fn zeroSpec(n usize) BufSpec { new BufSpec(List[u32].empty(), n); }
+
+fn floatSpec(rng &mut Rng, n usize, amp f32) BufSpec { spec(floatWords(syntheticFloats(rng, n, amp).view())); }
+
+// Run the recorder 'times' times in a job over the held buffers (or, the first time, the specs'), and wait: the
+// microseconds from submit to the answer
+fn runOnce(device &mut Device, kernels &Kernels, works &mut Works, held &mut List[Buffer], specs &List[BufSpec],
+    shape &Shape, record &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool, times usize, first bool) f64 {
+  mut job = Job.make(device);
+  mut slots = List[u32].empty();
+  mut i = 0usize;
+  while i < specs.len() {
+    if first {
+      if specs[i].words.len() > 0usize { slots.push(job.give(upload(device, specs[i].words.view()))); }
+      else { slots.push(job.give(zeroed(device, specs[i].zeros))); }
+    } else {
+      match held.pop() {
+        case mut b Some { slots.push(job.give(b)); }
+        case is None { }
+      }
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < times {
+    if !record(kernels, &mut job, device, slots.view(), shape) { printStr("(the case was refused)\n"); }
+    i = i + 1usize;
+  }
+  imm start = Instant.now();
+  imm ticket = works.submit(device, job, Target.Here(1u64));
+  mut got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  imm took = start.elapsed();
+  // the buffers come back: hold them, last slot first, so the next job pops slot 0 first
+  mut k = specs.len();
+  while k > 0usize {
+    k = k - 1usize;
+    held.push(got[0usize].take(u32.from(k)));
+  }
+  f64.from(took.nanos()) / 1000.0d;
+}
+
+// Microseconds for one dispatch: (t51 - t1) / 50, the median of 5
+fn timeCase(device &mut Device, kernels &Kernels, works &mut Works, specs &List[BufSpec], shape &Shape,
+    record &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool) f64 {
+  mut held = List[Buffer].empty();
+  runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, true);   // uploads, untimed
+  mut diffs = List[f64].empty();
+  mut rep = 0usize;
+  while rep < 5usize {
+    imm t1 = runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, false);
+    imm t51 = runOnce(device, kernels, works, &mut held, specs, shape, record, 51usize, false);
+    diffs.push((t51 - t1) / 50.0d);
+    rep = rep + 1usize;
+  }
+  // the median of five: the third smallest
+  mut a = 0usize;
+  while a < 5usize {
+    mut b = a + 1usize;
+    while b < 5usize {
+      if *diffs[b] < *diffs[a] { diffs.swap(a, b); }
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+  *diffs[2usize];
+}
+
+fn recMatvec(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.matvec(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b);
+}
+
+fn recMatmul(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.matmul(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b, s.c);
+}
+
+fn recRms(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.rmsnorm(job, device, slots[0usize], slots[1usize], slots[2usize], s.a, s.b, 0.00001);
+}
+
+fn recRope(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.rope(job, device, slots[0usize], slots[1usize], s.a, s.b, s.c, s.c, s.d, 0u32);
+}
+
+fn recSoftmax(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.softmax(job, device, slots[0usize], slots[1usize], s.a, s.b);
+}
+
+fn recAttention(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  // a = tokens, b = heads, c = kv heads, d = head dim, e = pos0, f = maxSeq
+  k.attention(job, device, slots[0usize], slots[1usize], slots[2usize], slots[3usize], slots[4usize], s.a, s.b, s.c, s.d, s.e, s.f,
+    1.0 / f32.from(libc.sqrt(f64.from(s.d))));
+}
+
+fn recAppend(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.kvAppend(job, device, slots[0usize], slots[1usize], s.a, s.b, s.c);
+}
+
+fn recSilu(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.silu(job, device, slots[0usize], slots[1usize], s.a);
+}
+
+fn recGelu(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.gelu(job, device, slots[0usize], slots[1usize], s.a);
+}
+
+fn recAdd(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.add(job, device, slots[0usize], slots[1usize], slots[2usize], s.a);
+}
+
+fn recMul(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+  k.mul(job, device, slots[0usize], slots[1usize], slots[2usize], s.a);
+}
+
+fn typeName(qt u32) &str {
+  if qt == QTYPE_F32 { return "F32 "; }
+  if qt == QTYPE_F16 { return "F16 "; }
+  if qt == QTYPE_Q8_0 { return "Q8_0"; }
+  if qt == QTYPE_Q4_K { return "Q4_K"; }
+  "Q6_K";
+}
+
+fn pad(s &str, width usize) {
+  mut n = s.len;
+  printStr(s);
+  while n < width { printStr(" "); n = n + 1usize; }
+}
+
+fn matvecCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, qt u32, rows usize, cols usize) {
+  match syntheticMatrix(rng, qt, rows, cols) {
+    case imm m Some {
+      mut specs = List[BufSpec].empty();
+      specs.push(spec(m.words()));
+      specs.push(floatSpec(rng, cols, 1.0));
+      specs.push(zeroSpec(rows));
+      imm us = timeCase(device, kernels, works, &specs, &new Shape(rows, cols, 0usize, 0usize, 0usize, 0usize, qt), &recMatvec);
+      printStr("matvec "); printStr(typeName(qt)); printStr(" "); printUInt(u64.from(rows)); printStr(" x "); printUInt(u64.from(cols));
+      printStr(": "); printFloat(us); printStr(" us, weights read at "); printFloat(f64.from(m.bytes.len()) / us / 1000.0d); printStr(" GB/s\n");
+    }
+    case is None { printStr("matvec: bad shape\n"); }
+  }
+}
+
+fn matmulCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, qt u32, rows usize, cols usize, batch usize) {
+  match syntheticMatrix(rng, qt, rows, cols) {
+    case imm m Some {
+      mut specs = List[BufSpec].empty();
+      specs.push(spec(m.words()));
+      specs.push(floatSpec(rng, cols * batch, 1.0));
+      specs.push(zeroSpec(rows * batch));
+      imm us = timeCase(device, kernels, works, &specs, &new Shape(rows, cols, batch, 0usize, 0usize, 0usize, qt), &recMatmul);
+      printStr("matmul "); printStr(typeName(qt)); printStr(" "); printUInt(u64.from(rows)); printStr(" x "); printUInt(u64.from(cols));
+      printStr(" x batch "); printUInt(u64.from(batch)); printStr(": "); printFloat(us); printStr(" us, ");
+      printFloat(2.0d * f64.from(rows) * f64.from(cols) * f64.from(batch) / us / 1000.0d); printStr(" GFLOP/s\n");
+    }
+    case is None { printStr("matmul: bad shape\n"); }
+  }
+}
+
+fn line(name &str, us f64) {
+  pad(name, 54usize);
+  printFloat(us);
+  printStr(" us\n");
+}
+
+fn main() i32 {
+  mut instance = Instance.create("llmkernels bench");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  mut device = adapter.requestDevice();
+  if !device.isValid() {
+    printStr("no device\n");
+    return 1i32;
+  }
+  imm kernels = Kernels.make(&device);
+  if !kernels.isValid() {
+    printStr("the kernels were not made\n");
+    return 1i32;
+  }
+  mut works = Works.make();
+  mut rng = Rng.fromSeed(2026u64);
+  if (libc.getenv("GPUWORK_REPORT") as usize) != 0usize { printStr("adapter: "); printStr(adapter.name.view()); printStr("\n"); }
+
+  // ---- matvec: a decode step's weights ----
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F32, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F16, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q8_0, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q4_K, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q6_K, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q4_K, 11008usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q6_K, 32000usize, 4096usize);
+
+  // ---- matmul: a prefill's batch ----
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F32, 4096usize, 4096usize, 32usize);
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F16, 4096usize, 4096usize, 32usize);
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q8_0, 4096usize, 4096usize, 32usize);
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q4_K, 4096usize, 4096usize, 32usize);
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q6_K, 4096usize, 4096usize, 32usize);
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q8_0, 4096usize, 4096usize, 128usize);
+  matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F32, 4096usize, 4096usize, 128usize);
+
+  // ---- the rest ----
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 4096usize, 3.0));
+    specs.push(floatSpec(&mut rng, 4096usize, 1.0));
+    specs.push(zeroSpec(4096usize));
+    line("rmsnorm 1 row of 4096", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(4096usize, 1usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recRms));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 128usize * 4096usize, 3.0));
+    specs.push(floatSpec(&mut rng, 4096usize, 1.0));
+    specs.push(zeroSpec(128usize * 4096usize));
+    line("rmsnorm 128 rows of 4096", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(4096usize, 128usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recRms));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(spec(floatWords(ropeFrequencies(128usize, 10000.0).view())));
+    specs.push(floatSpec(&mut rng, 32usize * 128usize, 1.0));
+    line("rope 1 token, 32 heads of 128 (position 1000)", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 32usize, 128usize, 1000usize, 0usize, 0usize, 0u32), &recRope));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(spec(floatWords(ropeFrequencies(128usize, 10000.0).view())));
+    specs.push(floatSpec(&mut rng, 128usize * 32usize * 128usize, 1.0));
+    line("rope 128 tokens, 32 heads of 128", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(128usize, 32usize, 128usize, 0usize, 0usize, 0usize, 0u32), &recRope));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 32000usize, 4.0));
+    specs.push(zeroSpec(32000usize));
+    line("softmax 1 row of 32000 (the vocabulary)", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(32000usize, 1usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recSoftmax));
+  }
+  {
+    // decode over 2048 positions: 32 heads of 128 over 8 key-value heads
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 32usize * 128usize, 1.0));
+    specs.push(floatSpec(&mut rng, 2048usize * 8usize * 128usize, 1.0));
+    specs.push(floatSpec(&mut rng, 2048usize * 8usize * 128usize, 1.0));
+    specs.push(zeroSpec(32usize * 2048usize));
+    specs.push(zeroSpec(32usize * 128usize));
+    line("attention decode, 2048 positions, 32 heads of 128 / 8", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 32usize, 8usize, 128usize, 2047usize, 2048usize, 0u32), &recAttention));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 32usize * 128usize, 1.0));
+    specs.push(floatSpec(&mut rng, 512usize * 8usize * 128usize, 1.0));
+    specs.push(floatSpec(&mut rng, 512usize * 8usize * 128usize, 1.0));
+    specs.push(zeroSpec(32usize * 512usize));
+    specs.push(zeroSpec(32usize * 128usize));
+    line("attention decode, 512 positions, 32 heads of 128 / 8", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 32usize, 8usize, 128usize, 511usize, 512usize, 0u32), &recAttention));
+  }
+  {
+    // prefill of 128 tokens, 128 positions
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 128usize * 32usize * 128usize, 1.0));
+    specs.push(floatSpec(&mut rng, 128usize * 8usize * 128usize, 1.0));
+    specs.push(floatSpec(&mut rng, 128usize * 8usize * 128usize, 1.0));
+    specs.push(zeroSpec(128usize * 32usize * 128usize));
+    specs.push(zeroSpec(128usize * 32usize * 128usize));
+    line("attention prefill, 128 tokens, 32 heads of 128 / 8", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(128usize, 32usize, 8usize, 128usize, 0usize, 128usize, 0u32), &recAttention));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 1024usize, 1.0));
+    specs.push(zeroSpec(2048usize * 1024usize));
+    line("kv append 1 token of 1024 (8 heads of 128)", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 1024usize, 1000usize, 0usize, 0usize, 0usize, 0u32), &recAppend));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 11008usize, 6.0));
+    specs.push(zeroSpec(11008usize));
+    line("silu 11008", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(11008usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recSilu));
+    line("gelu 11008", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(11008usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recGelu));
+  }
+  {
+    mut specs = List[BufSpec].empty();
+    specs.push(floatSpec(&mut rng, 11008usize, 6.0));
+    specs.push(floatSpec(&mut rng, 11008usize, 6.0));
+    specs.push(zeroSpec(11008usize));
+    line("add 11008", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(11008usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recAdd));
+    line("mul 11008", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(11008usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recMul));
+  }
+  device.endFrame();
+  device.waitIdle();
+  0i32;
+}

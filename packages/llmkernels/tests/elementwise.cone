@@ -1,0 +1,223 @@
+// SiLU, GELU, add, multiply and the KV-cache append on the GPU against their CPU twins, over lengths that are
+// not multiples of the workgroup (256 invocations; the append's is 64): 1, 255, 256, 257, 10000, and one past
+// 65535 groups (16776961 elements, so the index folds into a second row of groups). SiLU and GELU also run
+// over a list of special inputs (0, tiny, large of both signs, where the exponential overflows or the tanh
+// saturates). Inputs are synthetic and seeded.
+//
+// Tolerances, named. The twin works in f64, so the difference is the GPU's f32 error.
+//  - ADD, MUL, the APPEND: none. An IEEE add or multiply, or a copy, is the same on every GPU and the CPU:
+//    bit for bit.
+//  - SILU: relative, 8 + 2 |x| units of 2^-24 (an exp of -x, which the Vulkan specification bounds at
+//    3 + 2 |x| ulp, plus an add and a division), with an absolute floor of 1e-30 (SILU_FLOOR) where the
+//    answer is vanishingly small: at x = -88 the true answer is 5e-37 and the GPU's exp overflows, so it
+//    answers 0.
+//  - GELU: absolute, (6 + 4 |x|) units of 2^-24 plus 6 units of 2^-24 of the answer: the tanh's error (taken
+//    as 5 ulp of a number at most 1) enters through the sum 1 + tanh, which for a large negative x cancels,
+//    so the error is absolute in x.
+// The worst error seen of each, in these units, is printed with LLMKERNELS_REPORT set.
+//
+// Only a failure prints. GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two. It needs
+// a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod elementwise;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+const U = 5.9604644775390625e-8d;           // 2^-24
+
+// SiLU's absolute floor: its answer at x = -88 is 5e-37, which the GPU gives as 0 (its exp(88), 1.65e38,
+// comes out infinite, measured on the RTX 4060): an error nothing downstream can see
+const SILU_FLOOR = 1.0e-30d;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn zerosF(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l;
+}
+
+struct Stats {
+  silu f64;
+  gelu f64;
+}
+
+fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
+  imm ticket = works.submit(device, job, Target.Here(1u64));
+  mut got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  require(got.len() == 1usize, "the job's completion");
+  expectBool(got[0usize].ok, true, "the job ran");
+  wordFloats(got[0usize].words(back).view());
+}
+
+// SiLU (which = 0) or GELU (1) of x: the number of outputs outside the bound
+fn activation(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, x &Array[f32], which u32) u64 {
+  imm n = x.len;
+  mut want = zerosF(n);
+  if which == 0u32 { siluCpu(x, n, want.viewMut()); } else { geluCpu(x, n, want.viewMut()); }
+  mut job = Job.make(device);
+  imm xb = job.give(upload(device, floatWords(x).view()));
+  imm yb = job.give(zeroed(device, n));
+  if which == 0u32 { require(kernels.silu(&mut job, device, xb, yb, n), "the silu recorded"); }
+  else { require(kernels.gelu(&mut job, device, xb, yb, n), "the gelu recorded"); }
+  imm back = job.readback(device, yb);
+  imm y = finish(device, works, job, back);
+  mut bad = 0u64;
+  mut i = 0usize;
+  while i < n {
+    imm xv = libc.fabs(f64.from(x[i]));
+    imm err = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+    imm mag = libc.fabs(f64.from(*want[i]));
+    if which == 0u32 {
+      if !(err <= (8.0d + 2.0d * xv) * U * mag + SILU_FLOOR) { bad = bad + 1u64; }
+      if mag > 1.0e-30d {
+        imm units = err / (U * mag);
+        if units > stats.silu { stats.silu = units; }
+      }
+    } else {
+      if !(err <= (6.0d + 4.0d * xv) * U + 6.0d * U * mag) { bad = bad + 1u64; }
+      imm units = err / U;
+      if units > stats.gelu { stats.gelu = units; }
+    }
+    i = i + 1usize;
+  }
+  bad;
+}
+
+// a + b (which = 0) or a * b (1): how many outputs are not bit for bit the twin's
+fn binary(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, n usize, which u32) u64 {
+  imm a = syntheticFloats(rng, n, 8.0);
+  imm b = syntheticFloats(rng, n, 8.0);
+  mut want = zerosF(n);
+  if which == 0u32 { addCpu(a.view(), b.view(), n, want.viewMut()); } else { mulCpu(a.view(), b.view(), n, want.viewMut()); }
+  mut job = Job.make(device);
+  imm ab = job.give(upload(device, floatWords(a.view()).view()));
+  imm bb = job.give(upload(device, floatWords(b.view()).view()));
+  imm yb = job.give(zeroed(device, n));
+  if which == 0u32 { require(kernels.add(&mut job, device, ab, bb, yb, n), "the add recorded"); }
+  else { require(kernels.mul(&mut job, device, ab, bb, yb, n), "the mul recorded"); }
+  imm back = job.readback(device, yb);
+  imm y = finish(device, works, job, back);
+  mut bad = 0u64;
+  mut i = 0usize;
+  while i < n {
+    if (*y[i] as u32) != (*want[i] as u32) { bad = bad + 1u64; }
+    i = i + 1usize;
+  }
+  bad;
+}
+
+// Append nTokens rows of kvDim to a cache of capacity (pos0 + nTokens + 3) rows, past rows holding a marker: how
+// many words are wrong
+fn append(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, nTokens usize, kvDim usize, pos0 usize) u64 {
+  imm src = syntheticFloats(rng, nTokens * kvDim, 2.0);
+  imm rows = pos0 + nTokens + 3usize;
+  mut cache = List[f32].withCapacity(rows * kvDim);
+  mut i = 0usize;
+  while i < rows * kvDim { cache.push(7.0); i = i + 1usize; }
+  mut want = List[f32].withCapacity(rows * kvDim);
+  i = 0usize;
+  while i < rows * kvDim { want.push(*cache[i]); i = i + 1usize; }
+  kvAppendCpu(src.view(), want.viewMut(), nTokens, kvDim, pos0);
+  mut job = Job.make(device);
+  imm sb = job.give(upload(device, floatWords(src.view()).view()));
+  imm cb = job.give(upload(device, floatWords(cache.view()).view()));
+  require(kernels.kvAppend(&mut job, device, sb, cb, nTokens, kvDim, pos0), "the append recorded");
+  imm back = job.readback(device, cb);
+  imm y = finish(device, works, job, back);
+  mut bad = 0u64;
+  i = 0usize;
+  while i < rows * kvDim {
+    if (*y[i] as u32) != (*want[i] as u32) { bad = bad + 1u64; }
+    i = i + 1usize;
+  }
+  bad;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("llmkernels elementwise");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm kernels = Kernels.make(&device);
+  require(kernels.isValid(), "the kernels");
+  mut works = Works.make();
+  mut stats = new Stats(0.0d, 0.0d);
+  mut rng = Rng.fromSeed(31337u64);
+
+  imm sizes = [1usize, 255usize, 256usize, 257usize, 10000usize];
+  mut s = 0usize;
+  while s < 5usize {
+    imm n = sizes[s];
+    imm x = syntheticFloats(&mut rng, n, 6.0);
+    expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, x.view(), 0u32), 0u64, "silu");
+    expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, x.view(), 1u32), 0u64, "gelu");
+    expectUInt(binary(&mut device, &kernels, &mut works, &mut rng, n, 0u32), 0u64, "add");
+    expectUInt(binary(&mut device, &kernels, &mut works, &mut rng, n, 1u32), 0u64, "mul");
+    s = s + 1usize;
+  }
+
+  // special inputs
+  imm special = [0.0, 1.0e-8, -1.0e-8, 1.0, -1.0, 6.0, -6.0, 20.0, -20.0, 88.0, -88.0, 100.0, -100.0, 1.0e10, -1.0e10, 0.5, -0.5, 3.0, -3.0];
+  expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, &special, 0u32), 0u64, "silu of special inputs");
+  expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, &special, 1u32), 0u64, "gelu of special inputs");
+
+  // the append
+  expectUInt(append(&mut device, &kernels, &mut works, &mut rng, 1usize, 64usize, 0usize), 0u64, "append 1 row at 0");
+  expectUInt(append(&mut device, &kernels, &mut works, &mut rng, 3usize, 128usize, 5usize), 0u64, "append 3 rows at 5");
+  expectUInt(append(&mut device, &kernels, &mut works, &mut rng, 17usize, 100usize, 30usize), 0u64, "append 17 rows of 100 at 30");
+  expectUInt(append(&mut device, &kernels, &mut works, &mut rng, 2048usize, 4096usize, 7usize), 0u64, "append 2048 rows of 4096: 8388608 elements, past 65535 groups");
+
+  // one past 65535 groups of 256
+  imm big = 65535usize * 256usize + 1usize;
+  expectUInt(binary(&mut device, &kernels, &mut works, &mut rng, big, 0u32), 0u64, "add of 16776961 elements (the index folds)");
+  {
+    imm x = syntheticFloats(&mut rng, big, 6.0);
+    expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, x.view(), 0u32), 0u64, "silu of 16776961 elements");
+  }
+
+  // refusals
+  {
+    mut job = Job.make(&mut device);
+    imm a = job.give(zeroed(&mut device, 64usize));
+    imm b = job.give(zeroed(&mut device, 64usize));
+    imm c = job.give(zeroed(&mut device, 64usize));
+    expectBool(kernels.silu(&mut job, &mut device, a, b, 0usize), false, "silu of nothing is refused");
+    expectBool(kernels.add(&mut job, &mut device, a, b, c, 0usize), false, "add of nothing is refused");
+    expectBool(kernels.kvAppend(&mut job, &mut device, a, b, 0usize, 8usize, 0usize), false, "an append of no tokens is refused");
+    expectBool(kernels.kvAppend(&mut job, &mut device, a, b, 2usize, 0usize, 0usize), false, "an append of no width is refused");
+    expectBool(kernels.add(&mut job, &mut device, a, b, c, 8usize), true, "a good add is recorded");
+    imm t = works.submit(&mut device, job, Target.Here(2u64));
+    mut got = List[Completion].empty();
+    works.waitFor(&mut device, t, &mut got);
+    expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
+  }
+
+  if (libc.getenv("LLMKERNELS_REPORT") as usize) != 0usize {
+    printStr("silu worst: "); printFloat(stats.silu); printStr(" x 2^-24 relative\n");
+    printStr("gelu worst: "); printFloat(stats.gelu); printStr(" x 2^-24 absolute\n");
+  }
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  device.endFrame();
+  device.waitIdle();
+  done();
+}

@@ -1,0 +1,174 @@
+// The tiled matrix-matrix product (Y = X W^T for a batch of input rows, a 16 x 16 tile of Y to a workgroup) on the
+// GPU against its CPU twin, for all five weight types, over rows, columns and batch sizes that are not multiples
+// of the tile (1, 15, 16, 17, 33, 40) and columns that are not multiples of the 16-column step (F32 and F16 any
+// count; the quantised types a whole number of blocks). Weights and inputs are synthetic and seeded.
+//
+// Tolerance, named: each output within llmreference's sumTolerance of the twin's value, (cols + 4) * 2^-24
+// times the sum of the absolute values of its products (the same bound as the matvec's). The worst error seen,
+// in units of 2^-24 times that sum, is printed with LLMKERNELS_REPORT set. The kernel adds each output in column
+// order, so it is expected to be far inside the bound.
+//
+// Also: a matrix at a byte offset in a larger weights buffer, X read from an element offset and Y written from
+// one, and refusals (an unknown type, columns that are not whole blocks, a zero batch).
+//
+// Only a failure prints. GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two. It needs
+// a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod matmul;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+fn preference() u32 {
+  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn zerosF(n usize) List[f32] {
+  mut l = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l;
+}
+
+fn zerosD(n usize) List[f64] {
+  mut l = List[f64].withCapacity(n);
+  mut i = 0usize;
+  while i < n { l.push(0.0d); i = i + 1usize; }
+  l;
+}
+
+struct Stats {
+  worst f64;
+}
+
+// One matmul on the GPU against the twin: how many outputs are outside the bound
+fn run(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, qt u32, rows usize,
+    cols usize, batch usize, wPad usize, xPad usize, yPad usize) u64 {
+  match syntheticMatrix(rng, qt, rows, cols) {
+    case imm m Some {
+      imm x = syntheticFloats(rng, cols * batch, 1.0);
+      mut want = zerosF(rows * batch);
+      mut mag = zerosD(rows * batch);
+      matmulCpu(&m, x.view(), batch, want.viewMut());
+      matmulMagnitudeCpu(&m, x.view(), batch, mag.viewMut());
+      mut bytes = List[u8].empty();
+      mut i = 0usize;
+      while i < wPad { bytes.push(0xa5u8); i = i + 1usize; }
+      i = 0usize;
+      while i < m.bytes.len() { bytes.push(*m.bytes[i]); i = i + 1usize; }
+      mut xs = List[f32].withCapacity(xPad + cols * batch);
+      i = 0usize;
+      while i < xPad { xs.push(9.0); i = i + 1usize; }
+      i = 0usize;
+      while i < cols * batch { xs.push(*x[i]); i = i + 1usize; }
+      mut job = Job.make(device);
+      imm w = job.give(upload(device, packWords(bytes.view()).view()));
+      imm xb = job.give(upload(device, floatWords(xs.view()).view()));
+      imm yb = job.give(zeroed(device, yPad + rows * batch));
+      require(kernels.matmulAt(&mut job, device, w, xb, yb, qt, rows, cols, batch, wPad, xPad, yPad), "the matmul recorded");
+      imm back = job.readback(device, yb);
+      imm ticket = works.submit(device, job, Target.Here(1u64));
+      mut got = List[Completion].empty();
+      works.waitFor(device, ticket, &mut got);
+      require(got.len() == 1usize, "the job's completion");
+      expectBool(got[0usize].ok, true, "the job ran");
+      imm y = wordFloats(got[0usize].words(back).view());
+      mut bad = 0u64;
+      i = 0usize;
+      while i < yPad { if *y[i] != 0.0 { bad = bad + 1u64; } i = i + 1usize; }
+      i = 0usize;
+      while i < rows * batch {
+        imm err = libc.fabs(f64.from(*y[yPad + i]) - f64.from(*want[i]));
+        imm bound = sumTolerance(cols, *mag[i]);
+        if !(err <= bound) { bad = bad + 1u64; }
+        if *mag[i] > 0.0d {
+          imm units = err / (5.9604644775390625e-8d * *mag[i]);
+          if units > stats.worst { stats.worst = units; }
+        }
+        i = i + 1usize;
+      }
+      return bad;
+    }
+    case is None { return 999999u64; }
+  }
+  999999u64;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("llmkernels matmul");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm kernels = Kernels.make(&device);
+  require(kernels.isValid(), "the kernels");
+  mut works = Works.make();
+  mut stats = new Stats(0.0d);
+  mut rng = Rng.fromSeed(4321u64);
+
+  // rows, columns, batch
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 1usize, 1usize, 1usize, 0usize, 0usize, 0usize), 0u64, "F32 1 x 1 x 1");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 15usize, 5usize, 1usize, 0usize, 0usize, 0usize), 0u64, "F32 15 x 5 x 1");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 16usize, 16usize, 16usize, 0usize, 0usize, 0usize), 0u64, "F32 16 x 16 x 16 (exactly one tile)");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 17usize, 19usize, 5usize, 0usize, 0usize, 0usize), 0u64, "F32 17 x 19 x 5");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 33usize, 100usize, 17usize, 0usize, 0usize, 0usize), 0u64, "F32 33 x 100 x 17");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 40usize, 37usize, 40usize, 0usize, 0usize, 0usize), 0u64, "F32 40 x 37 x 40");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 70usize, 1000usize, 33usize, 0usize, 0usize, 0usize), 0u64, "F32 70 x 1000 x 33");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 17usize, 31usize, 3usize, 0usize, 0usize, 0usize), 0u64, "F16 17 x 31 x 3");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 33usize, 129usize, 17usize, 0usize, 0usize, 0usize), 0u64, "F16 33 x 129 x 17");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 1usize, 32usize, 1usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 1 x 32 x 1");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 33usize, 96usize, 5usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 33 x 96 x 5");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 17usize, 64usize, 33usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 17 x 64 x 33");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 40usize, 800usize, 16usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 40 x 800 x 16");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 19usize, 512usize, 7usize, 0usize, 0usize, 0usize), 0u64, "Q4_K 19 x 512 x 7");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 33usize, 768usize, 17usize, 0usize, 0usize, 0usize), 0u64, "Q4_K 33 x 768 x 17");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 19usize, 512usize, 7usize, 0usize, 0usize, 0usize), 0u64, "Q6_K 19 x 512 x 7");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 17usize, 256usize, 40usize, 0usize, 0usize, 0usize), 0u64, "Q6_K 17 x 256 x 40");
+
+  // offsets: 12 bytes of junk before the matrix, 5 floats before X, 3 before Y
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 18usize, 21usize, 9usize, 12usize, 5usize, 3usize), 0u64, "F32 at offsets");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 18usize, 21usize, 9usize, 12usize, 5usize, 3usize), 0u64, "F16 at offsets");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 18usize, 64usize, 9usize, 12usize, 5usize, 3usize), 0u64, "Q8_0 at offsets");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 18usize, 256usize, 9usize, 12usize, 5usize, 3usize), 0u64, "Q4_K at offsets");
+  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 18usize, 256usize, 9usize, 12usize, 5usize, 3usize), 0u64, "Q6_K at offsets");
+
+  // refusals: nothing is recorded
+  {
+    mut job = Job.make(&mut device);
+    imm a = job.give(zeroed(&mut device, 64usize));
+    imm b = job.give(zeroed(&mut device, 64usize));
+    imm c = job.give(zeroed(&mut device, 64usize));
+    expectBool(kernels.matmul(&mut job, &mut device, a, b, c, 7u32, 4usize, 32usize, 2usize), false, "an unknown type is refused");
+    expectBool(kernels.matmul(&mut job, &mut device, a, b, c, QTYPE_Q6_K, 4usize, 100usize, 2usize), false, "columns that are not whole blocks are refused");
+    expectBool(kernels.matmul(&mut job, &mut device, a, b, c, QTYPE_F32, 4usize, 8usize, 0usize), false, "a zero batch is refused");
+    expectBool(kernels.matmul(&mut job, &mut device, a, b, c, QTYPE_F32, 0usize, 8usize, 2usize), false, "no rows is refused");
+    expectBool(kernels.matmul(&mut job, &mut device, a, b, c, QTYPE_F32, 4usize, 8usize, 2usize), true, "a good one is recorded");
+    imm t = works.submit(&mut device, job, Target.Here(2u64));
+    mut got = List[Completion].empty();
+    works.waitFor(&mut device, t, &mut got);
+    expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
+  }
+
+  if (libc.getenv("LLMKERNELS_REPORT") as usize) != 0usize {
+    printStr("matmul worst error: ");
+    printFloat(stats.worst);
+    printStr(" x 2^-24 x sum of |terms|\n");
+  }
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  device.endFrame();
+  device.waitIdle();
+  done();
+}
