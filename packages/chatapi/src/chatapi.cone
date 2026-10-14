@@ -1,0 +1,122 @@
+// The chatapi package (header written last).
+
+mod chatapi;
+
+import collections use List, String;
+import json;
+import env;
+import http;
+import httpclient;
+import actorhttp;
+import sse;
+import aio use IoLimits;
+import actors;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// What kind of thing went wrong (see the package's header, ERRORS)
+pub enum ChatErrorKind {
+  NoKey,         // the environment variable that should hold the key is not set: nothing was sent
+  Request,       // the request cannot be written: no model, no messages, text that is not UTF-8
+  Transport,     // the exchange failed: the network, TLS, a limit of the client's
+  Cancelled,     // its cancel group was cancelled
+  TimedOut,      // its deadline passed
+  Api,           // the server answered with an error status: status, and the API's error object
+  Decode,        // a reply or a chunk is not what the API says
+  Stream;        // a stream broke: an error chunk, or it ended before the reply was whole
+}
+
+// The name of a kind, in lower case
+pub fn errorKindName(k ChatErrorKind) &str {
+  if k == ChatErrorKind.NoKey {"nokey";}
+  elif k == ChatErrorKind.Request {"request";}
+  elif k == ChatErrorKind.Transport {"transport";}
+  elif k == ChatErrorKind.Cancelled {"cancelled";}
+  elif k == ChatErrorKind.TimedOut {"timedout";}
+  elif k == ChatErrorKind.Api {"api";}
+  elif k == ChatErrorKind.Decode {"decode";}
+  else {"stream";}
+}
+
+// Why a call has no reply. Nothing in it is ever the API key
+pub struct ChatError {
+  pub kind ChatErrorKind;
+  pub status u16;          // Api: the HTTP status; 0 otherwise
+  pub detail String;       // what is wrong: the API's own message for Api
+  pub errorType String;    // Api: the error object's "type", or empty
+  pub code String;         // Api: the error object's "code" (text or number), or empty
+
+  pub fn make(kind ChatErrorKind, detail &str) ChatError {
+    new ChatError(kind, 0u16, String.from(detail), String.empty(), String.empty());
+  }
+
+  pub fn copy(self &) ChatError {
+    new ChatError(kind, status, detail.copy(), errorType.copy(), code.copy());
+  }
+
+  pub fn isCancelled(self &) bool {kind == ChatErrorKind.Cancelled;}
+  pub fn isTimedOut(self &) bool {kind == ChatErrorKind.TimedOut;}
+
+  // Whether trying the same call again later may succeed: the network or the
+  // server failing, a deadline, a rate limit (429) or a server error (5xx)
+  pub fn isRetryable(self &) bool {
+    kind == ChatErrorKind.Transport or kind == ChatErrorKind.TimedOut or
+      (kind == ChatErrorKind.Api and (status == 429u16 or status == 408u16 or status >= 500u16));
+  }
+
+  // One line: 'api: 401 invalid_api_key: Incorrect API key provided'
+  pub fn message(self &) String {
+    mut out = String.from(errorKindName(kind));
+    out.append(": ");
+    if kind == ChatErrorKind.Api {
+      out.appendUInt(u64.from(status));
+      if code.len() > 0usize {
+        out.append(" ");
+        out.append(code.view());
+      }
+      out.append(": ");
+    }
+    out.append(detail.view());
+    out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint
+// ---------------------------------------------------------------------------
+
+// Where the API is, and whose key opens it (see the package's header, THE ENDPOINT)
+pub struct Endpoint {
+  pub baseUrl String;              // 'https://api.openai.com/v1': the path before '/chat/completions'
+  pub keyEnv String;               // the NAME of the environment variable holding the key; empty: none is sent
+  pub maxCompletionTokens bool;    // send the limit as 'max_completion_tokens' (OpenAI's newer models), not 'max_tokens'
+
+  pub fn make(baseUrl &str, keyEnv &str) Endpoint {
+    new Endpoint(String.from(baseUrl), String.from(keyEnv), false);
+  }
+
+  // OpenAI's, the key in OPENAI_API_KEY
+  pub fn openai() Endpoint {Endpoint.make("https://api.openai.com/v1", "OPENAI_API_KEY");}
+
+  // A server on this machine (llama.cpp, vLLM, Ollama, ...) at 127.0.0.1:port/v1, no key
+  pub fn loopback(port u16) Endpoint {
+    mut u = String.from("http://127.0.0.1:");
+    u.appendUInt(u64.from(port));
+    u.append("/v1");
+    Endpoint.make(u.view(), "");
+  }
+
+  pub fn copy(self &) Endpoint {
+    new Endpoint(baseUrl.copy(), keyEnv.copy(), maxCompletionTokens);
+  }
+
+  // The URL a request is posted to: the base with one '/chat/completions' after it
+  pub fn url(self &) String {
+    mut u = String.from(baseUrl.view());
+    while u.len() > 0usize and u[u.len() - 1usize] == '/' {u.truncate(u.len() - 1usize);}
+    u.append("/chat/completions");
+    u;
+  }
+}

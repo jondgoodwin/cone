@@ -1,0 +1,206 @@
+// What the server's answers are read as: a whole chat completion, the API's
+// error objects (the nested object, a bare string, a numeric code, a body that
+// is no error object at all), the chunks of a stream, and the whole reply put
+// together from the chunks. Everything here is text in, value out: no
+// connection is made.
+
+mod decode;
+
+import testing use *;
+import collections use List, String;
+import chatapi use *;
+
+// JSON written with ' for the quote mark, so that the tests' texts need no escaped quotes
+fn jq(s &str) String {
+  mut t = String.from(s);
+  t.replaceByte('\'', '"');
+  t;
+}
+
+fn usageText(u &Option[Usage]) String {
+  match u {
+    case imm x &Some {
+      mut s = String.empty();
+      s.appendUInt(x.promptTokens);
+      s.append("/");
+      s.appendUInt(x.completionTokens);
+      s.append("/");
+      s.appendUInt(x.totalTokens);
+      s;
+    }
+    case is &None {String.from("none");}
+  }
+}
+
+// The reply parsed from text, or "ERROR kind: message"
+fn replyLine(text &str) String {
+  match parseReply(text) {
+    case imm r Ok {
+      mut s = String.empty();
+      s.append(r.id.view());
+      s.append("|");
+      s.append(r.model.view());
+      s.append("|");
+      s.appendInt(r.created);
+      s.append("|");
+      s.append(r.role.view());
+      s.append("|");
+      s.append(r.content.view());
+      s.append("|");
+      s.append(r.finishReason.view());
+      s.append("|");
+      s.append(usageText(&r.usage).view());
+      s;
+    }
+    case imm e Error {
+      mut s = String.from("ERROR ");
+      s.append(e.message().view());
+      s;
+    }
+  }
+}
+
+fn chunkLine(text &str) String {
+  match parseChunk(text) {
+    case imm d Ok {
+      mut s = String.empty();
+      s.append(d.id.view());
+      s.append("|");
+      s.append(d.model.view());
+      s.append("|");
+      s.append(d.role.view());
+      s.append("|");
+      s.append(d.content.view());
+      s.append("|");
+      s.append(d.finishReason.view());
+      s.append("|");
+      s.append(usageText(&d.usage).view());
+      s;
+    }
+    case imm e Error {
+      mut s = String.from("ERROR ");
+      s.append(e.message().view());
+      s;
+    }
+  }
+}
+
+fn errorLine(status u16, body &str) String {
+  imm e = apiError(status, body);
+  mut s = e.message();
+  s.append(" [type=");
+  s.append(e.errorType.view());
+  s.append(" code=");
+  s.append(e.code.view());
+  s.append(" retryable=");
+  if e.isRetryable() {s.append("yes");} else {s.append("no");}
+  s.append("]");
+  s;
+}
+
+fn main() i32 {
+  // A whole reply, as OpenAI writes it
+  imm full = jq("{'id':'chatcmpl-9','object':'chat.completion','created':1700000123,'model':'gpt-x-2024','choices':[{'index':0,'message':{'role':'assistant','content':'Hello \\'there\\'\\n\\u00E9'},'finish_reason':'stop'}],'usage':{'prompt_tokens':9,'completion_tokens':12,'total_tokens':21},'system_fingerprint':'fp_1'}");
+  expectStr(replyLine(full.view()).view(), "chatcmpl-9|gpt-x-2024|1700000123|assistant|Hello \"there\"\né|stop|9/12/21",
+    "a whole reply");
+
+  // The same without what a local server may leave out
+  expectStr(replyLine(jq("{'choices':[{'message':{'content':'hi'}}]}").view()).view(), "||0||hi||none",
+    "only the choice's message: the rest is empty");
+  expectStr(replyLine(jq("{'id':'a','choices':[{'index':0,'message':{'role':'assistant','content':null},'finish_reason':'tool_calls'}]}").view()).view(),
+    "a||0|assistant||tool_calls|none", "null content is empty text");
+  expectStr(replyLine(jq("{'choices':[{'message':{'content':'first'}},{'message':{'content':'second'}}]}").view()).view(),
+    "||0||first||none", "of several choices the first is the reply");
+  expectStr(replyLine("\xEF\xBB\xBF{\"choices\":[{\"message\":{\"content\":\"bom\"}}]}").view(), "||0||bom||none",
+    "a byte order mark is passed over");
+
+  // Replies that are not replies
+  expect(replyLine("not json").view().startsWith("ERROR decode: the reply: json: line 1, column 1: "), "not JSON: the json package says where");
+  expectStr(replyLine("[1]").view(), "ERROR decode: the reply is not a JSON object", "not an object");
+  expectStr(replyLine("{}").view(), "ERROR decode: the reply has no \"choices\"", "no choices member");
+  expectStr(replyLine(jq("{'choices':[]}").view()).view(), "ERROR decode: the reply has no choices", "no choices");
+  expectStr(replyLine(jq("{'choices':[{'index':0}]}").view()).view(), "ERROR decode: the reply's first choice has no \"message\"",
+    "a choice with no message");
+  expectStr(replyLine(jq("{'error':{'message':'overloaded','type':'server_error'}}").view()).view(), "ERROR api: 200: overloaded",
+    "an error object in a 200 is an API error");
+
+  // The API's errors
+  imm nested = jq("{'error':{'message':'Incorrect API key provided.','type':'invalid_request_error','param':null,'code':'invalid_api_key'}}");
+  expectStr(errorLine(401u16, nested.view()).view(),
+    "api: 401 invalid_api_key: Incorrect API key provided. [type=invalid_request_error code=invalid_api_key retryable=no]",
+    "the API's error object");
+  expectStr(errorLine(429u16, jq("{'error':{'message':'Rate limit reached','type':'rate_limit_error','code':429}}").view()).view(),
+    "api: 429 429: Rate limit reached [type=rate_limit_error code=429 retryable=yes]", "a numeric code; 429 is worth retrying");
+  expectStr(errorLine(500u16, jq("{'error':'model crashed'}").view()).view(), "api: 500: model crashed [type= code= retryable=yes]",
+    "a bare string, as some servers write it; 5xx is worth retrying");
+  expectStr(errorLine(400u16, jq("{'error':{'type':'x'}}").view()).view(),
+    "api: 400: the server reported an error without a message [type=x code= retryable=no]", "an error object with no message");
+  expectStr(errorLine(502u16, "<html><body>Bad Gateway</body></html>").view(),
+    "api: 502: the server answered 502 with no error object: <html><body>Bad Gateway</body></html> [type= code= retryable=yes]",
+    "a body that is no error object: the status and the start of the body");
+  expectStr(errorLine(404u16, "").view(), "api: 404: the server answered 404 with no error object [type= code= retryable=no]",
+    "an empty body");
+  mut long = String.empty();
+  mut i = 0usize;
+  while i < 300usize {
+    long.appendByte('x');
+    i = i + 1usize;
+  }
+  imm cut = errorLine(503u16, long.view());
+  expect(cut.len() < 260usize and cut.view().contains("xxxxxxxxxx..."), "a long body is cut");
+
+  // The names and the one-line messages
+  expectStr(ChatError.make(ChatErrorKind.Transport, "connect: refused").message().view(), "transport: connect: refused", "a transport error");
+  expect(ChatError.make(ChatErrorKind.Transport, "x").isRetryable(), "a transport error may be retried");
+  expect(ChatError.make(ChatErrorKind.TimedOut, "x").isRetryable(), "a deadline may be retried");
+  expect(not ChatError.make(ChatErrorKind.Decode, "x").isRetryable(), "a decode error is not retried");
+  expect(not ChatError.make(ChatErrorKind.NoKey, "x").isRetryable(), "a missing key is not retried");
+  expect(ChatError.make(ChatErrorKind.Cancelled, "x").isCancelled(), "isCancelled");
+  expect(ChatError.make(ChatErrorKind.TimedOut, "x").isTimedOut(), "isTimedOut");
+
+  // Chunks of a stream
+  expectStr(chunkLine(jq("{'id':'c1','object':'chat.completion.chunk','created':1,'model':'m','choices':[{'index':0,'delta':{'role':'assistant','content':''},'finish_reason':null}]}").view()).view(),
+    "c1|m|assistant|||none", "the first chunk: the role, no text");
+  expectStr(chunkLine(jq("{'id':'c1','model':'m','choices':[{'index':0,'delta':{'content':'Hel'},'finish_reason':null}]}").view()).view(),
+    "c1|m||Hel||none", "a chunk of text");
+  expectStr(chunkLine(jq("{'id':'c1','model':'m','choices':[{'index':0,'delta':{},'finish_reason':'length'}]}").view()).view(),
+    "c1|m|||length|none", "the last chunk: an empty delta and a finish reason");
+  expectStr(chunkLine(jq("{'id':'c1','model':'m','choices':[],'usage':{'prompt_tokens':3,'completion_tokens':4,'total_tokens':7}}").view()).view(),
+    "c1|m||||3/4/7", "the usage chunk has no choices");
+  expectStr(chunkLine(jq("{'choices':[{'delta':{'content':null}}]}").view()).view(), "|||||none", "null content is empty text");
+  expectStr(chunkLine(jq("{'choices':[{'delta':{'content':'\\u00E9\\n'}}]}").view()).view(), "|||é\n||none", "escapes are decoded");
+
+  // Chunks that are not
+  expect(chunkLine("{not json").view().startsWith("ERROR decode: a chunk: json: line 1, column 2: "), "a chunk that is not JSON: the json package says where");
+  expectStr(chunkLine("[]").view(), "ERROR decode: a chunk is not a JSON object", "a chunk that is not an object");
+  expectStr(chunkLine(jq("{'id':'x'}").view()).view(), "ERROR decode: a chunk has no \"choices\"", "a chunk with no choices");
+  expectStr(chunkLine(jq("{'choices':3}").view()).view(), "ERROR decode: a chunk's \"choices\" is not an array", "choices that is no array");
+  expectStr(chunkLine(jq("{'error':{'message':'context length exceeded','type':'invalid_request_error','code':'context_length_exceeded'}}").view()).view(),
+    "ERROR stream: context length exceeded", "an error object in a chunk is a stream error");
+
+  // The whole reply from the chunks
+  mut reply = ChatReply.empty();
+  mut d1 = Delta.empty();
+  d1.id = String.from("c1");
+  d1.model = String.from("m");
+  d1.role = String.from("assistant");
+  absorb(&mut reply, &d1);
+  mut d2 = Delta.empty();
+  d2.content = String.from("Hel");
+  absorb(&mut reply, &d2);
+  mut d3 = Delta.empty();
+  d3.id = String.from("other");
+  d3.content = String.from("lo");
+  d3.finishReason = String.from("stop");
+  absorb(&mut reply, &d3);
+  mut d4 = Delta.empty();
+  d4.usage = Some[Usage](new Usage(1u64, 2u64, 3u64));
+  absorb(&mut reply, &d4);
+  expectStr(reply.id.view(), "c1", "the first id is kept");
+  expectStr(reply.model.view(), "m", "the model");
+  expectStr(reply.role.view(), "assistant", "the role");
+  expectStr(reply.content.view(), "Hello", "the text, in order");
+  expectStr(reply.finishReason.view(), "stop", "the finish reason");
+  expectStr(usageText(&reply.usage).view(), "1/2/3", "the usage");
+  done();
+}

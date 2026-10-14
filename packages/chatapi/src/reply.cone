@@ -1,0 +1,268 @@
+// ======== The reply: a whole one, a streamed chunk, and the API's errors ========
+
+// The tokens a call used, as the server counted them
+pub struct Usage {
+  pub promptTokens u64;
+  pub completionTokens u64;
+  pub totalTokens u64;
+}
+
+// A whole reply: the first choice of the server's answer
+pub struct ChatReply {
+  pub id String;
+  pub model String;           // the model that answered, as the server names it
+  pub created i64;            // seconds since the epoch, or 0 when the server sent none
+  pub role String;            // 'assistant'
+  pub content String;         // the text; empty when the server sent none (null)
+  pub finishReason String;    // 'stop', 'length', ...; empty when the server sent none
+  pub usage Option[Usage];
+
+  pub fn empty() ChatReply {
+    new ChatReply(String.empty(), String.empty(), 0i64, String.empty(), String.empty(), String.empty(), None);
+  }
+}
+
+// One piece of a streamed reply: what one chunk of the stream added
+pub struct Delta {
+  pub id String;
+  pub model String;
+  pub role String;            // set on the first chunk ('assistant'), empty after
+  pub content String;         // the text this chunk adds; may be empty
+  pub finishReason String;    // set on the chunk that ends the reply, empty before
+  pub usage Option[Usage];    // set on the last chunk when the request asked (includeUsage)
+
+  pub fn empty() Delta {
+    new Delta(String.empty(), String.empty(), String.empty(), String.empty(), String.empty(), None);
+  }
+}
+
+// -------- reading JSON members --------
+
+fn textOr(j &json.Json, key &str) String {
+  match j.getText(key) {
+    case imm s Some {String.from(s);}
+    case is None {String.empty();}
+  }
+}
+
+fn countOf(j &json.Json, key &str) u64 {
+  match j.getU64(key) {
+    case imm n Some {n;}
+    case is None {0u64;}
+  }
+}
+
+fn usageOf(j &json.Json) Option[Usage] {
+  match j.get("usage") {
+    case imm u Some {
+      if u.isObject() {
+        return Some[Usage](new Usage(countOf(u, "prompt_tokens"), countOf(u, "completion_tokens"),
+          countOf(u, "total_tokens")));
+      }
+      None;
+    }
+    case is None {None;}
+  }
+}
+
+fn decodeError(what &str, e &json.JsonError) ChatError {
+  mut d = String.from(what);
+  d.append(": ");
+  d.append(e.message().view());
+  ChatError.make(ChatErrorKind.Decode, d.view());
+}
+
+fn shapeError(what &str) ChatError {ChatError.make(ChatErrorKind.Decode, what);}
+
+// An error object, as the API writes it: {"error": {"message": ..., "type": ..., "code": ...}}, or
+// {"error": "text"} as some servers do. None when the document holds no error
+fn errorObject(doc &json.Json, kind ChatErrorKind, status u16) Option[ChatError] {
+  match doc.get("error") {
+    case imm e Some {
+      mut err = ChatError.make(kind, "");
+      err.status = status;
+      match e.asText() {
+        case imm s Some {
+          err.detail = String.from(s);
+          return Some[ChatError](err);
+        }
+        case is None {}
+      }
+      if e.isObject() {
+        err.detail = textOr(e, "message");
+        err.errorType = textOr(e, "type");
+        match e.get("code") {
+          case imm c Some {
+            match c.asText() {
+              case imm s Some {err.code = String.from(s);}
+              case is None {
+                match c.numberText() {
+                  case imm n Some {err.code = String.from(n);}
+                  case is None {}
+                }
+              }
+            }
+          }
+          case is None {}
+        }
+        if err.detail.len() == 0usize {err.detail = String.from("the server reported an error without a message");}
+        return Some[ChatError](err);
+      }
+      err.detail = String.from("the server reported an error");
+      Some[ChatError](err);
+    }
+    case is None {None;}
+  }
+}
+
+// The error a non-2xx answer is: the API's error object if the body holds
+// one, else the status and the start of the body
+pub fn apiError(status u16, body &Array[u8]) ChatError {
+  match json.parse(body) {
+    case imm doc Ok {
+      match errorObject(&doc, ChatErrorKind.Api, status) {
+        case mut e Some {
+          mut out = ChatError.make(ChatErrorKind.Api, "");
+          out <=> e;
+          return out;
+        }
+        case is None {}
+      }
+    }
+    case imm bad Error {}
+  }
+  mut d = String.from("the server answered ");
+  d.appendUInt(u64.from(status));
+  d.append(" with no error object");
+  imm snippet = String.fromBytes(body).trim();
+  if snippet.len() > 0usize {
+    d.append(": ");
+    if snippet.len() > 160usize {
+      d.append(snippet.sub(0usize, 160usize).view());
+      d.append("...");
+    } else {
+      d.append(snippet.view());
+    }
+  }
+  mut e = ChatError.make(ChatErrorKind.Api, d.view());
+  e.status = status;
+  e;
+}
+
+// -------- a whole reply --------
+
+// Read the body of a 200 as the API's chat completion
+pub fn parseReply(text &Array[u8]) Result[ChatReply, ChatError] {
+  match json.parse(text) {
+    case imm doc Ok {replyOf(&doc);}
+    case imm e Error {Error[ChatReply, ChatError](decodeError("the reply", &e));}
+  }
+}
+
+fn replyOf(doc &json.Json) Result[ChatReply, ChatError] {
+  if not doc.isObject() {
+    return Error[ChatReply, ChatError](shapeError("the reply is not a JSON object"));
+  }
+  match errorObject(doc, ChatErrorKind.Api, 200u16) {
+    case mut e Some {
+      mut out = ChatError.make(ChatErrorKind.Api, "");
+      out <=> e;
+      return Error[ChatReply, ChatError](out);
+    }
+    case is None {}
+  }
+  mut r = ChatReply.empty();
+  r.id = textOr(doc, "id");
+  r.model = textOr(doc, "model");
+  r.created = doc.i64Or("created", 0i64);
+  r.usage = usageOf(doc);
+  match doc.get("choices") {
+    case imm cs Some {
+      match cs.at(0usize) {
+        case imm c Some {
+          r.finishReason = textOr(c, "finish_reason");
+          match c.get("message") {
+            case imm m Some {
+              r.role = textOr(m, "role");
+              r.content = textOr(m, "content");
+            }
+            case is None {return Error[ChatReply, ChatError](shapeError("the reply's first choice has no \"message\""));}
+          }
+        }
+        case is None {return Error[ChatReply, ChatError](shapeError("the reply has no choices"));}
+      }
+    }
+    case is None {return Error[ChatReply, ChatError](shapeError("the reply has no \"choices\""));}
+  }
+  Ok[ChatReply, ChatError](r);
+}
+
+// The reply a response is: its body read as a chat completion if its status
+// is 2xx, the API's error if it is not. For a program that drives
+// httpclient itself with the request 'httpRequest' made
+pub fn replyOfResponse(r &httpclient.Response) Result[ChatReply, ChatError] {
+  if r.outcome != httpclient.EventKind.Done {
+    return Error[ChatReply, ChatError](ChatError.make(ChatErrorKind.Transport, r.failure.message().view()));
+  }
+  if r.status < 200u16 or r.status >= 300u16 {
+    return Error[ChatReply, ChatError](apiError(r.status, r.body.view()));
+  }
+  parseReply(r.body.view());
+}
+
+// The error an actorhttp exchange that gave no response is
+pub fn transportError(e &actorhttp.FetchError) ChatError {
+  if e.isCancelled() {return ChatError.make(ChatErrorKind.Cancelled, "cancelled");}
+  if e.isTimedOut() {return ChatError.make(ChatErrorKind.TimedOut, "deadline passed");}
+  ChatError.make(ChatErrorKind.Transport, e.message().view());
+}
+
+// -------- a streamed chunk --------
+
+// The text of one chunk's 'data' (not '[DONE]'): what it adds. A chunk
+// that carries an error object is a Stream error
+pub fn parseChunk(text &Array[u8]) Result[Delta, ChatError] {
+  match json.parse(text) {
+    case imm doc Ok {deltaOf(&doc);}
+    case imm e Error {Error[Delta, ChatError](decodeError("a chunk", &e));}
+  }
+}
+
+fn deltaOf(doc &json.Json) Result[Delta, ChatError] {
+  if not doc.isObject() {
+    return Error[Delta, ChatError](shapeError("a chunk is not a JSON object"));
+  }
+  match errorObject(doc, ChatErrorKind.Stream, 0u16) {
+    case mut e Some {
+      mut out = ChatError.make(ChatErrorKind.Stream, "");
+      out <=> e;
+      return Error[Delta, ChatError](out);
+    }
+    case is None {}
+  }
+  mut d = Delta.empty();
+  d.id = textOr(doc, "id");
+  d.model = textOr(doc, "model");
+  d.usage = usageOf(doc);
+  match doc.get("choices") {
+    case imm cs Some {
+      if not cs.isArray() {return Error[Delta, ChatError](shapeError("a chunk's \"choices\" is not an array"));}
+      // The usage chunk has none; n above 1 is not asked for, so the first is the reply
+      match cs.at(0usize) {
+        case imm c Some {
+          d.finishReason = textOr(c, "finish_reason");
+          match c.get("delta") {
+            case imm x Some {
+              d.role = textOr(x, "role");
+              d.content = textOr(x, "content");
+            }
+            case is None {}
+          }
+        }
+        case is None {}
+      }
+    }
+    case is None {return Error[Delta, ChatError](shapeError("a chunk has no \"choices\""));}
+  }
+  Ok[Delta, ChatError](d);
+}
