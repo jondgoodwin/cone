@@ -1,0 +1,488 @@
+// Glass, reflections and the extended material lobes on a table, drawn
+// offscreen (no window) in HDR, tone-mapped (AgX) and saved; then what it
+// costs on the GPU.
+//
+//   congo run packages/render/examples/materialglass.cone -- --shot table.bmp
+//   congo run packages/render/examples/materialglass.cone -- --shot closeup.bmp --view 1
+//   congo run packages/render/examples/materialglass.cone -- --cost
+//
+// GPU_POWER_PREFERENCE=low-power picks the Intel GPU.
+//
+// The scene is a dark lacquered floor under a chequered cloth, lit by one
+// low sun, a dusk sky and a small light behind, seen from the front. At the
+// back, a row of spheres in the four looks the extended lobes add: red velvet
+// (sheen), brushed gold (anisotropy, the grain running round each sphere),
+// skin and wax (subsurface). In front, a table of glass objets d'art: a vase
+// of deep green glass, a goblet, a faceted stone of high index that disperses
+// a white edge into a rainbow, a frosted ball, and a ball of cobalt. The
+// lacquer reflects all of it by screen-space ray marching, the sky and
+// whatever lies off the screen by the environment. Nothing in the scene is a
+// horse or a person: every shape is a sphere, a surface of revolution about
+// an axis or a cut stone, defined by a profile.
+//
+// '--view 0' is the whole table; '--view 1' a close view of the glass;
+// '--view 2' a close view of the four spheres. '--plain' draws the same
+// scene with every material replaced by a plain one of the same colour (what
+// the cost is measured against); '--noreflect' draws the extended materials
+// without the screen-space reflections.
+
+mod materialglass;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+
+// A surface of revolution about the y axis: 'profile' (radius, height) in order along the
+// curve, 'segments' around, smooth normals or flat ones (a cut stone). The faces are turned
+// to face outward whichever way the profile runs.
+fn lathe(profile &List[Vec2], segments i32, smooth bool) Mesh {
+  mut m = Mesh.empty();
+  imm rings = profile.len();
+  mut i = 0usize;
+  while i < rings {
+    imm p = *profile[i];
+    mut j = 0;
+    while j <= segments {
+      imm a = 2. * pi * f32.from(j) / f32.from(segments);
+      m.positions.push(new Vec3(p.x * cos(a), p.y, p.x * sin(a)));
+      m.uvs.push(new Vec2(f32.from(j) / f32.from(segments), f32.from(i) / f32.from(rings - 1usize)));
+      j = j + 1;
+    }
+    i = i + 1usize;
+  }
+  imm stride = u32.from(segments + 1);
+  i = 0usize;
+  while i + 1usize < rings {
+    mut j = 0;
+    while j < segments {
+      imm a = u32.from(i) * stride + u32.from(j);
+      imm b = a + 1u32;
+      imm c = a + stride;
+      imm d = c + 1u32;
+      m.indices.push(a);
+      m.indices.push(c);
+      m.indices.push(b);
+      m.indices.push(b);
+      m.indices.push(c);
+      m.indices.push(d);
+      j = j + 1;
+    }
+    i = i + 1usize;
+  }
+  m.addGroup(0u32, u32.from(m.indices.len()), 0u32);
+  if smooth { m.computeSmoothNormals(); } else { m.computeFlatNormals(); }
+  // Which way did the winding come out? An outward normal has a positive radial part, summed over the
+  // whole surface (the outer wall of a shell outweighs its inner one)
+  mut radial = 0.;
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm p = *m.positions[v];
+    imm n = *m.normals[v];
+    radial = radial + p.x * n.x + p.z * n.z;
+    v = v + 1usize;
+  }
+  if radial < 0. {
+    mut t = 0usize;
+    while t + 2usize < m.indices.len() {
+      imm second = *m.indices[t + 1usize];
+      m.indices.set(t + 1usize, *m.indices[t + 2usize]);
+      m.indices.set(t + 2usize, second);
+      t = t + 3usize;
+    }
+    if smooth { m.computeSmoothNormals(); } else { m.computeFlatNormals(); }
+  }
+  m.computeTangents();
+  m;
+}
+
+fn pt(r f32, y f32) Vec2 { new Vec2(r, y); }
+
+// The profile of a hollow shell of wall 'wall': the inside of 'outer' from its point 'from' up to
+// its end (the rim) at 'floorY' (the inside's lowest height), then the outside down to its start.
+// The inside's triangles come first, so the outside, nearer the eye, is drawn last.
+fn shell(outer &List[Vec2], from usize, wall f32, floorY f32) List[Vec2] {
+  mut p = List[Vec2].empty();
+  p.push(pt(0.001, floorY));
+  mut i = from;
+  while i < outer.len() {
+    imm q = *outer[i];
+    imm r = if q.x - wall > 0.002 { q.x - wall; } else { 0.002; };
+    imm y = if q.y < floorY { floorY; } else { q.y; };
+    p.push(pt(r, y));
+    i = i + 1usize;
+  }
+  mut k = outer.len();
+  while k > 0usize {
+    k = k - 1usize;
+    p.push(*outer[k]);
+  }
+  p;
+}
+
+// A vase: a foot, a swelling body and a narrow neck with a flared lip
+fn vaseOuter() List[Vec2] {
+  mut p = List[Vec2].empty();
+  p.push(pt(0.001, 0.));
+  p.push(pt(0.034, 0.));
+  p.push(pt(0.040, 0.004));
+  p.push(pt(0.034, 0.010));
+  p.push(pt(0.046, 0.030));
+  p.push(pt(0.062, 0.060));
+  p.push(pt(0.068, 0.090));
+  p.push(pt(0.060, 0.125));
+  p.push(pt(0.040, 0.160));
+  p.push(pt(0.026, 0.185));
+  p.push(pt(0.022, 0.210));
+  p.push(pt(0.026, 0.232));
+  p.push(pt(0.038, 0.250));
+  p.push(pt(0.040, 0.254));
+  p;
+}
+
+// A goblet: a foot, a stem and a bowl
+fn gobletOuter() List[Vec2] {
+  mut p = List[Vec2].empty();
+  p.push(pt(0.001, 0.));
+  p.push(pt(0.036, 0.));
+  p.push(pt(0.038, 0.003));
+  p.push(pt(0.030, 0.008));
+  p.push(pt(0.012, 0.016));
+  p.push(pt(0.007, 0.030));
+  p.push(pt(0.007, 0.062));
+  p.push(pt(0.012, 0.074));
+  p.push(pt(0.028, 0.084));
+  p.push(pt(0.046, 0.102));
+  p.push(pt(0.054, 0.128));
+  p.push(pt(0.052, 0.152));
+  p.push(pt(0.046, 0.164));
+  p;
+}
+
+// A brilliant-cut stone: a flat table on top, a crown, a thin girdle, a pavilion to a point, upside down
+fn gemProfile() List[Vec2] {
+  mut p = List[Vec2].empty();
+  p.push(pt(0.001, 0.));
+  p.push(pt(0.020, 0.030));
+  p.push(pt(0.040, 0.056));
+  p.push(pt(0.040, 0.062));
+  p.push(pt(0.030, 0.076));
+  p.push(pt(0.017, 0.082));
+  p.push(pt(0.001, 0.082));
+  p;
+}
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while *(a + i) != 0u8 and i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  i == b.len() and *(a + i) == 0u8;
+}
+
+fn nanosecondsBetween(readback &Buffer, device &Device) f64 {
+  imm ticks = readback.mappedRange() as *u64;
+  f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod);
+}
+
+fn byValue(a &f64, b &f64) i32 {
+  if *a < *b { return -1i32; }
+  if *a > *b { return 1i32; }
+  0i32;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut shot = String.empty();
+  mut cost = false;
+  mut plain = false;
+  mut noReflect = false;
+  mut useFx = false;
+  mut noGlass = false;
+  mut tier = 3i32;
+  mut frameCount = 0u32;
+  mut view = 0i32;
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--cost") {
+      cost = true;
+    } elif cstrEquals(arg, "--fx") {
+      useFx = true;
+    } elif cstrEquals(arg, "--plain") {
+      plain = true;
+    } elif cstrEquals(arg, "--noreflect") {
+      noReflect = true;
+    } elif cstrEquals(arg, "--noglass") {
+      noGlass = true;
+    } elif cstrEquals(arg, "--tier") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      tier = i32.from(*s) - 48;
+      a = a + 1;
+    } elif cstrEquals(arg, "--frames") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut n = 0u32;
+      mut i = 0usize;
+      while *(s + i) >= 48u8 and *(s + i) <= 57u8 {
+        n = n * 10u32 + u32.from(*(s + i) - 48u8);
+        i = i + 1usize;
+      }
+      frameCount = n;
+      a = a + 1;
+    } elif cstrEquals(arg, "--view") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      view = i32.from(*s) - 48;
+      a = a + 1;
+    } elif cstrEquals(arg, "--shot") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        shot.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Use --shot FILE, --view 0|1|2|3, --plain, --noreflect, --noglass, --fx, --frames N and/or --cost\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+
+  mut instance = Instance.create("render materialglass");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(powerEnv), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm w = 1280u32;
+  imm h = 800u32;
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, w, h);
+  if !renderer.isValid() or !post.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  // The image quality passes (temporal AA, ambient occlusion, auto-exposure) around the scene, if asked
+  mut fx = ImageFx.create(&mut device, &renderer, &mut post);
+  if useFx {
+    if !fx.isValid() {
+      print <- "The image quality passes could not be made\n";
+      return 1;
+    }
+    fx.configure(&FxSettings.high());
+  }
+  imm outDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut out = device.createTexture(&outDesc);
+  // The depth is sampled by the capture
+  imm depthDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(w * h * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  post.bloom = 0.05;
+  post.exposure = 1.7;
+
+  // A low warm sun and a dusk sky; the sky is the environment the glass and the lacquer reflect
+  mut sky = Sky.dusk(radians(26.), radians(-38.));
+  sky.zenith = new Color(0.10, 0.17, 0.40, 1.);
+  sky.horizon = new Color(0.55, 0.38, 0.40, 1.);
+  sky.line = new Color(1.6, 0.9, 0.55, 1.);
+  sky.lineWidth = 0.03;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.4, 2.4, 1.7, 1.), new Color(0.05, 0.05, 0.07, 1.));
+  renderer.setShadows(&mut device, &ShadowSettings.medium());
+  // The march's tier: the integrated GPU's low one, the discrete GPU's high one, unless '--tier' says
+  if tier == 3 { tier = if preference == POWER_PREFERENCE_LOW_POWER { 0; } else { 2; }; }
+  if tier == 0 { renderer.setReflections(&ReflectionSettings.low()); }
+  elif tier == 1 { renderer.setReflections(&ReflectionSettings.medium()); }
+  else { renderer.setReflections(&ReflectionSettings.high()); }
+  // A small light behind the spheres, for the rim the cloth and the skin show at a grazing angle
+  renderer.lights.addPoint(new Vec3(0.05, 0.24, -0.45), new Color(1., 0.86, 0.7, 1.), 0.3, 2.5);
+  renderer.lights.addPoint(new Vec3(-0.5, 0.35, 0.5), new Color(0.6, 0.7, 1., 1.), 0.2, 3.);
+
+  // The cloth: squares of two creams, on a lacquered floor
+  imm cloth = renderer.addTexture(&mut device, &Image.checker(512, 512, 12, 8, new Color(0.62, 0.55, 0.42, 1.),
+    new Color(0.14, 0.10, 0.09, 1.)));
+  mut clothLook = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.55).coated(0.6, 0.12).reflective(1.).causticReceiver(1.);
+  clothLook.texture = cloth;
+  mut floorLook = PbrMaterial.standard(new Color(0.035, 0.03, 0.03, 1.), 0., 0.3).coated(1., 0.04).reflective(1.);
+  mut spheres Array[PbrMaterial, 4] = [
+    // red velvet: a dark red base, a pale rose sheen
+    PbrMaterial.standard(new Color(0.30, 0.012, 0.02, 1.), 0., 0.8).velvet(new Color(0.9, 0.38, 0.40, 1.), 0.45),
+    // brushed gold: a metal of roughness 0.4, the grain stretching the highlight round each sphere
+    PbrMaterial.standard(new Color(1.0, 0.72, 0.30, 1.), 1., 0.38).brushed(0.85, 0.).reflective(1.),
+    // skin and wax: light scattered inside
+    // (these balls are 15 cm across: the scattering is the skin's widths times 2.5, and wax's mean free path a good deal longer)
+    PbrMaterial.standard(new Color(0.80, 0.50, 0.40, 1.), 0., 0.55).scattering(1., new Color(3., 1., 0.6, 1.), 2.5),
+    PbrMaterial.standard(new Color(0.92, 0.82, 0.58, 1.), 0., 0.35).scattering(1., new Color(1.25, 1., 0.8, 1.), 25.)];
+  mut glassVase = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.5, 0.008, new Color(0.25, 0.75, 0.62, 1.), 0.02, 0.);
+  mut glassGoblet = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.5, 0.006, new Color(0.95, 0.9, 0.82, 1.), 0.1, 0.);
+  mut glassGem = PbrMaterial.glassOf(new Color(1., 0.95, 0.9, 1.), 2.4, 0.05, new Color(1., 0.62, 0.50, 1.), 0.1, 14.);
+  mut glassFrosted = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.5, 0.07, new Color(0.92, 0.95, 1., 1.), 0.6, 0.).frosted(0.4);
+  mut glassCobalt = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.5, 0.12, new Color(0.18, 0.34, 1., 1.), 0.12, 0.);
+  glassVase.glass = 0.92;
+  glassGoblet.glass = 0.92;
+  if noReflect {
+    clothLook.reflections = 0.;
+    floorLook.reflections = 0.;
+    spheres[1usize].reflections = 0.;
+    glassVase.reflections = 0.;
+    glassGoblet.reflections = 0.;
+    glassGem.reflections = 0.;
+    glassFrosted.reflections = 0.;
+    glassCobalt.reflections = 0.;
+  }
+  if plain {
+    // every look replaced by a plain one of the same colour
+    clothLook = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.55);
+    clothLook.texture = cloth;
+    floorLook = PbrMaterial.standard(new Color(0.035, 0.03, 0.03, 1.), 0., 0.3);
+    mut k = 0usize;
+    while k < 4usize {
+      spheres[k] = PbrMaterial.standard(spheres[k].baseColor, spheres[k].metallic, spheres[k].roughness);
+      k = k + 1usize;
+    }
+  }
+  if plain or noGlass {
+    // the glass replaced by plain see-through materials of its colour
+    glassVase = PbrMaterial.standard(new Color(0.2, 0.55, 0.5, 1.), 0., 0.1).translucent(0.5);
+    glassGoblet = PbrMaterial.standard(new Color(0.9, 0.9, 0.85, 1.), 0., 0.1).translucent(0.3);
+    glassGem = PbrMaterial.standard(new Color(0.9, 0.5, 0.4, 1.), 0., 0.1).translucent(0.5);
+    glassFrosted = PbrMaterial.standard(new Color(0.9, 0.93, 1., 1.), 0., 0.4).translucent(0.5);
+    glassCobalt = PbrMaterial.standard(new Color(0.05, 0.1, 0.9, 1.), 0., 0.1).translucent(0.7);
+  }
+  imm clothM = renderer.addPbrMaterial(&mut device, &clothLook);
+  imm floorM = renderer.addPbrMaterial(&mut device, &floorLook);
+  imm velvetM = renderer.addPbrMaterial(&mut device, &spheres[0usize]);
+  imm goldM = renderer.addPbrMaterial(&mut device, &spheres[1usize]);
+  imm skinM = renderer.addPbrMaterial(&mut device, &spheres[2usize]);
+  imm waxM = renderer.addPbrMaterial(&mut device, &spheres[3usize]);
+  imm vaseM = renderer.addPbrMaterial(&mut device, &glassVase);
+  imm gobletM = renderer.addPbrMaterial(&mut device, &glassGoblet);
+  imm gemM = renderer.addPbrMaterial(&mut device, &glassGem);
+  imm frostedM = renderer.addPbrMaterial(&mut device, &glassFrosted);
+  imm cobaltM = renderer.addPbrMaterial(&mut device, &glassCobalt);
+
+  imm table = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  mut sphereMesh = Mesh.sphere(1., 64);
+  sphereMesh.computeTangents();
+  imm ball = renderer.addMesh(&mut device, &sphereMesh);
+  imm vase = renderer.addMesh(&mut device, &lathe(&shell(&vaseOuter(), 1usize, 0.005, 0.012), 72, true));
+  imm goblet = renderer.addMesh(&mut device, &lathe(&shell(&gobletOuter(), 7usize, 0.004, 0.080), 72, true));
+  imm gem = renderer.addMesh(&mut device, &lathe(&gemProfile(), 12, false));
+
+  mut list = DrawList.empty();
+  list.add(table, floorM, Mat4.fromTrs(new Vec3(0., -0.001, 0.), Quat.identity(), new Vec3(6., 1., 6.)));
+  list.add(table, clothM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(0.62, 1., 0.42)));
+  // The back row of spheres, radius 0.075
+  imm r = 0.075;
+  list.add(ball, velvetM, Mat4.fromTrs(new Vec3(-0.33, r, -0.2), Quat.identity(), new Vec3(r, r, r)));
+  list.add(ball, goldM, Mat4.fromTrs(new Vec3(-0.11, r, -0.2), Quat.identity(), new Vec3(r, r, r)));
+  list.add(ball, skinM, Mat4.fromTrs(new Vec3(0.11, r, -0.2), Quat.identity(), new Vec3(r, r, r)));
+  list.add(ball, waxM, Mat4.fromTrs(new Vec3(0.33, r, -0.2), Quat.identity(), new Vec3(r, r, r)));
+  // The glass, in front
+  list.add(vase, vaseM, Mat4.fromTranslation(new Vec3(-0.36, 0., 0.0)));
+  list.add(goblet, gobletM, Mat4.fromTranslation(new Vec3(-0.17, 0., 0.13)));
+  list.add(gem, gemM, Mat4.fromTranslation(new Vec3(0.0, 0., 0.14)));
+  list.add(ball, frostedM, Mat4.fromTrs(new Vec3(0.16, 0.065, 0.12), Quat.identity(), new Vec3(0.065, 0.065, 0.065)));
+  list.add(ball, cobaltM, Mat4.fromTrs(new Vec3(0.33, 0.07, 0.04), Quat.identity(), new Vec3(0.07, 0.07, 0.07)));
+
+  mut camera = Camera.make();
+  camera.near = 0.05;
+  camera.far = 20.;
+  camera.background = new Color(0.02, 0.025, 0.05, 1.);
+  imm up = new Vec3(0., 1., 0.);
+  if view == 3 {
+    // The cloth under a sheet of rippled water 12 cm up: the sun is focused into the lines of light that
+    // dance on a pool's bed (the cloth is the one caustic receiver)
+    mut pool = CausticVolume.none();
+    pool.boxMin = new Vec3(-0.7, -0.1, -0.5);
+    pool.boxMax = new Vec3(0.7, 0.6, 0.5);
+    pool.surfaceHeight = 0.14;
+    pool.strength = 1.;
+    pool.rippleHeight = 0.012;
+    pool.wavelength = 0.16;
+    renderer.setCaustics(&mut device, &pool);
+    camera.fov = radians(36.);
+    camera.lookAt(new Vec3(0.0, 0.62, 0.62), new Vec3(0., 0.02, 0.02), up);
+  } elif view == 1 {
+    camera.fov = radians(30.);
+    camera.lookAt(new Vec3(-0.14, 0.2, 0.52), new Vec3(-0.1, 0.075, 0.08), up);
+  } elif view == 2 {
+    camera.fov = radians(28.);
+    camera.lookAt(new Vec3(0.0, 0.19, 0.5), new Vec3(0., 0.07, -0.2), up);
+  } else {
+    camera.fov = radians(34.);
+    camera.lookAt(new Vec3(0.0, 0.33, 1.0), new Vec3(0., 0.07, -0.03), up);
+  }
+
+  // The timing
+  imm timed = device.timestampPeriod > 0.;
+  mut queries = QuerySet.none();
+  mut resolved = Buffer.none();
+  mut ticksBack = Buffer.none();
+  if timed {
+    queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+    resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+    ticksBack = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  }
+
+  // The frames
+  mut samples = List[f64].empty();
+  imm frames = if frameCount > 0u32 { frameCount; } elif cost { 400u32; } else { 3u32; };
+  mut frame = 0u32;
+  while frame < frames {
+    renderer.time = f32.from(frame) * 0.1;
+    mut encoder = device.createCommandEncoder();
+    if timed { encoder.writeTimestamp(&queries, 0u32); }
+    if useFx {
+      fx.render(&mut device, &mut encoder, &mut renderer, &mut post, &camera, &light, &list, &out);
+    } else {
+      renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+      post.apply(&mut encoder, &out);
+    }
+    if timed {
+      encoder.writeTimestamp(&queries, 1u32);
+      encoder.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      encoder.copyBufferToBuffer(&resolved, 0u64, &ticksBack, 0u64, 16u64);
+    }
+    encoder.copyTextureToBuffer(&out, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    if timed and frame >= 8u32 { samples.push(nanosecondsBetween(&ticksBack, &device) / 1000000d); }
+    frame = frame + 1u32;
+  }
+  print <- "Draws: "; print <- renderer.drawCalls; print <- ", triangles: "; print <- renderer.triangles;
+  if renderer.ext.len() > 0usize {
+    print <- ", captures: "; print <- renderer.ext[0usize].captures;
+  }
+  print <- "\n";
+  if shot.len() > 0usize {
+    imm img = Image.fromTexels(readback.mappedRange(), i32.from(w), i32.from(h), false);
+    imm written = img.save(&filepath.Path.from(shot.view()));
+    print <- "Screenshot: "; printStr(shot.view());
+    if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+  }
+  if cost and samples.len() > 0usize {
+    samples.sortBy(&byValue);
+    print <- "Frame on the GPU, p50 of "; print <- samples.len(); print <- ": "; print <- *samples[samples.len() / 2usize];
+    print <- " ms (min "; print <- *samples[0usize]; print <- ", max "; print <- *samples[samples.len() - 1usize]; print <- ")\n";
+  }
+  0;
+}

@@ -1,0 +1,341 @@
+// Glass on a real GPU with no window: a see-through material that refracts what
+// was drawn behind it, absorbs, disperses and blurs, into a 96 x 96 half-float
+// target read back as linear radiance (exposure 1), checked against values
+// worked out on the CPU in double precision. Only a failure prints. Every
+// scene is emissive (the sun black, no environment, no sky), so a pixel is
+// what is behind the glass and what the glass does to it, and nothing else.
+//
+// The scene: the camera at (0, 0, 1) looking down -z, 60 degrees across, so a
+// pixel column c sees the ray with tan = (c + 0.5 - 48) / 48 x tan 30 degrees; a background
+// plane at z = -1 split at x = 0.3 (red on the left, green on the right: or black and white), and
+// a pane of glass at z = 0, a square facing the camera, 'thickness' metres deep.
+//
+// 1. REFRACTION. Without the pane the edge is at the column where the ray through x = 0.3 at z = -1
+//    comes out (0.3 / 2 / tan 30 degrees x 48 + 48 = 60.5). Through the pane (index 1.5, thickness 0.5)
+//    the picture is read where the refracted ray comes out of the volume: the ray from the camera through
+//    the pane at x = px bends to sin(t) = sin(i) / 1.5, runs 0.5 on, and the frame is read at that
+//    point's projection (the glTF volume model). The column where the edge shows through is the px where
+//    that projection is at the edge's: found by bisection on the CPU, within 1 column.
+// 2. ABSORPTION. A pane of attenuation colour (0.5, 0.25, 1) over a white field, its thickness one
+//    attenuation distance: what passes is (0.5, 0.25, 1) of the white (times 1 - the Fresnel reflectance,
+//    the same in each channel), so the channels are in the ratio 2 : 1 : 4 to 2%, and the blue is
+//    above 0.93 and below 0.99. A tint (1, 0.5, 0.5) multiplies the light that passes. A pane that
+//    lets only half through ('glass' 0.5) over white leaves 0.5 + 0.5 x that: 0.74 in red.
+// 3. DISPERSION. Over a black and white edge, with the indices spread 0.25 either side (the glTF
+//    rule: (ior - 1) x 0.025 x dispersion), the red, green and blue edges are at the columns each
+//    index puts them, each within 1 column and in that order: three edges, not one.
+// 4. ROUGH GLASS blurs what is behind it: the edge's transition over a smooth pane is under 3 columns
+//    wide, over one of roughness 0.6 more than 8.
+// 5. CAPTURE. A frame with glass makes one capture; none for a target that cannot be sampled, which
+//    draws the glass against the environment alone (black here) and breaks nothing; a frame with
+//    no glass and no reflecting mesh makes none.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation and
+// synchronization validation are on, and must say nothing.
+
+mod materialglass;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIZE = 96u32;
+
+// The discrete GPU, or the integrated one if GPU_POWER_PREFERENCE is low-power
+fn powerPreference() u32 {
+  imm e = libc.getenv("GPU_POWER_PREFERENCE");
+  if (e as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(e), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn halfToFloat(h u16) f32 {
+  imm bits = u32.from(h);
+  imm exponent = (bits >> 10u32) & 31u32;
+  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  if exponent == 0u32 { return 0.; }
+  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  sign * (f as f32);
+}
+
+fn radiance(p *u8, x u32, y u32, c usize) f64 {
+  imm h = p as *u16;
+  f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(SIZE) + usize.from(x)) * 4usize + c)));
+}
+
+fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn within(got f64, want f64, relative f64, absolute f64) bool {
+  imm d = if got < want { want - got; } else { got - want; };
+  d <= absolute + relative * (if want < 0d { -want; } else { want; });
+}
+
+fn glowing(r f32, g f32, b f32) PbrMaterial {
+  PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 1.).glowing(new Color(r, g, b, 1.), 1.);
+}
+
+// The first column of row 48 at or after 'from' where channel 'c' passes 0.5
+fn edgeColumn(p *u8, c usize, from u32) i64 {
+  mut x = from;
+  while x < SIZE {
+    if radiance(p, x, 48u32, c) > 0.5d { return i64.from(x); }
+    x = x + 1u32;
+  }
+  -1i64;
+}
+
+// Where channel 'c' of row 48 crosses 'level' going up between columns 50 and 76, in continuous column
+// coordinates (pixel x's centre is x + 0.5), by linear interpolation between the two pixels
+fn edgeCrossing(p *u8, c usize, level f64) f64 {
+  mut x = 51u32;
+  while x < 76u32 {
+    imm v0 = radiance(p, x - 1u32, 48u32, c);
+    imm v1 = radiance(p, x, 48u32, c);
+    if v1 > level and v0 <= level { return f64.from(x) - 0.5d + (level - v0) / (v1 - v0); }
+    x = x + 1u32;
+  }
+  -1d;
+}
+
+// The tangent of half the field of view (60 degrees across)
+fn tanHalf() f64 { libc.tan(0.5235987755982988d); }
+
+// The pane's x where the edge at the background's x = 'edge' shows through a pane 'depth' thick of index
+// 'ior' (found by bisection): the projection of the point the refracted ray leaves the volume at is the
+// edge's. The camera is at z = 1, the pane at z = 0, the background at z = -1.
+fn edgeThroughPane(edge f64, ior f64, thickness f64) f64 {
+  imm edgeNdc = edge / (2d * tanHalf());
+  mut lo = 0d;
+  mut hi = 0.9d;
+  mut i = 0;
+  while i < 60 {
+    imm px = 0.5d * (lo + hi);
+    imm sinI = px / libc.sqrt(1d + px * px);
+    imm sinT = sinI / ior;
+    imm cosT = libc.sqrt(1d - sinT * sinT);
+    imm ex = px + thickness * sinT;
+    imm ez = -thickness * cosT;
+    imm ndc = ex / ((1d - ez) * tanHalf());
+    if ndc < edgeNdc { lo = px; } else { hi = px; }
+    i = i + 1;
+  }
+  0.5d * (lo + hi);
+}
+
+// The column of the pane's x
+fn columnOf(px f64) f64 { px / tanHalf() * 48d + 48d; }
+
+fn main() i32 {
+  mut instance = Instance.create("materialglass");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, powerPreference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  mut depth = device.createTexture(&depthDesc);
+  // The same target that cannot be sampled
+  imm bareDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut bare = device.createTexture(&bareDesc);
+  imm bareDepthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut bareDepth = device.createTexture(&bareDepthDesc);
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  renderer.environmentStrength = 0.;
+  renderer.drawSky = false;
+  mut camera = Camera.make();
+  camera.fov = radians(60.);
+  camera.lookAt(new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm dark = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.), Color.gray(0.));
+
+  imm plane = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  // A square of half-size 'sx' by 'sy' facing +z at 'x', 'y', 'z'
+  imm face = Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.));
+  imm redM = renderer.addPbrMaterial(&mut device, &glowing(1., 0., 0.));
+  imm greenM = renderer.addPbrMaterial(&mut device, &glowing(0., 1., 0.));
+  imm whiteM = renderer.addPbrMaterial(&mut device, &glowing(1., 1., 1.));
+  imm blackM = renderer.addPbrMaterial(&mut device, &glowing(0., 0., 0.));
+
+  // The background: the left of x = 0.3 'left', the right 'right'; each a plane of the width to the edge of the view
+  mut backdrop = DrawList.empty();
+  backdrop.add(plane, redM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
+  backdrop.add(plane, greenM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+  mut bw = DrawList.empty();
+  bw.add(plane, blackM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
+  bw.add(plane, whiteM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+  mut field = DrawList.empty();
+  field.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
+  imm pane = Mat4.fromTrs(new Vec3(0., 0., 0.), face, new Vec3(0.9, 1., 0.9));
+
+  // ---- 1. Refraction ----
+  {
+    // The edge without glass
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &backdrop);
+    imm bare60 = edgeColumn(p, 1usize, 0u32);
+    expect(bare60 >= 59i64 and bare60 <= 61i64, "without glass the edge is at column 60.5");
+    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.5, Color.gray(1.), 1., 0.);
+    glass.reflections = 0.;
+    imm gm = renderer.addPbrMaterial(&mut device, &glass);
+    mut scene = DrawList.empty();
+    scene.add(plane, redM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
+    scene.add(plane, greenM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+    scene.add(plane, gm, pane);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+    imm through = edgeColumn(p, 1usize, 0u32);
+    imm want = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
+    expect(f64.from(through) > f64.from(bare60) + 0.5d, "the glass moved the edge");
+    expect(through >= 0i64 and f64.from(through) >= want - 1d and f64.from(through) <= want + 1d,
+      "the edge shows through the pane where the refracted ray puts it (the glTF volume's model)");
+    if !(f64.from(through) >= want - 1d and f64.from(through) <= want + 1d) { eprint <- "  edge at column "; eprint <- through; eprint <- ", wanted "; eprint <- want; eprint <- "\n"; }
+    expectUInt(u64.from(renderer.ext[0usize].captures), 1u64, "one capture, for the glass");
+  }
+
+  // ---- 2. Absorption ----
+  {
+    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.2, new Color(0.5, 0.25, 1., 1.), 0.2, 0.);
+    glass.reflections = 0.;
+    imm gm = renderer.addPbrMaterial(&mut device, &glass);
+    mut scene = DrawList.empty();
+    scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
+    scene.add(plane, gm, pane);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+    imm r = radiance(p, 48u32, 48u32, 0usize);
+    imm g = radiance(p, 48u32, 48u32, 1usize);
+    imm b = radiance(p, 48u32, 48u32, 2usize);
+    expectFloat(r / b, 0.5d, 0.01d, "absorption: red is half of blue (the attenuation colour at its distance)");
+    expectFloat(g / b, 0.25d, 0.005d, "and green a quarter");
+    expect(b > 0.93d and b < 0.99d, "the blue is 1 less the Fresnel reflectance");
+    // A tint
+    mut tinted = glass;
+    tinted.baseColor = new Color(1., 0.5, 0.5, 1.);
+    tinted.attenuationColor = Color.gray(1.);
+    imm tm = renderer.addPbrMaterial(&mut device, &tinted);
+    scene.clear();
+    scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
+    scene.add(plane, tm, pane);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+    expectFloat(radiance(p, 48u32, 48u32, 1usize) / radiance(p, 48u32, 48u32, 0usize), 0.5d, 0.01d, "a tint multiplies the light that passes");
+    // Half transmissive
+    mut half = glass;
+    half.glass = 0.5;
+    imm hm = renderer.addPbrMaterial(&mut device, &half);
+    scene.clear();
+    scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
+    scene.add(plane, hm, pane);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+    // 0.5 x (0.5 x the red's share of 1 - Fresnel) + 0.5 x the white behind: 0.5 + 0.25 (1 - R)
+    expectFloat(radiance(p, 48u32, 48u32, 0usize), 0.74d, 0.02d, "a pane that passes half leaves half the picture and half the glass's red");
+  }
+
+  // ---- 3. Dispersion ----
+  {
+    // The indices 1.5 -/+ 0.25: (ior - 1) x 0.025 x dispersion with dispersion 20
+    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.5, Color.gray(1.), 1., 20.);
+    glass.reflections = 0.;
+    imm gm = renderer.addPbrMaterial(&mut device, &glass);
+    mut scene = DrawList.empty();
+    scene.add(plane, blackM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
+    scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+    scene.add(plane, gm, pane);
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+    // The white behind reads 0.96 through the pane (1 less the Fresnel reflectance): the edge is where it crosses half of that
+    imm er = edgeCrossing(p, 0usize, 0.48d);
+    imm eg = edgeCrossing(p, 1usize, 0.48d);
+    imm eb = edgeCrossing(p, 2usize, 0.48d);
+    imm wantR = columnOf(edgeThroughPane(0.3d, 1.25d, 0.5d));
+    imm wantG = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
+    imm wantB = columnOf(edgeThroughPane(0.3d, 1.75d, 0.5d));
+    // (the picture behind is a grid of pixels, so an edge in it is known to within half a pixel: the
+    // positions are checked to a column, the spacings, which that does not touch, to 0.3)
+    expect(er >= wantR - 1d and er <= wantR + 1d, "dispersion: the red edge is where index 1.25 puts it");
+    expect(eg >= wantG - 1d and eg <= wantG + 1d, "the green edge, index 1.5");
+    expect(eb >= wantB - 1d and eb <= wantB + 1d, "the blue edge, index 1.75");
+    expect(er < eg and eg < eb, "in the order of the indices: three edges, not one");
+    expect(within(eg - er, wantG - wantR, 0d, 0.3d) and within(eb - eg, wantB - wantG, 0d, 0.3d),
+      "and as far apart as the indices put them");
+    if !(er < eg and eg < eb and within(eg - er, wantG - wantR, 0d, 0.3d) and within(eb - eg, wantB - wantG, 0d, 0.3d)) {
+      eprint <- "  edge columns "; eprint <- er; eprint <- ", "; eprint <- eg; eprint <- ", "; eprint <- eb; eprint <- "; wanted "; eprint <- wantR; eprint <- ", "; eprint <- wantG; eprint <- ", "; eprint <- wantB; eprint <- "\n";
+    }
+  }
+
+  // ---- 4. Rough glass ----
+  {
+    mut smooth = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.05, Color.gray(1.), 1., 0.);
+    smooth.reflections = 0.;
+    mut rough = smooth.frosted(0.6);
+    imm sm = renderer.addPbrMaterial(&mut device, &smooth);
+    imm rm = renderer.addPbrMaterial(&mut device, &rough);
+    mut widths Array[i64, 2] = [0i64, 0i64];
+    mut k = 0usize;
+    while k < 2usize {
+      mut scene = DrawList.empty();
+      scene.add(plane, blackM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
+      scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
+      scene.add(plane, if k == 0usize { sm; } else { rm; }, pane);
+      drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+      mut n = 0i64;
+      // the columns round the edge (the pane's own rim is elsewhere); the white reads 0.96
+      mut x = 50u32;
+      while x < 76u32 {
+        imm v = radiance(p, x, 48u32, 1usize);
+        if v > 0.1d and v < 0.86d { n = n + 1i64; }
+        x = x + 1u32;
+      }
+      widths[k] = n;
+      k = k + 1usize;
+    }
+    expect(widths[0usize] < 3i64, "a smooth pane keeps the edge sharp");
+    expect(widths[1usize] > 5i64, "a rough pane blurs it");
+    if !(widths[0usize] < 3i64 and widths[1usize] > 5i64) { eprint <- "  edge widths "; eprint <- widths[0usize]; eprint <- ", "; eprint <- widths[1usize]; eprint <- "\n"; }
+  }
+
+  // ---- 5. Capture ----
+  {
+    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.2, Color.gray(1.), 1., 0.);
+    glass.reflections = 0.;
+    imm gm = renderer.addPbrMaterial(&mut device, &glass);
+    mut scene = DrawList.empty();
+    scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
+    scene.add(plane, gm, pane);
+    imm before = renderer.ext[0usize].captures;
+    // A target that cannot be sampled: drawn, no capture; the glass sees the environment (black)
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &bare, &bareDepth, &camera, &dark, &scene);
+    encoder.copyTextureToBuffer(&bare, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    expectUInt(u64.from(renderer.ext[0usize].captures), u64.from(before), "a target that cannot be sampled makes no capture");
+    imm seen = radiance(p, 48u32, 48u32, 1usize);
+    expect(seen < 0.2d, "and the glass shows the environment alone, black, not the white behind");
+    // No glass, no reflecting mesh: no capture
+    scene.clear();
+    scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
+    drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
+    expectUInt(u64.from(renderer.ext[0usize].captures), u64.from(before), "a frame without glass or reflections makes none");
+  }
+  done();
+}
