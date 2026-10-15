@@ -1,0 +1,96 @@
+// The skinmesh package: a quad mesh grown from a graph of nodes and edges,
+// with a rig from the same graph. The graph is a stick figure (a position and a
+// radius, across x and across z, at each node); the skin is the creature's base
+// mesh, ready to subdivide and to sculpt, and the armature and weights make it
+// move. It is Blender's Skin modifier and ZBrush's ZSpheres (Adaptive Skin),
+// built here as follows.
+//
+//   import skinmesh use *;
+//   mut g = SkinGraph.empty();
+//   imm hip = g.addNode(new Vec3(0., 1., 0.), 0.18, 0.12);
+//   imm chest = g.grow(hip, new Vec3(0., 1.5, 0.), 0.22, 0.13);
+//   ...
+//   imm s = skinStandard(&g);          // s.mesh, s.rig, s.weights, s.problems
+//   imm fine = subdivideSkin(&s, 2u32);
+//
+// What the skin is
+// - A node of degree one is an end: a ring (a rectangle of half-extents radiusX
+//   and radiusZ, square to the edge) closed by one quad, or with SkinCapDome by
+//   a smaller ring beyond it and then a quad.
+// - A node of degree two is a joint. A smooth one (the default) has one ring in
+//   the plane that bisects the bend, widened along the bend by 1 / cos of half
+//   the turn (up to 'mitreLimit') so the tube keeps its thickness, as a mitre
+//   joint does; the two edges' tubes meet at that one ring. A loose one
+//   (SkinLoose, or an edge folded back on its neighbour) keeps a ring of its
+//   own for each edge, a little way out along it, and a band across the joint:
+//   the corner stays sharper, and after subdivision the joint is a knuckle.
+// - A node of degree three or more is a branch. Each edge gets a ring square to
+//   it, standing off from the node by the least distance that makes every ring
+//   a face of the convex hull of all the rings' corners (the fixed point of
+//   t_i = max over the other rings' corners p of p . q_i, which is about
+//   r / tan(theta / 2) for two edges theta apart), plus 'smooth' radii at a
+//   smooth node; a loose branch keeps the least. The hull's other faces are the
+//   junction: neighbouring triangles merged into quads where the four corners
+//   are near a plane, and the rest left (counted in Skin.triangles).
+// - A node of degree zero is a box.
+// - The tubes between rings are quads, with 'cuts' extra rings between, and no
+//   twist: the corner of one ring met by the other's is the nearest.
+//
+// Frames: each edge is oriented away from its tree's root (a node marked
+// SkinRoot, else the tree's lowest-numbered node). A ring's x axis is the start
+// node's hint (SkinGraph.setHint) if it has one, else the parent edge's x axis
+// turned with the least rotation (Quat.fromVectors) to this edge, else the world
+// x (or z). So a limb keeps its flat side to the same side all along, and a
+// side branch inherits it.
+//
+// Channels: vertex "along" (0 to 1 from the start of the vertex's limb, a run
+// of edges through smooth or loose joints between branches, ends and the root,
+// by distance), "around" (the ring's corner, 0, 1/4, 1/2, 3/4), "limb" (the
+// limb's number, as f32) and the corner "uv" (u around, v along, 1 at the seam
+// of a tube; at a junction or a cap the vertex's own values: not unwrapped).
+// Subdivision carries them as sculpt's subdivide carries any channel.
+//
+// The rig: one bone for each edge (Armature), numbered parents first, head at
+// the edge's start node, tail at its end; 'skeleton' gives the same as
+// bonepose's Skeleton. The weights (SkinWeights, creaturerig's layout) are two
+// bones at most on the base mesh: a vertex of a ring that two bones share
+// (a smooth joint's, a branch's child edge's ring with its parent) is half and
+// half; a ring that one edge owns is 1; the rings cut into a tube blend
+// linearly from half and half at a shared end to 1 at the middle. After
+// subdivision the weights are carried vertex by vertex, as channels, and the
+// best four kept.
+//
+// The algorithms are from the literature; parameters follow Blender's manual,
+// never its source:
+// - the skin of a graph of nodes with radii and the hull at a branch: Blender's
+//   Skin modifier (the manual gives its options: root, loose, radius, branch
+//   smoothing) and, as a method, Ji, Liu, Wang and Yang (2010), "B-Mesh: A
+//   modeling system for base meshes of 3D articulated shapes", Computer Graphics
+//   Forum 29(7): a joint is a convex hull of the connecting tubes' ends,
+//   quadrangulated; Bærentzen et al. (2012), "Two methods for skinning
+//   branching structures": the same idea with a quad-dominant hull;
+// - rotation-minimizing frames along a tree: Wang, Juttler, Zheng and Liu
+//   (2008), as sculpt's paths use them;
+// - the hull of a few points by supporting planes over all triples, and
+//   triangles merged into quads by a cheapest-first matching with augmenting
+//   paths (the dual of the hull's triangles as the graph; not blossom, so an
+//   odd cycle may leave a triangle).
+//
+// Its conventions are sculpt's: right-handed space, y up, f32, faces wound
+// counterclockwise seen from outside.
+//
+//   graph.cone    SkinGraph: nodes, radii, edges, flags (root, loose), hints
+//   hull.cone     convexHull3 (supporting planes), quadrangulate (triangle pairs)
+//   build.cone    SkinOptions, Skin, and the Builder: orientation from the root,
+//                 limbs, rings, tubes, caps, joints and junctions
+//   rig.cone      Armature, SkinWeights, the weights as channels and back
+//   skin.cone     skin, skinStandard, subdivideSkin: the whole build
+
+mod skinmesh;
+
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+import bonepose use *;
+import sculpt use *;

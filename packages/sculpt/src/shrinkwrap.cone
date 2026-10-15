@@ -1,0 +1,192 @@
+// ======== Shrinkwrap and Project All: one surface laid onto another ========
+//
+// 'shrinkwrap' moves each vertex of a mesh to a place on a target surface
+// (a SurfaceIndex, see surface.cone), as Blender's Shrinkwrap modifier does,
+// and returns the mesh with its topology and every channel as they were. Its
+// modes, the options from Blender's manual (the geometry worked out here):
+//
+// - ShrinkNearestSurface: the vertex goes to the nearest point of the target.
+// - ShrinkProject: a ray from the vertex along a direction, forwards
+//   ('positive'), backwards ('negative') or both (the nearer hit wins; with
+//   neither the vertex stays). The direction is the one given (any vector:
+//   an axis, a diagonal, a view), or each vertex's own unit normal where the
+//   given one is (0, 0, 0). 'cull' ignores the target's faces that face the
+//   ray (CullFront) or face away (CullBack), as Blender's Cull Faces.
+// - ShrinkNearestVertex: the nearest vertex of the target that a face uses.
+// - ShrinkTargetNormal: the point of the target whose interpolated normal
+//   line passes through the vertex (Blender's Target Normal Project; see
+//   'targetNormal' in surface.cone).
+// A vertex whose search finds nothing within 'limit' (Blender's Distance; 0
+// or less: no limit) stays where it is.
+//
+// WHERE ON THE LINE (the wrap method, Blender's Snap Mode), with the hit q, p
+// the vertex, 'back' the unit vector from q towards p (against the ray for a
+// projection), n the target triangle's unit normal and ns its normal
+// interpolated from the vertex normals; 'offset' is Blender's:
+// - WrapOnSurface: q + offset back: the vertex lands on the side it came from.
+// - WrapOutsideSurface: q + offset n, always on the normal's side.
+// - WrapInsideSurface: q - offset n, always against the normal.
+// - WrapOutside: the vertex stays where it is if it is already more than
+//   'offset' outside (on the normal's side of the plane through q); else it
+//   goes to q + offset n. Nothing is pulled in, everything is kept out.
+// - WrapInside: the mirror: a vertex already more than 'offset' inside stays;
+//   else it goes to q - offset n.
+// - WrapAboveSurface: q + offset ns, the smooth normal, so a sheet laid on a
+//   rounded form follows it without the facets' steps.
+// At a point where the two directions agree (back is (0, 0, 0) because p is on
+// the surface) n stands for back.
+//
+// THE WEIGHT: a vertex channel named by the caller ("" for none) scales how
+// far each vertex goes (0 stays, 1 lands), as Blender's vertex group does; a
+// name with no such vertex channel weighs every vertex 1.
+//
+// 'projectAll' is ZBrush's Project All: a retopologised mesh (the target) laid
+// onto the detailed mesh it was made from (the source). Each vertex casts a
+// ray along its own unit normal, both ways, within 'distance' (ZBrush's Dist),
+// to the source; the nearer hit is where it goes, and a vertex whose rays both
+// miss goes to the source's nearest point within 'distance'; one with no
+// source within it stays. The source's channels are carried to the result, as
+// ZBrush carries polypaint, by interpolation across the hit triangle
+// (projectAllWith, 'keepChannels'). Level by level, as ZBrush does after a
+// subdivision, is this called again at each level.
+//
+// FAST ENOUGH TO HYDRATE: one query is a walk down a tree of boxes that skips
+// everything beyond the best answer so far; examples/project.cone times 20,000
+// vertices onto 100,000 triangles for each mode.
+
+pub const ShrinkNearestSurface = 0u32;
+pub const ShrinkProject = 1u32;
+pub const ShrinkNearestVertex = 2u32;
+pub const ShrinkTargetNormal = 3u32;
+
+pub const WrapOnSurface = 0u32;
+pub const WrapInsideSurface = 1u32;
+pub const WrapOutsideSurface = 2u32;
+pub const WrapOutside = 3u32;
+pub const WrapInside = 4u32;
+pub const WrapAboveSurface = 5u32;
+
+pub struct Shrinkwrap {
+  pub mode u32;
+  pub wrap u32;
+  pub offset f32;
+  pub limit f32;
+  pub direction Vec3;
+  pub positive bool;
+  pub negative bool;
+  pub cull u32;
+
+  // Each mode with Blender's defaults: on the surface, no offset or limit
+  pub fn nearestSurface() Shrinkwrap {
+    new Shrinkwrap(ShrinkNearestSurface, WrapOnSurface, 0., 0., new Vec3(0., 0., 0.), true, true, CullNone);
+  }
+  // Along 'direction', both ways; (0, 0, 0) for each vertex's own normal
+  pub fn project(direction Vec3) Shrinkwrap {
+    new Shrinkwrap(ShrinkProject, WrapOnSurface, 0., 0., direction, true, true, CullNone);
+  }
+  pub fn nearestVertex() Shrinkwrap {
+    new Shrinkwrap(ShrinkNearestVertex, WrapOnSurface, 0., 0., new Vec3(0., 0., 0.), true, true, CullNone);
+  }
+  pub fn targetNormal() Shrinkwrap {
+    new Shrinkwrap(ShrinkTargetNormal, WrapOnSurface, 0., 0., new Vec3(0., 0., 0.), true, true, CullNone);
+  }
+}
+
+// The mesh shrinkwrapped onto a target mesh (indexed here; use 'shrinkwrap'
+// with a SurfaceIndex to wrap several meshes onto one target)
+pub fn shrinkwrapTo(m &PolyMesh, target &PolyMesh, s &Shrinkwrap, weight &str) PolyMesh {
+  imm idx = SurfaceIndex.of(target);
+  shrinkwrap(m, &idx, s, weight);
+}
+
+// The mesh shrinkwrapped onto an indexed target
+pub fn shrinkwrap(m &PolyMesh, target &SurfaceIndex, s &Shrinkwrap, weight &str) PolyMesh {
+  imm nv = m.vertexCount();
+  mut pos = List[Vec3].withCapacity(nv);
+  imm wch = if weight.len() > 0usize { m.findFloatChannel(VertexDomain, weight); } else { NoIndex; };
+  imm normals = if s.mode == ShrinkProject and zeroVec(s.direction) { m.vertexNormals(); } else { List[Vec3].empty(); };
+  mut stack = List[u32].empty();
+  mut v = 0usize;
+  while v < nv {
+    imm p = *m.positions[v];
+    imm w = if wch != NoIndex { m.float(wch, u32.from(v)); } else { 1.; };
+    if !(w > 0.) { pos.push(p); v = v + 1usize; continue; }
+    mut hit = SurfaceHit.none();
+    mut flat = new Vec3(0., 0., 0.);
+    mut smooth = new Vec3(0., 0., 0.);
+    if s.mode == ShrinkNearestSurface {
+      hit = target.nearestWith(p, s.limit, &mut stack);
+    } elif s.mode == ShrinkProject {
+      imm dir = if zeroVec(s.direction) { *normals[v]; } else { s.direction; };
+      if s.positive and s.negative { hit = target.rayBothWays(p, dir, s.limit, s.cull, &mut stack); }
+      elif s.positive { hit = target.rayWith(p, dir, s.limit, s.cull, &mut stack); }
+      elif s.negative { hit = target.rayWith(p, new Vec3(-dir.x, -dir.y, -dir.z), s.limit, s.cull, &mut stack); }
+    } elif s.mode == ShrinkNearestVertex {
+      hit = target.nearestVertexWith(p, s.limit, &mut stack);
+    } else {
+      hit = target.targetNormal(p, s.limit);
+    }
+    if hit.tri == NoIndex { pos.push(p); v = v + 1usize; continue; }
+    flat = hit.normal;
+    smooth = target.smoothNormal(&hit);
+    if s.mode == ShrinkNearestVertex {
+      // The vertex's own normal stands for both
+      flat = smooth;
+    }
+    imm snapped = snap(p, hit.point, flat, smooth, s.wrap, s.offset);
+    pos.push(p + (snapped - p) * w);
+    v = v + 1usize;
+  }
+  withPositions(m, pos);
+}
+
+fn zeroVec(v Vec3) bool { v.x == 0. and v.y == 0. and v.z == 0.; }
+
+// Where the vertex p goes for the hit q (see the top)
+fn snap(p Vec3, q Vec3, flat Vec3, smooth Vec3, wrap u32, offset f32) Vec3 {
+  imm gap = p - q;
+  imm along = unit(gap);
+  imm back = if zeroVec(along) { flat; } else { along; };
+  if wrap == WrapOnSurface { return q + back * offset; }
+  if wrap == WrapOutsideSurface { return q + flat * offset; }
+  if wrap == WrapInsideSurface { return q - flat * offset; }
+  if wrap == WrapAboveSurface { return q + smooth * offset; }
+  imm height = gap.dot(flat);
+  if wrap == WrapOutside {
+    if height > offset { return p; }
+    return q + flat * offset;
+  }
+  // WrapInside
+  if height < -offset { return p; }
+  q - flat * offset;
+}
+
+// ---- Project All ----
+
+// The mesh laid onto the source: see the top
+pub fn projectAll(target &PolyMesh, source &PolyMesh, distance f32) PolyMesh {
+  projectAllWith(target, source, distance, true);
+}
+
+// The same, the source's channels carried to the result or not
+pub fn projectAllWith(target &PolyMesh, source &PolyMesh, distance f32, keepChannels bool) PolyMesh {
+  imm idx = SurfaceIndex.of(source);
+  imm nv = target.vertexCount();
+  imm normals = target.vertexNormals();
+  mut pos = List[Vec3].withCapacity(nv);
+  mut stack = List[u32].empty();
+  mut v = 0usize;
+  while v < nv {
+    imm p = *target.positions[v];
+    mut hit = idx.rayBothWays(p, *normals[v], distance, CullNone, &mut stack);
+    if hit.tri == NoIndex { hit = idx.nearestWith(p, distance, &mut stack); }
+    pos.push(if hit.tri == NoIndex { p; } else { hit.point; });
+    v = v + 1usize;
+  }
+  imm moved = withPositions(target, pos);
+  if !keepChannels { return moved; }
+  mut problems = List[String].empty();
+  imm map = new TransferMap(MapInterpolated, MapInterpolated, MapInterpolated, MapInterpolated, distance, 1.);
+  imm none Array[&str, 1] = [""];
+  dataTransferIndexed(&moved, source, &idx, &map, false, &none, &mut problems);
+}

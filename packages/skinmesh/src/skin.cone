@@ -1,0 +1,124 @@
+// ======== skin: a graph to a mesh, a rig and weights ========
+
+// The skin of a graph: one mesh of quads (with triangles and larger faces only
+// where a junction could not be paired), its armature, its weights and what
+// went wrong. The graph is read, not changed.
+pub fn skin(graph &SkinGraph, options SkinOptions) Skin {
+  mut b = Builder.make(graph.copy(), options);
+  b.adjacency();
+  b.grow();
+  // Rings for every node, then what joins them
+  imm nn = b.g.position.len();
+  mut e = 0usize;
+  while e < b.g.edgeA.len() {
+    b.endRing.push(NoNode);
+    b.endRing.push(NoNode);
+    e = e + 1usize;
+  }
+  mut n = 0usize;
+  while n < nn {
+    b.node(u32.from(n));
+    n = n + 1usize;
+  }
+  b.edgeSides();
+  finish(&mut b);
+}
+
+// 'skin' with the standard options
+pub fn skinStandard(graph &SkinGraph) Skin { skin(graph, SkinOptions.standard()); }
+
+// The mesh, bones and weights from a finished build
+fn finish(b &mut Builder) Skin {
+  mut problems = List[String].empty();
+  mut i = 0usize;
+  while i < b.problems.len() {
+    problems.push(String.from((*b.problems[i]).view()));
+    i = i + 1usize;
+  }
+  mut pm = PolyMesh.fromPolygons(b.pos.view(), b.fCount.view(), b.fIdx.view(), &mut problems);
+  imm uv = pm.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
+  pm.setCornerVec2s(uv, b.fUv.view());
+  imm along = pm.addFloatChannel(VertexDomain, "along", 0.);
+  imm around = pm.addFloatChannel(VertexDomain, "around", 0.);
+  imm limb = pm.addFloatChannel(VertexDomain, "limb", 0.);
+  mut v = 0usize;
+  while v < b.pos.len() {
+    pm.setFloat(along, u32.from(v), *b.vAlong[v]);
+    pm.setFloat(around, u32.from(v), *b.vAround[v]);
+    pm.setFloat(limb, u32.from(v), *b.vLimb[v]);
+    v = v + 1usize;
+  }
+  // The armature, in the order the edges were reached
+  mut arm = Armature.empty();
+  mut edgeBone = List[i32].empty();
+  i = 0usize;
+  while i < b.g.edgeA.len() { edgeBone.push(-1i32); i = i + 1usize; }
+  i = 0usize;
+  while i < b.order.len() {
+    imm e = usize.from(*b.order[i]);
+    edgeBone.set(e, i32.from(i));
+    imm s = *b.eStart[e];
+    imm t = *b.eEnd[e];
+    arm.head.push(*b.g.position[usize.from(s)]);
+    arm.tail.push(*b.g.position[usize.from(t)]);
+    imm p = *b.nParent[usize.from(s)];
+    arm.parent.push(if p == NoNode {-1i32;} else {*edgeBone[usize.from(p)];});
+    arm.edge.push(u32.from(e));
+    arm.startNode.push(s);
+    arm.endNode.push(t);
+    i = i + 1usize;
+  }
+  // The weights: a vertex's owner takes 1 - w, the edge sharing it w
+  mut sw = new SkinWeights(List[u32].empty(), List[f32].empty());
+  v = 0usize;
+  while v < b.pos.len() {
+    imm o = *b.vOwner[v];
+    imm x = *b.vOther[v];
+    imm w = *b.vW[v];
+    imm bo = if o == NoNode {-1i32;} else {*edgeBone[usize.from(o)];};
+    imm bx = if x == NoNode {-1i32;} else {*edgeBone[usize.from(x)];};
+    if bo < 0i32 {
+      sw.joints.push(0u32); sw.joints.push(0u32); sw.joints.push(0u32); sw.joints.push(0u32);
+      sw.weights.push(0.); sw.weights.push(0.); sw.weights.push(0.); sw.weights.push(0.);
+    } elif bx < 0i32 or w <= 0. {
+      sw.joints.push(u32.from(bo)); sw.joints.push(0u32); sw.joints.push(0u32); sw.joints.push(0u32);
+      sw.weights.push(1.); sw.weights.push(0.); sw.weights.push(0.); sw.weights.push(0.);
+    } else {
+      sw.joints.push(u32.from(bo)); sw.joints.push(u32.from(bx)); sw.joints.push(0u32); sw.joints.push(0u32);
+      sw.weights.push(1. - w); sw.weights.push(w); sw.weights.push(0.); sw.weights.push(0.);
+    }
+    v = v + 1usize;
+  }
+  imm lc = u32.from(b.limbLen.len());
+  new Skin(pm, arm, sw, problems, lc, b.triangles);
+}
+
+// The skin subdivided 'levels' times (Catmull-Clark, as sculpt's subdivide):
+// the mesh smoothed, "along", "around" and "limb" carried by the vertex rules,
+// and the weights carried the same way, one channel a bone, then the best four
+// kept. The armature is as it was.
+pub fn subdivideSkin(s &Skin, levels u32) Skin {
+  imm bones = s.rig.boneCount();
+  mut base = smooth(&s.mesh, 0., 0u32);
+  s.weights.toChannels(&mut base, bones);
+  mut out = subdivide(&base, levels);
+  imm w = weightsFromChannels(&out, bones);
+  // The weight channels were a means; drop them from the result
+  mut kept = List[Channel[f32]].empty();
+  mut c = 0usize;
+  while c < out.floats.len() {
+    if !out.floats[c].name.view().startsWith("weight_") {
+      kept.push(new Channel[f32](String.from(out.floats[c].name.view()), out.floats[c].domain,
+        copyOf[f32](&out.floats[c].values), out.floats[c].fill));
+    }
+    c = c + 1usize;
+  }
+  out.floats = kept;
+  mut problems = List[String].empty();
+  mut i = 0usize;
+  while i < s.problems.len() {
+    problems.push(String.from((*s.problems[i]).view()));
+    i = i + 1usize;
+  }
+  new Skin(out, s.rig.copy(), w, problems, s.limbs, s.triangles);
+}

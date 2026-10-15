@@ -1,0 +1,141 @@
+// Poses: standing at ease, sitting down on a seat and standing up from it, and a hail. Walking is walkgait's.
+//
+// A SEAT is data, not a kind of furniture: a sit point (where the sitting bones rest, on the seat's surface), the
+// way a sitter faces, and the surface's height above the floor the feet are on, and how far the seat itself moves
+// (a rocking chair's rock, a swing's swing: an angle and a period, carried by the caller with the sitter). A chair, a
+// bench, a throne, a porch rocker and a swing are each one Seat.
+//
+// SITTING DOWN is the sit-to-stand movement of the clinical studies run backwards (Schenkman et al., "Whole-body
+// movements during rising to standing from sitting", Phys Ther 1990, four phases: flexion momentum, momentum
+// transfer, extension, stabilisation; from memory, not fetched): the feet stay planted, the trunk leans forward
+// to keep the weight over them (the lean peaks, about 40 degrees, as the hips pass over the knees), the pelvis
+// travels down and back on a curve to the seat, and the trunk comes upright as the seat takes the weight. Standing
+// up is the same path the other way, the lean earlier (the trunk must lead). The legs reach the planted feet by
+// two-bone inverse kinematics (bonepose's aimLimb), the knees forward; seated, the hands rest on the thighs.
+//
+// THE HAIL (EverQuest's way of greeting): the right arm up and out, the elbow bent a little, the hand waving from
+// the elbow at about 1.6 Hz, the head turned a little to the one hailed.
+//
+// Every pose is in the being's model space: the origin is the ground point between the feet, the being faces -z.
+// The proportions are the person's: each pose is computed from their own skeleton.
+
+pub struct Seat {
+  pub point Vec3;      // the sit point, in the world
+  pub yaw f32;         // the facing (0: -z)
+  pub height f32;      // the seat's surface above the floor
+  pub rock f32;        // the seat's own swing, radians each way (0: still)
+  pub period f32;      // and its period, seconds
+
+  pub fn chair(point Vec3, yaw f32, height f32) Seat { new Seat(point, yaw, height, 0., 1.); }
+}
+
+// Where a sitter's feet stand, in the world: in front of the sit point by the thigh's length (the shins upright)
+pub fn seatFeet(seat &Seat, skel &Skeleton) Vec3 {
+  imm lt = skel.restOf(SHIN_L).translation.length();
+  imm fwd = new Vec3(0. - sin(seat.yaw), 0., 0. - cos(seat.yaw));
+  imm floor = seat.point.y - seat.height;
+  new Vec3(seat.point.x + fwd.x * lt * 0.92, floor, seat.point.z + fwd.z * lt * 0.92);
+}
+
+fn turnX(a f32) Quat { Quat.angleAxis(a, new Vec3(1., 0., 0.)); }
+fn turnY(a f32) Quat { Quat.angleAxis(a, new Vec3(0., 1., 0.)); }
+fn turnZ(a f32) Quat { Quat.angleAxis(a, new Vec3(0., 0., 1.)); }
+
+fn ease(t f32) f32 { smoothstep(0., 1., t); }
+
+// The arms brought down from the skeleton's A-pose to hang at ease (by 'drop' radians), elbows a little bent
+fn armsAtEase(skel &Skeleton, pose &mut Pose, drop f32, bend f32) {
+  pose.setRotation(UPPER_ARM_L, skel.restOf(UPPER_ARM_L).rotation * turnZ(drop));
+  pose.setRotation(UPPER_ARM_R, skel.restOf(UPPER_ARM_R).rotation * turnZ(0. - drop));
+  pose.setRotation(FOREARM_L, turnX(0. - bend));
+  pose.setRotation(FOREARM_R, turnX(0. - bend));
+}
+
+// Standing at ease: the rest pose, the arms down beside the body
+pub fn standPose(skel &Skeleton) Pose {
+  mut pose = skel.restPose();
+  armsAtEase(skel, &mut pose, 0.13, 0.12);
+  pose;
+}
+
+// The sit's pose at 's' (0 standing in front of the seat, 1 seated), sitting down ('down' true) or standing up;
+// model space with its origin at the planted feet's ground point (seatFeet), facing the seat's way
+pub fn sitPose(skel &Skeleton, seat &Seat, s f32, down bool) Pose {
+  imm h = skel.restOf(PELVIS).translation.y / 0.530;      // the skeleton's height
+  imm lt = skel.restOf(SHIN_L).translation.length();
+  mut pose = standPose(skel);
+  // the pelvis's path: from over the feet down and back to above the sit point
+  imm standY = skel.restOf(PELVIS).translation.y;
+  imm seatedY = seat.height + 0.085 * h / 1.75;
+  imm back = lt * 0.92;
+  // the drop starts late sitting down (the lean first) and the rise late standing up (the lean first again)
+  imm tDown = if down { ease(clampf((s - 0.15) / 0.85, 0., 1.)); } else { ease(clampf(s / 0.85, 0., 1.)); };
+  imm tBack = if down { ease(clampf((s - 0.05) / 0.80, 0., 1.)); } else { ease(clampf((s - 0.15) / 0.85, 0., 1.)); };
+  imm py = standY + (seatedY - standY) * tDown;
+  imm pz = back * tBack;
+  // the trunk's lean: forward most as the hips pass over the knees, upright seated
+  imm leanPeak = 0.70;
+  imm bell = libc.sinf(pi * clampf(if down { s; } else { s; }, 0., 1.));
+  imm lean = 0. - leanPeak * bell * bell + (0. - 0.04) * s;
+  // the pelvis tips with the lean (most of it is at the hips), the spine and chest carry the rest
+  pose.setTranslation(PELVIS, new Vec3(0., py, pz));
+  pose.setRotation(PELVIS, turnX(lean * 0.55));
+  pose.setRotation(SPINE, turnX(lean * 0.25));
+  pose.setRotation(CHEST, turnX(lean * 0.20));
+  // the head stays level
+  pose.setRotation(NECK, turnX(0. - lean * 0.45));
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(&pose, &mut models);
+  // the legs reach the planted feet, knees forward
+  imm ankleY = 0.039 * h;
+  mut side = 0usize;
+  while side < 2usize {
+    imm th = if side == 0usize { THIGH_L; } else { THIGH_R; };
+    imm hipX = (*models[th]).translation.x;
+    imm target = new Vec3(hipX * 1.15, ankleY, 0.);
+    aimLimb(skel, &mut pose, &mut models, th, target, new Vec3(0., 0., -1.), 0.35);
+    // the foot flat on the floor: undo the shin's turn on the foot
+    skel.setModelRotation(&mut pose, &models, th + 4usize, Quat.identity());
+    skel.recompose(&pose, &mut models, th + 4usize);
+    side = side + 1usize;
+  }
+  // the arms: hanging at ease standing, the hands to the thighs seated
+  imm onThigh = ease(clampf((s - 0.55) / 0.45, 0., 1.));
+  side = 0usize;
+  while side < 2usize {
+    imm ua = if side == 0usize { UPPER_ARM_L; } else { UPPER_ARM_R; };
+    imm th = if side == 0usize { THIGH_L; } else { THIGH_R; };
+    imm hand = (*models[ua + 4usize]).translation;
+    imm hip = (*models[th]).translation;
+    imm knee = (*models[th + 2usize]).translation;
+    imm rest = hip + (knee - hip) * 0.55 + new Vec3(0., 0.045 * h / 1.75, 0.);
+    imm target = hand + (rest - hand) * onThigh;
+    imm sideX = if side == 0usize { -1.; } else { 1.; };
+    if onThigh > 0.001 {
+      aimLimb(skel, &mut pose, &mut models, ua, target, new Vec3(sideX * 0.6, 0., 0.8), 0.6);
+    }
+    side = side + 1usize;
+  }
+  pose;
+}
+
+// The hail at 't' seconds since it began: the right arm up and waving (it settles in over the first half second)
+pub fn hailPose(skel &Skeleton, t f32) Pose {
+  imm h = skel.restOf(PELVIS).translation.y / 0.530;
+  mut pose = standPose(skel);
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(&pose, &mut models);
+  imm up = ease(clampf(t / 0.5, 0., 1.));
+  imm sh = (*models[UPPER_ARM_R]).translation;
+  imm hand = (*models[HAND_R]).translation;
+  imm wave = libc.sinf(2. * pi * 1.6 * t) * up;
+  imm raised = sh + new Vec3(0.20 * h / 1.75 + 0.07 * wave * h / 1.75, 0.34 * h / 1.75, -0.10 * h / 1.75);
+  imm target = hand + (raised - hand) * up;
+  aimLimb(skel, &mut pose, &mut models, UPPER_ARM_R, target, new Vec3(0.7, -0.6, 0.4), 0.5);
+  // the hand up, the palm forward
+  pose.setRotation(HAND_R, turnX(-0.25 * up));
+  // the head turned a little and the chest leaning away from the raised arm
+  pose.setRotation(NECK, turnY(0.10 * up));
+  pose.setRotation(CHEST, turnZ(-0.04 * up));
+  pose;
+}
