@@ -1,0 +1,271 @@
+// ======== Features on a field: peaks, pits, and crease lines ========
+//
+// A residual (or any per-vertex field: a curvature, a height) shows where a shape
+// has a feature the fitted form lacks. These find them:
+//
+// - Peaks and pits (never on the mesh's border, where "higher than every neighbour"
+//   only means the neighbours are missing): a vertex whose value is higher (lower) than every vertex that
+//   shares an edge with it and at least 'minHeight' above (below) zero, then
+//   thinned so that no two kept ones are closer than 'minSeparation', the stronger
+//   keeping its place. Returned strongest first.
+// - Creases: ridge lines and valley lines of the field. At each vertex the field is
+//   fitted by a quadratic over its neighbours (two rings) in the tangent plane, by
+//   weighted least squares; the Hessian's eigen-directions say how the field bends.
+//   A vertex is on a RIDGE if the field bends down across it by more than
+//   'minBend' (its most negative second derivative) and the vertex is no lower
+//   than its neighbours that lie most nearly along that direction, on either side
+//   (the crest of the bend), and the field bends the other way less than half as
+//   much (so a bump or a dent, which bends both ways, is no crease); a VALLEY is the same upside down. Flagged vertices
+//   that are neighbours are chained into lines (a line is a list of vertex
+//   numbers, each step along an edge), and lines of fewer than 'minLength' vertices
+//   are dropped.
+
+pub struct Creases {
+  pub ridges List[List[u32]];
+  pub valleys List[List[u32]];
+  pub ridgeFlag List[bool];      // per vertex: on a ridge line that was kept
+  pub valleyFlag List[bool];
+}
+
+// The local maxima of the field (or, with 'pits', the local minima), see the top
+pub fn findExtrema(m &PolyMesh, field &List[f32], minHeight f32, minSeparation f32, pits bool) List[u32] {
+  imm nv = m.vertexCount();
+  mut cand = List[u32].empty();
+  mut v = 0usize;
+  while v < nv {
+    imm val = if pits { -*field[v]; } else { *field[v]; };
+    if val >= minHeight and val > 0. and not m.isBoundaryVertex(u32.from(v)) {
+      imm nb = m.vertexNeighbors(u32.from(v));
+      mut top = nb.len() > 0usize;
+      mut k = 0usize;
+      while k < nb.len() {
+        imm o = if pits { -*field[usize.from(*nb[k])]; } else { *field[usize.from(*nb[k])]; };
+        if o >= val { top = false; }
+        k += 1usize;
+      }
+      if top { cand.push(u32.from(v)); }
+    }
+    v += 1usize;
+  }
+  // strongest first, ties by vertex number
+  cand.sortBy((a, b) => {
+    imm fa = if pits { -*field[usize.from(*a)]; } else { *field[usize.from(*a)]; };
+    imm fb = if pits { -*field[usize.from(*b)]; } else { *field[usize.from(*b)]; };
+    if fa > fb { -1i32; } elif fa < fb { 1i32; } elif *a < *b { -1i32; } else { 1i32; };
+  });
+  mut kept = List[u32].empty();
+  mut i = 0usize;
+  while i < cand.len() {
+    mut near = false;
+    mut k = 0usize;
+    while k < kept.len() {
+      if m.positions[usize.from(*cand[i])].distance(*m.positions[usize.from(*kept[k])]) < minSeparation { near = true; }
+      k += 1usize;
+    }
+    if not near { kept.push(*cand[i]); }
+    i += 1usize;
+  }
+  kept;
+}
+
+pub fn findPeaks(m &PolyMesh, field &List[f32], minHeight f32, minSeparation f32) List[u32] {
+  findExtrema(m, field, minHeight, minSeparation, false);
+}
+
+pub fn findPits(m &PolyMesh, field &List[f32], minDepth f32, minSeparation f32) List[u32] {
+  findExtrema(m, field, minDepth, minSeparation, true);
+}
+
+// The vertices within two edges of v (not v), without repeats, in discovery order
+fn twoRing(m &PolyMesh, v u32) List[u32] {
+  mut out = List[u32].empty();
+  imm first = m.vertexNeighbors(v);
+  mut k = 0usize;
+  while k < first.len() { out.push(*first[k]); k += 1usize; }
+  k = 0usize;
+  while k < first.len() {
+    imm second = m.vertexNeighbors(*first[k]);
+    mut j = 0usize;
+    while j < second.len() {
+      imm c = *second[j];
+      if c != v {
+        mut seen = false;
+        mut q = 0usize;
+        while q < out.len() { if *out[q] == c { seen = true; } q += 1usize; }
+        if not seen { out.push(c); }
+      }
+      j += 1usize;
+    }
+    k += 1usize;
+  }
+  out;
+}
+
+// Chain flagged vertices (neighbours along an edge) into lines of at least minLength vertices
+fn chainLines(m &PolyMesh, flag &List[bool], minLength usize) List[List[u32]] {
+  imm nv = m.vertexCount();
+  mut used = List[bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv { used.push(false); v += 1usize; }
+  mut lines = List[List[u32]].empty();
+  // Start from the ends first (one flagged neighbour), then from anything left
+  mut pass = 0;
+  while pass < 2 {
+    v = 0usize;
+    while v < nv {
+      if *flag[v] and not *used[v] {
+        imm nb = m.vertexNeighbors(u32.from(v));
+        mut deg = 0;
+        mut k = 0usize;
+        while k < nb.len() { if *flag[usize.from(*nb[k])] { deg += 1; } k += 1usize; }
+        if pass == 1 or deg <= 1 {
+          mut line = List[u32].empty();
+          mut cur = v;
+          line.push(u32.from(cur));
+          used.set(cur, true);
+          mut going = true;
+          while going {
+            imm cn = m.vertexNeighbors(u32.from(cur));
+            // continue to the unused flagged neighbour that keeps the direction
+            mut bestN = NoIndex;
+            mut bestScore = -2.d;
+            mut j = 0usize;
+            while j < cn.len() {
+              imm c = usize.from(*cn[j]);
+              if *flag[c] and not *used[c] {
+                mut score = 0.d;
+                if line.len() >= 2usize {
+                  imm prev = DVec3.from(*m.positions[usize.from(*line[line.len() - 2usize])]);
+                  imm here = DVec3.from(*m.positions[cur]);
+                  imm go = unitd(DVec3.from(*m.positions[c]) - here);
+                  score = go.dot(unitd(here - prev));
+                } else { score = 0.d; }
+                if bestN == NoIndex or score > bestScore { bestN = *cn[j]; bestScore = score; }
+              }
+              j += 1usize;
+            }
+            if bestN == NoIndex { going = false; } else {
+              cur = usize.from(bestN);
+              line.push(bestN);
+              used.set(cur, true);
+            }
+          }
+          if line.len() >= minLength { lines.push(line); }
+        }
+      }
+      v += 1usize;
+    }
+    pass += 1;
+  }
+  lines;
+}
+
+// Ridge and valley lines of the field (see the top). 'minBend' is the least
+// second derivative (field units per length squared) that counts as a crease.
+pub fn findCreases(m &PolyMesh, field &List[f32], minBend f32, minLength usize) Creases {
+  imm nv = m.vertexCount();
+  imm normals = m.vertexNormals();
+  mut ridge = List[bool].withCapacity(nv);
+  mut valley = List[bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    ridge.push(false);
+    valley.push(false);
+    v += 1usize;
+  }
+  v = 0usize;
+  while v < nv {
+    imm ring = twoRing(m, u32.from(v));
+    imm n = unitd(DVec3.from(*normals[v]));
+    if ring.len() >= 5usize and n.lengthSquared() > 0.5d {
+      imm e1 = perpendicularTo(n);
+      imm e2 = crossd(n, e1);
+      imm p0 = DVec3.from(*m.positions[v]);
+      // normal equations for  df = gx u + gy v + 0.5 hxx u^2 + hxy u v + 0.5 hyy v^2
+      mut a = zeros(25usize);
+      mut b = zeros(5usize);
+      mut k = 0usize;
+      while k < ring.len() {
+        imm d = DVec3.from(*m.positions[usize.from(*ring[k])]) - p0;
+        imm u = d.dot(e1);
+        imm w2 = d.dot(e2);
+        imm df = f64.from(*field[usize.from(*ring[k])] - *field[v]);
+        imm wgt = 1.d / (d.lengthSquared() + 1.0e-30d);
+        imm row = [u, w2, 0.5d * u * u, u * w2, 0.5d * w2 * w2];
+        mut r = 0usize;
+        while r < 5usize {
+          mut c = 0usize;
+          while c < 5usize { a.set(r * 5usize + c, *a[r * 5usize + c] + wgt * row[r] * row[c]); c += 1usize; }
+          b.set(r, *b[r] + wgt * row[r] * df);
+          r += 1usize;
+        }
+        k += 1usize;
+      }
+      // a little ridge regularisation keeps a thin neighbourhood solvable
+      mut tr = 0.d;
+      k = 0usize;
+      while k < 5usize { tr = tr + *a[k * 5usize + k]; k += 1usize; }
+      k = 0usize;
+      while k < 5usize { a.set(k * 5usize + k, *a[k * 5usize + k] + 1.0e-9d * tr + 1.0e-300d); k += 1usize; }
+      if solveLinear(&mut a, &mut b, 5usize) {
+        // The Hessian [[hxx, hxy], [hxy, hyy]]: eigenvalues and directions
+        imm hxx = *b[2];
+        imm hxy = *b[3];
+        imm hyy = *b[4];
+        imm half = 0.5d * (hxx - hyy);
+        imm rad = sqrtd(half * half + hxy * hxy);
+        imm mid = 0.5d * (hxx + hyy);
+        imm lamHi = mid + rad;
+        imm lamLo = mid - rad;
+        // angle of the eigenvector of lamHi, the other perpendicular
+        imm th = 0.5d * libc.atan2(2.d * hxy, hxx - hyy);
+        imm dirHi = e1 * libc.cos(th) + e2 * libc.sin(th);
+        imm dirLo = crossd(n, dirHi);
+        // ridge: bends down most across dirLo
+        // and the bend the other way is less than half as strong: a bump bends both ways, a ridge one
+        if lamLo < -f64.from(minBend) and lamHi > 0.5d * lamLo and crestAlong(m, field, v, dirLo, true) { ridge.set(v, true); }
+        if lamHi > f64.from(minBend) and lamLo < 0.5d * lamHi and crestAlong(m, field, v, dirHi, false) { valley.set(v, true); }
+      }
+    }
+    v += 1usize;
+  }
+  imm rl = chainLines(m, &ridge, minLength);
+  imm vl = chainLines(m, &valley, minLength);
+  mut rf = List[bool].withCapacity(nv);
+  mut vf = List[bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv { rf.push(false); vf.push(false); v += 1usize; }
+  mut i = 0usize;
+  while i < rl.len() { mut k = 0usize; while k < rl[i].len() { rf.set(usize.from(*rl[i][k]), true); k += 1usize; } i += 1usize; }
+  i = 0usize;
+  while i < vl.len() { mut k = 0usize; while k < vl[i].len() { vf.set(usize.from(*vl[i][k]), true); k += 1usize; } i += 1usize; }
+  new Creases(rl, vl, rf, vf);
+}
+
+// Whether vertex v is at least as high (as low, if 'high' is false) as its neighbours
+// that lie most nearly along the direction d, forwards and backwards. A side with no
+// neighbour within 60 degrees of the direction is taken as satisfied (a border).
+fn crestAlong(m &PolyMesh, field &List[f32], v usize, d DVec3, high bool) bool {
+  imm nb = m.vertexNeighbors(u32.from(v));
+  imm p0 = DVec3.from(*m.positions[v]);
+  mut bestF = -1.d;
+  mut bestB = -1.d;
+  mut nF = NoIndex;
+  mut nB = NoIndex;
+  mut k = 0usize;
+  while k < nb.len() {
+    imm o = DVec3.from(*m.positions[usize.from(*nb[k])]) - p0;
+    imm c = unitd(o).dot(d);
+    if c > bestF { bestF = c; nF = *nb[k]; }
+    if -c > bestB { bestB = -c; nB = *nb[k]; }
+    k += 1usize;
+  }
+  mut ok = true;
+  if nF != NoIndex and bestF > 0.5d {
+    if high { if *field[usize.from(nF)] > *field[v] { ok = false; } } else { if *field[usize.from(nF)] < *field[v] { ok = false; } }
+  }
+  if nB != NoIndex and bestB > 0.5d {
+    if high { if *field[usize.from(nB)] > *field[v] { ok = false; } } else { if *field[usize.from(nB)] < *field[v] { ok = false; } }
+  }
+  ok;
+}

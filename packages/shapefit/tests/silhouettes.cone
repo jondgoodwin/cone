@@ -1,0 +1,62 @@
+// shapefit's silhouettes: orthographic outlines from views without rendering,
+// their area, and the comparison of two meshes by overlap and Hausdorff distance.
+
+mod silhouettetests;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import shapefit use *;
+
+fn main() i32 {
+  imm views = standardViews();
+  expectInt(i64.from(views.len()), 6, "six standard views");
+  expectFloat(views[0usize].right.x, -1.d, 0.0000001, "the front view looks along +z, so -x is to its right");
+  expectFloat(views[0usize].up.y, 1.d, 0.0000001, "and y up");
+
+  // A cylinder of radius 1 and height 2 (32 sides): from the front a rectangle 2 x 2, from above a polygon near the circle
+  imm cyl = cylinderMesh(1., 2., 4usize, 64usize);
+  imm win = windowFor(&cyl, &cyl, views[0usize], 400usize);
+  imm cells = rasterize(&cyl, views[0usize], &win);
+  imm out = traceOutline(&cells, &win);
+  expectInt(i64.from(out.len()), 1, "one outline");
+  expectFloat(f64.from(loopsArea(&out)), 4.d, 0.06d, "front area is 2 x 2");
+  expect(out[0usize].len() <= 8usize, "a rectangle needs few points");
+  imm topWin = windowFor(&cyl, &cyl, views[4usize], 400usize);
+  imm topCells = rasterize(&cyl, views[4usize], &topWin);
+  imm top = traceOutline(&topCells, &topWin);
+  expectFloat(f64.from(loopsArea(&top)), 3.1365d, 0.05d, "top area is the 64-gon's, near pi");
+
+  // Identical meshes overlap completely and have no distance
+  imm same = compareSilhouettes(&cyl, &cyl, &views, 300usize);
+  expectFloat(f64.from(same[0usize].iou), 1.d, 0.0000001, "iou with itself");
+  expectFloat(f64.from(same[2usize].hausdorff), 0.d, 0.0000001, "Hausdorff with itself");
+
+  // A sphere against a sphere 1.2 times larger: the overlap is 1 / 1.44, the outlines 0.2 apart
+  imm s1 = sphereMesh(1., 24usize, 48usize);
+  imm s2 = sphereMesh(1.2, 24usize, 48usize);
+  imm cmp = compareSilhouettes(&s1, &s2, &views, 400usize);
+  mut v = 0usize;
+  while v < 6usize {
+    expectFloat(f64.from(cmp[v].iou), 0.6944d, 0.02d, "sphere overlap");
+    expectFloat(f64.from(cmp[v].hausdorff), 0.2d, 0.03d, "sphere outlines 0.2 apart");
+    v += 1usize;
+  }
+  expectFloat(f64.from(cmp[0usize].areaB / cmp[0usize].areaA), 1.44d, 0.04d, "areas scale as the square");
+
+  // A shifted copy: a sphere moved 0.5 sideways. From the front the shift is across the view, from the side along it
+  mut moved = sphereMesh(1., 24usize, 48usize);
+  movePoints(&mut moved, p => p + new Vec3(0.5, 0., 0.));
+  imm sh = compareSilhouettes(&s1, &moved, &views, 400usize);
+  expectFloat(f64.from(sh[0usize].hausdorff), 0.5d, 0.03d, "shifted across the view");
+  expectFloat(f64.from(sh[2usize].hausdorff), 0.d, 0.02d, "shifted along the view: the same outline");
+  expectFloat(f64.from(sh[2usize].iou), 1.d, 0.01d, "and the same cover");
+  expect(sh[0usize].iou < 0.7, "the overlap drops across the view");
+
+  // Turntable views
+  imm tt = turntableViews(8usize);
+  expectInt(i64.from(tt.len()), 8, "eight turntable views");
+  expectFloat(tt[2usize].forward.x, 1.d, 0.000001, "the third looks along +x");
+  done();
+}
