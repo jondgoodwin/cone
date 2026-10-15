@@ -1,0 +1,325 @@
+// The sculpt package's symmetry (mirrorMap, mirrorWeights, maskMirror,
+// mirrorSelection, reflectPoint and symmetrize), checked with the testing
+// package against values worked out by hand; only a failure prints, so
+// symmetries.out holds the summary alone.
+//
+// reflectPoint: (1, 2, 3) in the plane x = 0 is (-1, 2, 3); in the plane
+// through (1, 0, 0) with normal (2, 0, 0) (made unit), (3, 0, 0) is (-1, 0, 0).
+//
+// The grid: 8 x 4 quads of side 1, x from -4 to 4 (9 columns), z from 0 to 4
+// (5 rows), vertex (i, j) at (i - 4, 0, j), number 9 j + i. In the plane x =
+// 0 (origin 0, normal +x) the mirror of (i, j) is (8 - i, j): vertex 0 maps to
+// 8, 4 (the middle column) to itself, 12 = (3, 1) to 14 = (5, 1).
+// - Move vertex (1, 2), number 19, by 0.3 in x: it and its partner (7, 2),
+//   number 25, have no mirror within 0.01 (each is 0.3 off the other's
+//   reflection), NoIndex; within 0.5 each maps to the other again.
+// - Weights 0.8 on vertex 19 (x = -3): met with their mirrors by MaskUnion
+//   both sides' weights are 0.8 (19 and 25); by MaskReplace, both ways, they
+//   swap (19 is 0, 25 is 0.8); from the positive side by MaskReplace the
+//   weight on x = 3 (zero) is copied over the x = -3 side, so 19 becomes 0;
+//   from the negative side by MaskReplace, 25 becomes 0.8 and 19 keeps it.
+//   The middle column never changes under a one-way copy.
+// - mirrorSelection of vertices 10 and 19 ((1, 1) and (1, 2)): 16 and 25;
+//   extended, 10, 16, 19, 25; of a vertex with no mirror (moved off, with a
+//   small tolerance): dropped, or kept when extended; ascending without repeats.
+// - symmetrize. A box x from -0.5 to 1.5, y and z from -1 to 1, made from the
+//   cube cage placed by joinPlaced, with vertex "w" = x, corner "uv" = (x, y)
+//   and face "id" = 10 + face. Keeping the +x side (normal +x, merge 0.001):
+//   the four edges parallel to x cross the plane at x = 0 (the cage's x
+//   edges, w = 0 there: -0.5 + 2 x 0.25), the left face is lost; the kept
+//   half is the box 0 to 1.5, open at x = 0 with 8 vertices and 5 faces, and
+//   the mirror closes it: 12 vertices, 10 faces, closed (no boundary edge),
+//   volume 3 x 2 x 2 = 12, x from -1.5 to 1.5. Every corner's uv.x is the
+//   distance of its vertex from the plane (0 on the seam, 1.5 at the ends: the
+//   blends, since a mirrored copy is not reflected), and the right face's id
+//   (13) is on two faces. Keeping the -x side (normal -x): the box 0 to -0.5
+//   mirrored, -0.5 to 0.5: 12 vertices, 10 faces, volume 1 x 2 x 2 = 4.
+//   A box wholly behind the plane (x from -3 to -1) keeps nothing: an empty
+//   mesh. A box on the plane's positive side (x from 0 to 2): its x = 0 face
+//   is lost, the rest kept, 12 vertices, 10 faces, volume 16. An already
+//   symmetric cube -1 to 1: 12 vertices, 10 faces, volume 8, a loop of cut
+//   vertices through the middle.
+
+mod symmetries;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+// 8 x 4 quads, x from -4 to 4, z from 0 to 4, facing +y; vertex (i, j) number 9 j + i
+fn gridMesh() PolyMesh {
+  mut pts = List[Vec3].empty();
+  mut j = 0;
+  while j <= 4 {
+    mut i = 0;
+    while i <= 8 {
+      pts.push(new Vec3(f32.from(i - 4), 0., f32.from(j)));
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  j = 0;
+  while j < 4 {
+    mut i = 0;
+    while i < 8 {
+      imm v00 = u32.from(j * 9 + i);
+      counts.push(4u32);
+      idx.push(v00);
+      idx.push(v00 + 9u32);
+      idx.push(v00 + 10u32);
+      idx.push(v00 + 1u32);
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems);
+}
+
+fn absf(a f32) f32 {if a < 0. {-a;} else {a;};}
+
+fn moved(m &PolyMesh, v u32, dx f32) PolyMesh {
+  // weld at a negative distance merges nothing: a copy
+  mut c = weld(m, -1.);
+  c.positions.set(usize.from(v), *c.positions[usize.from(v)] + new Vec3(dx, 0., 0.));
+  c;
+}
+
+fn volume(m &PolyMesh) f32 {
+  mut sum f32 = 0.;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.;
+}
+
+fn boundaryEdges(m &PolyMesh) i64 {
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.isBoundaryEdge(e) { n = n + 1i64; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn reflecting() {
+  imm p = reflectPoint(new Vec3(1., 2., 3.), new Vec3(0., 0., 0.), new Vec3(1., 0., 0.));
+  expectFloat(f64.from(p.x), -1., near, "reflect: x flips");
+  expectFloat(f64.from(p.y), 2., near, "reflect: y stays");
+  imm q = reflectPoint(new Vec3(3., 0., 0.), new Vec3(1., 0., 0.), new Vec3(2., 0., 0.));
+  expectFloat(f64.from(q.x), -1., near, "reflect: about x = 1, from 3 to -1");
+}
+
+fn maps() {
+  imm g = gridMesh();
+  imm o = new Vec3(0., 0., 0.);
+  imm nx = new Vec3(1., 0., 0.);
+  imm map = mirrorMap(&g, o, nx, 0.01);
+  expectInt(i64.from(map.len()), 45, "map: a vertex each");
+  expectInt(i64.from(*map[0usize]), 8, "map: 0 to 8");
+  expectInt(i64.from(*map[8usize]), 0, "map: 8 to 0");
+  expectInt(i64.from(*map[4usize]), 4, "map: the middle column to itself");
+  expectInt(i64.from(*map[12usize]), 14, "map: 12 to 14");
+  mut all = true;
+  mut v = 0usize;
+  while v < map.len() {
+    if *map[usize.from(*map[v])] != u32.from(v) { all = false; }
+    v = v + 1usize;
+  }
+  expectBool(all, true, "map: an involution on a symmetric mesh");
+
+  imm skew = moved(&g, 19u32, 0.3);
+  imm tight = mirrorMap(&skew, o, nx, 0.01);
+  expectInt(i64.from(*tight[19usize]), i64.from(NoIndex), "map: the moved vertex has no mirror (tight)");
+  expectInt(i64.from(*tight[25usize]), i64.from(NoIndex), "map: and neither has its partner");
+  expectInt(i64.from(*tight[18usize]), 26, "map: its neighbour is unaffected");
+  imm loose = mirrorMap(&skew, o, nx, 0.5);
+  expectInt(i64.from(*loose[19usize]), 25, "map: within 0.5 it finds its partner");
+  expectInt(i64.from(*loose[25usize]), 19, "map: and back");
+  imm exact = mirrorMap(&g, o, nx, 0.);
+  expectInt(i64.from(*exact[12usize]), 14, "map: a tolerance of 0 finds exact mirrors");
+  imm far = mirrorMap(&g, new Vec3(0.25, 0., 0.), nx, 0.01);
+  expectInt(i64.from(*far[12usize]), i64.from(NoIndex), "map: a plane off the grid's mirror line finds none");
+}
+
+fn weights() {
+  imm g = gridMesh();
+  imm o = new Vec3(0., 0., 0.);
+  imm nx = new Vec3(1., 0., 0.);
+  imm map = mirrorMap(&g, o, nx, 0.01);
+  mut vals = List[f32].empty();
+  mut v = 0usize;
+  while v < 45usize {
+    vals.push(0.);
+    v = v + 1usize;
+  }
+  vals.set(19usize, 0.8);
+  vals.set(22usize, 0.6);
+  imm sym = mirrorWeights(&g, &vals, o, nx, &map, MaskUnion, MirrorBoth);
+  expectFloat(f64.from(*sym[19usize]), 0.8, near, "weights, union: 19 keeps its weight");
+  expectFloat(f64.from(*sym[25usize]), 0.8, near, "weights, union: 25 takes it");
+  imm swap = mirrorWeights(&g, &vals, o, nx, &map, MaskReplace, MirrorBoth);
+  expectFloat(f64.from(*swap[19usize]), 0., near, "weights, replace both: 19 takes 25's 0");
+  expectFloat(f64.from(*swap[25usize]), 0.8, near, "weights, replace both: 25 takes 19's");
+  imm fromPos = mirrorWeights(&g, &vals, o, nx, &map, MaskReplace, MirrorFromPositive);
+  expectFloat(f64.from(*fromPos[19usize]), 0., near, "weights, from positive: 19 (x = -3) takes 25's 0");
+  expectFloat(f64.from(*fromPos[25usize]), 0., near, "weights, from positive: 25 keeps its own 0");
+  imm fromNeg = mirrorWeights(&g, &vals, o, nx, &map, MaskReplace, MirrorFromNegative);
+  expectFloat(f64.from(*fromNeg[25usize]), 0.8, near, "weights, from negative: 25 takes 19's");
+  expectFloat(f64.from(*fromNeg[19usize]), 0.8, near, "weights, from negative: 19 keeps its own");
+  expectFloat(f64.from(*fromNeg[22usize]), 0.6, near, "weights, from negative: the middle column is not touched");
+
+  // As a mask
+  imm masked = withMaskValues(&g, &vals);
+  imm sm = maskMirror(&masked, o, nx, &map, MaskUnion, MirrorBoth);
+  imm mv = maskValues(&sm);
+  expectFloat(f64.from(*mv[25usize]), 0.8, near, "maskMirror: union makes the mask symmetric");
+  expectFloat(f64.from(*mv[22usize]), 0.6, near, "maskMirror: the middle column stays");
+  expectInt(i64.from(sm.validate().len()), 0, "maskMirror: valid");
+
+  // Selections
+  mut sel = List[u32].empty();
+  sel.push(10u32);
+  sel.push(19u32);
+  imm mirrored = mirrorSelection(&sel, &map, false);
+  expectInt(i64.from(mirrored.len()), 2, "selection: two");
+  expectInt(i64.from(*mirrored[0usize]), 16, "selection: 10 to 16");
+  expectInt(i64.from(*mirrored[1usize]), 25, "selection: 19 to 25");
+  imm extended = mirrorSelection(&sel, &map, true);
+  expectInt(i64.from(extended.len()), 4, "selection, extended: four");
+  expectInt(i64.from(*extended[0usize]), 10, "selection, extended: ascending");
+  expectInt(i64.from(*extended[3usize]), 25, "selection, extended: ascending (last)");
+  mut both = List[u32].empty();
+  both.push(10u32);
+  both.push(16u32);
+  imm twice = mirrorSelection(&both, &map, false);
+  expectInt(i64.from(twice.len()), 2, "selection: a pair reflects to itself, no repeats");
+  imm skew = moved(&g, 19u32, 0.3);
+  imm tight = mirrorMap(&skew, o, nx, 0.01);
+  mut one = List[u32].empty();
+  one.push(19u32);
+  expectInt(i64.from(mirrorSelection(&one, &tight, false).len()), 0, "selection: a vertex with no mirror is dropped");
+  expectInt(i64.from(mirrorSelection(&one, &tight, true).len()), 1, "selection, extended: and kept");
+}
+
+// The cube cage placed to span x from x0 to x1, y and z from -1 to 1, with the channels
+fn box(x0 f32, x1 f32) PolyMesh {
+  mut parts = List[PolyMesh].empty();
+  parts.push(PolyMesh.cube(0.5));
+  mut places = List[Transform3].empty();
+  places.push(new Transform3(new Vec3((x0 + x1) * 0.5, 0., 0.), Quat.identity(), new Vec3(x1 - x0, 2., 2.)));
+  mut problems = List[String].empty();
+  mut m = joinPlaced(&parts, &places, &mut problems);
+  imm w = m.addFloatChannel(VertexDomain, "w", 0.);
+  mut v = 0usize;
+  while v < m.positions.len() {
+    m.setFloat(w, u32.from(v), m.positions[v].x);
+    v = v + 1usize;
+  }
+  imm id = m.addFloatChannel(FaceDomain, "id", 0.);
+  imm uv = m.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
+  mut f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    m.setFloat(id, f, 10. + f32.from(f));
+    imm hs = m.faceHalfedges(f);
+    mut i = 0usize;
+    while i < hs.len() {
+      imm p = *m.positions[usize.from(m.toVertex(*hs[i]))];
+      m.setVec2(uv, *hs[i], new Vec2(p.x, p.y));
+      i = i + 1usize;
+    }
+    f = f + 1u32;
+  }
+  m;
+}
+
+fn closed(m &PolyMesh, verts i64, faces i64, vol f32, label &Array[u8]) {
+  expectInt(i64.from(m.validate().len()), 0, label);
+  expectInt(i64.from(m.vertexCount()), verts, label);
+  expectInt(i64.from(m.faceCount()), faces, label);
+  expectInt(boundaryEdges(m), 0, label);
+  expectFloat(f64.from(volume(m)), f64.from(vol), 0.0001d, label);
+}
+
+fn symmetrizing() {
+  imm o = new Vec3(0., 0., 0.);
+  imm b = box(-0.5, 1.5);
+  imm s = symmetrize(&b, o, new Vec3(1., 0., 0.), 0.001);
+  closed(&s, 12, 10, 12., "symmetrize +x: closed, 12 vertices, 10 faces, volume 12");
+  imm bb = s.bounds();
+  expectFloat(f64.from(bb.min.x), -1.5, near, "symmetrize +x: reaches x = -1.5");
+  expectFloat(f64.from(bb.max.x), 1.5, near, "symmetrize +x: and 1.5");
+  imm uv = s.findVec2Channel(CornerDomain, "uv");
+  imm w = s.findFloatChannel(VertexDomain, "w");
+  mut uvOk = true;
+  mut onSeam = 0i64;
+  mut f = 0u32;
+  while usize.from(f) < s.faceCount() {
+    imm hs = s.faceHalfedges(f);
+    mut i = 0usize;
+    while i < hs.len() {
+      imm px = s.positions[usize.from(s.toVertex(*hs[i]))].x;
+      imm ux = s.vec2(uv, *hs[i]).x;
+      if absf(ux - absf(px)) > 0.0001 { uvOk = false; }
+      if absf(px) < 0.0001 { onSeam = onSeam + 1i64; }
+      i = i + 1usize;
+    }
+    f = f + 1u32;
+  }
+  expectBool(uvOk, true, "symmetrize +x: every corner's uv.x is its distance from the plane");
+  expect(onSeam > 0, "symmetrize +x: corners on the seam");
+  mut wOk = true;
+  mut v = 0u32;
+  while usize.from(v) < s.vertexCount() {
+    imm px = s.positions[usize.from(v)].x;
+    if absf(s.float(w, v) - absf(px)) > 0.0001 { wOk = false; }
+    v = v + 1u32;
+  }
+  expectBool(wOk, true, "symmetrize +x: every vertex's w is its distance from the plane");
+  imm id = s.findFloatChannel(FaceDomain, "id");
+  mut right = 0i64;
+  f = 0u32;
+  while usize.from(f) < s.faceCount() {
+    if s.float(id, f) == 13. { right = right + 1i64; }
+    f = f + 1u32;
+  }
+  expectInt(right, 2, "symmetrize +x: the right face's id is on two faces");
+
+  imm neg = symmetrize(&b, o, new Vec3(-1., 0., 0.), 0.001);
+  closed(&neg, 12, 10, 4., "symmetrize -x: closed, volume 4");
+  imm nb = neg.bounds();
+  expectFloat(f64.from(nb.max.x), 0.5, near, "symmetrize -x: reaches x = 0.5");
+
+  imm behind = symmetrize(&box(-3., -1.), o, new Vec3(1., 0., 0.), 0.001);
+  expectInt(i64.from(behind.vertexCount()), 0, "symmetrize: a box behind the plane keeps nothing");
+  imm half = symmetrize(&box(0., 2.), o, new Vec3(1., 0., 0.), 0.001);
+  closed(&half, 12, 10, 16., "symmetrize: a box on the positive side is mirrored whole");
+  imm cube = symmetrize(&box(-1., 1.), o, new Vec3(1., 0., 0.), 0.001);
+  closed(&cube, 12, 10, 8., "symmetrize: a symmetric cube gains a loop");
+  imm shifted = symmetrize(&box(1.5, 3.5), new Vec3(2.5, 0., 0.), new Vec3(1., 0., 0.), 0.001);
+  closed(&shifted, 12, 10, 8., "symmetrize: about a plane at x = 2.5, the half beyond it");
+  imm tilted = symmetrize(&box(-0.5, 1.5), o, new Vec3(0., 0., 0.), 0.001);
+  expectInt(i64.from(tilted.vertexCount()), 8, "symmetrize: a zero normal returns a copy");
+}
+
+fn main() i32 {
+  reflecting();
+  maps();
+  weights();
+  symmetrizing();
+  done();
+}
