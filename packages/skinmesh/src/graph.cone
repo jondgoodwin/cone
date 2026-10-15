@@ -1,0 +1,87 @@
+// ======== SkinGraph: the stick figure a skin grows around ========
+
+fn copyOf[T](src &List[T]) List[T] {
+  mut out = List[T].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(*src[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A node's flags
+pub const SkinLoose = 1u32;   // the junction keeps its own ring per edge (see the root file)
+pub const SkinRoot = 2u32;    // where the frames, the bones and "along" start
+
+// A graph of nodes and edges: node i is the point 'position[i]' with a
+// half-extent 'radiusX[i]' across the ring's x axis and 'radiusZ[i]' across its
+// z axis (the ring stands square to the edge, which is its y axis); edge e
+// joins nodes 'edgeA[e]' and 'edgeB[e]'. 'hint[i]' is a direction for the ring's
+// x axis at the node (the zero vector: none, and the ring's x carries on from
+// the edge before it). The graph is a forest of trees; a graph with a cycle is
+// built too, and reported. The order an edge is given in, and the order of the
+// edges, do not matter; the skin comes from which node is the root.
+pub struct SkinGraph {
+  pub position List[Vec3];
+  pub radiusX List[f32];
+  pub radiusZ List[f32];
+  pub flags List[u32];
+  pub hint List[Vec3];
+  pub edgeA List[u32];
+  pub edgeB List[u32];
+
+  pub fn empty() SkinGraph {
+    new SkinGraph(List[Vec3].empty(), List[f32].empty(), List[f32].empty(), List[u32].empty(),
+      List[Vec3].empty(), List[u32].empty(), List[u32].empty());
+  }
+
+  pub fn copy(self &) SkinGraph {
+    new SkinGraph(copyOf[Vec3](&position), copyOf[f32](&radiusX), copyOf[f32](&radiusZ), copyOf[u32](&flags),
+      copyOf[Vec3](&hint), copyOf[u32](&edgeA), copyOf[u32](&edgeB));
+  }
+
+  pub fn nodeCount(self &) usize { position.len(); }
+  pub fn edgeCount(self &) usize { edgeA.len(); }
+
+  // A node at p, a half-extent rx across x and rz across z; its number
+  pub fn addNode(self &mut, p Vec3, rx f32, rz f32) u32 {
+    position.push(p);
+    radiusX.push(rx);
+    radiusZ.push(rz);
+    flags.push(0u32);
+    hint.push(new Vec3(0., 0., 0.));
+    u32.from(position.len() - 1usize);
+  }
+
+  // A node with the same half-extent r both ways
+  pub fn addRound(self &mut, p Vec3, r f32) u32 { self.addNode(p, r, r); }
+
+  // An edge joining nodes a and b (both must exist, and differ); its number
+  pub fn addEdge(self &mut, a u32, b u32) u32 {
+    edgeA.push(a);
+    edgeB.push(b);
+    u32.from(edgeA.len() - 1usize);
+  }
+
+  // A new node at p joined to node 'from' by an edge; the new node's number
+  // (so a figure is grown outward, limb by limb)
+  pub fn grow(self &mut, from u32, p Vec3, rx f32, rz f32) u32 {
+    imm n = self.addNode(p, rx, rz);
+    self.addEdge(from, n);
+    n;
+  }
+
+  // Node n the root of its tree (the starting point for frames, bones and
+  // "along"). A tree with none marked is rooted at its lowest-numbered node
+  pub fn setRoot(self &mut, n u32) { flags.set(usize.from(n), *flags[usize.from(n)] | SkinRoot); }
+
+  // Node n loose or smooth (the default)
+  pub fn setLoose(self &mut, n u32, loose bool) {
+    imm f = *flags[usize.from(n)];
+    flags.set(usize.from(n), if loose {f | SkinLoose;} else {f & (0xFFFFFFFFu32 ^ SkinLoose);});
+  }
+
+  // Node n's ring x axis near this direction
+  pub fn setHint(self &mut, n u32, dir Vec3) { hint.set(usize.from(n), dir); }
+}
