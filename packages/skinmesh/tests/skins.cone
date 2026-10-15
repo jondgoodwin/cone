@@ -1,0 +1,255 @@
+// skinmesh's skin, rig and weights, checked with the testing package against
+// values worked out by hand; only a failure prints, so skins.out holds the
+// summary alone. Volumes are by the divergence theorem over the faces as wound,
+// so a face turned the wrong way would show.
+//
+// - A bar of two nodes, (0,0,0) and (0,2,0), half-extents rx 0.2, rz 0.1: one
+//   ring of 4 at each end (8 vertices), 4 side quads and 2 caps (6 faces),
+//   volume 0.4 x 0.2 x 2 = 0.16, 1 bone, every vertex wholly on it. around of
+//   vertex 1 is 0.25; along is 0 at the first ring and 1 at the second.
+// - The same bar through a middle node (0,1,0): a joint of degree two, smooth,
+//   so one shared ring: 12 vertices, 10 faces, volume 0.16, 2 bones; the shared
+//   ring's vertices 4 to 7 are half bone 0, half bone 1, along 0.5; the end rings
+//   wholly their own bone. As a loose joint it has two rings there (16 vertices,
+//   14 faces).
+// - With 2 cuts an edge has 2 rings more: the bar has 16 vertices, 14 faces, and
+//   along 1/3 and 2/3 on them.
+// - A dome cap adds a ring a node end: the bar 16 vertices, 10 + 4 faces (ring
+//   of side quads 4 and the cap quad 1 at each dome, so 4 + 4 + 4 + 2).
+// - A lone node: a box of 8 vertices, volume 2 rx x 2 rz x (rx + rz).
+// - A Y: a stem and two arms off a node (24 vertices, 22 faces), closed,
+//   manifold, a positive volume, 3 bones, the weights of every vertex summing to 1.
+// - A graph that closes a cycle, and an edge of no length, are reported in
+//   'problems' and the rest is still built.
+// - The skin subdivided once keeps the vertex count V + E + F, closed, its
+//   weights still summing to 1 and "along" still between 0 and 1.
+// - The same graph twice gives the same bits.
+
+mod skins;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import skinmesh use *;
+
+imm near = 0.00001d;
+imm close = 0.0001d;
+
+fn volumeOf(pm &PolyMesh) f64 {
+  mut vol = 0.;
+  mut f = 0usize;
+  while f < pm.faceCount() {
+    imm vs = pm.faceVertices(u32.from(f));
+    imm p0 = *pm.positions[usize.from(*vs[0usize])];
+    mut k = 1usize;
+    while k + 1usize < vs.len() {
+      imm p1 = *pm.positions[usize.from(*vs[k])];
+      imm p2 = *pm.positions[usize.from(*vs[k + 1usize])];
+      vol = vol + p0.dot(p1.cross(p2)) / 6.;
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  f64.from(vol);
+}
+
+fn boundaryEdges(pm &PolyMesh) i64 {
+  mut n = 0i64;
+  mut e = 0usize;
+  while e < pm.edgeCount() {
+    if pm.isBoundaryEdge(u32.from(e)) { n = n + 1i64; }
+    e = e + 1usize;
+  }
+  n;
+}
+
+fn sound(s &Skin, label &Array[u8]) {
+  expectInt(i64.from(s.problems.len()), 0i64, label);
+  expectInt(i64.from(s.mesh.validate().len()), 0i64, label);
+  expectInt(boundaryEdges(&s.mesh), 0i64, label);
+  expect(volumeOf(&s.mesh) > 0., label);
+}
+
+fn bar(mid bool, loose bool) SkinGraph {
+  mut g = SkinGraph.empty();
+  imm a = g.addNode(new Vec3(0., 0., 0.), 0.2, 0.1);
+  g.setRoot(a);
+  if mid {
+    imm b = g.grow(a, new Vec3(0., 1., 0.), 0.2, 0.1);
+    g.grow(b, new Vec3(0., 2., 0.), 0.2, 0.1);
+    g.setLoose(b, loose);
+  } else {
+    g.grow(a, new Vec3(0., 2., 0.), 0.2, 0.1);
+  }
+  g;
+}
+
+fn bars() {
+  imm s = skinStandard(&bar(false, false));
+  sound(&s, "bar: sound");
+  expectInt(i64.from(s.mesh.vertexCount()), 8i64, "bar: vertices");
+  expectInt(i64.from(s.mesh.faceCount()), 6i64, "bar: faces");
+  expectFloat(volumeOf(&s.mesh), 0.16, close, "bar: volume");
+  expectInt(i64.from(s.rig.boneCount()), 1i64, "bar: one bone");
+  expectFloat(f64.from(s.rig.tail[0usize].y), 2., near, "bar: bone tail");
+  expectInt(i64.from(*s.rig.parent[0usize]), -1i64, "bar: root bone has no parent");
+  imm around = s.mesh.findFloatChannel(VertexDomain, "around");
+  imm along = s.mesh.findFloatChannel(VertexDomain, "along");
+  expectFloat(f64.from(s.mesh.float(around, 1u32)), 0.25, near, "bar: around of vertex 1");
+  expectFloat(f64.from(s.mesh.float(along, 0u32)), 0., near, "bar: along at the start");
+  expectFloat(f64.from(s.mesh.float(along, 5u32)), 1., near, "bar: along at the end");
+  expectFloat(f64.from(s.weights.weightOf(3usize, 0usize)), 1., near, "bar: wholly bone 0");
+
+  imm j = skinStandard(&bar(true, false));
+  sound(&j, "smooth joint: sound");
+  expectInt(i64.from(j.mesh.vertexCount()), 12i64, "joint: vertices");
+  expectInt(i64.from(j.mesh.faceCount()), 10i64, "joint: faces");
+  expectFloat(volumeOf(&j.mesh), 0.16, close, "joint: volume");
+  expectInt(i64.from(j.rig.boneCount()), 2i64, "joint: two bones");
+  expectInt(i64.from(*j.rig.parent[1usize]), 0i64, "joint: bone 1's parent is bone 0");
+  expectFloat(f64.from(j.weights.weightOf(5usize, 0usize)), 0.5, near, "joint: shared ring half bone 0");
+  expectFloat(f64.from(j.weights.weightOf(5usize, 1usize)), 0.5, near, "joint: shared ring half bone 1");
+  expectFloat(f64.from(j.weights.weightOf(1usize, 0usize)), 1., near, "joint: end ring wholly bone 0");
+  expectFloat(f64.from(j.weights.weightOf(9usize, 1usize)), 1., near, "joint: end ring wholly bone 1");
+  expectFloat(f64.from(j.mesh.float(j.mesh.findFloatChannel(VertexDomain, "along"), 5u32)), 0.5, near,
+    "joint: along 0.5 at the shared ring");
+
+  imm l = skinStandard(&bar(true, true));
+  sound(&l, "loose joint: sound");
+  expectInt(i64.from(l.mesh.vertexCount()), 16i64, "loose joint: vertices");
+  expectInt(i64.from(l.mesh.faceCount()), 14i64, "loose joint: faces");
+
+  mut o = SkinOptions.standard();
+  o.cuts = 2u32;
+  imm c = skin(&bar(false, false), o);
+  sound(&c, "cuts: sound");
+  expectInt(i64.from(c.mesh.vertexCount()), 16i64, "cuts: vertices");
+  expectInt(i64.from(c.mesh.faceCount()), 14i64, "cuts: faces");
+  expectFloat(f64.from(c.mesh.float(c.mesh.findFloatChannel(VertexDomain, "along"), 8u32)), 1. / 3., close,
+    "cuts: along of the first cut ring");
+  expectFloat(volumeOf(&c.mesh), 0.16, close, "cuts: volume");
+
+  mut d = SkinOptions.standard();
+  d.cap = SkinCapDome;
+  imm dm = skin(&bar(false, false), d);
+  sound(&dm, "dome: sound");
+  expectInt(i64.from(dm.mesh.vertexCount()), 16i64, "dome: vertices");
+  expectInt(i64.from(dm.mesh.faceCount()), 14i64, "dome: faces");
+}
+
+fn lone() {
+  mut g = SkinGraph.empty();
+  g.addNode(new Vec3(1., 1., 1.), 0.3, 0.1);
+  imm s = skinStandard(&g);
+  sound(&s, "lone node: sound");
+  expectInt(i64.from(s.mesh.vertexCount()), 8i64, "lone: vertices");
+  expectFloat(volumeOf(&s.mesh), 0.6 * 0.2 * 0.4, close, "lone: volume of the box");
+  expectInt(i64.from(s.rig.boneCount()), 0i64, "lone: no bones");
+}
+
+fn ySkin() SkinGraph {
+  mut g = SkinGraph.empty();
+  imm a = g.addNode(new Vec3(0., 0., 0.), 0.1, 0.1);
+  g.setRoot(a);
+  imm top = g.grow(a, new Vec3(0., 1., 0.), 0.1, 0.1);
+  g.grow(top, new Vec3(-0.8, 1.8, 0.), 0.08, 0.08);
+  g.grow(top, new Vec3(0.8, 1.8, 0.), 0.08, 0.08);
+  g;
+}
+
+fn junctions() {
+  imm s = skinStandard(&ySkin());
+  sound(&s, "Y: sound");
+  expectInt(i64.from(s.mesh.vertexCount()), 24i64, "Y: vertices");
+  expectInt(i64.from(s.rig.boneCount()), 3i64, "Y: bones");
+  expectInt(i64.from(s.limbs), 3i64, "Y: limbs");
+  mut v = 0usize;
+  mut worst = 0.;
+  while v < s.weights.vertexCount() {
+    mut sum = 0.;
+    mut k = 0usize;
+    while k < 4usize { sum = sum + s.weights.weight(v, k); k = k + 1usize; }
+    imm off = if sum > 1. {sum - 1.;} else {1. - sum;};
+    if off > worst { worst = off; }
+    v = v + 1usize;
+  }
+  expectFloat(f64.from(worst), 0., near, "Y: weights sum to 1");
+  // The arm bones' parent is the stem's
+  expectInt(i64.from(*s.rig.parent[1usize]), 0i64, "Y: arm 1's parent");
+  expectInt(i64.from(*s.rig.parent[2usize]), 0i64, "Y: arm 2's parent");
+  // Twice the same
+  imm t = skinStandard(&ySkin());
+  mut same = true;
+  v = 0usize;
+  while v < s.mesh.vertexCount() {
+    if !(*s.mesh.positions[v]).equals(*t.mesh.positions[v]) { same = false; }
+    v = v + 1usize;
+  }
+  expect(same, "Y: the same bits twice");
+
+  // The smooth version
+  imm fine = subdivideSkin(&s, 1u32);
+  expectInt(i64.from(fine.mesh.validate().len()), 0i64, "Y subdivided: valid");
+  expectInt(boundaryEdges(&fine.mesh), 0i64, "Y subdivided: closed");
+  expectInt(i64.from(fine.mesh.vertexCount()), i64.from(s.mesh.vertexCount() + s.mesh.edgeCount() + s.mesh.faceCount()),
+    "Y subdivided: V + E + F");
+  mut worstW = 0.;
+  v = 0usize;
+  while v < fine.weights.vertexCount() {
+    mut sum = 0.;
+    mut k = 0usize;
+    while k < 4usize { sum = sum + fine.weights.weight(v, k); k = k + 1usize; }
+    imm off = if sum > 1. {sum - 1.;} else {1. - sum;};
+    if off > worstW { worstW = off; }
+    v = v + 1usize;
+  }
+  expectFloat(f64.from(worstW), 0., close, "Y subdivided: weights sum to 1");
+  imm along = fine.mesh.findFloatChannel(VertexDomain, "along");
+  mut inRange = true;
+  v = 0usize;
+  while v < fine.mesh.vertexCount() {
+    imm a = fine.mesh.float(along, u32.from(v));
+    if a < -0.0001 or a > 1.0001 { inRange = false; }
+    v = v + 1usize;
+  }
+  expect(inRange, "Y subdivided: along in 0..1");
+  expect(fine.mesh.findFloatChannel(VertexDomain, "weight_0") == NoIndex, "Y subdivided: no weight channels left");
+}
+
+fn problems() {
+  mut g = SkinGraph.empty();
+  imm a = g.addNode(new Vec3(0., 0., 0.), 0.1, 0.1);
+  imm b = g.grow(a, new Vec3(1., 0., 0.), 0.1, 0.1);
+  imm c = g.grow(b, new Vec3(1., 1., 0.), 0.1, 0.1);
+  g.addEdge(c, a);
+  imm s = skinStandard(&g);
+  expect(s.problems.len() >= 1usize, "a cycle is reported");
+  expectInt(i64.from(s.rig.boneCount()), 3i64, "a cycle: still three bones");
+  mut h = SkinGraph.empty();
+  imm p = h.addNode(new Vec3(0., 0., 0.), 0.1, 0.1);
+  imm q = h.grow(p, new Vec3(0., 1., 0.), 0.1, 0.1);
+  h.addEdge(q, q);
+  imm t = skinStandard(&h);
+  expectInt(i64.from(t.problems.len()), 1i64, "an edge to itself is reported");
+  expectInt(i64.from(t.rig.boneCount()), 1i64, "an edge to itself: one bone");
+}
+
+fn skeletons() {
+  imm s = skinStandard(&ySkin());
+  imm sk = s.rig.skeleton();
+  expectInt(i64.from(sk.boneCount()), 3i64, "skeleton: bones");
+  expectInt(i64.from(sk.parentOf(1usize)), 0i64, "skeleton: parent");
+  // Bone 0 runs from (0,0,0) to (0,1,0): its rest is a translation of 0 and no turn
+  expectFloat(f64.from(sk.restOf(0usize).translation.y), 0., near, "skeleton: root at the origin");
+  expectFloat(f64.from(sk.restOf(1usize).translation.y), 1., near, "skeleton: the arm starts a unit up in its parent's frame");
+}
+
+fn main() i32 {
+  bars();
+  lone();
+  junctions();
+  problems();
+  skeletons();
+  done();
+}
