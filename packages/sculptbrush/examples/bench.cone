@@ -1,0 +1,146 @@
+// bench: the time a recipe of 200 strokes takes to replay on a mesh of 50 thousand vertices, as
+// hydrating a sculpted shape would, per stroke and per dab, and the same recipe a second time to
+// show it gives the same bits.
+//
+//   congo run --release packages/sculptbrush/examples/bench.cone
+//
+// The mesh is a 223 x 223 grid (49,729 vertices) bent into a dome of height 0.6 over a square of side 2.
+// The strokes are placed by a fixed pseudo-random sequence over it: draw, clay strips, crease, smooth,
+// inflate, blob, pinch, dam, grab, elastic deform, snake hook, nudge in turn, radii 0.06 to 0.14.
+
+mod bench;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import time use *;
+import sculpt use *;
+import sculptbrush use *;
+
+fn dome(n u32) PolyMesh {
+  mut pos = List[Vec3].empty();
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut j = 0u32;
+  while j <= n {
+    mut i = 0u32;
+    while i <= n {
+      imm x = (f32.from(i) / f32.from(n) - 0.5) * 2.;
+      imm z = (f32.from(j) / f32.from(n) - 0.5) * 2.;
+      pos.push(new Vec3(x, 0.6 * (1. - 0.5 * (x * x + z * z)), z));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  j = 0u32;
+  while j < n {
+    mut i = 0u32;
+    while i < n {
+      imm a = j * (n + 1u32) + i;
+      counts.push(4u32);
+      idx.push(a);
+      idx.push(a + n + 1u32);
+      idx.push(a + n + 2u32);
+      idx.push(a + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+}
+
+struct Lcg {
+  s u64;
+  fn next(self &mut) f32 {
+    s = (s * 1103515245u64 + 12345u64) % 2147483648u64;
+    f32.from(u32.from(s >> 8u64)) / 8388608.;
+  }
+}
+
+fn recipe() List[Stroke] {
+  mut rng = new Lcg(99u64);
+  mut out = List[Stroke].empty();
+  mut k = 0;
+  while k < 200 {
+    imm x = (rng.next() - 0.5) * 1.6;
+    imm z = (rng.next() - 0.5) * 1.6;
+    imm y = 0.6 * (1. - 0.5 * (x * x + z * z));
+    imm ang = rng.next() * 6.283;
+    imm radius = 0.06 + 0.08 * rng.next();
+    imm dx = ang.cos() * radius * 2.;
+    imm dz = ang.sin() * radius * 2.;
+    imm kind = k % 12;
+    mut pts = List[Vec3].empty();
+    pts.push(new Vec3(x - dx, y, z - dz));
+    pts.push(new Vec3(x + dx, y, z + dz));
+    mut b = if kind == 0 {BrushDraw;} elif kind == 1 {BrushClayStrips;} elif kind == 2 {BrushCrease;}
+      elif kind == 3 {BrushSmooth;} elif kind == 4 {BrushInflate;} elif kind == 5 {BrushBlob;}
+      elif kind == 6 {BrushPinch;} elif kind == 7 {BrushDam;} elif kind == 8 {BrushGrab;}
+      elif kind == 9 {BrushElastic;} elif kind == 10 {BrushSnakeHook;} else {BrushNudge;};
+    mut st = Stroke.make(Brush.of(b), pts, radius, 1.);
+    if b == BrushGrab or b == BrushElastic {
+      st.points.set(1usize, new Vec3(x, y + radius, z));
+      st.points.set(0usize, new Vec3(x, y, z));
+    }
+    out.push(st);
+    k = k + 1;
+  }
+  out;
+}
+
+fn sameBits(a &PolyMesh, b &PolyMesh) bool {
+  mut v = 0usize;
+  while v < a.positions.len() {
+    imm p = *a.positions[v];
+    imm q = *b.positions[v];
+    if p.x != q.x or p.y != q.y or p.z != q.z { return false; }
+    v = v + 1usize;
+  }
+  true;
+}
+
+fn main() i32 {
+  imm m = dome(223u32);
+  printStr("mesh: "); print <- m.vertexCount(); printStr(" vertices, "); print <- m.faceCount(); printStr(" faces\n");
+  imm strokes = recipe();
+  imm t0 = Instant.now();
+  mut s = Sculptor.of(&m);
+  imm t1 = Instant.now();
+  printStr("Sculptor.of (a copy and a hash): "); print <- (t1 - t0).micros() / 1000i64; printStr(" ms\n");
+  mut dabs = 0u32;
+  mut k = 0usize;
+  mut kindUs = List[i64].empty();
+  mut kindDabs = List[i64].empty();
+  mut z = 0;
+  while z < 12 { kindUs.push(0i64); kindDabs.push(0i64); z = z + 1; }
+  while k < strokes.len() {
+    imm ta = Instant.now();
+    imm rep = s.stroke(&*strokes[k]);
+    imm tb = Instant.now();
+    imm slot = k % 12usize;
+    kindUs.set(slot, *kindUs[slot] + (tb - ta).micros());
+    kindDabs.set(slot, *kindDabs[slot] + i64.from(rep.dabs));
+    dabs = dabs + rep.dabs;
+    k = k + 1usize;
+  }
+  imm names = ["draw", "clay strips", "crease", "smooth", "inflate", "blob", "pinch", "dam", "grab", "elastic", "snake hook", "nudge"];
+  z = 0;
+  while z < 12 {
+    printStr("  "); printStr(names[usize.from(z)]); printStr(": 17 strokes "); print <- *kindUs[usize.from(z)] / 1000i64;
+    printStr(" ms, "); print <- *kindDabs[usize.from(z)]; printStr(" dabs\n");
+    z = z + 1;
+  }
+  imm t2 = Instant.now();
+  imm total = (t2 - t1).micros();
+  printStr("200 strokes, "); print <- dabs; printStr(" dabs: "); print <- total / 1000i64; printStr(" ms in all\n");
+  printStr("per stroke: "); print <- total / 200i64; printStr(" us; per dab: "); print <- total / i64.from(dabs); printStr(" us\n");
+  imm a = s.finish();
+  mut s2 = Sculptor.of(&m);
+  k = 0usize;
+  while k < strokes.len() { s2.stroke(&*strokes[k]); k = k + 1usize; }
+  imm b = s2.finish();
+  printStr("same bits on a second run: "); printStr(if sameBits(&a, &b) {"yes";} else {"NO";}); printStr("\n");
+  if sameBits(&a, &b) { 0; } else { 1; };
+}

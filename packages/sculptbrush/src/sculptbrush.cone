@@ -1,0 +1,72 @@
+// The sculptbrush package: Sculpt Mode's brushes and stroke engine, on a fixed-topology
+// mesh.PolyMesh (density comes from sculpt's 'subdivide', multires or voxel remesh; there
+// is no dynamic topology). A recipe is data, a list of 'Stroke's, and replaying it gives the
+// same bits on every machine.
+//
+//   import sculptbrush use *;
+//   mut sc = Sculptor.of(&mesh);                       // a working copy
+//   mut pts = List[Vec3].empty();  pts.push(a);  pts.push(b);
+//   mut st = Stroke.make(Brush.of(BrushClayStrips), pts, 0.2, 1.);   // brush, path, radius, strength
+//   st.mirrorAcross(origin, normal);                   // symmetry
+//   imm report = sc.stroke(&st);                       // dabs, vertices moved, needsDensity
+//   imm sculpted = sc.finish();
+//
+// - 'Stroke' and 'Brush' (stroke.cone): a stroke is a brush, a path (points; methods StrokeSpace, StrokeDots,
+//   StrokeAnchored, StrokeLine, StrokeCurve, as Blender's space, dots, anchored, line and curve), a radius,
+//   a strength, curves of radius and of strength along the stroke (pressure: 'pressureCurve', 'rampCurve'),
+//   a falloff across the dab (sculpt's 'Falloff', so all of Blender's brush curves and a custom one), the
+//   inverted action ('subtract', Blender's Ctrl), mirror planes ('mirrorAcross'), a front-faces-only gate,
+//   a face-set limit, the mask ("mask" channel, sculpt's), an alpha (a stamp, 'Alpha', 'alphaFrom'), and
+//   whether the path is snapped to the surface. 'bezierPoints' and 'splinePoints' make paths.
+// - 'Sculptor' (sculptor.cone): applies strokes in order; 'sculptStroke' and 'sculptStrokes' are the one-shot
+//   forms; 'captureBase' is Blender's persistent base for Layer; 'StrokeReport' says when a stroke
+//   stretched the surface thin ('needsDensity': subdivide or remesh before going on).
+// - The brushes (kernels.cone), each a function of the dab to a displacement per vertex, as Blender's manual
+//   describes it (names as Blender's, ZBrush's in brackets):
+//     BrushDraw (Standard), BrushDrawSharp, BrushClay, BrushClayStrips (ClayBuildup), BrushLayer, BrushInflate
+//     (Inflat), BrushBlob, BrushCrease, BrushDam (Dam Standard), BrushSmooth (Laplacian, with a Taubin step
+//     back out), BrushPlane (Flatten, Fill, Scrape presets; Flatten inverted is Contrast; ZBrush Flatten and
+//     hPolish), BrushPinch (inverted: Magnify), BrushGrab (Move), BrushElastic (Elastic Deform: regularised
+//     biscale Kelvinlets), BrushSnakeHook (fixed topology), BrushThumb, BrushNudge, BrushRotate, BrushSlideRelax
+//     (Relax Slide), BrushPose (a segment turned about a pivot found automatically), BrushMask (paints the
+//     mask; subtract erases), BrushMoveTopological (ZBrush Move Topological: grab with weights by distance
+//     along the surface).
+// - Strokes in a shape's own coordinates (anatomy.cone): 'anatomyPoint' and 'anatomyHit' map (limb, along,
+//   around) of skinmesh's channels to a surface point; 'anatomyPath', 'alongPlaces', 'aroundPlaces' make a
+//   stroke's points from them, so the same recipe lands on the same anatomy when proportions change.
+//
+// Method choices worth knowing (each stated where it is made):
+// - The dab centre is snapped by the tangent plane at the nearest vertex (a hash over the stroke's start
+//   positions), not by a tree over the triangles, because a recipe of 200 strokes cannot afford a tree
+//   rebuilt after each one; and each dab lifts its centre by how far the vertex under it has moved since
+//   the stroke began, so a stroke goes on working on the surface it makes.
+// - Brushes follow Blender's manual for what they do; the amounts (how high a stroke builds) are tuned here,
+//   not taken from its source. Rotate's angle is given as tan(half angle) and Pose's turn is a normalised
+//   quaternion lerp, so that no kernel calls a trigonometric function: the only libm call in a stroke is
+//   what a falloff makes (FalloffGauss uses exp: avoid it in a recipe that must be exact).
+// - Layer without 'captureBase' raises from where each stroke began; with it, from the captured surface.
+//
+// Not built: dynamic topology (Snake Hook, Grab and Thumb stretch a fixed mesh: see 'needsDensity'),
+// radial symmetry, view-dependent gates (front faces are by the dab's normal, not a camera), Boundary,
+// Cloth, Multiplane Scrape, Elastic Snake Hook, scale and twist Kelvinlets.
+//
+// The algorithms are from the literature; parameters follow Blender's manual, never its source:
+// - regularised Kelvinlets: de Goes and James, "Regularized Kelvinlets: sculpting brushes based on
+//   fundamental solutions of elasticity", ACM Transactions on Graphics 36(4), 2017, and their biscale form;
+// - the fast-marching surface distance Pose and Move Topological use is sculpt's (select.cone).
+//
+// Files (one module; only this root imports):
+//
+//   stroke.cone     Brush, Alpha, SymPlane, Stroke, the curves, paths and dab spacing
+//   sculptor.cone   Sculptor: strokes to dabs, gathering a dab's vertices and their weights, the gates,
+//                   symmetry, grab and pose, the report
+//   kernels.cone    each brush's displacement, the relax step, the Kelvinlets
+//   anatomy.cone    strokes in (limb, along, around)
+
+mod sculptbrush;
+
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+import sculpt use *;

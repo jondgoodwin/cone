@@ -1,0 +1,984 @@
+// shots: pictures of the brushes, each one's before and after, on a sphere and on a skinmesh
+// creature, and a recipe of 30 strokes that muscles a skinmesh horse-like figure, drawn by
+// a small software renderer to PNG sheets in C:/src/sculptbrush-shots.
+//
+//   congo run --release packages/sculptbrush/examples/shots.cone
+//
+//   brushes-sphere-1..4.png    the 22 brushes (Pose and Move Topological excepted) on a sphere:
+//                              six to a sheet, in 2 columns of 3 cells, each cell a before (left)
+//                              and an after (right). The wire shows the topology, which a
+//                              tangential brush (pinch, slide relax, rotate) moves without
+//                              changing the light; amber tints the vertices that moved.
+//   brushes-figure-1..4.png    the same brushes on the creature's shoulder
+//   brush-pose.png             Pose: a foreleg turned about a pivot found at the elbow, the neck
+//                              raised; Mask: painted, then drawn over
+//   brush-topological.png      a grab and a move topological at the inner thigh of a hind leg, the
+//                              other leg beside it: the grab takes both
+//   horse-recipe.png           the 30 strokes: the figure's base, after every ten strokes and
+//                              at the end, from the side and in three quarters, then the stroke list
+//   horse-proportions.png      the same recipe on a stockier and a leaner base
+//
+// The order of the cells is printed. Exit status 0.
+
+mod shots;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import imagedecode use *;
+import fs;
+import path use Path as FilePath;
+import skinmesh use *;
+import sculpt use *;
+import sculptbrush use *;
+
+fn absf(a f32) f32 { if a < 0. {-a;} else {a;}; }
+fn imax(a i32, b i32) i32 { if a > b {a;} else {b;}; }
+fn imin(a i32, b i32) i32 { if a < b {a;} else {b;}; }
+fn fmin3(a f32, b f32, c f32) f32 { imm m = if a < b {a;} else {b;}; if m < c {m;} else {c;}; }
+fn fmax3(a f32, b f32, c f32) f32 { imm m = if a > b {a;} else {b;}; if m > c {m;} else {c;}; }
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+
+fn byteOf(v f32) u8 {
+  mut x = i32.from(v * 255. + 0.5);
+  if x < 0 { x = 0; }
+  if x > 255 { x = 255; }
+  u8.from(x);
+}
+
+fn copyPts(src &List[Vec3]) List[Vec3] {
+  mut out = List[Vec3].empty();
+  mut i = 0usize;
+  while i < src.len() { out.push(*src[i]); i = i + 1usize; }
+  out;
+}
+
+// ---------------------------------------------------------------- a canvas
+
+struct Canvas {
+  w i32;
+  h i32;
+  px List[u8];
+  zb List[f32];
+  cx0 i32;
+  cy0 i32;
+  cx1 i32;
+  cy1 i32;
+
+  fn make(w i32, h i32) Canvas {
+    mut c = new Canvas(w, h, List[u8].empty(), List[f32].empty(), 0, 0, w, h);
+    c.px.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    c.zb.resize(usize.from(w) * usize.from(h), -1000000.);
+    c;
+  }
+
+  fn tile(self &mut, x0 i32, y0 i32, x1 i32, y1 i32, bg Vec3) {
+    cx0 = x0; cy0 = y0; cx1 = x1; cy1 = y1;
+    mut y = y0;
+    while y < y1 {
+      mut x = x0;
+      while x < x1 {
+        self.setPixel(x, y, bg);
+        zb.set(usize.from(y * w + x), -1000000.);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn setPixel(self &mut, x i32, y i32, c Vec3) {
+    imm i = usize.from(y * w + x) * 4usize;
+    px.set(i, byteOf(c.x));
+    px.set(i + 1usize, byteOf(c.y));
+    px.set(i + 2usize, byteOf(c.z));
+  }
+
+  fn plot(self &mut, x i32, y i32, z f32, c Vec3) {
+    if x >= cx0 and x < cx1 and y >= cy0 and y < cy1 {
+      imm i = usize.from(y * w + x);
+      if z > *zb[i] {
+        zb.set(i, z);
+        self.setPixel(x, y, c);
+      }
+    }
+  }
+
+  // A triangle in screen space with a depth at each corner, a normal and a colour
+  fn shaded(self &mut, a Vec3, b Vec3, c Vec3, na Vec3, nb Vec3, nc Vec3, ca Vec3, cb Vec3, cc Vec3) {
+    imm minx = imax(cx0, i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    imm maxx = imin(cx1 - 1, i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    imm miny = imax(cy0, i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    imm maxy = imin(cy1 - 1, i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    imm den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if den > -0.0000001 and den < 0.0000001 { return; }
+    imm light = new Vec3(-0.45, 0.55, 0.70).normalize();
+    imm fill = new Vec3(0.7, -0.2, 0.4).normalize();
+    mut y = miny;
+    while y <= maxy {
+      mut x = minx;
+      while x <= maxx {
+        imm fx = f32.from(x) + 0.5;
+        imm fy = f32.from(y) + 0.5;
+        imm l0 = ((b.y - c.y) * (fx - c.x) + (c.x - b.x) * (fy - c.y)) / den;
+        imm l1 = ((c.y - a.y) * (fx - c.x) + (a.x - c.x) * (fy - c.y)) / den;
+        imm l2 = 1. - l0 - l1;
+        if l0 >= -0.0001 and l1 >= -0.0001 and l2 >= -0.0001 {
+          imm n = (na * l0 + nb * l1 + nc * l2).normalize();
+          imm col = ca * l0 + cb * l1 + cc * l2;
+          imm lam = fmax3(n.dot(light), 0., 0.);
+          imm lam2 = fmax3(n.dot(fill), 0., 0.);
+          self.plot(x, y, l0 * a.z + l1 * b.z + l2 * c.z, col * (0.26 + 0.72 * lam + 0.12 * lam2));
+        }
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn line(self &mut, a Vec3, b Vec3, col Vec3, bias f32) {
+    imm dx = b.x - a.x;
+    imm dy = b.y - a.y;
+    imm steps = i32.from(fmax3(absf(dx), absf(dy), 1.)) + 1;
+    mut i = 0;
+    while i <= steps {
+      imm t = f32.from(i) / f32.from(steps);
+      self.plot(i32.from(a.x + dx * t), i32.from(a.y + dy * t), a.z + (b.z - a.z) * t + bias, col);
+      i = i + 1;
+    }
+  }
+}
+
+// ---------------------------------------------------------------- the text
+
+// A 5 x 7 bitmap font for capitals, digits and a little punctuation, one row a byte (bit 4 the left pixel)
+fn glyph(ch u8) Array[u8, 7] {
+  if ch == 65u8 { return [14u8, 17u8, 17u8, 31u8, 17u8, 17u8, 17u8]; }
+  if ch == 66u8 { return [30u8, 17u8, 17u8, 30u8, 17u8, 17u8, 30u8]; }
+  if ch == 67u8 { return [14u8, 17u8, 16u8, 16u8, 16u8, 17u8, 14u8]; }
+  if ch == 68u8 { return [30u8, 17u8, 17u8, 17u8, 17u8, 17u8, 30u8]; }
+  if ch == 69u8 { return [31u8, 16u8, 16u8, 30u8, 16u8, 16u8, 31u8]; }
+  if ch == 70u8 { return [31u8, 16u8, 16u8, 30u8, 16u8, 16u8, 16u8]; }
+  if ch == 71u8 { return [14u8, 17u8, 16u8, 23u8, 17u8, 17u8, 15u8]; }
+  if ch == 72u8 { return [17u8, 17u8, 17u8, 31u8, 17u8, 17u8, 17u8]; }
+  if ch == 73u8 { return [14u8, 4u8, 4u8, 4u8, 4u8, 4u8, 14u8]; }
+  if ch == 74u8 { return [7u8, 2u8, 2u8, 2u8, 2u8, 18u8, 12u8]; }
+  if ch == 75u8 { return [17u8, 18u8, 20u8, 24u8, 20u8, 18u8, 17u8]; }
+  if ch == 76u8 { return [16u8, 16u8, 16u8, 16u8, 16u8, 16u8, 31u8]; }
+  if ch == 77u8 { return [17u8, 27u8, 21u8, 21u8, 17u8, 17u8, 17u8]; }
+  if ch == 78u8 { return [17u8, 25u8, 21u8, 19u8, 17u8, 17u8, 17u8]; }
+  if ch == 79u8 { return [14u8, 17u8, 17u8, 17u8, 17u8, 17u8, 14u8]; }
+  if ch == 80u8 { return [30u8, 17u8, 17u8, 30u8, 16u8, 16u8, 16u8]; }
+  if ch == 81u8 { return [14u8, 17u8, 17u8, 17u8, 21u8, 18u8, 13u8]; }
+  if ch == 82u8 { return [30u8, 17u8, 17u8, 30u8, 20u8, 18u8, 17u8]; }
+  if ch == 83u8 { return [15u8, 16u8, 16u8, 14u8, 1u8, 1u8, 30u8]; }
+  if ch == 84u8 { return [31u8, 4u8, 4u8, 4u8, 4u8, 4u8, 4u8]; }
+  if ch == 85u8 { return [17u8, 17u8, 17u8, 17u8, 17u8, 17u8, 14u8]; }
+  if ch == 86u8 { return [17u8, 17u8, 17u8, 17u8, 17u8, 10u8, 4u8]; }
+  if ch == 87u8 { return [17u8, 17u8, 17u8, 21u8, 21u8, 27u8, 17u8]; }
+  if ch == 88u8 { return [17u8, 17u8, 10u8, 4u8, 10u8, 17u8, 17u8]; }
+  if ch == 89u8 { return [17u8, 17u8, 10u8, 4u8, 4u8, 4u8, 4u8]; }
+  if ch == 90u8 { return [31u8, 1u8, 2u8, 4u8, 8u8, 16u8, 31u8]; }
+  if ch == 48u8 { return [14u8, 17u8, 19u8, 21u8, 25u8, 17u8, 14u8]; }
+  if ch == 49u8 { return [4u8, 12u8, 4u8, 4u8, 4u8, 4u8, 14u8]; }
+  if ch == 50u8 { return [14u8, 17u8, 1u8, 2u8, 4u8, 8u8, 31u8]; }
+  if ch == 51u8 { return [30u8, 1u8, 1u8, 14u8, 1u8, 1u8, 30u8]; }
+  if ch == 52u8 { return [2u8, 6u8, 10u8, 18u8, 31u8, 2u8, 2u8]; }
+  if ch == 53u8 { return [31u8, 16u8, 30u8, 1u8, 1u8, 17u8, 14u8]; }
+  if ch == 54u8 { return [6u8, 8u8, 16u8, 30u8, 17u8, 17u8, 14u8]; }
+  if ch == 55u8 { return [31u8, 1u8, 2u8, 4u8, 8u8, 8u8, 8u8]; }
+  if ch == 56u8 { return [14u8, 17u8, 17u8, 14u8, 17u8, 17u8, 14u8]; }
+  if ch == 57u8 { return [14u8, 17u8, 17u8, 15u8, 1u8, 2u8, 12u8]; }
+  if ch == 46u8 { return [0u8, 0u8, 0u8, 0u8, 0u8, 12u8, 12u8]; }
+  if ch == 45u8 { return [0u8, 0u8, 0u8, 31u8, 0u8, 0u8, 0u8]; }
+  if ch == 58u8 { return [0u8, 12u8, 12u8, 0u8, 12u8, 12u8, 0u8]; }
+  if ch == 47u8 { return [1u8, 1u8, 2u8, 4u8, 8u8, 16u8, 16u8]; }
+  if ch == 40u8 { return [2u8, 4u8, 8u8, 8u8, 8u8, 4u8, 2u8]; }
+  if ch == 41u8 { return [8u8, 4u8, 2u8, 2u8, 2u8, 4u8, 8u8]; }
+  if ch == 44u8 { return [0u8, 0u8, 0u8, 0u8, 12u8, 4u8, 8u8]; }
+  if ch == 43u8 { return [0u8, 4u8, 4u8, 31u8, 4u8, 4u8, 0u8]; }
+  if ch == 61u8 { return [0u8, 0u8, 31u8, 0u8, 31u8, 0u8, 0u8]; }
+  if ch == 37u8 { return [24u8, 25u8, 2u8, 4u8, 8u8, 19u8, 3u8]; }
+  [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+}
+
+fn drawText(cv &mut Canvas, x i32, y i32, text &str, scale i32, col Vec3) {
+  mut cx = x;
+  mut i = 0usize;
+  while i < text.len() {
+    mut ch = text[i];
+    if ch >= 97u8 and ch <= 122u8 { ch = ch - 32u8; }
+    imm g = glyph(ch);
+    mut r = 0;
+    while r < 7 {
+      imm bits = g[usize.from(r)];
+      mut c = 0;
+      while c < 5 {
+        if (bits & (1u8 << u8.from(4 - c))) != 0u8 {
+          mut sy = 0;
+          while sy < scale {
+            mut sx = 0;
+            while sx < scale {
+              imm px = cx + c * scale + sx;
+              imm py = y + r * scale + sy;
+              if px >= cv.cx0 and px < cv.cx1 and py >= cv.cy0 and py < cv.cy1 {
+                cv.setPixel(px, py, col);
+              }
+              sx = sx + 1;
+            }
+            sy = sy + 1;
+          }
+        }
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+    cx = cx + 6 * scale;
+    i = i + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------- the view
+
+// An orthographic camera looking at 'focus' from the direction 'eye' (a unit vector from the focus to the camera)
+struct View {
+  right Vec3;
+  up Vec3;
+  back Vec3;
+  focus Vec3;
+  scale f32;
+  cx f32;
+  cy f32;
+
+  fn look(focus Vec3, eye Vec3, upHint Vec3, scale f32, cx f32, cy f32) View {
+    imm back = eye.normalize();
+    mut r = upHint.cross(back);
+    if r.lengthSquared() < 0.0001 { r = v3(1., 0., 0.).cross(back); }
+    imm right = r.normalize();
+    imm up = back.cross(right);
+    new View(right, up, back, focus, scale, cx, cy);
+  }
+
+  fn project(self &, p Vec3) Vec3 {
+    imm d = p - focus;
+    new Vec3(cx + d.dot(right) * scale, cy - d.dot(up) * scale, d.dot(back) * scale);
+  }
+
+  fn rotate(self &, v Vec3) Vec3 { new Vec3(v.dot(right), v.dot(up), v.dot(back)); }
+}
+
+// Draw a mesh with a colour at each vertex (grey, or tinted where it moved), optionally the wire
+fn drawMesh(cv &mut Canvas, m &PolyMesh, cols &List[Vec3], view &View, wire bool) {
+  imm nrm = m.vertexNormals();
+  mut sp = List[Vec3].withCapacity(m.positions.len());
+  mut sn = List[Vec3].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    sp.push(view.project(*m.positions[v]));
+    sn.push(view.rotate(*nrm[v]));
+    v = v + 1usize;
+  }
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm vs = m.faceVertices(u32.from(f));
+    mut k = 1usize;
+    while k + 1usize < vs.len() {
+      imm a = usize.from(*vs[0usize]);
+      imm b = usize.from(*vs[k]);
+      imm c = usize.from(*vs[k + 1usize]);
+      imm pa = *sp[a];
+      imm pb = *sp[b];
+      imm pc = *sp[c];
+      // back faces are skipped
+      if (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x) < 0. {
+        cv.shaded(pa, pb, pc, *sn[a], *sn[b], *sn[c], *cols[a], *cols[b], *cols[c]);
+      }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  if wire {
+    f = 0usize;
+    while f < m.faceCount() {
+      imm vs = m.faceVertices(u32.from(f));
+      mut k = 0usize;
+      while k < vs.len() {
+        imm pa = *sp[usize.from(*vs[k])];
+        imm pb = *sp[usize.from(*vs[(k + 1usize) % vs.len()])];
+        imm pc = *sp[usize.from(*vs[(k + 2usize) % vs.len()])];
+        if (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x) < 0. {
+          cv.line(pa, pb, new Vec3(0.18, 0.18, 0.22), 0.4);
+        }
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+}
+
+// Grey for every vertex, amber for the vertices of 'after' that moved from 'before' (by how far, 0 to 1 of 'full')
+fn tints(before &PolyMesh, after &PolyMesh, full f32) List[Vec3] {
+  mut out = List[Vec3].withCapacity(before.positions.len());
+  mut v = 0usize;
+  while v < before.positions.len() {
+    imm d = (*after.positions[v] - *before.positions[v]).length();
+    imm t = if full > 0. {fmin3(d / full, 1., 1.);} else {0.;};
+    imm tt = if d > 0.0000001 {0.25 + 0.75 * t;} else {0.;};
+    out.push(new Vec3(0.74, 0.76, 0.80) * (1. - tt) + new Vec3(0.98, 0.62, 0.18) * tt);
+    v = v + 1usize;
+  }
+  out;
+}
+
+fn greys(m &PolyMesh) List[Vec3] {
+  mut out = List[Vec3].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() { out.push(new Vec3(0.74, 0.76, 0.80)); v = v + 1usize; }
+  out;
+}
+
+// ---------------------------------------------------------------- output
+
+fn save(cv &Canvas, name &str) {
+  mut r = Raster.empty();
+  r.width = cv.w;
+  r.height = cv.h;
+  r.depth = 8;
+  r.colorSpace = ColorSpace.Srgb;
+  mut i = 0usize;
+  while i < cv.px.len() { r.pixels8.push(*cv.px[i]); i = i + 1usize; }
+  imm png = encodePng(&r, 2);
+  mut full = String.from("C:/src/sculptbrush-shots/");
+  full.append(name);
+  imm op = FilePath.from(full.view());
+  fs.writeFile(&op, png.view());
+  printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
+}
+
+// ---------------------------------------------------------------- a pseudo-random sequence (a 31-bit LCG)
+
+struct Lcg {
+  s u64;
+
+  fn next(self &mut) f32 {
+    s = (s * 1103515245u64 + 12345u64) % 2147483648u64;
+    f32.from(u32.from(s >> 8u64)) / 8388608.;
+  }
+
+  fn signed(self &mut) f32 { self.next() * 2. - 1.; }
+}
+
+// ---------------------------------------------------------------- a brush on a place
+
+const NBrushes = 20;
+
+fn brushKind(i i32) u32 {
+  if i == 0 { BrushDraw; }
+  elif i == 1 { BrushDrawSharp; }
+  elif i == 2 { BrushClay; }
+  elif i == 3 { BrushClayStrips; }
+  elif i == 4 { BrushLayer; }
+  elif i == 5 { BrushInflate; }
+  elif i == 6 { BrushBlob; }
+  elif i == 7 { BrushCrease; }
+  elif i == 8 { BrushDam; }
+  elif i == 9 { BrushSmooth; }
+  elif i == 10 { BrushPlane; }
+  elif i == 11 { BrushPinch; }
+  elif i == 12 { BrushGrab; }
+  elif i == 13 { BrushElastic; }
+  elif i == 14 { BrushSnakeHook; }
+  elif i == 15 { BrushThumb; }
+  elif i == 16 { BrushNudge; }
+  elif i == 17 { BrushRotate; }
+  elif i == 18 { BrushSlideRelax; }
+  else { BrushMask; };
+}
+
+fn brushName(i i32) &str {
+  if i == 0 { "DRAW"; }
+  elif i == 1 { "DRAW SHARP"; }
+  elif i == 2 { "CLAY"; }
+  elif i == 3 { "CLAY STRIPS"; }
+  elif i == 4 { "LAYER"; }
+  elif i == 5 { "INFLATE"; }
+  elif i == 6 { "BLOB"; }
+  elif i == 7 { "CREASE"; }
+  elif i == 8 { "DAM STANDARD"; }
+  elif i == 9 { "SMOOTH"; }
+  elif i == 10 { "PLANE FLATTEN"; }
+  elif i == 11 { "PINCH"; }
+  elif i == 12 { "GRAB"; }
+  elif i == 13 { "ELASTIC DEFORM"; }
+  elif i == 14 { "SNAKE HOOK"; }
+  elif i == 15 { "THUMB"; }
+  elif i == 16 { "NUDGE"; }
+  elif i == 17 { "ROTATE"; }
+  elif i == 18 { "SLIDE RELAX"; }
+  else { "MASK THEN DRAW"; };
+}
+
+// A place on a surface where a brush is tried: the point, the way along the surface, the outward
+// normal, and the brush radius
+struct Spot {
+  c Vec3;
+  t Vec3;
+  n Vec3;
+  u f32;
+}
+
+fn along(s &Spot, k f32) Vec3 { s.c + s.t * (k * s.u); }
+
+// The strokes that show brush i at a spot (usually one)
+fn strokesFor(i i32, s &Spot) List[Stroke] {
+  mut out = List[Stroke].empty();
+  imm kind = brushKind(i);
+  mut pts = List[Vec3].empty();
+  mut radius = s.u;
+  mut strength = 1.;
+  if kind == BrushDraw or kind == BrushDrawSharp or kind == BrushClay or kind == BrushClayStrips
+      or kind == BrushInflate or kind == BrushBlob or kind == BrushCrease or kind == BrushDam { strength = 6.; }
+  if kind == BrushInflate or kind == BrushBlob or kind == BrushPinch or kind == BrushRotate or kind == BrushSmooth
+      or kind == BrushPlane or kind == BrushSlideRelax or kind == BrushMask {
+    pts.push(s.c);
+  } else {
+    pts.push(along(s, -1.2));
+    pts.push(along(s, 1.2));
+  }
+  mut b = Brush.of(kind);
+  if kind == BrushPlane { b.planeMode = PlaneFlatten; }
+  if kind == BrushRotate { b.angle = 0.5; }
+  if kind == BrushLayer { b.height = 0.3; }
+  if kind == BrushSmooth { b.iterations = 3u32; }
+  if kind == BrushSlideRelax { b.iterations = 3u32; }
+  if kind == BrushCrease or kind == BrushDam { radius = s.u * 0.8; }
+  if kind == BrushClayStrips { radius = s.u * 0.9; }
+  if kind == BrushLayer { strength = 1.; }
+  if kind == BrushGrab {
+    pts = List[Vec3].empty();
+    pts.push(s.c);
+    pts.push(s.c + s.n * (0.9 * s.u) + s.t * (0.3 * s.u));
+    radius = s.u * 1.3;
+  }
+  if kind == BrushElastic {
+    pts = List[Vec3].empty();
+    pts.push(s.c);
+    pts.push(s.c + s.n * (1.0 * s.u) + s.t * (0.3 * s.u));
+    radius = s.u * 0.9;
+  }
+  if kind == BrushSnakeHook {
+    pts = bezierPoints(s.c, s.c + s.n * (0.8 * s.u), s.c + s.n * (1.6 * s.u) + s.t * (0.4 * s.u),
+      s.c + s.n * (2.2 * s.u) + s.t * (1.2 * s.u), 14u32);
+    radius = s.u * 0.8;
+  }
+  mut st = Stroke.make(b, pts, radius, strength);
+  if kind == BrushSnakeHook { st.method = StrokeSpace; }
+  if kind == BrushDraw or kind == BrushDrawSharp or kind == BrushClay or kind == BrushLayer {
+    st.strengthCurve = pressureCurve(0.5);
+  }
+  if kind == BrushMask {
+    st.method = StrokeDots;
+    st.radius = s.u * 0.9;
+  }
+  out.push(st);
+  if kind == BrushMask {
+    // And a draw across it
+    mut dp = List[Vec3].empty();
+    dp.push(along(s, -1.4));
+    dp.push(along(s, 1.4));
+    mut dr = Stroke.make(Brush.of(BrushDraw), dp, s.u * 1.6, 1.);
+    dr.strength = 3.;
+    out.push(dr);
+  }
+  out;
+}
+
+// The mesh made lumpy near a spot (for the brushes that put things right), or bunched (slide relax)
+fn prepare(m &PolyMesh, i i32, s &Spot) PolyMesh {
+  imm kind = brushKind(i);
+  if kind == BrushSmooth or kind == BrushPlane or kind == BrushThumb {
+    mut rng = new Lcg(7u64);
+    mut sc = Sculptor.of(m);
+    imm bin = s.n.cross(s.t);
+    mut k = 0;
+    while k < 40 {
+      imm p = s.c + s.t * (rng.signed() * s.u * 1.2) + bin * (rng.signed() * s.u * 1.2);
+      mut st = Stroke.dab(Brush.of(BrushDraw), p, s.u * 0.22, 1.2);
+      st.subtract = rng.next() > 0.5;
+      sc.stroke(&st);
+      k = k + 1;
+    }
+    return sc.finish();
+  }
+  if kind == BrushSlideRelax {
+    mut b = Brush.of(BrushPinch);
+    b.pinch = 1.4;
+    mut sc = Sculptor.of(m);
+    sc.stroke(&Stroke.dab(b, s.c, s.u * 1.4, 1.));
+    sc.stroke(&Stroke.dab(b, s.c, s.u * 1.4, 1.));
+    return sc.finish();
+  }
+  smooth(m, 0., 0u32);
+}
+
+// ---------------------------------------------------------------- the sheets
+
+// A before and an after of brush i, in the cells' two tiles
+fn drawPair(cv &mut Canvas, base &PolyMesh, i i32, s &Spot, x0 i32, y0 i32, w i32, h i32, wire bool) {
+  imm before = prepare(base, i, s);
+  imm strokes = strokesFor(i, s);
+  mut sc = Sculptor.of(&before);
+  mut k = 0usize;
+  mut worst = false;
+  while k < strokes.len() {
+    imm rep = sc.stroke(&*strokes[k]);
+    if rep.needsDensity { worst = true; }
+    k = k + 1usize;
+  }
+  imm after = sc.finish();
+  // The camera: from the normal side, tilted so relief shows
+  imm up = if absf(s.n.y) > 0.9 {v3(0., 0., -1.);} else {v3(0., 1., 0.);};
+  imm eye = s.n * 0.55 + s.n.cross(s.t) * 0.8;
+  imm sc0 = f32.from(h) * 0.5 / (s.u * 3.6);
+  imm viewA = View.look(s.c, eye, up, sc0, f32.from(x0 + w / 2), f32.from(y0 + h / 2));
+  imm viewB = View.look(s.c, eye, up, sc0, f32.from(x0 + w + w / 2), f32.from(y0 + h / 2));
+  cv.tile(x0, y0, x0 + w, y0 + h, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(cv, &before, &greys(&before), &viewA, wire);
+  cv.tile(x0 + w, y0, x0 + 2 * w, y0 + h, new Vec3(0.97, 0.97, 0.95));
+  imm tint = tints(&before, &after, s.u * 0.12);
+  drawMesh(cv, &after, &tint, &viewB, wire);
+  // A hairline between and a mark under a brush that asks for more density
+  cv.cx0 = x0; cv.cy0 = y0; cv.cx1 = x0 + 2 * w; cv.cy1 = y0 + h;
+  mut yy = y0;
+  while yy < y0 + h {
+    cv.setPixel(x0 + w, yy, new Vec3(0.55, 0.55, 0.6));
+    yy = yy + 1;
+  }
+  if worst { drawText(cv, x0 + w + 8, y0 + h - 18, "NEEDS DENSITY", 2, new Vec3(0.8, 0.1, 0.1)); }
+  imm name = brushName(i);
+  drawText(cv, x0 + 8, y0 + 8, name, 3, new Vec3(0.15, 0.15, 0.2));
+}
+
+// The cell tile: 6 per sheet, 2 columns of 3
+fn sheet(base &PolyMesh, spot &Spot, first i32, name &str) {
+  mut cv = Canvas.make(2560, 1440);
+  cv.tile(0, 0, 2560, 1440, new Vec3(0.97, 0.97, 0.95));
+  mut cell = 0;
+  while cell < 6 and first + cell < NBrushes {
+    imm col = cell % 2;
+    imm row = cell / 2;
+    drawPair(&mut cv, base, first + cell, spot, col * 1280, row * 480, 640, 480, true);
+    printStr("  "); printStr(name); printStr(" cell ("); print <- col; printStr(", "); print <- row; printStr("): ");
+    printStr(brushName(first + cell)); printStr("\n");
+    cell = cell + 1;
+  }
+  save(&cv, name);
+}
+
+// ---------------------------------------------------------------- the horse
+
+fn horse(stock f32) SkinGraph {
+  mut g = SkinGraph.empty();
+  // skinmesh's four-legged creature, its trunk and neck widened by 'stock'
+  imm w = stock;
+  imm hips = g.addNode(v3(0., 0.62, -0.50), 0.09 * w, 0.10);
+  g.setRoot(hips);
+  imm mid = g.grow(hips, v3(0., 0.68, 0.), 0.17 * w, 0.15);
+  imm shoulders = g.grow(mid, v3(0., 0.68, 0.50), 0.10 * w, 0.11);
+  imm neck = g.grow(shoulders, v3(0., 0.82, 0.78), 0.09 * w, 0.09);
+  imm head = g.grow(neck, v3(0., 0.86, 0.98), 0.075 * w, 0.08);
+  g.grow(head, v3(0., 0.80, 1.18), 0.05 * w, 0.05);
+  imm tail1 = g.grow(hips, v3(0., 0.66, -0.80), 0.045, 0.045);
+  imm tail2 = g.grow(tail1, v3(0., 0.62, -1.05), 0.035, 0.035);
+  g.grow(tail2, v3(0., 0.74, -1.28), 0.02, 0.02);
+  mut side = -1.;
+  mut s = 0;
+  while s < 2 {
+    imm elbow = g.grow(shoulders, v3(side * 0.28, 0.36, 0.52), 0.06, 0.06);
+    imm wrist = g.grow(elbow, v3(side * 0.24, 0.13, 0.54), 0.04, 0.04);
+    g.grow(wrist, v3(side * 0.24, 0.03, 0.62), 0.045, 0.035);
+    imm knee = g.grow(hips, v3(side * 0.30, 0.34, -0.40), 0.07, 0.07);
+    imm hock = g.grow(knee, v3(side * 0.24, 0.18, -0.64), 0.04, 0.04);
+    g.grow(hock, v3(side * 0.24, 0.03, -0.54), 0.045, 0.035);
+    side = 1.;
+    s = s + 1;
+  }
+  g;
+}
+
+// The ring a node sits in: the limb number of the vertex nearest a point, and its place
+struct Probe {
+  limb f32;
+  along f32;
+  around f32;
+}
+
+fn probeAt(m &PolyMesh, p Vec3) Probe {
+  imm limbCh = m.findFloatChannel(VertexDomain, "limb");
+  imm alongCh = m.findFloatChannel(VertexDomain, "along");
+  imm aroundCh = m.findFloatChannel(VertexDomain, "around");
+  mut best = 0usize;
+  mut bd = 3.0e38;
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm d = (*m.positions[v] - p).lengthSquared();
+    if d < bd { bd = d; best = v; }
+    v = v + 1usize;
+  }
+  new Probe(f32.from(i32.from(m.float(limbCh, u32.from(best)) + 0.5)), m.float(alongCh, u32.from(best)), m.float(aroundCh, u32.from(best)));
+}
+
+// The surface point of the mesh nearest a point, and the vertex normal there
+fn surfaceAt(m &PolyMesh, p Vec3) Spot {
+  mut best = 0usize;
+  mut bd = 3.0e38;
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm d = (*m.positions[v] - p).lengthSquared();
+    if d < bd { bd = d; best = v; }
+    v = v + 1usize;
+  }
+  imm nr = m.vertexNormals();
+  new Spot(*m.positions[best], v3(0., 0., 1.), *nr[best], 0.1);
+}
+
+// The 'around' of a limb at an 'along' that faces a direction (the ring's point whose position
+// is farthest in the direction from the ring's middle)
+fn aroundFacing(m &PolyMesh, limb f32, a f32, dir Vec3) f32 {
+  mut best = 0.;
+  mut bd = -3.0e38;
+  mut k = 0;
+  while k < 40 {
+    imm r = f32.from(k) / 40.;
+    imm p = anatomyHit(m, limb, a, r);
+    if p.exact {
+      imm d = p.point.dot(dir);
+      if d > bd { bd = d; best = r; }
+    }
+    k = k + 1;
+  }
+  best;
+}
+
+// The anatomy of the figure: the limbs, found by where their middles are
+struct Anatomy {
+  body f32;
+  neck f32;
+  tail f32;
+  fore f32;      // the foreleg of the +x side
+  hind f32;      // the hind leg of the +x side
+  upX f32;       // body: around facing up
+  sideX f32;     // body: around facing +x
+  neckUp f32;
+  foreSide f32;  // foreleg: around facing +x
+  hindSide f32;
+  hindBack f32;
+  hindFront f32;
+  neckSide f32;
+  headLimbSide f32;
+}
+
+fn anatomyOf(m &PolyMesh, w f32) Anatomy {
+  imm body = probeAt(m, v3(0., 0.68, 0.1)).limb;
+  imm neck = probeAt(m, v3(0., 0.84, 0.88)).limb;
+  imm tail = probeAt(m, v3(0., 0.64, -0.92)).limb;
+  imm fore = probeAt(m, v3(0.26, 0.25, 0.53)).limb;
+  imm hind = probeAt(m, v3(0.27, 0.26, -0.52)).limb;
+  new Anatomy(body, neck, tail, fore, hind,
+    aroundFacing(m, body, 0.5, v3(0., 1., 0.)), aroundFacing(m, body, 0.5, v3(1., 0., 0.)),
+    aroundFacing(m, neck, 0.2, v3(0., 1., 0.)), aroundFacing(m, fore, 0.4, v3(1., 0., 0.)),
+    aroundFacing(m, hind, 0.4, v3(1., 0., 0.)), aroundFacing(m, hind, 0.4, v3(0., 0., -1.)),
+    aroundFacing(m, hind, 0.4, v3(0., 0., 1.)), aroundFacing(m, neck, 0.5, v3(1., 0., 0.)), 0.);
+}
+
+// One line of the recipe, for the list on the sheet
+struct Step {
+  stroke Stroke;
+  desc String;
+}
+
+fn num(x f32) String {
+  mut s = String.empty();
+  mut v = x;
+  if v < 0. { s.append("-"); v = -v; }
+  mut whole = i32.from(v);
+  mut frac = i32.from((v - f32.from(whole)) * 100. + 0.5);
+  if frac >= 100 { whole = whole + 1; frac = frac - 100; }
+  s.append(intText(whole).view());
+  s.append(".");
+  if frac < 10 { s.append("0"); }
+  s.append(intText(frac).view());
+  s;
+}
+
+fn digitStr(d i32) &str {
+  if d == 0 { "0"; } elif d == 1 { "1"; } elif d == 2 { "2"; } elif d == 3 { "3"; } elif d == 4 { "4"; }
+  elif d == 5 { "5"; } elif d == 6 { "6"; } elif d == 7 { "7"; } elif d == 8 { "8"; } else { "9"; };
+}
+
+fn intText(x i32) String {
+  mut s = String.empty();
+  if x == 0 { s.append("0"); return s; }
+  mut digits = List[i32].empty();
+  mut v = x;
+  if v < 0 { s.append("-"); v = -v; }
+  while v > 0 { digits.push(v % 10); v = v / 10; }
+  mut i = digits.len();
+  while i > 0usize {
+    i = i - 1usize;
+    s.append(digitStr(*digits[i]));
+  }
+  s;
+}
+
+fn step(name &str, kind u32, a &Anatomy, limb f32, a0 f32, a1 f32, r0 f32, r1 f32, radius f32, strength0 f32, mirror bool, subtract bool, m &PolyMesh) Step {
+  mut places = List[Vec3].empty();
+  places.push(new Vec3(limb, a0, r0));
+  if a1 != a0 or r1 != r0 { places.push(new Vec3(limb, a1, r1)); }
+  imm path = anatomyPath(m, &places);
+  imm strength = if kind == BrushSmooth {strength0;} else {strength0 * 5.;};
+  mut st = Stroke.make(Brush.of(kind), path, radius, strength);
+  st.subtract = subtract;
+  if mirror { st.mirrorAcross(v3(0., 0., 0.), v3(1., 0., 0.)); }
+  mut d = String.from(name);
+  d.append(" ");
+  d.append(kindName(kind));
+  if subtract { d.append(" INV"); }
+  d.append(" L");
+  d.append(intText(i32.from(limb + 0.5)).view());
+  d.append(" A");
+  d.append(num(a0).view());
+  if a1 != a0 { d.append("-"); d.append(num(a1).view()); }
+  d.append(" R");
+  d.append(num(r0).view());
+  if r1 != r0 { d.append("-"); d.append(num(r1).view()); }
+  d.append(" RAD");
+  d.append(num(radius).view());
+  d.append(" S");
+  d.append(num(strength).view());
+  if mirror { d.append(" X"); }
+  new Step(st, d);
+}
+
+fn kindName(kind u32) &str {
+  if kind == BrushInflate { "INFLATE"; }
+  elif kind == BrushBlob { "BLOB"; }
+  elif kind == BrushClay { "CLAY"; }
+  elif kind == BrushClayStrips { "STRIPS"; }
+  elif kind == BrushPinch { "PINCH"; }
+  elif kind == BrushDam { "DAM"; }
+  elif kind == BrushPlane { "PLANE"; }
+  elif kind == BrushCrease { "CREASE"; }
+  elif kind == BrushDraw { "DRAW"; }
+  elif kind == BrushSmooth { "SMOOTH"; }
+  else { "BRUSH"; };
+}
+
+// The recipe: 30 strokes in the animal's own coordinates, a scale of lengths in metres of the base
+fn recipe(m &PolyMesh, a &Anatomy) List[Step] {
+  mut out = List[Step].empty();
+  imm u = 0.6;      // scale: the creature's body is about 1 long
+  // Bulk first: the barrel and the chest, then the big muscle masses, then detail, then smoothing
+  out.push(step("RIBCAGE", BrushInflate, a, a.body, 0.30, 0.60, a.sideX, a.sideX, 0.30 * u, 1.0, true, false, m));
+  out.push(step("BARREL BELLY", BrushInflate, a, a.body, 0.35, 0.60, a.sideX + 0.25, a.sideX + 0.25, 0.22 * u, 0.7, true, false, m));
+  out.push(step("CHEST", BrushBlob, a, a.body, 0.97, 0.97, a.sideX, a.sideX, 0.20 * u, 1.0, true, false, m));
+  out.push(step("SHOULDER", BrushClayStrips, a, a.body, 0.78, 0.92, a.sideX, a.sideX, 0.22 * u, 1.0, true, false, m));
+  out.push(step("SHOULDER 2", BrushClayStrips, a, a.body, 0.70, 0.90, a.sideX - 0.06, a.sideX - 0.06, 0.18 * u, 0.8, true, false, m));
+  out.push(step("WITHERS", BrushClay, a, a.body, 0.88, 0.94, a.upX, a.upX, 0.12 * u, 0.9, false, false, m));
+  out.push(step("HAUNCH", BrushBlob, a, a.body, 0.06, 0.06, a.sideX, a.sideX, 0.28 * u, 1.2, true, false, m));
+  out.push(step("HAUNCH MASS", BrushClayStrips, a, a.body, 0.04, 0.22, a.sideX, a.sideX, 0.22 * u, 1.0, true, false, m));
+  out.push(step("RUMP TOP", BrushClay, a, a.body, 0.08, 0.20, a.upX, a.upX, 0.18 * u, 0.8, false, false, m));
+  out.push(step("THIGH", BrushClayStrips, a, a.hind, 0.05, 0.40, a.hindSide, a.hindSide, 0.16 * u, 1.0, true, false, m));
+  out.push(step("THIGH BACK", BrushClayStrips, a, a.hind, 0.08, 0.40, a.hindBack, a.hindBack, 0.14 * u, 0.9, true, false, m));
+  out.push(step("STIFLE", BrushBlob, a, a.hind, 0.12, 0.12, a.hindFront, a.hindFront, 0.10 * u, 0.9, true, false, m));
+  out.push(step("FOREARM", BrushClayStrips, a, a.fore, 0.10, 0.35, a.foreSide, a.foreSide, 0.09 * u, 1.0, true, false, m));
+  out.push(step("NECK BASE", BrushBlob, a, a.neck, 0.08, 0.08, a.neckSide, a.neckSide, 0.14 * u, 1.0, true, false, m));
+  out.push(step("NECK SIDE", BrushClayStrips, a, a.neck, 0.12, 0.55, a.neckSide, a.neckSide, 0.11 * u, 1.0, true, false, m));
+  out.push(step("NECK CREST", BrushClayStrips, a, a.neck, 0.15, 0.60, a.neckUp, a.neckUp, 0.08 * u, 1.0, false, false, m));
+  out.push(step("THROAT", BrushPinch, a, a.neck, 0.75, 0.75, a.neckUp + 0.5, a.neckUp + 0.5, 0.09 * u, 0.6, false, false, m));
+  out.push(step("JAW", BrushInflate, a, a.neck, 0.74, 0.86, a.neckSide, a.neckSide, 0.08 * u, 0.9, true, false, m));
+  out.push(step("CHEEK", BrushBlob, a, a.neck, 0.78, 0.78, a.neckSide, a.neckSide, 0.06 * u, 0.9, true, false, m));
+  out.push(step("BROW", BrushClay, a, a.neck, 0.83, 0.83, a.neckUp, a.neckUp, 0.05 * u, 0.9, false, false, m));
+  out.push(step("SPINE GROOVE", BrushDam, a, a.body, 0.12, 0.82, a.upX, a.upX, 0.05 * u, 0.7, false, false, m));
+  out.push(step("FLANK TUCK", BrushPlane, a, a.body, 0.14, 0.18, a.sideX + 0.22, a.sideX + 0.22, 0.12 * u, 0.8, true, false, m));
+  out.push(step("SHOULDER SEAM", BrushCrease, a, a.body, 0.68, 0.74, a.sideX + 0.05, a.sideX + 0.20, 0.05 * u, 0.8, true, false, m));
+  out.push(step("HAUNCH SEAM", BrushCrease, a, a.body, 0.22, 0.26, a.sideX - 0.05, a.sideX + 0.12, 0.05 * u, 0.8, true, false, m));
+  out.push(step("ELBOW", BrushBlob, a, a.fore, 0.04, 0.04, a.foreSide, a.foreSide, 0.06 * u, 0.9, true, false, m));
+  out.push(step("HOCK", BrushDraw, a, a.hind, 0.52, 0.55, a.hindBack, a.hindBack, 0.05 * u, 1.2, true, false, m));
+  out.push(step("TENDON", BrushDam, a, a.fore, 0.55, 0.85, a.foreSide + 0.5, a.foreSide + 0.5, 0.025 * u, 0.7, true, false, m));
+  out.push(step("TAIL DOCK", BrushInflate, a, a.tail, 0.05, 0.25, 0.0, 0.0, 0.08 * u, 0.8, false, false, m));
+  out.push(step("SMOOTH BODY", BrushSmooth, a, a.body, 0.10, 0.90, a.sideX, a.sideX, 0.20 * u, 0.5, true, false, m));
+  out.push(step("SMOOTH NECK", BrushSmooth, a, a.neck, 0.10, 0.60, a.neckSide, a.neckSide, 0.12 * u, 0.5, true, false, m));
+  out;
+}
+
+fn drawHorse(cv &mut Canvas, m &PolyMesh, x0 i32, y0 i32, w i32, h i32, yaw f32, scale f32) {
+  cv.tile(x0, y0, x0 + w, y0 + h, new Vec3(0.97, 0.97, 0.95));
+  imm eye = v3(libc.sinf(yaw), 0.18, libc.cosf(yaw));
+  imm view = View.look(v3(0., 0.5, -0.05), eye, v3(0., 1., 0.), scale, f32.from(x0 + w / 2), f32.from(y0 + h / 2));
+  drawMesh(cv, m, &greys(m), &view, false);
+}
+
+// The base after the first n steps
+fn applySteps(base &PolyMesh, steps &List[Step], n usize) PolyMesh {
+  mut sc = Sculptor.of(base);
+  mut i = 0usize;
+  while i < n and i < steps.len() {
+    sc.stroke(&(*steps[i]).stroke);
+    i = i + 1usize;
+  }
+  sc.finish();
+}
+
+fn horseBase(stock f32) PolyMesh {
+  imm g = horse(stock);
+  imm s0 = skinStandard(&g);
+  imm s3 = subdivideSkin(&s0, 3u32);
+  smooth(&s3.mesh, 0., 0u32);
+}
+
+fn pageBg(cv &mut Canvas) { cv.tile(0, 0, 2560, 1440, new Vec3(0.97, 0.97, 0.95)); }
+
+fn poseSheet(fig &PolyMesh) {
+  mut cv = Canvas.make(2560, 1440);
+  pageBg(&mut cv);
+  // Row 0: the +x foreleg dragged forward about its elbow; row 1: the head raised about the neck's base
+  mut b = Brush.of(BrushPose);
+  b.reach = 1.;
+  mut pl = List[Vec3].empty();
+  pl.push(v3(0.24, 0.06, 0.58));
+  pl.push(v3(0.24, 0.25, 0.85));
+  imm leg = sculptStroke(fig, &Stroke.make(b.copy(), pl, 0.42, 1.));
+  mut pn = List[Vec3].empty();
+  pn.push(v3(0., 0.82, 1.15));
+  pn.push(v3(0., 1.15, 1.0));
+  imm neck = sculptStroke(fig, &Stroke.make(b.copy(), pn, 0.5, 1.));
+  drawHorse(&mut cv, fig, 0, 0, 1280, 720, 1.2, 420.);
+  drawHorse(&mut cv, &leg, 1280, 0, 1280, 720, 1.2, 420.);
+  drawHorse(&mut cv, fig, 0, 720, 1280, 720, 1.5708, 420.);
+  drawHorse(&mut cv, &neck, 1280, 720, 1280, 720, 1.5708, 420.);
+  cv.cx0 = 0; cv.cy0 = 0; cv.cx1 = 2560; cv.cy1 = 1440;
+  drawText(&mut cv, 8, 8, "POSE: FORELEG ABOUT ITS FOUND PIVOT (BEFORE, AFTER)", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cv, 8, 728, "POSE: HEAD AND NECK RAISED (BEFORE, AFTER)", 3, new Vec3(0.15, 0.15, 0.2));
+  save(&cv, "brush-pose.png");
+}
+
+fn topoSheet(fig &PolyMesh) {
+  mut cv = Canvas.make(2560, 1440);
+  pageBg(&mut cv);
+  mut pts = List[Vec3].empty();
+  pts.push(v3(0.24, 0.36, -0.40));
+  pts.push(v3(0.50, 0.36, -0.40));
+  imm grab = sculptStroke(fig, &Stroke.make(Brush.of(BrushGrab), copyPts(&pts), 0.45, 1.));
+  imm topo = sculptStroke(fig, &Stroke.make(Brush.of(BrushMoveTopological), copyPts(&pts), 0.45, 1.));
+  // From behind, close on the hind legs
+  imm eye = v3(0., 0.15, -1.);
+  imm v0 = View.look(v3(0., 0.4, -0.5), eye, v3(0., 1., 0.), 900., 427., 720.);
+  imm v1 = View.look(v3(0., 0.4, -0.5), eye, v3(0., 1., 0.), 900., 1280., 720.);
+  imm v2 = View.look(v3(0., 0.4, -0.5), eye, v3(0., 1., 0.), 900., 2133., 720.);
+  cv.tile(0, 0, 853, 1440, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(&mut cv, fig, &greys(fig), &v0, true);
+  cv.tile(853, 0, 1706, 1440, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(&mut cv, &grab, &tints(fig, &grab, 0.05), &v1, true);
+  cv.tile(1706, 0, 2560, 1440, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(&mut cv, &topo, &tints(fig, &topo, 0.05), &v2, true);
+  cv.cx0 = 0; cv.cy0 = 0; cv.cx1 = 2560; cv.cy1 = 1440;
+  drawText(&mut cv, 8, 8, "BEFORE", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cv, 861, 8, "GRAB: BOTH LEGS FOLLOW", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cv, 1714, 8, "MOVE TOPOLOGICAL: ONE LEG", 3, new Vec3(0.15, 0.15, 0.2));
+  save(&cv, "brush-topological.png");
+}
+
+// ---------------------------------------------------------------- main
+
+fn main() i32 {
+  imm dir = FilePath.from("C:/src/sculptbrush-shots");
+  fs.makeDirAll(&dir);
+  // The sphere
+  imm cube = PolyMesh.cube(1.);
+  imm rough = subdivide(&cube, 5u32);
+  imm ball = deform(&rough, p => p.normalize() * 0.8);
+  printStr("sphere: "); print <- ball.vertexCount(); printStr(" vertices\n");
+  imm sphereSpot = new Spot(v3(0., 0.8, 0.), v3(1., 0., 0.), v3(0., 1., 0.), 0.17);
+  printStr("brushes on the sphere\n");
+  sheet(&ball, &sphereSpot, 0, "brushes-sphere-1.png");
+  sheet(&ball, &sphereSpot, 6, "brushes-sphere-2.png");
+  sheet(&ball, &sphereSpot, 12, "brushes-sphere-3.png");
+  sheet(&ball, &sphereSpot, 18, "brushes-sphere-4.png");
+  // The figure
+  imm g = horse(1.);
+  imm skin0 = skinStandard(&g);
+  imm skin3 = subdivideSkin(&skin0, 3u32);
+  imm fig = smooth(&skin3.mesh, 0., 0u32);
+  printStr("horse base: "); print <- fig.vertexCount(); printStr(" vertices, "); print <- skin0.problems.len(); printStr(" problems\n");
+  mut shoulder = surfaceAt(&fig, v3(0.20, 0.68, 0.45));
+  shoulder.t = v3(0., 0., 1.);
+  shoulder.n = v3(1., 0., 0.);
+  shoulder.u = 0.09;
+  printStr("brushes on the horse\n");
+  sheet(&fig, &shoulder, 0, "brushes-figure-1.png");
+  sheet(&fig, &shoulder, 6, "brushes-figure-2.png");
+  sheet(&fig, &shoulder, 12, "brushes-figure-3.png");
+  sheet(&fig, &shoulder, 18, "brushes-figure-4.png");
+  poseSheet(&fig);
+  topoSheet(&fig);
+  // The recipe
+  imm base = horseBase(1.);
+  imm an = anatomyOf(&base, 1.);
+  printStr("limbs: body "); print <- an.body; printStr(" neck "); print <- an.neck; printStr(" tail "); print <- an.tail;
+  printStr(" fore "); print <- an.fore; printStr(" hind "); print <- an.hind; printStr("\n");
+  imm steps = recipe(&base, &an);
+  printStr("recipe: "); print <- steps.len(); printStr(" strokes\n");
+  mut si = 0usize;
+  while si < steps.len() { printStr("  "); printStr((*steps[si]).desc.view()); printStr("\n"); si = si + 1usize; }
+  imm s10 = applySteps(&base, &steps, 10usize);
+  imm s20 = applySteps(&base, &steps, 20usize);
+  imm s30 = applySteps(&base, &steps, 30usize);
+  mut cv = Canvas.make(2560, 1440);
+  pageBg(&mut cv);
+  drawHorse(&mut cv, &base, 0, 0, 850, 720, 1.5708, 330.);
+  drawHorse(&mut cv, &base, 850, 0, 850, 720, 0.9, 330.);
+  drawHorse(&mut cv, &s30, 0, 720, 850, 720, 1.5708, 330.);
+  drawHorse(&mut cv, &s30, 850, 720, 850, 720, 0.9, 330.);
+  cv.cx0 = 0; cv.cy0 = 0; cv.cx1 = 2560; cv.cy1 = 1440;
+  drawText(&mut cv, 8, 8, "BASE", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cv, 8, 728, "AFTER 30 STROKES", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cv, 1710, 8, "RECIPE: NAME BRUSH LIMB ALONG AROUND RADIUS STRENGTH X=MIRRORED", 2, new Vec3(0.15, 0.15, 0.2));
+  si = 0usize;
+  while si < steps.len() {
+    drawText(&mut cv, 1710, 40 + i32.from(si) * 22, (*steps[si]).desc.view(), 2, new Vec3(0.2, 0.2, 0.25));
+    si = si + 1usize;
+  }
+  save(&cv, "horse-recipe.png");
+  mut cs = Canvas.make(2560, 1440);
+  pageBg(&mut cs);
+  drawHorse(&mut cs, &base, 0, 0, 1280, 720, 1.5708, 480.);
+  drawHorse(&mut cs, &s10, 1280, 0, 1280, 720, 1.5708, 480.);
+  drawHorse(&mut cs, &s20, 0, 720, 1280, 720, 1.5708, 480.);
+  drawHorse(&mut cs, &s30, 1280, 720, 1280, 720, 1.5708, 480.);
+  cs.cx0 = 0; cs.cy0 = 0; cs.cx1 = 2560; cs.cy1 = 1440;
+  drawText(&mut cs, 8, 8, "BASE", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cs, 1288, 8, "AFTER 10 STROKES", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cs, 8, 728, "AFTER 20", 3, new Vec3(0.15, 0.15, 0.2));
+  drawText(&mut cs, 1288, 728, "AFTER 30", 3, new Vec3(0.15, 0.15, 0.2));
+  save(&cs, "horse-stages.png");
+  // The same recipe on other proportions
+  mut cp = Canvas.make(2560, 1440);
+  pageBg(&mut cp);
+  mut col = 0;
+  while col < 3 {
+    imm stock = if col == 0 {0.8;} elif col == 1 {1.;} else {1.3;};
+    imm b2 = horseBase(stock);
+    imm a2 = anatomyOf(&b2, stock);
+    imm st2 = recipe(&b2, &a2);
+    imm f2 = applySteps(&b2, &st2, 30usize);
+    drawHorse(&mut cp, &b2, col * 853, 0, 853, 720, 0.6, 300.);
+    drawHorse(&mut cp, &f2, col * 853, 720, 853, 720, 0.6, 300.);
+    col = col + 1;
+  }
+  cp.cx0 = 0; cp.cy0 = 0; cp.cx1 = 2560; cp.cy1 = 1440;
+  drawText(&mut cp, 8, 8, "SLIM / NORMAL / STOCKY BASE (TOP) AND THE SAME 30 STROKES (BOTTOM)", 2, new Vec3(0.15, 0.15, 0.2));
+  save(&cp, "horse-proportions.png");
+  0;
+}
