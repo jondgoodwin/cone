@@ -1,0 +1,347 @@
+// ======== Multiresolution: subdivision levels that keep their detail ========
+//
+// As Blender's Multiresolution modifier and ZBrush's subdivision levels: a
+// base mesh (level 0) and n levels of Catmull-Clark subdivision above it,
+// each level's detail kept as displacements from the level below, so a
+// sculpt at a high level and a reshape of the base are both kept. A Multires
+// holds, for each level, the evaluated mesh (its topology, channels and
+// positions) and, for each level above the base, its detail.
+//
+// What a level is made of. Level k's reference surface is the subdivision of
+// level k-1's positions (the smooth surface the level below promises); a
+// vertex of level k is its reference point plus its detail:
+//     P_k[v] = R_k[v] + t[v] c[v].x + b[v] c[v].y + n[v] c[v].z
+// where R_k is 'refPositions' of level k-1, (t, b, n) is a frame at the
+// reference point and c the stored detail, three numbers. The frame is
+// worked out on the reference surface alone (n the vertex's normal there,
+// angle-weighted over its faces; t the direction of its first edge, with n's
+// part taken out; b = n x t), so it depends on the level below and nothing
+// else, and detail rides along: reshape or pose a lower level and every
+// level above is rebuilt from its own detail in the new frames, a bump on a
+// bent arm still standing out from the new arm. (Blender stores each level's
+// displacement in the tangent space of the subdivided surface and so does
+// this; the frame here is the subdivided level's normal, not the limit
+// surface's, which the next level's reference converges to.)
+//
+// Numbering is subdivide's: level k's vertices 0 to V-1, those of level
+// k-1, are the same points, so a vertex of the base is a vertex of every
+// level, then the edge points, then the face points. A level's mesh is the
+// subdivision of the level below with positions as above, and every channel
+// is carried by subdivision's rules (a crease wears down a level a time).
+//
+// Operations (each named for what Blender or ZBrush calls it):
+// - 'Multires.fromMesh': a base with no levels yet; 'addLevel' (Blender's
+//   Subdivide, ZBrush's Divide): one more level, detail zero, so the surface
+//   is the smooth subdivision;
+// - 'fromDense' (ZBrush's Reconstruct Subdiv, Blender's Rebuild Subdivisions):
+//   a dense mesh whose topology is the subdivision of a simpler one, taken
+//   back to a base and levels, the base and each lower level the least
+//   squares fit of the level above (see multiresrebuild.cone); the top level
+//   is the dense mesh itself, exactly;
+// - 'evaluate' (any level's mesh), 'apply' (the top level as a plain
+//   PolyMesh, Blender's Apply);
+// - 'editLevel': a level given new positions; the detail below it is kept
+//   and the detail at it is what the new positions leave, so an edit at a
+//   high level is stored as detail, and an edit at a low level (the base
+//   included, 'setBase') moves every level above it, smoothly, by their
+//   detail in the new frames;
+// - 'deleteHigher' (Blender's Delete Higher, ZBrush's Del Higher), 'deleteLower'
+//   (ZBrush's Del Lower: a level becomes the base, the levels above are
+//   kept exactly as they were); 'bakeDown' (as Blender's Apply Base: each
+//   lower level takes the shape of the top, its vertices being the top's, and
+//   the detail is rewritten so that no level above changes);
+// - 'displacement': the offset between two levels as vertex channels on the
+//   upper level's mesh, for a later normal-map or displacement-map baker;
+// - storage: 'levelBytes', 'packLevel', 'unpackLevel' and 'quantize': a
+//   level's detail as float32, or as signed integers of 8 or 16 bits with one
+//   scale per component, the candidate format for sending sculpted detail
+//   (see multresstore.cone).
+//
+// Sharp creases, boundaries and face-varying data follow 'subdivide' with the
+// boundary and face-varying rules the Multires was made with (subdivide's
+// defaults for 'fromMesh').
+
+pub struct Multires {
+  pub levels List[PolyMesh];      // levels[k]: level k as evaluated; levels[0] is the base
+  pub detail List[List[Vec3]];    // detail[k-1]: level k's, per vertex, (t, b, n) coefficients
+  pub boundary u32;
+  pub fvar u32;
+
+  // A base and no levels above it, with subdivide's defaults
+  pub fn fromMesh(base &PolyMesh) Multires {
+    Multires.fromMeshWith(base, BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+  }
+
+  // The same, with the boundary rule (BoundaryEdgeOnly or BoundaryEdgeAndCorner) and the
+  // face-varying rule (FvarLinearNone to FvarLinearAll) given
+  pub fn fromMeshWith(base &PolyMesh, boundary u32, fvar u32) Multires {
+    mut ls = List[PolyMesh].empty();
+    ls.push(copyPolyMesh(base));
+    new Multires(ls, List[List[Vec3]].empty(), boundary, fvar);
+  }
+
+  // How many levels there are above the base
+  pub fn levelCount(self &) u32 {u32.from(detail.len());}
+
+  // Level k's mesh, a copy; the top level for a k past it
+  pub fn evaluate(self &, level u32) PolyMesh {
+    mut k = usize.from(level);
+    if k >= levels.len() { k = levels.len() - 1usize; }
+    copyPolyMesh(levels[k]);
+  }
+
+  // The top level as a plain PolyMesh (Blender's Apply)
+  pub fn apply(self &) PolyMesh {copyPolyMesh(levels[levels.len() - 1usize]);}
+
+  // One more level, by Catmull-Clark of the top, its detail zero
+  pub fn addLevel(self &mut) {
+    imm child = subdivideOnce(levels[levels.len() - 1usize], boundary, fvar);
+    mut zero = List[Vec3].withCapacity(child.positions.len());
+    mut i = 0usize;
+    while i < child.positions.len() {
+      zero.push(new Vec3(0., 0., 0.));
+      i = i + 1usize;
+    }
+    levels.push(child);
+    detail.push(zero);
+  }
+
+  // Level 'level' given new positions (one per vertex, a list of the level's
+  // length; the call is ignored otherwise). The levels below do not change;
+  // the detail at this level becomes what the positions leave, and each
+  // level above is rebuilt from its own detail, so an edit at the base moves
+  // the whole figure and an edit at the top is detail only.
+  pub fn editLevel(self &mut, level u32, positions &List[Vec3]) {
+    imm k = usize.from(level);
+    if k >= levels.len() or positions.len() != levels[k].positions.len() { return; }
+    if k > 0usize {
+      imm ref = refPositions(levels[k - 1usize], boundary);
+      setPositions(&mut levels[k], &ref);
+      imm fr = smoothFrames(levels[k]);
+      detail.set(k - 1usize, detailOf(&fr, &ref, positions));
+    }
+    setPositions(&mut levels[k], positions);
+    self.reevaluate(k);
+  }
+
+  // The base given new positions (Blender's moving the cage in edit mode)
+  pub fn setBase(self &mut, positions &List[Vec3]) {self.editLevel(0u32, positions);}
+
+  // Levels above 'level' dropped (Blender's Delete Higher)
+  pub fn deleteHigher(self &mut, level u32) {
+    imm k = usize.from(level);
+    if k + 1usize >= levels.len() { return; }
+    levels.truncate(k + 1usize);
+    detail.truncate(k);
+  }
+
+  // Levels below 'level' dropped, that level the new base; the levels above
+  // are exactly as they were, since each is made from the level below's
+  // positions and its own detail (ZBrush's Del Lower)
+  pub fn deleteLower(self &mut, level u32) {
+    imm k = usize.from(level);
+    if k == 0usize or k >= levels.len() { return; }
+    mut nl = List[PolyMesh].withCapacity(levels.len() - k);
+    mut nd = List[List[Vec3]].withCapacity(levels.len() - k);
+    mut i = k;
+    while i < levels.len() {
+      nl.push(copyPolyMesh(levels[i]));
+      if i > k { nd.push(copyList[Vec3](detail[i - 1usize])); }
+      i = i + 1usize;
+    }
+    levels = nl;
+    detail = nd;
+  }
+
+  // Every lower level takes the shape of the top (as Blender's Apply Base,
+  // which moves the base to the sculpted surface): level k's vertices are
+  // the top's first V_k, and the detail is rewritten so that no level above
+  // changes. Afterwards each level is a coarser view of the top's own
+  // vertices, and its detail is what its subdivision lacks.
+  pub fn bakeDown(self &mut) {
+    imm top = levels.len() - 1usize;
+    if top == 0usize { return; }
+    imm target = copyList[Vec3](&levels[top].positions);
+    mut k = 0usize;
+    while k < top {
+      mut p = 0usize;
+      imm count = levels[k].positions.len();
+      while p < count {
+        levels[k].positions.set(p, *target[p]);
+        p = p + 1usize;
+      }
+      k = k + 1usize;
+    }
+    k = 1usize;
+    while k <= top {
+      imm count = levels[k].positions.len();
+      mut want = List[Vec3].withCapacity(count);
+      mut p = 0usize;
+      while p < count {
+        want.push(*target[p]);
+        p = p + 1usize;
+      }
+      imm ref = refPositions(levels[k - 1usize], boundary);
+      setPositions(&mut levels[k], &ref);
+      imm fr = smoothFrames(levels[k]);
+      detail.set(k - 1usize, detailOf(&fr, &ref, &want));
+      setPositions(&mut levels[k], &want);
+      k = k + 1usize;
+    }
+  }
+
+  // Every level above 'from' rebuilt from the one below it and its detail
+  pub fn reevaluate(self &mut, from usize) {
+    mut k = from + 1usize;
+    while k < levels.len() {
+      imm ref = refPositions(levels[k - 1usize], boundary);
+      setPositions(&mut levels[k], &ref);
+      imm fr = smoothFrames(levels[k]);
+      addDetail(&mut levels[k], &fr, detail[k - 1usize]);
+      k = k + 1usize;
+    }
+  }
+
+  // The offset of level 'hi' from the surface level 'lo' promises there (the
+  // subdivision of 'lo', hi - lo times, no detail added): level hi's mesh
+  // with three vertex channels, the world-space offset "displacement"
+  // (Vec3), the same in the reference surface's frame "displacement_tangent"
+  // (x along t, y along b, z along the normal), and "height" (f32), the
+  // distance along the reference normal: Multires's compact form of a
+  // normal or displacement map, as a baker would sample it. For hi = lo + 1
+  // the displacement_tangent is the stored detail.
+  pub fn displacement(self &, lo u32, hi u32) PolyMesh {
+    imm top = levels.len() - 1usize;
+    mut h = usize.from(hi);
+    if h > top { h = top; }
+    mut l = usize.from(lo);
+    if l > h { l = h; }
+    mut cur = copyList[Vec3](&levels[l].positions);
+    mut k = l + 1usize;
+    mut fr = smoothFrames(levels[h]);
+    while k <= h {
+      mut tmp = copyPolyMesh(levels[k - 1usize]);
+      setPositions(&mut tmp, &cur);
+      cur = refPositions(&tmp, boundary);
+      k = k + 1usize;
+    }
+    mut out = copyPolyMesh(levels[h]);
+    if h > l {
+      setPositions(&mut out, &cur);
+      fr = smoothFrames(&out);
+      setPositions(&mut out, &levels[h].positions);
+    }
+    imm n = levels[h].positions.len();
+    imm world = out.addVec3Channel(VertexDomain, "displacement", new Vec3(0., 0., 0.));
+    imm tang = out.addVec3Channel(VertexDomain, "displacement_tangent", new Vec3(0., 0., 0.));
+    imm height = out.addFloatChannel(VertexDomain, "height", 0.);
+    mut v = 0usize;
+    while v < n {
+      imm d = *levels[h].positions[v] - *cur[v];
+      imm nv = *fr.n[v];
+      imm tv = *fr.t[v];
+      imm bv = nv.cross(tv);
+      out.setVec3(world, u32.from(v), d);
+      out.setVec3(tang,u32.from(v), new Vec3(d.dot(tv), d.dot(bv), d.dot(nv)));
+      out.setFloat(height, u32.from(v), d.dot(nv));
+      v = v + 1usize;
+    }
+    out;
+  }
+}
+
+// The positions a mesh's Catmull-Clark subdivision gives its vertices, edge
+// points and face points, in subdivide's numbering, with no topology made
+fn refPositions(m &PolyMesh, boundary u32) List[Vec3] {
+  imm sh = sharpnessOf(m);
+  refineVertexData(m, &m.positions, boundary, &sh.e, &sh.v);
+}
+
+// A mesh's vertices put at the given positions
+fn setPositions(m &mut PolyMesh, p &List[Vec3]) {
+  mut i = 0usize;
+  while i < p.len() {
+    m.positions.set(i, *p[i]);
+    i = i + 1usize;
+  }
+}
+
+// A frame at each vertex: n its unit normal, t a unit tangent
+struct Frames {
+  n List[Vec3];
+  t List[Vec3];
+}
+
+// The frames of a mesh: each vertex's normal (angle-weighted over its faces),
+// and the tangent along its first edge that does not lie along the normal,
+// with the normal's part taken out. A vertex with no faces gets y up. The
+// frame is a function of the mesh's connectivity and positions alone.
+fn smoothFrames(m &PolyMesh) Frames {
+  imm nrm = m.vertexNormals();
+  imm nv = m.positions.len();
+  mut ns = List[Vec3].withCapacity(nv);
+  mut ts = List[Vec3].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    mut n = *nrm[v];
+    if n.lengthSquared() <= 0. { n = new Vec3(0., 1., 0.); }
+    imm own = *m.positions[v];
+    mut t = new Vec3(0., 0., 0.);
+    imm h0 = *m.vHalfedge[v];
+    if h0 != NoIndex {
+      mut h = h0;
+      mut going = true;
+      mut tries = 0usize;
+      while going {
+        imm e = *m.positions[usize.from(*m.hVertex[usize.from(h)])] - own;
+        imm cand = e - n * e.dot(n);
+        if cand.lengthSquared() > 0.0001 * e.lengthSquared() and cand.lengthSquared() > 0. {
+          t = unit(cand);
+          going = false;
+        } else {
+          h = m.twin(m.prev(h));
+          tries = tries + 1usize;
+          going = h != h0 and tries < 64usize;
+        }
+      }
+    }
+    if t.lengthSquared() <= 0. {
+      // No edge helps: the axis least along the normal
+      imm ax = if absf(n.x) < 0.6 {new Vec3(1., 0., 0.);} else {new Vec3(0., 1., 0.);};
+      t = unit(ax - n * ax.dot(n));
+    }
+    ns.push(n);
+    ts.push(t);
+    v = v + 1usize;
+  }
+  new Frames(ns, ts);
+}
+
+// The detail of positions p against a reference ref, in frames fr: each
+// vertex's offset as (t, b, n) coefficients
+fn detailOf(fr &Frames, ref &List[Vec3], p &List[Vec3]) List[Vec3] {
+  mut out = List[Vec3].withCapacity(p.len());
+  mut v = 0usize;
+  while v < p.len() {
+    imm d = *p[v] - *ref[v];
+    imm n = *fr.n[v];
+    imm t = *fr.t[v];
+    imm b = n.cross(t);
+    out.push(new Vec3(d.dot(t), d.dot(b), d.dot(n)));
+    v = v + 1usize;
+  }
+  out;
+}
+
+// A mesh at its reference positions moved by detail c in the frames fr
+fn addDetail(m &mut PolyMesh, fr &Frames, c &List[Vec3]) {
+  mut v = 0usize;
+  while v < c.len() {
+    imm n = *fr.n[v];
+    imm t = *fr.t[v];
+    imm b = n.cross(t);
+    imm k = *c[v];
+    m.positions.set(v, *m.positions[v] + t * k.x + b * k.y + n * k.z);
+    v = v + 1usize;
+  }
+}
