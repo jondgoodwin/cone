@@ -238,6 +238,48 @@ pub fn weldSeamNormals(mesh &mut Mesh, ring &List[u32], bottom &List[u32]) {
   while i < bottom.len() { mesh.normals.set(usize.from(*bottom[i]), *fromBottom[i]); i = i + 1usize; }
 }
 
+// The shoulders' caps: the arm grows from a patch of the trunk's side, and where the arm's vertices (projected on the
+// deltoid) meet the trunk's (on the trapezius and the acromion) the cap turns a corner; a person whose blends widen the
+// deltoid over a slim arm (the tall slim man) wore it as a square epaulette, and a shirt made from the body follows it.
+// A few passes of Taubin's smoothing (lambda then mu, so the cap keeps its size) within a hand's breadth of each
+// shoulder joint round the corner off.
+fn smoothShoulders(s &mut BodySurface, models &List[Transform3]) {
+  imm n = s.positions.len();
+  imm a = (*models[UPPER_ARM_L]).translation;
+  imm b = (*models[UPPER_ARM_R]).translation;
+  mut wt = List[f32].empty();
+  mut i = 0usize;
+  while i < n {
+    imm p = *s.positions[i];
+    imm d = minf((p - a).length(), (p - b).length());
+    // (down to the armpit, where the arm's first ring folds against the trunk's side)
+    wt.push(1. - smoothstep(0.07, 0.14, d));
+    i = i + 1usize;
+  }
+  mut pass = 0;
+  while pass < 16 {
+    imm lam = if pass % 2 == 0 { 0.5; } else { -0.53; };
+    mut next = List[Vec3].empty();
+    i = 0usize;
+    while i < n {
+      imm p = *s.positions[i];
+      imm lo = usize.from(*s.nbrStart[i]);
+      imm hi = usize.from(*s.nbrStart[i + 1usize]);
+      if *wt[i] > 0. and hi > lo {
+        mut sum = new Vec3(0., 0., 0.);
+        mut k = lo;
+        while k < hi { sum = sum + *s.positions[usize.from(*s.nbr[k])]; k = k + 1usize; }
+        next.push(p + (sum * (1. / f32.from(hi - lo)) - p) * (lam * *wt[i]));
+      } else {
+        next.push(p);
+      }
+      i = i + 1usize;
+    }
+    s.positions = next;
+    pass = pass + 1;
+  }
+}
+
 // The body of measures 'm' sculpted with 'gains': the surface, the head stitched on, the weights and uvs
 // The neck's join: the head's neck and the body's neck and trapezius are separate forms that meet at the seam ring
 // with different slopes, a ring-shaped step however well the ring itself matches. A band 'reach' above and below the
@@ -321,6 +363,7 @@ pub fn assembleBody(m &Measures, gains &List[f32], levels u32) Body {
   mut s = subdivideCage(&cage, levels);
   imm forms = bodyForms(m, &models, gains);
   projectSurface(&mut s, &forms, 3);
+  smoothShoulders(&mut s, &models);
   imm seamY = seamHeight(m);
   imm head = buildHead(m, seamY);
   imm nb = s.positions.len();

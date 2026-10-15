@@ -107,8 +107,9 @@ fn outfitSpecs(p &Person, models &List[Transform3], out &mut List[ShellSpec], co
   below(&mut shirt, seamY - 0.010);
   // over trousers the shirt is tucked in below their waistband; with a skirt it ends just inside the skirt's top, so
   // its hem is the skirt's waist, not a line where the shirt and the skirt's cone cross
-  imm tucked = if p.outfit == OUTFIT_SHIRT_SKIRT { (m.waistAt - 0.015) * h; } else { (m.crotchAt + 0.045) * h; };
-  above(&mut shirt, tucked);
+  // (a cut is a plane across the whole body, so this one is low enough to leave the sleeves to the wrists; the shirt's
+  // body is trimmed higher, inside the waistband or the skirt's top, by 'tuckOf' after it is made)
+  above(&mut shirt, (m.crotchAt + 0.045) * h);
   imm topColor = if p.outfit == OUTFIT_TUNIC_TROUSERS { new Vec3(222., 214., 196.); } else { p.cloth; };
   out.push(shirt);
   colors.push(topColor);
@@ -116,7 +117,9 @@ fn outfitSpecs(p &Person, models &List[Transform3], out &mut List[ShellSpec], co
   // trousers (not for a dress or a skirt)
   if p.outfit == OUTFIT_SHIRT_TROUSERS or p.outfit == OUTFIT_TUNIC_TROUSERS {
     mut tr = spec("trousers", 2u32, 0.006, 0.004, 0.5);
-    bones(&mut tr, &[PELVIS, THIGH_L, THIGH_R, SHIN_L, SHIN_R]);
+    // (the spine too: on the hips' weights alone the trousers stopped short of their waistband's cut, below a
+    // waistcoat's hem, and the shirt showed between)
+    bones(&mut tr, &[PELVIS, SPINE, THIGH_L, THIGH_R, SHIN_L, SHIN_R]);
     below(&mut tr, (m.waistAt + 0.004) * h);
     above(&mut tr, 0.075 * h);
     out.push(tr);
@@ -155,7 +158,8 @@ fn outfitSpecs(p &Person, models &List[Transform3], out &mut List[ShellSpec], co
 // circle. garmentdrape wraps the cloth at the radius its flat width asks for, and a half circle's 5 m of hem stands out
 // as a bell its stiff cloth cannot buckle out of; a hem a little wider than the back hangs close behind it, a little
 // below the knee. It sees the trunk, the legs and the upper arms (so it rounds over the shoulders' points instead of
-// passing through them); a second panel is a standing collar round the back and the sides of the neck, held to it.
+// passing through them); a second panel is a standing collar round the back and the sides of the neck, held to it,
+// its ends just behind the sides (carried further round, they stood out over the shoulders' fronts as flaps).
 fn avatarCape() &str {
   "garment cape layer 3\n
 fabric density 0.62 stretch 2e-6 shear 2e-5 bend 6 thick 0.006 damping 0.75 air 1.0\n
@@ -166,11 +170,11 @@ panel cape grid 28 24 axis neck pelvis shift -0.02 face back arc 200 gap 0.024 f
   left line -0.24432 0.08893 -0.72 1.10 28\n
   right line 0.24432 0.08893 0.72 1.10 28\n
   loose 0 0  0.04 0  0.12 0.9  0.3 1  1 1\n
-panel collar grid 24 3 axis neck pelvis shift -0.085 face back arc 240 gap 0.012 flare 0 minr 0.05 reach 0.02\n
-  top line -0.23 0 0.23 0 24\n
-  bottom line -0.25 0.075 0.25 0.075 24\n
-  left line -0.23 0 -0.25 0.075 3\n
-  right line 0.23 0 0.25 0.075 3\n
+panel collar grid 20 3 axis neck pelvis shift -0.085 face back arc 200 gap 0.012 flare 0 minr 0.05 reach 0.02\n
+  top line -0.19 0 0.19 0 20\n
+  bottom line -0.21 0.075 0.21 0.075 20\n
+  left line -0.19 0 -0.21 0.075 3\n
+  right line 0.19 0 0.21 0.075 3\n
   loose 0 0  1 0\n
 ";
 }
@@ -294,6 +298,81 @@ pub fn rippleGarment(w &mut Wardrobe, g usize, axis Vec3, waves f32, amp f32) {
     }
     i = i + 1usize;
   }
+}
+
+// THE SHIRT TUCKED. A cut is a plane across the whole body, so the shirt's own cut is low enough to leave the sleeves
+// to the wrists; its body is then trimmed where something else covers it. Over trousers: wherever the trousers cover
+// the body a ring deep (they end where the hips' weights do, not at a plane), so the shirt goes a little way into them
+// and no further (tucked deep, it came through them below the waistcoat as a white strip). Under a skirt: below just
+// inside the skirt's top, so its hem is the skirt's waist, not a line where the shirt and the skirt's cone cross.
+// Returns, for each body vertex, whether the shirt is dropped there; none, for a dress's bodice.
+fn tuckOf(p &Person, body &Body, outfit &Outfit) List[bool] {
+  imm m = &p.measures;
+  imm nb = body.mesh.positions.len();
+  mut drop = List[bool].empty();
+  drop.resize(nb, false);
+  if p.outfit == OUTFIT_SHIRT_SKIRT {
+    imm y = (m.waistAt - 0.015) * m.height;
+    mut v = 0usize;
+    while v < nb {
+      mut arm = 0.;
+      mut k = UPPER_ARM_L;
+      while k <= HAND_R { arm = arm + *body.weights[v * BODY_BONES + k]; k = k + 1usize; }
+      drop.set(v, (*body.mesh.positions[v]).y < y and arm < 0.5);
+      v = v + 1usize;
+    }
+  }
+  mut s = 0usize;
+  while s < outfit.shells.len() {
+    if outfit.shells[s].name.equals("trousers") {
+      mut inT = List[bool].empty();
+      inT.resize(nb, false);
+      mut i = 0usize;
+      while i < outfit.shells[s].source.len() { inT.set(usize.from(*outfit.shells[s].source[i]), true); i = i + 1usize; }
+      // a ring in from the trousers' edge: a vertex all of whose triangles are wholly the trousers'
+      mut deep = List[bool].empty();
+      i = 0usize;
+      while i < nb { deep.push(*inT[i]); i = i + 1usize; }
+      mut t = 0usize;
+      while t + 2usize < body.mesh.indices.len() {
+        imm a = usize.from(*body.mesh.indices[t]);
+        imm b = usize.from(*body.mesh.indices[t + 1usize]);
+        imm c = usize.from(*body.mesh.indices[t + 2usize]);
+        if !(*inT[a] and *inT[b] and *inT[c]) { deep.set(a, false); deep.set(b, false); deep.set(c, false); }
+        t = t + 3usize;
+      }
+      drop = deep;
+    }
+    s = s + 1usize;
+  }
+  drop;
+}
+
+// The shell's triangles all of whose corners' body vertices are dropped are left out. Returns the vertices still used,
+// for the body's hiding.
+fn trimWhere(sh &mut Mesh, source &List[u32], drop &List[bool]) List[bool] {
+  mut keepV = List[bool].empty();
+  mut i = 0usize;
+  while i < sh.positions.len() {
+    keepV.push(!*drop[usize.from(*source[i])]);
+    i = i + 1usize;
+  }
+  mut idx = List[u32].empty();
+  mut used = List[bool].empty();
+  used.resize(sh.positions.len(), false);
+  mut t = 0usize;
+  while t + 2usize < sh.indices.len() {
+    imm a = *sh.indices[t];
+    imm b = *sh.indices[t + 1usize];
+    imm c = *sh.indices[t + 2usize];
+    if *keepV[usize.from(a)] or *keepV[usize.from(b)] or *keepV[usize.from(c)] {
+      idx.push(a); idx.push(b); idx.push(c);
+      used.set(usize.from(a), true); used.set(usize.from(b), true); used.set(usize.from(c), true);
+    }
+    t = t + 3usize;
+  }
+  sh.indices = idx;
+  used;
 }
 
 fn byKey(a &u64, b &u64) i32 { if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; } }
@@ -496,9 +575,16 @@ pub fn dressPerson(body &Body, p &Person, underwearOnly bool, threads u32) Wardr
     mut found = 0usize;
     while k < specs.len() { if specs[k].name.equals(outfit.shells[s].name.view()) { found = k; } k = k + 1usize; }
     imm sh = outfit.shells[s];
-    mut v = 0usize;
-    while v < sh.source.len() { covered.set(usize.from(*sh.source[v]), true); v = v + 1usize; }
     mut finished = copyMesh(&sh.mesh);
+    // the shirt's body tucked (its sleeves run on): the body under the dropped part is drawn
+    mut used = List[bool].empty();
+    used.resize(sh.source.len(), true);
+    if sh.name.equals("shirt") {
+      imm drop = tuckOf(p, body, &outfit);
+      used = trimWhere(&mut finished, &sh.source, &drop);
+    }
+    mut v = 0usize;
+    while v < sh.source.len() { if *used[v] { covered.set(usize.from(*sh.source[v]), true); } v = v + 1usize; }
     // (the hems are eased along themselves, not laid on their cuts: at this mesh's density a vertex moved to its cut
     // stretched the shell's triangles across the body's curve, and the body showed through)
     imm noCuts = List[Cut].empty();
@@ -511,6 +597,19 @@ pub fn dressPerson(body &Body, p &Person, underwearOnly bool, threads u32) Wardr
   if !underwearOnly and (p.outfit == OUTFIT_DRESS or p.outfit == OUTFIT_SHIRT_SKIRT) {
     imm hem = if p.outfit == OUTFIT_DRESS { 0.36; } else { 0.30; };
     pieces.push(skirtPiece(m, hem, if p.outfit == OUTFIT_DRESS { 0.32; } else { 0.18; }, p.cloth2));
+    // the body inside the skirt is not drawn (the skirt is an ellipse round the measures; a hip's front could come
+    // through it): its trunk and legs from a little below the skirt's top to a little above the hem, not the hands
+    imm yTop = (m.waistAt - 0.008) * m.height;
+    imm yLow = hem * m.height + 0.03;
+    mut v = 0usize;
+    while v < body.mesh.positions.len() {
+      imm y = (*body.mesh.positions[v]).y;
+      mut arm = 0.;
+      mut k = UPPER_ARM_L;
+      while k <= HAND_R { arm = arm + *body.weights[v * BODY_BONES + k]; k = k + 1usize; }
+      if y < yTop and y > yLow and arm < 0.5 and v < body.headStart { covered.set(v, true); }
+      v = v + 1usize;
+    }
   }
   // the body's triangles not wholly under clothes
   mut idx = List[u32].empty();
