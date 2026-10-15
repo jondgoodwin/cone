@@ -1,0 +1,343 @@
+// ======== The convex hull of a junction, and its quadrangulation ========
+
+// Faces as flat lists: face f is idx[start[f]] up to idx[start[f + 1]]
+pub struct HullFaces {
+  pub start List[u32];
+  pub idx List[u32];
+
+  pub fn empty() HullFaces { new HullFaces(List[u32].empty(), List[u32].empty()); }
+
+  pub fn faceCount(self &) usize { if start.len() == 0usize {0usize;} else {start.len() - 1usize;}; }
+
+  pub fn size(self &, f usize) usize { usize.from(*start[f + 1usize] - *start[f]); }
+
+  pub fn corner(self &, f usize, k usize) u32 { *idx[usize.from(*start[f]) + k]; }
+
+  // A face added, from its vertex numbers
+  pub fn add(self &mut, vs &List[u32]) {
+    if start.len() == 0usize { start.push(0u32); }
+    mut i = 0usize;
+    while i < vs.len() {
+      idx.push(*vs[i]);
+      i = i + 1usize;
+    }
+    start.push(u32.from(idx.len()));
+  }
+}
+
+fn absF(a f32) f32 { if a < 0. {-a;} else {a;}; }
+
+// The faces of the convex hull of the points, each wound counterclockwise seen
+// from outside, coplanar points (within eps) joining one face as its convex
+// polygon. By brute force over the triples that span a supporting plane: at
+// most 4 x 8 points here, so some hundred thousand tests. The same points give
+// the same faces in the same order, on every machine: the planes are found in
+// the order of (i, j, k), the polygon's corners sorted by angle with ties kept
+// in their point order.
+pub fn convexHull3(pts &List[Vec3], eps f32) HullFaces {
+  imm n = pts.len();
+  mut out = HullFaces.empty();
+  mut planeN = List[Vec3].empty();
+  mut planeD = List[f32].empty();
+  mut i = 0usize;
+  while i < n {
+    mut j = i + 1usize;
+    while j < n {
+      mut k = j + 1usize;
+      while k < n {
+        imm pi = *pts[i];
+        // Skip a triple that lies in a plane already found
+        mut known = false;
+        mut q = 0usize;
+        while q < planeN.len() and !known {
+          imm pn = *planeN[q];
+          imm pd = *planeD[q];
+          if absF(pn.dot(pi) - pd) <= eps and absF(pn.dot(*pts[j]) - pd) <= eps and absF(pn.dot(*pts[k]) - pd) <= eps {
+            known = true;
+          }
+          q = q + 1usize;
+        }
+        if !known {
+          imm cr = (*pts[j] - pi).cross(*pts[k] - pi);
+          imm len = cr.length();
+          if len > 0.000000001 {
+            imm nrm = cr * (1. / len);
+            imm d = nrm.dot(pi);
+            mut pos = false;
+            mut neg = false;
+            mut l = 0usize;
+            while l < n and !(pos and neg) {
+              imm s = nrm.dot(*pts[l]) - d;
+              if s > eps { pos = true; }
+              if s < -eps { neg = true; }
+              l = l + 1usize;
+            }
+            if !(pos and neg) and (pos or neg) {
+              // Outward is the side with no points
+              imm on = if pos {-nrm;} else {nrm;};
+              imm od = on.dot(pi);
+              planeN.push(on);
+              planeD.push(od);
+              planePolygon(pts, on, od, eps, &mut out);
+            }
+          }
+        }
+        k = k + 1usize;
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The face on the plane (n, d): the points on it, their convex polygon
+// counterclockwise seen from the side n points to
+fn planePolygon(pts &List[Vec3], nrm Vec3, d f32, eps f32, out &mut HullFaces) {
+  mut on = List[u32].empty();
+  mut cen = new Vec3(0., 0., 0.);
+  mut l = 0usize;
+  while l < pts.len() {
+    if absF(nrm.dot(*pts[l]) - d) <= eps {
+      on.push(u32.from(l));
+      cen = cen + *pts[l];
+    }
+    l = l + 1usize;
+  }
+  if on.len() < 3usize { return; }
+  cen = cen * (1. / f32.from(on.len()));
+  // A basis in the plane
+  imm u0 = (*pts[usize.from(*on[0usize])] - cen);
+  imm u = if u0.length() > 0.0000001 {u0.normalize();} else {perpendicular(nrm);};
+  imm v = nrm.cross(u);
+  mut ang = List[f32].empty();
+  l = 0usize;
+  while l < on.len() {
+    imm r = *pts[usize.from(*on[l])] - cen;
+    ang.push(atan2(r.dot(v), r.dot(u)));
+    l = l + 1usize;
+  }
+  // Insertion sort by angle, stable
+  mut a = 1usize;
+  while a < on.len() {
+    mut b = a;
+    while b > 0usize and *ang[b - 1usize] > *ang[b] {
+      imm ta = *ang[b];
+      ang.set(b, *ang[b - 1usize]);
+      ang.set(b - 1usize, ta);
+      imm to = *on[b];
+      on.set(b, *on[b - 1usize]);
+      on.set(b - 1usize, to);
+      b = b - 1usize;
+    }
+    a = a + 1usize;
+  }
+  // Drop the corners that are inside (a strictly concave turn) until none is
+  mut again = true;
+  while again and on.len() > 3usize {
+    again = false;
+    mut c = 0usize;
+    while c < on.len() and !again {
+      imm m = on.len();
+      imm p0 = *pts[usize.from(*on[(c + m - 1usize) % m])];
+      imm p1 = *pts[usize.from(*on[c])];
+      imm p2 = *pts[usize.from(*on[(c + 1usize) % m])];
+      imm turn = (p1 - p0).cross(p2 - p1).dot(nrm);
+      if turn < -eps * 0.1 * ((p1 - p0).length() + (p2 - p1).length()) {
+        // Remove corner c
+        mut nl = List[u32].empty();
+        mut e = 0usize;
+        while e < m {
+          if e != c { nl.push(*on[e]); }
+          e = e + 1usize;
+        }
+        on = nl;
+        again = true;
+      }
+      c = c + 1usize;
+    }
+  }
+  if on.len() >= 3usize { out.add(&on); }
+}
+
+fn perpendicular(n Vec3) Vec3 {
+  imm a = if absF(n.x) < 0.9 {new Vec3(1., 0., 0.);} else {new Vec3(0., 1., 0.);};
+  n.cross(a).normalize();
+}
+
+// The faces with pairs of neighbouring triangles merged into quads where the
+// four corners lie near a plane and the quad is not badly shaped: cheapest
+// pairs first, then an augmenting search for triangles left over, so a
+// triangle is left only when no neighbour is free to join (or all joins are
+// too flat-hostile). Faces of 4 and more are kept. The result lists the
+// quads first? No: the faces keep the order of their lowest member.
+pub fn quadrangulate(h &HullFaces, pts &List[Vec3]) HullFaces {
+  imm nf = h.faceCount();
+  // Candidate pairs among the triangles
+  mut pa = List[u32].empty();
+  mut pb = List[u32].empty();
+  mut pc = List[f32].empty();
+  mut a = 0usize;
+  while a < nf {
+    if h.size(a) == 3usize {
+      mut b = a + 1usize;
+      while b < nf {
+        if h.size(b) == 3usize {
+          imm c = pairCost(h, pts, a, b);
+          if c >= 0. {
+            pa.push(u32.from(a));
+            pb.push(u32.from(b));
+            pc.push(c);
+          }
+        }
+        b = b + 1usize;
+      }
+    }
+    a = a + 1usize;
+  }
+  // Sort the candidates by cost, stable
+  mut order = List[u32].empty();
+  mut o = 0usize;
+  while o < pc.len() { order.push(u32.from(o)); o = o + 1usize; }
+  o = 1usize;
+  while o < order.len() {
+    mut b = o;
+    while b > 0usize and *pc[usize.from(*order[b - 1usize])] > *pc[usize.from(*order[b])] {
+      imm t = *order[b];
+      order.set(b, *order[b - 1usize]);
+      order.set(b - 1usize, t);
+      b = b - 1usize;
+    }
+    o = o + 1usize;
+  }
+  // mate[f]: the triangle f is paired with, or NoMate
+  mut mate = List[u32].empty();
+  a = 0usize;
+  while a < nf { mate.push(NoMate); a = a + 1usize; }
+  o = 0usize;
+  while o < order.len() {
+    imm p = usize.from(*order[o]);
+    imm x = usize.from(*pa[p]);
+    imm y = usize.from(*pb[p]);
+    if *mate[x] == NoMate and *mate[y] == NoMate {
+      mate.set(x, u32.from(y));
+      mate.set(y, u32.from(x));
+    }
+    o = o + 1usize;
+  }
+  // Augment: for a free triangle, search an alternating path
+  a = 0usize;
+  while a < nf {
+    if h.size(a) == 3usize and *mate[a] == NoMate {
+      mut seen = List[bool].empty();
+      mut s = 0usize;
+      while s < nf { seen.push(false); s = s + 1usize; }
+      augment(h, pts, a, &mut mate, &mut seen);
+    }
+    a = a + 1usize;
+  }
+  // Build the result
+  mut out = HullFaces.empty();
+  a = 0usize;
+  while a < nf {
+    imm m = *mate[a];
+    if h.size(a) != 3usize or m == NoMate {
+      mut vs = List[u32].empty();
+      mut k = 0usize;
+      while k < h.size(a) { vs.push(h.corner(a, k)); k = k + 1usize; }
+      out.add(&vs);
+    } elif usize.from(m) > a {
+      imm q = mergeTriangles(h, a, usize.from(m));
+      out.add(&q);
+    }
+    a = a + 1usize;
+  }
+  out;
+}
+
+const NoMate = 0xFFFFFFFFu32;
+
+// Try to give triangle a a partner: a free neighbour, or one whose partner
+// can move to another; true when it did
+fn augment(h &HullFaces, pts &List[Vec3], a usize, mate &mut List[u32], seen &mut List[bool]) bool {
+  seen.set(a, true);
+  mut b = 0usize;
+  while b < h.faceCount() {
+    if b != a and h.size(b) == 3usize and !*seen[b] and pairCost(h, pts, a, b) >= 0. {
+      imm m = *mate[b];
+      seen.set(b, true);
+      if m == NoMate {
+        mate.set(a, u32.from(b));
+        mate.set(b, u32.from(a));
+        return true;
+      }
+      imm mm = usize.from(m);
+      if !*seen[mm] {
+        // Free b's partner mm elsewhere, then take b
+        mate.set(b, NoMate);
+        mate.set(mm, NoMate);
+        if augment(h, pts, mm, mate, seen) {
+          mate.set(a, u32.from(b));
+          mate.set(b, u32.from(a));
+          return true;
+        }
+        mate.set(b, m);
+        mate.set(mm, u32.from(b));
+      }
+    }
+    b = b + 1usize;
+  }
+  false;
+}
+
+// For two triangles sharing an edge, the quad they make: its corners in order
+fn mergeTriangles(h &HullFaces, a usize, b usize) List[u32] {
+  mut out = List[u32].empty();
+  mut i = 0usize;
+  while i < 3usize {
+    imm u = h.corner(a, i);
+    imm v = h.corner(a, (i + 1usize) % 3usize);
+    mut j = 0usize;
+    while j < 3usize {
+      if h.corner(b, j) == v and h.corner(b, (j + 1usize) % 3usize) == u {
+        // b: v, u, x
+        imm x = h.corner(b, (j + 2usize) % 3usize);
+        out.push(u);
+        out.push(x);
+        out.push(v);
+        out.push(h.corner(a, (i + 2usize) % 3usize));
+        return out;
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// How much worse than a flat square the quad of triangles a and b is (0 for a
+// square; -1 if they share no edge or the quad is too bent or folded)
+fn pairCost(h &HullFaces, pts &List[Vec3], a usize, b usize) f32 {
+  imm q = mergeTriangles(h, a, b);
+  if q.len() != 4usize { return -1.; }
+  imm p0 = *pts[usize.from(*q[0usize])];
+  imm p1 = *pts[usize.from(*q[1usize])];
+  imm p2 = *pts[usize.from(*q[2usize])];
+  imm p3 = *pts[usize.from(*q[3usize])];
+  imm e = ((p1 - p0).length() + (p2 - p1).length() + (p3 - p2).length() + (p0 - p3).length()) * 0.25;
+  if e <= 0.0000001 { return -1.; }
+  // Convex: every corner turns the same way as the quad's normal
+  imm nrm = (p2 - p0).cross(p3 - p1);
+  imm t0 = (p1 - p0).cross(p2 - p1).dot(nrm);
+  imm t1 = (p2 - p1).cross(p3 - p2).dot(nrm);
+  imm t2 = (p3 - p2).cross(p0 - p3).dot(nrm);
+  imm t3 = (p0 - p3).cross(p1 - p0).dot(nrm);
+  if t0 <= 0. or t1 <= 0. or t2 <= 0. or t3 <= 0. { return -1.; }
+  imm nu = nrm.normalize();
+  imm flat = absF(nu.dot(p0 - p1)) / e;
+  imm d1 = (p2 - p0).length();
+  imm d2 = (p3 - p1).length();
+  imm shape = absF(d1 - d2) / (d1 + d2);
+  if flat > 0.4 { return -1.; }
+  flat + 0.5 * shape;
+}
