@@ -1,0 +1,382 @@
+// ======== Pictures: a software canvas to show the measurements ========
+//
+// The instruments produce numbers per vertex; a picture of them is how a person
+// sees where a shape is wrong. This is a small CPU renderer, with no GPU or window
+// needed, so the example (and anyone's tests) can write PNG sheets anywhere:
+// an orthographic view (the silhouette module's View and Window) of a PolyMesh,
+// Gouraud-shaded by a light at the viewer with a colour per vertex, lines and dots
+// on top (outlines, crease lines, peaks and pits), a bitmap font in capitals, and
+// the PNG save. A Viewport is a tile of the canvas, so a sheet holds many views.
+
+pub struct Viewport {
+  pub x i32;
+  pub y i32;
+  pub w i32;
+  pub h i32;
+}
+
+pub struct Canvas {
+  pub w i32;
+  pub h i32;
+  pub rgba List[u8];       // rows from the top
+  pub depth List[f32];     // per pixel: the nearest depth drawn
+
+  pub fn make(w i32, h i32, bg Vec3) Canvas {
+    mut rgba = List[u8].withCapacity(usize.from(w) * usize.from(h) * 4usize);
+    mut depth = List[f32].withCapacity(usize.from(w) * usize.from(h));
+    mut i = 0usize;
+    while i < usize.from(w) * usize.from(h) {
+      rgba.push(byteOf(bg.x)); rgba.push(byteOf(bg.y)); rgba.push(byteOf(bg.z)); rgba.push(255u8);
+      depth.push(1.0e30);
+      i += 1usize;
+    }
+    new Canvas(w, h, rgba, depth);
+  }
+
+  pub fn setPixel(self &mut, x i32, y i32, c Vec3) {
+    if x >= 0 and y >= 0 and x < w and y < h {
+      imm i = (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize;
+      rgba.set(i, byteOf(c.x)); rgba.set(i + 1usize, byteOf(c.y)); rgba.set(i + 2usize, byteOf(c.z));
+    }
+  }
+
+  pub fn fillRect(self &mut, x i32, y i32, rw i32, rh i32, c Vec3) {
+    mut j = 0;
+    while j < rh {
+      mut i = 0;
+      while i < rw { setPixel(x + i, y + j, c); i += 1; }
+      j += 1;
+    }
+  }
+
+  // A line between two pixels (not depth tested)
+  pub fn line(self &mut, x0 i32, y0 i32, x1 i32, y1 i32, c Vec3) {
+    imm dx = if x1 > x0 { x1 - x0; } else { x0 - x1; };
+    imm dy = if y1 > y0 { y1 - y0; } else { y0 - y1; };
+    imm n = if dx > dy { dx; } else { dy; };
+    mut k = 0;
+    while k <= n {
+      imm t = if n == 0 { 0.; } else { f32.from(k) / f32.from(n); };
+      setPixel(x0 + i32.from(libc.floorf(f32.from(x1 - x0) * t + 0.5)), y0 + i32.from(libc.floorf(f32.from(y1 - y0) * t + 0.5)), c);
+      k += 1;
+    }
+  }
+
+  // A filled disc of the radius about a pixel
+  pub fn dot(self &mut, cx i32, cy i32, r i32, c Vec3) {
+    mut j = -r;
+    while j <= r {
+      mut i = -r;
+      while i <= r {
+        if i * i + j * j <= r * r + r { setPixel(cx + i, cy + j, c); }
+        i += 1;
+      }
+      j += 1;
+    }
+  }
+
+  // Capital letters, digits and a few signs in a 5 x 7 font, each pixel 'scale' square;
+  // lower case is drawn as upper. Returns the x after the text.
+  pub fn text(self &mut, x i32, y i32, s &str, scale i32, c Vec3) i32 {
+    mut cx = x;
+    mut k = 0usize;
+    while k < s.len() {
+      imm bits = glyph(s[k]);
+      mut r = 0;
+      while r < 7 {
+        mut q = 0;
+        while q < 5 {
+          if bits[usize.from(r * 5 + q)] == 35u8 { fillRect(cx + q * scale, y + r * scale, scale, scale, c); }
+          q += 1;
+        }
+        r += 1;
+      }
+      cx = cx + 6 * scale;
+      k += 1usize;
+    }
+    cx;
+  }
+
+  // Write the canvas as a PNG into the folder
+  pub fn save(self &, dir &str, name &str) bool {
+    mut r = Raster.empty();
+    r.width = w;
+    r.height = h;
+    r.depth = 8;
+    r.colorSpace = ColorSpace.Srgb;
+    r.pixels8.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    mut i = 0usize;
+    while i < rgba.len() { r.pixels8.set(i, *rgba[i]); i += 1usize; }
+    imm png = encodePng(&r, 2);
+    mut full = String.from(dir);
+    full.append("/");
+    full.append(name);
+    imm op = Path.from(full.view());
+    mut ok = false;
+    match fs.writeFile(&op, png.view()) {
+      case imm good Ok { ok = true; }
+      case imm bad Error { ok = false; }
+    }
+    ok;
+  }
+}
+
+fn byteOf(v f32) u8 {
+  imm x = if v < 0. { 0.; } elif v > 1. { 1.; } else { v; };
+  u8.from(i32.from(libc.floorf(x * 255. + 0.5)));
+}
+
+// A number as text with the given digits after the point: numberText(-3.14159, 2) is "-3.14"
+pub fn numberText(v f32, decimals i32) String {
+  mut s = String.empty();
+  mut x = f64.from(v);
+  if x < 0.d { s.append("-"); x = -x; }
+  mut scale = 1.d;
+  mut d = 0;
+  while d < decimals { scale = scale * 10.d; d += 1; }
+  imm r = libc.floor(x * scale + 0.5d);
+  imm whole = libc.floor(r / scale);
+  s.appendUInt(u64.from(whole));
+  if decimals > 0 {
+    s.append(".");
+    imm frac = r - whole * scale;
+    mut digits = String.empty();
+    digits.appendUInt(u64.from(frac));
+    mut pad = decimals - i32.from(digits.len());
+    while pad > 0 { s.append("0"); pad -= 1; }
+    s.append(digits.view());
+  }
+  s;
+}
+
+// ---- colour maps ----
+
+// Blue for negative, white at 0, red for positive; x runs -1 to 1 (clamped)
+pub fn divergingColor(x f32) Vec3 {
+  imm t = if x < -1. { -1.; } elif x > 1. { 1.; } else { x; };
+  if t >= 0. { new Vec3(1., 1. - 0.85 * t, 1. - 0.9 * t); } else { new Vec3(1. + 0.9 * t, 1. + 0.55 * t, 1.); };
+}
+
+// A colour for each patch class: flat grey, dome red, cup blue, saddle yellow, ridge orange, valley teal
+pub fn patchColor(c u32) Vec3 {
+  if c == PatchFlat { new Vec3(0.8, 0.8, 0.8); }
+  elif c == PatchDome { new Vec3(0.88, 0.25, 0.22); }
+  elif c == PatchCup { new Vec3(0.2, 0.4, 0.85); }
+  elif c == PatchSaddle { new Vec3(0.95, 0.85, 0.2); }
+  elif c == PatchRidge { new Vec3(0.95, 0.55, 0.15); }
+  else { new Vec3(0.15, 0.7, 0.65); };
+}
+
+// A colour per vertex from a field, scaled so that +-range is the full colour
+pub fn fieldColors(field &List[f32], range f32) List[Vec3] {
+  mut out = List[Vec3].withCapacity(field.len());
+  mut i = 0usize;
+  while i < field.len() { out.push(divergingColor(*field[i] / range)); i += 1usize; }
+  out;
+}
+
+pub fn patchColors(classes &List[u32]) List[Vec3] {
+  mut out = List[Vec3].withCapacity(classes.len());
+  mut i = 0usize;
+  while i < classes.len() { out.push(patchColor(*classes[i])); i += 1usize; }
+  out;
+}
+
+// ---- mapping the view to the tile ----
+
+// The pixel (x, y from the top) of the view-plane point (px, py) in the tile
+fn tileX(vp &Viewport, win &Window, px f64) f64 {
+  f64.from(vp.x) + 0.5d * (f64.from(vp.w) - f64.from(win.w)) + (px - win.x0) * win.scale;
+}
+fn tileY(vp &Viewport, win &Window, py f64) f64 {
+  f64.from(vp.y) + 0.5d * (f64.from(vp.h) - f64.from(win.h)) + (f64.from(win.h) - (py - win.y0) * win.scale);
+}
+
+// A window for the mesh (or two meshes) in the view, fitted to the tile with a margin
+pub fn tileWindow(a &PolyMesh, b &PolyMesh, v &View, vp &Viewport) Window {
+  imm side = if vp.w < vp.h { vp.w; } else { vp.h; };
+  windowFor(a, b, v, usize.from(side - 8));
+}
+
+// Draw the mesh into the tile: lit by a light at the viewer, each vertex coloured
+// ('colors' per vertex, or empty for grey). Depth is tested against the canvas's.
+pub fn drawMesh(cv &mut Canvas, vp &Viewport, win &Window, m &PolyMesh, v &View, colors &List[Vec3]) {
+  imm tris = fanTriangles(m);
+  imm normals = m.vertexNormals();
+  imm nv = m.vertexCount();
+  mut sx = List[f64].withCapacity(nv);
+  mut sy = List[f64].withCapacity(nv);
+  mut sz = List[f64].withCapacity(nv);
+  mut i = 0usize;
+  while i < nv {
+    imm q = v.project(DVec3.from(*m.positions[i]));
+    sx.push(tileX(vp, win, q.x));
+    sy.push(tileY(vp, win, q.y));
+    sz.push(q.z);
+    i += 1usize;
+  }
+  imm toward = -v.forward;
+  i = 0usize;
+  while i < tris.len() / 3usize {
+    imm ia = usize.from(*tris[3usize * i]);
+    imm ib = usize.from(*tris[3usize * i + 1usize]);
+    imm ic = usize.from(*tris[3usize * i + 2usize]);
+    imm ax = *sx[ia]; imm ay = *sy[ia];
+    imm bx = *sx[ib]; imm byy = *sy[ib];
+    imm cx = *sx[ic]; imm cy = *sy[ic];
+    imm area = (bx - ax) * (cy - ay) - (byy - ay) * (cx - ax);
+    if absd(area) > 1.0e-9d {
+      imm x0 = usize.from(maxd(f64.from(vp.x), libc.floor(mind(ax, mind(bx, cx)) - 0.5d)));
+      imm x1 = usize.from(mind(f64.from(vp.x + vp.w) - 1.d, libc.ceil(maxd(ax, maxd(bx, cx)) - 0.5d)));
+      imm y0 = usize.from(maxd(f64.from(vp.y), libc.floor(mind(ay, mind(byy, cy)) - 0.5d)));
+      imm y1 = usize.from(mind(f64.from(vp.y + vp.h) - 1.d, libc.ceil(maxd(ay, maxd(byy, cy)) - 0.5d)));
+      imm na = unitd(DVec3.from(*normals[ia]));
+      imm nb = unitd(DVec3.from(*normals[ib]));
+      imm nc = unitd(DVec3.from(*normals[ic]));
+      imm have = colors.len() == nv;
+      imm ca = if have { *colors[ia]; } else { new Vec3(0.78, 0.78, 0.8); };
+      imm cb = if have { *colors[ib]; } else { new Vec3(0.78, 0.78, 0.8); };
+      imm cc = if have { *colors[ic]; } else { new Vec3(0.78, 0.78, 0.8); };
+      mut y = y0;
+      while y <= y1 {
+        mut x = x0;
+        while x <= x1 {
+          imm qx = f64.from(x) + 0.5d;
+          imm qy = f64.from(y) + 0.5d;
+          imm w0 = ((bx - qx) * (cy - qy) - (byy - qy) * (cx - qx)) / area;
+          imm w1 = ((cx - qx) * (ay - qy) - (cy - qy) * (ax - qx)) / area;
+          imm w2 = 1.d - w0 - w1;
+          if w0 >= -1.0e-9d and w1 >= -1.0e-9d and w2 >= -1.0e-9d {
+            imm z = f32.from(w0 * *sz[ia] + w1 * *sz[ib] + w2 * *sz[ic]);
+            imm di = y * usize.from(cv.w) + x;
+            if z < *cv.depth[di] {
+              cv.depth.set(di, z);
+              imm n = unitd(na * w0 + nb * w1 + nc * w2);
+              // the light's side is the viewer's; faces turned away are lit from behind, dimmer
+              imm lit = absd(n.dot(toward));
+              imm k = f32.from(0.3d + 0.7d * lit);
+              imm col = (ca * f32.from(w0) + cb * f32.from(w1) + cc * f32.from(w2)) * k;
+              cv.setPixel(i32.from(x), i32.from(y), col);
+            }
+          }
+          x += 1usize;
+        }
+        y += 1usize;
+      }
+    }
+    i += 1usize;
+  }
+}
+
+// A polyline on the surface (3-D points), drawn depth-tested against the mesh just drawn
+pub fn drawPolyline3(cv &mut Canvas, vp &Viewport, win &Window, v &View, pts &List[Vec3], c Vec3) {
+  mut k = 0usize;
+  while k + 1usize < pts.len() {
+    imm p = v.project(DVec3.from(*pts[k]));
+    imm q = v.project(DVec3.from(*pts[k + 1usize]));
+    imm x0 = tileX(vp, win, p.x); imm y0 = tileY(vp, win, p.y);
+    imm x1 = tileX(vp, win, q.x); imm y1 = tileY(vp, win, q.y);
+    imm n = i32.from(maxd(absd(x1 - x0), absd(y1 - y0))) + 1;
+    mut s = 0;
+    while s <= n {
+      imm t = f64.from(s) / f64.from(n);
+      imm px = i32.from(libc.floor(x0 + (x1 - x0) * t));
+      imm py = i32.from(libc.floor(y0 + (y1 - y0) * t));
+      imm z = f32.from(p.z + (q.z - p.z) * t);
+      if px >= vp.x and py >= vp.y and px < vp.x + vp.w and py < vp.y + vp.h {
+        // within a hair of the surface drawn there, or in front
+        if z <= *cv.depth[usize.from(py) * usize.from(cv.w) + usize.from(px)] + f32.from(3.d / win.scale) {
+          cv.setPixel(px, py, c);
+        }
+      }
+      s += 1;
+    }
+    k += 1usize;
+  }
+}
+
+// A marker at a 3-D point (not depth tested; a dot of the radius in pixels)
+pub fn drawMarker3(cv &mut Canvas, vp &Viewport, win &Window, v &View, p Vec3, r i32, c Vec3) {
+  imm q = v.project(DVec3.from(p));
+  cv.dot(i32.from(libc.floor(tileX(vp, win, q.x))), i32.from(libc.floor(tileY(vp, win, q.y))), r, c);
+}
+
+// Closed outlines in the view plane (the silhouette module's loops), as lines on the tile
+pub fn drawLoops(cv &mut Canvas, vp &Viewport, win &Window, loops &List[List[Vec2]], c Vec3) {
+  mut i = 0usize;
+  while i < loops.len() {
+    imm l = loops[i];
+    mut k = 0usize;
+    while k < l.len() {
+      imm p = *l[k];
+      imm q = *l[(k + 1usize) % l.len()];
+      cv.line(i32.from(libc.floor(tileX(vp, win, f64.from(p.x)))), i32.from(libc.floor(tileY(vp, win, f64.from(p.y)))),
+        i32.from(libc.floor(tileX(vp, win, f64.from(q.x)))), i32.from(libc.floor(tileY(vp, win, f64.from(q.y)))), c);
+      k += 1usize;
+    }
+    i += 1usize;
+  }
+}
+
+// A colour bar: blue to white to red across the rectangle, with the end labels
+pub fn drawColorBar(cv &mut Canvas, x i32, y i32, w i32, h i32, lo &str, hi &str) {
+  mut i = 0;
+  while i < w {
+    cv.fillRect(x + i, y, 1, h, divergingColor(2. * f32.from(i) / f32.from(w - 1) - 1.));
+    i += 1;
+  }
+  cv.text(x, y + h + 3, lo, 2, new Vec3(0.1, 0.1, 0.1));
+  cv.text(x + w - 12 * i32.from(hi.len()), y + h + 3, hi, 2, new Vec3(0.1, 0.1, 0.1));
+}
+
+// The 5 x 7 bitmap of a character, 35 bytes of '#' and '.', row by row
+fn glyph(ch u8) &str {
+  imm c = if ch >= 97u8 and ch <= 122u8 { ch - 32u8; } else { ch; };
+  if c == 48u8 { ".###.#...##..###.#.###..##...#.###."; }
+  elif c == 49u8 { "..#...##....#....#....#....#...###."; }
+  elif c == 50u8 { ".###.#...#....#...#...#...#...#####"; }
+  elif c == 51u8 { ".###.#...#....#..##.....##...#.###."; }
+  elif c == 52u8 { "...#...##..#.#.#..#.#####...#....#."; }
+  elif c == 53u8 { "######....####.....#....##...#.###."; }
+  elif c == 54u8 { "..##..#...#....####.#...##...#.###."; }
+  elif c == 55u8 { "#####....#...#...#...#....#....#..."; }
+  elif c == 56u8 { ".###.#...##...#.###.#...##...#.###."; }
+  elif c == 57u8 { ".###.#...##...#.####....#...#..##.."; }
+  elif c == 65u8 { ".###.#...##...#######...##...##...#"; }
+  elif c == 66u8 { "####.#...##...#####.#...##...#####."; }
+  elif c == 67u8 { ".###.#...##....#....#....#...#.###."; }
+  elif c == 68u8 { "####.#...##...##...##...##...#####."; }
+  elif c == 69u8 { "######....#....####.#....#....#####"; }
+  elif c == 70u8 { "######....#....####.#....#....#...."; }
+  elif c == 71u8 { ".###.#...##....#.####...##...#.###."; }
+  elif c == 72u8 { "#...##...##...#######...##...##...#"; }
+  elif c == 73u8 { ".###...#....#....#....#....#...###."; }
+  elif c == 74u8 { "..###...#....#....#....#.#..#..##.."; }
+  elif c == 75u8 { "#...##..#.#.#..##...#.#..#..#.#...#"; }
+  elif c == 76u8 { "#....#....#....#....#....#....#####"; }
+  elif c == 77u8 { "#...###.###.#.##.#.##...##...##...#"; }
+  elif c == 78u8 { "#...###..##.#.##..###...##...##...#"; }
+  elif c == 79u8 { ".###.#...##...##...##...##...#.###."; }
+  elif c == 80u8 { "####.#...##...#####.#....#....#...."; }
+  elif c == 81u8 { ".###.#...##...##...##.#.##..#..##.#"; }
+  elif c == 82u8 { "####.#...##...#####.#.#..#..#.#...#"; }
+  elif c == 83u8 { ".#####....#.....###.....#....#####."; }
+  elif c == 84u8 { "#####..#....#....#....#....#....#.."; }
+  elif c == 85u8 { "#...##...##...##...##...##...#.###."; }
+  elif c == 86u8 { "#...##...##...##...##...#.#.#...#.."; }
+  elif c == 87u8 { "#...##...##...##.#.##.#.###.###...#"; }
+  elif c == 88u8 { "#...##...#.#.#...#...#.#.#...##...#"; }
+  elif c == 89u8 { "#...##...#.#.#...#....#....#....#.."; }
+  elif c == 90u8 { "#####....#...#...#...#...#....#####"; }
+  elif c == 46u8 { "..........................##...##.."; }
+  elif c == 45u8 { "...............#####..............."; }
+  elif c == 43u8 { ".......#....#..#####..#....#......."; }
+  elif c == 58u8 { "......##...##........##...##......."; }
+  elif c == 47u8 { "....#....#...#...#...#...#....#...."; }
+  elif c == 37u8 { "##..###..#...#...#...#...#..###..##"; }
+  elif c == 61u8 { "..........#####.....#####.........."; }
+  elif c == 40u8 { "...#...#...#....#....#.....#.....#."; }
+  elif c == 41u8 { ".#.....#.....#....#....#...#...#..."; }
+  elif c == 44u8 { ".....................##....#...#..."; }
+  else { "..................................."; };
+}
