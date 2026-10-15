@@ -1,0 +1,93 @@
+// shapefit's feature detection on a field: peaks, pits, ridge lines and valley
+// lines, on a flat grid (40 x 40 quads, side 4, spacing 0.1; vertex j * 41 + i is at
+// x = -2 + 0.1 i, z = -2 + 0.1 j) carrying fields whose features are known.
+
+mod featuretests;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import shapefit use *;
+
+fn expf(a f32) f32 { libc.expf(a); }
+
+fn fieldOf(m &PolyMesh, kind u32) List[f32] {
+  mut out = List[f32].empty();
+  mut v = 0usize;
+  while v < m.vertexCount() {
+    imm p = *m.positions[v];
+    mut f = 0.;
+    if kind == 0u32 {
+      // a bump of height 1 at (0.5, 0.5) and a dent of depth 0.8 at (-1, -1)
+      f = expf(-((p.x - 0.5) * (p.x - 0.5) + (p.z - 0.5) * (p.z - 0.5)) / 0.08)
+        - 0.8 * expf(-((p.x + 1.) * (p.x + 1.) + (p.z + 1.) * (p.z + 1.)) / 0.08);
+    } elif kind == 1u32 {
+      // a ridge along z at x = 0.3
+      f = expf(-(p.x - 0.3) * (p.x - 0.3) / 0.05);
+    } elif kind == 2u32 {
+      // a valley along x at z = -0.5
+      f = -expf(-(p.z + 0.5) * (p.z + 0.5) / 0.05);
+    } else {
+      // nothing: a plane and a gentle slope
+      f = 0.2 * p.x + 0.1 * p.z;
+    }
+    out.push(f);
+    v += 1usize;
+  }
+  out;
+}
+
+fn main() i32 {
+  imm g = gridMesh(40usize, 4., (x, z) => 0.);
+  // peaks and pits
+  imm f0 = fieldOf(&g, 0u32);
+  imm peaks = findPeaks(&g, &f0, 0.3, 0.3);
+  imm pits = findPits(&g, &f0, 0.3, 0.3);
+  expectInt(i64.from(peaks.len()), 1, "one peak");
+  expectInt(i64.from(pits.len()), 1, "one pit");
+  // (0.5, 0.5) is vertex 25 * 41 + 25; (-1, -1) is 10 * 41 + 10
+  expectInt(i64.from(*peaks[0usize]), 25 * 41 + 25, "the peak is the bump's top");
+  expectInt(i64.from(*pits[0usize]), 10 * 41 + 10, "the pit is the dent's bottom");
+  expectInt(i64.from(findPeaks(&g, &f0, 1.5, 0.3).len()), 0, "none that tall");
+  // a threshold of 0.9 on the pit (depth 0.8) finds nothing, on the peak (1.0) it does
+  expectInt(i64.from(findPits(&g, &f0, 0.9, 0.3).len()), 0, "the dent is not that deep");
+  expectInt(i64.from(findPeaks(&g, &f0, 0.9, 0.3).len()), 1, "the bump is that tall");
+  // a slope has neither
+  imm f3 = fieldOf(&g, 3u32);
+  expectInt(i64.from(findPeaks(&g, &f3, 0.01, 0.3).len()), 0, "a slope has no peak");
+
+  // a ridge
+  imm f1 = fieldOf(&g, 1u32);
+  imm c1 = findCreases(&g, &f1, 2., 8usize);
+  expectInt(i64.from(c1.ridges.len()), 1, "one ridge line");
+  expectInt(i64.from(c1.valleys.len()), 0, "and no valley");
+  expect(c1.ridges[0usize].len() >= 30usize, "the ridge runs the length of the grid");
+  // every vertex on it is at x = 0.3
+  mut off = 0.;
+  mut k = 0usize;
+  while k < c1.ridges[0usize].len() {
+    imm d = m1(g.positions[usize.from(*c1.ridges[0usize][k])].x - 0.3);
+    off = if d > off { d; } else { off; };
+    k += 1usize;
+  }
+  expect(off < 0.06, "the ridge is on the crest");
+
+  // a valley
+  imm f2 = fieldOf(&g, 2u32);
+  imm c2 = findCreases(&g, &f2, 2., 8usize);
+  expectInt(i64.from(c2.valleys.len()), 1, "one valley line");
+  expectInt(i64.from(c2.ridges.len()), 0, "and no ridge");
+  expect(c2.valleys[0usize].len() >= 30usize, "the valley runs the length of the grid");
+  expect(*c2.valleyFlag[usize.from(*c2.valleys[0usize][3usize])], "flags are set along the line");
+
+  // a slope has no creases
+  imm c3 = findCreases(&g, &f3, 0.5, 4usize);
+  expectInt(i64.from(c3.ridges.len() + c3.valleys.len()), 0, "a slope has no creases");
+  // short lines are dropped
+  expectInt(i64.from(findCreases(&g, &f1, 2., 1000usize).ridges.len()), 0, "too short for a line of 1000");
+  done();
+}
+
+fn m1(a f32) f32 { if a < 0. { -a; } else { a; }; }

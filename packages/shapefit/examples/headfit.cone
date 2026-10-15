@@ -1,0 +1,544 @@
+// headfit: the shapefit instruments on a real question, how far humanbody's head is
+// from the MakeHuman base mesh's head (CC0, reference only: read from its place at run
+// time, never copied into the repo).
+//
+//   congo run --release packages/shapefit/examples/headfit.cone
+//
+// Reads
+//   C:/src/makehuman-poc/heads.txt   our heads, printed by refpeople-tools/dumphead.cone (its
+//                                    method: humanbody's personBody + buildFace); the first
+//                                    person, vertices 'V' and quads 'Q', head-local numbering
+//   C:/src/reference-models/makehuman/base.obj   the reference body; the 'body' group's faces
+//                                    above the neck, rotated to face -z and scaled to metres
+// and writes to C:/src/shapefit-shots/
+//   head-curvature.png    patch classes of both heads (front and three-quarter)
+//   head-ellipsoid.png    each head's distance from an ellipsoid fitted to its cranium, with the
+//                         peaks, pits and crease lines found on that residual
+//   head-gap.png          our head's signed distance from the reference after ICP (red = ours stands
+//                         proud), front, three-quarter and side
+//   head-silhouettes.png  outlines of both heads in front, side and top views with IoU and Hausdorff
+// and prints the numbers: the fits, the alignment, per-region statistics, the silhouette scores.
+mod headfit;
+
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+import fs;
+import path use Path;
+import shapefit use *;
+
+imm OutDir = "C:/src/shapefit-shots";
+
+fn ink() Vec3 { new Vec3(0.08, 0.08, 0.1); }
+
+// ---------- reading the data ----------
+
+fn isBlank(c u8) bool { c == 32u8 or c == 9u8 or c == 13u8; }
+
+fn lineEnd(d &Array[u8], from usize) usize {
+  mut i = from;
+  while i < d.len and d[i] != 10u8 { i += 1usize; }
+  i;
+}
+
+// The k-th space-separated token of d[lo, hi), its span in a and b; false if there is none
+fn tokenAt(d &Array[u8], lo usize, hi usize, k usize, a &mut usize, b &mut usize) bool {
+  mut i = lo;
+  mut n = 0usize;
+  while i < hi {
+    while i < hi and isBlank(d[i]) { i += 1usize; }
+    if i >= hi { return false; }
+    imm s = i;
+    while i < hi and not isBlank(d[i]) { i += 1usize; }
+    if n == k { *a = s; *b = i; return true; }
+    n += 1usize;
+  }
+  false;
+}
+
+fn parseNum(d &Array[u8], lo usize, hi usize) f64 {
+  mut i = lo;
+  mut neg = false;
+  if i < hi and (d[i] == 45u8 or d[i] == 43u8) { neg = d[i] == 45u8; i += 1usize; }
+  mut v = 0.d;
+  while i < hi and d[i] >= 48u8 and d[i] <= 57u8 { v = v * 10.d + f64.from(d[i] - 48u8); i += 1usize; }
+  if i < hi and d[i] == 46u8 {
+    i += 1usize;
+    mut scale = 0.1d;
+    while i < hi and d[i] >= 48u8 and d[i] <= 57u8 { v = v + scale * f64.from(d[i] - 48u8); scale = scale * 0.1d; i += 1usize; }
+  }
+  if i < hi and (d[i] == 101u8 or d[i] == 69u8) {
+    i += 1usize;
+    mut eneg = false;
+    if i < hi and (d[i] == 45u8 or d[i] == 43u8) { eneg = d[i] == 45u8; i += 1usize; }
+    mut e = 0.d;
+    while i < hi and d[i] >= 48u8 and d[i] <= 57u8 { e = e * 10.d + f64.from(d[i] - 48u8); i += 1usize; }
+    v = v * libc.pow(10.d, if eneg { -e; } else { e; });
+  }
+  if neg { -v; } else { v; };
+}
+
+fn startsWith(d &Array[u8], lo usize, hi usize, w &str) bool {
+  if hi - lo < w.len() { return false; }
+  mut i = 0usize;
+  while i < w.len() { if d[lo + i] != w[i] { return false; } i += 1usize; }
+  true;
+}
+
+fn readAll(file &str) String {
+  mut out = String.empty();
+  match fs.readFile(&Path.from(file)) {
+    case mut ok Ok { out <=> ok; }
+    case imm e Error { print <- "cannot read "; print <- file; print <- "\n"; }
+  }
+  out;
+}
+
+fn buildMesh(pos &List[Vec3], counts &List[u32], idx &List[u32], what &str) PolyMesh {
+  mut problems = List[String].empty();
+  imm m = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+  print <- what; print <- ": "; print <- m.vertexCount(); print <- " vertices, "; print <- m.faceCount(); print <- " faces, ";
+  print <- problems.len(); print <- " faces refused\n";
+  m;
+}
+
+// Our head: the first person's V and Q lines
+fn readOurs() PolyMesh {
+  imm text = readAll("C:/src/makehuman-poc/heads.txt");
+  imm d = text.view();
+  mut pos = List[Vec3].empty();
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut at = 0usize;
+  mut inside = false;
+  mut headStart = 0u32;
+  mut finished = false;
+  while at < d.len and not finished {
+    imm e = lineEnd(d, at);
+    if startsWith(d, at, e, "PERSON") { inside = true; }
+    elif inside and startsWith(d, at, e, "HEADSTART") {
+      mut a = 0usize; mut b = 0usize;
+      tokenAt(d, at, e, 1usize, &mut a, &mut b);
+      headStart = u32.from(parseNum(d, a, b));
+    }
+    elif startsWith(d, at, e, "END") { if inside { finished = true; } }
+    elif inside and startsWith(d, at, e, "V ") {
+      mut a = 0usize; mut b = 0usize;
+      tokenAt(d, at, e, 1usize, &mut a, &mut b); imm x = parseNum(d, a, b);
+      tokenAt(d, at, e, 2usize, &mut a, &mut b); imm y = parseNum(d, a, b);
+      tokenAt(d, at, e, 3usize, &mut a, &mut b); imm z = parseNum(d, a, b);
+      pos.push(new Vec3(f32.from(x), f32.from(y), f32.from(z)));
+    } elif inside and startsWith(d, at, e, "Q ") {
+      mut k = 1usize;
+      while k <= 4usize {
+        mut a = 0usize; mut b = 0usize;
+        tokenAt(d, at, e, k, &mut a, &mut b);
+        // the quads number the whole body's vertices; the head's V lines start at HEADSTART
+        idx.push(u32.from(parseNum(d, a, b)) - headStart);
+        k += 1usize;
+      }
+      counts.push(4u32);
+    }
+    at = e + 1usize;
+  }
+  buildMesh(&pos, &counts, &idx, "ours");
+}
+
+// The reference's head: faces of group 'body' whose corners are all above 'minY' (decimetres),
+// turned to face -z and scaled to metres
+fn readReference(minY f32) PolyMesh {
+  imm text = readAll("C:/src/reference-models/makehuman/base.obj");
+  imm d = text.view();
+  mut all = List[Vec3].empty();
+  mut faces = List[u32].empty();      // per face: corner count, then the corners
+  mut inBody = false;
+  mut at = 0usize;
+  while at < d.len {
+    imm e = lineEnd(d, at);
+    if startsWith(d, at, e, "v ") {
+      mut a = 0usize; mut b = 0usize;
+      tokenAt(d, at, e, 1usize, &mut a, &mut b); imm x = parseNum(d, a, b);
+      tokenAt(d, at, e, 2usize, &mut a, &mut b); imm y = parseNum(d, a, b);
+      tokenAt(d, at, e, 3usize, &mut a, &mut b); imm z = parseNum(d, a, b);
+      all.push(new Vec3(f32.from(x), f32.from(y), f32.from(z)));
+    } elif startsWith(d, at, e, "g ") {
+      inBody = startsWith(d, at, e, "g body");
+    } elif inBody and startsWith(d, at, e, "f ") {
+      mut cnt = 0u32;
+      mut k = 1usize;
+      mut corners = List[u32].empty();
+      mut a = 0usize; mut b = 0usize;
+      while tokenAt(d, at, e, k, &mut a, &mut b) {
+        // the vertex number is up to the first '/'
+        mut s = a;
+        while s < b and d[s] != 47u8 { s += 1usize; }
+        corners.push(u32.from(parseNum(d, a, s)) - 1u32);
+        cnt += 1u32;
+        k += 1usize;
+      }
+      faces.push(cnt);
+      mut j = 0usize;
+      while j < corners.len() { faces.push(*corners[j]); j += 1usize; }
+    }
+    at = e + 1usize;
+  }
+  // the head's faces, re-indexed
+  mut remap = List[u32].empty();
+  mut i = 0usize;
+  while i < all.len() { remap.push(NoIndex); i += 1usize; }
+  mut pos = List[Vec3].empty();
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  i = 0usize;
+  while i < faces.len() {
+    imm n = usize.from(*faces[i]);
+    mut up = true;
+    mut j = 0usize;
+    while j < n { if all[usize.from(*faces[i + 1usize + j])].y <= minY { up = false; } j += 1usize; }
+    if up {
+      counts.push(*faces[i]);
+      j = 0usize;
+      while j < n {
+        imm v = usize.from(*faces[i + 1usize + j]);
+        if *remap[v] == NoIndex {
+          remap.set(v, u32.from(pos.len()));
+          imm p = *all[v];
+          pos.push(new Vec3(-0.1 * p.x, 0.1 * p.y, -0.1 * p.z));
+        }
+        idx.push(*remap[v]);
+        j += 1usize;
+      }
+    }
+    i += 1usize + n;
+  }
+  buildMesh(&pos, &counts, &idx, "reference head");
+}
+
+// The faces of the mesh whose corners are all above minY, as a mesh of their own
+fn cropAbove(m &PolyMesh, minY f32) PolyMesh {
+  mut remap = List[u32].empty();
+  mut i = 0usize;
+  while i < m.vertexCount() { remap.push(NoIndex); i += 1usize; }
+  mut pos = List[Vec3].empty();
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm vs = m.faceVertices(u32.from(f));
+    mut up = true;
+    mut k = 0usize;
+    while k < vs.len() { if m.positions[usize.from(*vs[k])].y <= minY { up = false; } k += 1usize; }
+    if up {
+      counts.push(u32.from(vs.len()));
+      k = 0usize;
+      while k < vs.len() {
+        imm v = usize.from(*vs[k]);
+        if *remap[v] == NoIndex { remap.set(v, u32.from(pos.len())); pos.push(*m.positions[v]); }
+        idx.push(*remap[v]);
+        k += 1usize;
+      }
+    }
+    f += 1usize;
+  }
+  buildMesh(&pos, &counts, &idx, "cropped");
+}
+
+// ---------- helpers ----------
+
+fn label(prefix &str, value f32, decimals i32) String {
+  mut s = String.from(prefix);
+  s.append(numberText(value, decimals).view());
+  s;
+}
+
+fn mm(v f32) f32 { v * 1000.; }
+
+fn showMesh(cv &mut Canvas, vp &Viewport, m &PolyMesh, colors &List[Vec3], v &View, caption &str) Window {
+  imm win = tileWindow(m, m, v, vp);
+  drawMesh(cv, vp, &win, m, v, colors);
+  cv.text(vp.x + 8, vp.y + 8, caption, 2, ink());
+  win;
+}
+
+fn outwardness(m &PolyMesh) f32 {
+  imm b = m.bounds();
+  imm c = (b.min + b.max) * 0.5;
+  imm n = m.vertexNormals();
+  mut s = 0.;
+  mut i = 0usize;
+  while i < m.vertexCount() { s = s + n[i].dot((*m.positions[i] - c).normalize()); i += 1usize; }
+  s / f32.from(m.vertexCount());
+}
+
+fn heightRange(m &PolyMesh, lo &mut f32, hi &mut f32) {
+  *lo = m.positions[0usize].y;
+  *hi = *lo;
+  mut i = 0usize;
+  while i < m.vertexCount() {
+    if m.positions[i].y < *lo { *lo = m.positions[i].y; }
+    if m.positions[i].y > *hi { *hi = m.positions[i].y; }
+    i += 1usize;
+  }
+}
+
+// A region per vertex: the height in tenths of the head's, front (z below the middle) or back
+fn bandRegions(m &PolyMesh, lo f32, hi f32) List[u32] {
+  imm b = m.bounds();
+  imm zmid = 0.5 * (b.min.z + b.max.z);
+  mut out = List[u32].empty();
+  mut i = 0usize;
+  while i < m.vertexCount() {
+    imm p = *m.positions[i];
+    imm t = (p.y - lo) / (hi - lo);
+    mut band = u32.from(t * 10.);
+    if band > 9u32 { band = 9u32; }
+    out.push(band * 2u32 + if p.z < zmid { 0u32; } else { 1u32; });
+    i += 1usize;
+  }
+  out;
+}
+
+fn printStats(title &str, stats &List[RegionStat]) {
+  print <- title; print <- "\n";
+  print <- "  region        n   mean   mean|.|  rms    p95    min    max   (mm)\n";
+  mut i = 0usize;
+  while i < stats.len() {
+    imm s = stats[i];
+    imm band = s.region / 2u32;
+    print <- "  "; print <- band * 10u32; print <- "-"; print <- band * 10u32 + 10u32; print <- "% ";
+    print <- if s.region % 2u32 == 0u32 { "front"; } else { "back "; };
+    print <- "  "; print <- s.count; print <- "  "; print <- mm(s.mean); print <- "  "; print <- mm(s.meanAbs);
+    print <- "  "; print <- mm(s.rms); print <- "  "; print <- mm(s.p95); print <- "  "; print <- mm(s.min);
+    print <- "  "; print <- mm(s.max); print <- "\n";
+    i += 1usize;
+  }
+}
+
+fn uniform(n usize, c Vec3) List[Vec3] {
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n { out.push(c); i += 1usize; }
+  out;
+}
+
+fn curvatureSheet(ours &PolyMesh, ref &PolyMesh) {
+  mut cv = Canvas.make(1600, 560, new Vec3(1., 1., 1.));
+  imm front = View.look(new Vec3(0., 0., 1.), new Vec3(0., 1., 0.));
+  imm quarter = View.look(new Vec3(0.7, -0.15, 1.), new Vec3(0., 1., 0.));
+  imm co = smoothCurvature(ours, &curvature(ours), 3u32);
+  imm cr = smoothCurvature(ref, &curvature(ref), 3u32);
+  imm eo = flatCurvature(ours, 0.12);
+  imm er = flatCurvature(ref, 0.12);
+  imm ko = patchColors(&classifyVertices(&co, eo));
+  imm kr = patchColors(&classifyVertices(&cr, er));
+  showMesh(&mut cv, &new Viewport(0, 0, 400, 540), ours, &ko, &front, "HUMANBODY FRONT");
+  showMesh(&mut cv, &new Viewport(400, 0, 400, 540), ours, &ko, &quarter, "HUMANBODY 3/4");
+  showMesh(&mut cv, &new Viewport(800, 0, 400, 540), ref, &kr, &front, "MAKEHUMAN FRONT");
+  showMesh(&mut cv, &new Viewport(1200, 0, 400, 540), ref, &kr, &quarter, "MAKEHUMAN 3/4");
+  mut c = 0u32;
+  while c < 6u32 {
+    cv.fillRect(8, 36 + i32.from(c) * 20, 14, 14, patchColor(c));
+    cv.text(28, 38 + i32.from(c) * 20, patchName(c), 1, ink());
+    c += 1u32;
+  }
+  mut ok = cv.save(OutDir, "head-curvature.png");
+  if not ok { print <- "could not write head-curvature.png\n"; }
+  imm clo = classifyVertices(&co, eo);
+  imm clr = classifyVertices(&cr, er);
+  mut no = [0usize, 0usize, 0usize, 0usize, 0usize, 0usize];
+  mut nr = [0usize, 0usize, 0usize, 0usize, 0usize, 0usize];
+  mut i = 0usize;
+  while i < clo.len() { no[usize.from(*clo[i])] = no[usize.from(*clo[i])] + 1usize; i += 1usize; }
+  i = 0usize;
+  while i < clr.len() { nr[usize.from(*clr[i])] = nr[usize.from(*clr[i])] + 1usize; i += 1usize; }
+  print <- "patch classes (flat dome cup saddle ridge valley), flat below curvature "; print <- eo; print <- " /m:\n  ours ";
+  c = 0u32;
+  while c < 6u32 { print <- no[usize.from(c)]; print <- " "; c += 1u32; }
+  print <- "\n  reference ";
+  c = 0u32;
+  while c < 6u32 { print <- nr[usize.from(c)]; print <- " "; c += 1u32; }
+  print <- "\n";
+}
+
+// The weights of the cranium: vertices above this fraction of the head's height
+fn craniumWeights(m &PolyMesh, lo f32, hi f32, frac f32) List[f32] {
+  mut w = List[f32].empty();
+  mut i = 0usize;
+  while i < m.vertexCount() {
+    w.push(if (m.positions[i].y - lo) / (hi - lo) > frac { 1.; } else { 0.; });
+    i += 1usize;
+  }
+  w;
+}
+
+fn markFeatures(cv &mut Canvas, vp &Viewport, win &Window, v &View, m &PolyMesh, field &List[f32], label2 &str) {
+  imm sm = smoothField(m, field, 2u32);
+  imm peaks = findPeaks(m, &sm, 0.005, 0.025);
+  imm pits = findPits(m, &sm, 0.005, 0.025);
+  imm cr = findCreases(m, &sm, 8., 8usize);
+  mut l = 0usize;
+  while l < cr.ridges.len() {
+    mut pts = List[Vec3].empty();
+    mut k = 0usize;
+    while k < cr.ridges[l].len() { pts.push(*m.positions[usize.from(*cr.ridges[l][k])]); k += 1usize; }
+    drawPolyline3(cv, vp, win, v, &pts, new Vec3(0.95, 0.5, 0.0));
+    l += 1usize;
+  }
+  l = 0usize;
+  while l < cr.valleys.len() {
+    mut pts = List[Vec3].empty();
+    mut k = 0usize;
+    while k < cr.valleys[l].len() { pts.push(*m.positions[usize.from(*cr.valleys[l][k])]); k += 1usize; }
+    drawPolyline3(cv, vp, win, v, &pts, new Vec3(0.0, 0.45, 0.45));
+    l += 1usize;
+  }
+  mut i = 0usize;
+  while i < peaks.len() { drawMarker3(cv, vp, win, v, *m.positions[usize.from(*peaks[i])], 4, new Vec3(0.1, 0.65, 0.1)); i += 1usize; }
+  i = 0usize;
+  while i < pits.len() { drawMarker3(cv, vp, win, v, *m.positions[usize.from(*pits[i])], 4, new Vec3(0.7, 0.1, 0.7)); i += 1usize; }
+  print <- label2; print <- ": peaks "; print <- peaks.len(); print <- ", pits "; print <- pits.len();
+  print <- ", ridge lines "; print <- cr.ridges.len(); print <- ", valley lines "; print <- cr.valleys.len(); print <- "\n";
+}
+
+fn ellipsoidSheet(ours &PolyMesh, ref &PolyMesh) {
+  mut cv = Canvas.make(1600, 560, new Vec3(1., 1., 1.));
+  imm quarter = View.look(new Vec3(0.7, -0.15, 1.), new Vec3(0., 1., 0.));
+  imm front = View.look(new Vec3(0., 0., 1.), new Vec3(0., 1., 0.));
+  mut pass = 0;
+  while pass < 2 {
+    imm m = if pass == 0 { ours; } else { ref; };
+    mut lo = 0.; mut hi = 0.;
+    heightRange(m, &mut lo, &mut hi);
+    imm w = craniumWeights(m, lo, hi, 0.55);
+    imm pts = gather(m, allVertices(m).view());
+    imm fit = fitEllipsoid(pts.view(), w.view());
+    imm field = residualToForm(m, &fit);
+    print <- if pass == 0 { "ours"; } else { "reference"; };
+    print <- " cranium ellipsoid (vertices above 55% of the height, "; print <- fit.count; print <- " of them): semi-axes mm ";
+    print <- mm(fit.param(3usize)); print <- " "; print <- mm(fit.param(4usize)); print <- " "; print <- mm(fit.param(5usize));
+    print <- ", rms mm "; print <- mm(f32.from(fit.rms)); print <- ", max mm "; print <- mm(f32.from(fit.maxAbs)); print <- "\n";
+    imm colors = fieldColors(&field, 0.015);
+    imm vp0 = new Viewport(pass * 800, 0, 400, 540);
+    imm vp1 = new Viewport(pass * 800 + 400, 0, 400, 540);
+    showMesh(&mut cv, &vp0, m, &colors, &front, if pass == 0 { "HUMANBODY VS ELLIPSOID"; } else { "MAKEHUMAN VS ELLIPSOID"; });
+    imm win = showMesh(&mut cv, &vp1, m, &colors, &quarter, "FEATURES");
+    markFeatures(&mut cv, &vp1, &win, &quarter, m, &field, if pass == 0 { "  ours"; } else { "  reference"; });
+    pass += 1;
+  }
+  cv.text(8, 540, "RED OUTSIDE THE ELLIPSOID, BLUE INSIDE, 15 MM FULL COLOUR. GREEN PEAK, PURPLE PIT, ORANGE RIDGE, TEAL VALLEY", 1, ink());
+  mut ok = cv.save(OutDir, "head-ellipsoid.png");
+  if not ok { print <- "could not write head-ellipsoid.png\n"; }
+}
+
+fn main() i32 {
+  fs.makeDirAll(&Path.from(OutDir));
+  imm none = List[f32].empty();
+  // Both heads cropped to the top 235 mm (chin to crown with a little neck): ours includes the whole neck
+  imm oursFull = readOurs();
+  imm refFull = readReference(-1000.);
+  if oursFull.vertexCount() == 0usize or refFull.vertexCount() == 0usize { return 1; }
+  mut t0 = 0.; mut t1 = 0.;
+  heightRange(&oursFull, &mut t0, &mut t1);
+  imm ours = cropAbove(&oursFull, t1 - 0.235);
+  heightRange(&refFull, &mut t0, &mut t1);
+  imm refRaw = cropAbove(&refFull, t1 - 0.235);
+  print <- "normals outward (mean dot, 1 = all out): ours "; print <- outwardness(&ours); print <- ", reference "; print <- outwardness(&refRaw); print <- "\n";
+
+  // ---- landmark-free alignment: match the heights, then ICP with scale on the face ----
+  mut olo = 0.; mut ohi = 0.;
+  heightRange(&ours, &mut olo, &mut ohi);
+  mut rlo = 0.; mut rhi = 0.;
+  heightRange(&refRaw, &mut rlo, &mut rhi);
+  print <- "height mm: ours "; print <- mm(ohi - olo); print <- ", reference "; print <- mm(rhi - rlo); print <- "\n";
+  imm ob = ours.bounds();
+  imm rb = refRaw.bounds();
+  imm s0 = 1.d;
+  // the crowns and the middles of the heads in x and z coincide to begin with
+  imm oc = new DVec3(f64.from(0.5 * (ob.min.x + ob.max.x)), f64.from(ob.max.y), f64.from(0.5 * (ob.min.z + ob.max.z)));
+  imm rc = new DVec3(f64.from(0.5 * (rb.min.x + rb.max.x)), f64.from(rb.max.y), f64.from(0.5 * (rb.min.z + rb.max.z)));
+  mut start = Similarity.identity();
+  start.scale = s0;
+  start.trans = oc - rc * s0;
+  imm surf = Surface.of(&ours);
+  imm rpts = gather(&refRaw, allVertices(&refRaw).view());
+  imm res = icp(rpts.view(), &surf, &start, 80u32, 0.7, 0., true, none.view());
+  print <- "ICP: "; print <- res.rounds; print <- " rounds, kept-pair rms mm "; print <- mm(f32.from(res.rms)); print <- ", scale ";
+  print <- f32.from(res.map.scale); print <- ", turn degrees "; print <- f32.from(res.map.angleDegrees()); print <- "\n";
+  mut ref = PolyMesh.empty();
+  {
+    mut moved = List[Vec3].empty();
+    mut i = 0usize;
+    while i < refRaw.vertexCount() { moved.push(res.map.apply(*refRaw.positions[i])); i += 1usize; }
+    mut counts = List[u32].empty();
+    mut idx = List[u32].empty();
+    mut f = 0usize;
+    while f < refRaw.faceCount() {
+      imm vs = refRaw.faceVertices(u32.from(f));
+      counts.push(u32.from(vs.len()));
+      mut k = 0usize;
+      while k < vs.len() { idx.push(*vs[k]); k += 1usize; }
+      f += 1usize;
+    }
+    mut problems = List[String].empty();
+    ref = PolyMesh.fromPolygons(moved.view(), counts.view(), idx.view(), &mut problems);
+  }
+
+  // ---- the gap: our vertices against the reference surface ----
+  imm refSurf = Surface.of(&ref);
+  imm flip = if outwardness(&ref) < 0. { -1.; } else { 1.; };
+  mut gap = residualToSurface(&ours, &refSurf);
+  mut gi = 0usize;
+  while gi < gap.len() { gap.set(gi, *gap[gi] * flip); gi += 1usize; }
+  imm regions = bandRegions(&ours, olo, ohi);
+  printStats("our vertex to the reference surface, by height band (signed, + = ours proud):", &regionStats(&gap, &regions));
+  {
+    mut cv = Canvas.make(1440, 560, new Vec3(1., 1., 1.));
+    imm colors = fieldColors(&gap, 0.01);
+    showMesh(&mut cv, &new Viewport(0, 0, 360, 540), &ours, &colors, &View.look(new Vec3(0., 0., 1.), new Vec3(0., 1., 0.)), "FRONT");
+    showMesh(&mut cv, &new Viewport(360, 0, 360, 540), &ours, &colors, &View.look(new Vec3(0.7, -0.15, 1.), new Vec3(0., 1., 0.)), "3/4");
+    showMesh(&mut cv, &new Viewport(720, 0, 360, 540), &ours, &colors, &View.look(new Vec3(1., 0., 0.), new Vec3(0., 1., 0.)), "SIDE");
+    showMesh(&mut cv, &new Viewport(1080, 0, 360, 540), &ours, &colors, &View.look(new Vec3(0., 1., 0.), new Vec3(0., 0., -1.)), "TOP");
+    cv.text(8, 540, "OURS COLOURED BY SIGNED DISTANCE TO THE MAKEHUMAN HEAD AFTER ICP. RED = OURS PROUD, BLUE = RECESSED, 10 MM FULL COLOUR", 1, ink());
+    mut ok = cv.save(OutDir, "head-gap.png");
+    if not ok { print <- "could not write head-gap.png\n"; }
+  }
+
+  curvatureSheet(&ours, &ref);
+  ellipsoidSheet(&ours, &ref);
+
+  // ---- silhouettes ----
+  {
+    imm views = standardViews();
+    imm scores = compareSilhouettes(&ours, &ref, &views, 480usize);
+    imm names = ["FRONT", "BACK", "SIDE", "OTHER SIDE", "TOP", "BOTTOM"];
+    mut k = 0usize;
+    while k < 6usize {
+      print <- "silhouette "; print <- names[k]; print <- ": iou "; print <- scores[k].iou; print <- ", hausdorff mm "; print <- mm(scores[k].hausdorff); print <- "\n";
+      k += 1usize;
+    }
+    mut cv = Canvas.make(1500, 500, new Vec3(1., 1., 1.));
+    imm which = [0usize, 2usize, 4usize];
+    mut t = 0usize;
+    while t < 3usize {
+      imm vi = which[t];
+      imm vp = new Viewport(i32.from(t) * 500, 0, 500, 500);
+      imm win = tileWindow(&ours, &ref, views[vi], &vp);
+      imm sw = windowFor(&ours, &ref, views[vi], usize.from(500 - 8));
+      imm oa = traceOutline(&rasterize(&ours, views[vi], &sw), &sw);
+      imm ob2 = traceOutline(&rasterize(&ref, views[vi], &sw), &sw);
+      drawLoops(&mut cv, &vp, &win, &oa, new Vec3(0.85, 0.2, 0.2));
+      drawLoops(&mut cv, &vp, &win, &ob2, new Vec3(0.2, 0.35, 0.85));
+      cv.text(i32.from(t) * 500 + 8, 8, names[vi], 2, ink());
+      cv.text(i32.from(t) * 500 + 8, 28, label("IOU ", scores[vi].iou, 3).view(), 2, ink());
+      cv.text(i32.from(t) * 500 + 8, 48, label("HAUSDORFF MM ", mm(scores[vi].hausdorff), 1).view(), 2, ink());
+      t += 1usize;
+    }
+    cv.text(8, 488, "RED = HUMANBODY, BLUE = MAKEHUMAN", 1, ink());
+    mut ok = cv.save(OutDir, "head-silhouettes.png");
+    if not ok { print <- "could not write head-silhouettes.png\n"; }
+  }
+  0;
+}
+

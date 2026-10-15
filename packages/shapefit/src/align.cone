@@ -1,0 +1,242 @@
+// ======== Landmark correspondence: Procrustes alignment and ICP ========
+//
+// Rigid and similarity alignment of one set of points onto another from point
+// pairs, and the iterated closest point refinement when the pairs are not known
+// (a mesh onto a mesh).
+//
+// - 'alignPoints': Horn's closed form ("Closed-form solution of absolute
+//   orientation using unit quaternions", 1987): the rotation is the quaternion
+//   that is the eigenvector of greatest eigenvalue of a 4 x 4 matrix of the
+//   pairs' cross-covariance (so it is a proper rotation, never a reflection);
+//   the scale, when asked for, Umeyama's (1991): the sum of the dot products
+//   of the target with the rotated source over the sum of the source's squares.
+//   Weights per pair are honoured.
+// - 'icp': Besl and McKay's iterated closest point: each round pairs every source
+//   point with its nearest point on the target surface, drops the farthest pairs
+//   (a trimmed fraction, so a region that does not match cannot drag the rest),
+//   and solves 'alignPoints' on the kept pairs.
+//
+// A Similarity maps p to scale * R p + t.
+
+pub struct Similarity {
+  pub scale f64;
+  pub rot List[f64];     // row-major 3 x 3
+  pub trans DVec3;
+
+  pub fn identity() Similarity {
+    mut r = zeros(9usize);
+    r.set(0usize, 1.d); r.set(4usize, 1.d); r.set(8usize, 1.d);
+    new Similarity(1.d, r, new DVec3(0.d, 0.d, 0.d));
+  }
+
+  pub fn applyD(self &, p DVec3) DVec3 {
+    new DVec3(*rot[0] * p.x + *rot[1] * p.y + *rot[2] * p.z, *rot[3] * p.x + *rot[4] * p.y + *rot[5] * p.z,
+      *rot[6] * p.x + *rot[7] * p.y + *rot[8] * p.z) * scale + trans;
+  }
+
+  pub fn apply(self &, p Vec3) Vec3 { applyD(DVec3.from(p)).toVec3(); }
+
+  // The rotation as a geomath Mat3
+  pub fn rotation(self &) Mat3 {
+    new Mat3([f32.from(*rot[0]), f32.from(*rot[3]), f32.from(*rot[6]), f32.from(*rot[1]), f32.from(*rot[4]),
+      f32.from(*rot[7]), f32.from(*rot[2]), f32.from(*rot[5]), f32.from(*rot[8])]);
+  }
+
+  // The rotation's angle in degrees
+  pub fn angleDegrees(self &) f64 {
+    imm c = maxd(-1.d, mind(1.d, (*rot[0] + *rot[4] + *rot[8] - 1.d) * 0.5d));
+    libc.acos(c) * 180.d / 3.14159265358979d;
+  }
+
+  // The map that does this one and then 'then'
+  pub fn followedBy(self &, then &Similarity) Similarity {
+    mut r = zeros(9usize);
+    mut i = 0usize;
+    while i < 3usize {
+      mut j = 0usize;
+      while j < 3usize {
+        mut s = 0.d;
+        mut k = 0usize;
+        while k < 3usize { s = s + *then.rot[i * 3usize + k] * *rot[k * 3usize + j]; k += 1usize; }
+        r.set(i * 3usize + j, s);
+        j += 1usize;
+      }
+      i += 1usize;
+    }
+    new Similarity(then.scale * scale, r, then.applyD(trans));
+  }
+}
+
+// Every vertex of the mesh moved by the map
+pub fn applySimilarity(m &mut PolyMesh, s &Similarity) {
+  mut i = 0usize;
+  while i < m.positions.len() {
+    m.positions.set(i, s.apply(*m.positions[i]));
+    i += 1usize;
+  }
+}
+
+// The points moved by the map
+pub fn transformPoints(pts &Array[Vec3], s &Similarity) List[Vec3] {
+  mut out = List[Vec3].withCapacity(pts.len);
+  mut i = 0usize;
+  while i < pts.len { out.push(s.apply(pts[i])); i += 1usize; }
+  out;
+}
+
+// The rotation matrix (row-major) of the unit quaternion (w, x, y, z)
+fn quatMatrix(w f64, x f64, y f64, z f64) List[f64] {
+  mut r = zeros(9usize);
+  r.set(0usize, 1.d - 2.d * (y * y + z * z)); r.set(1usize, 2.d * (x * y - w * z)); r.set(2usize, 2.d * (x * z + w * y));
+  r.set(3usize, 2.d * (x * y + w * z)); r.set(4usize, 1.d - 2.d * (x * x + z * z)); r.set(5usize, 2.d * (y * z - w * x));
+  r.set(6usize, 2.d * (x * z - w * y)); r.set(7usize, 2.d * (y * z + w * x)); r.set(8usize, 1.d - 2.d * (x * x + y * y));
+  r;
+}
+
+// The rotation, translation and (if 'withScale') uniform scale that carry the
+// source points closest onto the target points, pair i of one onto pair i of the
+// other, by weighted least squares. An empty weight array weighs every pair 1.
+// Fewer than three pairs give the identity (and for one or two, the translation
+// or rotation that is determined).
+pub fn alignPoints(src &Array[Vec3], dst &Array[Vec3], w &Array[f32], withScale bool) Similarity {
+  imm n = if src.len < dst.len { src.len; } else { dst.len; };
+  mut tw = 0.d;
+  mut cs = new DVec3(0.d, 0.d, 0.d);
+  mut cd = new DVec3(0.d, 0.d, 0.d);
+  mut i = 0usize;
+  while i < n {
+    imm wi = wt(w, i);
+    tw = tw + wi;
+    cs = cs + DVec3.from(src[i]) * wi;
+    cd = cd + DVec3.from(dst[i]) * wi;
+    i += 1usize;
+  }
+  if tw <= 0.d { return Similarity.identity(); }
+  cs = cs * (1.d / tw);
+  cd = cd * (1.d / tw);
+  mut sxx = 0.d; mut sxy = 0.d; mut sxz = 0.d;
+  mut syx = 0.d; mut syy = 0.d; mut syz = 0.d;
+  mut szx = 0.d; mut szy = 0.d; mut szz = 0.d;
+  mut var = 0.d;
+  i = 0usize;
+  while i < n {
+    imm wi = wt(w, i);
+    imm a = DVec3.from(src[i]) - cs;
+    imm b = DVec3.from(dst[i]) - cd;
+    sxx = sxx + wi * a.x * b.x; sxy = sxy + wi * a.x * b.y; sxz = sxz + wi * a.x * b.z;
+    syx = syx + wi * a.y * b.x; syy = syy + wi * a.y * b.y; syz = syz + wi * a.y * b.z;
+    szx = szx + wi * a.z * b.x; szy = szy + wi * a.z * b.y; szz = szz + wi * a.z * b.z;
+    var = var + wi * a.lengthSquared();
+    i += 1usize;
+  }
+  mut nm = zeros(16usize);
+  nm.set(0usize, sxx + syy + szz);   nm.set(1usize, syz - szy);        nm.set(2usize, szx - sxz);        nm.set(3usize, sxy - syx);
+  nm.set(4usize, syz - szy);         nm.set(5usize, sxx - syy - szz);  nm.set(6usize, sxy + syx);        nm.set(7usize, szx + sxz);
+  nm.set(8usize, szx - sxz);         nm.set(9usize, sxy + syx);        nm.set(10usize, -sxx + syy - szz); nm.set(11usize, syz + szy);
+  nm.set(12usize, sxy - syx);        nm.set(13usize, szx + sxz);       nm.set(14usize, syz + szy);       nm.set(15usize, -sxx - syy + szz);
+  mut vals = List[f64].empty();
+  mut vecs = List[f64].empty();
+  jacobiEigen(&mut nm, 4usize, &mut vals, &mut vecs);
+  // The eigenvector of the greatest eigenvalue (column 3), ordered (w, x, y, z)
+  imm qw = *vecs[3usize];
+  imm qx = *vecs[4usize + 3usize];
+  imm qy = *vecs[8usize + 3usize];
+  imm qz = *vecs[12usize + 3usize];
+  imm rot = quatMatrix(qw, qx, qy, qz);
+  mut s = 1.d;
+  if withScale and var > 0.d {
+    mut num = 0.d;
+    i = 0usize;
+    while i < n {
+      imm wi = wt(w, i);
+      imm a = DVec3.from(src[i]) - cs;
+      imm b = DVec3.from(dst[i]) - cd;
+      imm ra = new DVec3(*rot[0] * a.x + *rot[1] * a.y + *rot[2] * a.z, *rot[3] * a.x + *rot[4] * a.y + *rot[5] * a.z,
+        *rot[6] * a.x + *rot[7] * a.y + *rot[8] * a.z);
+      num = num + wi * b.dot(ra);
+      i += 1usize;
+    }
+    s = num / var;
+  }
+  imm rc = new DVec3(*rot[0] * cs.x + *rot[1] * cs.y + *rot[2] * cs.z, *rot[3] * cs.x + *rot[4] * cs.y + *rot[5] * cs.z,
+    *rot[6] * cs.x + *rot[7] * cs.y + *rot[8] * cs.z);
+  new Similarity(s, rot, cd - rc * s);
+}
+
+// The root-mean-square distance between paired points (src moved by the map, against dst)
+pub fn pairRms(src &Array[Vec3], dst &Array[Vec3], w &Array[f32], s &Similarity) f64 {
+  imm n = if src.len < dst.len { src.len; } else { dst.len; };
+  mut sum = 0.d;
+  mut tw = 0.d;
+  mut i = 0usize;
+  while i < n {
+    imm wi = wt(w, i);
+    sum = sum + wi * (s.applyD(DVec3.from(src[i])) - DVec3.from(dst[i])).lengthSquared();
+    tw = tw + wi;
+    i += 1usize;
+  }
+  if tw > 0.d { sqrtd(sum / tw); } else { 0.d; };
+}
+
+pub struct IcpResult {
+  pub map Similarity;
+  pub rms f64;               // of the kept pairs in the last round
+  pub rounds u32;
+  pub history List[f32];     // the kept pairs' rms at each round
+}
+
+// Refine 'start' so that the source points land on the target surface: up to
+// 'rounds' rounds of pairing with the nearest point and aligning. Of the pairs,
+// the nearest 'keep' fraction (0 to 1) are used each round, and none farther than
+// 'maxDist' if that is above zero. With 'withScale' the map may scale. 'w' weighs
+// the source points (empty for all 1). Stops early when the rms stops changing.
+pub fn icp(src &Array[Vec3], target &Surface, start &Similarity, rounds u32, keep f32, maxDist f32, withScale bool,
+    w &Array[f32]) IcpResult {
+  imm n = src.len;
+  mut map = start.followedBy(&Similarity.identity());
+  mut history = List[f32].empty();
+  mut last = 1.0e30d;
+  mut done = 0u32;
+  mut rms = 0.d;
+  mut pass = 0u32;
+  mut dst = List[Vec3].withCapacity(n);
+  mut dists = zeros(n);
+  while pass < rounds and n > 0usize {
+    dst.clear();
+    mut i = 0usize;
+    while i < n {
+      mut t = NoIndex;
+      mut bw = new DVec3(0.d, 0.d, 0.d);
+      imm d2 = target.nearest(map.applyD(DVec3.from(src[i])), &mut t, &mut bw);
+      dists.set(i, d2);
+      dst.push(if t == NoIndex { src[i]; } else { target.pointAt(t, bw).toVec3(); });
+      i += 1usize;
+    }
+    // Which pairs to keep: the nearest fraction among those with weight
+    mut live = List[f32].empty();
+    i = 0usize;
+    while i < n { if wt(w, i) > 0.d { live.push(f32.from(*dists[i])); } i += 1usize; }
+    live.sortBy((a, b) => if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; });
+    mut limit = 1.0e30d;
+    if live.len() > 0usize and keep < 1. {
+      mut rank = usize.from(libc.ceil(f64.from(keep) * f64.from(live.len()))) ;
+      if rank > 0usize { rank -= 1usize; }
+      if rank >= live.len() { rank = live.len() - 1usize; }
+      limit = f64.from(*live[rank]);
+    }
+    if maxDist > 0. { limit = mind(limit, f64.from(maxDist) * f64.from(maxDist)); }
+    mut kw = List[f32].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      kw.push(if *dists[i] <= limit { f32.from(wt(w, i)); } else { 0.; });
+      i += 1usize;
+    }
+    map = alignPoints(src, dst.view(), kw.view(), withScale);
+    rms = pairRms(src, dst.view(), kw.view(), &map);
+    history.push(f32.from(rms));
+    done = pass + 1u32;
+    if absd(last - rms) < 1.0e-9d * (1.d + rms) { pass = rounds; } else { pass += 1u32; }
+    last = rms;
+  }
+  new IcpResult(map, rms, done, history);
+}
