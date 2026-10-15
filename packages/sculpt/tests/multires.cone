@@ -1,0 +1,516 @@
+// Multiresolution (src/multires.cone, multiresstore.cone, multiresrebuild.cone),
+// checked with the testing package against values worked out by hand before the
+// test was run; only a failure prints, so multires.out holds the summary alone.
+//
+// - The cube cage of size 1 with two levels added is subdivide's own level 2
+//   to the bit (detail zero): 98 vertices, 96 faces, level 1's vertex 7 at
+//   (5/9, 5/9, 5/9) (catmullclark.cone works it out).
+// - A flat 3 x 3 grid in the plane z = 0, x and y from 0 to 2, 9 vertices, 4
+//   quads facing +z, one level added (25 vertices). Its level 1 is the plane
+//   itself (every rule keeps a flat patch flat), and the middle vertex of the
+//   grid, vertex 4 at (1, 1, 0), is a face-point-free interior vertex point
+//   that stays at (1, 1, 0). The face point of face 0 (corners (0,0), (1,0),
+//   (1,1), (0,1)) is its centre (0.5, 0.5, 0), vertex 9 + 12 + 0 = 21 of level
+//   1 (V = 9, E = 12). Edited up to (0.5, 0.5, 0.5), its detail is 0.5 along
+//   the normal +z. The base then turned 90 degrees about the x axis (y, z) ->
+//   (-z, y): the face point is at (0.5, 0, 0.5) in the turned plane, whose
+//   normal is (0, -1, 0): so level 1 puts the detail at (0.5, -0.5, 0.5). The
+//   same turn without a frame (the detail kept as (0, 0, 0.5)) would give
+//   (0.5, 0, 1).
+// - The displacement between levels 0 and 1 is the stored detail: height 0.5
+//   at that vertex, 0 elsewhere; the world displacement (0, 0, 0.5) before
+//   the turn.
+// - Storage of the cube's two levels (V1 = 26, V2 = 98): 32 bits is 12 bytes a
+//   vertex (312 and 1176), 16 bits 12 + 6 V (168 and 600), 8 bits 12 + 3 V (90
+//   and 306). A 32-bit pack read back is exact; a 16-bit pack is within half a
+//   step, the step being the level's largest coefficient over 32767.
+// - Delete higher keeps the lower levels as they were; delete lower makes a
+//   level the base and rebuilds the same top; bake down gives each lower level
+//   the top's own first vertices, and the top unchanged.
+// - Rebuilding: the squashed cube (a box 1 x 0.6 x 0.4 half-extents) subdivided
+//   twice comes back, with two levels asked for, to a base within 0.0001 of the
+//   box and a detail RMS near 0 at both levels; the dense mesh with a bump on
+//   it comes back with its top exactly the dense mesh, and a base nearer the
+//   bump-free box than the bump is high; a grid with a boundary comes back as
+//   the cage; a mesh that is no subdivision (a lathed pot) is reported and has
+//   no levels.
+
+mod multires;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+imm loose = 0.0001d;
+
+fn point(got Vec3, x f32, y f32, z f32, within f64, label &Array[u8]) {
+  expectFloat(got.x, x, within, label);
+  expectFloat(got.y, y, within, label);
+  expectFloat(got.z, z, within, label);
+}
+
+fn copyPos(src &List[Vec3]) List[Vec3] {
+  mut out = List[Vec3].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(*src[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A mesh with the same topology and channels, the given positions
+fn withPos(m &PolyMesh, p List[Vec3]) PolyMesh {
+  mut c = subdivide(m, 0u32);
+  mut i = 0usize;
+  while i < p.len() {
+    c.positions.set(i, *p[i]);
+    i = i + 1usize;
+  }
+  c;
+}
+
+// The greatest distance between two meshes' vertices, vertex for vertex
+fn farthest(a &PolyMesh, b &PolyMesh) f64 {
+  if a.vertexCount() != b.vertexCount() { return 1000000.d; }
+  mut worst = 0.d;
+  mut i = 0usize;
+  while i < a.vertexCount() {
+    imm d = f64.from((*a.positions[i] - *b.positions[i]).length());
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst;
+}
+
+fn farthestList(a &List[Vec3], b &List[Vec3]) f64 {
+  mut worst = 0.d;
+  mut i = 0usize;
+  while i < a.len() {
+    imm d = f64.from((*a[i] - *b[i]).length());
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst;
+}
+
+// A grid of nx x ny quads in z = 0, x and y from 0 to nx and ny, facing +z
+fn grid(nx u32, ny u32) PolyMesh {
+  mut pts = List[Vec3].empty();
+  mut j = 0u32;
+  while j <= ny {
+    mut i = 0u32;
+    while i <= nx {
+      pts.push(new Vec3(f32.from(i), f32.from(j), 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  j = 0u32;
+  while j < ny {
+    mut i = 0u32;
+    while i < nx {
+      imm a = j * (nx + 1u32) + i;
+      counts.push(4u32);
+      idx.push(a);
+      idx.push(a + 1u32);
+      idx.push(a + nx + 2u32);
+      idx.push(a + nx + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems);
+}
+
+// A box with the given half-extents, as the cube cage scaled
+fn box(sx f32, sy f32, sz f32) PolyMesh {
+  imm c = PolyMesh.cube(1.);
+  mut pts = List[Vec3].empty();
+  mut i = 0usize;
+  while i < c.vertexCount() {
+    pts.push(new Vec3(c.positions[i].x * sx, c.positions[i].y * sy, c.positions[i].z * sz));
+    i = i + 1usize;
+  }
+  withPos(&c, pts);
+}
+
+// Positions turned 90 degrees about the x axis: (x, y, z) -> (x, -z, y)
+fn turnX(p &List[Vec3]) List[Vec3] {
+  mut out = List[Vec3].empty();
+  mut i = 0usize;
+  while i < p.len() {
+    out.push(new Vec3(p[i].x, -p[i].z, p[i].y));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Positions turned by an angle about the y axis
+fn turnY(p &List[Vec3], a f32) List[Vec3] {
+  mut out = List[Vec3].empty();
+  imm c = cos(a);
+  imm s = sin(a);
+  mut i = 0usize;
+  while i < p.len() {
+    out.push(new Vec3(p[i].x * c + p[i].z * s, p[i].y, -p[i].x * s + p[i].z * c));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A cube with two levels and a little detail made by hand
+fn detailed() Multires {
+  imm cube = PolyMesh.cube(1.);
+  mut mr = Multires.fromMesh(&cube);
+  mr.addLevel();
+  mr.addLevel();
+  mut p = copyPos(&mr.levels[2usize].positions);
+  p.set(3usize, *p[3usize] + new Vec3(0.1, 0.2, -0.1));
+  p.set(30usize, *p[30usize] * 1.1);
+  p.set(60usize, *p[60usize] * 0.9);
+  p.set(90usize, *p[90usize] + new Vec3(0., 0.15, 0.));
+  mr.editLevel(2u32, &p);
+  mut q = copyPos(&mr.levels[1usize].positions);
+  q.set(12usize, *q[12usize] * 1.2);
+  mr.editLevel(1u32, &q);
+  mr;
+}
+
+fn basics() {
+  imm cube = PolyMesh.cube(1.);
+  mut mr = Multires.fromMesh(&cube);
+  expectInt(i64.from(mr.levelCount()), 0, "a new Multires has no levels");
+  mr.addLevel();
+  mr.addLevel();
+  expectInt(i64.from(mr.levelCount()), 2, "two levels");
+  imm direct = subdivide(&cube, 2u32);
+  imm top = mr.apply();
+  expectInt(i64.from(top.vertexCount()), 98, "level 2 vertices");
+  expectInt(i64.from(top.faceCount()), 96, "level 2 faces");
+  expectFloat(farthest(&top, &direct), 0.d, 0.d, "zero detail is subdivide's own level 2, to the bit");
+  imm l1 = mr.evaluate(1u32);
+  point(*l1.positions[7usize], 0.555556, 0.555556, 0.555556, near, "level 1 vertex 7");
+  imm past = mr.evaluate(9u32);
+  expectInt(i64.from(past.vertexCount()), 98, "a level past the top is the top");
+  expectInt(i64.from(top.validate().len()), 0, "level 2 validates");
+  expectFloat(f64.from(detailRms(&mr, 2u32)), 0.d, 0.d, "zero detail has zero RMS");
+}
+
+fn ridesAlong() {
+  imm g = grid(2u32, 2u32);
+  mut mr = Multires.fromMesh(&g);
+  mr.addLevel();
+  point(*mr.levels[1usize].positions[4usize], 1., 1., 0., near, "grid level 1: the middle vertex stays");
+  point(*mr.levels[1usize].positions[21usize], 0.5, 0.5, 0., near, "grid level 1: face 0's point");
+  mut p = copyPos(&mr.levels[1usize].positions);
+  p.set(21usize, new Vec3(0.5, 0.5, 0.5));
+  mr.editLevel(1u32, &p);
+  point(*mr.detail[0usize][21usize], 0., 0., 0.5, near, "the edit is stored as 0.5 along the normal");
+  point(*mr.detail[0usize][4usize], 0., 0., 0., near, "and nothing elsewhere");
+  // The base turned, the detail rides
+  imm turned = turnX(&mr.levels[0usize].positions);
+  mr.setBase(&turned);
+  point(*mr.levels[1usize].positions[21usize], 0.5, -0.5, 0.5, loose, "turned base: the detail turns with it");
+  point(*mr.levels[1usize].positions[4usize], 1., 0., 1., loose, "turned base: the middle vertex");
+  expectInt(i64.from(mr.levelCount()), 1, "still one level");
+}
+
+fn rotatesWhole() {
+  mr_rotation(detailed());
+}
+
+// A figure with detail at two levels, its base turned by 30 degrees about y:
+// every level is the turned level it was
+fn mr_rotation(mr0 Multires) {
+  mut mr = mr0;
+  imm before1 = copyPos(&mr.levels[1usize].positions);
+  imm before2 = copyPos(&mr.levels[2usize].positions);
+  expect(detailRms(&mr, 2u32) > 0.01, "the figure has detail");
+  imm base = turnY(&mr.levels[0usize].positions, 0.5);
+  mr.setBase(&base);
+  imm want1 = turnY(&before1, 0.5);
+  imm want2 = turnY(&before2, 0.5);
+  expectFloat(farthestList(&mr.levels[1usize].positions, &want1), 0.d, loose, "level 1 turned with the base");
+  expectFloat(farthestList(&mr.levels[2usize].positions, &want2), 0.d, loose, "level 2 turned with the base");
+}
+
+fn editing() {
+  mut mr = detailed();
+  imm l0 = copyPos(&mr.levels[0usize].positions);
+  imm l1 = copyPos(&mr.levels[1usize].positions);
+  imm l2 = copyPos(&mr.levels[2usize].positions);
+  // An edit at level 1 leaves level 0, moves level 2
+  mut p = copyPos(&l1);
+  p.set(10usize, *p[10usize] + new Vec3(0., 0.3, 0.));
+  mr.editLevel(1u32, &p);
+  expectFloat(farthestList(&mr.levels[0usize].positions, &l0), 0.d, 0.d, "an edit at level 1 leaves the base");
+  point(*mr.levels[1usize].positions[10usize], p[10usize].x, p[10usize].y, p[10usize].z, near, "level 1 has the edit");
+  expect(farthestList(&mr.levels[2usize].positions, &l2) > 0.05, "level 2 moves with it");
+  // Put back, level 2 returns
+  mr.editLevel(1u32, &l1);
+  expectFloat(farthestList(&mr.levels[2usize].positions, &l2), 0.d, loose, "put back, level 2 returns");
+  // An edit at the top is detail only
+  mut t = copyPos(&l2);
+  t.set(40usize, *t[40usize] + new Vec3(0.2, 0., 0.));
+  mr.editLevel(2u32, &t);
+  expectFloat(farthestList(&mr.levels[1usize].positions, &l1), 0.d, loose, "an edit at the top leaves level 1");
+  point(*mr.levels[2usize].positions[40usize], t[40usize].x, t[40usize].y, t[40usize].z, near, "the top has the edit");
+  // A wrong-length list is ignored
+  imm short = List[Vec3].empty();
+  mr.editLevel(2u32, &short);
+  point(*mr.levels[2usize].positions[40usize], t[40usize].x, t[40usize].y, t[40usize].z, near, "a list of the wrong length is ignored");
+}
+
+fn deleting() {
+  mut mr = detailed();
+  imm l1 = copyPos(&mr.levels[1usize].positions);
+  imm l2 = copyPos(&mr.levels[2usize].positions);
+  mut hi = detailed();
+  hi.deleteHigher(1u32);
+  expectInt(i64.from(hi.levelCount()), 1, "delete higher: one level left");
+  expectFloat(farthestList(&hi.levels[1usize].positions, &l1), 0.d, 0.d, "delete higher keeps level 1");
+  mr.deleteLower(1u32);
+  expectInt(i64.from(mr.levelCount()), 1, "delete lower: one level above the new base");
+  expectFloat(farthestList(&mr.levels[0usize].positions, &l1), 0.d, 0.d, "delete lower: level 1 is the base");
+  expectFloat(farthestList(&mr.levels[1usize].positions, &l2), 0.d, 0.d, "delete lower: the top is as it was");
+  mr.reevaluate(0usize);
+  expectFloat(farthestList(&mr.levels[1usize].positions, &l2), 0.d, loose, "delete lower: rebuilt from the new base, the top is as it was");
+  // The base turned: still rides
+  imm base = turnY(&mr.levels[0usize].positions, 0.4);
+  mr.setBase(&base);
+  imm want = turnY(&l2, 0.4);
+  expectFloat(farthestList(&mr.levels[1usize].positions, &want), 0.d, loose, "delete lower: the new base turned, the top turns");
+}
+
+fn baking() {
+  mut mr = detailed();
+  imm l2 = copyPos(&mr.levels[2usize].positions);
+  mr.bakeDown();
+  expectFloat(farthestList(&mr.levels[2usize].positions, &l2), 0.d, loose, "bake down: the top is unchanged");
+  mut ok = true;
+  mut v = 0usize;
+  while v < mr.levels[0usize].positions.len() {
+    if !(mr.levels[0usize].positions[v].x == l2[v].x and mr.levels[0usize].positions[v].y == l2[v].y
+      and mr.levels[0usize].positions[v].z == l2[v].z) { ok = false; }
+    v = v + 1usize;
+  }
+  expect(ok, "bake down: the base's vertices are the top's first");
+  ok = true;
+  v = 0usize;
+  while v < mr.levels[1usize].positions.len() {
+    if !(mr.levels[1usize].positions[v].x == l2[v].x and mr.levels[1usize].positions[v].z == l2[v].z) { ok = false; }
+    v = v + 1usize;
+  }
+  expect(ok, "bake down: level 1's vertices are the top's first");
+  // And the top is still rebuilt from them
+  imm saved = copyPos(&mr.levels[2usize].positions);
+  mr.reevaluate(0usize);
+  expectFloat(farthestList(&mr.levels[2usize].positions, &saved), 0.d, loose, "bake down: rebuilt, the top is the same");
+}
+
+fn displacements() {
+  imm g = grid(2u32, 2u32);
+  mut mr = Multires.fromMesh(&g);
+  mr.addLevel();
+  mut p = copyPos(&mr.levels[1usize].positions);
+  p.set(21usize, new Vec3(0.5, 0.5, 0.5));
+  mr.editLevel(1u32, &p);
+  imm d = mr.displacement(0u32, 1u32);
+  imm hc = d.findFloatChannel(VertexDomain, "height");
+  imm wc = d.findVec3Channel(VertexDomain, "displacement");
+  imm tc = d.findVec3Channel(VertexDomain, "displacement_tangent");
+  expect(hc != NoIndex and wc != NoIndex and tc != NoIndex, "displacement: the three channels");
+  expectFloat(f64.from(d.float(hc, 21u32)), 0.5, near, "displacement: height 0.5 at the bump");
+  expectFloat(f64.from(d.float(hc, 4u32)), 0., near, "displacement: height 0 elsewhere");
+  point(d.vec3(wc, 21u32), 0., 0., 0.5, near, "displacement: world offset at the bump");
+  point(d.vec3(tc, 21u32), 0., 0., 0.5, near, "displacement: the same in the frame");
+  expectInt(i64.from(d.vertexCount()), 25, "displacement: level 1's vertices");
+  // Between levels 0 and 2 of the detailed cube: the sum of the steps is the offset from the doubly smoothed base
+  imm mr2 = detailed();
+  imm d02 = mr2.displacement(0u32, 2u32);
+  imm direct = subdivide(mr2.levels[0usize], 2u32);
+  imm w2 = d02.findVec3Channel(VertexDomain, "displacement");
+  mut worst = 0.d;
+  mut i = 0usize;
+  while i < d02.vertexCount() {
+    imm e = (*mr2.levels[2usize].positions[i] - *direct.positions[i]) - d02.vec3(w2, u32.from(i));
+    if f64.from(e.length()) > worst { worst = f64.from(e.length()); }
+    i = i + 1usize;
+  }
+  expectFloat(worst, 0.d, loose, "displacement 0 to 2: top less the base's own level 2");
+  imm same = mr2.displacement(2u32, 2u32);
+  expectFloat(f64.from(same.float(same.findFloatChannel(VertexDomain, "height"), 5u32)), 0., near, "displacement from a level to itself is zero");
+}
+
+fn storage() {
+  imm cube = PolyMesh.cube(1.);
+  mut mr = Multires.fromMesh(&cube);
+  mr.addLevel();
+  mr.addLevel();
+  expectInt(i64.from(detailBytes(&mr, 1u32, 32u32)), 312, "bytes: level 1 float32");
+  expectInt(i64.from(detailBytes(&mr, 2u32, 32u32)), 1176, "bytes: level 2 float32");
+  expectInt(i64.from(detailBytes(&mr, 1u32, 16u32)), 168, "bytes: level 1 16-bit");
+  expectInt(i64.from(detailBytes(&mr, 2u32, 16u32)), 600, "bytes: level 2 16-bit");
+  expectInt(i64.from(detailBytes(&mr, 1u32, 8u32)), 90, "bytes: level 1 8-bit");
+  expectInt(i64.from(detailBytes(&mr, 2u32, 8u32)), 306, "bytes: level 2 8-bit");
+  expectInt(i64.from(detailBytes(&mr, 0u32, 16u32)), 0, "bytes: the base has no detail");
+  expectInt(i64.from(totalDetailBytes(&mr, 16u32)), 768, "bytes: both levels 16-bit");
+  mut m = detailed();
+  imm top = copyPos(&m.levels[2usize].positions);
+  expectInt(i64.from(packDetail(&m, 2u32, 16u32).len()), 600, "pack: 16-bit length");
+  expectInt(i64.from(packDetail(&m, 2u32, 32u32).len()), 1176, "pack: float32 length");
+  expectInt(i64.from(packDetail(&m, 0u32, 16u32).len()), 0, "pack: the base is empty");
+  // float32 exact
+  mut e = detailed();
+  imm pk = packDetail(&e, 2u32, 32u32);
+  expect(unpackDetail(&mut e, 2u32, pk.view(), 32u32), "unpack float32 accepted");
+  expectFloat(farthestList(&e.levels[2usize].positions, &top), 0.d, 0.d, "float32 round trip is exact");
+  // wrong length refused
+  imm short = packDetail(&e, 2u32, 16u32);
+  expect(!unpackDetail(&mut e, 2u32, short.view(), 32u32), "unpack: the wrong length is refused");
+  // 16 bits
+  mut q = detailed();
+  quantizeDetail(&mut q, 16u32);
+  imm err16 = farthestList(&q.levels[2usize].positions, &top);
+  expect(err16 < 0.0001, "16-bit detail: the top within 0.0001");
+  mut q8 = detailed();
+  quantizeDetail(&mut q8, 8u32);
+  imm err8 = farthestList(&q8.levels[2usize].positions, &top);
+  expect(err8 < 0.05, "8-bit detail: the top within 0.05");
+  expect(err8 > err16, "8-bit is coarser than 16-bit");
+  // per-coefficient bound at 16 bits
+  imm exact = detailed();
+  mut worst = 0.d;
+  mut v = 0usize;
+  while v < exact.detail[1usize].len() {
+    imm d = *exact.detail[1usize][v] - *q.detail[1usize][v];
+    imm a = f64.from(d.length());
+    if a > worst { worst = a; }
+    v = v + 1usize;
+  }
+  expect(worst < 0.0001, "16-bit detail: every coefficient within a step");
+}
+
+// Subdivided twice, the box comes back
+fn rebuildPure() {
+  imm cage = box(1., 0.6, 0.4);
+  imm dense = subdivide(&cage, 2u32);
+  mut problems = List[String].empty();
+  imm mr = fromDense(&dense, 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "rebuild: no problems");
+  expectInt(i64.from(mr.levelCount()), 2, "rebuild: two levels");
+  expectInt(i64.from(mr.levels[0usize].vertexCount()), 8, "rebuild: the base has 8 vertices");
+  expectInt(i64.from(mr.levels[0usize].faceCount()), 6, "rebuild: the base has 6 faces");
+  expectFloat(farthest(mr.levels[0usize], &cage), 0.d, loose, "rebuild: the base is the cage");
+  expectFloat(f64.from(detailRms(&mr, 1u32)), 0.d, loose, "rebuild: no detail at level 1");
+  expectFloat(f64.from(detailRms(&mr, 2u32)), 0.d, loose, "rebuild: no detail at level 2");
+  expectFloat(farthest(mr.levels[2usize], &dense), 0.d, loose, "rebuild: the top is the dense mesh");
+  imm lvl1 = subdivide(&cage, 1u32);
+  expectFloat(farthest(mr.levels[1usize], &lvl1), 0.d, loose, "rebuild: level 1 is the cage subdivided once");
+}
+
+// With a bump on the dense mesh
+fn rebuildBump() {
+  imm cage = box(1., 0.6, 0.4);
+  imm dense0 = subdivide(&cage, 2u32);
+  mut p = copyPos(&dense0.positions);
+  p.set(60usize, *p[60usize] * 1.25);
+  p.set(61usize, *p[61usize] * 0.8);
+  imm dense = withPos(&dense0, copyPos(&p));
+  mut problems = List[String].empty();
+  imm mr = fromDense(&dense, 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "bump: no problems");
+  expectFloat(farthest(mr.levels[2usize], &dense), 0.d, loose, "bump: the top is the dense mesh");
+  expect(detailRms(&mr, 2u32) > 0.001, "bump: the detail is at level 2");
+  expect(farthest(mr.levels[0usize], &cage) < 0.1, "bump: the base is near the cage");
+  expect(farthest(mr.levels[0usize], &cage) > 0.0000001, "bump: the base is not the cage");
+  // Rebuilding the rebuilt figure's own top reproduces it
+  mut again = List[String].empty();
+  imm mr2 = fromDense(mr.levels[2usize], 2u32, &mut again);
+  expectFloat(farthest(mr2.levels[0usize], mr.levels[0usize]), 0.d, loose, "bump: rebuilding the top again gives the same base");
+}
+
+// A mesh with a boundary
+fn rebuildOpen() {
+  imm g = grid(2u32, 2u32);
+  mut cage = copyPos(&g.positions);
+  cage.set(4usize, new Vec3(1., 1., 0.4));
+  cage.set(0usize, new Vec3(-0.2, -0.1, 0.1));
+  imm bent = withPos(&g, cage);
+  imm dense = subdivide(&bent, 2u32);
+  mut problems = List[String].empty();
+  imm mr = fromDense(&dense, 2u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "open: no problems");
+  expectInt(i64.from(mr.levelCount()), 2, "open: two levels");
+  expectFloat(farthest(mr.levels[0usize], &bent), 0.d, loose, "open: the base is the cage");
+  expectFloat(farthest(mr.levels[2usize], &dense), 0.d, loose, "open: the top is the dense mesh");
+}
+
+// One level only of two asked for; and a mesh that is no subdivision
+fn rebuildRefused() {
+  imm cage = box(1., 0.6, 0.4);
+  imm dense = subdivide(&cage, 1u32);
+  mut problems = List[String].empty();
+  imm mr = fromDense(&dense, 3u32, &mut problems);
+  expect(problems.len() > 0usize, "short: the missing levels are reported");
+  expectInt(i64.from(mr.levelCount()), 1, "short: one level made");
+  expectFloat(farthest(mr.levels[1usize], &dense), 0.d, loose, "short: its top is the dense mesh");
+  imm pot = lathe(&Profile.polygon(7u32, 0.5), new Vec3(0., 1., 0.), 6.2, 9u32);
+  mut p2 = List[String].empty();
+  imm none = fromDense(&pot, 2u32, &mut p2);
+  expect(p2.len() > 0usize, "no subdivision: reported");
+  expectInt(i64.from(none.levelCount()), 0, "no subdivision: no levels");
+  expectInt(i64.from(none.levels[0usize].vertexCount()), i64.from(pot.vertexCount()), "no subdivision: the base is the mesh");
+}
+
+// A crease, and a boundary: channels stay, creases wear as subdivide's
+fn channels() {
+  imm cube = PolyMesh.cube(1.);
+  mut c = withPos(&cube, copyPos(&cube.positions));
+  imm ch = c.addFloatChannel(EdgeDomain, "crease", 0.);
+  c.setFloat(ch, 0u32, 3.);
+  imm vch = c.addFloatChannel(VertexDomain, "mark", 0.);
+  c.setFloat(vch, 7u32, 1.);
+  mut mr = Multires.fromMesh(&c);
+  mr.addLevel();
+  mr.addLevel();
+  imm direct = subdivide(&c, 2u32);
+  expectFloat(farthest(mr.levels[2usize], &direct), 0.d, 0.d, "creased: level 2 is subdivide's own");
+  expectInt(i64.from(mr.levels[2usize].floats.len()), 2, "creased: both channels carried");
+  imm mk = mr.levels[2usize].findFloatChannel(VertexDomain, "mark");
+  imm dk = direct.findFloatChannel(VertexDomain, "mark");
+  expectFloat(f64.from(mr.levels[2usize].float(mk, 7u32)), f64.from(direct.float(dk, 7u32)), 0.d, "creased: the mark is subdivide's own at vertex 7");
+  expect(mr.levels[2usize].float(mk, 7u32) > 0.3, "creased: and smoothed from 1, not lost");
+  // Turn the creased base: it still follows
+  mut turned = Multires.fromMesh(&c);
+  turned.addLevel();
+  turned.addLevel();
+  imm tb = turnY(&turned.levels[0usize].positions, 0.7);
+  turned.setBase(&tb);
+  imm want = turnY(&mr.levels[2usize].positions, 0.7);
+  expectFloat(farthestList(&turned.levels[2usize].positions, &want), 0.d, loose, "creased: turned, level 2 turned");
+}
+
+fn main() i32 {
+  basics();
+  ridesAlong();
+  rotatesWhole();
+  editing();
+  deleting();
+  baking();
+  displacements();
+  storage();
+  rebuildPure();
+  rebuildBump();
+  rebuildOpen();
+  rebuildRefused();
+  channels();
+  done();
+}
