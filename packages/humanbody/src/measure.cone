@@ -1,0 +1,176 @@
+// Measuring a body as a surveyor does: breadths, depths and girths taken off the mesh by slicing it.
+//
+// A slice is the mesh cut by a plane: the segments where its triangles cross the plane. A BREADTH is the
+// slice's extent across x, a DEPTH its extent along z, a GIRTH the length of the slice's loop round one
+// limb (the tape measure's path, which bridges no hollow; a limb's cross-section is convex enough here for
+// the slice's length to be it). Each segment knows the triangle it came from, and so the skin weights of
+// its corners, which say which part it belongs to: the arms are left out of the trunk's breadths, one leg's
+// girth leaves the other leg and the hand beside it out.
+//
+// What is measured is the ANSUR II measures (measures.cone) but the biacromial breadth, which is between
+// two bony points under the skin (the skeleton is placed from it, skeleton.cone) and the head's, which is
+// the head's own (head.cone).
+
+pub struct Slice {
+  pub a List[Vec3];        // each segment's two ends
+  pub b List[Vec3];
+  pub tri List[u32];       // the triangle it came from
+}
+
+// The parts a segment may be counted in
+pub const PART_TRUNK = 0u32;     // the trunk and both legs, no arm
+pub const PART_ALL = 1u32;
+pub const PART_ARM_R = 2u32;
+pub const PART_LEG_R = 3u32;
+
+fn sliceOf(pos &List[Vec3], tris &List[u32], at Vec3, n Vec3) Slice {
+  mut s = new Slice(List[Vec3].empty(), List[Vec3].empty(), List[u32].empty());
+  mut t = 0usize;
+  while t + 2usize < tris.len() {
+    imm p0 = *pos[usize.from(*tris[t])];
+    imm p1 = *pos[usize.from(*tris[t + 1usize])];
+    imm p2 = *pos[usize.from(*tris[t + 2usize])];
+    imm d0 = (p0 - at).dot(n);
+    imm d1 = (p1 - at).dot(n);
+    imm d2 = (p2 - at).dot(n);
+    mut pts = List[Vec3].empty();
+    if (d0 < 0.) != (d1 < 0.) { pts.push(p0 + (p1 - p0) * (d0 / (d0 - d1))); }
+    if (d1 < 0.) != (d2 < 0.) { pts.push(p1 + (p2 - p1) * (d1 / (d1 - d2))); }
+    if (d2 < 0.) != (d0 < 0.) { pts.push(p2 + (p0 - p2) * (d2 / (d2 - d0))); }
+    if pts.len() == 2usize {
+      s.a.push(*pts[0usize]);
+      s.b.push(*pts[1usize]);
+      s.tri.push(u32.from(t / 3usize));
+    }
+    t = t + 3usize;
+  }
+  s;
+}
+
+fn partWeight(w &List[f32], v usize, part u32) f32 {
+  imm b = v * HUMANOID_BONES;
+  imm armL = *w[b + UPPER_ARM_L] + *w[b + FOREARM_L] + *w[b + HAND_L];
+  imm armR = *w[b + UPPER_ARM_R] + *w[b + FOREARM_R] + *w[b + HAND_R];
+  if part == PART_TRUNK { return 1. - armL - armR; }
+  if part == PART_ARM_R { return armR; }
+  if part == PART_LEG_R { return *w[b + THIGH_R] + *w[b + SHIN_R] + *w[b + FOOT_R] - *w[b + THIGH_L] - *w[b + SHIN_L] - *w[b + FOOT_L]; }
+  1.;
+}
+
+// Is segment k of the slice in the part? (its triangle's corners, on average, are)
+fn inPart(s &Slice, k usize, tris &List[u32], w &List[f32], part u32) bool {
+  if part == PART_ALL { return true; }
+  // below the crotch a leg is the slice's own loop on its side: no arm, and right of the middle
+  if part == PART_LEG_R {
+    return (*s.a[k]).x + (*s.b[k]).x > 0. and inPart(s, k, tris, w, PART_TRUNK);
+  }
+  imm t = usize.from(*s.tri[k]) * 3usize;
+  imm sum = partWeight(w, usize.from(*tris[t]), part) + partWeight(w, usize.from(*tris[t + 1usize]), part) +
+    partWeight(w, usize.from(*tris[t + 2usize]), part);
+  sum > 1.5;
+}
+
+// The body as triangles, with its weights, ready to measure
+pub struct Measured {
+  pub positions List[Vec3];
+  pub tris List[u32];
+  pub weights List[f32];
+  pub measures Measures;           // the landmark heights (and height) to measure at
+
+  // The extents of the horizontal slice at height y, of the part: x is the breadth, y the depth
+  pub fn extents(self &, y f32, part u32) Vec2 {
+    imm s = sliceOf(&positions, &tris, new Vec3(0., y, 0.), new Vec3(0., 1., 0.));
+    mut lo = new Vec3(1000., 0., 1000.);
+    mut hi = new Vec3(-1000., 0., -1000.);
+    mut k = 0usize;
+    while k < s.a.len() {
+      if inPart(&s, k, &tris, &weights, part) {
+        lo = lo.min(*s.a[k]).min(*s.b[k]);
+        hi = hi.max(*s.a[k]).max(*s.b[k]);
+      }
+      k = k + 1usize;
+    }
+    new Vec2(maxf(hi.x - lo.x, 0.), maxf(hi.z - lo.z, 0.));
+  }
+
+  // The most of the extents over heights from y0 to y1
+  pub fn widest(self &, y0 f32, y1 f32, part u32) Vec2 {
+    mut best = new Vec2(0., 0.);
+    mut i = 0;
+    while i <= 16 {
+      imm e = self.extents(y0 + (y1 - y0) * f32.from(i) / 16., part);
+      best = new Vec2(maxf(best.x, e.x), maxf(best.y, e.y));
+      i = i + 1;
+    }
+    best;
+  }
+
+  // The girth of the part's loop where the plane through 'at' square to 'n' cuts it, within 'reach' of 'at'
+  pub fn girth(self &, at Vec3, n Vec3, part u32, reach f32) f32 {
+    imm s = sliceOf(&positions, &tris, at, n.normalize());
+    mut len = 0.;
+    mut k = 0usize;
+    while k < s.a.len() {
+      if inPart(&s, k, &tris, &weights, part) and (*s.a[k] - at).length() < reach {
+        len = len + (*s.b[k] - *s.a[k]).length();
+      }
+      k = k + 1usize;
+    }
+    len;
+  }
+
+  // The most girth along a limb, between fractions f0 and f1 of the way from 'a' to 'b'
+  pub fn mostGirth(self &, a Vec3, b Vec3, f0 f32, f1 f32, part u32, reach f32) f32 {
+    mut best = 0.;
+    mut i = 0;
+    while i <= 8 {
+      imm f = f0 + (f1 - f0) * f32.from(i) / 8.;
+      best = maxf(best, self.girth(a + (b - a) * f, b - a, part, reach));
+      i = i + 1;
+    }
+    best;
+  }
+
+  // Measure i of measures.cone's order (biacromial and head breadth are not measured here: -1)
+  pub fn measure(self &, i usize, models &List[Transform3]) f32 {
+    imm h = measures.height;
+    imm m = &measures;
+    if i == 1usize { return self.widest(m.armpitAt * h, (m.acromionAt + 0.01) * h, PART_ALL).x; }
+    if i == 2usize { return self.extents(m.chestAt * h, PART_TRUNK).x; }
+    if i == 3usize { return self.extents(m.chestAt * h, PART_TRUNK).y; }
+    if i == 4usize { return self.extents(m.waistAt * h, PART_TRUNK).x; }
+    if i == 5usize { return self.extents(m.waistAt * h, PART_TRUNK).y; }
+    if i == 6usize { return self.widest((m.crotchAt - 0.02) * h, (m.waistAt - 0.04) * h, PART_TRUNK).x; }
+    if i == 7usize { return self.widest(m.crotchAt * h, (m.waistAt - 0.04) * h, PART_TRUNK).y; }
+    if i == 8usize { return self.girth(new Vec3(0., (m.acromionAt + 0.024) * h, 0.012), new Vec3(0., 1., 0.), PART_TRUNK, 0.12); }
+    imm hipR = (*models[THIGH_R]).translation;
+    imm knR = (*models[SHIN_R]).translation;
+    imm anR = (*models[FOOT_R]).translation;
+    imm shR = (*models[UPPER_ARM_R]).translation;
+    imm elR = (*models[FOREARM_R]).translation;
+    imm wrR = (*models[HAND_R]).translation;
+    if i == 9usize { return self.girth(new Vec3(hipR.x, (m.crotchAt - 0.020) * h, 0.), new Vec3(0., 1., 0.), PART_LEG_R, 0.20); }
+    if i == 10usize { return self.mostGirth(knR, anR, 0.15, 0.50, PART_LEG_R, 0.12); }
+    if i == 11usize { return self.girth(shR + (elR - shR) * 0.5, elR - shR, PART_ARM_R, 0.10); }
+    if i == 12usize { return self.mostGirth(elR, wrR, 0.10, 0.40, PART_ARM_R, 0.09); }
+    if i == 13usize { return self.girth(elR + (wrR - elR) * 0.94, wrR - elR, PART_ARM_R, 0.07); }
+    -1.;
+  }
+}
+
+pub fn measuredOf(positions &List[Vec3], quads &List[u32], weights &List[f32], m &Measures) Measured {
+  mut tris = List[u32].empty();
+  mut q = 0usize;
+  while q + 3usize < quads.len() {
+    tris.push(*quads[q]); tris.push(*quads[q + 1usize]); tris.push(*quads[q + 2usize]);
+    tris.push(*quads[q]); tris.push(*quads[q + 2usize]); tris.push(*quads[q + 3usize]);
+    q = q + 4usize;
+  }
+  mut p = List[Vec3].empty();
+  mut v = 0usize;
+  while v < positions.len() { p.push(*positions[v]); v = v + 1usize; }
+  mut w = List[f32].empty();
+  v = 0usize;
+  while v < weights.len() { w.push(*weights[v]); v = v + 1usize; }
+  new Measured(p, tris, w, *m);
+}

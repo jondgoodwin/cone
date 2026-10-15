@@ -1,0 +1,115 @@
+// What the package promises, measured.
+//
+// The cage is a closed surface but for the neck's seam (no face PolyMesh refuses); the projection puts every vertex on
+// the forms (a mean within a tenth of a millimetre); the fitted body meets the survey's measures (each breadth, depth
+// and girth within 6 per cent, the thigh's within 12: a thigh is held inside the hips' breadth, see forms.cone); the
+// skeleton's hips and shoulders are where the measures put them; the whole body is one mesh with the head stitched on,
+// its skin weights summing to one; the face's spec has every landmark the unit table needs and its targets are built, at
+// natural strengths, and the mouth opens between the upper lip (the head's) and its own row (the jaw's); a seated pose
+// has the pelvis on the seat and the feet on the floor; a hail raises the right hand above the head. People made of
+// blends are blends.cone's.
+
+mod people;
+
+import testing use *;
+import stdio use *;
+import collections use List, String;
+import geomath use *;
+import bonepose use *;
+import humanbody use *;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool { expectFloat(f64.from(got), f64.from(want), f64.from(within), label); }
+
+fn testSculpt() {
+  imm m = averageMan();
+  imm skel = personSkeleton(&m);
+  imm models = restModels(&skel);
+  imm cage = bodyCage(&m, &models);
+  mut s = subdivideCage(&cage, 1u32);
+  expectInt(i64.from(s.problems.len()), 0, "the cage's faces all join");
+  expect(s.vertexCount() > 2000usize, "the subdivided surface has its rings");
+  expectInt(i64.from(s.seam.len()), 32, "the neck's seam is a ring of 32");
+  imm gains = unitGains();
+  imm forms = bodyForms(&m, &models, &gains);
+  projectSurface(&mut s, &forms, 3);
+  imm err = fitError(&s, &forms);
+  expect(err.x < 0.0001, "the surface lies on the forms (mean)");
+  expect(err.y < 0.003, "the surface lies on the forms (worst)");
+  // the skeleton's joints
+  near((*models[THIGH_R]).translation.x, 0.245 * m.hipBreadth, 0.0001, "the hip joint at a quarter of the hip breadth");
+  near((*models[UPPER_ARM_R]).translation.x, 0.5 * m.biacromial - 0.025, 0.0001, "the shoulder joint inside the acromion");
+}
+
+fn testFit() {
+  imm m = averageWoman();
+  imm gains = fitGains(&m, 1u32, 4);
+  imm got = measureBody(&m, &gains, 1u32);
+  mut i = 1usize;
+  while i < 14usize {
+    if i == 8usize { i = 9usize; }       // the neck is set, not fitted (body.cone's fitGains)
+    imm want = measureAt(&m, i);
+    imm tol = if i == 9usize { 0.12; } else { 0.06; };
+    mut label = String.from("the fitted ");
+    label.append(measureName(i).view());
+    label.append(" is the survey's");
+    if !expect(absf(*got[i] - want) <= tol * want, label.view()) { print <- "  got "; print <- *got[i]; print <- " want "; print <- want; print <- "\n"; }
+    i = i + 1usize;
+  }
+}
+
+fn testBody() {
+  imm m = averageMan();
+  imm gains = fitGains(&m, 1u32, 2);
+  mut body = assembleBody(&m, &gains, 1u32);
+  expect(body.headStart < body.vertexCount(), "the head's vertices follow the body's");
+  expect(body.mesh.triangleCount() > 15000usize and body.mesh.triangleCount() < 22000usize, "a game body: 15 to 22 thousand triangles");
+  mut v = 0usize;
+  mut badSum = 0usize;
+  while v < body.vertexCount() {
+    mut s = 0.;
+    mut b = 0usize;
+    while b < BODY_BONES { s = s + *body.weights[v * BODY_BONES + b]; b = b + 1usize; }
+    if absf(s - 1.) > 0.001 { badSum = badSum + 1usize; }
+    v = v + 1usize;
+  }
+  expectInt(i64.from(badSum), 0, "every vertex's skin weights sum to one");
+  imm face = buildFace(&mut body);
+  expectInt(i64.from(body.skeleton.boneCount()), 22, "the face adds the jaw and the eyes");
+  expect(face.spec.has("lidUpperR") and face.spec.has("mouthCornerL") and face.spec.has("jawAngleR"), "the spec has its landmarks");
+  expect(face.targets.count() > 30usize, "the units' targets are built");
+  // the expressions at a natural strength: a smile's corners a third of facerig's rule, a blink's lids all of it
+  expect(naturalStrength(12u32) < 0.4 and naturalStrength(45u32) == 1., "a smile is a third of the rule, a blink whole");
+  // the mouth opens between its row and the lips above: down the middle of the face, the mouth's row and the lower
+  // lip's rows are the jaw's, the upper lip's the head's
+  imm nc = body.head.cols;
+  imm mid = body.headStart + nc / 2usize;
+  imm mr = body.head.mouthRow;
+  expect(*body.weights[(mid + (mr + 1usize) * nc) * BODY_BONES + JAW] > 0.9 and *body.weights[(mid + mr * nc) * BODY_BONES + JAW] > 0.9,
+    "the mouth's row and the lower lip go with the jaw");
+  expect(*body.weights[(mid + (mr - 1usize) * nc) * BODY_BONES + JAW] < 0.1, "the upper lip stays with the head");
+}
+
+fn testPoses() {
+  imm m = averageMan();
+  imm skel = personSkeleton(&m);
+  imm seat = Seat.chair(new Vec3(0., 0.45, 0.35), 0., 0.45);
+  imm feet = seatFeet(&seat, &skel);
+  imm sat = sitPose(&skel, &seat, 1., true);
+  mut models = List[Transform3].empty();
+  skel.modelTransforms(&sat, &mut models);
+  // in the model's space the feet are the origin: the seat is 'feet' back from it
+  imm pelvis = (*models[PELVIS]).translation + feet;
+  near(pelvis.y, 0.45 + 0.085 * m.height / 1.75, 0.01, "seated, the pelvis is over the seat");
+  expect((*models[FOOT_L]).translation.y < 0.08 and (*models[FOOT_R]).translation.y < 0.08, "seated, the feet are on the floor");
+  imm hail = hailPose(&skel, 0.8);
+  skel.modelTransforms(&hail, &mut models);
+  expect((*models[HAND_R]).translation.y > (*models[HEAD]).translation.y, "hailing, the right hand is above the head");
+}
+
+fn main() i32 {
+  testSculpt();
+  testFit();
+  testBody();
+  testPoses();
+  done();
+}
