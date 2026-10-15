@@ -145,6 +145,140 @@ pub fn polyWriteObj overload writeObj(m &PolyMesh, path &Path) bool {
   writeFile(path, text.view());
 }
 
+// ---- reading ----
+
+// A polygon mesh from .obj text: every 'v' line a vertex (x y z; a fourth
+// number or colours after it are ignored), every 'f' line a face of its
+// corners' position numbers (from 1; a negative number counts back from the
+// last vertex read; anything after a '/' in a corner, its uv and normal, is
+// ignored). Other lines ('vt', 'vn', 'g', 'o', 'usemtl', 's', comments) are
+// skipped. The faces are built by 'PolyMesh.fromPolygons', which reports a
+// face it refuses in 'problems'; a corner naming no vertex refuses its face
+// here, reported the same way. It keeps no uvs or groups.
+pub fn polyFromObjText(text &Array[u8], problems &mut List[String]) PolyMesh {
+  mut pos = List[Vec3].empty();
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut corners = List[u32].empty();
+  mut at = 0usize;
+  mut line = 1u64;
+  while at < text.len {
+    mut e = at;
+    while e < text.len and text[e] != 10u8 { e = e + 1usize; }
+    imm s = skipBlanks(text, at, e);
+    if s + 1usize < e and text[s] == 118u8 and isBlank(text[s + 1usize]) {
+      mut p = s + 1usize;
+      mut xyz = new Array[f64, 3] <- fill 0d;
+      mut k = 0usize;
+      mut ok = true;
+      while k < 3usize {
+        p = skipBlanks(text, p, e);
+        imm q = tokenEnd(text, p, e);
+        if q == p { ok = false; }
+        xyz[k] = parseObjNumber(text, p, q);
+        p = q;
+        k = k + 1usize;
+      }
+      if not ok { problems.push(objProblem(line, "a 'v' line with fewer than three numbers")); }
+      pos.push(new Vec3(f32.from(xyz[0usize]), f32.from(xyz[1usize]), f32.from(xyz[2usize])));
+    } elif s + 1usize < e and text[s] == 102u8 and isBlank(text[s + 1usize]) {
+      corners.clear();
+      mut p = s + 1usize;
+      mut bad = false;
+      while p < e {
+        p = skipBlanks(text, p, e);
+        if p >= e { break; }
+        imm q = tokenEnd(text, p, e);
+        mut slash = p;
+        while slash < q and text[slash] != 47u8 { slash = slash + 1usize; }
+        imm n = parseObjNumber(text, p, slash);
+        mut v = 0d;
+        if n < 0d { v = f64.from(pos.len()) + n; } else { v = n - 1d; }
+        if v < 0d or v >= f64.from(pos.len()) { bad = true; } else { corners.push(u32.from(v)); }
+        p = q;
+      }
+      if bad or corners.len() < 3usize {
+        problems.push(objProblem(line, "a face naming a vertex not yet read, or with fewer than three corners"));
+      } else {
+        counts.push(u32.from(corners.len()));
+        mut k = 0usize;
+        while k < corners.len() { idx.push(*corners[k]); k = k + 1usize; }
+      }
+    }
+    at = e + 1usize;
+    line = line + 1u64;
+  }
+  PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), problems);
+}
+
+// The .obj file at 'path' as a polygon mesh (see 'polyFromObjText'); a file that
+// cannot be read gives an empty mesh and says so in 'problems'
+pub fn readPolyObj(path &Path, problems &mut List[String]) PolyMesh {
+  mut cpath = String.from(path.view());
+  imm f = libc.fopen(cpath.cstr(), "rb");
+  if !f {
+    mut msg = String.from("cannot open ");
+    msg.append(path.view());
+    problems.push(msg);
+    return PolyMesh.empty();
+  }
+  mut text = String.empty();
+  mut buf = new Array[u8, 65536] <- fill 0u8;
+  mut n = libc.fread(&mut buf[0], 1usize, 65536usize, f);
+  while n > 0usize {
+    text.appendBytes(&buf[..<n]);
+    n = libc.fread(&mut buf[0], 1usize, 65536usize, f);
+  }
+  libc.fclose(f);
+  polyFromObjText(text.view(), problems);
+}
+
+fn objProblem(line u64, what &str) String {
+  mut s = String.from("line ");
+  s.appendUInt(line);
+  s.append(": ");
+  s.append(what);
+  s;
+}
+
+fn isBlank(c u8) bool { c == 32u8 or c == 9u8 or c == 13u8; }
+
+fn skipBlanks(d &Array[u8], from usize, to usize) usize {
+  mut i = from;
+  while i < to and isBlank(d[i]) { i = i + 1usize; }
+  i;
+}
+
+fn tokenEnd(d &Array[u8], from usize, to usize) usize {
+  mut i = from;
+  while i < to and not isBlank(d[i]) { i = i + 1usize; }
+  i;
+}
+
+// A decimal number, with an optional sign, fraction and exponent, from d[lo, hi);
+// what is not a number reads as 0
+fn parseObjNumber(d &Array[u8], lo usize, hi usize) f64 {
+  mut i = lo;
+  mut neg = false;
+  if i < hi and (d[i] == 45u8 or d[i] == 43u8) { neg = d[i] == 45u8; i = i + 1usize; }
+  mut v = 0d;
+  while i < hi and d[i] >= 48u8 and d[i] <= 57u8 { v = v * 10d + f64.from(d[i] - 48u8); i = i + 1usize; }
+  if i < hi and d[i] == 46u8 {
+    i = i + 1usize;
+    mut scale = 0.1d;
+    while i < hi and d[i] >= 48u8 and d[i] <= 57u8 { v = v + scale * f64.from(d[i] - 48u8); scale = scale * 0.1d; i = i + 1usize; }
+  }
+  if i < hi and (d[i] == 101u8 or d[i] == 69u8) {
+    i = i + 1usize;
+    mut eneg = false;
+    if i < hi and (d[i] == 45u8 or d[i] == 43u8) { eneg = d[i] == 45u8; i = i + 1usize; }
+    mut e = 0d;
+    while i < hi and d[i] >= 48u8 and d[i] <= 57u8 { e = e * 10d + f64.from(d[i] - 48u8); i = i + 1usize; }
+    v = v * libc.pow(10d, if eneg { 0d - e; } else { e; });
+  }
+  if neg { 0d - v; } else { v; };
+}
+
 // The whole of 'text' into the file at 'path'
 fn writeFile(path &Path, text &Array[u8]) bool {
   mut cpath = String.from(path.view());

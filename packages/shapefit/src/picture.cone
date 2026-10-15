@@ -268,6 +268,112 @@ pub fn drawMesh(cv &mut Canvas, vp &Viewport, win &Window, m &PolyMesh, v &View,
   }
 }
 
+// A light rig fixed to the view, so that two shapes drawn in the same view are lit
+// alike: a key light and a fill light (directions the light travels FROM, in the
+// view's frame: x right, y up, z toward the viewer), an ambient term, and a soft
+// specular highlight from the key (Blinn-Phong). Wrapped diffuse ('wrap' 0 to 1)
+// softens the terminator as skin's scattering does.
+pub struct Lighting {
+  pub key Vec3;
+  pub keyStrength f32;
+  pub fill Vec3;
+  pub fillStrength f32;
+  pub ambient f32;
+  pub wrap f32;
+  pub specular f32;
+  pub shininess f32;
+
+  // The portrait rig: key from the upper left in front, fill low from the right,
+  // a little ambient, a soft highlight; the form reads in its planes
+  pub fn portrait() Lighting {
+    new Lighting(new Vec3(-0.55, 0.55, 0.63), 0.85, new Vec3(0.75, -0.1, 0.65), 0.28, 0.12, 0.25, 0.12, 24.);
+  }
+}
+
+fn viewToWorld(v &View, d Vec3) DVec3 {
+  unitd(v.right * f64.from(d.x) + v.up * f64.from(d.y) - v.forward * f64.from(d.z));
+}
+
+// Draw the mesh into the tile, lit by 'light' (see Lighting), each vertex coloured
+// ('colors' per vertex, or empty for a skin-like grey). Faces seen from behind are
+// lit as if their normals were turned toward the viewer. Depth is tested against
+// the canvas's.
+pub fn drawMeshLit(cv &mut Canvas, vp &Viewport, win &Window, m &PolyMesh, v &View, colors &List[Vec3], light &Lighting) {
+  imm tris = fanTriangles(m);
+  imm normals = m.vertexNormals();
+  imm nv = m.vertexCount();
+  mut sx = List[f64].withCapacity(nv);
+  mut sy = List[f64].withCapacity(nv);
+  mut sz = List[f64].withCapacity(nv);
+  mut i = 0usize;
+  while i < nv {
+    imm q = v.project(DVec3.from(*m.positions[i]));
+    sx.push(tileX(vp, win, q.x));
+    sy.push(tileY(vp, win, q.y));
+    sz.push(q.z);
+    i += 1usize;
+  }
+  imm toward = -v.forward;
+  imm kd = viewToWorld(v, light.key);
+  imm fd = viewToWorld(v, light.fill);
+  imm hk = unitd(kd + toward);
+  imm wrap = f64.from(light.wrap);
+  i = 0usize;
+  while i < tris.len() / 3usize {
+    imm ia = usize.from(*tris[3usize * i]);
+    imm ib = usize.from(*tris[3usize * i + 1usize]);
+    imm ic = usize.from(*tris[3usize * i + 2usize]);
+    imm ax = *sx[ia]; imm ay = *sy[ia];
+    imm bx = *sx[ib]; imm byy = *sy[ib];
+    imm cx = *sx[ic]; imm cy = *sy[ic];
+    imm area = (bx - ax) * (cy - ay) - (byy - ay) * (cx - ax);
+    if absd(area) > 1.0e-9d {
+      imm x0 = usize.from(maxd(f64.from(vp.x), libc.floor(mind(ax, mind(bx, cx)) - 0.5d)));
+      imm x1 = usize.from(mind(f64.from(vp.x + vp.w) - 1.d, libc.ceil(maxd(ax, maxd(bx, cx)) - 0.5d)));
+      imm y0 = usize.from(maxd(f64.from(vp.y), libc.floor(mind(ay, mind(byy, cy)) - 0.5d)));
+      imm y1 = usize.from(mind(f64.from(vp.y + vp.h) - 1.d, libc.ceil(maxd(ay, maxd(byy, cy)) - 0.5d)));
+      imm na = unitd(DVec3.from(*normals[ia]));
+      imm nb = unitd(DVec3.from(*normals[ib]));
+      imm nc = unitd(DVec3.from(*normals[ic]));
+      imm have = colors.len() == nv;
+      imm grey = new Vec3(0.80, 0.70, 0.64);
+      imm ca = if have { *colors[ia]; } else { grey; };
+      imm cb = if have { *colors[ib]; } else { grey; };
+      imm cc = if have { *colors[ic]; } else { grey; };
+      mut y = y0;
+      while y <= y1 {
+        mut x = x0;
+        while x <= x1 {
+          imm qx = f64.from(x) + 0.5d;
+          imm qy = f64.from(y) + 0.5d;
+          imm w0 = ((bx - qx) * (cy - qy) - (byy - qy) * (cx - qx)) / area;
+          imm w1 = ((cx - qx) * (ay - qy) - (cy - qy) * (ax - qx)) / area;
+          imm w2 = 1.d - w0 - w1;
+          if w0 >= -1.0e-9d and w1 >= -1.0e-9d and w2 >= -1.0e-9d {
+            imm z = f32.from(w0 * *sz[ia] + w1 * *sz[ib] + w2 * *sz[ic]);
+            imm di = y * usize.from(cv.w) + x;
+            if z < *cv.depth[di] {
+              cv.depth.set(di, z);
+              mut n = unitd(na * w0 + nb * w1 + nc * w2);
+              if n.dot(toward) < 0.d { n = n * -1.d; }
+              imm dk = maxd(0.d, (n.dot(kd) + wrap) / (1.d + wrap));
+              imm df = maxd(0.d, (n.dot(fd) + wrap) / (1.d + wrap));
+              imm sp = libc.pow(maxd(0.d, n.dot(hk)), f64.from(light.shininess)) * f64.from(light.specular);
+              imm k = f32.from(f64.from(light.ambient) + f64.from(light.keyStrength) * dk + f64.from(light.fillStrength) * df);
+              imm base = (ca * f32.from(w0) + cb * f32.from(w1) + cc * f32.from(w2)) * k;
+              imm s = f32.from(sp);
+              cv.setPixel(i32.from(x), i32.from(y), new Vec3(base.x + s, base.y + s, base.z + s));
+            }
+          }
+          x += 1usize;
+        }
+        y += 1usize;
+      }
+    }
+    i += 1usize;
+  }
+}
+
 // A polyline on the surface (3-D points), drawn depth-tested against the mesh just drawn
 pub fn drawPolyline3(cv &mut Canvas, vp &Viewport, win &Window, v &View, pts &List[Vec3], c Vec3) {
   mut k = 0usize;

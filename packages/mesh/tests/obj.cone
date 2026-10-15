@@ -161,11 +161,35 @@ fn polygons() {
   libc.remove("polygons-path.obj");
 }
 
+// Reading: a quad and a triangle sharing an edge, with comments, uvs and normals in the corners, a negative
+// index; the positions and faces come back, the rest is skipped; a face naming a vertex not read is refused and
+// reported; a polygon mesh written and read back has the same text
+fn reading() {
+  imm text = "# a comment\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 2 0.5 -1.5e-1\nvt 0 0\nvn 0 0 1\ng part\nf 1/1/1 2/1/1 3/1/1 4/1/1\nf 2 5 -3\nf 1 2 9\n";
+  mut problems = List[String].empty();
+  imm m = polyFromObjText(text, &mut problems);
+  expectUInt(u64.from(m.vertexCount()), 5u64, "five vertices read");
+  expectUInt(u64.from(m.faceCount()), 2u64, "two faces: a quad and a triangle");
+  expectUInt(u64.from(m.faceDegree(0u32)), 4u64, "the first is the quad");
+  expectUInt(u64.from(problems.len()), 1u64, "the face naming vertex 9 is refused and reported");
+  expectFloat(f64.from(m.positions[4usize].z), -0.15d, 0.000001d, "an exponent is read");
+  imm tv = m.faceVertices(1u32);
+  expectUInt(u64.from(*tv[2usize]), 2u64, "a negative index counts back from the last vertex");
+  mut p2 = List[String].empty();
+  imm back = polyFromObjText(objText(&m).view(), &mut p2);
+  expectStr(objText(&back).view(), objText(&m).view(), "written and read back, the same text");
+  mut p3 = List[String].empty();
+  imm none = readPolyObj(&Path.from("no such folder/none.obj"), &mut p3);
+  expectUInt(u64.from(none.vertexCount()), 0u64, "a file that cannot be read gives an empty mesh");
+  expectUInt(u64.from(p3.len()), 1u64, "and says so");
+}
+
 fn main() i32 {
   triangle();
   numbers();
   partial();
   groups();
   polygons();
+  reading();
   done();
 }
