@@ -1,0 +1,1433 @@
+// peoplebench: humanbody's test bench. The cast of seven (the main avatar and six) built as blends of the two base
+// bodies, dressed, with faces that move, walking, sitting and hailing, drawn offscreen on a real GPU under day and dusk
+// light, written as 2560 x 1440 PNG sheets.
+//
+//   congo run --release packages/humanbody/examples/peoplebench.cone -- --out C:/src/humanbody-shots [--quick] [--only NAME]
+//
+// The sheets (--quick: fewer temporal AA frames; --first: sheet 01 alone; --head: the head study; --stages: the
+// sculpting step by step into OUT/stages; --mouth: sheets 01 and 11b alone):
+//   01-main-avatar          the main avatar: front, back (the cape), side, his face near
+//   11b-avatar-expressions  the main avatar's face near: neutral, a smile, surprise, "ah", "oo", a blink
+//   02-cast-day             the seven dressed, side by side, day; 03 the same turned a third of a turn; 04 from behind
+//   05-cast-dusk            the seven at dusk; 06 turned
+//   07-cast-underwear       the seven base bodies in plain underwear, front; 08 from the side
+//   09-proportions          each in underwear, seen square on (orthographic), with its ANSUR II measures drawn behind it as
+//                           bars at their heights: the body's edges should touch the bars' ends
+//   10-mannequin-compare    today's pegasus3d mannequin (its numbers) beside the average man and the main avatar, one scale
+//   11-faces                the seven faces: neutral, a smile, surprise, speaking ("ah"), a blink
+//   12-walk                 the main avatar (cape) and the petite woman walking, eight frames each
+//   13-sit-chair            the average man sitting down on a chair and standing up; 14-sit-bench: two on a bench
+//   15-hail                 three hailing
+//   16-rt-off               sheet 02 with ray tracing off (render's ray-traced glass and reflections; the bodies are raster)
+//   stages/                 the sculpting, step by step, for the main avatar and the average woman
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod peoplebench;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import time use *;
+import imagedecode use *;
+import gpu use *;
+import render use *;
+import fs;
+import path use Path;
+import sculpt;
+import sdfmesh use surfaceNet;
+import bonepose use *;
+import walkgait use Walker;
+import xpbdsoftbody use Workers, writeMesh, outputVertexCount, outputIndexCount;
+import garmentdrape use Garment, ClothLook, WearBand, addClothPipeline, addClothMaterial;
+import facerig use FaceRig, FaceFrame, utteranceFromText, applyFace, EXPR_HAPPINESS, EXPR_SURPRISE, AU_JAW_DROP, AU_LIPS_PART,
+  AU_LIP_FUNNELER, AU_LIP_PUCKER, SIDE_BOTH;
+import humanbody use *;
+
+const SW = 2560u32;
+const SH = 1440u32;
+
+// ------------------------------------------------------------------------------ pictures
+
+struct Sheet {
+  raster Raster;
+
+  fn make(w i32, h i32) Sheet {
+    mut r = Raster.empty();
+    r.width = w;
+    r.height = h;
+    r.depth = 8;
+    r.colorSpace = ColorSpace.Srgb;
+    r.pixels8.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    new Sheet(r);
+  }
+
+  // A readback 'tw' by 'th' (rows from the top) into the sheet at (x, y)
+  fn put(self &mut, x0 i32, y0 i32, tw i32, th i32, px *u8) {
+    mut y = 0;
+    while y < th {
+      mut x = 0;
+      while x < tw {
+        imm s = usize.from((y * tw + x) * 4);
+        imm d = usize.from(((y0 + y) * raster.width + x0 + x) * 4);
+        raster.pixels8.set(d, *(px + s));
+        raster.pixels8.set(d + 1usize, *(px + s + 1usize));
+        raster.pixels8.set(d + 2usize, *(px + s + 2usize));
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn save(self &, dir &String, name &str) {
+    imm png = encodePng(&raster, 2);
+    mut full = dir.copy();
+    full.append("/");
+    full.append(name);
+    full.append(".png");
+    imm op = Path.from(full.view());
+    fs.writeFile(&op, png.view());
+    printStr("wrote "); printStr(full.view()); printStr("\n");
+  }
+}
+
+fn cstrEquals(a *u8, b &str) bool {
+  mut i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8;
+}
+
+fn argString(p *u8) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while *(p + i) != 0u8 { s.appendByte(*(p + i)); i = i + 1usize; }
+  s;
+}
+
+// ------------------------------------------------------------------------------ the stage
+
+struct Stage {
+  renderer Renderer;
+  post Post;
+  fx ImageFx;
+  morpher Morpher;
+  cloth PipelineHandle;
+  w u32;
+  h u32;
+  color Texture;
+  depth Texture;
+  readback Buffer;
+  sun Light;
+  floorMesh MeshHandle;
+  floorMat MaterialHandle;
+  cube MeshHandle;
+  wood MaterialHandle;
+  barMat MaterialHandle;
+  clay MaterialHandle;
+}
+
+fn daySky() Sky {
+  mut s = Sky.dusk(radians(50.), radians(135.));
+  s.zenith = new Color(0.16, 0.30, 0.66, 1.);
+  s.horizon = new Color(0.62, 0.68, 0.78, 1.);
+  s.sunColor = new Color(30., 28., 24., 1.);
+  s.glow = new Color(0.20, 0.18, 0.12, 1.);
+  s.ground = new Color(0.20, 0.19, 0.16, 1.);
+  s;
+}
+
+fn duskSky() Sky {
+  mut s = Sky.dusk(radians(7.), radians(250.));
+  s.zenith = new Color(0.08, 0.12, 0.30, 1.);
+  s.horizon = new Color(0.70, 0.42, 0.26, 1.);
+  s.sunColor = new Color(24., 12., 5., 1.);
+  s.glow = new Color(0.55, 0.28, 0.12, 1.);
+  s.ground = new Color(0.10, 0.08, 0.07, 1.);
+  s;
+}
+
+fn setDay(device &mut Device, st &mut Stage, day bool) {
+  imm sky = if day { daySky(); } else { duskSky(); };
+  st.renderer.setSky(device, &sky);
+  st.sun = if day { sky.sunLight(new Color(3.0, 2.85, 2.6, 1.), new Color(0.10, 0.11, 0.13, 1.)); }
+    else { sky.sunLight(new Color(2.4, 1.35, 0.75, 1.), new Color(0.05, 0.06, 0.10, 1.)); };
+}
+
+fn resize(device &mut Device, st &mut Stage, w u32, h u32) {
+  if st.w == w and st.h == h { return; }
+  imm outDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  st.color = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  st.depth = device.createTexture(&depthDesc);
+  st.readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  st.post.resize(device, w, h);
+  st.w = w;
+  st.h = h;
+}
+
+fn makeStage(device &mut Device) Stage {
+  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, SW, SH);
+  mut fx = ImageFx.create(device, &renderer, &mut post);
+  mut fs = FxSettings.high();
+  fs.exposure.enabled = false;
+  fx.configure(&fs);
+  imm shadows = ShadowSettings.high();
+  renderer.setShadows(device, &shadows);
+  mut morpher = Morpher.create(device);
+  imm cloth = addClothPipeline(&mut renderer, device);
+  imm outDesc = new TextureDescriptor(SW, SH, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm color = device.createTexture(&outDesc);
+  imm depthDesc = new TextureDescriptor(SW, SH, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  imm depth = device.createTexture(&depthDesc);
+  imm readback = device.createBuffer(u64.from(SW) * u64.from(SH) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  // a stone floor: a fine checker of two greys
+  imm img = Image.checker(512, 512, 64, 64, new Color(0.40, 0.38, 0.35, 1.), new Color(0.36, 0.34, 0.31, 1.));
+  imm tex = renderer.addTexture(device, &img);
+  mut fm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.85);
+  fm.texture = tex;
+  imm floorMat = renderer.addPbrMaterial(device, &fm);
+  imm cubeMesh = Mesh.cube(0.5);
+  imm floorMesh = renderer.addMesh(device, &cubeMesh);
+  imm cube = renderer.addMesh(device, &cubeMesh);
+  imm wood = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.30, 0.17, 0.08, 1.), 0., 0.55));
+  imm barMat = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 1.).glowing(new Color(1., 0.55, 0.1, 1.), 1.6));
+  imm clay = renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.62, 0.50, 0.42, 1.), 0., 0.6));
+  mut st = new Stage(renderer, post, fx, morpher, cloth, SW, SH, color, depth, readback, Light.directional(new Vec3(0., -1., 0.),
+    new Color(1., 1., 1., 1.), new Color(0.1, 0.1, 0.1, 1.)), floorMesh, floorMat, cube, wood, barMat, clay);
+  setDay(device, &mut st, true);
+  st;
+}
+
+// Draw 'list' 'frames' times (temporal AA converges on a still picture) and read the last back
+fn shoot(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, frames i32) *u8 {
+  st.fx.cut = true;
+  mut f = 0;
+  while f < frames {
+    mut encoder = device.createCommandEncoder();
+    st.morpher.update(device, &mut encoder, &st.renderer);
+    st.fx.render(device, &mut encoder, &mut st.renderer, &mut st.post, camera, &st.sun, list, &st.color);
+    if f + 1 == frames { encoder.copyTextureToBuffer(&st.color, &st.readback); }
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    f = f + 1;
+  }
+  st.readback.mappedRange();
+}
+
+fn floor(list &mut DrawList, st &Stage) {
+  list.add(st.floorMesh, st.floorMat, Mat4.fromTrs(new Vec3(0., -0.5, 0.), Quat.identity(), new Vec3(30., 1., 30.)));
+}
+
+fn box(list &mut DrawList, st &Stage, mat MaterialHandle, c Vec3, half Vec3, yaw f32) {
+  list.add(st.cube, mat, Mat4.fromTrs(c, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), half * 2.));
+}
+
+// The faces' rows: 0 neutral, 1 a smile, 2 surprise, 3 "ah", 4 "oo", 5 neutral (a blink is started after)
+fn setFaceRow(ac &mut Actor, row i32) {
+  ac.pose = standPose(&ac.body.skeleton);
+  ac.rig.clearExpressions(0.01);
+  ac.rig.blinking = false;
+  ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.);
+  if row == 1 { ac.rig.express(EXPR_HAPPINESS, 1., 0.01); }
+  if row == 2 { ac.rig.express(EXPR_SURPRISE, 1., 0.01); }
+  // the visemes as their units: "ah" the jaw down and the lips apart; "oo" the lips rounded and pushed out
+  if row == 3 { ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.55); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.6); }
+  if row == 4 { ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.45); ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.35);
+    ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.12); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.15); }
+}
+
+// ------------------------------------------------------------------------------ the cape's folds
+
+// A hanging garment drawn with folds. The drape settles the cape's cut at a coarse grid (28 by 24 cells for a cape
+// a metre long), too coarse to buckle into the narrow folds heavy cloth makes, so its look is finished in the
+// drawing: each vertex moves along the cloth's normal by a wave round the neck (the folds fan out from the
+// shoulders, as a cape's do) that grows from nothing at the collar to its depth at the hem, and the normals are
+// found again from the moved surface so the folds catch the light. The simulation is untouched; this is paint.
+struct FoldedView {
+  mesh MeshHandle;
+  material MaterialHandle;
+  scratch Mesh;
+  normals List[Vec3];
+  acc List[Vec3];
+}
+
+fn makeFolded(renderer &mut Renderer, device &mut Device, g &Garment, material MaterialHandle) FoldedView {
+  imm mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
+  new FoldedView(mesh, material, Mesh.empty(), List[Vec3].empty(), List[Vec3].empty());
+}
+
+// 'neck' the neck's place (world), 'up' the body's up; 'folds' waves a full turn round, 'depth' at the hem, 'drop'
+// the distance below the neck where the folds reach their depth
+fn drawFolded(v &mut FoldedView, renderer &mut Renderer, device &mut Device, g &Garment, list &mut DrawList, neck Vec3,
+    folds f32, depth f32, drop f32) {
+  writeMesh(&g.soft, &mut v.scratch, true, &mut v.normals);
+  imm nv = v.scratch.positions.len() / 2usize;
+  mut i = 0usize;
+  while i < nv {
+    imm p = *v.scratch.positions[i];
+    imm n = *v.scratch.normals[i];
+    imm dx = p.x - neck.x;
+    imm dz = p.z - neck.z;
+    imm ang = atan2(dx, dz);
+    imm below = neck.y - p.y;
+    imm amp = depth * smoothstep(0.04, drop, below);
+    // a second, slower wave makes the folds uneven, as cloth's are
+    imm w = sin(folds * ang) + 0.35 * sin(folds * 0.43 * ang + 1.7);
+    imm q = p + n * (amp * w);
+    v.scratch.positions.set(i, q);
+    v.scratch.positions.set(nv + i, q);
+    i = i + 1usize;
+  }
+  // the normals of the moved surface, from the front's triangles (the first half of the indices), turned to agree
+  // with the cloth's own
+  v.acc.clear();
+  i = 0usize;
+  while i < nv { v.acc.push(new Vec3(0., 0., 0.)); i = i + 1usize; }
+  imm half = v.scratch.indices.len() / 2usize;
+  mut t = 0usize;
+  while t + 2usize < half {
+    imm a = usize.from(*v.scratch.indices[t]);
+    imm b = usize.from(*v.scratch.indices[t + 1usize]);
+    imm c = usize.from(*v.scratch.indices[t + 2usize]);
+    imm fa = (*v.scratch.positions[b] - *v.scratch.positions[a]).cross(*v.scratch.positions[c] - *v.scratch.positions[a]);
+    v.acc.set(a, *v.acc[a] + fa);
+    v.acc.set(b, *v.acc[b] + fa);
+    v.acc.set(c, *v.acc[c] + fa);
+    t = t + 3usize;
+  }
+  i = 0usize;
+  while i < nv {
+    imm old = *v.scratch.normals[i];
+    mut n = *v.acc[i];
+    if n.length() > 1e-12 {
+      n = n.normalize();
+      if n.dot(old) < 0. { n = n * -1.; }
+      v.scratch.normals.set(i, n);
+      v.scratch.normals.set(nv + i, n * -1.);
+    }
+    i = i + 1usize;
+  }
+  renderer.writeDynamicMesh(device, v.mesh, &v.scratch);
+  list.add(v.mesh, v.material, Mat4.identity());
+}
+
+// ------------------------------------------------------------------------------ the people
+
+struct Actor {
+  index usize;
+  name String;
+  body Body;
+  face BodyFace;
+  rig FaceRig;
+  frame FaceFrame;
+  full Wardrobe;
+  under Wardrobe;
+  copyFull MorphHandle;
+  copyUnder MorphHandle;
+  skinMat MaterialHandle;
+  eyeMat MaterialHandle;
+  teethMat MaterialHandle;
+  tongueMat MaterialHandle;
+  cavMat MaterialHandle;
+  hEyes MeshHandle;
+  hEars MeshHandle;
+  hTeeth MeshHandle;
+  hTongue MeshHandle;
+  hCav MeshHandle;
+  fullPieces List[MeshHandle];
+  fullMats List[MaterialHandle];
+  underPieces List[MeshHandle];
+  underMats List[MaterialHandle];
+  capeView List[FoldedView];
+  restInv List[Mat4];
+  pose Pose;
+  models List[Transform3];
+  world List[Transform3];
+  mats List[Mat4];
+  walker Walker;
+}
+
+fn clothMaterial(device &mut Device, st &mut Stage, c Vec3, kind u32) MaterialHandle {
+  imm lin = linearOf(c);
+  mut m = PbrMaterial.standard(lin, 0., 0.78);
+  if kind == CLOTH_PLAIN { m.sheenColor = new Color(lin.red * 0.35 + 0.05, lin.green * 0.35 + 0.05, lin.blue * 0.35 + 0.05, 1.); m.sheenRoughness = 0.6; }
+  if kind == CLOTH_WOOL { m.roughness = 0.9; m.sheenColor = new Color(lin.red * 0.5 + 0.04, lin.green * 0.5 + 0.04, lin.blue * 0.5 + 0.04, 1.); m.sheenRoughness = 0.75; }
+  if kind == CLOTH_SILK { m.roughness = 0.38; m.sheenColor = new Color(lin.red * 0.7 + 0.08, lin.green * 0.7 + 0.08, lin.blue * 0.7 + 0.08, 1.); m.sheenRoughness = 0.35; }
+  if kind == CLOTH_LEATHER { m.roughness = 0.42; m.clearcoat = 0.25; m.clearcoatRoughness = 0.35; }
+  st.renderer.addPbrMaterial(device, &m);
+}
+
+fn indexedMesh(m &Mesh, idx &List[u32]) Mesh {
+  mut out = copyMesh(m);
+  out.indices.clear();
+  mut i = 0usize;
+  while i < idx.len() { out.indices.push(*idx[i]); i = i + 1usize; }
+  out;
+}
+
+fn makeActor(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index usize, workers &mut Workers) Actor {
+  mut body = personBody(set, &p.measures);
+  imm face = buildFace(&mut body);
+  imm full = dressPerson(&body, p, false, 4u32);
+  imm under = dressPerson(&body, p, true, 1u32);
+  imm skin = body.skin();
+  imm mt = morphTargetsOf(&face, body.mesh.positions.len());
+  imm morphSet = st.morpher.addSet(device, &mt, &body.mesh);
+  imm hFull = st.renderer.addSkinnedMesh(device, &indexedMesh(&body.mesh, &full.bodyIndices), &skin);
+  imm hUnder = st.renderer.addSkinnedMesh(device, &indexedMesh(&body.mesh, &under.bodyIndices), &skin);
+  mut enc0 = device.createCommandEncoder();
+  imm copyFull = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, hFull, morphSet, false);
+  imm copyUnder = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, hUnder, morphSet, false);
+  device.queue.submit(enc0.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm tex = paintSkin(&body, &p.look, 2048);
+  imm albedo = st.renderer.addTexture(device, &tex.albedo);
+  imm roughTex = st.renderer.addLinearTexture(device, &tex.roughness);
+  mut sm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 1.).skin();
+  sm.texture = albedo;
+  sm.metallicRoughnessTexture = roughTex;
+  imm skinMat = st.renderer.addPbrMaterial(device, &sm);
+  imm eyeTex = st.renderer.addTexture(device, &paintEye(p.look.iris));
+  mut em = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.3);
+  em.texture = eyeTex;
+  em.clearcoat = 1.;
+  em.clearcoatRoughness = 0.02;
+  imm eyeMat = st.renderer.addPbrMaterial(device, &em);
+  imm teethMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.78, 0.74, 0.64, 1.), 0., 0.3));
+  // (the mouth's inside is lit as if open to the sky; its colours are darkened by the shadow it would have)
+  imm tongueMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.24, 0.07, 0.08, 1.), 0., 0.4));
+  imm cavMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.045, 0.012, 0.012, 1.), 0., 0.9));
+  imm hEyes = st.renderer.addSkinnedMesh(device, &face.parts.eyes, &face.parts.eyesSkin);
+  imm hEars = st.renderer.addSkinnedMesh(device, &face.parts.ears, &face.parts.earsSkin);
+  imm hTeeth = st.renderer.addSkinnedMesh(device, &face.parts.teeth, &face.parts.teethSkin);
+  imm hTongue = st.renderer.addSkinnedMesh(device, &face.parts.tongue, &face.parts.tongueSkin);
+  imm hCav = st.renderer.addSkinnedMesh(device, &face.parts.cavity, &face.parts.cavitySkin);
+  mut fullPieces = List[MeshHandle].empty();
+  mut fullMats = List[MaterialHandle].empty();
+  mut i = 0usize;
+  while i < full.pieces.len() {
+    fullPieces.push(st.renderer.addSkinnedMesh(device, &full.pieces[i].mesh, &full.pieces[i].skin));
+    fullMats.push(clothMaterial(device, st, full.pieces[i].color, full.pieces[i].kind));
+    i = i + 1usize;
+  }
+  mut underPieces = List[MeshHandle].empty();
+  mut underMats = List[MaterialHandle].empty();
+  i = 0usize;
+  while i < under.pieces.len() {
+    underPieces.push(st.renderer.addSkinnedMesh(device, &under.pieces[i].mesh, &under.pieces[i].skin));
+    underMats.push(clothMaterial(device, st, under.pieces[i].color, under.pieces[i].kind));
+    i = i + 1usize;
+  }
+  mut capeView = List[FoldedView].empty();
+  if full.capeIndex >= 0i32 {
+    imm g = full.outfit.garments[usize.from(full.capeIndex)];
+    // black velvet: the pile's sheen a cool grey, bright enough at grazing angles that the folds read, no dirt, no wear
+    imm look = new ClothLook(new Color(0.016, 0.016, 0.019, 1.), new Color(0.018, 0.018, 0.021, 1.), new Color(0.55, 0.55, 0.60, 1.), 1.0,
+      0.32, new Color(1., 1., 1., 1.), 900., 0.25, 2u32, 0.10, 0., 0., 0., 37u32);
+    imm bands = List[WearBand].empty();
+    imm cm = addClothMaterial(&mut st.renderer, device, st.cloth, g, &look, &bands);
+    capeView.push(makeFolded(&mut st.renderer, device, g, cm));
+  }
+  imm rest = restModels(&body.skeleton);
+  mut restInv = List[Mat4].empty();
+  i = 0usize;
+  while i < rest.len() { restInv.push((*rest[i]).toMat4().inverse()); i = i + 1usize; }
+  mut rig = FaceRig.make(&face.spec, &face.units, &face.targets, 20261015u32 + u32.from(index));
+  rig.idleAmount = 0.;
+  rig.blinking = false;
+  imm frame = rig.newFrame();
+  imm pose = body.skeleton.restPose();
+  mut walker = Walker.make(p.measures.height, u32.from(index) + 3u32);
+  walker.hipSpan = hipHalfSpan(&p.measures) / p.measures.height;
+  print <- "  "; printStr(p.name.view()); print <- ": "; print <- body.vertexCount(); print <- " vertices, ";
+  print <- body.mesh.triangleCount(); print <- " triangles; "; print <- full.pieces.len(); print <- " pieces; body drawn ";
+  print <- full.bodyIndices.len() / 3usize; print <- " triangles dressed\n";
+  new Actor(index, p.name.copy(), body, face, rig, frame, full, under, copyFull, copyUnder, skinMat, eyeMat, teethMat, tongueMat, cavMat,
+    hEyes, hEars, hTeeth, hTongue, hCav, fullPieces, fullMats, underPieces, underMats, capeView, restInv, pose, List[Transform3].empty(),
+    List[Transform3].empty(), List[Mat4].empty(), walker);
+}
+
+// The actor's pose placed in the world at 'at' facing 'yaw': the face's jaw and eyes from its frame, the bones in the
+// world, the skinning matrices
+fn place(a &mut Actor, at Vec3, yaw f32) {
+  applyFace(&mut a.pose, &a.face.bones, &a.frame, &a.face.spec, false);
+  a.body.skeleton.modelTransforms(&a.pose, &mut a.models);
+  imm root = new Transform3(at, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
+  a.world.clear();
+  a.mats.clear();
+  mut i = 0usize;
+  while i < a.models.len() {
+    imm w = root * *a.models[i];
+    a.world.push(w);
+    a.mats.push(w.toMat4() * *a.restInv[i]);
+    i = i + 1usize;
+  }
+}
+
+fn faceStep(st &mut Stage, a &mut Actor, frames i32) {
+  mut k = 0;
+  while k < frames { a.rig.update(1. / 60., &mut a.frame); k = k + 1; }
+}
+
+// The cape brought to the pose and let settle for 'frames' sixtieths
+fn settleCape(a &mut Actor, workers &mut Workers, frames i32, snap bool) {
+  if a.full.capeIndex < 0i32 { return; }
+  if snap {
+    a.full.outfit.snap(&a.full.rig, &a.world);
+    rippleGarment(&mut a.full, usize.from(a.full.capeIndex), (*a.world[NECK]).translation, 7., 0.12);
+  }
+  mut k = 0;
+  while k < frames { a.full.outfit.step(&a.full.rig, &a.world, 1. / 60., new Vec3(0.3, 0., 0.2), workers); k = k + 1; }
+}
+
+fn draw(device &mut Device, st &mut Stage, list &mut DrawList, a &mut Actor, dressed bool) {
+  st.morpher.setWeights(&mut st.renderer, if dressed { a.copyFull; } else { a.copyUnder; }, &a.frame.weights);
+  imm mesh = st.morpher.mesh(if dressed { a.copyFull; } else { a.copyUnder; });
+  list.addSkinned(mesh, a.skinMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hEyes, a.eyeMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hEars, a.skinMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hTeeth, a.teethMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hTongue, a.tongueMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hCav, a.cavMat, Mat4.identity(), a.mats.view());
+  mut i = 0usize;
+  if dressed {
+    while i < a.fullPieces.len() { list.addSkinned(*a.fullPieces[i], *a.fullMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
+    if a.capeView.len() > 0usize {
+      imm g = a.full.outfit.garments[usize.from(a.full.capeIndex)];
+      imm neck = (*a.world[NECK]).translation;
+      drawFolded(&mut a.capeView[0usize], &mut st.renderer, device, g, list, neck, 16., 0.022, 0.55);
+    }
+  } else {
+    while i < a.underPieces.len() { list.addSkinned(*a.underPieces[i], *a.underMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
+  }
+}
+
+fn ground(x f32, z f32) f32 { 0.; }
+
+// ------------------------------------------------------------------------------ main
+
+fn main(argc i32, argv **u8) i32 {
+  mut outDir = String.from("C:/src/humanbody-shots");
+  mut quick = false;
+  mut firstOnly = false;
+  mut headOnly = false;
+  mut stagesOnly = false;
+  mut pairsOnly = false;
+  mut mouthOnly = false;
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") and a + 1 < argc { outDir = argString(*(argv + usize.from(a + 1))); a += 1; }
+    if cstrEquals(arg, "--quick") { quick = true; }
+    if cstrEquals(arg, "--first") { firstOnly = true; }
+    if cstrEquals(arg, "--head") { headOnly = true; }
+    if cstrEquals(arg, "--stages") { stagesOnly = true; }
+    if cstrEquals(arg, "--pairs") { pairsOnly = true; }
+    if cstrEquals(arg, "--mouth") { mouthOnly = true; }
+    a += 1;
+  }
+  imm taaFrames = if quick { 2; } else { 10; };
+  mut instance = Instance.create("humanbody peoplebench");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1; }
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1; }
+  printStr("adapter: "); printStr(adapter.name.view()); printStr("\n");
+  mut st = makeStage(&mut device);
+  if headOnly { headStudy(&mut device, &mut st, &outDir); return 0; }
+  imm rayTraced = st.renderer.setRayTracing(&mut device, true);
+  print <- "ray tracing: "; print <- if rayTraced { "on"; } else { "not on this device"; }; print <- "\n";
+  mut workers = Workers.make(4u32);
+
+  // ---- the bases and their blends ----
+  imm t0 = Instant.now();
+  imm men = buildBlendSet(MALE, 1u32);
+  imm women = buildBlendSet(FEMALE, 1u32);
+  print <- "the two bases and their "; print <- men.blends.len() + women.blends.len(); print <- " blends in ";
+  print <- t0.elapsed().nanos() / 1000000i64; print <- " ms\n";
+  imm people = cast();
+  if pairsOnly {
+    // the main avatar and the average woman alone, square on, in underwear, filling a 1280 x 2560 frame head to foot:
+    // for setting beside the classical figures (a composite made outside, in the shots folder)
+    {
+      imm empty = DrawList.empty();
+      imm cam = Camera.make();
+      shoot(&mut device, &mut st, &cam, &empty, 1);
+    }
+    resize(&mut device, &mut st, 1280u32, 2560u32);
+    mut k = 0usize;
+    while k < 2usize {
+      imm idx = if k == 0usize { 0usize; } else { 6usize; };
+      imm p = people[idx];
+      imm set = if p.measures.sex == MALE { &men; } else { &women; };
+      mut ac = makeActor(&mut device, &mut st, set, p, idx, &mut workers);
+      ac.pose = standPose(&ac.body.skeleton);
+      faceStep(&mut st, &mut ac, 10);
+      place(&mut ac, new Vec3(0., 0., 0.), 0.);
+      mut list = DrawList.empty();
+      draw(&mut device, &mut st, &mut list, &mut ac, false);
+      mut cam = Camera.make();
+      cam.projection = Orthogonal;
+      cam.viewHeight = p.measures.height * 0.515;
+      cam.near = 0.05;
+      cam.far = 100.;
+      cam.background = new Color(0.82, 0.82, 0.80, 1.);
+      imm cy = p.measures.height * 0.5;
+      cam.lookAt(new Vec3(0., cy, -20.), new Vec3(0., cy, 0.), new Vec3(0., 1., 0.));
+      imm px = shoot(&mut device, &mut st, &cam, &list, 10);
+      mut sheet = Sheet.make(1280, 2560);
+      sheet.put(0, 0, 1280, 2560, px);
+      sheet.save(&outDir, if k == 0usize { "pair-avatar"; } else { "pair-woman"; });
+      k = k + 1usize;
+    }
+    workers.stop();
+    return 0;
+  }
+  if stagesOnly {
+    stages(&mut device, &mut st, &men, people[0usize], 0usize, &outDir, &mut workers);
+    stages(&mut device, &mut st, &women, people[6usize], 6usize, &outDir, &mut workers);
+    workers.stop();
+    return 0;
+  }
+  mut actors = List[Actor].empty();
+  mut i = 0usize;
+  while i < people.len() {
+    imm p = people[i];
+    imm set = if p.measures.sex == MALE { &men; } else { &women; };
+    actors.push(makeActor(&mut device, &mut st, set, p, i, &mut workers));
+    // what the blends made of the person's measures, against what they should be
+    imm meas = measuredOfBody(&actors[i].body);
+    imm models = restModels(&actors[i].body.skeleton);
+    print <- "    measures (mm, made / ANSUR II):";
+    mut k = 1usize;
+    while k < 14usize {
+      // (the neck's girth is set on the head's part from the survey, not measured on the body: skipped)
+      if k == 8usize { k = 9usize; }
+      print <- " "; printStr(measureName(k).view()); print <- " "; print <- i64.from(meas.measure(k, &models) * 1000.); print <- "/";
+      print <- i64.from(measureAt(&p.measures, k) * 1000.);
+      k = k + 1usize;
+    }
+    print <- "\n";
+    i = i + 1usize;
+  }
+  imm n = actors.len();
+  // the line-up's places: 0.9 m apart, the main avatar in the middle
+  mut xs = List[f32].empty();
+  i = 0usize;
+  while i < n {
+    imm order = [3, 2, 4, 1, 5, 0, 6];
+    xs.push(f32.from(order[i] - 3) * 0.92);
+    i = i + 1usize;
+  }
+  mut list = DrawList.empty();
+  mut camera = Camera.make();
+  camera.near = 0.05;
+  camera.far = 200.;
+  camera.background = new Color(0.5, 0.55, 0.62, 1.);
+
+  // ---- standing poses, the faces neutral (the avatar's with the hint of a smile), the cape settled ----
+  i = 0usize;
+  while i < n {
+    actors[i].pose = standPose(&actors[i].body.skeleton);
+    actors[i].rig.clearExpressions(0.01);
+    if i == 0usize { actors[i].rig.express(EXPR_HAPPINESS, 0.25, 0.01); }
+    faceStep(&mut st, &mut actors[i], 20);
+    place(&mut actors[i], new Vec3(*xs[i], 0., 0.), 0.);
+    settleCape(&mut actors[i], &mut workers, 150, true);
+    i = i + 1usize;
+  }
+
+  // ---- 01: the main avatar ----
+  {
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    resize(&mut device, &mut st, 640u32, 1440u32);
+    imm av = 0usize;
+    imm ax = *xs[av];
+    imm h = people[av].measures.height;
+    mut k = 0;
+    while k < 4 {
+      list.clear();
+      floor(&mut list, &st);
+      draw(&mut device, &mut st, &mut list, &mut actors[av], true);
+      camera.fov = radians(20.);
+      imm at = new Vec3(ax, h * 0.52, 0.);
+      if k == 0 { camera.lookAt(new Vec3(ax - 0.6, h * 0.55, -6.2), at, new Vec3(0., 1., 0.)); }
+      if k == 1 { camera.lookAt(new Vec3(ax + 3.2, h * 0.58, 5.4), at, new Vec3(0., 1., 0.)); }
+      if k == 2 { camera.lookAt(new Vec3(ax - 6.2, h * 0.55, -0.4), at, new Vec3(0., 1., 0.)); }
+      if k == 3 {
+        camera.fov = radians(10.);
+        imm eye = *actors[av].body.points[POINT_HEAD] + new Vec3(ax, 0., 0.);
+        camera.lookAt(eye + new Vec3(-0.55, 0.05, -1.55), eye + new Vec3(0., -0.05, 0.), new Vec3(0., 1., 0.));
+      }
+      imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      sheet.put(k * 640, 0, 640, 1440, px);
+      k = k + 1;
+    }
+    sheet.save(&outDir, "01-main-avatar");
+  }
+  if firstOnly { workers.stop(); return 0; }
+
+  // ---- 11b: the main avatar's face close: neutral, a smile, surprise, "ah", "oo", a blink ----
+  {
+    imm tw = 853u32;
+    imm th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    mut row = 0;
+    while row < 6 {
+      mut ac = &mut actors[0usize];
+      setFaceRow(ac, row);
+      faceStep(&mut st, ac, 30);
+      if row == 5 { ac.rig.blinking = true; ac.rig.blinker.start(1.); faceStep(&mut st, ac, 6); ac.rig.blinking = false; }
+      place(ac, new Vec3(0., 0., 0.), 0.);
+      list.clear();
+      floor(&mut list, &st);
+      draw(&mut device, &mut st, &mut list, ac, true);
+      imm eye = *ac.body.points[POINT_HEAD];
+      camera.fov = radians(9.);
+      camera.lookAt(eye + new Vec3(-0.35, 0.02, -1.25), eye + new Vec3(0., -0.045, 0.), new Vec3(0., 1., 0.));
+      imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      sheet.put((row % 3) * i32.from(tw), (row / 3) * i32.from(th), i32.from(tw), i32.from(th), px);
+      row = row + 1;
+    }
+    sheet.save(&outDir, "11b-avatar-expressions");
+    setFaceRow(&mut actors[0usize], 0);
+    actors[0usize].rig.express(EXPR_HAPPINESS, 0.25, 0.01);
+    faceStep(&mut st, &mut actors[0usize], 30);
+    place(&mut actors[0usize], new Vec3(*xs[0usize], 0., 0.), 0.);
+  }
+  if mouthOnly { workers.stop(); return 0; }
+
+  // ---- 02 to 06: the cast, day and dusk ----
+  resize(&mut device, &mut st, SW, SH);
+  mut view = 0;
+  while view < 6 {
+    imm day = view < 3;
+    setDay(&mut device, &mut st, day);
+    imm yaw = if view == 1 or view == 4 { radians(-38.); } elif view == 2 { pi; } elif view == 5 { radians(38.); } else { 0.; };
+    i = 0usize;
+    while i < n {
+      place(&mut actors[i], new Vec3(*xs[i], 0., 0.), yaw);
+      settleCape(&mut actors[i], &mut workers, 40, false);
+      i = i + 1usize;
+    }
+    list.clear();
+    floor(&mut list, &st);
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], true); i = i + 1usize; }
+    camera.fov = radians(22.);
+    camera.lookAt(new Vec3(0., 1.05, -9.8), new Vec3(0., 0.92, 0.), new Vec3(0., 1., 0.));
+    imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    imm names = ["02-cast-day", "03-cast-day-turned", "04-cast-day-back", "05-cast-dusk", "06-cast-dusk-turned", "06b-cast-dusk-turned-other"];
+    sheet.save(&outDir, names[usize.from(view)]);
+    view = view + 1;
+  }
+  setDay(&mut device, &mut st, true);
+
+  // ---- 07, 08: the base bodies in underwear ----
+  view = 0;
+  while view < 2 {
+    imm yaw = if view == 1 { radians(-90.); } else { 0.; };
+    i = 0usize;
+    while i < n { place(&mut actors[i], new Vec3(*xs[i], 0., 0.), yaw); i = i + 1usize; }
+    list.clear();
+    floor(&mut list, &st);
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], false); i = i + 1usize; }
+    camera.fov = radians(22.);
+    camera.lookAt(new Vec3(0., 1.05, -9.8), new Vec3(0., 0.92, 0.), new Vec3(0., 1., 0.));
+    imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, if view == 0 { "07-cast-underwear"; } else { "08-cast-underwear-side"; });
+    view = view + 1;
+  }
+
+  // ---- 09: proportions, square on, with the measures behind ----
+  {
+    mut barPos = List[Vec3].empty();
+    mut barIdx = List[u32].empty();
+    i = 0usize;
+    while i < n {
+      place(&mut actors[i], new Vec3(*xs[i], 0., 0.), 0.);
+      measureBars(&people[i].measures, *xs[i], &mut barPos, &mut barIdx);
+      i = i + 1usize;
+    }
+    mut bars = Mesh.empty();
+    i = 0usize;
+    while i < barPos.len() { bars.positions.push(*barPos[i]); bars.normals.push(new Vec3(0., 0., -1.)); bars.uvs.push(new Vec2(0., 0.)); i = i + 1usize; }
+    i = 0usize;
+    while i < barIdx.len() { bars.indices.push(*barIdx[i]); i = i + 1usize; }
+    imm hBars = st.renderer.addMesh(&mut device, &bars);
+    list.clear();
+    floor(&mut list, &st);
+    list.add(hBars, st.barMat, Mat4.identity());
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], false); i = i + 1usize; }
+    camera.projection = Orthogonal;
+    camera.viewHeight = 1.0;
+    // (the line-up is 5.5 m wide, the frame 3.6 at this height: two frames, the left half and the right)
+    mut half = 0;
+    while half < 2 {
+      imm cx = if half == 0 { -1.38; } else { 1.38; };
+      camera.lookAt(new Vec3(cx, 0.98, -20.), new Vec3(cx, 0.98, 0.), new Vec3(0., 1., 0.));
+      imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+      sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+      sheet.save(&outDir, if half == 0 { "09-proportions-left"; } else { "09-proportions-right"; });
+      half = half + 1;
+    }
+    camera.projection = Perspective;
+  }
+
+  // ---- 10: today's mannequin beside the average man and the main avatar ----
+  {
+    imm mq = mannequinMesh(1.75);
+    imm hMq = st.renderer.addMesh(&mut device, &mq);
+    imm woodMat = st.renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.672, 0.434, 0.216, 1.), 0., 0.45));
+    list.clear();
+    floor(&mut list, &st);
+    // (seen from the front, +x is on the picture's left): left to right the main avatar, the average man, today's
+    // mannequin, and the mannequin from its side
+    list.add(hMq, woodMat, Mat4.fromTranslation(new Vec3(-0.25, 0., 0.)));
+    list.add(hMq, woodMat, Mat4.fromTrs(new Vec3(-1.25, 0., 0.), Quat.angleAxis(radians(-90.), new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.)));
+    place(&mut actors[3usize], new Vec3(0.75, 0., 0.), 0.);
+    draw(&mut device, &mut st, &mut list, &mut actors[3usize], false);
+    place(&mut actors[0usize], new Vec3(1.65, 0., 0.), 0.);
+    draw(&mut device, &mut st, &mut list, &mut actors[0usize], false);
+    camera.projection = Orthogonal;
+    camera.viewHeight = 1.0;
+    camera.lookAt(new Vec3(0.2, 0.98, -20.), new Vec3(0.2, 0.98, 0.), new Vec3(0., 1., 0.));
+    imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, "10-mannequin-compare");
+    camera.projection = Perspective;
+  }
+
+  // ---- 11: the faces: neutral, a smile, surprise, "ah", "oo", a blink ----
+  {
+    imm tw = 365u32;
+    imm th = 240u32;
+    resize(&mut device, &mut st, tw, th);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    mut row = 0;
+    while row < 6 {
+      i = 0usize;
+      while i < n {
+        mut ac = &mut actors[i];
+        setFaceRow(ac, row);
+        faceStep(&mut st, ac, 30);
+        if row == 5 { ac.rig.blinking = true; ac.rig.blinker.start(1.); faceStep(&mut st, ac, 6); ac.rig.blinking = false; }
+        place(ac, new Vec3(0., 0., 0.), 0.);
+        list.clear();
+        floor(&mut list, &st);
+        draw(&mut device, &mut st, &mut list, ac, true);
+        imm eye = *ac.body.points[POINT_HEAD];
+        camera.fov = radians(13.);
+        camera.lookAt(eye + new Vec3(-0.30, 0.03, -1.05), eye + new Vec3(0., -0.045, 0.), new Vec3(0., 1., 0.));
+        imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+        sheet.put(i32.from(i) * i32.from(tw), row * i32.from(th), i32.from(tw), i32.from(th), px);
+        i = i + 1usize;
+      }
+      row = row + 1;
+    }
+    sheet.save(&outDir, "11-faces");
+    i = 0usize;
+    while i < n {
+      actors[i].rig.clearExpressions(0.01);
+      actors[i].rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.);
+      actors[i].rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.);
+      actors[i].rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
+      actors[i].rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.);
+      faceStep(&mut st, &mut actors[i], 30);
+      i = i + 1usize;
+    }
+  }
+
+  // ---- 12: walking ----
+  {
+    imm tw = 320u32;
+    imm th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    imm who = [0usize, 4usize];
+    mut r = 0usize;
+    while r < 2usize {
+      mut ac = &mut actors[who[r]];
+      ac.walker = Walker.make(ac.body.measures.height, 7u32);
+      ac.walker.hipSpan = hipHalfSpan(&ac.body.measures) / ac.body.measures.height;
+      mut z = 0.;
+      imm speed = 1.35;
+      imm dt = 1. / 60.;
+      mut models = List[Transform3].empty();
+      // walk a second and a half to get going, the cape with it
+      mut frame = 0;
+      mut shot = 0;
+      while shot < 8 {
+        z = z - speed * dt;
+        ac.walker.update(&ac.body.skeleton, &mut ac.pose, &mut models, new Vec3(0., 0., z), 0., speed, 0., true, &ground, dt);
+        place(ac, new Vec3(0., 0., z), 0.);
+        if frame == 0 { settleCape(ac, &mut workers, 60, true); } else { settleCape(ac, &mut workers, 1, false); }
+        if frame >= 90 and (frame - 90) % 5 == 0 {
+          list.clear();
+          floor(&mut list, &st);
+          draw(&mut device, &mut st, &mut list, ac, true);
+          camera.fov = radians(26.);
+          imm hh = ac.body.measures.height;
+          camera.lookAt(new Vec3(-4.6, hh * 0.55, z - 0.6), new Vec3(0., hh * 0.5, z), new Vec3(0., 1., 0.));
+          imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+          sheet.put(shot * i32.from(tw), i32.from(r) * i32.from(th), i32.from(tw), i32.from(th), px);
+          shot = shot + 1;
+        }
+        frame = frame + 1;
+      }
+      r = r + 1usize;
+    }
+    sheet.save(&outDir, "12-walk");
+  }
+
+  // ---- 13: sitting down on a chair and standing up ----
+  {
+    imm tw = 426u32;
+    imm th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    imm who = [3usize, 6usize];
+    mut r = 0usize;
+    while r < 2usize {
+      mut ac = &mut actors[who[r]];
+      imm seat = Seat.chair(new Vec3(0., 0.45, 0.35), 0., 0.45);
+      imm feet = seatFeet(&seat, &ac.body.skeleton);
+      imm phases = [0., 0.3, 0.55, 0.8, 1.0, 0.45];
+      mut k = 0usize;
+      while k < 6usize {
+        imm down = k < 5usize;
+        ac.pose = sitPose(&ac.body.skeleton, &seat, phases[k], down);
+        place(ac, feet, 0.);
+        list.clear();
+        floor(&mut list, &st);
+        chair(&mut list, &st, &seat);
+        draw(&mut device, &mut st, &mut list, ac, true);
+        camera.fov = radians(30.);
+        camera.lookAt(new Vec3(-3.0, 1.0, -0.9), new Vec3(0., 0.75, 0.2), new Vec3(0., 1., 0.));
+        imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+        sheet.put(i32.from(k) * i32.from(tw), i32.from(r) * i32.from(th), i32.from(tw), i32.from(th), px);
+        k = k + 1usize;
+      }
+      ac.pose = standPose(&ac.body.skeleton);
+      r = r + 1usize;
+    }
+    sheet.save(&outDir, "13-sit-chair");
+  }
+
+  // ---- 14: two on a bench ----
+  {
+    resize(&mut device, &mut st, SW, SH);
+    imm seatA = Seat.chair(new Vec3(-0.35, 0.43, 0.30), 0., 0.43);
+    imm seatB = Seat.chair(new Vec3(0.40, 0.43, 0.30), 0., 0.43);
+    mut ac = &mut actors[5usize];
+    ac.pose = sitPose(&ac.body.skeleton, &seatA, 1., true);
+    place(ac, seatFeet(&seatA, &ac.body.skeleton), 0.);
+    mut bc = &mut actors[1usize];
+    bc.pose = sitPose(&bc.body.skeleton, &seatB, 1., true);
+    place(bc, seatFeet(&seatB, &bc.body.skeleton), 0.);
+    settleCape(bc, &mut workers, 60, true);
+    list.clear();
+    floor(&mut list, &st);
+    bench(&mut list, &st, new Vec3(0., 0.43, 0.30), 1.8);
+    draw(&mut device, &mut st, &mut list, &mut actors[5usize], true);
+    draw(&mut device, &mut st, &mut list, &mut actors[1usize], true);
+    camera.fov = radians(26.);
+    camera.lookAt(new Vec3(-1.6, 1.25, -3.4), new Vec3(0., 0.75, 0.2), new Vec3(0., 1., 0.));
+    imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, "14-sit-bench");
+    actors[5usize].pose = standPose(&actors[5usize].body.skeleton);
+    actors[1usize].pose = standPose(&actors[1usize].body.skeleton);
+  }
+
+  // ---- 15: hailing ----
+  {
+    imm tw = 426u32;
+    imm th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    imm who = [0usize, 3usize];
+    mut r = 0usize;
+    while r < 2usize {
+      mut ac = &mut actors[who[r]];
+      imm times = [0.0, 0.3, 0.6, 0.75, 0.9, 1.05];
+      mut k = 0usize;
+      while k < 6usize {
+        ac.pose = hailPose(&ac.body.skeleton, times[k]);
+        ac.rig.clearExpressions(0.01);
+        ac.rig.express(EXPR_HAPPINESS, 0.6, 0.01);
+        faceStep(&mut st, ac, 20);
+        place(ac, new Vec3(0., 0., 0.), 0.);
+        settleCape(ac, &mut workers, if k == 0usize { 60; } else { 10; }, k == 0usize);
+        list.clear();
+        floor(&mut list, &st);
+        draw(&mut device, &mut st, &mut list, ac, true);
+        camera.fov = radians(28.);
+        imm hh = ac.body.measures.height;
+        camera.lookAt(new Vec3(-1.4, hh * 0.62, -3.4), new Vec3(0., hh * 0.62, 0.), new Vec3(0., 1., 0.));
+        imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+        sheet.put(i32.from(k) * i32.from(tw), i32.from(r) * i32.from(th), i32.from(tw), i32.from(th), px);
+        k = k + 1usize;
+      }
+      ac.pose = standPose(&ac.body.skeleton);
+      ac.rig.clearExpressions(0.01);
+      faceStep(&mut st, ac, 30);
+      r = r + 1usize;
+    }
+    sheet.save(&outDir, "15-hail");
+  }
+
+  // ---- 16: the cast with ray tracing off ----
+  {
+    resize(&mut device, &mut st, SW, SH);
+    st.renderer.setRayTracing(&mut device, false);
+    i = 0usize;
+    while i < n {
+      actors[i].pose = standPose(&actors[i].body.skeleton);
+      place(&mut actors[i], new Vec3(*xs[i], 0., 0.), 0.);
+      settleCape(&mut actors[i], &mut workers, 90, true);
+      i = i + 1usize;
+    }
+    list.clear();
+    floor(&mut list, &st);
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], true); i = i + 1usize; }
+    camera.fov = radians(22.);
+    camera.lookAt(new Vec3(0., 1.05, -9.8), new Vec3(0., 0.92, 0.), new Vec3(0., 1., 0.));
+    imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, "16-rt-off");
+  }
+  workers.stop();
+  0;
+}
+
+// The sculpting step by step for one person, from one fixed camera, into OUT/stages/<who>-NN-<step>.png (--stages):
+// the forms, the blended field, the ring mesh laid on it, the mesh shaded, the base body of the sex and the blends
+// applied a group at a time (the height, the trunk, the limbs, the head and face, the build), the skin, the underwear,
+// the clothes and (the main avatar) the cape
+fn stages(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index usize, outDir &String, workers &mut Workers) {
+  imm m = &p.measures;
+  imm who = if index == 0usize { "avatar"; } else { "woman"; };
+  imm w = 1920u32;
+  imm hgt = 1080u32;
+  {
+    imm empty = DrawList.empty();
+    imm cam = Camera.make();
+    shoot(device, st, &cam, &empty, 1);
+  }
+  resize(device, st, w, hgt);
+  mut camera = Camera.make();
+  camera.near = 0.05;
+  camera.far = 100.;
+  camera.fov = radians(24.);
+  imm hh = m.height;
+  camera.lookAt(new Vec3(-2.3, hh * 0.62, -4.1), new Vec3(0., hh * 0.50, 0.), new Vec3(0., 1., 0.));
+  mut n = 1;
+  // the direct sculpt of this person (the forms, the field, the mesh)
+  imm gains = fitGains(m, 1u32, 3);
+  imm skel = personSkeleton(m);
+  imm models = restModels(&skel);
+  imm forms = bodyForms(m, &models, &gains);
+  imm body = assembleBody(m, &gains, 1u32);
+  imm hf = headFieldOf(m);
+  imm hbox = new Aabb3(hf.origin + new Vec3(-0.12, -0.20, -0.16), hf.origin + new Vec3(0.12, 0.16, 0.14));
+  imm headNet = surfaceNet(&hf, hbox, 0.003, 1u32, true).toMesh();
+  imm hHeadField = st.renderer.addMesh(device, &headNet);
+  imm hForms = st.renderer.addMesh(device, &formsMesh(&forms, GROUP_ALL));
+  imm field = new FormField(forms, GROUP_ALL);
+  imm box = new Aabb3(new Vec3(-0.6, -0.02, -0.4), new Vec3(0.6, hh * 0.86, 0.4));
+  imm hField = st.renderer.addMesh(device, &surfaceNet(&field, box, 0.007, 1u32, true).toMesh());
+  imm hMesh = st.renderer.addMesh(device, &body.mesh);
+  mut wire = List[u32].empty();
+  mut q = 0usize;
+  while q + 2usize < body.mesh.indices.len() {
+    mut e = 0usize;
+    while e < 3usize { wire.push(*body.mesh.indices[q + e]); wire.push(*body.mesh.indices[q + (e + 1usize) % 3usize]); e = e + 1usize; }
+    q = q + 3usize;
+  }
+  imm hWire = st.renderer.addLines(device, body.mesh.positions.view(), wire.view());
+  mut list = DrawList.empty();
+  mut k = 0;
+  while k < 4 {
+    list.clear();
+    floor(&mut list, st);
+    if k == 0 { list.add(hForms, st.clay, Mat4.identity()); list.add(hHeadField, st.clay, Mat4.identity()); }
+    if k == 1 { list.add(hField, st.clay, Mat4.identity()); list.add(hHeadField, st.clay, Mat4.identity()); }
+    if k == 2 {
+      list.add(hField, st.clay, Mat4.identity());
+      list.add(hHeadField, st.clay, Mat4.identity());
+      list.addLines(hWire, Mat4.identity(), new Color(0.05, 0.10, 0.30, 1.));
+    }
+    if k == 3 { list.add(hMesh, st.clay, Mat4.identity()); }
+    imm names = ["forms", "sculpt", "mesh-on-sculpt", "mesh-shaded"];
+    stageShot(device, st, &camera, &list, w, hgt, outDir, who, n, names[usize.from(k)]);
+    n = n + 1;
+    k = k + 1;
+  }
+  // the blends, a group at a time, from the base of the sex
+  imm full = blendWeights(set, m);
+  imm groups = [0usize, 1usize, 2usize, 3usize, 4usize, 5usize];
+  imm groupNames = ["base", "height", "trunk", "limbs", "head-face", "build"];
+  mut g = 0usize;
+  while g < 6usize {
+    mut wts = List[f32].empty();
+    mut i = 0usize;
+    while i < set.blends.len() {
+      imm ax = set.blends[i].axis;
+      imm grp = if ax <= 7usize { 2usize; } elif ax <= 13usize { 3usize; } elif ax <= 25usize { 4usize; } else { 5usize; };
+      wts.push(if grp <= groups[g] { *full[i]; } else { 0.; });
+      i = i + 1usize;
+    }
+    imm scale = if g == 0usize { 1.; } else { m.height / set.base.measures.height; };
+    imm b = bodyFromWeights(set, m, &wts, scale);
+    imm hb = st.renderer.addMesh(device, &b.mesh);
+    list.clear();
+    floor(&mut list, st);
+    list.add(hb, st.clay, Mat4.identity());
+    mut nm = String.from("blend-");
+    nm.append(groupNames[g]);
+    stageShot(device, st, &camera, &list, w, hgt, outDir, who, n, nm.view());
+    n = n + 1;
+    g = g + 1usize;
+  }
+  // the skin, the underwear, the clothes, the cape
+  mut a = makeActor(device, st, set, p, index, workers);
+  a.pose = standPose(&a.body.skeleton);
+  faceStep(st, &mut a, 10);
+  place(&mut a, new Vec3(0., 0., 0.), 0.);
+  settleCape(&mut a, workers, 150, true);
+  k = 0;
+  while k < 4 {
+    list.clear();
+    floor(&mut list, st);
+    if k == 0 {
+      // the skin alone: the body with no clothes at all, but its underwear (the base bodies are never shown bare)
+      draw(device, st, &mut list, &mut a, false);
+    }
+    if k == 1 { draw(device, st, &mut list, &mut a, false); }
+    if k >= 2 {
+      if k == 2 and a.capeView.len() > 0usize {
+        // the clothes without the cape: the cape's view left out
+        st.morpher.setWeights(&mut st.renderer, a.copyFull, &a.frame.weights);
+        list.addSkinned(st.morpher.mesh(a.copyFull), a.skinMat, Mat4.identity(), a.mats.view());
+        list.addSkinned(a.hEyes, a.eyeMat, Mat4.identity(), a.mats.view());
+        list.addSkinned(a.hEars, a.skinMat, Mat4.identity(), a.mats.view());
+        mut i = 0usize;
+        while i < a.fullPieces.len() { list.addSkinned(*a.fullPieces[i], *a.fullMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
+      } else {
+        draw(device, st, &mut list, &mut a, true);
+      }
+    }
+    imm names = ["skin", "underwear", "clothes", "cape"];
+    if !(k == 3 and a.capeView.len() == 0usize) and k != 1 {
+      stageShot(device, st, &camera, &list, w, hgt, outDir, who, n, names[usize.from(k)]);
+      n = n + 1;
+    }
+    k = k + 1;
+  }
+}
+
+fn stageShot(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, w u32, h u32, outDir &String, who &str, n i32, name &str) {
+  imm px = shoot(device, st, camera, list, 10);
+  mut sheet = Sheet.make(i32.from(w), i32.from(h));
+  sheet.put(0, 0, i32.from(w), i32.from(h), px);
+  mut file = String.from("stages/");
+  file.append(who);
+  file.append("-");
+  if n < 10 { file.append("0"); }
+  file.appendUInt(u64.from(u32.from(n)));
+  file.append("-");
+  file.append(name);
+  sheet.save(outDir, file.view());
+}
+
+// The head study (--head): the main avatar's and the average woman's heads sculpted directly (no blends), skinned and
+// painted, front, three-quarter and profile, near: for working on the face quickly
+fn headStudy(device &mut Device, st &mut Stage, outDir &String) {
+  imm people = cast();
+  imm who = [0usize, 6usize];
+  mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+  // one frame first: the stage's first work (the sky's bake) must be done before its targets are remade
+  {
+    imm empty = DrawList.empty();
+    imm cam = Camera.make();
+    shoot(device, st, &cam, &empty, 1);
+  }
+  resize(device, st, 853u32, 720u32);
+  mut r = 0usize;
+  while r < 2usize {
+    imm p = people[who[r]];
+    imm gains = fitGains(&p.measures, 1u32, 2);
+    mut body = assembleBody(&p.measures, &gains, 1u32);
+    imm face = buildFace(&mut body);
+    imm skin = body.skin();
+    imm hBody = st.renderer.addSkinnedMesh(device, &body.mesh, &skin);
+    imm tex = paintSkin(&body, &p.look, 2048);
+    mut sm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 1.).skin();
+    sm.texture = st.renderer.addTexture(device, &tex.albedo);
+    sm.metallicRoughnessTexture = st.renderer.addLinearTexture(device, &tex.roughness);
+    imm skinMat = st.renderer.addPbrMaterial(device, &sm);
+    mut em = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.3);
+    em.texture = st.renderer.addTexture(device, &paintEye(p.look.iris));
+    em.clearcoat = 1.;
+    em.clearcoatRoughness = 0.02;
+    imm eyeMat = st.renderer.addPbrMaterial(device, &em);
+    imm hEyes = st.renderer.addSkinnedMesh(device, &face.parts.eyes, &face.parts.eyesSkin);
+    imm hEars = st.renderer.addSkinnedMesh(device, &face.parts.ears, &face.parts.earsSkin);
+    imm rest = restModels(&body.skeleton);
+    mut mats = List[Mat4].empty();
+    mut i = 0usize;
+    while i < rest.len() { mats.push(Mat4.identity()); i = i + 1usize; }
+    mut camera = Camera.make();
+    camera.near = 0.05;
+    camera.far = 50.;
+    camera.fov = radians(14.);
+    imm o = body.head.origin;
+    mut k = 0;
+    while k < 3 {
+      mut list = DrawList.empty();
+      list.addSkinned(hBody, skinMat, Mat4.identity(), mats.view());
+      list.addSkinned(hEyes, eyeMat, Mat4.identity(), mats.view());
+      list.addSkinned(hEars, skinMat, Mat4.identity(), mats.view());
+      imm at = o + new Vec3(0., -0.04, -0.02);
+      if k == 0 { camera.lookAt(o + new Vec3(0., 0.0, -1.25), at, new Vec3(0., 1., 0.)); }
+      if k == 1 { camera.lookAt(o + new Vec3(-0.80, 0.03, -0.95), at, new Vec3(0., 1., 0.)); }
+      if k == 2 { camera.lookAt(o + new Vec3(-1.25, 0.0, 0.), at, new Vec3(0., 1., 0.)); }
+      imm px = shoot(device, st, &camera, &list, 6);
+      sheet.put(k * 853, i32.from(r) * 720, 853, 720, px);
+      k = k + 1;
+    }
+    r = r + 1usize;
+  }
+  sheet.save(outDir, "head-study");
+}
+
+// ------------------------------------------------------------------------------ furniture and measures
+
+// A chair: a seat at the seat's height, four legs, a back behind the sit point
+fn chair(list &mut DrawList, st &Stage, seat &Seat) {
+  imm c = seat.point;
+  imm y = seat.height;
+  box(list, st, st.wood, new Vec3(c.x, y - 0.02, c.z + 0.02), new Vec3(0.23, 0.02, 0.22), 0.);
+  mut sx = -1.;
+  while sx < 2. {
+    mut sz = -1.;
+    while sz < 2. {
+      box(list, st, st.wood, new Vec3(c.x + sx * 0.20, (y - 0.04) * 0.5, c.z + 0.02 + sz * 0.19), new Vec3(0.02, (y - 0.04) * 0.5, 0.02), 0.);
+      sz = sz + 2.;
+    }
+    sx = sx + 2.;
+  }
+  box(list, st, st.wood, new Vec3(c.x, y + 0.24, c.z + 0.23), new Vec3(0.22, 0.24, 0.02), 0.);
+}
+
+// A bench 'length' long, its seat's top at the centre's height
+fn bench(list &mut DrawList, st &Stage, c Vec3, length f32) {
+  box(list, st, st.wood, new Vec3(c.x, c.y - 0.025, c.z + 0.02), new Vec3(length * 0.5, 0.025, 0.20), 0.);
+  mut sx = -1.;
+  while sx < 2. {
+    box(list, st, st.wood, new Vec3(c.x + sx * (length * 0.5 - 0.08), (c.y - 0.05) * 0.5, c.z + 0.02), new Vec3(0.04, (c.y - 0.05) * 0.5, 0.17), 0.);
+    sx = sx + 2.;
+  }
+}
+
+// Bars at the person's landmark heights, as wide as their ANSUR II breadths (the arms out at the shoulders), behind them
+fn measureBars(m &Measures, x f32, pos &mut List[Vec3], idx &mut List[u32]) {
+  imm h = m.height;
+  imm z = 0.45;
+  imm t = 0.0035;
+  imm ys = [m.acromionAt * h - 0.03, m.chestAt * h, m.waistAt * h, m.trochanterAt * h, (m.crotchAt - 0.02) * h, h];
+  imm thighW = m.thighGirth / 3.1416;
+  imm ws = [m.bideltoid, m.chestBreadth, m.waistBreadth, m.hipBreadth, 2. * hipHalfSpan(m) + thighW, 0.12];
+  mut k = 0usize;
+  while k < 6usize {
+    imm base = u32.from(pos.len());
+    imm hw = ws[k] * 0.5;
+    pos.push(new Vec3(x - hw, ys[k] - t, z)); pos.push(new Vec3(x + hw, ys[k] - t, z));
+    pos.push(new Vec3(x + hw, ys[k] + t, z)); pos.push(new Vec3(x - hw, ys[k] + t, z));
+    idx.push(base); idx.push(base + 2u32); idx.push(base + 1u32);
+    idx.push(base); idx.push(base + 3u32); idx.push(base + 2u32);
+    // ticks at the bar's ends
+    imm b2 = u32.from(pos.len());
+    pos.push(new Vec3(x - hw - t, ys[k] - 0.025, z)); pos.push(new Vec3(x - hw + t, ys[k] - 0.025, z));
+    pos.push(new Vec3(x - hw + t, ys[k] + 0.025, z)); pos.push(new Vec3(x - hw - t, ys[k] + 0.025, z));
+    idx.push(b2); idx.push(b2 + 2u32); idx.push(b2 + 1u32);
+    idx.push(b2); idx.push(b2 + 3u32); idx.push(b2 + 2u32);
+    imm b3 = u32.from(pos.len());
+    pos.push(new Vec3(x + hw - t, ys[k] - 0.025, z)); pos.push(new Vec3(x + hw + t, ys[k] - 0.025, z));
+    pos.push(new Vec3(x + hw + t, ys[k] + 0.025, z)); pos.push(new Vec3(x + hw - t, ys[k] + 0.025, z));
+    idx.push(b3); idx.push(b3 + 2u32); idx.push(b3 + 1u32);
+    idx.push(b3); idx.push(b3 + 3u32); idx.push(b3 + 2u32);
+    k = k + 1usize;
+  }
+}
+
+// ------------------------------------------------------------------------------ today's mannequin, for comparison
+//
+// pegasus3d's browser/src/mannequin.cone's body, its tables and lofts copied here as they are (unskinned: it stands in
+// its rest pose), to draw it at the same scale. That file is the truth; this is a reading of it on 15 Oct 2026.
+
+const MQ_TRUNK Array[f32, 72] = [
+  0.445, 0.040, 0.030, 0.000, 0.465, 0.105, 0.066, 0.006, 0.500, 0.136, 0.076, 0.009, 0.545, 0.140, 0.072, 0.005,
+  0.600, 0.110, 0.062, 0.001, 0.660, 0.110, 0.064, -0.003, 0.720, 0.120, 0.070, -0.006, 0.775, 0.130, 0.065, -0.002,
+  0.812, 0.124, 0.056, 0.004, 0.835, 0.098, 0.048, 0.006, 0.850, 0.050, 0.038, 0.005, 0.862, 0.034, 0.034, 0.004,
+  0.878, 0.031, 0.034, 0.001, 0.896, 0.040, 0.050, -0.006, 0.930, 0.046, 0.058, -0.004, 0.966, 0.044, 0.054, 0.000,
+  0.991, 0.030, 0.038, 0.002, 1.002, 0.008, 0.010, 0.000];
+const MQ_LEG Array[f32, 30] = [0.000, 0.020, 0.000, 0.020, 0.041, 0.000, 0.050, 0.050, 0.000, 0.140, 0.050, -0.003,
+  0.220, 0.044, 0.000, 0.295, 0.037, 0.000, 0.355, 0.040, 0.006, 0.445, 0.031, 0.003, 0.541, 0.023, 0.000, 0.556, 0.013, 0.000];
+const MQ_ARM Array[f32, 20] = [0.000, 0.010, 0.010, 0.027, 0.022, 0.035, 0.082, 0.033, 0.162, 0.030, 0.210, 0.026,
+  0.246, 0.029, 0.310, 0.024, 0.355, 0.018, 0.365, 0.013];
+const MQ_HAND Array[f32, 15] = [0.00, 0.016, 0.012, 0.25, 0.024, 0.013, 0.60, 0.025, 0.011, 0.90, 0.018, 0.008, 1.00, 0.006, 0.004];
+const MQ_FOOT Array[f32, 18] = [0.00, 0.009, 0.018, 0.07, 0.021, 0.044, 0.28, 0.024, 0.058, 0.55, 0.029, 0.040, 0.85, 0.027, 0.026,
+  1.00, 0.010, 0.012];
+
+fn mqEllipse(n usize, a f32, b f32, cx f32, cy f32) sculpt.Profile {
+  mut pts = List[Vec2].withCapacity(n);
+  mut k = 0usize;
+  while k < n {
+    imm t = 2. * pi * f32.from(k) / f32.from(n);
+    pts.push(new Vec2(cx + a * cos(t), cy + b * sin(t)));
+    k = k + 1usize;
+  }
+  sculpt.Profile.fromPoints(pts.view(), true);
+}
+
+fn mqSole(n usize, hw f32, top f32) sculpt.Profile {
+  mut pts = List[Vec2].withCapacity(n);
+  imm half = top * 0.5;
+  imm mid = half * 0.8;
+  mut k = 0usize;
+  while k < n {
+    imm t = 2. * pi * f32.from(k) / f32.from(n);
+    imm y = mid + half * sin(t);
+    pts.push(new Vec2(hw * cos(t), if y < 0. { 0.; } else { y; }));
+    k = k + 1usize;
+  }
+  sculpt.Profile.fromPoints(pts.view(), true);
+}
+
+fn mqLoft(from Vec3, to Vec3, up Vec3, profiles &List[sculpt.Profile], at &Array[f32]) Mesh {
+  imm ends = [from, to];
+  mut path = sculpt.Path.fromPoints(&ends, false);
+  path.up = up;
+  imm pm = sculpt.loftAlong(profiles, &path, at, 0u32, 2u32, true, true);
+  pm.triangulate(true);
+}
+
+fn mannequinMesh(h f32) Mesh {
+  imm skel = humanoid(h);
+  imm rest = restModels(&skel);
+  mut body = Mesh.empty();
+  {
+    mut profiles = List[sculpt.Profile].empty();
+    mut at = List[f32].empty();
+    imm y0 = MQ_TRUNK[0] * h;
+    imm y1 = MQ_TRUNK[68usize] * h;
+    mut r = 0usize;
+    while r < 18usize {
+      imm e = r * 4usize;
+      profiles.push(mqEllipse(24usize, MQ_TRUNK[e + 1usize] * h, MQ_TRUNK[e + 2usize] * h, 0., MQ_TRUNK[e + 3usize] * h));
+      at.push((MQ_TRUNK[e] * h - y0) / (y1 - y0));
+      r = r + 1usize;
+    }
+    imm piece = mqLoft(new Vec3(0., y0, 0.), new Vec3(0., y1, 0.), new Vec3(0., 0., 1.), &profiles, at.view());
+    body.append(&piece);
+    mut nose = Mesh.sphere(1., 10);
+    nose.transform(Mat4.fromTrs(new Vec3(0., 0.925 * h, -0.058 * h), Quat.identity(), new Vec3(0.009 * h, 0.013 * h, 0.012 * h)));
+    body.append(&nose);
+  }
+  mut side = 0usize;
+  while side < 2usize {
+    imm thigh = if side == 0usize { THIGH_L; } else { THIGH_R; };
+    imm hip = (*rest[thigh]).translation;
+    imm ankle = (*rest[thigh + 4usize]).translation;
+    imm down = (ankle - hip).normalize();
+    imm top = hip - down * (0.05 * h);
+    imm length = MQ_LEG[27usize] * h;
+    mut profiles = List[sculpt.Profile].empty();
+    mut at = List[f32].empty();
+    mut r = 0usize;
+    while r < 10usize {
+      imm e = r * 3usize;
+      imm radius = MQ_LEG[e + 1usize] * h;
+      profiles.push(mqEllipse(16usize, radius, radius, 0., MQ_LEG[e + 2usize] * h));
+      at.push(MQ_LEG[e] * h / length);
+      r = r + 1usize;
+    }
+    imm piece = mqLoft(top, top + down * length, new Vec3(0., 0., 1.), &profiles, at.view());
+    body.append(&piece);
+    mut feet = List[sculpt.Profile].empty();
+    mut fat = List[f32].empty();
+    r = 0usize;
+    while r < 6usize {
+      imm e = r * 3usize;
+      feet.push(mqSole(16usize, MQ_FOOT[e + 1usize] * h, MQ_FOOT[e + 2usize] * h));
+      fat.push(MQ_FOOT[e]);
+      r = r + 1usize;
+    }
+    imm heel = new Vec3(ankle.x, 0., ankle.z + 0.045 * h);
+    imm toe = new Vec3(ankle.x, 0., ankle.z - 0.115 * h);
+    imm footPiece = mqLoft(heel, toe, new Vec3(0., 1., 0.), &feet, fat.view());
+    body.append(&footPiece);
+    side = side + 1usize;
+  }
+  side = 0usize;
+  while side < 2usize {
+    imm upper = if side == 0usize { UPPER_ARM_L; } else { UPPER_ARM_R; };
+    imm shoulder = (*rest[upper]).translation;
+    imm wrist = (*rest[upper + 4usize]).translation;
+    imm down = (wrist - shoulder).normalize();
+    imm top = shoulder - down * (0.022 * h);
+    imm length = MQ_ARM[18usize] * h;
+    mut profiles = List[sculpt.Profile].empty();
+    mut at = List[f32].empty();
+    mut r = 0usize;
+    while r < 10usize {
+      imm e = r * 2usize;
+      imm radius = MQ_ARM[e + 1usize] * h;
+      profiles.push(mqEllipse(16usize, radius, radius, 0., 0.));
+      at.push(MQ_ARM[e] * h / length);
+      r = r + 1usize;
+    }
+    imm piece = mqLoft(top, top + down * length, new Vec3(0., 0., 1.), &profiles, at.view());
+    body.append(&piece);
+    mut rings = List[sculpt.Profile].empty();
+    mut hat = List[f32].empty();
+    r = 0usize;
+    while r < 5usize {
+      imm e = r * 3usize;
+      rings.push(mqEllipse(12usize, MQ_HAND[e + 1usize] * h, MQ_HAND[e + 2usize] * h, 0., 0.));
+      hat.push(MQ_HAND[e]);
+      r = r + 1usize;
+    }
+    imm out = if side == 0usize { new Vec3(-1., 0., 0.); } else { new Vec3(1., 0., 0.); };
+    imm handPiece = mqLoft(wrist, wrist + down * (0.108 * h), out, &rings, hat.view());
+    body.append(&handPiece);
+    side = side + 1usize;
+  }
+  body;
+}
