@@ -1,0 +1,350 @@
+// People as blends of one mesh: the base bodies and their morph targets, and a person's body from them.
+//
+// THE BASE. One body per sex, the survey's average man or woman (measures.cone) sculpted to their measures
+// (body.cone's fitGains and assembleBody): the base mesh. Both are made from the same cage and the same head
+// grid, so the two sexes' meshes have the same vertices too.
+//
+// THE BLENDS. A morph target for each thing a person may differ in, made as an artist makes a blend shape:
+// the same vertices sculpted again with one thing changed. Here 'sculpted again' is literal: the measure is
+// changed by a step, the forms are made for it with the base's gains, and the SAME cage, subdivision, head
+// grid and projection put the same vertices on the new shape; the target is the difference, per unit of the
+// measure. There are blends for the trunk's and limbs' breadths, depths and girths (biacromial, bideltoid,
+// chest, waist, hip, buttock, neck, thigh, calf, arm, forearm, wrist), the head's (breadth, length, the face's
+// length, the cheeks' and the jaw's breadths), the face's character (brow, nose, nose's width, lips, chin,
+// cheekbones, jaw) and the build (muscle, belly, a woman's bust). Each target moves the NAMED POINTS too (the
+// joints, the eyes, the jaw's hinge, the mouth: body.cone), so a person's skeleton and eyes come from the same
+// blend as their skin and always sit in it.
+//
+// A PERSON is the base of their sex plus the blends at their weights, scaled to their height. The weights of
+// the measured blends are SOLVED, not read: the base is measured with each blend applied (measure.cone), which
+// gives how each measure moves with each blend (a matrix, nearly diagonal: the waist's blend moves the hips a
+// little), and the weights are the solution of that linear system for the person's measures (at the base's
+// height: a person's measures are divided by their height over the base's before the solve, and the mesh is
+// scaled up after). The face's and the build's blends are weighted directly, by how far the person's number is
+// from the base's. So every person is the same mesh: what a garment or an expression does to one it does to all.
+
+// A blend: what it changes ('axis', a number of 'blendAxis'), the step it was made with, and per unit of it the
+// vertices' and the named points' moves
+pub struct Blend {
+  pub axis usize;
+  pub step f32;
+  pub dPos List[Vec3];
+  pub dPoints List[Vec3];
+}
+
+// The base of one sex and its blends
+pub struct BlendSet {
+  pub base Body;
+  pub blends List[Blend];
+  pub response List[f32];      // MEASURE_COUNT x (measured blends): how measure i moves per unit of blend j
+}
+
+// The axes: 0 to 14 the measures (measures.cone's order, the head's breadth last), then the head and face
+pub const AXIS_HEAD_LENGTH = 15usize;
+pub const AXIS_FACE_LENGTH = 16usize;
+pub const AXIS_CHEEK = 17usize;
+pub const AXIS_JAW_BREADTH = 18usize;
+pub const AXIS_BROW = 19usize;
+pub const AXIS_NOSE = 20usize;
+pub const AXIS_NOSE_WIDTH = 21usize;
+pub const AXIS_LIPS = 22usize;
+pub const AXIS_CHIN = 23usize;
+pub const AXIS_CHEEKBONES = 24usize;
+pub const AXIS_JAW = 25usize;
+pub const AXIS_MUSCLE = 26usize;
+pub const AXIS_BELLY = 27usize;
+pub const AXIS_BUST = 28usize;
+pub const AXIS_COUNT = 29usize;
+
+// The measured axes the solve is over: the trunk's and limbs' (1 to 13; the biacromial is the skeleton's, and
+// is weighted directly, as the head's breadth is)
+fn solved(axis usize) bool { axis >= 1usize and axis <= 13usize; }
+
+pub fn axisValue(m &Measures, axis usize) f32 {
+  if axis < MEASURE_COUNT { return measureAt(m, axis); }
+  if axis == AXIS_HEAD_LENGTH { return m.headLength; }
+  if axis == AXIS_FACE_LENGTH { return m.faceLength; }
+  if axis == AXIS_CHEEK { return m.cheekBreadth; }
+  if axis == AXIS_JAW_BREADTH { return m.jawBreadth; }
+  if axis == AXIS_BROW { return m.brow; }
+  if axis == AXIS_NOSE { return m.nose; }
+  if axis == AXIS_NOSE_WIDTH { return m.noseWidth; }
+  if axis == AXIS_LIPS { return m.lips; }
+  if axis == AXIS_CHIN { return m.chin; }
+  if axis == AXIS_CHEEKBONES { return m.cheekbones; }
+  if axis == AXIS_JAW { return m.jaw; }
+  if axis == AXIS_MUSCLE { return m.muscle; }
+  if axis == AXIS_BELLY { return m.belly; }
+  m.bust;
+}
+
+fn setAxis(m &mut Measures, axis usize, v f32) {
+  if axis < MEASURE_COUNT { setMeasure(m, axis, v); return; }
+  if axis == AXIS_HEAD_LENGTH { m.headLength = v; return; }
+  if axis == AXIS_FACE_LENGTH { m.faceLength = v; return; }
+  if axis == AXIS_CHEEK { m.cheekBreadth = v; return; }
+  if axis == AXIS_JAW_BREADTH { m.jawBreadth = v; return; }
+  if axis == AXIS_BROW { m.brow = v; return; }
+  if axis == AXIS_NOSE { m.nose = v; return; }
+  if axis == AXIS_NOSE_WIDTH { m.noseWidth = v; return; }
+  if axis == AXIS_LIPS { m.lips = v; return; }
+  if axis == AXIS_CHIN { m.chin = v; return; }
+  if axis == AXIS_CHEEKBONES { m.cheekbones = v; return; }
+  if axis == AXIS_JAW { m.jaw = v; return; }
+  if axis == AXIS_MUSCLE { m.muscle = v; return; }
+  if axis == AXIS_BELLY { m.belly = v; return; }
+  m.bust = v;
+}
+
+pub fn axisName(axis usize) String {
+  if axis < MEASURE_COUNT { return measureName(axis); }
+  imm names = ["head length", "face length", "cheek breadth", "jaw breadth", "brow", "nose", "nose width", "lips", "chin",
+    "cheekbones", "jaw", "muscle", "belly", "bust"];
+  String.from(names[axis - MEASURE_COUNT]);
+}
+
+// The step a blend is made with: a measure's 4 per cent (a centimetre or so), a character's 0.25
+fn stepOf(m &Measures, axis usize) f32 {
+  if axis <= AXIS_JAW_BREADTH { return 0.04 * axisValue(m, axis); }
+  0.25;
+}
+
+// The base body of a sex and its blends; 'levels' of subdivision
+pub fn buildBlendSet(sex u32, levels u32) BlendSet {
+  imm bm = if sex == MALE { averageMan(); } else { averageWoman(); };
+  imm gains = fitGains(&bm, levels, 4);
+  imm base = assembleBody(&bm, &gains, levels);
+  imm baseMeas = measuredOfBody(&base);
+  imm models = restModels(&base.skeleton);
+  mut blends = List[Blend].empty();
+  mut response = List[f32].empty();
+  mut axis = 0usize;
+  while axis < AXIS_COUNT {
+    // a woman's bust and nothing of it for a man
+    if !(axis == AXIS_BUST and sex == MALE) {
+      mut m = bm;
+      imm step = stepOf(&bm, axis);
+      setAxis(&mut m, axis, axisValue(&bm, axis) + step);
+      imm b = assembleBody(&m, &gains, levels);
+      mut dPos = List[Vec3].empty();
+      mut v = 0usize;
+      while v < base.mesh.positions.len() {
+        dPos.push((*b.mesh.positions[v] - *base.mesh.positions[v]) * (1. / step));
+        v = v + 1usize;
+      }
+      mut dPoints = List[Vec3].empty();
+      v = 0usize;
+      while v < POINT_COUNT { dPoints.push((*b.points[v] - *base.points[v]) * (1. / step)); v = v + 1usize; }
+      // how the measures move with it, on the base's skeleton (the solve's matrix)
+      if solved(axis) {
+        imm bmeas = measuredOfBody(&b);
+        mut i = 1usize;
+        while i <= 13usize {
+          response.push((bmeas.measure(i, &models) - baseMeas.measure(i, &models)) / step);
+          i = i + 1usize;
+        }
+      }
+      blends.push(new Blend(axis, step, dPos, dPoints));
+    }
+    axis = axis + 1usize;
+  }
+  new BlendSet(base, blends, response);
+}
+
+// The body measured, its surface's quads as they are
+pub fn measuredOfBody(b &Body) Measured {
+  imm nb = b.headStart;
+  mut pos = List[Vec3].empty();
+  mut w = List[f32].empty();
+  mut v = 0usize;
+  while v < nb {
+    pos.push(*b.mesh.positions[v]);
+    mut k = 0usize;
+    while k < HUMANOID_BONES { w.push(*b.weights[v * BODY_BONES + k]); k = k + 1usize; }
+    v = v + 1usize;
+  }
+  measuredOf(&pos, &b.surfaceQuads, &w, &b.measures);
+}
+
+// Solve a x = y for the n x n matrix a (rows), by Gauss's elimination with partial pivoting
+fn solveLinear(a &List[f32], y &List[f32], n usize) List[f32] {
+  mut m = List[f32].empty();
+  mut i = 0usize;
+  while i < n {
+    mut j = 0usize;
+    while j < n { m.push(*a[i * n + j]); j = j + 1usize; }
+    m.push(*y[i]);
+    i = i + 1usize;
+  }
+  imm w = n + 1usize;
+  mut col = 0usize;
+  while col < n {
+    mut piv = col;
+    mut r = col + 1usize;
+    while r < n { if absf(*m[r * w + col]) > absf(*m[piv * w + col]) { piv = r; } r = r + 1usize; }
+    if piv != col {
+      mut c = 0usize;
+      while c < w { imm t = *m[col * w + c]; m.set(col * w + c, *m[piv * w + c]); m.set(piv * w + c, t); c = c + 1usize; }
+    }
+    imm d = *m[col * w + col];
+    if absf(d) > 0.000001 {
+      r = 0usize;
+      while r < n {
+        if r != col {
+          imm f = *m[r * w + col] / d;
+          mut c = col;
+          while c < w { m.set(r * w + c, *m[r * w + c] - f * *m[col * w + c]); c = c + 1usize; }
+        }
+        r = r + 1usize;
+      }
+    }
+    col = col + 1usize;
+  }
+  mut x = List[f32].empty();
+  i = 0usize;
+  while i < n {
+    imm d = *m[i * w + i];
+    x.push(if absf(d) > 0.000001 { *m[i * w + n] / d; } else { 0.; });
+    i = i + 1usize;
+  }
+  x;
+}
+
+// A person's blend weights, one a blend of the set (units of each blend's axis)
+pub fn blendWeights(set &BlendSet, m &Measures) List[f32] {
+  imm bm = &set.base.measures;
+  imm k = bm.height / m.height;        // the person's measures at the base's height
+  mut w = List[f32].empty();
+  mut solvedIdx = List[usize].empty();
+  mut i = 0usize;
+  while i < set.blends.len() {
+    imm axis = set.blends[i].axis;
+    if solved(axis) { solvedIdx.push(i); w.push(0.); }
+    elif axis < MEASURE_COUNT or axis <= AXIS_JAW_BREADTH { w.push(axisValue(m, axis) * k - axisValue(bm, axis)); }
+    else { w.push(axisValue(m, axis) - axisValue(bm, axis)); }
+    i = i + 1usize;
+  }
+  // the solve: response (13 measures x 13 blends) times the weights = the measures' differences
+  imm n = solvedIdx.len();
+  mut a = List[f32].empty();
+  mut y = List[f32].empty();
+  mut r = 0usize;
+  while r < n {
+    imm measure = r + 1usize;
+    mut c = 0usize;
+    while c < n { a.push(*set.response[c * 13usize + r]); c = c + 1usize; }
+    y.push(measureAt(m, measure) * k - measureAt(bm, measure));
+    r = r + 1usize;
+  }
+  imm x = solveLinear(&a, &y, n);
+  i = 0usize;
+  while i < n { w.set(*solvedIdx[i], *x[i]); i = i + 1usize; }
+  w;
+}
+
+// The skeleton whose rest pose puts the joints at 'joints' (model space), the humanoid's bones and turns
+fn skeletonAt(height f32, joints &List[Vec3], like &Skeleton) Skeleton {
+  mut s = humanoid(height);
+  // the sockets and the turns are the humanoid's; the translations the joints'
+  mut i = 0usize;
+  while i < HUMANOID_BONES {
+    s.bones.set(i, new Bone((*like.bones[i]).parent, (*like.bones[i]).rest));
+    i = i + 1usize;
+  }
+  imm rest = s.restPose();
+  mut models = List[Transform3].empty();
+  s.modelTransforms(&rest, &mut models);
+  i = 0usize;
+  while i < HUMANOID_BONES {
+    imm p = s.parentOf(i);
+    imm want = *joints[i];
+    if p < 0i32 {
+      s.bones.set(i, new Bone(p, new Transform3(want, (*s.bones[i]).rest.rotation, new Vec3(1., 1., 1.))));
+    } else {
+      imm pm = *models[usize.from(p)];
+      imm offset = pm.rotation.conjugate() * (want - pm.translation);
+      s.bones.set(i, new Bone(p, new Transform3(offset,(*s.bones[i]).rest.rotation, new Vec3(1., 1., 1.))));
+    }
+    // recompose so the children see this bone where it now is
+    s.modelTransforms(&s.restPose(), &mut models);
+    i = i + 1usize;
+  }
+  // the hip sockets with the hips
+  s.sockets.set(SOCKET_HIP_L, new Socket(PELVIS, new Transform3((*s.bones[THIGH_L]).rest.translation, Quat.identity(), new Vec3(1., 1., 1.))));
+  s.sockets.set(SOCKET_HIP_R, new Socket(PELVIS, new Transform3((*s.bones[THIGH_R]).rest.translation, Quat.identity(), new Vec3(1., 1., 1.))));
+  s;
+}
+
+// A person's body: the base of their sex with the blends at their weights, scaled to their height
+pub fn personBody(set &BlendSet, m &Measures) Body {
+  imm w = blendWeights(set, m);
+  bodyFromWeights(set, m, &w, m.height / set.base.measures.height);
+}
+
+// The base with the blends at weights 'w' (one a blend), scaled by 'scale': a person's body (personBody), or a step on
+// the way to it (the stages' pictures apply the blends a group at a time)
+pub fn bodyFromWeights(set &BlendSet, m &Measures, w &List[f32], scale f32) Body {
+  imm base = &set.base;
+  mut pos = List[Vec3].empty();
+  mut v = 0usize;
+  while v < base.mesh.positions.len() { pos.push(*base.mesh.positions[v]); v = v + 1usize; }
+  mut pts = List[Vec3].empty();
+  v = 0usize;
+  while v < POINT_COUNT { pts.push(*base.points[v]); v = v + 1usize; }
+  mut i = 0usize;
+  while i < set.blends.len() {
+    imm wi = *w[i];
+    if wi != 0. {
+      imm b = set.blends[i];
+      v = 0usize;
+      while v < pos.len() { pos.set(v, *pos[v] + *b.dPos[v] * wi); v = v + 1usize; }
+      v = 0usize;
+      while v < POINT_COUNT { pts.set(v, *pts[v] + *b.dPoints[v] * wi); v = v + 1usize; }
+    }
+    i = i + 1usize;
+  }
+  mut mesh = Mesh.empty();
+  v = 0usize;
+  while v < pos.len() { mesh.positions.push(*pos[v] * scale); v = v + 1usize; }
+  v = 0usize;
+  while v < base.mesh.uvs.len() { mesh.uvs.push(*base.mesh.uvs[v]); v = v + 1usize; }
+  v = 0usize;
+  while v < base.mesh.indices.len() { mesh.indices.push(*base.mesh.indices[v]); v = v + 1usize; }
+  mesh.computeSmoothNormals();
+  // the head's seam column: one normal for its two copies
+  imm hc = base.head.cols;
+  mut r = 0usize;
+  while r < base.head.rows {
+    imm a = base.headStart + r * hc;
+    imm bb = a + hc - 1usize;
+    imm nn = (*mesh.normals[a] + *mesh.normals[bb]).normalize();
+    mesh.normals.set(a, nn);
+    mesh.normals.set(bb, nn);
+    r = r + 1usize;
+  }
+  mut ring = List[u32].empty();
+  v = 0usize;
+  while v < base.seamRing.len() { ring.push(*base.seamRing[v]); v = v + 1usize; }
+  mut bottom = List[u32].empty();
+  v = 0usize;
+  while v < base.head.bottom.len() { bottom.push(*base.head.bottom[v] + u32.from(base.headStart)); v = v + 1usize; }
+  weldSeamNormals(&mut mesh, &ring, &bottom);
+  v = 0usize;
+  while v < POINT_COUNT { pts.set(v, *pts[v] * scale); v = v + 1usize; }
+  imm skel = skeletonAt(m.height, &pts, &base.skeleton);
+  // the head's record: the base's grid, the person's shape, its frame where the blend put it
+  mut head = buildHeadRecord(&base.head, m, *pts[POINT_HEAD]);
+  mut weights = List[f32].empty();
+  v = 0usize;
+  while v < base.weights.len() { weights.push(*base.weights[v]); v = v + 1usize; }
+  mut sq = List[u32].empty();
+  v = 0usize;
+  while v < base.surfaceQuads.len() { sq.push(*base.surfaceQuads[v]); v = v + 1usize; }
+  mut hq = List[u32].empty();
+  v = 0usize;
+  while v < base.headQuads.len() { hq.push(*base.headQuads[v]); v = v + 1usize; }
+  mut gs = List[f32].empty();
+  v = 0usize;
+  while v < base.gains.len() { gs.push(*base.gains[v]); v = v + 1usize; }
+  new Body(*m, skel, mesh, weights, base.headStart, head, sq, hq, gs, pts, ring);
+}

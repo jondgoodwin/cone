@@ -1,0 +1,58 @@
+// The humanbody package: people of game quality, as data. A program reaches it with 'import humanbody'.
+//
+// A person is a set of measures (ANSUR II's breadths, depths and girths: measures.cone), a look and an
+// outfit. The body is made the way RDR2's, GTA's and EverQuest II's are, with the artist's part done by rule:
+//
+//   1. ONE BASE MESH PER SEX, of game topology: quads in rings round the trunk and the limbs, extra loops
+//      where the body bends, a head whose rows follow the lids and the mouth (cage.cone, sculpt.cone,
+//      head.cone). Its shape comes from sculpted FORMS, the muscle masses as a signed distance field
+//      (forms.cone, over the sdf package): the ring mesh is projected onto them, never meshed from them.
+//   2. PEOPLE AS BLENDS of that one mesh (blends.cone): a morph target for each measure, made by changing the
+//      measure and projecting the same vertices again. A person is the base plus the blends at their weights,
+//      scaled to their height; every person has the same vertices, so clothes and expressions carry over.
+//   3. SKINNING to bonepose's 19-bone humanoid (skeleton.cone moves its hips and shoulders to the person's),
+//      with weights painted on the cage and smoothed by its subdivision.
+//   4. CLOTHES as fitted layers on the same mesh (outfits.cone): garmentdrape's shells, made from each
+//      person's own body, and the body under them not drawn.
+//   5. A FACE THAT MOVES (face.cone): facerig's FACS units built as morph targets on the head's own
+//      landmarks; its jaw and eyes as bones; eyeballs, teeth, tongue and mouth.
+//   6. SKIN (look.cone): render's physically based material with its pre-integrated subsurface lobe, and a
+//      painted albedo.
+//   7. POSES (poses.cone): a seat as data (a sit point, a facing, a height) to sit on and rise from, and a
+//      hail; walking is walkgait's.
+//
+// Conventions are bonepose's: right-handed, y up, metres, f32; a being faces -z; its left is -x.
+//
+//   humanbody.cone   this overview and the imports
+//   measures.cone    Measures, Look, Person, the cast of six
+//   skeleton.cone    the person's skeleton
+//   forms.cone       the forms as a field
+//   cage.cone        the cage's topology and weights
+//   sculpt.cone      subdivision, projection, relaxation
+//   head.cone        the head, stitched to the neck
+//   measure.cone     breadths, depths and girths taken off a mesh by slicing it
+//   body.cone        Body: the whole mesh, skin, uvs, named points; fitting the forms to the measures
+//   blends.cone      the base meshes and the blends; a person's body
+//   face.cone        the face rig on the body
+//   outfits.cone     garments as shells and tubes
+//   look.cone        skin, eyes and cloth materials and their textures
+//   poses.cone       seats, sitting, standing up, hailing
+
+mod humanbody;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh, PolyMesh, VertexDomain;
+import sculpt use subdivide;
+import sdf use ellipsoid, taperedCapsule, smoothUnion, smoothSubtract, sphere;import render use Skin, MorphTargets, Image, PbrMaterial;
+import garmentdrape use BodyRig, Outfit, ShellSpec, Cut, Pattern, parsePattern, cape, humanoidNames, dress;
+import facerig use FaceSpec, UnitDef, FaceTargets, FaceBones, buildTargets, standardUnits, attachFace,
+  AU_INNER_BROW_RAISER, AU_OUTER_BROW_RAISER, AU_BROW_LOWERER, AU_UPPER_LID_RAISER, AU_CHEEK_RAISER, AU_LID_TIGHTENER,
+  AU_NOSE_WRINKLER, AU_UPPER_LIP_RAISER, AU_LIP_CORNER_PULLER, AU_DIMPLER, AU_LIP_CORNER_DEPRESSOR, AU_LOWER_LIP_DEPRESSOR,
+  AU_CHIN_RAISER, AU_LIP_PUCKER, AU_LIP_STRETCHER, AU_LIP_FUNNELER, AU_LIP_TIGHTENER, AU_LIP_PRESSOR, AU_LIPS_PART,
+  AU_LIP_SUCK, AU_CHEEK_BLOW, INFL_TURN;
+import bonepose use *;
+
+pub fn maxf(a f32, b f32) f32 { if a > b { return a; } b; }
+pub fn minf(a f32, b f32) f32 { if a < b { return a; } b; }
