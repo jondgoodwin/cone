@@ -1,0 +1,878 @@
+// shots: quadremesh's retopology, drawn by a small software renderer (no GPU) to
+// PNG sheets in C:/src/quadremesh-shots.
+//
+//   congo run --release packages/quadremesh/examples/shots.cone
+//
+// Exit status 0 if every remesh came out closed (where the source was) and near
+// the source.
+
+mod shots;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import imagedecode use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+import skinmesh use *;
+import time use Instant;
+import quadremesh use *;
+
+struct Canvas {
+  w i32;
+  h i32;
+  px List[u8];
+  zb List[f32];
+  cx0 i32;
+  cy0 i32;
+  cx1 i32;
+  cy1 i32;
+
+  fn make(w i32, h i32) Canvas {
+    mut c = new Canvas(w, h, List[u8].empty(), List[f32].empty(), 0, 0, w, h);
+    c.px.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    c.zb.resize(usize.from(w) * usize.from(h), -1000000.);
+    c;
+  }
+
+  fn tile(self &mut, x0 i32, y0 i32, x1 i32, y1 i32, bg Vec3) {
+    cx0 = x0; cy0 = y0; cx1 = x1; cy1 = y1;
+    mut y = y0;
+    while y < y1 {
+      mut x = x0;
+      while x < x1 {
+        self.setPixel(x, y, bg);
+        zb.set(usize.from(y * w + x), -1000000.);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn setPixel(self &mut, x i32, y i32, c Vec3) {
+    imm i = usize.from(y * w + x) * 4usize;
+    px.set(i, byteOf(c.x));
+    px.set(i + 1usize, byteOf(c.y));
+    px.set(i + 2usize, byteOf(c.z));
+  }
+
+  fn plot(self &mut, x i32, y i32, z f32, c Vec3) {
+    if x >= cx0 and x < cx1 and y >= cy0 and y < cy1 {
+      imm i = usize.from(y * w + x);
+      if z > *zb[i] {
+        zb.set(i, z);
+        self.setPixel(x, y, c);
+      }
+    }
+  }
+
+  fn triangle(self &mut, a Vec3, b Vec3, c Vec3, col Vec3) {
+    imm minx = imax(cx0, i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    imm maxx = imin(cx1 - 1, i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    imm miny = imax(cy0, i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    imm maxy = imin(cy1 - 1, i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    imm den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if den > -0.0000001 and den < 0.0000001 { return; }
+    mut y = miny;
+    while y <= maxy {
+      mut x = minx;
+      while x <= maxx {
+        imm px_ = f32.from(x) + 0.5;
+        imm py_ = f32.from(y) + 0.5;
+        imm l0 = ((b.y - c.y) * (px_ - c.x) + (c.x - b.x) * (py_ - c.y)) / den;
+        imm l1 = ((c.y - a.y) * (px_ - c.x) + (a.x - c.x) * (py_ - c.y)) / den;
+        imm l2 = 1. - l0 - l1;
+        if l0 >= -0.0001 and l1 >= -0.0001 and l2 >= -0.0001 {
+          self.plot(x, y, l0 * a.z + l1 * b.z + l2 * c.z, col);
+        }
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn line(self &mut, a Vec3, b Vec3, col Vec3, bias f32, thick i32) {
+    imm dx = b.x - a.x;
+    imm dy = b.y - a.y;
+    imm steps = i32.from(fmax3(absf(dx), absf(dy), 1.)) + 1;
+    mut i = 0;
+    while i <= steps {
+      imm t = f32.from(i) / f32.from(steps);
+      imm x = a.x + dx * t;
+      imm y = a.y + dy * t;
+      imm z = a.z + (b.z - a.z) * t + bias;
+      mut ox = 0;
+      while ox < thick {
+        mut oy = 0;
+        while oy < thick {
+          self.plot(i32.from(x) + ox, i32.from(y) + oy, z, col);
+          oy = oy + 1;
+        }
+        ox = ox + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  fn dot(self &mut, x f32, y f32, z f32, r i32, col Vec3) {
+    mut ox = -r;
+    while ox <= r {
+      mut oy = -r;
+      while oy <= r {
+        self.plot(i32.from(x) + ox, i32.from(y) + oy, z, col);
+        oy = oy + 1;
+      }
+      ox = ox + 1;
+    }
+  }
+}
+
+fn absf(a f32) f32 { if a < 0. {-a;} else {a;}; }
+fn imax(a i32, b i32) i32 { if a > b {a;} else {b;}; }
+fn imin(a i32, b i32) i32 { if a < b {a;} else {b;}; }
+fn fmin3(a f32, b f32, c f32) f32 { imm m = if a < b {a;} else {b;}; if m < c {m;} else {c;}; }
+fn fmax3(a f32, b f32, c f32) f32 { imm m = if a > b {a;} else {b;}; if m > c {m;} else {c;}; }
+
+fn byteOf(v f32) u8 {
+  mut x = i32.from(v * 255. + 0.5);
+  if x < 0 { x = 0; }
+  if x > 255 { x = 255; }
+  u8.from(x);
+}
+
+struct View {
+  yaw f32;
+  pitch f32;
+
+  fn turn(self, p Vec3) Vec3 {
+    imm cy = cos(yaw);
+    imm sy = sin(yaw);
+    imm x1 = p.x * cy + p.z * sy;
+    imm z1 = -p.x * sy + p.z * cy;
+    imm cp = cos(pitch);
+    imm sp = sin(pitch);
+    new Vec3(x1, p.y * cp - z1 * sp, p.y * sp + z1 * cp);
+  }
+}
+
+// Where a mesh sits in a tile: the middle of the box that bounds the points
+// given and the scale that fits it
+struct Fit {
+  mid Vec3;
+  sc f32;
+  tw f32;
+  th f32;
+  cx f32;
+  cy f32;
+
+  fn of(cv &Canvas, pts &List[Vec3], view &View) Fit {
+    mut lo = new Vec3(1000000., 1000000., 1000000.);
+    mut hi = new Vec3(-1000000., -1000000., -1000000.);
+    mut v = 0usize;
+    while v < pts.len() {
+      imm p = view.turn(*pts[v]);
+      lo = lo.min(p);
+      hi = hi.max(p);
+      v = v + 1usize;
+    }
+    imm tw = f32.from(cv.cx1 - cv.cx0);
+    imm th = f32.from(cv.cy1 - cv.cy0);
+    imm ext = hi - lo;
+    imm sc = fmin3(tw * 0.92 / fmax3(ext.x, 0.0001, 0.0001), th * 0.92 / fmax3(ext.y, 0.0001, 0.0001), 1000000.);
+    new Fit((lo + hi) * 0.5, sc, tw, th, f32.from(cv.cx0) + tw * 0.5, f32.from(cv.cy0) + th * 0.5);
+  }
+
+  fn screen(self, view &View, p Vec3) Vec3 {
+    imm q = view.turn(p) - mid;
+    new Vec3(cx + q.x * sc, cy - q.y * sc, q.z * sc);
+  }
+}
+
+fn valenceColor(v usize) Vec3 {
+  if v == 3usize { new Vec3(0.90, 0.10, 0.10); }
+  elif v == 5usize { new Vec3(0.10, 0.30, 0.95); }
+  elif v == 6usize { new Vec3(0.10, 0.65, 0.20); }
+  else { new Vec3(0.95, 0.55, 0.05); };
+}
+
+// A mesh shaded, quads outlined, triangles yellow, larger faces purple;
+// with 'mark', the interior vertices that are not of valence 4 are dotted
+// (3 red, 5 blue, 6 green, others orange); with 'wireOnly' the faces are pale
+fn drawMesh(cv &mut Canvas, pm &PolyMesh, view &View, fit &Fit, mark bool, wireOnly bool, edgeCol Vec3) {
+  mut sp = List[Vec3].empty();
+  mut v = 0usize;
+  while v < pm.positions.len() {
+    sp.push(fit.screen(view, *pm.positions[v]));
+    v = v + 1usize;
+  }
+  imm light = new Vec3(-0.35, 0.55, 0.75).normalize();
+  mut f = 0usize;
+  while f < pm.faceCount() {
+    imm vs = pm.faceVertices(u32.from(f));
+    imm n = view.turn(pm.faceNormal(u32.from(f)));
+    mut base = if wireOnly { new Vec3(0.93, 0.93, 0.91); } else { new Vec3(0.78, 0.80, 0.84); };
+    if vs.len() == 3usize { base = base * 0.45 + new Vec3(0.55, 0.50, 0.0); }
+    elif vs.len() > 4usize { base = base * 0.45 + new Vec3(0.55, 0.0, 0.55); }
+    imm shade = if wireOnly { 1.; } else { 0.30 + 0.70 * fmax3(n.dot(light), 0., 0.); };
+    mut col = base * shade;
+    if n.z < 0. { col = new Vec3(0.9, 0.1, 0.1); }
+    mut k = 1usize;
+    while k + 1usize < vs.len() {
+      cv.triangle(*sp[usize.from(*vs[0usize])], *sp[usize.from(*vs[k])], *sp[usize.from(*vs[k + 1usize])], col);
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  f = 0usize;
+  while f < pm.faceCount() {
+    imm vs = pm.faceVertices(u32.from(f));
+    mut k = 0usize;
+    while k < vs.len() {
+      cv.line(*sp[usize.from(*vs[k])], *sp[usize.from(*vs[(k + 1usize) % vs.len()])], edgeCol, 0.0006 * fit.sc, 1);
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  if mark {
+    v = 0usize;
+    while v < pm.positions.len() {
+      if !pm.isIsolated(u32.from(v)) and !pm.isBoundaryVertex(u32.from(v)) {
+        imm val = pm.valence(u32.from(v));
+        if val != 4usize {
+          imm p = *sp[v];
+          cv.dot(p.x, p.y, p.z + 0.004 * fit.sc, 2, valenceColor(val));
+        }
+      }
+      v = v + 1usize;
+    }
+  }
+}
+
+fn save(cv &Canvas, name &str) {
+  mut r = Raster.empty();
+  r.width = cv.w;
+  r.height = cv.h;
+  r.depth = 8;
+  r.colorSpace = ColorSpace.Srgb;
+  mut i = 0usize;
+  while i < cv.px.len() { r.pixels8.push(*cv.px[i]); i = i + 1usize; }
+  imm png = encodePng(&r, 2);
+  mut full = String.from("C:/src/quadremesh-shots/");
+  full.append(name);
+  imm op = FilePath.from(full.view());
+  fs.writeFile(&op, png.view());
+  printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
+}
+
+// ---------------------------------------------------------------- sources
+
+fn sphereSource(level u32, r f32) PolyMesh {
+  imm c = PolyMesh.cube(1.);
+  mut m = subdivide(&c, level);
+  mut v = 0usize;
+  while v < m.vertexCount() {
+    m.positions.set(v, (*m.positions[v]).normalize() * r);
+    v = v + 1usize;
+  }
+  m;
+}
+
+fn torusSource(nu usize, nv usize, big f32, small f32) PolyMesh {
+  mut pos = List[Vec3].empty();
+  mut i = 0usize;
+  while i < nu {
+    mut j = 0usize;
+    while j < nv {
+      imm a = 2. * pi * f32.from(i) / f32.from(nu);
+      imm b = 2. * pi * f32.from(j) / f32.from(nv);
+      imm rr = big + small * cos(b);
+      pos.push(new Vec3(rr * cos(a), small * sin(b), rr * sin(a)));
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  i = 0usize;
+  while i < nu {
+    mut j = 0usize;
+    while j < nv {
+      imm i1 = (i + 1usize) % nu;
+      imm j1 = (j + 1usize) % nv;
+      counts.push(4u32);
+      idx.push(u32.from(i * nv + j));
+      idx.push(u32.from(i * nv + j1));
+      idx.push(u32.from(i1 * nv + j1));
+      idx.push(u32.from(i1 * nv + j));
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  mut problems = List[String].empty();
+  imm m = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+  // wound outward? flip if the volume is negative
+  m;
+}
+
+// A box of n x n quads a face, centred, sx by sy by sz
+fn boxSource(n usize, sx f32, sy f32, sz f32) PolyMesh {
+  mut pos = List[Vec3].empty();
+  mut ids = List[i32].empty();
+  imm side = n + 1usize;
+  ids.resize(side * side * side, -1);
+  mut a = 0usize;
+  while a < side {
+    mut b = 0usize;
+    while b < side {
+      mut c = 0usize;
+      while c < side {
+        if a == 0usize or a == n or b == 0usize or b == n or c == 0usize or c == n {
+          ids.set((a * side + b) * side + c, i32.from(pos.len()));
+          pos.push(new Vec3(sx * (f32.from(a) / f32.from(n) - 0.5), sy * (f32.from(b) / f32.from(n) - 0.5),
+            sz * (f32.from(c) / f32.from(n) - 0.5)));
+        }
+        c = c + 1usize;
+      }
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut face = 0;
+  while face < 6 {
+    // the face's fixed axis (0 x, 1 y, 2 z), its side, and axes u, v with u x v outward
+    imm axis = face / 2;
+    imm hi = face % 2 == 1;
+    mut u = 0usize;
+    while u < n {
+      mut v = 0usize;
+      while v < n {
+        mut quad = List[u32].empty();
+        mut k = 0;
+        while k < 4 {
+          imm du = if k == 1 or k == 2 {1usize;} else {0usize;};
+          imm dv = if k == 2 or k == 3 {1usize;} else {0usize;};
+          // axes: x-face uses (y, z); y-face (z, x); z-face (x, y)
+          mut ix = 0usize; mut iy = 0usize; mut iz = 0usize;
+          if axis == 0 { ix = if hi {n;} else {0usize;}; iy = u + du; iz = v + dv; }
+          elif axis == 1 { iy = if hi {n;} else {0usize;}; iz = u + du; ix = v + dv; }
+          else { iz = if hi {n;} else {0usize;}; ix = u + du; iy = v + dv; }
+          quad.push(u32.from(*ids[(ix * side + iy) * side + iz]));
+          k = k + 1;
+        }
+        counts.push(4u32);
+        if hi {
+          idx.push(*quad[0usize]); idx.push(*quad[1usize]); idx.push(*quad[2usize]); idx.push(*quad[3usize]);
+        } else {
+          idx.push(*quad[3usize]); idx.push(*quad[2usize]); idx.push(*quad[1usize]); idx.push(*quad[0usize]);
+        }
+        v = v + 1usize;
+      }
+      u = u + 1usize;
+    }
+    face = face + 1;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+}
+
+fn volumeOf(pm &PolyMesh) f64 {
+  mut vol = 0.;
+  mut f = 0usize;
+  while f < pm.faceCount() {
+    imm vs = pm.faceVertices(u32.from(f));
+    imm p0 = *pm.positions[usize.from(*vs[0usize])];
+    mut k = 1usize;
+    while k + 1usize < vs.len() {
+      imm p1 = *pm.positions[usize.from(*vs[k])];
+      imm p2 = *pm.positions[usize.from(*vs[k + 1usize])];
+      vol = vol + p0.dot(p1.cross(p2)) / 6.;
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  f64.from(vol);
+}
+
+// ---------------------------------------------------------------- reports
+
+fn printStats(label &str, st &QuadStats, r &Remesh) {
+  printStr(label);
+  printStr(": faces "); print <- i64.from(st.faces);
+  printStr(" quads "); print <- i64.from(st.quads);
+  printStr(" ("); print <- f64.from(st.quadFraction * 100.); printStr("%) tris "); print <- i64.from(st.triangles);
+  printStr(" ngons "); print <- i64.from(st.ngons);
+  printStr(" verts "); print <- i64.from(st.vertices);
+  printStr(" irregular "); print <- i64.from(st.irregular);
+  printStr(" of "); print <- i64.from(st.interior);
+  printStr(" boundary edges "); print <- i64.from(st.boundaryEdges);
+  printStr("\n   hausdorff "); print <- f64.from(st.hausdorff);
+  printStr(" ("); print <- f64.from(st.hausdorff / st.diagonal * 100.); printStr("% of diagonal) mean "); print <- f64.from(st.meanToSource);
+  printStr(" minAngle "); print <- f64.from(st.minAngle);
+  printStr(" poor "); print <- i64.from(st.poorQuads);
+  printStr(" flipped "); print <- i64.from(st.flipped);
+  printStr("\n   valence:");
+  mut i = 0usize;
+  while i < st.valence.len() { printStr(" "); print <- i64.from(*st.valence[i]); i = i + 1usize; }
+  printStr("\n   work "); print <- i64.from(r.workTriangles); printStr(" tris, levels "); print <- i64.from(r.levels);
+  printStr(", field "); print <- r.fieldSeconds; printStr(" s, extract "); print <- r.extractSeconds;
+  printStr(" s, finish "); print <- r.finishSeconds; printStr(" s; holes filled "); print <- i64.from(r.holesFilled);
+  printStr(", polygons split "); print <- i64.from(r.polygonsSplit);
+  printStr(", lattice error "); print <- f64.from(r.latticeError);
+  printStr("\n");
+  mut p = 0usize;
+  while p < r.problems.len() { printStr("   problem: "); printStr(r.problems[p].view()); printStr("\n"); p = p + 1usize; }
+}
+
+// ---------------------------------------------------------------- sheets
+
+// A column: the source wireframe above, the result below, in one view
+fn column(cv &mut Canvas, x0 i32, w i32, src &PolyMesh, out &PolyMesh, view &View) {
+  cv.tile(x0, 0, x0 + w, 720, new Vec3(0.97, 0.97, 0.95));
+  imm fit = Fit.of(cv, &src.positions, view);
+  drawMesh(cv, src, view, &fit, false, true, new Vec3(0.35, 0.35, 0.40));
+  cv.tile(x0, 720, x0 + w, 1440, new Vec3(0.97, 0.97, 0.95));
+  imm fit2 = Fit.of(cv, &src.positions, view);
+  drawMesh(cv, out, view, &fit2, true, false, new Vec3(0.10, 0.10, 0.14));
+}
+
+fn basicShapes() bool {
+  mut ok = true;
+  mut cv = Canvas.make(2560, 1440);
+  mut sp = sphereSource(5u32, 1.);
+  mut o = RemeshOptions.withFaces(600u32);
+  imm r1 = quadRemesh(&sp, &o);
+  imm s1 = measure(&r1.mesh, &sp);
+  printStats("sphere 600", &s1, &r1);
+  column(&mut cv, 0, 640, &sp, &r1.mesh, &new View(0.5, 0.3));
+  imm bx = boxSource(24usize, 1.6, 1., 1.);
+  mut o2 = RemeshOptions.withFaces(400u32);
+  o2.creaseAngle = 0.6;
+  imm r2 = quadRemesh(&bx, &o2);
+  imm s2 = measure(&r2.mesh, &bx);
+  printStats("box 400", &s2, &r2);
+  column(&mut cv, 640, 640, &bx, &r2.mesh, &new View(0.5, 0.35));
+  imm tr = torusSource(96usize, 48usize, 1., 0.4);
+  mut o3 = RemeshOptions.withFaces(800u32);
+  imm r3 = quadRemesh(&tr, &o3);
+  imm s3 = measure(&r3.mesh, &tr);
+  printStats("torus 800", &s3, &r3);
+  column(&mut cv, 1280, 640, &tr, &r3.mesh, &new View(0.4, 0.8));
+  imm cy = sphereSource(5u32, 1.);
+  mut o4 = RemeshOptions.withFaces(2000u32);
+  imm r4 = quadRemesh(&cy, &o4);
+  imm s4 = measure(&r4.mesh, &cy);
+  printStats("sphere 2000", &s4, &r4);
+  column(&mut cv, 1920, 640, &cy, &r4.mesh, &new View(0.5, 0.3));
+  save(&cv, "quad-basic.png");
+  if s1.boundaryEdges != 0u32 or s3.boundaryEdges != 0u32 { ok = false; }
+  ok;
+}
+
+// Source edges with both ends masked, as guide pairs
+fn guidesFromMask(src &PolyMesh, mask &List[bool]) List[u32] {
+  mut g = List[u32].empty();
+  mut e = 0usize;
+  while e < src.edgeCount() {
+    imm a = src.fromVertex(u32.from(2usize * e));
+    imm b = src.toVertex(u32.from(2usize * e));
+    if *mask[usize.from(a)] and *mask[usize.from(b)] { g.push(a); g.push(b); }
+    e = e + 1usize;
+  }
+  g;
+}
+
+// How far a vertex's mirror image (in the plane axis = 0) is from the nearest vertex
+fn symmetryError(pm &PolyMesh, axis u32) f32 {
+  imm idx = SurfaceIndex.of(pm);
+  mut worst = 0.;
+  mut v = 0usize;
+  while v < pm.vertexCount() {
+    imm p = *pm.positions[v];
+    imm m = if axis == 0u32 { new Vec3(-p.x, p.y, p.z); } elif axis == 1u32 { new Vec3(p.x, -p.y, p.z); } else { new Vec3(p.x, p.y, -p.z); };
+    imm hit = idx.nearestVertex(m, 0.);
+    if hit.tri != NoIndex and hit.distance > worst { worst = hit.distance; }
+    v = v + 1usize;
+  }
+  worst;
+}
+
+// Controls: density, guides, symmetry, creases
+fn featureSheet() bool {
+  mut ok = true;
+  mut cv = Canvas.make(2560, 1440);
+  // Density: finer on top
+  mut sp = sphereSource(5u32, 1.);
+  imm dch = sp.addFloatChannel(VertexDomain, "density", 1.);
+  mut v = 0usize;
+  while v < sp.vertexCount() {
+    sp.setFloat(dch, u32.from(v), 1. + 5. * fmax3((*sp.positions[v]).y, 0., 0.));
+    v = v + 1usize;
+  }
+  mut o = RemeshOptions.withFaces(900u32);
+  o.density = String.from("density");
+  imm r1 = quadRemesh(&sp, &o);
+  imm s1 = measure(&r1.mesh, &sp);
+  printStats("density", &s1, &r1);
+  column(&mut cv, 0, 640, &sp, &r1.mesh, &new View(0.5, 0.5));
+  // A loop guide round the equator, tilted
+  mut sg = sphereSource(5u32, 1.);
+  mut mask = List[bool].empty();
+  v = 0usize;
+  while v < sg.vertexCount() {
+    mask.push(absf((*sg.positions[v]).y - 0.2) < 0.0000001 or absf((*sg.positions[v]).y - 0.2) < 0.0000001);
+    v = v + 1usize;
+  }
+  // the vertices nearest the circle y = 0.2 form the ring: take the ones within half an edge of it
+  mask.clear();
+  v = 0usize;
+  while v < sg.vertexCount() {
+    imm p = *sg.positions[v];
+    mask.push(absf(p.y - 0.2) < 0.012);
+    v = v + 1usize;
+  }
+  mut o2 = RemeshOptions.withFaces(500u32);
+  o2.guides = guidesFromMask(&sg, &mask);
+  imm r2 = quadRemesh(&sg, &o2);
+  imm s2 = measure(&r2.mesh, &sg);
+  printStats("loop guide", &s2, &r2);
+  column(&mut cv, 640, 640, &sg, &r2.mesh, &new View(0.5, 0.2));
+  // Symmetry: a bean, remeshed whole and by its half and mirrored
+  mut bean = sphereSource(5u32, 1.);
+  v = 0usize;
+  while v < bean.vertexCount() {
+    imm p = *bean.positions[v];
+    bean.positions.set(v, new Vec3(p.x * 1.3, p.y * (1. + 0.25 * p.x * p.x) + 0.15 * p.x * p.x, p.z * 0.8));
+    v = v + 1usize;
+  }
+  mut o3 = RemeshOptions.withFaces(600u32);
+  imm r3 = quadRemesh(&bean, &o3);
+  imm s3 = measure(&r3.mesh, &bean);
+  printStats("bean, no symmetry", &s3, &r3);
+  printStr("   mirror error "); print <- f64.from(symmetryError(&r3.mesh, 0u32)); printStr("\n");
+  column(&mut cv, 1280, 640, &bean, &r3.mesh, &new View(0.5, 0.4));
+  mut o4 = RemeshOptions.withFaces(600u32);
+  o4.symmetryAxis = 0i32;
+  imm r4 = quadRemesh(&bean, &o4);
+  imm s4 = measure(&r4.mesh, &bean);
+  printStats("bean, symmetric in x", &s4, &r4);
+  imm se = symmetryError(&r4.mesh, 0u32);
+  printStr("   mirror error "); print <- f64.from(se); printStr("\n");
+  column(&mut cv, 1920, 640, &bean, &r4.mesh, &new View(0.5, 0.4));
+  save(&cv, "quad-controls.png");
+  if s4.boundaryEdges != 0u32 or se > 0.00001 { ok = false; }
+  ok;
+}
+
+// ---------------------------------------------------------------- the creature
+
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+
+fn partMesh(g &SkinGraph) PolyMesh {
+  imm s = skinStandard(g);
+  mut f = subdivideSkin(&s, 1u32);
+  mut out = PolyMesh.empty();
+  out <=> f.mesh;
+  out;
+}
+
+// Several skinmesh parts, joined and fused by a voxel remesh: a lumpy body
+fn creatureSource(voxel f32) PolyMesh {
+  mut parts = List[PolyMesh].empty();
+  // body and legs
+  mut g = SkinGraph.empty();
+  imm hips = g.addNode(v3(0., 0.62, -0.50), 0.09, 0.10);
+  g.setRoot(hips);
+  imm mid = g.grow(hips, v3(0., 0.68, 0.), 0.17, 0.15);
+  imm shoulders = g.grow(mid, v3(0., 0.68, 0.50), 0.10, 0.11);
+  mut side = -1.;
+  mut s = 0;
+  while s < 2 {
+    imm elbow = g.grow(shoulders, v3(side * 0.28, 0.36, 0.52), 0.06, 0.06);
+    imm wrist = g.grow(elbow, v3(side * 0.24, 0.13, 0.54), 0.04, 0.04);
+    g.grow(wrist, v3(side * 0.24, 0.03, 0.62), 0.045, 0.035);
+    imm knee = g.grow(hips, v3(side * 0.30, 0.34, -0.40), 0.07, 0.07);
+    imm hock = g.grow(knee, v3(side * 0.24, 0.18, -0.64), 0.04, 0.04);
+    g.grow(hock, v3(side * 0.24, 0.03, -0.54), 0.045, 0.035);
+    side = 1.;
+    s = s + 1;
+  }
+  parts.push(partMesh(&g));
+  // neck and head
+  mut h = SkinGraph.empty();
+  imm n0 = h.addNode(v3(0., 0.74, 0.40), 0.10, 0.10);
+  h.setRoot(n0);
+  imm n1 = h.grow(n0, v3(0., 0.84, 0.80), 0.09, 0.09);
+  imm hd = h.grow(n1, v3(0., 0.88, 1.00), 0.08, 0.09);
+  h.grow(hd, v3(0., 0.80, 1.20), 0.05, 0.05);
+  parts.push(partMesh(&h));
+  // tail
+  mut t = SkinGraph.empty();
+  imm t0 = t.addNode(v3(0., 0.64, -0.40), 0.06, 0.06);
+  t.setRoot(t0);
+  imm t1 = t.grow(t0, v3(0., 0.66, -0.80), 0.045, 0.045);
+  imm t2 = t.grow(t1, v3(0., 0.62, -1.05), 0.035, 0.035);
+  t.grow(t2, v3(0., 0.74, -1.28), 0.02, 0.02);
+  parts.push(partMesh(&t));
+  // two horns
+  side = -1.;
+  s = 0;
+  while s < 2 {
+    mut e = SkinGraph.empty();
+    imm e0 = e.addNode(v3(side * 0.05, 0.92, 0.96), 0.03, 0.03);
+    e.setRoot(e0);
+    imm e1 = e.grow(e0, v3(side * 0.14, 1.08, 0.90), 0.025, 0.025);
+    e.grow(e1, v3(side * 0.18, 1.22, 0.82), 0.012, 0.012);
+    parts.push(partMesh(&e));
+    side = 1.;
+    s = s + 1;
+  }
+  mut problems = List[String].empty();
+  imm joined = join(&parts, &mut problems);
+  voxelRemesh(&joined, voxel, &mut problems);
+}
+
+fn creatureSheet() bool {
+  mut ok = true;
+  mut cv = Canvas.make(2560, 1440);
+  imm src = creatureSource(0.022);
+  printStr("creature source: faces "); print <- i64.from(src.faceCount()); printStr("\n");
+  imm view = new View(0.7, 0.2);
+  cv.tile(0, 0, 1280, 720, new Vec3(0.97, 0.97, 0.95));
+  imm fit = Fit.of(&cv, &src.positions, &view);
+  drawMesh(&mut cv, &src, &view, &fit, false, false, new Vec3(0.55, 0.55, 0.6));
+  mut o = RemeshOptions.withFaces(2000u32);
+  o.creaseAngle = 0.;
+  imm r1 = quadRemesh(&src, &o);
+  imm s1 = measure(&r1.mesh, &src);
+  printStats("creature 2k", &s1, &r1);
+  cv.tile(0, 720, 1280, 1440, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(&mut cv, &r1.mesh, &view, &Fit.of(&cv, &src.positions, &view), true, false, new Vec3(0.10, 0.10, 0.14));
+  mut o2 = RemeshOptions.withFaces(8000u32);
+  imm r2 = quadRemesh(&src, &o2);
+  imm s2 = measure(&r2.mesh, &src);
+  printStats("creature 8k", &s2, &r2);
+  cv.tile(1280, 0, 2560, 720, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(&mut cv, &src, &new View(-0.9, 0.35), &Fit.of(&cv, &src.positions, &new View(-0.9, 0.35)), false, false, new Vec3(0.55, 0.55, 0.6));
+  cv.tile(1280, 720, 2560, 1440, new Vec3(0.97, 0.97, 0.95));
+  drawMesh(&mut cv, &r2.mesh, &new View(-0.9, 0.35), &Fit.of(&cv, &src.positions, &new View(-0.9, 0.35)), false, false, new Vec3(0.10, 0.10, 0.14));
+  save(&cv, "quad-creature.png");
+  if s1.boundaryEdges != 0u32 or s2.boundaryEdges != 0u32 { ok = false; }
+  ok;
+}
+
+// ---------------------------------------------------------------- the head
+
+fn parseF(s &str) f32 {
+  imm t &Array[u8] = s;
+  mut i = 0usize;
+  mut neg = false;
+  if t.len > 0usize and t[0usize] == '-' { neg = true; i = 1usize; }
+  mut whole = 0.d;
+  while i < t.len and t[i] >= '0' and t[i] <= '9' {
+    whole = whole * 10.d + f64.from(i32.from(t[i]) - 48);
+    i = i + 1usize;
+  }
+  mut scale = 0.1d;
+  if i < t.len and t[i] == '.' {
+    i = i + 1usize;
+    while i < t.len and t[i] >= '0' and t[i] <= '9' {
+      whole = whole + scale * f64.from(i32.from(t[i]) - 48);
+      scale = scale * 0.1d;
+      i = i + 1usize;
+    }
+  }
+  f32.from(if neg { -whole; } else { whole; });
+}
+
+// The faces of base.obj's "body" group whose vertices all lie above y = neck,
+// as a PolyMesh (read here, never copied)
+fn loadHead(file &str, neck f32) PolyMesh {
+  mut text = String.empty();
+  imm fp = FilePath.from(file);
+  match fs.readFile(&fp) {
+    case mut r Ok { text <=> r; }
+    case imm e Error {}
+  }
+  mut pos = List[Vec3].empty();
+  mut fc = List[u32].empty();
+  mut fi = List[u32].empty();
+  mut inBody = false;
+  imm lines = text.lines();
+  mut li = 0usize;
+  while li < lines.len() {
+    imm ln = lines[li].view();
+    imm bytes &Array[u8] = ln;
+    if bytes.len > 2usize and bytes[0usize] == 'v' and bytes[1usize] == ' ' {
+      imm parts = lines[li].split(' ');
+      mut vals = List[f32].empty();
+      mut k = 1usize;
+      while k < parts.len() { if parts[k].len() > 0usize { vals.push(parseF(parts[k].view())); } k = k + 1usize; }
+      if vals.len() >= 3usize { pos.push(new Vec3(*vals[0usize], *vals[1usize], *vals[2usize])); }
+    } elif bytes.len > 2usize and bytes[0usize] == 'g' and bytes[1usize] == ' ' {
+      inBody = ln == "g body";
+    } elif inBody and bytes.len > 2usize and bytes[0usize] == 'f' and bytes[1usize] == ' ' {
+      imm parts = lines[li].split(' ');
+      mut vs = List[u32].empty();
+      mut k = 1usize;
+      while k < parts.len() {
+        if parts[k].len() > 0usize {
+          imm sub = parts[k].split('/');
+          imm n = parseInt(sub[0usize].view());
+          match n {
+            case imm some Some { vs.push(u32.from(some - 1i64)); }
+            case None {}
+          }
+        }
+        k = k + 1usize;
+      }
+      mut allUp = vs.len() >= 3usize;
+      k = 0usize;
+      while k < vs.len() { if (*pos[usize.from(*vs[k])]).y < neck { allUp = false; } k = k + 1usize; }
+      if allUp {
+        fc.push(u32.from(vs.len()));
+        k = 0usize;
+        while k < vs.len() { fi.push(*vs[k]); k = k + 1usize; }
+      }
+    }
+    li = li + 1usize;
+  }
+  // compact the vertices
+  mut map = List[u32].empty();
+  map.resize(pos.len(), NoIndex);
+  mut np = List[Vec3].empty();
+  mut ni = List[u32].empty();
+  mut i = 0usize;
+  while i < fi.len() {
+    imm v = usize.from(*fi[i]);
+    if *map[v] == NoIndex { map.set(v, u32.from(np.len())); np.push(*pos[v]); }
+    ni.push(*map[v]);
+    i = i + 1usize;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(np.view(), fc.view(), ni.view(), &mut problems);
+}
+
+// Vertices that sit near another surface of the mesh but far from it along the
+// mesh: the sealed slits of the lids and the lips
+fn slitMask(m &PolyMesh, close f32, hops usize) List[bool] {
+  mut mask = List[bool].empty();
+  mut v = 0usize;
+  while v < m.vertexCount() {
+    // vertices within 'hops' edges of v
+    mut near = List[u32].empty();
+    near.push(u32.from(v));
+    mut frontier = List[u32].empty();
+    frontier.push(u32.from(v));
+    mut h = 0usize;
+    while h < hops {
+      mut next = List[u32].empty();
+      mut f = 0usize;
+      while f < frontier.len() {
+        imm nb = m.vertexNeighbors(*frontier[f]);
+        mut k = 0usize;
+        while k < nb.len() {
+          mut seen = false;
+          mut q = 0usize;
+          while q < near.len() { if *near[q] == *nb[k] { seen = true; } q = q + 1usize; }
+          if !seen { near.push(*nb[k]); next.push(*nb[k]); }
+          k = k + 1usize;
+        }
+        f = f + 1usize;
+      }
+      frontier = next;
+      h = h + 1usize;
+    }
+    mut hit = false;
+    imm p = *m.positions[v];
+    mut w = 0usize;
+    while w < m.vertexCount() and !hit {
+      if (*m.positions[w] - p).lengthSquared() < close * close {
+        mut isNear = false;
+        mut q = 0usize;
+        while q < near.len() { if usize.from(*near[q]) == w { isNear = true; } q = q + 1usize; }
+        if !isNear { hit = true; }
+      }
+      w = w + 1usize;
+    }
+    mask.push(hit);
+    v = v + 1usize;
+  }
+  mask;
+}
+
+fn headSheet() bool {
+  mut ok = true;
+  imm head = loadHead("C:/src/reference-models/makehuman/base.obj", 6.2);
+  printStr("head: vertices "); print <- i64.from(head.vertexCount()); printStr(" faces "); print <- i64.from(head.faceCount()); printStr("\n");
+  if head.faceCount() == 0usize { printStr("no head read\n"); return true; }
+  imm mask = slitMask(&head, 0.03, 3usize);
+  mut slit = 0usize;
+  mut v = 0usize;
+  while v < mask.len() { if *mask[v] { slit = slit + 1usize; } v = v + 1usize; }
+  printStr("slit vertices "); print <- i64.from(slit); printStr("\n");
+  mut o1 = RemeshOptions.withFaces(2500u32);
+  imm r1 = quadRemesh(&head, &o1);
+  imm s1 = measure(&r1.mesh, &head);
+  printStats("head, no guides", &s1, &r1);
+  mut o2 = RemeshOptions.withFaces(2500u32);
+  o2.guides = guidesFromMask(&head, &mask);
+  imm r2 = quadRemesh(&head, &o2);
+  imm s2 = measure(&r2.mesh, &head);
+  printStats("head, eye and mouth loop guides", &s2, &r2);
+  mut cv = Canvas.make(2560, 1440);
+  imm view = new View(0., 0.05);
+  mut k = 0;
+  while k < 3 {
+    imm x0 = k * 853;
+    cv.tile(x0, 0, x0 + 853, 1440, new Vec3(0.97, 0.97, 0.95));
+    imm fit = Fit.of(&cv, &head.positions, &view);
+    if k == 0 { drawMesh(&mut cv, &head, &view, &fit, false, true, new Vec3(0.30, 0.30, 0.36)); }
+    elif k == 1 { drawMesh(&mut cv, &r1.mesh, &view, &fit, true, false, new Vec3(0.10, 0.10, 0.14)); }
+    else { drawMesh(&mut cv, &r2.mesh, &view, &fit, true, false, new Vec3(0.10, 0.10, 0.14)); }
+    k = k + 1;
+  }
+  save(&cv, "quad-head.png");
+  ok;
+}
+
+// Timing on inputs of about 50k and 200k triangles (a sphere's, and a torus's)
+fn timing() bool {
+  mut ok = true;
+  mut round = 0;
+  while round < 4 {
+    imm src = if round == 0 { sphereSource(6u32, 1.); } elif round == 1 { sphereSource(7u32, 1.); }
+      elif round == 2 { torusSource(256usize, 96usize, 1., 0.4); } else { torusSource(512usize, 196usize, 1., 0.4); };
+    imm faces = if round % 2 == 0 { 5000u32; } else { 20000u32; };
+    mut o = RemeshOptions.withFaces(faces);
+    imm t0 = Instant.now();
+    imm r = quadRemesh(&src, &o);
+    imm total = t0.elapsed().secondsF64();
+    imm tris = r.workTriangles;
+    printStr("timing: input "); print <- i64.from(src.faceCount() * 2usize); printStr(" tris -> "); print <- i64.from(faces);
+    printStr(" faces: total "); print <- total; printStr(" s (fields "); print <- r.fieldSeconds;
+    printStr(", extract "); print <- r.extractSeconds; printStr(", finish "); print <- r.finishSeconds;
+    printStr("), result faces "); print <- i64.from(r.mesh.faceCount()); printStr("\n");
+    imm st = measure(&r.mesh, &src);
+    printStats("  quality", &st, &r);
+    if tris == 0u32 { ok = false; }
+    round = round + 1;
+  }
+  ok;
+}
+
+fn main() i32 {
+  imm dir = FilePath.from("C:/src/quadremesh-shots");
+  fs.makeDirAll(&dir);
+  mut ok = true;
+  ok = basicShapes() and ok;
+  ok = featureSheet() and ok;
+  ok = creatureSheet() and ok;
+  ok = headSheet() and ok;
+  ok = timing() and ok;
+  if ok {0;} else {1;};
+}

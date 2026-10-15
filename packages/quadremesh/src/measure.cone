@@ -1,0 +1,116 @@
+// ======== Measuring a remesh ========
+
+// How good a quad mesh is, and how near the source it stays
+pub struct QuadStats {
+  pub faces u32;
+  pub quads u32;
+  pub triangles u32;
+  pub ngons u32;                // faces of five or more corners
+  pub quadFraction f32;
+  pub vertices u32;
+  pub boundaryEdges u32;
+  pub valence List[u32];        // interior vertices by valence: [v] for 0 to 11, [12] for 12 or more
+  pub interior u32;             // interior vertices
+  pub irregular u32;            // interior vertices whose valence is not 4: the singularities
+  pub toSource f32;             // the most any vertex, edge middle or face centre is from the source
+  pub fromSource f32;           // the most any source vertex is from the result
+  pub hausdorff f32;            // the larger of the two
+  pub meanToSource f32;
+  pub diagonal f32;             // the source's bounding box diagonal, to scale the distances by
+  pub minAngle f32;             // the least corner of any quad, in degrees
+  pub poorQuads u32;            // quads with a corner under 30 degrees or over 150
+  pub flipped u32;              // faces facing against the source where they lie
+}
+
+fn angleDeg(a Vec3, b Vec3, c Vec3) f32 {
+  // the angle at b
+  imm u = unit(a - b);
+  imm v = unit(c - b);
+  degrees(acos(clampf(u.dot(v), -1., 1.)));
+}
+
+pub fn measure(mesh &PolyMesh, source &PolyMesh) QuadStats {
+  mut st = new QuadStats(0u32, 0u32, 0u32, 0u32, 0., 0u32, 0u32, List[u32].empty(), 0u32, 0u32, 0., 0., 0., 0.,
+    0., 180., 0u32, 0u32);
+  imm nf = mesh.faceCount();
+  st.faces = u32.from(nf);
+  st.vertices = u32.from(mesh.vertexCount());
+  mut k = 0usize;
+  while k < 13usize { st.valence.push(0u32); k = k + 1usize; }
+  imm src = SurfaceIndex.of(source);
+  imm out = SurfaceIndex.of(mesh);
+  mut stack = List[u32].empty();
+  mut sum = 0.;
+  mut samples = 0.;
+  mut worst = 0.;
+  mut f = 0usize;
+  while f < nf {
+    imm vs = mesh.faceVertices(u32.from(f));
+    imm n = vs.len();
+    if n == 3usize { st.triangles = st.triangles + 1u32; }
+    elif n == 4usize { st.quads = st.quads + 1u32; }
+    else { st.ngons = st.ngons + 1u32; }
+    imm c = mesh.faceCentroid(u32.from(f));
+    imm hit = src.nearestWith(c, 0., &mut stack);
+    if hit.tri != NoIndex {
+      if hit.distance > worst { worst = hit.distance; }
+      sum = sum + hit.distance; samples = samples + 1.;
+      if mesh.faceNormal(u32.from(f)).dot(hit.normal) < 0. { st.flipped = st.flipped + 1u32; }
+    }
+    if n == 4usize {
+      mut poor = false;
+      mut i = 0usize;
+      while i < 4usize {
+        imm a = angleDeg(*mesh.positions[usize.from(*vs[(i + 3usize) % 4usize])], *mesh.positions[usize.from(*vs[i])],
+          *mesh.positions[usize.from(*vs[(i + 1usize) % 4usize])]);
+        if a < st.minAngle { st.minAngle = a; }
+        if a < 30. or a > 150. { poor = true; }
+        i = i + 1usize;
+      }
+      if poor { st.poorQuads = st.poorQuads + 1u32; }
+    }
+    f = f + 1usize;
+  }
+  st.quadFraction = if nf > 0usize { f32.from(st.quads) / f32.from(nf); } else { 0.; };
+  mut v = 0usize;
+  while v < mesh.vertexCount() {
+    imm hit = src.nearestWith(*mesh.positions[v], 0., &mut stack);
+    if hit.tri != NoIndex {
+      if hit.distance > worst { worst = hit.distance; }
+      sum = sum + hit.distance; samples = samples + 1.;
+    }
+    if !mesh.isIsolated(u32.from(v)) and !mesh.isBoundaryVertex(u32.from(v)) {
+      imm val = mesh.valence(u32.from(v));
+      imm slot = if val > 12usize { 12usize; } else { val; };
+      st.valence.set(slot, *st.valence[slot] + 1u32);
+      st.interior = st.interior + 1u32;
+      if val != 4usize { st.irregular = st.irregular + 1u32; }
+    }
+    v = v + 1usize;
+  }
+  mut e = 0usize;
+  while e < mesh.edgeCount() {
+    if mesh.isBoundaryEdge(u32.from(e)) { st.boundaryEdges = st.boundaryEdges + 1u32; }
+    imm a = *mesh.positions[usize.from(mesh.fromVertex(u32.from(2usize * e)))];
+    imm b = *mesh.positions[usize.from(mesh.toVertex(u32.from(2usize * e)))];
+    imm hit = src.nearestWith((a + b) * 0.5, 0., &mut stack);
+    if hit.tri != NoIndex {
+      if hit.distance > worst { worst = hit.distance; }
+      sum = sum + hit.distance; samples = samples + 1.;
+    }
+    e = e + 1usize;
+  }
+  st.toSource = worst;
+  st.meanToSource = if samples > 0. { sum / samples; } else { 0.; };
+  mut back = 0.;
+  v = 0usize;
+  while v < source.vertexCount() {
+    imm hit = out.nearestWith(*source.positions[v], 0., &mut stack);
+    if hit.tri != NoIndex and hit.distance > back { back = hit.distance; }
+    v = v + 1usize;
+  }
+  st.fromSource = back;
+  st.hausdorff = if back > worst { back; } else { worst; };
+  st.diagonal = source.bounds().size().length();
+  st;
+}
