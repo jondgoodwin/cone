@@ -53,7 +53,8 @@ walking, sitting down and standing up, hailing; and the sculpting step by step (
    found by a ray from inside the head. Face rows are level lines, and the rows near each eye are drawn onto the lids'
    edges, so the lid margins and the mouth's line ARE rows. A smooth brush (Taubin's, along the normals only) takes out
    the creases where forms meet, sparing the lids and the mouth. The lids and the mouth's slot are facerig's test
-   head's operations; the bottom row is zipped to the body's neck ring and their normals welded.
+   head's operations; the bottom row is zipped to the body's neck ring, a band either side of the seam smoothed out
+   from the neck's axis (the head's neck and the body's trapezius meet at different slopes), and the normals welded.
 8. **The blends** (`blends.cone`): for each of 29 axes (the trunk's and limbs' measures, the head's, the face's
    character, the build), the same vertices sculpted again with one thing changed; the target is the difference per
    unit, with the joints, the eyes, the jaw's hinge and the mouth moved too. A person's weights for the measured blends
@@ -63,8 +64,11 @@ walking, sitting down and standing up, hailing; and the sculpting step by step (
    the grid points nearest each feature), its 50 FACS targets built on the whole mesh, the jaw and eyes added to the
    skeleton; eyeballs, teeth, tongue, the mouth's inside and the ears as rigid parts.
 10. **The clothes** (`outfits.cone`): garmentdrape's shells (the body's surface over a region of bones, pushed out by
-    ease and the layers beneath, smoothed, skinned as the body), a lofted skirt that hangs from the waist, and the main
-    avatar's draped cape; the body under opaque cloth is not drawn.
+    ease and the layers beneath, smoothed, skinned as the body), finished here (each shell's edges eased along
+    themselves out of the mesh's staircase, the shirt's humps at the shoulder smoothed within its own ease), a lofted
+    skirt that hangs from the waist (a shirt over it ends just inside its top), and the main avatar's draped cape: a
+    trapezoid to below the knee that sees the upper arms so it rounds over the shoulders, and a standing collar; the
+    body under opaque cloth is not drawn.
 11. **The look** (`look.cone`): an albedo painted from the head's own shape (lips, brows, lash lines, cropped hair to a
     hairline, beard shadow, warmer cheeks, nose and ears) and a roughness map, under render's skin material.
 12. **The poses** (`poses.cone`): standing at ease, sitting down on and standing up from any Seat (a sit point, a
@@ -86,16 +90,36 @@ walking, sitting down and standing up, hailing; and the sculpting step by step (
   the person skins against a skeleton that is not theirs; here every target carries the joints and the face's points.
 - **A cone of cloth is a stable shape.** garmentdrape wraps cloth at the radius its flat width asks; a half-circle cape
   becomes a bell its strain-limited, stiff cloth cannot buckle out of. A hem a little wider than the back hangs.
+- **A ray finds the first surface, not the one you meant.** The head's grid points are rays' first exits from the
+  field. Where the field has a hole (an eye socket carved deeper than the lid shell) or an edge a level ray only grazes
+  (the jaw's underside), neighbouring rays find different surfaces: fins from the eyes' corners, a dotted line along
+  the jaw. The cure is in the field or the ray, not in smoothing afterwards: fill the socket with the eyeball's shell;
+  tilt the rays that cross the jaw's underside.
+- **Decide membership by structure, not by where a point ended up.** The mouth's slot and the jaw's weight were first
+  decided by each point's own height and depth; the smooth brush had moved the middle of the lips a millimetre and the
+  lips stand proud of the line, so the middle of the mouth's row escaped the slot and the lower lip's top stayed on the
+  head. Opened, the mouth showed a sheet of lip like a tongue. Judged by the row a point belongs to, the mouth opens
+  cleanly. The same holds for paint: the inside of the lips is found by texel row, not by position.
+- **A rule sized for one head is a caricature on another.** facerig's units read at a glance on its small test head; on
+  a person at game scale a full smile pulled the corners half an eye-distance. Each unit's target is scaled to a
+  natural strength as the morph targets are made (`naturalStrength`), the jaw's full opening is 17 degrees, and the
+  lids' turning region is kept below the brow.
+- **Paint the look you cannot simulate.** The cape's drape is settled on a grid too coarse to buckle into the narrow
+  folds heavy velvet makes; the example draws the folds (a wave round the neck along the cloth's normal, growing from
+  the collar to the hem, normals found again) and leaves the simulation alone.
 
 ## What it does not do yet
 
 - Articulated hands (mittens, by the agreed scope), hair (cropped scalp painting), user configurability.
 - No normal maps: the muscle detail is what 17,500 triangles carry. No corrective shapes at the joints yet.
 - The thighs are 5 to 10 per cent under their survey girth (each thigh is held inside the hip breadth).
-- The cape hangs with few folds: garmentdrape's cloth settles into the shape it was wrapped in.
+- The faces are analytic forms on a 72-column grid: plausible at a few metres, a mannequin's near. The open mouth is
+  dark with the teeth hidden behind the lips' slot; the cheeks' planes and the lids' folds want a sculpted base head.
+- The tall slim man's shoulders show knobs where his blend extrapolates the deltoid; the shirt follows them.
 
 ## Tests
 
 `tests/people.cone`: the cage closes, the surface lies on the forms, the fitted measures are the survey's, the body is
-one mesh whose weights sum to one, the face's spec and targets are built, a blended person meets their measures, a
-seated pose sits and a hail raises the hand. `congo test` in this folder.
+one mesh whose weights sum to one, the face's spec and targets are built at natural strengths, the mouth opens between
+the upper lip and the jaw's rows, a blended person meets their measures, a seated pose sits and a hail raises the
+hand. `congo test` in this folder.

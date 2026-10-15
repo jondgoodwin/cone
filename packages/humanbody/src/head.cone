@@ -66,7 +66,7 @@ pub struct Features {
 
 pub fn featuresOf(s &HeadShape) Features {
   imm f = s.sF;
-  new Features(-0.0705 * s.sL, -0.0690 * f, -0.1130 * f, -0.0890 * s.sL, 0.0142, 0.0052, 0.0046, s.eyeR + 0.0016,
+  new Features(-0.0705 * s.sL, -0.0690 * f, -0.1130 * f, -0.0868 * s.sL, 0.0142, 0.0052, 0.0046, s.eyeR + 0.0016,
     0.0245 + 0.002 * s.lips);
 }
 
@@ -94,13 +94,21 @@ pub fn headDistance(p Vec3, s &HeadShape, ft &Features, neckR f32, neckZ f32) f3
   imm sq = 0.8 + 0.5 * s.jawSquare;
   imm ch = 0.8 + 0.5 * s.chin;
   // (the lower face narrows from the cheekbones to the jaw: a wedge, its sides flat, not a ball)
-  imm lower = new Vec3(p.x / (0.98 * cw), p.y, p.z);
+  // (narrower below the cheekbones than at them: the cheek falls in under the malar eminence)
+  imm lower = new Vec3(p.x / (cw * (0.98 - 0.09 * smoothstep(-0.020 * f, -0.062 * f, p.y))), p.y, p.z);
   d = softUnion(d, taperedCapsule(lower, new Vec3(0., -0.016 * f, -0.026 * l), new Vec3(0., -0.088 * f, -0.054 * l), 0.047, 0.020 * ch), 0.010);
   d = softUnion(d, hEll(p, new Vec3(0., -0.042 * f, -0.054 * l), new Vec3(0.034 * b, 0.040 * f, 0.040 * l)), 0.006);
   // the jaw: the ramus down from in front of the ear to the angle, the body forward to the chin, a firm edge
-  imm gonion = new Vec3(jw - 0.010, -0.088 * f, -0.004 * l);
+  // (a square jaw: its angle lower, further out and further back, so the edge from the ear to the chin turns a corner)
+  imm js = s.jawSquare - 0.5;
+  imm gonion = new Vec3(jw - 0.010 + 0.004 * js, -0.088 * f - 0.006 * js, -0.004 * l + 0.004 * js);
   d = softUnion(d, taperedCapsule(q, new Vec3(jw - 0.013, -0.030 * f, 0.006 * l), gonion, 0.009, 0.008 * sq), 0.004);
-  d = softUnion(d, taperedCapsule(q, gonion, new Vec3(0.018, -0.108 * f, -0.064 * l), 0.008 * sq, 0.009), 0.004);
+  // (the body's lower edge stays above the chin's lowest point, so no ray along a row grazes it)
+  d = softUnion(d, taperedCapsule(q, gonion, new Vec3(0.018, -0.103 * f, -0.064 * l), 0.008 * sq, 0.009), 0.004);
+  // the masseter: a flat band of muscle from the cheekbone's arch down to the jaw's angle, bridging them so that the
+  // cheek under the cheekbone is a plane falling to the jaw, not a hollow between two lumps
+  d = softUnion(d, taperedCapsule(q, new Vec3(s.cheek - 0.017, -0.024 * f, -0.030 * l), gonion + new Vec3(-0.004, 0.009, -0.010),
+    0.0105, 0.0085), 0.010);
   // the chin: forward and square for a strong one (two mental tubercles either side of the middle)
   imm chinZ = -0.071 * l - 0.004 * (s.chin - 0.5);
   d = softUnion(d, hEll(p, new Vec3(0., -0.101 * f, chinZ), new Vec3(0.016 * ch, 0.0120, 0.0120)), 0.004);
@@ -113,23 +121,31 @@ pub fn headDistance(p Vec3, s &HeadShape, ft &Features, neckR f32, neckZ f32) f3
     0.0080 * brow, 0.0045 * brow), 0.006);
   // the cheekbones (the malar eminence under the eye, small and high) and the arch back towards the ear
   imm zyg = 0.7 + 0.6 * s.cheekbones;
-  d = softUnion(d, hEll(q, new Vec3(s.cheek - 0.024, -0.008 * f, -0.054 * l), new Vec3(0.016, 0.010 * zyg, 0.020)), 0.007);
-  d = softUnion(d, taperedCapsule(q, new Vec3(s.cheek - 0.022, -0.010 * f, -0.048 * l), new Vec3(s.cheek - 0.008, -0.014 * f, -0.012 * l),
-    0.007, 0.006), 0.007);
+  d = softUnion(d, hEll(q, new Vec3(s.cheek - 0.023, -0.010 * f, -0.055 * l), new Vec3(0.017, 0.0105 * zyg, 0.020)), 0.011);
+  d = softUnion(d, taperedCapsule(q, new Vec3(s.cheek - 0.022, -0.012 * f, -0.048 * l), new Vec3(s.cheek - 0.008, -0.014 * f, -0.012 * l),
+    0.007, 0.006), 0.009);
+  // the cheek's soft mass in front, from under the cheekbone to beside the mouth (fills the valley a sculptor would
+  // find between the cheekbone, the nose's wing and the mouth's mound)
+  d = softUnion(d, hEll(q, new Vec3(s.cheek - 0.034, -0.040 * f, -0.054 * l), new Vec3(0.019, 0.022 * f, 0.020)), 0.012);
   // the eye sockets, carved
-  d = smoothSubtract(d, sphere(q - new Vec3(s.ipd * 0.5, 0.0, ft.eyeZ - 0.003), 0.0150), 0.007);
+  d = smoothSubtract(d, sphere(q - new Vec3(s.ipd * 0.5, 0.0, ft.eyeZ - 0.003), 0.0150), 0.009);
+  // and the eyeball with its lids' shell in each (the socket is a hollow round the eye, not a hole: a row's ray near
+  // the eye's corners otherwise found the socket's back wall at one height and the face at the next, folds that
+  // stood out of the corners as fins)
+  d = softUnion(d, sphere(q - new Vec3(s.ipd * 0.5, 0.0, ft.eyeZ), ft.shell + 0.0008), 0.004);
   // the soft fullness below the lower lid, over the orbit's rim to the cheekbone (lower than the lid: it must not cover it)
-  d = softUnion(d, hEll(q, new Vec3(s.ipd * 0.5 + 0.004, -0.0215, ft.eyeZ - 0.003), new Vec3(0.019, 0.0085, 0.0105)), 0.006);
-  // the mouth's mound over the teeth, curved like the dental arch, and the lips
-  d = softUnion(d, hEll(p, new Vec3(0., ft.yg - 0.001, -0.068 * l), new Vec3(0.024, 0.019 * f, 0.016)), 0.006);
+  d = softUnion(d, hEll(q, new Vec3(s.ipd * 0.5 + 0.004, -0.0215, ft.eyeZ - 0.003), new Vec3(0.019, 0.0085, 0.0105)), 0.010);
+  // the mouth's mound over the teeth, curved like the dental arch, and the lips on it
+  d = softUnion(d, hEll(p, new Vec3(0., ft.yg - 0.001, -0.067 * l), new Vec3(0.025, 0.019 * f, 0.0155)), 0.008);
   imm lf = 0.75 + 0.5 * s.lips;
   // the upper lip: two lobes either side of the middle and the tubercle between them (the cupid's bow is the dip of the
-  // lobes' tops at the middle, the philtrum's columns rising from their peaks); the lower lip one fuller roll
-  d = softUnion(d, hEll(q, new Vec3(ft.mouthHW * 0.38, ft.yg + 0.0040 * lf, ft.lipZ + 0.0060), new Vec3(ft.mouthHW * 0.52, 0.0046 * lf, 0.0060 * lf)), 0.004);
-  d = softUnion(d, hEll(p, new Vec3(0., ft.yg + 0.0030 * lf, ft.lipZ + 0.0052), new Vec3(0.0060, 0.0036 * lf, 0.0056 * lf)), 0.003);
-  d = softUnion(d, hEll(p, new Vec3(0., ft.yg - 0.0056 * lf, ft.lipZ + 0.0068), new Vec3(ft.mouthHW * 0.70, 0.0062 * lf, 0.0070 * lf)), 0.005);
+  // lobes' tops at the middle, the philtrum's columns rising from their peaks), thin and laid back on the teeth; the lower
+  // lip one fuller roll. Both stand only a little proud of the mound and thin out to the corners
+  d = softUnion(d, hEll(q, new Vec3(ft.mouthHW * 0.36, ft.yg + 0.0032 * lf, ft.lipZ + 0.0046), new Vec3(ft.mouthHW * 0.50, 0.0034 * lf, 0.0046 * lf)), 0.004);
+  d = softUnion(d, hEll(p, new Vec3(0., ft.yg + 0.0026 * lf, ft.lipZ + 0.0040), new Vec3(0.0052, 0.0028 * lf, 0.0042 * lf)), 0.003);
+  d = softUnion(d, hEll(p, new Vec3(0., ft.yg - 0.0048 * lf, ft.lipZ + 0.0058), new Vec3(ft.mouthHW * 0.64, 0.0050 * lf, 0.0056 * lf)), 0.005);
   // the philtrum's columns and the groove between them
-  d = softUnion(d, taperedCapsule(q, new Vec3(0.0042, ft.yg + 0.0085, ft.lipZ + 0.0040), new Vec3(0.0030, ft.yg + 0.020, ft.lipZ + 0.0062), 0.0022, 0.0018), 0.003);
+  d = softUnion(d, taperedCapsule(q, new Vec3(0.0040, ft.yg + 0.0070, ft.lipZ + 0.0032), new Vec3(0.0030, ft.yg + 0.019, ft.lipZ + 0.0058), 0.0020, 0.0016), 0.003);
   // the nose: the bridge from its root, the tip, the wings
   imm nl = 0.85 + 0.3 * s.nose;
   imm nw = 0.8 + 0.4 * s.noseWidth;
@@ -297,7 +313,11 @@ fn lidWarp(y f32, cy f32, dx f32, ft &Features) f32 {
   imm z = 0.020;
   imm t = y - cy;
   if t <= 0. - z or t >= z { return y; }
-  imm e = lidEdges(dx, ft);
+  // past the corners the rows that ran between the margins open out again to their level spacing (left pinched,
+  // they draw a crease out from each corner to the temple and the nose)
+  imm past = smoothstep(1.0, 1.7, absf(dx) / ft.lidHW);
+  imm e0 = lidEdges(dx, ft);
+  imm e = new Vec2(e0.x + (ft.lidHU - e0.x) * past, e0.y + (0. - ft.lidHL - e0.y) * past);
   imm u = maxf(e.x, e.y + 0.0004);
   imm lo = minf(e.y, u - 0.0004);
   mut out = t;
@@ -320,7 +340,9 @@ fn eyeOp(p Vec3, c Vec3, side f32, ft &Features) Vec3 {
   imm e = minf(edges.x - dy, dy - edges.y);        // positive inside the opening
   imm w = smoothstep(0., 0.0012, e);
   imm rr = minf(r, zone0);
-  mut zShell = c.z - (ft.shell * ft.shell - rr * rr).sqrt();
+  // (past the lids the shell falls back, so it never stands in front of the cheek and the brow: held level there it
+  // pulled a ring of face forward round each eye, a puff with a crease at its rim)
+  mut zShell = c.z - (ft.shell * ft.shell - rr * rr).sqrt() + 0.9 * maxf(r - zone0, 0.);
   // the margin's roll, and the fold above the upper lid
   if e < 0. {
     imm along = 1. - smoothstep(0.65, 0.95, absf(dx) / ft.lidHW);
@@ -334,17 +356,22 @@ fn eyeOp(p Vec3, c Vec3, side f32, ft &Features) Vec3 {
   imm zIn = c.z - 0.005;
   // where the face stands in front of the lids' shell (under the brow, over the cheek's top) the face is the surface
   // and the lids come out from under it: a deep-set eye, no fold where shell and face meet
-  imm zLid = softUnion(zShell, p.z, 0.0010);
+  // past the corners there are no lids: the face is the surface (the shell pulled the rows packed into each corner
+  // forward by different amounts, thin fins standing out from the corners)
+  imm inLid = 1. - smoothstep(0.9, 1.3, absf(dx) / ft.lidHW);
+  imm zLid = p.z + (softUnion(zShell, p.z, 0.0010) - p.z) * inLid;
   imm z = zLid * (1. - w) + zIn * w;
   imm bl = smoothstep(zone0, zone1, r);
   new Vec3(p.x, p.y, z * (1. - bl) + p.z * bl);
 }
 
-fn mouthOp(p Vec3, ft &Features) Vec3 {
+// 'rowY' the height the point's row was cast at: the smooth brush may have moved the point a millimetre or two along
+// the lips' curved surface, and the slot must take the whole mouth's row, not only where the brush left it level
+fn mouthOp(p Vec3, rowY f32, ft &Features) Vec3 {
   imm ax = absf(p.x);
   imm taper = 1. - smoothstep(ft.mouthHW - 0.006, ft.mouthHW + 0.002, ax);
   imm front = smoothstep(-0.02, -0.06, p.z);
-  imm dy = (p.y - ft.yg) / 0.0006;
+  imm dy = (rowY - ft.yg) / 0.0006;
   if absf(dy) > 4.5 { return p; }
   imm g = libc.expf(-0.5 * dy * dy);
   new Vec3(p.x, p.y, p.z + 0.012 * g * taper * front);
@@ -520,6 +547,14 @@ pub fn buildHead(m &Measures, seamY f32) Head {
           if p0.x > 0. { y = lidWarp(y, cR.y, p0.x - cR.x, &ft); } else { y = lidWarp(y, cL.y, cL.x - p0.x, &ft); }
         }
         o = new Vec3(0., y, ry.centre.z);
+        // round the chin's lowest point and under the jaw a level ray would graze the jaw's lower edge (it meets it
+        // or misses it from one column to the next: a dotted line along the jaw), so there the rays leave from higher
+        // up and slope down, to cross the jaw's underside instead of skimming it; level again above and below
+        imm lift = 0.026 * smoothstep(ft.menton + 0.024, ft.menton + 0.006, y) * (1. - smoothstep(ft.menton - 0.030, ft.menton - 0.070, y));
+        if lift > 0. {
+          o = new Vec3(0., y + lift, ry.centre.z);
+          d = (hd * 0.060 + new Vec3(0., 0. - lift, 0.)).normalize();
+        }
       }
       imm t = rayExit(o, d, &s, &ft, neckR, neckZ);
       pos.push(o + d * t);
@@ -532,7 +567,7 @@ pub fn buildHead(m &Measures, seamY f32) Head {
   // the jaw, the jaw the neck). The grid's points are moved along the surface's normal only, towards the mean of their
   // four neighbours (Taubin's two steps, lambda then mu, so the head does not shrink), and the rows are not slid
   // along the face; the lids' and the mouth's rows are held, the lips and the nose's tip mostly
-  smoothHead(&mut pos, nr, nc, &ft, cR, cL, 10);
+  smoothHead(&mut pos, nr, nc, &ft, cR, cL, 24);
   // the lids and the mouth, cut in
   mut k = 0usize;
   while k < pos.len() {
@@ -541,7 +576,7 @@ pub fn buildHead(m &Measures, seamY f32) Head {
     if ry.kind == 1u32 and p.z < -0.035 {
       p = eyeOp(p, cR, 1., &ft);
       p = eyeOp(p, cL, -1., &ft);
-      p = mouthOp(p, &ft);
+      p = mouthOp(p, ry.value, &ft);
       pos.set(k, p);
     }
     k = k + 1usize;
@@ -609,8 +644,14 @@ pub fn buildHead(m &Measures, seamY f32) Head {
     imm dz = pivot.z - ft.lipZ;
     imm len = (dy * dy + dz * dz).sqrt();
     imm n = new Vec3(0., dz / len, 0. - dy / len);
-    imm sd = n.dot(new Vec3(0., p.y - ft.yg, p.z - ft.lipZ));
-    imm width = 0.0009 + 0.010 * smoothstep(0.012, 0.032, absf(p.x));
+    // which side of the plane a point is on is judged by its row's height, not its own (the smooth brush moves points
+    // a little along the lips' curve), and a point standing in front of the lips' line as on it: the lips stand
+    // proud of it, and the plane tilting back through them put the lower lip's top on the head while the mouth's row
+    // went with the jaw, a sheet of lip stretched across the open mouth
+    imm rowY = if v < nr * nc and (*rays[v / nc]).kind == 1u32 { (*rays[v / nc]).value; } else { p.y; };
+    imm sd = n.dot(new Vec3(0., rowY - ft.yg, maxf(p.z, ft.lipZ) - ft.lipZ));
+    // (sharp between the lips, broad over the cheeks, so an open jaw stretches the cheek smoothly, not along a fold)
+    imm width = 0.0009 + 0.018 * smoothstep(0.012, 0.036, absf(p.x));
     imm jt = smoothstep(-1., 1., (0. - sd) / width);
     imm low = 1. - smoothstep(ft.menton - 0.004, ft.menton - 0.045, p.y);
     imm back = 1. - smoothstep(0.03, 0.06, p.z - pivot.z);

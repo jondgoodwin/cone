@@ -239,6 +239,81 @@ pub fn weldSeamNormals(mesh &mut Mesh, ring &List[u32], bottom &List[u32]) {
 }
 
 // The body of measures 'm' sculpted with 'gains': the surface, the head stitched on, the weights and uvs
+// The neck's join: the head's neck and the body's neck and trapezius are separate forms that meet at the seam ring
+// with different slopes, a ring-shaped step however well the ring itself matches. A band 'reach' above and below the
+// seam is smoothed (Taubin's lambda and mu, over the mesh's edges, fading to nothing at the band's ends), so the two
+// slopes run into each other. The head's seam column is two copies of one column; they are moved together.
+fn smoothSeamBand(mesh &mut Mesh, ring &List[u32], headStart usize, cols usize, rows usize, seamY f32, axis Vec3, reach f32,
+    passes i32) {
+  imm n = mesh.positions.len();
+  mut wt = List[f32].empty();
+  mut i = 0usize;
+  while i < n {
+    // the neck only: not the shoulders' tops beside it
+    imm p = *mesh.positions[i];
+    imm r = new Vec3(p.x - axis.x, 0., p.z - axis.z).length();
+    wt.push((1. - smoothstep(0., reach, absf(p.y - seamY))) * (1. - smoothstep(0.095, 0.135, r)));
+    i = i + 1usize;
+  }
+  // the seam itself is held (the body's ring lies on the head's bottom row; the zipper's triangles between them are
+  // slivers that take their uvs from both halves of the texture, and must stay slivers)
+  i = 0usize;
+  while i < ring.len() { wt.set(usize.from(*ring[i]), 0.); i = i + 1usize; }
+  mut c = 0usize;
+  while c < cols { wt.set(headStart + (rows - 1usize) * cols + c, 0.); c = c + 1usize; }
+  mut pass = 0;
+  while pass < passes * 2 {
+    imm lam = if pass % 2 == 0 { 0.5; } else { -0.53; };
+    mut acc = List[Vec3].empty();
+    mut deg = List[f32].empty();
+    acc.resize(n, new Vec3(0., 0., 0.));
+    deg.resize(n, 0.);
+    mut t = 0usize;
+    while t + 2usize < mesh.indices.len() {
+      mut e = 0usize;
+      while e < 3usize {
+        imm a = usize.from(*mesh.indices[t + e]);
+        imm b = usize.from(*mesh.indices[t + (e + 1usize) % 3usize]);
+        if *wt[a] > 0. or *wt[b] > 0. {
+          acc.set(a, *acc[a] + *mesh.positions[b]);
+          deg.set(a, *deg[a] + 1.);
+          acc.set(b, *acc[b] + *mesh.positions[a]);
+          deg.set(b, *deg[b] + 1.);
+        }
+        e = e + 1usize;
+      }
+      t = t + 3usize;
+    }
+    // the seam column's two copies: one sum
+    mut r = 0usize;
+    while r < rows {
+      imm a = headStart + r * cols;
+      imm b = a + cols - 1usize;
+      imm sa = *acc[a] + *acc[b];
+      imm da = *deg[a] + *deg[b];
+      acc.set(a, sa); acc.set(b, sa);
+      deg.set(a, da); deg.set(b, da);
+      r = r + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      if *wt[i] > 0. and *deg[i] > 0. {
+        // out from the neck's axis only: the points keep their heights and their places round the neck, so the
+        // zipper's narrow triangles cannot fold over one another
+        imm p = *mesh.positions[i];
+        imm out = new Vec3(p.x - axis.x, 0., p.z - axis.z);
+        if out.length() > 1e-6 {
+          imm rd = out.normalize();
+          imm lap = *acc[i] * (1. / *deg[i]) - p;
+          mesh.positions.set(i, p + rd * (rd.dot(lap) * lam * *wt[i]));
+        }
+      }
+      i = i + 1usize;
+    }
+    pass = pass + 1;
+  }
+}
+
 pub fn assembleBody(m &Measures, gains &List[f32], levels u32) Body {
   imm skel = personSkeleton(m);
   imm models = restModels(&skel);
@@ -367,6 +442,7 @@ pub fn assembleBody(m &Measures, gains &List[f32], levels u32) Body {
   }
   i = 0usize;
   while i < head.uvs.len() { mesh.uvs.push(*head.uvs[i]); i = i + 1usize; }
+  smoothSeamBand(&mut mesh, &s.seam, nb,head.cols, head.rows, seamY, head.neckAxis, 0.05, 20);
   mesh.computeSmoothNormals();
   // the head's seam column: one normal for its two copies
   imm hc = head.cols;

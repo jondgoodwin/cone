@@ -5,8 +5,9 @@
 //   congo run --release packages/humanbody/examples/peoplebench.cone -- --out C:/src/humanbody-shots [--quick] [--only NAME]
 //
 // The sheets (--quick: fewer temporal AA frames; --first: sheet 01 alone; --head: the head study; --stages: the
-// sculpting step by step into OUT/stages):
+// sculpting step by step into OUT/stages; --mouth: sheets 01 and 11b alone):
 //   01-main-avatar          the main avatar: front, back (the cape), side, his face near
+//   11b-avatar-expressions  the main avatar's face near: neutral, a smile, surprise, "ah", "oo", a blink
 //   02-cast-day             the seven dressed, side by side, day; 03 the same turned a third of a turn; 04 from behind
 //   05-cast-dusk            the seven at dusk; 06 turned
 //   07-cast-underwear       the seven base bodies in plain underwear, front; 08 from the side
@@ -39,8 +40,8 @@ import sculpt;
 import sdfmesh use surfaceNet;
 import bonepose use *;
 import walkgait use Walker;
-import xpbdsoftbody use Workers;
-import garmentdrape use GarmentView, ClothLook, WearBand, addClothPipeline, addClothMaterial;
+import xpbdsoftbody use Workers, writeMesh, outputVertexCount, outputIndexCount;
+import garmentdrape use Garment, ClothLook, WearBand, addClothPipeline, addClothMaterial;
 import facerig use FaceRig, FaceFrame, utteranceFromText, applyFace, EXPR_HAPPINESS, EXPR_SURPRISE, AU_JAW_DROP, AU_LIPS_PART,
   AU_LIP_FUNNELER, AU_LIP_PUCKER, SIDE_BOTH;
 import humanbody use *;
@@ -228,6 +229,98 @@ fn box(list &mut DrawList, st &Stage, mat MaterialHandle, c Vec3, half Vec3, yaw
   list.add(st.cube, mat, Mat4.fromTrs(c, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), half * 2.));
 }
 
+// The faces' rows: 0 neutral, 1 a smile, 2 surprise, 3 "ah", 4 "oo", 5 neutral (a blink is started after)
+fn setFaceRow(ac &mut Actor, row i32) {
+  ac.pose = standPose(&ac.body.skeleton);
+  ac.rig.clearExpressions(0.01);
+  ac.rig.blinking = false;
+  ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.);
+  if row == 1 { ac.rig.express(EXPR_HAPPINESS, 1., 0.01); }
+  if row == 2 { ac.rig.express(EXPR_SURPRISE, 1., 0.01); }
+  // the visemes as their units: "ah" the jaw down and the lips apart; "oo" the lips rounded and pushed out
+  if row == 3 { ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.55); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.6); }
+  if row == 4 { ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.45); ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.35);
+    ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.12); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.15); }
+}
+
+// ------------------------------------------------------------------------------ the cape's folds
+
+// A hanging garment drawn with folds. The drape settles the cape's cut at a coarse grid (28 by 24 cells for a cape
+// a metre long), too coarse to buckle into the narrow folds heavy cloth makes, so its look is finished in the
+// drawing: each vertex moves along the cloth's normal by a wave round the neck (the folds fan out from the
+// shoulders, as a cape's do) that grows from nothing at the collar to its depth at the hem, and the normals are
+// found again from the moved surface so the folds catch the light. The simulation is untouched; this is paint.
+struct FoldedView {
+  mesh MeshHandle;
+  material MaterialHandle;
+  scratch Mesh;
+  normals List[Vec3];
+  acc List[Vec3];
+}
+
+fn makeFolded(renderer &mut Renderer, device &mut Device, g &Garment, material MaterialHandle) FoldedView {
+  imm mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
+  new FoldedView(mesh, material, Mesh.empty(), List[Vec3].empty(), List[Vec3].empty());
+}
+
+// 'neck' the neck's place (world), 'up' the body's up; 'folds' waves a full turn round, 'depth' at the hem, 'drop'
+// the distance below the neck where the folds reach their depth
+fn drawFolded(v &mut FoldedView, renderer &mut Renderer, device &mut Device, g &Garment, list &mut DrawList, neck Vec3,
+    folds f32, depth f32, drop f32) {
+  writeMesh(&g.soft, &mut v.scratch, true, &mut v.normals);
+  imm nv = v.scratch.positions.len() / 2usize;
+  mut i = 0usize;
+  while i < nv {
+    imm p = *v.scratch.positions[i];
+    imm n = *v.scratch.normals[i];
+    imm dx = p.x - neck.x;
+    imm dz = p.z - neck.z;
+    imm ang = atan2(dx, dz);
+    imm below = neck.y - p.y;
+    imm amp = depth * smoothstep(0.04, drop, below);
+    // a second, slower wave makes the folds uneven, as cloth's are
+    imm w = sin(folds * ang) + 0.35 * sin(folds * 0.43 * ang + 1.7);
+    imm q = p + n * (amp * w);
+    v.scratch.positions.set(i, q);
+    v.scratch.positions.set(nv + i, q);
+    i = i + 1usize;
+  }
+  // the normals of the moved surface, from the front's triangles (the first half of the indices), turned to agree
+  // with the cloth's own
+  v.acc.clear();
+  i = 0usize;
+  while i < nv { v.acc.push(new Vec3(0., 0., 0.)); i = i + 1usize; }
+  imm half = v.scratch.indices.len() / 2usize;
+  mut t = 0usize;
+  while t + 2usize < half {
+    imm a = usize.from(*v.scratch.indices[t]);
+    imm b = usize.from(*v.scratch.indices[t + 1usize]);
+    imm c = usize.from(*v.scratch.indices[t + 2usize]);
+    imm fa = (*v.scratch.positions[b] - *v.scratch.positions[a]).cross(*v.scratch.positions[c] - *v.scratch.positions[a]);
+    v.acc.set(a, *v.acc[a] + fa);
+    v.acc.set(b, *v.acc[b] + fa);
+    v.acc.set(c, *v.acc[c] + fa);
+    t = t + 3usize;
+  }
+  i = 0usize;
+  while i < nv {
+    imm old = *v.scratch.normals[i];
+    mut n = *v.acc[i];
+    if n.length() > 1e-12 {
+      n = n.normalize();
+      if n.dot(old) < 0. { n = n * -1.; }
+      v.scratch.normals.set(i, n);
+      v.scratch.normals.set(nv + i, n * -1.);
+    }
+    i = i + 1usize;
+  }
+  renderer.writeDynamicMesh(device, v.mesh, &v.scratch);
+  list.add(v.mesh, v.material, Mat4.identity());
+}
+
 // ------------------------------------------------------------------------------ the people
 
 struct Actor {
@@ -255,7 +348,7 @@ struct Actor {
   fullMats List[MaterialHandle];
   underPieces List[MeshHandle];
   underMats List[MaterialHandle];
-  capeView List[GarmentView];
+  capeView List[FoldedView];
   restInv List[Mat4];
   pose Pose;
   models List[Transform3];
@@ -312,8 +405,9 @@ fn makeActor(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index 
   em.clearcoatRoughness = 0.02;
   imm eyeMat = st.renderer.addPbrMaterial(device, &em);
   imm teethMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.78, 0.74, 0.64, 1.), 0., 0.3));
-  imm tongueMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.55, 0.18, 0.20, 1.), 0., 0.4));
-  imm cavMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.10, 0.025, 0.025, 1.), 0., 0.9));
+  // (the mouth's inside is lit as if open to the sky; its colours are darkened by the shadow it would have)
+  imm tongueMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.24, 0.07, 0.08, 1.), 0., 0.4));
+  imm cavMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.045, 0.012, 0.012, 1.), 0., 0.9));
   imm hEyes = st.renderer.addSkinnedMesh(device, &face.parts.eyes, &face.parts.eyesSkin);
   imm hEars = st.renderer.addSkinnedMesh(device, &face.parts.ears, &face.parts.earsSkin);
   imm hTeeth = st.renderer.addSkinnedMesh(device, &face.parts.teeth, &face.parts.teethSkin);
@@ -335,15 +429,15 @@ fn makeActor(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index 
     underMats.push(clothMaterial(device, st, under.pieces[i].color, under.pieces[i].kind));
     i = i + 1usize;
   }
-  mut capeView = List[GarmentView].empty();
+  mut capeView = List[FoldedView].empty();
   if full.capeIndex >= 0i32 {
     imm g = full.outfit.garments[usize.from(full.capeIndex)];
-    // black velvet: the pile's sheen a cool grey, no dirt, no wear
-    imm look = new ClothLook(new Color(0.010, 0.010, 0.012, 1.), new Color(0.012, 0.012, 0.014, 1.), new Color(0.30, 0.30, 0.34, 1.), 0.95,
-      0.40, new Color(1., 1., 1., 1.), 900., 0.25, 2u32, 0.10, 0., 0., 0., 37u32);
+    // black velvet: the pile's sheen a cool grey, bright enough at grazing angles that the folds read, no dirt, no wear
+    imm look = new ClothLook(new Color(0.016, 0.016, 0.019, 1.), new Color(0.018, 0.018, 0.021, 1.), new Color(0.55, 0.55, 0.60, 1.), 1.0,
+      0.32, new Color(1., 1., 1., 1.), 900., 0.25, 2u32, 0.10, 0., 0., 0., 37u32);
     imm bands = List[WearBand].empty();
     imm cm = addClothMaterial(&mut st.renderer, device, st.cloth, g, &look, &bands);
-    capeView.push(GarmentView.make(&mut st.renderer, device, g, cm));
+    capeView.push(makeFolded(&mut st.renderer, device, g, cm));
   }
   imm rest = restModels(&body.skeleton);
   mut restInv = List[Mat4].empty();
@@ -411,7 +505,8 @@ fn draw(device &mut Device, st &mut Stage, list &mut DrawList, a &mut Actor, dre
     while i < a.fullPieces.len() { list.addSkinned(*a.fullPieces[i], *a.fullMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
     if a.capeView.len() > 0usize {
       imm g = a.full.outfit.garments[usize.from(a.full.capeIndex)];
-      a.capeView[0usize].draw(&mut st.renderer, device, g, list);
+      imm neck = (*a.world[NECK]).translation;
+      drawFolded(&mut a.capeView[0usize], &mut st.renderer, device, g, list, neck, 16., 0.022, 0.55);
     }
   } else {
     while i < a.underPieces.len() { list.addSkinned(*a.underPieces[i], *a.underMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
@@ -429,6 +524,7 @@ fn main(argc i32, argv **u8) i32 {
   mut headOnly = false;
   mut stagesOnly = false;
   mut pairsOnly = false;
+  mut mouthOnly = false;
   mut a = 1;
   while a < argc {
     imm arg = *(argv + usize.from(a));
@@ -438,6 +534,7 @@ fn main(argc i32, argv **u8) i32 {
     if cstrEquals(arg, "--head") { headOnly = true; }
     if cstrEquals(arg, "--stages") { stagesOnly = true; }
     if cstrEquals(arg, "--pairs") { pairsOnly = true; }
+    if cstrEquals(arg, "--mouth") { mouthOnly = true; }
     a += 1;
   }
   imm taaFrames = if quick { 2; } else { 10; };
@@ -582,6 +679,37 @@ fn main(argc i32, argv **u8) i32 {
   }
   if firstOnly { workers.stop(); return 0; }
 
+  // ---- 11b: the main avatar's face close: neutral, a smile, surprise, "ah", "oo", a blink ----
+  {
+    imm tw = 853u32;
+    imm th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    mut sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    mut row = 0;
+    while row < 6 {
+      mut ac = &mut actors[0usize];
+      setFaceRow(ac, row);
+      faceStep(&mut st, ac, 30);
+      if row == 5 { ac.rig.blinking = true; ac.rig.blinker.start(1.); faceStep(&mut st, ac, 6); ac.rig.blinking = false; }
+      place(ac, new Vec3(0., 0., 0.), 0.);
+      list.clear();
+      floor(&mut list, &st);
+      draw(&mut device, &mut st, &mut list, ac, true);
+      imm eye = *ac.body.points[POINT_HEAD];
+      camera.fov = radians(9.);
+      camera.lookAt(eye + new Vec3(-0.35, 0.02, -1.25), eye + new Vec3(0., -0.045, 0.), new Vec3(0., 1., 0.));
+      imm px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      sheet.put((row % 3) * i32.from(tw), (row / 3) * i32.from(th), i32.from(tw), i32.from(th), px);
+      row = row + 1;
+    }
+    sheet.save(&outDir, "11b-avatar-expressions");
+    setFaceRow(&mut actors[0usize], 0);
+    actors[0usize].rig.express(EXPR_HAPPINESS, 0.25, 0.01);
+    faceStep(&mut st, &mut actors[0usize], 30);
+    place(&mut actors[0usize], new Vec3(*xs[0usize], 0., 0.), 0.);
+  }
+  if mouthOnly { workers.stop(); return 0; }
+
   // ---- 02 to 06: the cast, day and dusk ----
   resize(&mut device, &mut st, SW, SH);
   mut view = 0;
@@ -702,19 +830,7 @@ fn main(argc i32, argv **u8) i32 {
       i = 0usize;
       while i < n {
         mut ac = &mut actors[i];
-        ac.pose = standPose(&ac.body.skeleton);
-        ac.rig.clearExpressions(0.01);
-        ac.rig.blinking = false;
-        ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
-        ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.);
-        ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.);
-        ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.);
-        if row == 1 { ac.rig.express(EXPR_HAPPINESS, 1., 0.01); }
-        if row == 2 { ac.rig.express(EXPR_SURPRISE, 1., 0.01); }
-        // the visemes as their units: "ah" the jaw down and the lips apart; "oo" the lips rounded and pushed out
-        if row == 3 { ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.55); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.6); }
-        if row == 4 { ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.45); ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.35);
-          ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.12); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.15); }
+        setFaceRow(ac, row);
         faceStep(&mut st, ac, 30);
         if row == 5 { ac.rig.blinking = true; ac.rig.blinker.start(1.); faceStep(&mut st, ac, 6); ac.rig.blinking = false; }
         place(ac, new Vec3(0., 0., 0.), 0.);

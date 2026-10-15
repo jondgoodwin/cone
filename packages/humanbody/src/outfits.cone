@@ -105,7 +105,10 @@ fn outfitSpecs(p &Person, models &List[Transform3], out &mut List[ShellSpec], co
     }
   }
   below(&mut shirt, seamY - 0.010);
-  above(&mut shirt, (m.crotchAt + 0.045) * h);
+  // over trousers the shirt is tucked in below their waistband; with a skirt it ends just inside the skirt's top, so
+  // its hem is the skirt's waist, not a line where the shirt and the skirt's cone cross
+  imm tucked = if p.outfit == OUTFIT_SHIRT_SKIRT { (m.waistAt - 0.015) * h; } else { (m.crotchAt + 0.045) * h; };
+  above(&mut shirt, tucked);
   imm topColor = if p.outfit == OUTFIT_TUNIC_TROUSERS { new Vec3(222., 214., 196.); } else { p.cloth; };
   out.push(shirt);
   colors.push(topColor);
@@ -150,18 +153,25 @@ fn outfitSpecs(p &Person, models &List[Transform3], out &mut List[ShellSpec], co
 // The main avatar's cape, after garmentdrape's sample cape (samples.cone): heavier and softer (a wool-silk velvet), its
 // collar a 140-degree arc round the neck and its body a trapezoid to a hem 1.4 m wide at the calf, not the sample's half
 // circle. garmentdrape wraps the cloth at the radius its flat width asks for, and a half circle's 5 m of hem stands out
-// as a bell its stiff cloth cannot buckle out of; a hem a little wider than the back hangs close behind it. It sees
-// only the trunk and the legs: the arms move in front of it.
+// as a bell its stiff cloth cannot buckle out of; a hem a little wider than the back hangs close behind it, a little
+// below the knee. It sees the trunk, the legs and the upper arms (so it rounds over the shoulders' points instead of
+// passing through them); a second panel is a standing collar round the back and the sides of the neck, held to it.
 fn avatarCape() &str {
   "garment cape layer 3\n
 fabric density 0.62 stretch 2e-6 shear 2e-5 bend 6 thick 0.006 damping 0.75 air 1.0\n
-sees only pelvis spine chest neck head clavicle_l clavicle_r thigh_l thigh_r shin_l shin_r\n
+sees only pelvis spine chest neck head clavicle_l clavicle_r upper_arm_l upper_arm_r thigh_l thigh_r shin_l shin_r\n
 panel cape grid 28 24 axis neck pelvis shift -0.02 face back arc 200 gap 0.024 flare 0.04 minr 0.08 reach 0.70\n
   top arc 0 0 0.26 160 20 32\n
-  bottom line -0.74 1.16 0.74 1.16 32\n
-  left line -0.24432 0.08893 -0.74 1.16 28\n
-  right line 0.24432 0.08893 0.74 1.16 28\n
+  bottom line -0.72 1.10 0.72 1.10 32\n
+  left line -0.24432 0.08893 -0.72 1.10 28\n
+  right line 0.24432 0.08893 0.72 1.10 28\n
   loose 0 0  0.04 0  0.12 0.9  0.3 1  1 1\n
+panel collar grid 24 3 axis neck pelvis shift -0.085 face back arc 240 gap 0.012 flare 0 minr 0.05 reach 0.02\n
+  top line -0.23 0 0.23 0 24\n
+  bottom line -0.25 0.075 0.25 0.075 24\n
+  left line -0.23 0 -0.25 0.075 3\n
+  right line 0.23 0 0.25 0.075 3\n
+  loose 0 0  1 0\n
 ";
 }
 
@@ -286,6 +296,167 @@ pub fn rippleGarment(w &mut Wardrobe, g usize, axis Vec3, waves f32, amp f32) {
   }
 }
 
+fn byKey(a &u64, b &u64) i32 { if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; } }
+
+// A shell's finish: its hems laid on their cuts and its surface smoothed.
+//
+// HEMS. A shell keeps the body's triangles whose three corners are on the kept side of every cut, so a hem follows
+// the triangles' edges: a zigzag. Each vertex on the shell's edge that has a body neighbour beyond a cut is moved,
+// with its offset, to where the edge between them crosses the cut (the mean of those crossings): the hem lies on the
+// plane. HUMPS. The offset is smoothed over the surface, but where the body turns sharply (the shoulder's point, the
+// armpit) an offset along its normals still stands up; a few passes of Taubin's smoothing of the shell's own points
+// (lambda then mu, so it does not shrink) rounds them. The edge is held, so the hems stay on their planes.
+fn finishShell(sh &mut Mesh, source &List[u32], body &Mesh, cuts &List[Cut], passes i32, humpPasses i32, ease f32) {
+  imm n = sh.positions.len();
+  imm nb = body.positions.len();
+  // the body vertex's shell vertex, or none
+  mut inShell = List[u32].empty();
+  inShell.resize(nb, 0xFFFFFFFFu32);
+  mut i = 0usize;
+  while i < n { inShell.set(usize.from(*source[i]), u32.from(i)); i = i + 1usize; }
+  // the shell's edge: vertices on an edge only one triangle has (counted by a sorted pair's hash in a list of pairs)
+  mut edgeA = List[u64].empty();
+  mut t = 0usize;
+  while t + 2usize < sh.indices.len() {
+    mut e = 0usize;
+    while e < 3usize {
+      imm a = u64.from(*sh.indices[t + e]);
+      imm b = u64.from(*sh.indices[t + (e + 1usize) % 3usize]);
+      edgeA.push(if a < b { a * 1048576u64 + b; } else { b * 1048576u64 + a; });
+      e = e + 1usize;
+    }
+    t = t + 3usize;
+  }
+  edgeA.sortBy(&byKey);
+  mut onEdge = List[bool].empty();
+  onEdge.resize(n, false);
+  // each edge vertex's two neighbours along the edge
+  mut along0 = List[u32].empty();
+  mut along1 = List[u32].empty();
+  along0.resize(n, 0xFFFFFFFFu32);
+  along1.resize(n, 0xFFFFFFFFu32);
+  mut k = 0usize;
+  while k < edgeA.len() {
+    mut j = k;
+    while j + 1usize < edgeA.len() and *edgeA[j + 1usize] == *edgeA[k] { j = j + 1usize; }
+    if j == k {
+      imm a = usize.from(*edgeA[k] / 1048576u64);
+      imm b = usize.from(*edgeA[k] % 1048576u64);
+      onEdge.set(a, true);
+      onEdge.set(b, true);
+      if *along0[a] == 0xFFFFFFFFu32 { along0.set(a, u32.from(b)); } else { along1.set(a, u32.from(b)); }
+      if *along0[b] == 0xFFFFFFFFu32 { along0.set(b, u32.from(a)); } else { along1.set(b, u32.from(a)); }
+    }
+    k = j + 1usize;
+  }
+  // the hems onto their cuts
+  mut sum = List[Vec3].empty();
+  mut cnt = List[u32].empty();
+  sum.resize(n, new Vec3(0., 0., 0.));
+  cnt.resize(n, 0u32);
+  t = 0usize;
+  while t + 2usize < body.indices.len() {
+    mut e = 0usize;
+    while e < 3usize {
+      imm a = usize.from(*body.indices[t + e]);
+      imm b = usize.from(*body.indices[t + (e + 1usize) % 3usize]);
+      // a kept vertex on the shell's edge, its neighbour not kept
+      mut s = 0usize;
+      while s < 2usize {
+        imm v = if s == 0usize { a; } else { b; };
+        imm u = if s == 0usize { b; } else { a; };
+        imm si = *inShell[v];
+        if si != 0xFFFFFFFFu32 and *inShell[u] == 0xFFFFFFFFu32 and *onEdge[usize.from(si)] {
+          imm pv = *body.positions[v];
+          imm pu = *body.positions[u];
+          mut c = 0usize;
+          while c < cuts.len() {
+            imm dv = (pv - cuts[c].point).dot(cuts[c].normal);
+            imm du = (pu - cuts[c].point).dot(cuts[c].normal);
+            if dv >= 0. and du < 0. {
+              imm f = dv / (dv - du);
+              sum.set(usize.from(si), *sum[usize.from(si)] + (pu - pv) * f);
+              cnt.set(usize.from(si), *cnt[usize.from(si)] + 1u32);
+            }
+            c = c + 1usize;
+          }
+        }
+        s = s + 1usize;
+      }
+      e = e + 1usize;
+    }
+    t = t + 3usize;
+  }
+  i = 0usize;
+  while i < n {
+    if *cnt[i] > 0u32 { sh.positions.set(i, *sh.positions[i] + *sum[i] * (1. / f32.from(*cnt[i]))); }
+    i = i + 1usize;
+  }
+  // the edges no cut made (where the bones' weights end: a waistcoat's armholes and neck) step from square to square;
+  // they are eased along themselves into a curve
+  mut ep = 0;
+  while ep < passes {
+    mut moved = List[Vec3].empty();
+    i = 0usize;
+    while i < n {
+      mut p = *sh.positions[i];
+      if *onEdge[i] and *cnt[i] == 0u32 and *along0[i] != 0xFFFFFFFFu32 and *along1[i] != 0xFFFFFFFFu32 {
+        imm mid = (*sh.positions[usize.from(*along0[i])] + *sh.positions[usize.from(*along1[i])]) * 0.5;
+        p = p + (mid - p) * 0.5;
+      }
+      moved.push(p);
+      i = i + 1usize;
+    }
+    sh.positions = moved;
+    ep = ep + 1;
+  }
+  // the humps: Taubin's smoothing over the shell's triangles, the edge held. A point may sink by no more than
+  // 'sink' along its first normal (part of its own ease), so it never goes under the layer beneath, and rise by no
+  // more than 'rise', so it never comes through the layer above
+  imm sink = ease * 0.6;
+  imm rise = 0.0005;
+  mut orig = List[Vec3].empty();
+  i = 0usize;
+  while i < n { orig.push(*sh.positions[i]); i = i + 1usize; }
+  mut pass = 0;
+  while pass < humpPasses * 2 {
+    imm lam = if pass % 2 == 0 { 0.5; } else { -0.53; };
+    mut acc = List[Vec3].empty();
+    mut deg = List[f32].empty();
+    acc.resize(n, new Vec3(0., 0., 0.));
+    deg.resize(n, 0.);
+    t = 0usize;
+    while t + 2usize < sh.indices.len() {
+      mut e = 0usize;
+      while e < 3usize {
+        imm a = usize.from(*sh.indices[t + e]);
+        imm b = usize.from(*sh.indices[t + (e + 1usize) % 3usize]);
+        acc.set(a, *acc[a] + *sh.positions[b]);
+        deg.set(a, *deg[a] + 1.);
+        acc.set(b, *acc[b] + *sh.positions[a]);
+        deg.set(b, *deg[b] + 1.);
+        e = e + 1usize;
+      }
+      t = t + 3usize;
+    }
+    i = 0usize;
+    while i < n {
+      if !*onEdge[i] and *deg[i] > 0. {
+        imm p = *sh.positions[i];
+        mut q = p + (*acc[i] * (1. / *deg[i]) - p) * lam;
+        imm nrm = *sh.normals[i];
+        imm d = (q - *orig[i]).dot(nrm);
+        if d < 0. - sink { q = q - nrm * (d + sink); }
+        if d > rise { q = q - nrm * (d - rise); }
+        sh.positions.set(i, q);
+      }
+      i = i + 1usize;
+    }
+    pass = pass + 1;
+  }
+  sh.computeSmoothNormals();
+}
+
 // A person's wardrobe on their body: 'underwearOnly' dresses the base body in its underwear and nothing else
 pub fn dressPerson(body &Body, p &Person, underwearOnly bool, threads u32) Wardrobe {
   imm m = &body.measures;
@@ -327,7 +498,14 @@ pub fn dressPerson(body &Body, p &Person, underwearOnly bool, threads u32) Wardr
     imm sh = outfit.shells[s];
     mut v = 0usize;
     while v < sh.source.len() { covered.set(usize.from(*sh.source[v]), true); v = v + 1usize; }
-    pieces.push(new Piece(sh.name.copy(), copyMesh(&sh.mesh), copySkin(&sh.skin), *colors[found], *kinds[found]));
+    mut finished = copyMesh(&sh.mesh);
+    // (the hems are eased along themselves, not laid on their cuts: at this mesh's density a vertex moved to its cut
+    // stretched the shell's triangles across the body's curve, and the body showed through)
+    imm noCuts = List[Cut].empty();
+    // (the humps are the sleeves' at the shoulder: only the shirt is smoothed, so no layer sinks towards the one below)
+    imm humps = if specs[found].layer == 1u32 { 6; } else { 0; };
+    finishShell(&mut finished, &sh.source, &body.mesh, &noCuts, 4, humps, specs[found].ease);
+    pieces.push(new Piece(sh.name.copy(), finished, copySkin(&sh.skin), *colors[found], *kinds[found]));
     s = s + 1usize;
   }
   if !underwearOnly and (p.outfit == OUTFIT_DRESS or p.outfit == OUTFIT_SHIRT_SKIRT) {

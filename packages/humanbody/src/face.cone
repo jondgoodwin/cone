@@ -108,6 +108,8 @@ pub fn faceSpecOf(body &Body) FaceSpec {
   spec.lowerLidEdge = asin(ft.lidHL / ft.shell);
   spec.closingLine = -0.10;
   spec.jawPivot = *body.points[POINT_JAW];
+  // the jaw's opening at AU26 = 1: about 17 degrees (a wide 'ah' is some 10 to 12; facerig's default of 26 is a yawn)
+  spec.jawOpenMax = 0.30;
   spec.scale = (*body.points[POINT_EYE_R] - *body.points[POINT_EYE_L]).length();
   spec;
 }
@@ -173,7 +175,8 @@ fn faceParts(body &Body) FaceParts {
   mut eyesSkin = Skin.empty();
   mut side = 1.;
   while side > -2. {
-    mut e = eyeball(s.eyeR, 32);
+    // (half a millimetre inside the head's eyeball, so the smoothed skin round the orbit never lets it show through)
+    mut e = eyeball(s.eyeR - 0.0005, 32);
     e.transform(Mat4.fromTranslation(*body.points[if side > 0. { POINT_EYE_R; } else { POINT_EYE_L; }]));
     imm bone = if side > 0. { EYE_R; } else { EYE_L; };
     mut v = 0usize;
@@ -203,7 +206,9 @@ fn faceParts(body &Body) FaceParts {
     teeth.append(&tl);
     t = t + 1usize;
   }
-  imm tongue = ellipsoidMesh(new Vec3(0.0145, 0.0050, 0.0185), o + new Vec3(0., ft.yg - 0.0085, ft.lipZ + 0.047), 14);
+  // the tongue lies low in the jaw, its top well under the lower teeth's edges, so an open mouth shows the teeth and
+  // the dark behind them and the tongue only as a shadowed floor
+  imm tongue = ellipsoidMesh(new Vec3(0.0140, 0.0045, 0.0180), o + new Vec3(0., ft.yg - 0.0125, ft.lipZ + 0.050), 14);
   imm cavity = ellipsoidMesh(new Vec3(0.0280, 0.0200, 0.0230), o + new Vec3(0., ft.yg - 0.0040, ft.lipZ + 0.046), 18);
   imm tongueSkin = rigidSkin(&tongue, JAW);
   imm cavitySkin = rigidSkin(&cavity, HEAD);
@@ -286,7 +291,22 @@ fn earMesh(body &Body, side f32) Mesh {
 // skeleton (the jaw and the eyes, bones 19 to 21: body.cone's JAW, EYE_L and EYE_R)
 pub fn buildFace(body &mut Body) BodyFace {
   imm spec = faceSpecOf(body);
-  imm units = standardUnits();
+  // facerig's lids turn a region 0.45 face-scales tall about the eyeball, sized for its test head; on these faces the
+  // brow sits closer above the lid, and a closing lid dragged the brow's inner end down into a kink. Every turning
+  // rule (only the lids turn) is kept to 0.6 of that height
+  mut units = standardUnits();
+  mut u = 0usize;
+  while u < units.len() {
+    mut k = 0usize;
+    while k < units[u].influences.len() {
+      if units[u].influences[k].kind == INFL_TURN {
+        imm r = units[u].influences[k].radii;
+        units[u].influences[k].radii = new Vec3(r.x, r.y * 0.6, r.z);
+      }
+      k = k + 1usize;
+    }
+    u = u + 1usize;
+  }
   imm targets = buildTargets(&body.mesh, &spec, &units);
   imm models = restModels(&body.skeleton);
   imm headAt = (*models[HEAD]).translation;
@@ -295,13 +315,51 @@ pub fn buildFace(body &mut Body) BodyFace {
   new BodyFace(spec, units, targets, bones, parts);
 }
 
-// The face's targets as render's morph targets
+// How far each action unit's target may move these faces at full value, as a share of facerig's rule. facerig's
+// rules are sized so that a unit at 1 reads at a glance on its small test head; on a person at game scale they
+// are a caricature (a full smile pulled the corners half a face-scale out and up). These are set against the
+// face plate (Gray's) and photographs of moderate expressions: the mouth's units most, the brows and lids less,
+// the lids' closing and the gaze's channels not at all (a blink must shut the eye)
+pub fn naturalStrength(au u32) f32 {
+  if au == AU_LIP_CORNER_PULLER { return 0.35; }
+  if au == AU_CHEEK_RAISER or au == AU_DIMPLER or au == AU_LIP_STRETCHER or au == AU_LIP_CORNER_DEPRESSOR { return 0.45; }
+  if au == AU_UPPER_LIP_RAISER or au == AU_LOWER_LIP_DEPRESSOR or au == AU_NOSE_WRINKLER { return 0.45; }
+  if au == AU_LIP_PUCKER or au == AU_LIP_FUNNELER or au == AU_LIP_TIGHTENER or au == AU_LIP_PRESSOR or au == AU_LIP_SUCK { return 0.5; }
+  if au == AU_CHIN_RAISER or au == AU_CHEEK_BLOW { return 0.5; }
+  if au == AU_LIPS_PART { return 0.6; }
+  if au == AU_INNER_BROW_RAISER or au == AU_OUTER_BROW_RAISER or au == AU_BROW_LOWERER { return 0.55; }
+  if au == AU_UPPER_LID_RAISER or au == AU_LID_TIGHTENER { return 0.6; }
+  1.;
+}
+
+// The face's targets as render's morph targets, each at its unit's natural strength
 pub fn morphTargetsOf(face &BodyFace, vertexCount usize) MorphTargets {
   mut mt = MorphTargets.empty(vertexCount);
   imm noTan = List[Vec3].empty();
+  // each target's unit (the first unit that uses it)
+  mut strength = List[f32].empty();
   mut t = 0usize;
+  while t < face.targets.count() { strength.push(1.); t = t + 1usize; }
+  mut set = List[bool].empty();
+  t = 0usize;
+  while t < face.targets.count() { set.push(false); t = t + 1usize; }
+  mut u = 0usize;
+  while u < face.targets.unitTarget.len() and u < face.units.len() {
+    imm ti = *face.targets.unitTarget[u];
+    if ti >= 0i32 and not *set[usize.from(ti)] {
+      strength.set(usize.from(ti), naturalStrength(face.units[u].au));
+      set.set(usize.from(ti), true);
+    }
+    u = u + 1usize;
+  }
+  t = 0usize;
   while t < face.targets.count() {
-    mt.addSparse(&face.targets.indicesOf(t), &face.targets.positionsOf(t), &face.targets.normalsOf(t), &noTan);
+    imm k = *strength[t];
+    mut dp = face.targets.positionsOf(t);
+    mut dn = face.targets.normalsOf(t);
+    mut i = 0usize;
+    while i < dp.len() { dp.set(i, *dp[i] * k); dn.set(i, *dn[i] * k); i = i + 1usize; }
+    mt.addSparse(&face.targets.indicesOf(t), &dp, &dn, &noTan);
     t = t + 1usize;
   }
   mt;
