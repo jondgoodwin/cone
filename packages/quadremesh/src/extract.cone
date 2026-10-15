@@ -1,0 +1,416 @@
+// ======== Extracting the quads from the fields ========
+//
+// Each input vertex rounds its own position to the nearest point of its own
+// lattice. Neighbouring vertices that round to the same lattice point (the
+// step between their points, read in the first one's frame, is (0, 0) to within
+// a tolerance) are one output vertex; neighbours that round to lattice points
+// one step apart (one step along an axis) are joined by an output edge. The
+// output vertices and edges are a planar graph on the surface; its faces, read
+// off its rotation system (the edges at a vertex in order round its normal),
+// are the quads. What the fields could not make consistent (at the singularities
+// above all) leaves faces of other sizes and holes, mended afterwards.
+
+const FlagCorner = 8u32;       // an output vertex pinned at a corner of a crease
+const FlagOnPlane = 16u32;     // on the mirror plane
+
+// The output graph's vertices, and its faces
+struct Quads {
+  pos List[Vec3];
+  nrm List[Vec3];
+  flag List[u32];            // FeatBoundary, FeatCrease, FeatGuide, FlagCorner
+  rho List[f32];
+  fcount List[u32];          // corners of each face
+  fidx List[u32];            // their vertices
+  edges usize;               // edges in the graph
+  clusters usize;
+  merges usize;              // input edges that joined two vertices
+  steps usize;               // input edges that were a lattice step
+  ignored usize;             // input edges the fields did not settle
+
+  fn faceCount(self &) usize { fcount.len(); }
+}
+
+fn rootOf(parent &mut List[u32], v u32) u32 {
+  mut r = v;
+  while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
+  mut x = v;
+  while *parent[usize.from(x)] != r {
+    imm nxt = *parent[usize.from(x)];
+    parent.set(usize.from(x), r);
+    x = nxt;
+  }
+  r;
+}
+
+fn joinSets(parent &mut List[u32], a u32, b u32) {
+  imm ra = rootOf(parent, a);
+  imm rb = rootOf(parent, b);
+  if ra < rb { parent.set(usize.from(rb), ra); }
+  elif rb < ra { parent.set(usize.from(ra), rb); }
+}
+
+// The tangent frame used to order the edges round a vertex
+fn frameOf(n Vec3) Vec3 {
+  imm ax = if absf(n.x) < 0.6 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
+  unit(ax - n * ax.dot(n));
+}
+
+fn angleAt(n Vec3, e1 Vec3, d Vec3) f32 {
+  imm e2 = n.cross(e1);
+  atan2(d.dot(e2), d.dot(e1));
+}
+
+// A polygon's normal (Newell), not unit; its length is twice the area
+fn newell(pts &List[Vec3]) Vec3 {
+  mut s = zero3();
+  mut i = 0usize;
+  while i < pts.len() {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % pts.len()];
+    s = s + a.cross(b);
+    i = i + 1usize;
+  }
+  s;
+}
+
+// tol: how far from a whole step the fields' lattices may disagree
+fn extract(l &Level, o &List[Vec3], q &List[Vec3], vfeat &List[u32], tol f32, maxPoly usize) Quads {
+  imm n = l.count();
+  // Each vertex's lattice point
+  mut lat = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    lat.push(latticeNear(*q[i], *o[i], *l.nrm[i], *l.rho[i], *l.pos[i]));
+    i = i + 1usize;
+  }
+  // Joined and stepped neighbours
+  mut parent = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n { parent.push(u32.from(i)); i = i + 1usize; }
+  mut sa = List[u32].empty();
+  mut sb = List[u32].empty();
+  mut merges = 0usize;
+  mut ignored = 0usize;
+  i = 0usize;
+  while i < n {
+    imm oi = *o[i];
+    imm ni = *l.nrm[i];
+    imm ti = ni.cross(oi);
+    mut k = usize.from(*l.g.start[i]);
+    imm hi = usize.from(*l.g.start[i + 1usize]);
+    while k < hi {
+      imm j = usize.from(*l.g.nbr[k]);
+      if j > i {
+        imm rho = (*l.rho[i] + *l.rho[j]) * 0.5;
+        imm d = *lat[j] - *lat[i];
+        imm a = d.dot(oi) / rho;
+        imm b = d.dot(ti) / rho;
+        imm ra = rnd(a);
+        imm rb = rnd(b);
+        imm res = ((a - ra) * (a - ra) + (b - rb) * (b - rb)).sqrt();
+        if res < tol {
+          if ra == 0. and rb == 0. {
+            joinSets(&mut parent, u32.from(i), u32.from(j));
+            merges = merges + 1usize;
+          } elif absf(ra) + absf(rb) == 1. {
+            sa.push(u32.from(i));
+            sb.push(u32.from(j));
+          } else { ignored = ignored + 1usize; }
+        } else { ignored = ignored + 1usize; }
+      }
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // The clusters
+  mut cl = List[u32].withCapacity(n);
+  mut cid = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n { cid.push(NoVertex); i = i + 1usize; }
+  mut nc = 0u32;
+  i = 0usize;
+  while i < n {
+    imm r = rootOf(&mut parent, u32.from(i));
+    if *cid[usize.from(r)] == NoVertex { cid.set(usize.from(r), nc); nc = nc + 1u32; }
+    cl.push(*cid[usize.from(r)]);
+    i = i + 1usize;
+  }
+  imm ncl = usize.from(nc);
+  mut cpos = List[Vec3].withCapacity(ncl);
+  mut cnrm = List[Vec3].withCapacity(ncl);
+  mut cflag = List[u32].withCapacity(ncl);
+  mut crho = List[f32].withCapacity(ncl);
+  mut cnt = List[f32].withCapacity(ncl);
+  mut pin = List[Vec3].withCapacity(ncl);
+  mut pinCnt = List[f32].withCapacity(ncl);
+  i = 0usize;
+  while i < ncl {
+    cpos.push(zero3()); cnrm.push(zero3()); cflag.push(0u32); crho.push(0.); cnt.push(0.);
+    pin.push(zero3()); pinCnt.push(0.);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    imm c = usize.from(*cl[i]);
+    cpos.set(c, *cpos[c] + *lat[i]);
+    cnrm.set(c, *cnrm[c] + *l.nrm[i]);
+    cflag.set(c, *cflag[c] | *vfeat[i]);
+    crho.set(c, *crho[c] + *l.rho[i]);
+    cnt.set(c, *cnt[c] + 1.);
+    if *l.ckind[i] == 2u32 {
+      pin.set(c, *pin[c] + *l.pos[i]);
+      pinCnt.set(c, *pinCnt[c] + 1.);
+      cflag.set(c, *cflag[c] | FlagCorner);
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < ncl {
+    imm k = 1. / *cnt[i];
+    cpos.set(i, *cpos[i] * k);
+    cnrm.set(i, unit(*cnrm[i]));
+    crho.set(i, *crho[i] * k);
+    if *pinCnt[i] > 0. { cpos.set(i, *pin[i] * (1. / *pinCnt[i])); }
+    i = i + 1usize;
+  }
+  // The graph's edges, each with the number of input edges that made it
+  mut keys = List[u64].withCapacity(sa.len());
+  i = 0usize;
+  while i < sa.len() {
+    imm a = *cl[usize.from(*sa[i])];
+    imm b = *cl[usize.from(*sb[i])];
+    if a != b { keys.push(ekey(a, b)); }
+    i = i + 1usize;
+  }
+  sortKeys(&mut keys);
+  mut ea = List[u32].empty();
+  mut eb = List[u32].empty();
+  mut esup = List[u32].empty();
+  i = 0usize;
+  while i < keys.len() {
+    mut j = i;
+    while j < keys.len() and *keys[j] == *keys[i] { j = j + 1usize; }
+    imm a = keyLo(*keys[i]);
+    imm b = keyHi(*keys[i]);
+    imm dist = (*cpos[usize.from(a)] - *cpos[usize.from(b)]).length();
+    imm rr = (*crho[usize.from(a)] + *crho[usize.from(b)]) * 0.5;
+    if dist > 0.3 * rr and dist < 2.2 * rr {
+      ea.push(a); eb.push(b); esup.push(u32.from(j - i));
+    }
+    i = j;
+  }
+  imm ne0 = ea.len();
+  // Edges lying along one another at a vertex: the better supported stays
+  mut alive = List[u32].withCapacity(ne0);
+  i = 0usize;
+  while i < ne0 { alive.push(1u32); i = i + 1usize; }
+  prune(&ea, &eb, &esup, &cpos, &cnrm, ncl, &mut alive, 0.55);
+  mut fa = List[u32].empty();
+  mut fb = List[u32].empty();
+  i = 0usize;
+  while i < ne0 {
+    if *alive[i] == 1u32 { fa.push(*ea[i]); fb.push(*eb[i]); }
+    i = i + 1usize;
+  }
+  imm ne = fa.len();
+  // The rotation system
+  // Half-edge 2k runs fa[k] -> fb[k], 2k + 1 the other way
+  mut deg = List[u32].withCapacity(ncl + 1usize);
+  i = 0usize;
+  while i <= ncl { deg.push(0u32); i = i + 1usize; }
+  i = 0usize;
+  while i < ne {
+    deg.set(usize.from(*fa[i]) + 1usize, *deg[usize.from(*fa[i]) + 1usize] + 1u32);
+    deg.set(usize.from(*fb[i]) + 1usize, *deg[usize.from(*fb[i]) + 1usize] + 1u32);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < ncl { deg.set(i + 1usize, *deg[i + 1usize] + *deg[i]); i = i + 1usize; }
+  mut fillAt = copyOf[u32](&deg);
+  mut out = List[u32].empty();
+  out.resize(ne * 2usize, 0u32);
+  mut ang = List[f32].empty();
+  ang.resize(ne * 2usize, 0.);
+  i = 0usize;
+  while i < ne {
+    imm a = usize.from(*fa[i]);
+    imm b = usize.from(*fb[i]);
+    imm d = *cpos[b] - *cpos[a];
+    ang.set(2usize * i, angleAt(*cnrm[a], frameOf(*cnrm[a]), d));
+    ang.set(2usize * i + 1usize, angleAt(*cnrm[b], frameOf(*cnrm[b]), -d));
+    out.set(usize.from(*fillAt[a]), u32.from(2usize * i));
+    fillAt.set(a, *fillAt[a] + 1u32);
+    out.set(usize.from(*fillAt[b]), u32.from(2usize * i + 1usize));
+    fillAt.set(b, *fillAt[b] + 1u32);
+    i = i + 1usize;
+  }
+  mut slot = List[u32].empty();
+  slot.resize(ne * 2usize, 0u32);
+  mut c = 0usize;
+  while c < ncl {
+    imm lo = usize.from(*deg[c]);
+    imm hi = usize.from(*deg[c + 1usize]);
+    mut a = lo + 1usize;
+    while a < hi {
+      imm kh = *out[a];
+      imm kang = *ang[usize.from(kh)];
+      mut b = a;
+      while b > lo and *ang[usize.from(*out[b - 1usize])] > kang {
+        out.set(b, *out[b - 1usize]);
+        b = b - 1usize;
+      }
+      out.set(b, kh);
+      a = a + 1usize;
+    }
+    a = lo;
+    while a < hi { slot.set(usize.from(*out[a]), u32.from(a)); a = a + 1usize; }
+    c = c + 1usize;
+  }
+  // The faces: walk each half-edge to the face on its left
+  mut res = new Quads(List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[f32].empty(),
+    List[u32].empty(), List[u32].empty(), ne, ncl, merges, sa.len(), ignored);
+  i = 0usize;
+  while i < ncl {
+    res.pos.push(*cpos[i]); res.nrm.push(*cnrm[i]); res.flag.push(*cflag[i]); res.rho.push(*crho[i]);
+    i = i + 1usize;
+  }
+  mut seen = List[u32].empty();
+  seen.resize(ne * 2usize, 0u32);
+  mut walk = List[u32].empty();
+  mut pts = List[Vec3].empty();
+  mut h = 0usize;
+  while h < ne * 2usize {
+    if *seen[h] == 0u32 {
+      walk.clear();
+      mut cur = u32.from(h);
+      while *seen[usize.from(cur)] == 0u32 {
+        seen.set(usize.from(cur), 1u32);
+        walk.push(cur);
+        // the head of cur is the tail of cur^1
+        imm hk = usize.from(cur >> 1u32);
+        imm headV = if (cur & 1u32) == 0u32 { *fb[hk]; } else { *fa[hk]; };
+        imm base = usize.from(*deg[usize.from(headV)]);
+        imm dg = usize.from(*deg[usize.from(headV) + 1usize]) - base;
+        imm at = usize.from(*slot[usize.from(cur ^ 1u32)]) - base;
+        cur = *out[base + (at + dg - 1usize) % dg];
+      }
+      imm len = walk.len();
+      // A closed walk only (it returned to where it began)
+      if cur == *walk[0usize] and len >= 3usize and len <= maxPoly {
+        pts.clear();
+        mut simple = true;
+        mut nsum = zero3();
+        mut e = 0usize;
+        while e < len {
+          imm hh = usize.from(*walk[e]);
+          imm kk = hh >> 1usize;
+          imm tail = if (hh & 1usize) == 0usize { *fa[kk]; } else { *fb[kk]; };
+          pts.push(*cpos[usize.from(tail)]);
+          nsum = nsum + *cnrm[usize.from(tail)];
+          e = e + 1usize;
+        }
+        // distinct vertices
+        e = 0usize;
+        while e < len and simple {
+          imm hh = usize.from(*walk[e]);
+          imm tail_e = if (hh & 1usize) == 0usize { *fa[hh >> 1usize]; } else { *fb[hh >> 1usize]; };
+          mut f2 = e + 1usize;
+          while f2 < len {
+            imm h2 = usize.from(*walk[f2]);
+            imm tail_f = if (h2 & 1usize) == 0usize { *fa[h2 >> 1usize]; } else { *fb[h2 >> 1usize]; };
+            if tail_e == tail_f { simple = false; }
+            f2 = f2 + 1usize;
+          }
+          e = e + 1usize;
+        }
+        imm nw = newell(&pts);
+        imm area = nw.length() * 0.5;
+        imm rmean = avgRho(&pts, &walk, &fa, &fb, &crho);
+        if simple and nw.dot(unit(nsum)) > 0.3 * nw.length() and area > 0.08 * rmean * rmean {
+          res.fcount.push(u32.from(len));
+          e = 0usize;
+          while e < len {
+            imm hh = usize.from(*walk[e]);
+            imm kk = hh >> 1usize;
+            res.fidx.push(if (hh & 1usize) == 0usize { *fa[kk]; } else { *fb[kk]; });
+            e = e + 1usize;
+          }
+        }
+      }
+    }
+    h = h + 1usize;
+  }
+  res;
+}
+
+fn avgRho(pts &List[Vec3], walk &List[u32], fa &List[u32], fb &List[u32], crho &List[f32]) f32 {
+  mut s = 0.;
+  mut e = 0usize;
+  while e < walk.len() {
+    imm hh = usize.from(*walk[e]);
+    imm kk = hh >> 1usize;
+    imm tail = if (hh & 1usize) == 0usize { *fa[kk]; } else { *fb[kk]; };
+    s = s + *crho[usize.from(tail)];
+    e = e + 1usize;
+  }
+  s / f32.from(walk.len());
+}
+
+// At every vertex, of two edges within 'gap' radians of each other the worse
+// supported (then the longer) is dropped
+fn prune(ea &List[u32], eb &List[u32], esup &List[u32], cpos &List[Vec3], cnrm &List[Vec3], ncl usize,
+    alive &mut List[u32], gap f32) {
+  imm ne = ea.len();
+  mut deg = List[u32].withCapacity(ncl + 1usize);
+  mut i = 0usize;
+  while i <= ncl { deg.push(0u32); i = i + 1usize; }
+  i = 0usize;
+  while i < ne {
+    deg.set(usize.from(*ea[i]) + 1usize, *deg[usize.from(*ea[i]) + 1usize] + 1u32);
+    deg.set(usize.from(*eb[i]) + 1usize, *deg[usize.from(*eb[i]) + 1usize] + 1u32);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < ncl { deg.set(i + 1usize, *deg[i + 1usize] + *deg[i]); i = i + 1usize; }
+  mut fillAt = copyOf[u32](&deg);
+  mut lst = List[u32].empty();
+  lst.resize(ne * 2usize, 0u32);
+  i = 0usize;
+  while i < ne {
+    imm a = usize.from(*ea[i]);
+    imm b = usize.from(*eb[i]);
+    lst.set(usize.from(*fillAt[a]), u32.from(i)); fillAt.set(a, *fillAt[a] + 1u32);
+    lst.set(usize.from(*fillAt[b]), u32.from(i)); fillAt.set(b, *fillAt[b] + 1u32);
+    i = i + 1usize;
+  }
+  mut c = 0usize;
+  while c < ncl {
+    imm lo = usize.from(*deg[c]);
+    imm hi = usize.from(*deg[c + 1usize]);
+    imm n = *cnrm[c];
+    // Pairs within the gap: the weaker dropped
+    mut a = lo;
+    while a < hi {
+      mut b = a + 1usize;
+      while b < hi {
+        imm ia = usize.from(*lst[a]);
+        imm ib = usize.from(*lst[b]);
+        if *alive[ia] == 1u32 and *alive[ib] == 1u32 {
+          imm oa = if usize.from(*ea[ia]) == c { *eb[ia]; } else { *ea[ia]; };
+          imm ob = if usize.from(*ea[ib]) == c { *eb[ib]; } else { *ea[ib]; };
+          imm da = unit(toTangent(n, *cpos[usize.from(oa)] - *cpos[c]));
+          imm db = unit(toTangent(n, *cpos[usize.from(ob)] - *cpos[c]));
+          if da.dot(db) > cos(gap) {
+            imm la = (*cpos[usize.from(oa)] - *cpos[c]).lengthSquared();
+            imm lb = (*cpos[usize.from(ob)] - *cpos[c]).lengthSquared();
+            imm dropA = *esup[ia] < *esup[ib] or (*esup[ia] == *esup[ib] and la > lb);
+            if dropA { alive.set(ia, 0u32); } else { alive.set(ib, 0u32); }
+          }
+        }
+        b = b + 1usize;
+      }
+      a = a + 1usize;
+    }
+    c = c + 1usize;
+  }
+}
