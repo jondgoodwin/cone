@@ -1,0 +1,415 @@
+// ======== Symmetry: mirror maps, mirrored masks and selections, Symmetrize ========
+//
+// A mirror plane is a point 'origin' on it and a 'normal' (made unit): the
+// plane x = 0 is origin (0, 0, 0) and normal (1, 0, 0). Three things use it.
+//
+// - 'mirrorMap': for each vertex, the vertex nearest to its reflection in the
+//   plane, or NoIndex if none lies within a tolerance. It is what makes an
+//   operation symmetric: a brush dab at p also lands at the reflection of p
+//   (the vertices near the mirrored centre, see 'reflectPoint'), a mask or a
+//   selection copies across ('mirrorWeights', 'mirrorSelection', 'maskMirror'),
+//   and an asymmetric edit can be compared with its reflection. The nearest is
+//   found through a grid hash, so a mesh of any size takes about n lookups; of
+//   equals the lowest-numbered wins. It is Blender's "Mirror Vertex Group"
+//   and Select Mirror by position, not by topology: a mesh whose halves are
+//   not vertex for vertex mirrors of each other still gets every vertex that
+//   has a partner within the tolerance.
+// - 'mirrorWeights' and 'maskMirror' (a mask) and 'mirrorSelection' (a list of
+//   vertices): the values on one side copied to the other. A weight list is
+//   met with its mirror as a mask is met with a new one (MaskReplace takes the
+//   mirror's value, MaskUnion makes the mask symmetric with the greater of the
+//   two): see mask.cone for the five modes.
+// - 'symmetrize' (Blender's Symmetrize): the half of the mesh on the side the
+//   normal points to is kept, the other half thrown away, and the kept half's
+//   reflection put in its place, the two stitched along the plane. A face the
+//   plane cuts is cut: its part on the kept side stays, with new vertices
+//   where its edges cross the plane (so the seam is a line of vertices on the
+//   plane shared by the faces on either side), every channel of the new vertex
+//   and the new corners blended between the two ends by the crossing's place;
+//   vertices within half of 'merge' of the plane are moved onto it and joined
+//   with their reflections ('mirror', merge). A face wholly on the plane or
+//   behind it goes. Blender's "-X to +X" is the normal (-1, 0, 0).
+
+// The reflection of a point in the plane
+pub fn reflectPoint(p Vec3, origin Vec3, normal Vec3) Vec3 {
+  imm n = unit(normal);
+  p - n * (2. * (p - origin).dot(n));
+}
+
+// For each vertex, the vertex nearest to its reflection in the plane within
+// 'tolerance' (the lowest-numbered of equals), or NoIndex
+pub fn mirrorMap(m &PolyMesh, origin Vec3, normal Vec3, tolerance f32) List[u32] {
+  imm nv = m.positions.len();
+  mut out = List[u32].withCapacity(nv);
+  if nv == 0usize { return out; }
+  // Cells the size of the tolerance, but not so small the mesh is a million cells
+  mut lo = *m.positions[0usize];
+  mut hi = lo;
+  mut v = 1usize;
+  while v < nv {
+    lo = minVec(lo, *m.positions[v]);
+    hi = maxVec(hi, *m.positions[v]);
+    v = v + 1usize;
+  }
+  imm span = (hi - lo).length();
+  imm floor = span / 64.;
+  imm tol = if tolerance > 0. {tolerance;} else {0.;};
+  imm cell = if tol > floor {tol;} elif floor > 0. {floor;} else {1.;};
+  imm grid = PointGrid.build(&m.positions, cell);
+  v = 0usize;
+  while v < nv {
+    out.push(grid.nearestWithin(reflectPoint(*m.positions[v], origin, normal), tol));
+    v = v + 1usize;
+  }
+  out;
+}
+
+// Which vertices take their mirror's value
+pub const MirrorBoth = 0u32;           // every vertex meets its mirror's value
+pub const MirrorFromPositive = 1u32;   // the side the normal points to is copied over the other
+pub const MirrorFromNegative = 2u32;   // the other side is copied over the normal's side
+
+// 'values' (one per vertex of m) met with the values at each vertex's mirror:
+// vertex v gets meet(values[v], values[map[v]]) as 'how' (mask.cone's modes)
+// says. A vertex with no mirror keeps its value, and so does one on the plane
+// when 'side' copies one side over the other. With MirrorBoth and MaskReplace
+// every pair swaps; with MirrorBoth and MaskUnion the weights become
+// symmetric (the greater of each pair); with MirrorFromPositive and
+// MaskReplace the half the normal points to is copied over the other half.
+pub fn mirrorWeights(m &PolyMesh, values &List[f32], origin Vec3, normal Vec3, map &List[u32], how u32,
+    side u32) List[f32] {
+  imm n = unit(normal);
+  mut out = List[f32].withCapacity(values.len());
+  mut v = 0usize;
+  while v < values.len() {
+    imm other = if v < map.len() {*map[v];} else {NoIndex;};
+    imm d = if v < m.positions.len() {(*m.positions[v] - origin).dot(n);} else {0.;};
+    imm takes = side == MirrorBoth or (side == MirrorFromPositive and d < 0.) or (side == MirrorFromNegative and d > 0.);
+    if takes and other != NoIndex and usize.from(other) < values.len() {
+      out.push(meetMask(*values[v], *values[usize.from(other)], how));
+    } else {
+      out.push(*values[v]);
+    }
+    v = v + 1usize;
+  }
+  out;
+}
+
+// The mask met with its mirror (see 'mirrorWeights')
+pub fn maskMirror(m &PolyMesh, origin Vec3, normal Vec3, map &List[u32], how u32, side u32) PolyMesh {
+  imm vals = maskValues(m);
+  imm mirrored = mirrorWeights(m, &vals, origin, normal, map, how, side);
+  withMaskValues(m, &mirrored);
+}
+
+// A selection (vertex numbers) reflected: each selected vertex's mirror;
+// with 'extend' the selection and its reflection together. Ascending, no
+// repeats; a vertex with no mirror is dropped, unless 'extend' keeps it.
+pub fn mirrorSelection(selected &List[u32], map &List[u32], extend bool) List[u32] {
+  imm nv = map.len();
+  mut flag = List[bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    flag.push(false);
+    v = v + 1usize;
+  }
+  mut i = 0usize;
+  while i < selected.len() {
+    imm s = usize.from(*selected[i]);
+    if s < nv {
+      if extend { flag.set(s, true); }
+      imm other = *map[s];
+      if other != NoIndex { flag.set(usize.from(other), true); }
+    }
+    i = i + 1usize;
+  }
+  mut out = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    if *flag[v] { out.push(u32.from(v)); }
+    v = v + 1usize;
+  }
+  out;
+}
+
+// -------- Symmetrize --------
+
+// Where an edge crosses the plane: the new vertex between vertices lo and hi
+// (lo the lower numbered), a fraction t of the way from lo to hi
+struct PlaneCut {
+  pub lo u32;
+  pub hi u32;
+  pub t f32;
+}
+
+// The cut of edge e (joining a and b), made if it is not yet, as an index
+// into 'cuts'
+fn cutOfEdge(e u32, a u32, b u32, da f32, db f32, byEdge &mut List[u32], cuts &mut List[PlaneCut]) u32 {
+  imm found = *byEdge[usize.from(e)];
+  if found != NoIndex { return found; }
+  imm lo = if a < b {a;} else {b;};
+  imm hi = if a < b {b;} else {a;};
+  imm dlo = if a < b {da;} else {db;};
+  imm dhi = if a < b {db;} else {da;};
+  imm id = u32.from(cuts.len());
+  cuts.push(new PlaneCut(lo, hi, dlo / (dlo - dhi)));
+  byEdge.set(usize.from(e), id);
+  id;
+}
+
+// A reflection of the kept half made whole: see the header
+pub fn symmetrize(m &PolyMesh, origin Vec3, normal Vec3, merge f32) PolyMesh {
+  imm n = unit(normal);
+  imm nv = m.positions.len();
+  if n.dot(n) == 0. or nv == 0usize { return withPositions(m, copyList[Vec3](&m.positions)); }
+  imm eps = if merge > 0. {merge * 0.5;} else {0.;};
+  mut dist = List[f32].withCapacity(nv);
+  mut side = List[i32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    imm d = (*m.positions[v] - origin).dot(n);
+    dist.push(d);
+    side.push(if d > eps {1;} elif d < -eps {-1;} else {0;});
+    v = v + 1usize;
+  }
+
+  // The kept faces' corners: a vertex reference (an original vertex, or nv
+  // plus a cut), the source corner and edge, and for a corner made by a cut
+  // the other corner it is blended with and the fraction
+  mut counts = List[u32].empty();
+  mut refs = List[u32].empty();
+  mut cSrc = List[u32].empty();
+  mut eSrc = List[u32].empty();
+  mut cOther = List[u32].empty();
+  mut cT = List[f32].empty();
+  mut fSrc = List[u32].empty();
+  mut byEdge = List[u32].withCapacity(m.edgeCount());
+  mut e = 0usize;
+  while e < m.edgeCount() {
+    byEdge.push(NoIndex);
+    e = e + 1usize;
+  }
+  mut cuts = List[PlaneCut].empty();
+
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm vs = m.faceVertices(u32.from(f));
+    imm hs = m.faceHalfedges(u32.from(f));
+    imm k = vs.len();
+    mut npos = 0usize;
+    mut nneg = 0usize;
+    mut i = 0usize;
+    while i < k {
+      imm s = *side[usize.from(*vs[i])];
+      if s > 0 { npos = npos + 1usize; }
+      if s < 0 { nneg = nneg + 1usize; }
+      i = i + 1usize;
+    }
+    if npos > 0usize and nneg == 0usize {
+      counts.push(u32.from(k));
+      i = 0usize;
+      while i < k {
+        refs.push(*vs[i]);
+        cSrc.push(*hs[i]);
+        eSrc.push(m.edge(*hs[i]));
+        cOther.push(NoIndex);
+        cT.push(0.);
+        i = i + 1usize;
+      }
+      fSrc.push(u32.from(f));
+    } elif npos > 0usize {
+      mut tRef = List[u32].empty();
+      mut tCs = List[u32].empty();
+      mut tEs = List[u32].empty();
+      mut tOther = List[u32].empty();
+      mut tT = List[f32].empty();
+      i = 0usize;
+      while i < k {
+        imm p = (i + k - 1usize) % k;
+        imm vp = *vs[p];
+        imm vc = *vs[i];
+        imm sp = *side[usize.from(vp)];
+        imm sc = *side[usize.from(vc)];
+        imm eIn = m.edge(*hs[i]);
+        imm crossing = (sp > 0 and sc < 0) or (sp < 0 and sc > 0);
+        imm tc = if crossing {*dist[usize.from(vp)] / (*dist[usize.from(vp)] - *dist[usize.from(vc)]);} else {0.;};
+        if sp >= 0 and sc >= 0 {
+          tRef.push(vc);
+          tCs.push(*hs[i]);
+          tEs.push(eIn);
+          tOther.push(NoIndex);
+          tT.push(0.);
+        } elif sp >= 0 and sc < 0 {
+          if sp > 0 {
+            imm c = cutOfEdge(eIn, vp, vc, *dist[usize.from(vp)], *dist[usize.from(vc)], &mut byEdge, &mut cuts);
+            tRef.push(u32.from(nv) + c);
+            tCs.push(*hs[p]);
+            tEs.push(eIn);
+            tOther.push(*hs[i]);
+            tT.push(tc);
+          }
+        } elif sp < 0 and sc >= 0 {
+          if sc > 0 {
+            imm c = cutOfEdge(eIn, vp, vc, *dist[usize.from(vp)], *dist[usize.from(vc)], &mut byEdge, &mut cuts);
+            tRef.push(u32.from(nv) + c);
+            tCs.push(*hs[p]);
+            tEs.push(NoIndex);
+            tOther.push(*hs[i]);
+            tT.push(tc);
+          }
+          tRef.push(vc);
+          tCs.push(*hs[i]);
+          tEs.push(if sc > 0 {eIn;} else {NoIndex;});
+          tOther.push(NoIndex);
+          tT.push(0.);
+        }
+        i = i + 1usize;
+      }
+      // Kept if it is a polygon: three corners, no vertex twice
+      mut ok = tRef.len() >= 3usize;
+      i = 0usize;
+      while ok and i < tRef.len() {
+        mut j = i + 1usize;
+        while j < tRef.len() {
+          if *tRef[i] == *tRef[j] { ok = false; }
+          j = j + 1usize;
+        }
+        i = i + 1usize;
+      }
+      if ok {
+        counts.push(u32.from(tRef.len()));
+        i = 0usize;
+        while i < tRef.len() {
+          refs.push(*tRef[i]);
+          cSrc.push(*tCs[i]);
+          eSrc.push(*tEs[i]);
+          cOther.push(*tOther[i]);
+          cT.push(*tT[i]);
+          i = i + 1usize;
+        }
+        fSrc.push(u32.from(f));
+      }
+    }
+    f = f + 1usize;
+  }
+  if counts.len() == 0usize { return PolyMesh.empty(); }
+
+  // The vertices: those of the kept faces in their order, then the cuts
+  mut used = List[bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    used.push(false);
+    v = v + 1usize;
+  }
+  mut r = 0usize;
+  while r < refs.len() {
+    if usize.from(*refs[r]) < nv { used.set(usize.from(*refs[r]), true); }
+    r = r + 1usize;
+  }
+  mut newOf = List[u32].withCapacity(nv);
+  mut pos = List[Vec3].empty();
+  mut vSrc = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    if *used[v] {
+      newOf.push(u32.from(pos.len()));
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+    } else {
+      newOf.push(NoIndex);
+    }
+    v = v + 1usize;
+  }
+  imm keptCount = pos.len();
+  mut c = 0usize;
+  while c < cuts.len() {
+    imm lo = *m.positions[usize.from(cuts[c].lo)];
+    imm hi = *m.positions[usize.from(cuts[c].hi)];
+    imm at = lo + (hi - lo) * cuts[c].t;
+    pos.push(at - n * (at - origin).dot(n));
+    vSrc.push(cuts[c].lo);
+    c = c + 1usize;
+  }
+  mut idx = List[u32].withCapacity(refs.len());
+  r = 0usize;
+  while r < refs.len() {
+    imm ref = *refs[r];
+    if usize.from(ref) < nv { idx.push(*newOf[usize.from(ref)]); } else { idx.push(u32.from(keptCount) + ref - u32.from(nv)); }
+    r = r + 1usize;
+  }
+  mut kept = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+
+  // The cuts' vertex values, and the cut corners' values, blended
+  c = 0usize;
+  while c < cuts.len() {
+    imm nvx = u32.from(keptCount + c);
+    imm a = cuts[c].lo;
+    imm b = cuts[c].hi;
+    imm t = cuts[c].t;
+    mut k = 0usize;
+    while k < kept.floats.len() {
+      if kept.floats[k].domain == VertexDomain {
+        imm x = m.float(u32.from(k), a);
+        kept.setFloat(u32.from(k), nvx, x + (m.float(u32.from(k), b) - x) * t);
+      }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < kept.vec2s.len() {
+      if kept.vec2s[k].domain == VertexDomain {
+        kept.setVec2(u32.from(k), nvx, m.vec2(u32.from(k), a).lerp(m.vec2(u32.from(k), b), t));
+      }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < kept.vec3s.len() {
+      if kept.vec3s[k].domain == VertexDomain {
+        kept.setVec3(u32.from(k), nvx, m.vec3(u32.from(k), a).lerp(m.vec3(u32.from(k), b), t));
+      }
+      k = k + 1usize;
+    }
+    c = c + 1usize;
+  }
+  mut given = List[u32].empty();
+  mut first = List[u32].empty();
+  madeFaces(&kept, &counts, &idx, &mut given, &mut first);
+  mut kf = 0usize;
+  while kf < kept.fHalfedge.len() {
+    imm hs = kept.faceHalfedges(u32.from(kf));
+    imm base = usize.from(*first[kf]);
+    mut j = 0usize;
+    while j < hs.len() {
+      imm other = *cOther[base + j];
+      if other != NoIndex {
+        imm a = *cSrc[base + j];
+        imm t = *cT[base + j];
+        imm h = *hs[j];
+        mut k = 0usize;
+        while k < kept.floats.len() {
+          if kept.floats[k].domain == CornerDomain {
+            imm x = m.float(u32.from(k), a);
+            kept.setFloat(u32.from(k), h, x + (m.float(u32.from(k), other) - x) * t);
+          }
+          k = k + 1usize;
+        }
+        k = 0usize;
+        while k < kept.vec2s.len() {
+          if kept.vec2s[k].domain == CornerDomain {
+            kept.setVec2(u32.from(k), h, m.vec2(u32.from(k), a).lerp(m.vec2(u32.from(k), other), t));
+          }
+          k = k + 1usize;
+        }
+        k = 0usize;
+        while k < kept.vec3s.len() {
+          if kept.vec3s[k].domain == CornerDomain {
+            kept.setVec3(u32.from(k), h, m.vec3(u32.from(k), a).lerp(m.vec3(u32.from(k), other), t));
+          }
+          k = k + 1usize;
+        }
+      }
+      j = j + 1usize;
+    }
+    kf = kf + 1usize;
+  }
+  mirror(&kept, origin, n, merge);
+}

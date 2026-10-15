@@ -1,0 +1,96 @@
+// shapefit's alignment: Procrustes from point pairs (rigid and with scale), and
+// ICP, which finds the map when the pairs are not known.
+
+mod aligntests;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import shapefit use *;
+
+fn main() i32 {
+  imm none = List[f32].empty();
+  // An uneven ellipsoid's vertices, moved by a known similarity
+  mut e = sphereMesh(1., 8usize, 12usize);
+  movePoints(&mut e, p => new Vec3(3. * p.x, 1.2 * p.y, 2. * p.z));
+  imm src = gather(&e, allVertices(&e).view());
+  imm rot = Mat3.fromQuat(Quat.angleAxis(radians(40.), new Vec3(1., 2., 3.).normalize()));
+  mut dst = List[Vec3].empty();
+  mut i = 0usize;
+  while i < src.len() {
+    dst.push(rot * (*src[i] * 1.3) + new Vec3(0.5, -1., 2.));
+    i += 1usize;
+  }
+  imm sim = alignPoints(src.view(), dst.view(), none.view(), true);
+  expectFloat(sim.scale, 1.3d, 0.00001, "recovered scale");
+  expectFloat(sim.angleDegrees(), 40.d, 0.001, "recovered angle");
+  expectFloat(pairRms(src.view(), dst.view(), none.view(), &sim), 0.d, 0.00001, "pairs coincide");
+  expectFloat(f64.from(sim.apply(*src[3usize]).x), f64.from(dst[3usize].x), 0.00001, "apply moves a point onto its pair");
+  expectFloat(sim.trans.z, 2.d, 0.01, "translation is roughly the offset (the centroid is near the origin)");
+
+  // Rigid only: the same points without scale, a pure rotation and shift
+  mut dst2 = List[Vec3].empty();
+  i = 0usize;
+  while i < src.len() {
+    dst2.push(rot * *src[i] + new Vec3(0.5, -1., 2.));
+    i += 1usize;
+  }
+  imm rig = alignPoints(src.view(), dst2.view(), none.view(), false);
+  expectFloat(rig.scale, 1.d, 0.0000001, "no scale asked, none given");
+  expectFloat(rig.angleDegrees(), 40.d, 0.001, "rigid angle");
+  expectFloat(pairRms(src.view(), dst2.view(), none.view(), &rig), 0.d, 0.00001, "rigid pairs coincide");
+  // an improper pairing (a mirror image) cannot be matched by a rotation: the rms stays high
+  mut mir = List[Vec3].empty();
+  i = 0usize;
+  while i < src.len() { mir.push(new Vec3(-src[i].x, src[i].y, src[i].z + 0.3 * src[i].x)); i += 1usize; }
+  imm bad = alignPoints(src.view(), mir.view(), none.view(), false);
+  expect(pairRms(src.view(), mir.view(), none.view(), &bad) > 0.1d, "a mirror image is not matched by a rotation");
+  // weights: three wrong pairs ignored by weight zero
+  mut wrong = List[Vec3].empty();
+  mut wts = List[f32].empty();
+  i = 0usize;
+  while i < src.len() {
+    if i % 17usize == 3usize { wrong.push(*dst2[i] + new Vec3(5., 5., 5.)); wts.push(0.); } else { wrong.push(*dst2[i]); wts.push(1.); }
+    i += 1usize;
+  }
+  imm wsim = alignPoints(src.view(), wrong.view(), wts.view(), false);
+  expectFloat(wsim.angleDegrees(), 40.d, 0.001, "weights drop the wrong pairs");
+  // composing maps
+  imm back = alignPoints(dst2.view(), src.view(), none.view(), false);
+  imm both = rig.followedBy(&back);
+  expectFloat(both.angleDegrees(), 0.d, 0.01, "a map followed by its inverse is nothing");
+  expectFloat(both.trans.length(), 0.d, 0.0001, "and moves nothing");
+
+  // ICP: a coarse mesh of an ellipsoid, shifted and turned a little, onto a fine mesh of it
+  mut fine = sphereMesh(1., 28usize, 40usize);
+  movePoints(&mut fine, p => new Vec3(3. * p.x, 1.2 * p.y, 2. * p.z));
+  imm surf = Surface.of(&fine);
+  imm small = Mat3.fromQuat(Quat.angleAxis(radians(8.), new Vec3(0., 1., 0.)));
+  mut moved = List[Vec3].empty();
+  i = 0usize;
+  while i < src.len() { moved.push(small * *src[i] + new Vec3(0.12, 0.05, -0.1)); i += 1usize; }
+  // three stray points far from the surface
+  moved.push(new Vec3(8., 8., 8.));
+  moved.push(new Vec3(-8., 6., 8.));
+  moved.push(new Vec3(0., -9., 5.));
+  imm start = Similarity.identity();
+  imm res = icp(moved.view(), &surf, &start, 60u32, 0.9, 0., false, none.view());
+  expect(res.rounds > 1u32, "icp took some rounds");
+  expect(res.rms < 0.02d, "icp lands the points on the surface");
+  expect(*res.history[res.history.len() - 1usize] < *res.history[0usize], "the error went down");
+  // the shape is symmetric about each axis, so check the fit rather than the transform: every real point is near the surface
+  mut worst = 0.d;
+  i = 0usize;
+  while i < src.len() {
+    imm q = res.map.applyD(DVec3.from(*moved[i]));
+    mut t = NoIndex;
+    mut w = new DVec3(0.d, 0.d, 0.d);
+    imm d2 = surf.nearest(q, &mut t, &mut w);
+    worst = if d2 > worst { d2; } else { worst; };
+    i += 1usize;
+  }
+  expectFloat(libc.sqrt(worst), 0.d, 0.06d, "every real point is within 6 cm of the surface (the ellipsoid lets points slide)");
+  done();
+}

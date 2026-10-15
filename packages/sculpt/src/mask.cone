@@ -1,0 +1,413 @@
+// ======== Masks: a per-vertex protection channel ========
+//
+// A mask is a vertex float channel named "mask", as Blender's Sculpt
+// Mode keeps it: 1 protects a vertex from every edit, 0 leaves it free, and
+// values between protect it in part. The weight functions of select.cone
+// multiply by 1 minus the mask, so a brush or a soft selection leaves a masked
+// vertex where it is. A mesh without the channel is unmasked; the channel is
+// made, at fill 0, by the first function that sets one.
+//
+// Every function here takes a mesh and returns a copy with the channel
+// changed, as the other operators do (positions, topology and every other
+// channel are carried unchanged). A function that makes a mask from something
+// else (a normal, a cavity, a region, a channel) takes 'how', how the new
+// values meet the mask already there:
+//
+//   MaskReplace    the new values replace it
+//   MaskUnion      the greater of the two (Blender's mask add by painting; a
+//                  vertex masked by either)
+//   MaskIntersect  the lesser (masked by both)
+//   MaskSubtract   the old mask times 1 minus the new (what the new values
+//                  free; ZBrush's Ctrl-Alt erase)
+//   MaskAdd        their sum, held to 1
+//
+// The filters change the mask in place of making one:
+//
+// - 'maskGrow' and 'maskShrink': each vertex takes the greatest (least) of
+//   its neighbours' values and its own, once per iteration, as Blender's
+//   Mask Filter grow and shrink do, a ring of vertices at a time;
+// - 'maskSmooth': each vertex moves 'factor' of the way to the mean of its
+//   neighbours' values, all at once each iteration (Blender's Mask Filter,
+//   Smooth; ZBrush's Blur);
+// - 'maskSharpen': each iteration applies the S-curve 3m^2 - 2m^3, which
+//   pushes values below a half towards 0 and above it towards 1, so a soft
+//   edge hardens (Blender's Sharpen, ZBrush's Sharpen Mask); 'maskRemap' the
+//   linear form: values below 'lo' become 0, above 'hi' 1, between them
+//   in proportion;
+// - 'maskInvert': 1 minus the mask, Blender's Invert Mask.
+//
+// The makers:
+//
+// - 'maskByNormal': the vertices whose normal faces a direction, within an
+//   angle, with a soft edge (Blender's face-normal auto-masking, with the
+//   direction the surface normal at a dab's centre);
+// - 'maskByCavity': the vertices that sit below (concave) or above (convex)
+//   the blurred surface about them (Blender's cavity auto-masking, ZBrush's
+//   Mask By Cavity): the blurred position is the mesh smoothed 'steps' times
+//   (the uniform Laplacian, factor a half), a vertex's cavity is how far the
+//   blurred position lies from it along its normal, in mean edge lengths,
+//   positive in a pit and negative on a bump, and the mask is that times
+//   'gain', held between 0 and 1, so a vertex a gain-th of an edge length
+//   from the blurred surface is fully masked. The blur grows with 'steps':
+//   few steps find fine creases, many a broad hollow;
+// - 'maskBySphere', 'maskByBox' and 'maskByPlane': a region of space, the
+//   sphere with any falloff, the box and the plane with a soft rim of
+//   'feather' (Blender's Box and Line Mask);
+// - 'maskByChannel': a vertex channel's value, mapped linearly from lo..hi
+//   to 0..1, so a recipe can mask by "along" and "around" and land on the
+//   same anatomy when the base changes;
+// - 'maskByVertices' (a list, at 1) and 'maskByFaceSet' (the vertices of a
+//   face set, see faceset.cone).
+
+pub const MaskReplace = 0u32;
+pub const MaskUnion = 1u32;
+pub const MaskIntersect = 2u32;
+pub const MaskSubtract = 3u32;
+pub const MaskAdd = 4u32;
+
+// How the new value n meets the old mask value o
+fn meetMask(o f32, n f32, how u32) f32 {
+  if how == MaskUnion { return if n > o {n;} else {o;}; }
+  if how == MaskIntersect { return if n < o {n;} else {o;}; }
+  if how == MaskSubtract { return o * (1. - n); }
+  if how == MaskAdd { return clampf(o + n, 0., 1.); }
+  n;
+}
+
+// Each vertex's mask value (0 for a mesh with no "mask" channel)
+pub fn maskValues(m &PolyMesh) List[f32] {
+  imm nv = m.positions.len();
+  imm ch = m.findFloatChannel(VertexDomain, "mask");
+  mut out = List[f32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    if ch != NoIndex { out.push(m.float(ch, u32.from(v))); } else { out.push(0.); }
+    v = v + 1usize;
+  }
+  out;
+}
+
+// A copy of the mesh with its mask set to 'values' (held between 0 and 1)
+pub fn withMaskValues(m &PolyMesh, values &List[f32]) PolyMesh {
+  mut held = List[f32].withCapacity(values.len());
+  mut i = 0usize;
+  while i < values.len() {
+    held.push(clampf(*values[i], 0., 1.));
+    i = i + 1usize;
+  }
+  withVertexChannel(m, "mask", 0., &held);
+}
+
+// A copy with the mask cleared to 0 everywhere
+pub fn maskClear(m &PolyMesh) PolyMesh {
+  mut zero = List[f32].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    zero.push(0.);
+    v = v + 1usize;
+  }
+  withMaskValues(m, &zero);
+}
+
+// The mask with 'values' met into it as 'how' says
+fn meetInto(m &PolyMesh, values &List[f32], how u32) PolyMesh {
+  imm old = maskValues(m);
+  mut out = List[f32].withCapacity(old.len());
+  mut v = 0usize;
+  while v < old.len() {
+    out.push(meetMask(*old[v], clampf(*values[v], 0., 1.), how));
+    v = v + 1usize;
+  }
+  withMaskValues(m, &out);
+}
+
+// -------- filters --------
+
+// Each vertex's neighbours, the vertices an edge joins it to
+fn neighbourLists(m &PolyMesh, starts &mut List[u32], targets &mut List[u32]) {
+  mut v = 0usize;
+  while v < m.positions.len() {
+    starts.push(u32.from(targets.len()));
+    imm ring = m.vertexNeighbors(u32.from(v));
+    mut k = 0usize;
+    while k < ring.len() {
+      targets.push(*ring[k]);
+      k = k + 1usize;
+    }
+    v = v + 1usize;
+  }
+  starts.push(u32.from(targets.len()));
+}
+
+// One step of grow (grow true: the greatest) or shrink (the least)
+fn maskStepExtreme(vals &List[f32], starts &List[u32], targets &List[u32], grow bool) List[f32] {
+  mut out = List[f32].withCapacity(vals.len());
+  mut v = 0usize;
+  while v < vals.len() {
+    mut best = *vals[v];
+    mut k = usize.from(*starts[v]);
+    while k < usize.from(*starts[v + 1usize]) {
+      imm x = *vals[usize.from(*targets[k])];
+      if grow and x > best { best = x; }
+      if !grow and x < best { best = x; }
+      k = k + 1usize;
+    }
+    out.push(best);
+    v = v + 1usize;
+  }
+  out;
+}
+
+fn maskExtreme(m &PolyMesh, iterations u32, grow bool) PolyMesh {
+  mut starts = List[u32].empty();
+  mut targets = List[u32].empty();
+  neighbourLists(m, &mut starts, &mut targets);
+  mut vals = maskValues(m);
+  mut i = 0u32;
+  while i < iterations {
+    imm next = maskStepExtreme(&vals, &starts, &targets, grow);
+    vals = next;
+    i = i + 1u32;
+  }
+  withMaskValues(m, &vals);
+}
+
+// The mask grown 'iterations' rings: each vertex the greatest of its own
+// value and its neighbours'
+pub fn maskGrow(m &PolyMesh, iterations u32) PolyMesh {maskExtreme(m, iterations, true);}
+
+// The mask shrunk 'iterations' rings: each vertex the least of its own value
+// and its neighbours'
+pub fn maskShrink(m &PolyMesh, iterations u32) PolyMesh {maskExtreme(m, iterations, false);}
+
+// The mask smoothed: each iteration moves every vertex 'factor' of the way
+// to the mean of its neighbours' values
+pub fn maskSmooth(m &PolyMesh, factor f32, iterations u32) PolyMesh {
+  mut starts = List[u32].empty();
+  mut targets = List[u32].empty();
+  neighbourLists(m, &mut starts, &mut targets);
+  mut vals = maskValues(m);
+  mut i = 0u32;
+  while i < iterations {
+    mut next = List[f32].withCapacity(vals.len());
+    mut v = 0usize;
+    while v < vals.len() {
+      imm s = usize.from(*starts[v]);
+      imm t = usize.from(*starts[v + 1usize]);
+      if t > s {
+        mut sum = 0.;
+        mut k = s;
+        while k < t {
+          sum = sum + *vals[usize.from(*targets[k])];
+          k = k + 1usize;
+        }
+        next.push(*vals[v] + (sum / f32.from(t - s) - *vals[v]) * factor);
+      } else {
+        next.push(*vals[v]);
+      }
+      v = v + 1usize;
+    }
+    vals = next;
+    i = i + 1u32;
+  }
+  withMaskValues(m, &vals);
+}
+
+// The mask sharpened: the S-curve 3m^2 - 2m^3 applied 'iterations' times
+pub fn maskSharpen(m &PolyMesh, iterations u32) PolyMesh {
+  mut vals = maskValues(m);
+  mut i = 0u32;
+  while i < iterations {
+    mut v = 0usize;
+    while v < vals.len() {
+      imm x = *vals[v];
+      vals.set(v, x * x * (3. - 2. * x));
+      v = v + 1usize;
+    }
+    i = i + 1u32;
+  }
+  withMaskValues(m, &vals);
+}
+
+// The mask remapped linearly: 'lo' and below become 0, 'hi' and above 1
+// (lo below hi; with lo at or above hi, a step at lo)
+pub fn maskRemap(m &PolyMesh, lo f32, hi f32) PolyMesh {
+  mut vals = maskValues(m);
+  mut v = 0usize;
+  while v < vals.len() {
+    imm x = *vals[v];
+    if hi <= lo {
+      vals.set(v, if x >= lo {1.;} else {0.;});
+    } else {
+      vals.set(v, clampf((x - lo) / (hi - lo), 0., 1.));
+    }
+    v = v + 1usize;
+  }
+  withMaskValues(m, &vals);
+}
+
+// The mask inverted: 1 minus each value
+pub fn maskInvert(m &PolyMesh) PolyMesh {
+  mut vals = maskValues(m);
+  mut v = 0usize;
+  while v < vals.len() {
+    vals.set(v, 1. - *vals[v]);
+    v = v + 1usize;
+  }
+  withMaskValues(m, &vals);
+}
+
+// -------- makers --------
+
+// Mask the vertices whose normal faces 'direction' (made unit) within
+// 'angle' radians, 1 inside the cone, falling to 0 over the next 'soft'
+// radians (0 for a hard edge). With a direction of the normal at a dab's
+// centre, an angle of 45 degrees masks what turns away from the dab: use
+// 'maskInvert' for the other side.
+pub fn maskByNormal(m &PolyMesh, direction Vec3, angle f32, soft f32, how u32) PolyMesh {
+  imm d = unit(direction);
+  imm normals = m.vertexNormals();
+  mut vals = List[f32].withCapacity(normals.len());
+  mut v = 0usize;
+  while v < normals.len() {
+    imm a = acos(clampf(normals[v].dot(d), -1., 1.));
+    if a <= angle {
+      vals.push(1.);
+    } elif soft > 0. and a < angle + soft {
+      imm t = (a - angle) / soft;
+      vals.push(1. - t * t * (3. - 2. * t));
+    } else {
+      vals.push(0.);
+    }
+    v = v + 1usize;
+  }
+  meetInto(m, &vals, how);
+}
+
+// The mean length of the mesh's edges (0 for a mesh with none)
+fn meanEdgeLength(m &PolyMesh) f32 {
+  imm ne = m.edgeCount();
+  if ne == 0usize { return 0.; }
+  mut sum = 0.;
+  mut e = 0usize;
+  while e < ne {
+    imm a = *m.positions[usize.from(*m.hVertex[2usize * e])];
+    imm b = *m.positions[usize.from(*m.hVertex[2usize * e + 1usize])];
+    sum = sum + (a - b).length();
+    e = e + 1usize;
+  }
+  sum / f32.from(ne);
+}
+
+pub const CavityConcave = 0u32;   // pits: the surface lies below its blurred self
+pub const CavityConvex = 1u32;    // bumps
+pub const CavityBoth = 2u32;      // either
+
+// Mask by cavity, as the header describes: the blur is 'steps' uniform
+// Laplacian steps of factor a half, the mask the cavity times 'gain' held
+// to 0..1, of the kind 'mode' names.
+pub fn maskByCavity(m &PolyMesh, steps u32, gain f32, mode u32, how u32) PolyMesh {
+  imm blurred = smooth(m, 0.5, steps);
+  imm normals = m.vertexNormals();
+  imm edge = meanEdgeLength(m);
+  mut vals = List[f32].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    mut c = 0.;
+    if edge > 0. { c = (*blurred.positions[v] - *m.positions[v]).dot(*normals[v]) / edge; }
+    if mode == CavityConvex { c = -c; }
+    if mode == CavityBoth { c = absf(c); }
+    vals.push(clampf(c * gain, 0., 1.));
+    v = v + 1usize;
+  }
+  meetInto(m, &vals, how);
+}
+
+// Mask a sphere of space: the falloff of distance / radius
+pub fn maskBySphere(m &PolyMesh, centre Vec3, radius f32, f &Falloff, how u32) PolyMesh {
+  imm vals = brushWeights(m, centre, radius, f, "");
+  meetInto(m, &vals, how);
+}
+
+// Mask an axis-aligned box of space from 'lo' to 'hi': 1 inside, falling
+// to 0 over 'feather' outside it (smoothstep; 0 for a hard edge)
+pub fn maskByBox(m &PolyMesh, lo Vec3, hi Vec3, feather f32, how u32) PolyMesh {
+  mut vals = List[f32].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm p = *m.positions[v];
+    // The distance outside the box, 0 inside
+    imm dx = fmax2(fmax2(lo.x - p.x, p.x - hi.x), 0.);
+    imm dy = fmax2(fmax2(lo.y - p.y, p.y - hi.y), 0.);
+    imm dz = fmax2(fmax2(lo.z - p.z, p.z - hi.z), 0.);
+    imm out = libc.sqrtf(dx * dx + dy * dy + dz * dz);
+    if out <= 0. {
+      vals.push(1.);
+    } elif feather > 0. and out < feather {
+      imm t = out / feather;
+      vals.push(1. - t * t * (3. - 2. * t));
+    } else {
+      vals.push(0.);
+    }
+    v = v + 1usize;
+  }
+  meetInto(m, &vals, how);
+}
+
+fn fmax2(a f32, b f32) f32 {if a > b {a;} else {b;};}
+
+// Mask the side of a plane its normal points to: 1 at and beyond the plane,
+// falling to 0 over 'feather' on the other side
+pub fn maskByPlane(m &PolyMesh, origin Vec3, normal Vec3, feather f32, how u32) PolyMesh {
+  imm n = unit(normal);
+  mut vals = List[f32].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm d = (*m.positions[v] - origin).dot(n);
+    if d >= 0. {
+      vals.push(1.);
+    } elif feather > 0. and -d < feather {
+      imm t = -d / feather;
+      vals.push(1. - t * t * (3. - 2. * t));
+    } else {
+      vals.push(0.);
+    }
+    v = v + 1usize;
+  }
+  meetInto(m, &vals, how);
+}
+
+// Mask by a vertex channel: (value - lo) / (hi - lo) held to 0..1 (with hi
+// at or below lo, a step at lo). A mesh without the channel is unchanged.
+pub fn maskByChannel(m &PolyMesh, channel &str, lo f32, hi f32, how u32) PolyMesh {
+  imm ch = m.findFloatChannel(VertexDomain, channel);
+  if ch == NoIndex { return withPositions(m, copyList[Vec3](&m.positions)); }
+  mut vals = List[f32].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm x = m.float(ch, u32.from(v));
+    if hi <= lo {
+      vals.push(if x >= lo {1.;} else {0.;});
+    } else {
+      vals.push(clampf((x - lo) / (hi - lo), 0., 1.));
+    }
+    v = v + 1usize;
+  }
+  meetInto(m, &vals, how);
+}
+
+// Mask the listed vertices at 1
+pub fn maskByVertices(m &PolyMesh, vertices &List[u32], how u32) PolyMesh {
+  mut vals = List[f32].withCapacity(m.positions.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    vals.push(0.);
+    v = v + 1usize;
+  }
+  mut i = 0usize;
+  while i < vertices.len() {
+    if usize.from(*vertices[i]) < vals.len() { vals.set(usize.from(*vertices[i]), 1.); }
+    i = i + 1usize;
+  }
+  meetInto(m, &vals, how);
+}

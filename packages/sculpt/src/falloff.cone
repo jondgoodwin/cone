@@ -1,0 +1,112 @@
+// ======== Falloff: the weight of a brush or a selection by distance ========
+//
+// A 'Falloff' turns d, the distance from a centre as a fraction of a radius,
+// into a weight: 1 at the centre, 0 at the radius and beyond. It is one of
+// geomath's presets, Blender's brush curves ('FalloffSmooth', 'FalloffSphere',
+// 'FalloffRoot', 'FalloffSharp', 'FalloffSmoothSharp', 'FalloffLinear' and
+// 'FalloffConstant', and facerig's 'FalloffGauss' and 'FalloffPlateau'; see
+// geomath's falloff.cone for each formula), or a custom curve, Blender's
+// "Custom" brush curve: control points (d, weight) joined by a monotone cubic
+// (Fritsch and Carlson, "Monotone piecewise cubic interpolation", SIAM
+// Journal on Numerical Analysis 17(2), 1980, with the slopes at the knots of
+// Fritsch and Butland's harmonic mean), which never overshoots its points, so
+// a curve drawn through (0, 1) and (1, 0) never rises above 1 or dips below 0.
+//
+// Before its first point a custom curve is its first weight, after its
+// last its last; at d above 1 every falloff is 0, a brush ends at its
+// radius. The points may be given in any order; of two with the same d the
+// first given is kept.
+
+pub const FalloffCustom = 100u32;
+
+pub struct Falloff {
+  pub kind u32;              // a preset's number, or FalloffCustom
+  pub xs List[f32];          // custom: the knots' d, ascending
+  pub ys List[f32];          // custom: the weights
+  pub ms List[f32];          // custom: the slopes at the knots
+
+  // One of geomath's presets
+  pub fn preset(kind u32) Falloff {
+    new Falloff(kind, List[f32].empty(), List[f32].empty(), List[f32].empty());
+  }
+
+  // A custom curve through points (x = d, y = weight)
+  pub fn custom(points &Array[Vec2]) Falloff {
+    // Insertion sort by d, a duplicate d dropped (the first given kept)
+    mut xs = List[f32].empty();
+    mut ys = List[f32].empty();
+    mut i = 0usize;
+    while i < points.len {
+      imm p = points[i];
+      mut at = xs.len();
+      mut dup = false;
+      mut k = 0usize;
+      while k < xs.len() {
+        if *xs[k] == p.x { dup = true; }
+        if *xs[k] > p.x and at == xs.len() { at = k; }
+        k = k + 1usize;
+      }
+      if !dup {
+        xs.push(p.x);
+        ys.push(p.y);
+        mut j = xs.len() - 1usize;
+        while j > at {
+          xs.swap(j, j - 1usize);
+          ys.swap(j, j - 1usize);
+          j = j - 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+    imm n = xs.len();
+    mut ms = List[f32].withCapacity(n);
+    mut s = 0usize;
+    while s < n {
+      ms.push(0.);
+      s = s + 1usize;
+    }
+    if n >= 2usize {
+      // Secant slopes between knots, then each knot's slope
+      mut sec = List[f32].withCapacity(n - 1usize);
+      s = 0usize;
+      while s + 1usize < n {
+        sec.push((*ys[s + 1usize] - *ys[s]) / (*xs[s + 1usize] - *xs[s]));
+        s = s + 1usize;
+      }
+      ms.set(0usize, *sec[0usize]);
+      ms.set(n - 1usize, *sec[n - 2usize]);
+      s = 1usize;
+      while s + 1usize < n {
+        imm a = *sec[s - 1usize];
+        imm b = *sec[s];
+        if a * b > 0. {
+          imm h0 = *xs[s] - *xs[s - 1usize];
+          imm h1 = *xs[s + 1usize] - *xs[s];
+          ms.set(s, 3. * (h0 + h1) / ((2. * h1 + h0) / a + (h1 + 2. * h0) / b));
+        }
+        s = s + 1usize;
+      }
+    }
+    new Falloff(FalloffCustom, xs, ys, ms);
+  }
+
+  // The weight at distance fraction d
+  pub fn weight(self &, d f32) f32 {
+    if kind != FalloffCustom { return falloffWeight(kind, d); }
+    if d > 1. { return 0.; }
+    imm n = xs.len();
+    if n == 0usize { return 0.; }
+    if d <= *xs[0usize] { return *ys[0usize]; }
+    if d >= *xs[n - 1usize] { return *ys[n - 1usize]; }
+    // The segment holding d
+    mut k = 0usize;
+    while k + 2usize < n and d >= *xs[k + 1usize] { k = k + 1usize; }
+    imm x0 = *xs[k];
+    imm h = *xs[k + 1usize] - x0;
+    imm t = (d - x0) / h;
+    imm t2 = t * t;
+    imm t3 = t2 * t;
+    (2. * t3 - 3. * t2 + 1.) * *ys[k] + (t3 - 2. * t2 + t) * h * *ms[k]
+      + (-2. * t3 + 3. * t2) * *ys[k + 1usize] + (t3 - t2) * h * *ms[k + 1usize];
+  }
+}

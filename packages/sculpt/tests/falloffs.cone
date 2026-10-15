@@ -1,0 +1,99 @@
+// The sculpt package's falloff curves, checked with the testing package
+// against values worked out by hand; only a failure prints, so falloffs.out
+// holds the summary alone.
+//
+// Each preset at d = 0, 0.5 and 1 (and past 1), from its formula with
+// p = 1 - d: at d = 0.5, p = 0.5:
+//   smooth 3 p^2 - 2 p^3 = 0.75 - 0.25 = 0.5; smooth sharp 0.5^2 = 0.25;
+//   root sqrt(0.5) = 0.707107; sharp 0.25; linear 0.5; sphere
+//   sqrt(1 - 0.25) = 0.866025; constant 1; plateau 1 (up to d = 0.5); gauss
+//   exp(-4.5 x 0.25) = exp(-1.125) = 0.324652 (smoothstep(0.7, 1, 0.5) is 0).
+// At d = 0.25: smooth 3 (0.5625) - 2 (0.421875) = 0.84375; linear 0.75; sharp
+// 0.5625; sphere sqrt(1 - 0.0625) = 0.968246.
+// A custom curve through (0, 1), (0.5, 0.25), (1, 0): at the knots exactly its
+// weights; between them within 0 and 1 and falling (the monotone cubic never
+// overshoots its points); given out of order it is the same curve.
+
+mod falloffs;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn preset(kind u32, d f32, want f64, label &Array[u8]) {
+  imm f = Falloff.preset(kind);
+  expectFloat(f64.from(f.weight(d)), want, near, label);
+}
+
+fn presets() {
+  preset(FalloffSmooth, 0., 1., "smooth at 0");
+  preset(FalloffSmooth, 0.5, 0.5, "smooth at 0.5");
+  preset(FalloffSmooth, 0.25, 0.84375, "smooth at 0.25");
+  preset(FalloffSmooth, 1., 0., "smooth at 1");
+  preset(FalloffSmooth, 1.5, 0., "smooth past 1");
+  preset(FalloffSmoothSharp, 0.5, 0.25, "smooth sharp at 0.5");
+  preset(FalloffRoot, 0.5, 0.707107, "root at 0.5");
+  preset(FalloffRoot, 0., 1., "root at 0");
+  preset(FalloffSharp, 0.5, 0.25, "sharp at 0.5");
+  preset(FalloffSharp, 0.25, 0.5625, "sharp at 0.25");
+  preset(FalloffLinear, 0.5, 0.5, "linear at 0.5");
+  preset(FalloffLinear, 0.25, 0.75, "linear at 0.25");
+  preset(FalloffSphere, 0.5, 0.866025, "sphere at 0.5");
+  preset(FalloffSphere, 0.25, 0.968246, "sphere at 0.25");
+  preset(FalloffConstant, 0.99, 1., "constant at 0.99");
+  preset(FalloffConstant, 1., 0., "constant at 1");
+  preset(FalloffPlateau, 0.5, 1., "plateau at 0.5");
+  preset(FalloffPlateau, 0.75, 0.5, "plateau at 0.75");
+  preset(FalloffGauss, 0.5, 0.324652, "gauss at 0.5");
+  preset(FalloffGauss, 0., 1., "gauss at 0");
+  preset(FalloffSmooth, -0.5, 1., "a distance below 0 counts as 0");
+  preset(77u32, 0.5, 0.5, "an unknown kind is smooth");
+}
+
+fn customCurve() {
+  imm pts Array[Vec2, 3] = [new Vec2(0., 1.), new Vec2(0.5, 0.25), new Vec2(1., 0.)];
+  imm f = Falloff.custom(&pts);
+  expectFloat(f64.from(f.weight(0.)), 1., near, "custom: at its first knot");
+  expectFloat(f64.from(f.weight(0.5)), 0.25, near, "custom: at its middle knot");
+  expectFloat(f64.from(f.weight(1.)), 0., near, "custom: at its last knot");
+  expectFloat(f64.from(f.weight(1.01)), 0., near, "custom: past the radius");
+  mut ok = true;
+  mut prev = 2.;
+  mut d = 0.;
+  while d <= 1. {
+    imm w = f.weight(d);
+    if w < -0.000001 or w > 1.000001 or w > prev + 0.000001 { ok = false; }
+    prev = w;
+    d = d + 0.01;
+  }
+  expectBool(ok, true, "custom: stays between 0 and 1, never rising");
+
+  imm shuffled Array[Vec2, 4] = [new Vec2(1., 0.), new Vec2(0., 1.), new Vec2(0.5, 0.25), new Vec2(0.5, 0.9)];
+  imm g = Falloff.custom(&shuffled);
+  expectFloat(f64.from(g.weight(0.3)), f64.from(f.weight(0.3)), near, "custom: points in any order, the first of a repeated d kept");
+
+  // A bump that rises then falls does not overshoot its peak
+  imm bump Array[Vec2, 4] = [new Vec2(0., 0.), new Vec2(0.3, 0.8), new Vec2(0.6, 0.8), new Vec2(1., 0.)];
+  imm b = Falloff.custom(&bump);
+  mut peak = 0.;
+  d = 0.;
+  while d <= 1. {
+    if b.weight(d) > peak { peak = b.weight(d); }
+    d = d + 0.01;
+  }
+  expectFloat(f64.from(peak), 0.8, 0.00001d, "custom: a plateau of 0.8 is not overshot");
+
+  imm one Array[Vec2, 1] = [new Vec2(0.4, 0.6)];
+  imm c = Falloff.custom(&one);
+  expectFloat(f64.from(c.weight(0.1)), 0.6, near, "custom: one point is a constant");
+  expectFloat(f64.from(c.weight(0.9)), 0.6, near, "custom: one point is a constant (after)");
+}
+
+fn main() i32 {
+  presets();
+  customCurve();
+  done();
+}

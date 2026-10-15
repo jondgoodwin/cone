@@ -1,0 +1,345 @@
+// operators: each shapefit instrument on a synthetic shape, before and after, as
+// PNG sheets in C:/src/shapefit-shots/.
+//
+//   congo run packages/shapefit/examples/operators.cone
+//
+//   fits.png         a shape coloured by its distance from a poor form (left of each pair) and
+//                    from the right one (right): plane/sphere, axis-aligned/general ellipsoid,
+//                    sphere/cylinder, cylinder/capsule, plane/quadric (blue inside, red outside)
+//   curvature.png    patch classes (flat grey, dome red, cup blue, saddle yellow, ridge orange,
+//                    valley teal) of an egg carton and a vase, and the vase's mean curvature
+//   align.png        a mesh and a moved, noisy copy: before, after the landmarks, after ICP
+//   features.png     a field with a bump, a dent, a ridge and a valley, and what is found
+//   silhouettes.png  outlines from three views of two shapes, with IoU and Hausdorff distance
+mod operators;
+
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+import fs;
+import path use Path;
+import shapefit use *;
+
+imm OutDir = "C:/src/shapefit-shots";
+
+fn ink() Vec3 { new Vec3(0.08, 0.08, 0.1); }
+
+fn wobble(i usize, amount f32) f32 {
+  imm h = (u32.from(i) * 2654435761u32) >> 8u32;
+  amount * (f32.from(h & 1023u32) / 511.5 - 1.);
+}
+
+fn threeQuarter() View { View.look(new Vec3(0.45, -0.35, 1.), new Vec3(0., 1., 0.)); }
+
+fn rms(field &List[f32]) f32 {
+  mut s = 0.d;
+  mut i = 0usize;
+  while i < field.len() { s = s + f64.from(*field[i]) * f64.from(*field[i]); i += 1usize; }
+  f32.from(libc.sqrt(s / f64.from(field.len())));
+}
+
+fn label(prefix &str, value f32, decimals i32) String {
+  mut s = String.from(prefix);
+  s.append(numberText(value, decimals).view());
+  s;
+}
+
+fn noisy(m &mut PolyMesh, amount f32) {
+  imm nrm = m.vertexNormals();
+  mut k = 0usize;
+  while k < m.positions.len() {
+    m.positions.set(k, *m.positions[k] + *nrm[k] * wobble(k, amount));
+    k += 1usize;
+  }
+}
+
+// A mesh coloured by a field, in a tile, with a caption
+fn showField(cv &mut Canvas, vp &Viewport, m &PolyMesh, field &List[f32], range f32, v &View, caption &str) {
+  imm colors = fieldColors(field, range);
+  imm win = tileWindow(m, m, v, vp);
+  drawMesh(cv, vp, &win, m, v, &colors);
+  cv.text(vp.x + 8, vp.y + 8, caption, 2, ink());
+}
+
+// Two tiles: the mesh's distance from a poor form, and from the right one
+fn pair(cv &mut Canvas, col i32, row i32, m &PolyMesh, bad &Form, good &Form, nameBad &str, nameGood &str,
+    rangeBad f32, rangeGood f32, v &View) {
+  imm vp0 = new Viewport(col * 320, row * 320, 320, 320);
+  imm vp1 = new Viewport(col * 320 + 320, row * 320, 320, 320);
+  imm rb = residualToForm(m, bad);
+  imm rg = residualToForm(m, good);
+  showField(cv, &vp0, m, &rb, rangeBad, v, label(nameBad, rms(&rb), 3).view());
+  showField(cv, &vp1, m, &rg, rangeGood, v, label(nameGood, rms(&rg), 3).view());
+  cv.line(vp0.x, vp0.y, vp0.x, vp0.y + vp0.h, new Vec3(0.7, 0.7, 0.7));
+  print <- nameBad; print <- " rms "; print <- rms(&rb); print <- "   "; print <- nameGood; print <- " rms "; print <- rms(&rg); print <- "\n";
+}
+
+fn fitsSheet() {
+  imm none = List[f32].empty();
+  mut cv = Canvas.make(1280, 960, new Vec3(1., 1., 1.));
+  imm v = threeQuarter();
+
+  // 1. a noisy sphere: plane, then sphere
+  mut a = sphereMesh(1.5, 20usize, 28usize);
+  noisy(&mut a, 0.03);
+  imm ap = gather(&a, allVertices(&a).view());
+  pair(&mut cv, 0, 0, &a, &fitPlane(ap.view(), none.view()), &fitSphere(ap.view(), none.view()),
+    "PLANE ", "SPHERE ", 1.5, 0.1, &v);
+
+  // 2. a rotated ellipsoid: axis-aligned, then general
+  mut e = sphereMesh(1., 22usize, 30usize);
+  imm rot = Mat3.fromQuat(Quat.angleAxis(radians(35.), new Vec3(1., 1., 0.).normalize()));
+  movePoints(&mut e, p => rot * new Vec3(2.2 * p.x, 1.2 * p.y, 1.6 * p.z));
+  noisy(&mut e, 0.02);
+  imm ep = gather(&e, allVertices(&e).view());
+  pair(&mut cv, 2, 0, &e, &fitEllipsoidAxis(ep.view(), none.view()), &fitEllipsoid(ep.view(), none.view()),
+    "AXIS ELLIPSOID ", "ELLIPSOID ", 0.6, 0.1, &v);
+
+  // 3. a cylinder: sphere, then cylinder
+  mut c = cylinderMesh(1., 4., 10usize, 28usize);
+  noisy(&mut c, 0.02);
+  imm cp = gather(&c, allVertices(&c).view());
+  pair(&mut cv, 0, 1, &c, &fitSphere(cp.view(), none.view()), &fitCylinder(cp.view(), none.view()),
+    "SPHERE ", "CYLINDER ", 1.0, 0.1, &v);
+
+  // 4. a capsule: cylinder, then capsule
+  mut k = capsuleMesh(0.8, 2.4, 6usize, 8usize, 28usize);
+  movePoints(&mut k, p => rot * p);
+  noisy(&mut k, 0.02);
+  imm kp = gather(&k, allVertices(&k).view());
+  pair(&mut cv, 2, 1, &k, &fitCylinder(kp.view(), none.view()), &fitCapsule(kp.view(), none.view()),
+    "CYLINDER ", "CAPSULE ", 0.4, 0.1, &v);
+
+  // 5. a quadric patch: plane, then quadric
+  mut g = gridMesh(30usize, 4., (x, z) => 0.4 * x * x + 0.15 * x * z - 0.3 * z * z + 0.1 * x);
+  noisy(&mut g, 0.01);
+  imm gp = gather(&g, allVertices(&g).view());
+  pair(&mut cv, 0, 2, &g, &fitPlane(gp.view(), none.view()), &fitQuadric(gp.view(), none.view()),
+    "PLANE ", "QUADRIC ", 1.0, 0.1, &v);
+
+  // 6. weights: a sphere with a bulge, fitted with and without the bulge's weight
+  mut b = sphereMesh(1.5, 20usize, 28usize);
+  mut wts = List[f32].empty();
+  mut i = 0usize;
+  while i < b.positions.len() {
+    imm p = *b.positions[i];
+    if p.y > 0.6 and p.x > 0. { b.positions.set(i, p * 1.25); wts.push(0.); } else { wts.push(1.); }
+    i += 1usize;
+  }
+  imm bp = gather(&b, allVertices(&b).view());
+  pair(&mut cv, 2, 2, &b, &fitSphere(bp.view(), none.view()), &fitSphere(bp.view(), wts.view()),
+    "ALL POINTS ", "BULGE WEIGHT 0 ", 0.3, 0.3, &v);
+
+  cv.text(10, 940, "BLUE INSIDE THE FORM, RED OUTSIDE", 2, ink());
+  mut ok = cv.save(OutDir, "fits.png");
+  if not ok { print <- "could not write fits.png\n"; }
+}
+
+fn curvatureSheet() {
+  mut cv = Canvas.make(1280, 400, new Vec3(1., 1., 1.));
+  imm v = threeQuarter();
+  // an egg carton, y = 0.25 sin 2x sin 2z
+  imm egg = gridMesh(60usize, 6., (x, z) => 0.3 * libc.sinf(1.6 * x) * libc.sinf(1.6 * z));
+  imm ce = curvature(&egg);
+  imm ee = 0.25;
+  imm cls = classifyVertices(&ce, ee);
+  imm vp0 = new Viewport(0, 0, 400, 380);
+  imm w0 = tileWindow(&egg, &egg, &v, &vp0);
+  drawMesh(&mut cv, &vp0, &w0, &egg, &v, &patchColors(&cls));
+  cv.text(8, 8, "EGG CARTON: PATCH CLASSES", 2, ink());
+  // a vase: a profile of a wavy radius
+  mut prof = List[Vec2].empty();
+  mut j = 0usize;
+  while j <= 40usize {
+    imm t = f32.from(j) / 40.;
+    imm r = if j == 0usize or j == 40usize { 0.; } else { 0.8 + 0.35 * libc.sinf(2. * pi * t * 1.5) * libc.sinf(pi * t) + 0.5 * libc.sinf(pi * t); };
+    prof.push(new Vec2(r, 2.5 - 5. * t));
+    j += 1usize;
+  }
+  imm vase = revolve(prof.view(), 48usize, false, false);
+  imm cvs = curvature(&vase);
+  imm vcls = classifyVertices(&cvs, 0.3);
+  imm vp1 = new Viewport(400, 0, 400, 380);
+  imm w1 = tileWindow(&vase, &vase, &v, &vp1);
+  drawMesh(&mut cv, &vp1, &w1, &vase, &v, &patchColors(&vcls));
+  cv.text(408, 8, "VASE: PATCH CLASSES", 2, ink());
+  mut mean = List[f32].empty();
+  mut i = 0usize;
+  while i < vase.vertexCount() { mean.push(cvs.mean(i)); i += 1usize; }
+  imm sm = smoothField(&vase, &mean, 1u32);
+  imm vp2 = new Viewport(800, 0, 400, 380);
+  showField(&mut cv, &vp2, &vase, &sm, 1.5, &v, "VASE: MEAN CURVATURE");
+  // legend
+  mut x = 1215;
+  mut c = 0u32;
+  while c < 6u32 {
+    cv.fillRect(1210, 40 + i32.from(c) * 22, 16, 16, patchColor(c));
+    cv.text(1230 - 0, 43 + i32.from(c) * 22, patchName(c), 1, ink());
+    c += 1u32;
+  }
+  mut ok = cv.save(OutDir, "curvature.png");
+  if not ok { print <- "could not write curvature.png\n"; }
+  print <- "egg carton classes: ";
+  mut counts = [0usize, 0usize, 0usize, 0usize, 0usize, 0usize];
+  i = 0usize;
+  while i < cls.len() { counts[usize.from(*cls[i])] = counts[usize.from(*cls[i])] + 1usize; i += 1usize; }
+  c = 0u32;
+  while c < 6u32 { print <- patchName(c); print <- " "; print <- counts[usize.from(c)]; print <- "  "; c += 1u32; }
+  print <- "\n";
+}
+
+fn alignSheet() {
+  imm none = List[f32].empty();
+  mut cv = Canvas.make(1260, 420, new Vec3(1., 1., 1.));
+  imm v = View.look(new Vec3(0.2, -0.3, 1.), new Vec3(0., 1., 0.));
+  mut a = sphereMesh(1., 24usize, 32usize);
+  movePoints(&mut a, p => new Vec3(2.4 * p.x, 1.1 * p.y, 1.5 * p.z + 0.35 * p.x * p.y));
+  // the moved copy: scaled, turned, shifted, a little noisy
+  imm rot = Mat3.fromQuat(Quat.angleAxis(radians(25.), new Vec3(0.3, 1., 0.2).normalize()));
+  mut b = sphereMesh(1., 24usize, 32usize);
+  movePoints(&mut b, p => rot * (new Vec3(2.4 * p.x, 1.1 * p.y, 1.5 * p.z + 0.35 * p.x * p.y) * 1.15) + new Vec3(0.7, 0.3, -0.2));
+  noisy(&mut b, 0.02);
+  // landmarks: eight vertices of a and the same eight on b, each placed by hand with an error
+  mut la = List[Vec3].empty();
+  mut lb = List[Vec3].empty();
+  imm picks = [3usize, 40usize, 100usize, 200usize, 333usize, 450usize, 600usize, 700usize];
+  mut i = 0usize;
+  while i < 8usize {
+    la.push(*a.positions[picks[i]]);
+    lb.push(*b.positions[picks[i]] + new Vec3(wobble(i, 0.05), wobble(i + 9usize, 0.05), wobble(i + 19usize, 0.05)));
+    i += 1usize;
+  }
+  imm lm = alignPoints(lb.view(), la.view(), none.view(), true);
+  mut b1 = b.positions.view();
+  mut afterLm = sphereMesh(1., 24usize, 32usize);
+  i = 0usize;
+  while i < b.positions.len() { afterLm.positions.set(i, lm.apply(*b.positions[i])); i += 1usize; }
+  imm bpts = gather(&b, allVertices(&b).view());
+  imm surf = Surface.of(&a);
+  imm res = icp(bpts.view(), &surf, &lm, 40u32, 0.9, 0., true, none.view());
+  mut afterIcp = sphereMesh(1., 24usize, 32usize);
+  i = 0usize;
+  while i < b.positions.len() { afterIcp.positions.set(i, res.map.apply(*b.positions[i])); i += 1usize; }
+  imm red = uniform(a.vertexCount(), new Vec3(0.9, 0.3, 0.25));
+  imm blue = uniform(a.vertexCount(), new Vec3(0.25, 0.45, 0.9));
+  mut t = 0;
+  while t < 3 {
+    imm vp = new Viewport(t * 420, 0, 420, 420);
+    imm moving = if t == 0 { &b; } elif t == 1 { &afterLm; } else { &afterIcp; };
+    imm win = tileWindow(&a, moving, &v, &vp);
+    drawMesh(&mut cv, &vp, &win, &a, &v, &red);
+    drawMesh(&mut cv, &vp, &win, moving, &v, &blue);
+    t += 1;
+  }
+  imm rmsBefore = pairRms(lb.view(), la.view(), none.view(), &Similarity.identity());
+  imm rmsLm = pairRms(lb.view(), la.view(), none.view(), &lm);
+  cv.text(8, 8, "BEFORE", 2, ink());
+  cv.text(428, 8, label("LANDMARKS: SCALE ", f32.from(lm.scale), 3).view(), 2, ink());
+  cv.text(848, 8, label("ICP: RMS ", f32.from(res.rms), 4).view(), 2, ink());
+  print <- "landmark rms before "; print <- f32.from(rmsBefore); print <- " after "; print <- f32.from(rmsLm);
+  print <- "; icp rounds "; print <- res.rounds; print <- " rms "; print <- f32.from(res.rms); print <- " scale "; print <- f32.from(res.map.scale); print <- "\n";
+  mut ok = cv.save(OutDir, "align.png");
+  if not ok { print <- "could not write align.png\n"; }
+}
+
+fn uniform(n usize, c Vec3) List[Vec3] {
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n { out.push(c); i += 1usize; }
+  out;
+}
+
+fn fieldAt(p Vec3) f32 {
+  imm bump = libc.expf(-((p.x - 1.) * (p.x - 1.) + (p.z - 1.) * (p.z - 1.)) / 0.1);
+  imm dent = -0.8 * libc.expf(-((p.x + 1.2) * (p.x + 1.2) + (p.z + 1.2) * (p.z + 1.2)) / 0.1);
+  imm ridge = 0.6 * libc.expf(-(p.x + 0.3) * (p.x + 0.3) / 0.04) * (if p.z > -1.8 and p.z < 1.8 { 1.; } else { 0.; });
+  imm valley = -0.5 * libc.expf(-(p.z - 0.2) * (p.z - 0.2) / 0.04) * (if p.x > 0.3 and p.x < 1.9 { 1.; } else { 0.; });
+  bump + dent + ridge + valley;
+}
+
+fn featuresSheet() {
+  mut cv = Canvas.make(900, 460, new Vec3(1., 1., 1.));
+  mut g = gridMesh(70usize, 4.4, (x, z) => 0.);
+  mut field = List[f32].empty();
+  mut i = 0usize;
+  while i < g.vertexCount() { field.push(fieldAt(*g.positions[i])); i += 1usize; }
+  imm peaks = findPeaks(&g, &field, 0.3, 0.4);
+  imm pits = findPits(&g, &field, 0.3, 0.4);
+  imm cr = findCreases(&g, &field, 3., 8usize);
+  print <- "features: peaks "; print <- peaks.len(); print <- " pits "; print <- pits.len();
+  print <- " ridge lines "; print <- cr.ridges.len(); print <- " valley lines "; print <- cr.valleys.len(); print <- "\n";
+  // relief for the picture
+  i = 0usize;
+  while i < g.vertexCount() { g.positions.set(i, new Vec3(g.positions[i].x, 0.5 * *field[i], g.positions[i].z)); i += 1usize; }
+  imm v = View.look(new Vec3(0.2, -0.75, 0.55), new Vec3(0., 1., 0.));
+  imm vp0 = new Viewport(0, 0, 450, 440);
+  showField(&mut cv, &vp0, &g, &field, 1., &v, "FIELD");
+  imm vp1 = new Viewport(450, 0, 450, 440);
+  showField(&mut cv, &vp1, &g, &field, 1., &v, "FOUND");
+  imm win = tileWindow(&g, &g, &v, &vp1);
+  mut l = 0usize;
+  while l < cr.ridges.len() {
+    mut pts = List[Vec3].empty();
+    mut k = 0usize;
+    while k < cr.ridges[l].len() { pts.push(*g.positions[usize.from(*cr.ridges[l][k])] + new Vec3(0., 0.02, 0.)); k += 1usize; }
+    drawPolyline3(&mut cv, &vp1, &win, &v, &pts, new Vec3(0.9, 0.55, 0.0));
+    l += 1usize;
+  }
+  l = 0usize;
+  while l < cr.valleys.len() {
+    mut pts = List[Vec3].empty();
+    mut k = 0usize;
+    while k < cr.valleys[l].len() { pts.push(*g.positions[usize.from(*cr.valleys[l][k])] + new Vec3(0., 0.02, 0.)); k += 1usize; }
+    drawPolyline3(&mut cv, &vp1, &win, &v, &pts, new Vec3(0.0, 0.5, 0.5));
+    l += 1usize;
+  }
+  i = 0usize;
+  while i < peaks.len() { drawMarker3(&mut cv, &vp1, &win, &v, *g.positions[usize.from(*peaks[i])], 5, new Vec3(0.1, 0.7, 0.1)); i += 1usize; }
+  i = 0usize;
+  while i < pits.len() { drawMarker3(&mut cv, &vp1, &win, &v, *g.positions[usize.from(*pits[i])], 5, new Vec3(0.75, 0.1, 0.75)); i += 1usize; }
+  cv.text(458, 30, "GREEN PEAK  PURPLE PIT  ORANGE RIDGE  TEAL VALLEY", 1, ink());
+  mut ok = cv.save(OutDir, "features.png");
+  if not ok { print <- "could not write features.png\n"; }
+}
+
+fn silhouetteSheet() {
+  mut cv = Canvas.make(1260, 420, new Vec3(1., 1., 1.));
+  mut a = sphereMesh(1., 28usize, 40usize);
+  movePoints(&mut a, p => new Vec3(1.5 * p.x, 1.0 * p.y, 0.8 * p.z));
+  mut b = sphereMesh(1., 28usize, 40usize);
+  movePoints(&mut b, p => new Vec3(1.5 * p.x * 1.1 + 0.25, 1.0 * p.y * 1.1, 0.8 * p.z * 0.8 + 0.1) );
+  imm views = standardViews();
+  imm scores = compareSilhouettes(&a, &b, &views, 420usize);
+  imm which = [0usize, 2usize, 4usize];
+  imm names = ["FRONT", "SIDE", "TOP"];
+  mut t = 0usize;
+  while t < 3usize {
+    imm vi = which[t];
+    imm vp = new Viewport(i32.from(t) * 420, 0, 420, 420);
+    imm win = tileWindow(&a, &b, views[vi], &vp);
+    imm sw = windowFor(&a, &b, views[vi], usize.from(420 - 8));
+    imm oa = traceOutline(&rasterize(&a, views[vi], &sw), &sw);
+    imm ob = traceOutline(&rasterize(&b, views[vi], &sw), &sw);
+    drawLoops(&mut cv, &vp, &win, &oa, new Vec3(0.85, 0.2, 0.2));
+    drawLoops(&mut cv, &vp, &win, &ob, new Vec3(0.2, 0.35, 0.85));
+    cv.text(i32.from(t) * 420 + 8, 8, names[t], 2, ink());
+    cv.text(i32.from(t) * 420 + 8, 28, label("IOU ", scores[vi].iou, 3).view(), 2, ink());
+    cv.text(i32.from(t) * 420 + 8, 48, label("HAUSDORFF ", scores[vi].hausdorff, 3).view(), 2, ink());
+    print <- names[t]; print <- " iou "; print <- scores[vi].iou; print <- " hausdorff "; print <- scores[vi].hausdorff; print <- "\n";
+    t += 1usize;
+  }
+  mut ok = cv.save(OutDir, "silhouettes.png");
+  if not ok { print <- "could not write silhouettes.png\n"; }
+}
+
+fn main() i32 {
+  fs.makeDirAll(&Path.from(OutDir));
+  fitsSheet();
+  curvatureSheet();
+  alignSheet();
+  featuresSheet();
+  silhouetteSheet();
+  0;
+}
