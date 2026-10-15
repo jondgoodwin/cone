@@ -148,29 +148,59 @@ pub fn voxelRemeshWith(m &PolyMesh, voxelSize f32, preserveVolume bool, keepChan
   }
 
   // Each new vertex's nearest point of the input
+  // (surface.cone's search over the same triangles; transfer.cone's carry)
   if preserveVolume or keepChannels {
+    imm idx = SurfaceIndex.ofTriMesh(&t, &bvh);
     imm nv = out.vertexCount();
-    mut nearTri = List[u32].withCapacity(nv);
-    mut nearW = List[DVec3].withCapacity(nv);
-    mut cands = List[u32].empty();
+    mut hits = List[SurfaceHit].withCapacity(nv);
     mut stack = List[u32].empty();
     mut v = 0usize;
     while v < nv {
-      mut w = new DVec3(1.d, 0.d, 0.d);
-      imm tri = nearestTriangle(&t, &bvh, *out.positions[v], cs, &mut w, &mut cands, &mut stack);
-      nearTri.push(tri);
-      nearW.push(w);
+      hits.push(idx.nearestWith(*out.positions[v], 0., &mut stack));
       v = v + 1usize;
     }
     if preserveVolume {
       v = 0usize;
       while v < nv {
-        imm tri = *nearTri[v];
-        if tri != NoIndex { out.positions.set(v, triPointAt(&t, usize.from(tri), *nearW[v]).toVec3()); }
+        if hits[v].tri != NoIndex { out.positions.set(v, hits[v].point); }
         v = v + 1usize;
       }
     }
-    if keepChannels { carryNearest(m, &t, &bvh, &mut out, &nearTri, &nearW, cs); }
+    if keepChannels {
+      // Vertices and corners blend across the nearest triangle, a face takes
+      // the input face nearest its centroid, an edge has no source
+      mut samples = List[List[Sample]].empty();
+      mut vs = List[Sample].withCapacity(nv);
+      v = 0usize;
+      while v < nv {
+        vs.push(triSample(&idx, *hits[v], VertexDomain));
+        v = v + 1usize;
+      }
+      samples.push(vs);
+      mut es = List[Sample].empty();
+      mut ed = 0usize;
+      while ed < out.edgeCount() { es.push(sampleNone()); ed = ed + 1usize; }
+      samples.push(es);
+      mut fs = List[Sample].empty();
+      mut f = 0usize;
+      while f < out.faceCount() {
+        imm h = idx.nearestWith(out.faceCentroid(u32.from(f)), 0., &mut stack);
+        fs.push(if h.tri == NoIndex { sampleNone(); } else { sampleOne(h.face); });
+        f = f + 1usize;
+      }
+      samples.push(fs);
+      mut cs2 = List[Sample].withCapacity(out.halfedgeCount());
+      mut c = 0usize;
+      while c < out.halfedgeCount() {
+        if *out.hFace[c] == NoIndex { cs2.push(sampleNone()); }
+        else { cs2.push(triSample(&idx, *hits[usize.from(*out.hVertex[c])], CornerDomain)); }
+        c = c + 1usize;
+      }
+      samples.push(cs2);
+      mut ignoredNames Array[&str, 1] = [""];
+      mut carried = List[String].empty();
+      carryChannels(m, &mut out, &samples, false, &ignoredNames, 1., &mut carried);
+    }
   }
   out;
 }
@@ -442,14 +472,6 @@ fn segmentParam(p DVec3, a DVec3, b DVec3) f64 {
   if s < 0.d { 0.d; } elif s > 1.d { 1.d; } else { s; };
 }
 
-// Triangle s's point at barycentric weights w
-fn triPointAt(t &TriMesh, s usize, w DVec3) DVec3 {
-  imm a = *t.pos[usize.from(*t.tv[3usize * s])];
-  imm b = *t.pos[usize.from(*t.tv[3usize * s + 1usize])];
-  imm c = *t.pos[usize.from(*t.tv[3usize * s + 2usize])];
-  a * w.x + b * w.y + c * w.z;
-}
-
 // ---- Inside or outside: the rows ----
 
 // Each sample inside the solid made negative (a distance of 0 there the
@@ -548,169 +570,9 @@ fn side2(a DVec3, b DVec3, qy f64, qz f64) i32 {
   0i32;
 }
 
-// ---- The nearest point ----
-
-// The input triangle nearest p (the lowest number among equals), and the
-// nearest point's barycentric weights in 'w'; the search starts within two
-// cells and widens until it finds one. NoIndex if there are no triangles
-fn nearestTriangle(t &TriMesh, bvh &Bvh, p Vec3, cs f32, w &mut DVec3, cands &mut List[u32], stack &mut List[u32]) u32 {
-  if t.triCount() == 0usize { return NoIndex; }
-  imm pd = DVec3.from(p);
-  mut r = 2. * cs;
-  mut best = NoIndex;
-  mut bestD = 0.d;
-  while best == NoIndex {
-    bvh.query(p - new Vec3(r, r, r), p + new Vec3(r, r, r), cands, stack);
-    mut k = 0usize;
-    while k < cands.len() {
-      imm s = *cands[k];
-      imm su = usize.from(s);
-      imm a = *t.pos[usize.from(*t.tv[3usize * su])];
-      imm b = *t.pos[usize.from(*t.tv[3usize * su + 1usize])];
-      imm c = *t.pos[usize.from(*t.tv[3usize * su + 2usize])];
-      mut wts = new DVec3(0.d, 0.d, 0.d);
-      nearestOnTriangle(pd, a, b, c, &mut wts);
-      imm q = a * wts.x + b * wts.y + c * wts.z;
-      imm d = (pd - q).lengthSquared();
-      if best == NoIndex or d < bestD or (d == bestD and s < best) {
-        best = s;
-        bestD = d;
-        *w = wts;
-      }
-      k = k + 1usize;
-    }
-    // A triangle found in the box may not be the nearest beyond it: accept
-    // it only if it is within the box's half width
-    if best != NoIndex and bestD > f64.from(r) * f64.from(r) { best = NoIndex; }
-    r = r * 2.;
-  }
-  best;
-}
-
-// The channels of m carried to 'out' from the nearest points (see the top)
-fn carryNearest(m &PolyMesh, t &TriMesh, bvh &Bvh, out &mut PolyMesh, nearTri &List[u32], nearW &List[DVec3], cs f32) {
-  // Each new face's nearest input face, by its centroid
-  imm nf = out.faceCount();
-  mut faceSrc = List[u32].withCapacity(nf);
-  mut cands = List[u32].empty();
-  mut stack = List[u32].empty();
-  mut f = 0usize;
-  while f < nf {
-    mut w = new DVec3(1.d, 0.d, 0.d);
-    imm tri = nearestTriangle(t, bvh, out.faceCentroid(u32.from(f)), cs, &mut w, &mut cands, &mut stack);
-    faceSrc.push(if tri == NoIndex { NoIndex; } else { *t.tf[usize.from(tri)]; });
-    f = f + 1usize;
-  }
-  mut i = 0usize;
-  while i < m.floats.len() {
-    imm domain = m.floats[i].domain;
-    imm fill = m.floats[i].fill;
-    imm n = out.domainSize(domain);
-    mut vals = List[f32].withCapacity(n);
-    mut e = 0usize;
-    while e < n {
-      mut val = fill;
-      imm src = nearSource(out, domain, e, nearTri, &faceSrc);
-      if src != NoIndex {
-        if domain == FaceDomain { val = m.float(u32.from(i), src); }
-        elif domain == VertexDomain or domain == CornerDomain {
-          imm w = *nearW[usize.from(src)];
-          imm s = 3usize * usize.from(*nearTri[usize.from(src)]);
-          imm k0 = sourceElement(t, domain, s);
-          imm k1 = sourceElement(t, domain, s + 1usize);
-          imm k2 = sourceElement(t, domain, s + 2usize);
-          val = blend3(m.float(u32.from(i), k0), m.float(u32.from(i), k1), m.float(u32.from(i), k2), w);
-        }
-      }
-      vals.push(val);
-      e = e + 1usize;
-    }
-    out.floats.push(new Channel[f32](String.from(m.floats[i].name.view()), domain, vals, fill));
-    i = i + 1usize;
-  }
-  i = 0usize;
-  while i < m.vec2s.len() {
-    imm domain = m.vec2s[i].domain;
-    imm fill = m.vec2s[i].fill;
-    imm n = out.domainSize(domain);
-    mut vals = List[Vec2].withCapacity(n);
-    mut e = 0usize;
-    while e < n {
-      mut val = fill;
-      imm src = nearSource(out, domain, e, nearTri, &faceSrc);
-      if src != NoIndex {
-        if domain == FaceDomain { val = m.vec2(u32.from(i), src); }
-        elif domain == VertexDomain or domain == CornerDomain {
-          imm w = *nearW[usize.from(src)];
-          imm s = 3usize * usize.from(*nearTri[usize.from(src)]);
-          imm a = m.vec2(u32.from(i), sourceElement(t, domain, s));
-          imm b = m.vec2(u32.from(i), sourceElement(t, domain, s + 1usize));
-          imm c = m.vec2(u32.from(i), sourceElement(t, domain, s + 2usize));
-          val = new Vec2(blend3(a.x, b.x, c.x, w), blend3(a.y, b.y, c.y, w));
-        }
-      }
-      vals.push(val);
-      e = e + 1usize;
-    }
-    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[i].name.view()), domain, vals, fill));
-    i = i + 1usize;
-  }
-  i = 0usize;
-  while i < m.vec3s.len() {
-    imm domain = m.vec3s[i].domain;
-    imm fill = m.vec3s[i].fill;
-    imm n = out.domainSize(domain);
-    mut vals = List[Vec3].withCapacity(n);
-    mut e = 0usize;
-    while e < n {
-      mut val = fill;
-      imm src = nearSource(out, domain, e, nearTri, &faceSrc);
-      if src != NoIndex {
-        if domain == FaceDomain { val = m.vec3(u32.from(i), src); }
-        elif domain == VertexDomain or domain == CornerDomain {
-          imm w = *nearW[usize.from(src)];
-          imm s = 3usize * usize.from(*nearTri[usize.from(src)]);
-          imm a = m.vec3(u32.from(i), sourceElement(t, domain, s));
-          imm b = m.vec3(u32.from(i), sourceElement(t, domain, s + 1usize));
-          imm c = m.vec3(u32.from(i), sourceElement(t, domain, s + 2usize));
-          val = new Vec3(blend3(a.x, b.x, c.x, w), blend3(a.y, b.y, c.y, w), blend3(a.z, b.z, c.z, w));
-        }
-      }
-      vals.push(val);
-      e = e + 1usize;
-    }
-    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[i].name.view()), domain, vals, fill));
-    i = i + 1usize;
-  }
-}
-
-// Where new element e of a domain takes its value from: a face's nearest
-// input face; a vertex's own number, or a corner's vertex's, whose nearest
-// triangle and weights are kept; NoIndex for an edge, a boundary corner, or
-// nothing found
-fn nearSource(out &PolyMesh, domain u32, e usize, nearTri &List[u32], faceSrc &List[u32]) u32 {
-  if domain == FaceDomain { return *faceSrc[e]; }
-  if domain == VertexDomain {
-    if *nearTri[e] == NoIndex { return NoIndex; }
-    return u32.from(e);
-  }
-  if domain == CornerDomain {
-    if *out.hFace[e] == NoIndex { return NoIndex; }
-    imm v = *out.hVertex[e];
-    if *nearTri[usize.from(v)] == NoIndex { return NoIndex; }
-    return v;
-  }
-  NoIndex;
-}
-
 // Three values blended by barycentric weights, in f64 and rounded once, so
 // three equal values give that value exactly
 fn blend3(a f32, b f32, c f32, w DVec3) f32 {
   f32.from(f64.from(a) * w.x + f64.from(b) * w.y + f64.from(c) * w.z);
 }
 
-// Triangle corner k's element of the input in a domain: its vertex, or its
-// corner (half-edge)
-fn sourceElement(t &TriMesh, domain u32, k usize) u32 {
-  if domain == VertexDomain { *t.tv[k]; } else { *t.tc[k]; };
-}

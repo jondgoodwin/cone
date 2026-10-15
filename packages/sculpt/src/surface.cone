@@ -1,0 +1,596 @@
+// ======== A surface to search: nearest point, nearest vertex, rays ========
+//
+// The search inside voxel remesh made public, and widened: 'SurfaceIndex.of'
+// cuts a PolyMesh's faces into triangles (a triangle is kept as it is, a
+// convex face fanned, any other face ear-clipped, as 'triangulate' does) and
+// builds two trees of boxes over them (bvh.cone): one over the triangles, one
+// over the vertices the triangles use. The mesh need not be closed or
+// manifold, and may have faces of no area: a surface to snap to, not a solid.
+// Its questions, each answered by a walk down the tree that skips every box
+// further than the best answer so far:
+//
+// - 'nearest': the point of the surface nearest a point, with its triangle,
+//   face, barycentric weights, distance and the triangle's unit normal.
+//   Ericson's nearest point on a triangle (Real-Time Collision Detection,
+//   5.1.5, in remesh.cone), in f64; the least distance wins, and equal
+//   distances go to the lowest triangle number, so the answer does not depend
+//   on the tree.
+// - 'nearestVertex': the nearest vertex that a triangle uses, as a hit on one
+//   of its triangles with weight 1 on that vertex.
+// - 'ray': the first triangle a ray meets, by the Moller-Trumbore test in
+//   f64 with the triangle's plane normal deciding which side faces the ray;
+//   'CullFront' ignores triangles facing the ray's origin (as Blender's
+//   Shrinkwrap "Cull Faces: Front"), 'CullBack' those facing away. A ray that
+//   runs along a shared edge hits one of its triangles, not neither (the
+//   barycentric test lets a rounding error of 1e-9 through).
+// - 'targetNormal': the point whose interpolated vertex normal line passes
+//   through the query point (Blender's Shrinkwrap "Target Normal Project"),
+//   found for each candidate triangle by Gauss-Newton on the barycentric
+//   coordinates from the triangle's centre; the candidates are the triangles
+//   within the limit, or with no limit within twice the nearest distance; the
+//   nearest solution wins, and when no triangle has one the nearest point is
+//   answered.
+// - 'smoothNormal': a hit's normal interpolated from the vertex normals (the
+//   angle-weighted normals PolyMesh.vertexNormals gives), unit.
+//
+// A hit with 'tri' NoIndex found nothing. A limit of 0 or less means no limit.
+// DETERMINISTIC: the walks are in a fixed order and every comparison is on
+// numbers, so the same mesh and query give the same bits.
+
+pub const CullNone = 0u32;
+pub const CullFront = 1u32;
+pub const CullBack = 2u32;
+
+// Where a query landed: the triangle (NoIndex for none) and its face, the
+// point, the weights on the triangle's three corners, how far (from the query
+// point, or along the ray), and the triangle's unit normal
+pub struct SurfaceHit {
+  pub tri u32;
+  pub face u32;
+  pub point Vec3;
+  pub bary DVec3;           // in f64, so blended values are rounded once
+  pub distance f32;
+  pub normal Vec3;
+
+  pub fn none() SurfaceHit {
+    new SurfaceHit(NoIndex, NoIndex, new Vec3(0., 0., 0.), new DVec3(0.d, 0.d, 0.d), 0., new Vec3(0., 0., 0.));
+  }
+  pub fn found(self &) bool { tri != NoIndex; }
+}
+
+pub struct SurfaceIndex {
+  pos List[DVec3];          // per vertex
+  nrm List[Vec3];           // per vertex: its unit normal
+  tv List[u32];             // per triangle corner (3 a triangle): its vertex
+  tc List[u32];             // per triangle corner: the mesh's corner (half-edge)
+  tf List[u32];             // per triangle: its face
+  tlo List[Vec3];           // per triangle: its box
+  thi List[Vec3];
+  tree Bvh;                 // over the triangles
+  vlist List[u32];          // the vertices some triangle uses
+  vtree Bvh;                // over those
+  vtri List[u32];           // per vertex: the first triangle using it, NoIndex for none
+
+  // The index of a mesh
+  pub fn of(m &PolyMesh) SurfaceIndex {
+    imm nv = m.vertexCount();
+    mut pos = List[DVec3].withCapacity(nv);
+    mut v = 0usize;
+    while v < nv {
+      pos.push(DVec3.from(*m.positions[v]));
+      v = v + 1usize;
+    }
+    mut tv = List[u32].empty();
+    mut tc = List[u32].empty();
+    mut tf = List[u32].empty();
+    mut tlo = List[Vec3].empty();
+    mut thi = List[Vec3].empty();
+    mut vtri = List[u32].withCapacity(nv);
+    v = 0usize;
+    while v < nv {
+      vtri.push(NoIndex);
+      v = v + 1usize;
+    }
+    mut cut = List[u32].empty();
+    mut f = 0usize;
+    while f < m.faceCount() {
+      imm hs = m.faceHalfedges(u32.from(f));
+      cut.clear();
+      if hs.len() == 3usize {
+        cut.push(0u32); cut.push(1u32); cut.push(2u32);
+      } else {
+        m.cutFace(u32.from(f), &mut cut);
+      }
+      mut k = 0usize;
+      while k + 2usize < cut.len() {
+        imm tri = u32.from(tf.len());
+        mut c = 0usize;
+        while c < 3usize {
+          imm h = *hs[usize.from(*cut[k + c])];
+          imm vv = m.toVertex(h);
+          tv.push(vv);
+          tc.push(h);
+          if *vtri[usize.from(vv)] == NoIndex { vtri.set(usize.from(vv), tri); }
+          c = c + 1usize;
+        }
+        tf.push(u32.from(f));
+        imm a = *m.positions[usize.from(*tv[tv.len() - 3usize])];
+        imm b = *m.positions[usize.from(*tv[tv.len() - 2usize])];
+        imm cc = *m.positions[usize.from(*tv[tv.len() - 1usize])];
+        tlo.push(minVec(minVec(a, b), cc));
+        thi.push(maxVec(maxVec(a, b), cc));
+        k = k + 3usize;
+      }
+      f = f + 1usize;
+    }
+    imm tree = Bvh.build(&tlo, &thi);
+    mut vlist = List[u32].empty();
+    mut vlo = List[Vec3].empty();
+    v = 0usize;
+    while v < nv {
+      if *vtri[v] != NoIndex {
+        vlist.push(u32.from(v));
+        vlo.push(*m.positions[v]);
+      }
+      v = v + 1usize;
+    }
+    imm vtree = Bvh.build(&vlo, &vlo);
+    new SurfaceIndex(pos, m.vertexNormals(), tv, tc, tf, tlo, thi, tree, vlist, vtree, vtri);
+  }
+
+  // The index over a TriMesh's triangles (voxel remesh's), sharing its
+  // triangulation and tree: it answers 'nearest' and 'ray' only, having no
+  // vertex normals or vertex tree
+  fn ofTriMesh(t &TriMesh, tree &Bvh) SurfaceIndex {
+    new SurfaceIndex(copyList(&t.pos), List[Vec3].empty(), copyList(&t.tv), copyList(&t.tc), copyList(&t.tf),
+      copyList(&t.tlo), copyList(&t.thi),
+      new Bvh(copyList(&tree.lo), copyList(&tree.hi), copyList(&tree.first), copyList(&tree.count), copyList(&tree.items)),
+      List[u32].empty(), Bvh.build(&List[Vec3].empty(), &List[Vec3].empty()), List[u32].empty());
+  }
+
+  pub fn triangleCount(self &) usize { tf.len(); }
+
+  // Triangle t's corner positions
+  fn corners(self &, t usize, a &mut DVec3, b &mut DVec3, c &mut DVec3) {
+    *a = *pos[usize.from(*tv[3usize * t])];
+    *b = *pos[usize.from(*tv[3usize * t + 1usize])];
+    *c = *pos[usize.from(*tv[3usize * t + 2usize])];
+  }
+
+  // Triangle t's unit normal, (0, 0, 0) for a triangle of no area
+  pub fn triangleNormal(self &, t u32) Vec3 {
+    mut a = new DVec3(0.d, 0.d, 0.d);
+    mut b = a;
+    mut c = a;
+    self.corners(usize.from(t), &mut a, &mut b, &mut c);
+    imm n = crossD(b - a, c - a);
+    imm len = n.length();
+    if len > 0.d { (n * (1.d / len)).toVec3(); } else { new Vec3(0., 0., 0.); };
+  }
+
+  // A hit on triangle t at weights w, as seen from p
+  fn hitAt(self &, t usize, w DVec3, p DVec3, dist f64) SurfaceHit {
+    mut a = new DVec3(0.d, 0.d, 0.d);
+    mut b = a;
+    mut c = a;
+    self.corners(t, &mut a, &mut b, &mut c);
+    imm q = a * w.x + b * w.y + c * w.z;
+    new SurfaceHit(u32.from(t), *tf[t], q.toVec3(), w, f32.from(dist), self.triangleNormal(u32.from(t)));
+  }
+
+  // The surface point nearest p, within 'maxDistance' of it (0 or less: any)
+  pub fn nearest(self &, p Vec3, maxDistance f32) SurfaceHit {
+    mut stack = List[u32].empty();
+    self.nearestWith(p, maxDistance, &mut stack);
+  }
+
+  // The same with the walk's stack handed in (cleared first), so a loop of
+  // queries makes none
+  pub fn nearestWith(self &, p Vec3, maxDistance f32, stack &mut List[u32]) SurfaceHit {
+    if tf.len() == 0usize { return SurfaceHit.none(); }
+    imm pd = DVec3.from(p);
+    mut bestD = if maxDistance > 0. { f64.from(maxDistance) * f64.from(maxDistance); } else { 1.0e300d; };
+    mut best = NoIndex;
+    mut bestW = new DVec3(1.d, 0.d, 0.d);
+    stack.clear();
+    stack.push(0u32);
+    while stack.len() > 0usize {
+      imm node = usize.from(*stack[stack.len() - 1usize]);
+      stack.pop();
+      if boxDist2(pd, *tree.lo[node], *tree.hi[node]) > bestD { continue; }
+      imm cnt = usize.from(*tree.count[node]);
+      imm f = *tree.first[node];
+      if cnt == 0usize {
+        // The nearer child is walked first (pushed last)
+        imm l = usize.from(f);
+        imm r = l + 1usize;
+        if boxDist2(pd, *tree.lo[l], *tree.hi[l]) <= boxDist2(pd, *tree.lo[r], *tree.hi[r]) {
+          stack.push(f + 1u32);
+          stack.push(f);
+        } else {
+          stack.push(f);
+          stack.push(f + 1u32);
+        }
+      } else {
+        mut k = 0usize;
+        while k < cnt {
+          imm s = *tree.items[usize.from(f) + k];
+          mut a = new DVec3(0.d, 0.d, 0.d);
+          mut b = a;
+          mut c = a;
+          self.corners(usize.from(s), &mut a, &mut b, &mut c);
+          mut w = new DVec3(0.d, 0.d, 0.d);
+          nearestOnTriangle(pd, a, b, c, &mut w);
+          imm q = a * w.x + b * w.y + c * w.z;
+          imm d = (pd - q).lengthSquared();
+          if d <= bestD and (best == NoIndex or d < bestD or s < best) {
+            best = s;
+            bestD = d;
+            bestW = w;
+          }
+          k = k + 1usize;
+        }
+      }
+    }
+    if best == NoIndex { return SurfaceHit.none(); }
+    self.hitAt(usize.from(best), bestW, pd, bestD.sqrt());
+  }
+
+  // The vertex nearest p that a triangle uses, within 'maxDistance' (0 or
+  // less: any), as a hit with weight 1 on that vertex's corner of the first
+  // triangle that uses it
+  pub fn nearestVertex(self &, p Vec3, maxDistance f32) SurfaceHit {
+    mut stack = List[u32].empty();
+    self.nearestVertexWith(p, maxDistance, &mut stack);
+  }
+
+  pub fn nearestVertexWith(self &, p Vec3, maxDistance f32, stack &mut List[u32]) SurfaceHit {
+    if vlist.len() == 0usize { return SurfaceHit.none(); }
+    imm pd = DVec3.from(p);
+    mut bestD = if maxDistance > 0. { f64.from(maxDistance) * f64.from(maxDistance); } else { 1.0e300d; };
+    mut best = NoIndex;
+    stack.clear();
+    stack.push(0u32);
+    while stack.len() > 0usize {
+      imm node = usize.from(*stack[stack.len() - 1usize]);
+      stack.pop();
+      if boxDist2(pd, *vtree.lo[node], *vtree.hi[node]) > bestD { continue; }
+      imm cnt = usize.from(*vtree.count[node]);
+      imm f = *vtree.first[node];
+      if cnt == 0usize {
+        imm l = usize.from(f);
+        imm r = l + 1usize;
+        if boxDist2(pd, *vtree.lo[l], *vtree.hi[l]) <= boxDist2(pd, *vtree.lo[r], *vtree.hi[r]) {
+          stack.push(f + 1u32);
+          stack.push(f);
+        } else {
+          stack.push(f);
+          stack.push(f + 1u32);
+        }
+      } else {
+        mut k = 0usize;
+        while k < cnt {
+          imm vv = *vlist[usize.from(*vtree.items[usize.from(f) + k])];
+          imm d = (pd - *pos[usize.from(vv)]).lengthSquared();
+          if d <= bestD and (best == NoIndex or d < bestD or vv < best) {
+            best = vv;
+            bestD = d;
+          }
+          k = k + 1usize;
+        }
+      }
+    }
+    if best == NoIndex { return SurfaceHit.none(); }
+    imm t = usize.from(*vtri[usize.from(best)]);
+    mut w = new DVec3(0.d, 0.d, 0.d);
+    if *tv[3usize * t] == best { w = new DVec3(1.d, 0.d, 0.d); }
+    elif *tv[3usize * t + 1usize] == best { w = new DVec3(0.d, 1.d, 0.d); }
+    else { w = new DVec3(0.d, 0.d, 1.d); }
+    self.hitAt(t, w, pd, bestD.sqrt());
+  }
+
+  // The first triangle the ray from 'origin' along 'dir' meets, within
+  // 'maxDistance' along it (0 or less: any), the distance measured along the
+  // unit direction; none if 'dir' has no length
+  pub fn ray(self &, origin Vec3, dir Vec3, maxDistance f32, cull u32) SurfaceHit {
+    mut stack = List[u32].empty();
+    self.rayWith(origin, dir, maxDistance, cull, &mut stack);
+  }
+
+  pub fn rayWith(self &, origin Vec3, dir Vec3, maxDistance f32, cull u32, stack &mut List[u32]) SurfaceHit {
+    if tf.len() == 0usize { return SurfaceHit.none(); }
+    imm o = DVec3.from(origin);
+    imm dl = DVec3.from(dir).length();
+    if !(dl > 0.d) { return SurfaceHit.none(); }
+    imm d = DVec3.from(dir) * (1.d / dl);
+    mut bestT = if maxDistance > 0. { f64.from(maxDistance); } else { 1.0e300d; };
+    mut best = NoIndex;
+    mut bestW = new DVec3(1.d, 0.d, 0.d);
+    stack.clear();
+    stack.push(0u32);
+    while stack.len() > 0usize {
+      imm node = usize.from(*stack[stack.len() - 1usize]);
+      stack.pop();
+      if !rayMeetsBox(o, d, *tree.lo[node], *tree.hi[node], bestT) { continue; }
+      imm cnt = usize.from(*tree.count[node]);
+      imm f = *tree.first[node];
+      if cnt == 0usize {
+        stack.push(f + 1u32);
+        stack.push(f);
+      } else {
+        mut k = 0usize;
+        while k < cnt {
+          imm s = *tree.items[usize.from(f) + k];
+          mut a = new DVec3(0.d, 0.d, 0.d);
+          mut b = a;
+          mut c = a;
+          self.corners(usize.from(s), &mut a, &mut b, &mut c);
+          mut w = new DVec3(0.d, 0.d, 0.d);
+          imm t = rayTriangle(o, d, a, b, c, cull, &mut w);
+          if t >= 0.d and t <= bestT and (best == NoIndex or t < bestT or s < best) {
+            best = s;
+            bestT = t;
+            bestW = w;
+          }
+          k = k + 1usize;
+        }
+      }
+    }
+    if best == NoIndex { return SurfaceHit.none(); }
+    self.hitAt(usize.from(best), bestW, o, bestT);
+  }
+
+  // The nearer of the rays from p along dir and along -dir (the one along
+  // dir on a tie)
+  pub fn rayBothWays(self &, p Vec3, dir Vec3, maxDistance f32, cull u32, stack &mut List[u32]) SurfaceHit {
+    imm fwd = self.rayWith(p, dir, maxDistance, cull, stack);
+    imm back = self.rayWith(p, new Vec3(-dir.x, -dir.y, -dir.z), maxDistance, cull, stack);
+    if fwd.tri == NoIndex { return back; }
+    if back.tri == NoIndex { return fwd; }
+    if back.distance < fwd.distance { back; } else { fwd; };
+  }
+
+  // How far along the ray from 'origin' along 'dir' triangle t is met, -1 for
+  // a miss: the test 'ray' makes of every triangle it reaches
+  pub fn rayOnTri(self &, t u32, origin Vec3, dir Vec3) f32 {
+    mut a = new DVec3(0.d, 0.d, 0.d);
+    mut b = a;
+    mut c = a;
+    self.corners(usize.from(t), &mut a, &mut b, &mut c);
+    imm dl = DVec3.from(dir).length();
+    if !(dl > 0.d) { return -1.; }
+    mut w = new DVec3(0.d, 0.d, 0.d);
+    f32.from(rayTriangle(DVec3.from(origin), DVec3.from(dir) * (1.d / dl), a, b, c, CullNone, &mut w));
+  }
+
+  // The point of triangle t nearest p
+  pub fn nearestOnTri(self &, t u32, p Vec3) SurfaceHit {
+    mut a = new DVec3(0.d, 0.d, 0.d);
+    mut b = a;
+    mut c = a;
+    self.corners(usize.from(t), &mut a, &mut b, &mut c);
+    imm pd = DVec3.from(p);
+    mut w = new DVec3(0.d, 0.d, 0.d);
+    nearestOnTriangle(pd, a, b, c, &mut w);
+    imm q = a * w.x + b * w.y + c * w.z;
+    self.hitAt(usize.from(t), w, pd, (pd - q).length());
+  }
+
+  // Among the triangles within 'maxDistance' of p (0 or less: twice the
+  // nearest distance), the one whose normal agrees best with n (the greatest
+  // dot product; the nearer, then the lower number, on a tie), as the point
+  // of it nearest p: the "best matching normal" choice of Blender's Data
+  // Transfer. Triangles of no area are never chosen.
+  pub fn bestNormal(self &, p Vec3, n Vec3, maxDistance f32) SurfaceHit {
+    mut stack = List[u32].empty();
+    imm near = self.nearestWith(p, maxDistance, &mut stack);
+    if near.tri == NoIndex { return near; }
+    imm reach = if maxDistance > 0. { maxDistance; } else { 2. * near.distance + 1.0e-9; };
+    mut cands = List[u32].empty();
+    self.tree.query(p - new Vec3(reach, reach, reach), p + new Vec3(reach, reach, reach), &mut cands, &mut stack);
+    mut best = near;
+    mut bestDot = near.normal.dot(n);
+    mut k = 0usize;
+    while k < cands.len() {
+      imm s = *cands[k];
+      imm tn = self.triangleNormal(s);
+      imm dt = tn.dot(n);
+      if s != best.tri and dt >= bestDot {
+        imm h = self.nearestOnTri(s, p);
+        if h.distance <= reach and (dt > bestDot or h.distance < best.distance or (h.distance == best.distance and s < best.tri)) {
+          best = h;
+          bestDot = dt;
+        }
+      }
+      k = k + 1usize;
+    }
+    best;
+  }
+
+  // A hit's normal interpolated from the vertex normals, unit ((0, 0, 0) if
+  // they cancel); the triangle's own for a hit that found nothing
+  pub fn smoothNormal(self &, hit &SurfaceHit) Vec3 {
+    if hit.tri == NoIndex { return hit.normal; }
+    imm t = usize.from(hit.tri);
+    imm n = *nrm[usize.from(*tv[3usize * t])] * f32.from(hit.bary.x) + *nrm[usize.from(*tv[3usize * t + 1usize])] * f32.from(hit.bary.y)
+      + *nrm[usize.from(*tv[3usize * t + 2usize])] * f32.from(hit.bary.z);
+    imm u = unit(n);
+    if u.x == 0. and u.y == 0. and u.z == 0. { hit.normal; } else { u; };
+  }
+
+  // Vertex v's unit normal
+  pub fn vertexNormal(self &, v u32) Vec3 { *nrm[usize.from(v)]; }
+
+  // The surface point whose interpolated normal line passes through p (see
+  // the top), within 'maxDistance' of p
+  pub fn targetNormal(self &, p Vec3, maxDistance f32) SurfaceHit {
+    mut stack = List[u32].empty();
+    imm near = self.nearestWith(p, maxDistance, &mut stack);
+    if near.tri == NoIndex { return near; }
+    imm pd = DVec3.from(p);
+    imm reach = if maxDistance > 0. { f64.from(maxDistance); } else { 2.d * f64.from(near.distance) + 1.0e-9d; };
+    mut best = NoIndex;
+    mut bestD = reach * reach;
+    mut bestW = new DVec3(0.d, 0.d, 0.d);
+    // The nearest triangles first; a triangle's box further than the best
+    // solution so far holds none nearer
+    stack.clear();
+    stack.push(0u32);
+    while stack.len() > 0usize {
+      imm node = usize.from(*stack[stack.len() - 1usize]);
+      stack.pop();
+      if boxDist2(pd, *tree.lo[node], *tree.hi[node]) > bestD { continue; }
+      imm cnt = usize.from(*tree.count[node]);
+      imm f = *tree.first[node];
+      if cnt == 0usize {
+        imm l = usize.from(f);
+        imm rr = l + 1usize;
+        if boxDist2(pd, *tree.lo[l], *tree.hi[l]) <= boxDist2(pd, *tree.lo[rr], *tree.hi[rr]) {
+          stack.push(f + 1u32);
+          stack.push(f);
+        } else {
+          stack.push(f);
+          stack.push(f + 1u32);
+        }
+      } else {
+        mut k = 0usize;
+        while k < cnt {
+          imm s = *tree.items[usize.from(f) + k];
+          if boxDist2(pd, *tlo[usize.from(s)], *thi[usize.from(s)]) <= bestD {
+            mut w = new DVec3(0.d, 0.d, 0.d);
+            imm d = self.solveNormalLine(usize.from(s), pd, &mut w);
+            if d >= 0.d and d <= bestD and (best == NoIndex or d < bestD or s < best) {
+              best = s;
+              bestD = d;
+              bestW = w;
+            }
+          }
+          k = k + 1usize;
+        }
+      }
+    }
+    if best == NoIndex { return near; }
+    self.hitAt(usize.from(best), bestW, pd, bestD.sqrt());
+  }
+
+  // In triangle t, the barycentric weights of a point whose interpolated
+  // normal line passes through p, by Gauss-Newton on (u, w) from the centre;
+  // the squared distance from p to that point, or -1 for none inside the
+  // triangle
+  fn solveNormalLine(self &, t usize, p DVec3, wts &mut DVec3) f64 {
+    mut a = new DVec3(0.d, 0.d, 0.d);
+    mut b = a;
+    mut c = a;
+    self.corners(t, &mut a, &mut b, &mut c);
+    imm na = DVec3.from(*nrm[usize.from(*tv[3usize * t])]);
+    imm nb = DVec3.from(*nrm[usize.from(*tv[3usize * t + 1usize])]);
+    imm nc = DVec3.from(*nrm[usize.from(*tv[3usize * t + 2usize])]);
+    imm e1 = b - a;
+    imm e2 = c - a;
+    imm dn1 = nb - na;
+    imm dn2 = nc - na;
+    mut u = 1.d / 3.d;
+    mut w = 1.d / 3.d;
+    mut iter = 0;
+    while iter < 16 {
+      imm q = a + e1 * u + e2 * w;
+      imm n = na + dn1 * u + dn2 * w;
+      imm r = q - p;
+      imm f = crossD(r, n);
+      imm j1 = crossD(e1, n) + crossD(r, dn1);
+      imm j2 = crossD(e2, n) + crossD(r, dn2);
+      imm a11 = j1.dot(j1);
+      imm a12 = j1.dot(j2);
+      imm a22 = j2.dot(j2);
+      imm det = a11 * a22 - a12 * a12;
+      if !(absd(det) > 1.0e-30d) { break; }
+      imm b1 = -j1.dot(f);
+      imm b2 = -j2.dot(f);
+      imm du = (b1 * a22 - b2 * a12) / det;
+      imm dw = (a11 * b2 - a12 * b1) / det;
+      u = u + du;
+      w = w + dw;
+      if absd(du) + absd(dw) < 1.0e-12d { break; }
+      iter = iter + 1;
+    }
+    imm tol = 1.0e-6d;
+    if !(u >= -tol and w >= -tol and u + w <= 1.d + tol) { return -1.d; }
+    if u < 0.d { u = 0.d; }
+    if w < 0.d { w = 0.d; }
+    if u + w > 1.d { imm s = u + w; u = u / s; w = w / s; }
+    imm q = a + e1 * u + e2 * w;
+    imm n = na + dn1 * u + dn2 * w;
+    imm r = q - p;
+    imm rl = r.length();
+    imm nl = n.length();
+    // A line that really passes through p: r parallel to n
+    if rl > 1.0e-12d and !(crossD(r, n).length() <= 1.0e-5d * rl * nl) { return -1.d; }
+    *wts = new DVec3(1.d - u - w, u, w);
+    r.lengthSquared();
+  }
+}
+
+// ---- queries' pieces ----
+
+// The squared distance from p to the box from lo to hi
+fn boxDist2(p DVec3, lo Vec3, hi Vec3) f64 {
+  imm lx = f64.from(lo.x);
+  imm ly = f64.from(lo.y);
+  imm lz = f64.from(lo.z);
+  imm hx = f64.from(hi.x);
+  imm hy = f64.from(hi.y);
+  imm hz = f64.from(hi.z);
+  imm dx = if p.x < lx { lx - p.x; } elif p.x > hx { p.x - hx; } else { 0.d; };
+  imm dy = if p.y < ly { ly - p.y; } elif p.y > hy { p.y - hy; } else { 0.d; };
+  imm dz = if p.z < lz { lz - p.z; } elif p.z > hz { p.z - hz; } else { 0.d; };
+  dx * dx + dy * dy + dz * dz;
+}
+
+// Whether the ray (o, d) meets the box from lo to hi at a distance of at most tmax
+fn rayMeetsBox(o DVec3, d DVec3, lo Vec3, hi Vec3, tmax f64) bool {
+  mut t0 = 0.d;
+  mut t1 = tmax;
+  mut axis = 0u32;
+  while axis < 3u32 {
+    imm oa = if axis == 0u32 { o.x; } elif axis == 1u32 { o.y; } else { o.z; };
+    imm da = if axis == 0u32 { d.x; } elif axis == 1u32 { d.y; } else { d.z; };
+    imm la = f64.from(if axis == 0u32 { lo.x; } elif axis == 1u32 { lo.y; } else { lo.z; });
+    imm ha = f64.from(if axis == 0u32 { hi.x; } elif axis == 1u32 { hi.y; } else { hi.z; });
+    if absd(da) < 1.0e-300d {
+      if oa < la or oa > ha { return false; }
+    } else {
+      mut ta = (la - oa) / da;
+      mut tb = (ha - oa) / da;
+      if ta > tb { imm s = ta; ta = tb; tb = s; }
+      if ta > t0 { t0 = ta; }
+      if tb < t1 { t1 = tb; }
+      if t0 > t1 { return false; }
+    }
+    axis = axis + 1u32;
+  }
+  true;
+}
+
+// How far along the unit ray (o, d) triangle (a, b, c) is met, with the
+// weights of the point in 'w'; -1 for a miss, a triangle of no area, a ray
+// parallel to it, or one culled. The plane's normal n = (b - a) x (c - a)
+// faces the ray's origin when n . d < 0
+fn rayTriangle(o DVec3, d DVec3, a DVec3, b DVec3, c DVec3, cull u32, w &mut DVec3) f64 {
+  imm n = crossD(b - a, c - a);
+  imm n2 = n.dot(n);
+  if !(n2 > 0.d) { return -1.d; }
+  imm denom = n.dot(d);
+  if denom == 0.d { return -1.d; }
+  if cull == CullFront and denom < 0.d { return -1.d; }
+  if cull == CullBack and denom > 0.d { return -1.d; }
+  imm t = n.dot(a - o) / denom;
+  if t < 0.d { return -1.d; }
+  imm q = o + d * t;
+  imm wa = n.dot(crossD(c - b, q - b)) / n2;
+  imm wb = n.dot(crossD(a - c, q - c)) / n2;
+  imm wc = n.dot(crossD(b - a, q - a)) / n2;
+  imm eps = -1.0e-9d;
+  if wa < eps or wb < eps or wc < eps { return -1.d; }
+  *w = new DVec3(wa, wb, wc);
+  t;
+}
