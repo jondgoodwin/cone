@@ -1,0 +1,350 @@
+// Clothes: fitted layers made from each person's own body, and the cape.
+//
+// SHELLS (garmentdrape's): a garment that is tight is the body's own surface over a region, pushed out along its
+// normals by the ease and the thickness beneath, smoothed, and skinned as the body is. Because every person is the
+// same mesh, a garment is the same few lines for everyone (the bones whose weight picks its region and the planes
+// that cut its hems), and each person's is made from their own body: shaped to it, following every blend.
+//
+// TUBES (here): a skirt hangs from the waist and does not follow each leg, so it is not a shell. It is a lofted
+// tube of rings from the waist to the hem, its rings an ellipse round the body's waist and hips (the measures',
+// plus ease) flaring below the hips, skinned to the pelvis at the top and more and more to the thighs below, each
+// side to its own thigh: it swings with the stride and keeps its shape.
+//
+// THE CAPE (garmentdrape's pattern, draped and simulated, only for the main avatar): a half circle of cloth hung
+// from the neckline, tight at the throat and free below.
+//
+// THE BODY UNDER THEM IS NOT DRAWN: a body triangle all of whose corners are covered by an opaque shell (the
+// shell was made from them) is left out of the body's indices. A hem keeps the triangles that cross it.
+
+// What a piece is made of, for its material
+pub const CLOTH_PLAIN = 0u32;        // cotton, linen
+pub const CLOTH_WOOL = 1u32;
+pub const CLOTH_LEATHER = 2u32;
+pub const CLOTH_SILK = 3u32;
+
+pub struct Piece {
+  pub name String;
+  pub mesh Mesh;
+  pub skin Skin;
+  pub color Vec3;            // sRGB
+  pub kind u32;
+}
+
+pub struct Wardrobe {
+  pub rig BodyRig;
+  pub outfit Outfit;
+  pub pieces List[Piece];        // the shells and tubes, to draw as skinned meshes
+  pub bodyIndices List[u32];     // the body's triangles that are not under clothes
+  pub capeIndex i32;             // the cape's garment in 'outfit', or -1
+}
+
+fn spec(name &str, layer u32, ease f32, thickness f32, minWeight f32) ShellSpec {
+  mut s = ShellSpec.make(name);
+  s.layer = layer;
+  s.ease = ease;
+  s.thickness = thickness;
+  s.minWeight = minWeight;
+  // smoothed more than garmentdrape's three passes: the offset follows the deltoid and the armpit's turn without
+  // standing up in puffs where the body's normals turn quickly
+  s.smooth = 8u32;
+  s;
+}
+
+fn below(s &mut ShellSpec, y f32) { s.cuts.push(new Cut(new Vec3(0., y, 0.), new Vec3(0., -1., 0.))); }
+fn above(s &mut ShellSpec, y f32) { s.cuts.push(new Cut(new Vec3(0., y, 0.), new Vec3(0., 1., 0.))); }
+
+// A cut across a limb from 'a' to 'b' at fraction t, keeping the side towards 'a'
+fn cuff(s &mut ShellSpec, a Vec3, b Vec3, t f32) {
+  s.cuts.push(new Cut(a + (b - a) * t, (a - b).normalize()));
+}
+
+fn bones(s &mut ShellSpec, list &Array[usize]) {
+  mut i = 0usize;
+  while i < list.len { s.bones.push(list[i]); i = i + 1usize; }
+}
+
+// The underwear every base body wears (briefs; a band over the bust for a woman): layer 0
+fn underwear(m &Measures, out &mut List[ShellSpec], colors &mut List[Vec3]) {
+  imm h = m.height;
+  mut b = spec("briefs", 0u32, 0.0015, 0.0015, 0.3);
+  bones(&mut b, &[PELVIS, THIGH_L, THIGH_R, SPINE]);
+  below(&mut b, (m.waistAt - 0.042) * h);
+  above(&mut b, (m.crotchAt - 0.028) * h);
+  out.push(b);
+  colors.push(new Vec3(222., 216., 204.));
+  if m.sex == FEMALE {
+    mut t = spec("band", 0u32, 0.0015, 0.0015, 0.4);
+    bones(&mut t, &[CHEST, SPINE]);
+    below(&mut t, (m.chestAt + 0.030) * h);
+    above(&mut t, (m.chestAt - 0.048) * h);
+    out.push(t);
+    colors.push(new Vec3(222., 216., 204.));
+  }
+}
+
+// The specs of a person's outfit over the underwear, with their colours and kinds
+fn outfitSpecs(p &Person, models &List[Transform3], out &mut List[ShellSpec], colors &mut List[Vec3], kinds &mut List[u32]) {
+  imm m = &p.measures;
+  imm h = m.height;
+  imm seamY = seamHeight(m);
+  // a shirt or blouse: the trunk and the arms to the wrists, the hem over the hips
+  mut shirt = spec("shirt", 1u32, 0.004, 0.003, 0.5);
+  if p.outfit == OUTFIT_DRESS {
+    // a dress's bodice: the trunk and the shoulders' caps, no sleeves (a cut is a plane across the whole body, so a
+    // short sleeve is the bones it covers, not a cut)
+    bones(&mut shirt, &[SPINE, CHEST, CLAVICLE_L, CLAVICLE_R, PELVIS]);
+  } else {
+    bones(&mut shirt, &[SPINE, CHEST, CLAVICLE_L, CLAVICLE_R, UPPER_ARM_L, UPPER_ARM_R, FOREARM_L, FOREARM_R, PELVIS]);
+    mut side = 0usize;
+    while side < 2usize {
+      imm ua = if side == 0usize { UPPER_ARM_L; } else { UPPER_ARM_R; };
+      imm el = (*models[ua + 2usize]).translation;
+      imm wr = (*models[ua + 4usize]).translation;
+      cuff(&mut shirt, el, wr, 0.93);
+      side = side + 1usize;
+    }
+  }
+  below(&mut shirt, seamY - 0.010);
+  above(&mut shirt, (m.crotchAt + 0.045) * h);
+  imm topColor = if p.outfit == OUTFIT_TUNIC_TROUSERS { new Vec3(222., 214., 196.); } else { p.cloth; };
+  out.push(shirt);
+  colors.push(topColor);
+  kinds.push(CLOTH_PLAIN);
+  // trousers (not for a dress or a skirt)
+  if p.outfit == OUTFIT_SHIRT_TROUSERS or p.outfit == OUTFIT_TUNIC_TROUSERS {
+    mut tr = spec("trousers", 2u32, 0.006, 0.004, 0.5);
+    bones(&mut tr, &[PELVIS, THIGH_L, THIGH_R, SHIN_L, SHIN_R]);
+    below(&mut tr, (m.waistAt + 0.004) * h);
+    above(&mut tr, 0.075 * h);
+    out.push(tr);
+    colors.push(p.cloth2);
+    kinds.push(CLOTH_WOOL);
+  }
+  // the main avatar's waistcoat over the shirt, and a belt
+  if p.outfit == OUTFIT_TUNIC_TROUSERS {
+    mut wc = spec("waistcoat", 3u32, 0.007, 0.004, 0.62);
+    bones(&mut wc, &[SPINE, CHEST, PELVIS]);
+    below(&mut wc, (m.acromionAt - 0.006) * h);
+    above(&mut wc, (m.crotchAt + 0.065) * h);
+    out.push(wc);
+    colors.push(p.cloth);
+    kinds.push(CLOTH_SILK);
+    mut belt = spec("belt", 4u32, 0.010, 0.004, 0.3);
+    bones(&mut belt, &[PELVIS, SPINE]);
+    below(&mut belt, (m.waistAt - 0.030) * h);
+    above(&mut belt, (m.waistAt - 0.052) * h);
+    out.push(belt);
+    colors.push(new Vec3(40., 28., 22.));
+    kinds.push(CLOTH_LEATHER);
+  }
+  // boots: tall for trousers (riding boots over them), ankle for a skirt
+  mut bt = spec("boots", 5u32, 0.004, 0.005, 0.5);
+  bones(&mut bt, &[FOOT_L, FOOT_R, SHIN_L, SHIN_R]);
+  imm tall = p.outfit == OUTFIT_SHIRT_TROUSERS or p.outfit == OUTFIT_TUNIC_TROUSERS;
+  below(&mut bt, if tall { 0.27 * h; } else { 0.12 * h; });
+  out.push(bt);
+  colors.push(p.boots);
+  kinds.push(CLOTH_LEATHER);
+}
+
+// The main avatar's cape, after garmentdrape's sample cape (samples.cone): heavier and softer (a wool-silk velvet), its
+// collar a 140-degree arc round the neck and its body a trapezoid to a hem 1.4 m wide at the calf, not the sample's half
+// circle. garmentdrape wraps the cloth at the radius its flat width asks for, and a half circle's 5 m of hem stands out
+// as a bell its stiff cloth cannot buckle out of; a hem a little wider than the back hangs close behind it. It sees
+// only the trunk and the legs: the arms move in front of it.
+fn avatarCape() &str {
+  "garment cape layer 3\n
+fabric density 0.62 stretch 2e-6 shear 2e-5 bend 6 thick 0.006 damping 0.75 air 1.0\n
+sees only pelvis spine chest neck head clavicle_l clavicle_r thigh_l thigh_r shin_l shin_r\n
+panel cape grid 28 24 axis neck pelvis shift -0.02 face back arc 200 gap 0.024 flare 0.04 minr 0.08 reach 0.70\n
+  top arc 0 0 0.26 160 20 32\n
+  bottom line -0.74 1.16 0.74 1.16 32\n
+  left line -0.24432 0.08893 -0.74 1.16 28\n
+  right line 0.24432 0.08893 0.74 1.16 28\n
+  loose 0 0  0.04 0  0.12 0.9  0.3 1  1 1\n
+";
+}
+
+// A skirt: a tube from the waist to the hem ('hemAt' a fraction of the height), skinned to the pelvis and the thighs
+fn skirtPiece(m &Measures, hemAt f32, flare f32, color Vec3) Piece {
+  imm h = m.height;
+  imm yTop = (m.waistAt - 0.005) * h;
+  imm yHip = m.trochanterAt * h;
+  imm yHem = hemAt * h;
+  imm rings = 16usize;
+  imm around = 32usize;
+  imm ease = 0.012;
+  mut mesh = Mesh.empty();
+  mut skin = Skin.empty();
+  mut r = 0usize;
+  while r < rings {
+    imm t = f32.from(r) / f32.from(rings - 1usize);
+    imm y = yTop + (yHem - yTop) * t;
+    imm toHip = smoothstep(yTop, yHip, y);
+    imm a0 = 0.5 * m.waistBreadth + (0.5 * m.hipBreadth * 1.04 - 0.5 * m.waistBreadth) * toHip + ease;
+    imm b0 = 0.5 * m.waistDepth + (0.5 * m.buttockDepth * 1.04 - 0.5 * m.waistDepth) * toHip + ease;
+    imm drop = maxf(yHip - y, 0.);
+    imm a = a0 + flare * drop;
+    imm b = b0 + flare * drop * 1.1;
+    imm down = smoothstep(yHip, yHem, y);
+    mut k = 0usize;
+    while k <= around {
+      imm ang = 2. * pi * f32.from(k) / f32.from(around);
+      imm x = sin(ang) * a;
+      imm z = 0.012 - cos(ang) * b;
+      mesh.positions.push(new Vec3(x, y, z));
+      mesh.uvs.push(new Vec2(f32.from(k) / f32.from(around), t));
+      imm side = clampf(x / 0.08, -1., 1.);
+      imm wr = 0.55 * down * (0.5 + 0.5 * side);
+      imm wl = 0.55 * down * (0.5 - 0.5 * side);
+      skin.push(u32.from(PELVIS), u32.from(THIGH_R), u32.from(THIGH_L), 0u32, 1. - wr - wl, wr, wl, 0.);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  imm stride = around + 1usize;
+  r = 0usize;
+  while r + 1usize < rings {
+    mut k = 0usize;
+    while k < around {
+      imm a = u32.from(r * stride + k);
+      imm b = u32.from(r * stride + k + 1usize);
+      imm c = u32.from((r + 1usize) * stride + k + 1usize);
+      imm d = u32.from((r + 1usize) * stride + k);
+      // outside: counterclockwise seen from outside (k runs towards +x from the front, rows downward)
+      mesh.indices.push(a); mesh.indices.push(b); mesh.indices.push(c);
+      mesh.indices.push(a); mesh.indices.push(c); mesh.indices.push(d);
+      // and the inside, a millimetre in, the other way round (seen from below)
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  // the inside: the same rings, a little smaller, wound the other way
+  imm n0 = u32.from(mesh.positions.len());
+  imm nOut = mesh.positions.len();
+  mut v = 0usize;
+  while v < nOut {
+    imm p = *mesh.positions[v];
+    mesh.positions.push(new Vec3(p.x * 0.99, p.y, 0.012 + (p.z - 0.012) * 0.99));
+    mesh.uvs.push(*mesh.uvs[v]);
+    skin.joints.push(*skin.joints[v]);
+    skin.weights.push(*skin.weights[v]);
+    v = v + 1usize;
+  }
+  imm nTri = mesh.indices.len();
+  v = 0usize;
+  while v + 2usize < nTri {
+    mesh.indices.push(*mesh.indices[v] + n0);
+    mesh.indices.push(*mesh.indices[v + 2usize] + n0);
+    mesh.indices.push(*mesh.indices[v + 1usize] + n0);
+    v = v + 3usize;
+  }
+  // which way is out: the first outer triangle's normal should point away from the axis
+  {
+    imm p0 = *mesh.positions[usize.from(*mesh.indices[0usize])];
+    imm p1 = *mesh.positions[usize.from(*mesh.indices[1usize])];
+    imm p2 = *mesh.positions[usize.from(*mesh.indices[2usize])];
+    imm nrm = (p1 - p0).cross(p2 - p0);
+    if nrm.dot(new Vec3(p0.x, 0., p0.z - 0.012)) < 0. {
+      v = 0usize;
+      while v + 2usize < mesh.indices.len() {
+        imm t = *mesh.indices[v + 1usize];
+        mesh.indices.set(v + 1usize, *mesh.indices[v + 2usize]);
+        mesh.indices.set(v + 2usize, t);
+        v = v + 3usize;
+      }
+    }
+  }
+  mesh.computeSmoothNormals();
+  new Piece(String.from("skirt"), mesh, skin, color, CLOTH_WOOL);
+}
+
+// Folds started in a draped garment: its free particles pushed in towards a vertical axis through 'axis' by up to
+// 'amp' metres in 'waves' waves round it (more where it is looser). A cone of cloth hung from the shoulders is a
+// balanced shape (the hem cannot shrink, the cloth cannot stretch, and nothing tips it), so a cape drapes as a smooth
+// bell; a nudge lets gravity buckle it into the folds a hanging cape has. Call after 'snap', then let it settle.
+pub fn rippleGarment(w &mut Wardrobe, g usize, axis Vec3, waves f32, amp f32) {
+  mut gm = &mut w.outfit.garments[g];
+  imm n = gm.soft.pos.len();
+  mut i = 0usize;
+  while i < n {
+    imm l = *gm.loose[i];
+    if l > 0.05 {
+      imm p = *gm.soft.pos[i];
+      imm dx = p.x - axis.x;
+      imm dz = p.z - axis.z;
+      imm r = (dx * dx + dz * dz).sqrt();
+      if r > 0.001 {
+        imm ang = atan2(dx, dz);
+        imm push = amp * l * (0.5 + 0.5 * sin(waves * ang));
+        imm q = new Vec3(p.x - dx / r * push, p.y, p.z - dz / r * push);
+        gm.soft.pos.set(i, q);
+        gm.soft.prev.set(i, q);
+      }
+    }
+    i = i + 1usize;
+  }
+}
+
+// A person's wardrobe on their body: 'underwearOnly' dresses the base body in its underwear and nothing else
+pub fn dressPerson(body &Body, p &Person, underwearOnly bool, threads u32) Wardrobe {
+  imm m = &body.measures;
+  imm skel = copySkeleton(&body.skeleton);
+  imm rig = BodyRig.make(skel, copyMesh(&body.mesh), body.skin());
+  imm models = restModels(&body.skeleton);
+  mut specs = List[ShellSpec].empty();
+  mut colors = List[Vec3].empty();
+  mut kinds = List[u32].empty();
+  underwear(m, &mut specs, &mut colors);
+  mut c = 0usize;
+  while c < colors.len() { kinds.push(CLOTH_PLAIN); c = c + 1usize; }
+  if !underwearOnly { outfitSpecs(p, &models, &mut specs, &mut colors, &mut kinds); }
+  mut patterns = List[Pattern].empty();
+  mut capeIndex = -1i32;
+  if p.cape and !underwearOnly {
+    imm names = humanoidNames();
+    mut a = parsePattern(avatarCape(), &names);
+    if a.ok {
+      mut pc = a.take();
+      pc.layer = 6u32;
+      patterns.push(pc);
+      capeIndex = 0i32;
+    }
+  }
+  mut dressing = dress(&rig, &specs, &patterns, threads);
+  mut outfit = Outfit.make();
+  outfit <=> dressing.outfit;
+  // the pieces: each shell (in the order dress made them: by layer, then as given) with its look
+  mut pieces = List[Piece].empty();
+  mut covered = List[bool].empty();
+  covered.resize(body.mesh.positions.len(), false);
+  mut s = 0usize;
+  while s < outfit.shells.len() {
+    // its spec by name
+    mut k = 0usize;
+    mut found = 0usize;
+    while k < specs.len() { if specs[k].name.equals(outfit.shells[s].name.view()) { found = k; } k = k + 1usize; }
+    imm sh = outfit.shells[s];
+    mut v = 0usize;
+    while v < sh.source.len() { covered.set(usize.from(*sh.source[v]), true); v = v + 1usize; }
+    pieces.push(new Piece(sh.name.copy(), copyMesh(&sh.mesh), copySkin(&sh.skin), *colors[found], *kinds[found]));
+    s = s + 1usize;
+  }
+  if !underwearOnly and (p.outfit == OUTFIT_DRESS or p.outfit == OUTFIT_SHIRT_SKIRT) {
+    imm hem = if p.outfit == OUTFIT_DRESS { 0.36; } else { 0.30; };
+    pieces.push(skirtPiece(m, hem, if p.outfit == OUTFIT_DRESS { 0.32; } else { 0.18; }, p.cloth2));
+  }
+  // the body's triangles not wholly under clothes
+  mut idx = List[u32].empty();
+  mut t = 0usize;
+  while t + 2usize < body.mesh.indices.len() {
+    imm a = *body.mesh.indices[t];
+    imm b = *body.mesh.indices[t + 1usize];
+    imm cc = *body.mesh.indices[t + 2usize];
+    if !(*covered[usize.from(a)] and *covered[usize.from(b)] and *covered[usize.from(cc)]) {
+      idx.push(a); idx.push(b); idx.push(cc);
+    }
+    t = t + 3usize;
+  }
+  new Wardrobe(rig, outfit, pieces, idx, capeIndex);
+}

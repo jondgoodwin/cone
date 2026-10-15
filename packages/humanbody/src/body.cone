@@ -1,0 +1,408 @@
+// The body as one mesh: the sculpted surface and the head, triangulated, with normals, uvs and skin.
+
+// Copies (the lists are owned, so a copy is made element by element)
+pub fn copyMesh(m &Mesh) Mesh {
+  mut out = Mesh.empty();
+  out.append(m);
+  out;
+}
+
+pub fn copySkin(s &Skin) Skin {
+  mut out = Skin.empty();
+  mut i = 0usize;
+  while i < s.joints.len() { out.joints.push(*s.joints[i]); out.weights.push(*s.weights[i]); i = i + 1usize; }
+  out;
+}
+
+pub fn copySkeleton(s &Skeleton) Skeleton {
+  mut out = Skeleton.empty();
+  mut i = 0usize;
+  while i < s.bones.len() { out.bones.push(*s.bones[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < s.sockets.len() { out.sockets.push(*s.sockets[i]); i = i + 1usize; }
+  out;
+}
+
+// A quad cut along its shorter diagonal, wound as the quad is
+fn quadTriangles(out &mut List[u32], p &List[Vec3], a u32, b u32, c u32, d u32) {
+  imm ac = (*p[usize.from(a)] - *p[usize.from(c)]).lengthSquared();
+  imm bd = (*p[usize.from(b)] - *p[usize.from(d)]).lengthSquared();
+  if ac <= bd {
+    out.push(a); out.push(b); out.push(c);
+    out.push(a); out.push(c); out.push(d);
+  } else {
+    out.push(a); out.push(b); out.push(d);
+    out.push(b); out.push(c); out.push(d);
+  }
+}
+
+// The surface's quads as a triangle mesh, smooth normals, no uvs yet
+pub fn surfaceMesh(s &BodySurface) Mesh {
+  mut m = Mesh.empty();
+  mut v = 0usize;
+  while v < s.positions.len() { m.positions.push(*s.positions[v]); v = v + 1usize; }
+  mut q = 0usize;
+  while q + 3usize < s.quads.len() {
+    quadTriangles(&mut m.indices, &s.positions, *s.quads[q], *s.quads[q + 1usize], *s.quads[q + 2usize], *s.quads[q + 3usize]);
+    q = q + 4usize;
+  }
+  m.computeSmoothNormals();
+  m;
+}
+
+// The gains that bring the sculpted body to its measures: the body is sculpted, measured (measure.cone),
+// and each measure's gain multiplied by the ratio of what it should be to what it is, 'rounds' times
+pub fn fitGains(m &Measures, levels u32, rounds i32) List[f32] {
+  mut gains = unitGains();
+  imm skel = personSkeleton(m);
+  imm models = restModels(&skel);
+  imm cage = bodyCage(m, &models);
+  mut r = 0;
+  while r < rounds {
+    mut s = subdivideCage(&cage, levels);
+    imm forms = bodyForms(m, &models, &gains);
+    projectSurface(&mut s, &forms, 2);
+    imm meas = measuredOf(&s.positions, &s.quads, &s.weights, m);
+    mut i = 1usize;
+    while i < 14usize {
+      imm got = meas.measure(i, &models);
+      // (the neck's girth is the survey's below the larynx, on the head's part of the mesh: its form is set from it
+      // directly, not fitted; the body's slice that high meets the seam)
+      if got > 0.01 and i != 8usize {
+        imm want = measureAt(m, i);
+        imm ratio = clampf(want / got, 0.6, 1.6);
+        gains.set(i, *gains[i] * libc.powf(ratio, 0.9));
+      }
+      i = i + 1usize;
+    }
+    r = r + 1;
+  }
+  gains;
+}
+
+// The body's measures as sculpted with 'gains', measure by measure (biacromial and head: 0)
+pub fn measureBody(m &Measures, gains &List[f32], levels u32) List[f32] {
+  imm skel = personSkeleton(m);
+  imm models = restModels(&skel);
+  imm cage = bodyCage(m, &models);
+  mut s = subdivideCage(&cage, levels);
+  imm forms = bodyForms(m, &models, gains);
+  projectSurface(&mut s, &forms, 3);
+  imm meas = measuredOf(&s.positions, &s.quads, &s.weights, m);
+  mut out = List[f32].empty();
+  mut i = 0usize;
+  while i < MEASURE_COUNT { out.push(maxf(meas.measure(i, &models), 0.)); i = i + 1usize; }
+  out;
+}
+
+// The bones a body is skinned to: the humanoid's 19, then the jaw and the eyes facerig's attachFace adds
+pub const JAW = 19usize;
+pub const EYE_L = 20usize;
+pub const EYE_R = 21usize;
+pub const BODY_BONES = 22usize;
+
+// The named points a body carries beside its vertices: the 19 joints' rest positions (by bone number), then
+pub const POINT_HEAD = 19usize;       // the head frame's origin
+pub const POINT_EYE_R = 20usize;      // the eyeballs' centres
+pub const POINT_EYE_L = 21usize;
+pub const POINT_JAW = 22usize;        // the jaw's hinge
+pub const POINT_MOUTH = 23usize;      // the mouth's line at the middle, at the lips' front
+pub const POINT_COUNT = 24usize;
+
+fn namedPoints(models &List[Transform3], head &Head) List[Vec3] {
+  mut out = List[Vec3].empty();
+  mut b = 0usize;
+  while b < HUMANOID_BONES { out.push((*models[b]).translation); b = b + 1usize; }
+  imm o = head.origin;
+  imm s = &head.shape;
+  imm ft = &head.ft;
+  out.push(o);
+  out.push(o + new Vec3(s.ipd * 0.5, 0., ft.eyeZ));
+  out.push(o + new Vec3(0. - s.ipd * 0.5, 0., ft.eyeZ));
+  out.push(o + new Vec3(0., -0.024 * s.sF, 0.008));
+  out.push(o + new Vec3(0., ft.yg, ft.lipZ));
+  out;
+}
+
+// The whole body as one mesh, in the bind pose (the skeleton's rest pose), with everything made from it
+pub struct Body {
+  pub measures Measures;
+  pub skeleton Skeleton;           // the person's 19 bones (face.cone adds the jaw and the eyes)
+  pub mesh Mesh;                   // positions, normals, uvs, triangles
+  pub weights List[f32];           // BODY_BONES a vertex
+  pub headStart usize;             // the head's vertices are from here on
+  pub head Head;
+  pub surfaceQuads List[u32];      // the body's quads (for measuring and wireframes)
+  pub headQuads List[u32];         // the head's, numbered in the mesh
+  pub gains List[f32];
+  pub points List[Vec3];           // the named points (POINT_*): the joints at rest, the head's frame, the eyes,
+                                   // the jaw's hinge, the mouth; blended with the mesh (blends.cone)
+  pub seamRing List[u32];          // the body's vertices on the neck's seam (each lies on the head's bottom row)
+
+  pub fn vertexCount(self &) usize { mesh.positions.len(); }
+
+  // The render skin: each vertex's four heaviest bones
+  pub fn skin(self &) Skin {
+    mut s = Skin.empty();
+    mut v = 0usize;
+    while v < mesh.positions.len() {
+      mut j = [0u32, 0u32, 0u32, 0u32];
+      mut w = [0., 0., 0., 0.];
+      mut b = 0usize;
+      while b < BODY_BONES {
+        imm x = *weights[v * BODY_BONES + b];
+        if x > w[3] {
+          mut k = 3usize;
+          while k > 0usize and x > w[k - 1usize] { w[k] = w[k - 1usize]; j[k] = j[k - 1usize]; k = k - 1usize; }
+          w[k] = x;
+          j[k] = u32.from(b);
+        }
+        b = b + 1usize;
+      }
+      s.push(j[0], j[1], j[2], j[3], w[0], w[1], w[2], w[3]);
+      v = v + 1usize;
+    }
+    s;
+  }
+}
+
+// The angle of a point round a vertical axis through 'axis': 0 in front (-z), positive towards +x
+fn aroundAxis(p Vec3, axis Vec3) f32 { atan2(p.x - axis.x, axis.z - p.z); }
+
+// The point of the head's bottom row at an angle round the neck (between its columns)
+fn bottomAt(head &Head, th f32) Vec3 {
+  imm n = head.bottom.len();
+  mut c = 0usize;
+  while c + 2usize < n and *head.bottomAngles[c + 1usize] < th { c = c + 1usize; }
+  imm a0 = *head.bottomAngles[c];
+  imm a1 = *head.bottomAngles[c + 1usize];
+  imm t = clampf((th - a0) / maxf(a1 - a0, 0.000001), 0., 1.);
+  imm p0 = *head.positions[usize.from(*head.bottom[c])];
+  imm p1 = *head.positions[usize.from(*head.bottom[c + 1usize])];
+  p0 + (p1 - p0) * t;
+}
+
+// A triangle wound to face away from 'axis' (a point on the neck's axis at its height)
+fn outwardTri(out &mut List[u32], pos &List[Vec3], a u32, b u32, c u32, axis Vec3) {
+  imm pa = *pos[usize.from(a)];
+  imm pb = *pos[usize.from(b)];
+  imm pc = *pos[usize.from(c)];
+  imm n = (pb - pa).cross(pc - pa);
+  imm mid = (pa + pb + pc) * (1. / 3.);
+  imm away = new Vec3(mid.x - axis.x, 0., mid.z - axis.z);
+  if n.dot(away) >= 0. { out.push(a); out.push(b); out.push(c); } else { out.push(a); out.push(c); out.push(b); }
+}
+
+// The seam's two rings lie on one curve but are not the same vertices: each ring vertex's normal becomes the mean of
+// its own and the other ring's nearest two, so the light does not see the seam
+pub fn weldSeamNormals(mesh &mut Mesh, ring &List[u32], bottom &List[u32]) {
+  mut fromRing = List[Vec3].empty();
+  mut i = 0usize;
+  while i < ring.len() {
+    imm v = usize.from(*ring[i]);
+    imm p = *mesh.positions[v];
+    mut n = *mesh.normals[v];
+    mut k = 0usize;
+    mut d1 = 1000.;
+    mut d2 = 1000.;
+    mut n1 = n;
+    mut n2 = n;
+    while k < bottom.len() {
+      imm b = usize.from(*bottom[k]);
+      imm d = (*mesh.positions[b] - p).lengthSquared();
+      if d < d1 { d2 = d1; n2 = n1; d1 = d; n1 = *mesh.normals[b]; } elif d < d2 { d2 = d; n2 = *mesh.normals[b]; }
+      k = k + 1usize;
+    }
+    fromRing.push((n + n1 + n2).normalize());
+    i = i + 1usize;
+  }
+  mut fromBottom = List[Vec3].empty();
+  i = 0usize;
+  while i < bottom.len() {
+    imm b = usize.from(*bottom[i]);
+    imm p = *mesh.positions[b];
+    mut best = 1000.;
+    mut nb = *mesh.normals[b];
+    mut k = 0usize;
+    while k < ring.len() {
+      imm d = (*mesh.positions[usize.from(*ring[k])] - p).lengthSquared();
+      if d < best { best = d; nb = *fromRing[k]; }
+      k = k + 1usize;
+    }
+    fromBottom.push((*mesh.normals[b] + nb).normalize());
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < ring.len() { mesh.normals.set(usize.from(*ring[i]), *fromRing[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < bottom.len() { mesh.normals.set(usize.from(*bottom[i]), *fromBottom[i]); i = i + 1usize; }
+}
+
+// The body of measures 'm' sculpted with 'gains': the surface, the head stitched on, the weights and uvs
+pub fn assembleBody(m &Measures, gains &List[f32], levels u32) Body {
+  imm skel = personSkeleton(m);
+  imm models = restModels(&skel);
+  imm cage = bodyCage(m, &models);
+  mut s = subdivideCage(&cage, levels);
+  imm forms = bodyForms(m, &models, gains);
+  projectSurface(&mut s, &forms, 3);
+  imm seamY = seamHeight(m);
+  imm head = buildHead(m, seamY);
+  imm nb = s.positions.len();
+  // the body's seam ring onto the head's bottom row, each at its angle round the neck
+  mut ringAngles = List[f32].empty();
+  mut i = 0usize;
+  while i < s.seam.len() {
+    imm v = usize.from(*s.seam[i]);
+    imm th = aroundAxis(*s.positions[v], head.neckAxis);
+    ringAngles.push(th);
+    s.positions.set(v, bottomAt(&head, th));
+    i = i + 1usize;
+  }
+  mut mesh = Mesh.empty();
+  i = 0usize;
+  while i < nb { mesh.positions.push(*s.positions[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < head.positions.len() { mesh.positions.push(*head.positions[i]); i = i + 1usize; }
+  // the body's triangles, the head's, the crown's fan
+  mut q = 0usize;
+  while q + 3usize < s.quads.len() {
+    quadTriangles(&mut mesh.indices, &mesh.positions, *s.quads[q], *s.quads[q + 1usize], *s.quads[q + 2usize], *s.quads[q + 3usize]);
+    q = q + 4usize;
+  }
+  imm off = u32.from(nb);
+  mut headQuads = List[u32].empty();
+  q = 0usize;
+  while q + 3usize < head.quads.len() {
+    imm a = *head.quads[q] + off;
+    imm b = *head.quads[q + 1usize] + off;
+    imm c = *head.quads[q + 2usize] + off;
+    imm d = *head.quads[q + 3usize] + off;
+    headQuads.push(a); headQuads.push(b); headQuads.push(c); headQuads.push(d);
+    quadTriangles(&mut mesh.indices, &mesh.positions, a, b, c, d);
+    q = q + 4usize;
+  }
+  q = 0usize;
+  while q < head.tris.len() { mesh.indices.push(*head.tris[q] + off); q = q + 1usize; }
+  // the zipper between the seam ring (sorted by angle) and the head's bottom row (its columns but the
+  // seam's copy): each step joins the ring's next point or the row's, whichever is nearer round the neck
+  imm nr = s.seam.len();
+  mut order = List[usize].empty();
+  i = 0usize;
+  while i < nr { order.push(i); i = i + 1usize; }
+  i = 1usize;
+  while i < nr {
+    imm x = *order[i];
+    mut j = i;
+    while j > 0usize and *ringAngles[*order[j - 1usize]] > *ringAngles[x] { order.set(j, *order[j - 1usize]); j = j - 1usize; }
+    order.set(j, x);
+    i = i + 1usize;
+  }
+  imm nh = head.bottom.len() - 1usize;
+  // unwrapped angles: the ring's from its first, the row's from -pi
+  mut ia = 0usize;
+  mut ib = 0usize;
+  imm baseA = *ringAngles[*order[0usize]];
+  // start the row at the column nearest the ring's first point
+  mut start = 0usize;
+  mut cbest = 1000.;
+  mut c = 0usize;
+  while c < nh {
+    imm dd = absf(*head.bottomAngles[c] - baseA);
+    if dd < cbest { cbest = dd; start = c; }
+    c = c + 1usize;
+  }
+  imm axis = head.neckAxis;
+  while ia < nr or ib < nh {
+    imm ra = u32.from(*s.seam[*order[ia % nr]]);
+    imm hb = *head.bottom[(start + ib) % nh] + off;
+    // the angles of the next points, unwrapped from the start
+    mut angA = *ringAngles[*order[(ia + 1usize) % nr]];
+    if ia + 1usize >= nr { angA = angA + 2. * pi; }
+    mut angB = *head.bottomAngles[(start + ib + 1usize) % nh];
+    if start + ib + 1usize >= nh { angB = angB + 2. * pi; }
+    if (angA <= angB and ia < nr) or ib >= nh {
+      imm ra2 = u32.from(*s.seam[*order[(ia + 1usize) % nr]]);
+      outwardTri(&mut mesh.indices, &mesh.positions, ra, ra2, hb, axis);
+      ia = ia + 1usize;
+    } else {
+      imm hb2 = *head.bottom[(start + ib + 1usize) % nh] + off;
+      outwardTri(&mut mesh.indices, &mesh.positions, ra, hb2, hb, axis);
+      ib = ib + 1usize;
+    }
+  }
+  // the weights: the body's from its cage, the head's neck, head and jaw
+  mut w = List[f32].empty();
+  i = 0usize;
+  while i < nb {
+    mut b = 0usize;
+    while b < BODY_BONES {
+      w.push(if b < HUMANOID_BONES { *s.weights[i * HUMANOID_BONES + b]; } else { 0.; });
+      b = b + 1usize;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < head.positions.len() {
+    imm hw = *head.headWeight[i];
+    imm jw = *head.jawWeight[i];
+    mut b = 0usize;
+    while b < BODY_BONES {
+      mut x = 0.;
+      if b == NECK { x = 1. - hw; }
+      if b == HEAD { x = hw * (1. - jw); }
+      if b == JAW { x = hw * jw; }
+      w.push(x);
+      b = b + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // the uvs: the body seen from the front in the bottom of the texture, the head's grid in its top half
+  imm su = 0.44 / seamY;
+  i = 0usize;
+  while i < nb {
+    imm p = *mesh.positions[i];
+    mesh.uvs.push(new Vec2(0.5 + p.x * su, p.y * su));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < head.uvs.len() { mesh.uvs.push(*head.uvs[i]); i = i + 1usize; }
+  mesh.computeSmoothNormals();
+  // the head's seam column: one normal for its two copies
+  imm hc = head.cols;
+  mut r = 0usize;
+  while r < head.rows {
+    imm a = nb + r * hc;
+    imm b = nb + r * hc + hc - 1usize;
+    imm nn = (*mesh.normals[a] + *mesh.normals[b]).normalize();
+    mesh.normals.set(a, nn);
+    mesh.normals.set(b, nn);
+    r = r + 1usize;
+  }
+  mut sq = List[u32].empty();
+  q = 0usize;
+  while q < s.quads.len() { sq.push(*s.quads[q]); q = q + 1usize; }
+  mut gs = List[f32].empty();
+  q = 0usize;
+  while q < gains.len() { gs.push(*gains[q]); q = q + 1usize; }
+  imm points = namedPoints(&models, &head);
+  mut ring = List[u32].empty();
+  i = 0usize;
+  while i < s.seam.len() { ring.push(*s.seam[i]); i = i + 1usize; }
+  mut bottom = List[u32].empty();
+  i = 0usize;
+  while i < head.bottom.len() { bottom.push(*head.bottom[i] + off); i = i + 1usize; }
+  weldSeamNormals(&mut mesh, &ring, &bottom);
+  new Body(*m, skel, mesh, w, nb, head, sq, headQuads, gs, points, ring);
+}
+
+// The body of measures 'm' without its head: cage, subdivision, projection
+pub fn sculptBody(m &Measures, gains &List[f32], levels u32) BodySurface {
+  imm skel = personSkeleton(m);
+  imm models = restModels(&skel);
+  imm cage = bodyCage(m, &models);
+  mut s = subdivideCage(&cage, levels);
+  imm forms = bodyForms(m, &models, gains);
+  projectSurface(&mut s, &forms, 3);
+  s;
+}

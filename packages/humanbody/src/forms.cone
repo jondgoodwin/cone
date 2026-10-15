@@ -1,0 +1,346 @@
+// The body's forms: the sculptor's masses as a signed distance field, the shape the mesh is projected onto.
+//
+// A body is not tubes. Under the skin there is a ribcage and a pelvis, and over them the masses an artist
+// blocks in first: the chest, the belly, the buttocks, the shoulder blades, the trapezius running from the
+// neck to the shoulder, the deltoid capping the shoulder, the biceps and triceps, the forearm's bulge below
+// the elbow, the thigh's quadriceps, hamstrings and adductors, the knee cap, the calf, the heel and the foot,
+// and a woman's breasts or a man's pectorals. Each is an ellipsoid or a tapered capsule (sdf's), placed
+// from the joints and sized from the measures; the field is their smooth union (sdf's smoothUnion, each form
+// blended in with its own radius 'k', so the masses run into each other as flesh does). The sole is cut flat
+// at the ground.
+//
+// GROUPS. Every form belongs to the trunk, an arm or a leg. A surface point is projected onto the union of
+// the trunk's forms and those of the limbs it is skinned to (sculpt.cone), never onto the other leg's: the
+// thighs touch, and a point of the inner thigh must find its own thigh's surface, not the far side of the
+// other.
+//
+// GAINS. Each measure the body must meet has a gain (1 at first) on the radii of the forms that make it;
+// sculpt.cone measures the mesh and corrects the gains until the mesh's breadths, depths and girths are the
+// measures'. The forms are placed by hand from anatomy (own judgement, by the proportions of an adult);
+// what they must come to is measured.
+
+pub const GROUP_TRUNK = 1u32;
+pub const GROUP_ARM_L = 2u32;
+pub const GROUP_ARM_R = 4u32;
+pub const GROUP_LEG_L = 8u32;
+pub const GROUP_LEG_R = 16u32;
+pub const GROUP_ALL = 31u32;
+
+// How far inside its own surface a limb left out of a vertex's field is pulled
+const LIMB_AWAY = 0.15;
+
+fn reachOfMask(mask u32) Vec4 {
+  new Vec4(if (mask & GROUP_ARM_L) != 0u32 { 1.; } else { 0.; }, if (mask & GROUP_ARM_R) != 0u32 { 1.; } else { 0.; },
+    if (mask & GROUP_LEG_L) != 0u32 { 1.; } else { 0.; }, if (mask & GROUP_LEG_R) != 0u32 { 1.; } else { 0.; });
+}
+
+fn shareOf(group u32, r Vec4) f32 {
+  if group == GROUP_ARM_L { return r.x; }
+  if group == GROUP_ARM_R { return r.y; }
+  if group == GROUP_LEG_L { return r.z; }
+  if group == GROUP_LEG_R { return r.w; }
+  1.;
+}
+
+const FORM_ELLIPSOID = 0u32;
+const FORM_CAPSULE = 1u32;
+
+pub struct Form {
+  pub kind u32;
+  pub group u32;
+  pub a Vec3;          // an ellipsoid's centre; a capsule's first end
+  pub b Vec3;          // a capsule's second end
+  pub radii Vec3;      // an ellipsoid's radii, in its own frame
+  pub toLocal Quat;    // an ellipsoid's frame: the turn that takes a model-space offset into it
+  pub ra f32;          // a capsule's radii at a and b
+  pub rb f32;
+  pub k f32;           // how much it swells where it blends in
+
+  pub fn distance(self &, p Vec3) f32 {
+    if kind == FORM_ELLIPSOID { return ellipsoid(toLocal * (p - a), radii); }
+    taperedCapsule(p, a, b, ra, rb);
+  }
+}
+
+pub struct Forms {
+  pub forms List[Form];
+
+  pub fn empty() Forms { new Forms(List[Form].empty()); }
+
+  // The field of the forms in the groups 'mask'
+  pub fn distance(self &, p Vec3, mask u32) f32 { self.distanceIn(p, reachOfMask(mask)); }
+
+  // The field with each limb's forms in by a share (x the left arm, y the right, z the left leg, w the
+  // right): a limb half in is pulled half of LIMB_AWAY inside its surface, so a vertex's field changes
+  // smoothly as its weights do (a hard switch between fields would leave a step where it switches)
+  pub fn distanceIn(self &, p Vec3, reach Vec4) f32 {
+    mut d = 1000.;
+    mut first = true;
+    mut i = 0usize;
+    while i < forms.len() {
+      imm f = forms[i];
+      imm share = shareOf(f.group, reach);
+      if share > 0. {
+        imm e = f.distance(p) + (1. - share) * LIMB_AWAY;
+        if first { d = e; first = false; } else { d = smoothUnion(d, e, f.k); }
+      }
+      i = i + 1usize;
+    }
+    // the sole: nothing below the ground
+    maxf(d, 0. - p.y);
+  }
+
+  // Its gradient, by central differences
+  pub fn gradient(self &, p Vec3, mask u32) Vec3 { self.gradientIn(p, reachOfMask(mask)); }
+
+  pub fn gradientIn(self &, p Vec3, reach Vec4) Vec3 {
+    imm e = 0.0005;
+    imm dx = self.distanceIn(p + new Vec3(e, 0., 0.), reach) - self.distanceIn(p - new Vec3(e, 0., 0.), reach);
+    imm dy = self.distanceIn(p + new Vec3(0., e, 0.), reach) - self.distanceIn(p - new Vec3(0., e, 0.), reach);
+    imm dz = self.distanceIn(p + new Vec3(0., 0., e), reach) - self.distanceIn(p - new Vec3(0., 0., e), reach);
+    new Vec3(dx, dy, dz) * (1. / (2. * e));
+  }
+
+  fn ell(self &mut, group u32, c Vec3, radii Vec3, axis Vec3, k f32) {
+    // the ellipsoid's y along 'axis'
+    imm q = Quat.fromVectors(new Vec3(0., 1., 0.), axis.normalize());
+    forms.push(new Form(FORM_ELLIPSOID, group, c, c, radii, q.conjugate(), 0., 0., k));
+  }
+
+  fn cap(self &mut, group u32, a Vec3, b Vec3, ra f32, rb f32, k f32) {
+    forms.push(new Form(FORM_CAPSULE, group, a, b, new Vec3(0., 0., 0.), Quat.identity(), ra, rb, k));
+  }
+}
+
+// The gains on the measures' forms: one a measure (measures.cone's order), 1 to begin with
+pub fn unitGains() List[f32] {
+  mut g = List[f32].empty();
+  g.resize(MEASURE_COUNT, 1.);
+  g;
+}
+
+fn tau() f32 { 6.2831853; }
+
+// The forms of a body of measures 'm' standing in the rest pose 'models' of its skeleton, with the gains 'g'
+pub fn bodyForms(m &Measures, models &List[Transform3], g &List[f32]) Forms {
+  imm h = m.height;
+  imm hs = h / 1.75;                     // lengths that go with the body's size
+  imm fem = if m.sex == FEMALE { 1.; } else { 0.; };
+  imm mus = m.muscle;
+  imm up = new Vec3(0., 1., 0.);
+  mut f = Forms.empty();
+  imm T = GROUP_TRUNK;
+
+  // ---- the trunk ----
+  imm chestW = 0.5 * m.chestBreadth * *g[2];
+  imm chestD = 0.5 * m.chestDepth * *g[3];
+  imm waistW = 0.5 * m.waistBreadth * *g[4];
+  imm waistD = 0.5 * m.waistDepth * *g[5];
+  imm hipW = 0.5 * m.hipBreadth * *g[6];
+  imm buttD = 0.5 * m.buttockDepth * *g[7];
+  imm acrom = 0.5 * m.biacromial * *g[0];
+  imm yCrotch = m.crotchAt * h;
+  imm yButt = m.buttockAt * h;
+  imm yTroch = m.trochanterAt * h;
+  imm yWaist = m.waistAt * h;
+  imm yChest = m.chestAt * h;
+  imm yArmpit = m.armpitAt * h;
+  imm yAcrom = m.acromionAt * h;
+  // the ribcage, an egg wider above: the thorax at the armpits and the lower ribs
+  f.ell(T, new Vec3(0., (yChest + yArmpit) * 0.5 - 0.01 * h, 0.012), new Vec3(chestW * 0.90, (yAcrom - yChest) * 1.05,
+    chestD * (0.86 - 0.10 * fem)), up, 0.015);
+  f.ell(T, new Vec3(0., (yChest + yWaist) * 0.5 + 0.01 * h, 0.006), new Vec3((chestW + waistW) * 0.45, (yChest - yWaist) * 0.62,
+    (chestD + waistD) * 0.43), up, 0.015);
+  // the abdomen and the belly over it
+  f.ell(T, new Vec3(0., yWaist, 0.004), new Vec3(waistW * 0.86, 0.065 * h, waistD * 0.84), up, 0.015);
+  f.ell(T, new Vec3(0., yWaist - 0.022 * h, 0. - waistD * 0.38), new Vec3(waistW * 0.60, 0.060 * h, 0.022 + 0.060 * m.belly), up, 0.015);
+  // the pelvis
+  f.ell(T, new Vec3(0., (yTroch + yWaist) * 0.5 - 0.012 * h, 0.010), new Vec3(hipW * 0.80, 0.065 * h, buttD * 0.78), up, 0.015);
+  mut s = -1.;
+  while s < 2. {
+    // the flanks, the obliques over the crest of the hip bone
+    f.ell(T, new Vec3(s * waistW * 0.70, yWaist - 0.030 * h, 0.006), new Vec3(0.050, 0.045 * h, waistD * 0.62), up, 0.012);
+    // the hips' sides over the trochanters (a woman's wider)
+    f.ell(T, new Vec3(s * hipW * 0.62, yTroch, 0.010), new Vec3(hipW * 0.40, 0.055 * h, buttD * 0.60), up, 0.012);
+    // the buttocks
+    f.ell(T, new Vec3(s * hipW * 0.36, yButt - 0.004 * h, buttD * 0.42), new Vec3(hipW * 0.44, 0.058 * h, buttD * 0.60), up, 0.012);
+    // the latissimus, the back's V from the armpit down
+    f.ell(T, new Vec3(s * chestW * 0.74, yChest - 0.015 * h, chestD * 0.22), new Vec3(0.030 + 0.016 * mus, 0.085 * h, chestD * 0.55),
+      new Vec3(s * -0.25, 1., 0.), 0.012);
+    // a man's pectorals, a woman's breasts
+    if m.sex == MALE {
+      f.ell(T, new Vec3(s * chestW * 0.44, yChest + 0.022 * h, 0. - chestD * 0.62), new Vec3(chestW * 0.44, 0.042 * h, 0.018 + 0.016 * mus),
+        new Vec3(s * 0.35, 1., 0.), 0.012);
+    } else {
+      imm bs = 0.70 + 0.50 * m.bust;
+      f.ell(T, new Vec3(s * chestW * 0.46, yChest + 0.004 * h, 0. - chestD * 0.50), new Vec3(0.050 * bs, 0.048 * bs, 0.044 * bs),
+        new Vec3(s * 0.3, 1., 0.25), 0.012);
+      f.ell(T, new Vec3(s * chestW * 0.40, yChest + 0.030 * h, 0. - chestD * 0.60), new Vec3(chestW * 0.40, 0.032 * h, 0.014),
+        new Vec3(s * 0.25, 1., 0.), 0.012);
+    }
+    // the shoulder blades
+    f.ell(T, new Vec3(s * acrom * 0.40, yArmpit + 0.008 * h, chestD * 0.72), new Vec3(0.052, 0.062 * h, 0.018 + 0.008 * mus),
+      new Vec3(s * 0.25, 1., 0.), 0.012);
+    // the trapezius, from the neck to the shoulder
+    f.cap(T, new Vec3(s * 0.026, yAcrom + 0.006 * h, 0.034), new Vec3(s * (acrom - 0.040), yAcrom - 0.004 * h, 0.010),
+      (0.020 + 0.008 * mus) * m.neckGirth * *g[8] / 0.38, 0.016, 0.015);
+    // the top of the shoulder over the acromion, filling the dip between the trapezius and the deltoid
+    f.ell(T, new Vec3(s * (acrom - 0.012), yAcrom - 0.006 * h, 0.006), new Vec3(0.030, 0.020, 0.040), up, 0.012);
+    // the collar bones, faint under the skin
+    f.cap(T, new Vec3(s * 0.020, yAcrom - 0.010 * h, 0. - chestD * 0.62), new Vec3(s * (acrom - 0.024), yAcrom, -0.004), 0.008, 0.008, 0.008);
+    s = s + 2.;
+  }
+  // the neck, into the head (whose lathe takes over above the seam)
+  imm neckR = m.neckGirth / tau() * *g[8];
+  f.cap(T, new Vec3(0., yAcrom - 0.015 * h, 0.016), new Vec3(0., 0.900 * h, 0.022), neckR * 1.02, neckR * 0.98, 0.02);
+
+  // ---- the arms ----
+  imm armR = m.armGirth / tau() * *g[11];
+  imm foreR = m.forearmGirth / tau() * *g[12];
+  imm wristR = m.wristGirth / tau() * *g[13];
+  s = -1.;
+  while s < 2. {
+    imm grp = if s < 0. { GROUP_ARM_L; } else { GROUP_ARM_R; };
+    imm ua = if s < 0. { UPPER_ARM_L; } else { UPPER_ARM_R; };
+    imm sh = (*models[ua]).translation;
+    imm el = (*models[ua + 2usize]).translation;
+    imm wr = (*models[ua + 4usize]).translation;
+    imm d1 = (el - sh).normalize();
+    imm d2 = (wr - el).normalize();
+    imm lu = (el - sh).length();
+    imm lf = (wr - el).length();
+    imm front = new Vec3(0., 0., -1.);
+    imm side = new Vec3(s, 0., 0.);
+    // the deltoid caps the shoulder: its outside is half the bideltoid breadth
+    imm delt = maxf(0.5 * m.bideltoid * *g[1] - absf(sh.x), 0.035);
+    // (a cap over the joint and down the arm's outside, not a ball: thinner across than along)
+    f.ell(grp, sh + d1 * (0.042 * hs) + side * 0.002, new Vec3(delt * 0.86, 0.095 * hs, delt * 0.92), d1, 0.012);
+    f.cap(grp, sh, el, armR * 0.76, armR * 0.58, 0.010);
+    // the biceps in front, its belly past the middle; the triceps behind, higher
+    f.ell(grp, sh + d1 * (0.56 * lu) + front * (armR * 0.40), new Vec3(armR * 0.56, lu * 0.28, armR * (0.52 + 0.18 * mus)), d1, 0.010);
+    f.ell(grp, sh + d1 * (0.40 * lu) - front * (armR * 0.32), new Vec3(armR * 0.62, lu * 0.32, armR * 0.54), d1, 0.010);
+    // the elbow's point behind and its two knuckles either side
+    f.ell(grp, el - front * (foreR * 0.62), new Vec3(0.011, 0.016, 0.010), d1, 0.006);
+    f.ell(grp, el + side * (foreR * 0.62), new Vec3(0.009, 0.012, 0.010), d1, 0.006);
+    // the forearm: full below the elbow, tapering to a slim, flat wrist
+    f.cap(grp, el, wr, foreR * 0.78, wristR * 0.84, 0.010);
+    f.ell(grp, el + d2 * (0.22 * lf) + side * (foreR * 0.14) - front * (foreR * 0.06), new Vec3(foreR * 0.86, lf * 0.30, foreR * 0.80), d2, 0.010);
+    f.ell(grp, el + d2 * (0.24 * lf) - side * (foreR * 0.22), new Vec3(foreR * 0.62, lf * 0.28, foreR * 0.62), d2, 0.010);
+    // the mitten hand: the palm faces the thigh, so it is thin across x; the fingers together, curled a little
+    imm hl = 0.108 * h;
+    f.ell(grp, wr + d2 * (0.30 * hl), new Vec3(0.0200 * hs, 0.30 * hl, 0.040 * hs), d2, 0.008);
+    // the fingers together, curled a little towards the palm (the palm faces the thigh: inward)
+    f.ell(grp, wr + d2 * (0.68 * hl) + front * (0.002 * hs) - side * (0.007 * hs), new Vec3(0.0145 * hs, 0.27 * hl, 0.036 * hs),
+      d2 - side * 0.30, 0.008);
+    // the thumb, along the hand's front and turned in
+    f.ell(grp, wr + d2 * (0.34 * hl) + front * (0.033 * hs) - side * (0.010 * hs), new Vec3(0.011 * hs, 0.23 * hl, 0.012 * hs),
+      d2 + front * 0.30 - side * 0.25, 0.006);
+    s = s + 2.;
+  }
+
+  // ---- the legs ----
+  imm thighR = m.thighGirth / tau() * *g[9];
+  imm calfR = m.calfGirth / tau() * *g[10];
+  imm kneeR = 0.058 * hs;
+  imm ankleR = 0.036 * hs;
+  s = -1.;
+  while s < 2. {
+    imm grp = if s < 0. { GROUP_LEG_L; } else { GROUP_LEG_R; };
+    imm th = if s < 0. { THIGH_L; } else { THIGH_R; };
+    imm hip = (*models[th]).translation;
+    imm kn = (*models[th + 2usize]).translation;
+    imm an = (*models[th + 4usize]).translation;
+    imm d1 = (kn - hip).normalize();
+    imm d2 = (an - kn).normalize();
+    imm lt = (kn - hip).length();
+    imm ls = (an - kn).length();
+    imm front = new Vec3(0., 0., -1.);
+    imm side = new Vec3(s, 0., 0.);
+    // the thigh's top: its outside within the hips' breadth (the flesh of a thigh lies inward of the joint,
+    // and the thighs meet below the crotch)
+    imm tx = minf(absf(hip.x), 0.5 * m.hipBreadth * *g[6] - thighR * 0.92);
+    f.cap(grp, new Vec3(s * tx, hip.y + 0.02 * hs, hip.z), kn, thighR * 0.86, kneeR * 0.86, 0.012);
+    f.ell(grp, hip + d1 * (0.52 * lt) + front * (thighR * 0.28) + side * (thighR * 0.14),
+      new Vec3(thighR * 0.58, lt * 0.36, thighR * (0.50 + 0.12 * mus)), d1, 0.012);
+    f.ell(grp, hip + d1 * (0.42 * lt) - front * (thighR * 0.30), new Vec3(thighR * 0.58, lt * 0.36, thighR * 0.48), d1, 0.012);
+    f.ell(grp, hip + d1 * (0.24 * lt) - side * (thighR * 0.28), new Vec3(thighR * 0.54, lt * 0.30, thighR * 0.56), d1, 0.012);
+    // the knee cap
+    f.ell(grp, kn + front * (kneeR * 0.60) + up * (0.012 * hs), new Vec3(0.028 * hs, 0.032 * hs, 0.018 * hs), d2, 0.008);
+    // the shin and the calf (its inner head lower)
+    f.cap(grp, kn, an, calfR * 0.62, ankleR, 0.010);
+    f.ell(grp, kn + d2 * (0.30 * ls) - front * (calfR * 0.36) + side * (calfR * 0.12), new Vec3(calfR * 0.56, ls * 0.25, calfR * 0.56), d2, 0.010);
+    f.ell(grp, kn + d2 * (0.36 * ls) - front * (calfR * 0.34) - side * (calfR * 0.16), new Vec3(calfR * 0.56, ls * 0.26, calfR * 0.56), d2, 0.010);
+    // the ankle's bones, the heel and the foot (the foot runs forward, -z, from 0.04 H behind the ankle to 0.112 H ahead)
+    f.ell(grp, an, new Vec3(0.032 * hs, 0.022 * hs, 0.028 * hs), up, 0.008);
+    f.ell(grp, new Vec3(an.x, 0.032 * hs, an.z + 0.034 * hs), new Vec3(0.029 * hs, 0.034 * hs, 0.034 * hs), up, 0.010);
+    f.ell(grp, new Vec3(an.x + s * 0.004 * hs, 0.026 * hs, an.z - 0.060 * hs), new Vec3(0.038 * hs, 0.034 * hs, 0.090 * hs),
+      new Vec3(0., 1., 0.), 0.012);
+    f.ell(grp, new Vec3(an.x + s * 0.010 * hs, 0.017 * hs, an.z - 0.150 * hs), new Vec3(0.044 * hs, 0.019 * hs, 0.050 * hs),
+      new Vec3(0., 1., 0.), 0.010);
+    s = s + 2.;
+  }
+  f;
+}
+
+// The field of some groups of forms as an sdf Shape (a distance method), for meshing it to look at (the
+// stages' pictures): the body is never made from this mesh
+pub struct FormField {
+  pub forms Forms;
+  pub mask u32;
+
+  pub fn distance(self &, p Vec3) f32 { forms.distance(p, mask); }
+}
+
+// Each form on its own, as a mesh (an ellipsoid a scaled sphere, a capsule two spheres and a lofted side),
+// unblended: what an artist blocks in before blending
+pub fn formsMesh(f &Forms, mask u32) Mesh {
+  mut out = Mesh.empty();
+  mut i = 0usize;
+  while i < f.forms.len() {
+    imm fm = f.forms[i];
+    if (fm.group & mask) != 0u32 {
+      if fm.kind == FORM_ELLIPSOID {
+        mut s = Mesh.sphere(1., 16);
+        s.transform(Mat4.fromTrs(fm.a, fm.toLocal.conjugate(), fm.radii));
+        out.append(&s);
+      } else {
+        imm d = fm.b - fm.a;
+        imm len = d.length();
+        imm q = Quat.fromVectors(new Vec3(0., 1., 0.), d * (1. / maxf(len, 0.000001)));
+        mut s0 = Mesh.sphere(1., 12);
+        s0.transform(Mat4.fromTrs(fm.a, Quat.identity(), new Vec3(fm.ra, fm.ra, fm.ra)));
+        out.append(&s0);
+        mut s1 = Mesh.sphere(1., 12);
+        s1.transform(Mat4.fromTrs(fm.b, Quat.identity(), new Vec3(fm.rb, fm.rb, fm.rb)));
+        out.append(&s1);
+        // the side: a ring of 16 at each end
+        imm base = u32.from(out.positions.len());
+        imm ax = if absf(d.x) < 0.9 * len { new Vec3(1., 0., 0.); } else { new Vec3(0., 0., 1.); };
+        imm u = ax.cross(d).normalize();
+        imm w = d.cross(u).normalize();
+        mut k = 0usize;
+        while k < 16usize {
+          imm t = f32.from(k) * 6.2831853 / 16.;
+          imm r = u * cos(t) + w * sin(t);
+          out.positions.push(fm.a + r * fm.ra);
+          out.normals.push(r);
+          out.uvs.push(new Vec2(0., 0.));
+          out.positions.push(fm.b + r * fm.rb);
+          out.normals.push(r);
+          out.uvs.push(new Vec2(0., 0.));
+          k = k + 1usize;
+        }
+        k = 0usize;
+        while k < 16usize {
+          imm a0 = base + u32.from(2usize * k);
+          imm a1 = base + u32.from(2usize * ((k + 1usize) % 16usize));
+          out.indices.push(a0); out.indices.push(a1); out.indices.push(a1 + 1u32);
+          out.indices.push(a0); out.indices.push(a1 + 1u32); out.indices.push(a0 + 1u32);
+          k = k + 1usize;
+        }
+      }
+    }
+    i = i + 1usize;
+  }
+  out;
+}

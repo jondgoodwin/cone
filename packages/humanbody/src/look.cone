@@ -1,0 +1,279 @@
+// The look: the skin's painted albedo and roughness, the eyes' painting, and the materials.
+//
+// THE SKIN is render's physically based material with its subsurface lobe (pre-integrated skin shading after
+// Penner and Borshukov, which render's extended pipeline draws: light that scatters under the skin softens
+// the terminator and turns it red where the surface curves sharply, the ears' rims, the nostrils' wings, the
+// lips) at skin's own scatter widths (render's 'skin()'), over an ALBEDO painted from the head's own shape:
+// the texel's place on the head is found from the grid (the head's uvs are its grid's columns and rows), and
+// what is there decides its colour: the lips, the brows' strokes, the lash line on the upper lid's margin, the
+// cropped hair over the scalp to its hairline, a man's beard shadow, the warmer cheeks, nose and ears. The
+// body's texels (the texture's bottom half, the body seen from the front) are the skin's colour with a faint
+// mottle. A second, linear texture carries the ROUGHNESS (render's metallic-roughness map's green): the lips
+// and the nose and forehead's oily zone are smoother than the cheeks; the hair is rough.
+//
+// Colours are sRGB bytes in, linear out. The sizes: a 2048 texture, the head's half 0.27 mm a texel at the face.
+
+fn hashUnit(i i32, j i32, seed u32) f32 {
+  mut h = u32.from(i) * 73856093u32 ^ u32.from(j) * 19349663u32 ^ seed * 83492791u32;
+  h = (h ^ (h >> 16u32)) * 2246822519u32;
+  h = (h ^ (h >> 13u32)) * 3266489917u32;
+  h = h ^ (h >> 16u32);
+  f32.from(h >> 8u32) * 0.000000059604644775390625;
+}
+
+// Value noise in [0, 1]
+pub fn valueNoise(x f32, y f32, seed u32) f32 {
+  imm xi = libc.floorf(x);
+  imm yi = libc.floorf(y);
+  imm fx = x - xi;
+  imm fy = y - yi;
+  imm sx = fx * fx * (3. - 2. * fx);
+  imm sy = fy * fy * (3. - 2. * fy);
+  imm i = i32.from(xi);
+  imm j = i32.from(yi);
+  imm a = hashUnit(i, j, seed);
+  imm b = hashUnit(i + 1, j, seed);
+  imm c = hashUnit(i, j + 1, seed);
+  imm d = hashUnit(i + 1, j + 1, seed);
+  (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
+}
+
+fn mixv(a Vec3, b Vec3, t f32) Vec3 { a + (b - a) * clampf(t, 0., 1.); }
+
+fn byteOf(v f32) u8 {
+  if v <= 0. { return 0u8; }
+  if v >= 255. { return 255u8; }
+  u8.from(v + 0.5);
+}
+
+// The head-frame point under a head texel: the grid's points bilinearly between rows and columns
+fn headPointAt(body &Body, u f32, v f32) Vec3 {
+  imm hd = &body.head;
+  imm nr = hd.rows;
+  imm nc = hd.cols;
+  // the uv of row r is 1 - 0.5 (r + 1) / (nr + 1); of column c, c / (nc - 1)
+  imm rf = clampf((1. - v) * 2. * f32.from(nr + 1usize) - 1., 0., f32.from(nr - 1usize));
+  imm cf = clampf(u * f32.from(nc - 1usize), 0., f32.from(nc - 1usize));
+  imm r0 = usize.from(libc.floorf(minf(rf, f32.from(nr) - 1.001)));
+  imm c0 = usize.from(libc.floorf(minf(cf, f32.from(nc) - 1.001)));
+  imm tr = rf - f32.from(r0);
+  imm tc = cf - f32.from(c0);
+  imm base = body.headStart;
+  imm p00 = *body.mesh.positions[base + r0 * nc + c0];
+  imm p01 = *body.mesh.positions[base + r0 * nc + c0 + 1usize];
+  imm p10 = *body.mesh.positions[base + (r0 + 1usize) * nc + c0];
+  imm p11 = *body.mesh.positions[base + (r0 + 1usize) * nc + c0 + 1usize];
+  imm a = p00 + (p01 - p00) * tc;
+  imm b = p10 + (p11 - p10) * tc;
+  a + (b - a) * tr - hd.origin;
+}
+
+// The skin's colour (sRGB 0 to 255) and roughness at a head-frame point
+fn headPaint(p Vec3, body &Body, look &Look, male f32, age f32) Vec4 {
+  imm hd = &body.head;
+  imm s = &hd.shape;
+  imm ft = &hd.ft;
+  imm ax = absf(p.x);
+  imm front = smoothstep(-0.020, -0.050, p.z);
+  mut c = look.skin;
+  mut rough = 0.55;
+  // a faint mottle
+  imm mot = valueNoise(p.x * 220., p.y * 220. + p.z * 130., 5u32) - 0.5;
+  c = c * (1. + 0.05 * mot);
+  // warmth: the cheeks, the nose, the ears (the sides at the ears' height)
+  imm redden = new Vec3(1.0, 0.86, 0.84);
+  imm ck = (ax - 0.042) / 0.016;
+  imm cy = (p.y + 0.030) / 0.016;
+  imm cheek = libc.expf(-(ck * ck + cy * cy)) * front;
+  imm tipY = noseTipY(s);
+  imm nk = ax / 0.012;
+  imm ny = (p.y - tipY) / 0.012;
+  imm nose = libc.expf(-(nk * nk + ny * ny)) * front;
+  // the ears: the head's sides at the ears' height
+  imm er = (absf(p.x) - 0.070) / 0.012;
+  imm ey2 = (p.y + 0.010) / 0.022;
+  imm ear = libc.expf(-(er * er + ey2 * ey2)) * (1. - front);
+  c = c * (new Vec3(1., 1., 1.) + (redden - new Vec3(1., 1., 1.)) * minf(0.85 * cheek + 0.75 * nose + 0.8 * ear, 1.2));
+  // the eyes' surroundings: a little darker and cooler under the eye
+  imm ey = (p.y + 0.012) / 0.007;
+  imm ex = (ax - s.ipd * 0.5) / 0.013;
+  imm under = libc.expf(-(ex * ex + ey * ey)) * front;
+  c = c * (1. - 0.03 * under);
+  // the oily zone: forehead and nose smoother
+  imm tz = smoothstep(0.03, 0.0, ax - 0.004) * smoothstep(-0.055, -0.03, p.y) * front;
+  rough = rough - 0.12 * maxf(tz, nose);
+  // the lips: an outline with a bow above and a fuller middle below
+  imm hw = ft.mouthHW * 0.94;
+  if ax < hw and front > 0.5 {
+    imm qx = ax / hw;
+    imm lf = 0.75 + 0.5 * s.lips;
+    imm bow = 0.0010 * libc.expf(-(ax / 0.004) * (ax / 0.004));
+    imm top = ft.yg + (0.0082 * lf - bow) * libc.powf(1. - qx * qx, 0.6);
+    imm bottom = ft.yg - 0.0102 * lf * libc.powf(1. - qx * qx, 0.5);
+    imm inside = minf(top - p.y, p.y - bottom);
+    imm w = smoothstep(-0.0006, 0.0006, inside);
+    c = mixv(c, look.lips * (0.92 + 0.08 * mot), w);
+    rough = rough - 0.22 * w;
+  }
+  // the brows: strokes along an arc over each eye, thicker inside
+  {
+    imm bx = ax - 0.012;
+    imm span = 0.044;
+    if bx > -0.002 and bx < span + 0.004 and front > 0.3 {
+      imm t = clampf(bx / span, 0., 1.);
+      imm arc = 0.0215 * s.sF + 0.0055 * libc.sinf(t * 2.6) - 0.002 * t;
+      imm thick = 0.0042 * (1. - 0.55 * t) * (0.8 + 0.4 * male);
+      imm dy = absf(p.y - arc);
+      imm along = smoothstep(-0.002, 0.003, bx) * (1. - smoothstep(span - 0.004, span + 0.004, bx));
+      imm stroke = valueNoise(bx * 900., (p.y - arc) * 300., 11u32);
+      imm w = (1. - smoothstep(thick * 0.6, thick, dy)) * along * (0.55 + 0.45 * stroke);
+      c = mixv(c, look.brows, w * 0.85);
+      rough = rough + 0.2 * w;
+    }
+  }
+  // the lash line on the upper lid's margin, a softer one on the lower
+  {
+    imm ecx = s.ipd * 0.5;
+    imm dx = ax - ecx;
+    if absf(dx) < ft.lidHW and front > 0.5 {
+      imm qx = dx / ft.lidHW;
+      imm h = libc.powf(1. - qx * qx, 0.6);
+      imm up = ft.lidHU * h * (1. - 0.18 * qx) + 0.0014 * qx;
+      imm lo = 0. - ft.lidHL * h * (1. + 0.15 * qx) + 0.0014 * qx;
+      imm du = p.y - up;
+      imm wu = (1. - smoothstep(0.0003, 0.0011, absf(du - 0.0002)));
+      imm dl = p.y - lo;
+      imm wl = (1. - smoothstep(0.0002, 0.0007, absf(dl + 0.0002))) * 0.45;
+      c = mixv(c, look.brows * 0.35, maxf(wu, wl));
+    }
+  }
+  // the scalp's cropped hair: above a hairline that rises at the temples, down to the nape behind
+  {
+    imm hairY = 0.054 * s.sF + 0.010 * smoothstep(0.02, 0.045, ax);
+    imm sideY = 0.020;
+    imm backY = -0.075;
+    // where the hairline is round the head: the front's height in front, the sides' at the sides, the nape's behind
+    imm th = atan2(p.x, 0. - p.z);
+    imm fb = smoothstep(0.9, 1.6, absf(th));          // 0 in front, 1 at the sides
+    imm bb = smoothstep(1.9, 2.6, absf(th));          // 1 behind
+    imm line = hairY * (1. - fb) + sideY * fb * (1. - bb) + backY * bb;
+    imm w = smoothstep(line - 0.002, line + 0.004, p.y) * look.hairCover;
+    imm stub = valueNoise(p.x * 1400., p.y * 1400. + p.z * 900., 17u32);
+    c = mixv(c, look.brows * (0.85 + 0.3 * stub), w * (0.55 + 0.35 * stub));
+    rough = rough + 0.3 * w;
+  }
+  // a man's beard shadow: the jaw, the chin and the upper lip
+  if male > 0.5 {
+    imm jawLine = ft.menton + 0.002;
+    imm onJaw = smoothstep(-0.040, -0.052, p.y) * smoothstep(jawLine - 0.03, jawLine - 0.005, p.y) * smoothstep(0.075, 0.040, ax);
+    imm cheekLine = smoothstep(-0.034, -0.050, p.y);
+    imm lip = smoothstep(ft.mouthHW + 0.006, ft.mouthHW - 0.004, ax) * smoothstep(ft.yg + 0.004, ft.yg + 0.008, p.y)
+      * smoothstep(ft.yg + 0.020, ft.yg + 0.014, p.y);
+    imm w = maxf(onJaw * cheekLine, lip) * look.hairCover * 0.5;
+    imm stub = valueNoise(p.x * 1500., p.y * 1500., 23u32);
+    c = mixv(c, c * new Vec3(0.62, 0.62, 0.66), w * (0.6 + 0.4 * stub));
+  }
+  // age: a little sallow and uneven
+  c = c * (1. - 0.06 * age * valueNoise(p.x * 90., p.y * 90., 29u32));
+  new Vec4(c.x, c.y, c.z, clampf(rough, 0.25, 0.9));
+}
+
+pub struct SkinTextures {
+  pub albedo Image;
+  pub roughness Image;      // linear: green the roughness
+}
+
+// The skin's textures for a body and a look ('size' texels square)
+pub fn paintSkin(body &Body, look &Look, size i32) SkinTextures {
+  mut albedo = new Image(size, size, 4, List[u8].empty());
+  mut rough = new Image(size, size, 4, List[u8].empty());
+  albedo.pixels.resize(usize.from(size * size * 4), 255u8);
+  rough.pixels.resize(usize.from(size * size * 4), 255u8);
+  imm male = if body.measures.sex == MALE { 1.; } else { 0.; };
+  imm age = clampf((body.measures.age - 25.) / 40., 0., 1.);
+  mut j = 0;
+  while j < size {
+    // rows run from the bottom up, as render's Image holds them
+    imm v = (f32.from(j) + 0.5) / f32.from(size);
+    mut i = 0;
+    while i < size {
+      imm u = (f32.from(i) + 0.5) / f32.from(size);
+      mut out = new Vec4(look.skin.x, look.skin.y, look.skin.z, 0.55);
+      if v >= 0.5 {
+        out = headPaint(headPointAt(body, u, v), body, look, male, age);
+      } else {
+        imm mot = valueNoise(u * 300., v * 300., 3u32) * 0.6 + valueNoise(u * 60., v * 60., 4u32) * 0.4 - 0.5;
+        // where the texel is on the body seen from the front (body.cone's uvs), and the warmer places there: the
+        // knees, the elbows, the hands
+        imm su = 0.44 / seamHeight(&body.measures);
+        imm atX = absf((u - 0.5) / su);
+        imm atY = v / su;
+        imm hh = body.measures.height;
+        imm kx = (atX - hipHalfSpan(&body.measures)) / 0.05;
+        imm ky = (atY - 0.285 * hh) / 0.05;
+        imm ex = (atX - 0.26 * hh / 1.75) / 0.04;
+        imm ey = (atY - 0.63 * hh) / 0.05;
+        imm hand = smoothstep(0.50 * hh, 0.44 * hh, atY) * smoothstep(0.22, 0.28, atX);
+        imm warm = minf(libc.expf(-(kx * kx + ky * ky)) * 0.6 + libc.expf(-(ex * ex + ey * ey)) * 0.5 + hand * 0.6, 1.);
+        imm c = look.skin * (1. + 0.06 * mot) * (new Vec3(1., 1., 1.) + new Vec3(0., -0.10, -0.12) * warm);
+        out = new Vec4(c.x, c.y, c.z, 0.58);
+      }
+      imm at = usize.from((j * size + i) * 4);
+      albedo.pixels.set(at, byteOf(out.x));
+      albedo.pixels.set(at + 1usize, byteOf(out.y));
+      albedo.pixels.set(at + 2usize, byteOf(out.z));
+      rough.pixels.set(at, 255u8);
+      rough.pixels.set(at + 1usize, byteOf(out.w * 255.));
+      rough.pixels.set(at + 2usize, 0u8);
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  new SkinTextures(albedo, rough);
+}
+
+// An eyeball's painting (its uv a planar projection along its axis): the sclera, the iris in 'iris' (sRGB),
+// the limbal ring and the pupil
+pub fn paintEye(iris Vec3) Image {
+  imm n = 512;
+  mut img = new Image(n, n, 4, List[u8].empty());
+  img.pixels.resize(usize.from(n * n * 4), 255u8);
+  imm inner = mixv(iris, new Vec3(200., 160., 90.), 0.35);
+  imm outer = iris * 0.55;
+  mut j = 0;
+  while j < n {
+    mut i = 0;
+    while i < n {
+      imm x = (f32.from(i) + 0.5) / f32.from(n) * 2. - 1.;
+      imm y = (f32.from(j) + 0.5) / f32.from(n) * 2. - 1.;
+      imm r = (x * x + y * y).sqrt();
+      imm ang = atan2(y, x);
+      mut c = new Vec3(236., 230., 224.);
+      imm vein = valueNoise(ang * 6., r * 14., 3u32);
+      c = c + new Vec3(0., -12., -12.) * (vein * smoothstep(0.6, 0.95, r));
+      c = c * (1. - 0.20 * smoothstep(0.65, 1.0, r));
+      imm ir = 0.47;
+      if r < ir + 0.02 {
+        imm fibre = valueNoise(ang * 24., r * 9., 7u32) * 0.6 + valueNoise(ang * 60., r * 3., 9u32) * 0.4;
+        imm t = smoothstep(0.18, ir, r);
+        mut ic = mixv(inner, outer, t * 0.9);
+        ic = ic * (0.75 + 0.5 * fibre);
+        c = mixv(c, ic, 1. - smoothstep(ir - 0.025, ir, r));
+        c = mixv(c, new Vec3(26., 20., 16.), smoothstep(ir - 0.04, ir - 0.005, r) * (1. - smoothstep(ir, ir + 0.02, r)));
+        c = mixv(c, new Vec3(5., 4., 4.), 1. - smoothstep(0.16, 0.18, r));
+      }
+      imm at = usize.from((j * n + i) * 4);
+      img.pixels.set(at, byteOf(c.x));
+      img.pixels.set(at + 1usize, byteOf(c.y));
+      img.pixels.set(at + 2usize, byteOf(c.z));
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  img;
+}
+
+// An sRGB byte colour as render's linear Color
+pub fn linearOf(c Vec3) Color {
+  new Color(libc.powf(c.x / 255., 2.2), libc.powf(c.y / 255., 2.2), libc.powf(c.z / 255., 2.2), 1.);
+}

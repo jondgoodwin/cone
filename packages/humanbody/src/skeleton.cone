@@ -1,0 +1,49 @@
+// A person's skeleton: bonepose's 19-bone humanoid with the hips and shoulders where the person's are.
+//
+// The humanoid's bone LENGTHS are Drillis and Contini's fractions of the height, and are kept: walkgait's
+// stride, reach and pelvis height and ragdollrig's tables are worked out from them. Two of its OFFSETS are
+// not a person's joint centres and are moved here, as data on the same bones:
+//   - the hip joints, 0.0955 H from the midline in the table (half its 0.191 H hip WIDTH, the outside of the
+//     hips): a real hip joint is about half that from the midline, and legs hung from the table's put the
+//     outside of the thighs 0.28 H apart (the mannequin's hips). Here: 0.245 of the hip breadth (measures.cone).
+//   - the shoulder joints, 0.1295 H out (half the table's 0.259 H shoulder width, the acromions): the joint is
+//     inside and below the acromion. Here: 25 mm in from it and 35 mm below.
+// The bones, their order, their parents and the sockets are the humanoid's, so whatever drives that skeleton
+// drives this one (walkgait reads the hips' offsets from the skeleton it is given).
+
+// Hip joint centre from the midline, metres
+pub fn hipHalfSpan(m &Measures) f32 { 0.245 * m.hipBreadth; }
+
+// Shoulder joint centre from the midline, and its drop below the acromion, metres
+pub fn shoulderHalfSpan(m &Measures) f32 { 0.5 * m.biacromial - 0.025; }
+pub const SHOULDER_DROP = 0.035;
+
+fn trs(p Vec3, q Quat) Transform3 { new Transform3(p, q, new Vec3(1., 1., 1.)); }
+
+// The skeleton of a person of measures 'm'
+pub fn personSkeleton(m &Measures) Skeleton {
+  imm h = m.height;
+  mut s = humanoid(h);
+  // the thighs hang from the pelvis at the hip joints
+  imm hx = hipHalfSpan(m);
+  s.bones.set(THIGH_L, new Bone(i32.from(PELVIS), trs(new Vec3(-hx, 0., 0.), Quat.identity())));
+  s.bones.set(THIGH_R, new Bone(i32.from(PELVIS), trs(new Vec3(hx, 0., 0.), Quat.identity())));
+  // the upper arms hang from the clavicles' ends: the clavicle starts 0.020 H out; its bone runs to the joint
+  imm sx = shoulderHalfSpan(m) - 0.020 * h;
+  imm outR = Quat.angleAxis(ARM_REST_ABDUCTION, new Vec3(0., 0., 1.));
+  imm outL = Quat.angleAxis(0. - ARM_REST_ABDUCTION, new Vec3(0., 0., 1.));
+  s.bones.set(UPPER_ARM_L, new Bone(i32.from(CLAVICLE_L), trs(new Vec3(0. - sx, 0. - SHOULDER_DROP, 0.), outL)));
+  s.bones.set(UPPER_ARM_R, new Bone(i32.from(CLAVICLE_R), trs(new Vec3(sx, 0. - SHOULDER_DROP, 0.), outR)));
+  // the hip sockets with them
+  s.sockets.set(SOCKET_HIP_L, new Socket(PELVIS, trs(new Vec3(-hx, 0., 0.), Quat.identity())));
+  s.sockets.set(SOCKET_HIP_R, new Socket(PELVIS, trs(new Vec3(hx, 0., 0.), Quat.identity())));
+  s;
+}
+
+// The rest pose's model transforms of a skeleton
+pub fn restModels(s &Skeleton) List[Transform3] {
+  imm p = s.restPose();
+  mut out = List[Transform3].empty();
+  s.modelTransforms(&p, &mut out);
+  out;
+}
