@@ -1,0 +1,62 @@
+// A global's type must be Shareable: every thread may name a global at once,
+// and every program is taken to have threads (doc/reference/refmodule.html,
+// "Global variables"). The check is made at the declaration, ErrorGlobalShare.
+//
+// Refused: a plain 'mut' whatever it holds (a number, an inferred type, a
+// struct, a list, an 'extern' one, a module-level 'static'); and an 'imm',
+// 'extern' or not, whose type is not Shareable by the test a 'parallel each'
+// applies to a value from outside the loop and an 'Arc[imm, T]' to its T: an
+// 'Rc', or a struct holding one.
+//
+// Accepted beside them, each declaration unmarked: 'imm' of a Shareable type
+// (a number, a struct of numbers, a List), 'imm' holding an atomic value or a
+// lock (the shared mutable form), '@threadlocal', '@workgroup', and an
+// 'extern imm' of a Shareable type. 'const' is not a global variable.
+
+mod concurrency_typecheck_global_shareable;
+
+import collections use List;
+import sync use Mutex, Arc;
+
+struct Item { pub n i64; }
+
+struct Holds {
+  pub shared Rc[imm, Item];
+}
+
+// ---- refused: a plain mut
+mut plain i64 = 0i64;                          //~ ErrorGlobalShare "Global plain (i64) is a plain 'mut'"
+pub mut inferred = 5i64;                       //~ ErrorGlobalShare "Global inferred (i64) is a plain 'mut'"
+mut box Item = new Item(1i64);                 //~ ErrorGlobalShare "Global box (Item) is a plain 'mut'"
+mut items List[Item];                          //~ ErrorGlobalShare "Global items (List) is a plain 'mut'"
+mut counts Array[i64, 3] = [0i64, 0i64, 0i64]; //~ ErrorGlobalShare "Global counts (Array[i64, 3]) is a plain 'mut'"
+extern mut cvalue i32;                         //~ ErrorGlobalShare "Global cvalue (i32) is a plain 'mut'"
+static mut moduleStatic = 7i64;                //~ ErrorGlobalShare "Global moduleStatic (i64) is a plain 'mut'"
+
+// ---- refused: an imm of a type that is not Shareable
+imm rc Rc[imm, Item];                          //~ ErrorGlobalShare "Global rc's type"
+imm holds Holds;                               //~ ErrorGlobalShare "Global holds's type"
+extern imm crc Rc[imm, Item];                  //~ ErrorGlobalShare "Global crc's type"
+
+// ---- accepted
+const SIZE = 4i64;
+imm limit i64 = 10i64;
+imm pair Array[i64, 2] = [1i64, 2i64];
+imm roster List[Item];
+imm hits Atomic[i64];
+imm lock Mutex;
+imm shared Arc[imm, Item];
+extern imm cconst i32;
+mut @threadlocal depth i64 = 0i64;
+mut @threadlocal slots Array[i64, 2] = [0i64, 0i64];
+mut @workgroup tile Array[u32, 4];
+
+fn @initpure init() {
+  items = List[Item].empty();
+  roster = List[Item].empty();
+  rc = new Rc[imm, Item](new Item(2i64));
+  holds = new Holds(new Rc[imm, Item](new Item(2i64)));
+  hits = Atomic[i64].of(0i64);
+  lock = Mutex.make();
+  shared = new Arc[imm, Item](new Item(3i64));
+}

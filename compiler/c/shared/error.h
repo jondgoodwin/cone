@@ -694,6 +694,9 @@ enum ErrorCode {
     // The calling convention of a function reference (ir/types/fnsig.c)
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly
 
+    // A global's type must be Shareable (ir/stmt/vardcl.c)
+    ErrorGlobalShare = 1504,    // A module global that several threads could reach at once: a plain 'mut' that is not '@threadlocal' or '@workgroup', or an 'imm' (extern or not) whose type is not Shareable (it holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path)
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

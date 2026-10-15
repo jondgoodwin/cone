@@ -1,0 +1,75 @@
+// The globals a program may declare, each used: a global's type must be
+// Shareable (doc/reference/refmodule.html, "Global variables"). Each form the
+// rule allows is here, and each is read or written from the one thread every
+// program has and from a second thread, to show what is shared and what is not:
+//
+// - 'imm' of a Shareable type: a number, an array of numbers, a struct, and a
+//   List set once in the module's 'init';
+// - 'imm' holding an atomic value or a lock, the shared mutable form: both
+//   threads count in the atomic and take the lock;
+// - '@threadlocal': each thread has its own copy;
+// - '@workgroup': an ordinary global of numbers on the CPU.
+//
+// 'const' is no global variable and is unaffected.
+
+mod concurrency_global_shareable;
+
+import stdio use *;
+import collections use List;
+import sync use Mutex;
+import thread;
+
+struct Spec { pub width i64; pub height i64; }
+
+const SIZE = 4i64;
+imm limit i64 = 10i64;
+imm table Array[i64, 3] = [7i64, 8i64, 9i64];
+imm spec Spec = new Spec(80i64, 24i64);
+imm names List[i64];
+imm hits Atomic[i64];
+imm lock Mutex;
+mut @threadlocal depth i64 = 0i64;
+mut @workgroup tile Array[u32, 4];
+
+fn @initpure init() {
+  mut built = List[i64].empty();
+  built.push(11i64);
+  built.push(12i64);
+  names = built;
+  hits = Atomic[i64].of(0i64);
+  lock = Mutex.make();
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The second thread: counts under the lock, bumps its own depth, and reports
+// what it sees of the shared globals
+fn worker(n i64) i64 {
+  depth = depth + n;
+  lock.lock();
+  hits.add(n);
+  lock.unlock();
+  limit + table[2usize] + names[1usize] + spec.height + SIZE + depth;
+}
+
+fn main() {
+  depth = 5i64;
+  tile[1usize] = 3u32;
+  mut t = thread.start(100i64, &worker);
+  imm seen = t.join();
+  show("thread sees shared reads and its own depth", seen);
+  lock.lock();
+  hits.add(1i64);
+  lock.unlock();
+  show("hits", hits.load());
+  show("main's depth is its own", depth);
+  show("limit", limit);
+  show("table", table[0usize] + table[1usize] + table[2usize]);
+  show("names", names[0usize] + names[1usize]);
+  show("workgroup", i64.from(tile[1usize]));
+}

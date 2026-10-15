@@ -101,6 +101,8 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // The calls a 'parallel each' body made of a function that writes a global
     // (ir/exp/pareach.c)
     parallelHelperGlobalsCheckAll();
+    // A module global's type must be Shareable (ir/stmt/vardcl.c)
+    globalShareCheckAll();
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);
