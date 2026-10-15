@@ -65,8 +65,10 @@ walking, sitting down and standing up, hailing; and the sculpting step by step (
    skeleton; eyeballs, teeth, tongue, the mouth's inside and the ears as rigid parts.
 10. **The clothes** (`outfits.cone`): garmentdrape's shells (the body's surface over a region of bones, pushed out by
     ease and the layers beneath, smoothed, skinned as the body), finished here (each shell's edges eased along
-    themselves out of the mesh's staircase, the shirt's humps at the shoulder smoothed within its own ease), a lofted
-    skirt that hangs from the waist (a shirt over it ends just inside its top), and the main avatar's draped cape: a
+    themselves out of the mesh's staircase, the shirt's humps at the shoulder smoothed within its own ease, the shirt's
+    body trimmed a ring inside the trousers or just inside a skirt's top while its sleeves run on to the cuffs: a cut
+    is a plane across the whole body, so a trim that spares some bones is the general form), a lofted skirt that
+    hangs from the waist (the body inside it not drawn), and the main avatar's draped cape: a
     trapezoid to below the knee that sees the upper arms so it rounds over the shoulders, and a standing collar; the
     body under opaque cloth is not drawn.
 11. **The look** (`look.cone`): an albedo painted from the head's own shape (lips, brows, lash lines, cropped hair to a
@@ -115,7 +117,8 @@ walking, sitting down and standing up, hailing; and the sculpting step by step (
 - The thighs are 5 to 10 per cent under their survey girth (each thigh is held inside the hip breadth).
 - The faces are analytic forms on a 72-column grid: plausible at a few metres, a mannequin's near. The open mouth is
   dark with the teeth hidden behind the lips' slot; the cheeks' planes and the lids' folds want a sculpted base head.
-- The tall slim man's shoulders show knobs where his blend extrapolates the deltoid; the shirt follows them.
+- The shoulders' caps are rounded by a smoothing pass, not by the forms: a person whose blends widen the deltoid over a
+  slim arm still has squarer shoulders than a sculptor would give him.
 
 ## Tests
 
