@@ -1,0 +1,576 @@
+// ======== Selection by distance: brush weights, soft selection, surface distance ========
+//
+// What a brush or a proportional edit needs from a mesh is one thing: for
+// each vertex, a weight from 0 to 1, from where it is, a centre, a radius, a
+// falloff and a mask. The functions here give it in the three ways Blender
+// and ZBrush do, as a List of f32 with a slot per vertex (or sparse, for a
+// stroke):
+//
+// - 'brushWeights': by straight-line distance from a centre, the weight
+//   falloff(distance / radius), as Blender's brush does with "Connected Only"
+//   off; 'brushDab' the same sparse (only the vertices that get weight), over
+//   a 'PointGrid' built once, for a stroke of many dabs.
+// - 'surfaceBrushWeightsAt': by distance along the surface from the centre
+//   (Blender's "Connected Only", ZBrush's Move Topological): a lip's weight
+//   does not reach the other lip across the gap between them.
+// - 'softSelect': from a set of selected vertices, as Blender's proportional
+//   editing: the selected vertices weigh 1 and the others by their distance
+//   to the nearest selected one, straight-line ('SoftEuclidean') or along the
+//   surface ('SoftSurface', its "Connected" option).
+//
+// The mask. A vertex float channel named "mask" (any name, given to the
+// functions) holds Sculpt Mode's mask: 1 protects a vertex from every edit,
+// 0 leaves it free (see mask.cone). Every weight function here takes the
+// channel's name ("" for none) and multiplies the weight by 1 minus the
+// mask, so a masked vertex gets no weight, however near the centre.
+//
+// Distance along the surface. 'surfaceDistances' is a fast-marching sweep
+// (Kimmel and Sethian, "Computing geodesic paths on manifolds", PNAS 95(15),
+// 1998, in the form of the minimum over a point of the opposite edge): the
+// vertices are visited nearest first from a heap, and each visited vertex
+// improves its neighbours both along the edges and through the triangle each
+// polygon corner makes with its two neighbours in the face (a quad is
+// two triangles at each corner), where the distance to a corner is the least,
+// over the point P on the far side between the other two, of the distance to
+// P (interpolated along the side) plus the straight line from P. Plain
+// Dijkstra over the edges would give a grid's Manhattan distance, up to 41
+// percent too long across a diagonal; this is within a few percent of the
+// true surface distance on a sampled sphere or plane. No distance beyond a
+// limit is found.
+
+// The distance of a vertex that was not reached
+pub const SurfaceFar = 3.0e38;
+
+// How a soft selection measures distance
+pub const SoftEuclidean = 0u32;   // straight line to the nearest selected vertex
+pub const SoftSurface = 1u32;     // along the surface from the selection
+
+// -------- a spatial hash over points --------
+
+// A uniform grid hash over a list of points, for finding the points near a
+// place without looking at them all (Teschner et al., "Optimized spatial
+// hashing for collision detection of deformable objects", 2003). A cell is
+// 'size' wide; a query reaches every cell its radius touches, so choose a
+// size about the radius you will ask for. It keeps a copy of the points: a
+// grid built before a stroke moved the mesh answers for the mesh as it was.
+pub struct PointGrid {
+  pub size f32;
+  pub pts List[Vec3];
+  pub head List[u32];
+  pub next List[u32];
+  pub cx List[i32];
+  pub cy List[i32];
+  pub cz List[i32];
+  pub mask u32;
+
+  // The grid over 'pts', cells 'size' wide (a size of 0 or less is taken as 1)
+  pub fn build(pts &List[Vec3], size f32) PointGrid {
+    imm n = pts.len();
+    imm cell = if size > 0. {size;} else {1.;};
+    mut slots = 1usize;
+    while slots < 2usize * n { slots = slots * 2usize; }
+    mut g = new PointGrid(cell, copyList[Vec3](pts), List[u32].withCapacity(slots), List[u32].withCapacity(n),
+      List[i32].withCapacity(n), List[i32].withCapacity(n), List[i32].withCapacity(n), u32.from(slots - 1usize));
+    mut i = 0usize;
+    while i < slots {
+      g.head.push(NoIndex);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      imm p = *pts[i];
+      imm x = cellOf(p.x, cell);
+      imm y = cellOf(p.y, cell);
+      imm z = cellOf(p.z, cell);
+      g.cx.push(x);
+      g.cy.push(y);
+      g.cz.push(z);
+      imm s = usize.from(cellHash(x, y, z) & g.mask);
+      g.next.push(*g.head[s]);
+      g.head.set(s, u32.from(i));
+      i = i + 1usize;
+    }
+    g;
+  }
+
+  // The points within 'radius' of 'centre' (their distance at most it), in
+  // ascending order
+  pub fn within(self &, centre Vec3, radius f32) List[u32] {
+    mut out = List[u32].empty();
+    if radius < 0. or pts.len() == 0usize { return out; }
+    imm r2 = radius * radius;
+    imm x0 = cellOf(centre.x - radius, size);
+    imm x1 = cellOf(centre.x + radius, size);
+    imm y0 = cellOf(centre.y - radius, size);
+    imm y1 = cellOf(centre.y + radius, size);
+    imm z0 = cellOf(centre.z - radius, size);
+    imm z1 = cellOf(centre.z + radius, size);
+    imm cells = (i64.from(x1) - i64.from(x0) + 1i64) * (i64.from(y1) - i64.from(y0) + 1i64)
+      * (i64.from(z1) - i64.from(z0) + 1i64);
+    if cells > i64.from(pts.len()) {
+      // The query reaches more cells than there are points: look at them all
+      mut i = 0usize;
+      while i < pts.len() {
+        imm d = *pts[i] - centre;
+        if d.dot(d) <= r2 { out.push(u32.from(i)); }
+        i = i + 1usize;
+      }
+      return out;
+    }
+    mut x = x0;
+    while x <= x1 {
+      mut y = y0;
+      while y <= y1 {
+        mut z = z0;
+        while z <= z1 {
+          mut o = *head[usize.from(cellHash(x, y, z) & mask)];
+          while o != NoIndex {
+            imm ou = usize.from(o);
+            if *cx[ou] == x and *cy[ou] == y and *cz[ou] == z {
+              imm d = *pts[ou] - centre;
+              if d.dot(d) <= r2 { out.push(o); }
+            }
+            o = *next[ou];
+          }
+          z = z + 1;
+        }
+        y = y + 1;
+      }
+      x = x + 1;
+    }
+    out.sortBy(&ascending);
+    out;
+  }
+
+  // The nearest point to 'centre' within 'radius' (the lowest-numbered of
+  // equals), or NoIndex when there is none
+  pub fn nearestWithin(self &, centre Vec3, radius f32) u32 {
+    imm near = self.within(centre, radius);
+    mut best = NoIndex;
+    mut bestD = SurfaceFar;
+    mut i = 0usize;
+    while i < near.len() {
+      imm d = *pts[usize.from(*near[i])] - centre;
+      imm dd = d.dot(d);
+      if dd < bestD {
+        bestD = dd;
+        best = *near[i];
+      }
+      i = i + 1usize;
+    }
+    best;
+  }
+}
+
+fn ascending(a &u32, b &u32) i32 {
+  if *a < *b { -1; } elif *a > *b { 1; } else { 0; };
+}
+
+// -------- brush weights --------
+
+// The channel named, or NoIndex for "" or a name with no vertex channel
+fn maskChannelOf(m &PolyMesh, name &str) u32 {
+  if name.len() == 0usize { return NoIndex; }
+  m.findFloatChannel(VertexDomain, name);
+}
+
+// The weight left after the mask: w times 1 minus the mask at v
+fn masked(m &PolyMesh, ch u32, v usize, w f32) f32 {
+  if ch == NoIndex or w <= 0. { return w; }
+  w * (1. - clampf(m.float(ch, u32.from(v)), 0., 1.));
+}
+
+// Each vertex's weight for a dab at 'centre': falloff(distance / radius),
+// times 1 minus the vertex float channel 'mask' ("" for none). A radius of 0
+// or less gives every vertex 0.
+pub fn brushWeights(m &PolyMesh, centre Vec3, radius f32, f &Falloff, mask &str) List[f32] {
+  imm nv = m.positions.len();
+  imm ch = maskChannelOf(m, mask);
+  mut out = List[f32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    mut w = 0.;
+    if radius > 0. {
+      imm d = (*m.positions[v] - centre).length() / radius;
+      if d < 1. { w = f.weight(d); }
+    }
+    out.push(masked(m, ch, v, w));
+    v = v + 1usize;
+  }
+  out;
+}
+
+// The vertices a dab gives weight to, and the weights
+pub struct Dab {
+  pub vertices List[u32];    // ascending
+  pub weights List[f32];     // each above 0
+}
+
+// The same sparse: only the vertices within the radius whose weight is above
+// 0, found through a grid built over the mesh's positions. For a stroke of
+// many dabs, build the grid once (PointGrid.build(&m.positions, radius)) and
+// call this for each.
+pub fn brushDab(m &PolyMesh, grid &PointGrid, centre Vec3, radius f32, f &Falloff, mask &str) Dab {
+  imm ch = maskChannelOf(m, mask);
+  mut out = new Dab(List[u32].empty(), List[f32].empty());
+  if radius <= 0. { return out; }
+  imm near = grid.within(centre, radius);
+  mut i = 0usize;
+  while i < near.len() {
+    imm v = *near[i];
+    imm d = (*m.positions[usize.from(v)] - centre).length() / radius;
+    if d < 1. {
+      imm w = masked(m, ch, usize.from(v), f.weight(d));
+      if w > 0. {
+        out.vertices.push(v);
+        out.weights.push(w);
+      }
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// -------- distance along the surface --------
+
+// A binary min-heap of (distance, vertex), ties by vertex
+struct DistHeap {
+  pub keys List[f32];
+  pub vals List[u32];
+  pub n usize;
+
+  fn before(self &, i usize, j usize) bool {
+    if *keys[i] != *keys[j] { return *keys[i] < *keys[j]; }
+    *vals[i] < *vals[j];
+  }
+
+  fn push(self &mut, key f32, val u32) {
+    if n < keys.len() {
+      keys.set(n, key);
+      vals.set(n, val);
+    } else {
+      keys.push(key);
+      vals.push(val);
+    }
+    mut i = n;
+    n = n + 1usize;
+    while i > 0usize {
+      imm up = (i - 1usize) / 2usize;
+      if self.before(i, up) {
+        keys.swap(i, up);
+        vals.swap(i, up);
+        i = up;
+      } else {
+        i = 0usize;
+      }
+    }
+  }
+
+  // Drop the smallest
+  fn dropTop(self &mut) {
+    n = n - 1usize;
+    if n > 0usize {
+      keys.set(0usize, *keys[n]);
+      vals.set(0usize, *vals[n]);
+      mut i = 0usize;
+      mut going = true;
+      while going {
+        imm l = 2usize * i + 1usize;
+        imm r = l + 1usize;
+        mut least = i;
+        if l < n and self.before(l, least) { least = l; }
+        if r < n and self.before(r, least) { least = r; }
+        if least != i {
+          keys.swap(i, least);
+          vals.swap(i, least);
+          i = least;
+        } else {
+          going = false;
+        }
+      }
+    }
+  }
+}
+
+// The distance to C through a triangle whose other corners A and B have
+// distances ta and tb: the least over P on AB of (ta + s (tb - ta)) + |C - P|,
+// s the fraction of the way from A to B. Written with L = |AB|, u = tb - ta,
+// h the distance of C from the line AB and 'along' the foot of its
+// perpendicular measured from A: the minimum is at an offset x = -sign(u) |u| h / sqrt(L^2 - u^2)
+// from the foot when |u| < L, and at an end of AB when it falls outside.
+fn triangleUpdate(ta f32, tb f32, a Vec3, b Vec3, c Vec3) f32 {
+  imm ca = (c - a).length();
+  imm cb = (c - b).length();
+  imm viaA = ta + ca;
+  imm viaB = tb + cb;
+  imm best = if viaA < viaB {viaA;} else {viaB;};
+  imm e = b - a;
+  imm len = e.length();
+  imm u = tb - ta;
+  if len <= 0. or absf(u) >= len { return best; }
+  imm w = c - a;
+  imm along = w.dot(e) / len;
+  imm h2 = w.dot(w) - along * along;
+  imm h = if h2 > 0. {libc.sqrtf(h2);} else {0.;};
+  imm mag = absf(u) * h / libc.sqrtf(len * len - u * u);
+  imm x = if u > 0. {-mag;} else {mag;};
+  imm s = (x + along) / len;
+  if s <= 0. or s >= 1. { return best; }
+  imm through = ta + s * u + libc.sqrtf(x * x + h * h);
+  if through < best { through; } else { best; };
+}
+
+// Each vertex's distance along the surface from the nearest seed, found up
+// to 'limit' (SurfaceFar for a vertex farther, or not connected). Seed i
+// starts at distance offsets[i] (0 if 'offsets' has no ith), so a centre
+// between vertices can seed the ones round it by their own distances to it.
+pub fn surfaceDistances(m &PolyMesh, seeds &List[u32], offsets &List[f32], limit f32) List[f32] {
+  imm nv = m.positions.len();
+  mut dist = List[f32].withCapacity(nv);
+  mut done = List[bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    dist.push(SurfaceFar);
+    done.push(false);
+    v = v + 1usize;
+  }
+  mut heap = new DistHeap(List[f32].empty(), List[u32].empty(), 0usize);
+  mut i = 0usize;
+  while i < seeds.len() {
+    imm s = usize.from(*seeds[i]);
+    imm off = if i < offsets.len() {*offsets[i];} else {0.;};
+    if s < nv and off < *dist[s] and off <= limit {
+      dist.set(s, off);
+      heap.push(off, *seeds[i]);
+    }
+    i = i + 1usize;
+  }
+  mut going = true;
+  while going and heap.n > 0usize {
+    imm key = *heap.keys[0usize];
+    imm vu = *heap.vals[0usize];
+    heap.dropTop();
+    imm vi = usize.from(vu);
+    if !*done[vi] and key <= *dist[vi] {
+      if key > limit {
+        going = false;
+      } else {
+        done.set(vi, true);
+        imm pv = *m.positions[vi];
+        imm hs = m.vertexOutgoing(vu);
+        mut k = 0usize;
+        while k < hs.len() {
+          imm h = *hs[k];
+          imm w = usize.from(m.toVertex(h));
+          if !*done[w] {
+            imm cand = key + (*m.positions[w] - pv).length();
+            if cand < *dist[w] and cand <= limit {
+              dist.set(w, cand);
+              heap.push(cand, u32.from(w));
+            }
+          }
+          k = k + 1usize;
+        }
+        // Then through the triangles, which need the neighbours' distances above
+        k = 0usize;
+        while k < hs.len() {
+          imm f = m.face(*hs[k]);
+          if f != NoIndex { relaxFace(m, f, vu, key, &mut dist, &done, &mut heap, limit); }
+          k = k + 1usize;
+        }
+      }
+    }
+  }
+  dist;
+}
+
+// The corners of face f, improved through the triangle each makes with v (just
+// settled, at distance tv) and a corner next to v in the face
+fn relaxFace(m &PolyMesh, f u32, v u32, tv f32, dist &mut List[f32], done &List[bool], heap &mut DistHeap,
+    limit f32) {
+  imm vs = m.faceVertices(f);
+  imm n = vs.len();
+  mut at = 0usize;
+  mut i = 0usize;
+  while i < n {
+    if *vs[i] == v { at = i; }
+    i = i + 1usize;
+  }
+  imm pv = *m.positions[usize.from(v)];
+  mut side = 0usize;
+  while side < 2usize {
+    // side 0: the corner after v; side 1: the corner before it
+    imm x = if side == 0usize {*vs[(at + 1usize) % n];} else {*vs[(at + n - 1usize) % n];};
+    imm xi = usize.from(x);
+    if x != v and *dist[xi] < SurfaceFar {
+      // Every other corner, through the triangle v, x and it
+      mut j = 0usize;
+      while j < n {
+        imm c = *vs[j];
+        imm ci = usize.from(c);
+        if c != v and c != x and !*done[ci] {
+          imm cand = triangleUpdate(tv, *dist[xi], pv, *m.positions[xi], *m.positions[ci]);
+          if cand < *dist[ci] and cand <= limit {
+            dist.set(ci, cand);
+            heap.push(cand, c);
+          }
+        }
+        j = j + 1usize;
+      }
+    }
+    side = side + 1usize;
+  }
+}
+
+// Each vertex's weight for a dab by distance along the surface from 'seeds'
+// (with their starting distances 'offsets', see 'surfaceDistances'):
+// falloff(distance / radius) times 1 minus the mask.
+pub fn surfaceBrushWeights(m &PolyMesh, seeds &List[u32], offsets &List[f32], radius f32, f &Falloff,
+    mask &str) List[f32] {
+  imm ch = maskChannelOf(m, mask);
+  mut out = List[f32].withCapacity(m.positions.len());
+  if radius <= 0. {
+    mut v = 0usize;
+    while v < m.positions.len() {
+      out.push(0.);
+      v = v + 1usize;
+    }
+    return out;
+  }
+  imm dist = surfaceDistances(m, seeds, offsets, radius);
+  mut v = 0usize;
+  while v < dist.len() {
+    mut w = 0.;
+    if *dist[v] < radius { w = f.weight(*dist[v] / radius); }
+    out.push(masked(m, ch, v, w));
+    v = v + 1usize;
+  }
+  out;
+}
+
+// The same for a dab at a point 'centre' on or near the surface: the
+// nearest vertex and its neighbours seed the sweep, each at its straight-line
+// distance from the centre. A mesh with no vertices gives an empty list.
+pub fn surfaceBrushWeightsAt(m &PolyMesh, centre Vec3, radius f32, f &Falloff, mask &str) List[f32] {
+  mut seeds = List[u32].empty();
+  mut offsets = List[f32].empty();
+  imm nv = m.positions.len();
+  mut best = NoIndex;
+  mut bestD = SurfaceFar;
+  mut v = 0usize;
+  while v < nv {
+    imm d = *m.positions[v] - centre;
+    imm dd = d.dot(d);
+    if dd < bestD {
+      bestD = dd;
+      best = u32.from(v);
+    }
+    v = v + 1usize;
+  }
+  if best != NoIndex {
+    seeds.push(best);
+    offsets.push(libc.sqrtf(bestD));
+    imm ring = m.vertexNeighbors(best);
+    mut k = 0usize;
+    while k < ring.len() {
+      seeds.push(*ring[k]);
+      offsets.push((*m.positions[usize.from(*ring[k])] - centre).length());
+      k = k + 1usize;
+    }
+  }
+  surfaceBrushWeights(m, &seeds, &offsets, radius, f, mask);
+}
+
+// -------- soft selection --------
+
+// Proportional editing's weights: the selected vertices (a list of vertex
+// numbers) weigh 1; every other vertex falloff(distance / radius), the
+// distance to the nearest selected vertex, straight-line (SoftEuclidean) or
+// along the surface (SoftSurface), 0 beyond the radius.
+pub fn softSelect(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, mode u32) List[f32] {
+  softSelectWith(m, selected, radius, f, mode, "");
+}
+
+// The same, times 1 minus the vertex channel 'mask' ("" for none). A masked
+// vertex that is selected gets 0 as well.
+pub fn softSelectWith(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, mode u32,
+    mask &str) List[f32] {
+  imm nv = m.positions.len();
+  imm ch = maskChannelOf(m, mask);
+  mut chosen = List[bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    chosen.push(false);
+    v = v + 1usize;
+  }
+  mut i = 0usize;
+  while i < selected.len() {
+    if usize.from(*selected[i]) < nv { chosen.set(usize.from(*selected[i]), true); }
+    i = i + 1usize;
+  }
+  mut dist = List[f32].withCapacity(nv);
+  if radius <= 0. {
+    v = 0usize;
+    while v < nv {
+      dist.push(SurfaceFar);
+      v = v + 1usize;
+    }
+  } elif mode == SoftSurface {
+    imm none = List[f32].empty();
+    dist = surfaceDistances(m, selected, &none, radius);
+  } else {
+    mut pts = List[Vec3].empty();
+    i = 0usize;
+    while i < selected.len() {
+      if usize.from(*selected[i]) < nv { pts.push(*m.positions[usize.from(*selected[i])]); }
+      i = i + 1usize;
+    }
+    imm grid = PointGrid.build(&pts, radius);
+    v = 0usize;
+    while v < nv {
+      imm p = *m.positions[v];
+      imm near = grid.nearestWithin(p, radius);
+      if near == NoIndex {
+        dist.push(SurfaceFar);
+      } else {
+        dist.push((*pts[usize.from(near)] - p).length());
+      }
+      v = v + 1usize;
+    }
+  }
+  mut out = List[f32].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    mut w = 0.;
+    if *chosen[v] {
+      w = 1.;
+    } elif radius > 0. and *dist[v] < radius {
+      w = f.weight(*dist[v] / radius);
+    }
+    out.push(masked(m, ch, v, w));
+    v = v + 1usize;
+  }
+  out;
+}
+
+// A copy of the mesh with the vertex channel 'name' (made at 'fill' if it
+// is not there) holding 'values'
+fn withVertexChannel(m &PolyMesh, name &str, fill f32, values &List[f32]) PolyMesh {
+  mut out = withPositions(m, copyList[Vec3](&m.positions));
+  imm ch = out.addFloatChannel(VertexDomain, name, fill);
+  mut v = 0usize;
+  while v < values.len() and v < out.positions.len() {
+    out.setFloat(ch, u32.from(v), *values[v]);
+    v = v + 1usize;
+  }
+  out;
+}
+
+// The soft selection's weights as a vertex channel named 'name' on a copy of
+// the mesh, for the operators that read a weight channel ('smoothWith', the
+// decimator's weight)
+pub fn withSoftSelection(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, mode u32,
+    name &str) PolyMesh {
+  imm w = softSelect(m, selected, radius, f, mode);
+  withVertexChannel(m, name, 0., &w);
+}

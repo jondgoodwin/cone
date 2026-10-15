@@ -1,0 +1,280 @@
+// The sculpt package's masks (the "mask" vertex channel, its filters and its
+// makers), checked with the testing package against values worked out by hand;
+// only a failure prints, so masks.out holds the summary alone.
+//
+// The flat grid: 9 x 9 quads of side 1 in y = 0 (10 x 10 vertices, vertex
+// (i, j) at (i, 0, j), number 10 j + i), centre vertex 44 = (4, 4); every
+// vertex has the vertex channel "h" = its x. Counted: the vertices masked at
+// 0.5 or more.
+// - One vertex masked, grown once: itself and its 4 edge neighbours, 5; grown
+//   twice, the diamond of radius 2, 13. Shrunk back from the diamond once, 5,
+//   twice, 1. At the grid's corner a vertex has 2 neighbours and shrinks away
+//   as a single masked vertex does.
+// - Smoothed with factor 1, once: vertex 44 takes the mean of its 4 neighbours,
+//   0, and each neighbour (4 neighbours, one of them 44) takes 1/4. Factor 0.5:
+//   vertex 44 goes to 0.5 and a neighbour to 0.125.
+// - Inverted: 1 - m. Sharpened once: m goes to 3 m^2 - 2 m^3: 0.25 to 0.15625,
+//   0.75 to 0.84375, 0.5 stays. Remapped 0.2..0.6: 0.4 goes to 0.5, 0.1 to 0,
+//   0.8 to 1; remapped 0.5..0.5 (a step): 0.4 to 0, 0.5 to 1.
+// - The ways to meet: vertex 44 masked, then 45 made with the new values in
+//   each mode: replace (45 at 1, 44 at 0), union (both 1), intersect (both 0),
+//   subtract (44 at 0 as the new mask frees 44? no: new = {45}, so 44 stays 1
+//   and 45 stays 0), add (both 1).
+// - By normal on the cube cage ((+-1, +-1, +-1), each vertex normal along its
+//   diagonal, 54.7356 degrees from +y): towards +y within 60 degrees masks the
+//   4 top vertices; within 50 degrees none; within 50 degrees soft 10, the
+//   top vertices at t = (54.7356 - 50) / 10 = 0.47357, 1 - t^2 (3 - 2 t) =
+//   0.5396.
+// - By cavity on a Gaussian bump (height exp(-r^2 / 8), r from the centre of
+//   a 20 x 20 grid): the top is convex (the blurred surface lies below it),
+//   masked fully by convex with a gain of 20; the ring at r = 4 is concave
+//   (the Gaussian's Laplacian is positive beyond r = 2 sqrt 2), masked by
+//   concave a little and by convex not at all; the far corner, nearly flat,
+//   is masked by neither.
+// - By a sphere at (4, 0, 4) radius 2, linear falloff: vertex 45 at 0.5. By
+//   a box (3, -1, 3) to (5, 1, 5): the 9 vertices (3..5, 3..5), hard; with a
+//   feather of 2, vertex (6, 4), 1 outside, at smoothstep 0.5: 0.5. By the
+//   plane x = 4.5 facing +x: the 50 vertices with i >= 5; with a feather of
+//   1, vertex i = 4 (0.5 behind) at 0.5. By the channel "h" from 2 to 6:
+//   x = 4 at 0.5, x = 1 at 0, x = 7 at 1; by a missing channel, unchanged.
+// - The mesh keeps its positions, topology and the "h" channel through all
+//   of it, and validates.
+
+mod masks;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+// An nx by nz grid of unit quads facing +y, vertex (i, j) number j (nx + 1) + i
+// at height y(i, j), with a vertex channel "h" = x
+fn gridWith(nx i32, nz i32, bump bool) PolyMesh {
+  mut pts = List[Vec3].empty();
+  mut j = 0;
+  while j <= nz {
+    mut i = 0;
+    while i <= nx {
+      mut y = 0.;
+      if bump {
+        imm dx = f32.from(i) - f32.from(nx) * 0.5;
+        imm dz = f32.from(j) - f32.from(nz) * 0.5;
+        y = libc.expf(-(dx * dx + dz * dz) / 8.);
+      }
+      pts.push(new Vec3(f32.from(i), y, f32.from(j)));
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  j = 0;
+  while j < nz {
+    mut i = 0;
+    while i < nx {
+      imm v00 = u32.from(j * (nx + 1) + i);
+      imm v10 = v00 + 1u32;
+      imm v01 = v00 + u32.from(nx + 1);
+      imm v11 = v01 + 1u32;
+      counts.push(4u32);
+      idx.push(v00);
+      idx.push(v01);
+      idx.push(v11);
+      idx.push(v10);
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  mut problems = List[String].empty();
+  mut m = PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems);
+  imm h = m.addFloatChannel(VertexDomain, "h", 0.);
+  mut v = 0usize;
+  while v < m.positions.len() {
+    m.setFloat(h, u32.from(v), m.positions[v].x);
+    v = v + 1usize;
+  }
+  m;
+}
+
+fn grid() PolyMesh {gridWith(9, 9, false);}
+
+fn one(v u32) List[u32] {
+  mut l = List[u32].empty();
+  l.push(v);
+  l;
+}
+
+fn at(m &PolyMesh, v u32) f32 {
+  imm ch = m.findFloatChannel(VertexDomain, "mask");
+  if ch == NoIndex { return -1.; }
+  m.float(ch, v);
+}
+
+fn count(m &PolyMesh) i64 {
+  imm vals = maskValues(m);
+  mut n = 0i64;
+  mut v = 0usize;
+  while v < vals.len() {
+    if *vals[v] >= 0.5 { n = n + 1i64; }
+    v = v + 1usize;
+  }
+  n;
+}
+
+fn kept(m &PolyMesh, g &PolyMesh, label &Array[u8]) {
+  expectInt(i64.from(m.validate().len()), 0, label);
+  expectInt(i64.from(m.positions.len()), i64.from(g.positions.len()), label);
+  expectInt(i64.from(m.hVertex.len()), i64.from(g.hVertex.len()), label);
+  expect(m.findFloatChannel(VertexDomain, "h") != NoIndex, label);
+  expectFloat(f64.from(m.positions[45usize].x), 5., near, label);
+}
+
+fn filters() {
+  imm g = grid();
+  expectFloat(f64.from(at(&g, 44u32)), -1., near, "a mesh with no mask has no channel");
+  imm none = maskValues(&g);
+  expectFloat(f64.from(*none[44usize]), 0., near, "maskValues of an unmasked mesh is 0");
+  imm m1 = maskByVertices(&g, &one(44u32), MaskReplace);
+  expectFloat(f64.from(at(&m1, 44u32)), 1., near, "one masked vertex");
+  expectInt(count(&m1), 1, "one vertex masked");
+  kept(&m1, &g, "maskByVertices keeps the mesh");
+  imm g1 = maskGrow(&m1, 1u32);
+  expectInt(count(&g1), 5, "grow once: 5");
+  imm g2 = maskGrow(&m1, 2u32);
+  expectInt(count(&g2), 13, "grow twice: 13");
+  expectFloat(f64.from(at(&g2, 24u32)), 1., near, "grow twice reaches (4, 2)");
+  expectFloat(f64.from(at(&g2, 23u32)), 0., near, "and not (3, 2), 3 steps off");
+  expectInt(count(&maskShrink(&g2, 1u32)), 5, "shrink the diamond once: 5");
+  expectInt(count(&maskShrink(&g2, 2u32)), 1, "shrink twice: 1");
+  expectInt(count(&maskShrink(&m1, 1u32)), 0, "shrink one vertex: none");
+  expectInt(count(&maskGrow(&m1, 0u32)), 1, "grow 0 times changes nothing");
+  kept(&g2, &g, "maskGrow keeps the mesh");
+
+  imm s1 = maskSmooth(&m1, 1., 1u32);
+  expectFloat(f64.from(at(&s1, 44u32)), 0., near, "smooth factor 1: the centre takes the mean of 0s");
+  expectFloat(f64.from(at(&s1, 45u32)), 0.25, near, "smooth factor 1: a neighbour takes a quarter");
+  expectFloat(f64.from(at(&s1, 55u32)), 0., near, "smooth factor 1: a diagonal is not yet reached");
+  imm s2 = maskSmooth(&m1, 0.5, 1u32);
+  expectFloat(f64.from(at(&s2, 44u32)), 0.5, near, "smooth factor 0.5: the centre halves");
+  expectFloat(f64.from(at(&s2, 45u32)), 0.125, near, "smooth factor 0.5: a neighbour an eighth");
+
+  imm inv = maskInvert(&m1);
+  expectFloat(f64.from(at(&inv, 44u32)), 0., near, "invert: the masked vertex is free");
+  expectFloat(f64.from(at(&inv, 0u32)), 1., near, "invert: a free vertex is masked");
+  expectInt(count(&inv), 99, "invert: 99");
+  imm cleared = maskClear(&inv);
+  expectInt(count(&cleared), 0, "clear: none");
+  kept(&cleared, &g, "maskClear keeps the mesh");
+
+  // Values to sharpen and remap
+  mut vals = maskValues(&g);
+  vals.set(10usize, 0.25);
+  vals.set(11usize, 0.75);
+  vals.set(12usize, 0.5);
+  vals.set(13usize, 0.4);
+  vals.set(14usize, 0.1);
+  vals.set(15usize, 0.8);
+  imm graded = withMaskValues(&g, &vals);
+  imm sharp = maskSharpen(&graded, 1u32);
+  expectFloat(f64.from(at(&sharp, 10u32)), 0.15625, near, "sharpen: 0.25 to 0.15625");
+  expectFloat(f64.from(at(&sharp, 11u32)), 0.84375, near, "sharpen: 0.75 to 0.84375");
+  expectFloat(f64.from(at(&sharp, 12u32)), 0.5, near, "sharpen: 0.5 stays");
+  imm sharp2 = maskSharpen(&graded, 2u32);
+  expect(at(&sharp2, 10u32) < 0.15625 and at(&sharp2, 11u32) > 0.84375, "sharpen twice goes further");
+  imm remap = maskRemap(&graded, 0.2, 0.6);
+  expectFloat(f64.from(at(&remap, 13u32)), 0.5, near, "remap 0.2..0.6: 0.4 to 0.5");
+  expectFloat(f64.from(at(&remap, 14u32)), 0., near, "remap: 0.1 to 0");
+  expectFloat(f64.from(at(&remap, 15u32)), 1., near, "remap: 0.8 to 1");
+  imm step = maskRemap(&graded, 0.5, 0.5);
+  expectFloat(f64.from(at(&step, 13u32)), 0., near, "step at 0.5: 0.4 to 0");
+  expectFloat(f64.from(at(&step, 12u32)), 1., near, "step at 0.5: 0.5 to 1");
+  imm emptyVals = List[f32].empty();
+  imm shortMask = withMaskValues(&g, &emptyVals);
+  expectInt(i64.from(shortMask.validate().len()), 0, "an empty value list still gives a valid mesh");
+}
+
+fn meeting() {
+  imm g = grid();
+  imm base = maskByVertices(&g, &one(44u32), MaskReplace);
+  imm rep = maskByVertices(&base, &one(45u32), MaskReplace);
+  expectFloat(f64.from(at(&rep, 44u32)), 0., near, "replace: 44 freed");
+  expectFloat(f64.from(at(&rep, 45u32)), 1., near, "replace: 45 masked");
+  imm joined = maskByVertices(&base, &one(45u32), MaskUnion);
+  expectFloat(f64.from(at(&joined, 44u32)), 1., near, "union: 44 stays");
+  expectFloat(f64.from(at(&joined, 45u32)), 1., near, "union: 45 added");
+  imm inter = maskByVertices(&base, &one(45u32), MaskIntersect);
+  expectInt(count(&inter), 0, "intersect: nothing masked by both");
+  imm sub = maskByVertices(&base, &one(44u32), MaskSubtract);
+  expectInt(count(&sub), 0, "subtract: the new values free 44");
+  imm sub2 = maskByVertices(&base, &one(45u32), MaskSubtract);
+  expectFloat(f64.from(at(&sub2, 44u32)), 1., near, "subtract: a vertex the new values do not touch stays");
+  imm add = maskByVertices(&base, &one(45u32), MaskAdd);
+  expectInt(count(&add), 2, "add: both");
+  imm add2 = maskByVertices(&add, &one(44u32), MaskAdd);
+  expectFloat(f64.from(at(&add2, 44u32)), 1., near, "add: held to 1");
+}
+
+fn makers() {
+  imm cube = PolyMesh.cube(1.);
+  imm up = new Vec3(0., 1., 0.);
+  imm top = maskByNormal(&cube, up, radians(60.), 0., MaskReplace);
+  expectInt(count(&top), 4, "by normal: 4 top vertices within 60 degrees");
+  expectFloat(f64.from(at(&top, 2u32)), 1., near, "by normal: vertex 2 (-1, 1, -1) is on top");
+  expectFloat(f64.from(at(&top, 0u32)), 0., near, "by normal: vertex 0 (-1, -1, -1) is not");
+  expectInt(count(&maskByNormal(&cube, up, radians(50.), 0., MaskReplace)), 0, "by normal: none within 50 degrees");
+  imm soft = maskByNormal(&cube, up, radians(50.), radians(10.), MaskReplace);
+  expectFloat(f64.from(at(&soft, 2u32)), 0.5396, 0.001d, "by normal: the soft edge, 0.5396");
+  expectFloat(f64.from(at(&soft, 0u32)), 0., near, "by normal: and 0 where it faces away");
+
+  imm bump = gridWith(20, 20, true);
+  imm convex = maskByCavity(&bump, 1u32, 20., CavityConvex, MaskReplace);
+  imm concave = maskByCavity(&bump, 1u32, 20., CavityConcave, MaskReplace);
+  imm both = maskByCavity(&bump, 1u32, 20., CavityBoth, MaskReplace);
+  expectFloat(f64.from(at(&convex, 220u32)), 1., near, "cavity: the top of the bump is convex");
+  expectFloat(f64.from(at(&concave, 220u32)), 0., near, "cavity: and not concave");
+  expect(at(&concave, 14u32 + 10u32 * 21u32) > 0.05, "cavity: the ring at r = 4 is concave");
+  expectFloat(f64.from(at(&convex, 14u32 + 10u32 * 21u32)), 0., near, "cavity: and not convex");
+  expect(at(&convex, 0u32) < 0.05 and at(&concave, 0u32) < 0.05, "cavity: the far corner is flat");
+  expectFloat(f64.from(at(&both, 220u32)), 1., near, "cavity: either, the top");
+  expect(at(&both, 14u32 + 10u32 * 21u32) > 0.05, "cavity: either, the ring");
+  imm flat = maskByCavity(&grid(), 2u32, 20., CavityBoth, MaskReplace);
+  expectInt(count(&flat), 0, "cavity: a flat grid has none");
+
+  imm g = grid();
+  imm f = Falloff.preset(FalloffLinear);
+  imm sph = maskBySphere(&g, new Vec3(4., 0., 4.), 2., &f, MaskReplace);
+  expectFloat(f64.from(at(&sph, 44u32)), 1., near, "sphere: the centre");
+  expectFloat(f64.from(at(&sph, 45u32)), 0.5, near, "sphere: 0.5 a vertex off");
+  expectFloat(f64.from(at(&sph, 46u32)), 0., near, "sphere: 0 at the radius");
+
+  imm box = maskByBox(&g, new Vec3(3., -1., 3.), new Vec3(5., 1., 5.), 0., MaskReplace);
+  expectInt(count(&box), 9, "box: 9 vertices");
+  imm soft2 = maskByBox(&g, new Vec3(3., -1., 3.), new Vec3(5., 1., 5.), 2., MaskReplace);
+  expectFloat(f64.from(at(&soft2, 46u32)), 0.5, near, "box: feathered, 1 outside at 0.5");
+  expectFloat(f64.from(at(&soft2, 44u32)), 1., near, "box: inside is 1");
+  imm plane = maskByPlane(&g, new Vec3(4.5, 0., 0.), new Vec3(1., 0., 0.), 0., MaskReplace);
+  expectInt(count(&plane), 50, "plane: 50 vertices");
+  imm soft3 = maskByPlane(&g, new Vec3(4.5, 0., 0.), new Vec3(1., 0., 0.), 1., MaskReplace);
+  expectFloat(f64.from(at(&soft3, 44u32)), 0.5, near, "plane: feathered, 0.5 behind at 0.5");
+  expectFloat(f64.from(at(&soft3, 43u32)), 0., near, "plane: 1.5 behind at 0");
+  imm byh = maskByChannel(&g, "h", 2., 6., MaskReplace);
+  expectFloat(f64.from(at(&byh, 44u32)), 0.5, near, "channel: x = 4 at 0.5");
+  expectFloat(f64.from(at(&byh, 41u32)), 0., near, "channel: x = 1 at 0");
+  expectFloat(f64.from(at(&byh, 47u32)), 1., near, "channel: x = 7 at 1");
+  imm missing = maskByChannel(&g, "nothing", 0., 1., MaskReplace);
+  expectInt(i64.from(missing.validate().len()), 0, "channel: a missing channel leaves a valid mesh");
+  expectInt(count(&missing), 0, "channel: and no mask");
+  kept(&byh, &g, "maskByChannel keeps the mesh");
+  kept(&box, &g, "maskByBox keeps the mesh");
+}
+
+fn main() i32 {
+  filters();
+  meeting();
+  makers();
+  done();
+}
