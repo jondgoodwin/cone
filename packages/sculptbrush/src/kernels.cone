@@ -1,0 +1,265 @@
+// ======== Brush kernels: a dab's weights to a displacement per vertex ========
+//
+// Each brush is a function of a dab (its frame 'DabCtx' and its vertices
+// 'DabData') to the displacement of each vertex, in the order of the dab's
+// list. The amounts are in units of the radius and the strength, tuned so a
+// stroke of strength 1 spaced 0.1 builds a form of a tenth of the radius or so
+// (Blender's default feel); the form of each brush follows Blender's manual.
+// Whether a brush's default action is to add or take away is Blender's, and
+// 'subtract' (sign -1) is its Ctrl action.
+
+fn vzero() Vec3 { new Vec3(0., 0., 0.); }
+
+// The weight-averaged position of a dab's vertices
+fn areaCentre(s &Sculptor, d &DabData) Vec3 {
+  mut sum = vzero();
+  mut tw = 0.;
+  mut i = 0usize;
+  while i < d.vs.len() {
+    sum = sum + *s.mesh.positions[usize.from(*d.vs[i])] * *d.w[i];
+    tw = tw + *d.w[i];
+    i = i + 1usize;
+  }
+  if tw > 0. { sum * (1. / tw); } else { vzero(); };
+}
+
+// The displacement of every vertex of the dab
+pub fn kernelDisp(s &Sculptor, st &Stroke, cx &DabCtx, d &DabData) List[Vec3] {
+  imm kind = st.brush.kind;
+  imm n = cx.n;
+  imm r = cx.r;
+  imm sg = cx.sign;
+  imm sc = cx.s;
+  imm cnt = d.vs.len();
+  mut out = List[Vec3].withCapacity(cnt);
+  // The pull a plane-seeking brush makes in a dab: strength, held to 1
+  imm pull = if sc > 1. {1.;} else {sc;};
+  if kind == BrushDraw {
+    // Along the area normal
+    imm amt = sg * sc * r * 0.012;
+    mut i = 0usize;
+    while i < cnt { out.push(n * (amt * *d.w[i])); i = i + 1usize; }
+  } elif kind == BrushDrawSharp {
+    // Tied to the surface as the stroke began: each vertex goes towards a height
+    // over its starting place and no farther, so dabs do not pile up
+    imm top = sg * sc * r * 0.15;
+    mut i = 0usize;
+    while i < cnt {
+      imm v = usize.from(*d.vs[i]);
+      imm off = (*s.mesh.positions[v] - *s.start[v]).dot(n);
+      imm target = top * *d.w[i];
+      if (target - off) * sg > 0. {
+        out.push(n * ((target - off) * 0.5));
+      } else {
+        out.push(vzero());
+      }
+      i = i + 1usize;
+    }
+  } elif kind == BrushClay or kind == BrushClayStrips {
+    // Towards a plane just above the dab's mean place, so hollows fill and stacked strokes build up
+    imm a = areaCentre(s, d);
+    imm q = a + n * (sg * st.brush.height * r);
+    imm f = 0.45 * pull;
+    mut i = 0usize;
+    while i < cnt {
+      imm dist = (q - *s.mesh.positions[usize.from(*d.vs[i])]).dot(n);
+      if dist * sg > 0. { out.push(n * (dist * f * *d.w[i])); } else { out.push(vzero()); }
+      i = i + 1usize;
+    }
+  } elif kind == BrushLayer {
+    // Raised to a fixed height over the base and held there
+    imm cap = sg * st.brush.height * r;
+    imm rate = (if cap < 0. {-cap;} else {cap;}) * pull * 0.5;
+    mut i = 0usize;
+    while i < cnt {
+      imm v = usize.from(*d.vs[i]);
+      imm basePos = if s.hasBase {*s.base[v];} else {*s.start[v];};
+      imm nb = vertexNormalOf(&s.mesh, if s.hasBase {&s.base;} else {&s.start;}, *d.vs[i]);
+      imm off = (*s.mesh.positions[v] - basePos).dot(nb);
+      mut moved = off;
+      if cap >= 0. {
+        imm up = off + rate * *d.w[i];
+        imm held = if up > cap {cap;} else {up;};
+        if held > off { moved = held; }
+      } else {
+        imm dn = off - rate * *d.w[i];
+        imm held = if dn < cap {cap;} else {dn;};
+        if held < off { moved = held; }
+      }
+      out.push(nb * (moved - off));
+      i = i + 1usize;
+    }
+  } elif kind == BrushInflate {
+    imm amt = sg * sc * r * 0.012;
+    mut i = 0usize;
+    while i < cnt { out.push(*d.nrm[i] * (amt * *d.w[i])); i = i + 1usize; }
+  } elif kind == BrushBlob {
+    // Along the normals, drawn towards a sphere whose centre lies under the dab
+    imm amt = sg * sc * r * 0.014;
+    imm sphereC = cx.c - n * (0.5 * r);
+    mut i = 0usize;
+    while i < cnt {
+      imm p = *s.mesh.positions[usize.from(*d.vs[i])];
+      imm radial = (p - sphereC).normalize();
+      imm dir = (*d.nrm[i] * (1. - st.brush.sphere) + radial * st.brush.sphere).normalize();
+      out.push(dir * (amt * *d.w[i]));
+      i = i + 1usize;
+    }
+  } elif kind == BrushCrease or kind == BrushDam {
+    // Pushed in along the normal and pinched towards the stroke line
+    imm depth = if kind == BrushDam {0.03;} else {0.015;};
+    imm amt = sg * sc * r * depth;
+    imm pinchF = st.brush.pinch * pull * 0.15 * sg;
+    mut i = 0usize;
+    while i < cnt {
+      imm v = usize.from(*d.vs[i]);
+      imm x = *s.mesh.positions[v] - cx.c;
+      mut lat = x - n * x.dot(n);
+      if cx.hasDir { lat = lat - cx.dir * lat.dot(cx.dir); }
+      out.push(n * (-amt * *d.w[i]) - lat * (pinchF * *d.w[i]));
+      i = i + 1usize;
+    }
+  } elif kind == BrushPlane {
+    // To a plane through the dab's mean place, flat, filling or scraping
+    imm a = areaCentre(s, d);
+    imm q = a + n * (st.brush.height * r);
+    imm f = 0.6 * pull;
+    imm depth = st.brush.depth * r;
+    mut mode = st.brush.planeMode;
+    if sg < 0. and mode == PlaneFill { mode = PlaneScrape; }
+    elif sg < 0. and mode == PlaneScrape { mode = PlaneFill; }
+    imm away = sg < 0. and st.brush.planeMode == PlaneFlatten;
+    mut i = 0usize;
+    while i < cnt {
+      imm dist = (q - *s.mesh.positions[usize.from(*d.vs[i])]).dot(n);
+      mut ok = true;
+      if mode == PlaneFill and dist <= 0. { ok = false; }
+      if mode == PlaneScrape and dist >= 0. { ok = false; }
+      if st.brush.depth > 0. and absf(dist) > depth { ok = false; }
+      if ok {
+        imm amt = if away {-dist * f * 0.5;} else {dist * f;};
+        out.push(n * (amt * *d.w[i]));
+      } else {
+        out.push(vzero());
+      }
+      i = i + 1usize;
+    }
+  } elif kind == BrushPinch {
+    // Towards the centre across the surface (Magnify, inverted, away from it)
+    imm f = sg * st.brush.pinch * pull * 0.3;
+    mut i = 0usize;
+    while i < cnt {
+      imm x = cx.c - *s.mesh.positions[usize.from(*d.vs[i])];
+      imm t = x - n * x.dot(n);
+      out.push(t * (f * *d.w[i]));
+      i = i + 1usize;
+    }
+  } elif kind == BrushSnakeHook {
+    // Dragged by the centre's move
+    imm f = pull;
+    mut i = 0usize;
+    while i < cnt { out.push(cx.delta * (f * *d.w[i])); i = i + 1usize; }
+  } elif kind == BrushThumb {
+    // Flattened to the dab's mean plane and smeared along the stroke
+    imm a = areaCentre(s, d);
+    mut i = 0usize;
+    while i < cnt {
+      imm p = *s.mesh.positions[usize.from(*d.vs[i])];
+      imm flat = n * ((a - p).dot(n) * 0.35 * pull);
+      imm smear = cx.dir * (sg * sc * r * 0.04);
+      out.push((flat + smear) * *d.w[i]);
+      i = i + 1usize;
+    }
+  } elif kind == BrushNudge {
+    imm amt = sg * sc * r * 0.04;
+    mut i = 0usize;
+    while i < cnt { out.push(cx.dir * (amt * *d.w[i])); i = i + 1usize; }
+  } elif kind == BrushRotate {
+    // About the dab's normal through its centre
+    mut i = 0usize;
+    while i < cnt {
+      imm th = st.brush.angle * sg * sc * *d.w[i];
+      imm len = (1. + th * th).sqrt();
+      imm qv = n * (th / len);
+      imm qq = 1. / len;
+      imm x = *s.mesh.positions[usize.from(*d.vs[i])] - cx.c;
+      imm t1 = qv.cross(x);
+      out.push(t1 * (2. * qq) + qv.cross(t1) * 2.);
+      i = i + 1usize;
+    }
+  } else {
+    mut i = 0usize;
+    while i < cnt { out.push(vzero()); i = i + 1usize; }
+  }
+  out;
+}
+
+// A relaxing step: each vertex moves 'factor' x weight of the way to the mean
+// of its neighbours (along the boundary, for a boundary vertex), all from the
+// positions as they are; 'slide' keeps only the part across the surface
+pub fn relaxDisp(s &Sculptor, st &Stroke, d &DabData, factor f32, slide bool) List[Vec3] {
+  mut out = List[Vec3].withCapacity(d.vs.len());
+  mut i = 0usize;
+  while i < d.vs.len() {
+    imm v = *d.vs[i];
+    imm p = *s.mesh.positions[usize.from(v)];
+    imm hs = s.mesh.vertexOutgoing(v);
+    imm onBoundary = s.mesh.isBoundaryVertex(v);
+    mut sum = vzero();
+    mut cnt = 0.;
+    mut k = 0usize;
+    while k < hs.len() {
+      imm h = *hs[k];
+      if !onBoundary or s.mesh.isBoundaryEdge(s.mesh.edge(h)) {
+        sum = sum + *s.mesh.positions[usize.from(s.mesh.toVertex(h))];
+        cnt = cnt + 1.;
+      }
+      k = k + 1usize;
+    }
+    if cnt > 0. {
+      mut step = (sum * (1. / cnt) - p) * (factor * *d.w[i]);
+      if slide {
+        imm nv = *d.nrm[i];
+        step = step - nv * step.dot(nv);
+      }
+      out.push(step);
+    } else {
+      out.push(vzero());
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The regularised Kelvinlet of de Goes and James (2017), "Regularized
+// Kelvinlets: sculpting brushes based on fundamental solutions of elasticity":
+// the displacement at offset x from a point force f in an elastic solid with
+// regularisation radius eps is [(a - b)/r_e I + b/r_e^3 x x^T + a eps^2/(2 r_e^3) I] f,
+// r_e = sqrt(|x|^2 + eps^2), a = 1/(4 pi mu), b = a / (4 (1 - nu)); here a = 1.
+fn kelvinlet(x Vec3, f Vec3, eps f32, nu f32) Vec3 {
+  imm a = 1.;
+  imm b = a / (4. * (1. - nu));
+  imm re2 = x.lengthSquared() + eps * eps;
+  imm re = re2.sqrt();
+  imm re3 = re2 * re;
+  f * ((a - b) / re + a * eps * eps / (2. * re3)) + x * (x.dot(f) * (b / re3));
+}
+
+// The biscale form (the same paper, section 6): the difference of two
+// Kelvinlets of radii eps1 < eps2, which falls off as the cube of the
+// distance rather than the first power, so a brush of a given radius has
+// compact influence. Scaled so the point of the force moves by exactly 'move'
+// (the field there is isotropic, (1.5 a - b)(1/eps) f), and faded to nothing
+// at ElasticReach radii so there is no cut.
+pub fn kelvinBiscale(x Vec3, move Vec3, radius f32, nu f32) Vec3 {
+  imm eps1 = 0.5 * radius;
+  imm eps2 = 1.5 * radius;
+  imm a = 1.;
+  imm b = a / (4. * (1. - nu));
+  imm at0 = (1.5 * a - b) * (1. / eps1 - 1. / eps2);
+  imm field = kelvinlet(x, move, eps1, nu) - kelvinlet(x, move, eps2, nu);
+  imm reach = ElasticReach * radius;
+  imm q = x.length() / reach;
+  imm fade = if q >= 1. {0.;} else {(1. - q * q) * (1. - q * q);};
+  field * (fade / at0);
+}

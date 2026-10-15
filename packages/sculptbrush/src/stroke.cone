@@ -1,0 +1,340 @@
+// ======== Strokes and brushes as data ========
+//
+// A 'Stroke' is a recipe step: a brush, a path, and the dials of the stroke.
+// Nothing in it is a pointer into a mesh, so a list of strokes is a script
+// that can be stored, sent and replayed (see sculptor.cone).
+//
+// The 'Brush' is a kind (BrushDraw ...) and the few numbers its kernel reads.
+// 'Brush.of(kind)' gives each kind's defaults; change the fields after.
+// Every number is in units of the stroke's radius, so a recipe lands the same
+// at another scale.
+
+// -------- the brushes --------
+
+pub const BrushDraw = 0u32;
+pub const BrushDrawSharp = 1u32;
+pub const BrushClay = 2u32;
+pub const BrushClayStrips = 3u32;
+pub const BrushLayer = 4u32;
+pub const BrushInflate = 5u32;
+pub const BrushBlob = 6u32;
+pub const BrushCrease = 7u32;
+pub const BrushSmooth = 8u32;
+pub const BrushPlane = 9u32;
+pub const BrushPinch = 10u32;
+pub const BrushGrab = 11u32;
+pub const BrushElastic = 12u32;
+pub const BrushSnakeHook = 13u32;
+pub const BrushThumb = 14u32;
+pub const BrushNudge = 15u32;
+pub const BrushRotate = 16u32;
+pub const BrushSlideRelax = 17u32;
+pub const BrushPose = 18u32;
+pub const BrushMask = 19u32;
+pub const BrushDam = 20u32;
+pub const BrushMoveTopological = 21u32;
+
+// Plane brush presets (Blender's Flatten, Fill and Scrape)
+pub const PlaneFlatten = 0u32;   // everything moves to the plane
+pub const PlaneFill = 1u32;      // what lies below the plane moves up to it
+pub const PlaneScrape = 2u32;    // what lies above the plane moves down to it
+
+// How the dabs lie along a stroke (Blender's stroke methods)
+pub const StrokeSpace = 0u32;      // along the polyline of the points, one dab every spacing x radius
+pub const StrokeDots = 1u32;       // one dab at each point
+pub const StrokeAnchored = 2u32;   // one dab at the first point, the radius and direction set by the last
+pub const StrokeLine = 3u32;       // along the straight line from the first point to the last
+pub const StrokeCurve = 4u32;      // along a Catmull-Rom spline through the points
+
+pub struct Brush {
+  pub kind u32;
+  pub height f32;       // Layer: the cap on the raised height; Clay, Clay Strips, Plane: how far the plane lies off the surface (along the normal)
+  pub pinch f32;        // Crease, Dam: the pull towards the stroke line; Pinch: the pull towards the centre (1 is the usual)
+  pub sphere f32;       // Blob: 0 pushes along the normals, 1 straight out from a sphere below the dab
+  pub aspect f32;       // Clay Strips: the strip's width over its length
+  pub depth f32;        // Plane: ignore what lies farther than this many radii from the plane (0: no limit)
+  pub planeMode u32;    // Plane: PlaneFlatten, PlaneFill, PlaneScrape
+  pub iterations u32;   // Smooth, Slide Relax: passes a dab
+  pub taubin bool;      // Smooth: each pass followed by Taubin's step back out, so it does not shrink
+  pub angle f32;        // Rotate: tan(half the angle) at full strength (no trig, so every machine agrees)
+  pub poisson f32;      // Elastic: the Poisson ratio of the material, 0 to 0.5 (0.5 is incompressible)
+  pub pivot Vec3;       // Pose: the pivot, when fixedPivot
+  pub fixedPivot bool;  // Pose: use 'pivot' in place of the automatically found one
+  pub reach f32;        // Pose: the segment's reach along the surface in radii (1: the radius)
+
+  pub fn of(kind u32) Brush {
+    mut b = new Brush(kind, 0.06, 0.4, 0.6, 0.35, 0., PlaneFlatten, 1u32, false, 0.2, 0.5, new Vec3(0., 0., 0.), false, 1.);
+    if kind == BrushLayer { b.height = 0.08; }
+    if kind == BrushClay { b.height = 0.05; }
+    if kind == BrushClayStrips { b.height = 0.08; }
+    if kind == BrushPlane { b.height = 0.; }
+    if kind == BrushCrease { b.pinch = 0.4; }
+    if kind == BrushDam { b.pinch = 0.9; }
+    if kind == BrushSmooth { b.taubin = true; }
+    b;
+  }
+
+  // A copy of the brush, for a recipe that varies one number
+  pub fn copy(self &) Brush {
+    new Brush(kind, height, pinch, sphere, aspect, depth, planeMode, iterations, taubin, angle, poisson, pivot,
+      fixedPivot, reach);
+  }
+}
+
+// -------- alpha --------
+
+// A height image stamped into the dab: Blender's brush texture, ZBrush's
+// alpha. 'values' is w x h samples from 0 to 1, row by row, covering the
+// square of side twice the radius centred on the dab, one axis along the
+// stroke (with 'followStroke', else a fixed frame on the surface), the
+// other across it. Each vertex's weight is multiplied by the sample at its
+// place (bilinear), so an alpha of dots or ridges stamps its pattern.
+pub struct Alpha {
+  pub w u32;
+  pub h u32;
+  pub values List[f32];
+  pub followStroke bool;
+
+  pub fn empty() Alpha { new Alpha(0u32, 0u32, List[f32].empty(), true); }
+
+  // The sample at (u, v), each from 0 to 1; 0 outside
+  pub fn sample(self &, u f32, v f32) f32 {
+    if w == 0u32 or h == 0u32 or u < 0. or v < 0. or u > 1. or v > 1. { return 0.; }
+    imm x = u * f32.from(w - 1u32);
+    imm y = v * f32.from(h - 1u32);
+    mut x0 = u32.from(x);
+    mut y0 = u32.from(y);
+    if x0 >= w - 1u32 and w > 1u32 { x0 = w - 2u32; }
+    if y0 >= h - 1u32 and h > 1u32 { y0 = h - 2u32; }
+    imm x1 = if x0 + 1u32 < w {x0 + 1u32;} else {x0;};
+    imm y1 = if y0 + 1u32 < h {y0 + 1u32;} else {y0;};
+    imm fx = x - f32.from(x0);
+    imm fy = y - f32.from(y0);
+    imm a = *values[usize.from(y0 * w + x0)];
+    imm b = *values[usize.from(y0 * w + x1)];
+    imm c = *values[usize.from(y1 * w + x0)];
+    imm d = *values[usize.from(y1 * w + x1)];
+    (a * (1. - fx) + b * fx) * (1. - fy) + (c * (1. - fx) + d * fx) * fy;
+  }
+}
+
+// An alpha of size x size samples from a function of (u, v) over 0 to 1
+pub fn alphaFrom[F fn(u f32, v f32) f32](size u32, f &F) Alpha {
+  mut a = Alpha.empty();
+  a.w = size;
+  a.h = size;
+  mut j = 0u32;
+  while j < size {
+    mut i = 0u32;
+    while i < size {
+      imm d = if size > 1u32 {f32.from(size - 1u32);} else {1.;};
+      a.values.push(f(f32.from(i) / d, f32.from(j) / d));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  a;
+}
+
+// -------- symmetry --------
+
+// A mirror plane: a point on it and a normal
+pub struct SymPlane {
+  pub origin Vec3;
+  pub normal Vec3;
+}
+
+// -------- the stroke --------
+
+pub struct Stroke {
+  pub brush Brush;
+  pub points List[Vec3];       // the path's control points (world space)
+  pub method u32;              // StrokeSpace ...
+  pub spacing f32;             // between dabs, a fraction of the radius
+  pub radius f32;
+  pub strength f32;            // 0 to 1 and beyond
+  pub radiusCurve Falloff;     // a multiplier on the radius along the stroke (t from 0 to 1): pressure
+  pub strengthCurve Falloff;   // the same for the strength
+  pub falloff Falloff;         // the weight across a dab
+  pub subtract bool;           // the brush's inverted action (Blender's Ctrl), as lower, dig, deflate
+  pub symmetry List[SymPlane]; // every dab is also made in the mirror of each subset of these planes
+  pub frontOnly bool;          // only vertices whose normal faces the dab's (Blender's Front Faces Only)
+  pub faceSet u32;             // limit to this face set ("face_set" channel; a mesh with none is all set 1), NoIndex for none
+  pub useMask bool;            // a vertex's weight is multiplied by 1 minus its "mask"
+  pub alpha Alpha;
+  pub hasAlpha bool;
+  pub project bool;            // snap the path onto the surface (not for a grab or hook, whose last point is where it goes)
+  pub maxDabs u32;             // a guard: no stroke makes more dabs than this
+
+  // A stroke of 'brush' along 'points', with the brush's default falloff,
+  // spacing 0.1, no symmetry, masked, projected onto the surface
+  pub fn make(brush Brush, points List[Vec3], radius f32, strength f32) Stroke {
+    imm kind = brush.kind;
+    mut sp = 0.1;
+    if kind == BrushGrab or kind == BrushElastic or kind == BrushPose or kind == BrushMoveTopological { sp = 1.; }
+    mut s = new Stroke(brush, points, StrokeSpace, sp, radius, strength, flatCurve(), flatCurve(),
+      Falloff.preset(defaultFalloffOf(kind)), false, List[SymPlane].empty(), false, NoIndex, true, Alpha.empty(), false,
+      true, 4000u32);
+    if kind == BrushGrab or kind == BrushElastic or kind == BrushPose or kind == BrushMoveTopological
+        or kind == BrushSnakeHook {
+      s.project = false;
+    }
+    if kind == BrushSnakeHook or kind == BrushGrab or kind == BrushElastic or kind == BrushPose
+        or kind == BrushMoveTopological {
+      s.method = StrokeLine;
+    }
+    s;
+  }
+
+  // A stroke of one dab at a point
+  pub fn dab(brush Brush, at Vec3, radius f32, strength f32) Stroke {
+    mut pts = List[Vec3].empty();
+    pts.push(at);
+    mut s = Stroke.make(brush, pts, radius, strength);
+    s.method = StrokeDots;
+    s;
+  }
+
+  // Mirror the stroke across a plane as well (up to three planes make 2, 4 or 8 copies of every dab)
+  pub fn mirrorAcross(self &mut, origin Vec3, normal Vec3) {
+    symmetry.push(new SymPlane(origin, normal.normalize()));
+  }
+
+  // Set the alpha
+  pub fn setAlpha(self &mut, a Alpha) {
+    alpha = a;
+    hasAlpha = true;
+  }
+}
+
+// The falloff a brush kind starts with
+pub fn defaultFalloffOf(kind u32) u32 {
+  if kind == BrushDrawSharp or kind == BrushDam { return FalloffSharp; }
+  if kind == BrushCrease { return FalloffSmoothSharp; }
+  if kind == BrushPose { return FalloffPlateau; }
+  if kind == BrushClayStrips or kind == BrushLayer { return FalloffSmooth; }
+  FalloffSmooth;
+}
+
+// A curve that is 1 all the way along (the default radius and strength curves)
+pub fn flatCurve() Falloff {
+  imm pts Array[Vec2, 2] = [new Vec2(0., 1.), new Vec2(1., 1.)];
+  Falloff.custom(&pts);
+}
+
+// A pressure curve rising then falling: 'ends' at the ends of the stroke and 1 in the middle
+pub fn pressureCurve(ends f32) Falloff {
+  imm pts Array[Vec2, 3] = [new Vec2(0., ends), new Vec2(0.5, 1.), new Vec2(1., ends)];
+  Falloff.custom(&pts);
+}
+
+// A curve rising or falling in a line from 'a' at the start to 'b' at the end
+pub fn rampCurve(a f32, b f32) Falloff {
+  imm pts Array[Vec2, 2] = [new Vec2(0., a), new Vec2(1., b)];
+  Falloff.custom(&pts);
+}
+
+// -------- paths --------
+
+// A cubic Bezier sampled at n + 1 points (de Casteljau), for a stroke's points
+pub fn bezierPoints(p0 Vec3, p1 Vec3, p2 Vec3, p3 Vec3, n u32) List[Vec3] {
+  mut out = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  mut i = 0u32;
+  while i <= n {
+    imm t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
+    imm a = p0.lerp(p1, t);
+    imm b = p1.lerp(p2, t);
+    imm c = p2.lerp(p3, t);
+    imm d = a.lerp(b, t);
+    imm e = b.lerp(c, t);
+    out.push(d.lerp(e, t));
+    i = i + 1u32;
+  }
+  out;
+}
+
+// A uniform Catmull-Rom spline through the points, 'per' samples a segment,
+// the ends doubled
+pub fn splinePoints(pts &List[Vec3], per u32) List[Vec3] {
+  mut out = List[Vec3].empty();
+  imm n = pts.len();
+  if n < 3usize or per < 1u32 {
+    mut i = 0usize;
+    while i < n { out.push(*pts[i]); i = i + 1usize; }
+    return out;
+  }
+  mut s = 0usize;
+  while s + 1usize < n {
+    imm p1 = *pts[s];
+    imm p2 = *pts[s + 1usize];
+    imm p0 = if s == 0usize {p1;} else {*pts[s - 1usize];};
+    imm p3 = if s + 2usize < n {*pts[s + 2usize];} else {p2;};
+    mut k = 0u32;
+    while k < per {
+      imm t = f32.from(k) / f32.from(per);
+      imm t2 = t * t;
+      imm t3 = t2 * t;
+      out.push((p1 * 2. + (p2 - p0) * t + (p0 * 2. - p1 * 5. + p2 * 4. - p3) * t2
+        + (p1 * 3. - p0 - p2 * 3. + p3) * t3) * 0.5);
+      k = k + 1u32;
+    }
+    s = s + 1usize;
+  }
+  out.push(*pts[n - 1usize]);
+  out;
+}
+
+// The dabs of a stroke along a polyline: the places, and how far along the
+// stroke each is (0 to 1). The spacing is the stroke's fraction of the radius
+// there (radius times the radius curve at that place).
+pub struct DabPath {
+  pub at List[Vec3];
+  pub t List[f32];
+}
+
+fn strokePathLength(line &List[Vec3]) f32 {
+  mut len = 0.;
+  mut i = 0usize;
+  while i + 1usize < line.len() {
+    len = len + (*line[i + 1usize] - *line[i]).length();
+    i = i + 1usize;
+  }
+  len;
+}
+
+// Dabs spaced along the polyline
+pub fn spaceDabs(st &Stroke, line &List[Vec3]) DabPath {
+  mut out = new DabPath(List[Vec3].empty(), List[f32].empty());
+  if line.len() == 0usize { return out; }
+  out.at.push(*line[0usize]);
+  out.t.push(0.);
+  imm total = strokePathLength(line);
+  if line.len() == 1usize or total <= 0. { return out; }
+  mut s = 0.;
+  mut seg = 0usize;
+  mut segStart = 0.;      // arc length at the start of segment 'seg'
+  mut segLen = (*line[1usize] - *line[0usize]).length();
+  mut going = true;
+  while going and out.at.len() < usize.from(st.maxDabs) {
+    imm t = s / total;
+    imm rad = st.radius * st.radiusCurve.weight(t);
+    mut step = st.spacing * rad;
+    imm floor = total * 0.0005;
+    if step < floor { step = floor; }
+    s = s + step;
+    if s > total + step * 0.000001 {
+      going = false;
+    } else {
+      while seg + 2usize < line.len() and s > segStart + segLen {
+        segStart = segStart + segLen;
+        seg = seg + 1usize;
+        segLen = (*line[seg + 1usize] - *line[seg]).length();
+      }
+      imm f = if segLen > 0. {(s - segStart) / segLen;} else {0.;};
+      imm ff = if f > 1. {1.;} else {f;};
+      out.at.push((*line[seg]).lerp(*line[seg + 1usize], ff));
+      out.t.push(s / total);
+    }
+  }
+  out;
+}

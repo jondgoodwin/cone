@@ -1,0 +1,173 @@
+// ======== Strokes in a shape's own coordinates ========
+//
+// A mesh made by skinmesh (or any generator that writes them) carries the
+// vertex channels "limb" (which limb a vertex belongs to), "along" (0 to 1
+// from the start of the limb) and "around" (0 to 1, once round it). A recipe
+// that says "limb 2, along 0.3 to 0.6, around 0.25" lands on the same anatomy
+// when the figure's proportions change, because the mesh finds the place, not
+// the recipe's numbers.
+//
+// 'anatomyPoint' maps (limb, along, around) to a point on the surface: the
+// first face of that limb whose corners enclose (along, around) in its two
+// parameters (around taken as going round, so 0.95 is near 0.05), the position
+// interpolated across it. A point no face encloses (a pole, or the band where
+// subdivision has smeared "around": see below) takes the position of the vertex
+// of that limb nearest in (along, around), so a stroke never fails.
+//
+// What to know about "around" after subdivision. skinmesh numbers the four
+// corners of a ring 0, 1/4, 1/2 and 3/4; Catmull-Clark carries the channel as
+// it carries any number, by averaging, so the face band where the values wrap
+// from 3/4 to 0 holds the arithmetic mean (about 3/8) of its ends where the
+// going-round mean (7/8) is meant. Away from that band the channel is monotone
+// and exact. A recipe is best written with "around" away from the seam (the
+// band lies on one side of the limb, where ring corner 3/4 meets corner 0): use
+// the fallback as a warning, 'anatomyHit' tells which one answered.
+
+// Does the face lie wholly in the limb (every corner's "limb" within half of the number)?
+fn faceInLimb(m &PolyMesh, vs &List[u32], limbCh u32, limb f32) bool {
+  mut i = 0usize;
+  while i < vs.len() {
+    imm l = m.float(limbCh, *vs[i]);
+    if absf(l - limb) > 0.5 { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// b brought to within half of a, going round
+fn nearCyclic(b f32, a f32) f32 {
+  mut x = b;
+  if x - a > 0.5 { x = x - 1.; }
+  if a - x > 0.5 { x = x + 1.; }
+  x;
+}
+
+fn cyclicDistance(a f32, b f32) f32 {
+  imm d = absf(a - b);
+  if d > 0.5 { 1. - d; } else { d; };
+}
+
+// The barycentric coordinates of q in the triangle (a, b, c) in the plane
+fn bary2(q Vec2, a Vec2, b Vec2, c Vec2) Vec3 {
+  imm v0 = b - a;
+  imm v1 = c - a;
+  imm v2 = q - a;
+  imm den = v0.x * v1.y - v1.x * v0.y;
+  if absf(den) < 0.000000001 { return new Vec3(-1., -1., -1.); }
+  imm l1 = (v2.x * v1.y - v1.x * v2.y) / den;
+  imm l2 = (v0.x * v2.y - v2.x * v0.y) / den;
+  new Vec3(1. - l1 - l2, l1, l2);
+}
+
+// Where a place in a shape's coordinates is on its surface, and whether a face
+// enclosed it
+pub struct AnatomyHit {
+  pub point Vec3;
+  pub exact bool;     // a face enclosed (along, around); false: the nearest vertex answered
+  pub face u32;       // the face (NoIndex when not exact)
+}
+
+// The surface point of (limb, along, around); see the header
+pub fn anatomyHit(m &PolyMesh, limb f32, along f32, around f32) AnatomyHit {
+  imm limbCh = m.findFloatChannel(VertexDomain, "limb");
+  imm alongCh = m.findFloatChannel(VertexDomain, "along");
+  imm aroundCh = m.findFloatChannel(VertexDomain, "around");
+  if limbCh == NoIndex or alongCh == NoIndex or aroundCh == NoIndex {
+    return new AnatomyHit(new Vec3(0., 0., 0.), false, NoIndex);
+  }
+  imm q0 = new Vec2(around, along);
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm vs = m.faceVertices(u32.from(f));
+    if vs.len() >= 3usize and faceInLimb(m, &vs, limbCh, limb) {
+      // The corners in (around, along), around going round from the first corner
+      imm a0 = m.float(aroundCh, *vs[0usize]);
+      mut pts = List[Vec2].withCapacity(vs.len());
+      mut i = 0usize;
+      while i < vs.len() {
+        pts.push(new Vec2(nearCyclic(m.float(aroundCh, *vs[i]), a0), m.float(alongCh, *vs[i])));
+        i = i + 1usize;
+      }
+      // The query at each way round that could put it inside
+      mut shift = -1;
+      while shift <= 1 {
+        imm q = new Vec2(q0.x + f32.from(shift), q0.y);
+        // The polygon as a fan from its first corner
+        mut k = 1usize;
+        while k + 1usize < vs.len() {
+          imm bc = bary2(q, *pts[0usize], *pts[k], *pts[k + 1usize]);
+          if bc.x >= -0.0001 and bc.y >= -0.0001 and bc.z >= -0.0001 {
+            imm p = *m.positions[usize.from(*vs[0usize])] * bc.x + *m.positions[usize.from(*vs[k])] * bc.y
+              + *m.positions[usize.from(*vs[k + 1usize])] * bc.z;
+            return new AnatomyHit(p, true, u32.from(f));
+          }
+          k = k + 1usize;
+        }
+        shift = shift + 1;
+      }
+    }
+    f = f + 1usize;
+  }
+  // The nearest vertex of the limb in (along, around)
+  mut best = NoIndex;
+  mut bestD = 3.0e38;
+  mut v = 0usize;
+  while v < m.vertexCount() {
+    imm vu = u32.from(v);
+    if absf(m.float(limbCh, vu) - limb) <= 0.5 {
+      imm da = m.float(alongCh, vu) - along;
+      imm dr = cyclicDistance(m.float(aroundCh, vu), around);
+      imm dd = da * da + dr * dr;
+      if dd < bestD {
+        bestD = dd;
+        best = vu;
+      }
+    }
+    v = v + 1usize;
+  }
+  if best == NoIndex { return new AnatomyHit(new Vec3(0., 0., 0.), false, NoIndex); }
+  new AnatomyHit(*m.positions[usize.from(best)], false, NoIndex);
+}
+
+// The surface point of (limb, along, around)
+pub fn anatomyPoint(m &PolyMesh, limb f32, along f32, around f32) Vec3 {
+  anatomyHit(m, limb, along, around).point;
+}
+
+// A stroke's points from places in a shape's coordinates: each place is
+// (limb, along, around) packed as x, y, z
+pub fn anatomyPath(m &PolyMesh, places &List[Vec3]) List[Vec3] {
+  mut out = List[Vec3].withCapacity(places.len());
+  mut i = 0usize;
+  while i < places.len() {
+    imm p = *places[i];
+    out.push(anatomyPoint(m, p.x, p.y, p.z));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A straight run of places along a limb at one 'around', from 'a0' to 'a1'
+// along it, in n + 1 steps: a stroke down a limb's side
+pub fn alongPlaces(limb f32, a0 f32, a1 f32, around f32, n u32) List[Vec3] {
+  mut out = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  mut i = 0u32;
+  while i <= n {
+    imm t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
+    out.push(new Vec3(limb, a0 + (a1 - a0) * t, around));
+    i = i + 1u32;
+  }
+  out;
+}
+
+// A run of places round a limb at one 'along', from 'r0' to 'r1' in around
+pub fn aroundPlaces(limb f32, along f32, r0 f32, r1 f32, n u32) List[Vec3] {
+  mut out = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  mut i = 0u32;
+  while i <= n {
+    imm t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
+    out.push(new Vec3(limb, along, r0 + (r1 - r0) * t));
+    i = i + 1u32;
+  }
+  out;
+}
