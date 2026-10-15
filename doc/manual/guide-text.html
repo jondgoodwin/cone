@@ -141,8 +141,38 @@ imm part = String.from("hello world").sub(6usize, 11usize);   // "world", a new 
 	<p>To print a String, <span class="pre">print</span> is handed its <span class="pre">view()</span>: the String's text
 		as a <span class="pre">str</span>, read where it is, without copying it.</p>
 
+	<!-- Moved here 15 Oct 2026 from the old "Values, variables and expressions" page: a String is the first
+	     value a reader meets that moves. Unpolished until this page's turn in the review. -->
+	<h2 id="moving">Copy or move</h2>
+	<p>Assigning a number, or handing one to a function, copies it. Changing the copy leaves the original
+		as it was. Most values in Cone behave like this.</p>
+<pre>
+imm a = 3;
+mut b = a;  // b holds a copy of a's value
+b += 1;     // b's value is changed to 4
+a;          // is still 3
+</pre>
+	<p>Some values should never exist twice, because they own something: a <span class="pre">String</span> owns
+		the memory its text is kept in. Two copies would each believe the memory was theirs to change and to free.
+		So a value like this <b>moves</b> instead. <span class="pre">imm today = plan;</span> hands the text to
+		<span class="pre">today</span>, and <span class="pre">plan</span> has nothing left: the compiler refuses
+		any later use of it, with <i>"This variable's value has been moved out."</i> There is only ever one owner,
+		so Cone knows exactly when the text is no longer needed, and frees it then, with no garbage collector and
+		nothing for you to free by hand.</p>
+<pre>
+imm plan = String.from("day two: the coast road");
+imm today = plan;         // plan's text moves to today
+print &lt;- today.view(), "\n";
+// print &lt;- plan.view();  // Error: plan's value has moved to today
+</pre>
+	<p>Whether a value copies or moves is decided by its type, not by how it is used. Numbers copy. A type
+		moves if it says so, if it has a finalizer, or if anything it holds moves; you will meet such types again
+		with <a href="guide-structs.html">structs</a> and <a href="guide-collections.html">collections</a>.
+		That is all a program needs to know about moving for now. <a href="#movecopy">Move vs. copy, in brief</a>,
+		below, has a little more, and <a href="mem-moves.html">Moves in depth</a> has the rest.</p>
+
 	<h2 id="moves">A String has one owner</h2>
-	<p>A String owns its text, so, as the <a href="guide-values.html#moving">previous page</a> showed, it moves
+	<p>A String owns its text, so, as <a href="#moving">above</a>, it moves
 		rather than copies. Follow the text of <span class="pre">"coffee"</span> through the program. The literal is
 		copied once, into a new String, because <span class="pre">item</span> asks for a String. That String moves
 		into the parameter <span class="pre">name</span>, then into the variable <span class="pre">line</span>, which
@@ -157,6 +187,39 @@ imm part = String.from("hello world").sub(6usize, 11usize);   // "world", a new 
 	<p><i>The rest of this page is the complete reference for text: <span class="pre">str</span>,
 		<span class="pre">String</span>, text as bytes, and C strings; skip to the
 		<a href="guide-conditionals.html">next page</a> if the program above was enough.</i></p>
+
+	<!-- Moved here 15 Oct 2026 from the old "Values, variables and expressions" page. -->
+	<h3 id="movecopy">Move vs. Copy, in brief</h3>
+	<p>Values are copied as they flow from
+		variable-to-variable or function-to-function.
+		Changes made to a copy don't affect the original value.</p>
+	<p>Sometimes, however, we have values for which we don't want multiple copies to
+		exist at the same time: for example, a handle to a just-opened file, where closing the file
+		using one copy would make it unsafe to use the other.
+		To provide safe support for such "non-copyable" values, Cone supports <b>move semantics</b>.
+	   Move semantics enable non-copyable values to be moved from one place to another in a code's logic.
+	   However, once the value moves, it may no longer be accessed from its old location.
+	   This restriction ensures there is only ever one copy of the value in existence.</p>
+	<p>Whether a value is handled by move vs. copy semantics is determined by its type.
+		Most types copy. A type moves if it declares so, by naming <span class="pre">Move</span> in its
+		<span class="pre">is</span> list, if it has a <a href="guide-structs.html#finalizer">finalizer</a>, or if any of
+		its fields moves:</p>
+<pre>
+struct Handle is Move {
+   pub id i32;
+}
+
+fn take(h Handle) {
+  print &lt;- h.id, "\n";
+}
+
+imm h = new Handle(1);
+take(h);            // h moves into take
+print &lt;- h.id;      // **ERROR** h was moved out
+</pre>
+	<p>A <span class="pre">clone</span> method takes no part in copying: a type may declare one and call it by name,
+		but no copy calls it. <a href="mem-moves.html">Moves in depth</a> has every rule, what a move leaves behind,
+		moves on only some paths, and swapping.</p>
 
 	<p style="margin-left: 40px;"><i>Note: Making text from bytes, <span class="pre">bytes as &amp;str</span>, does not yet check that the bytes are UTF-8, nor that nothing still writes them while the text is used.</i></p>
 
@@ -391,7 +454,7 @@ libc.fwrite(bytes as *u8, 1usize, bytes.len, f);  // a buffer and a count: a poi
 	<p>A slice is an address and a count, so it is <b>not</b> a pointer: the implicit conversion of a
 		slice to a raw pointer is gone, and <span class="pre">xs as *T</span> takes the address of a
 		slice's first element, for a C function that takes a buffer and a length
-		(<a href="guide-values.html#slicenoptr">a slice coerces to no pointer</a>). A buffer and its length are
+		(<a href="guide-types.html#slicenoptr">a slice coerces to no pointer</a>). A buffer and its length are
 		two parameters in C, so they stay a <span class="pre">*u8</span> and a count.</p>
 
 	<h2 id="comesback">Comes back in &hellip;</h2>
@@ -404,11 +467,11 @@ libc.fwrite(bytes as *u8, 1usize, bytes.len, f);  // a buffer and a count: a poi
 	<li><a href="mem-borrowing.html">Borrowed references</a>: what lending text, as <span class="pre">view()</span>
 		does, means underneath.</li>
 	<li><a href="safe-c.html">Talking to C</a>: <span class="pre">extern</span> bindings that take a <span class="pre">cstr</span>.</li>
-	<li><a href="guide-values.html#conversion-coercion">Conversion, coercion and subtypes</a>: a slice coerces to no pointer.</li>
+	<li><a href="guide-types.html#conversion-coercion">Conversion, coercion and subtypes</a>: a slice coerces to no pointer.</li>
 	</ul>
 
 	<p style="text-align: right; margin-top: 2em;">
-		<a href="guide-conditionals.html"><img alt="_" src="next.png" /></a>
+		<a href="guide-structs.html"><img alt="_" src="next.png" /></a>
 	</p>
 
 	</div>

@@ -1,0 +1,351 @@
+<html>
+  <head>
+	  <title>Numbers - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Numbers</div>
+		</div>
+
+    <div class="text">
+
+	<!-- DRAFT 15 Oct 2026: gathered from the old "Values, variables and expressions" page, unpolished until
+	     this page's turn in the review (Ruminations\manual-v2-page-review-2026-10-15.md). -->
+	<p>The number types, their literals, the operators that compute with them, and how a number
+		changes from one type to another.</p>
+
+	<h3 id="literals">Literals</h3>
+	<p>A literal is a specific, unchangeable value.
+		Each of these <a href="syntax-lexical.html#number">numbers</a> is a literal:</p>
+<pre>
+123
+3.14159
+1e6          // 1000000.0
+-1_000_000   // underscores are ignored
+0x1000       // Hexadecimal
+</pre>
+	<p>Beyond numbers, other forms of literals will be introduced later, including:</p>
+	<ul>
+	<li><a href="syntax-lexical.html#string">string</a> and
+		<a href="syntax-lexical.html#char">character</a> literals
+		(e.g., "Hello" and 'a')
+	</li>
+	<li>boolean <span class="pre">true</span> and <span class="pre">false</span></li>
+	<li>struct, array, and other compound values</li>
+	</ul>
+
+	<h3 id="numbertypes">Integers and floats</h3>
+	<p>The built-in number types
+		specify their bit-size as part of the type's name. Here they are:</p>
+	<ul>
+	<li><b>Signed integer</b> types: <span class="pre">i8</span>, <span class="pre">i16</span>,
+	<span class="pre">i32</span> and <span class="pre">i64</span></li>
+	<li><b>Unsigned integer</b> types: <span class="pre">u8</span>, <span class="pre">u16</span>,
+	<span class="pre">u32</span> and <span class="pre">u64</span></li>
+	<li><b>Floating point</b> types: <span class="pre">f32</span> and <span class="pre">f64</span></li>
+	</ul>
+	<p>Later, a number of other types will be introduced.</p>
+	<h4 id="typedlit">Typed Number Literals</h4>
+	<p>To explicitly specify the type for a numeric literal,
+		append the type name right after the number:</p>
+<pre>
+65u8       // 8-bit unsigned integer
+1f64       // 64-bit floating point number
+</pre>
+	<p>If the type is omitted, the number is understood to be 32-bits.
+		When the number explicitly includes a decimal point or exponent,
+		it is treated as a floating point number (f32).
+		Otherwise, it is considered to be a signed integer (i32).</p>
+<pre>
+3.14159    // f32 (because of the decimal point)
+1e6        // f32 (because of the exponent)
+1_000_000  // i32 (no decimal point or exponent)
+</pre>
+	<p>Type name shortcuts are also supported:</p>
+<pre>
+1000u      // u32
+1f         // f32
+1d         // f64
+</pre>
+
+	<h4 id="bits">An integer's bits</h4>
+	<p>Every integer type (<span class="pre">u8</span> to <span class="pre">u64</span>,
+		<span class="pre">i8</span> to <span class="pre">i64</span>, <span class="pre">usize</span>
+		and <span class="pre">isize</span>) has methods that count and move its bits.
+		Each count is a <span class="pre">u32</span>, and each is defined for 0, as the width:</p>
+	<dl>
+	<dt>x.countOnes()</dt>
+	<dd>How many of its bits are 1.</dd>
+	<dt>x.leadingZeros()</dt>
+	<dd>How many bits are 0 above its highest 1: the width, for 0.</dd>
+	<dt>x.trailingZeros()</dt>
+	<dd>How many bits are 0 below its lowest 1: the width, for 0.</dd>
+	</dl>
+<pre>
+0x2Cu8.countOnes()        // 3
+1u64.leadingZeros()       // 63
+0u32.trailingZeros()      // 32
+(-1i16).countOnes()       // 16: a signed integer's bits, the sign's among them
+</pre>
+	<p>The rest take an amount <span class="pre">n</span>, a <span class="pre">u32</span>,
+		and use it modulo the width, so every amount has an answer and 0, the width and twice
+		the width give the same one:</p>
+	<dl>
+	<dt>x.rotateLeft(n), x.rotateRight(n)</dt>
+	<dd>The bits moved by <span class="pre">n</span>, those shifted out of one end coming in at the other.</dd>
+	<dt>x.shlMasked(n), x.shrMasked(n)</dt>
+	<dd>A shift by <span class="pre">n</span> modulo the width: the shift most processors do in one
+		instruction. <span class="pre">shrMasked</span> fills with the sign bit on a signed integer
+		and with zeros on an unsigned one. The operators <span class="pre">&lt;&lt;</span> and
+		<span class="pre">&gt;&gt;</span> differ only past the width, where they shift every bit out
+		(<a href="#shift">Shift operators</a>).</dd>
+	</dl>
+<pre>
+0x81u8.rotateLeft(1)      // 0x03
+1u32.shlMasked(33)        // 2, a shift by 1
+1u32 &lt;&lt; 33u32            // 0
+(-16i8).shrMasked(10)     // -4, a shift by 2
+</pre>
+	<p>The same operations are core's intrinsics, <span class="pre">mem.countOnes(x)</span> and the
+		rest (<a href="safe-intrinsics.html#bits">Intrinsics</a>), whose type parameter is any of these
+		integer types.</p>
+
+	<h4 id="intfloat">The primitive 'int' and 'float' number types</h4>
+	<p style="margin-left: 40px;"><i>Note: The primitive <span class="pre">int-</span> and
+		<span class="pre">float-</span> types are not implemented, and the standard number
+		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are built
+		into the compiler rather than defined in a library. A custom number type written as below,
+		with a standard number type as its field in place of <span class="pre">int-32</span>, does
+		work: a struct wrapping the number, methods on it, and its conversion from a number,
+		<span class="pre">Nbr32.from(somenbr)</span>, declared as below. The standard number
+		types' <span class="pre">from</span> is built into the compiler with them, and so are
+		<a href="#bits">an integer's bit methods</a>, which are implemented.</i></p>
+	<p><span class="pre">int-32</span> specifies a 32-bit integer.
+		Any integer value from 1 to 128 may be specified after the dash, to establish the number of bits.</p>
+	<p>Similarly, <span class="pre">float-32</span> is a 32-bit floating point number.
+		Floats only support 32 and 64-bit values.</p>
+	<p>Unlike <span class="pre">i32</span>, <span class="pre">int-32</span> does not define any methods
+		for manipulating its values (e.g., adding and subtracting).
+		It is also agnostic on the semantic interpretation of its values ... it does not even signify
+		whether the integer value should be interpreted as signed or unsigned.
+		Its lack of built-in methods and interpretation is what makes it an ideal foundation for defining
+		new types with very different interpretations and methods.</p>
+
+	<h4 id="customnbr">Custom Number Types</h4>
+	<p><i>Rarely needed, and largely hypothetical for now (see the note above): defining a number type of your own.</i></p>
+	<p>There are several reasons why we might want to define distinctly different
+		number types than those provided by the standard library:</p>
+	<ul>
+	<li>One might want to use different types to distinguish between units of measure,
+		thereby potentially avoiding problems like the loss of the $125 million Mars probe.</li>
+	<li>Different number types could make different promises for undefined behavior
+		(e.g., protecting against undesired overflows), or could guarantee the number values are bounded by some range.</li>
+	<li>Integers that support intrinsic atomic operations can be separately typed, as the
+		core package's <a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a> is.</li>
+	</ul>
+
+	<p>Creating a new numeric integer type is nearly as simple as wrapping an primitive integer
+		type as a field in a struct. For example:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+}
+</pre>
+	<p>Methods may be added to this struct to define the operations that may be performed on values of this type.
+		These methods can make use of fast internal integer primitive functions (TBD).</p>
+	<p>Although numbers of one type are never implicitly converted into the equivalent number of another type,
+		a conversion may always be asked for explicitly. A conversion is a method of the type converted to,
+		named <span class="pre">from</span> and called on the type, which takes the value to convert:</p>
+<pre>
+imm converted = Nbr32.from(somenbr);
+</pre>
+	<p>Every standard number type has one, which takes a value of any number type
+		(<a href="#conversion">Explicit Conversion</a>).
+		A custom number type declares its own, an ordinary function of the type:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+
+    pub fn from(n i32) Nbr32 {
+        new Nbr32(n);
+    }
+}
+</pre>
+	<p><span class="pre">from</span> is the type's default conversion from another type.
+		A conversion that differs from it, such as one that saturates at the type's limits
+		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
+
+	<h3 id="arith">Operators and precedence</h3>
+	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented
+		except the special <span class="pre">my</span> name and
+		<span class="pre">max</span> and <span class="pre">abs</span> on numbers, which are not built.</i></p>
+	<p>Now that we have literals and variables, we can construct more complex expressions that
+	use operators, methods and functions calls to calculate new values.
+	Although the expression examples on this page work with integer and floating point values,
+	similar expressions can be formulated that manipulate values of other types.</p>
+	<p>Expressions are gathered into blocks.
+			A block is the basic unit for structured control flow.
+			It holds a ordered collection of statements that are executed in order, starting with the first statement.
+			It may also accumulate its own temporary, local state.
+			Blocks that evaluate to some value may also be used in expressions.</p>
+
+	<h4 id="arithops">Arithmetic Operators</h4>
+	<p>Integer and floating point numbers may be computed using arithmetic operators:</p>
+	<dl>
+	<dt>'+'</dt>
+	<dd>Add</dd>
+	<dt>'-'</dt>
+	<dd>Subtract (or negate when used as a prefix operator)</dd>
+	<dt>'*'</dt>
+	<dd>Multiply</dd>
+	<dt>'/'</dt>
+	<dd>Divide</dd>
+	<dt>'%'</dt>
+	<dd>Modulo (remainder)</dd>
+	</dl>
+	<p>Thus:</p>
+<pre>
+-12 + 14    // 2
+6 / 5       // 1
+-4 % 3      // -1 (where -4/3 --&gt; -1, truncating towards zero)
+2*2 + 2*3   // 10 (standard algebraic operator precedence)
+2 * (4 + 1) // 10 (parentheses override operator precedence)
+</pre>
+
+	<h4 id="bitwise">Bitwise expressions</h4>
+	<p>The bitwise operators operate on true/false values:</p>
+	<dl>
+	<dt>'|'</dt>
+	<dd>Or</dd>
+	<dt>'&amp;'</dt>
+	<dd>And</dd>
+	<dt>'^'</dt>
+	<dd>Xor</dd>
+	<dt>'~'</dt>
+	<dd>Not</dd>
+	</dl>
+	<p>For example:</p>
+<pre>
+true | (false &amp; true) // true
+true ^ ~true          // true
+</pre>
+	<p>These bitwise operators may also be used on unsigned integers,
+	as they are viewed as a collection of true/false bits.</p>
+<pre>
+0xE0u | 0xB8u  // 0xF8u
+</pre>
+	<h4 id="shift">Shift operators</h4>
+	<p>The shifting of an integer's bits is accomplished
+	using the &lt;&lt; and &gt;&gt; operators:</p>
+<pre>
+0x0Cu &lt;&lt; 1    // 0x18, after shifting bits left once
+</pre>
+	<p>The amount to shift by is a value of the same integer type. <span class="pre">&lt;&lt;</span>
+		fills the bits it vacates with zeros, and the bits shifted past the top are gone.
+		<span class="pre">&gt;&gt;</span> on an unsigned integer fills with zeros; on a signed
+		integer it fills with copies of the sign bit, so a negative value stays negative.</p>
+	<p>Every amount gives an answer, the same in every build. An amount of the integer's width
+		or more shifts every bit out: <span class="pre">&lt;&lt;</span> gives 0, as does
+		<span class="pre">&gt;&gt;</span> on an unsigned integer, and <span class="pre">&gt;&gt;</span>
+		on a signed integer gives the sign in every bit, 0 or -1. The amount is read as an unsigned
+		number of its own width, so a negative amount of a signed type is past the width too:</p>
+<pre>
+imm n = 64u64;
+255u64 &gt;&gt; n         // 0
+(1u64 &lt;&lt; n) - 1u64  // all ones: 1 &lt;&lt; 64 is 0
+-8i32 &gt;&gt; 40i32      // -1, at run time
+</pre>
+	<p>In a <a href="mod-globals.html#const">constant expression</a>, such as a <span class="pre">const</span>'s
+		value, a shift by the width or more, or by a negative amount, is an error.</p>
+	<p>An amount taken modulo the width is asked for by name: the integer methods
+		<span class="pre">shlMasked</span> and <span class="pre">shrMasked</span>, the processor's
+		one-instruction shift, and <span class="pre">rotateLeft</span> and
+		<span class="pre">rotateRight</span> (<a href="#bits">An integer's bits</a>).</p>
+
+	<h4 id="otherops">Other Expression Operators</h4>
+	<p>Cone supports several more expression operators.
+		Descriptions may be found in the chapters
+		relevant to their common use:</p>
+	<ul>
+	<li><a href="guide-conditionals.html#condexp">conditional expression operators</a></li>
+	<li><a href="mod-composition.html#with">'with' block operators</a></li>
+	<li>construction, <span class="pre">new Point(1, 2)</span>, which builds a struct's value by one of its
+		<a href="guide-structs.html#initializer">initializers</a></li>
+	</ul>
+	<p>The precedence of every operator is listed in <a href="syntax-lexical.html">Lexical Elements</a>.</p>
+
+	<h4 id="numrconv">Numeric conversions</h4>
+	<p>To convert a number from one type to another, call the intended type's method
+		<span class="pre">from</span> with the number:</p>
+<pre>
+imm six = i32.from(6u8);    // Converts 8-bit unsigned integer to 32-bit signed integer
+imm sixf = f64.from(six);   // Converts 32-bit signed integer to 64-bit floating point number
+</pre>
+	<p>If the receiving number type is a smaller size, numeric information may be lost.
+		<a href="#conversion">Explicit Conversion</a> gives what each conversion does.</p>
+
+	<h4 id="conversion">Explicit Conversion</h4>
+	<p>Type conversion involves transforming a value of one type
+		to the closest possible value in another type.
+		For example, converting the integer 1 to the floating point number 1.0,
+		or serializing it to text:  "1".
+		Unlike coercion, conversion may not map perfectly:
+		A valid mapping may not exist or some precision may be lost.
+	</p>
+	<p>A conversion is not a construction but a method of the new type,
+		<span class="pre">from</span>, called on the type with the value to convert.
+		It is the type's default conversion from another type;
+		any other way of converting, such as one that saturates at the type's limits
+		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
+<pre>
+imm float = f32.from(1);
+imm count = u32.from(list.len());
+imm name = String.from("node");    // collections' String, from a slice of bytes
+</pre>
+	<p>Every number type has <span class="pre">from</span>, which takes a value of any number type.
+		It may be called on the type named directly, through an alias of it,
+		or on a generic's type parameter: <span class="pre">T.from(x)</span>
+		converts to whichever type <span class="pre">T</span> is.
+		The <span class="pre">into</span> operator is retired: <span class="pre">from</span> is the conversion.
+		Between numbers it does what the machine does:</p>
+	<ul>
+		<li>To a narrower integer, the low bits are kept: <span class="pre">u8.from(300)</span> is 44.</li>
+		<li>To a wider integer, a signed value converting to a signed type is sign-extended;
+			every other value is zero-extended from its own width, so
+			<span class="pre">u64.from(-1i8)</span> is 255. Between a signed and an unsigned type of one width,
+			the bits are kept: <span class="pre">i8.from(200u8)</span> is -56.</li>
+		<li>A float converts to an integer by truncating toward zero:
+			<span class="pre">i32.from(-2.75)</span> is -2. A float whose truncated value
+			the integer type cannot hold, a negative one to an unsigned type among them, has no defined result.</li>
+		<li>An integer converts to the nearest float, and a float to the nearest float of the other width.</li>
+		<li>An integer literal with no suffix is an <span class="pre">i32</span> and converts as one:
+			<span class="pre">u64.from(-1)</span> is 4294967295. Converting a literal gives a literal,
+			so it may be a global's value.</li>
+	</ul>
+	<p>Converting a number, reference or pointer to <span class="pre">bool</span>,
+		written <span class="pre">bool.from(n)</span>,
+		gives the answer its <span class="pre">isTrue</span> method gives a condition
+		(see <a href="guide-types.html#coercion">Implicit Coercion to bool</a>):
+		<span class="pre">bool.from(2)</span> is true, as are <span class="pre">bool.from(0.5)</span>
+		and NaN; only 0, -0 and a null pointer are false.
+		A <span class="pre">bool</span> converts to a number as 0 or 1.</p>
+	<p>A number type takes no square brackets: <span class="pre">u64[count]</span> is an error
+		naming <span class="pre">u64.from(count)</span>.</p>
+	<p>In some cases, it may be more convenient to request conversion
+		by using some method in the old type:</p>
+<pre>
+imm text = 1.text;
+</pre>
+
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="guide-text.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

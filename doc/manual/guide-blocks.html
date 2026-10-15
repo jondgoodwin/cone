@@ -1,0 +1,274 @@
+<html>
+  <head>
+	  <title>Blocks and scope - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Blocks and scope</div>
+		</div>
+
+    <div class="text">
+
+	<!-- DRAFT 15 Oct 2026: gathered from the old "Values, variables and expressions" page, unpolished until
+	     this page's turn in the review (Ruminations\manual-v2-page-review-2026-10-15.md). -->
+	<p>Statements, the blocks that group them, and the value a block gives; where a variable can be seen;
+		and the forms of assignment. Conditionals and loops build on blocks.</p>
+
+	<h3 id="blocks">Blocks are values</h3>
+	<h4 id="statements">Statements</h4>
+		<p>A statement is typically some expression to be performed. If the expression evaluates to
+			some value, it is then usually discarded by the statement.
+			In addition to expression statements, there are other kinds of statements,
+			such as <a href="guide-values.html#vars">variable declarations</a>,
+			a block treated as a statement,
+			or various statements used to control execution flow
+			(<a href="guide-conditionals.html">Conditionals</a>, <a href="guide-loops.html">Loops</a>).</p>
+		<p>Every statement that does not finish with a block is terminated by a semicolon.
+			The semicolon is never optional: not at the end of a line, and not on the
+			last statement before a block's closing brace.
+			This example shows two expression statements:</p>
+<pre>
+mut a = 12;
+mut b = 5;
+</pre>
+		<p>A single line may hold more than one statement,
+			each ended by its own semicolon:</p>
+<pre>
+a = 24; b = 6;
+</pre>
+		<p>A statement may span as many lines as it needs, since nothing but the semicolon ends it.
+			Indenting the continuation lines helps a reader see that they belong to one statement,
+			but the compiler pays no attention to indentation or to where a line ends:</p>
+<pre>
+a = b + c + d
+    - e + f;     // One statement: a = b + c + d - e + f;
+</pre>
+		<p>So a missing semicolon is never silently inferred. Leave one out and the compiler
+			reports it, at the end of the statement the semicolon belongs to:</p>
+<pre>
+a = b + c + d     // Error: expected ';' to end the statement
+e = f;
+</pre>
+
+		<h4 id="block">Blocks</h4>
+		<p>Blocks offer a versatile, easy-to-apprehend way to structure logic.
+	  A block's well-defined single point of entry and exit establishes clear
+	  boundaries around control flow as well as the local context it manages.</p>
+	  <p>Versatility comes from being able to nest different kinds of block easily within each other.
+	  This inherent modularity is useful when used in conjunction
+	  with control flow statements or to establish a context for compiler operations
+		(e.g., safety constraints).</p>
+	<p>Blocks support these roles:</p>
+	  <ul>
+		<li>Holding an ordered collection of statements</li>
+		<li>Establishing a lexical scope for a local context</li>
+		<li>Building and/or returning a value</li>
+	  </ul>
+
+	<h5>Ordered Collection of Statements</h5>
+	<p>At its simplest, a block is merely a ordered set of statements which are
+		executed one after another, in order.
+		The block's statements are wrapped inside curly braces, which is the only way
+		to mark that several statements belong to one block:</p>
+<pre>
+{
+	a = 12;
+	b = 5;
+}
+</pre>
+	<p>Indentation is for the reader. Where a block begins and ends is decided by the braces alone:</p>
+<pre>
+if a == 0 {
+	a = 12;
+}
+b = 5;        // Not part of if's inner block: it follows the closing brace.
+</pre>
+	<p>Blocks may be specified within blocks:</p>
+<pre>
+{
+  ++a;
+  {
+    ++b;
+    --a;
+  }
+  a + b;
+}
+</pre>
+	<p>The statements incrementing <span class="pre">b</span>
+	and decrementing <span class="pre">a</span> comprise an interior block within
+	an outer block. This particular example is a bit contrived,
+	as there is no good reason for us to use an interior block here,
+	since the logic would work the same if all statements belong to a single block.
+  However, later we will see useful examples of blocks embedded within other blocks.</p>
+
+	<h5 id="blockscope">Lexical Context</h5>
+	<p>Execution of a block's statements always begins with the first statement,
+	as one cannot jump into the middle of a block.
+	Likewise, execution of the block always finishes at the end of the block.
+	This single-entrance and single-exit nature makes it possible for a block
+	to create a temporary execution context that persists for the lifetime of the block
+	and then is automatically cleaned up at the end of the block.</p>
+
+	<p><b>Local Variables.</b>
+		Any variable <a href="guide-values.html#vars">declared</a> wihin a block
+		provides a temporary working state for that block.
+		Such variables are <i><a href="#visibility">local</a></i> to their block.
+		They cannot be referenced or used outside of that scope.
+		This silly example illustrates the block scope of declared variables:</p>
+<pre>
+{
+	mut result = 0;
+	{
+		mut sum = a + b;
+		result = sum;
+	}
+	++result;    // sum cannot be referenced in outer block
+}
+</pre>
+	<p>The block where a variable is defined is considered to be its lexical scope.
+	Scopes are nested from outer to inner, with global variables having the outer-most scope.
+	Variables declared in outer scopes are accessible in any inner scope.
+	However, the reverse is not true.
+	Thus, the outer block may not refer to <span class="pre">sum</span>.</p>
+	<p>If an inner block declares a local variable of the same name
+	as an outer scope (including global variables),
+		the outer-scoped variable is effectively inaccessible
+		throughout the lexical scope of that inner block.
+		To avoid potential confusion, this should be avoided.</p>
+
+	<p><b>Resource Disposal.</b>
+	The execution lifetime of a local variable does not last beyond its lexical scope.
+	At the end of the block, any resources acquired by local variables
+	are automatically reclaimed.
+	Reclamation might encompass a wide variety of possible activities,
+	including: freeing heap-allocated memory, decrementing counters,
+	releasing locks, joining threads,
+	or other type-based <a href="guide-structs.html#finalizer">finalization</a> activity
+	that closes acquired resources or removes dependencies to other objects.</p>
+
+	<h4 id="blockexpr">Blocks as expressions</h4>
+	<p>Blocks that evaluate to a value may be used as an expression, embedded within a larger expression.
+	When a block is used as an expression,
+	its value is that of the last statement in the block.</p>
+<pre>
+// Using a block as an expression
+a = {
+	3.14;
+	6;      // a's value will become 6
+}
+</pre>
+	<p>A <span class="pre">with</span> block is a block that focuses its logic around one value, named
+		<span class="pre">this</span>, whose fields and methods it reaches with a bare dot:</p>
+<pre>
+with &amp;mut point {
+	.x /= len;      // the same as point.x /= len
+	.y /= len;
+}
+</pre>
+	<p><a href="mod-composition.html#with">with blocks and this</a> has the form in full, with the prefix
+		operators that act on <span class="pre">this</span>.</p>
+
+	<h3 id="scope">Delayed initialization and scope</h3>
+	<h4 id="delayed">Delayed initialization</h4>
+	<p>It is often preferable to initialize a variable as part of declaration.
+		When that is not realistic, initialization may be performed later
+		using an <b>assignment</b>:</p>
+<pre>
+imm height f32;
+// ... some statements here ...
+height = 1.86;         // Initialize height now
+</pre>
+	<p>An <i>assignment</i> essentially copies the evaluated value of the expression
+		to the right of the <span class="pre">=</span> into the variable specified to the left.
+		(Later, we will show that assignment can also be used to place values into structures
+		that lie "within" a variable's value.)
+		Any assignment is itself an expression, and may be used wherever expressions are allowed.</p>
+	<p>It is worth pointing out that any attempt to re-assign 'height' later
+	to another value will trigger an error message:</p>
+<pre>
+height = 2.12;         // **ERROR** since height is immutable and initialized
+</pre>
+
+	<h4 id="visibility">Scope and Visibility</h4>
+	<p>As we have seen, variables have a name, permission, type and value.
+		They also have a scope and visibility.
+		Scope and visibility restrict where a variable may be
+		referenced and used in a program.</p>
+	<ul>
+	<li><i>Scope</i> is established by where the variable's declaration is found.
+		Based on this position, the scope can be <a href="mod-globals.html#global">global</a>,
+		<a href="guide-functions.html#local">local</a> to a function,
+		local to a <a href="#blockscope">block</a>,
+			or a <a href="guide-structs.html#struct">field</a> in a type.</li>
+	<li><i>Visibility</i> is declared, not spelled: a global variable or type field
+		is private unless its declaration begins with <span class="pre">pub</span>.
+		Visibility determines whether a global variable or type field is visible outside
+		its owning <a href="mod-namespaces.html">namespace</a>.</li>
+	</ul>
+
+	<h3 id="lval">Assignment forms: +=, ++, parallel assignment</h3>
+	<p>An 'lval'-based expression is one where the expression to the "left" represents a memory "container"
+		which holds a value. Lval-based expressions will change the stored value.
+		The <i>assignment</i> expression introduced <a href="#delayed">above</a> is lval-based,
+		as examples specified a variable to the left of the <span class="pre">=</span>.
+	</p>
+	<h4 id="parallel">Parallel Assignment</h4>
+	<p>Parallel assignment makes it possible to simultaneously assign multiple values to multiple variables.
+	This can be convenient when swapping the values held by two variables:</p>
+<pre>
+// Swap the variable values for a and b
+a,b = b,a;
+</pre>
+	<p>This is also useful for capturing multiple values returned by a function or method call:</p>
+<pre>
+min, max = minmax(5, 4);
+</pre>
+
+	<h4 id="incrdecr">Increment/decrement Operators</h4>
+	<p>When used to the left of an lval, <span class="pre">++</span> will increment the number and
+	<span class="pre">--</span> will decrement it.</p>
+<pre>
+mut cnt = 10;
+++cnt;          // 11
+--cnt;          // 10
+</pre>
+	<p>When used to the right of an lval, it will still increment and decrement, but the expression
+		will return the original value.</p>
+<pre>
+mut cnt = 10;
+imm x = cnt++;  // x is 10, cnt is 11
+</pre>
+
+	<h4 id="arithassign">Arithmetic Assignment</h4>
+	<p>The arithmetic assignment operators (e.g., '+=', '-=', '*=', '/=') offer a convenient way to update
+		an existing stored value:</p>
+<pre>
+counter = 3;
+counter += 1;  // 4. Equivalent to: counter = counter + 1
+</pre>
+
+	<h4 id="logicassign">Logical assignment operators</h4>
+	<p>These work similarly to the arithmetic assignment operators:</p>
+<pre>
+mut flags = 0xC0u;
+flags |= 0x01u;   // 0xC1u
+flags &gt;&gt;= 1;      // 0x60u
+</pre>
+
+
+	<h4 id="static">Static variables</h4>
+	<p>A variable declared <span class="pre">static</span> inside a function is one copy shared by every call
+		of the function, kept across calls (<span class="pre">static mut calls = 0;</span>).
+		<a href="guide-structs.html#static-local">Static variables</a> has the rules at every scale.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="guide-conditionals.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>
