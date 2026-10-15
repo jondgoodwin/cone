@@ -1,0 +1,438 @@
+// ======== Multiresolution: rebuilding the levels of a dense mesh ========
+//
+// ZBrush's Reconstruct Subdiv and Blender's Rebuild Subdivisions: given a
+// dense mesh that is the Catmull-Clark subdivision (in topology) of a simpler
+// one, find the simpler mesh. 'fromDense' does it one level at a time:
+// 1. the topology comes back with 'unsubdivide', which gives the cage's
+//    connectivity and numbering, not its positions. The result is checked: it
+//    must subdivide back to the dense mesh's own faces, vertex for vertex, or
+//    that level (and every one below it) is refused and reported;
+// 2. the positions are the least squares fit of the level above: the coarse
+//    positions x for which the subdivision S x of the coarse mesh is nearest
+//    the fine positions p, the sum of squared distances over all the fine
+//    vertices, (S^T S) x = S^T p. When p is exactly a subdivision, S x = p and
+//    the cage comes back as it was; when p has detail the cage is its smooth
+//    part, a low-pass of the dense mesh, since each coarse vertex then
+//    averages over the fine vertices it reaches. Fitting only the vertex
+//    points instead (making S x agree with p there and nowhere else) would
+//    solve the square system M x = p and amplify any detail on those vertices
+//    by the inverse of a smoothing, so it is not used;
+// 3. the dense mesh becomes the top level exactly (its detail is what the
+//    fit leaves, in the frames of the fit's smooth surface), and each level
+//    below is the fit of the level above it.
+// The channels of the Multires are the base's, subdivided by subdivision's
+// rules; the dense mesh's own are not kept.
+//
+// The matrix S, one level of subdivision's positions as a sparse matrix, is
+// not written out by rule. It is measured: the subdivision of a vertex
+// function is linear, so S's column j is what 'refineVertexData' gives for
+// the function that is 1 at coarse vertex j and 0 elsewhere, and vertices
+// that share no fine vertex can be measured together. A fine vertex's value
+// depends on coarse vertices that share a face with the coarse element it
+// belongs to, so two coarse vertices whose face-sharing distance is more than
+// 2 never meet in one fine vertex; a greedy colouring of the coarse vertices
+// by that rule gives a few dozen colours (25 on a quad grid), and one
+// subdivision per colour, its values (1, j, 0) at the colour's vertices,
+// reads off weight and column index of every nonzero (the index as the ratio
+// of the second component to the first, from the one vertex that reaches
+// there). The weights are then exactly the rules' own, creases and boundaries
+// included. The system is solved by conjugate gradients, preconditioned by
+// the diagonal of S^T S and started from the fine mesh's own kept vertices.
+
+// One level of subdivision's positions as a sparse matrix, row per fine
+// vertex: row r holds entries rowStart[r] to rowStart[r + 1] - 1 of col and
+// weight
+struct Prolongation {
+  rowStart List[u32];
+  col List[u32];
+  weight List[f32];
+  coarse usize;      // the number of columns
+}
+
+// Each vertex's neighbours across a face (the other corners of its faces),
+// each once
+fn faceSharing(m &PolyMesh) List[List[u32]] {
+  imm nv = m.vertexCount();
+  mut out = List[List[u32]].withCapacity(nv);
+  mut stamp = List[u32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    out.push(List[u32].empty());
+    stamp.push(NoIndex);
+    v = v + 1usize;
+  }
+  v = 0usize;
+  while v < nv {
+    imm vu = u32.from(v);
+    stamp.set(v, vu);
+    imm hs = m.vertexOutgoing(vu);
+    mut i = 0usize;
+    while i < hs.len() {
+      imm f = m.face(*hs[i]);
+      if f != NoIndex {
+        imm corners = m.faceVertices(f);
+        mut c = 0usize;
+        while c < corners.len() {
+          imm u = *corners[c];
+          if *stamp[usize.from(u)] != vu {
+            stamp.set(usize.from(u), vu);
+            out[v].push(u);
+          }
+          c = c + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+    v = v + 1usize;
+  }
+  out;
+}
+
+// A colour for every vertex, no two vertices within face-sharing distance 2
+// the same
+fn colourVertices(share &List[List[u32]], nv usize) List[u32] {
+  mut colour = List[u32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    colour.push(NoIndex);
+    v = v + 1usize;
+  }
+  mut mark = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    imm stampV = u32.from(v) + 1u32;
+    imm near = share[v];
+    mut i = 0usize;
+    while i < near.len() {
+      imm u = usize.from(*near[i]);
+      markColour(&mut mark, *colour[u], stampV);
+      imm far = share[u];
+      mut j = 0usize;
+      while j < far.len() {
+        markColour(&mut mark, *colour[usize.from(*far[j])], stampV);
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    mut c = 0usize;
+    while c < mark.len() and *mark[c] == stampV {
+      c = c + 1usize;
+    }
+    colour.set(v, u32.from(c));
+    v = v + 1usize;
+  }
+  colour;
+}
+
+// Colour c marked taken in the stamp list, grown to hold it
+fn markColour(mark &mut List[u32], c u32, stampV u32) {
+  if c == NoIndex { return; }
+  while mark.len() <= usize.from(c) {
+    mark.push(0u32);
+  }
+  mark.set(usize.from(c), stampV);
+}
+
+// S for the subdivision of 'coarse' (see above)
+fn buildProlongation(coarse &PolyMesh, boundary u32) Prolongation {
+  imm nc = coarse.vertexCount();
+  imm share = faceSharing(coarse);
+  imm colour = colourVertices(&share, nc);
+  mut colours = 0usize;
+  mut v = 0usize;
+  while v < nc {
+    if usize.from(*colour[v]) + 1usize > colours { colours = usize.from(*colour[v]) + 1usize; }
+    v = v + 1usize;
+  }
+  imm sh = sharpnessOf(coarse);
+  imm nf = nc + coarse.edgeCount() + coarse.faceCount();
+  mut rowOf = List[u32].empty();
+  mut colOf = List[u32].empty();
+  mut wOf = List[f32].empty();
+  mut vals = List[Vec3].withCapacity(nc);
+  v = 0usize;
+  while v < nc {
+    vals.push(new Vec3(0., 0., 0.));
+    v = v + 1usize;
+  }
+  mut c = 0usize;
+  while c < colours {
+    v = 0usize;
+    while v < nc {
+      if usize.from(*colour[v]) == c { vals.set(v, new Vec3(1., f32.from(v), 0.)); }
+      else { vals.set(v, new Vec3(0., 0., 0.)); }
+      v = v + 1usize;
+    }
+    imm r = refineVertexData(coarse, &vals, boundary, &sh.e, &sh.v);
+    mut w = 0usize;
+    while w < nf {
+      imm a = r[w].x;
+      if absf(a) > 0.000000001 {
+        rowOf.push(u32.from(w));
+        colOf.push(u32.from(libc.floorf(r[w].y / a + 0.5)));
+        wOf.push(a);
+      }
+      w = w + 1usize;
+    }
+    c = c + 1usize;
+  }
+  // Sorted into rows
+  mut rowStart = List[u32].withCapacity(nf + 1usize);
+  mut w = 0usize;
+  while w <= nf {
+    rowStart.push(0u32);
+    w = w + 1usize;
+  }
+  mut i = 0usize;
+  while i < rowOf.len() {
+    imm r = usize.from(*rowOf[i]) + 1usize;
+    rowStart.set(r, *rowStart[r] + 1u32);
+    i = i + 1usize;
+  }
+  w = 0usize;
+  while w < nf {
+    rowStart.set(w + 1usize, *rowStart[w + 1usize] + *rowStart[w]);
+    w = w + 1usize;
+  }
+  mut fill = List[u32].withCapacity(nf);
+  w = 0usize;
+  while w < nf {
+    fill.push(*rowStart[w]);
+    w = w + 1usize;
+  }
+  mut col = List[u32].withCapacity(rowOf.len());
+  mut weight = List[f32].withCapacity(rowOf.len());
+  i = 0usize;
+  while i < rowOf.len() {
+    col.push(0u32);
+    weight.push(0.);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < rowOf.len() {
+    imm r = usize.from(*rowOf[i]);
+    imm at = usize.from(*fill[r]);
+    col.set(at, *colOf[i]);
+    weight.set(at, *wOf[i]);
+    fill.set(r, *fill[r] + 1u32);
+    i = i + 1usize;
+  }
+  new Prolongation(rowStart, col, weight, nc);
+}
+
+// S x
+fn prolong(s &Prolongation, x &List[Vec3]) List[Vec3] {
+  imm rows = s.rowStart.len() - 1usize;
+  mut out = List[Vec3].withCapacity(rows);
+  mut r = 0usize;
+  while r < rows {
+    mut sum = new Vec3(0., 0., 0.);
+    mut k = usize.from(*s.rowStart[r]);
+    imm end = usize.from(*s.rowStart[r + 1usize]);
+    while k < end {
+      sum = sum + *x[usize.from(*s.col[k])] * *s.weight[k];
+      k = k + 1usize;
+    }
+    out.push(sum);
+    r = r + 1usize;
+  }
+  out;
+}
+
+// S^T y
+fn restrictTo(s &Prolongation, y &List[Vec3]) List[Vec3] {
+  imm rows = s.rowStart.len() - 1usize;
+  mut out = List[Vec3].withCapacity(s.coarse);
+  mut j = 0usize;
+  while j < s.coarse {
+    out.push(new Vec3(0., 0., 0.));
+    j = j + 1usize;
+  }
+  mut r = 0usize;
+  while r < rows {
+    imm yr = *y[r];
+    mut k = usize.from(*s.rowStart[r]);
+    imm end = usize.from(*s.rowStart[r + 1usize]);
+    while k < end {
+      imm c = usize.from(*s.col[k]);
+      out.set(c, *out[c] + yr * *s.weight[k]);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  out;
+}
+
+fn dotAll(a &List[Vec3], b &List[Vec3]) f64 {
+  mut sum = 0.d;
+  mut i = 0usize;
+  while i < a.len() {
+    sum = sum + f64.from(a[i].x) * f64.from(b[i].x) + f64.from(a[i].y) * f64.from(b[i].y)
+      + f64.from(a[i].z) * f64.from(b[i].z);
+    i = i + 1usize;
+  }
+  sum;
+}
+
+// The x nearest to S x = p in least squares, from the start x0: conjugate
+// gradients on S^T S x = S^T p, Jacobi-preconditioned
+fn leastSquares(s &Prolongation, p &List[Vec3], x0 &List[Vec3]) List[Vec3] {
+  imm n = s.coarse;
+  // The diagonal of S^T S
+  mut diag = List[f32].withCapacity(n);
+  mut j = 0usize;
+  while j < n {
+    diag.push(0.);
+    j = j + 1usize;
+  }
+  mut k = 0usize;
+  while k < s.col.len() {
+    imm c = usize.from(*s.col[k]);
+    diag.set(c, *diag[c] + *s.weight[k] * *s.weight[k]);
+    k = k + 1usize;
+  }
+  mut x = copyList[Vec3](x0);
+  imm b = restrictTo(s, p);
+  imm ax0 = restrictTo(s, &prolong(s, &x));
+  mut r = List[Vec3].withCapacity(n);
+  mut z = List[Vec3].withCapacity(n);
+  mut d = List[Vec3].withCapacity(n);
+  j = 0usize;
+  while j < n {
+    imm rj = *b[j] - *ax0[j];
+    imm inv = if *diag[j] > 0.0000001 {1. / *diag[j];} else {1.;};
+    r.push(rj);
+    z.push(rj * inv);
+    d.push(rj * inv);
+    j = j + 1usize;
+  }
+  mut rz = dotAll(&r, &z);
+  imm bnorm = dotAll(&b, &b);
+  mut it = 0u32;
+  while it < 400u32 and dotAll(&r, &r) > 0.000000000001d * (bnorm + 0.000000001d) {
+    imm ad = restrictTo(s, &prolong(s, &d));
+    imm dad = dotAll(&d, &ad);
+    if dad <= 0.d { it = 400u32; }
+    else {
+      imm alpha = f32.from(rz / dad);
+      j = 0usize;
+      while j < n {
+        x.set(j, *x[j] + *d[j] * alpha);
+        r.set(j, *r[j] - *ad[j] * alpha);
+        imm inv = if *diag[j] > 0.0000001 {1. / *diag[j];} else {1.;};
+        z.set(j, *r[j] * inv);
+        j = j + 1usize;
+      }
+      imm rzNew = dotAll(&r, &z);
+      imm beta = f32.from(rzNew / rz);
+      rz = rzNew;
+      j = 0usize;
+      while j < n {
+        d.set(j, *z[j] + *d[j] * beta);
+        j = j + 1usize;
+      }
+      it = it + 1u32;
+    }
+  }
+  x;
+}
+
+// A mesh's faces as lists of vertex numbers, the same as another's, face for face
+fn sameFaces(a &PolyMesh, b &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() or a.faceCount() != b.faceCount() or a.edgeCount() != b.edgeCount() {
+    return false;
+  }
+  mut f = 0usize;
+  while f < a.faceCount() {
+    imm fa = a.faceVertices(u32.from(f));
+    imm fb = b.faceVertices(u32.from(f));
+    if fa.len() != fb.len() { return false; }
+    mut i = 0usize;
+    while i < fa.len() {
+      if *fa[i] != *fb[i] { return false; }
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  true;
+}
+
+// A dense mesh that is the subdivision of a simpler one (topologically, in
+// subdivide's numbering) taken back 'levels' levels: a Multires whose top
+// level is the dense mesh and whose lower levels and base are the least
+// squares fits described above. A level that cannot be recovered (the mesh
+// is not on a subdivision grid there, or its numbering is not subdivide's) is
+// reported in 'problems', and the levels below it are not made, so the
+// result may have fewer levels than asked, none at all if even the first
+// failed (then its base is a copy of the dense mesh).
+pub fn fromDense(dense &PolyMesh, levels u32, problems &mut List[String]) Multires {
+  fromDenseWith(dense, levels, BoundaryEdgeAndCorner, FvarLinearCornersPlus1, problems);
+}
+
+// The same, with the boundary rule and the face-varying rule given
+pub fn fromDenseWith(dense &PolyMesh, levels u32, boundary u32, fvar u32, problems &mut List[String]) Multires {
+  // The topologies, fine to coarse
+  mut chain = List[PolyMesh].empty();
+  chain.push(copyPolyMesh(dense));
+  mut i = 0u32;
+  mut going = true;
+  while going and i < levels {
+    mut found = List[String].empty();
+    imm next = unsubdivide(chain[chain.len() - 1usize], 1u32, &mut found);
+    imm again = subdivideOnce(&next, boundary, fvar);
+    if next.vertexCount() < chain[chain.len() - 1usize].vertexCount() and sameFaces(&again, chain[chain.len() - 1usize]) {
+      chain.push(next);
+      i = i + 1u32;
+    } else {
+      mut s = String.from("level ");
+      s.appendUInt(u64.from(levels - i));
+      s.append(" of the dense mesh is not the subdivision of a coarser mesh (in subdivide's numbering); levels from ");
+      s.appendUInt(u64.from(levels - i));
+      s.append(" down are not rebuilt");
+      problems.push(s);
+      mut m = 0usize;
+      while m < found.len() {
+        problems.push(String.from(found[m].view()));
+        m = m + 1usize;
+      }
+      going = false;
+    }
+  }
+  imm top = chain.len() - 1usize;
+  if top == 0usize { return Multires.fromMeshWith(dense, boundary, fvar); }
+
+  // The positions, level by level from the dense mesh down: pos[k] is level k's
+  mut pos = List[List[Vec3]].withCapacity(top + 1usize);
+  mut k = 0usize;
+  while k <= top {
+    pos.push(List[Vec3].empty());
+    k = k + 1usize;
+  }
+  pos.set(top, copyList[Vec3](&dense.positions));
+  k = top;
+  while k >= 1usize {
+    imm coarse = chain[top - k + 1usize];
+    imm s = buildProlongation(coarse, boundary);
+    imm nc = coarse.vertexCount();
+    mut x0 = List[Vec3].withCapacity(nc);
+    mut v = 0usize;
+    while v < nc {
+      x0.push(*pos[k][v]);
+      v = v + 1usize;
+    }
+    pos.set(k - 1usize, leastSquares(&s, pos[k], &x0));
+    k = k - 1usize;
+  }
+
+  // The Multires: the cage at the fit, each level its subdivision and the fit's detail
+  mut base = copyPolyMesh(chain[top]);
+  setPositions(&mut base, pos[0usize]);
+  mut mr = Multires.fromMeshWith(&base, boundary, fvar);
+  k = 1usize;
+  while k <= top {
+    mr.addLevel();
+    mr.editLevel(u32.from(k), pos[k]);
+    k = k + 1usize;
+  }
+  mr;
+}

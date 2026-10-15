@@ -349,14 +349,16 @@ fn refineChannel(m &PolyMesh, child &PolyMesh, domain u32, vals &List[Vec3], isC
   refineCornerData(m, vals, fvar, eSharp, vSharp, child, parentFace, parentHalf);
 }
 
-// One level of Catmull-Clark
-fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
-  imm nv = m.positions.len();
-  imm nh = m.hVertex.len();
-  imm ne = nh / 2usize;
-  imm nf = m.fHalfedge.len();
+// A mesh's sharpnesses: each edge's (the "crease" channel, boundary edges
+// infinite) and each vertex's (the "crease_vert" channel)
+struct Sharpness {
+  e List[f32];
+  v List[f32];
+}
 
-  // Sharpness: the crease channels, and boundary edges infinitely sharp
+fn sharpnessOf(m &PolyMesh) Sharpness {
+  imm nv = m.positions.len();
+  imm ne = m.hVertex.len() / 2usize;
   imm creaseE = m.findFloatChannel(EdgeDomain, "crease");
   imm creaseV = m.findFloatChannel(VertexDomain, "crease_vert");
   mut eSharp = List[f32].withCapacity(ne);
@@ -378,9 +380,22 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
     vSharp.push(s);
     v = v + 1usize;
   }
+  new Sharpness(eSharp, vSharp);
+}
+
+// One level of Catmull-Clark
+fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
+  imm nv = m.positions.len();
+  imm nh = m.hVertex.len();
+  imm ne = nh / 2usize;
+  imm nf = m.fHalfedge.len();
+
+  // Sharpness: the crease channels, and boundary edges infinitely sharp
+  imm sh = sharpnessOf(m);
+  mut e = 0usize;
 
   // The new positions and faces
-  imm pos = refineVertexData(m, &m.positions, boundary, &eSharp, &vSharp);
+  imm pos = refineVertexData(m, &m.positions, boundary, &sh.e, &sh.v);
   mut counts = List[u32].empty();
   mut idx = List[u32].empty();
   mut pEdgeA = List[u32].empty();
@@ -435,7 +450,7 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
     imm isCrease = (domain == EdgeDomain and m.floats[i].name.equals("crease"))
       or (domain == VertexDomain and m.floats[i].name.equals("crease_vert"));
     imm vals = floatChannelVec3s(m, i);
-    imm out = refineChannel(m, &child, domain, &vals, isCrease, boundary, fvar, &eSharp, &vSharp,
+    imm out = refineChannel(m, &child, domain, &vals, isCrease, boundary, fvar, &sh.e, &sh.v,
       &cEdgeParent, &parentFace, &parentHalf);
     child.floats.push(new Channel[f32](String.from(m.floats[i].name.view()), domain, vec3ToFloats(&out), m.floats[i].fill));
     i = i + 1usize;
@@ -444,7 +459,7 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
   while i < m.vec2s.len() {
     imm domain = m.vec2s[i].domain;
     imm vals = vec2ChannelVec3s(m, i);
-    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
+    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &sh.e, &sh.v,
       &cEdgeParent, &parentFace, &parentHalf);
     child.vec2s.push(new Channel[Vec2](String.from(m.vec2s[i].name.view()), domain, vec3ToVec2s(&out), m.vec2s[i].fill));
     i = i + 1usize;
@@ -453,7 +468,7 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
   while i < m.vec3s.len() {
     imm domain = m.vec3s[i].domain;
     imm vals = vec3ChannelVec3s(m, i);
-    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
+    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &sh.e, &sh.v,
       &cEdgeParent, &parentFace, &parentHalf);
     child.vec3s.push(new Channel[Vec3](String.from(m.vec3s[i].name.view()), domain, out, m.vec3s[i].fill));
     i = i + 1usize;
