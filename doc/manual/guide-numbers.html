@@ -13,10 +13,197 @@
 
     <div class="text">
 
-	<!-- DRAFT 15 Oct 2026: gathered from the old "Values, variables and expressions" page, unpolished until
-	     this page's turn in the review (Ruminations\manual-v2-page-review-2026-10-15.md). -->
-	<p>The number types, their literals, the operators that compute with them, and how a number
-		changes from one type to another.</p>
+	<p>Every example so far has quietly trusted its numbers to fit. Here is one that does not. An old legend says the
+		inventor of chess asked a king for a modest reward: one grain of wheat on the first square of the board, two
+		on the second, four on the third, doubling on every square up to the 64th. Counting it up takes a number type
+		big enough, a shift of bits, and a conversion from a count to a weight. By the end of this page you can do all
+		three, with any number type Cone has.</p>
+
+<pre>
+mod chessboard;
+
+import stdio use *;
+
+fn main() {
+  // 1 has no suffix, so grains is an i32: a 32-bit signed integer
+  mut grains = 1;
+  each square in 2 .. 33 {        // square 1 already has its grain
+    grains *= 2;
+    if square &gt;= 30 {             // show only the last few squares
+      print &lt;- "Square ", square, ": ", grains, " grains\n";
+    }
+  }
+
+  // A u64 is a 64-bit unsigned integer. Each square holds 1 doubled
+  // once for every square before it, and doubling n times is
+  // 1u64 &lt;&lt; n: a single 1 bit, shifted n places left
+  mut total = 0u64;
+  each n in 0u64 ..&lt; 64u64 {
+    total += 1u64 &lt;&lt; n;
+  }
+  print &lt;- "All 64 squares: ", total, " grains\n";
+  print &lt;- "Bits that are 1 in the total: ", total.countOnes(), "\n";
+
+  // f64.from converts the count to a 64-bit floating-point number.
+  // Call a grain 65 mg; a tonne is a billion (1e9) milligrams
+  imm tonnes = f64.from(total) * 65d / 1e9d;
+  print &lt;- "Weight: ", tonnes / 1e9d, " billion tonnes\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Square 30: 536870912 grains
+Square 31: 1073741824 grains
+Square 32: -2147483648 grains
+Square 33: 0 grains
+All 64 squares: 18446744073709551615 grains
+Bits that are 1 in the total: 64
+Weight: 1199.04 billion tonnes
+</pre>
+	<p>The world grows something like 800 million tonnes of wheat a year, so the king owed roughly 1,500 years of the
+		whole world's harvest (fewer if his grains were lighter than 65 mg, but not by enough to help him).</p>
+	<p><b>Try this:</b> print <span class="pre">total + 1u64</span>, one grain more, and see why the total is exactly
+		the largest number a <span class="pre">u64</span> can hold.</p>
+
+	<h2 id="sizes">Number types and their sizes</h2>
+	<p>Square 32 is where the <span class="pre">i32</span> gave out. An <span class="pre">i32</span> has 32 bits, one
+		of them for the sign, so it holds whole numbers from -2,147,483,648 to 2,147,483,647, and square 32 needs
+		2,147,483,648. The arithmetic wraps around silently: one past the largest <span class="pre">i32</span> is the
+		smallest, and doubling that gives 0. An unsigned type wraps the same way below zero:
+		<span class="pre">3u32 - 5u32</span> is 4,294,967,294. So the type has to be big enough for the largest
+		value it will ever hold.</p>
+	<p>Every number type says its size, in bits, in its name:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+		<tr><td><span class="pre">i8</span>, <span class="pre">i16</span>, <span class="pre">i32</span>,
+			<span class="pre">i64</span></td>
+			<td>Signed whole numbers. An <span class="pre">i8</span> holds -128 to 127; an
+			<span class="pre">i64</span> reaches about 9.2 billion billion either side of 0.</td></tr>
+		<tr><td><span class="pre">u8</span>, <span class="pre">u16</span>, <span class="pre">u32</span>,
+			<span class="pre">u64</span></td>
+			<td>Unsigned whole numbers, from 0. A <span class="pre">u8</span> holds 0 to 255; a
+			<span class="pre">u64</span> 0 to 18,446,744,073,709,551,615.</td></tr>
+		<tr><td><span class="pre">f32</span>, <span class="pre">f64</span></td>
+			<td>Floating-point numbers, with about 7 and about 16 significant digits.</td></tr>
+		<tr><td><span class="pre">usize</span>, <span class="pre">isize</span></td>
+			<td>Unsigned and signed whole numbers as wide as a memory address: 64 bits on today's machines. They
+			count sizes and positions in memory.</td></tr>
+	</table>
+	<p>A floating-point number keeps a fixed number of significant digits and, separately, how far to move the
+		point, so it trades exactness for range: an <span class="pre">f64</span> reaches past 10<sup>308</sup>. That
+		suits the weight, which nobody needs to the milligram. <span class="pre">print</span> shows a float to six
+		significant digits, which is why the weight came out as 1199.04.</p>
+
+	<h2 id="writing">Writing numbers: literals and suffixes</h2>
+	<!-- Literal defaults under design (number-literals conversation, 14-15 Oct 2026); replace this paragraph when it settles. -->
+	<p>A whole number with no suffix, such as <span class="pre">42</span>, is an <span class="pre">i32</span>, and one
+		with a decimal point or an exponent, such as <span class="pre">2.5</span> or <span class="pre">1e9</span>, is
+		an <span class="pre">f32</span>. A suffix names the type instead: <span class="pre">65u8</span>,
+		<span class="pre">5000000000i64</span>, and the short forms <span class="pre">u</span> for
+		<span class="pre">u32</span>, <span class="pre">f</span> for <span class="pre">f32</span> and
+		<span class="pre">d</span> for <span class="pre">f64</span>, as in <span class="pre">65d</span>. A whole
+		number with no suffix also takes the type its context wants: in <span class="pre">total += 1</span>, where
+		<span class="pre">total</span> is a <span class="pre">u64</span>, the 1 is a <span class="pre">u64</span>
+		too.</p>
+	<p>Underscores group digits and are otherwise ignored, as in <span class="pre">1_000_000</span>, and
+		<span class="pre">0x</span> starts a hexadecimal number: <span class="pre">0xFF</span> is 255.</p>
+
+	<h2 id="computing">Arithmetic and comparison</h2>
+	<p><span class="pre">+</span>, <span class="pre">-</span>, <span class="pre">*</span>, <span class="pre">/</span> and
+		<span class="pre">%</span> work with the usual precedence. Dividing two whole numbers gives a whole number,
+		rounding toward zero, and <span class="pre">%</span> gives the remainder, which takes the sign of the number
+		divided:</p>
+<pre>
+imm a = 7 / 2;       // 3
+imm b = -7 / 2;      // -3
+imm c = -7 % 2;      // -1
+imm d = 7.0 / 2.0;   // 3.5, between floats
+</pre>
+	<p>The comparisons <span class="pre">==</span>, <span class="pre">!=</span>, <span class="pre">&lt;</span>,
+		<span class="pre">&lt;=</span>, <span class="pre">&gt;</span> and <span class="pre">&gt;=</span> give a
+		<span class="pre">bool</span>, as <a href="guide-conditionals.html#asking">Conditionals</a> showed. Give an
+		operator two numbers of the same type; when they differ, convert one with <span class="pre">from</span>,
+		<a href="#converting">below</a>.</p>
+
+	<h2 id="bitwork">Working with bits</h2>
+	<p>The total's surprise is in its bits. Each square's grains are a single 1 bit, one place further left than on the
+		square before, so adding all 64 squares sets every one of the <span class="pre">u64</span>'s 64 bits. The
+		total is 2<sup>64</sup> - 1, the largest <span class="pre">u64</span> there is, and
+		<span class="pre">countOnes()</span> finds 64 ones. The bitwise operators work on integers bit by bit, and
+		the shifts move all the bits at once:</p>
+<pre>
+0xF0u &amp; 0x3Cu     // 48, 0x30: the bits set in both
+0xE0u | 0xB8u     // 248, 0xF8: the bits set in either
+0xFFu ^ 0x0Fu     // 240, 0xF0: the bits set in one but not both
+~0u8              // 255: every bit flipped
+0x0Cu &lt;&lt; 1u       // 24: one place left doubles it
+-8 &gt;&gt; 1           // -4: on a signed number, &gt;&gt; keeps the sign
+</pre>
+	<p>The amount to shift by is the same type as the number shifted, which is why the program counts its doublings
+		with <span class="pre">u64</span>s, <span class="pre">0u64 ..&lt; 64u64</span>. A shift by the type's width or
+		more shifts every bit out (<a href="#shift">Shift operators</a>).</p>
+	<p>Every integer type also has methods that count and move its bits:</p>
+<pre>
+total.countOnes()               // 64: how many bits are 1
+40u32.trailingZeros()           // 3: the zeros below the lowest 1, as 40 is 8 * 5
+32u32 - 1000u32.leadingZeros()  // 10: the bits it takes to write 1000
+0x81u8.rotateLeft(1)            // 3: the bit shifted out of the top comes in at the bottom
+</pre>
+
+	<h2 id="updating">Changing a variable in place: += and ++</h2>
+	<p><span class="pre">grains *= 2</span> and <span class="pre">total += 1u64 &lt;&lt; n</span> change a
+		<span class="pre">mut</span> variable using its own value. Every arithmetic and bitwise operator has this
+		form: <span class="pre">+=</span>, <span class="pre">-=</span>, <span class="pre">*=</span>,
+		<span class="pre">/=</span>, <span class="pre">%=</span>, <span class="pre">&amp;=</span>,
+		<span class="pre">|=</span>, <span class="pre">^=</span>, <span class="pre">&lt;&lt;=</span> and
+		<span class="pre">&gt;&gt;=</span>. <span class="pre">++</span> adds one and <span class="pre">--</span>
+		takes one away. Written before the variable, the expression gives the new value; after it, the old one:</p>
+<pre>
+mut count = 10;
+count += 5;          // 15
+count %= 4;          // 3
+++count;             // 4
+imm was = count++;   // was is 4, and count is 5
+</pre>
+
+	<h2 id="converting">Converting between number types: from</h2>
+	<p>Other than a whole number widening into a bigger one, a number changes type only when the program asks. To
+		convert, call <span class="pre">from</span> on the type you want, with the value: <span class="pre">T.from(x)</span> gives <span class="pre">x</span> as a
+		<span class="pre">T</span>. That is how the program turned its count into something it could weigh,
+		<span class="pre">f64.from(total)</span>. A conversion does what the machine does:</p>
+<pre>
+f64.from(7)        // 7.0
+i32.from(-2.75)    // -2: a float loses its fraction, rounding toward zero
+u8.from(300)       // 44: a narrower integer keeps only the low 8 bits
+i8.from(200u8)     // -56: the same 8 bits, read as signed
+</pre>
+	<p>Converting first is also how to compute past a type's limits:</p>
+<pre>
+imm million = 1000000;
+imm wrong = million * million;                     // -727379968: too big for an i32
+imm right = i64.from(million) * i64.from(million); // 1000000000000
+</pre>
+	<p>Every number type has <span class="pre">from</span>, and it takes a value of any number type.
+		<a href="#conversion">Explicit Conversion</a> below gives every case.</p>
+
+	<h2 id="methods">Methods on numbers: sqrt, sin and cos</h2>
+	<p>Floats have <span class="pre">sqrt</span>, <span class="pre">sin</span> and <span class="pre">cos</span>,
+		called like any method; <span class="pre">sin</span> and <span class="pre">cos</span> take an angle in
+		radians:</p>
+<pre>
+(3d * 3d + 4d * 4d).sqrt()        // 5
+imm pi = 3.14159265358979d;
+(30d * pi / 180d).sin()           // 0.5
+</pre>
+	<p>A number has no <span class="pre">abs</span>, <span class="pre">min</span> or <span class="pre">max</span> yet;
+		an <span class="pre">if</span> does the job: <span class="pre">if x &lt; 0 { -x; } else { x; }</span>.</p>
+
+	<p>You can now pick a number type big enough for the job, write its literals, compute with it down to the bits,
+		and convert between types. Every example has also been printing text; next comes
+		<span class="pre">String</span>, text that a program builds and changes as it runs.</p>
+
+	<h2 id="indetail">In detail</h2>
+	<p><i>The rest of this page is the complete reference for number types, literals, operators, conversion and the
+		assignment forms; skip to the <a href="guide-text.html">next page</a> if the program above was enough.</i></p>
 
 	<h3 id="literals">Literals</h3>
 	<p>A literal is a specific, unchangeable value.
@@ -56,6 +243,7 @@
 65u8       // 8-bit unsigned integer
 1f64       // 64-bit floating point number
 </pre>
+	<!-- Literal defaults under design (number-literals conversation, 14-15 Oct 2026); revise with the paragraph under "Writing numbers" above. -->
 	<p>If the type is omitted, the number is understood to be 32-bits.
 		When the number explicitly includes a decimal point or exponent,
 		it is treated as a floating point number (f32).
@@ -113,71 +301,6 @@
 	<p>The same operations are core's intrinsics, <span class="pre">mem.countOnes(x)</span> and the
 		rest (<a href="safe-intrinsics.html#bits">Intrinsics</a>), whose type parameter is any of these
 		integer types.</p>
-
-	<h4 id="intfloat">The primitive 'int' and 'float' number types</h4>
-	<p style="margin-left: 40px;"><i>Note: The primitive <span class="pre">int-</span> and
-		<span class="pre">float-</span> types are not implemented, and the standard number
-		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are built
-		into the compiler rather than defined in a library. A custom number type written as below,
-		with a standard number type as its field in place of <span class="pre">int-32</span>, does
-		work: a struct wrapping the number, methods on it, and its conversion from a number,
-		<span class="pre">Nbr32.from(somenbr)</span>, declared as below. The standard number
-		types' <span class="pre">from</span> is built into the compiler with them, and so are
-		<a href="#bits">an integer's bit methods</a>, which are implemented.</i></p>
-	<p><span class="pre">int-32</span> specifies a 32-bit integer.
-		Any integer value from 1 to 128 may be specified after the dash, to establish the number of bits.</p>
-	<p>Similarly, <span class="pre">float-32</span> is a 32-bit floating point number.
-		Floats only support 32 and 64-bit values.</p>
-	<p>Unlike <span class="pre">i32</span>, <span class="pre">int-32</span> does not define any methods
-		for manipulating its values (e.g., adding and subtracting).
-		It is also agnostic on the semantic interpretation of its values ... it does not even signify
-		whether the integer value should be interpreted as signed or unsigned.
-		Its lack of built-in methods and interpretation is what makes it an ideal foundation for defining
-		new types with very different interpretations and methods.</p>
-
-	<h4 id="customnbr">Custom Number Types</h4>
-	<p><i>Rarely needed, and largely hypothetical for now (see the note above): defining a number type of your own.</i></p>
-	<p>There are several reasons why we might want to define distinctly different
-		number types than those provided by the standard library:</p>
-	<ul>
-	<li>One might want to use different types to distinguish between units of measure,
-		thereby potentially avoiding problems like the loss of the $125 million Mars probe.</li>
-	<li>Different number types could make different promises for undefined behavior
-		(e.g., protecting against undesired overflows), or could guarantee the number values are bounded by some range.</li>
-	<li>Integers that support intrinsic atomic operations can be separately typed, as the
-		core package's <a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a> is.</li>
-	</ul>
-
-	<p>Creating a new numeric integer type is nearly as simple as wrapping an primitive integer
-		type as a field in a struct. For example:</p>
-<pre>
-struct Nbr32 {
-    pub nbr int-32;
-}
-</pre>
-	<p>Methods may be added to this struct to define the operations that may be performed on values of this type.
-		These methods can make use of fast internal integer primitive functions (TBD).</p>
-	<p>Although numbers of one type are never implicitly converted into the equivalent number of another type,
-		a conversion may always be asked for explicitly. A conversion is a method of the type converted to,
-		named <span class="pre">from</span> and called on the type, which takes the value to convert:</p>
-<pre>
-imm converted = Nbr32.from(somenbr);
-</pre>
-	<p>Every standard number type has one, which takes a value of any number type
-		(<a href="#conversion">Explicit Conversion</a>).
-		A custom number type declares its own, an ordinary function of the type:</p>
-<pre>
-struct Nbr32 {
-    pub nbr int-32;
-
-    pub fn from(n i32) Nbr32 {
-        new Nbr32(n);
-    }
-}
-</pre>
-	<p><span class="pre">from</span> is the type's default conversion from another type.
-		A conversion that differs from it, such as one that saturates at the type's limits
-		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
 
 	<h3 id="arith">Operators and precedence</h3>
 	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented

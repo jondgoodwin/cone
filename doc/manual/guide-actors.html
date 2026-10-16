@@ -13,276 +13,205 @@
 
     <div class="text">
 
-	<p>A program that does several things at once is usually a program that is hard to get right. Cone's answer is
-		the <b>actor</b>: a small worker that keeps its own state and is reached only by messages. Here is a caf&eacute;
-		run by four of them.</p>
-<pre>
-// Actors: each keeps its own state, and they work by sending messages
-//
-// A Till keeps the cafe's takings. Two Baristas make drinks, at the same
-// time, and ring them up on the Till. The Manager hands out the orders
-// and waits for the answers it needs.
+	<p>Every program so far has run on one core of your machine, while the others sat idle. This page puts them to
+		work, so that more gets done, faster. Cone's way to do it is the <b>actor</b>, and it may be the first thing in
+		this Guide you have not met before: a worker with a job of its own, which keeps its own data and handles the work
+		sent to it, one piece at a time. You call it like a method, and Cone does the rest. Here is a bakery whose two
+		tills sell from one stock room at once:</p>
 
-mod cafe;
+<pre>
+mod bakery;
 
 import stdio use *;
-import sync use Arc;
+// The actors package runs actors, on every core
 import actors;
 
-// The price list: shared by everyone, changed by no one
-struct Menu {
-  pub latte u64;
-  pub tea u64;
+const price = 3;          // dollars a loaf
+
+// An actor is declared like a struct. Its fields are its own:
+// only its behaviours, below, can reach them
+actor StockRoom {
+  loaves i32 = 100;
+
+  // A behaviour, marked 'async do'. Calling it sends the stock room
+  // a message, which it handles when its turn comes
+  pub async do take(self, wanted i32) i32 {
+    imm given = if wanted &lt;= loaves { wanted; } else { loaves; };
+    loaves -= given;
+    given;                              // the answer, sent back
+  }
+
+  pub async do left(self) i32 { loaves; }
 }
 
+// A till serves a customer from the stock room's loaves
 actor Till {
-  takings u64 = 0;                     // the till's own state: no one else can touch it
+  stock StockRoom;                      // how this till reaches the stock room
 
-  pub async do ring(self, price u64) { // a behaviour: it arrives as a message
-    takings = takings + price;
-  }
-
-  pub async do total(self) u64 {       // it returns a value, so it can be awaited
-    takings;
+  pub async do serve(self, wanted i32) i32 {
+    // await: ask the stock room, and carry on here when it answers
+    imm got = await stock.take(wanted);
+    got * price;                        // what the customer pays
   }
 }
 
-actor Barista {
-  till Till;                           // a handle: how this actor reaches the till
-  menu Arc[imm, Menu];                 // the shared price list
-
-  pub async do make(self, lattes u64, teas u64) u64 {
-    imm bill = lattes * menu.latte + teas * menu.tea;
-    till.ring(bill);                   // sent, and not waited for
-    bill;                              // the reply, for whoever awaits it
-  }
-}
-
-actor Manager {
-  till Till;
-  ana Barista;
-  ben Barista;
+// The shop runs the day
+actor Shop {
+  stock StockRoom;
+  east Till;
+  west Till;
 
   pub async do open(self) {
-    imm first = ana.make(2, 1);        // both orders go out at once,
-    imm second = ben.make(1, 3);       // and the baristas work on them together
-    print &lt;- "Ana's order: ", await first, "\n";
-    print &lt;- "Ben's order: ", await second, "\n";
-    print &lt;- "In the till: ", await till.total(), "\n";
+    // Two customers, served at once, one at each till
+    imm ana = east.serve(30);
+    imm ben = west.serve(40);
+    print &lt;- "Ana pays $", await ana, "\n";
+    print &lt;- "Ben pays $", await ben, "\n";
+    print &lt;- "Left on the shelf: ", await stock.left(), "\n";
   }
 }
 
 fn main() {
-  imm menu = new Arc[imm, Menu](latte: 4, tea: 3);
-  imm till = new Till();
-  imm ana = new Barista(till, menu);
-  imm ben = new Barista(till, menu);
-  imm manager = new Manager(till, ana, ben);
-  manager.open();                      // returns at once: the actors do the work
-}                                      // and the program ends when they are all done
+  // new makes an actor, and gives back a handle to reach it through
+  imm stock = new StockRoom();
+  imm shop = new Shop(stock, new Till(stock), new Till(stock));
+  shop.open();      // one message; the program ends when the work is done
+}
 </pre>
 	<p>It prints:</p>
 <pre>
-Ana's order: 11
-Ben's order: 13
-In the till: 24
+Ana pays $90
+Ben pays $120
+Left on the shelf: 30
 </pre>
-	<p><b>What to notice</b></p>
-	<ul>
-		<li>An <span class="pre">actor</span> is declared like a struct: its fields are its state, and nothing outside
-			the actor can reach them.</li>
-		<li>A method declared <span class="pre">async do</span> is a <i>behaviour</i>. Calling one sends the actor a
-			message and returns at once: <span class="pre">till.ring(bill)</span> does not wait for the till.</li>
-		<li>A behaviour that returns a value can be <span class="pre">await</span>ed. Keeping the call in a variable
-			first, as <span class="pre">first</span> and <span class="pre">second</span> do, lets both baristas work at the
-			same time.</li>
-		<li>The till's handle and the menu are shared by several actors, and nothing in the program takes a lock.</li>
-		<li><span class="pre">main</span> makes the actors and sends one message; the program ends when every actor has
-			finished its work.</li>
-	</ul>
+	<p><b>Try this:</b> stock the shelf with 50 loaves, and run it a few times. Someone now goes short, and which of
+		them can change from run to run, since either till may reach the stock room first. Between them, though, they
+		always pay for exactly 50 loaves: never one more.</p>
 
-	<h2 id="why">Why actors: many hands, each with its own work</h2>
-	<p>A computer has several cores, and a program that keeps only one of them busy leaves the rest idle. A program
-		also spends much of its time waiting, for a file, for the network, for another part of itself. Doing several
-		things at once helps on both counts: many hands make light work, and a hand that is waiting can let another
-		get on.</p>
-	<p>The trouble has always been the shared desk. When two threads change the same value at once, the result
-		depends on which got there first, and a program that works a thousand times can fail on the next. The usual
-		cure is a lock around every shared value, and then the trouble becomes remembering every lock, and taking them
-		in the right order.</p>
-	<p>An actor gives every worker a desk of its own. Its state is private: only its own behaviours touch it. Other
-		code asks it to do things by sending messages, which wait in its <i>mailbox</i> and are handled one at a time.
-		Because only one message runs at a time, the actor never needs a lock, and because each sender's messages arrive
-		in the order they were sent, the actor sees its work in a sensible order. In the caf&eacute;, the
-		<span class="pre">Till</span> is the only one who ever touches the takings; the baristas just send it
-		<span class="pre">ring</span> messages, and it adds them up one after another.</p>
-	<p>Behind the scenes, Cone runs the actors on a pool of worker threads, one for each core, and moves an actor onto
-		a free thread whenever it has a message to handle. You never start a thread, join one, or take a lock. You
-		decide which parts of the work belong together, give each part to an actor along with the state it needs, and
-		let them talk.</p>
+	<h2 id="why">Workers with a job of their own</h2>
+	<p>Doing several things at once has always had one hard part: two pieces of a program changing the same data at the
+		same moment. Picture both tills reading "50 loaves" off the shelf, and each selling 40. If you have written
+		threaded code, you know the usual cure, a lock around every shared value, and how hard it is to get every one of
+		them right.</p>
+	<p>An actor takes the shared data away. The count of loaves belongs to the stock room, and nothing else can touch
+		it; the tills ask the stock room instead. Their requests wait in its <b>mailbox</b>, and it handles them one at
+		a time. Two requests can never tangle inside it, whichever order they
+		arrive in, and that is why the Try this never sells a loaf twice.</p>
+	<p>Some work is a one-off, started, finished and its answer collected, and the
+		<a href="guide-parallel.html">next page</a> has the simplest tool for that. But much of a running system is not
+		like that. The stock room has state, and an ongoing responsibility: to take on whatever requests are sent to it,
+		and answer each as and when it can, for as long as the shop is open. An actor is that kind of worker.</p>
+	<p>Underneath, Cone keeps a pool of worker threads, one for each core, and whenever an actor has a message waiting,
+		a free thread runs it. You never start a thread, wait for one to finish, or take a lock. You decide which parts
+		of the work belong together, give each part to an actor along with the data it needs, and let them talk.
+		Cone has other ways to make work happen at the same time, and the <a href="concurrency.html">Concurrency</a>
+		part has them all; actors and <span class="pre">parallel each</span> are the two to build on first.</p>
 
 	<h2 id="first-actor">Declaring an actor</h2>
-	<p>An actor is written with <span class="pre">actor</span>, and its body looks like a struct's. A module that
-		declares one imports the <span class="pre">actors</span> package, which is what runs them:</p>
+	<p>An actor is written like a <a href="guide-structs.html">struct</a>, with <span class="pre">actor</span> in place of
+		<span class="pre">struct</span>, in a module that imports the <span class="pre">actors</span> package. Its fields
+		are its state, and they are never <span class="pre">pub</span>: only its own behaviours reach them. Code outside
+		that tries is refused, with a message that says what to do instead:</p>
 <pre>
-actor Till {
-  takings u64 = 0;                     // the till's own state: no one else can touch it
-
-  pub async do ring(self, price u64) { // a behaviour: it arrives as a message
-    takings = takings + price;
-  }
-
-  pub async do total(self) u64 {       // it returns a value, so it can be awaited
-    takings;
-  }
-}
+`loaves` is part of actor StockRoom's private state, which only its own methods reach, one message at a time. Send it a behaviour that uses it.
 </pre>
-	<p>The fields are the actor's state. They are never <span class="pre">pub</span>, and code outside the actor that
-		tries to read one is refused, with a message that says what to do instead:</p>
-<pre>
-`takings` is part of actor Till's private state, which only its own methods reach, one message at a time. Send it a behaviour that uses it.
-</pre>
-	<p>Each method declared <span class="pre">async do</span> (one keyword of two words) is a behaviour: a message the
-		actor understands. Inside one, the fields are used by name, and may be changed freely, since nothing else is
-		running in this actor while it does.</p>
-	<p><span class="pre">new Till()</span> makes the actor and gives back its <i>handle</i>, the value you send it
-		messages through. Its fields are filled in order from the arguments, as a struct's are, and a field with a
-		default, like <span class="pre">takings u64 = 0</span>, takes its default when the argument is left out. So
-		<span class="pre">new Barista(till, menu)</span> fills a barista's two fields.</p>
+	<p>A method marked <span class="pre">async do</span> is a <b>behaviour</b>: a message the actor understands. Inside
+		one, the fields are used by name, and changed freely, since nothing else runs in this actor while it does.</p>
+	<p><span class="pre">new StockRoom()</span> makes the actor and gives back its <b>handle</b>, the value you reach it
+		through. As with a struct, the fields are filled in order from the arguments, and a field with a default, such
+		as <span class="pre">loaves i32 = 100</span>, takes it when the argument is left off. A handle may be copied as
+		often as you like: the shop and both tills hold the one stock room's handle, and whatever any of them sends lands
+		in the same mailbox.</p>
 
-	<h2 id="sending">Sending a message</h2>
-	<p>Calling a behaviour on a handle sends that message:</p>
-<pre>
-till.ring(bill);                   // sent, and not waited for
-</pre>
-	<p>The call puts the message in the till's mailbox and returns at once; the barista goes straight on to its next
-		line. Some time later, on whichever worker thread is free, the till takes the message out and runs
-		<span class="pre">ring</span>. Messages one actor sends to another are handled in the order they were sent.</p>
-	<p>The program starts and stops the runtime by itself. The first actor made starts the worker threads.
-		<span class="pre">manager.open()</span> in <span class="pre">main</span> is a send like any other, so
-		<span class="pre">main</span> reaches its end almost at once; the program then waits until no actor has anything
+	<h2 id="sending">Calling a behaviour sends a message</h2>
+	<p><span class="pre">east.serve(30)</span> looks like a method call, and that is how you write it. What it does is
+		put a message in the till's mailbox and return at once, without waiting for the till. It is the same idea as the
+		<a href="guide-first.html#send">send operator</a>, a send dressed as a method call: you write the call, and Cone
+		carries the message, and schedules the till to handle it on whichever thread is free. One actor's messages to
+		another are handled in the order they were sent.</p>
+	<p><span class="pre">main</span> starts the day with <span class="pre">shop.open()</span>, a message like any other, so
+		<span class="pre">main</span> reaches its end almost at once. The program then waits until no actor has anything
 		left to do, and stops.</p>
 
-	<h2 id="awaiting">Asking, and waiting for the answer</h2>
-	<p>A plain send is a one-way street: whatever the behaviour returns is dropped. When the sender needs the answer,
-		it writes <span class="pre">await</span> in front of the call:</p>
-<pre>
-print &lt;- "In the till: ", await till.total(), "\n";
-</pre>
-	<p>The <span class="pre">await</span> sends <span class="pre">total</span> to the till and pauses the manager's
-		behaviour until the reply comes back. Pausing does not tie up a thread: the worker goes on to other work, and the
-		manager can even handle its other messages meanwhile. When the reply arrives, the behaviour carries on from
-		where it stopped, with the till's answer as the value of the <span class="pre">await</span>.</p>
-	<p>Only a behaviour that declares a return type sends a reply, so only such a behaviour can be awaited. And
-		<span class="pre">await</span> stands only inside a behaviour, which is why the caf&eacute; has a
-		<span class="pre">Manager</span>: <span class="pre">main</span> is a plain function, so it starts things off with
-		a send, and the waiting happens in an actor.</p>
-	<p>Awaiting each call as it is made would have the manager wait for Ana before even asking Ben. Instead it keeps
-		each call's <i>future</i>, a value standing for the reply to come, and awaits them afterwards:</p>
-<pre>
-imm first = ana.make(2, 1);        // both orders go out at once,
-imm second = ben.make(1, 3);       // and the baristas work on them together
-print &lt;- "Ana's order: ", await first, "\n";
-print &lt;- "Ben's order: ", await second, "\n";
-</pre>
-	<p>Both messages are sent before either answer is needed, so Ana and Ben work at the same time, on different
-		threads. By the time the manager asks for the total, both baristas have rung up their bills, since each sent its
-		<span class="pre">ring</span> to the till before it replied.</p>
+	<h2 id="awaiting">async and await</h2>
+	<p>A behaviour is <b>asynchronous</b>: it runs later, when the actor gets to the message, which is what
+		<span class="pre">async</span> says. A send is one way, so when the sender needs the answer, it writes
+		<span class="pre">await</span>. In <span class="pre">serve</span>, <span class="pre">await stock.take(wanted)</span>
+		sends <span class="pre">take</span> to the stock room, and the till's behaviour pauses there until the answer
+		comes back. Pausing does not hold up a core: the thread goes off to other work, and the till may even
+		handle its other messages meanwhile. When the answer arrives, the behaviour carries on from where it stopped,
+		with the stock room's answer as the <span class="pre">await</span>'s value.</p>
+	<p>So <span class="pre">serve</span> reads top to bottom, like any function, though it runs on two actors and,
+		perhaps, two cores. The <span class="pre">await</span>s mark the seams where it waits on another actor. Only a
+		behaviour that declares a return type sends an answer, so only such a behaviour can be awaited, and
+		<span class="pre">await</span> stands only inside a behaviour. That is why the bakery has a
+		<span class="pre">Shop</span>: <span class="pre">main</span> is a plain function, so it starts things off with a
+		send, and the waiting happens in an actor.</p>
+	<p>Awaiting each call as it is made, <span class="pre">await east.serve(30)</span>, would have the shop wait for Ana
+		before it even began on Ben. Instead, <span class="pre">imm ana = east.serve(30)</span> sends the message at once
+		and keeps its <b>future</b>: a value standing for the answer to come. Both customers' messages are out before
+		either answer is needed, so the two tills serve them at the same time, and the shop awaits the futures
+		afterwards. The stock room's count is right by the time the shop asks for it, because each till had its answer
+		from the stock room before it answered the shop.</p>
 
-	<h2 id="sharing">Sharing data safely</h2>
-	<p>Actors work together by passing values to each other, and each kind of value crosses from one actor to
-		another in its own safe way. The caf&eacute; uses most of them.</p>
-	<p><b>Numbers are copied.</b> <span class="pre">ana.make(2, 1)</span> puts copies of 2 and 1 in the message. The
-		manager keeps its own, and Ana gets hers.</p>
-	<p><b>A value that moves arrives whole.</b> A list, a <span class="pre">String</span> or any other
-		<a href="guide-values.html">value that moves</a> moves into the message, and from then on only the receiver has
-		it:</p>
+	<h2 id="sharing">What you can send</h2>
+	<p>A message carries its values to another actor, which may be running on another core, and each kind of value
+		crosses in its own safe way.</p>
+	<p><b>Numbers are copied.</b> <span class="pre">east.serve(30)</span> puts a copy of 30 in the message.</p>
+	<p><b>A value that moves just flows.</b> A <span class="pre">String</span>, a list, or any other value that
+		<a href="guide-text.html#moving">moves</a> rather than copies is handed over whole: it moves into the message, and
+		from then on only the receiver has it. Here the shop hands a customer's name to an order book:</p>
 <pre>
+actor OrderBook {
+  names List[String];
+
+  pub async do add(self, name String) {
+    names &lt;- name;                // the book keeps the String
+  }
+}
+</pre>
+<pre>
+imm name = String.from("Ana");
+book.add(name);                   // the String moves into the message
+</pre>
+	<p>Once the name has gone, the shop cannot use it: <span class="pre">name</span> after the send is refused, with
+		<span class="pre">This variable's value has been moved out. It is no longer there to use.</span> So two actors
+		never hold the same String at once, and nothing needs guarding.</p>
+	<p><b>Handles are shared,</b> as the tills share the stock room's.</p>
+	<p><b>What nobody changes, everybody may share.</b> A larger value that every actor reads, such as a price list, is
+		made once as an <span class="pre">Arc</span>, from the <span class="pre">sync</span> package, and handed to as many
+		actors as need it. Every copy reaches the one price list, and the <span class="pre">imm</span> in
+		<span class="pre">Arc[imm, Prices]</span> says no one may change it, so every actor may read it at once:</p>
+<pre>
+import sync use Arc;
+
+struct Prices {
+  pub loaf i32;
+  pub bun i32;
+}
+
 actor Till {
-  takings u64 = 0;
+  prices Arc[imm, Prices];        // one price list, read by every till
 
-  pub async do ringAll(self, prices List[u64]) {
-    each price in prices {
-      takings = takings + price;
-    }
-  }
-  // ...
-}
-
-actor Manager {
-  till Till;
-
-  pub async do close(self) {
-    imm prices = new List[u64] &lt;- 4, 3, 4;
-    till.ringAll(prices);              // the list moves into the message
-    print &lt;- "In the till: ", await till.total(), "\n";
+  pub async do serve(self, loaves i32, buns i32) i32 {
+    loaves * prices.loaf + buns * prices.bun;
   }
 }
+
+// Made once, and handed to as many tills as you like
+imm prices = new Arc[imm, Prices](loaf: 3, bun: 1);
+imm east = new Till(prices);
+imm west = new Till(prices);
 </pre>
-	<p>This prints <span class="pre">In the till: 11</span>. Once the list has gone, the manager cannot touch it:
-		using <span class="pre">prices</span> after the send is refused, with <span class="pre">This variable's value
-		has been moved out. It is no longer there to use.</span> So two actors never hold the same list at the same
-		time.</p>
-	<p><b>Handles are shared.</b> An actor's handle may be copied as often as you like: passed to
-		<span class="pre">new</span>, stored in another actor's fields, or sent in a message. All three of the
-		caf&eacute;'s other actors hold the one till's handle, and every message any of them sends lands in the same
-		mailbox.</p>
-	<p><b>What never changes may be shared by everyone.</b> The price list is made once, as an
-		<span class="pre">Arc[imm, Menu]</span>, from the <span class="pre">sync</span> package. Every copy of it reaches
-		the one menu, and <span class="pre">imm</span> means no one may change it: a barista that tries,
-		<span class="pre">menu.latte = 5</span>, is refused. With nobody able to write, every actor may read it at
-		once.</p>
-	<p>The compiler checks all of this for you. Every parameter of a behaviour must be a type that can safely travel
-		to another thread, and it works that out from what the type holds, with nothing for you to write. A type that
-		cannot travel is refused where the behaviour is declared, with a message that names the part of it at fault
-		(<a href="#sendable">What may be sent</a>, below).</p>
-	<p>When several actors truly must <i>change</i> one value, the usual answer is to give that value to an actor of
-		its own, as the caf&eacute; gives the takings to the till, and send it messages. Values guarded by a lock exist
-		too, for the rare case that needs one (<a href="#locks">lock permissions</a>, below).</p>
+	<p>The compiler checks all of this for you, from what each behaviour's parameters hold, with nothing for you to
+		write; a value that could not travel safely is refused where the behaviour is declared. When several actors
+		truly must <i>change</i> one value, give that value to an actor of its own, as the bakery gives the loaves to the
+		stock room. The rest of what may cross, and the locks for the rare case that needs one, are in
+		<a href="conc-sharing.html">What may cross a thread</a>.</p>
 
-	<h2 id="dividing">Dividing one big job</h2>
-	<p>Actors also split up a single large piece of work. Here four <span class="pre">Worker</span> actors each add
-		up a quarter of the numbers from 1 to 4000, at the same time, and send their partial sums to one
-		<span class="pre">Tally</span>:</p>
-<pre>
-actor Tally {
-  waiting u64;                         // how many partial sums are still to come
-  total u64 = 0;
-
-  pub async do add(self, partial u64) {
-    total = total + partial;
-    waiting = waiting - 1;
-    if waiting == 0 {
-      print &lt;- "total = ", total, "\n";
-    }
-  }
-}
-
-actor Worker {
-  tally Tally;
-
-  pub async do sum(self, from u64, to u64) {
-    mut partial = 0u64;
-    each n in from .. to {
-      partial = partial + n;
-    }
-    tally.add(partial);                // a message to another actor
-  }
-}
-
-fn main() {
-  imm tally = new Tally(4);
-  each k in 0u64 ..&lt; 4u64 {
-    imm worker = new Worker(tally);
-    worker.sum(k * 1000 + 1, k * 1000 + 1000);
-  }
-}
-</pre>
-	<p>It prints <span class="pre">total = 8002000</span>. Which worker finishes first changes from run to run, but
-		the total never does: the tally handles one partial sum at a time, so its running total needs no lock, and it
-		knows the job is done when its count of sums still to come reaches zero. Each worker lives on after
-		<span class="pre">main</span> lets go of its handle, until its message has been handled. For the common case of
-		one loop spread over every core, the <a href="guide-parallel.html">next page</a> has something simpler still.</p>
+	<p>You can now give each part of a program to an actor of its own, call it like a method, and let the actors work
+		side by side on every core. When the work is one big loop rather than standing roles, there is something simpler
+		still: one word in front of an <span class="pre">each</span>.</p>
 
 	<h2 id="indetail">In detail</h2>
 	<p>The rest of this page is the complete reference for actors at this level, with excerpts from
@@ -357,7 +286,7 @@ fn main() {
 		on the handle, <span class="pre">c.add(5u64)</span>, sends that message: a send is one-way, it queues the
 		message and returns. Each sender's messages to one actor are handled in the order sent. A handle may be
 		copied: passed, stored, kept in another actor's state, or put in a message, as
-		the caf&eacute;'s baristas hold the <span class="pre">Till</span> above. An actor dies when its last
+		the bakery's tills hold the <span class="pre">StockRoom</span> above. An actor dies when its last
 		handle has gone <i>and</i> its mailbox is empty.</p>
 	<p>The runtime starts and stops by itself: the first actor made starts the worker threads, one per logical
 		processor by default, and when <span class="pre">main</span> returns the program waits until no actor is queued

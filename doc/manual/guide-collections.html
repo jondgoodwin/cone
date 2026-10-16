@@ -13,227 +13,244 @@
 
     <div class="text">
 
-	<p>An array's size is fixed when the program is compiled. Most programs gather values whose number is known only
-		when they run: the words of a text, the users of a service, the orders of the day. A collection holds as many as
-		it is given. This page counts the words of a sentence with the four you will reach for most often:
-		<span class="pre">List</span>, <span class="pre">Dict</span>, <span class="pre">Set</span> and
-		<span class="pre">String</span>.</p>
+	<p>Most programs gather values whose number is known only when they run: the primes below some limit, the words
+		of a text, the orders of the day. A collection holds as many values as it is given. This page brings in the two
+		you will reach for most often, the <span class="pre">List</span> and the <span class="pre">Dict</span>: how to
+		make one, send values into it with <span class="pre">&lt;-</span>, find them again, and walk them with
+		<span class="pre">each</span>. Here is a List at work, sieving out the primes the way Eratosthenes did:</p>
+
 <pre>
-// Word frequencies: which words a text uses, and how often
-mod wordfreq;
+mod sieve;
 
 import stdio use *;
+// collections gives us List, Dict and the rest
 import collections use *;
 
-struct Tally {
-  pub word String;
-  pub count i64;
-}
-
 fn main() {
-  // A String is a collection of bytes, changed here in place
-  mut text = String.from("The cat sat on the mat and the dog sat on the log");
-  text.lowerAscii();
+  // Positions in a list are counted with usize, so the limit is one
+  imm limit = 1000usize;
 
-  // A List of Strings, one for each word
-  imm words = text.split(' ');
-  print &lt;- words.len(), " words\n";
+  // For every number below the limit, how many primes divide it:
+  // room for 1000 values, every one filled with 0 to begin with
+  mut factors = new List[i32](limit) &lt;- fill 0;
 
-  // A Dict from each word to how many times it appears
-  mut counts = new Dict[String, i64];
-  each w in words {
-    imm before = match counts.getCopy(w) {     // an Option: Some(count), or None
-      case imm n Some {n;}
-      case None {0;}
-    };
-    counts &lt;- w.copy(): before + 1;           // a key and its value; the new count replaces the old
+  // A list that starts empty, and grows as primes are sent to it
+  mut primes = new List[usize];
+
+  // A number that no smaller prime divides is prime,
+  // and it marks every multiple of itself
+  each n in 2usize ..&lt; limit {
+    continue if factors[n] &gt; 0;
+    primes &lt;- n;
+    each m in n ..&lt; limit by n {
+      factors[m] += 1;
+    }
   }
-  print &lt;- counts.len(), " different words\n";
 
-  // Build a List from the Dict, then sort it: most frequent first, ties alphabetical
-  mut ranked = new List[Tally] &lt;- each e in counts.entries() yield new Tally(e.key.copy(), e.value);
-  ranked.sortBy((a, b) =&gt;
-    if a.count != b.count {i32.from(b.count - a.count);}
-    else {bytesCompare(a.word.view(), b.word.view());});
-
-  // Gather the first three into one line of text
-  mut top = String.from("top three:");
-  each t in ranked.iter().take(3) {
-    top &lt;- " ", t.word.view(), "=", t.count;
-  }
-  print &lt;- top.view(), "\n";
-
-  // Adapters work on a sequence as a whole
-  imm total = ranked.iter().map(t =&gt; t.count).sum();
-  imm repeated = ranked.iter().filter(t =&gt; t.count &gt; 1).count();
-  print &lt;- total, " counted, ", repeated, " words used more than once\n";
-
-  // A Set of the words used only once
-  imm once = new Set[String] &lt;- each t in ranked if t.count == 1 yield t.word.copy();
-  print &lt;- once.len(), " used once";
-  if once.contains("cat") {print &lt;- ", the cat among them";}
-  print &lt;- "\n";
-
-  // pop takes the last value out; peek looks at the new last one
-  match ranked.pop() {
-    case imm t Some {print &lt;- "last: ", t.word.view();}
-    case None {print &lt;- "no words";}
-  }
-  match ranked.peek() {
-    case imm t Some {print &lt;- ", then ", t.word.view(), "\n";}
-    case None {print &lt;- "\n";}
-  }
+  print &lt;- primes.len(), " primes below ", limit, ", the last ", primes[primes.len() - 1], "\n";
+  print &lt;- "210 has ", factors[210], " different prime factors\n";
 }
 </pre>
 	<p>It prints:</p>
 <pre>
-13 words
-8 different words
-top three: the=4 on=2 sat=2
-13 counted, 3 words used more than once
-5 used once, the cat among them
-last: mat, then log
+168 primes below 1000, the last 997
+210 has 4 different prime factors
 </pre>
+	<p><b>Try this:</b> 210 is 2 &times; 3 &times; 5 &times; 7. The first number with five different prime factors
+		is 2310, past the end of this list. Raise the limit to 3000 and ask <span class="pre">factors</span> about
+		it.</p>
 
-	<p><b>What to notice</b></p>
-	<ul>
-		<li><span class="pre">import collections use *;</span> brings in <span class="pre">List</span>,
-			<span class="pre">Dict</span>, <span class="pre">Set</span> and <span class="pre">String</span>.</li>
-		<li><span class="pre">&lt;-</span> gives values to a collection: a word and its count to the Dict, text and numbers
-			to a String, and, after <span class="pre">new List[Tally]</span>, an <span class="pre">each &hellip; yield</span>
-			that builds the whole list in one line.</li>
-		<li><span class="pre">each</span> walks a collection as it walks a range. <span class="pre">iter()</span> hands the
-			values out one at a time, and steps such as <span class="pre">take</span>, <span class="pre">map</span>,
-			<span class="pre">filter</span>, <span class="pre">sum</span> and <span class="pre">count</span> work on them as a
-			whole.</li>
-		<li><span class="pre">getCopy</span>, <span class="pre">pop</span> and <span class="pre">peek</span> may have nothing to
-			give, so each answers an <span class="pre">Option</span>, and a <span class="pre">match</span> asks which.</li>
-		<li><span class="pre">sortBy</span> is given a closure that says which of two tallies comes first.</li>
-	</ul>
-
-	<h2 id="growing">Why lists grow</h2>
-	<p>A <span class="pre">List[T]</span> is an array that grows. It keeps its values side by side in one block of memory,
-		and when the block is full it moves them to one twice the size, so there is always room for one more. It can be
-		built with its first values, and given more at any time:</p>
+	<h2 id="growing">Lists: a row of values that grows</h2>
+	<p><span class="pre">new List[usize]</span> makes an empty list. The type in the square brackets says what the list
+		holds, as the types in <span class="pre">Result[i32, &amp;str]</span> did on
+		<a href="guide-functions.html#result-tour">Functions</a>. There is one <span class="pre">List</span>, and the
+		brackets fill in the rest: a <span class="pre">List[i32]</span>, a <span class="pre">List[bool]</span> and a list
+		of structs of your own are the same List holding different things. Whatever a list holds, the compiler holds it
+		to: <span class="pre">primes &lt;- true</span> is refused, with <i>"A bool is not a number, and usize is wanted
+		here."</i></p>
+	<p>The send operator puts a value on the end of a list: <span class="pre">primes &lt;- n</span>. It is the arrow
+		that has sent text to <span class="pre">print</span> since the first page, and it takes several values in the
+		same way, separated by commas: <span class="pre">primes &lt;- 1009, 1013</span>.
+		<span class="pre">len()</span> says how many values a list holds.</p>
+	<p>A value is found by its position, counted from 0: <span class="pre">primes[0]</span> is 2. A position is a
+		<span class="pre">usize</span>, the unsigned type for counting things in memory, which is why the sieve counts
+		with one. In a <span class="pre">mut</span> list a value can be changed where it stands,
+		<span class="pre">factors[m] += 1</span>, or replaced, <span class="pre">factors[m] = 0</span>. A position past
+		the end stops the program, with a panic that says what went wrong: <i>"index 5 is out of range for a length of
+		2"</i>.</p>
+	<p><span class="pre">each</span> walks a list as it walks a range, from the first value to the last:</p>
 <pre>
-mut primes = new List[i32] &lt;- 2, 3, 5;    // built with its first values
-primes &lt;- 7;                               // &lt;- pushes onto the end
-primes.push(11);                           // the same, by name
-primes &lt;- 2 of 0;                          // two more values, both 0
-
-mut sum = 0;
 each p in primes {
-  sum += p;                                // 28, over all seven
+  break if p &gt; 30;
+  print &lt;- " ", p;              // 2 3 5 7 11 13 17 19 23 29
 }
 </pre>
-	<p><span class="pre">primes.len()</span> is 7. <span class="pre">primes[1]</span> is the value at position 1, which is 3,
-		since positions count from 0. A position past the end stops the program with a panic that names the index and
-		the length, as an array's does. To ask instead, <span class="pre">primes.get(20)</span> answers an
-		<a href="#maybe">Option</a> that says whether there is a value there.</p>
 
-	<h2 id="lookup">Finding things by key: Dict and Set</h2>
-	<p>A <span class="pre">Dict[K, V]</span> pairs each key with a value, and finds the value again by its key. The keys may be integers, a <span class="pre">bool</span>, a <span class="pre">String</span>, or a struct
-		of your own that says it can be hashed. The program counts with one: <span class="pre">counts &lt;- w.copy(): before + 1</span>
-		puts a word and its count in, and a later count for a word it already holds replaces the earlier one. The key is
-		handed to the dictionary, which keeps it, so the program gives it a copy of the word and keeps its own. A dictionary
-		whose keys are Strings is asked with plain text: <span class="pre">counts.contains("the")</span>.</p>
+	<h2 id="lookup">Dicts: finding a value by its key</h2>
+	<p>A list finds a value by its position, but often what a program has in hand is a name: a word, a product code, a
+		user. A <span class="pre">Dict</span> pairs each <b>key</b> with a value, and finds the value again by its key.
+		Its brackets hold two types, the keys' and then the values'. Here is one counting the words of a sentence:</p>
 <pre>
-imm ages = new Dict[String, i64] &lt;- String.from("Ann"): 31, String.from("Bo"): 12;
-mut adults = 0;
-each name, age in ages {       // two variables: each key, and its value
-  if age &gt;= 18 { adults += 1; }
+imm text = String.from("the cat sat on the mat and the dog sat on the log");
+mut counts = new Dict[String, i32];
+
+each w in text.split(' ') {        // split gives back a List of the words
+  if counts.contains(w) {
+    counts[w] += 1;                // seen before: one more
+  } else {
+    counts &lt;- w.copy(): 1;         // new: send the word and its first count
+  }
+}
+print &lt;- counts.len(), " different words; the: ", counts["the"], ", sat: ", counts["sat"], "\n";
+                                   // 8 different words; the: 4, sat: 2
+</pre>
+	<p>The send operator gives a dictionary a key and its value together, with a colon between them:
+		<span class="pre">counts &lt;- w.copy(): 1</span>. A later value for a key it already holds replaces the
+		earlier one. The dictionary keeps its keys, so it is given a copy of the word,
+		<span class="pre">w.copy()</span>, and the list of words keeps its own.</p>
+	<p><span class="pre">counts["the"]</span> looks a value up by its key, and a dictionary whose keys are Strings is
+		asked with plain text. A key it does not hold stops the program, <i>"no entry for the key "fish""</i>, so a
+		program that is not sure asks first, with <span class="pre">contains</span>, as the counting loop does.</p>
+	<p><span class="pre">each</span> with two variables walks a dictionary's keys and their values:</p>
+<pre>
+mut repeated = 0;
+each word, count in counts {
+  if count &gt; 1 { repeated += 1; }
+}                                  // repeated is 3: the, sat and on
+</pre>
+	<p>A dictionary is <b>unordered</b>. The order it visits its keys in is not the order they went in, and it changes
+		from one run to the next, so a program that prints them in order sorts them first, or uses an
+		<span class="pre">OrderedDict</span> (<a href="#others">below</a>).</p>
+
+	<h2 id="giving">Building a collection with the send operator</h2>
+	<p>So far each list began empty, or full of zeros, and grew a value at a time. Put the send operator straight after
+		<span class="pre">new</span>, and it gives a collection all of its contents as it is made. What follows it is a
+		list of <b>entries</b>, each given in turn, and an entry can be more than a single value:</p>
+<pre>
+imm small = new List[i32] &lt;- 2, 3, 5, 7;              // these four values
+imm zeros = new List[i32] &lt;- 5 of 0;                  // one value, five times
+imm flags = new List[bool](8) &lt;- fill false;          // room for 8, then filled
+imm squares = new List[i32] &lt;- each i in 1 .. 10 yield i * i;
+                                                      // 1 4 9 16 25 36 49 64 81 100
+</pre>
+	<p>The last entry is the <span class="pre">each</span> of <a href="guide-loops.html#counting">Loops</a>, with
+		<span class="pre">yield</span> and a value in place of its block: every pass of the loop sends one value into
+		the new list. It takes the same <span class="pre">if</span> after its range, to skip the passes that fail:</p>
+<pre>
+imm oddSquares = new List[i32] &lt;- each i in 1 .. 10 if i % 2 == 1 yield i * i;   // 1 9 25 49 81
+</pre>
+	<p>Anything <span class="pre">each</span> can walk can fill a collection, and that includes a
+		<a href="guide-functions.html#generators-tour">generator</a>. Here is the Fibonacci generator from Functions,
+		handing its values straight into a list, all of them, or only the even ones:</p>
+<pre>
+imm fibs = new List[i64] &lt;- each fibonacci(12);      // 0 1 1 2 3 5 8 13 21 34 55 89
+imm evenFibs = new List[i64] &lt;- each f in fibonacci(12) if f % 2 == 0 yield f;   // 0 2 8 34
+</pre>
+	<p>With no variable, <span class="pre">each</span> sends every value it is handed. A dictionary is built the same
+		way, its entries pairs: <span class="pre">yield w.copy(): w.len()</span> makes a
+		<span class="pre">Dict[String, usize]</span> from each word to its length. And all of these work after a
+		collection that already exists, as <span class="pre">primes &lt;- 1009, 1013</span> did: the send operator adds
+		its entries to whatever is on its left.</p>
+
+	<h2 id="walking">Working on a whole collection: map, filter and sum</h2>
+	<p>Many loops over a collection only add its values up, count the ones that pass a test, or change each one. A list
+		can do that for you. <span class="pre">iter()</span> hands out its values one at a time, and steps chained after
+		it work on all of them:</p>
+<pre>
+imm doubled = squares.iter().map(x =&gt; x * 2).sum();          // 770: each doubled, then added up
+imm over20 = squares.iter().filter(x =&gt; x &gt; 20).count();     // 6: those over 20
+imm evens = new List[i32] &lt;- each squares.iter().filter(x =&gt; x % 2 == 0);   // 4 16 36 64 100
+</pre>
+	<p><span class="pre">x =&gt; x * 2</span> is a closure, in the short form <a href="guide-functions.html#closures-tour">Functions</a>
+		promised: its parameter, an arrow and its body, with no types written, since the list already says what its
+		values are. <span class="pre">map</span> turns each value into another, <span class="pre">filter</span> keeps the
+		values its test is true of, and <span class="pre">sum</span> and <span class="pre">count</span> walk what is left
+		and give the answer. Nothing is done until one of those walks it, and the whole chain runs as one loop.
+		<span class="pre">take</span>, <span class="pre">min</span>, <span class="pre">max</span>,
+		<span class="pre">any</span>, <span class="pre">find</span> and others are in <a href="#adapters">the full
+		list</a> below.</p>
+	<p><span class="pre">sortBy</span> sorts a list in place, and its closure takes two values and says which comes
+		first: a negative number for the first, a positive one for the second. Largest first is
+		<span class="pre">scores.sortBy((a, b) =&gt; b - a)</span>.</p>
+
+	<h2 id="sharing">Sharing a collection: Arc</h2>
+	<p>A list owns its values, so, like a <a href="guide-text.html#moving">String</a>, it moves. Handing one to a
+		function gives it away:</p>
+<pre>
+fn total(xs List[i32]) i32 { mut sum = 0; each x in xs { sum += x; } sum; }
+
+imm primes = new List[i32] &lt;- 2, 3, 5, 7, 11;
+print &lt;- total(primes), "\n";
+print &lt;- primes.len(), "\n";    // Error: This variable's value has been moved out.
+</pre>
+	<p>When a collection is to be used in several places at once, put it behind an <b>Arc</b>. An Arc is a
+		<b>shared reference</b>: no one variable owns the list. Copying the Arc copies only the reference, never the
+		list, and every copy reaches the same list, which is freed once the last copy is gone:</p>
+<pre>
+mod share;
+
+import stdio use *;
+import collections use *;
+// sync gives us Arc, a reference that may be shared
+import sync use Arc;
+
+// total is handed a shared reference to the list, not the list itself
+fn total(xs Arc[imm, List[i32]]) i32 {
+  mut sum = 0;
+  each x in xs {
+    sum += x;
+  }
+  sum;
+}
+
+fn main() {
+  imm list = new List[i32] &lt;- 2, 3, 5, 7, 11;
+  imm primes = new Arc[imm, List[i32]](list);   // the list moves into the Arc
+  imm also = primes;                            // a second reference to the same list
+  print &lt;- total(primes), " ", total(also), " ", primes.len(), "\n";   // 28 28 5
 }
 </pre>
-	<p>A dictionary is <b>unordered</b>: the order it visits its keys in changes from one run to the next, so a program
-		that prints them in order sorts them first, as the word counter does. An <span class="pre">OrderedDict</span>, with
-		the same methods, visits them in the order they were put in.</p>
-	<p>A <span class="pre">Set[T]</span> is a dictionary of keys alone: it says whether it holds something.
-		<span class="pre">insert</span> adds an element and answers whether it was new, <span class="pre">contains</span>
-		asks, and <span class="pre">remove</span> takes one out. The program's <span class="pre">once</span> is a set of the
-		words used only once, and <span class="pre">once.contains("cat")</span> finds the cat among them.</p>
+	<p>The <span class="pre">imm</span> in <span class="pre">Arc[imm, List[i32]]</span> says the list can be read
+		through the reference and never changed. With nobody able to change it, any number of hands may read it at
+		once, even hands working at the same time, which is just how the next page uses one. References come back in
+		depth in <a href="memory.html">Memory</a>, along with lighter ways to lend a collection for a moment.</p>
 
-	<h2 id="textcoll">A String is a collection too</h2>
-	<p><span class="pre">String</span> is text that grows: a list of bytes that is read as text. The program changes one in
-		place (<span class="pre">text.lowerAscii()</span>), splits one into a List of Strings
-		(<span class="pre">text.split(' ')</span>), and builds one up with <span class="pre">&lt;-</span>, which appends text
-		or a number: <span class="pre">top &lt;- " ", t.word.view(), "=", t.count</span>.
-		<span class="pre">top.view()</span> is its text, as <span class="pre">print</span> takes it.
-		<a href="guide-text.html">Text</a> has the rest of what a String does.</p>
+	<h2 id="others">Other collections</h2>
+	<p>List and Dict carry most programs. The <span class="pre">collections</span> package has more of the same
+		family, each made, sent to and walked the same way: a <a href="#set"><span class="pre">Set</span></a> says only
+		whether it holds something, a dictionary of keys alone; a <a href="#deque"><span class="pre">Deque</span></a> is
+		a list that is quick at both ends, for a queue; an <a href="#ordereddict"><span class="pre">OrderedDict</span></a>
+		is a dictionary that visits its keys in the order they went in. A <a href="guide-text.html">String</a> is a
+		collection too, of bytes read as text.</p>
 
-	<h2 id="walking">Walking a collection</h2>
-	<p><a href="guide-loops.html#each">Loops</a> walked a range with <span class="pre">each</span>. Over a collection it is
-		the same loop: <span class="pre">each w in words</span> visits the words in order, two variables take each key and
-		value of a dictionary, and a set gives each element. The loop reads the collection where it lies, so the collection
-		cannot be changed while the loop walks it. To take the values out as you go, walk <span class="pre">drain()</span>,
-		which hands each one over and leaves the list empty:</p>
+	<h2 id="fixedarrays">Arrays: when the size is fixed</h2>
+	<p>A list grows. An <b>array</b>'s size is fixed when it is made, and never changes. That suits values whose number
+		is part of the problem: the three coordinates of a point in space, the sixteen numbers of a 4&times;4 matrix, a
+		table of the days in each month. An array is written as its values in square brackets, and is read with
+		<span class="pre">[i]</span> and walked with <span class="pre">each</span>, just as a list is:</p>
 <pre>
-mut names = String.from("ann,bo,cy").split(',');
-mut joined = String.from("");
-each name in names.drain() {     // each String is handed over, not copied
-  joined &lt;- name.view(), ";";
+imm days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+mut total = 0;
+each d in days {
+  total += d;
 }
-// joined is "ann;bo;cy;" and names is empty
-</pre>
-	<p><span class="pre">iter()</span> gives a <b>cursor</b>, which hands out a collection's values one at a time. A cursor
-		has steps that work on the values as a whole. Some give a cursor again: <span class="pre">map</span> turns each value
-		into another, <span class="pre">filter</span> keeps those a test is true of, <span class="pre">take(n)</span> keeps
-		the first <span class="pre">n</span> and <span class="pre">skip(n)</span> drops them. Others walk the chain once and
-		answer: <span class="pre">sum</span>, <span class="pre">count</span>, <span class="pre">min</span>,
-		<span class="pre">max</span>, <span class="pre">any</span>, <span class="pre">all</span>, <span class="pre">find</span>
-		and <span class="pre">fold</span>. A chain does no work until one of these walks it, and it is compiled into one loop:</p>
-<pre>
-imm total = ranked.iter().map(t =&gt; t.count).sum();
-imm repeated = ranked.iter().filter(t =&gt; t.count &gt; 1).count();
-</pre>
-	<p>The steps take <a href="guide-functions.html">closures</a>, small functions written where they are used, and so does
-		<span class="pre">sortBy</span>, whose closure answers which of two values comes first: a negative number for the
-		first, a positive one for the second, and 0 when either may go first.</p>
+print &lt;- total, " days; February has ", days[1], "\n";   // 365 days; February has 28
 
-	<h2 id="giving">The send operator</h2>
-	<p>Everything given to a collection above went through <span class="pre">&lt;-</span>, the same operator
-		<span class="pre">print</span> has used since the first program. It is the one operator for giving values to anything
-		that takes them. What follows it is a list, each entry given in turn, and an entry may be more than a value:</p>
-	<ul>
-		<li><span class="pre">2 of 0</span> gives the same value several times;</li>
-		<li><span class="pre">fill 0</span> gives it until a collection made with room for some number of values is full;</li>
-		<li><span class="pre">word: count</span> gives a key and its value together;</li>
-		<li><span class="pre">each</span> gives every value a loop makes, and with a <span class="pre">yield</span> in place of
-			the loop's body it builds one collection from another:</li>
-	</ul>
-<pre>
-imm squares = new List[i32] &lt;- each i in 1 .. 5 yield i * i;     // 1 4 9 16 25
-imm once = new Set[String] &lt;- each t in ranked if t.count == 1 yield t.word.copy();
+imm point = [3d, 4d, 12d];
+imm far = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();   // 13
+
+mut grid = new Array[f64, 4, 4] &lt;- fill 0d;     // a 4&times;4 matrix of zeros
+each i in 0usize ..&lt; 4 {
+  grid[i][i] = 1d;                              // ones down the diagonal
+}
 </pre>
+	<p>The size is part of an array's type: <span class="pre">days</span> is an <span class="pre">Array[i32, 12]</span>.
+		So an array takes no <span class="pre">&lt;-</span> once it is made, though <span class="pre">fill</span> can fill
+		a new one. <a href="guide-structs.html#array">Arrays</a> has the full rules.</p>
 
-	<h2 id="maybe">When there may be nothing: Option</h2>
-	<p><span class="pre">pop</span> takes the last value off a list, but the list may be empty. <span class="pre">peek</span>
-		looks at the last value, <span class="pre">get</span> at a position that may be past the end, and
-		<span class="pre">getCopy</span> for a key the dictionary may not hold. So each answers an
-		<span class="pre">Option</span>: an enum, declared by the core library as <span class="pre">Result</span> is
-		(<a href="guide-enums.html#resultenum">Enums</a>), whose value is <span class="pre">Some(value)</span> when there is
-		one and <span class="pre">None</span> when there is not. A <span class="pre">match</span> finds out which:
-		<span class="pre">case imm t Some</span> hands over the value, and <span class="pre">case None</span> is the
-		empty-handed case. That is all there is to it; its complete rules are with the
-		<a href="guide-enums.html#option">enums</a>.</p>
-
-	<h2 id="regions">Where a collection's memory lives</h2>
-	<p>A collection keeps its values in one block of memory, which it gets, grows and gives back as it needs. That block
-		comes from a <b>region</b>: the heap's, unless the collection was made in another. Nothing in this page had to say
-		so. A collection made with <span class="pre">new</span> or <span class="pre">empty()</span> takes the heap's, and
-		when the collection dies it finalizes each value it holds and gives its block back. Why there is more than one
-		kind of region is a story for later, and it begins like this:</p>
-	<blockquote>
-	<p>Unusual among languages, Cone conceptually partitions the heap into regions.
-			Each region has its own strategy for allocating and automatically reclaiming memory that holds values.
-			Every program value on the heap is wholly located within and governed by its owning region.</p>
-	<p>The reason Cone supports multiple regions is because there
-		is no one perfect strategy for allocating and automatically freeing memory.
-		Each strategy (e.g., tracing GC, ref-counting, single-owner, pools or arenas) carries
-		different trade-offs in terms of throughput, latency/responsiveness, memory use and leakage,
-		data structure flexibility, and programmer convenience.</p>
-	</blockquote>
-	<p>The rest is in <a href="mem-regions.html">Owning references and regions</a>, and a collection made in a region of
-		your choosing is in <a href="mem-collections.html">Collections in a region or arena</a>.</p>
+	<p>You can now gather values as they come, find them by key, build a whole collection in one line, and share one
+		without copying it. Next come actors: workers that run at the same time, each with its own state, sending one
+		another messages with the same arrow, and sharing what never changes through an Arc.</p>
 
 	<h2 id="indetail">In detail</h2>
 	<p><i>The rest of this page is the complete reference for collections, iteration over them and the send operator;

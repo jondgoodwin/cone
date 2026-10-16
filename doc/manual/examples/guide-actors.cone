@@ -1,63 +1,60 @@
-// Actors: each keeps its own state, and they work by sending messages
-//
-// A Till keeps the cafe's takings. Two Baristas make drinks, at the same
-// time, and ring them up on the Till. The Manager hands out the orders
-// and waits for the answers it needs.
+// Actors: two tills sell from one stock room, at the same time
+// (the Guide's Actors page)
 
-mod cafe;
+mod bakery;
 
 import stdio use *;
-import sync use Arc;
+// The actors package runs actors, on every core
 import actors;
 
-// The price list: shared by everyone, changed by no one
-struct Menu {
-  pub latte u64;
-  pub tea u64;
+const price = 3;          // dollars a loaf
+
+// An actor is declared like a struct. Its fields are its own:
+// only its behaviours, below, can reach them
+actor StockRoom {
+  loaves i32 = 100;
+
+  // A behaviour, marked 'async do'. Calling it sends the stock room
+  // a message, which it handles when its turn comes
+  pub async do take(self, wanted i32) i32 {
+    imm given = if wanted <= loaves { wanted; } else { loaves; };
+    loaves -= given;
+    given;                              // the answer, sent back
+  }
+
+  pub async do left(self) i32 { loaves; }
 }
 
+// A till serves a customer from the stock room's loaves
 actor Till {
-  takings u64 = 0;                     // the till's own state: no one else can touch it
+  stock StockRoom;                      // how this till reaches the stock room
 
-  pub async do ring(self, price u64) { // a behaviour: it arrives as a message
-    takings = takings + price;
-  }
-
-  pub async do total(self) u64 {       // it returns a value, so it can be awaited
-    takings;
+  pub async do serve(self, wanted i32) i32 {
+    // await: ask the stock room, and carry on here when it answers
+    imm got = await stock.take(wanted);
+    got * price;                        // what the customer pays
   }
 }
 
-actor Barista {
-  till Till;                           // a handle: how this actor reaches the till
-  menu Arc[imm, Menu];                 // the shared price list
-
-  pub async do make(self, lattes u64, teas u64) u64 {
-    imm bill = lattes * menu.latte + teas * menu.tea;
-    till.ring(bill);                   // sent, and not waited for
-    bill;                              // the reply, for whoever awaits it
-  }
-}
-
-actor Manager {
-  till Till;
-  ana Barista;
-  ben Barista;
+// The shop runs the day
+actor Shop {
+  stock StockRoom;
+  east Till;
+  west Till;
 
   pub async do open(self) {
-    imm first = ana.make(2, 1);        // both orders go out at once,
-    imm second = ben.make(1, 3);       // and the baristas work on them together
-    print <- "Ana's order: ", await first, "\n";
-    print <- "Ben's order: ", await second, "\n";
-    print <- "In the till: ", await till.total(), "\n";
+    // Two customers, served at once, one at each till
+    imm ana = east.serve(30);
+    imm ben = west.serve(40);
+    print <- "Ana pays $", await ana, "\n";
+    print <- "Ben pays $", await ben, "\n";
+    print <- "Left on the shelf: ", await stock.left(), "\n";
   }
 }
 
 fn main() {
-  imm menu = new Arc[imm, Menu](latte: 4, tea: 3);
-  imm till = new Till();
-  imm ana = new Barista(till, menu);
-  imm ben = new Barista(till, menu);
-  imm manager = new Manager(till, ana, ben);
-  manager.open();                      // returns at once: the actors do the work
-}                                      // and the program ends when they are all done
+  // new makes an actor, and gives back a handle to reach it through
+  imm stock = new StockRoom();
+  imm shop = new Shop(stock, new Till(stock), new Till(stock));
+  shop.open();      // one message; the program ends when the work is done
+}

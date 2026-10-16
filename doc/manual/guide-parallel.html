@@ -13,122 +13,115 @@
 
     <div class="text">
 
-	<p>Some work is one big job: the same test made of every number in a range, the same change made to every item
-		of a list. Put the word <span class="pre">parallel</span> in front of the <span class="pre">each</span>, and
-		every core of the machine works on the loop at once. This program counts the primes below 200,000 that way.</p>
+	<p>Some work is one big job made of many small ones that do not depend on each other: the same test for every
+		number in a range, the same change to every order in a list. Put the word <span class="pre">parallel</span> in
+		front of an <span class="pre">each</span>, and every core of the machine works on the loop at once. There are no
+		threads to start and no work to share out by hand: it is the loop you would have written anyway. Here it finds
+		the primes below a million:</p>
 <pre>
-// parallel each: one loop, every core
-//
-// Writing 'parallel' in front of an 'each' runs the loop's passes at the
-// same time, spread over a worker thread for each core of the machine.
-
 mod primes;
 
 import stdio use *;
 import collections use *;
+// parallel each runs on the same worker threads as actors
 import actors;
 
-// Is n a prime? Try every divisor up to its square root.
+// Is n a prime? Try every divisor up to its square root
 fn isPrime(n u64) bool {
-  if n &lt; 2 {
-    return false;
-  }
   mut d = 2u64;
   while d * d &lt;= n {
-    if n % d == 0 {
-      return false;
-    }
-    d = d + 1;
+    if n % d == 0 { return false; }
+    d += 1;
   }
   true;
 }
 
 fn main() {
-  // Count the primes below 200,000, with every core testing numbers at once
-  imm count = Atomic[u64].of(0);
-  parallel each n in 0u64 ..&lt; 200000u64 {
-    if isPrime(n) {
-      count.add(1);                    // an Atomic takes additions from every pass
-    }
-  }                                    // here, every pass has finished
-  print &lt;- "Primes below 200000: ", count.load(), "\n";
+  // Every core tests numbers at once, and the list keeps
+  // the primes in order, as a plain each would
+  imm primes = new List[u64] &lt;- parallel each n in 2u64 ..&lt; 1000000u64 if isPrime(n) yield n;
+  print &lt;- "There are ", primes.len(), " primes below a million\n";
+  print &lt;- "The largest is ", primes[primes.len() - 1], "\n";
 
-  // Collect them into a list instead: it comes out in order, as a plain 'each' would
-  imm primes = new List[u64] &lt;- parallel each n in 0u64 ..&lt; 200000u64 if isPrime(n) yield n;
-  print &lt;- "In the list: ", primes.len(), "\n";
-
-  // And add the list up, in parallel too
-  print &lt;- "Their sum: ", primes.parallel().sum(), "\n";
+  // Adding them all up, on every core too
+  print &lt;- "They add up to ", primes.parallel().sum(), "\n";
 }
 </pre>
 	<p>It prints:</p>
 <pre>
-Primes below 200000: 17984
-In the list: 17984
-Their sum: 1709600813
+There are 78498 primes below a million
+The largest is 999983
+They add up to 37550402023
 </pre>
-	<p><b>What to notice</b></p>
-	<ul>
-		<li><span class="pre">parallel each</span> is an ordinary <span class="pre">each</span> with one word in front.
-			A module that writes one imports the <span class="pre">actors</span> package, which runs it.</li>
-		<li>When the program reaches the line after the loop, every pass has finished.</li>
-		<li>The passes may read what was declared outside the loop, but not change it. The count comes back through an
-			<span class="pre">Atomic</span>, a number that every pass may add to safely.</li>
-		<li>A list built with <span class="pre">&lt;- parallel each &hellip; yield</span> holds its values in the order a
-			plain loop would give them, whichever pass finished first.</li>
-		<li><span class="pre">primes.parallel().sum()</span> adds up a list on every core, and gives the same answer
-			on every run.</li>
-	</ul>
+	<p><b>Try this:</b> take the word <span class="pre">parallel</span> out of the loop, and the answers stay the same,
+		with one core doing all the work. Then search below ten million, with and without it. On a 16-core laptop, the
+		parallel loop takes about half a second, and the plain one about five.</p>
 
 	<h2 id="why">One loop, every core</h2>
-	<p><a href="guide-actors.html">Actors</a> divide a program into parts that keep their own state and talk by
-		message. A <span class="pre">parallel each</span> divides a single loop. It suits work where each pass stands on
-		its own: whether 7919 is a prime has nothing to do with whether 7920 is, so the numbers can be tested in any
-		order, on any core, all at once.</p>
-	<p>You do not say how to split the work. The loop starts as one piece covering the whole range; whoever works on
-		a piece cuts it in half while it is big, keeps one half and leaves the other for an idle worker to take. So a
-		range whose passes take uneven time, as testing big numbers takes longer than small ones, still spreads itself
-		evenly, and the code that wrote the loop helps with it while it waits. When control reaches the statement after
-		the loop, all of it is done.</p>
-	<p>An <span class="pre">if</span> after the source skips the passes it is false for, as it does in a plain
-		<span class="pre">each</span>: <span class="pre">parallel each n in 0u64 ..&lt; 200000u64 if isPrime(n)</span>.</p>
+	<p>A <span class="pre">parallel each</span> suits work where each pass stands on its own. Whether 7919 is a prime has
+		nothing to do with whether 7920 is, so the numbers can be tested in any order, on any core, all at once.</p>
+	<p>You do not say how to split the work. The loop starts as one piece covering the whole range, and a worker with a
+		big piece cuts it in half and leaves one half for an idle worker to take. So the work spreads evenly even when
+		some passes take longer than others, as testing a big number takes longer than a small one. When the program
+		reaches the statement after the loop, every pass has finished.</p>
+	<p>The <span class="pre">if</span> after the range keeps only the numbers it holds for, as it does in a plain
+		<span class="pre">each</span>. And the list is built just as <a href="guide-collections.html#giving">Collections</a>
+		built one, with <span class="pre">parallel</span> in front of the <span class="pre">each</span>: each piece of the
+		loop collects its own primes, and the pieces are joined in order at the end, so the list is the one a plain loop
+		would have made, whichever pass finished first.</p>
 
 	<h2 id="results">Getting the results out</h2>
-	<p>Since the passes really do run at the same time, a pass may not change a variable declared outside the loop:
-		if two passes added to one total at once, one of the additions could be lost. The compiler refuses it, and says
-		what to do instead:</p>
+	<p>Because the passes really do run at the same time, a pass may not change a variable declared outside the loop:
+		if two passes added to one total at the same moment, one of the additions could be lost. The compiler refuses it,
+		and says what to do instead:</p>
 <pre>
-mut total = 0u64;
-parallel each n in 0u64 ..&lt; 1000u64 {
+mut total = 0;
+parallel each n in 0 ..&lt; 1000 {
   total = total + n;                 // refused
 }
 </pre>
 <pre>
 A 'parallel each' body may not write total, which is declared outside the loop: the passes run at the same time. Outside variables are read-only for the loop. Hand results back with the parallel builder, or 'mutItems()' on the items, or count with an Atomic.
 </pre>
-	<p>The program uses three ways to hand results back:</p>
-	<ul>
-		<li><b>An <span class="pre">Atomic</span></b> is a number that is changed only through its methods, and those
-			methods are safe to call from every pass at once. <span class="pre">Atomic[u64].of(0)</span> makes one,
-			<span class="pre">add</span> adds to it, and <span class="pre">load</span> reads it once the loop is
-			done.</li>
-		<li><b>The parallel builder</b> makes a list. Write <span class="pre">parallel each</span> after the
-			<span class="pre">&lt;-</span> that fills a <a href="guide-collections.html">new list</a>, and give each
-			pass's value with <span class="pre">yield</span>. Each piece of the loop collects its own values, and the
-			pieces are joined in order at the end, so the list is the same as the one a plain loop would make.</li>
-		<li><b>A reduction</b> boils a whole list down to one value: <span class="pre">primes.parallel().sum()</span>
-			adds every item, each core adding up a stretch of the list and the stretches' totals then being added
-			together. The stretches are cut by the list's length alone, so the answer is the same on every run, on any
-			machine.</li>
-	</ul>
+	<p>The program above uses the parallel builder. A total such as the sum of the primes is a <b>reduction</b>,
+		which boils a whole list down to one value: <span class="pre">primes.parallel().sum()</span> has each core add up
+		a stretch of the list, and then adds the stretches' totals together. The stretches are cut by the list's length
+		alone, so the answer is the same on every run, on any machine. An <span class="pre">Atomic</span> is a number that
+		every pass may add to safely, and <a href="conc-primitives.html#atomic">Concurrency</a> has it.</p>
+
+	<h2 id="inplace">Changing every item at once</h2>
+	<p>Sometimes the job is not to find anything, just to update everything. Back at the bakery, the year ends with ten
+		percent off every order of $50 or more:</p>
+<pre>
+// A made-up year of the bakery's orders: what each customer spent, in dollars
+mut orders = new List[i32] &lt;- each i in 1 .. 100000 yield i % 90 + 3;
+print &lt;- "Takings: $", orders.parallel().sum(), "\n";      // Takings: $4749610
+
+// Ten percent off every order of $50 or more, all at once
+parallel each o in orders.mutItems() {
+  if *o &gt;= 50 { *o -= *o / 10; }
+}
+print &lt;- "After the discount: $", orders.parallel().sum(), "\n";   // $4430753
+</pre>
+	<p><span class="pre">mutItems()</span> gives each pass one order of its own to change, and no two passes are
+		ever given the same one, so they can all change their orders at once. <span class="pre">o</span> stands for the
+		order where it sits in the list, not a copy of it, and <span class="pre">*o</span> reaches through to the order
+		itself; references like this one come later, in <a href="memory.html">Memory</a>.</p>
 
 	<h2 id="choosing">Actors or a parallel each?</h2>
-	<p>Both put every core to work, and they suit different shapes of problem. When the job is the same thing done
-		to many items, with nothing to remember between them, a <span class="pre">parallel each</span> is the simplest
-		thing to write: it is the loop you would have written anyway. When the work falls into parts that each keep
-		their own state, and need to ask each other things, give each part to an actor. The two mix: a behaviour may
-		run a <span class="pre">parallel each</span> over the actor's own data, and a pass may send a message to an
-		actor (<a href="#body">What the body may do</a>, below).</p>
+	<p>Both put every core to work, and they suit different shapes of work. When the job is the same thing done to many
+		items, with nothing to remember between them, a <span class="pre">parallel each</span> is the simplest thing to
+		write. When the work falls into parts that each keep their own state and have an ongoing job, like the stock
+		room, give each part to an <a href="guide-actors.html">actor</a>. The two mix: a behaviour may run a
+		<span class="pre">parallel each</span> over its actor's own data (<a href="#inactor">below</a>), and a pass may
+		send a message to an actor.</p>
+
+	<p>That is the Guide. You can now name and compute values, choose and repeat, give a piece of work a name, shape your
+		data with structs, enums and collections, and put every core of the machine to work with actors and
+		<span class="pre">parallel each</span>: enough to build real programs. What comes next is where Cone's own work
+		begins: <a href="memory.html">memory</a> that is both safe and yours to manage,
+		<a href="concurrency.html">concurrency</a> in depth, and <a href="modularity.html">modularity</a>. It asks more
+		thought of you, and it repays it.</p>
 
 	<h2 id="indetail">In detail</h2>
 	<p>The rest of this page is the complete reference for <span class="pre">parallel each</span> at this level, with

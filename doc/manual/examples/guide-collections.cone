@@ -1,65 +1,33 @@
-// Word frequencies: which words a text uses, and how often
-mod wordfreq;
+// Eratosthenes' sieve with a List: the primes below 1000, and how many
+// different primes divide each number.
+
+mod sieve;
 
 import stdio use *;
+// collections gives us List, Dict and the rest
 import collections use *;
 
-struct Tally {
-  pub word String;
-  pub count i64;
-}
-
 fn main() {
-  // A String is a collection of bytes, changed here in place
-  mut text = String.from("The cat sat on the mat and the dog sat on the log");
-  text.lowerAscii();
+  // Positions in a list are counted with usize, so the limit is one
+  imm limit = 1000usize;
 
-  // A List of Strings, one for each word
-  imm words = text.split(' ');
-  print <- words.len(), " words\n";
+  // For every number below the limit, how many primes divide it:
+  // room for 1000 values, every one filled with 0 to begin with
+  mut factors = new List[i32](limit) <- fill 0;
 
-  // A Dict from each word to how many times it appears
-  mut counts = new Dict[String, i64];
-  each w in words {
-    imm before = match counts.getCopy(w) {     // an Option: Some(count), or None
-      case imm n Some {n;}
-      case None {0;}
-    };
-    counts <- w.copy(): before + 1;           // a key and its value; the new count replaces the old
+  // A list that starts empty, and grows as primes are sent to it
+  mut primes = new List[usize];
+
+  // A number that no smaller prime divides is prime,
+  // and it marks every multiple of itself
+  each n in 2usize ..< limit {
+    continue if factors[n] > 0;
+    primes <- n;
+    each m in n ..< limit by n {
+      factors[m] += 1;
+    }
   }
-  print <- counts.len(), " different words\n";
 
-  // Build a List from the Dict, then sort it: most frequent first, ties alphabetical
-  mut ranked = new List[Tally] <- each e in counts.entries() yield new Tally(e.key.copy(), e.value);
-  ranked.sortBy((a, b) =>
-    if a.count != b.count {i32.from(b.count - a.count);}
-    else {bytesCompare(a.word.view(), b.word.view());});
-
-  // Gather the first three into one line of text
-  mut top = String.from("top three:");
-  each t in ranked.iter().take(3) {
-    top <- " ", t.word.view(), "=", t.count;
-  }
-  print <- top.view(), "\n";
-
-  // Adapters work on a sequence as a whole
-  imm total = ranked.iter().map(t => t.count).sum();
-  imm repeated = ranked.iter().filter(t => t.count > 1).count();
-  print <- total, " counted, ", repeated, " words used more than once\n";
-
-  // A Set of the words used only once
-  imm once = new Set[String] <- each t in ranked if t.count == 1 yield t.word.copy();
-  print <- once.len(), " used once";
-  if once.contains("cat") {print <- ", the cat among them";}
-  print <- "\n";
-
-  // pop takes the last value out; peek looks at the new last one
-  match ranked.pop() {
-    case imm t Some {print <- "last: ", t.word.view();}
-    case None {print <- "no words";}
-  }
-  match ranked.peek() {
-    case imm t Some {print <- ", then ", t.word.view(), "\n";}
-    case None {print <- "\n";}
-  }
+  print <- primes.len(), " primes below ", limit, ", the last ", primes[primes.len() - 1], "\n";
+  print <- "210 has ", factors[210], " different prime factors\n";
 }

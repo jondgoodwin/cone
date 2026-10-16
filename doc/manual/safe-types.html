@@ -320,7 +320,7 @@ list.len();     // equivalent to:  (&amp;list).len()
 		Text is built of <span class="pre">char</span>, a Unicode code point
 		(<a href="syntax-lexical.html#char">character literals</a>), which is compared but is no quantity.
 		Additional distinct number types may be defined using
-		the <b><a href="guide-numbers.html#customnbr">integer or float</a></b> keywords.</li>
+		the <b><a href="#customnbr">integer or float</a></b> keywords.</li>
 	<li><b><a href="guide-structs.html#struct">struct</a></b> types.
 		Each named struct type is composed of some number of co-located, named, and typed fields.</li>
 	<li><b><a href="guide-structs.html#array">array</a></b> types.
@@ -361,6 +361,73 @@ list.len();     // equivalent to:  (&amp;list).len()
 		its supertype's comparable value.</li>
 	<li>Named types can be genericized using type parameters.</li>
 	</ul>
+
+	<!-- Moved here 15 Oct 2026 from Numbers (guide-numbers.html): designing number types of your own, mostly not
+	     built, belongs with type safety rather than in the Guide. -->
+	<h4 id="intfloat">The primitive 'int' and 'float' number types</h4>
+	<p style="margin-left: 40px;"><i>Note: The primitive <span class="pre">int-</span> and
+		<span class="pre">float-</span> types are not implemented, and the standard number
+		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are built
+		into the compiler rather than defined in a library. A custom number type written as below,
+		with a standard number type as its field in place of <span class="pre">int-32</span>, does
+		work: a struct wrapping the number, methods on it, and its conversion from a number,
+		<span class="pre">Nbr32.from(somenbr)</span>, declared as below. The standard number
+		types' <span class="pre">from</span> is built into the compiler with them, and so are
+		<a href="guide-numbers.html#bits">an integer's bit methods</a>, which are implemented.</i></p>
+	<p><span class="pre">int-32</span> specifies a 32-bit integer.
+		Any integer value from 1 to 128 may be specified after the dash, to establish the number of bits.</p>
+	<p>Similarly, <span class="pre">float-32</span> is a 32-bit floating point number.
+		Floats only support 32 and 64-bit values.</p>
+	<p>Unlike <span class="pre">i32</span>, <span class="pre">int-32</span> does not define any methods
+		for manipulating its values (e.g., adding and subtracting).
+		It is also agnostic on the semantic interpretation of its values ... it does not even signify
+		whether the integer value should be interpreted as signed or unsigned.
+		Its lack of built-in methods and interpretation is what makes it an ideal foundation for defining
+		new types with very different interpretations and methods.</p>
+
+	<h4 id="customnbr">Custom Number Types</h4>
+	<p><i>Rarely needed, and largely hypothetical for now (see the note above): defining a number type of your own.</i></p>
+	<p>There are several reasons why we might want to define distinctly different
+		number types than those provided by the standard library:</p>
+	<ul>
+	<li>One might want to use different types to distinguish between units of measure,
+		thereby potentially avoiding problems like the loss of the $125 million Mars probe.</li>
+	<li>Different number types could make different promises for undefined behavior
+		(e.g., protecting against undesired overflows), or could guarantee the number values are bounded by some range.</li>
+	<li>Integers that support intrinsic atomic operations can be separately typed, as the
+		core package's <a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a> is.</li>
+	</ul>
+
+	<p>Creating a new numeric integer type is nearly as simple as wrapping an primitive integer
+		type as a field in a struct. For example:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+}
+</pre>
+	<p>Methods may be added to this struct to define the operations that may be performed on values of this type.
+		These methods can make use of fast internal integer primitive functions (TBD).</p>
+	<p>Although numbers of one type are never implicitly converted into the equivalent number of another type,
+		a conversion may always be asked for explicitly. A conversion is a method of the type converted to,
+		named <span class="pre">from</span> and called on the type, which takes the value to convert:</p>
+<pre>
+imm converted = Nbr32.from(somenbr);
+</pre>
+	<p>Every standard number type has one, which takes a value of any number type
+		(<a href="guide-numbers.html#conversion">Explicit Conversion</a>).
+		A custom number type declares its own, an ordinary function of the type:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+
+    pub fn from(n i32) Nbr32 {
+        new Nbr32(n);
+    }
+}
+</pre>
+	<p><span class="pre">from</span> is the type's default conversion from another type.
+		A conversion that differs from it, such as one that saturates at the type's limits
+		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
 
 
 		<p style="text-align: right; margin-top: 2em;">
