@@ -152,6 +152,8 @@ int parseBehaviourWords(char *where);
 // the function that makes the generator, in place of the one parseFn read
 GenCtx *parseGenBegin(ParseState *parse, FnDclNode *fn);
 FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx *ctx, BlockNode *body);
+// Does a type declare an invariant lifetime, which a generator method of it cannot yet hold?
+int parseGenTypeInvariant(StructNode *type);
 // In a generator's body, 'self' is its method's receiver and 'Self' the type it is a method of,
 // where the generator is a struct of its own: the name use as it is to be read (parsegen.c)
 INode *parseGenName(ParseState *parse, NameUseNode *use);

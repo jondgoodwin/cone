@@ -804,8 +804,8 @@ value and hands back a call of `walk.none`. A `yield` met as a term's operand
 `ParseState.genoperand`) is refused (`ErrorYieldPlace`), so no value made before
 a seam is in flight across it. An `inline`, `where`, anonymous or bodiless
 generator, one whose type parameters name lifetimes, and a method of a trait, of
-an enum, of an actor (`ParseState.dcltexts`) or of a type that declares lifetimes,
-are refused (`ErrorGenForm`). A `pub` one in a library is not: its include file
+an enum, of an actor (`ParseState.dcltexts`) or of a type that declares an
+invariant lifetime, are refused (`ErrorGenForm`). A `pub` one in a library is not: its include file
 carries the declaration whole (see "It generates a generator's declarations,
 across packages", below). Then `parseGenFinish` re-reads the parameter
 list from its text (`parseGenParms`), and writes as Cone source, parsed from a
@@ -869,6 +869,21 @@ An instance of the struct is cloned from this template like any generic type's
 instance is looked up by its struct (`yieldGenOfStruct`) and its step
 (`yieldGenOf`) and not through the template. Each instance's `next` is checked
 and generated when it is used, as a generic type's methods are.
+
+**A method of a type that declares lifetimes** (`parseGenTypeLifes`: those in its
+brackets, or the one its fields write where it declares none) gives the struct the
+same lifetimes, copied with the type parameters, so that the receiver's field can
+be written `` &'a View['a] `` and holds what the receiver holds. The borrows the
+struct takes are given a lifetime of their own, `'a` unless the type declares one
+so named (`parseGenBorrowLife`), declared first in the struct's brackets. The
+constructor then names the lifetimes too: each borrow it takes is given that
+lifetime, a receiver written `self &` is written out with the type's lifetimes, and
+its result is `walk.Gen['b, 'a]` (`['a]` where no borrow is taken, as for a
+receiver taken by value), so that the flow walk's lifetime accounting carries what
+the receiver lent and what it holds into the generator. A type that declares an
+invariant lifetime is refused, as is a free generator whose parameter is a type
+that declares lifetimes (`ErrorLifetimeUndeclared`, from the struct's check, not
+`ErrorGenForm`).
 
 **Across packages** (`pub` in a library). A generator is declared once in the
 source and made again from that text wherever the declaration is read, so the
