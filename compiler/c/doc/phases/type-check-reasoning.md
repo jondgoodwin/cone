@@ -242,7 +242,9 @@ Lifetimes named on the two signatures match only by agreeing
 so `from` must promise exactly that. The same agreement is part of
 `fnSigEqual`, so two signatures that promise differently are two types
 (spelled apart by `lifeSigSpell`). A module's or a struct's method meets a
-trait's requirement (`fnSigVrefEqual`) where it promises at least what the
+trait's requirement (`fnSigVrefEqual`, or `fnSigVrefMeets` where its types are
+a recast's difference from the requirement's: nodes/struct.md, "A method meets a
+requirement as a subtype") where it promises at least what the
 requirement does (`lifeSigMeets`), digit by digit of the same promises: its
 result, and what it may store through a writable parameter, holds no part
 the requirement's may not; a parameter is `'static` only where the

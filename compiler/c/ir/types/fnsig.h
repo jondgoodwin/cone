@@ -44,6 +44,13 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 // for; NULL compares exactly, as a vtable slot must.
 int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype);
 
+// The same match, loosened as a subtype's signature is to its supertype's:
+// 'impl' meets 'req' where each parameter after 'self' is the requirement's or a
+// supertype of it, and the result its or a subtype of it, wherever the difference
+// is a recast with no run-time conversion (the test a function reference's
+// signature gets). Anything fnSigVrefEqual accepts, this accepts.
+int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype);
+
 // Do two signatures declare the same parameter types (ignoring return type)?
 // Used to detect two overload candidates that would accept the same arguments.
 int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);

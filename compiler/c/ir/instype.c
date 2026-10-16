@@ -230,27 +230,38 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
     return found;
 }
 
-// Find method whose method signature matches exactly (except for self)
+// Find the method that meets the requirement 'matchmeth' (except for self)
 // 'binding' is the namespace's binding for the method's name
 // return NULL if none, or if more than one candidate matches
+//
+// A candidate of the requirement's exact signature is the one that meets it. Only
+// where the name has none is a candidate whose signature is a subtype of the
+// requirement's looked for (fnSigVrefMeets): parameters that are supertypes of
+// the requirement's, a result that is a subtype of its. So a requirement some
+// candidate met before is still met by that one, whatever else the name declares.
 FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *selftype) {
-    INode **candidatep;
-    uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
+    for (int loose = 0; loose <= 1; ++loose) {
+        INode **candidatep;
+        uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
-    // Look through every candidate the name declares for the sole exact match
-    FnDclNode *found = NULL;
-    while (cnt--) {
-        FnDclNode *methnode = (FnDclNode *)*candidatep++;
-        // A generic method does not meet a requirement that is not generic: it
-        // is a family of methods, not the one the requirement asks for, and its
-        // signature is written in type parameters that are not types
-        if (methnode->genericinfo && !matchmeth->genericinfo)
-            continue;
-        if (!fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype))
-            continue;
+        // Look through every candidate the name declares for the sole match
+        FnDclNode *found = NULL;
+        while (cnt--) {
+            FnDclNode *methnode = (FnDclNode *)*candidatep++;
+            // A generic method does not meet a requirement that is not generic: it
+            // is a family of methods, not the one the requirement asks for, and its
+            // signature is written in type parameters that are not types
+            if (methnode->genericinfo && !matchmeth->genericinfo)
+                continue;
+            if (loose ? !fnSigVrefMeets((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype)
+                      : !fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype))
+                continue;
+            if (found)
+                return NULL;
+            found = methnode;
+        }
         if (found)
-            return NULL;
-        found = methnode;
+            return found;
     }
-    return found;
+    return NULL;
 }
