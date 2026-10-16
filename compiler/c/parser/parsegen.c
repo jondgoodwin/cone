@@ -61,6 +61,12 @@
  * or writes a reference a lifetime cannot be put on, makes every borrow the
  * unnamed one, and 'next''s result is tied to the generator.
  *
+ * A method of a type that declares lifetimes, 'struct View['a]', has them in its
+ * struct too, 'View.twice.Gen['b, 'a]', the borrows' one lifetime ('b, named
+ * apart from the type's) first. The receiver's field is '&'b View['a]', and the
+ * constructor, which names the same lifetimes, carries what the receiver was lent
+ * and what it holds into the generator (parseGenTypeLifes).
+ *
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -142,7 +148,7 @@ static int parseGenIsIdent(char c) {
 // is '&'a Tree', '&mut Node' is '&'a mut Node'. '*refs' counts the borrows;
 // '*bad' is set where one is written some way a lifetime cannot be put after,
 // or already names one
-static void parseGenAnnotate(GenText *g, char *from, char *to, int annotate, int *refs, int *bad) {
+static void parseGenAnnotate(GenText *g, char *from, char *to, const char *life, int *refs, int *bad) {
     for (char *p = from; p < to; ++p) {
         if (*p == '\'')
             *bad = 1;
@@ -156,8 +162,11 @@ static void parseGenAnnotate(GenText *g, char *from, char *to, int annotate, int
             continue;
         }
         // The lifetime, then a space before the name or permission that follows
-        if (annotate)
-            genPuts(g, next == ' ' ? "'a" : "'a ");
+        if (life) {
+            genPuts(g, life);
+            if (next != ' ')
+                genPuts(g, " ");
+        }
     }
 }
 
@@ -313,6 +322,62 @@ static INode *parseGenMember(StructNode *strnode, Name *name, int tag) {
     return NULL;
 }
 
+// The lifetimes the type of a generator method declares, which the generator's
+// struct declares too, to hold a receiver of that type: the ones in its
+// brackets, in order, or, where it declares none and its fields name one, that
+// one. Answers how many (0 for a type with none), and points *namesp at them
+static uint32_t parseGenTypeLifes(StructNode *type, Name ***namesp) {
+    LifeParms *parms = type ? type->lifeparms : NULL;
+    if (parms == NULL)
+        return 0;
+    if (parms->count > 0) {
+        *namesp = parms->names;
+        return parms->count;
+    }
+    // Declared in no brackets: the one name its fields write, as they are read so far
+    Name **one = (Name **)memAllocBlk(sizeof(Name *));
+    one[0] = NULL;
+    if (parms->usedat) {
+        INode **np;
+        uint32_t cnt;
+        for (nodesFor(parms->usedat, cnt, np)) {
+            Name *name = ((NameUseNode *)*np)->namesym;
+            if (one[0] && one[0] != name)
+                return 0;
+            one[0] = name;
+        }
+    }
+    *namesp = one;
+    return one[0] ? 1 : 0;
+}
+
+// Does the type declare an invariant lifetime?
+int parseGenTypeInvariant(StructNode *type) {
+    Name **names = NULL;
+    uint32_t count = parseGenTypeLifes(type, &names);
+    for (uint32_t k = 0; k < count; ++k) {
+        if (lifeIsInvariant(names[k]))
+            return 1;
+    }
+    return 0;
+}
+
+// The lifetime the generator's borrows are given, 'a unless the type declares
+// a lifetime of that name
+static const char *parseGenBorrowLife(Name **tlifes, uint32_t ntlifes) {
+    static const char *names[] = {"'a", "'b", "'c", "'d", "'e", "'f", "'g", "'h"};
+    for (uint32_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        uint32_t k;
+        for (k = 0; k < ntlifes; ++k) {
+            if (strcmp(&tlifes[k]->namestr, names[i]) == 0)
+                break;
+        }
+        if (k == ntlifes)
+            return names[i];
+    }
+    return names[0];
+}
+
 FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx *ctx, BlockNode *body) {
     GenParm *parms;
     uint32_t nparms = parseGenParms(parse, sig, &parms);
@@ -347,8 +412,19 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     StructNode *type = (StructNode *)ctx->type;
     Nodes *typenames = type && type->genericinfo ? type->genericinfo->parms : NULL;
     GenText tdecl = {NULL, 0, 0}, targs = {NULL, 0, 0}, typeuse = {NULL, 0, 0};
-    if (typenames && typenames->used > 0 && parse->tparms)
+    // The lifetimes the type declares, which the struct declares too
+    Name **tlifes = NULL;
+    uint32_t ntlifes = parseGenTypeLifes(type, &tlifes);
+    GenText lifeuse = {NULL, 0, 0};
+    for (uint32_t k = 0; k < ntlifes; ++k) {
+        if (k)
+            genPuts(&lifeuse, ", ");
+        genPutn(&lifeuse, &tlifes[k]->namestr, tlifes[k]->namesz);
+    }
+    if (parse->tparms && ((typenames && typenames->used > 0) || ntlifes > 0))
         genPutn(&tdecl, parse->tparms, parse->tparmsend - parse->tparms);
+    else if (ntlifes > 0)
+        genPutn(&tdecl, lifeuse.text, lifeuse.len);
     if (sig->tparms) {
         if (tdecl.len)
             genPuts(&tdecl, ", ");
@@ -408,9 +484,12 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     GenText selftext = {NULL, 0, 0};
     if (type) {
         genName(&selftext, type->namesym);
-        if (typeuse.len) {
+        if (typeuse.len || lifeuse.len) {
             genPuts(&selftext, "[");
-            genPutn(&selftext, typeuse.text, typeuse.len);
+            genPutn(&selftext, lifeuse.text ? lifeuse.text : "", lifeuse.len);
+            if (typeuse.len && lifeuse.len)
+                genPuts(&selftext, ", ");
+            genPutn(&selftext, typeuse.text ? typeuse.text : "", typeuse.len);
             genPuts(&selftext, "]");
         }
     }
@@ -420,23 +499,36 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     GenText probe = {NULL, 0, 0};
     int prefs = 0, pbad = 0, yrefs = 0, ybad = 0;
     for (uint32_t i = 0; i < nparms; ++i)
-        parseGenAnnotate(&probe, parms[i].type, parms[i].typeend, 0, &prefs, &pbad);
-    parseGenAnnotate(&probe, sig->ytype, sig->ytypeend, 0, &yrefs, &ybad);
-    int annotate = prefs > 0 && !pbad && !ybad;
+        parseGenAnnotate(&probe, parms[i].type, parms[i].typeend, NULL, &prefs, &pbad);
+    parseGenAnnotate(&probe, sig->ytype, sig->ytypeend, NULL, &yrefs, &ybad);
+    // (the struct declares the type's lifetimes and the one lifetime the
+    // borrows have, and no other, so a lifetime the author wrote would be undeclared)
+    if (ntlifes > 0 && (pbad || ybad)) {
+        errorMsgNode((INode *)fn, ErrorGenForm,
+            "A generator method of a type that declares lifetimes cannot name a lifetime in its signature yet, nor write a borrow some way a lifetime cannot be put after: its borrows are given the one lifetime the generator's struct declares for them.");
+        return fn;
+    }
+    const char *life = prefs > 0 && !pbad && !ybad ? parseGenBorrowLife(tlifes, ntlifes) : NULL;
 
     GenText g = {NULL, 0, 0};
     GenText ytype = {NULL, 0, 0};
     int dummy1 = 0, dummy2 = 0;
-    parseGenAnnotate(&ytype, sig->ytype, sig->ytypeend, annotate, &dummy1, &dummy2);
+    parseGenAnnotate(&ytype, sig->ytype, sig->ytypeend, life, &dummy1, &dummy2);
     GenText yplain = {NULL, 0, 0};
     genPutn(&yplain, sig->ytype, sig->ytypeend - sig->ytype);
 
-    // The struct
+    // The struct. Where the type declares lifetimes the struct declares them
+    // too, and the borrows' one lifetime beside them, which is none of the type's
     genPuts(&g, "struct ");
     genSlot(&g, GenStruct);
-    if (tdecl.len) {
+    if (tdecl.len || (life && ntlifes > 0)) {
         genPuts(&g, "[");
-        genPutn(&g, tdecl.text, tdecl.len);
+        if (life && ntlifes > 0) {
+            genPuts(&g, life);
+            if (tdecl.len)
+                genPuts(&g, ", ");
+        }
+        genPutn(&g, tdecl.text ? tdecl.text : "", tdecl.len);
         genPuts(&g, "]");
     }
     // It declares what it is, an Iterator of what it yields, so it has the adapters
@@ -462,7 +554,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         genSlot(&g, isrecv ? (uint32_t)GenRecv : GenSlots + i);
         genPutn(&g, parms[i].nameend, typestart - parms[i].nameend);
         int d1 = 0, d2 = 0;
-        parseGenAnnotate(&g, typestart, parms[i].typeend, annotate, &d1, &d2);
+        parseGenAnnotate(&g, typestart, parms[i].typeend, life, &d1, &d2);
         if (isrecv && (!parms[i].typed || parms[i].bare)) {
             genPuts(&g, " ");
             genPutn(&g, selftext.text, selftext.len);
@@ -505,13 +597,37 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     for (uint32_t i = 0; i < nparms; ++i) {
         if (i)
             genPuts(&g, ", ");
+        // Where the type declares lifetimes, the constructor's result names
+        // them, so each borrow it takes names the one lifetime the struct's
+        // borrows have, and the receiver is written out to say what it holds
+        if (ntlifes > 0 && life) {
+            int isrecv = i == 0 && ctx->recv != NULL;
+            genPutn(&g, parms[i].start, parms[i].type - parms[i].start);
+            int d1 = 0, d2 = 0;
+            parseGenAnnotate(&g, parms[i].type, parms[i].typeend, life, &d1, &d2);
+            if (isrecv && parms[i].typed && parms[i].bare) {
+                genPuts(&g, " ");
+                genPutn(&g, selftext.text, selftext.len);
+            }
+            genPutn(&g, parms[i].typeend, parms[i].valueend - parms[i].typeend);
+            continue;
+        }
         genPutn(&g, parms[i].start, parms[i].valueend - parms[i].start);
     }
     genPuts(&g, ") ");
     genSlot(&g, GenStruct);
-    if (targs.len) {
+    if (targs.len || ntlifes > 0) {
         genPuts(&g, "[");
-        genPutn(&g, targs.text, targs.len);
+        if (ntlifes > 0) {
+            if (life) {
+                genPuts(&g, life);
+                genPuts(&g, ", ");
+            }
+            genPutn(&g, lifeuse.text, lifeuse.len);
+            if (targs.len)
+                genPuts(&g, ", ");
+        }
+        genPutn(&g, targs.text ? targs.text : "", targs.len);
         genPuts(&g, "]");
     }
     genPuts(&g, " {new ");

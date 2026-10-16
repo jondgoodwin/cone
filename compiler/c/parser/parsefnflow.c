@@ -2452,8 +2452,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
                 why = "A trait's or an enum's method cannot be a generator yet: the generator is a struct of its own that holds the method's parameters, 'self' among them, and a trait's method is copied into each implementer. Write a function that takes what the method would.";
             else if (parse->dcltexts)
                 why = "An actor's method cannot be a generator yet: the actor's body is read to generate its mailbox and its state, and a generator's struct is not one of them. Write a function that takes what the method would.";
-            else if (parse->typenode && ((INode*)parse->typenode)->tag == StructTag && ((StructNode*)parse->typenode)->lifeparms)
-                why = "A method of a type that declares lifetimes cannot be a generator yet: the generator is a struct of its own that holds the receiver, and does not declare the type's lifetimes.";
+            else if (parse->typenode && ((INode*)parse->typenode)->tag == StructTag && parseGenTypeInvariant((StructNode*)parse->typenode))
+                why = "A method of a type that declares an invariant lifetime ('=a) cannot be a generator yet: the generator is a struct of its own that holds the receiver, and is not built to declare an invariant lifetime.";
             else if (fnnode->flags & FlagInline)
                 why = "A generator cannot be 'inline': it is a struct and a method, not code expanded where it is called.";
             else if (fnnode->where)

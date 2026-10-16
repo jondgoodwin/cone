@@ -1,0 +1,77 @@
+mod corout_lifetime_methods_flow;
+
+// What a generator method of a type that declares lifetimes keeps of its
+// receiver. It holds the receiver, so what the receiver is lent stays lent for
+// as long as the generator lives, and what the receiver holds, the borrow of its
+// lifetime, stays borrowed too: neither may be changed, and neither may die
+// first. A generator is not a way to keep a borrow past the value it borrows.
+
+struct View['a] {
+  pub r &'a i64;
+
+  fn twice(self &) yields i64 {
+    yield *r;
+    yield *r;
+  }
+
+  fn run(self) yields i64 {
+    yield *r;
+    yield *r;
+  }
+}
+
+// The view the generator was lent dies while the generator lives
+fn viewDiesFirst() {
+  imm x = 4i64;
+  imm outer = new View(&x);
+  mut g = outer.twice();
+  {
+    imm v = new View(&x);                      //~ ErrorFrozen:9 "goes out of scope while 'g' still holds a borrow of it"
+    g = v.twice();
+  }
+  g.next();
+}
+
+// The value the view borrows dies while the generator lives: the view moved into
+// the generator, so the view is not what is borrowed, and the value is
+fn valueDiesFirst() {
+  imm y = 1i64;
+  imm outer = new View(&y);
+  mut g = outer.run();
+  {
+    imm x = 4i64;                              //~ ErrorFrozen:9 "goes out of scope while 'g' still holds a borrow of it"
+    imm v = new View(&x);
+    g = v.run();
+  }
+  g.next();
+}
+
+// The value the view borrows is changed while the generator may be resumed
+fn valueChanged() {
+  mut x = 4i64;
+  imm v = new View(&x);
+  mut g = v.twice();
+  x = 5i64;                                    //~ ErrorFrozen:3 "It may not be changed until after that last use"
+  g.next();
+}
+
+// So is the view, which the generator holds
+fn viewChanged() {
+  imm x = 4i64;
+  imm y = 7i64;
+  mut v = new View(&x);
+  mut g = v.twice();
+  v.r = &y;                                    //~ ErrorFrozen:4 "It may not be changed until after that last use"
+  g.next();
+}
+
+// Once the generator is gone they may be
+fn mayChangeAfter() {
+  mut x = 4i64;
+  imm v = new View(&x);
+  {
+    mut g = v.twice();
+    g.next();
+  }
+  x = 5i64;
+}

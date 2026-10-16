@@ -1,0 +1,174 @@
+mod corout_lifetime_methods;
+
+// Generator methods of a type that declares lifetimes. The generator holds the
+// receiver as it holds a parameter, and so holds what the receiver holds: the
+// borrow it was lent and the lifetimes of the type. Its struct declares the
+// type's lifetimes and one of its own for the borrows it takes (it is never
+// named). Every value printed is worked out by hand from the values put in.
+
+import stdio use *;
+
+// One lifetime, and the receivers a method may take
+struct View['a] {
+  pub r &'a i64;
+
+  // lent for reading
+  fn twice(self &) yields i64 {
+    yield *r;
+    yield *r;
+  }
+
+  // a borrow it hands out, of what the view points at
+  fn lent(self &) yields &i64 {
+    yield r;
+    yield r;
+  }
+
+  // a parameter of its own that is a borrow
+  fn plus(self &, o &i64) yields i64 {
+    yield *r + *o;
+    yield *o;
+  }
+
+  // taken by value: the view moves into the generator
+  fn run(self) yields i64 {
+    yield *r;
+    yield *r + 1i64;
+  }
+
+  // taken by value, with a borrow beside it
+  fn runPlus(self, o &i64) yields i64 {
+    yield *r + *o;
+  }
+
+  // a function of the type, with no receiver
+  fn range(from i64, to i64) yields i64 {
+    mut i = from;
+    while i < to {
+      yield i;
+      i = i + 1i64;
+    }
+  }
+
+  // a count the view's value starts from
+  fn count(self &, n i64) yields i64 {
+    mut i = 0i64;
+    while i < n {
+      yield *r + i;
+      i = i + 1i64;
+    }
+  }
+}
+
+// A receiver lent mutably, holding a mutable borrow
+struct Cell['a] {
+  pub r &'a mut i64;
+
+  fn bump(self &mut) yields i64 {
+    *r = *r + 1i64;
+    yield *r;
+    *r = *r + 1i64;
+    yield *r;
+  }
+}
+
+// Two lifetimes, ordered
+struct Pair['s, 'r] where 's >= 'r {
+  pub a &'s i64;
+  pub b &'r i64;
+
+  fn both(self &) yields i64 {
+    yield *a;
+    yield *b;
+  }
+}
+
+// A lifetime and a type parameter
+struct Holder['a, T] {
+  pub r &'a T;
+
+  fn twice(self &) yields T {
+    yield *r;
+    yield *r;
+  }
+
+  fn lent(self &, n i64) yields &T {
+    yield r;
+  }
+}
+
+// A recursive walk through 'yield each', the sub-generator of the same kind
+struct Node['a] {
+  pub val i64;
+  pub rest Option[&'a Node['a]];
+
+  fn walk(self &) yields i64 {
+    yield val;
+    match rest {
+      case imm n Some { yield each n.walk(); }
+      case is None { }
+    }
+  }
+}
+
+// The lifetime is the one its field writes, declared in no brackets
+struct Bare {
+  pub r &'a i64;
+
+  fn twice(self &) yields i64 {
+    yield *r;
+    yield *r;
+  }
+}
+
+fn main() {
+  imm x = 4i64;
+  imm y = 10i64;
+
+  imm v = new View(&x);
+  each k in v.twice() { printInt(k); printStr(" "); }                // 4 4
+  each k in v.lent() { printInt(*k); printStr(" "); }                // 4 4
+  each k in v.plus(&y) { printInt(k); printStr(" "); }               // 14 10
+  each k in v.count(3i64) { printInt(k); printStr(" "); }            // 4 5 6
+  imm w = new View(&x);
+  each k in w.run() { printInt(k); printStr(" "); }                  // 4 5
+  imm u = new View(&x);
+  each k in u.runPlus(&y) { printInt(k); printStr(" "); }            // 14
+  each k in View.range(3i64, 6i64) { printInt(k); printStr(" "); }   // 3 4 5
+  printStr("\n");
+
+  // the generator is a value like any other: stepped by hand, then dropped
+  // part-way, and the view is still usable
+  mut g = v.twice();
+  match g.next() {
+    case imm a Some { printInt(a); printStr(" "); }                  // 4
+    case is None { }
+  }
+  printInt(*v.r);                                                    // 4
+  printStr("\n");
+
+  mut z = 1i64;
+  {
+    mut c = new Cell(&mut z);
+    each k in c.bump() { printInt(k); printStr(" "); }               // 2 3
+  }
+  printInt(z);                                                       // 3
+  printStr("\n");
+
+  imm p = new Pair(&x, &y);
+  each k in p.both() { printInt(k); printStr(" "); }                 // 4 10
+  imm hx = new Holder[i64](&x);
+  each k in hx.twice() { printInt(k); printStr(" "); }               // 4 4
+  imm hy = new Holder[i64](&y);
+  each k in hy.lent(0i64) { printInt(*k); printStr(" "); }           // 10
+  printStr("\n");
+
+  imm n3 = new Node(3i64, None[&Node]);
+  imm n2 = new Node(2i64, Some[&Node](&n3));
+  imm n1 = new Node(1i64, Some[&Node](&n2));
+  each k in n1.walk() { printInt(k); printStr(" "); }                // 1 2 3
+
+  imm b = new Bare(&y);
+  each k in b.twice() { printInt(k); printStr(" "); }                // 10 10
+  printStr("\n");
+}
