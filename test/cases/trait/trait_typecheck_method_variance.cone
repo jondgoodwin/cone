@@ -1,0 +1,143 @@
+// A method meets a trait's method when its signature is a subtype of the trait's
+// by a recast alone (trait_method_variance). What is refused: a parameter that asks
+// for more than the trait gives (a '&mut P' for the trait's '&P'), a result that
+// promises less (a '&P' for the trait's '&mut P'), a parameter or a result that
+// needs a conversion (a wider number, a value made an Option), a variant or an
+// enum held by value for the other (a function reference accepts it, and reads
+// the wrong bytes), a parameter that is a subtype of the trait's, a result that is
+// a supertype, and a value behind a '&mut' that differs at all (it is read and
+// written). Each is refused as a virtual reference, as a generic's bound, and a
+// type that declares the trait with 'is'.
+
+mod trait_typecheck_method_variance;
+
+struct P {
+  pub x i32;
+}
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+trait Reads {
+  pub fn look(self &, p &P) i32;
+}
+
+trait Writes {
+  pub fn pick(self &, p &mut P) &mut P;
+}
+
+trait Counts {
+  pub fn count(self &, n i32) i32;
+}
+
+trait Finds {
+  pub fn find(self &, n i32) &Shape.Circle;
+  pub fn size(self &, s &Shape) i32;
+}
+
+trait Holds {
+  pub fn hold(self &, s Shape.Circle) Shape;
+}
+
+trait Edits {
+  pub fn edit(self &, s &mut Shape) i32;
+}
+
+// Asks for more than the trait gives: the trait lends a read-only borrow
+struct Greedy {
+  pub n i32;
+  pub fn look(self &, p &mut P) i32 { p.x = 1; n; }
+}
+
+// Promises less than the trait does: it gives back a read-only borrow
+struct Timid {
+  pub n i32;
+  pub fn pick(self &, p &mut P) &P { p; }
+}
+
+// A parameter wider than the trait's, and a result that is not an i32
+struct Wide {
+  pub n i32;
+  pub fn count(self &, n i64) i32 { 1; }
+}
+
+struct Narrow {
+  pub n i32;
+  pub fn count(self &, n i32) i64 { 1; }
+}
+
+// A result the enum's reference is not (a Shape for the trait's Circle), and a
+// parameter narrower than the trait's (a Circle where the trait lends any Shape)
+struct Broad {
+  pub s Shape;
+  pub fn find(self &, n i32) &Shape { &s; }
+  pub fn size(self &, c &Shape) i32 { 1; }
+}
+
+struct Pointy {
+  pub c Shape.Circle;
+  pub fn find(self &, n i32) &Shape.Circle { &c; }
+  pub fn size(self &, c &Shape.Circle) i32 { 1; }
+}
+
+// A variant for its enum, and an enum for its variant, held by value
+struct Valued {
+  pub n i32;
+  pub fn hold(self &, s Shape) Shape.Circle { Shape.Circle(r: 1); }
+}
+
+// A mutable reference reads and writes: the enum for its variant is no recast
+struct Editor {
+  pub n i32;
+  pub fn edit(self &, s &mut Shape.Circle) i32 { 1; }
+}
+
+fn viaReads(g &<Reads) {}
+fn viaWrites(g &<Writes) {}
+fn viaCounts(g &<Counts) {}
+fn viaFinds(g &<Finds) {}
+fn viaHolds(g &<Holds) {}
+fn viaEdits(g &<Edits) {}
+fn boundReads[T Reads](g &T) {}
+fn boundWrites[T Writes](g &T) {}
+fn boundCounts[T Counts](g &T) {}
+fn boundHolds[T Holds](g &T) {}
+fn boundEdits[T Edits](g &T) {}
+
+// Declared with 'is'
+struct IsGreedy is Reads {          //~ ErrorInvType:8 "none of what it declares has the signature Reads requires"
+  pub n i32;
+  pub fn look(self &, p &mut P) i32 { p.x = 1; n; }
+}
+struct IsWide is Counts {           //~ ErrorInvType:8 "none of what it declares has the signature Counts requires"
+  pub n i32;
+  pub fn count(self &, n i64) i32 { 1; }
+}
+
+fn main() {
+  mut g = new Greedy(1);
+  mut t = new Timid(1);
+  mut w = new Wide(1);
+  mut n = new Narrow(1);
+  mut b = new Broad(Shape.Square(2));
+  mut p = new Pointy(Shape.Circle(3));
+  mut v = new Valued(1);
+  mut e = new Editor(1);
+
+  viaReads(&g);                     //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  boundReads(&g);                   //~ ErrorWhereUnmet:13 "Greedy is not Reads"
+  viaWrites(&t);                    //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  boundWrites(&t);                  //~ ErrorWhereUnmet:14 "Timid is not Writes"
+  viaCounts(&w);                    //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  boundCounts(&w);                  //~ ErrorWhereUnmet:14 "Wide is not Counts"
+  viaCounts(&n);                    //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  boundCounts(&n);                  //~ ErrorWhereUnmet:14 "Narrow is not Counts"
+  viaFinds(&b);                     //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  viaFinds(&p);                     //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  viaHolds(&v);                     //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  boundHolds(&v);                   //~ ErrorWhereUnmet:13 "Valued is not Holds"
+  viaEdits(&e);                     //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  boundEdits(&e);                   //~ ErrorWhereUnmet:13 "Editor is not Edits"
+}

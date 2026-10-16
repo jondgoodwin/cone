@@ -241,6 +241,88 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
     return lifeSigMeets(node1, node2);
 }
 
+// Does a requirement's type name 'Self' outright, or through the references and
+// pointers that lead to it? Such a type is read as the implementer
+// (fnSigReqTypeSame), so it has no fixed shape to be compared for variance.
+static int fnSigReqNamesSelf(INode *req) {
+    for (;;) {
+        if (isNameUseNode(req) && ((NameUseNode*)req)->namesym == selfTypeName)
+            return 1;
+        INode *dcl = itypeGetTypeDcl(req);
+        switch (dcl->tag) {
+        case RefTag:
+        case ArrayRefTag:
+            req = ((RefNode*)dcl)->vtexp;
+            break;
+        case PtrTag:
+            req = ((StarNode*)dcl)->vtexp;
+            break;
+        default:
+            return 0;
+        }
+    }
+}
+
+// Does an implementation's type 'impl' stand where a requirement's type 'req'
+// is, or differ from it only by a recast? 'flowin' is true for a parameter, a
+// value that flows from the caller (the requirement's) into the implementation,
+// and false for a result, which flows the other way. The test is the one a
+// function reference's signature gets (fnSigMatchesC): the same itypeMatches, in
+// the same constraint, and a difference that needs a run-time conversion (a
+// wider number, a value made an Option) does not meet it, since a vtable slot is called with the requirement's values.
+static int fnSigVrefTypeMeets(INode *req, INode *impl, INode *selftype, int flowin) {
+    if (fnSigReqTypeSame(req, impl, selftype))
+        return 1;
+    if (fnSigReqNamesSelf(req))
+        return 0;
+    TypeCompare match = flowin ? itypeMatches(impl, req, Regref) : itypeMatches(req, impl, Regref);
+    if (match == EqMatch)
+        return 1;
+    if (match != CastSubtype)
+        return 0;
+    // A value held by value is passed and returned as its own type's aggregate,
+    // and only an enrichment and its base are one. A variant is a different
+    // aggregate from its enum, so a variant for its enum (or the reverse) through
+    // a slot of the other's signature is read as another value -- measured with a
+    // function reference, which accepts it -- and would need a thunk to convert.
+    // A reference to either is one pointer, and recasts.
+    switch (itypeGetTypeDcl(req)->tag) {
+    case RefTag:
+    case VirtRefTag:
+    case ArrayRefTag:
+    case PtrTag:
+        return 1;
+    default:
+        return structExtendsEquiv(req, impl);
+    }
+}
+
+// Does an implementation's signature 'impl' meet a requirement's 'req', ignoring
+// the first 'self' parameter, as a subtype of it does: each parameter may be a
+// supertype of the requirement's (contravariant) and the result a subtype of its
+// (covariant), where the difference is a recast alone and no run-time conversion
+// (see fnSigVrefTypeMeets). fnSigVrefEqual's match is the special case where
+// every type is the same, and is the more specific: a requirement an exact
+// candidate meets is not left to the looser reading (iNsTypeFindVrefMethod).
+// 'selftype' is as for fnSigVrefEqual.
+int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype) {
+    INode **implp, **reqp;
+    uint32_t cnt;
+
+    if (impl->parms->used != req->parms->used)
+        return 0;
+    if (!fnSigVrefTypeMeets(req->rettype, impl->rettype, selftype, 0))
+        return 0;
+    reqp = &nodesGet(req->parms, 0);
+    for (nodesFor(impl->parms, cnt, implp)) {
+        if (cnt < impl->parms->used
+            && !fnSigVrefTypeMeets(((IExpNode*)*reqp)->vtype, ((IExpNode*)*implp)->vtype, selftype, 1))
+            return 0;
+        reqp++;
+    }
+    return lifeSigMeets(impl, req);
+}
+
 // Do two signatures declare the same parameter types (ignoring return type)?
 // Two overload candidates that compare equal would accept exactly the same
 // arguments, so the overload name could never choose between them.

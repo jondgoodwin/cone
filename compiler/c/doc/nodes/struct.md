@@ -445,6 +445,26 @@ refused where the trait says `self &`, under every holder
 (`fnSigVrefSelfRefusal`, `ErrorVtableSelf`), at an argument, an initializer and
 an owner's making; other positions report the generic type mismatch.
 `trait_typecheck_vref_self` pins the refusals and `trait_vref_self` what runs.
+
+⚠ **A method meets a requirement as a subtype of its signature, by a recast alone.**
+`iNsTypeFindVrefMethod` is every route's one question (a bound and a reference's
+structural fit in `structMatches`, `is` in `structCheckTraitReqs`, a slot in
+`structMapVtableImpl`, an enrichment's, a callable's `()`). It takes the candidate
+of exactly the requirement's signature (`fnSigVrefEqual`) when the name has one,
+and else the sole candidate that meets it as a function reference's signature
+meets another (`fnSigVrefMeets`): each parameter after `self` a supertype of the
+requirement's (contravariant), the result a subtype (covariant), by the same
+`itypeMatches` in `Regref` that `fnSigMatches` asks. Only `EqMatch` and
+`CastSubtype` count: a wider number or a value made an `Option` is a conversion
+(`ConvSubtype`), and a vtable slot is called with the
+requirement's values, so none could be built without a thunk. A value held by
+value counts only for an enrichment and its base (`structExtendsEquiv`): a variant
+passed or returned for its enum is a different aggregate and is read as another
+value (it does so through a function reference, which accepts it: an open defect),
+so only a reference to either recasts. A requirement naming `Self` (through
+references or a pointer) keeps its exact reading, and lifetimes are
+`lifeSigMeets`' as before. `trait_method_variance` pins what is accepted and
+`trait_typecheck_method_variance` what is refused.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked — an enum's once its variants are laid out, and only where one of them has something to do as it dies (type check, step 8a) |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
