@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Traits and subtyping: interchangeable parts - Cone Reference</title>
+	  <title>Traits: interchangeable parts - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,17 +8,17 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Traits and subtyping: interchangeable parts</div>
+			<div id="sub">Traits: interchangeable parts</div>
 		</div>
 
     <div class="text">
 
 	<p>A light socket takes any bulb of the right fitting, whatever its size, shape or colour. Code can work the
 		same way: a function written against an interface takes any part that meets it, so behaviour is varied by
-		handing in a different part, and a part is upgraded without touching what uses it. That is
-		<b>subtyping</b>, and in Cone the interface is usually a <b>trait</b>. This page shows how to declare a
-		trait, how a type meets one, how the choice of part is settled while the program is compiled or while it
-		runs, and the other places Cone lets one thing stand in for another.</p>
+		handing in a different part, and a part is upgraded without touching what uses it. In Cone that
+		interface is a <b>trait</b>. This page shows how to declare a trait, how a type meets one, how the choice of part
+		is settled while the program is compiled or while it runs, enums as the closed form of the same idea, and the
+		traits the library is built on. Afterwards you can write code against an interface and plug parts into it.</p>
 <pre>
 mod shapes;
 
@@ -64,48 +64,9 @@ area 100, perimeter 40
 		<span class="pre">perimeter</span>, and pass it to <span class="pre">describe</span>, which does not change.
 		Neither struct ever says it is a <span class="pre">Shape</span>: having the methods is enough.</p>
 
-	<h2 id="why">Subtyping: one part for another</h2>
-	<p>To make a swap safe, the component states an interface, and a candidate must meet all of it to play the
-		part. The interface is the <i>supertype</i>, and each type that meets it a <i>subtype</i>: a value of the
-		subtype may stand wherever the supertype is wanted. That buys versatility, since behaviour is varied by
-		handing in a different part; maintainability, since a part can be upgraded without touching what uses it;
-		and reuse, since new parts are easier to write against a known interface. It also adds coupling, since
-		every part now depends on the interface, and a change to the interface ripples out to all of them.</p>
-	<p>A substitution is settled in one of two ways. While the program is <b>compiled</b>, by generating code for
-		each part handed in, which is what a generic constrained by a trait does
-		(<a href="mod-generativity.html#constraints">Generics</a>): every call is direct, and there is a version of
-		the code for each part. Or while it <b>runs</b>, by calling through a table of methods the part brings with
-		it, which is what a <a href="#virtref">virtual reference</a> does: one version of the code serves every
-		part, and each call looks its method up. Cone has both, and subtyping at every layer:</p>
-	<ul>
-		<li>For a <b>type</b>, the interface is a <a href="#traits">trait</a>, and a struct meets it by having its
-			members. An <a href="guide-enums.html">enum</a> is the closed form: its variants are the subtypes, all
-			declared in one place, and a value of any of them is a value of the enum. A set of variants that other
-			modules may add to is an <a href="#traitvar">open trait</a>.</li>
-		<li>For a <b>function</b>, the interface is its signature. A <a href="mod-functions.html#fnref">function reference</a> takes
-			any function of the signature, and a <a href="mod-functions.html#cloref">closure reference</a> any closure, or any struct
-			with a <span class="pre">()</span> method, of it.</li>
-		<li>For a <b>module</b>, the interface is a <a href="#modtrait">module trait</a>, settled when the program is
-			compiled.</li>
-		<li>For an <b>actor</b>, the interface would be an <span class="pre">actor trait</span>, which is not built
-			yet.</li>
-	</ul>
-	<p><b>Subtypes in Cone are always abstractions.</b> A concrete type is never a subtype of another concrete
-		type: the supertype is a trait, an enum, a signature or a module trait. Reusing another concrete type's code
-		is a separate question, answered by <a href="mod-extensibility.html">name folding</a>, and it grants no
-		subtyping. A value also crosses from one type to another implicitly in a few other places, such as an
-		owning reference given where a borrowed one is wanted; those are described with the types they belong to,
-		in <a href="safe-types.html#conversion-coercion">Type safety: coercion and conversion</a> and
-		<a href="mem-permissions.html">Permissions</a>.</p>
-	<p id="subtype">What makes it safe to hand in a value of one type where another is wanted? Two criteria
-		matter most, among others. Every value of the subtype must map to exactly one value of the supertype with the
-		same meaning. And the subtype must behave as the supertype does: at the least, for every method of the
-		supertype, the subtype has one with the same signature and constraints. When both hold, turning a subtype's
-		value into the supertype's is trivially safe, and Cone does it implicitly wherever the supertype is wanted
-		(upcasting). The way back is not: the supertype has values that are no value of a particular subtype, so
-		recovering the subtype needs a guard, a pattern that checks which it is, and a match that succeeds guarantees
-		a valid value of the subtype: <a href="#downcast">from a virtual reference</a>, and
-		<a href="#flow">from an enum</a>.</p>
+	<p>A trait is the supertype here, and each struct that meets it a subtype. What makes that substitution safe,
+		and the same rules at work for numbers, enums, functions and references, is the previous page,
+		<a href="mod-subtyping.html">Subtyping</a>; this one is about the trait itself.</p>
 
 	<h2 id="traits">Traits</h2>
 	<p style="margin-left: 40px;"><i>Note: All of this is implemented, except <span class="pre">actor trait</span>,
@@ -961,7 +922,7 @@ fn when(e &amp;&lt;Event) i64 { e.time; }
 	<p><b>The compiler knows these marker traits of its own</b>, reached from every module without an import, and
 		none has members:</p>
 	<ul>
-		<li><a href="mem-moves.html"><span class="pre">Move</span> and <span class="pre">Copy</span></a>. Every type
+		<li><a href="guide-moves.html#movecopy"><span class="pre">Move</span> and <span class="pre">Copy</span></a>. Every type
 			is exactly one of the two. Unlike a marker trait you write, the compiler also <i>grants</i> one to every
 			type from what it can see: a finalizer, a field that moves or an owning reference that cannot be aliased
 			makes a type <span class="pre">Move</span>, and a type with none of these is <span class="pre">Copy</span>.

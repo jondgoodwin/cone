@@ -1,0 +1,424 @@
+<html>
+  <head>
+	  <title>Subtyping: when one type can stand in for another - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Subtyping: when one type can stand in for another</div>
+		</div>
+
+    <div class="text">
+
+	<p>Write a piece of logic once and have it work for many types, and you write less code and break less of it
+		when the types change. What makes that safe is <b>subtyping</b>: the rules that say when a value of one type
+		may stand where another is wanted. Cone uses it everywhere, for numbers, enums, references, functions and
+		traits alike. This page covers why a substitution is safe, the two ways Cone makes one, and the rules for each
+		kind of type. Afterwards you can tell whether one type may stand in for another, and what the swap costs.</p>
+<pre>
+mod standins;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+struct Counter {
+  pub n u32;
+}
+
+fn size(s &amp;Shape) i32 {
+  match s {
+    case imm c Circle { c.r; }
+    case imm q Square { q.s; }
+  }
+}
+
+fn total(n u32) u32 { n + 1000u32; }
+
+fn peek(c &amp;Counter) u32 { c.n; }
+
+fn main() {
+  imm small = 7u8;
+  print &lt;- total(small), "\n";       // a u8 where a u32 is wanted
+  imm c = Shape.Circle(5);
+  print &lt;- size(&amp;c), "\n";           // a Circle where a Shape is wanted
+  mut k = new Counter(3u32);
+  imm m &amp;mut Counter = &amp;mut k;
+  m.n += 1u32;
+  print &lt;- peek(m), "\n";            // a &amp;mut where a read-only &amp; is wanted
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+1007
+5
+4
+</pre>
+	<p><b>Try this:</b> make <span class="pre">c</span> a <span class="pre">mut</span> variable, and change
+		<span class="pre">size</span> to take <span class="pre">s &amp;mut Shape</span> and the call to pass
+		<span class="pre">&amp;mut c</span>. The compiler now refuses it. <a href="#refvariance">References</a>, below,
+		says why.</p>
+
+	<h2 id="why">Supertypes and subtypes: one part for another</h2>
+	<p>A light socket takes any bulb of the right fitting. To make such a swap safe in code, the component states an
+		interface, and a candidate must meet all of it to play the part. The interface is the <i>supertype</i>, and each
+		type that meets it a <i>subtype</i>: a value of the subtype may stand wherever the supertype is wanted. That buys
+		versatility, since behaviour is varied by handing in a different part; maintainability, since a part can be
+		upgraded without touching what uses it; and reuse, since new parts are easier to write against a known
+		interface. It also adds coupling, since every part now depends on the interface, and a change to the interface
+		ripples out to all of them.</p>
+	<p>Every place Cone lets a value of one type stand where another is wanted is a subtype relation: a
+		<span class="pre">u8</span> where a <span class="pre">u32</span> is wanted, an enum's variant where the enum is,
+		a <span class="pre">&amp;mut</span> reference where a read-only one is, a function that asks less of its argument
+		than a signature offers, a struct where a trait it meets is wanted. All of them answer to one test, which explains
+		why each is safe, and why some swaps that look harmless are refused. Cone has subtyping at every layer:</p>
+	<ul>
+		<li>For a <b>type</b>, the interface is a <a href="mod-substitution.html#traits">trait</a>, and a struct meets it
+			by having its members. An <a href="guide-enums.html">enum</a> is the closed form: its variants are the
+			subtypes, all declared in one place, and a value of any of them is a value of the enum. A set of variants that
+			other modules may add to is an <a href="mod-substitution.html#traitvar">open trait</a>.</li>
+		<li>For a <b>function</b>, the interface is its signature. A <a href="mod-functions.html#fnref">function
+			reference</a> takes any function of the signature, and a <a href="mod-functions.html#cloref">closure
+			reference</a> any closure, or any struct with a <span class="pre">()</span> method, of it.</li>
+		<li>For a <b>module</b>, the interface is a <a href="mod-substitution.html#modtrait">module trait</a>, settled
+			when the program is compiled.</li>
+		<li>For an <b>actor</b>, the interface would be an <span class="pre">actor trait</span>, which is not built
+			yet.</li>
+	</ul>
+
+	<h2 id="strategies">Generics and coercion: two ways to substitute</h2>
+	<p>Code written for a supertype receives a subtype's value in one of two ways, and Cone uses both.</p>
+	<p><b>A generic makes a copy for each subtype.</b> A generic function constrained by a trait
+		(<a href="mod-generativity.html#constraints">Generics</a>) is compiled again for each type it is given, with that
+		type in place of its parameter; making the copies is called <i>monomorphization</i>. The substitution is
+		settled while the program is compiled, every call in a copy is direct, and each copy is exact for its type. The
+		cost is code: one version for each type handed in.</p>
+	<p><b>A coercion makes one copy serve every subtype.</b> The value is changed into the supertype's form as it
+		arrives, so a single version of the code handles them all. A coercion is one of two kinds:</p>
+	<ul>
+		<li>A <b>recast</b> changes only the type. The value's bits already mean the same as a value of the supertype,
+			so nothing runs: a <span class="pre">&amp;mut Point</span> used as a read-only <span class="pre">&amp;Point</span>,
+			or an enum's variant used as the enum, whose every value takes the same room
+			(<a href="guide-enums.html#enumcopy">Enums</a>).</li>
+		<li>A <b>conversion</b> runs code that makes the supertype's value: a <span class="pre">u8</span> widened into a
+			<span class="pre">u32</span> gains three bytes of zeros, and a <span class="pre">&amp;Circle</span> given where a
+			<span class="pre">&amp;&lt;Shape</span> is wanted gains a pointer to the table of methods
+			<span class="pre">Circle</span> brings with it (<a href="mod-substitution.html#vtable">How a virtual reference
+			works</a>).</li>
+	</ul>
+<pre>
+mod strategies;
+
+import stdio use *;
+
+trait Shape {
+  pub fn area(self &amp;) f32;
+}
+
+struct Square {
+  pub side f32;
+  pub fn area(self &amp;) f32 { side * side; }
+}
+
+struct Circle {
+  pub r f32;
+  pub fn area(self &amp;) f32 { 3.14159 * r * r; }
+}
+
+// Generic: a copy of twice is compiled for each type it is given
+fn twice[S Shape](s &amp;S) f32 { s.area() * 2.; }
+
+// Coerced: one copy of half, and each reference is converted as it arrives
+fn half(s &amp;&lt;Shape) f32 { s.area() / 2.; }
+
+fn tenfold(n u32) u32 { n * 10u32; }
+
+fn main() {
+  imm sq = new Square(3.);
+  imm ci = new Circle(1.);
+  print &lt;- twice(&amp;sq), " ", twice(&amp;ci), "\n";
+  print &lt;- half(&amp;sq), " ", half(&amp;ci), "\n";
+  print &lt;- tenfold(7u8), "\n";      // a u8 converted to a u32
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+18 6.28318
+4.5 1.5708
+70
+</pre>
+	<p>The compiled program holds two versions of <span class="pre">twice</span>, one calling
+		<span class="pre">Square</span>'s <span class="pre">area</span> directly and one calling
+		<span class="pre">Circle</span>'s, and one version of <span class="pre">half</span>, which looks up each call's
+		<span class="pre">area</span> in the table its <a href="mod-substitution.html#virtref">virtual reference</a>
+		carries. Neither is the better strategy. A generic is the faster and the more flexible; coercion keeps the program
+		smaller, and it is the only choice when which type will arrive is known only while the program runs
+		(<a href="mod-substitution.html#virtexample">Virtual references</a>).</p>
+	<p><b>A conversion has limits a recast does not.</b> To convert a value, the supertype's value must be built, and
+		that is not always practical: a value with more fields than its supertype would need room the supertype does
+		not have, and copying a large value field by field, recursively, is work no one asked for. So Cone never
+		converts the value of a struct, an array or a tuple into another type: an <span class="pre">Array[u8, 4]</span>
+		is not coerced into an <span class="pre">Array[u16, 4]</span>, nor a <span class="pre">(u8, u8)</span> into a
+		<span class="pre">(u16, u16)</span> (each is refused, 1013). It coerces <b>references</b> to them instead. A
+		reference is small and of one size, so converting it is cheap however large or varied its value is, and the
+		value itself stays where it is, untouched. A virtual reference is exactly that.</p>
+	<p><b>The way back needs a check.</b> A coercion goes from subtype to supertype, which is called
+		<i>upcasting</i>, and when the subtype rules hold it is always safe, so Cone does it implicitly wherever the
+		supertype is wanted. The other way, <i>downcasting</i>, is not: the supertype has values that are no value of a
+		particular subtype. Recovering the subtype needs a guard, a pattern that checks which it is, and a match that
+		succeeds guarantees a valid value of the subtype. That is possible only where the supertype's value records
+		which subtype it came from: an enum's tag (<a href="mod-substitution.html#flow">narrowing to a variant</a>) or a
+		virtual reference's table (<a href="mod-substitution.html#downcast">getting the concrete type back</a>).</p>
+
+	<h2 id="subtype">Judging a subtype: values, operations and predicates</h2>
+	<p>What makes it safe to hand in a value of one type where another is wanted? The standard is behavioural:
+		whatever can be proven of every value of the supertype must hold of every value of the subtype, so that code
+		written for the supertype cannot be surprised by a subtype's value. What can be proven of a type comes in three
+		kinds, and each gives a rule.</p>
+	<p><b>Values.</b> Every value of the subtype must map to exactly one value of the supertype with the same meaning.
+		Every <span class="pre">u8</span>, 0 to 255, is a <span class="pre">u16</span>, 0 to 65,535, so by values
+		<span class="pre">u8</span> is a subtype of <span class="pre">u16</span>, written
+		<span class="pre">u8 &lt;: u16</span>. Not the other way round: 1000 is no <span class="pre">u8</span>. And
+		often neither way: an <span class="pre">i8</span> may be -10, which no <span class="pre">u8</span> is, and a
+		<span class="pre">u8</span> may be 200, which no <span class="pre">i8</span> is. So two types may be the same,
+		either may be a subtype of the other, or they may not compare at all. Cone coerces a number only into a wider
+		type of the same kind: unsigned into unsigned, signed into signed, float into float. A
+		<span class="pre">u8</span> fits an <span class="pre">i16</span> by value, yet is not coerced into one (1013);
+		convert it, <span class="pre">i16.from(b)</span> (<a href="safe-types.html#from">Conversion</a>).</p>
+	<p><b>Operations.</b> Every operation on the supertype must work on the subtype too, and give an equivalent
+		result: 3 plus 6 is 9 as <span class="pre">u8</span>s and as <span class="pre">u16</span>s. Nearly always:</p>
+<pre>
+imm a = 250u8;
+imm b = 10u8;
+imm wide u16 = a + b;          // added as u8s, then widened
+imm wider = 250u16 + b;        // widened, then added
+print &lt;- wide, " ", wider, "\n";   // 4 260
+</pre>
+	<p>The sum of two <span class="pre">u8</span>s wraps past 255 before it is widened. So
+		<span class="pre">u8</span> is nearly, but not strictly, a subtype of <span class="pre">u16</span>: the
+		substitution holds while nothing overflows. In Cone a type's operations are its methods, declared as part of the
+		type, which lets the compiler check a subtype against a supertype by comparing their methods, name by name and
+		signature by signature (<a href="#variance">Variance</a>, below, says how two signatures compare).</p>
+	<p><b>Predicates.</b> A predicate is a statement that must hold of a type's values or operations: only the even
+		numbers from 0 to 255 (a refinement), the first of a pair never greater than the second (an invariant), a square
+		root that requires a number that is not negative and returns one (a precondition and a postcondition). A subtype
+		must keep every invariant of its supertype, may not require more of its callers, and may not promise less.
+		Predicates can make a type harder to check than a compiler, or a person, can manage, so Cone keeps them few. A
+		data invariant is not part of any type: there are no refinement types. <b>Not built yet:</b> preconditions and
+		postconditions on a function, the <span class="pre">requires</span> and <span class="pre">ensures</span>
+		<a href="safe-panics.html#contracts">contract conditions</a>. An invariant a type keeps for itself, through the
+		logic of its methods, is protected by making private the fields it governs: structural matching does not count a
+		private field, so no trait reaches it, and only the type's own methods can change it.</p>
+	<p style="margin-left: 40px;"><i>Not checked yet: a private field or method still meets a trait structurally. A
+		virtual reference to a trait, made in another module, reaches a struct's private field or calls its private
+		method through the trait. As a generic constraint, a private method meets the bound, and the call to it inside the
+		generic is then refused (1042).</i></p>
+
+	<h2 id="concrete">Structs and traits: concrete and abstract types</h2>
+	<p>The same rules extend to a struct. Every field of the supertype must be in the subtype, with the same type or a
+		subtype of it (called <i>depth</i> subtyping, since it reaches into the fields), and every method of the
+		supertype must be in the subtype, with a signature that matches. A subtype with <i>more</i> fields than its
+		supertype, though (<i>width</i> subtyping), raises a problem: its extra fields hold values the supertype has no
+		room for, so a value of the subtype has no equal value in the supertype.</p>
+	<p>Cone resolves it by telling concrete types from abstract ones. A struct is <b>concrete</b>: a set of values,
+		each laid out completely. A trait is <b>abstract</b>: no value is ever of a trait's type
+		(<a href="mod-substitution.html#traits">Traits</a>); it is a set of criteria a concrete type must meet, at least
+		these fields and at least these methods. So a struct with more fields and methods than a trait asks for still
+		meets it, and width subtyping holds only against a trait. Between two structs it never holds, and no coercion
+		does either, even when their fields are the same:</p>
+<pre>
+struct A { pub x i32; }
+struct B { pub x i32; }
+
+fn readB(b &amp;B) i32 { b.x; }
+
+imm a = new A(3);
+readB(&amp;a);              // ERROR
+imm b B = a;            // ERROR
+</pre>
+<pre>
+Error 1013: Expression's type does not match declared parameter
+Error 1013: Initialization value's type does not match variable's declared type
+</pre>
+	<p>Depth subtyping applies where a struct meets a trait's field: a field <span class="pre">item Shape.Circle</span>
+		meets a trait's <span class="pre">item Shape</span>, since the variant is a recast of the enum. A field that would
+		need converting does not: <span class="pre">n u8</span> does not meet a trait's <span class="pre">n u16</span>
+		(1013), since a reference through the trait reads the field where it lies.</p>
+	<p style="margin-left: 40px;"><i>Not checked yet: such a field is held to the trait's type when it is written
+		through the trait. Through a <span class="pre">&amp;&lt;mut</span> reference to the trait, which may store any
+		<span class="pre">Shape</span>, a <span class="pre">Square</span> is stored in the
+		<span class="pre">Circle</span> field, which a mutable reference's invariance (<a href="#refvariance">below</a>)
+		should refuse.</i></p>
+	<p>A struct is a subtype of the traits it meets, and of nothing else. Reusing another struct's code is a separate
+		question, answered by <a href="mod-extensibility.html">name folding</a>, and it grants no subtyping: a type that
+		takes in another's fields and methods meets that type's values and operations, yet may break the invariants that
+		type's methods keep, which is the predicate rule.</p>
+	<p>A struct meets a trait <b>structurally</b>: having the trait's members is enough, whether or not the struct
+		names the trait (<a href="mod-substitution.html#comply">Meeting a trait</a>). That matters because a trait may be
+		written after, and apart from, the types that meet it, including a library's types you did not write. A struct
+		may also declare that it meets a trait, with <a href="mod-substitution.html#isa"><span class="pre">is</span></a>,
+		and the compiler checks the claim there and then.</p>
+	<p id="nominal"><b>Named types and structural types.</b> A struct or an enum is <i>nominal</i>: it is identified by
+		its name, so two structs with the same fields are two types, as <span class="pre">A</span> and
+		<span class="pre">B</span> above. Most other types are <i>structural</i>, identified by what they are made of: a
+		tuple type such as <span class="pre">(i32, i32)</span>, an array type such as <span class="pre">Array[u8, 3]</span>,
+		a reference type or a function signature, written in two places, is the same type in both. A signature's
+		parameter names are no part of it: a <span class="pre">&amp;fn(x i32) i32</span> takes a function declared
+		<span class="pre">fn twice(k i32) i32</span>. A trait sits between the two: it has a name, and a struct meets it by
+		its structure.</p>
+	<p id="byref"><b>An abstract type is reached only through a reference.</b> Every value is of a concrete type, since
+		only a concrete type says how much room a value takes. A trait's subtypes may differ in size, so no variable,
+		parameter or field holds a trait by value:</p>
+<pre>
+fn byValue(s Shape) f32 { s.area(); }    // ERROR
+</pre>
+<pre>
+Error 1069: Variable s cannot be held by value: Shape is a trait whose implementations may differ in size. Use a
+virtual reference, '&amp;&lt;Trait&gt;'.
+</pre>
+	<p>A <a href="mod-substitution.html#virtref">virtual reference</a> holds one instead. An enum declared
+		<span class="pre">@unsized</span>, whose variants are not padded to one size, is likewise reached only through a
+		reference (<a href="mem-regions.html#unsized">An enum reached only by reference</a>).</p>
+
+	<h2 id="sumtypes">Enums: closed supertypes of their variants</h2>
+	<p>An <a href="guide-enums.html">enum</a> is a supertype of its variants by design: a value of any variant is a
+		value of the enum, and a method the enum declares without a body is one every variant answers. The set is
+		closed, written in one place, and every value of the enum takes the room of its largest variant, so a variant's
+		value becomes the enum's by a recast: nothing is converted, and the tag the value carries says which variant it
+		holds, which is what lets a match recover it. A set of variants that other modules may add to cannot promise one
+		size, so it is an <a href="mod-substitution.html#traitvar">open trait</a>, whose variants are structs reached
+		through references, as any struct that meets a trait is. <a href="mod-substitution.html#enumtraits">Enums: a
+		closed set of subtypes</a>, on the Traits page, has the details.</p>
+	<p style="margin-left: 40px;"><i>Not built yet: a plain value where an <a href="guide-dict.html#option">Option</a>
+		or a <a href="guide-functions.html#result-tour">Result</a> is wanted, an <span class="pre">i32</span> given as an
+		<span class="pre">Option[i32]</span>, which the value rule allows (1013 today). Write
+		<span class="pre">Some(5)</span> or <span class="pre">Ok(5)</span>. The <span class="pre">i32</span> is smaller than
+		the <span class="pre">Option[i32]</span>, so this one would be a conversion.</i></p>
+
+	<h2 id="variance">Variance: functions and references</h2>
+	<p>A type built from other types, a function's signature from its parameters and result, a reference from the type
+		it points at, is a subtype of another such type depending on how its parts are. Its <b>variance</b> says how.
+		<i>Covariant</i> keeps the direction, as a field does in depth subtyping. <i>Contravariant</i>
+		reverses it. <i>Invariant</i> allows only the same type. Information flow is a good guide: a subtype's value may
+		flow into a place meant for the supertype, never the reverse.</p>
+	<p><b>Functions.</b> Arguments flow into a function, and its result flows out. So a function may stand for a
+		signature when each parameter accepts at least what the signature passes (contravariant) and its result gives at
+		least what the signature promises (covariant):</p>
+<pre>
+struct P { pub x i32; }
+
+fn readOnly(p &amp;P) i32 { p.x; }            // asks less than the signature offers
+fn same(p &amp;mut P) &amp;mut P { p; }         // gives more than the signature promises
+
+fn apply(f &amp;fn(p &amp;mut P) i32, p &amp;mut P) i32 { f(p); }
+fn reader(f &amp;fn(p &amp;mut P) &amp;P, p &amp;mut P) i32 { f(p).x; }
+
+mut pt = new P(3);
+apply(&amp;readOnly, &amp;mut pt);    // 3
+reader(&amp;same, &amp;mut pt);       // 3
+</pre>
+	<p>The reverse is refused: a function taking <span class="pre">p &amp;mut P</span>, given where the signature lends
+		<span class="pre">p &amp;P</span>, would change what the caller lent only to be read (1013). A
+		<a href="mod-functions.html#fnref">function reference</a> points at one compiled function, so only a recast can
+		apply to its parameters and result: a function taking a <span class="pre">u32</span> is not given where
+		<span class="pre">&amp;fn(n u8)</span> is wanted, since each <span class="pre">u8</span> would need converting
+		before the call (1013). A method meeting a trait may take a weaker <span class="pre">self</span> than the trait
+		declares (<a href="mod-substitution.html#working">Working with virtual references</a>).</p>
+	<p style="margin-left: 40px;"><i>Not built yet: variance in a trait method's other parameters and in its result. A
+		type's method meets a trait's only when they match exactly; one whose parameter asks less than the trait's, or
+		whose result gives more, does not meet the trait, as a generic constraint (1186) or as a virtual reference
+		(1013).</i></p>
+	<p id="refvariance"><b>References.</b> Whether the type a reference points at may vary depends on the reference's
+		permission. A reference that may only read is covariant: a <span class="pre">&amp;Circle</span>, to an enum's
+		variant, may be read as a <span class="pre">&amp;Shape</span>. A reference that may read and write is invariant:
+		through a <span class="pre">&amp;mut Shape</span>, code may store any shape, so a
+		<span class="pre">&amp;mut Circle</span> may not be given as one, or a <span class="pre">Square</span> could be
+		stored where a <span class="pre">Circle</span> must be:</p>
+<pre>
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+fn size(s &amp;Shape) i32 {
+  match s {
+    case imm c Circle { c.r; }
+    case imm q Square { q.s; }
+  }
+}
+
+fn reshape(s &amp;mut Shape) {
+  *s = Shape.Square(1);
+}
+
+mut c = Shape.Circle(5);
+size(&amp;c);             // 5: read-only, so covariant
+reshape(&amp;mut c);      // ERROR: mutable, so invariant
+</pre>
+<pre>
+Error 1013: Expression's type does not match declared parameter
+</pre>
+	<p>An <span class="pre">&amp;imm Circle</span> is accepted as an <span class="pre">&amp;imm Shape</span>, and an
+		<span class="pre">&amp;uni Circle</span> refused as an <span class="pre">&amp;uni Shape</span>, by the same rule. A
+		permission that could write without reading would be contravariant; none of the
+		<a href="mem-permissions.html#list">static permissions</a> does. The same reasoning governs how long the borrows
+		behind a mutable reference may live: a call handed a mutable borrow that could store another holds both to the
+		shorter lifetime (<a href="mem-lifetimes.html#mutable">A mutable borrow that could store another</a>).</p>
+	<p style="margin-left: 40px;"><i>Not built yet: variance for a generic type's parameters. Today two instances of
+		a generic type are related only when their type arguments are the same: a <span class="pre">&amp;Holder[&amp;mut
+		P]</span> is not given where a <span class="pre">&amp;Holder[&amp;P]</span> is wanted (1013). Whether a generic's
+		type parameters will need marks saying their variance, or whether it can be worked out from where each is used
+		and the permissions of the references that use it, is undecided.</i></p>
+
+	<h2 id="refsubtype">References: region, permission and lifetime</h2>
+	<p>Beyond the type it points at, a reference has three parts that subtype, each by its own rule:</p>
+	<ul>
+		<li><b>Region.</b> A borrowed reference is a supertype of every owning reference to the same type: a
+			<span class="pre">So[P]</span> or an <span class="pre">Rc[mut, P]</span> given where a
+			<span class="pre">&amp;P</span> is wanted is lent (<a href="mem-borrowing.html">Borrowed references</a>). That is
+			the payoff of borrowing: code that takes a borrowed reference works the same whichever region the value lives
+			in. The lending is a recast, since an owning reference already points at its value; what it starts is the
+			borrowing rules on the owner. Through a <a href="conc-locks.html">lock permission</a> the borrow is never
+			implicit: it takes the lock while the program runs, so it is written out,
+			<span class="pre">&amp;*p</span> or <span class="pre">&amp;mut *p</span>
+			(<a href="conc-locks.html#borrowing">Borrowing takes the lock</a>).</li>
+		<li><b>Permission.</b> <span class="pre">ro</span>, read-only, is a supertype of every permission that may read,
+			and <span class="pre">opaq</span> of every permission. <span class="pre">uni</span>, the only reference to its
+			value, is a subtype of <span class="pre">mut</span>, <span class="pre">mut1</span>,
+			<span class="pre">imm</span> and <span class="pre">ro</span>. Each is a recast, since a permission lives only
+			in the type (<a href="mem-permissions.html#transitions">Changing a reference's permission</a>).</li>
+		<li><b>Lifetime.</b> A borrow that lives longer is a subtype of one that lives shorter, within whose scope it
+			lies. A global's borrow stands in where a local's is wanted:</li>
+	</ul>
+<pre>
+imm limit = 10i32;                   // a global
+
+fn larger(a &amp;'a i32, b &amp;'a i32) &amp;'a i32 { if *a &gt; *b { a; } else { b; } }
+
+imm near = 5i32;
+imm r = larger(&amp;limit, &amp;near);     // *r is 10: 'a is near's scope, which limit's outlasts
+</pre>
+	<p>Each reference coercion is a recast or a conversion: making a
+		<a href="mod-substitution.html#virtref">virtual reference</a> attaches a table of methods, and making a slice from
+		a reference to an array, <span class="pre">&amp;Array[u8, 4]</span> to <span class="pre">&amp;Array[u8]</span>,
+		attaches its count, while a change of region, permission or lifetime runs nothing.
+		<a href="safe-types.html#coercion">Coercion: the substitutions subtyping allows</a> lists every coercion Cone
+		makes by itself, each with its kind.</p>
+
+	<p>You can now tell whether one type may stand in for another, why the compiler refuses the swaps it refuses,
+		and whether a substitution costs a copy of the code, a conversion or nothing at all. Next, the abstract types
+		most substitutions are made against: traits, and the virtual references that carry them.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-substitution.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

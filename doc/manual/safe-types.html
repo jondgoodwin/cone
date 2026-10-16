@@ -85,37 +85,77 @@ imm t = takes(5i64);        // **ERROR** 1013: Expression's type does not match 
 		conversion may lose something, so it is asked for by name; a reinterpretation trusts the bits, so it is
 		marked with <span class="pre">as</span>.</p>
 
-	<h2 id="coercion">Coercion: crossings that lose nothing</h2>
-	<p>A <b>coercion</b> carries a value into a related type that can hold everything it means. Because it is
-		always safe, Cone does it by itself whenever a value is copied or moved into a variable, parameter, return
-		value, field or reference that expects the related type: in an assignment, a call or a return. These are
-		the coercions you will meet most:</p>
+	<h2 id="coercion">Coercion: the substitutions subtyping allows</h2>
+	<p>A <b>coercion</b> is a subtype's value standing where its supertype is wanted. What makes it safe is
+		subtyping: the supertype has an equal value for every value of the subtype, and supports everything that can be
+		done with one (<a href="mod-subtyping.html#subtype">Judging a subtype</a>). So Cone does it by itself whenever
+		a value is copied or moved into a variable, parameter, return value, field or reference that expects the
+		supertype: in an assignment, a call or a return. Each coercion is one of two kinds
+		(<a href="mod-subtyping.html#strategies">Generics and coercion</a>): a <b>recast</b> changes only the type and
+		runs nothing, because the value's bits already mean the same as the supertype's; a <b>conversion</b> runs code
+		that makes the supertype's value. These are the coercions Cone makes:</p>
 	<ul>
-		<li><b>A smaller number into a larger one of the same kind:</b> a <span class="pre">u8</span> into a
-			<span class="pre">u32</span>, an <span class="pre">i32</span> into an <span class="pre">i64</span>, an
-			<span class="pre">f32</span> into an <span class="pre">f64</span>. Never a whole number into a float,
-			which is a conversion. In arithmetic today, only the right-hand operand widens:
+		<li><b>A smaller number into a larger one of the same kind</b>, a conversion: a <span class="pre">u8</span> into
+			a <span class="pre">u32</span> gains zeros above its bits, an <span class="pre">i32</span> into an
+			<span class="pre">i64</span> copies its sign upward, an <span class="pre">f32</span> into an
+			<span class="pre">f64</span> is re-encoded in the wider format. Only within a kind: a <span class="pre">u8</span> is not
+			coerced into an <span class="pre">i16</span>, though every value fits (1013), and a whole number never into a
+			float; <a href="#from">convert</a> them. In arithmetic today, only the right-hand operand widens:
 			<span class="pre">wide + k</span> works for an <span class="pre">i64</span> and an
 			<span class="pre">i32</span>, while <span class="pre">k + wide</span> is refused (1056: No method declared
-			by `+` accepts the call's arguments). Put the wider value first, or convert.</li>
-		<li><b>An owning reference into a borrowed one:</b> a <span class="pre">So[Point]</span> passed where a
-			<span class="pre">&amp;Point</span> is wanted is lent, with the borrowing rules of
-			<a href="mem-borrowing.html">Borrowed references</a> applied to the owner.</li>
-		<li><b>A reference into one with fewer permissions:</b> a <span class="pre">&amp;mut</span> into a
-			<span class="pre">&amp;</span>, or a <span class="pre">&amp;uni</span> into a <span class="pre">&amp;mut</span>,
-			<span class="pre">&amp;imm</span> or <span class="pre">&amp;</span>
-			(<a href="mem-permissions.html">Permissions</a>).</li>
-		<li><b>A reference into a raw pointer</b> to the same type: <span class="pre">imm p *i32 = &amp;n;</span>
+			by `+` accepts the call's arguments). Put the wider value first, or convert. Widening keeps the value but not
+			every result: a sum of two <span class="pre">u8</span>s wraps before it is widened
+			(<a href="mod-subtyping.html#subtype">nearly, but not strictly, a subtype</a>).</li>
+		<li><b>A variant into its enum</b>, a recast, since every value of an enum takes the room of its largest variant:
+			<span class="pre">imm s Shape = Shape.Circle(5);</span>, and a read-only reference to a variant where one to
+			the enum is wanted. A mutable reference is not coerced so, since through it another variant could be stored
+			(<a href="mod-subtyping.html#refvariance">References and variance</a>). <b>Not built yet:</b> a plain value
+			where an <span class="pre">Option</span> or a <span class="pre">Result</span> is wanted, which would be a
+			conversion; write <span class="pre">Some(5)</span> or <span class="pre">Ok(5)</span>.</li>
+		<li><b>An owning reference into a borrowed one</b>, a recast: a <span class="pre">So[Point]</span> or an
+			<span class="pre">Rc[mut, Point]</span> passed where a <span class="pre">&amp;Point</span> is wanted is lent,
+			with the borrowing rules of <a href="mem-borrowing.html">Borrowed references</a> applied to the owner. An owner
+			whose permission is a lock is the exception: its borrow takes the lock while the program runs, so it is
+			written out, <span class="pre">&amp;*p</span> (<a href="conc-locks.html#borrowing">Lock permissions</a>).</li>
+		<li><b>A reference into one with fewer permissions</b>, a recast: a <span class="pre">&amp;mut</span> or
+			<span class="pre">&amp;imm</span> into a <span class="pre">&amp;</span> (read-only, <span class="pre">ro</span>);
+			a <span class="pre">&amp;uni</span> into a <span class="pre">&amp;mut</span>, <span class="pre">&amp;mut1</span>,
+			<span class="pre">&amp;imm</span> or <span class="pre">&amp;</span>; any reference into a
+			<span class="pre">&amp;opaq</span> (<a href="mem-permissions.html#transitions">Permissions</a>).</li>
+		<li><b>A borrow into one that lives less long</b>, a recast: a global's borrow where a local's is wanted
+			(<a href="mod-subtyping.html#refsubtype">References: region, permission and lifetime</a>).</li>
+		<li><b>A reference to a struct into a virtual reference to a trait it meets</b>, a conversion, which attaches the
+			struct's table of methods: <span class="pre">&amp;cat</span> passed where a
+			<span class="pre">&amp;&lt;Named</span> is wanted. So too an owner, <span class="pre">So[Circle]</span> into
+			<span class="pre">So[Shape]</span>, and a reference to an enum into a virtual reference to a trait its variants
+			meet, which attaches the table of whichever variant the tag names
+			(<a href="mod-substitution.html#virtref">Virtual references</a>).</li>
+		<li><b>A reference to a struct into a plain reference to a trait</b> whose fields the struct declares first, in
+			the trait's order, a recast: <span class="pre">imm r &amp;Id = &amp;node;</span> reads the trait's fields where
+			they lie (<a href="mod-substitution.html#takes">What the declaration takes</a>).</li>
+		<li><b>A reference to an array into a slice</b>, a conversion, which attaches the count:
+			<span class="pre">&amp;Array[u8, 4]</span> where a <span class="pre">&amp;Array[u8]</span> is wanted.</li>
+		<li><b>Text into its bytes</b>, a recast: a <span class="pre">&amp;str</span> where a
+			<span class="pre">&amp;Array[u8]</span> is wanted. Every text is bytes, but not all bytes are text, so the way
+			back is asked for (<a href="lib-string.html#bytes">Text and bytes</a>).</li>
+		<li><b>A function into a function reference</b> whose signature it meets, a recast: each parameter may accept
+			more than the signature passes, and the result give more than it promises, so long as no value needs converting
+			(<a href="mod-subtyping.html#variance">Variance</a>).</li>
+		<li><b>A reference into a raw pointer</b> to the same type, a recast: <span class="pre">imm p *i32 = &amp;n;</span>
 			(<a href="safe-pointers.html">Raw pointers</a>).</li>
-		<li><b>A reference into a reference to a type it is a subtype of:</b> <span class="pre">&amp;cat</span> passed
-			where a <span class="pre">&amp;&lt;Named</span>, a virtual reference to a trait the struct conforms to, is
-			wanted; or a reference to an enum's variant where a reference to the enum is wanted.
-			<a href="mod-substitution.html">Substitution</a> explains subtyping, the relation that decides which of
-			these crossings are safe.</li>
+		<li><b>Not built yet: a reference into an optional one.</b> A <span class="pre">&amp;P</span> is a subtype of
+			<span class="pre">?&amp;P</span>, and the two take the same room, so this would be a recast; today it is not made
+			implicitly (<span class="pre">imm r ?&amp;P = &amp;pt;</span> is refused, 1013), and is asked for with
+			<span class="pre">&amp;pt as ?&amp;P</span>.</li>
 	</ul>
-	<p>A coercion is more than a new label. It usually makes a new value, encoded differently from its source,
-		and it can set compiler machinery going: lending an owner as a borrow starts the borrowing rules on the
-		owner's variable, and coercing a value that moves applies the move. Where an expression needs a coercion
+	<p>Values of a struct, an array or a tuple are never coerced into another type: no struct is a subtype of another
+		struct, and an <span class="pre">Array[u8, 4]</span> is not converted into an <span class="pre">Array[u16, 4]</span>
+		(1013). References to them are coerced instead, as above
+		(<a href="mod-subtyping.html#concrete">Structs and traits</a>). Two more implicit crossings follow below which
+		are conveniences rather than substitutions: a value tested as a condition, and the borrow a method call makes of
+		its receiver.</p>
+	<p>Even a recast is more than a new label to the compiler: lending an owner as a borrow starts the borrowing rules
+		on the owner's variable, and coercing a value that moves applies the move. Where an expression needs a coercion
 		said out loud, a reference type is named with <span class="pre">as</span>, and any other type with its
 		<a href="#from">conversion</a>:</p>
 <pre>
