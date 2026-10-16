@@ -1,0 +1,100 @@
+// A function reference accepts a function whose signature differs from its own
+// only by a recast, and what is passed or returned by value must then be one
+// layout (ref_typecheck_fnref_byvalue refuses the rest). Here is what is
+// accepted, run to see the right value arrive:
+//
+// - a reference to a variant or an enum, for a reference to the other: a
+//   variant is passed by its address, and the address is the same
+// - an enrichment and its base by value, in both directions: 'extends' may not
+//   touch the fields, so the two are one representation
+// - an array of references, whose elements recast one by one
+// - a permission that narrows: a function taking '&' where '&mut' is wanted
+
+mod ref_fnref_byvalue;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub r i32;
+  }
+  struct Square {
+    pub s i32;
+  }
+}
+
+struct Base {
+  pub x i32;
+}
+
+struct Ext extends Base {
+  pub fn twice(self &) i32 { x * 2; }
+}
+
+struct Counter {
+  pub n i32;
+}
+
+// Takes the enum by reference where the wanted function is given the variant's
+fn areaOf(s &Shape) i32 {
+  match s {
+    case imm c Shape.Circle { c.r; }
+    case imm q Shape.Square { 100 + q.s; }
+  }
+}
+
+fn callArea(f &fn(s &Shape.Circle) i32, c &Shape.Circle) i32 {
+  f(c);
+}
+
+// Returns a reference to the variant where the wanted function's result is a
+// reference to the enum
+fn same(c &Shape.Circle) &Shape.Circle { c; }
+
+fn callSame(f &fn(c &Shape.Circle) &Shape, c &Shape.Circle) i32 {
+  areaOf(f(c));
+}
+
+fn useBase(b Base) i32 { b.x; }
+fn makeExt(n i32) Ext { new Ext(x: n); }
+
+fn callUseBase(f &fn(e Ext) i32) i32 {
+  imm e = new Ext(x: 5);
+  f(e);
+}
+
+fn callMakeExt(f &fn(n i32) Base) i32 {
+  f(9).x;
+}
+
+fn sumTwo(a Array[&Shape, 2]) i32 { areaOf(a[0]) + areaOf(a[1]); }
+
+fn callSumTwo(f &fn(a Array[&Shape.Circle, 2]) i32, c &Shape.Circle, d &Shape.Circle) i32 {
+  imm pair Array[&Shape.Circle, 2] = [c, d];
+  f(pair);
+}
+
+fn bump(c &Counter) i32 { c.n + 1; }
+
+fn callBump(f &fn(c &mut Counter) i32, c &mut Counter) i32 {
+  f(c);
+}
+
+fn exactMk(n i32) Shape.Circle { Shape.Circle(r: n); }
+
+fn callExact(f &fn(n i32) Shape.Circle) i32 {
+  imm c = f(4);
+  c.r;
+}
+
+fn main() {
+  imm c = Shape.Circle(r: 7);
+  imm d = Shape.Circle(r: 20);
+  mut counter = new Counter(n: 41);
+  print <- callArea(&areaOf, &c), "\n";
+  print <- callSame(&same, &c), "\n";
+  print <- callUseBase(&useBase), " ", callMakeExt(&makeExt), "\n";
+  print <- callSumTwo(&sumTwo, &c, &d), "\n";
+  print <- callBump(&bump, &mut counter), "\n";
+  print <- callExact(&exactMk), "\n";
+}

@@ -460,8 +460,9 @@ requirement's (contravariant), the result a subtype (covariant), by the same
 requirement's values, so none could be built without a thunk. A value held by
 value counts only for an enrichment and its base (`structExtendsEquiv`): a variant
 passed or returned for its enum is a different aggregate and is read as another
-value (it does so through a function reference, which accepts it: an open defect),
-so only a reference to either recasts. A requirement naming `Self` (through
+value, so only a reference to either recasts. That one test is
+`fnSigRecastSameLayout`, and a function reference's signature asks it too
+(`fnSigMatchesC`, `ErrorFnRefByValue`). A requirement naming `Self` (through
 references or a pointer) keeps its exact reading, and lifetimes are
 `lifeSigMeets`' as before. `trait_method_variance` pins what is accepted and
 `trait_typecheck_method_variance` what is refused.

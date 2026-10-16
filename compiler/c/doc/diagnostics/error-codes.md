@@ -571,6 +571,10 @@ A reference to a C-named function (`&fn @c (...)`) and one to a Cone function
 (an initializer, an assignment, an argument, a returned value, a struct's field),
 a C-named function's reference given where a callable `&<fn` is wanted, and `@c`
 written on a callable are all `ErrorFnRefConv`; the message says which side is which.
+A function reference given where one is wanted whose parameter or result, held by value,
+is not one layout with the wanted one's (a variant for its enum, or the reverse) is
+`ErrorFnRefByValue`: the message names the position and both types, and says to write a
+wrapper function. A reference to either type recasts, and is not refused.
 
 The built-in marker `Shareable` has two: an unmet `T is Shareable`, or a value made a
 virtual reference marked `+ Shareable` that is not, is `ErrorNotShareable` (the

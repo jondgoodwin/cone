@@ -237,6 +237,14 @@ receiver, which is not recast) still moves.
 `fnSigMatches` is the one matcher whose variance is easy to get backwards:
 **parameters are contravariant** (it flips `to` and `from`), **the return type is
 covariant**, and the overall verdict is the most expensive of all the parts.
+A part that is a `CastSubtype` must also be one layout (`fnSigRecastSameLayout`):
+a call through `to` passes and reads the value as `to` has it, so a reference or
+an enrichment and its base recasts, and a variant held by value for its enum (or
+the reverse), or an array of them, does not: it would be read as another value, so
+the match is `NoMatch` and the mismatch is `ErrorFnRefByValue` (`fnSigByValueRefusal`,
+reached from `fnSigConvRefusal`), naming the position. A conversion
+(`ConvSubtype`: a wider number, a value made an `Option`, a reference made a
+virtual one) was never a match here, since `refMatches` turns it into `NoMatch`.
 Lifetimes named on the two signatures match only by agreeing
 (`lifeSigsAgree`): a call through `to` is checked against what `to` promises,
 so `from` must promise exactly that. The same agreement is part of

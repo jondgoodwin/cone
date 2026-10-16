@@ -58,8 +58,10 @@ int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);
 // Why a value of type 'from' is refused where the type 'to' is wanted, when the
 // two are function references that differ only in the calling convention they
 // are marked for (FnSigNode.ccall); NULL when it is not that. The reference is
-// never converted: a Cone function and a C-named one are called differently
-char *fnSigConvRefusal(INode *from, INode *to);
+// never converted: a Cone function and a C-named one are called differently.
+// Also when they differ in a parameter or result held by value that is not one
+// layout (a variant for its enum): '*code' is the error code to report it under.
+char *fnSigConvRefusal(INode *from, INode *to, int *code);
 
 // Return TypeCompare indicating whether from type matches the function signature
 TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint);

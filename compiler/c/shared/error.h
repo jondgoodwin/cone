@@ -695,6 +695,9 @@ enum ErrorCode {
     // The calling convention of a function reference (ir/types/fnsig.c)
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly
 
+    // A function reference's by-value parameter or result (ir/types/fnsig.c)
+    ErrorFnRefByValue = 1506,   // A function reference given where one is wanted that differs from it in a parameter or the result held by value that is not one layout: a variant for its enum (`&mk` returning `Shape.Circle` as `&fn(n i32) Shape`, `&area` taking `Shape` as `&fn(s Shape.Circle) i32`) or the reverse. A call through the wanted type would pass or read the value as another, and no cast converts it, so it is refused where it is written and a wrapper function converts
+
     // A virtual reference that may write sees each field at exactly the trait's type (ir/types/fnsig.c, ir/types/reference.c)
     ErrorVtableField = 1504,    // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `So[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
 

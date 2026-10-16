@@ -215,10 +215,11 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         else if (tstate->fn && tstate->fn->closure && errors > tstate->fn->closure->errbase)
             ;
         else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
-            char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype) : NULL;
+            int whycode;
+            char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype, &whycode) : NULL;
             char privwhy[400];
             if (why)
-                errorMsgNode((INode*)retnode, ErrorFnRefConv, "%s", why);
+                errorMsgNode((INode*)retnode, whycode, "%s", why);
             else if (isExpNode(retnode->exp)
                 && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
                 errorMsgNode((INode*)retnode, ErrorPrivateMatch,
