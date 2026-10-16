@@ -1,0 +1,47 @@
+// An owner of a callable made from a plain function meets the signature by the one
+// rule (closure_callable_owner_variance accepts a recast's difference). What is
+// refused is what needs a run-time conversion or is no recast: a variant or an
+// enum held by value for the other (not one layout, so its own code, with the
+// position named), a wider number, a value made an Option, a parameter that asks
+// for more permission than the callable gives, a result that promises less, a
+// result that holds more borrows than the callable says it may, and a C-named
+// function for a Cone one.
+
+mod closure_typecheck_callable_owner_variance;
+
+struct P {
+  pub x i32;
+}
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+fn mk(n i32) Shape.Circle { Shape.Circle(r: n); }
+fn area(s Shape) i32 { 1; }
+fn wide(n i64) i32 { 1; }
+fn wideResult(n i32) i64 { 1; }
+fn fromOption(o Option[i32]) i32 { 1; }
+fn greedy(p &mut P) i32 { p.x = 1; 2; }
+fn timid(p &mut P) &P { p; }
+fn either(a &i64, b &i64) &i64 { a; }
+fn @c cfn(n i32) i32 { n; }
+
+// A struct's '()' meets the callable's by the same rule: a variant for its enum by value is no recast
+struct LiftedCall {
+  pub fn `()`(self &, n i32) Shape.Circle { Shape.Circle(r: n); }
+}
+
+fn main() {
+  imm j = new So[fn(n i32) Shape](new LiftedCall());    //~ ErrorFnRefByValue:11 "The `()` of LiftedCall is refused where `So[fn(i32) Shape]` is wanted: its result is `Circle` held by value"
+  imm a = new So[fn(n i32) Shape](&mk);                //~ ErrorFnRefByValue:35 "its result is `Circle` held by value, where the callable has `Shape`"
+  imm b = new So[fn(s Shape.Circle) i32](&area);        //~ ErrorFnRefByValue:42 "its parameter 1 (`s`) is `Shape` held by value, where the callable has `Circle`"
+  imm c = new So[fn(n i32) i32](&wide);                 //~ ErrorCallableUse:33 "this function is another"
+  imm d = new So[fn(n i32) i32](&wideResult);           //~ ErrorCallableUse:33 "this function is another"
+  imm e = new So[fn(n i32) i32](&fromOption);           //~ ErrorCallableUse:33 "this function is another"
+  imm f = new So[fn(p &P) i32](&greedy);                //~ ErrorCallableUse:32 "this function is another"
+  imm g = new So[fn(p &mut P) &mut P](&timid);          //~ ErrorCallableUse:39 "this function is another"
+  imm h = new So[fn(a &i64, b &'b i64) &i64](&either);  //~ ErrorCallableUse:46 "this function is another"
+  imm i = new So[fn(n i32) i32](&cfn);                  //~ ErrorCallableUse:33 "this function is another"
+}

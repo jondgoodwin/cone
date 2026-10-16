@@ -220,7 +220,9 @@ trait that already exists.
   special at its death. **A plain function** (`new So[fn(sig)](&f)`) is held by a
   struct of the compiler's, `closureFnHolder`: one field, the function reference,
   and a `()` that calls it, made as a closure's struct is and owned like it; a
-  function of another signature is `ErrorCallableUse`. Whether the closure may be kept is the loan walk's, as for
+  function whose signature does not meet the callable's (`fnSigMeets`, the one rule:
+  nodes/struct.md) is `ErrorCallableUse`, or `ErrorFnRefByValue` where the reason is
+  a variant/enum held by value. Whether the closure may be kept is the loan walk's, as for
   any owning virtual reference: one that borrows a local is refused by the rule
   that such an owner holds only global borrows.
 - **A callable field.** `t.profile(3.)` where `profile` is a field is rewritten

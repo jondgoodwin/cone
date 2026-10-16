@@ -688,7 +688,9 @@ subtype of it by a recast alone (`fnSigMeets`, as a struct's method meets a trai
 nodes/struct.md, "A method meets a requirement as a subtype"; a conversion is no
 recast, and no coercion stands in for the signature); a global
 for a global, of the member's type and permission. Each difference is
-`ErrorModTraitMismatch` at the `is`, naming the member. A copy has the shape by
+`ErrorModTraitMismatch` at the `is`, naming the member, except a function whose
+signature differs by a variant/enum held by value, which is `ErrorFnRefByValue`
+(`fnSigLayoutDiff`). A copy has the shape by
 construction and is passed over, and where a difference was reported the copies
 are marked checked rather than analyzed, since their bodies were written against
 the trait's members and would report the difference again. An `extern`

@@ -265,3 +265,19 @@ FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *se
     }
     return NULL;
 }
+
+// Where no candidate meets the requirement 'matchmeth': does one differ from it
+// in nothing but a value held by value that is not one layout? The same test as
+// iNsTypeFindVrefMethod's loose reading, asked for its one refusal.
+int iNsTypeVrefLayoutDiff(INode *binding, FnDclNode *matchmeth, INode *selftype, struct FnSigLayoutDiff *diff) {
+    INode **candidatep;
+    uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
+    while (cnt--) {
+        FnDclNode *methnode = (FnDclNode *)*candidatep++;
+        if (methnode->genericinfo && !matchmeth->genericinfo)
+            continue;
+        if (fnSigLayoutDiff((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype, ReceiverBoth, 0, diff))
+            return 1;
+    }
+    return 0;
+}

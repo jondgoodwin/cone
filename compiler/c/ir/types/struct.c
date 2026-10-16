@@ -2927,10 +2927,20 @@ static void structCheckTraitReqs(StructNode *node) {
             // through its tag's vtable from a reference to any of its variants,
             // and so must be met by exactly its signature
             INode *selftype = (trait->flags & (HasTagField | SameSize)) ? NULL : (INode*)node;
-            if (iNsTypeFindVrefMethod(binding, traitmeth, selftype) == NULL)
-                errorMsgNode((INode*)node, ErrorInvType,
-                    "Type declares %s, but none of what it declares has the signature %s requires",
-                    &traitmeth->namesym->namestr, &trait->namesym->namestr);
+            if (iNsTypeFindVrefMethod(binding, traitmeth, selftype) == NULL) {
+                FnSigLayoutDiff layout;
+                if (iNsTypeVrefLayoutDiff(binding, traitmeth, selftype, &layout)) {
+                    char why[700];
+                    fnSigLayoutSpell(why, sizeof(why), &layout, "the trait", "the trait");
+                    errorMsgNode((INode*)node, ErrorFnRefByValue,
+                        "Type declares %s, but none of what it declares has the signature %s requires: %s Write the method with the trait's types, and convert inside it.",
+                        &traitmeth->namesym->namestr, &trait->namesym->namestr, why);
+                }
+                else
+                    errorMsgNode((INode*)node, ErrorInvType,
+                        "Type declares %s, but none of what it declares has the signature %s requires",
+                        &traitmeth->namesym->namestr, &trait->namesym->namestr);
+            }
         }
     }
 }

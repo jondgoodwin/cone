@@ -577,7 +577,19 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     if (vdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)vdcl)->vtexp)->tag == FnSigTag
         && itypeGetTypeDcl(((RefNode*)vdcl)->region) == (INode*)borrowRef) {
         FnSigNode *fsig = (FnSigNode*)itypeGetTypeDcl(((RefNode*)vdcl)->vtexp);
-        if (trait->callsig == NULL || !fnSigEqual(trait->callsig, fsig)) {
+        // The function's signature meets the callable's as any callable's meets a
+        // signature (fnSigMeets): the holder's '()' calls it with the callable's
+        // own values, so only a recast of one layout is accepted
+        if (trait->callsig == NULL || !fnSigMeets(fsig, trait->callsig)) {
+            FnSigLayoutDiff diff;
+            if (trait->callsig && fnSigLayoutDiff(fsig, trait->callsig, NULL, ReceiverNone, 1, &diff)) {
+                char why[700];
+                fnSigLayoutSpell(why, sizeof(why), &diff, "the callable", "the callable");
+                errorMsgNode(*argp, ErrorFnRefByValue,
+                    "%s[%s] is made from a callable of that signature, and this function is refused: %s Write a wrapper function that converts, and make that the callable.",
+                    regname, sig, why);
+                return;
+            }
             errorMsgNode(*argp, ErrorCallableUse,
                 "%s[%s] is made from a callable of that signature, and this function is another.", regname, sig);
             return;

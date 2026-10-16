@@ -1,0 +1,63 @@
+// A function signature as a generic bound is met by a recast's difference
+// (generic_fn_bound_variance). What is refused is what needs a run-time
+// conversion or is no recast: a variant or an enum held by value for the other (not
+// one layout, so its own code, with the position named), on a plain function and on
+// a struct's '()'; a wider number; a value made an Option; a parameter that asks
+// for more permission than the bound gives; a result that promises less; and a
+// result that holds more borrows than the bound says it may.
+
+mod generic_typecheck_fn_bound_variance;
+
+struct P {
+  pub x i32;
+}
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+fn mk(n i32) Shape.Circle { Shape.Circle(r: n); }
+fn area(s Shape) i32 { 1; }
+fn wide(n i64) i32 { 1; }
+fn wideResult(n i32) i64 { 1; }
+fn fromOption(o Option[i32]) i32 { 1; }
+fn greedy(p &mut P) i32 { p.x = 1; 2; }
+fn timid(p &mut P) &P { p; }
+fn either(a &i64, b &i64) &i64 { a; }
+
+struct Valued {
+  pub fn `()`(self &, s Shape) i32 { 1; }
+}
+
+struct Lifted {
+  pub fn `()`(self &, n i32) Shape.Circle { Shape.Circle(r: n); }
+}
+
+struct Widened {
+  pub fn `()`(self &, n i64) i32 { 1; }
+}
+
+fn takesResult[F fn(n i32) Shape](f &F) i32 { 1; }
+fn takesParam[F fn(s Shape.Circle) i32](f &F) i32 { 1; }
+fn takesInt[F fn(n i32) i32](f &F) i32 { 1; }
+fn takesRead[F fn(p &P) i32](f &F) i32 { 1; }
+fn takesWrite[F fn(p &mut P) &mut P](f &F) i32 { 1; }
+fn takesBorrows[F fn(a &i64, b &'b i64) &i64](f &F) i32 { 1; }
+
+fn main() {
+  takesResult(&mk);                       //~ ErrorFnRefByValue:14 "its result is `Circle` held by value, where the bound has `Shape`"
+  takesParam(&area);                      //~ ErrorFnRefByValue:13 "its parameter 1 (`s`) is `Shape` held by value, where the bound has `Circle`"
+  imm valued = new Valued();
+  imm lifted = new Lifted();
+  imm widened = new Widened();
+  takesParam(&valued);                    //~ ErrorFnRefByValue:13 "The `()` of Valued is refused"
+  takesResult(&lifted);                   //~ ErrorFnRefByValue:14 "The `()` of Lifted is refused"
+  takesInt(&wide);                        //~ ErrorWhereUnmet:11 "A function must meet fn(i32) i32"
+  takesInt(&wideResult);                  //~ ErrorWhereUnmet:11 "this one is fn(i32) i64"
+  takesInt(&fromOption);                  //~ ErrorWhereUnmet:11 "this one is fn(Option[i32]) i32"
+  takesInt(&widened);                     //~ ErrorWhereUnmet:11 "Widened has ()(self &, n i64) i32"
+  takesRead(&greedy);                     //~ ErrorWhereUnmet:12 "this one is fn(&mut P) i32"
+  takesWrite(&timid);                     //~ ErrorWhereUnmet:13 "this one is fn(&mut P) &P"
+  takesBorrows(&either);                  //~ ErrorWhereUnmet:15
+}

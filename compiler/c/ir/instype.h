@@ -83,4 +83,11 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
 // NULL where a vtable slot is filled and the match must be exact.
 FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *selftype);
 
+// Where iNsTypeFindVrefMethod found none: does a candidate differ from the
+// requirement in nothing but a parameter or the result held by value that is not
+// one layout (a variant for its enum, or the reverse)? 'diff' says where
+// (fnSigLayoutDiff), for the refusal under ErrorFnRefByValue.
+struct FnSigLayoutDiff;
+int iNsTypeVrefLayoutDiff(INode *binding, FnDclNode *matchmeth, INode *selftype, struct FnSigLayoutDiff *diff);
+
 #endif

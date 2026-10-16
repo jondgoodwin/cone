@@ -234,26 +234,35 @@ moved. Nothing builds `&uni *o` for a virtual reference, which may not be
 dereferenced: an owner wanted as a `&<uni` (a parameter, or a `self &uni`
 receiver, which is not recast) still moves.
 
-`fnSigMatches` is the one matcher whose variance is easy to get backwards:
-**parameters are contravariant** (it flips `to` and `from`), **the return type is
-covariant**, and the overall verdict is the most expensive of all the parts.
-A part that is a `CastSubtype` must also be one layout (`fnSigRecastSameLayout`):
-a call through `to` passes and reads the value as `to` has it, so a reference or
-an enrichment and its base recasts, and a variant held by value for its enum (or
-the reverse), or an array of them, does not: it would be read as another value, so
-the match is `NoMatch` and the mismatch is `ErrorFnRefByValue` (`fnSigByValueRefusal`,
-reached from `fnSigConvRefusal`), naming the position. A conversion
-(`ConvSubtype`: a wider number, a value made an `Option`, a reference made a
-virtual one) was never a match here, since `refMatches` turns it into `NoMatch`.
-Lifetimes named on the two signatures match only by agreeing
-(`lifeSigsAgree`): a call through `to` is checked against what `to` promises,
-so `from` must promise exactly that. The same agreement is part of
-`fnSigEqual`, so two signatures that promise differently are two types
-(spelled apart by `lifeSigSpell`). A module's or a struct's method meets a
+**One rule, spelled once, for a callable meeting a signature** (`fnSigMeetKind`):
+a function reference's type (`fnSigMatches`), a callable made of a plain function
+(`&<fn`, `refvirtMatchesRef`), an owner `So[fn(sig)]` (`typelit.c`), a generic's
+`fn(sig)` constraint (`genericSigMeets`), a module meeting a module trait
+(`modtrait.c`) and a method meeting a trait's (`fnSigVrefMeets`) all ask it, and
+the variance is easy to get backwards:
+**parameters are contravariant** (`itypeMatches` is asked from the implementation's
+to the requirement's), **the return type is covariant**, and the verdict is the
+most expensive of all the parts. A part that is a `CastSubtype` must also be one
+layout (`fnSigRecastSameLayout`): a call through the requirement passes and reads
+the value as the requirement has it, so a reference or an enrichment and its base
+recasts, and a variant held by value for its enum (or the reverse), or an array
+of them, does not: it would be read as another value, so it does not meet, and the
+mismatch is `ErrorFnRefByValue` on every route (`fnSigLayoutDiff` finds the
+position, `fnSigLayoutSpell` words it; each route puts it in its own message),
+naming the position. A conversion (`ConvSubtype`: a wider number, a value made an
+`Option`, a reference made a virtual one) never meets. The calling convention each
+is marked for must be the same (`ccall`), except for a method's. The lifetimes
+named on the two signatures meet as a method's do (`lifeSigMeets`, below), on
+every route: a plain function reference once demanded that they agree
+exactly (`lifeSigsAgree`), so a function whose result holds fewer borrows than
+the type says was refused where the same function standing as a trait's method
+was not. Two signatures that promise differently are still two types
+(`fnSigEqual` includes `lifeSigsAgree`, spelled apart by `lifeSigSpell`).
+A module's or a struct's method meets a
 trait's requirement (`fnSigVrefEqual`, or `fnSigVrefMeets` where its types are
 a recast's difference from the requirement's: nodes/struct.md, "A method meets a
-requirement as a subtype"; a plain function made a callable and a module meeting a
-module trait ask the same test, `fnSigMeets`) where it promises at least what the
+requirement as a subtype"; every other route above asks the same test,
+`fnSigMeets`) where it promises at least what the
 requirement does (`lifeSigMeets`), digit by digit of the same promises: its
 result, and what it may store through a writable parameter, holds no part
 the requirement's may not; a parameter is `'static` only where the

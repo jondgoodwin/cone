@@ -51,10 +51,44 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype);
 // signature gets). Anything fnSigVrefEqual accepts, this accepts.
 int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype);
 
-// The same test for two signatures with no receiver: a plain function standing
-// where a callable's '()' is wanted, a module's function where a module trait
-// asks for one. Anything fnSigEqual accepts, this accepts.
+// The same test for two signatures with no receiver: a function reference's, a
+// plain function standing where a callable's '()' is wanted, a module's function
+// where a module trait asks for one, a function made a 'So[fn(sig)]', a generic's
+// 'fn(sig)' condition. Anything fnSigEqual accepts, this accepts. One rule, asked
+// by every route a callable meets a signature through.
 int fnSigMeets(FnSigNode *impl, FnSigNode *req);
+
+// The same test for a method standing where a signature written without a
+// receiver is wanted (a struct's '()' meeting a generic's 'fn(sig)' condition):
+// its receiver is skipped, and its lifetimes, counted by position, are not asked.
+int fnSigMeetsMethod(FnSigNode *impl, FnSigNode *req);
+
+// What is the first parameter of the two signatures a test compares: none (a
+// function's), a receiver in each that is not compared (a method meeting a
+// method), or a receiver in the implementation alone
+typedef enum { ReceiverNone, ReceiverBoth, ReceiverImpl } FnSigReceiver;
+
+// Where a signature is refused for one reason alone, a parameter or the result held
+// by value that is not one layout (a variant for its enum, or the reverse): the
+// first such position, and the two types in it
+typedef struct FnSigLayoutDiff {
+    char position[100];     // "parameter 1 (`s`)", "result"
+    INode *req;             // the type the requirement has there
+    INode *impl;            // the type the implementation has there
+} FnSigLayoutDiff;
+
+// Is that the one reason 'impl' does not meet 'req'? 'receiver', 'checkc' and
+// 'selftype' are as for the test it explains (fnSigVrefMeets, fnSigMeets); 'diff'
+// is filled when it is. Every route that refuses a signature reports this cause
+// under ErrorFnRefByValue, in its own words (fnSigLayoutSpell).
+int fnSigLayoutDiff(FnSigNode *impl, FnSigNode *req, INode *selftype, FnSigReceiver receiver, int checkc,
+        FnSigLayoutDiff *diff);
+
+// The sentence that says why, the same on every route: "its parameter 1 (`s`) is
+// `Shape` held by value, where {wanted} has `Shape.Circle`..." 'wanted' is what has
+// the requirement's type ("the wanted one", "the trait"), 'through' what the call
+// goes through ("the reference", "the trait")
+void fnSigLayoutSpell(char *buf, size_t size, const FnSigLayoutDiff *diff, const char *wanted, const char *through);
 
 // Do two signatures declare the same parameter types (ignoring return type)?
 // Used to detect two overload candidates that would accept the same arguments.
@@ -69,7 +103,7 @@ int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);
 char *fnSigConvRefusal(INode *from, INode *to, int *code);
 
 // Return TypeCompare indicating whether from type matches the function signature
-TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint);
+TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from);
 
 // Return true if type of from-exp matches totype
 int fnSigCoerce(FnSigNode *totype, INode **fromexp);

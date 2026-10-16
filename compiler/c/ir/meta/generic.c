@@ -1385,25 +1385,20 @@ static INode *genericClauseType(CastNode *clause, Nodes *parms, Nodes *args, Gen
 // ---------------------------------------------------------------------------
 // A function signature as a bound, 'F fn(a &T, b &T) i32'. It names an ad hoc
 // structural trait: a type meets it by having a pub '()' method whose
-// parameters after the receiver, and whose return type, are exactly the
-// signature's (parameter names do not matter), and a function type, as a
-// plain function referenced is, by being exactly that signature.
+// parameters after the receiver, and whose return type, meet the signature's
+// (parameter names do not matter), and a function type, as a plain function
+// referenced is, by meeting that signature. Meeting is the one rule every
+// callable meets a signature by (fnSigMeets): the signature's own types, or a
+// recast's difference from them.
 
 static void genericSigCat(char *buf, size_t size, FnDclNode *fn);
 
-// Does this method take the signature's parameters after its receiver, exactly,
-// and return its type?
+// Does this method meet the signature, after its receiver?
 static int genericMethodTakesSig(FnDclNode *meth, FnSigNode *sig) {
     if (meth->vtype == NULL || meth->genericinfo || !(meth->flags & FlagMethFld))
         return 0;
     FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
-    if (msig->parms->used != sig->parms->used + 1 || !itypeIsSame(msig->rettype, sig->rettype))
-        return 0;
-    for (uint32_t j = 0; j < sig->parms->used; ++j) {
-        if (!itypeIsSame(iexpGetTypeDcl(nodesGet(msig->parms, j + 1)), iexpGetTypeDcl(nodesGet(sig->parms, j))))
-            return 0;
-    }
-    return 1;
+    return msig->tag == FnSigTag && fnSigMeetsMethod(msig, sig);
 }
 
 // The candidates for '()' a type has, one FnDclNode at a time: candidate 'i' of
@@ -1449,7 +1444,7 @@ static FnSigNode *genericFnTypeSig(INode *type) {
 static int genericSigMeets(INode *type, FnSigNode *sig) {
     FnSigNode *fnsig = genericFnTypeSig(type);
     if (fnsig)
-        return fnSigEqual(sig, fnsig);
+        return fnSigMeets(fnsig, sig);
     INode *dcl = itypeGetTypeDcl(type);
     if (dcl->tag != StructTag)
         return 0;
@@ -1483,31 +1478,41 @@ void genericFnSigCat(char *buf, size_t size, FnSigNode *sig) {
     genericDropRo(buf);
 }
 
-// Why a type does not meet the signature, into 'buf': what it has instead
-static void genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *sig) {
+// Why a type does not meet the signature, into 'buf': what it has instead.
+// Answers true where the reason is a parameter or the result held by value that
+// is not one layout (fnSigLayoutDiff), which is reported under its own code
+static int genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *sig) {
     buf[0] = '\0';
     INode *dcl = itypeGetTypeDcl(type);
     char wanted[256] = "";
     genericFnSigCat(wanted, sizeof(wanted), sig);
+    FnSigLayoutDiff diff;
+    char layout[700];
     FnSigNode *fnsig = genericFnTypeSig(type);
     if (fnsig) {
         char have[256] = "";
         genericFnSigCat(have, sizeof(have), fnsig);
-        snprintf(buf, size, " A function must be exactly %s; this one is %s.", wanted, have);
-        return;
+        if (fnSigLayoutDiff(fnsig, sig, NULL, ReceiverNone, 1, &diff)) {
+            fnSigLayoutSpell(layout, sizeof(layout), &diff, "the bound", "the bound");
+            snprintf(buf, size, " A function must meet %s; this one is %s, and %s Write a wrapper function that converts, and use that.",
+                wanted, have, layout);
+            return 1;
+        }
+        snprintf(buf, size, " A function must meet %s (its types, or a recast's difference from them); this one is %s.", wanted, have);
+        return 0;
     }
     char typename[256] = "";
     genericTypeNameCat(typename, sizeof(typename), type, 0);
     if (dcl->tag != StructTag) {
         snprintf(buf, size, " %s is neither a function nor a struct with a '()' method.", typename);
-        return;
+        return 0;
     }
     INode *binding = namespaceFind(&((StructNode*)dcl)->namespace, parensName);
     FnDclNode *cand = binding ? genericParensCandidate(binding, 0) : NULL;
     if (cand == NULL) {
         snprintf(buf, size, " %s has no '()' method, and %s needs a pub one taking those parameters after its receiver.",
             typename, wanted);
-        return;
+        return 0;
     }
     fnCallDemandCandidates(binding);
     char found[256] = "";
@@ -1516,7 +1521,14 @@ static void genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *si
             continue;
         if (genericMethodTakesSig(cand, sig) && !(cand->flags & FlagPub)) {
             snprintf(buf, size, " %s has a '()' method of that signature, but it is not pub.", typename);
-            return;
+            return 0;
+        }
+        FnSigNode *msig = cand->vtype ? (FnSigNode*)itypeGetTypeDcl(cand->vtype) : NULL;
+        if ((cand->flags & FlagPub) && msig && msig->tag == FnSigTag && fnSigLayoutDiff(msig, sig, NULL, ReceiverImpl, 0, &diff)) {
+            fnSigLayoutSpell(layout, sizeof(layout), &diff, "the bound", "the bound");
+            snprintf(buf, size, " The `()` of %s is refused for %s: %s Write a wrapper function that converts, and use that.",
+                typename, wanted, layout);
+            return 1;
         }
         size_t used = strlen(found);
         if (found[0])
@@ -1527,8 +1539,9 @@ static void genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *si
     if (found[0] == '\0')
         snprintf(buf, size, " %s has '()' only as a generic method, which does not meet a signature bound.", typename);
     else
-        snprintf(buf, size, " %s has %s, but %s needs a pub '()' taking those parameters after its receiver and returning that type exactly.",
+        snprintf(buf, size, " %s has %s, but %s needs a pub '()' taking those parameters after its receiver and returning that type, or a recast's difference from it.",
             typename, found, wanted);
+    return 0;
 }
 
 // A bound is met by what the generic's own code could name through the type: the
@@ -2114,13 +2127,55 @@ static void genericSigCat(char *buf, size_t size, FnDclNode *fn) {
     }
 }
 
+// Where a type's method 'meth' of the trait's differs from the trait's in nothing
+// but a parameter or the result held by value that is not one layout
+// (fnSigLayoutDiff; 'binding' is the type's name for it): the sentence saying so,
+// into 'buf'. It is reported under ErrorFnRefByValue
+static int genericMethodLayoutWhy(char *buf, size_t size, FnDclNode *meth, INode *binding, INode *dcl,
+        char *typename, char *traitname) {
+    FnSigLayoutDiff diff;
+    if (!iNsTypeVrefLayoutDiff(binding, meth, dcl, &diff))
+        return 0;
+    char expected[256] = "", spelled[700];
+    genericSigCat(expected, sizeof(expected), meth);
+    fnSigLayoutSpell(spelled, sizeof(spelled), &diff, traitname, traitname);
+    snprintf(buf, size, " %s has %s, but %s requires %s, and %s Write the method with the trait's types, and convert inside it.",
+        typename, &meth->namesym->namestr, traitname, expected, spelled);
+    return 1;
+}
+
+// The same for the first method of 'trait' that is refused for that reason alone:
+// why a type does not fit a trait whose methods all exist, into 'buf'
+static int genericLayoutWhy(char *buf, size_t size, StructNode *trait, INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != StructTag)
+        return 0;
+    char typename[256] = "", traitname[256] = "";
+    genericTypeNameCat(typename, sizeof(typename), type, 0);
+    genericTypeNameCat(traitname, sizeof(traitname), (INode*)trait, 0);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        INode *binding = namespaceFind(&((StructNode*)dcl)->namespace, meth->namesym);
+        if (iNsTypeFindVrefMethod(binding, meth, dcl) == NULL
+            && genericMethodLayoutWhy(buf, size, meth, binding, dcl, typename, traitname))
+            return 1;
+    }
+    return 0;
+}
+
 // Why a type does not fit a generic trait's instance structurally, into 'buf'
 // (empty if nothing is found to say): the first method the trait requires that
 // the type lacks, or has only with another signature, each spelled as the
 // instance's types come to, so 'pop(self &mut) Option[i64]' where the trait
-// is 'Stack[i64]'
-static void genericFitWhy(char *buf, size_t size, StructNode *trait, INode *type) {
+// is 'Stack[i64]'. '*layout' is set where the reason is a parameter or result held
+// by value that is not one layout (fnSigLayoutDiff), which has its own code
+static void genericFitWhy(char *buf, size_t size, StructNode *trait, INode *type, int *layout) {
     buf[0] = '\0';
+    *layout = 0;
     char typename[256] = "";
     genericTypeNameCat(typename, sizeof(typename), type, 0);
     char traitname[256] = "";
@@ -2142,6 +2197,10 @@ static void genericFitWhy(char *buf, size_t size, StructNode *trait, INode *type
             continue;
         char expected[256] = "";
         genericSigCat(expected, sizeof(expected), meth);
+        if (genericMethodLayoutWhy(buf, size, meth, binding, dcl, typename, traitname)) {
+            *layout = 1;
+            return;
+        }
         if (binding == NULL || (binding->tag != FnDclTag && binding->tag != FnOverloadDclTag)) {
             snprintf(buf, size, " %s has no method %s, which %s requires.", typename,
                 &meth->namesym->namestr, traitname);
@@ -2262,9 +2321,9 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
         genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond, NULL);
         char here[256] = "";
         genericFnSigCat(here, sizeof(here), sig);
-        char why[640] = "";
-        genericSigMeetWhy(why, sizeof(why), arg, sig);
-        errorMsgNode((INode*)srcgencall, ErrorWhereUnmet,
+        char why[1000] = "";
+        int layout = genericSigMeetWhy(why, sizeof(why), arg, sig);
+        errorMsgNode((INode*)srcgencall, layout ? ErrorFnRefByValue : ErrorWhereUnmet,
             "%s requires %s is %s, here %s, and %s is not.%s",
             &name->namestr, &parm->namesym->namestr, isname, here, argname, why);
         return 0;
@@ -2288,20 +2347,25 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
     char isname[256] = "";
     genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond, inst);
-    char why[640] = "";
+    char why[1000] = "";
+    int layout = 0;
     if (trait)
         genericCondIsWhy(why, sizeof(why), arg, trait);
     else if (inst && !genericTraitIsMarker(inst))
-        genericFitWhy(why, sizeof(why), inst, arg);
+        genericFitWhy(why, sizeof(why), inst, arg, &layout);
     if (inst == NULL)
         inst = trait;
+    // A type whose method is the trait's but for a value held by value that is not
+    // one layout is refused for that, under its own code
+    if (why[0] == '\0' && inst && !layout)
+        layout = genericLayoutWhy(why, sizeof(why), inst, arg);
     // A type that has what the trait requires but keeps it private to its own
     // module does not meet it from another, and is told so under its own code
     int privacy = 0;
     if (why[0] == '\0' && inst && itypeGetTypeDcl(arg)->tag == StructTag)
         privacy = structPrivateWhy(why, sizeof(why), inst, (StructNode*)itypeGetTypeDcl(arg));
     int usermarker = why[0] == '\0' && inst && genericTraitIsMarker(inst) && !corelibIsBuiltinTrait((INode*)inst);
-    errorMsgNode((INode*)srcgencall, privacy ? ErrorPrivateMatch : ErrorWhereUnmet,
+    errorMsgNode((INode*)srcgencall, layout ? ErrorFnRefByValue : privacy ? ErrorPrivateMatch : ErrorWhereUnmet,
         "%s requires %s is %s, and %s is not %s.%s%s",
         &name->namestr, &parm->namesym->namestr, isname, argname, isname, why,
         usermarker ? " A trait requiring nothing of a value is met only by a type declaring it with 'is'." : "");

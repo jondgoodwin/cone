@@ -798,10 +798,13 @@ vetted by `genericConditionNameRes` (refused in a condition on an `is` entry,
 signature as an instance written out is made (`genericClauseCloneChecked`: the
 parameters substituted, the copy checked) and asks `genericSigMeets`: a function
 type, or a reference to one (`genericFnTypeSig`: what a plain function referenced
-is the argument as through `&F`, and by value), is met by a signature `fnSigEqual`
-to it, a struct by a `pub` `()` method that is not generic and
-whose parameters after the receiver, and whose return type, are `itypeIsSame` to
-the signature's (`genericParensMethod`, `genericMethodTakesSig`). Nothing else
+is the argument as through `&F`, and by value), is met by a signature that meets the
+bound's (`fnSigMeets`: the one rule every callable meets a signature by, nodes/struct.md,
+"A method meets a requirement as a subtype"), a struct by a `pub` `()` method that is not
+generic and whose signature after the receiver meets it (`genericParensMethod`,
+`genericMethodTakesSig`, `fnSigMeetsMethod`). A value held by value that is not one
+layout with the bound's (a variant for its enum) is the reason given under
+`ErrorFnRefByValue` (`genericSigMeetWhy`). Nothing else
 meets it, and the receiver's permission is not asked there: where the generic takes
 the parameter as `&F`, the call asks (`genericCallablePermCheck`, after the type
 arguments are inferred and before the instance is made), and a `()` taking `self

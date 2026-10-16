@@ -476,23 +476,35 @@ requirement's values, so none could be built without a thunk. A value held by
 value counts only for an enrichment and its base (`structExtendsEquiv`): a variant
 passed or returned for its enum is a different aggregate and is read as another
 value, so only a reference to either recasts. That one test is
-`fnSigRecastSameLayout`, and a function reference's signature asks it too
-(`fnSigMatchesC`, `ErrorFnRefByValue`). A requirement naming `Self` (through
+`fnSigRecastSameLayout`, and every route asks it (`fnSigMeetKind`, below;
+`ErrorFnRefByValue`). A requirement naming `Self` (through
 references or a pointer) keeps its exact reading, and lifetimes are
 `lifeSigMeets`' as before. `trait_method_variance` pins what is accepted and
 `trait_typecheck_method_variance` what is refused.
 
-Two routes with no receiver ask the same test as `fnSigMeets` (`fnSigMeetsC` with no
-`self` to skip, and the calling convention compared as `fnSigEqual` does): **a
-reference to a plain function made a callable** (`refvirtMatchesRef`, `&<fn(sig)`),
-whose stub (`genlFnStubVtable`) calls the function with the callable's own values,
-and **a module meeting a module trait's function** (`modTraitFindFn`, the exact
-candidate first and else the sole one that meets it; module.md, "Module traits").
-Neither needs a thunk, for the same reason: only a recast of one layout is accepted,
-so the callable's values are the function's. `closure_fnref_variance`,
-`module_trait_variance` and their `typecheck` scenarios pin them. A third and fourth
-route still ask `fnSigEqual`: an owner made of a plain function reference
-(`So[fn(sig)]`, `typelit.c`) and a generic's `fn(sig)` condition (`genericSigMeets`).
+**One rule, spelled once** (`fnSigMeetKind` in `types/fnsig.c`; `fnSigVrefMeets`,
+`fnSigMeets` and `fnSigMeetsMethod` are its three forms by what stands first in the
+two signatures: a receiver in both, none, or in the implementation alone). Every
+place a callable meets a signature asks it, with the calling convention compared as
+`fnSigEqual` does for those that have no receiver, and `lifeSigMeets` for the
+lifetimes (a result may hold fewer borrows than the signature allows): **a function
+reference** (`fnSigMatches`, through `itypeMatches`), **a reference to a plain
+function made a callable** (`refvirtMatchesRef`, `&<fn(sig)`), whose stub
+(`genlFnStubVtable`) calls the function with the callable's own values, **a module
+meeting a module trait's function** (`modTraitFindFn`, the exact candidate first and
+else the sole one that meets it; module.md, "Module traits"), **an owner made of a
+plain function reference** (`So[fn(sig)]`, `typeLitNewCallable`), whose holder
+(`closureFnHolder`) is an ordinary checked body that calls the function with the
+callable's own values, and **a generic's `fn(sig)` condition** (`genericSigMeets`: a
+function type by `fnSigMeets`, a struct's pub `()` by `fnSigMeetsMethod`, which
+skips the receiver and, counting lifetimes by position, asks none). None needs a
+thunk, for the same reason: only a recast of one layout is accepted, so the values
+the callable is called with are the function's (a generic's instance is checked at
+its argument). Each reports a by-value variant/enum difference under
+`ErrorFnRefByValue` from the same cause (`fnSigLayoutDiff`, `fnSigLayoutSpell`), in
+its own words. `closure_fnref_variance`, `closure_callable_owner_variance`,
+`generic_fn_bound_variance`, `ref_fnref_lifetimes`, `module_trait_variance` and
+their `typecheck` scenarios pin them.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked — an enum's once its variants are laid out, and only where one of them has something to do as it dies (type check, step 8a) |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |

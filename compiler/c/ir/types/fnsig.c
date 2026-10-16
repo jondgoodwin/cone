@@ -289,66 +289,195 @@ static int fnSigRecastSameLayout(INode *req, INode *impl) {
     }
 }
 
+// How an implementation's type 'impl' stands where a requirement's type 'req' is
+typedef enum {
+    PosRefused,     // not the requirement's, and not a recast of it
+    PosSame,        // the requirement's own type
+    PosRecast,      // differs by a recast of one layout alone
+    PosLayout,      // differs by a recast that is not one layout (a variant held for its enum)
+} FnSigPos;
+
 // Does an implementation's type 'impl' stand where a requirement's type 'req'
 // is, or differ from it only by a recast? 'flowin' is true for a parameter, a
 // value that flows from the caller (the requirement's) into the implementation,
-// and false for a result, which flows the other way. The test is the one a
-// function reference's signature gets (fnSigMatchesC): the same itypeMatches, in
-// the same constraint, and a difference that needs a run-time conversion (a
-// wider number, a value made an Option) does not meet it, since a vtable slot is called with the requirement's values.
-static int fnSigVrefTypeMeets(INode *req, INode *impl, INode *selftype, int flowin) {
+// and false for a result, which flows the other way. This is the one test every
+// route asks (fnSigMeetKind): itypeMatches in Regref, where only EqMatch and
+// CastSubtype count, since a difference that needs a run-time conversion (a wider
+// number, a value made an Option) is no recast and a call passes the
+// requirement's values as they are, and a CastSubtype counts only if it is one
+// layout (fnSigRecastSameLayout).
+static FnSigPos fnSigPosMeets(INode *req, INode *impl, INode *selftype, int flowin) {
     if (fnSigReqTypeSame(req, impl, selftype))
-        return 1;
+        return PosSame;
     if (fnSigReqNamesSelf(req))
-        return 0;
+        return PosRefused;
     TypeCompare match = flowin ? itypeMatches(impl, req, Regref) : itypeMatches(req, impl, Regref);
     if (match == EqMatch)
-        return 1;
+        return PosSame;
     if (match != CastSubtype)
-        return 0;
-    return fnSigRecastSameLayout(req, impl);
+        return PosRefused;
+    return fnSigRecastSameLayout(req, impl) ? PosRecast : PosLayout;
+}
+
+// How an implementation's signature stands against a requirement's
+typedef enum {
+    FnSigMeetNo,        // does not meet it
+    FnSigMeetLayout,    // meets it in every position but a value held by value that is not one layout
+    FnSigMeetSame,      // meets it, every type and lifetime the requirement's own
+    FnSigMeetRecast,    // meets it, differing by a recast
+} FnSigMeet;
+
+// Name the position 'at' (1-based, 0 for the result) of the signature 'req'
+static void fnSigPosSpell(char *buf, size_t size, FnSigNode *req, uint32_t at) {
+    if (at == 0)
+        snprintf(buf, size, "result");
+    else {
+        Name *parmname = ((VarDclNode*)nodesGet(req->parms, at - 1))->namesym;
+        if (parmname && parmname != anonName)
+            snprintf(buf, size, "parameter %u (`%s`)", at, &parmname->namestr);
+        else
+            snprintf(buf, size, "parameter %u", at);
+    }
 }
 
 // Does an implementation's signature 'impl' meet a requirement's 'req' as a
 // subtype of it does: each parameter may be a supertype of the requirement's
 // (contravariant) and the result a subtype of its (covariant), where the
-// difference is a recast alone and no run-time conversion (see
-// fnSigVrefTypeMeets). fnSigVrefEqual's match is the special case where every
+// difference is a recast alone and no run-time conversion (fnSigPosMeets), and
+// the lifetimes it promises are the requirement's or more (lifeSigMeets: a
+// result may hold fewer borrows). THIS IS THE ONE RULE for a callable meeting a
+// signature: a function reference's, a callable's, a module trait's, a trait's
+// method, 'So[fn(sig)]' and a generic's 'fn(sig)' condition each ask it, none
+// spelling it again. An equal signature meets it as the special case where every
 // type is the same, and is the more specific: a requirement an exact candidate
-// meets is not left to the looser reading (iNsTypeFindVrefMethod). 'skipself'
-// leaves the first parameter, the receiver, to its own rule; 'checkc' compares
-// the calling convention each is marked for. 'selftype' is as for fnSigVrefEqual.
-static int fnSigMeetsC(FnSigNode *impl, FnSigNode *req, INode *selftype, int skipself, int checkc) {
+// meets is not left to the looser reading (iNsTypeFindVrefMethod). 'receiver'
+// says what is the first parameter, the receiver, which has its own rule:
+// ReceiverNone, none; ReceiverBoth, both signatures have one and it is not
+// compared; ReceiverImpl, only the implementation (a method) has one, standing
+// where a signature written without one is wanted, and the lifetimes, which are
+// counted by position, are not asked. 'checkc' compares the calling convention
+// each is marked for; 'selftype' is as for fnSigVrefEqual. Where the one reason
+// it is refused is a value held by value that is not one layout, that is
+// FnSigMeetLayout and 'diff' (if given) says where; the lifetimes are not asked
+// then.
+static FnSigMeet fnSigMeetKind(FnSigNode *impl, FnSigNode *req, INode *selftype, FnSigReceiver receiver,
+        int checkc, FnSigLayoutDiff *diff) {
     INode **implp, **reqp;
     uint32_t cnt;
 
+    // A Cone function and a C-named one pass their values differently, and no
+    // conversion or thunk makes one the other (fnSigConvRefusal says so)
     if (checkc && impl->ccall != req->ccall)
-        return 0;
-    if (impl->parms->used != req->parms->used)
-        return 0;
-    if (!fnSigVrefTypeMeets(req->rettype, impl->rettype, selftype, 0))
-        return 0;
+        return FnSigMeetNo;
+    uint32_t implextra = receiver == ReceiverImpl ? 1 : 0;
+    if (impl->parms->used != req->parms->used + implextra)
+        return FnSigMeetNo;
+    int recast = 0;
+    INode *layoutreq = NULL, *layoutimpl = NULL;
+    uint32_t layoutat = 0;
     reqp = &nodesGet(req->parms, 0);
     for (nodesFor(impl->parms, cnt, implp)) {
-        if (!(skipself && cnt == impl->parms->used)
-            && !fnSigVrefTypeMeets(((IExpNode*)*reqp)->vtype, ((IExpNode*)*implp)->vtype, selftype, 1))
-            return 0;
+        if (receiver != ReceiverNone && cnt == impl->parms->used) {
+            if (receiver == ReceiverBoth)
+                reqp++;
+            continue;
+        }
+        INode *reqtype = ((IExpNode*)*reqp)->vtype;
+        INode *impltype = ((IExpNode*)*implp)->vtype;
+        switch (fnSigPosMeets(reqtype, impltype, selftype, 1)) {
+        case PosRefused:
+            return FnSigMeetNo;
+        case PosRecast:
+            recast = 1;
+            break;
+        case PosLayout:
+            if (layoutreq == NULL) {
+                layoutreq = itypeGetTypeDcl(reqtype);
+                layoutimpl = itypeGetTypeDcl(impltype);
+                layoutat = impl->parms->used - cnt + 1 - implextra;
+            }
+            break;
+        default:
+            break;
+        }
         reqp++;
     }
-    return lifeSigMeets(impl, req);
+    switch (fnSigPosMeets(req->rettype, impl->rettype, selftype, 0)) {
+    case PosRefused:
+        return FnSigMeetNo;
+    case PosRecast:
+        recast = 1;
+        break;
+    case PosLayout:
+        if (layoutreq == NULL) {
+            layoutreq = itypeGetTypeDcl(req->rettype);
+            layoutimpl = itypeGetTypeDcl(impl->rettype);
+            layoutat = 0;
+        }
+        break;
+    default:
+        break;
+    }
+    if (layoutreq) {
+        if (diff) {
+            fnSigPosSpell(diff->position, sizeof(diff->position), req, layoutat);
+            diff->req = layoutreq;
+            diff->impl = layoutimpl;
+        }
+        return FnSigMeetLayout;
+    }
+    if (receiver == ReceiverImpl)
+        return recast ? FnSigMeetRecast : FnSigMeetSame;
+    if (!lifeSigMeets(impl, req))
+        return FnSigMeetNo;
+    return recast || !lifeSigsAgree(impl, req) ? FnSigMeetRecast : FnSigMeetSame;
+}
+
+static int fnSigMeetsC(FnSigNode *impl, FnSigNode *req, INode *selftype, FnSigReceiver receiver, int checkc) {
+    FnSigMeet kind = fnSigMeetKind(impl, req, selftype, receiver, checkc, NULL);
+    return kind == FnSigMeetSame || kind == FnSigMeetRecast;
 }
 
 // A method's signature meets a requirement's, ignoring the receiver
 int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype) {
-    return fnSigMeetsC(impl, req, selftype, 1, 0);
+    return fnSigMeetsC(impl, req, selftype, ReceiverBoth, 0);
 }
 
-// The same for two signatures that have no receiver (a plain function standing
-// where a callable's '()' is wanted, a module's function where a module trait
-// asks for one). A Cone function and a C-named one are never each other's, as
-// fnSigEqual has it.
+// A method's signature meets one written without a receiver, as a generic's
+// 'fn(sig)' condition is met by a struct's '()'
+int fnSigMeetsMethod(FnSigNode *impl, FnSigNode *req) {
+    return fnSigMeetsC(impl, req, NULL, ReceiverImpl, 0);
+}
+
+// The same for two signatures that have no receiver (a function reference, a
+// plain function standing where a callable's '()' is wanted, a module's function
+// where a module trait asks for one). A Cone function and a C-named one are never
+// each other's, as fnSigEqual has it.
 int fnSigMeets(FnSigNode *impl, FnSigNode *req) {
-    return fnSigMeetsC(impl, req, NULL, 0, 1);
+    return fnSigMeetsC(impl, req, NULL, ReceiverNone, 1);
+}
+
+// Is the one reason 'impl' does not meet 'req' a parameter or the result held by
+// value that is not one layout (a variant for its enum, or the reverse)? Then
+// 'diff' says which, the first such position. Every other position meets it, so
+// this is the cause to give, where a plain refusal would only say they differ.
+int fnSigLayoutDiff(FnSigNode *impl, FnSigNode *req, INode *selftype, FnSigReceiver receiver, int checkc,
+        FnSigLayoutDiff *diff) {
+    return fnSigMeetKind(impl, req, selftype, receiver, checkc, diff) == FnSigMeetLayout;
+}
+
+// Say why a signature is refused for the position 'diff' names, as the sentence
+// that follows the lead each route gives its own subject. 'wanted' names what the
+// requirement has there ("the wanted one"), 'through' what a call goes through
+// ("the reference").
+void fnSigLayoutSpell(char *buf, size_t size, const FnSigLayoutDiff *diff, const char *wanted, const char *through) {
+    char reqspelled[160], implspelled[160];
+    reqspelled[0] = implspelled[0] = '\0';
+    itypeSpellCat(reqspelled, sizeof(reqspelled), diff->req, 0);
+    itypeSpellCat(implspelled, sizeof(implspelled), diff->impl, 0);
+    snprintf(buf, size,
+        "its %s is `%s` held by value, where %s has `%s`. The two are not one layout (a variant and its enum are passed and returned as different aggregates), so a call through %s would read the value wrongly, and no cast makes one the other.",
+        diff->position, implspelled, wanted, reqspelled, through);
 }
 
 // Do two signatures declare the same parameter types (ignoring return type)?
@@ -369,70 +498,18 @@ int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2) {
     return 1;
 }
 
-// Return TypeCompare indicating whether from type matches the function signature,
-// the calling convention each is marked for too if 'checkc'
-static TypeCompare fnSigMatchesC(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint, int checkc) {
-    TypeCompare result = EqMatch;
-
-    // A Cone function and a C-named one pass their values differently, and no
-    // conversion or thunk makes one the other (fnSigConvRefusal says so)
-    if (checkc && to->ccall != from->ccall)
-        return NoMatch;
-
-    // Number of parameters must match
-    if (to->parms->used != from->parms->used)
-        return NoMatch;
-
-    // Every parameter's type must also match
-    INode **tonodesp, **fromnodesp;
-    uint32_t cnt;
-    fromnodesp = &nodesGet(from->parms, 0);
-    for (nodesFor(to->parms, cnt, tonodesp)) {
-        // Match for parameters is contravariant, switching order of to/from
-        switch (itypeMatches(iexpGetTypeDcl(*fromnodesp), iexpGetTypeDcl(*tonodesp), constraint)) {
-        case NoMatch:
-            return NoMatch;
-        case CastSubtype:
-            // A call passes the value as 'to' has it, so it must be one layout
-            if (!fnSigRecastSameLayout(iexpGetTypeDcl(*tonodesp), iexpGetTypeDcl(*fromnodesp)))
-                return NoMatch;
-            result = result == ConvSubtype ? ConvSubtype : CastSubtype;
-            break;
-        case ConvSubtype:
-            result = ConvSubtype;
-            break;
-        default:
-            break;
-        }
-        fromnodesp++;
-    }
-
-    // A call through 'to' is checked against its lifetimes, so 'from' must
-    // promise the same
-    if (!lifeSigsAgree(to, from))
-        return NoMatch;
-
-    // Return type is covariant
-    switch (itypeMatches(to->rettype, from->rettype, constraint)) {
-    case NoMatch:
-        return NoMatch;
-    case CastSubtype:
-        if (!fnSigRecastSameLayout(to->rettype, from->rettype))
-            return NoMatch;
-        result = result == ConvSubtype ? ConvSubtype : CastSubtype;
-        break;
-    case ConvSubtype:
-        result = ConvSubtype;
-        break;
-    default:
-        break;
-    }
-    return result;
-}
-
 // Return TypeCompare indicating whether from type matches the function signature
-TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint) {
-    return fnSigMatchesC(to, from, constraint, 1);
+// 'to': 'from' meets it (fnSigMeetKind, the one rule), EqMatch where it is the
+// same and CastSubtype where it differs by a recast. A conversion never matches.
+TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from) {
+    switch (fnSigMeetKind(from, to, NULL, ReceiverNone, 1, NULL)) {
+    case FnSigMeetSame:
+        return EqMatch;
+    case FnSigMeetRecast:
+        return CastSubtype;
+    default:
+        return NoMatch;
+    }
 }
 
 // The signature a type is a plain reference to, or NULL: '&fn(...)', or the
@@ -455,53 +532,27 @@ static void fnSigRefSpell(char *buf, size_t size, FnSigNode *sig) {
 // Why the function reference signature 'fromsig' is refused where 'tosig' is
 // wanted when a parameter or the result is held by value and differs in layout (a
 // variant for its enum, or the reverse): the first such position, named with both
-// types; NULL when no position is that. fnSigMatchesC refuses it, since a call
-// through 'tosig' passes and reads that value as 'tosig' has it.
-static char *fnSigByValueRefusal(FnSigNode *tosig, FnSigNode *fromsig) {
-    if (tosig->parms->used != fromsig->parms->used)
+// types; NULL when no position is that. A call through 'tosig' passes and reads
+// that value as 'tosig' has it. 'callable' is true where 'tosig' is the signature
+// of a callable ('&<fn(...)'), not of a function reference.
+static char *fnSigByValueRefusal(FnSigNode *tosig, FnSigNode *fromsig, int callable) {
+    FnSigLayoutDiff diff;
+    if (!fnSigLayoutDiff(fromsig, tosig, NULL, ReceiverNone, 0, &diff))
         return NULL;
     static char msg[1100];
-    char wanted[320], have[320], position[100];
-    INode *reqtype = NULL, *impltype = NULL;
-    INode **toparmp = &nodesGet(tosig->parms, 0);
-    INode **fromparmp = &nodesGet(fromsig->parms, 0);
-    uint32_t cnt;
-    // Only when this is the reason: every other position is matched or recast
-    for (cnt = 1; cnt <= tosig->parms->used; ++cnt, ++toparmp, ++fromparmp) {
-        INode *req = iexpGetTypeDcl(*toparmp);
-        INode *impl = iexpGetTypeDcl(*fromparmp);
-        TypeCompare match = itypeMatches(impl, req, Regref);
-        if (match != EqMatch && match != CastSubtype)
-            return NULL;
-        if (match == CastSubtype && !fnSigRecastSameLayout(req, impl) && reqtype == NULL) {
-            reqtype = req;
-            impltype = impl;
-            Name *parmname = ((VarDclNode*)*toparmp)->namesym;
-            if (parmname && parmname != anonName)
-                snprintf(position, sizeof(position), "parameter %u (`%s`)", cnt, &parmname->namestr);
-            else
-                snprintf(position, sizeof(position), "parameter %u", cnt);
-        }
-    }
-    TypeCompare retmatch = itypeMatches(tosig->rettype, fromsig->rettype, Regref);
-    if (retmatch != EqMatch && retmatch != CastSubtype)
-        return NULL;
-    if (retmatch == CastSubtype && !fnSigRecastSameLayout(tosig->rettype, fromsig->rettype) && reqtype == NULL) {
-        reqtype = tosig->rettype;
-        impltype = fromsig->rettype;
-        snprintf(position, sizeof(position), "result");
-    }
-    if (reqtype == NULL)
-        return NULL;
-    char reqspelled[160], implspelled[160];
-    reqspelled[0] = implspelled[0] = '\0';
-    itypeSpellCat(reqspelled, sizeof(reqspelled), reqtype, 0);
-    itypeSpellCat(implspelled, sizeof(implspelled), impltype, 0);
+    char wanted[320], have[320], why[700];
     fnSigRefSpell(have, sizeof(have), fromsig);
     fnSigRefSpell(wanted, sizeof(wanted), tosig);
-    snprintf(msg, sizeof(msg),
-        "`%s` is refused where `%s` is wanted: its %s is `%s` held by value, where the wanted one has `%s`. The two are not one layout (a variant and its enum are passed and returned as different aggregates), so a call through the reference would read the value wrongly, and no cast makes one the other. Write a wrapper function that converts, and take a reference to that.",
-        have, wanted, position, implspelled, reqspelled);
+    fnSigLayoutSpell(why, sizeof(why), &diff, callable ? "the callable" : "the wanted one",
+        callable ? "the callable" : "the reference");
+    if (callable)
+        snprintf(msg, sizeof(msg),
+            "`%s` is refused where the callable `&<%s` is wanted: %s Write a wrapper function that converts, and make that the callable.",
+            have, wanted + 1, why);
+    else
+        snprintf(msg, sizeof(msg),
+            "`%s` is refused where `%s` is wanted: %s Write a wrapper function that converts, and take a reference to that.",
+            have, wanted, why);
     return msg;
 }
 
@@ -519,8 +570,16 @@ char *fnSigConvRefusal(INode *from, INode *to, int *code) {
     // A callable reference, '&<fn(...)', calls what it holds with Cone's convention
     if (todcl->tag == VirtRefTag) {
         StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
-        if (!fromsig->ccall || trait->tag != StructTag || trait->callsig == NULL
-            || !fnSigMeetsC(fromsig, trait->callsig, NULL, 0, 0))
+        if (trait->tag != StructTag || trait->callsig == NULL)
+            return NULL;
+        // A by-value parameter or result that is not one layout; the stub passes
+        // the callable's values as they are
+        char *bywhy = fnSigByValueRefusal(trait->callsig, fromsig, 1);
+        if (bywhy) {
+            *code = ErrorFnRefByValue;
+            return bywhy;
+        }
+        if (!fromsig->ccall || !fnSigMeetsC(fromsig, trait->callsig, NULL, ReceiverNone, 0))
             return NULL;
         *code = ErrorFnRefConv;
         fnSigRefSpell(have, sizeof(have), fromsig);
@@ -532,8 +591,8 @@ char *fnSigConvRefusal(INode *from, INode *to, int *code) {
     FnSigNode *tosig = fnSigRefTarget(to);
     if (tosig == NULL)
         return NULL;
-    if (tosig->ccall == fromsig->ccall || fnSigMatchesC(tosig, fromsig, Coercion, 0) == NoMatch) {
-        char *bywhy = fnSigByValueRefusal(tosig, fromsig);
+    if (tosig->ccall == fromsig->ccall || !fnSigMeetsC(fromsig, tosig, NULL, ReceiverNone, 0)) {
+        char *bywhy = fnSigByValueRefusal(tosig, fromsig, 0);
         if (bywhy)
             *code = ErrorFnRefByValue;
         return bywhy;
@@ -902,6 +961,38 @@ static char *fnSigMarkRefusal(RefNode *toref, StructNode *target, uint8_t mark) 
     return msg;
 }
 
+// Why 'impl' cannot be viewed as 'trait' behind a virtual reference when a method
+// it declares is the trait's but for a parameter or the result held by value that
+// is not one layout (a variant for its enum, or the reverse): the method's slot is
+// called with the trait's values; NULL when it is not that
+static char *fnSigVrefLayoutRefusal(StructNode *trait, StructNode *impl) {
+    if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType)
+        || (impl->flags & TraitType))
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        INode *binding = namespaceFind(&impl->namespace, meth->namesym);
+        if (binding == NULL || iNsTypeFindVrefMethod(binding, meth, NULL) != NULL)
+            continue;
+        FnSigLayoutDiff diff;
+        if (!iNsTypeVrefLayoutDiff(binding, meth, NULL, &diff))
+            continue;
+        static char msg[1100];
+        char why[700];
+        fnSigLayoutSpell(why, sizeof(why), &diff, trait->namesym ? &trait->namesym->namestr : "the trait",
+            trait->namesym ? &trait->namesym->namestr : "the trait");
+        snprintf(msg, sizeof(msg),
+            "%s's `%s` is refused for %s's: %s Write the method with the trait's types, and convert inside it.",
+            &impl->namesym->namestr, &meth->namesym->namestr, &trait->namesym->namestr, why);
+        return msg;
+    }
+    return NULL;
+}
+
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
 // when that is the permission its '()' or the borrow needs; NULL when it is not
 // that. The message leads with the cause in the author's words.
@@ -943,6 +1034,11 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
             if (selfwhy)
                 *code = ErrorVtableField;
         }
+        if (selfwhy == NULL && target->tag == StructTag) {
+            selfwhy = fnSigVrefLayoutRefusal(trait, (StructNode*)target);
+            if (selfwhy)
+                *code = ErrorFnRefByValue;
+        }
         return selfwhy;
     }
     // A callable that may change, where one that only reads is wanted
@@ -971,8 +1067,22 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
     FnDclNode *want = (FnDclNode*)namespaceFind(&trait->namespace, parensName);
     INode *binding = namespaceFind(&((StructNode*)target)->namespace, parensName);
     FnDclNode *meth = want && binding ? iNsTypeFindVrefMethod(binding, want, NULL) : NULL;
-    if (meth == NULL)
+    if (meth == NULL) {
+        // A '()' that is the callable's but for a value held by value that is not one layout
+        FnSigLayoutDiff diff;
+        if (want && binding && iNsTypeVrefLayoutDiff(binding, want, NULL, &diff)) {
+            static char lmsg[1100];
+            char lwanted[300], lwhy[700];
+            fnCallSpell(lwanted, sizeof(lwanted), toref, trait);
+            fnSigLayoutSpell(lwhy, sizeof(lwhy), &diff, "the callable", "the callable");
+            snprintf(lmsg, sizeof(lmsg),
+                "The `()` of %s is refused where `%s` is wanted: %s Write the `()` with the callable's types, and convert inside it.",
+                itypeName(target), lwanted, lwhy);
+            *code = ErrorFnRefByValue;
+            return lmsg;
+        }
         return NULL;
+    }
     static char msg[900];
     int isclosure = closureOfStruct(target) != NULL;
     char *what = isclosure ? "this closure" : itypeName(target);

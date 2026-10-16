@@ -1,0 +1,47 @@
+// An owner of a callable ('new So[fn(sig)](&f)') is made from a plain function
+// whose signature meets the callable's by the one rule every callable meets a
+// signature by (fnSigMeets, as a function reference's and a trait's method do):
+// each parameter may be a supertype of the callable's and the result a subtype,
+// where the difference is a recast with no run-time conversion, and the result may
+// hold fewer borrows. Before, the owner took only a function of exactly the
+// signature. The function's holder calls it with the callable's own values, so what
+// runs is checked. closure_typecheck_callable_owner_variance holds the rest, refused.
+
+mod closure_callable_owner_variance;
+
+import stdio use *;
+
+struct P {
+  pub x i32;
+}
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+fn readOnly(p &P) i32 { p.x; }                 // asks less than the callable gives
+fn shapeOf(s &Shape) i32 {                     // the enum for the variant
+  match s {
+    case imm c &Shape.Circle {c.r;}
+    case imm q &Shape.Square {100 + q.s;}
+  }
+}
+fn circ(c &Shape.Circle) &Shape.Circle { c; }  // the variant for the enum
+fn first(a &i64, b &'b i64) &i64 { a; }        // the result holds only a
+
+fn runP(f So[fn(p &mut P) i32], p &mut P) i32 { f(p); }
+fn runC(f So[fn(s &Shape.Circle) i32], s &Shape.Circle) i32 { f(s); }
+fn runD(f So[fn(c &Shape.Circle) &Shape], c &Shape.Circle) i32 { shapeOf(f(c)); }
+fn runE(f So[fn(a &i64, b &i64) &i64], a &i64, b &i64) i64 { *f(a, b); }
+
+fn main() {
+  mut pt = new P(3);
+  imm c = Shape.Circle(r: 5);
+  imm x = 4i64;
+  imm y = 9i64;
+  print <- "permission = ", runP(new So[fn(p &mut P) i32](&readOnly), &mut pt), "\n";
+  print <- "enum for variant = ", runC(new So[fn(s &Shape.Circle) i32](&shapeOf), &c), "\n";
+  print <- "variant for enum = ", runD(new So[fn(c &Shape.Circle) &Shape](&circ), &c), "\n";
+  print <- "lifetime = ", runE(new So[fn(a &i64, b &i64) &i64](&first), &x, &y), "\n";
+}
