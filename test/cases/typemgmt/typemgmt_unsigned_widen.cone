@@ -1,0 +1,92 @@
+// An unsigned integer widens implicitly into any strictly wider signed integer,
+// as a conversion, wherever a within-kind widening (u8 to u16, i8 to i32) does:
+// every value the unsigned type holds exists in the signed one, so nothing is
+// lost. u8 reaches i16, i32, i64 and isize; u16 reaches i32, i64 and isize; u32
+// reaches i64 and isize. The value is zero-extended, never sign-extended, so a
+// u8 above 127 stays positive. The refused directions (signed to unsigned, one
+// width, narrowing) are typemgmt_typecheck_unsigned_widen's.
+//
+// Every number is worked out by hand: 200 is a u8 above 127, 60000 a u16 above
+// 32767, 4000000000 a u32 above 2147483647; each prints as itself, and would
+// print negative if it were sign-extended. 200 + 1 is 201. usize is a 64-bit
+// width in this compiler, so it widens into nothing signed and isize is wider
+// than only u8, u16 and u32.
+
+mod typemgmt_unsigned_widen;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn flag(yes bool) i64 {
+  if yes { 1i64; } else { 0i64; }
+}
+
+fn asI16(n i16) i16 { n; }
+fn asI32(n i32) i32 { n; }
+fn asI64(n i64) i64 { n; }
+fn asIsize(n isize) isize { n; }
+
+fn returnedI64(n u32) i64 {
+  return n;
+}
+
+struct Wide {
+  pub small i16;
+  pub big i64;
+}
+
+const BYTE u8 = 250u8;
+
+imm globalWide i32 = BYTE;
+
+fn main() {
+  imm byte u8 = 200u8;
+  imm half u16 = 60000u16;
+  imm word u32 = 4000000000u32;
+
+  // An argument, from each unsigned type to each wider signed one
+  show("u8 to i16", i64.from(asI16(byte)));
+  show("u8 to i32", i64.from(asI32(byte)));
+  show("u8 to i64", asI64(byte));
+  show("u8 to isize", i64.from(asIsize(byte)));
+  show("u16 to i32", i64.from(asI32(half)));
+  show("u16 to i64", asI64(half));
+  show("u16 to isize", i64.from(asIsize(half)));
+  show("u32 to i64", asI64(word));
+  show("u32 to isize", i64.from(asIsize(word)));
+
+  // An initializer, an assignment, a return, a field and an array element
+  imm init i32 = half;
+  show("initializer", i64.from(init));
+  mut assigned i64 = 0i64;
+  assigned = word;
+  show("assignment", assigned);
+  show("return", returnedI64(word));
+  imm w = new Wide(byte, word);
+  show("field i16", i64.from(w.small));
+  show("field i64", w.big);
+  imm cells Array[i32, 2] = [half, 7u16];
+  show("array element", i64.from(cells[0]));
+
+  // A named constant of an unsigned type widens as the value does, and may be a global's value
+  imm fromConst i16 = BYTE;
+  show("constant", i64.from(fromConst));
+  show("global", i64.from(globalWide));
+
+  // The signed operand on the left decides the operator's type, as it does for
+  // two signed types of different widths: the unsigned right operand widens
+  imm one i16 = 1i16;
+  imm sum i16 = one + byte;
+  show("sum", i64.from(sum));
+  imm less bool = one < byte;
+  show("less", flag(less));
+  mut total i64 = 0i64;
+  total += word;
+  show("compound", total);
+}

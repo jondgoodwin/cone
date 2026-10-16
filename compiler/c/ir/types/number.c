@@ -51,6 +51,14 @@ TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constra
     if (totype == (INode*)charType || fromtype == (INode*)charType)
         return NoMatch;
 
+    // An unsigned integer widens into any strictly wider signed one: every
+    // value it holds exists there, so nothing is lost. The reverse is never
+    // implicit (a negative value has no unsigned form), nor is the same width
+    // (u16 and i16 each hold values the other does not). Floats and integers
+    // stay apart.
+    if (totype->tag == IntNbrTag && fromtype->tag == UintNbrTag)
+        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NoMatch;
+
     if (totype->tag != fromtype->tag)
         return NoMatch;
     if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)

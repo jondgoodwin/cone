@@ -1,0 +1,71 @@
+// An unsigned integer widens implicitly only into a strictly wider signed one
+// (typemgmt_unsigned_widen runs the accepted pairs). Every other crossing
+// between the signed and unsigned integers stays a written conversion,
+// 'i16.from(n)': a signed value into an unsigned type (a negative value has no
+// unsigned form), a signed and an unsigned type of one width (each holds values
+// the other lacks), and any narrowing. usize and isize count as the width of a
+// pointer, 64 bits, so neither widens into the other nor into i64 or u64, and
+// no unsigned type is wider than i128, which does not exist. A char and a bool
+// reach no number whatever their width (typemgmt_typecheck_char and
+// typemgmt_typecheck_boolnbr).
+//
+// Widening opens a second candidate for an overload, which no exactness
+// breaks, so a call that one unsigned argument now fits two ways is ambiguous.
+//
+// Type-check stage only.
+
+mod typemgmt_typecheck_unsigned_widen;
+
+fn wantU16(n u16) u16 { n; }
+fn wantI8(n i8) i8 { n; }
+fn wantI16(n i16) i16 { n; }
+fn wantI32(n i32) i32 { n; }
+fn wantI64(n i64) i64 { n; }
+
+// A signed value into an unsigned type, at every width
+fn signedToUnsigned(a i8, b i16, c i32, d i64) {
+  imm x1 u16 = a;                 //~ ErrorInvType:16 "Initialization value's type does not match variable's declared type"
+  imm x2 u32 = b;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+  imm x3 u64 = c;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+  imm x4 u64 = d;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+  wantU16(a);                     //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+}
+
+// One width, either way round
+fn sameWidth(a u8, b u16, c u32, d u64, e i8, f i16, g i32, h i64) {
+  imm x1 i8 = a;                  //~ ErrorInvType:15 "Initialization value's type does not match"
+  imm x2 i16 = b;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+  imm x3 i32 = c;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+  imm x4 i64 = d;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+  imm x5 u8 = e;                  //~ ErrorInvType:15 "Initialization value's type does not match"
+}
+
+// Narrowing: an unsigned type into a signed one that is still too narrow
+fn narrowing(a u16, b u32, c u64) {
+  wantI8(a);                      //~ ErrorInvType:10 "Expression's type does not match declared parameter"
+  wantI16(b);                     //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+  wantI32(c);                     //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+  imm x1 i8 = c;                  //~ ErrorInvType:15 "Initialization value's type does not match"
+}
+
+// A pointer-sized integer is 64 bits wide
+fn pointerSized(a usize, b isize, c u32) {
+  wantI64(a);                     //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+  imm x1 isize = a;               //~ ErrorInvType:18 "Initialization value's type does not match"
+  imm x2 usize = b;               //~ ErrorInvType:18 "Initialization value's type does not match"
+  imm x3 u64 = b;                 //~ ErrorInvType:16 "Initialization value's type does not match"
+}
+
+// An unsigned never becomes a float implicitly, wider or not
+fn toFloat(a u8) {
+  imm f f32 = a;                  //~ ErrorInvType:15 "Initialization value's type does not match"
+}
+
+// Two candidates a u8 fits: unsigned-to-unsigned widening and unsigned-to-signed
+// widening are both found, and neither wins
+fn wideU overload widen(n u16) u16 { n; }
+fn wideS overload widen(n i32) i32 { n; }
+
+fn bothFit(b u8) {
+  widen(b);                       //~ ErrorAmbigCandidate:8 "More than one function declared by `widen` accepts these arguments"
+}
