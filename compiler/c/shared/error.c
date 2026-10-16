@@ -109,8 +109,21 @@ static void errorOutGen(Lexer *lexer, char *tokp, char *linep, int code, const c
     char *srcp = linep;
     while (srcp < tokp && (*srcp == ' ' || *srcp == '\t'))
         ++srcp;
-    while (*srcp && *srcp != '\n')
+    while (*srcp && *srcp != '\n') {
+        // A name no source can spell, written '`#n`', is shown as the string it reads as
+        if (srcp[0] == '`' && srcp[1] == '#' && lexer->gennames) {
+            char *p = srcp + 2;
+            uint32_t n = 0;
+            while (*p >= '0' && *p <= '9')
+                n = n * 10 + (uint32_t)(*p++ - '0');
+            if (p > srcp + 2 && *p == '`' && n < lexer->ngennames && lexer->gennames[n]) {
+                fputs(&lexer->gennames[n]->namestr, stderr);
+                srcp = p + 1;
+                continue;
+            }
+        }
         fputc(*srcp++, stderr);
+    }
     fputc('\n', stderr);
 }
 

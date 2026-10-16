@@ -213,7 +213,8 @@ static int nameUseGenMember(NameResState *pstate, NameUseNode **namep) {
     GenInfo *info = yieldGenOfStruct(pstate->typenode);
     if (info == NULL || info->recv == NULL || info->recvtype == NULL || name->namesym == info->recv)
         return 0;
-    // A parameter of the generator is a field of its struct; a local has no owner
+    // A member of the generator's struct is the scope's own (a parameter was bound
+    // by nameUseGenParm, before this); a local has no owner
     if (namespaceFind(&((StructNode*)pstate->typenode)->namespace, name->namesym))
         return 0;
     INode *dcl = name->dclnode;
@@ -241,6 +242,33 @@ static int nameUseGenMember(NameResState *pstate, NameUseNode **namep) {
     return 1;
 }
 
+// A generator's parameters are fields of its struct under names no source can
+// spell (GenInfo.parmhidden), so a bare name in the body that the author gave a
+// parameter is not hooked to anything the struct has. It names the parameter's
+// field unless a local of the body (or the step's own receiver) is named so,
+// which shadows it as it shadows any field. Returns whether the use was bound.
+static int nameUseGenParm(NameResState *pstate, NameUseNode *name) {
+    if (pstate->typenode->tag != StructTag)
+        return 0;
+    GenInfo *info = yieldGenOfStruct(pstate->typenode);
+    if (info == NULL)
+        return 0;
+    Name *hidden = yieldGenParmHidden(info, name->namesym);
+    if (hidden == NULL)
+        return 0;
+    INode *dcl = name->dclnode;
+    if (dcl && dcl->tag == VarDclTag && inodeGetDclInfo(dcl)->owner == NULL)
+        return 0;
+    INode *field = namespaceFind(&((StructNode*)pstate->typenode)->namespace, hidden);
+    if (field == NULL || field->tag != FieldDclTag)
+        return 0;
+    // The use is re-read as a member of 'self' by the field's name (type check),
+    // so it takes the hidden one, which reads as the author's in a diagnostic
+    name->dclnode = field;
+    name->namesym = hidden;
+    return 1;
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -262,8 +290,10 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // scope owns it, innermost last, so this is one pointer read and no walk
     name->dclnode = name->namesym->node;
 
-    // In a generator method's body a bare name may be a field of the receiver
-    if (yieldAny() && pstate->typenode && nameUseGenMember(pstate, namep))
+    // In a generator's body a bare name may be a parameter, which is a field of
+    // the generator's struct; in a generator method's, a field of the receiver
+    int genparm = yieldAny() && pstate->typenode && nameUseGenParm(pstate, name);
+    if (!genparm && yieldAny() && pstate->typenode && nameUseGenMember(pstate, namep))
         return;
 
     if (!name->dclnode) {

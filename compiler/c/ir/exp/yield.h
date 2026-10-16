@@ -74,6 +74,15 @@ typedef struct GenInfo {
     FieldDclNode *state;    // The field holding where the body resumes: 0 unstarted, a seam's number, GenDone
     Name *recv;             // A method's receiver, as the struct names the field that holds it; else NULL
     StructNode *recvtype;   // The type the method belongs to, whose fields a bare name in the body may name
+    // The parameters (not a method's receiver) as the struct holds them: each
+    // is a field under a name no source can spell (a private Name reading as the
+    // parameter's own), so that none can collide with a member of Iterator or of
+    // the struct, and a bare name in the body that names the parameter is
+    // bound to that field (nameUseGenParm). parmuser[i] is the Name the author
+    // wrote, parmhidden[i] the field's
+    Name **parmuser;
+    Name **parmhidden;
+    uint32_t nparms;
     // Generation (genlyield.c): the locals the frame keeps, in the order first
     // met at a seam, and for each how it is kept: GenFrameInline, in the
     // frame; GenFrameBoxed, on the heap, its address in the frame, where a
@@ -110,6 +119,10 @@ GenInfo *yieldGenOfCtor(FnDclNode *ctor);
 // template: the instance is a generator of its own, whose step, 'none' and
 // state are the clone's members
 void yieldGenCloned(StructNode *template, StructNode *copy);
+
+// The Name of the field holding the parameter the author named 'user', or NULL
+// where the generator has no such parameter (a method's receiver is not one)
+Name *yieldGenParmHidden(GenInfo *info, Name *user);
 
 // A generator's seams, once its step is checked and walked
 void yieldSplitRegister(GenInfo *info, Nodes *yields);

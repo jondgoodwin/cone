@@ -820,8 +820,14 @@ fn walk(t &Tree) walk.Gen {new walk.Gen(t, 0u32);}
 ```
 
 and gives `next` the author's body, ended with a call of `walk.none` unless it
-ends in a `return`. The parameters are the struct's fields, so the body names
-them as a method names its fields, and a diagnostic names the value `walk.Gen`.
+ends in a `return`. The parameters are the struct's fields, each under a private
+name that reads as the parameter's own (`GenInfo.parmhidden`, written `` `#n` ``
+in the text, as the state's is), so that none collides with a member of `Iterator`
+or of the struct: a parameter may be called `count`, `map` or `next`; only `self`
+is refused. `nameUseNameRes` (`nameUseGenParm`) binds a bare name in the body
+that names a parameter, and that no local of the body shadows, to its field and
+gives the use the field's name, which type check reads as `self.field`. A
+diagnostic names the value `walk.Gen`, and the parameter as the author wrote it.
 `yield` and `none` are functions of the struct so that each instance of a generic
 generator has its own; the body names them bare, as any method names its type's
 functions.

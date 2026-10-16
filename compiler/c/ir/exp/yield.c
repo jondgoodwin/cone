@@ -82,10 +82,21 @@ void yieldGenCloned(StructNode *template, StructNode *copy) {
     GenInfo *info = yieldGenNew(step, copy, none);
     info->recv = orig->recv;
     info->recvtype = orig->recvtype;
+    info->parmuser = orig->parmuser;
+    info->parmhidden = orig->parmhidden;
+    info->nparms = orig->nparms;
     for (nodelistFor(&copy->fields, cnt, nodesp)) {
         if (((FieldDclNode *)*nodesp)->namesym == orig->state->namesym)
             info->state = (FieldDclNode *)*nodesp;
     }
+}
+
+Name *yieldGenParmHidden(GenInfo *info, Name *user) {
+    for (uint32_t i = 0; i < info->nparms; ++i) {
+        if (info->parmuser[i] == user)
+            return info->parmhidden[i];
+    }
+    return NULL;
 }
 
 void yieldSplitRegister(GenInfo *info, Nodes *yields) {

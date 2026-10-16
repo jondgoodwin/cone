@@ -10,7 +10,7 @@
  * reported at the generator's name, Lexer.genat):
  *
  *   struct walk.Gen is Iterator[&Node] {               the generator's value, declaring what it is
- *     imm t &'a Tree;  imm n i32;                      the parameters, as the author wrote them
+ *     imm t &'a Tree;  imm n i32;                      the parameters, as the author wrote them, under names no source can spell
  *     state' u32;                                      where the body resumes
  *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
  *     fn final(self &uni) {}                           what the frame's drop hangs on
@@ -31,6 +31,13 @@
  * returned in the author's place, is the type's method. The receiver is held in a
  * field under a private name that reads 'self', and 'self' in the body names it;
  * 'Self' in the body names the type, not the struct (parseGenName).
+ *
+ * A parameter is a field of the struct under a private Name that reads as the
+ * parameter's own (the table does not hold it, so no source spells it), as the
+ * state is: so a parameter called 'count', 'map' or 'final' does not collide
+ * with the Iterator the struct declares, and the generator's value has no member
+ * named as any parameter. A bare name in the body that names a parameter, and
+ * is not shadowed by a local, is bound to its field (nameUseGenParm).
  *
  * The struct is private: a generator 'pub' in a library is refused, since the
  * include file would have to carry its body whole for an importer to make the
@@ -312,17 +319,26 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     char *url = lex->url;
     ModuleNode *mod = parse->mod;
 
-    // The parameters are fields of the struct that has the methods 'next' and
-    // 'final', and is a method's 'self'
-    // (a method's receiver is the one exception: the generator holds it under
-    // a name of its own, and 'self' in the body names that)
+    // The parameters are fields of the struct that is 'self' in the body (a
+    // method's receiver is the one exception: the generator holds it under a
+    // name of its own, and 'self' in the body names that). Each is held under a
+    // name no source can spell, so that no parameter collides with a member of
+    // the struct or of Iterator, whatever it is called; only 'self' cannot be
+    // a parameter's name, since it names the value the body runs in
     for (uint32_t i = 0; i < nparms; ++i) {
         int isrecv = i == 0 && ctx->recv != NULL;
-        if (parms[i].name == nextName || parms[i].name == finalName || (parms[i].name == selfName && !isrecv)) {
+        if (parms[i].name == selfName && !isrecv) {
             errorMsgNode((INode *)fn, ErrorGenForm,
-                "A generator's parameter cannot be named '%s': the parameters are held in the value the generator is, which has the methods 'next' and 'final' and is 'self' in its body. Name it otherwise.",
-                &parms[i].name->namestr);
+                "A generator's parameter cannot be named 'self': 'self' in its body is the value the generator is, which holds the parameters. Name it otherwise.");
             return fn;
+        }
+        // The fields are named apart, so the struct no longer finds two alike
+        for (uint32_t j = 0; j < i; ++j) {
+            if (parms[j].name == parms[i].name) {
+                errorMsgNode((INode *)fn, ErrorDupName,
+                    "Duplicate name %s: every parameter of a generator needs its own name.", &parms[i].name->namestr);
+                return fn;
+            }
         }
     }
 
@@ -362,7 +378,8 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         snprintf(genname, sizeof(genname), "%s.%s.Gen", &type->namesym->namestr, &fn->namesym->namestr);
     else
         snprintf(genname, sizeof(genname), "%s.Gen", &fn->namesym->namestr);
-    Name *names[GenSlots];
+    // (kept by the lexer for the diagnostics against the text, so not on the stack)
+    Name **names = (Name **)memAllocBlk((GenSlots + nparms) * sizeof(Name *));
     names[GenStruct] = nametblPrivate(genname, strlen(genname));
     names[GenState] = nametblPrivate("state'", 6);
     names[GenYield] = ctx->some;
@@ -371,6 +388,20 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     names[GenSource] = nametblPrivate("src'", 4);
     names[GenItem] = nametblPrivate("item'", 5);
     names[GenRecv] = ctx->recv;
+    // Each parameter's field: its own string, as no source's name (a name the
+    // table does not hold), after the slots above. A receiver has GenRecv
+    Name **parmuser = (Name **)memAllocBlk((nparms + 1) * sizeof(Name *));
+    Name **parmhidden = (Name **)memAllocBlk((nparms + 1) * sizeof(Name *));
+    uint32_t nhidden = 0;
+    for (uint32_t i = 0; i < nparms; ++i) {
+        if (i == 0 && ctx->recv != NULL) {
+            names[GenSlots + i] = ctx->recv;
+            continue;
+        }
+        names[GenSlots + i] = nametblPrivate(&parms[i].name->namestr, parms[i].name->namesz);
+        parmuser[nhidden] = parms[i].name;
+        parmhidden[nhidden++] = names[GenSlots + i];
+    }
 
     // The type itself as the receiver's field names it, where the method wrote
     // 'self' or 'self &' and left the type to be inferred
@@ -422,14 +453,14 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         // to be inferred it is written out
         char *typestart = parms[i].type;
         int isrecv = i == 0 && ctx->recv != NULL;
-        if (isrecv) {
-            char *namestart = parms[i].nameend - parms[i].name->namesz;
-            genPutn(&g, parms[i].start, namestart - parms[i].start);
-            genSlot(&g, GenRecv);
-            genPutn(&g, parms[i].nameend, typestart - parms[i].nameend);
-        }
-        else
-            genPutn(&g, parms[i].start, typestart - parms[i].start);
+        // The name is the hidden one in either case; the author's text, a
+        // back-ticked name's ticks included, is what it replaces
+        char *namestart = parms[i].nameend - parms[i].name->namesz;
+        if (parms[i].nameend[-1] == '`')
+            namestart -= 2;
+        genPutn(&g, parms[i].start, namestart - parms[i].start);
+        genSlot(&g, isrecv ? (uint32_t)GenRecv : GenSlots + i);
+        genPutn(&g, parms[i].nameend, typestart - parms[i].nameend);
         int d1 = 0, d2 = 0;
         parseGenAnnotate(&g, typestart, parms[i].typeend, annotate, &d1, &d2);
         if (isrecv && (!parms[i].typed || parms[i].bare)) {
@@ -501,7 +532,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     Lexer *gen = lexNew(g.text, url);
     gen->genat = (INode *)fn;
     gen->gennames = names;
-    gen->ngennames = GenSlots;
+    gen->ngennames = GenSlots + nparms;
     lexPush(gen);
     StructNode *state = (StructNode *)parseStruct(parse, 0);
     modAddNode(mod, state->namesym, (INode *)state);
@@ -525,6 +556,9 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     info->ctor = ctor;
     info->recv = ctx->recv;
     info->recvtype = (StructNode *)ctx->type;
+    info->parmuser = parmuser;
+    info->parmhidden = parmhidden;
+    info->nparms = nhidden;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&state->fields, cnt, nodesp)) {
