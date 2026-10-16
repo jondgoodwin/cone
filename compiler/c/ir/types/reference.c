@@ -703,11 +703,14 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
 
     // A reference to a plain function is a callable of its signature: its
     // vtable's one '()' is a stub calling the function, which reads and changes
-    // nothing, so it meets either kind of callable reference at any permission
+    // nothing, so it meets either kind of callable reference at any permission.
+    // The function's signature meets the callable's as a method's meets a
+    // trait's (fnSigMeets): a recast's difference, never a conversion, so the
+    // stub passes the callable's values to the function as they are
     StructNode *totrait = (StructNode*)itypeGetTypeDcl(to->vtexp);
     INode *fromtarget = itypeGetTypeDcl(from->vtexp);
     if (fromtarget->tag == FnSigTag)
-        return totrait->tag == StructTag && totrait->callsig && fnSigEqual(totrait->callsig, (FnSigNode*)fromtarget)
+        return totrait->tag == StructTag && totrait->callsig && fnSigMeets((FnSigNode*)fromtarget, totrait->callsig)
             ? ConvSubtype : NoMatch;
 
     // Now their permissions

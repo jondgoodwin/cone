@@ -282,6 +282,8 @@ static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *
         candidatep = cnt ? &nodesGet(overloads, 0) : NULL;
     }
     FnDclNode *found = NULL;
+    FnDclNode *loose = NULL;
+    int nloose = 0;
     TypeCheckState tstate;
     tstate.typenode = NULL;
     tstate.fn = NULL;
@@ -296,8 +298,15 @@ static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *
         inodeTypeCheckAny(&tstate, &node);
         if (fnSigEqual((FnSigNode*)candidate->vtype, (FnSigNode*)member->vtype))
             found = candidate;
+        else if (fnSigMeets((FnSigNode*)candidate->vtype, (FnSigNode*)member->vtype)) {
+            loose = candidate;
+            ++nloose;
+        }
     }
-    return found;
+    // A candidate of exactly the member's signature meets it. Only where the name
+    // has none does the sole candidate whose signature is a subtype of the
+    // member's (fnSigMeets), the way a struct's method meets a trait's
+    return found ? found : (nloose == 1 ? loose : NULL);
 }
 
 // Check the shape of what the module declares for each member (modtrait.h).

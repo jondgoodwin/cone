@@ -1,0 +1,61 @@
+// A plain function stands as a callable only by a recast's difference
+// (closure_fnref_variance). What is refused: a parameter that asks for more than
+// the callable gives (a '&mut P' for a '&P'), a result that promises less (a '&P'
+// for a '&mut P'), a parameter or a result that needs a conversion (a wider or
+// narrower number, a value made an Option), a variant or an enum held by value
+// for the other (not one layout), a value behind a '&mut' that differs at all, a
+// parameter narrower than the callable's, a result that holds more borrows than
+// the callable says it may, and a C-named function for a Cone one.
+
+mod closure_typecheck_fnref_variance;
+
+struct P {
+  pub x i32;
+}
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+fn greedy(p &mut P) i32 { p.x = 1; 2; }
+fn timid(p &mut P) &P { p; }
+fn wide(n i64) i32 { 1; }
+fn wideResult(n i32) i64 { 1; }
+fn count(n i32) i32 { n; }
+fn fromOption(o Option[i32]) i32 { 1; }
+fn mk(n i32) Shape.Circle { Shape.Circle(r: n); }
+fn area(s Shape) i32 { 1; }
+fn edit(s &mut Shape.Circle) i32 { 1; }
+fn pointy(s &Shape.Circle) i32 { 1; }
+fn either(a &i64, b &i64) &i64 { a; }
+fn @c cfn(n i32) i32 { n; }
+
+fn viaGreedy(f &<fn(p &P) i32) {}
+fn viaTimid(f &<fn(p &mut P) &mut P) {}
+fn viaWide(f &<fn(n i32) i32) {}
+fn viaWideResult(f &<fn(n i32) i32) {}
+fn viaOption(f &<fn(n i32) i32) {}
+fn viaOptionResult(f &<fn(n i32) Option[i32]) {}
+fn viaOptionParm(f &<fn(n i32) i32) {}
+fn viaResult(f &<fn(n i32) Shape) {}
+fn viaParm(f &<fn(s Shape.Circle) i32) {}
+fn viaEdit(f &<fn(s &mut Shape) i32) {}
+fn viaPointy(f &<fn(s &Shape) i32) {}
+fn viaNamed(f &<fn(a &i64, b &'b i64) &i64) {}
+fn viaC(f &<fn(n i32) i32) {}
+
+fn main() {
+  viaGreedy(&greedy);               //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  viaTimid(&timid);                 //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  viaWide(&wide);                   //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+  viaWideResult(&wideResult);       //~ ErrorInvType:17 "Expression's type does not match declared parameter"
+  viaOptionResult(&count);         //~ ErrorInvType:19 "Expression's type does not match declared parameter"
+  viaOptionParm(&fromOption);       //~ ErrorInvType:17 "Expression's type does not match declared parameter"
+  viaResult(&mk);                   //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  viaParm(&area);                   //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+  viaEdit(&edit);                   //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+  viaPointy(&pointy);               //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  viaNamed(&either);                //~ ErrorInvType:12 "Expression's type does not match declared parameter"
+  viaC(&cfn);                       //~ ErrorFnRefConv:8
+}

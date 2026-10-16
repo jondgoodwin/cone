@@ -51,6 +51,11 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype);
 // signature gets). Anything fnSigVrefEqual accepts, this accepts.
 int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype);
 
+// The same test for two signatures with no receiver: a plain function standing
+// where a callable's '()' is wanted, a module's function where a module trait
+// asks for one. Anything fnSigEqual accepts, this accepts.
+int fnSigMeets(FnSigNode *impl, FnSigNode *req);
+
 // Do two signatures declare the same parameter types (ignoring return type)?
 // Used to detect two overload candidates that would accept the same arguments.
 int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);

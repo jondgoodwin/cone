@@ -481,6 +481,18 @@ value, so only a reference to either recasts. That one test is
 references or a pointer) keeps its exact reading, and lifetimes are
 `lifeSigMeets`' as before. `trait_method_variance` pins what is accepted and
 `trait_typecheck_method_variance` what is refused.
+
+Two routes with no receiver ask the same test as `fnSigMeets` (`fnSigMeetsC` with no
+`self` to skip, and the calling convention compared as `fnSigEqual` does): **a
+reference to a plain function made a callable** (`refvirtMatchesRef`, `&<fn(sig)`),
+whose stub (`genlFnStubVtable`) calls the function with the callable's own values,
+and **a module meeting a module trait's function** (`modTraitFindFn`, the exact
+candidate first and else the sole one that meets it; module.md, "Module traits").
+Neither needs a thunk, for the same reason: only a recast of one layout is accepted,
+so the callable's values are the function's. `closure_fnref_variance`,
+`module_trait_variance` and their `typecheck` scenarios pin them. A third and fourth
+route still ask `fnSigEqual`: an owner made of a plain function reference
+(`So[fn(sig)]`, `typelit.c`) and a generic's `fn(sig)` condition (`genericSigMeets`).
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked — an enum's once its variants are laid out, and only where one of them has something to do as it dies (type check, step 8a) |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |

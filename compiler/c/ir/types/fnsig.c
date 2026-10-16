@@ -309,30 +309,46 @@ static int fnSigVrefTypeMeets(INode *req, INode *impl, INode *selftype, int flow
     return fnSigRecastSameLayout(req, impl);
 }
 
-// Does an implementation's signature 'impl' meet a requirement's 'req', ignoring
-// the first 'self' parameter, as a subtype of it does: each parameter may be a
-// supertype of the requirement's (contravariant) and the result a subtype of its
-// (covariant), where the difference is a recast alone and no run-time conversion
-// (see fnSigVrefTypeMeets). fnSigVrefEqual's match is the special case where
-// every type is the same, and is the more specific: a requirement an exact
-// candidate meets is not left to the looser reading (iNsTypeFindVrefMethod).
-// 'selftype' is as for fnSigVrefEqual.
-int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype) {
+// Does an implementation's signature 'impl' meet a requirement's 'req' as a
+// subtype of it does: each parameter may be a supertype of the requirement's
+// (contravariant) and the result a subtype of its (covariant), where the
+// difference is a recast alone and no run-time conversion (see
+// fnSigVrefTypeMeets). fnSigVrefEqual's match is the special case where every
+// type is the same, and is the more specific: a requirement an exact candidate
+// meets is not left to the looser reading (iNsTypeFindVrefMethod). 'skipself'
+// leaves the first parameter, the receiver, to its own rule; 'checkc' compares
+// the calling convention each is marked for. 'selftype' is as for fnSigVrefEqual.
+static int fnSigMeetsC(FnSigNode *impl, FnSigNode *req, INode *selftype, int skipself, int checkc) {
     INode **implp, **reqp;
     uint32_t cnt;
 
+    if (checkc && impl->ccall != req->ccall)
+        return 0;
     if (impl->parms->used != req->parms->used)
         return 0;
     if (!fnSigVrefTypeMeets(req->rettype, impl->rettype, selftype, 0))
         return 0;
     reqp = &nodesGet(req->parms, 0);
     for (nodesFor(impl->parms, cnt, implp)) {
-        if (cnt < impl->parms->used
+        if (!(skipself && cnt == impl->parms->used)
             && !fnSigVrefTypeMeets(((IExpNode*)*reqp)->vtype, ((IExpNode*)*implp)->vtype, selftype, 1))
             return 0;
         reqp++;
     }
     return lifeSigMeets(impl, req);
+}
+
+// A method's signature meets a requirement's, ignoring the receiver
+int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype) {
+    return fnSigMeetsC(impl, req, selftype, 1, 0);
+}
+
+// The same for two signatures that have no receiver (a plain function standing
+// where a callable's '()' is wanted, a module's function where a module trait
+// asks for one). A Cone function and a C-named one are never each other's, as
+// fnSigEqual has it.
+int fnSigMeets(FnSigNode *impl, FnSigNode *req) {
+    return fnSigMeetsC(impl, req, NULL, 0, 1);
 }
 
 // Do two signatures declare the same parameter types (ignoring return type)?
@@ -504,7 +520,7 @@ char *fnSigConvRefusal(INode *from, INode *to, int *code) {
     if (todcl->tag == VirtRefTag) {
         StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
         if (!fromsig->ccall || trait->tag != StructTag || trait->callsig == NULL
-            || !fnSigEqualC(trait->callsig, fromsig, 0))
+            || !fnSigMeetsC(fromsig, trait->callsig, NULL, 0, 0))
             return NULL;
         *code = ErrorFnRefConv;
         fnSigRefSpell(have, sizeof(have), fromsig);

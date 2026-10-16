@@ -197,7 +197,8 @@ trait that already exists.
   words (`ErrorCallablePerm`), at an argument (`fnCallTypeCheck`), an
   initializer (`varDclTypeCheck`) and an owner's making.
 - **A plain function.** `refvirtMatchesRef` accepts a reference to a function
-  whose signature `fnSigEqual`s the trait's. Generation (`genlConvert`) makes the
+  whose signature meets the trait's (`fnSigMeets`: the trait's own, or a recast's
+  difference from it, as a method's meets a trait's; struct.md). Generation (`genlConvert`) makes the
   data pointer the function's own code pointer and the vtable (`genlFnStubVtable`,
   once per trait and object, `Vtable.llvmfnvtable`) a one-slot table holding a stub
   of the slot's type that calls its first argument as the function with the rest.

@@ -683,7 +683,10 @@ open.
 **What the module has for each member must have the member's shape**
 (`modTraitCheck`, at the start of `modTypeCheck`, once both sides have types): a
 function or an overload name for a function, one candidate with exactly the
-member's signature (`fnSigEqual`; no coercion, as for a struct trait); a global
+member's signature (`fnSigEqual`), or else the sole candidate whose signature is a
+subtype of it by a recast alone (`fnSigMeets`, as a struct's method meets a trait's:
+nodes/struct.md, "A method meets a requirement as a subtype"; a conversion is no
+recast, and no coercion stands in for the signature); a global
 for a global, of the member's type and permission. Each difference is
 `ErrorModTraitMismatch` at the `is`, naming the member. A copy has the shape by
 construction and is passed over, and where a difference was reported the copies
