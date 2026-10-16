@@ -432,6 +432,21 @@ call's argument, a variable's initializer, a return) and from the unmet bound
 (`genericRequirementsMetIn`). `trait_typecheck_private_match` pins the refusals
 and `trait_private_match` what still fits.
 
+⚠ **A generic's bound is asked from the generic, not from the use instantiating
+it.** The body is the code that reads the field or calls the method the trait
+names, and a private member is nameable only inside its module, so a type that
+passed the bound from where the use sits (the type's own module) would fail in
+the body with `ErrorNotPublic`. `GenericAsker` (generic.c) stands the generic in
+as `inodeCheckState` (a function's `fn`, a type's `typenode`) wherever its
+conditions are decided: `genericUnmetCondition` takes the generic, `genericEntryValue`
+does the same for an `is` entry's condition, and `genericRequirementsMet` holds it
+across the refusal's words too, so `structPrivateWhy` asks the same question the
+decision did. A type in the generic's own module keeps its privates for the bound
+whoever instantiates it; one from another module is refused (`ErrorPrivateMatch`)
+at the instantiation, from the type's own module as from any other. Pinned by
+`trait_typecheck_bound_privacy`, `trait_typecheck_bound_privacy_back` and
+`trait_bound_privacy`.
+
 ⚠ **A slot is filled by no stronger a `self` than the trait's method declares.**
 `fnSigVrefEqual` skips the receiver, so a vtable slot's match would meet a trait's
 `self &` with a method taking `self &mut`, and a call through a `&<Trait` would

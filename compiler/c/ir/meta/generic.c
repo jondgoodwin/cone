@@ -1531,6 +1531,35 @@ static void genericSigMeetWhy(char *buf, size_t size, INode *type, FnSigNode *si
             typename, found, wanted);
 }
 
+// A bound is met by what the generic's own code could name through the type: the
+// body is what calls the member, and a private member counts for code inside its
+// module only (structMemberHidden), so the asker while a bound is decided is the
+// generic, not the use instantiating it. A type passing the bound from where the
+// use sits would then fail in the body, on a member the body cannot name. This
+// stands the generic in as the code asking, and puts the real one back.
+typedef struct {
+    TypeCheckState state;
+    TypeCheckState *saved;
+} GenericAsker;
+
+static void genericAskerEnter(GenericAsker *asker, INode *generic) {
+    asker->saved = inodeCheckState;
+    asker->state.typenode = NULL;
+    asker->state.fn = NULL;
+    asker->state.scope = 0;
+    asker->state.extend = NULL;
+    if (generic && generic->tag == FnDclTag)
+        asker->state.fn = (FnDclNode*)generic;
+    else if (generic)
+        asker->state.typenode = generic;
+    if (asker->state.fn || asker->state.typenode)
+        inodeCheckState = &asker->state;
+}
+
+static void genericAskerLeave(GenericAsker *asker) {
+    inodeCheckState = asker->saved;
+}
+
 // Evaluate a condition at these arguments, 'or' and 'and' as in an expression,
 // the right side only where the left does not decide it. A lone clause is
 // decided only where its subject is one of 'parms': a clause over a parameter
@@ -1588,18 +1617,33 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
     return itypeIsSame(type, named) ? WhereTrue : WhereFalse;
 }
 
+// One condition of a generic's, decided as the generic's own code would ask it
+static WhereValue genericEntryValue(INode *generic, INode *cond, Nodes *parms, Nodes *args) {
+    GenericAsker asker;
+    genericAskerEnter(&asker, generic);
+    WhereValue value = genericConditionValue(cond, parms, args, 0);
+    genericAskerLeave(&asker);
+    return value;
+}
+
 // The first condition of 'where' these arguments make false, or NULL if none
 // does. One left unknown is decided where the parameter it turns on is bound.
-static INode *genericUnmetCondition(Nodes *where, Nodes *parms, Nodes *args) {
+static INode *genericUnmetCondition(INode *generic, Nodes *where, Nodes *parms, Nodes *args) {
     if (where == NULL || parms == NULL || args == NULL)
         return NULL;
+    GenericAsker asker;
+    genericAskerEnter(&asker, generic);
+    INode *unmet = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(where, cnt, nodesp)) {
-        if (genericConditionValue(*nodesp, parms, args, 0) == WhereFalse)
-            return *nodesp;
+        if (genericConditionValue(*nodesp, parms, args, 0) == WhereFalse) {
+            unmet = *nodesp;
+            break;
+        }
     }
-    return NULL;
+    genericAskerLeave(&asker);
+    return unmet;
 }
 
 // Append a type's name, with an instance's type arguments, to 'buf'
@@ -2010,7 +2054,7 @@ static void genericCondIsWhy(char *buf, size_t size, INode *arg, StructNode *tra
         FieldDclNode *entry = (FieldDclNode*)*nodesp;
         if (genericNamedTrait(entry->vtype) != want)
             continue;
-        int holds = genericConditionValue(entry->value, generic->genericinfo->parms, args, 0) == WhereTrue;
+        int holds = genericEntryValue((INode*)generic, entry->value, generic->genericinfo->parms, args) == WhereTrue;
         if (holds != (trait == copyTrait))
             continue;
         char text[256] = "";
@@ -2175,7 +2219,7 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
         }
     }
     genericWhereOwner = generic;
-    INode *cond = genericUnmetCondition(where, parms, srcgencall->args);
+    INode *cond = genericUnmetCondition(generic, where, parms, srcgencall->args);
     if (cond == NULL) {
         genericSendableNote(srcgencall, where, parms, name);
         genericWhereOwner = NULL;
@@ -2273,7 +2317,11 @@ static int genericRequirementsMet(TypeCheckState *pstate, FnCallNode *srcgencall
     TypeCheckState *svstate = genericCondState;
     genericCondSite = (INode*)srcgencall;
     genericCondState = pstate;
+    // The words for a refusal ask the same question the decision did
+    GenericAsker asker;
+    genericAskerEnter(&asker, generic);
     int met = genericRequirementsMetIn(srcgencall, generic, genericinfo, name);
+    genericAskerLeave(&asker);
     genericCondSite = svsite;
     genericCondState = svstate;
     return met;
@@ -2318,7 +2366,7 @@ static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args, Nodes **l
             nodesAdd(late, *nodesp);
             continue;
         }
-        if (genericUnmetCondition(((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args) == NULL)
+        if (genericUnmetCondition((INode*)generic, ((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args) == NULL)
             continue;
         if (absent == NULL)
             absent = newNodes(4);
@@ -2327,7 +2375,7 @@ static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args, Nodes **l
     if (generic->condis) {
         for (nodesFor(generic->condis, cnt, nodesp)) {
             INode *cond = ((FieldDclNode*)*nodesp)->value;
-            if (genericConditionValue(cond, generic->genericinfo->parms, args, 0) == WhereTrue)
+            if (genericEntryValue((INode*)generic, cond, generic->genericinfo->parms, args) == WhereTrue)
                 continue;
             if (absent == NULL)
                 absent = newNodes(4);
@@ -2428,7 +2476,7 @@ int genericReportAbsent(INode *errnode, INode *typedcl, Name *name) {
     Nodes *args = itypeInstanceTypeArgs(typedcl);
     while (cnt--) {
         FnDclNode *fn = (FnDclNode*)*candp++;
-        INode *cond = genericUnmetCondition(fn->where, generic->genericinfo->parms, args);
+        INode *cond = genericUnmetCondition((INode*)generic, fn->where, generic->genericinfo->parms, args);
         if (cond == NULL)
             continue;
         char typename[256] = "";
@@ -2553,7 +2601,7 @@ static void genericLateWhere(TypeCheckState *pstate, INode *instance, void *extr
     genericCondState = pstate;
     for (uint32_t i = 0; i + 1 < late->pairs->used; i += 2) {
         FnDclNode *original = (FnDclNode*)nodesGet(late->pairs, i);
-        if (genericUnmetCondition(original->where, late->generic->genericinfo->parms, late->args) != NULL)
+        if (genericUnmetCondition((INode*)late->generic, original->where, late->generic->genericinfo->parms, late->args) != NULL)
             structRetireMember((StructNode*)instance, nodesGet(late->pairs, i + 1));
     }
     genericCondSite = svsite;
@@ -3699,7 +3747,7 @@ int genericOverloadViable(FnDclNode *generic, INode **self, Nodes *args, uint32_
         if (!literal)
             return 0;
     }
-    if (genericUnmetCondition(generic->where, info->parms, known->args) != NULL)
+    if (genericUnmetCondition((INode*)generic, generic->where, info->parms, known->args) != NULL)
         return 0;
 
     // The other parameters are a plain function's

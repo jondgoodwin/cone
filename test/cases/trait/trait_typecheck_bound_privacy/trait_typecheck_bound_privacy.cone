@@ -1,0 +1,33 @@
+// A generic's bound is met by what the generic's own code can name through the
+// type, not what the code instantiating it can. A bound '[T Trait]' is checked
+// from the generic's module, because the generic's body is the code that reads
+// the field or calls the method, and a member private to a module is named only
+// by code inside it (doc/manual/mod-subtyping.html, privacy is module-wide).
+//
+// A type whose module instantiated another module's generic passed the bound
+// from where it stood, so the generic's body was then refused (1042) on a member
+// it cannot name. It is now refused where the generic is asked for, under the
+// same code as from any other module (1505, trait_typecheck_private_match),
+// and the body is never made.
+//
+// lib.cone holds the generics, vault.cone the types and the instantiation from
+// the type's own module; this module, a third, does it from outside both.
+// trait_typecheck_bound_privacy_back instantiates from the generics' module, and
+// trait_bound_privacy runs the generics that live in the type's own module.
+
+mod trait_typecheck_bound_privacy;
+
+fn fromThird() u32 {
+  imm s = vault.make(5u32);
+  lib.getId(&s);         //~ ErrorPrivateMatch:6 "getId requires T is Id, and Secret is not Id. The field `id` of Secret is private to its module"
+  lib.callHidden(&s);    //~ ErrorPrivateMatch:6 "callHidden requires T is Hidden, and Secret is not Hidden. The method `hidden` of Secret is private to its module"
+  lib.whereHidden(&s);   //~ ErrorPrivateMatch:6 "whereHidden requires T is Hidden, and Secret is not Hidden."
+  lib.viaHolder(s);      //~ ErrorPrivateMatch:6 "viaHolder requires T is Hidden, and Secret is not Hidden."
+  imm h = new lib.Holder(s); //~ ErrorPrivateMatch:11 "Holder requires T is Hidden, and Secret is not Hidden."
+  0u32;
+}
+
+fn fromThirdOpen() u32 {
+  imm o = vault.makeOpen(5u32);
+  lib.getId(&o) + lib.callHidden(&o) + lib.whereHidden(&o) + lib.viaHolder(o);
+}
