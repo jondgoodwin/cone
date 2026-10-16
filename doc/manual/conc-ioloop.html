@@ -236,6 +236,45 @@ cancel again
 		does a read from a peer that never sends, and an HTTP fetch still in flight. A program whose work is waiting on I/O
 		therefore keeps <span class="pre">main</span> waiting until it is done, as <a href="conc-io.html">the kitchen</a>
 		does on its channel.</p>
+	<p>Or <span class="pre">main</span> can end by calling <span class="pre">actors.waitUntilIdle()</span>. It returns once
+		no actor is queued or running and no awaited operation is outstanding: every timer or I/O operation an actor awaits
+		has been answered, and whatever its answer started has run. The runtime stays running, and the final then ends the
+		program as above.</p>
+<pre>
+mod idle;
+
+import stdio use *;
+import time use Duration;
+import actors;
+import aio;
+
+actor Timer {
+  pub async do ring(self, millis i64) {
+    imm r = await aio.sleep(Duration.fromMillis(millis));
+    print &lt;- "rang\n";
+  }
+}
+
+fn main() {
+  imm t = new Timer();
+  t.ring(200i64);
+  actors.waitUntilIdle();   // returns once "rang" is printed
+  print &lt;- "done\n";
+}
+</pre>
+	<p>It prints <span class="pre">rang</span>, then <span class="pre">done</span>. Without the call,
+		<span class="pre">main</span> returns at once, and the sleeping behaviour is abandoned as above.</p>
+	<ul>
+		<li>A program that never goes idle, such as a listening server, never returns from it. There is no time limit.</li>
+		<li>Called before any actor exists, it returns at once. Called from one of the runtime's own workers, it is a
+			panic.</li>
+		<li>Call it only as <span class="pre">main</span>'s last statement: a message another thread sends while it
+			waits may arrive after it returns.</li>
+		<li>Every <span class="pre">await</span> counts, so it covers <span class="pre">aio</span>,
+			<span class="pre">actorhttp</span> and any other package that hands an actor something to await.</li>
+	</ul>
+	<p style="margin-left: 40px;"><i>Interim: how a program ends with I/O in flight is to be designed again. This call
+		stands in until then.</i></p>
 
 	<p>You can now drive the <span class="pre">iocore</span> loop from a plain thread, send datagrams on it, cancel its
 		work in groups, and say what happens to I/O still waiting when a program ends. The I/O thread answers the actors;
