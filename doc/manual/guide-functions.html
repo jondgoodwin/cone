@@ -157,20 +157,51 @@ each i in 1 .. 10 {
   print &lt;- " ", nextFib();       // 0 1 1 2 3 5 8 13 21 34
 }
 </pre>
-	<p><span class="pre">a</span> and <span class="pre">b</span> belong to the closure, and a second closure written the
-		same way would have its own. A state entry that changes is <span class="pre">mut</span>, and so is the variable
-		that holds a closure that changes its state. The brackets can also hold copies of variables from around it,
-		<span class="pre">[rate]</span>. A closure with only its own state and copies can be kept after the code around
-		it has finished, or handed to an <a href="guide-actors.html">actor</a>; one that uses the variables around it
-		cannot.</p>
-	<p id="capture">A closure that uses a variable around it borrows it: it reads it where it stands, or changes it if
-		the body does and the variable is <span class="pre">mut</span>, and the compiler works out which from the body.
-		While the closure is still to be used, nothing else may change the variable (nor read it, if the closure
-		changes it), and once the closure's last use is past, it can. A closure is a value, and its body is its one method, so a few rules follow from that.
+	<p id="closuredef"><span id="full"></span><span class="pre">a</span> and <span class="pre">b</span> belong to the
+		closure, and a second closure written the same way would have its own. In full, a closure is written
+		<span class="pre">fn (parameters) [state] returnType { body }</span>: a function's definition without the name,
+		with the state in square brackets after the parameters, where a bracket cannot be taken for the return type. Each
+		state entry is a field of the closure, a name with an initial value whose type is the value's, and the entries
+		are separated by commas; a closure with no state leaves the list out, as <span class="pre">triple</span> does. An
+		entry is <span class="pre">imm</span> unless written <span class="pre">mut</span>, and
+		the variable that holds a closure that changes its state is <span class="pre">mut</span> too. An entry's initial
+		value is read in the code around the closure, not from the entries before it: in <span class="pre">[a = 1, b =
+		a]</span>, <span class="pre">b</span> starts from the <span class="pre">a</span> outside.</p>
+	<p id="own">An entry is how a closure gets a value of its own, by the ordinary rules for values:</p>
+<pre>
+imm ribs = 3;
+imm shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
+shape(2)          // 2 * 3 + 11: 17
+</pre>
+	<p>An entry with no <span class="pre">=</span>, <span class="pre">[ribs]</span>, starts from the variable of that
+		name around the closure: a value that copies is copied, and one that moves is moved, as it would be passed to a
+		function. <span class="pre">[buf = xs]</span> moves a value in, and <span class="pre">xs</span> can no longer be
+		used. Listing a counted handle, an <span class="pre">Rc</span> or an <span class="pre">Arc</span>, gives the closure
+		a count of its own, and the handle's permission says whether the closure may change what it points at.
+		<span class="pre">[mut n = 0]</span> is new state, and <span class="pre">[r = &amp;p]</span> is a borrow written
+		out, which gives the closure the borrow's lifetime. Listing also tells the reader which values are the closure's
+		own. A closure with only its own state and copies can be kept after the code around it has finished, or handed to
+		an <a href="guide-actors.html">actor</a>; one that uses the variables around it cannot.</p>
+	<p id="capture">A closure that uses a variable around it, without listing it, borrows it: it reads it where it
+		stands, or changes it if the body does, and the compiler works out which from the body. Only a
+		<span class="pre">mut</span> variable can be changed that way; changing any other is the ordinary "no permission to
+		modify" error, reported inside the body. While the closure is still to be used, nothing else may change the
+		variable (nor read it, if the closure changes it), and once the closure's last use is past, it can. Borrowing is
+		the default because a copy made silently would duplicate state: a closure that added to its own copy of a total
+		would leave the total unchanged, with no sign that it had. A closure written in a method that names a member of
+		the object, <span class="pre">hits</span>, reaches it through the method's <span class="pre">self</span>, which it
+		borrows as it borrows any variable; a closure sees exactly what the code around it sees, private members included,
+		wherever it is later called from.</p>
+	<p id="ret">A closure is a value, and its body is its one method, so a few rules follow from that.
 		<span class="pre">return</span> inside it leaves the closure, never the function around it. It cannot call
 		itself, since it has no name inside its own body (<i>"Error 1393: A closure cannot call itself"</i>), so
-		recursion is a named function's work. And a function that takes a closure names the signature it will call,
-		behind <span class="pre">&amp;&lt;</span>:</p>
+		recursion is a named function's work. It is written in a function, never at the module level as a global's value
+		or a field's default, where there is nothing for it to borrow. Its return type is the one written; or else the one
+		the signature it is given to says; or else it is read off the body: the first <span class="pre">return</span> or
+		final expression fixes it, and the others must fit. A body whose last statement changes something
+		(<span class="pre">total += x;</span>) returns nothing. Paths that give different types are refused, with
+		<i>Error 1392</i> asking for the return type to be written. And a function that takes a closure names the signature
+		it will call, behind <span class="pre">&amp;&lt;</span>:</p>
 <pre>
 // f is any closure, or function, that takes an i32 and gives one back
 fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
@@ -178,14 +209,26 @@ fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
 imm off = 10;
 apply(x =&gt; x * 2, 21)                        // 42
 apply(fn(x i32) i32 { x + off; }, 1)         // 11
+apply(fn(x) { x + off; }, 1)                 // 11: the type comes from the signature
 </pre>
 	<p>A closure that changes what it holds is passed as <span class="pre">&amp;&lt;mut fn(x i32) i32</span> instead.
 		This <span class="pre">&amp;&lt;</span> is a reference that stands for anything that can be called that way; the
 		<a href="mod-functions.html#cloref">Closure references</a> section of Modularity has every form of it, and
-		what a closure may hold and where it may go.</p>
-	<p>For a small closure handed to something that already knows its types, there is a short form, the parameters,
-		an arrow and the body: <span class="pre">x =&gt; x * 2</span>. That is how closures are handed to a collection to
-		keep, change or add up its items, on <a href="guide-collections.html">Collections</a>.</p>
+		what a closure may hold and where it may go. A parameter's type may be left out, as in the last call, only where
+		the closure is given to something that says what the signature is: a parameter such as
+		<span class="pre">f</span>, a generic bound <span class="pre">F fn(sig)</span>, or an owner of a closure
+		(<a href="mod-functions.html#owner">An owner of a closure</a>).</p>
+	<p id="short">For a small closure handed to something that already knows its types, there is a short form, the
+		parameters, an arrow and the body: <span class="pre">x =&gt; x * 2</span>, <span class="pre">(a, b) =&gt; a.len()
+		&lt; b.len()</span>, <span class="pre">() =&gt; 5</span>, <span class="pre">n =&gt; total += n</span>. It takes
+		parameter names only, and a body that is one expression, an assignment or a block; it has no state list and no
+		written return type, so a closure that needs either is written in full. A comma after the body belongs to the list
+		the closure is in, so <span class="pre">f(x =&gt; x + 1, 3)</span> is a call with two arguments, and the arrow is
+		<span class="pre">=&gt;</span>, not <span class="pre">-&gt;</span>, which would read as "returns". That is how
+		closures are handed to a collection to keep, change or add up its items, on
+		<a href="guide-collections.html">Collections</a>.</p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: a closure that is called once and consumed, whose body moves
+		one of its state entries out.</i></p>
 
 	<h2 id="generators-tour"><span id="generators"></span>Generators: functions that hand out values</h2>
 	<p>The Fibonacci closure has to be called once for every number. A <b>generator</b> turns that around: it is a
@@ -242,7 +285,9 @@ each v in span.evens() { print &lt;- " ", v; }              //  4 6 8 10
 	<p>A <span class="pre">yield</span> is a statement of its own, never part of a larger expression. A generator is
 		an ordinary value with a <span class="pre">next</span> method, which is all <span class="pre">each</span> needs, and
 		the iterator adapters take one as they take any cursor: <span class="pre">count(5).map(x =&gt; x * 2).sum()</span>
-		is 20 (<a href="guide-methods.html#iterator">Making an iterator</a>).</p>
+		is 20 (<a href="rec-methods.html#iterator">Being walked: next</a>). <a href="rec-generators.html">Generators:
+		writing your own</a>, in Recipes, has the rest: generator methods, generic generators, what may be borrowed across
+		a <span class="pre">yield</span>, and when a generator dies.</p>
 
 	<p>You can now name a piece of work, give it state, and have it hand out a sequence. Next come the types
 		themselves, starting with the numbers that every example so far has quietly relied on.</p>

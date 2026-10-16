@@ -4,8 +4,9 @@ Each block is verbatim, headed by an HTML comment giving its source page and anc
 Material folded into the manual's pages has been removed from here (git history keeps the original holding files,
 commit c0cbdae76).
 
-- `UNPLACED.html`: good material with no clean home yet: first-class patterns with their parser, jump tables, the
-  match assignment form, and the `pi as u64` trust example. (The type repertoire and semantics lists left 16 Oct:
+- `UNPLACED.html`: good material with no clean home yet: the `pi as u64` trust example. (First-class patterns with
+  their parser, jump tables and the match assignment form left 16 Oct for the Recipes part's
+  `rec-patterns.html`: `#using` and the sections after it, `#switch`, `#matchassign`. The type repertoire and semantics lists left 16 Oct:
   abstract types reached only by reference, and nominal versus structural types, went to
   `mod-subtyping.html#byref` and `#nominal`; the rest repeated the Guide's data-type pages and Memory, and was cut.)
 - `pending-subtype-pairs.html` (removed 16 Oct): the old Type safety page's subtype pairs, folded into
