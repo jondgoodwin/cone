@@ -166,8 +166,12 @@ Then, only when `pstate->scope > 0`:
 **`fnSigNameRes` forces `scope = 0`** around a signature, so a signature reached
 *as a type* does not leak parameter names — and, as a side effect, so the
 parse-time `scope = 1` survives. `fnDclNameRes` hooks the parameters itself,
-only when there is a body, which is why **there is no duplicate check on
-parameter names**.
+only when there is a body, so **the duplicate check on parameter names is a
+loop of its own in `fnDclNameRes`**, run for every function declaration with
+or without a body (`ErrorDupName` at the second; a closure's is
+`closureNameRes`, a generator's `parseGenFinish`, a behaviour's the actor's
+message struct). A function *type's* parameters are not asked: they bind
+nothing.
 
 `fieldDclNameRes` and `constDclNameRes` resolve their children and hook nothing.
 
@@ -395,7 +399,6 @@ Fields and constants have no flow participation at all.
   does not for private or enum-typed fields. A private field read through a
   virtual reference is refused before generation (`fnCallPrivateVtable`), which
   is what keeps generation from reading the hole.
-- **No duplicate check on parameter names.** `fn f(a i32, a i32)` compiles.
 - **`scope` is stamped by two different phases**, and the type check's
   `scope <= 1` literal rule silently reclassifies anything whose stamping was
   skipped — including the duplicate-name error path, which reports and falls

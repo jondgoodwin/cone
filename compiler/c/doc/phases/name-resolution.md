@@ -341,7 +341,7 @@ a path's member in `fnCallNameResPath`; never for a pattern's bare root, which
 type check reports),
 `ErrorNotPublic` (a private name through a qualifier; a private field or member
 in a fold), `ErrorPubFieldPrivType` (a `pub` field of a `pub` type naming a type
-private to the module, `fieldDclNameRes`), `ErrorDupName` (duplicate local, duplicate lifetime label,
+private to the module, `fieldDclNameRes`), `ErrorDupName` (duplicate local, a function's parameter named twice, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
 declares, a folded name already taken), `ErrorCircular` (two types that each
 extend or name the other in an `is`, or a type folding from a field of a type not yet
@@ -401,7 +401,9 @@ next pass a null to trip over.
   importer expands. `structNameRes` saves and restores it.
 - **`fnSigNameRes` forces `scope = 0`** so that a signature reached as a *type*
   does not leak its parameter names. `fnDclNameRes` hooks the same parameters
-  itself, at scope 1, only when there is a body.
+  itself, at scope 1, only when there is a body. Two parameters of one name are
+  `ErrorDupName` at the second, found by a loop in `fnDclNameRes` that runs
+  with or without a body (a function *type* is not asked).
 - **Resolve before hooking, in both senses.** A variable's value before its
   name; a struct's base trait before any type member.
 

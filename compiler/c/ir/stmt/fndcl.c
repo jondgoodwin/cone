@@ -247,6 +247,26 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     inodeNameRes(nstate, &fndclnode->vtype);
     nstate->sigfn = svsigfn;
 
+    // A function's parameters must differ from each other, 'self' among them.
+    // A generator's are refused at parse (parseGenFinish) and a closure's by
+    // closureNameRes; a signature that is only a type (fnSigNameRes) names
+    // nothing, so it is not asked.
+    if (fndclnode->vtype && fndclnode->vtype->tag == FnSigTag) {
+        FnSigNode *sig = (FnSigNode*)fndclnode->vtype;
+        for (nodesFor(sig->parms, cnt, nodesp)) {
+            if ((*nodesp)->tag != VarDclTag)
+                continue;
+            for (INode **priorp = &nodesGet(sig->parms, 0); priorp != nodesp; ++priorp)
+                if ((*priorp)->tag == VarDclTag
+                    && ((VarDclNode*)*priorp)->namesym == ((VarDclNode*)*nodesp)->namesym) {
+                    errorMsgNode(*nodesp, ErrorDupName,
+                        "Duplicate name %s: every parameter of a function needs its own name.",
+                        &((VarDclNode*)*nodesp)->namesym->namestr);
+                    break;
+                }
+        }
+    }
+
     if (fndclnode->value) {
 
         uint16_t oldscope = nstate->scope;

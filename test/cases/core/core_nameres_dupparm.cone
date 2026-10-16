@@ -1,0 +1,81 @@
+// A parameter is a local variable of the function, so two parameters of one
+// name are the same refusal as two locals of one name: ErrorDupName, at the
+// second. Before, the second silently won ('fn f(a i32, a i32) i32 { a; }'
+// answered its second argument).
+//
+// One case for each way a parameter list is declared. A function's, a method's
+// (the receiver 'self' is a parameter too), a generic function's, a generic
+// type's method's, a declaration without a body ('extern', a trait's) and an
+// actor's synchronous method all share the declaration's name resolution
+// (fnDclNameRes); a closure, in its full and its short form, is checked by
+// closureNameRes, and an anonymous function by the function path it is lifted
+// to. A generator's parameters are refused where it is declared
+// (corout_parameter_names_parse); a function TYPE, 'fn(a i32, a i32)', names
+// its parameters for the reader and binds none, so it is not asked.
+//
+// Name resolution stage only, as core_nameres_dupname: a function whose
+// parameters are all distinct, at the end, is accepted.
+
+mod core_nameres_dupparm;
+
+import actors;
+
+fn plain(a i32, a i32) i32 {           //~ ErrorDupName:17 "Duplicate name a"
+  a;
+}
+
+struct Box {
+  v i32;
+  fn method(self &, n i32, n i32) i32 {   //~ ErrorDupName:28 "Duplicate name n"
+    n;
+  }
+  fn receiver(self &, self i32) i32 {   //~ ErrorDupName:23 "Duplicate name self"
+    1;
+  }
+}
+
+fn generic[T](a T, a T) T {            //~ ErrorDupName:20 "Duplicate name a"
+  a;
+}
+
+struct Wrap[T] {
+  v T;
+  fn method(self &, a T, a T) T {       //~ ErrorDupName:26 "Duplicate name a"
+    a;
+  }
+}
+
+extern fn @c bodiless(a i32, a i32) i32;   //~ ErrorDupName:30 "Duplicate name a"
+
+trait Shape {
+  fn area(self &, w i32, w i32) i32;    //~ ErrorDupName:26 "Duplicate name w"
+}
+
+actor Count {
+  v u64;
+  fn bump(self &, a u64, a u64) {       //~ ErrorDupName:26 "Duplicate name a"
+  }
+}
+
+fn closures() {
+  imm full = fn(a i32, a i32) i32 { a; };      //~ ErrorDupName:24 "Name is already defined"
+  imm anon = &fn(a i32, a i32) i32 { a; };     //~ ErrorDupName:25 "Duplicate name a"
+  full(1, 2);
+  anon(1, 2);
+  apply((a, a) => a);                          //~ ErrorDupName:13 "Name is already defined"
+}
+
+fn apply(f &<fn(x i32, y i32) i32) i32 {
+  f(1, 2);
+}
+
+fn distinct(a i32, b i32) i32 {
+  a + b;
+}
+
+struct Fine {
+  v i32;
+  fn method(self &, a i32, b i32) i32 {
+    a + b;
+  }
+}
