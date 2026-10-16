@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Substitution - Cone Reference</title>
+	  <title>Traits and subtyping: interchangeable parts - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,376 +8,466 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Substitution</div>
+			<div id="sub">Traits and subtyping: interchangeable parts</div>
 		</div>
 
     <div class="text">
 
-	<h2 id="why">One part for another</h2>
-	<!-- NEW: drafted -->
-	<p>Substitution is the idea that a component may swap one of its parts for a different part
-		that is just as compliant, the way bulbs of any size, shape or colour fit a standard
-		socket. To make the swap safe, the component states an interface, and a candidate must meet
-		all of it to play the part. Substituting a part gives versatility, since behaviour can be
-		varied by handing in a different part; it lets a part be upgraded without touching what
-		uses it; and it makes new parts easier to write. It also adds coupling, since every part now
-		depends on the interface, and a change to the interface ripples out to all of them.</p>
-	<p>A substitution is settled either when the program is compiled, by generating code for each
-		part handed in (<a href="mod-generativity.html">Generativity</a>), or while it runs, by
-		dispatching through a table that the part brings with it. Cone has both, at each layer:</p>
+	<p>A light socket takes any bulb of the right fitting, whatever its size, shape or colour. Code can work the
+		same way: a function written against an interface takes any part that meets it, so behaviour is varied by
+		handing in a different part, and a part is upgraded without touching what uses it. That is
+		<b>subtyping</b>, and in Cone the interface is usually a <b>trait</b>. This page shows how to declare a
+		trait, how a type meets one, how the choice of part is settled while the program is compiled or while it
+		runs, and the other places Cone lets one thing stand in for another.</p>
+<pre>
+mod shapes;
+
+import stdio use *;
+
+// The interface: anything with these two methods is a Shape
+trait Shape {
+  pub fn area(self &amp;) f32;
+  pub fn perimeter(self &amp;) f32;
+}
+
+struct Rectangle {
+  height f32;
+  width f32;
+  pub fn area(self &amp;) f32 { height * width; }
+  pub fn perimeter(self &amp;) f32 { 2. * (height + width); }
+}
+
+struct Circle {
+  r f32;
+  pub fn area(self &amp;) f32 { 3.14159 * r * r; }
+  pub fn perimeter(self &amp;) f32 { 2. * 3.14159 * r; }
+}
+
+// Written once, for any Shape: &amp;&lt; is a virtual reference
+fn describe(shape &amp;&lt;Shape) {
+  print &lt;- "area ", shape.area(), ", perimeter ", shape.perimeter(), "\n";
+}
+
+fn main() {
+  imm circle = new Circle(5.);
+  describe(&amp;circle);
+  imm square = new Rectangle(10., 10.);
+  describe(&amp;square);
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+area 78.5397, perimeter 31.4159
+area 100, perimeter 40
+</pre>
+	<p><b>Try this:</b> add a <span class="pre">Triangle</span> with its own <span class="pre">area</span> and
+		<span class="pre">perimeter</span>, and pass it to <span class="pre">describe</span>, which does not change.
+		Neither struct ever says it is a <span class="pre">Shape</span>: having the methods is enough.</p>
+
+	<h2 id="why">Subtyping: one part for another</h2>
+	<p>To make a swap safe, the component states an interface, and a candidate must meet all of it to play the
+		part. The interface is the <i>supertype</i>, and each type that meets it a <i>subtype</i>: a value of the
+		subtype may stand wherever the supertype is wanted. That buys versatility, since behaviour is varied by
+		handing in a different part; maintainability, since a part can be upgraded without touching what uses it;
+		and reuse, since new parts are easier to write against a known interface. It also adds coupling, since
+		every part now depends on the interface, and a change to the interface ripples out to all of them.</p>
+	<p>A substitution is settled in one of two ways. While the program is <b>compiled</b>, by generating code for
+		each part handed in, which is what a generic constrained by a trait does
+		(<a href="mod-generativity.html#constraints">Generics</a>): every call is direct, and there is a version of
+		the code for each part. Or while it <b>runs</b>, by calling through a table of methods the part brings with
+		it, which is what a <a href="#virtref">virtual reference</a> does: one version of the code serves every
+		part, and each call looks its method up. Cone has both, and subtyping at every layer:</p>
 	<ul>
-		<li>For a <b>type</b>, the interface is a <a href="#traits">trait</a>. A generic constrained
-			by the trait settles it at compile time; a <a href="#virtref">virtual reference</a> to the
-			trait settles it at run time. A set of variants that other modules may add to is an
-			<a href="#traitvar">open trait</a>.</li>
-		<li>For a <b>function</b>, the interface is its signature. A
-			<a href="#fnref">function reference</a> takes any function of the signature, a
-			<a href="guide-functions.html#closures">closure</a> is a function with state, and a
-			<a href="guide-functions.html#cloref">closure reference</a> takes any closure of the signature.</li>
-		<li>For a <b>module</b>, the interface is a <a href="#modtrait">module trait</a>, settled at
-			compile time.</li>
-		<li>For an <b>actor</b>, the interface would be an <span class="pre">actor trait</span>, which
-			is not built yet.</li>
+		<li>For a <b>type</b>, the interface is a <a href="#traits">trait</a>, and a struct meets it by having its
+			members. An <a href="guide-enums.html">enum</a> is the closed form: its variants are the subtypes, all
+			declared in one place, and a value of any of them is a value of the enum. A set of variants that other
+			modules may add to is an <a href="#traitvar">open trait</a>.</li>
+		<li>For a <b>function</b>, the interface is its signature. A <a href="#fnref">function reference</a> takes
+			any function of the signature, and a <a href="#cloref">closure reference</a> any closure, or any struct
+			with a <span class="pre">()</span> method, of it.</li>
+		<li>For a <b>module</b>, the interface is a <a href="#modtrait">module trait</a>, settled when the program is
+			compiled.</li>
+		<li>For an <b>actor</b>, the interface would be an <span class="pre">actor trait</span>, which is not built
+			yet.</li>
 	</ul>
+	<p><b>Subtypes in Cone are always abstractions.</b> A concrete type is never a subtype of another concrete
+		type: the supertype is a trait, an enum, a signature or a module trait. Reusing another concrete type's code
+		is a separate question, answered by <a href="mod-extensibility.html">name folding</a>, and it grants no
+		subtyping. A value also crosses from one type to another implicitly in a few other places, such as an
+		owning reference given where a borrowed one is wanted; those are described with the types they belong to,
+		in <a href="safe-types.html#conversion-coercion">Type safety: coercion and conversion</a> and
+		<a href="mem-permissions.html">Permissions</a>.</p>
+	<!-- Home for the moved block safe-types.html#subtype ("Subtypes": the two criteria, the list of subtype
+	     pairs, and the one-way safety of upcasting), in moves/to-modularity.html. The criteria and the closing
+	     paragraph fit here. Its list of pairs disagrees with this page in places, so it waits for Jon (see Lane D's
+	     report): "any variant type is a subtype of any trait or struct type", "a smaller number type is a subtype
+	     of a larger", reference permissions and owning-to-borrowed references as subtypes, against "Subtypes in
+	     Cone are always abstractions" above; and Lane E measured "&Foo is a subtype of ?&Foo" as not holding
+	     implicitly today. -->
+	<!-- Home for guide-enums.html#enum ("closed enum versus open trait") is #choosing, below. -->
 
 	<h2 id="traits">Traits</h2>
-
-	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented, except for
-		<span class="pre">actor trait</span>, whose shape the grammar accepts and which the
-		compiler does not build, as actors are not declared in source yet, and a
-		requirement taking <span class="pre">Self</span> by value (<a href="#self">below</a>).
-		<span class="pre">mod trait</span> is implemented, and described with
-		<a href="#modtrait">modules</a>.</i></p>
-
-	<p>Similar to <span class="pre">struct</span>, the definition for a <span class="pre">trait</span>
-		type specifies named methods (and, possibly, fields).
-		For example:</p>
+	<p style="margin-left: 40px;"><i>Note: All of this is implemented, except <span class="pre">actor trait</span>,
+		whose spelling the grammar accepts and which the compiler does not build, as actors are not declared in
+		source yet, and a requirement taking <span class="pre">Self</span> by value (<a href="#self">below</a>).</i></p>
+	<p>A <span class="pre">trait</span> is declared like a struct, with named methods and, possibly, fields:</p>
 <pre>
 trait Id {
   pub id u32;
-  pub fn print();
+  pub fn describe(self &amp;) u32;
 }
 </pre>
-	<p>However, trait types accomplish a very different purpose than struct types.
-		Instead of specifying the complete field layout and behavior of concrete data,
-		trait types abstractly specify a common pattern of shared behavior (methods)
-		and state (fields) across multiple concrete types. By this understanding, the Id trait above expresses the idea that
-		there are other types out there which define a print method (that accepts no arguments
-		and return no values) as well as an unsigned integer field named id.</p>
-	<p>Because traits abstract over other types, their use differs from concrete types (like structs) in two important ways:</p>
+	<p>But it does a very different job. A struct specifies the complete layout and behaviour of concrete data.
+		A trait abstractly specifies a pattern of behaviour (methods) and state (fields) that many concrete types
+		share: <span class="pre">Id</span> says there are types out there with a <span class="pre">describe</span>
+		method of this signature and a <span class="pre">u32</span> field named <span class="pre">id</span>. So a
+		trait differs from a concrete type in two ways:</p>
 	<ul>
-		<li>One cannot explicitly create a value whose type is a trait. Thus, it is not possible to construct a value of this type
-			(e.g., <span class="pre">imm node = new Id(12)</span> is illegal). Instead, you create a concrete-type value,
-			and then you view that concrete value through the lens of a compatible trait.</li>
-		<li>A trait usually specifies methods that have no implementation logic,
-			as the <span class="pre">print</span> method above demonstrates.
-			When a method is called on a trait-based value, it will automatically substitute in the
-			method implementation logic defined by the concrete value's type.</li>
+		<li><b>No value's type is a trait.</b> <span class="pre">new Id(12)</span> is refused ("'new' constructs a
+			struct's value, and Id is not a struct"). You make a value of a concrete type, and view it through a
+			trait it meets.</li>
+		<li><b>A trait's methods usually have no body</b>, as <span class="pre">describe</span> has none. A call
+			through the trait runs the method of the value's own concrete type.</li>
 	</ul>
 
 	<h3 id="kind">A trait is an abstract kind</h3>
+	<p><span class="pre">trait</span> is not a kind of its own but a <b>modifier on a kind</b>: a trait is the
+		abstraction of whatever kind it modifies. The full spelling of the declaration above is
+		<span class="pre">struct trait Id { ... }</span>. <span class="pre">trait Id</span> and
+		<span class="pre">struct trait Id</span> are the same declaration, written two ways; the short form is the
+		one you will normally write, and it means the struct family, because that is what a trait has always
+		abstracted over.</p>
+	<p>Two more kinds take the modifier. A <span class="pre">mod trait</span> is the interface a module conforms
+		to, with functions and globals as its members (<a href="#modtrait">below</a>). An
+		<span class="pre">actor trait</span> is the abstraction of an actor; the grammar accepts it so that its
+		spelling is settled, and the compiler reports it as not built yet. The kind keyword says which <b>family</b>
+		an abstraction belongs to, and composition requires the families to match: a struct composes a struct or a
+		struct-trait, and an actor will compose an actor or an actor-trait. Nothing else on the declaration says
+		which family it serves, and nothing about it is inferred.</p>
+	<p><span class="pre">enum</span> does not take the modifier, and the omission is deliberate. An enum is
+		concrete: its identity is the set of variants it declares, so anything you could hold behind an abstraction
+		of one either is that set, and so is the enum, or is open, and so is a trait. <span class="pre">enum
+		trait</span> is refused: "An enum is concrete: its variant set is its identity. Use 'trait' for an open
+		abstraction."</p>
 
-	<p>A trait is not a kind of its own. <span class="pre">trait</span> is a <b>modifier on a
-		kind</b>, and a trait is the abstraction of whatever kind it modifies. The full spelling of
-		the declaration above is:</p>
-<pre>
-struct trait Id {
-  pub id u32;
-  pub fn print();
-}
-</pre>
-	<p><span class="pre">trait Id</span> and <span class="pre">struct trait Id</span> are the same
-		declaration, written two ways. The short form is the one you will normally write, and it
-		means the struct family, because that is what a trait has always abstracted over.</p>
+	<h2 id="comply">Meeting a trait</h2>
+	<p>A concrete type meets (complies with) a trait when it declares everything the trait requires: a method of
+		each required signature, and a field of each required name and type. <b>Compliance is noticed
+		structurally.</b> A type that happens to declare what a trait requires may be viewed through that trait,
+		whether or not it has ever heard of it, as <span class="pre">Circle</span> was at the top of this page. That
+		is what lets you apply a trait to a library type you did not write, and it saves you from defining
+		interfaces defensively in case you need them later.</p>
 
-	<p>Two more kinds take the modifier. A <span class="pre">mod trait</span> is the interface a
-		module conforms to, with functions and globals as its members, and its defaults copied into
-		each module that says it conforms: see <a href="#modtrait">modules</a>. An
-		<span class="pre">actor trait</span> is the abstraction of an actor; it is accepted by the
-		grammar so that its spelling is settled, and the compiler reports it as not built yet.</p>
-
-	<p>The kind keyword is what says which <b>family</b> an abstraction belongs to, and composition
-		requires the families to match: a struct composes a struct or a struct-trait, and an actor
-		will compose an actor or an actor-trait. Nothing else on the declaration says which family
-		it serves, and nothing about it is inferred.</p>
-
-	<p><span class="pre">enum</span> does not take the modifier, and the omission is deliberate. An
-		enum is concrete: its identity is the set of variants it declares, so anything you could
-		hold behind an abstraction of one either is that set — and so is the enum — or is open, and
-		so is a trait. <span class="pre">enum trait</span> is rejected.</p>
-
-	<h3 id="comply">Complying with a trait</h3>
-
-	<p>A concrete type complies with a trait when it declares everything the trait requires: a method
-		of each required signature, and a field of each required name and type. <b>Compliance is
-		noticed structurally.</b> A type that happens to declare what a trait requires may be viewed
-		through that trait, whether or not it has ever heard of it &mdash; which is what lets you
-		apply a trait to a library type you did not write, and saves you from defining interfaces
-		defensively in case you need them later.</p>
-
-	<h4 id="isa">Declaring it, with <span class="pre">is</span></h4>
-
+	<h3 id="isa">Declaring it, with is</h3>
 	<p>A type may also say so in its own declaration:</p>
 <pre>
 trait Id {
   pub id u32;
-  pub fn describe(self &) u32;
+  pub fn describe(self &amp;) u32;
 }
 
 struct Node is Id {
   pub id u32;
   pub value u32;
 
-  pub fn describe(self &) u32 {id + value;}
+  pub fn describe(self &amp;) u32 {id + value;}
 }
 </pre>
-	<p><b>This is the only place in Cone where a subtype relationship is asserted rather than
-		noticed.</b> The compiler verifies the compliance where it is written, and rejects the
-		declaration if it does not hold.</p>
+	<p><b>This is the only place in Cone where a subtype relationship is asserted rather than noticed.</b> The
+		compiler verifies the compliance where it is written, and refuses the declaration if it does not hold.</p>
+	<p><b>It is the same <span class="pre">is</span> you already know.</b> <span class="pre">p is Mobile</span>
+		asks of a value what <span class="pre">struct Node is Id</span> asserts of a type, and
+		<span class="pre">X is Y</span> means "X is a Y" in both. The difference is the operand, not the question: a
+		value's variant is dynamic, so the value form is answered when the program runs, while a type's
+		relationships are fixed, so the declaration form is settled where it is written. One predicate over two
+		kinds of operand, not two mechanisms that happen to share a word.</p>
+	<p>The obvious objection is that structural compliance makes the declaration redundant. It does not, for two
+		reasons. First, <b>a declaration forces compliance at the moment of declaring</b>, rather than later at the
+		point of use. If a type is meant to satisfy a trait, saying so is what makes the compiler tell you the day
+		you break it, at the type itself, instead of the day something far away tries to view a value through the
+		trait and fails there. Second, <b>some traits are empty</b>, and only a declaration can carry them: the
+		<a href="#marker">marker traits</a>, below. The two kinds of compliance exist alongside each other on
+		purpose. Structural compliance keeps traits applicable to types that never anticipated them;
+		<span class="pre">is</span> lets a type commit, and makes the empty trait expressible at all.</p>
 
-	<p><b>It is the same <span class="pre">is</span> you already know.</b>
-		<span class="pre">p is Mobile</span> asks of a value what
-		<span class="pre">struct Node is Id</span> asserts of a type, and
-		<span class="pre">X is Y</span> means &ldquo;X is a Y&rdquo; in both. The difference is the
-		operand, not the question: a value's variant is dynamic, so the value form is answered at
-		runtime, while a type's relationships are fixed, so the declaration form is settled where it
-		is written. One predicate over two kinds of operand &mdash; not two mechanisms that happen to
-		share a word.</p>
-
-	<p>The obvious objection is that structural compliance makes the declaration redundant. It does
-		not, for two reasons.</p>
-
-	<p id="marker"><b>A marker trait is empty, so nothing structural can ever notice it.</b> Plenty of useful
-		traits carry no fields and no methods at all &mdash; they are testable invariants, adjectives
-		a type either claims or does not. There is no such thing as a structural match to a trait that
-		declares nothing: every type would match it, so the match would say nothing at all. Such a
-		trait can only be carried by the types that <i>nominate</i> it, which is what
-		<span class="pre">is</span> is for. Nothing else in the language can express it.</p>
-
-	<p><b>The compiler knows these marker traits of its own</b>, reached from every module
-		without an import, and none has members:</p>
+	<h3 id="takes">What the declaration takes, and what it gives</h3>
 	<ul>
-		<li><a href="mem-moves.html"><span class="pre">Move</span> and <span class="pre">Copy</span></a>.
-			Every type is exactly one of the two. Unlike a marker trait you write, the compiler also
-			<i>grants</i> one to every type from what it can see: a finalizer, a field that moves or
-			an owning reference that cannot be aliased makes a type <span class="pre">Move</span>,
-			and a type with none of these is <span class="pre">Copy</span>. A type may still nominate
-			either. <span class="pre">struct Handle is Move</span> makes a type move that would
-			otherwise copy; <span class="pre">is Copy</span> asserts that it copies, and is rejected
-			on a type that turns out to move, including one that also says
-			<span class="pre">Move</span>.</li>
-		<li><span class="pre">RegionRef</span>, which a region's reference struct declares
-			(<a href="mem-regions.html">Regions</a>). A region ref may also declare
-			<span class="pre">Move</span>, as <span class="pre">So</span> does:
-			<span class="pre">struct So is RegionRef, Move</span>.</li>
-		<li><span class="pre">AtomicValue</span>, which marks a value changed only by atomic
-			operations, even where it is <span class="pre">imm</span>: core's
-			<span class="pre">Atomic[T]</span> declares it
-			(<a href="conc-primitives.html#atomic">Atomic values</a>). A type declaring it moves.</li>
-		<li><span class="pre">Integer</span>, which the compiler grants to the integer types,
-			<span class="pre">i8</span> to <span class="pre">i64</span>, <span class="pre">u8</span> to
-			<span class="pre">u64</span>, <span class="pre">isize</span> and
-			<span class="pre">usize</span>, for a generic to constrain on:
-			<span class="pre">where T is Integer</span>.</li>
-		<li><span class="pre">Pointer</span>, which the compiler grants to the raw pointer types,
-			<span class="pre">*T</span> whatever <span class="pre">T</span>, and not to a reference,
-			for a generic to constrain on: <span class="pre">where T is Pointer</span>.</li>
-		<li><span class="pre">Sendable</span>, which the compiler grants to every type whose values
-			may cross to another thread, for code that hands a value to one to constrain on:
-			<span class="pre">thread.start</span> and the <span class="pre">sync</span> package's
-			channels ask <span class="pre">where T is Sendable</span>. What it refuses is in
-			<a href="conc-sharing.html#race">Race condition safety</a>. A type holding raw pointers
-			it shares safely may declare it, which the compiler takes on trust; an instance of a
-			generic type declaring it is <span class="pre">Sendable</span> only where its type
-			arguments are.</li>
-		<li><span class="pre">Shareable</span>, Sendable's sibling, which the compiler grants to every
-			type a borrow of which several threads may hold at once: no counted owner whose count is
-			not atomic, no traced reference, no <span class="pre">&amp;mut</span> and no unmarked
-			reference to a trait or a callable in it, where a borrow of it reaches. A <span class="pre">parallel each</span> body may name only such
-			values from outside its loop, and a generic constrains on it,
-			<span class="pre">[F fn() + Shareable]</span>
-			(<a href="conc-sharing.html#shareable">Sendable and Shareable</a>). A type may declare
-			it, taken on trust, like <span class="pre">Sendable</span>. A reference to a trait or
-			a callable may say what the value behind it is: <span class="pre">&amp;&lt;Shape +
-			Shareable</span>, <span class="pre">So[fn() + Sendable]</span>.</li>
-		<li><span class="pre">ShapeKeeping</span>, <span class="pre">ShapeChanging</span>'s twin, which the
-			compiler finds of the methods a virtual reference calls and not of a type: they reshape no
-			collection they reach through a path others share, so a call through
-			<span class="pre">&amp;&lt;mut Scorer + ShapeKeeping</span> keeps the caller's borrows into one
-			(<a href="mem-borrowing.html#shapekeeping">Borrowed References</a>). It is written only after a
-			<span class="pre">+</span> in the type of a virtual reference, and a type cannot declare it (a package's
-			include file records it on its types, <a href="mem-borrowing.html#shapekeeping">Borrowed References</a>).</li>
-	</ul>
-	<p>Their names are taken in every module, as a built-in type's are: a module-level declaration
-		named like one, such as <span class="pre">struct Integer</span>, is an error saying the name is
-		a built-in trait's.</p>
-	<p>These are traits rather than <a href="syntax-lexical.html#attribute">attributes</a> because each is a
-		fact other code may ask about or constrain on; an attribute, such as
-		<span class="pre">@opaque</span>, is an instruction to the compiler about representation or
-		linkage that no code asks about. A generic asks with a constraint,
-		<span class="pre">where T is Copy</span> (<a href="mod-generativity.html#constraints">Generic
-		constraints</a>), which a marker answers only by the compiler's grant or a declaration,
-		and any other trait also by a type that fits it. (The other asking side, a compile-time
-		test, is not built yet.)</p>
-
-	<p><b>And a declaration forces compliance at the moment of declaring, rather than later at the
-		point of use.</b> If a type is meant to satisfy a trait, saying so is what makes the compiler
-		tell you the day you break it, at the type itself, instead of the day something far away tries
-		to view a value through the trait and fails there.</p>
-
-	<p>The two kinds of compliance exist alongside each other on purpose. Structural compliance keeps
-		traits applicable to types that never anticipated them;
-		<span class="pre">is</span> lets a type commit, and makes the empty trait expressible at
-		all.</p>
-
-	<h4 id="takes">What the declaration takes, and what it gives</h4>
-
-	<ul>
-		<li><b>A comma-separated list.</b> A type may declare <span class="pre">is</span> against any
-			number of traits: <span class="pre">struct Ledger is Audited, Sealed, Move</span>.</li>
-		<li><b>The trait contributes no fields.</b> What a trait's fields state is a requirement, and
-			the type declares them itself &mdash; the same names, the same types, in the trait's order,
-			ahead of any field of its own. That prefix is what lets a plain
-			<span class="pre">&amp;Id</span> reference read the trait's fields straight out of the
-			value, and what makes a same-size conversion to the trait a pure recast rather than a copy.
-			Declaring them in another order, or behind a field of your own, is rejected.</li>
-		<li><b>Only the first trait in the list may require fields</b>, since only one set of them can
-			occupy the front of the layout. The rest must require none &mdash; which is no restriction
-			in practice, because a field two traits want is declared once and satisfies both.</li>
-		<li><b>A method the trait implements and the type does not is inherited free.</b> A trait may
-			give a method a body, which becomes the default for any complying type that does not declare
-			its own. Declaring it is the primary case; taking the trait's implementation is the
-			fallback. Either way the method is the complying type's own, called on a value or named
-			through that type: <span class="pre">Node.describe</span>. The default may be
-				<a href="mod-generativity.html">generic</a> (<span class="pre">fn map[F fn(x T) U, U](self &amp;, f F) ...</span>):
-				a call on the type makes an instance for it, with <span class="pre">self</span> the type.
-				<b>A type's own method replaces a shared one of the same name, whatever its shape</b>
-				(its parameters and result need not be the trait's): <span class="pre">Zip</span> declares its own
-				<span class="pre">zip</span> that gives a flat triple, where <span class="pre">Iterator</span>'s
-				shared <span class="pre">zip</span> gives a pair, and the chunk cursors declare theirs to name their
-				lifetime. This holds for a default that is generic, has a <span class="pre">where</span> clause or is
-				<span class="pre">inline</span>, which fill no slot of the trait's virtual reference. A default that fills a slot
-				must still be met by a method of its signature, as a requirement is. The type's own method is found
-				by a direct call, and by generic code over the trait too (a generic function is made for the type it is
-				given, so <span class="pre">it.zip(other)</span> in <span class="pre">fn f[I Iterator[T], ...](it I, ...)</span> calls the
-				<span class="pre">Zip</span>'s own when <span class="pre">I</span> is a <span class="pre">Zip</span>); only a type
-				without its own gets the shared one. Behind a virtual reference (<span class="pre">&amp;&lt;mut Iterator[T]</span>)
-				neither is reachable, since a generic default has no slot.
-				A trait's method named through
-			the trait, <span class="pre">Id.describe</span>, is an error, since the trait keeps no
-			copy of it; only a trait's static functions are reached that way.</li>
-		<li><b>A trait may itself declare <span class="pre">is</span> against another trait</b>,
-			layering a deeper abstraction over a shallower one. It complies with the field requirement
-			the way any type does, by declaring the fields.</li>
+		<li><b>A comma-separated list.</b> A type may declare <span class="pre">is</span> against any number of
+			traits: <span class="pre">struct Ledger is Audited, Sealed, Move</span>.</li>
+		<li><b>The trait contributes no fields.</b> What a trait's fields state is a requirement, and the type
+			declares them itself: the same names, the same types, in the trait's order, ahead of any field of its
+			own. That prefix is what lets a plain <span class="pre">&amp;Id</span> reference read the trait's fields
+			straight out of the value, and what makes a same-size conversion to the trait a pure recast rather than a
+			copy. Declaring them in another order, or behind a field of your own, is refused.</li>
+		<li><b>Only the first trait in the list may require fields</b>, since only one set of them can occupy the
+			front of the layout. The rest must require none, which is no restriction in practice, because a field
+			two traits want is declared once and satisfies both.</li>
+		<li><b>A method the trait implements and the type does not is inherited free.</b> A trait may give a method
+			a body, which becomes the default for any complying type that does not declare its own. Declaring it is
+			the primary case; taking the trait's implementation is the fallback. Either way the method is the
+			complying type's own, called on a value or named through that type: <span class="pre">Node.describe</span>.
+			The default may be <a href="mod-generativity.html">generic</a> (<span class="pre">fn map[F fn(x T) U,
+			U](self &amp;, f F) ...</span>): a call on the type makes an instance for it, with
+			<span class="pre">self</span> the type.<br/>
+			<b>A type's own method replaces a shared one of the same name, whatever its shape</b> (its parameters and
+			result need not be the trait's): <span class="pre">Zip</span> declares its own
+			<span class="pre">zip</span> that gives a flat triple, where <span class="pre">Iterator</span>'s shared
+			<span class="pre">zip</span> gives a pair, and the chunk cursors declare theirs to name their lifetime.
+			This holds for a default that is generic, has a <span class="pre">where</span> clause or is
+			<span class="pre">inline</span>, which fill no slot of the trait's virtual reference. A default that fills
+			a slot must still be met by a method of its signature, as a requirement is. The type's own method is
+			found by a direct call, and by generic code over the trait too (a generic function is made for the type
+			it is given, so <span class="pre">it.zip(other)</span> in <span class="pre">fn f[I Iterator[T], ...](it I,
+			...)</span> calls the <span class="pre">Zip</span>'s own when <span class="pre">I</span> is a
+			<span class="pre">Zip</span>); only a type without its own gets the shared one. Behind a virtual reference
+			(<span class="pre">&amp;&lt;mut Iterator[T]</span>) neither is reachable, since a generic default has no
+			slot. A trait's method named through the trait, <span class="pre">Id.describe</span>, is an error, since
+			the trait keeps no copy of it; only a trait's static functions are reached that way.</li>
+		<li><b>A trait may itself declare <span class="pre">is</span> against another trait</b>, layering a deeper
+			abstraction over a shallower one. It complies with the field requirement the way any type does, by
+			declaring the fields.</li>
 		<li><b>It folds nothing.</b> There is no <span class="pre">use</span> clause on an
-			<span class="pre">is</span>: a trait is an abstraction, so there is no value for a folded
-			name to be reached through. <a href="mod-extensibility.html">Delegation</a> is what a field's own
+			<span class="pre">is</span>: a trait is an abstraction, so there is no value for a folded name to be
+			reached through. <a href="mod-extensibility.html#delegated">Delegation</a> is what a field's own
 			<span class="pre">use</span> clause is for.</li>
-		<li><b>An enum and its variants declare it too.</b> <span class="pre">enum Shape is Named</span>
-			gives every variant the trait's requirements and defaults, and a variant may name traits of
-			its own beyond its enum: <span class="pre">struct Square is Measured</span>, written inside the
-			enum. Neither list has a base, so neither may name a trait that requires fields;
-			<a href="guide-enums.html#isa">Complying with a trait</a> has the details. A match on an enum
-			may name such a trait as a pattern, which matches the variants that comply
-			(<a href="guide-enums.html#traitpat">Trait patterns</a>).</li>
-		<li><b>Every name in the list is an open trait.</b> An enum is closed: its variants are all
-			declared inside it, so naming one anywhere in an <span class="pre">is</span> list, first or
-			later, is rejected.</li>
-		<li><b>It is the one way to take a trait in.</b> The retired
-			<span class="pre">mixin</span> statement, which did the same from inside a type's body, is
-			an error that points here.</li>
+		<li><b>An enum and its variants declare it too.</b> <span class="pre">enum Shape is Named</span> gives every
+			variant the trait's requirements and defaults, and a variant may name traits of its own beyond its enum:
+			<span class="pre">struct Square is Measured</span>, written inside the enum. Neither list has a base, so
+			neither may name a trait that requires fields; <a href="#enumtraits">Enums: a closed set of subtypes</a>
+			has the details. A match on an enum may name such a trait as a pattern, which matches the variants that
+			comply (also <a href="#enumtraits">there</a>).</li>
+		<li><b>Every name in the list is an open trait.</b> An enum is closed: its variants are all declared inside
+			it, so naming one anywhere in an <span class="pre">is</span> list, first or later, is refused. So is naming
+			a struct: the base of an <span class="pre">is</span> is always an abstraction. A type may write
+			<a href="mod-extensibility.html#enrich"><span class="pre">extends</span></a> and
+			<span class="pre">is</span> together, in either order: they assert different things.</li>
+		<li><b>It is the one way to take a trait in.</b> The retired <span class="pre">mixin</span> statement, which
+			did the same from inside a type's body, is an error that points here.</li>
 	</ul>
 
-	<p><b>Subtypes in Cone are always abstractions.</b> A concrete type is never a subtype of another
-		concrete type, so the base of an <span class="pre">is</span> must be a trait; naming a struct
-		is rejected. Reusing another concrete type's code is a separate question, answered by
-		<a href="mod-extensibility.html">delegated inheritance</a> through a field, and by
-		<a href="mod-extensibility.html#enrich">enrichment</a> with <span class="pre">extends</span> over a
-		concrete base. Neither grants subtyping, and a type may write
-		<span class="pre">extends</span> and <span class="pre">is</span> together, in either order:
-		they assert different things.</p>
-
-	<h4 id="hash"><span class="pre">Hash</span>, and the hash the compiler supplies</h4>
-
-	<p>A key of a table, or anything else looked up by what identifies it, says what identifies it
-		by feeding a <span class="pre">Hasher</span>, and the <span class="pre">Hasher</span> turns
-		what was fed into a number. The two are kept apart, as Rust's <span class="pre">Hash</span>
-		and <span class="pre">Hasher</span> are and Swift's <span class="pre">hash(into:)</span>
-		is: a type decides what it feeds, and whatever holds the keys decides the algorithm, so
-		changing the algorithm changes no key type. Both are core's, reached from every module
-		without an import. The trait is</p>
+	<h3 id="self">Self in a trait</h3>
+	<p>Inside a trait, <span class="pre">Self</span> stands for the type complying with it. A requirement that
+		takes another value of the same type</p>
 <pre>
-pub trait Hash {
-  pub fn hash(self &amp;, h &amp;mut Hasher);
-}
-</pre>
-	<p>and the rule that ties it to equality is that if two values are <span class="pre">==</span>
-		they feed a hasher the same things. So a type that declares <span class="pre">is Hash</span>
-		must have a <span class="pre">==</span>, and is refused without one.</p>
-	<p>A <span class="pre">struct</span> that declares <span class="pre">Hash</span> and writes no
-		<span class="pre">hash</span> is given one by the compiler, as <span class="pre">!=</span>
-		is derived from <span class="pre">==</span>: it feeds each field, in the order declared.</p>
-<pre>
-struct Id is Hash {
-  pub slot u32;
-  pub gen u32;
-  pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+trait Same {
+  pub fn same(self &amp;, o &amp;Self) bool;
 }
 
-mut h = Hasher.seeded();
-id.hash(&amp;mut h);          // feeds slot, then gen
-imm number = h.finish();
+struct Pt is Same {
+  pub x i32;
+  pub fn same(self &amp;, o &amp;Pt) bool { x == o.x; }
+}
 </pre>
-	<p>It feeds the fields, never the struct's bytes, because the bytes between fields are
-		undefined. It is refused, at the field, where a field has no hash that agrees with its
-		<span class="pre">==</span>: a float (NaN is not equal to itself and -0 is equal to 0), or any
-		type that is not <span class="pre">Hash</span>, such as a struct that does not declare it, a
-		reference, a slice, a tuple, an array or a pointer. A type that wants such a field in its key
-		writes its own <span class="pre">hash</span>, which feeds what identifies it:</p>
+	<p>is met by a <span class="pre">same</span> method taking a reference to the complying type,
+		<span class="pre">o &amp;Self</span> or <span class="pre">o &amp;Pt</span> within <span class="pre">Pt</span>,
+		whether compliance is noticed by a <a href="mod-generativity.html#constraints">generic constraint</a> or
+		declared with <span class="pre">is</span>. A default method a type takes from the trait means that type by
+		<span class="pre">Self</span> too. Three things differ:</p>
+	<ul>
+		<li><b>A virtual reference cannot be made to such a trait</b> (<a href="#restrictions">What a virtual
+			reference cannot reach</a>): the value behind it may be of any complying type, so there is no one type for
+			<span class="pre">Self</span> to be. <span class="pre">&amp;&lt;Self</span> is the exception, a virtual
+			reference to the trait itself, met by a method taking <span class="pre">&amp;&lt;Same</span>.</li>
+		<li><b>An enum's requirement is met by each variant as it is written.</b> A call through a reference to the
+			enum reaches the variant by its tag, with an argument that may hold any variant, so
+			<span class="pre">Self</span> there is the enum: a variant meets <span class="pre">o &amp;Self</span> with
+			<span class="pre">o &amp;Number</span>.</li>
+		<li><b>Not built yet:</b> a requirement taking <span class="pre">Self</span> by value,
+			<span class="pre">b Self</span> or a by-value <span class="pre">self</span>, is refused at a trait whose
+			implementations may differ in size, as a trait held by value.</li>
+	</ul>
+
+	<h2 id="virtref">Virtual references: choosing the part while the program runs</h2>
+	<p style="margin-left: 40px;"><i>Note: Borrowed virtual references are implemented. An owning one
+		(<span class="pre">So[Shape]</span>) is built, dispatched through, lent as a borrowed one, and finalized and
+		freed when its last owner goes, but a <span class="pre">&amp;&lt;uni</span> borrow still moves it. A method
+		is dispatched only through a virtual reference whose permission grants what its <span class="pre">self</span>
+		declares, but dispatching through a <span class="pre">&amp;&lt;uni</span> hands the method that reference
+		itself, which moves it. A lifetime bound, <span class="pre">&amp;&lt;Shape + 'a</span>, is implemented on a
+		borrowed virtual reference; an owning one takes none yet, and is bounded by
+		<span class="pre">'static</span>.</i></p>
+	<p id="virtexample">Sometimes which part will arrive is decided only while the program runs: a shape read
+		from a file, an event from the user. <span class="pre">describe</span> at the top of this page takes a
+		<b>virtual reference</b>, written <span class="pre">&amp;&lt;Shape</span>: a reference to some value whose
+		structure (fields) and behaviour (methods) meet <span class="pre">Shape</span>, without knowing its concrete
+		type. A plain reference to a <span class="pre">Circle</span> or a <span class="pre">Rectangle</span> given
+		where one is wanted becomes one automatically, and <span class="pre">describe</span> calls the right
+		<span class="pre">area</span> for each.</p>
+
+	<h3 id="vtable">How it works</h3>
+	<p>A virtual reference is a "fat" reference: two pointers, one to the value and one to a <i>vtable</i>, a table
+		describing the value's concrete type as seen through the trait. It holds the addresses of the type's methods
+		that the trait declares, where the trait's fields sit, an id unique to the concrete type, and the type's
+		size, alignment and finalizer, which an owning virtual reference needs to release the value. There is one
+		vtable for each concrete type and trait, one for <span class="pre">Circle</span>-as-<span class="pre">Shape</span>
+		and another for <span class="pre">Rectangle</span>-as-<span class="pre">Shape</span>. When a reference to a
+		<span class="pre">Circle</span> is passed to <span class="pre">describe</span>, the virtual reference is made by
+		attaching the <span class="pre">Circle</span> vtable to the pointer, and a call through it fetches the method
+		from the vtable and calls it, handing it the pointer. Calling a method that way is called dynamic, or
+		virtual, dispatch.</p>
+
+	<h3 id="working">Working with virtual references</h3>
+	<p>A plain reference given to a variable or parameter that wants a virtual reference is coerced to one
+		automatically, which is called <i>upcasting</i>. The variable's type may say so explicitly:</p>
 <pre>
-  pub fn hash(self &amp;, h &amp;mut Hasher) {
-    h.writeU64(u64.from(slot) | (u64.from(gen) &lt;&lt; 32u64));   // two halves, mixed once
+imm virtref &amp;&lt;Shape = &amp;circle;
+</pre>
+	<p>A concrete type that does not structurally meet the virtual reference's type is a compile error there.
+		The type may implement more fields and methods than the trait asks for, but it must implement at least the
+		ones it does. Virtual references can be owning or borrowed, and are passed around, stored and compared like
+		other references. But a virtual reference may not be dereferenced with <span class="pre">*</span>, since it
+		may point at values of very different size and composition.</p>
+	<p>An owning virtual reference's type is written as any <a href="mem-regions.html#type">owning reference
+		type</a> is, <span class="pre">So[Shape]</span>: it is virtual because its value type is an open trait. It is
+		made by coercing an owning reference, and it lends as any owning reference does
+		(<a href="mem-borrowing.html">Borrowed references</a>): where a borrowed virtual reference is wanted, the owner
+		is borrowed from, not moved. Dispatching a method through it hands the method a borrowed virtual reference
+		with the permission its <span class="pre">self</span> declares, so the owner may be used again after the
+		call. The owner may not be replaced or moved while a borrow lent from it is still to be used, nor lent mutably
+		to one call beside another lend or a move of it (<span class="pre">app.mix(app)</span>, for a
+		<span class="pre">self &amp;mut</span> method, is refused):</p>
+<pre>
+mut app So[Shape] = new So[Circle](5.);
+app.area();                       // lends app to the method
+imm view &amp;&lt;Shape = app;          // borrows from app
+describe(app);                    // and so does passing it
+</pre>
+	<p>An owning virtual reference owns its value exactly as the owning reference it was coerced from did: that
+		reference is moved into it (or, for a counted region like <span class="pre">Rc</span>, copied as one more
+		owner), and when its last owner goes away (out of scope, replaced, or inside a struct that dies) the value is
+		finalized as its concrete type and its memory is given back to its region. The vtable carries what that needs
+		to know about the concrete type.</p>
+	<p id="bound">A virtual reference hides what the value it points at holds, borrows included. In a function's
+		signature or a struct's field, a <i>bound</i> says how long those last: <span class="pre">&amp;&lt;Shape +
+		'a</span> points at a value whose borrows all last at least as long as <span class="pre">'a</span>
+		(<a href="mem-lifetimes.html#bounds">lifetime bounds</a>). The type then holds <span class="pre">'a</span>
+		beside its own lifetime, so what it carries goes, wherever it is stored and read back out, where an
+		<span class="pre">'a</span> borrow may; and a value coerced to it where it is returned or stored through a
+		parameter may hold only borrows known to last <span class="pre">'a</span>. <span class="pre">&amp;&lt;Shape +
+		'static</span> points at a value holding only global borrows. With no bound, a borrowed virtual reference
+		holds its own lifetime only.</p>
+	<p>An owning virtual reference names no lifetime at all, so it may outlive any borrow:
+		<span class="pre">So[Shape]</span> is bounded by <span class="pre">'static</span>. A value holding a borrow
+		that is not global may not be made one, since nothing after it would follow what that value holds:</p>
+<pre>
+struct Ring['a] is Shape {
+  pub inner &amp;'a Circle;
+  pub fn area(self &amp;) f32 { inner.area(); }
+  pub fn perimeter(self &amp;) f32 { inner.perimeter(); }
+}
+
+mut app So[Shape] = new So[Circle](5.);   // Ok: a Circle holds no borrow
+imm c = new Circle(2.);
+app = new So[Ring](new Ring(&amp;c));       // ERROR: a Ring holds a borrow of c
+</pre>
+<pre>
+Error 1249: An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any
+borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow
+of 'c' (made at 19:31), which belongs to this function.
+</pre>
+	<p>The main use of a virtual
+		reference is the dot operator, to dispatch the trait's methods and reach its fields, and its
+		<a href="mem-permissions.html">permission</a> governs what it may do exactly as a plain reference's does: a
+		method is dispatched through it only when the reference's permission grants what the method's
+		<span class="pre">self</span> declares. A method taking <span class="pre">self &amp;mut</span> needs a virtual
+		reference that permits mutation (<span class="pre">&amp;&lt;mut</span>, <span class="pre">&amp;&lt;uni</span>,
+		or an owner such as <span class="pre">So[Shape]</span>); through a <span class="pre">&amp;&lt;</span> or
+		<span class="pre">&amp;&lt;imm</span> one, only methods taking <span class="pre">self &amp;</span> may be
+		called:</p>
+<pre>
+trait Growable {
+  pub fn grow(self &amp;mut);
+}
+
+fn enlarge(g &amp;&lt;mut Growable) {
+  g.grow();                       // a mutable virtual reference may
+}
+fn peek(g &amp;&lt;Growable) {
+  g.grow();                       // ERROR: g grants no mutation
+}
+</pre>
+<pre>
+Error 1056: No method declared by `grow` accepts the call's arguments.
+</pre>
+	<p>The same holds from the other side. A call through the trait lends only the permission the trait's method
+		declares, so a type's method may not ask for a stronger <span class="pre">self</span> than that:
+		<span class="pre">self &amp;mut</span> where the trait says <span class="pre">self &amp;</span>,
+		<span class="pre">self &amp;uni</span> where it says <span class="pre">self &amp;mut</span>, or
+		<span class="pre">self &amp;imm</span> where it says <span class="pre">self &amp;</span>. Giving such a type as
+		the virtual reference is refused, naming both methods. A weaker one is fine: a trait's
+		<span class="pre">self &amp;mut</span> is met by a method taking <span class="pre">self &amp;</span>. A
+		<a href="#closure">closure literal</a> given as the trait is no exception.</p>
+<pre>
+trait Reading {
+  pub fn read(self &amp;) i64;
+}
+
+struct Counter {
+  n i64;
+  pub fn read(self &amp;mut) i64 { n = n + 1; n; }
+}
+
+fn peek(r &amp;&lt;Reading) i64 { r.read(); }
+
+mut c = new Counter(0);
+peek(&amp;c);                        // ERROR
+</pre>
+<pre>
+Error 1401: Counter's `read` takes `self &amp;mut`, but Reading's `read` takes `self &amp;`: a call through the
+trait lends only what the trait declares, so Counter would have more of the value than the caller allowed.
+Declare `read` with `self &amp;`, or the trait's with `self &amp;mut`.
+</pre>
+
+	<h3 id="downcast">Getting the concrete type back: match</h3>
+	<p id="virtual">Sometimes you want the concrete reference back from a virtual one, which is called
+		downcasting. A <span class="pre">match</span> does it, each case naming a concrete type and binding a plain
+		reference to it:</p>
+<pre>
+fn which(shape &amp;&lt;Shape) i32 {
+  match shape {
+    case imm c &amp;Circle { 1; }       // c is a &amp;Circle here
+    case imm r &amp;Rectangle { 2; }    // r is a &amp;Rectangle
+    else { 0; }                     // some other shape
   }
+}
 </pre>
-	<p>Every integer type and <span class="pre">bool</span> is <span class="pre">Hash</span>, feeding
-		its bits, and so is an owner of text, a <span class="pre">So[str]</span> or an
-		<span class="pre">Rc[str]</span>, feeding the bytes as the <span class="pre">str</span> it lends does;
-		a float is not. A struct may hold such an owner as a field and still be given its
-		<span class="pre">hash</span>, which feeds the field as the <span class="pre">str</span> it
-		lends. A value whose length varies feeds a terminator after its bytes,
-		<span class="pre">h.writeStr(bytes)</span>, which is the bytes then the byte
-		<span class="pre">0xFF</span>, so that where one ends and the next begins is part of
-		what is fed: <span class="pre">("ab", "c")</span> and <span class="pre">("a", "bc")</span>
-		differ as the two parts of one key. A fixed-size run of bytes is
-		<span class="pre">h.writeBytes(bytes)</span>.</p>
-	<p>The <span class="pre">Hasher</span> is a fast hash of the wyhash family: each word fed is
-		xored into its state and multiplied (<a href="safe-intrinsics.html">mulFold</a>), and bytes go
-		through wyhash itself. <span class="pre">Hasher.seeded()</span> starts it from a seed drawn
-		at random from the operating system once for the process (<span class="pre">processSeed()</span>
-		is that number), so which keys collide is different on every run and no one outside can tell:
-		the defence against keys chosen to collide. <span class="pre">Hasher.withSeed(n)</span> starts
-		it from a seed of your own, and then the same keys give the same numbers on every run and
-		build, for a table whose order must be reproducible.</p>
+	<p>The vtable records which concrete type made the virtual reference, and the match checks it. So each pattern
+		names a concrete type: a trait or an enum is refused there, since no value is created as one. A virtual
+		reference made from a reference to an enum was made from one of its variants, and it is the variant that a
+		pattern names. A trait is a pattern only in the other direction, a match on an enum, where it names the
+		variants that comply with the trait and binds a virtual reference built from one
+		(<a href="#enumtraits">Enums: a closed set of subtypes</a>); an open trait has no such pattern.</p>
 
-	<h4 id="iterators"><span class="pre">Iterator</span> and <span class="pre">Iterable</span></h4>
+	<h3 id="restrictions">What a virtual reference cannot reach</h3>
+	<p>Some traits cannot be the type of a virtual reference. That is so if any method the trait requires is
+		generic: a vtable slot holds one signature, and a generic method has one per instance, so the compiler
+		refuses the virtual reference and names the method. A generic method that is private, or a generic function
+		with no <span class="pre">self</span>, is dispatched through nothing and so costs the trait nothing, and
+		neither does a generic <i>default</i> (a method given a body), which is cloned into each type that declares
+		the trait and is reached through that type, never through a slot. A default that is
+		<span class="pre">inline</span>, or exists only where a <span class="pre">where</span> condition holds, has no
+		slot either. It is also so if the trait uses <span class="pre">Self</span> in any form other than as a virtual
+		reference (<span class="pre">&amp;&lt;Self</span>).</p>
+	<p>The vtable holds only the trait's public methods and fields: a private one is not a requirement and has no
+		slot, so it cannot be reached through a virtual reference, even from the trait's own module, where its name
+		is visible. The compiler refuses the use and names the member and the trait; declaring it
+		<span class="pre">pub</span> in the trait gives it a slot. The virtual reference itself is not refused, and a
+		private method is still reached through <span class="pre">self</span> in the trait's defaults and on the
+		concrete type.</p>
 
-	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that
-		is generic over them. A type is an <span class="pre">Iterator[T]</span> by having
-		<span class="pre">next</span>, and an <span class="pre">Iterable[T, I]</span> by having
-		<span class="pre">iter</span>, and a type that says <span class="pre">is Iterator[T]</span> gets
-		the adapters, <span class="pre">map</span>, <span class="pre">filter</span> and the rest, as the
-		trait's generic defaults. Both are described with iteration, in
-		<a href="guide-collections.html#iterator">Collections and the send operator</a>.</p>
-
-	<h4 id="closure">A closure literal fills a trait with one required method</h4>
-
-	<p>A trait whose work is one method, such as a distance function or a comparison, would need a
-		struct written for each use. A <a href="guide-functions.html#closures">closure literal</a> given where such a trait is wanted
-		does that instead: it is the method. The trait must have <b>exactly one required method</b>, a method written
-		without a body, and no field. A method with a body is a default, and the literal's type inherits each default
-		as any type complying with the trait does, so the defaults call the literal's body through the required
-		method:</p>
+	<h2 id="closure">A closure written where a trait is wanted</h2>
+	<p>A trait whose work is one method, such as a distance function or a comparison, would need a struct written
+		for each use. A <a href="guide-functions.html#closures-tour">closure literal</a> given where such a trait is
+		wanted does that instead: it is the method. The trait must have <b>exactly one required method</b>, a method
+		written without a body, and no field. A method with a body is a default, and the literal's type inherits each
+		default as any type complying with the trait does, so the defaults call the literal's body through the
+		required method:</p>
 <pre>
+struct V {
+  pub x f32;
+  pub y f32;
+}
+
 trait Shape {
   pub fn distance(self &amp;, p V) f32;                          // the one required method
   pub fn nearness(self &amp;, p V) f32 { 100. - self.distance(p); }   // a default
@@ -386,7 +476,8 @@ trait Shape {
 fn depth[S Shape](shape &amp;S, p V) f32 { shape.distance(p) * 2.; }
 fn lend(shape &amp;&lt;Shape, p V) f32 { shape.nearness(p); }
 
-depth(q =&gt; q.x * q.x + q.y * q.y - 5., p);     // the static form: p is (3, 4): 40
+imm p = new V(3., 4.);
+depth(q =&gt; q.x * q.x + q.y * q.y - 5., p);     // the static form: 40
 lend(q =&gt; q.x + q.y, p);                       // the dynamic form: 100 - 7: 93
 imm k = 10.;
 imm own = new So[Shape](fn(q V) [off = k] f32 { q.x + off; });
@@ -395,32 +486,31 @@ own.nearness(p);     // 87
 </pre>
 	<p>The places a trait is wanted are a generic constraint (<span class="pre">[S Shape]</span>, taken as
 		<span class="pre">S</span>, <span class="pre">&amp;S</span> or <span class="pre">&amp;mut S</span>), a borrowed
-		<a href="#virtref">virtual reference</a> (<span class="pre">&amp;&lt;Shape</span>,
-		<span class="pre">&amp;&lt;mut Shape</span>, which lend the literal for the statement), and an owner made with
-		<span class="pre">new</span> (<span class="pre">So[Shape]</span>, <span class="pre">Rc[imm, Shape]</span>). It applies only to a
-		literal, written at the point the trait is expected, so no struct of yours meets a trait any differently.
-		A generic trait's instance as the constraint (<span class="pre">[S Shape[T]]</span>), and a literal as a field's
-		initial value or a variable's, are not built.</p>
+		virtual reference (<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;mut Shape</span>, which
+		lend the literal for the statement), and an owner made with <span class="pre">new</span>
+		(<span class="pre">So[Shape]</span>, <span class="pre">Rc[imm, Shape]</span>). It applies only to a literal,
+		written at the point the trait is expected, so no struct of yours meets a trait any differently. A generic
+		trait's instance as the constraint (<span class="pre">[S Shape[T]]</span>), and a literal as a field's initial
+		value or a variable's, are not built.</p>
 	<ul>
-		<li><b>The signature is the method's</b>, without its receiver. The literal's parameter types may be left out,
-			and if written they must be the method's exactly, as must a written return type, or the error names the
-			method: "the trait's <span class="pre">distance</span> takes V there". The number of parameters must match.</li>
-		<li><b>The literal's method has the method's name</b>, so a state entry or captured variable of the same name
-			is the ordinary duplicate-name error.</li>
+		<li><b>The signature is the method's</b>, without its receiver. The literal's parameter types may be left
+			out, and if written they must be the method's exactly, as must a written return type, or the error names
+			the method: "the trait's <span class="pre">distance</span> takes V there". The number of parameters must
+			match.</li>
+		<li><b>The literal's method has the method's name</b>, so a state entry or captured variable of the same
+			name is the ordinary duplicate-name error.</li>
 		<li><b>A trait with two required methods, none, or a field is refused</b>, naming what it has. A trait with
 			only defaults has nothing to fill.</li>
 	</ul>
-
-	<p><b><span class="pre">self</span>: a literal that changes state.</b> As for any closure, the method's
-		<span class="pre">self</span> follows the body: <span class="pre">self &amp;</span> for a body that only reads,
-		<span class="pre">self &amp;mut</span> for one that changes what it holds or borrows. The literal is held to the trait
-		as any implementer is, which may not ask for a stronger <span class="pre">self</span> than the trait's
-		method declares. So a literal that changes state fills a trait whose method says
-		<span class="pre">self &amp;mut</span>, and is refused where the method says <span class="pre">self &amp;</span>,
-		under every holder, <span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;mut Shape</span>, <span class="pre">So[Shape]</span>
-		and a generic's <span class="pre">S</span> alike, with an error that says to declare the trait's method
-		<span class="pre">self &amp;mut</span> or to not change the state. A literal that only reads meets a
-		method of either kind.</p>
+	<p><b>A literal that changes state.</b> As for any closure, the method's <span class="pre">self</span> follows
+		the body: <span class="pre">self &amp;</span> for a body that only reads, <span class="pre">self
+		&amp;mut</span> for one that changes what it holds or borrows. The literal is held to the trait as any
+		implementer is, and may not ask for a stronger <span class="pre">self</span> than the trait's method
+		declares. So a literal that changes state fills a trait whose method says <span class="pre">self
+		&amp;mut</span>, and is refused where the method says <span class="pre">self &amp;</span>, under every holder,
+		<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;mut Shape</span>,
+		<span class="pre">So[Shape]</span> and a generic's <span class="pre">S</span> alike. A literal that only reads
+		meets a method of either kind.</p>
 <pre>
 trait Counter {
   pub fn bump(self &amp;mut, step i32) i32;
@@ -428,433 +518,310 @@ trait Counter {
 fn bumpTwice(c &amp;&lt;mut Counter) i32 { c.bump(1); c.bump(10); }
 
 bumpTwice(fn(step i32) [mut n = 5] i32 { n += step; n; });    // 6, then 16: 16
-// ERROR on a trait that says 'fn distance(self &amp;, ..)':
-//   depth(q =&gt; { total += q.x; total; }, p);   // needs 'self &amp;mut' but Shape's distance takes 'self &amp;'
+
+mut total = 0.;
+depth(q =&gt; { total += q.x; total; }, p);    // ERROR: Shape's distance takes 'self &amp;'
+</pre>
+<pre>
+Error 1401: This closure's `distance` needs `self &amp;mut` (it changes state it holds or borrows), but Shape's
+`distance` takes `self &amp;`: a call through the trait lends only what the trait declares, so the closure
+would have more of the value than the caller allowed. Declare the method `self &amp;mut` in the trait, or
+don't change that state.
 </pre>
 	<p>This is a rule about the reference, not only the trait: a literal that changes state, given as
-		<span class="pre">&amp;&lt;mut Shape</span> and narrowed to a <span class="pre">&amp;&lt;Shape</span>, would change state through a
-		reference promised to read.</p>
+		<span class="pre">&amp;&lt;mut Shape</span> and narrowed to a <span class="pre">&amp;&lt;Shape</span>, would
+		change state through a reference promised to read.</p>
 
-	<h4 id="self"><span class="pre">Self</span> in a trait</h4>
-
-	<p>Inside a trait, <span class="pre">Self</span> stands for the type complying with it. A
-		requirement that takes another value of the same type</p>
+	<h2 id="enumtraits">Enums: a closed set of subtypes</h2>
+	<p>A trait is open: any type, anywhere, may meet it. An <a href="guide-enums.html">enum</a> is the closed form
+		of the same idea. Its variants are its subtypes, all declared inside it, and a value or a reference of any
+		variant stands wherever the enum is wanted. A method the enum declares without a body is a requirement every
+		variant implements, and a call through a reference to the enum runs the variant's own, chosen by the tag the
+		value carries. An enum may also say that it meets traits, which reach every variant:</p>
 <pre>
-trait Same {
-  pub fn same(self &amp;, o &amp;Self) bool;
+trait Named {
+  pub fn label(self &amp;) i32;
 }
+
+// Each variant is a subtype of Figure; area is required of every one
+enum Figure is Named {
+  pub fn area(self &amp;) f32;
+  pub fn label(self &amp;) i32 { 7; }
+
+  pub struct Square {
+    pub side f32;
+    pub fn area(self &amp;) f32 { side * side; }
+  }
+  pub struct Disc {
+    pub r f32;
+    pub fn area(self &amp;) f32 { 3.14159 * r * r; }
+  }
+}
+
+fn total(a &amp;Figure, b &amp;Figure) f32 {
+  a.area() + b.area();       // each call dispatches on the variant's tag
+}
+
+fn named(n &amp;&lt;Named) i32 { n.label(); }
+
+imm sq = Figure.Square(2.);
+imm d = Figure.Disc(1.);
+total(&amp;sq, &amp;d);      // 7.14159
+named(&amp;sq);          // 7
 </pre>
-	<p>is met by a <span class="pre">same</span> method taking a reference to the complying type,
-		<span class="pre">o &amp;Self</span> or <span class="pre">o &amp;Node</span> within
-		<span class="pre">Node</span>, whether compliance is noticed by a
-		<a href="mod-generativity.html#constraints">generic constraint</a> or declared with
-		<span class="pre">is</span>. A default method a type takes from the trait means that type by
-		<span class="pre">Self</span> too. Three things differ:</p>
-	<ul>
-		<li><b>A virtual reference cannot be made to such a trait</b>
-			(<a href="#restrictions">Type Restrictions</a>): the value behind it may be of any
-			complying type, so there is no one type for <span class="pre">Self</span> to be.
-			<span class="pre">&amp;&lt;Self</span> is the exception, a virtual reference to the trait
-			itself, met by a method taking <span class="pre">&amp;&lt;Same</span>.</li>
-		<li><b>An enum's requirement is met by each variant as it is written.</b> A call through a
-			reference to the enum reaches the variant by its tag, with an argument that may hold any
-			variant, so <span class="pre">Self</span> there is the enum: a variant meets
-			<span class="pre">o &amp;Self</span> with <span class="pre">o &amp;Number</span>.</li>
-		<li><b>Not built yet:</b> a requirement taking <span class="pre">Self</span> by value,
-			<span class="pre">b Self</span> or a by-value <span class="pre">self</span>, is refused
-			at a trait whose implementations may differ in size, as a trait held by value.</li>
-	</ul>
+	<!-- Home for the moved blocks, in moves/to-modularity.html, in this order:
+	     1. guide-enums.html#enumdcl ("members in common: shared fields, default methods and required methods,
+	        dispatch on the variant") and guide-structs.html#methods ("an enum's methods may be written anywhere in
+	        its body; common to all variants");
+	     2. guide-enums.html#dispatch, #wholeenum, #isa ("method dispatch through the tag, by-value methods, one
+	        function over the whole enum, an enum or variant complying with traits"). Its anchor isa collides with
+	        this page's struct "is" section: rename it enumisa when folding, and point links to it;
+	     3. guide-enums.html#traitpat ("trait patterns: a match case naming a trait");
+	     4. guide-enums.html#enum ("closed enum versus open trait"), which joins #choosing below;
+	     5. guide-conditionals.html#flow ("flow typing: after 'if s is Circle' the name is narrowed to the
+	        variant") and guide-conditionals.html#ifexpr ("an if chain of is tests naming every variant is a value
+	        without else"): narrowing a value to its subtype, as a subsection here, "Narrowing to a variant: is and
+	        flow typing", after trait patterns. -->
 
-	<p>Traits make possible several valuable kinds of polymorphism, particularly:
-	<ul>
-		<li><a href="#traitvar"><b>Trait-based variants</b></a>, which enable definition of
-			multiple variant structs that share some base trait's common fields and methods.</li>
-		<li><a href="#virtref"><b>Virtual reference interface</b></a>,
-			enabling the use of methods (and fields) on values whose
-			concrete type can only be determined at runtime.</li>
-		<li><a href="mod-generativity.html#constraints"><b>Generic constraints</b></a>, which can be use to restrict
-			which parametric types can be successfully substituted in to instantiate (monomorphize) a generic type.</li>
-	</ul>
-
-	<h2 id="traitvar">Trait-based Variants</h2>
-
-	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented.</i></p>
-
-	<p>Earlier, we introduced <a href="guide-enums.html"><span class="pre">enum</span></a> types, which
-		declare a closed set of variants: the whole set is written inside the declaration, and nothing
-		elsewhere can add to it.</p>
-	<p>Sometimes that is exactly what you do not want. Where <b>other modules</b> should be able to
-		add variants of their own, the set cannot be enumerated anywhere, so a
-		<a href="#traits">trait</a> and the structs that declare
-		<a href="#isa"><span class="pre">is</span></a> against it are what express it.</p>
+	<h2 id="traitvar">Open traits: variants other modules may add</h2>
+	<p style="margin-left: 40px;"><i>Note: All of this is implemented.</i></p>
+	<p>An <a href="guide-enums.html">enum</a> declares a closed set of variants: the whole set is written inside
+		its declaration, and nothing elsewhere can add to it. Sometimes that is exactly what you do not want. Where
+		<b>other modules</b> should be able to add variants of their own, the set cannot be enumerated anywhere, so a
+		trait, and the structs that declare <a href="#isa"><span class="pre">is</span></a> against it, express
+		it.</p>
 
 	<h3 id="openset">How an open set is written</h3>
-
-	<p>The variants are declared separately from the trait rather than inside it, and may live
-		anywhere &mdash; even in a different module. Each says which trait it belongs to by declaring
-		that it <span class="pre">is</span> one. A trait contributes no fields, so each variant
-		declares the trait's own fields itself, first and in the trait's order. That is what keeps the
-		trait's layout a prefix of every variant's.</p>
-	<p>Being declarations of their own, the variants are names of the module that declares them,
-		as any struct is: <span class="pre">KeyEvent</span>, where an enum's variant is a name of its
-		enum, <span class="pre">Event.KeyEvent</span>, until a <span class="pre">use</span> folds it
-		into a module.</p>
+	<p>The variants are declared separately from the trait rather than inside it, and may live anywhere, even in a
+		different module. Each says which trait it belongs to by declaring that it <span class="pre">is</span> one. A
+		trait contributes no fields, so each variant declares the trait's own fields itself, first and in the trait's
+		order, which keeps the trait's layout a prefix of every variant's. Being declarations of their own, the
+		variants are names of the module that declares them, as any struct is: <span class="pre">KeyEvent</span>,
+		where an enum's variant is a name of its enum, <span class="pre">Event.KeyEvent</span>, until a
+		<span class="pre">use</span> folds it into a module.</p>
 <pre>
 trait Event {
-	pub time datetime;
+	pub time i64;
 }
 
 struct ButtonEvent is Event {
-	pub time datetime;
+	pub time i64;
 	pub button u8;
 	pub pushed bool;
 }
 
 struct KeyEvent is Event {
-	pub time datetime;
-	pub key Unicode;
+	pub time i64;
+	pub key char;
 }
 
 struct QuitEvent is Event {
-	pub time datetime;
+	pub time i64;
 }
+
+fn when(e &amp;&lt;Event) i64 { e.time; }
 </pre>
 
 	<h3 id="opencost">What openness costs</h3>
-
-	<p>Because the variants are open-ended, the compiler cannot know at compile time how many there
-		will be, and so cannot give each one a guaranteed-unique number. <b>An open trait therefore
-		has no tag field</b>, implicit or explicit.</p>
-	<p>Everything an enum does with its tag has to be done another way. Without a tag there is nothing
-		in the value to say which variant it is, so neither pattern matching nor method dispatch works
-		on a plain reference to the trait. Both need a
-		<a href="#virtref">virtual reference</a>, which carries a pointer to the variant's
-		vtable alongside the pointer to the value.</p>
-	<p>That is where the cost lands, and it is worth being concrete about it:</p>
+	<p>Because the variants are open-ended, the compiler cannot know when the program is compiled how many there
+		will be, and so cannot give each one a guaranteed-unique number. <b>An open trait therefore has no tag
+		field</b>, implicit or explicit. Everything an enum does with its tag has to be done another way. Without a
+		tag there is nothing in the value to say which variant it is, so neither pattern matching nor method
+		dispatch works on a plain reference to the trait. Both need a <a href="#virtref">virtual reference</a>,
+		which carries a pointer to the variant's vtable alongside the pointer to the value. That is where the cost
+		lands:</p>
 	<ul>
 		<li>A virtual reference is a fat pointer, <b>twice the size</b> of a regular reference.</li>
-		<li>A match has to <b>check the possibilities one at a time</b>, because there is no number to
-			index with. An enum's tag <i>is</i> an index, so a closed set is not only exhaustive, it is
-			faster.</li>
-		<li>Variants differ in size, so no value of the trait may be held and nothing can swap one
-			variant for another in the same storage. Pool allocation, which wants one size, is out.</li>
+		<li>A match has to <b>check the possibilities one at a time</b>, because there is no number to index with.
+			An enum's tag <i>is</i> an index, so a closed set is not only exhaustive, it is faster.</li>
+		<li>Variants differ in size, so no value of the trait may be held and nothing can swap one variant for
+			another in the same storage. Pool allocation, which wants one size, is out.</li>
 	</ul>
 
-	<h3 id="choosing">Choosing between them</h3>
-	<p>Only choose an <b>open trait</b> if you really need other modules to be able to add variants.
-		Otherwise choose an <b>enum</b>, which is closed, tagged, exhaustively matchable, and by
-		default holdable by value.</p>
-	<p>The middle case is a closed set whose variants differ enough in size that padding them all to
-		the largest is not worth it. That is an enum too &mdash; written
-		<a href="guide-enums.html#unsized"><span class="pre">enum @unsized</span></a>, which keeps the
-		tag, the exhaustive match and the fast dispatch, and gives up only the value semantics.</p>
+	<h3 id="choosing">Choosing between an enum and an open trait</h3>
+	<p>Choose an <b>open trait</b> only if you really need other modules to be able to add variants. Otherwise
+		choose an <b>enum</b>, which is closed, tagged, exhaustively matchable, and by default holdable by value. The
+		middle case is a closed set whose variants differ enough in size that padding them all to the largest is not
+		worth it. That is an enum too, written <span class="pre">enum @unsized</span>, which keeps the tag, the
+		exhaustive match and the fast dispatch, and gives up only the value semantics: a value of it is reached only
+		through a reference.</p>
+	<!-- Home for the moved block guide-enums.html#unsized ("@unsized: declining the padding", sent to
+	     moves/to-memory.html with Modularity as the alternative): if Memory does not take it, it goes here. -->
 
-	<h2 id="virtref">Virtual References</h2>
+	<h2 id="marker">Marker traits: facts about a type</h2>
+	<p>Plenty of useful traits carry no fields and no methods at all: they are testable invariants, adjectives a
+		type either claims or does not. There is no such thing as a structural match to a trait that declares
+		nothing (every type would match it, so the match would say nothing), so such a trait can only be carried by
+		the types that <i>nominate</i> it, which is what <span class="pre">is</span> is for. Nothing else in the
+		language can express it. You may declare marker traits of your own, <span class="pre">trait Audited
+		{}</span>, and constrain a generic on them.</p>
+	<p><b>The compiler knows these marker traits of its own</b>, reached from every module without an import, and
+		none has members:</p>
+	<ul>
+		<li><a href="mem-moves.html"><span class="pre">Move</span> and <span class="pre">Copy</span></a>. Every type
+			is exactly one of the two. Unlike a marker trait you write, the compiler also <i>grants</i> one to every
+			type from what it can see: a finalizer, a field that moves or an owning reference that cannot be aliased
+			makes a type <span class="pre">Move</span>, and a type with none of these is <span class="pre">Copy</span>.
+			A type may still nominate either. <span class="pre">struct Handle is Move</span> makes a type move that
+			would otherwise copy; <span class="pre">is Copy</span> asserts that it copies, and is refused on a type that
+			turns out to move, including one that also says <span class="pre">Move</span>.</li>
+		<li><span class="pre">RegionRef</span>, which a region's reference struct declares
+			(<a href="mem-regions.html">Regions</a>). A region ref may also declare <span class="pre">Move</span>, as
+			<span class="pre">So</span> does: <span class="pre">struct So is RegionRef, Move</span>.</li>
+		<li><span class="pre">AtomicValue</span>, which marks a value changed only by atomic operations, even where
+			it is <span class="pre">imm</span>: core's <span class="pre">Atomic[T]</span> declares it
+			(<a href="conc-primitives.html#atomic">Atomic values</a>). A type declaring it moves.</li>
+		<li><span class="pre">Integer</span>, which the compiler grants to the integer types,
+			<span class="pre">i8</span> to <span class="pre">i64</span>, <span class="pre">u8</span> to
+			<span class="pre">u64</span>, <span class="pre">isize</span> and <span class="pre">usize</span>, for a
+			generic to constrain on: <span class="pre">where T is Integer</span>.</li>
+		<li><span class="pre">Pointer</span>, which the compiler grants to the raw pointer types,
+			<span class="pre">*T</span> whatever <span class="pre">T</span>, and not to a reference, for a generic to
+			constrain on: <span class="pre">where T is Pointer</span>.</li>
+		<li><span class="pre">Sized</span> and <span class="pre">DynSized</span>, granted to a type by its size, and
+			<span class="pre">Immutable</span>, declared and never granted (<a href="mod-generativity.html#constraints">Generic
+			constraints</a> has these three).</li>
+		<li><span class="pre">Sendable</span>, which the compiler grants to every type whose values may cross to
+			another thread, for code that hands a value to one to constrain on: <span class="pre">thread.start</span>
+			and the <span class="pre">sync</span> package's channels ask <span class="pre">where T is Sendable</span>.
+			What it refuses is in <a href="conc-sharing.html#race">Race condition safety</a>. A type holding raw
+			pointers it shares safely may declare it, which the compiler takes on trust; an instance of a generic type
+			declaring it is <span class="pre">Sendable</span> only where its type arguments are.</li>
+		<li><span class="pre">Shareable</span>, Sendable's sibling, which the compiler grants to every type a borrow
+			of which several threads may hold at once: no counted owner whose count is not atomic, no traced
+			reference, no <span class="pre">&amp;mut</span> and no unmarked reference to a trait or a callable in it,
+			where a borrow of it reaches. A <span class="pre">parallel each</span> body may name only such values from
+			outside its loop, and a generic constrains on it, <span class="pre">[F fn() + Shareable]</span>
+			(<a href="conc-sharing.html#shareable">Sendable and Shareable</a>). A type may declare it, taken on trust,
+			like <span class="pre">Sendable</span>. A reference to a trait or a callable may say what the value behind
+			it is: <span class="pre">&amp;&lt;Shape + Shareable</span>, <span class="pre">So[fn() + Sendable]</span>.</li>
+		<li><span class="pre">ShapeKeeping</span>, <span class="pre">ShapeChanging</span>'s twin, which the compiler
+			finds of the methods a virtual reference calls and not of a type: they reshape no collection they reach
+			through a path others share, so a call through <span class="pre">&amp;&lt;mut Scorer + ShapeKeeping</span>
+			keeps the caller's borrows into one (<a href="mem-shape.html#shapekeeping">Borrowed references</a>). It
+			is written only after a <span class="pre">+</span> in the type of a virtual reference, and a type cannot
+			declare it (a package's include file records it on its types).</li>
+	</ul>
+	<p>Their names are taken in every module, as a built-in type's are: a module-level declaration named like one,
+		such as <span class="pre">struct Integer</span>, is an error saying the name is a built-in trait's.</p>
+	<p>These are traits rather than <a href="syntax-lexical.html#attribute">attributes</a> because each is a fact
+		other code may ask about or constrain on. An attribute, such as <span class="pre">@opaque</span>, is an
+		instruction to the compiler about representation or linkage that no code asks about. A generic asks with a
+		constraint, <span class="pre">where T is Copy</span> (<a href="mod-generativity.html#constraints">Generic
+		constraints</a>), which a marker answers only by the compiler's grant or a declaration, and any other trait
+		also by a type that fits it. (The other asking side, a test while the program is compiled, is not built
+		yet.)</p>
 
-	<p style="margin-left: 40px;"><i>Note: Borrowed virtual references are implemented.
-		An owning one (<span class="pre">So[Shape]</span>) is built, dispatched through, lent
-		as a borrowed one, and finalized and freed when its last owner goes,
-		but a <span class="pre">&amp;&lt;uni</span> borrow still moves it.
-		A method is dispatched only through a virtual reference whose permission grants
-		what its <span class="pre">self</span> declares, but dispatching through a
-		<span class="pre">&amp;&lt;uni</span> hands the method that reference itself, which moves it.
-		A lifetime bound, <span class="pre">&amp;&lt;Shape + 'a</span>, is implemented on a borrowed
-		virtual reference; an owning one takes none yet, and is bounded by
-		<span class="pre">'static</span>.</i></p>
+	<h2 id="hash">Traits the library is built on</h2>
+	<p>A few of core's traits name the shapes that the collections and much else are written against. A type that
+		meets them works with every collection and every algorithm written over them.</p>
 
-	<p>Virtual references are distinct from simple references.
-		A virtual reference is used to access some of an object's fields or invoke some of its methods,
-		without actually knowing its specific, concrete type.
-		This is necessary when runtime conditional logic prevents us from knowing the concrete type at compile-time.
-		All a virtual reference knows is that it points to an object whose structure (fields) and behavior (methods)
-		conform to some specified type.</p>
-
-	<h3 id="virtexample">A trait example</h3>
-	<p>Let's illustrate this with an example:</p>
+	<h3 id="hashtrait">Hash, and the hash the compiler supplies</h3>
+	<p>A key of a table, or anything else looked up by what identifies it, says what identifies it by feeding a
+		<span class="pre">Hasher</span>, and the <span class="pre">Hasher</span> turns what was fed into a number. The
+		two are kept apart: a type decides what it feeds, and whatever holds the keys decides the algorithm, so
+		changing the algorithm changes no key type. Both are core's, reached from every module without an import.
+		The trait is</p>
 <pre>
-struct Rectangle;
-  height f32;
-  width f32;
-  fn area(self &amp;) f32;
-    height * width;
-  fn perimeter(self &amp;) f32;
-    2. * (height + width);
-
-struct Circle;
-  r f32;
-  fn area(self &amp;) f32;
-    f32.pi * r * r;
-  fn perimeter(self &amp;) f32;
-    2. * f32.pi * r;
-
-trait Shape;
-  pub fn area(self &amp;) f32;
-  pub fn perimeter(self &amp;) f32;
-
-fn doMath(shape &amp;&lt;Shape) f32, f32;
-  shape.area, shape.perimeter;
-
-fn tester();
-  imm circle = new Circle(5);
-  doMath(&amp;circle);             // 78.5, 31.4
-  imm square = new Rectangle(10, 10);
-  doMath(&amp;square);             // 100, 40
+pub trait Hash {
+  pub fn hash(self &amp;, h &amp;mut Hasher);
+}
 </pre>
-	<p>We define two different types, <span class="pre">Rectangle</span> and <span class="pre">Circle</span>,
-		each with different fields. However, both of them implement the
-		<span class="pre">area</span> and <span class="pre">perimeter</span> methods.
-		We also define a <span class="pre">Shape</span> trait that declares the same two methods.
-		Despite the fact that <span class="pre">Rectangle</span> and <span class="pre">Circle</span>
-		never say that they comply with (nor inherit from) the <span class="pre">Shape</span> trait, the fact
-		that both types implement all its methods means they are compliant with this trait.</p>
-	<p>The <span class="pre">doMath</span> function accepts a virtual reference
-		(denoted by <span class="pre">&amp;&lt;</span>)
-		to some object whose type is compliant with the <span class="pre">Shape</span> trait.
-		Using this reference, it returns two numbers calculated by applying
-		the <span class="pre">area</span> and <span class="pre">perimeter</span>
-		methods on the object. If the object happens to be a <span class="pre">Rectangle</span>,
-		it will use the methods defined for <span class="pre">Rectangle</span>.
-		Likewise, it will use the <span class="pre">Circle</span> methods,
-		if that is actual type of the object.</p>
-	<p>The <span class="pre">tester</span> function demonstrates this behavior
-		by creating a specific circle and rectangle, borrowing a reference to each,
-		and then calling <span class="pre">doMath</span> on them both.
-		The calculated results we get back reflect that the right method was used,
-		based on the actual type of the object.</p>
-
-	<h3 id="vtable">How the Magic Works</h3>
-	<p>Even though <span class="pre">doMath</span> <i>seems</i> to have no idea what
-		the concrete type is of <span class="pre">shape</span>, it nonetheless
-		correctly invokes the appropriate concrete type method. It can do this because
-		virtual references are "fat" references containing two pieces of information:
-		a reference to the real object itself and a reference to a <i>vtable</i>.
-		This vtable makes the magic possible
-		by describing key information about the object's concrete type
-		as viewed from the perspective of the trait.
-		In particular, it captures reference addresses for the type's trait-declared methods
-		and location information for trait-declared fields,
-		as well as unique id identifying the concrete type
-		and the type's size, alignment and finalizer, which an owning virtual reference
-		needs to release the object.</p>
-	<p>In this example, the vtable contains two references to the concrete type's
-		<span class="pre">area</span> and <span class="pre">perimeter</span> methods.
-		There are actually two different versions of this vtable,
-		one for references to <span class="pre">Circle</span> objects
-		and a different one for references to <span class="pre">Rectangle</span> objects.
-		When a borrowed reference to one of those two types of objects is
-		passed to <span class="pre">doMath</span>, a virtual reference is automatically
-		created by attaching the type-specific vtable to the known pointer to the object.</p>
-	<p>When <span class="pre">doMath</span> invokes a method using a virtual reference,
-		it retrieves a reference to that method out of the virtual reference's vtable.
-		Then it calls that method passing the appropriate information,
-		in this case the reference to the object.
-		Calling a method indirectly (via a vtable) is called dynamic (or virtual) dispatch.</p>
-
-	<h4 id="working">Working with Virtual References</h4>
-	<p>As the example above shows, a virtual reference is automatically created (coerced)
-		when passing a regular reference to a variable or function expecting a virtual reference.
-		This is called <i>upcasting</i>.</p>
-	<p>A compiler error will result if the concrete type
-		does not structurally conform to the virtual reference's expected type.
-		The virtual reference's expected type can be a struct or trait.
-		Compliance simply means that all the fields and methods defined on the reference's type
-		have been implemented by the concrete type.
-		The compliant type may implement more fields and methods,
-		but it must implement at least the ones the reference's type defines.</p>
-	<p>This coercion may be explicitly requested using the <span class="pre">as</span> operator:</p>
+	<p>and the rule that ties it to equality is that if two values are <span class="pre">==</span> they feed a
+		hasher the same things. So a type that declares <span class="pre">is Hash</span> must have a
+		<span class="pre">==</span>, and is refused without one. A <span class="pre">struct</span> that declares
+		<span class="pre">Hash</span> and writes no <span class="pre">hash</span> is given one by the compiler, as
+		<span class="pre">!=</span> is derived from <span class="pre">==</span>: it feeds each field, in the order
+		declared.</p>
 <pre>
-mut virtref = &amp;circle as &amp;&lt;Shape;
+struct Id is Hash {
+  pub slot u32;
+  pub gen u32;
+  pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+}
+
+imm id = new Id(1, 2);
+mut h = Hasher.seeded();
+id.hash(&amp;mut h);          // feeds slot, then gen
+imm number = h.finish();
 </pre>
-	<p>Virtual references can be owning or borrowed.
-		They can be freely passed around, stored, or compared much like all other references.
-		However, virtual references may not be de-referenced using the
-		<span class="pre">*</span> operator, as a virtual reference can point to objects
-		of very different size and data composition.</p>
-	<p>An owning virtual reference's type is written as any
-		<a href="mem-regions.html#type">owning reference type</a> is,
-		<span class="pre">So[Shape]</span>: it is virtual because its value type is an
-		open trait. It is created by coercing an owning reference,
-		and it lends as any owning reference does
-		(see <a href="mem-borrowing.html">borrowed references</a>, "Borrowing from another reference"):
-		where a borrowed virtual reference is wanted, the owner is borrowed from, not moved.
-		Dispatching a method through it hands the method a borrowed virtual reference
-		with the permission its <span class="pre">self</span> declares,
-		so the owner may be used again after the call,
-		and the owner may not be replaced or moved while a borrow lent from it is still to be used,
-		nor lent mutably to one call beside another lend or a move of it
-		(<span class="pre">app.mix(app)</span>, for a <span class="pre">self &amp;mut</span> method, is refused):</p>
+	<p>It feeds the fields, never the struct's bytes, because the bytes between fields are undefined. It is
+		refused, at the field, where a field has no hash that agrees with its <span class="pre">==</span>: a float
+		(NaN is not equal to itself, and -0 is equal to 0), or any type that is not <span class="pre">Hash</span>,
+		such as a struct that does not declare it, a reference, a slice, a tuple, an array or a pointer. A type that
+		wants such a field in its key writes its own <span class="pre">hash</span>, which feeds what identifies
+		it:</p>
 <pre>
-mut app So[Shape] = new So[Circle](5);
-app.area();                       // lends app to the method
-imm view &amp;&lt;Shape = app;          // borrows from app
-doMath(app);                      // and so does passing it
-</pre>
-	<p>An owning virtual reference owns its object exactly as the owning reference
-		it was coerced from did: that reference is moved into it
-		(or, for a counted region like <span class="pre">Rc</span>, copied as one more owner),
-		and when its last owner goes away &mdash; out of scope, replaced, or inside a
-		struct that dies &mdash; the object is finalized as its concrete type
-		and its memory is given back to its region.
-		The vtable carries what that needs to know about the concrete type.</p>
-	<p id="bound">A virtual reference hides what the value it points at holds, borrows included.
-		In a function's signature or a struct's field, a <i>bound</i> says how long those last:
-		<span class="pre">&amp;&lt;Shape + 'a</span> points at a value whose borrows all last at
-		least as long as <span class="pre">'a</span>
-		(see <a href="mem-lifetimes.html#bounds">lifetime bounds</a>). The type then holds
-		<span class="pre">'a</span> beside its own lifetime, so what it carries goes, wherever it is
-		stored and read back out, where an <span class="pre">'a</span> borrow may; and a value
-		coerced to it where it is returned or stored through a parameter may hold only borrows known
-		to last <span class="pre">'a</span>. <span class="pre">&amp;&lt;Shape + 'static</span> points at
-		a value holding only global borrows. With no bound, a borrowed virtual reference holds its
-		own lifetime only.</p>
-	<p>An owning virtual reference names no lifetime at all, so it may outlive any borrow:
-		<span class="pre">So[Shape]</span> is bounded by <span class="pre">'static</span>. A value
-		holding a borrow that is not global may not be made one, since nothing after it would
-		follow what that value holds
-		(see <a href="mem-lifetimes.html#bounds">lifetime bounds</a>):</p>
-<pre>
-struct Ring is Shape { pub inner &amp;Circle; ... }   // area and perimeter are inner's
-
-mut app So[Shape] = new So[Circle](5);   // Ok: a Circle holds no borrow
-imm c = new Circle(2);
-app = new So[Ring](new Ring(&amp;c));       // ** ILLEGAL! a Ring holds a borrow of c **
-</pre>
-	<p>The primary use of virtual references lies with the dot operator.
-		This is how one dispatches trait-declared methods and accesses trait-declared fields.
-		A virtual reference's <a href="mem-permissions.html">permission</a> governs what it may do
-		exactly as a plain reference's does: a method is dispatched through it only when
-		the reference's permission grants what the method's <span class="pre">self</span> declares.
-		A method taking <span class="pre">self &amp;mut</span> needs a virtual reference that permits
-		mutation (<span class="pre">&amp;&lt;mut</span>, <span class="pre">&amp;&lt;uni</span>,
-		or an owner such as <span class="pre">So[Shape]</span>);
-		through a <span class="pre">&amp;&lt;</span> or <span class="pre">&amp;&lt;imm</span> one,
-		only methods taking <span class="pre">self &amp;</span> may be called.</p>
-<pre>
-trait Growable;
-  pub fn grow(self &amp;mut);
-
-fn enlarge(g &amp;&lt;mut Growable);
-  g.grow();                       // a mutable virtual reference may
-fn peek(g &amp;&lt;Growable);
-  g.grow();                       // ** ILLEGAL! g grants no mutation **
-</pre>
-	<p>The same holds from the other side. A call through the trait lends only the permission
-		the trait's method declares, so a type's method may not ask for a stronger
-		<span class="pre">self</span> than that: <span class="pre">self &amp;mut</span> where the trait
-		says <span class="pre">self &amp;</span>, <span class="pre">self &amp;uni</span> where it says
-		<span class="pre">self &amp;mut</span>, or <span class="pre">self &amp;imm</span> where it says
-		<span class="pre">self &amp;</span>. Giving such a type as the virtual reference is refused,
-		naming both methods. A weaker one is fine: a trait's <span class="pre">self &amp;mut</span> is met by
-		a method taking <span class="pre">self &amp;</span>. A <a href="guide-functions.html#cloref">closure</a>
-		literal given as the trait is no exception: one that changes state needs <span class="pre">self &amp;mut</span>
-		and is refused where the trait's method says <span class="pre">self &amp;</span>.</p>
-<pre>
-trait Reading;
-  pub fn read(self &amp;) i64;
-
-struct Counter;
-  n i64;
-  pub fn read(self &amp;mut) i64 { n = n + 1; n; }
-
-fn peek(r &amp;&lt;Reading) i64 { r.read(); }
-peek(&amp;c);                        // ** ILLEGAL! Counter's read takes self &amp;mut, Reading's takes self &amp; **
-</pre>
-
-	<h3 id="downcast">Pattern matching</h3>
-	<p id="virtual">Sometimes we want to re-obtain the specific, concrete-type reference to an object
-		we have a virtual reference for. This is called downcasting.
-		This can be accomplished using pattern matching:</p>
-<pre>
-match shape;
-  imm circle &amp;&lt;Circle {
-    // circle is now usable as having type &Circle
-  }
-  im rect &lt;Rectangle {
-    // 'rect' is now usable as having type &Rectangle
-  }
-  _ {
-    // some other unknown shape type
+  pub fn hash(self &amp;, h &amp;mut Hasher) {
+    h.writeU64(u64.from(slot) | (u64.from(gen) &lt;&lt; 32u64));   // two halves, mixed once
   }
 </pre>
-	<p>Since a virtual reference might have been created from objects of many different types,
-		we use pattern matching to figure out which concrete type originally created the object,
-		information held by the vtable.
-		So each pattern names a concrete type: a trait or an enum is refused there, since no
-		object is created as one. A virtual reference made from a reference to an enum was made
-		from one of its variants, and it is the variant that a pattern names.
-		A trait is a pattern only for the other direction, a match on an enum, where it names the
-		variants that comply with the trait and binds a virtual reference built from one
-		(<a href="guide-enums.html#traitpat">Trait patterns</a>); an open trait has no such pattern.</p>
+	<p>Every integer type and <span class="pre">bool</span> is <span class="pre">Hash</span>, feeding its bits, and
+		so is an owner of text, a <span class="pre">So[str]</span> or an <span class="pre">Rc[str]</span>, feeding the
+		bytes as the <span class="pre">str</span> it lends does; a float is not. A struct may hold such an owner as a
+		field and still be given its <span class="pre">hash</span>, which feeds the field as the
+		<span class="pre">str</span> it lends. A value whose length varies feeds a terminator after its bytes,
+		<span class="pre">h.writeStr(bytes)</span>, which is the bytes then the byte <span class="pre">0xFF</span>, so
+		that where one ends and the next begins is part of what is fed: <span class="pre">("ab", "c")</span> and
+		<span class="pre">("a", "bc")</span> differ as the two parts of one key. A fixed-size run of bytes is
+		<span class="pre">h.writeBytes(bytes)</span>.</p>
+	<p>The <span class="pre">Hasher</span> is a fast hash of the wyhash family: each word fed is xored into its
+		state and multiplied (<a href="safe-intrinsics.html">mulFold</a>), and bytes go through wyhash itself.
+		<span class="pre">Hasher.seeded()</span> starts it from a seed drawn at random from the operating system once
+		for the process (<span class="pre">processSeed()</span> is that number), so which keys collide is different on
+		every run and no one outside can tell: the defence against keys chosen to collide.
+		<span class="pre">Hasher.withSeed(n)</span> starts it from a seed of your own, and then the same keys give the
+		same numbers on every run and build, for a table whose order must be reproducible.</p>
 
-	<h3 id="restrictions">Type Restrictions</h3>
-	<p>Some types may not be suitable
-		when used as a foundation for virtual references.
-		This would be the case if any method the trait requires were generic:
-		a vtable slot holds one signature and
-		a generic method has one per instantiation, so the compiler refuses the
-		virtual reference and names the method. A generic method that is private,
-		or a generic function with no <span class="pre">self</span>, is dispatched
-		through nothing and so costs the trait nothing, and neither does a generic
-		<i>default</i> (a method given a body), which is cloned into each type that
-		declares the trait and is reached through that type, never through a slot.
-		A default that is <span class="pre">inline</span>, or exists only where a
-		<span class="pre">where</span> condition holds, has no slot either.
-		The vtable holds only the trait's public methods and fields: a private one
-		is not a requirement and has no slot, so it cannot be reached through a
-		virtual reference, even from the trait's own module, where its name is visible.
-		The compiler refuses the use and names the member and the trait; declaring it
-		<span class="pre">pub</span> in the trait gives it a slot.
-		The virtual reference itself is not refused, and a private method is still
-		reached through <span class="pre">self</span> in the trait's defaults and on
-		the concrete type.
-		It would also happen if the type makes any use of <span class="pre">Self</span>
-		in any form other than as a virtual reference
-		(<span class="pre">&amp;&lt;Self</span>).</p>
+	<h3 id="iterators">Iterator and Iterable</h3>
+	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that is generic over
+		them. A type is an <span class="pre">Iterator[T]</span> by having <span class="pre">next</span>, and an
+		<span class="pre">Iterable[T, I]</span> by having <span class="pre">iter</span>, and a type that says
+		<span class="pre">is Iterator[T]</span> gets the adapters, <span class="pre">map</span>,
+		<span class="pre">filter</span> and the rest, as the trait's generic defaults. Making an iterator of your own
+		is in <a href="guide-methods.html#iterator">Method patterns</a>.</p>
+	<!-- Home for the moved blocks, in moves/to-modularity.html, in this order:
+	     1. guide-collections.html#iterator ("the Iterator and Iterable traits, as bounds and as virtual
+	        references"), here under #iterators;
+	     2. guide-collections.html#adapters ("how a chain compiles: generic closures, one loop, vectorization; a
+	        next without the declaration; terminal methods take &mut"), after it;
+	     3. guide-collections.html#traits ("the collection traits Collection, Indexed, Stack, Queue, Map, with a
+	        program"), as a section "The collection traits" (anchor collectiontraits);
+	     4. guide-structs.html#methodname ("a type's own method replaces a trait's shared method whatever its
+	        shape") joins the "inherited free" bullet of #takes above, which already says most of it. -->
 
-	<h2 id="fnref">Function References</h2>
-
-	<p style="margin-left: 40px;"><i>Note: This is implemented: borrowing a reference to a named function,
-		holding one in a variable, passing it to a parameter that spells out its signature,
-		with the signature's parameters named or written as their types alone,
-		calling through it, writing an anonymous function where the reference is wanted, and giving it a
-		<a href="guide-functions.html#closures">closure</a> that holds and borrows nothing.</i></p>
-
-	<p>Function references are useful when you want to generalize some piece of code,
-		such that part of its logic is performed by one of several compatible functions
-		selected at at runtime.</p>
-	<p>Use the ampersand operator to borrow a reference to any existing function:</p>
+	<h2 id="fnref">Function references: any function of a signature</h2>
+	<p style="margin-left: 40px;"><i>Note: This is implemented: borrowing a reference to a named function, holding
+		one in a variable, passing it to a parameter that spells out its signature, with the signature's parameters
+		named or written as their types alone, calling through it, writing an anonymous function where the reference
+		is wanted, and giving it a closure that holds and borrows nothing.</i></p>
+	<p>At the function's layer, the interface is a signature, and the subtypes are the functions that have it. A
+		<b>function reference</b> lets part of some code's logic be done by any of several compatible functions,
+		chosen while the program runs. The ampersand borrows a reference to any function:</p>
 <pre>
 fn incr(nbr u32) u32 {
   nbr + 1;
 }
 
-fn doit() {
-  imm fnref = &amp;incr;  // fn ref points to the function "incr"
+// The parameter's type is the signature it takes
+fn dostuff(fnref &amp;fn(u32) u32) u32 {
+  fnref(4);         // Call the function
 }
-</pre>
-	<p>As with any borrowed reference, this reference may be copied around between
-		variables and functions. It carries no lifetime restrictions,
-		as there is no risk of a global function going away.</p>
-	<p>The reference may be used at any time to call the function it refers to:</p>
-<pre>
-fn doit() {
-	dostuff(&amp;incr);   // Pass along a reference to the incr function
 
-// Note the parameter needs to declare the reference's function signature
-}
-fn dostuff(fnref &amp;fn(u32) u32) {
-	fnref(4);         // Call the function
-}
+imm fnref = &amp;incr;  // points to the function incr
+dostuff(&amp;incr);     // 5
 </pre>
-	<p>A function reference's type is its signature. Its parameters may be written
-		as their types alone, as here, or with names, as in <span class="pre">&amp;fn(nbr u32) u32</span>:
-		only the types are part of the type, so either spelling accepts a reference to
-		<span class="pre">incr</span>.</p>
-
-	<p>A function-reference parameter may stand anywhere in a parameter list.
-		Inside a list in parentheses &mdash; a function's parameters, or a function type's own &mdash;
-		a function type's return type ends at the comma, which goes on to the next parameter.
-		A function type there that returns several values writes them as a tuple, in parentheses:</p>
+	<p>As with any borrowed reference, a function reference may be copied between variables and functions. It
+		carries no lifetime restrictions, as there is no risk of a global function going away. Its type is its
+		signature. Its parameters may be written as their types alone, as here, or with names, as in
+		<span class="pre">&amp;fn(nbr u32) u32</span>: only the types are part of the type, so either spelling accepts
+		a reference to <span class="pre">incr</span>. Its permission is <span class="pre">opaq</span>, the default and
+		the only one permitted, which allows no dereference at all, so the function's code can be neither read nor
+		changed through it.</p>
+	<p>A function-reference parameter may stand anywhere in a parameter list. Inside a list in parentheses (a
+		function's parameters, or a function type's own) a function type's return type ends at the comma, which goes
+		on to the next parameter. A function type there that returns several values writes them as a tuple, in
+		parentheses:</p>
 <pre>
 fn combine(f &amp;fn(u32) u32, g &amp;fn(n u32) (u32, u32), x u32) u32 {
 	mut a u32;
@@ -868,48 +835,60 @@ struct Applier {
 	pub run &amp;fn(&amp;fn(u32) u32, u32) u32;
 }
 </pre>
-	<p>Outside a list, as a field's or a variable's whole type, a comma after the return type
-		adds another return type, as it does on a <a href="guide-functions.html#return">function's own signature</a>:
-		a field typed <span class="pre">&amp;fn(u32) u32, u32</span> holds a function returning two values.</p>
-
-	<p>The default (and only permissible) permission for a function reference is
-		<span class="pre">opaq</span>.
-		This permission does not allow the reference to be dereferenced in any way,
-		thereby prohibiting the ability to read or change the logic of the function it points to.
-	</p>
-
+	<p>Outside a list, as a field's or a variable's whole type, a comma after the return type adds another return
+		type, as it does on a <a href="guide-functions.html#return">function's own signature</a>: a field typed
+		<span class="pre">&amp;fn(u32) u32, u32</span> holds a function returning two values.</p>
 	<p>A function reference is one code address, so it takes only a function: no state travels with it.
-		Something that should take a function, a <a href="guide-functions.html#closures">closure</a> that carries state, or any struct
-		with a <span class="pre">()</span> method of the same signature asks for one of two things instead:</p>
+		Something that should take a function, a closure that carries state, or any struct with a
+		<span class="pre">()</span> method of the same signature asks for one of two things instead:</p>
 	<ul>
-		<li>a <a href="guide-functions.html#cloref">closure reference</a>, <span class="pre">&amp;&lt;fn(u32) u32</span> (or
+		<li>a <a href="#cloref">closure reference</a>, <span class="pre">&amp;&lt;fn(u32) u32</span> (or
 			<span class="pre">&amp;&lt;mut fn(u32) u32</span> where the callable may change its state), which is compiled
 			once and calls through the reference; a reference to a plain function, <span class="pre">&amp;incr</span>,
 			is accepted where one is wanted;</li>
-		<li>the signature as a constraint,
-			<span class="pre">fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut Array[T], order &amp;F)</span>,
-			which is compiled for each type it is given and is given <span class="pre">&amp;byName</span>, a closure, or a struct
-			(<a href="mod-generativity.html#sigbound">A function signature as a constraint</a>).</li>
+		<li>the signature as a constraint, <span class="pre">fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut
+			Array[T], order &amp;F)</span>, which is compiled for each type it is given and is given
+			<span class="pre">&amp;byName</span>, a closure, or a struct (<a href="mod-generativity.html#sigbound">A
+			function signature as a constraint</a>).</li>
 	</ul>
-	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what another Cone function
-		taking a function takes. A C library's callback parameter takes the reference to a
-		<a href="#cnamed">C-named function</a> instead, <span class="pre">&amp;fn @c (sig)</span>.</p>
+	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what another Cone function taking
+		a function takes. A C library's callback parameter takes the reference to a <a href="#cnamed">C-named
+		function</a> instead, <span class="pre">&amp;fn @c (sig)</span>.</p>
+
+	<h3 id="anonymous">Anonymous functions</h3>
+	<p>When the function you want a reference to is small, it may be written right where the reference is wanted,
+		with no name:</p>
+<pre>
+dostuff(&amp;fn(nbr u32) u32 {nbr+1;});      // 5
+dostuff(&amp;fn(nbr u32) u32 {nbr+nbr;});    // 8
+</pre>
+	<p>An anonymous function is a function that happens to be written in place. It is made at the module level, so
+		it sees none of the variables around it, and it is the same function every time. A
+		<a href="guide-functions.html#closures-tour">closure literal</a>, written without the ampersand,
+		<span class="pre">fn(nbr u32) u32 {nbr+1;}</span> or <span class="pre">nbr =&gt; nbr+1</span>, may name those
+		variables. Given where a function reference is wanted, a closure that holds and borrows nothing becomes a
+		plain function reference, so either spelling works for such a case:</p>
+<pre>
+dostuff(fn(nbr u32) u32 {nbr+1;});    // a closure, here a plain function
+dostuff(nbr =&gt; nbr+nbr);              // the parameter's type comes from the signature
+</pre>
+	<p>A closure that does name a variable of the code around it cannot be a function reference, which has no place
+		to keep it, and is refused there: "This closure borrows step, so it is not a function and cannot be given
+		where a function reference, '&amp;fn(...)', is wanted: only a closure that holds and borrows nothing is one."
+		The parameter is then declared <span class="pre">&amp;&lt;fn(u32) u32</span>, a closure reference.</p>
 
 	<h3 id="cnamed">A reference to a C-named function</h3>
 	<p>A Cone function and a <a href="safe-c.html#cnaming">C-named</a> one (an <span class="pre">extern</span>
-		function C defines, a <span class="pre">fn @c</span>, a function of an <span class="pre">@c</span> module)
-		are called differently: C passes a struct by value in registers or through a pointer
-		as its ABI says
-		(<a href="safe-c.html#cabi">Structs by value</a>), and Cone keeps its own convention for its own functions.
-		So the calling convention is part of a function reference's type. A reference to a C-named function has the type
+		function C defines, a <span class="pre">fn @c</span>, a function of an <span class="pre">@c</span> module) are
+		called differently: C passes a struct by value in registers or through a pointer as its ABI says
+		(<a href="safe-c.html#cabi">Structs by value</a>), and Cone keeps its own convention for its own functions. So
+		the calling convention is part of a function reference's type. A reference to a C-named function has the type
 		<span class="pre">&amp;fn @c (Vec3) f32</span>, marked as <span class="pre">fn @c</span> marks a function; a
-		reference to a Cone function is the plain <span class="pre">&amp;fn(Vec3) f32</span>.
-		In a declaration a name always follows the attribute, and in a type it never does, so in a type a
-		<span class="pre">(</span> after <span class="pre">@c</span> opens the parameters: the type's
-		<span class="pre">@c</span> takes no arguments. If a second C convention is ever needed, it gets its own attribute
-		name, not <span class="pre">@c(...)</span> arguments in a type; <span class="pre">&amp;fn @c(system)</span> is not
-		a spelling.</p>
-	<p>For example:</p>
+		reference to a Cone function is the plain <span class="pre">&amp;fn(Vec3) f32</span>. In a declaration a name
+		always follows the attribute, and in a type it never does, so in a type a <span class="pre">(</span> after
+		<span class="pre">@c</span> opens the parameters: the type's <span class="pre">@c</span> takes no arguments. If
+		a second C convention is ever needed, it gets its own attribute name, not <span class="pre">@c(...)</span>
+		arguments in a type; <span class="pre">&amp;fn @c(system)</span> is not a spelling.</p>
 <pre>
 struct Vec3 { pub x f32; pub y f32; pub z f32; }
 
@@ -926,10 +905,10 @@ fn doit(v Vec3) {
 }
 </pre>
 	<p>Neither converts to the other, and there is no thunk to bridge them: giving one where the other is wanted,
-		in an initializer, an assignment, an argument, a returned value or a struct's field, is a compile error,
-		so a call through a reference never passes its values the wrong way. A C library's callback parameter
-		is typed <span class="pre">&amp;fn @c</span>, and the Cone function handed to it is written
-		<span class="pre">fn @c</span>; handing C a plain Cone function is refused.</p>
+		in an initializer, an assignment, an argument, a returned value or a struct's field, is a compile error, so a
+		call through a reference never passes its values the wrong way. A C library's callback parameter is typed
+		<span class="pre">&amp;fn @c</span>, and the Cone function handed to it is written
+		<span class="pre">fn @c</span>; handing C a plain Cone function is refused:</p>
 <pre>
 extern fn @c c_apply(n i32, f &amp;fn @c (Vec3) f32) f32;   // C calls f
 
@@ -938,92 +917,59 @@ fn twice(v Vec3) f32 { v.x * 2.; }
 
 fn doit() {
   c_apply(1, &amp;scale);      // fine
-  c_apply(1, &amp;twice);      // error: a Cone function, where a C-named one is wanted
+  c_apply(1, &amp;twice);      // ERROR: a Cone function, where a C-named one is wanted
 }
 </pre>
-	<p>A <a href="guide-functions.html#closures">closure</a> has no C form, so it is never <span class="pre">@c</span>, and an
-		anonymous function with a body has no name for <span class="pre">@c</span> to give C spelling to.
-		A type's method keeps Cone's convention even when <span class="pre">@c</span> names its symbol (a vtable
-		calls it by its Cone signature), so a reference to a method is a plain <span class="pre">&amp;fn</span>.
-		A closure reference (<span class="pre">&amp;&lt;fn</span>, <span class="pre">So[fn]</span>) calls what it holds in
-		Cone's convention, so a C-named function's reference is not accepted where one is wanted:
-		call the C function from a Cone function and make that the callable.</p>
-
-	<h3 id="anonymous">Anonymous Functions</h3>
-	<p>When the function you want to get a reference to is small,
-		it may be more convenient to specify the logic for the function
-		right where the function reference is to be captured.
-		This is called an anonymous function, as the function has no name:
-	</p>
 <pre>
-fn doit() {
-	dostuff(&amp;fn(nbr u32) u32 {nbr+1;});
-	dostuff(&amp;fn(nbr u32) u32 {nbr+nbr;});
-}
+Error 1503: `&amp;fn(Vec3) f32` is a reference to a Cone function, and `&amp;fn @c (Vec3) f32`, a C-named
+function's, is wanted. C would call it in C's convention, which passes a struct differently from Cone's, so
+its values would arrive wrong, and neither converts to the other. Make the function C-named,
+`fn @c name(...)`, or put it in an `@c` module.
 </pre>
-	<p>An anonymous function is a function that happens to be written in place. It is made
-		at the module level, so it sees none of the variables around it, and it is the same function every time.
-		A <a href="guide-functions.html#closures">closure literal</a>, written without the ampersand,
-		<span class="pre">fn(nbr u32) u32 {nbr+1;}</span> or <span class="pre">nbr =&gt; nbr+1</span>, may name those variables.
-		Given where a function reference is wanted, a closure that holds and borrows nothing
-		becomes a plain function reference, so either spelling works for such a case:</p>
-<pre>
-fn doit() {
-	dostuff(fn(nbr u32) u32 {nbr+1;});    // a closure, here a plain function
-	dostuff(nbr =&gt; nbr+nbr);              // the parameter's type comes from the signature
-}
-</pre>
-	<p>A closure that does name a variable of the code around it cannot be a function reference, which has no place to
-		keep it, and is refused there with a message saying so. The parameter is then declared
-		<span class="pre">&amp;&lt;fn(u32) u32</span>.</p>
+	<p>A closure has no C form, so it is never <span class="pre">@c</span>, and an anonymous function with a body
+		has no name for <span class="pre">@c</span> to give C spelling to. A type's method keeps Cone's convention even
+		when <span class="pre">@c</span> names its symbol (a vtable calls it by its Cone signature), so a reference to
+		a method is a plain <span class="pre">&amp;fn</span>. A closure reference (<span class="pre">&amp;&lt;fn</span>,
+		<span class="pre">So[fn]</span>) calls what it holds in Cone's convention, so a C-named function's reference is
+		not accepted where one is wanted: call the C function from a Cone function and make that the callable.</p>
 
-	<h2 id="closures">Closures</h2>
-	<p>Closures, and the closure references that take any closure of a signature, are described in full with
-		functions, in <a href="guide-functions.html#closures">Functions, closures and Result</a>. The sections that
-		were here are there, and each link below goes straight to one:</p>
+	<h2 id="cloref">Closure references: any callable of a signature</h2>
+	<p id="closures">A function reference takes only a function. A <b>closure reference</b>,
+		<span class="pre">&amp;&lt;fn(u32) u32</span>, takes any callable of the signature, whatever holds its state: a
+		function, a closure, or a struct with a <span class="pre">()</span> method. It is to a signature what a virtual
+		reference is to a trait. Closures and closure references are described in full with functions, and each link
+		below goes straight to one part:</p>
 	<ul>
-		<li id="closuredef"><a href="guide-functions.html#closuredef">Closure Definition</a>:
+		<li>Closures: <span id="closuredef"><a href="guide-functions.html#closuredef">how one is written</a></span>,
 			<span id="full"><a href="guide-functions.html#full">the full form</a></span> and
-			<span id="short"><a href="guide-functions.html#short">the short form</a></span>.</li>
-		<li id="capture"><a href="guide-functions.html#capture">What a closure captures</a>, and
-			<span id="own"><a href="guide-functions.html#own">giving the closure its own value</a></span>.</li>
-		<li id="closure-self"><a href="guide-functions.html#closure-self">Whether the closure changes</a>.</li>
-		<li id="ret"><a href="guide-functions.html#ret">The return type</a>.</li>
-		<li id="nothing"><a href="guide-functions.html#nothing">A closure that holds nothing</a>.</li>
-		<li id="goes"><a href="guide-functions.html#goes">Where a closure may go</a>.</li>
-		<li id="closurerules"><a href="guide-functions.html#closurerules">Rules that follow</a>.</li>
-		<li id="closurevalues"><a href="guide-functions.html#closurevalues">Closures are values</a>.</li>
+			<span id="short"><a href="guide-functions.html#short">the short form</a></span>;
+			<span id="capture"><a href="guide-functions.html#capture">what a closure captures</a></span> and
+			<span id="own"><a href="guide-functions.html#own">giving it its own value</a></span>;
+			<span id="closure-self"><a href="guide-functions.html#closure-self">whether it changes</a></span>;
+			<span id="ret"><a href="guide-functions.html#ret">its return type</a></span>;
+			<span id="nothing"><a href="guide-functions.html#nothing">a closure that holds nothing</a></span>;
+			<span id="goes"><a href="guide-functions.html#goes">where a closure may go</a></span>;
+			<span id="closurerules"><a href="guide-functions.html#closurerules">rules that follow</a></span>; and
+			<span id="closurevalues"><a href="guide-functions.html#closurevalues">closures are values</a></span>.</li>
+		<li>Closure references: <span id="forms"><a href="guide-functions.html#forms">their forms</a></span> and
+			<span id="meets"><a href="guide-functions.html#meets">what meets one</a></span>;
+			<span id="lent"><a href="guide-functions.html#lent">a closure literal, lent</a></span>;
+			<span id="owner"><a href="guide-functions.html#owner">an owner of a closure</a></span>;
+			<span id="alias"><a href="guide-functions.html#alias">naming a signature</a></span>;
+			<span id="field"><a href="guide-functions.html#field">a callable held in a field</a></span>;
+			<span id="markers"><a href="guide-functions.html#markers">saying what is behind a reference</a></span>;
+			<span id="traitlit"><a href="guide-functions.html#traitlit">a literal that fills a trait</a></span>; and
+			<span id="static"><a href="guide-functions.html#static">a signature as a generic bound</a></span>.</li>
 	</ul>
 
-	<h2 id="cloref">Closure References</h2>
-	<p>A closure passed as a reference to the signature it calls, so that a function or a field takes any closure of
-		that signature whatever struct holds its state, is described with closures, in
-		<a href="guide-functions.html#cloref">Closure References</a>:</p>
-	<ul>
-		<li id="forms"><a href="guide-functions.html#forms">The forms of a closure reference</a>, and
-			<span id="meets"><a href="guide-functions.html#meets">what meets it</a></span>.</li>
-		<li id="lent"><a href="guide-functions.html#lent">A closure literal, lent</a>.</li>
-		<li id="owner"><a href="guide-functions.html#owner">An owner of a closure</a>.</li>
-		<li id="alias"><a href="guide-functions.html#alias">Naming a signature</a>.</li>
-		<li id="field"><a href="guide-functions.html#field">A callable held in a field</a>.</li>
-		<li id="markers"><a href="guide-functions.html#markers">Saying what is behind a reference</a>.</li>
-		<li id="traitlit"><a href="guide-functions.html#traitlit">A literal that fills a trait</a>.</li>
-		<li id="static"><a href="guide-functions.html#static">A signature as a generic bound</a>.</li>
-	</ul>
-
-	<h2 id="modtrait">A module conforming to a module trait</h2>
-
-	<p style="margin-left: 40px;"><i>A module may conform to a module trait, taking
-		the trait's defaults it does not declare. The
-		framework traits a program plugs into, whose entries would be configurable,
-		are not implemented.</i></p>
-
-	<p>A program plugs into a larger framework — a shell that runs it, a web server
-		that hands it requests — and the framework says what every program plugging
-		into it must provide. That interface is a <b>module trait</b>: the
-		abstraction of a module, as a <a href="#traits">trait</a> is the
-		abstraction of a struct. It declares functions and global variables. One
-		written with a body, or with an initial value, is a <b>default</b>; one
+	<h2 id="modtrait">Module traits: a module that plugs into a framework</h2>
+	<p style="margin-left: 40px;"><i>A module may conform to a module trait, taking the trait's defaults it does not
+		declare. The framework traits a program plugs into, whose entries would be configurable, are not
+		implemented.</i></p>
+	<p>A program plugs into a larger framework, a shell that runs it, a web server that hands it requests, and the
+		framework says what every program plugging into it must provide. That interface is a <b>module trait</b>: the
+		abstraction of a module, as a <a href="#traits">trait</a> is the abstraction of a struct. It declares
+		functions and global variables. One written with a body, or with an initial value, is a <b>default</b>; one
 		written without is a <b>requirement</b>:</p>
 <pre>
 mod hosts;
@@ -1038,15 +984,12 @@ pub mod trait Runner {
   }
 }
 </pre>
-	<p>A default's body is a template, as a generic's is: it is type-checked in
-		each module that conforms, where the requirements it calls are known, and
-		not where the trait is written. So a mistake in a default is reported at the
-		trait's line, <i>as instantiated by</i> the first module that conforms; a
-		framework package that no module of its own conforms to does not see it.
-		Give such a package a small conforming module in its tests.</p>
-	<p>A module trait is a declaration of the module whose file writes it, like a
-		type: it is imported, folded and made public as any declaration is. A module
-		says it conforms on its <span class="pre">mod</span> line, with
+	<p>A default's body is a template, as a generic's is: it is type-checked in each module that conforms, where the
+		requirements it calls are known, and not where the trait is written. So a mistake in a default is reported at
+		the trait's line, <i>as instantiated by</i> the first module that conforms; a framework package that no module
+		of its own conforms to does not see it. Give such a package a small conforming module in its tests.</p>
+	<p>A module trait is a declaration of the module whose file writes it, like a type: it is imported, folded and
+		made public as any declaration is. A module says it conforms on its <span class="pre">mod</span> line, with
 		<span class="pre">is</span>:</p>
 <pre>
 mod plain is Runner;
@@ -1059,87 +1002,59 @@ pub fn step(n i64) i64 {
 
 pub mut @threadlocal scale = 2i64;
 </pre>
+	<p>Now <span class="pre">plain.run(4i64)</span> is 110: <span class="pre">plain</span>'s own
+		<span class="pre">step</span>, times its <span class="pre">scale</span>, plus the default
+		<span class="pre">offset</span>.</p>
 	<ul>
-		<li><b>Conformance is declared, never inferred.</b> A module whose
-			declarations happen to match a trait does not conform to it unless its
-			<span class="pre">mod</span> line says so. A module conforms to one trait,
-			named by one name that the module can reach; a trait further away is
-			imported and folded in first.</li>
-		<li><b>It is checked where it is written.</b> For each requirement the module
-			must declare a function with exactly the trait's signature, or a global of
-			the trait's type and permission. A requirement the module does not declare,
-			or declares differently, is an error at the <span class="pre">is</span>,
-			naming the member.</li>
-		<li><b>Defaults are copied into the module.</b> A default the module does
-			not declare becomes the module's own: <span class="pre">plain.run</span> and
-			<span class="pre">plain.offset</span> are functions and globals of
-			<span class="pre">plain</span>, reached like any other. Where a default's
-			body names another member of the trait, the copy names the module's —
-			so <span class="pre">plain.run</span> calls <span class="pre">plain.step</span>.
-			A default global is storage of each module that takes it.</li>
-		<li><b>A module may override a default</b> by declaring its own, with the
-			same shape: the copies of the other defaults then use it.</li>
-		<li><b>Conformance is static.</b> A module is one instance, so nothing is
-			dispatched at run time, and there is no virtual reference to a module.
-			A member of the trait has no code or storage of its own, so
-			<span class="pre">Runner.run</span> is an error: name it through a module
-			that conforms.</li>
-		<li><b>A module trait holds functions and globals only.</b> A trait requiring
-			a type is not implemented, and neither is a generic function or an overload
-			name among its members.</li>
+		<li><b>Conformance is declared, never inferred.</b> A module whose declarations happen to match a trait does
+			not conform to it unless its <span class="pre">mod</span> line says so. A module conforms to one trait,
+			named by one name that the module can reach; a trait further away is imported and folded in first.</li>
+		<li><b>It is checked where it is written.</b> For each requirement the module must declare a function with
+			exactly the trait's signature, or a global of the trait's type and permission. A requirement the module does
+			not declare, or declares differently, is an error at the <span class="pre">is</span>, naming the
+			member.</li>
+		<li><b>Defaults are copied into the module.</b> A default the module does not declare becomes the module's
+			own: <span class="pre">plain.run</span> and <span class="pre">plain.offset</span> are functions and globals
+			of <span class="pre">plain</span>, reached like any other. Where a default's body names another member of
+			the trait, the copy names the module's, so <span class="pre">plain.run</span> calls
+			<span class="pre">plain.step</span>. A default global is storage of each module that takes it.</li>
+		<li><b>A module may override a default</b> by declaring its own, with the same shape: the copies of the other
+			defaults then use it.</li>
+		<li><b>Conformance is static.</b> A module is one instance, so nothing is dispatched while the program runs,
+			and there is no virtual reference to a module. A member of the trait has no code or storage of its own, so
+			<span class="pre">Runner.run</span> is an error: name it through a module that conforms.</li>
+		<li><b>A module trait holds functions and globals only.</b> A trait requiring a type is not implemented, and
+			neither is a generic function or an overload name among its members.</li>
 	</ul>
-	<p>On the <span class="pre">mod</span> line, <span class="pre">is</span> comes
-		after <a href="mod-extensibility.html#extends"><span class="pre">extends</span></a> and before a
-		<a href="mod-namespaces.html#default">default fold</a>:</p>
-<pre>
-mod layered extends plain is Runner use run;
-</pre>
-	<p>A module that extends a conforming module takes the defaults that module
-		took as that module's, as it takes all its names.</p>
+	<p>On the <span class="pre">mod</span> line, <span class="pre">is</span> comes after
+		<a href="mod-extensibility.html#extends"><span class="pre">extends</span></a> and before a
+		<a href="mod-namespaces.html#default">default fold</a>: <span class="pre">mod layered extends plain is Runner
+		use run;</span>. A module that extends a conforming module takes the defaults that module took as that
+		module's, as it takes all its names.</p>
 
-	<h2 id="finetuning">Fine-tuning: calls that may reshape a borrowed collection</h2>
-	<p>Two rules matter only when a collection is borrowed across a call through a reference that
-		may change what it reaches. They are the same rule, seen from a virtual reference and from a
-		closure.</p>
+	<h2 id="finetuning">Calls that may reshape a borrowed collection</h2>
+	<p id="reshape">One rule matters only when a collection is borrowed across a call through a reference that may
+		change what it reaches. The type behind a virtual reference is hidden, so a call through a mutable one
+		(<span class="pre">&amp;&lt;mut Trait</span>, or a <span class="pre">&amp;&lt;mut fn</span> called) is assumed
+		able to reshape any collection: it may be a struct that holds the list, or a closure that captured it. A borrow
+		of an element of a collection that another path reaches (a <span class="pre">&amp;mut</span> parameter, a
+		field of <span class="pre">self</span>) is refused across such a call (error 1339; 1425 for a reference
+		narrowed into an enum's variant). The cures are to lend the collection <span class="pre">&amp;imm</span>, which
+		nothing can write, to mark the reference <span class="pre">+ ShapeKeeping</span>, or to copy what is needed out
+		before the call. A read-only virtual reference (<span class="pre">&amp;&lt;Trait</span>,
+		<span class="pre">&amp;&lt;fn</span>) cannot write what it reaches and is not affected.
+		<span id="closure-reshape">The same rule, seen from a closure, with the visitor example, is in
+		<a href="guide-functions.html#closure-reshape">Calling a closure while a collection is borrowed</a>, and the
+		rule itself in <a href="mem-shape.html#shapechanging">Elements of a collection and changing its
+		shape</a>.</span></p>
 
-	<h3 id="reshape">Calling a mutable virtual reference while a collection is borrowed</h3>
-	<p>The type behind a virtual reference is hidden, so a call through a mutable one (<span class="pre">&amp;&lt;mut Trait</span>,
-		or a <span class="pre">&amp;&lt;mut fn</span> called) is assumed able to reshape any collection: it may be a struct
-		that holds the list, or a closure that captured it. A borrow of an element of a collection that another path
-		reaches (a <span class="pre">&amp;mut</span> parameter, a field of <span class="pre">self</span>) is refused across
-		such a call (error 1339; 1425 for a reference narrowed into an enum's variant). The cures are to lend the
-		collection <span class="pre">&amp;imm</span>, which nothing can write, to mark the reference
-		<span class="pre">+ ShapeKeeping</span>, or to copy what is needed out before the call. A read-only virtual
-		reference (<span class="pre">&amp;&lt;Trait</span>, <span class="pre">&amp;&lt;fn</span>) cannot write what it reaches and is
-		not affected. The rule, with the visitor example, is in
-		<a href="guide-functions.html#closure-reshape">Closures</a> and
-		<a href="mem-borrowing.html#shapechanging">Elements of a collection and changing its shape</a>.</p>
+	<p>You can now write code against an interface, and choose whether the part behind it is settled while the
+		program is compiled or while it runs. The compile-time choice is a generic, and generics, with macros, are
+		the last page of this part.</p>
 
-	<h3 id="closure-reshape">Calling a closure while a collection is borrowed</h3>
-	<p>The same rule, seen from a closure, with the visitor example, is described with closures:
-		<a href="guide-functions.html#closure-reshape">Calling a closure while a collection is borrowed</a>.</p>
-
-	<h2 id="comesback">Comes back in</h2>
-	<ul>
-		<li><a href="guide-functions.html#closures">Functions, closures and Result</a>: closures and closure
-			references in full, moved there from this page.</li>
-		<li><a href="mod-generativity.html">Generativity</a>: traits and signatures as constraints,
-			the static form of substitution.</li>
-		<li><a href="mod-extensibility.html#retro">Retroactive conformance</a>: meeting a trait a
-			library type does not, through an enrichment of your own.</li>
-		<li><a href="guide-enums.html#traitpat">Trait patterns</a>, in Enums, and match on variants
-			(matching on a virtual reference is <a href="#downcast">above</a>).</li>
-		<li><a href="guide-collections.html#iteration">Collections and the send operator</a>: <span class="pre">Iterator</span>,
-			<span class="pre">Iterable</span> and the adapters.</li>
-		<li><a href="conc-sharing.html">What may cross a thread</a>: the marker traits on a
-			reference to a callable or a trait.</li>
-		<li><a href="mem-borrowing.html">Borrowed references in depth</a>: shape change, and
-			<span class="pre">ShapeKeeping</span>.</li>
-	</ul>
-
-	<p style="text-align: right; margin-top: 2em;">
-		<a href="mod-generativity.html"><img alt="_" src="next.png" /></a>
-	</p>
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-generativity.html"><img alt="_" src="next.png" /></a>
+		</p>
 
 	</div>
 	</body>

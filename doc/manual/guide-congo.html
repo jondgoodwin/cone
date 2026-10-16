@@ -1,0 +1,215 @@
+<html>
+  <head>
+	  <title>Growing a program with Congo - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Growing a program with Congo</div>
+		</div>
+
+    <div class="text">
+
+	<p>Every program in the Guide so far has been one file. Real programs outgrow that: there is more code than one
+		file comfortably holds, some of it is worth sharing with other programs, and all of it needs tests so it can be
+		changed without fear. This page grows the bakery from <a href="guide-actors.html">Actors</a> into a package with
+		Congo, Cone's build tool: several files, a submodule, a library of its own, and tests. Afterwards you can lay out
+		a program of any size and keep it working. It starts with one command:</p>
+<pre>
+&gt; congo new bakery
+     Created executable package bakery (bakery)
+&gt; cd bakery
+&gt; congo run
+   Compiling libc v0.1.0 (C:\src\cone\packages\libc)
+   Compiling core v0.1.0 (C:\src\cone\packages\core)
+   Compiling stdio v0.1.0 (C:\src\cone\packages\stdio)
+   Compiling bakery v0.1.0 (C:\work\bakery)
+     Linking build\debug\bakery.exe
+    Finished debug build\debug\bakery.exe
+     Running build\debug\bakery.exe
+Hello, world!
+</pre>
+
+	<h2 id="package">A package: congo new</h2>
+	<p><span class="pre">congo new</span> makes a <b>package</b>: a folder holding a program's source and a short
+		description of it. The description is the manifest, <span class="pre">congo.toml</span>, which gives the
+		package's name, its version, and whether it builds into a program you run (an <i>executable</i>) or a library
+		other packages use:</p>
+<pre>
+bakery/
+  congo.toml
+  src/
+    bakery.cone
+</pre>
+<pre>
+[package]
+name = "bakery"
+version = "0.1.0"
+output = "executable"
+</pre>
+	<p>The source lives in <span class="pre">src</span>, and <span class="pre">src/bakery.cone</span>, named for the
+		package, is where it begins: it holds the <span class="pre">mod bakery;</span> line and
+		<span class="pre">main</span>. <span class="pre">congo run</span>, from anywhere inside the folder, builds the
+		package and runs it, and arguments after <span class="pre">--</span> go to the program:
+		<span class="pre">congo run -- 12 loaves</span>. <span class="pre">congo build</span> only builds, and
+		<span class="pre">--release</span> builds an optimised program. What a build writes goes in the package's
+		<span class="pre">build</span> folder. Notice what the manifest does not list: the packages this one uses.
+		Its <span class="pre">import</span> lines are the list, and Congo finds and builds each package they name.</p>
+
+	<h2 id="files">More files, one module</h2>
+	<p>As the bakery grows, its prices deserve a file of their own. Any other <span class="pre">.cone</span> file put in
+		<span class="pre">src</span> joins the module, with no <span class="pre">mod</span> line and nothing to list: being
+		in the folder is what brings it in, and its names are the module's own, used from any file without an
+		import:</p>
+<pre>
+// src/prices.cone: no mod line, so it joins the bakery module
+
+const bunPrice = 1;
+
+// A dozen loaves cost the price of ten
+fn loafPrice(loaves i32) i32 {
+  (loaves - loaves / 12 * 2) * 3;
+}
+</pre>
+	<p>Files can also be grouped in subfolders of <span class="pre">src</span>, and they still join the same module, as
+		long as the subfolder holds no file named for itself. All of a module's files share one set of names, which is
+		convenient, until it gets crowded.</p>
+
+	<h2 id="submodule">A submodule</h2>
+	<p>A file that opens with a <span class="pre">mod</span> line of its own is not one more file of the module but a
+		<b>submodule</b>: a module inside it, with its own names, its own imports, and its own private parts. The
+		bakery's receipts make a good one:</p>
+<pre>
+// src/receipt.cone: its own mod line makes it a submodule of bakery
+mod receipt;
+
+import collections use *;
+
+// pub: the bakery module may call it, as receipt.line
+pub fn line(item &amp;str, count i32, dollars i32) String {
+  mut s = String.from(item);
+  s.padEnd(8);
+  s &lt;- count, " for $", dollars, "\n";
+  s;
+}
+</pre>
+	<p>The bakery reaches it by its name, <span class="pre">receipt.line(...)</span>, and reaches only what it marks
+		<span class="pre">pub</span>; anything else in <span class="pre">receipt</span> is its own business. When a
+		submodule outgrows one file, it moves into a folder of its own name, <span class="pre">src/receipt/receipt.cone</span>,
+		with its other files beside it, and nothing that uses it changes. <a href="mod-namespaces.html#submodule">Submodules</a>
+		has the rules, and <a href="modularity.html">Modularity</a> how to decide where the lines between modules
+		should fall.</p>
+
+	<h2 id="library">A library of your own</h2>
+	<p>Some code is worth more than one program: the bakery's arithmetic with money, say, which a till, an accounts
+		program and a web shop could all use. That makes a <b>library</b>, a package of its own, made with
+		<span class="pre">--lib</span>:</p>
+<pre>
+&gt; congo new --lib money
+     Created library package money (money)
+</pre>
+<pre>
+// money/src/money.cone: money kept as whole cents, so nothing is lost to rounding
+mod money;
+
+pub fn cents(dollars i32) i32 {
+  dollars * 100;
+}
+
+// Add tax at a rate in percent, rounded to the nearest cent
+pub fn withTax(cents i32, ratePercent i32) i32 {
+  cents + (cents * ratePercent + 50) / 100;
+}
+</pre>
+	<p>Its manifest says <span class="pre">output = "library"</span>. A program uses it the way it uses the standard
+		library, by importing it by name, and calls what it makes <span class="pre">pub</span>:</p>
+<pre>
+// bakery/src/bakery.cone: the bakery's program, the package's root module
+mod bakery;
+
+import stdio use *;
+import money;           // another package: a library
+
+fn main() {
+  imm loaves = 14;
+  imm buns = 12;
+  print &lt;- receipt.line("loaves", loaves, loafPrice(loaves)).view();
+  print &lt;- receipt.line("buns", buns, buns * bunPrice).view();
+  imm bill = money.cents(loafPrice(loaves) + buns * bunPrice);
+  print &lt;- "with 8% tax: ", money.withTax(bill, 8), " cents\n";
+}
+</pre>
+	<p><span class="pre">congo run</span> in <span class="pre">bakery</span> now builds <span class="pre">money</span> first,
+		on its own, then the bakery against it, links the two, and runs the program:</p>
+<pre>
+loaves  14 for $36
+buns    12 for $12
+with 8% tax: 5184 cents
+</pre>
+	<p id="finding">Congo finds a package by its name, in a list of folders that hold packages. The packages that come
+		with Cone are always there. Your own are found once their folder is on the list, in Congo's settings file,
+		<span class="pre">config.toml</span> in the <span class="pre">.congo</span> folder of your home folder:</p>
+<pre>
+[registry]
+folders = ["C:/work"]          # the folder that holds bakery/ and money/
+</pre>
+	<p>Until then, the import is refused with <i>"import money: no package named 'money' in the registries
+		searched"</i>, followed by the folders it searched. A library is compiled apart from the programs that use it,
+		so it is built once however many use it, and a program sees only its <span class="pre">pub</span> names. What a
+		package shows and why its dependencies must never go round in a loop are in
+		<a href="mod-packages.html">Packages</a>.</p>
+
+	<h2 id="testing">Testing: congo test</h2>
+	<p>A library is only as good as the evidence that it works, and a Cone test is just another small program. It
+		lives in the <span class="pre">tests</span> folder of the package it tests, imports that package as any user
+		would, checks what it gives back with the <span class="pre">testing</span> package, and returns what
+		<span class="pre">done()</span> gives:</p>
+<pre>
+// money/tests/tax.cone
+mod tax;
+
+import testing use *;
+import money;
+
+fn main() i32 {
+  expectInt(money.cents(3), 300, "3 dollars in cents");
+  expectInt(money.withTax(1000, 8), 1080, "8% on $10");
+  expectInt(money.withTax(999, 8), 1079, "rounded to the nearest cent");
+  done();
+}
+</pre>
+	<p>A check that passes prints nothing; one that fails prints its label, what it expected and what it got. Beside
+		the test, <span class="pre">tests/tax.out</span> holds what the test must print, here its summary,
+		<span class="pre">3 checks passed</span>. <span class="pre">congo test</span>, run in the package's folder,
+		builds the package, runs every test, and compares what each printed with its <span class="pre">.out</span>
+		file:</p>
+<pre>
+&gt; congo test
+     Testing money v0.1.0 (C:\work\money)
+    Finished debug library object build\debug\money.obj
+        test tax ... ok
+      Result money: 1 test: 1 passed, 0 failed; 0 examples: 0 built, 0 failed to build
+</pre>
+	<p>For a new test, <span class="pre">congo test --bless</span> writes its <span class="pre">.out</span> from a run,
+		which is then yours to read line by line against what the package should do, since a blessed file is only as
+		right as the run it was copied from. Because a test imports the package the way any program does, it tests what
+		the package promises, its <span class="pre">pub</span> names, and leaves it free to change everything else. Every
+		check, what a failing test prints, and the other files a test may have are in <a href="lib-test.html">Testing</a>.</p>
+
+	<p>That is the Guide. You can now name and compute values, choose and repeat, give a piece of work a name, shape your
+		data with tuples, structs, enums and collections, put every core of the machine to work with actors and
+		<span class="pre">parallel each</span>, and grow a program into packages with tests: enough to build real
+		programs. What comes next is where Cone's own work begins: <a href="memory.html">memory</a> that is both safe and
+		yours to manage, <a href="concurrency.html">concurrency</a> in depth, and <a href="modularity.html">modularity</a>.
+		It asks more thought of you, and it repays it.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="memory.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,581 @@
+
+<!-- from: guide-structs.html#structdcl (Permission bullet) | suggested home: mem-permissions.html#view | how a field's permission combines with the struct value's: viewpoint adaptation, in-depth | Lane A, verbatim from guide-structs.html at HEAD lines 259-264 -->
+		<li><b>Permission.</b>
+			The actual permission that governs field access is derived from
+			both the field's and struct's permissions
+			using a mechanism called <a href="mem-permissions.html#view">viewpoint adaptation</a>.
+			If unspecified, <span class="pre">mut</span> is assumed,
+			which effectively means the struct value's permission governs access.</li>
+
+<!-- from: guide-structs.html#structdcl (a struct holding a List of itself moves) | suggested home: mem-moves.html | which types move; the guide keeps only the List-of-itself rule (guide-structs.html#structdcl) | Lane A, verbatim from guide-structs.html at HEAD lines 300-304 -->
+			Such a struct moves, as any struct with a field that moves does
+			(<a href="mem-moves.html">move semantics</a>), without declaring
+			<span class="pre">is Move</span>. So does an enum with a variant that
+			holds a <span class="pre">List</span> of the enum, and each of two types that hold a
+			<span class="pre">List</span> of the other.
+
+<!-- from: guide-structs.html#structinit (a construction fills its value in place) | suggested home: mem-moves.html or mem-regions.html (constructing) | cost model of construction, in-depth | Lane A, verbatim from guide-structs.html at HEAD lines 347-348 -->
+	<p>A construction fills its value where it goes: declaring a variable with one
+		hands the initializer the variable's own memory, so no copy is made.</p>
+
+<!-- from: guide-structs.html#initializer (construction in place, temporaries copied) | suggested home: mem-moves.html or mem-regions.html (constructing) | same topic as the block above; the 'constructed once' rule is woven into guide-methods.html#initializer | Lane A, verbatim from guide-structs.html at HEAD lines 1396-1400 -->
+	<p>A construction fills its value in place, where the value goes.
+		Declaring a variable with a construction hands the initializer the variable's own memory,
+		and allocating one hands it the memory the region obtained;
+		a value constructed where it has no place yet, as an argument to a function, or a field
+		of another construction, is built in a temporary and copied there.</p>
+
+<!-- from: guide-structs.html#empty (no owning reference to an empty struct) | suggested home: mem-regions.html | allocation restriction; guide keeps 'takes no room, can have methods' | Lane A, verbatim from guide-structs.html at HEAD lines 374-375 -->
+	<p>The most significant restriction is that it is not possible to allocate a zero-sized value on the heap,
+	which means you cannot create an owning reference to a value of an empty struct.</p>
+
+<!-- from: guide-structs.html#ownerself | suggested home: mem-regions.html (owners) or mem-borrowing.html | a method that asks for its owner: needs owners and borrows | Lane A, verbatim from guide-structs.html at HEAD lines 1192-1212 -->
+	<h4 id="ownerself">A method that asks for its owner</h4>
+	<p>A method may also ask for the <b>owner</b> of its type: a <i>borrow of an owner</i>, written
+		<span class="pre">self &amp;So[Self]</span>, <span class="pre">self &amp;Rc[Self]</span>,
+		<span class="pre">self &amp;Arc[Self]</span> or the borrow of any other owning reference to the type.
+		Such a method is found only through an owner of that kind, which is borrowed for the call and is
+		still the caller's afterwards; a plain value, a borrow or an owner of another kind has no such
+		method, just as for any method that does not accept the receiver. It is tried after the ordinary
+		selection, so a type's other methods are unaffected. Inside the method <span class="pre">self</span> reads
+		through the owner to the value, so <span class="pre">self.n</span> is the field, and the owner itself is
+		what the method can hand on or inspect (as <span class="pre">str</span>'s <span class="pre">cstr()</span> does,
+		which needs the owner's zero after the text: <a href="guide-text.html#cstr">C Strings</a>).</p>
+<pre>
+struct Node {
+  n i64;
+  pub fn viaSo(self &amp;So[Node]) i64 { self.n + 1; }   // only an So[Node] has this method
+  pub fn plain(self &amp;) i64 { n; }                    // any Node, however held
+}
+imm a = new So[Node](10);
+imm x = a.viaSo();                                   // 11; the So is borrowed, 'a' is still ours
+imm y = Node(10).viaSo();                            // **ERROR** a Node value is no owner
+</pre>
+
+<!-- from: guide-structs.html#finalizer (when exactly a value dies: temporaries, extended temporaries, raw-pointer temporaries, drop flags, assignment, values in a region, enums, globals) | suggested home: mem-moves.html (a 'When a value dies' section) | in-depth lifecycle; the guide keeps the first-week rules in guide-methods.html#finalizer. The globals paragraph might instead go to mod-globals.html#dyninit | Lane A, verbatim from guide-structs.html at HEAD lines 1444-1552 -->
+	<p>A temporary is a value an expression produces that nothing takes: it is not bound to a
+		variable, stored in a field or element, passed by value, returned or moved. A call's
+		result whose field is read, an owning reference read through, an owner lent to a call
+		as a borrowed reference, a value thrown away by a statement: each is a temporary, and
+		dies at the end of the statement that produced it, the newest first, as locals die at the
+		end of their block. A temporary produced by the condition of an <span class="pre">if</span>
+		or a <span class="pre">while</span> dies once the condition is decided, before the branch
+		runs, so each pass of a loop finalizes its own; and one produced by the right operand of
+		<span class="pre">and</span> or <span class="pre">or</span>, which runs on some paths
+		only, dies at the end of that operand. A value moved out of a temporary owner belongs to
+		its new holder, and the owner's memory is freed without it, as above.</p>
+<pre>
+imm n = open(name).length;   // the file open returns is closed here, once its length is read
+take(open(name));            // moved: take closes it
+if open(name).length &gt; 0 {   // closed here, before the branch runs
+  ...
+}
+</pre>
+	<p>A temporary a variable's initializer borrows lives longer, to the end of the block the
+		variable is declared in, as Rust extends it: so the borrow is good for as long as the
+		variable can be used. That is a temporary the initializer borrows directly
+		(<span class="pre">&amp;make()</span>), a part of one (<span class="pre">&amp;make().x</span>),
+		what a temporary owner owns (<span class="pre">&amp;*makeOwner()</span>), or a temporary owner
+		the initializer lends where a borrowed reference is declared
+		(<span class="pre">imm r &amp;R = makeOwner()</span>), whether the borrow is the whole
+		initializer or an element of a tuple, an array or a variant literal it builds
+		(<span class="pre">(&amp;make(), 1)</span>, <span class="pre">Some[&amp;R](&amp;make())</span>),
+		or the value of a block, of an <span class="pre">if</span>'s arm or of a
+		<span class="pre">match</span>'s arm in one of those places
+		(<span class="pre">if c { &amp;make(); } else { &amp;other(); }</span>), as Rust 2024 extends
+		them. Such a temporary dies at the end of its block, with the block's locals, the latest
+		first; one an arm makes, only where that arm ran.
+		A temporary passed to a function, or a method's receiver, is not extended, even
+		in an initializer: it dies at the end of its statement, and a variable still holding a
+		borrow of it may not be used after that. A borrow of a temporary anywhere else
+		(<span class="pre">show(&amp;make())</span>) points at it until then.</p>
+<pre>
+imm r = &amp;make();             // the temporary lives to the end of the block
+imm s &amp;R = makeOwner();       // so does the owner, and what it owns
+imm t = pick(makeOwner());    // the owner dies here: t may not be used after this statement
+</pre>
+	<p>A temporary that a raw pointer made from it may outlive is not finalized at all. Nothing follows a
+		raw pointer, so the compiler leaves the value as it is rather than finalize it and leave the pointer
+		dangling. An ordinary borrow of the same temporary does not keep it:</p>
+<pre>
+fn mk(n i32) R {..}
+fn id(r &amp;R) &amp;R {..}          // answers the borrow it is handed
+
+imm p = id(&amp;mk(2)) as *R;    // p may outlive the temporary: R's final never runs for it
+imm q = id(&amp;mk(3));          // an ordinary borrow: R's final runs at the end of this statement
+</pre>
+	<p>A value dies on the path that still holds it, and only there. Where a variable's value was
+		moved out, or given, on only some of the paths that reach the end of its scope
+		&mdash; in one branch of an <span class="pre">if</span> or a <span class="pre">match</span>,
+		in a loop that may not run, before an early <span class="pre">return</span> or
+		<span class="pre">break</span> &mdash; the compiler keeps a hidden flag beside the variable,
+		set where its value arrives and cleared where it leaves, and the end of its scope finalizes
+		it only when the flag says the value is still there. A variable whose every path agrees has
+		no flag, and costs nothing for it.</p>
+<pre>
+imm f = File.open(name);
+if verbose {
+  log.keep(f);      // f moves to the log on this path
+}
+                    // f is closed here only if verbose was false
+</pre>
+	<p>A value assigned over dies as it is replaced: the new value is evaluated first, then the
+		old one is finalized, then the new one is stored. This is so for a variable, a field or an
+		element of one, and a value reached through a reference (<span class="pre">*r = v</span>).
+		Where the variable holds nothing to replace &mdash; it was never given a value, or its value
+		moved out &mdash; nothing is finalized; where that depends on the path, its flag decides.</p>
+	<p>A value allocated in a region is finalized when the region lets it go: when its single
+		owner expires, or, for a counted region, its last owner. It dies as above, and only
+		then is its memory freed, so a finalizer may still use everything its value owns.
+		A value moved out of a region's object belongs to its new holder, which finalizes it;
+		the object's memory is freed without finalizing what was moved out. Only the whole value
+		moves: a field of it may not be moved out (<a href="mem-moves.html">move semantics</a>),
+		so no object dies partly moved out.</p>
+	<p>A value typed as an <a href="guide-enums.html#enum">enum</a> is finalized as the variant it holds.
+		An enum may define its own <span class="pre">final</span>, which runs for every variant, and a
+		variant may define one too: the variant's finalizer runs first, then the enum's, then the
+		finalizers of the variant's fields (the enum's common fields among them), then the owning
+		references those fields hold are released &mdash; the more specific type before the
+		more general, as with inheritance in other languages. An enum none of whose variants has
+		anything to finalize, such as <span class="pre">Option[i32]</span>, costs nothing when its
+		value dies.</p>
+	<p>A global variable lives until the program shuts down. Whatever it holds is then finalized by its
+		module's finalizer, after the module's own <span class="pre">final</span>: a value whose type
+		finalizes, a tuple or an array of them, or an owning reference, which is released
+		(<a href="mod-globals.html#dyninit">Dynamic initialization of global variables</a>).
+		A module has an initializer and a finalizer of its own too, described there.</p>
+<pre>
+struct R {
+  pub n i32;
+  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
+}
+imm one R;
+imm pair (R, R);
+imm many Array[R, 2];
+imm owned So[R];
+fn @initpure init() {
+  one = new R(1);
+  pair = (new R(2), new R(3));
+  many = [new R(4), new R(5)];
+  owned = new So[R](6);
+}
+</pre>
+	<p>After <span class="pre">main</span> returns, this prints <span class="pre">final 1</span> through
+		<span class="pre">final 6</span>, one to a line.</p>
+
+<!-- from: guide-structs.html#inregion (constructing in a region) | suggested home: mem-ownregion.html | an initializer running on a region's memory, with a home-made counted region | Lane A, verbatim from guide-structs.html at HEAD lines 1554-1609 -->
+	<h4 id="inregion">Constructing in a region</h4>
+	<p>An allocation constructs its value the same way, in the region. <span class="pre">new Rc[mut, Node](1)</span>
+		runs Node's initializer on the memory the region allocated, after the region's own initializer has filled
+		its bookkeeping. One given a finished Node instead, <span class="pre">new Rc[mut, Node](n)</span>,
+		moves it in and runs no initializer:</p>
+<pre>
+import stdio use *;
+import libc;
+
+struct Counted is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 { libc.malloc(size); }
+  fn init(self &amp;new) {
+    print &lt;- "region init\n";
+    *self = new Counted(1usize);
+  }
+  fn aliasRef(self &amp;uni Counted) { owners = owners + 1usize; }
+  fn dealiasRef(self &amp;uni Counted) bool {
+    owners = owners - 1usize;
+    owners == 0usize;
+  }
+  fn free(self &amp;uni Counted) {
+    print &lt;- "free\n";
+    libc.free(self as *u8);
+  }
+}
+
+struct Node {
+  pub n i32;
+  pub fn init(self &amp;new, k i32) {
+    print &lt;- "node init\n";
+    *self = new Node(n: k * 10);
+  }
+  fn final(self &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
+}
+
+fn main() i32 {
+  {
+    imm a = new Counted[mut, Node](1);    // Node's initializer runs, on the region's memory
+    print &lt;- a.n;
+    print &lt;- "\n";
+  }
+  {
+    imm done = new Node(5);
+    imm b = new Counted[mut, Node](done); // a finished Node moves in: no initializer runs
+    print &lt;- "moved in\n";
+  }
+  0i32;
+}
+</pre>
+	<p>The first block prints <span class="pre">region init</span>, <span class="pre">node init</span>,
+		<span class="pre">10</span>, <span class="pre">node final 10</span> and <span class="pre">free</span>.
+		The second prints <span class="pre">node init</span> (for <span class="pre">new Node(5)</span>),
+		<span class="pre">region init</span>, <span class="pre">moved in</span>,
+		<span class="pre">node final 50</span> and <span class="pre">free</span>.
+		The allocator is described in <a href="mem-ownregion.html">custom allocators</a>.</p>
+
+<!-- from: guide-collections.html#listfreeze | suggested home: mem-regions.html (beside owned arrays) | freezing a list into So[Array[T]]; guide-list and lib-collections keep a one-line mention | Lane A, verbatim from guide-collections.html at HEAD lines 350-356 -->
+<h4 id="listfreeze">Freezing a list</h4>
+	<p><span class="pre">list.freeze()</span>
+		consumes the list and moves its block, shrunk to the elements it holds, into a
+		<span class="pre">So[Array[T]]</span>: the elements are not copied, move types included, and the owner's death
+		finalizes each of them once. A list that holds nothing makes a one-byte block, since the owner of an
+		<span class="pre">Array[T]</span> always owns heap bytes
+		(<a href="#owned">owned arrays</a>).</p>
+
+<!-- from: guide-collections.html#owned (owned arrays: So/Rc/Arc/Gc of Array[T], no owning array reference) | suggested home: mem-regions.html#dynbody | owners of a run-time-sized body | Lane A, verbatim from guide-collections.html at HEAD lines 1139-1196 -->
+<h4 id="owned">Owned Arrays</h4>
+    <p>The body of a run-time length is <span class="pre">Array[T]</span>, the array type without a size.
+        It has no size of its own, so it is held only through a reference that carries the count, and the
+        slice <i>is</i> its borrow: <span class="pre">&amp;Array[T]</span> is the slice, and
+        <span class="pre">&amp;mut Array[T]</span> the slice that changes its elements; the earlier spelling,
+        <span class="pre">&amp;[]T</span>, is refused. Every array reference is borrowed. There is no owning array
+        reference: a <a href="mem-regions.html">managed reference</a> is thin, virtual, or fat with the count of a
+        <a href="mem-regions.html#dynbody">dynamically sized body</a>, <span class="pre">str</span> or
+        <span class="pre">Array[T]</span>, never an array reference. A slice of bytes,
+        <span class="pre">&amp;Array[u8]</span>, and a borrow of the text body, <span class="pre">&amp;str</span>, are the
+        same pair of words and different types, and either converts to the other with
+        <span class="pre">as</span>. What owns an array is one of these:</p>
+    <ul>
+    <li><b>A fixed-size array</b>, whose size is part of its type.
+        It may be held in a variable or a field, or allocated in a region and reached by a thin reference
+        whose type carries the size. Its contents follow the allocation after
+        <span class="pre">&lt;-</span>, and fill the array in the region's memory, with no array
+        made elsewhere and copied in; an array already made is moved in from the parentheses:
+<pre>
+imm grid = new Rc[mut, Array[i32, 4]] &lt;- fill 0i32;      // grid's type: Rc[mut, Array[i32, 4]]
+imm made = new Rc[mut, Array[i32, 4]](new Array[i32, 4] &lt;- 1, 2, 3, 4);
+</pre>
+    </li>
+    <li><b>An owner of <span class="pre">Array[T]</span></b>, when the number of elements is chosen at runtime
+        and never changes: <span class="pre">So[Array[T]]</span>, <span class="pre">Rc[Array[T]]</span>,
+        <span class="pre">Arc[Array[T]]</span> or <span class="pre">Gc[Array[T]]</span>, each a pointer and a count,
+        one hop to the elements. It is allocated by copying the elements of a slice, as an owner of
+        <span class="pre">str</span> is, so only where the elements copy; a list's
+        <span class="pre">freeze()</span> moves its own into one instead, any element included. The owner has
+        <span class="pre">len</span>, indexes (<span class="pre">o[i]</span>) and takes a borrowed range
+        (<span class="pre">&amp;o[a..&lt;b]</span>) as a slice does, and is lent as the slice wherever a
+        <span class="pre">&amp;Array[T]</span> is wanted, a generic's element type inferred from it. Which of the
+        <a href="#list">three kinds of list</a> it is comes from its permission: held writable
+        (<span class="pre">So[Array[T]]</span>, <span class="pre">Rc[mut, Array[T]]</span>) its elements change but
+        its length does not; held <span class="pre">imm</span> (<span class="pre">Rc[imm, Array[T]]</span>,
+        <span class="pre">Arc[imm, Array[T]]</span>) nothing changes. A borrow of a fixed-size array,
+        <span class="pre">&amp;Array[T, n]</span>, converts to the slice.
+<pre>
+imm primes = new Array[i32, 4] &lt;- 2, 3, 5, 7;
+imm shared = new Rc[imm, Array[i32]](&amp;primes);     // a copy: a pointer and a count
+imm total = sum(shared);                           // lent as the &amp;Array[i32] sum takes
+imm frozen = list.freeze();                        // a List[T]'s block, moved into a So[Array[T]]
+</pre>
+    </li>
+    <li><b>A collection</b>, when the number of elements is chosen at runtime.
+        An array whose whole length is decided at runtime, and which may grow or shrink,
+        is exactly what a collection is: a <span class="pre">List</span> holds a pointer to its elements,
+        how many there are, and how many it has room for.
+        A list held in a local is used directly; one that several owners share is a managed reference to it:
+<pre>
+imm names = new List[i32] &lt;- 3;
+imm shared = new Rc[mut, List[i32]](names);     // names is moved in; shared's type: Rc[mut, List[i32]]
+</pre>
+    </li>
+    </ul>
+    <p>The length of a shared list lives once, in the list, where every owner sees the same count.
+        A length carried in each copy of a reference could not stay in step when the list grows.
+        Writing <span class="pre">+[]</span>, as a type or an allocation, is an error that says this.</p>
+
+<!-- from: guide-collections.html#shapechanging (why a push waits for a borrow of an element; ShapeChanging; shared paths) | suggested home: mem-borrowing.html | full rules; a short version with the real error is woven into guide-list.html#shapechanging | Lane A, verbatim from guide-collections.html at HEAD lines 1578-1635 -->
+<h4 id="shapechanging">Why a push waits for a borrow of an element</h4>
+	<p>A collection's elements sit in one block, and a <span class="pre">push</span> may move every one of
+		them to a bigger block. So a borrow of an element (<span class="pre">list[i]</span>,
+		<span class="pre">dict[key]</span>, <span class="pre">s.view()</span>) keeps a local collection loaned
+		while it is used: it may be read, but a push waits for the borrow's last use. The compiler refuses
+		the push that would leave the borrow dangling:</p>
+<pre>
+mut list = List[i32].empty();
+list.push(10);
+list.push(20);
+imm first = list[0usize];     // borrows list, read-only
+imm n = list.len();           // fine: the list may be read
+list.push(30);                // refused: first is used again below
+print &lt;- *first;
+</pre>
+	<p>Copying what is needed out before the push leaves no borrow to wait for
+		(<span class="pre">imm firstX = l[0usize].x; l.push(p);</span>). A mutable borrow
+		(<span class="pre">&amp;mut list[i]</span>, or <span class="pre">list.viewMut()</span>, a
+		<span class="pre">&amp;mut Array[T]</span> of every element, and a String's
+		<span class="pre">s.viewMut()</span> of its bytes) is one more alias of the elements: until its last use the
+		collection may still be read and written in place, but not reshaped, by a push, a
+		<span class="pre">clear</span> or a <span class="pre">pop</span>.</p>
+<pre>
+mut list = List[i32].empty();
+list.push(10);
+list.push(20);
+imm e = &amp;mut list[0usize];
+imm n = list.len();           // fine: read while the mutable borrow is live
+list.set(1usize, 5);          // fine: written in place
+*e = 7;                       // the last use of e
+</pre>
+	<p>Each collection declares <span class="pre">ShapeChanging</span> (a provisional name), as does any type
+		the compiler finds to be one from its methods, a struct wrapping a list included:</p>
+<pre>
+struct Pt { pub x i32; pub y i32; }
+
+struct Bag {
+  items List[Pt];
+  fn first(self &amp;) &amp;Pt { items[0usize]; }
+  fn add(self &amp;mut, p Pt) { items.push(p); }
+}
+
+fn g(bag &amp;mut Bag) i32 {
+  imm e = bag.first();
+  bag.add(new Pt(5, 6));      // refused: e is used again below
+  e.x;
+}
+</pre>
+	<p>Reached through a shared path, a
+		<span class="pre">&amp;mut List</span> parameter say, the same path is frozen the same way, and a
+		push, a <span class="pre">clear</span> or a <span class="pre">pop</span> through another
+		reference to the same collection, or by a call that might make one, is refused while the
+		borrow is still to be used
+		(<span class="pre">fn f(l &amp;mut List[Pt], p Pt) i32 { imm e = l[0usize]; l.push(p); e.x; }</span>
+		is refused at the push, as is a cursor held across a push:
+		<span class="pre">mut it = dq.items(); dq.push(9); it.next();</span>).
+		The full rules, for locals, fields, and what a call could do, are those of
+		<a href="mem-borrowing.html#returned">borrowed references</a>.</p>
+
+<!-- from: guide-enums.html#enumcopy (one size lets memory hold any variant; pools) | suggested home: memory part, pools section | why one size matters to allocators | Lane A, verbatim from guide-enums.html at HEAD lines 482-484 -->
+	<p>Because they are all one size, allocated memory holding one variant can be given a value of a
+		different variant instead, and a pool allocator can hand out and reclaim variants of one
+		enum interchangeably.</p>
+
+<!-- from: guide-enums.html#final (finalizing an enum: enum final, variant final, order, Option cost) | suggested home: mem-moves.html (with the lifecycle block above) | finalization order; guide-methods.html#finalizer has the struct basics | Lane A, verbatim from guide-enums.html at HEAD lines 490-513 -->
+	<h4 id="final">Finalizing</h4>
+	<p>A value typed as the enum is finalized at the end of its life as the variant it holds would
+		be: the tag says which variant it is. An enum may declare its own
+		<a href="guide-structs.html#finalizer">finalizer</a>, which runs for every variant, after the
+		variant's own if it has one, and before the finalizers of the variant's fields:</p>
+<pre>
+enum Resource {
+	fn final(self &amp;uni) {
+		log("released");     // runs for every variant, after its own
+	}
+	struct File {
+		pub handle Handle;
+		fn final(self &amp;uni) {
+			close(handle);    // runs first, for a File
+		}
+	}
+	struct Nothing {}
+}
+</pre>
+	<p>An enum with nothing to finalize in any variant costs nothing: dropping an
+		<span class="pre">Option[i32]</span> does no work, while dropping an
+		<span class="pre">Option[String]</span> finalizes the string when it holds one. An owning
+		reference a variant holds is released as the enum value dies, so the owner held in a
+		<span class="pre">Some</span> is let go with its Option.</p>
+
+<!-- from: guide-enums.html#unsized (@unsized: declining the padding; reached only by reference) | suggested home: memory part (or Modularity's subtyping, since it compares with open traits) | rarely needed, reference-only values | Lane A, verbatim from guide-enums.html at HEAD lines 819-846 -->
+<h4 id="unsized">Declining the padding</h4>
+	<p>Padding every variant to the largest costs memory, and whether to pay it for the convenience
+		of a value is a choice only you can make. Write <span class="pre">@unsized</span> to decline
+		it:</p>
+<pre>
+enum @unsized Shape {
+	pub kind i32;
+
+	pub struct Dot;
+	pub struct Polygon {pub points Array[Point, 64];}
+}
+</pre>
+	<p>Each variant then occupies only what it needs, and the enum has no single size. So no value of
+		it may be held &mdash; not in a variable, not in a parameter, not in a field &mdash; and it is
+		reached only by reference:</p>
+<pre>
+imm shape &amp;Shape = &amp;someDot;
+</pre>
+	<p>Notice how a reference to a variant coerced automatically into a reference to the enum.
+		Everything else is unchanged: the tag is still in the value, a common field is still readable
+		through the reference, matching still recovers the variant, and dispatch still works. What is
+		given up is the value semantics &mdash; holding one in a variable, copying it, passing it by
+		value, and swapping a variant in place.</p>
+	<p>Most types that want this are graphs and trees, and those are usually better served by an open
+		<a href="mod-substitution.html">trait</a> and structs that are-a it: once a type is reached by
+		reference anyway, there is little left for a closed set to buy. So
+		<span class="pre">@unsized</span> is for the case that is genuinely closed, wants exhaustive
+		matching, and has variants whose sizes differ enough to matter.</p>
+
+<!-- from: guide-enums.html#letelse (what a let-else binding takes: copy, move, or a reference through &mut) | suggested home: mem-borrowing.html (bindings through a borrow) | the guide keeps the form and the must-leave rule (guide-enums.html#letelse) | Lane A, verbatim from guide-enums.html at HEAD lines 861-866 -->
+  <p>It binds what a binding does (<a href="guide-conditionals.html#form">What a match takes</a>): a copy of plain data, a move of
+  an owner, a reference into a borrowed value (<span class="pre">imm n Ok = &amp;mut r else ...</span> gives an
+  <span class="pre">&amp;mut i32</span>); it may be <span class="pre">mut</span>; and the pattern names only the
+  variant, taking its type arguments from the value. An <span class="pre">else</span> that falls through is an
+  error. Since the <span class="pre">else</span> leaves, <span class="pre">r</span> is known to be the variant
+  after the declaration, as after any branch that leaves.</p>
+
+<!-- from: guide-enums.html#variantpartial (what a binding gets: through references, the collection rule for bindings into a variant, Rc narrowing, struct variant bound by value finalized once, a match on a call) | suggested home: mem-borrowing.html | borrow rules for pattern bindings; the guide keeps 'a copy, a move, or a reference into the variant' | Lane A, verbatim from guide-enums.html at HEAD lines 963-1073 -->
+  <p><b>A binding gets what the variant holds.</b> A variant declared as a type
+    (<span class="pre">SomeInt(i32);</span>, see <a href="#forms">Variant forms</a>)
+    holds that type itself, so <span class="pre">intval</span> above is the
+    <span class="pre">i32</span>, with no field to name: <span class="pre">Some</span>,
+    <span class="pre">Ok</span> and <span class="pre">Error</span> are declared this way. Bound by value, it is a copy
+    of the <span class="pre">i32</span>, or, when what it holds moves, a move of it out of the
+    matched value, which is then finalized without it; a <span class="pre">mut</span> binding
+    changes the copy and not the matched value. Bound through a reference
+    (<span class="pre">case imm n SomeInt</span> on a reference to the enum), it is a reference of the same permission
+    to what the variant holds, an <span class="pre">&amp;i32</span> here. A variant declared as a struct
+    binds the struct, whose tag is never a visible field.</p>
+  <p>A variant is a name of its enum (see <a href="#naming">Naming a variant</a>), and a
+    pattern names it bare with no <span class="pre">use</span>: the match already knows which enum
+    the value belongs to. This is true of every pattern on a value &mdash; a
+    <span class="pre">case</span>, a bound <span class="pre">if</span> or
+    <span class="pre">elif</span>, and an <span class="pre">is</span> test &mdash; and it looks
+    through a reference, so <span class="pre">case imm c Circle</span> on a
+    <span class="pre">&amp;Shape</span> names <span class="pre">Shape.Circle</span>.</p>
+  <p><b>A pattern names only the variant.</b> The matched value supplies the rest: the type
+    arguments, and, where it is a reference, the kind of reference, its region and its permission.
+    On a <span class="pre">&amp;imm Shape</span>, <span class="pre">case imm c Circle</span> binds an
+    <span class="pre">&amp;imm Circle</span>; on a <span class="pre">&amp;mut Shape</span> (a borrow made at the match), an
+    <span class="pre">&amp;mut Circle</span>; on an <span class="pre">Rc[imm, Shape]</span>, an
+    <span class="pre">Rc[imm, Circle]</span>; on a <span class="pre">Shape</span>, a
+    <span class="pre">Circle</span>. A test with no binding, <span class="pre">case Circle</span> or
+    <span class="pre">s is Circle</span>, asks only whether the value is that variant. A pattern
+    may still be written as the reference, <span class="pre">case imm c &amp;Circle</span>, which then
+    checks that the matched value is one: it is an error where the value is no reference, or is in
+    another region, or has a weaker permission than the pattern asks for. A managed reference is
+    never spelled in a pattern, and the older <span class="pre">+Rc-mut Circle</span> is refused.</p>
+  <p><b>A binding through a reference points into the variant, and follows the collection rule.</b>
+    Through a reference, <span class="pre">c</span> is a reference into the value's payload,
+    and a change of variant would have it read the payload as the wrong type. It is a borrow
+    into the enum, as an element is a borrow into a list
+    (<a href="mem-borrowing.html">Borrowed references</a>), so it is allowed through any
+    reference, and refused only if something could change which variant the enum holds while
+    <span class="pre">c</span> is still to be used:</p>
+  <ul>
+  <li>the enum stored over whole (<span class="pre">*s = Shape.Rect(1, 2, 3)</span>) or swapped, through the
+    same name or another;</li>
+  <li>a call handed the enum, or anything that could reach it, whose body (or what it calls) does either,
+    or whose body the compiler cannot read.</li>
+  </ul>
+  <p>Writing a field within the variant is not a change, whether through <span class="pre">c</span> or
+    through the enum's name, and neither is a field every variant has
+    (<span class="pre">s.kind = 9</span>), nor reading the enum, nor a call that only reads it.
+    The refusal is reported where <span class="pre">c</span> is used again, and names the change; a
+    change after its last use is fine, which is how a state machine moves to its next state.
+    A <span class="pre">&amp;mut</span> borrow of a local made where it is matched is asked the same
+    (<span class="pre">match &amp;mut s</span>: the local is one more alias while the binding is used,
+    <a href="mem-borrowing.html">Freezing access to the source of a borrow</a>); a <span class="pre">&amp;</span> one needs no
+    question: the borrow freezes the local until the
+    binding's last use, and a <span class="pre">uni</span>, <span class="pre">imm</span> or
+    <span class="pre">mut1</span> reference has no other name to change it. A value owned by an
+    <span class="pre">Rc</span> is another owner of the same value: where no writer can store another variant through any owner (<span class="pre">Rc[imm, Shape]</span>), the binding is a copy of the owner, counted
+    one more and let go as the arm ends, typed as the variant (<span class="pre">Rc[imm, Circle]</span>), and the variant is at its enum's address, so nothing moves.
+    Where another owner could change which variant the value holds (<span class="pre">Rc[mut, Shape]</span>, <span class="pre">Rc[ro, Shape]</span>), no loan stands for it and the narrowing is refused:
+    bind the payload by copy, or match through a borrow of the value, which is followed. An <span class="pre">is</span> test binds nothing.</p>
+<pre>
+fn grow(s &amp;mut Shape) {
+  match s {
+    case mut c Circle {c.radius = 2;}   // Ok: nothing changes the variant while c is used
+    else {}
+  }
+}
+fn restart(s &amp;mut Shape, t &amp;mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      c.radius = 2;       // Ok: writing a field within the variant
+      *t = Shape.Rect(1, 2, 3);   // Error: t may be another name for s, and c is used again
+      c.radius;
+    }
+    else {0;}
+  }
+}
+fn step(m &amp;mut Machine) {
+  match &amp;mut m.state {
+    case mut c Circle {
+      c.radius = c.radius + 1;
+      m.state = Shape.Rect(1, 2, 3);  // Ok: c is not used again
+    }
+    else {}
+  }
+}
+</pre>
+  <p><b>The matched value's enum is asked first.</b> A bare name in a pattern means that enum's
+    variant whenever the enum has one of that name, whatever the name means elsewhere in the module,
+    so a <span class="pre">use</span> of another enum with a <span class="pre">Red</span> does not
+    change what <span class="pre">case is Red</span> means on a <span class="pre">Lamp</span>. Only a
+    name the enum has no variant of is looked up as any other name is. A qualified pattern,
+    <span class="pre">case is Colors.Red</span>, is taken as written; and a variant named
+    through its enum alone, <span class="pre">case Colors.Red</span>, means
+    <span class="pre">case is Colors.Red</span>, as the variant bare does.</p>
+  <p><b>The value supplies a generic variant's type arguments.</b> On an
+    <span class="pre">Option[i32]</span>, <span class="pre">case imm s Some</span> means
+    <span class="pre">Some[i32]</span>. Arguments may still be written where the name is in scope,
+    as <span class="pre">Some[i32]</span> always is. Written on a variant that is in scope only
+    because the matched enum has it, they are an error that says to drop them or to name the
+    variant through its enum.</p>
+  <p><b>A struct variant bound by value is the value the arm took, under its variant's name</b>, not a
+    second copy of it. The arm takes the matched value into a variable of its own (a move of one that
+    owns, which consumes a matched place on the paths to that arm), and when the arm ends it is
+    <a href="#final">finalized</a> once, as the variant it is. Moving
+    the bound variable, or handing it back as the case's value, moves that value. A bound
+    variable declared <span class="pre">mut</span> changes that value, not a matched place:
+    assigning over it, or over one of its fields, finalizes what is replaced, and a value swapped out
+    of it with <span class="pre">&lt;=&gt;</span> leaves what was swapped in to be finalized with it.
+    As with a plain <span class="pre">mut</span> local, one moved out (on every path or only on some)
+    and then assigned over holds the new value, which is finalized with the matched value.
+    A match on a call holds the matched value itself for the whole match and
+    finalizes it as the match ends, whichever case ran.</p>
+
+<!-- from: guide-enums.html#option-match (the form after = decides the binding: variable, borrow, call) | suggested home: mem-borrowing.html (with the block above) | binding semantics | Lane A, verbatim from guide-enums.html at HEAD lines 1213-1221 -->
+	<p>The form of the value after <span class="pre">=</span> decides what the binding is
+		(<a href="guide-conditionals.html#form">What a match takes</a>). A variable, as above, is tested where it
+		stands and only the block that binds takes from it: the integer is a copy, and an Option that holds
+		something that moves (an <span class="pre">Option[String]</span>) is moved from, which consumes
+		the variable on that path, while the <span class="pre">else</span> block still has it. A borrow,
+		<span class="pre">if imm integer Some = &amp;maybeInt</span>, binds
+		an <span class="pre">&amp;i32</span> into the Option instead and takes nothing, and a call is a
+		temporary the statement owns. The pattern names only the variant: it takes the type
+		argument, and the reference kind of a borrow, from the value.</p>
+
+<!-- from: guide-enums.html#option-refs (an Option of a reference is one word, None is 0) | suggested home: mem-regions.html or mem-borrowing.html | representation of optional references | Lane A, verbatim from guide-enums.html at HEAD lines 1222-1225 -->
+	<h4 id="option-refs">Option References</h4>
+	<p>Option references are optimized so they take no more space than regular references.
+		The None reference value is just a non-addressable address (typically, 0).
+		(<a href="memory.html">Memory</a> describes references.)</p>
+
+<!-- from: guide-conditionals.html#form (what a match takes: a place, a borrow, or a temporary; what a binding takes; guards take nothing) | suggested home: mem-borrowing.html (bindings through a borrow, with Lane A's guide-enums#variantpartial block) | binding semantics, in-depth | Lane F, verbatim from guide-conditionals.html at HEAD (a74d7982a) lines 768-796 -->
+	<h3 id="finetuning">Fine-tuning</h3>
+  <h4 id="form">What a match takes</h4>
+  <p>The form of the expression after <span class="pre">match</span> decides what the match
+  does with it, and a bound <span class="pre">if</span>, <span class="pre">if imm c Circle = s</span>,
+  reads its value the same way. (Borrowing and moving are explained in
+  <a href="mem-moves.html">Moves in depth</a> and <a href="mem-borrowing.html">Borrowed references in depth</a>.)</p>
+  <ul>
+  <li><b>A place</b> &mdash; a variable, a field of one, a dereference, an element at a name or a
+  literal, <span class="pre">match r</span> &mdash; is matched as the value it holds. Every test
+  reads it where it stands and takes nothing, so a match that only tests moves no resource away, and
+  <span class="pre">r</span> is whole after it. An arm that binds is the one that takes: the binding
+  holds the payload by value, a copy of a copy type, or a move of one that owns, which consumes
+  <span class="pre">r</span> on the paths that reach that arm. A <span class="pre">mut</span> binding
+  changes what the arm took and never <span class="pre">r</span>.</li>
+  <li><b>A borrow</b> &mdash; <span class="pre">match &amp;r</span>, <span class="pre">&amp;imm r</span>,
+  <span class="pre">&amp;mut r</span>, <span class="pre">&amp;uni r</span> &mdash; binds a reference of
+  that kind into <span class="pre">r</span>, which stays frozen to the match for as long as the
+  bindings are used. That is how a match changes <span class="pre">r</span>:
+  <span class="pre">match &amp;mut r</span>.</li>
+  <li><b>Any other value</b> &mdash; a call, <span class="pre">match f()</span> &mdash; is a temporary
+  the match owns: it is made once, every pattern reads it, and it is finalized as the match ends.</li>
+  </ul>
+  <p>A binding takes only what it binds. Where the payload is plain data (a number, a borrowed
+  reference, a struct of them), the arm copies it and the place is whole after the arm, even
+  where the enum holds an owner in another variant. A bound <span class="pre">if</span> guard
+  (<span class="pre">case imm x Some if x &gt; 0</span>) reads its binding before the arm is chosen, so it takes
+  nothing from the matched value at all, a place or a call's temporary alike: it sees a copy of plain data, and
+  a payload that owns something through a read-only borrow of it. A guard that fails leaves the value whole
+  for the cases after it, and the arm that runs is the one that takes.</p>

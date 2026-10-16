@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>I/O in depth - Cone Reference</title>
+	  <title>I/O in depth: awaiting sockets, files and timers - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,73 +8,120 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">I/O in depth</div>
+			<div id="sub">I/O in depth: awaiting sockets, files and timers</div>
 		</div>
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: <span class="pre">iocore</span> (sockets, timers, files, cancel
-		groups and the blocking pool), <span class="pre">iobuf</span>, <span class="pre">aio</span>,
-		<span class="pre">actorhttp</span> and the HTTP and
-		TLS packages over them run on Windows and on Linux. Batching
-		of datagrams (many in one call) is not here yet.</i></p>
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">iocore</span> (sockets, timers, files, cancel groups and the
+		blocking pool), <span class="pre">iobuf</span>, <span class="pre">aio</span>, <span class="pre">actorhttp</span> and
+		the HTTP and TLS packages over them run on Windows and on Linux. Batching of datagrams (many in one call) is not
+		built yet.</i></p>
 
-	<h2 id="why">Why you&rsquo;d want it</h2>
-	<p>An actor&rsquo;s behaviour should not hold a worker thread while a socket, a file or a timer takes its time. It <span class="pre">await</span>s the operation instead, as it awaits another actor&rsquo;s reply: the actor goes on with its other messages, and the rest of the behaviour runs when the answer comes. The packages that provide the operations are listed first; then the operations, one kind at a time.</p>
+	<p>A program that talks to the world spends most of its time waiting: for a connection, for bytes from a peer, for a
+		disk, for a clock. A thread that blocks while it waits is a core doing nothing. In Cone an actor's behaviour
+		<span class="pre">await</span>s the operation instead, exactly as it awaits <a href="conc-await.html">another actor's
+		answer</a>: the actor goes on with its other messages, and the rest of the behaviour runs when the answer comes.
+		This page covers the packages that do it and each kind of operation: sockets, datagrams, files, timers, child
+		processes and HTTP. Afterwards you can write a server, a client or a pipeline that keeps every core busy while it
+		waits. Here three timers wait on one actor at once:</p>
+
+<pre>
+mod kitchen;
+
+import stdio use *;
+import time use Duration;
+import sync use *;
+import actors;
+import aio;
+
+actor Timer {
+  // Waits without holding a thread, then says so
+  pub async do ring(self, what &amp;'static imm str, ms i64, done Sender[i64]) {
+    imm r = await aio.sleep(Duration.fromMillis(ms));
+    match r {
+      case imm e Error { print &lt;- what, ": the timer failed\n"; }
+      else { print &lt;- what, " is ready after ", ms, " ms\n"; }
+    }
+    mut d = done;
+    d &lt;- ms;                      // tell main this one is done
+  }
+}
+
+fn main() {
+  mut tx Sender[i64];
+  mut rx Receiver[i64];
+  tx, rx = Channel[i64].make();
+
+  // Three timers on one actor: none of them holds a worker while it waits
+  imm t = new Timer();
+  t.ring("The tea", 300i64, tx.clone());
+  t.ring("The toast", 200i64, tx.clone());
+  t.ring("The egg", 400i64, tx.clone());
+
+  // A behaviour paused on I/O does not keep the program running,
+  // so main waits until all three have rung
+  each i in 1 .. 3 {
+    rx.recv();
+  }
+}
+</pre>
+	<p>It prints, in the order the timers come due rather than the order they were sent:</p>
+<pre>
+The toast is ready after 200 ms
+The tea is ready after 300 ms
+The egg is ready after 400 ms
+</pre>
+	<p>One actor handled all three messages, and each <span class="pre">ring</span> paused at its
+		<span class="pre">await</span> so the next could start. Note the last lines of <span class="pre">main</span>. A program
+		ends when no actor is queued or running, and an actor paused on I/O is neither: without the wait, the program would
+		end at once and the timers would never ring (<a href="#io-thread">The I/O thread, and the program's end</a>). Here
+		<span class="pre">main</span> waits on a <a href="conc-threads.html#channel">channel</a>, a queue between threads
+		which each timer sends to as it finishes; a long-running server waits the same way for word that it is done.</p>
 
 	<h2 id="io-packages">The I/O packages</h2>
-	<p>What is built is in library packages, which <a href="library.html#asyncio">the standard
-		library chapter</a> lists:</p>
+	<p>What is built is in library packages, which <a href="library.html#asyncio">the standard library chapter</a>
+		lists. From the plainest to the most capable:</p>
 	<ul>
 	<li><b>Blocking, synchronous I/O:</b> <a href="lib-fs.html"><span class="pre">fs</span></a> (files and folders),
-		<span class="pre">path</span> and <span class="pre">env</span> (beneath them, the
-		<span class="pre">posix</span> package is the C library's own POSIX functions on Linux and maps
-		POSIX onto the Windows C runtime on Windows), and
-		<span class="pre">process</span>, which runs a program and waits for it, its insides
-		written over Windows' own <span class="pre">kernel32</span> or over
-		<span class="pre">posix_spawn</span> on Linux.</li>
-	<li><b>Asynchronous I/O, completion-based:</b> <span class="pre">iocore</span> is the
-		completion loop, over an I/O completion port on Windows and over epoll on Linux (a
-		socket's operation is tried at once and waits in a queue of the socket's if it would
-		block; a file's runs on a thread of the blocking pool; an operation's answers are the
-		same on both). A program hands a loop a job (receive
-		into this buffer, send these bytes, accept a connection, read a file at an offset,
-		wake at a time) and later gets exactly one answer for it, carrying the buffer back.
-		A job can carry a deadline and belong to a cancel group, and a blocking pool runs
-		work that has no completion form. Beneath it: <span class="pre">iobuf</span>, owned
-		buffers lent to an operation by moving them; <span class="pre">timewheel</span>, its
-		timers; <a href="lib-time.html"><span class="pre">time</span> and <span class="pre">calendar</span></a>, time
+		<span class="pre">path</span> and <span class="pre">env</span> (beneath them, the <span class="pre">posix</span>
+		package is the C library's own POSIX functions on Linux and maps POSIX onto the Windows C runtime on Windows), and
+		<span class="pre">process</span>, which runs a program and waits for it, written over Windows' own
+		<span class="pre">kernel32</span> or over <span class="pre">posix_spawn</span> on Linux. Fine for a tool that does one
+		thing at a time; a thread that calls them waits.</li>
+	<li><b>Asynchronous I/O, completion-based:</b> <span class="pre">iocore</span> is the completion loop, over an I/O
+		completion port on Windows and over epoll on Linux (a socket's operation is tried at once and waits in a queue of the
+		socket's if it would block; a file's runs on a thread of the blocking pool; an operation's answers are the same on
+		both). A program hands a loop a job (receive into this buffer, send these bytes, accept a connection, read a file at
+		an offset, wake at a time) and later gets exactly one answer for it, carrying the buffer back. A job can carry a
+		deadline and belong to a cancel group, and a blocking pool runs work that has no completion form. Beneath it:
+		<span class="pre">iobuf</span>, owned buffers lent to an operation by moving them; <span class="pre">timewheel</span>,
+		its timers; <a href="lib-time.html"><span class="pre">time</span> and <span class="pre">calendar</span></a>, time
 		values; and <span class="pre">diag</span>, records of where an operation's time went.</li>
-	<li><b>HTTP and TLS over it</b> (<a href="lib-http.html">HTTP, TLS and URLs</a>): <span class="pre">http1</span>, HTTP/1.1's connection
-		core, sans-IO; <span class="pre">httpconn</span>, which joins it to real sockets on a
-		loop, client and server; <span class="pre">tls</span>, TLS 1.2 and 1.3 over OpenSSL,
-		also sans-IO, with a server's certificate checked by the operating system;
-		<span class="pre">url</span>, URLs as data; and <span class="pre">httpclient</span>,
-		which fetches an <span class="pre">http://</span> or <span class="pre">https://</span>
-		URL in one call, with connection pooling, retries and redirects.</li>
-	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may
-		<span class="pre">await</span> a socket's operation &mdash; listen, accept, connect, read,
-		write &mdash; or a file's &mdash; open, read at an offset, write at an offset &mdash; or
-		a timer (<span class="pre">aio.sleep(d)</span>), a name looked up
-		(<span class="pre">aio.resolve(host)</span>), a file's metadata (<span class="pre">aio.stat(path)</span>)
-		or a child process (<span class="pre">aio.run(args)</span>), and
-		pauses there until the operation's answer comes, as it pauses for another
-		actor's reply (<a href="conc-await.html#await">Awaiting a reply</a>; below,
-		<a href="#await-io">Awaiting I/O</a>). TCP sockets, UDP sockets and files.</li>
+	<li><b>HTTP and TLS over it</b> (<a href="lib-http.html">HTTP, TLS and URLs</a>): <span class="pre">http1</span>,
+		HTTP/1.1's connection core, sans-IO; <span class="pre">httpconn</span>, which joins it to real sockets on a loop,
+		client and server; <span class="pre">tls</span>, TLS 1.2 and 1.3 over OpenSSL, also sans-IO, with a server's
+		certificate checked by the operating system; <span class="pre">url</span>, URLs as data; and
+		<span class="pre">httpclient</span>, which fetches an <span class="pre">http://</span> or
+		<span class="pre">https://</span> URL in one call, with connection pooling, retries and redirects.</li>
+	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may <span class="pre">await</span> a
+		socket's operation (listen, accept, connect, read, write), a file's (open, read at an offset, write at an offset), a
+		timer (<span class="pre">aio.sleep(d)</span>), a name looked up (<span class="pre">aio.resolve(host)</span>), a file's
+		metadata (<span class="pre">aio.stat(path)</span>) or a child process (<span class="pre">aio.run(args)</span>), and
+		pauses there until the operation's answer comes. TCP sockets, UDP sockets and files.</li>
 	<li><b>HTTP an actor awaits:</b> <span class="pre">actorhttp</span>. An actor's behaviour may
-		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for
-		<span class="pre">http://</span> or <span class="pre">https://</span>, and gets the whole response, or the
-		response as it arrives, in chunks or as server-sent events; and an actor may serve: await each request
-		of a listening server and answer it, whole or streamed
-		(<a href="#await-io-http">below</a>).</li>
+		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for <span class="pre">http://</span> or
+		<span class="pre">https://</span>, and gets the whole response, or the response as it arrives, in chunks or as
+		server-sent events; and an actor may serve: await each request of a listening server and answer it, whole or
+		streamed (<a href="#await-io-http">below</a>).</li>
 	</ul>
+	<p>Most programs need only the last two. The rest of the page is about them, and ends with the
+		<span class="pre">iocore</span> loop underneath, for a program that drives it itself.</p>
 
 	<h2 id="await-io">Awaiting I/O</h2>
-	<p>An actor's behaviour waits for I/O the way it waits for another actor's reply: with
-		<span class="pre">await</span>. The <span class="pre">aio</span> package makes each
-		operation; awaited, the behaviour pauses, the actor goes on with its other messages, and
-		when the operation has finished, the rest of the behaviour runs with its answer. A server
-		and a client, each an actor:</p>
+	<p>The <span class="pre">aio</span> package makes each operation; awaited, the behaviour pauses, the actor goes on with
+		its other messages, and when the operation has finished, the rest of the behaviour runs with its answer. A server and
+		a client, each an actor, the client sending five bytes to the server over a TCP connection on this machine:</p>
 <pre>
 // The Socket an answer holds, swapped out of it: Socket.none() if it failed
 fn socketOf(r Result[Socket, IoError]) Socket {
@@ -82,7 +129,7 @@ fn socketOf(r Result[Socket, IoError]) Socket {
   mut s = Socket.none();
   match &amp;mut res {
     case mut ok &amp;mut Ok {s &lt;=&gt; *ok;}
-    case imm e &amp;mut Error {say("failed", u64.from(e.code));}
+    case imm e &amp;mut Error {say("failed", u64.from((*e).code));}
   }
   s;
 }
@@ -143,102 +190,88 @@ actor Server {
   }
 }
 </pre>
-	<p>(<span class="pre">say</span> prints a word and a number on a line;
-		<span class="pre">Pool</span> and <span class="pre">IoBuf</span> are
-		<span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
-		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, and
-		<span class="pre">Socket</span> <span class="pre">aio</span>'s.) Sent
-		<span class="pre">serve()</span>, the server prints:</p>
+	<p>(<span class="pre">say</span> prints a word and a number on a line; <span class="pre">Pool</span> and
+		<span class="pre">IoBuf</span> are <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
+		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, and <span class="pre">Socket</span>
+		<span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server prints:</p>
 <pre>
 no room: error 122
 received 5
 end of stream 5
 </pre>
-	<p>Each <span class="pre">await</span> there pauses one behaviour, and only it. While the
-		server waits for a connection, the client waits for its connect; the worker threads run
-		neither until an answer comes.</p>
+	<p>Each <span class="pre">await</span> there pauses one behaviour, and only it. While the server waits for a
+		connection, the client waits for its connect; the worker threads run neither until an answer comes.</p>
 
-	<h3>What an operation answers</h3>
-	<p>Each operation declares its own answer, and the <span class="pre">await</span>'s value is
-		exactly that: <span class="pre">await</span> adds nothing to it. An operation that can fail
-		answers as a synchronous call that can fail does, with a <span class="pre">Result</span>:
-		the success, or the operating system's failure, an <span class="pre">IoError</span> whose
-		<span class="pre">code</span> is Windows' error number for the failure, on every system (on
-		Linux the <span class="pre">errno</span> is turned into the Windows number that names the same
-		condition, <span class="pre">ERROR_CONNECTION_REFUSED</span> for <span class="pre">ECONNREFUSED</span>;
-		one with no such number is its <span class="pre">errno</span> above <span class="pre">0x10000000</span>),
-		and its <span class="pre">message()</span> is the system's words for it.</p>
+	<h3 id="await-io-answers">What an operation answers</h3>
+	<p>Each operation declares its own answer, and the <span class="pre">await</span>'s value is exactly that:
+		<span class="pre">await</span> adds nothing to it. An operation that can fail answers as a synchronous call that can
+		fail does, with a <span class="pre">Result</span>: the success, or the operating system's failure, an
+		<span class="pre">IoError</span>. Its <span class="pre">code</span> is Windows' error number for the failure, on
+		every system: on Linux the <span class="pre">errno</span> is turned into the Windows number that names the same
+		condition (<span class="pre">ERROR_CONNECTION_REFUSED</span> for <span class="pre">ECONNREFUSED</span>), and one with
+		no such number is its <span class="pre">errno</span> above <span class="pre">0x10000000</span>. Its
+		<span class="pre">message()</span> is the system's words for it.</p>
 	<ul>
 	<li><span class="pre">aio.listen(addr)</span>, <span class="pre">aio.connect(addr)</span>,
-		<span class="pre">listener.accept()</span>: a <span class="pre">Socket</span>. Cone does
-		not yet move a value out of a matched variant's field, so it comes out by a swap, as
-		<span class="pre">socketOf</span> does.</li>
-	<li><span class="pre">conn.read(buf)</span>: the buffer, given back with what arrived
-		appended to it. The buffer is moved into the read, which is how the system may write into
-		it while the behaviour waits, and the read's answer is how it comes back. At the end of the
-		stream, when the peer has closed, it comes back as it went, its length unchanged. A failed
-		read's buffer goes home to its pool.</li>
-	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer;
-		the buffer goes home.</li>
+		<span class="pre">listener.accept()</span>: a <span class="pre">Socket</span>. Cone does not yet move a value out of a
+		matched variant's field, so it comes out by a swap, as <span class="pre">socketOf</span> does.</li>
+	<li><span class="pre">conn.read(buf)</span>: the buffer, given back with what arrived appended to it. The buffer is
+		moved into the read, which is how the system may write into it while the behaviour waits, and the read's answer is
+		how it comes back. At the end of the stream, when the peer has closed, it comes back as it went, its length
+		unchanged. A buffer with no room fails with 122, as above. A failed read's buffer goes home to its pool.</li>
+	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer; the buffer goes home.</li>
 	<li><span class="pre">s.localAddr()</span>: the address the socket is bound to.</li>
 	<li><span class="pre">aio.openFile(path, access)</span>: a <span class="pre">File</span>, out of the
 		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is.
-		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span>
-		answer as <span class="pre">read</span> and <span class="pre">write</span> do: see
-		<a href="#await-io-files">Files</a>.</li>
+		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span> answer as
+		<span class="pre">read</span> and <span class="pre">write</span> do (<a href="#await-io-files">Files</a>).</li>
 	</ul>
-	<p>An operation's answer should be used. An <span class="pre">await</span> on one that is a
-		statement of its own drops the failure unread, so it is warned. The program still
-		compiles, and the answer is dropped as any unused value is:</p>
+	<p>An operation's answer should be used. An <span class="pre">await</span> on one that is a statement of its own drops
+		the failure unread, so it is warned. The program still compiles, and the answer is dropped as any unused value
+		is:</p>
 <pre>
   pub async do careless(self, conn Socket) {
     await conn.write(pool.mustTake(64usize));   // warned: the answer is thrown away
   }
 </pre>
 <pre>
-This 'await' waits for an operation, which answers with a Result, and the answer is thrown
-away. An operation's answer says whether it worked, a failure among what it may say, as a
-synchronous call that can fail answers, so a failure here goes unread: bind it, 'imm r =
-await ...', and match on it.
+Warning 3005: This 'await' waits for an operation, which answers with a Result, and the answer is thrown away. An
+operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail
+answers, so a failure here goes unread: bind it, 'imm r = await ...', and match on it.
 </pre>
-	<p>An operation is made by the call (<span class="pre">conn.read(buf)</span>) and started by
-		the <span class="pre">await</span>; one made and never awaited does nothing, and is
-		dropped. An operation that did not finish &mdash; cancelled, or past its deadline &mdash;
-		answers like one that failed: see <a href="#await-io-limits">Cancelling an operation, and
-		limiting it</a>.</p>
+	<p>An operation is made by the call (<span class="pre">conn.read(buf)</span>) and started by the
+		<span class="pre">await</span>; one made and never awaited does nothing, and is dropped. That is why one behaviour
+		cannot start two operations and await them both: three timers at once took three
+		<span class="pre">ring</span> messages above. An operation that did not finish, cancelled or past its deadline,
+		answers like one that failed (next).</p>
 
 	<h3 id="await-io-limits">Cancelling an operation, and limiting it</h3>
-	<p>Every operation is answered exactly once, with one of four outcomes: done (the
-		<span class="pre">Ok</span> answer), failed (an <span class="pre">Error</span> whose
-		<span class="pre">code</span> is the system's), cancelled, or timed out. The last two are
-		<span class="pre">Error</span>s too. An <span class="pre">IoError</span> has a
-		<span class="pre">kind()</span>, an <span class="pre">IoErrorKind</span>:
-		<span class="pre">Os</span> for a failure of the system (its <span class="pre">code</span> and
-		<span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span> or
-		<span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or
-		<span class="pre">Truncated</span> (a datagram cut to the room that took it, below; its
-		<span class="pre">code</span> is the system's, 10040). The kind is what
-		<span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> read, and
-		<span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
-		questions; so no system error, whatever its number, is taken for either. The buffer an
-		operation was given goes home to its pool.</p>
-	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes a
+	<p>A read from a peer that never sends would wait for ever. So every operation can be limited, and is answered exactly
+		once, with one of four outcomes: done (the <span class="pre">Ok</span> answer), failed (an
+		<span class="pre">Error</span> whose <span class="pre">code</span> is the system's), cancelled, or timed out. The last
+		two are <span class="pre">Error</span>s too. An <span class="pre">IoError</span> has a <span class="pre">kind()</span>,
+		an <span class="pre">IoErrorKind</span>: <span class="pre">Os</span> for a failure of the system (its
+		<span class="pre">code</span> and <span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span>
+		or <span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or <span class="pre">Truncated</span> (a
+		datagram cut to the room that took it, <a href="#await-io-udp">below</a>; its <span class="pre">code</span> is the
+		system's, 10040). The kind is what <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span>
+		read, and <span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
+		questions, so no system error, whatever its number, is taken for either. The buffer an operation was given goes home
+		to its pool.</p>
+	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes an
 		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
 		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>,
-		<span class="pre">aio.connectIn(addr, lim)</span>, a file's
-		<span class="pre">f.readAtIn(offset, buf, lim)</span> and
-		<span class="pre">f.writeAtIn(offset, buf, lim)</span>, and a UDP socket's
-		<span class="pre">u.recvFromIn(buf, lim)</span> and
-		<span class="pre">u.sendToIn(addr, buf, lim)</span>. A <span class="pre">IoLimits</span> holds
-		a <a href="#cancel-groups">cancel group</a> and an absolute deadline, an
-		<span class="pre">Instant</span>: <span class="pre">IoLimits.within(group)</span>,
-		<span class="pre">IoLimits.until(deadline)</span>, or both with
-		<span class="pre">new IoLimits(Some[CancelGroup](group), deadline)</span>. The operation ends
-		when the group is cancelled, or at the deadline, the tighter of it and the group's (a group made
-		with <span class="pre">CancelGroup.until(d)</span>, or a <span class="pre">childUntil(d)</span> of
-		one, carries a deadline of its own, and a child's is never later than its parent's). A group is
-		a value: it goes in a message to another actor, or to a thread, and its one
-		<span class="pre">cancel()</span> ends every operation in it, in whichever actors they are.</p>
+		<span class="pre">aio.connectIn(addr, lim)</span>, a file's <span class="pre">f.readAtIn(offset, buf, lim)</span> and
+		<span class="pre">f.writeAtIn(offset, buf, lim)</span>, and a UDP socket's <span class="pre">u.recvFromIn(buf, lim)</span>
+		and <span class="pre">u.sendToIn(addr, buf, lim)</span>. An <span class="pre">IoLimits</span> holds a
+		<a href="#cancel-groups">cancel group</a> and an absolute deadline, an <span class="pre">Instant</span>:
+		<span class="pre">IoLimits.within(group)</span>, <span class="pre">IoLimits.until(deadline)</span>, or both with
+		<span class="pre">new IoLimits(Some[CancelGroup](group), deadline)</span>. The operation ends when the group is
+		cancelled, or at the deadline, the tighter of it and the group's (a group made with
+		<span class="pre">CancelGroup.until(d)</span>, or a <span class="pre">childUntil(d)</span> of one, carries a deadline
+		of its own, and a child's is never later than its parent's). A group is a value: it goes in a message to another
+		actor, or to a thread, and its one <span class="pre">cancel()</span> ends every operation in it, in whichever actors
+		they are.</p>
 <pre>
 actor Reader {
   pool Pool;
@@ -258,54 +291,49 @@ actor Reader {
   }
 }
 </pre>
-	<p>Whoever holds <span class="pre">group</span>, in this actor (a message to itself, which runs
-		while <span class="pre">fetch</span> is paused), another, or a plain thread, may call
-		<span class="pre">group.cancel()</span>, and the read ends. A cancel and the operation's
-		completion that race are settled by <span class="pre">iocore</span>: the answer is whichever came
-		first, never both. Cancelled is a state: an operation started in a group already cancelled, or
-		with a deadline already past, is answered at once. Closing a socket, by dropping it, cancels the
+	<p>Whoever holds <span class="pre">group</span>, in this actor (a message to itself, which runs while
+		<span class="pre">fetch</span> is paused), in another, or on a plain thread, may call <span class="pre">group.cancel()</span>,
+		and the read ends. A cancel and the operation's completion that race are settled by <span class="pre">iocore</span>:
+		the answer is whichever came first, never both. Cancelled is a state: an operation started in a group already
+		cancelled, or with a deadline already past, is answered at once. Closing a socket, by dropping it, cancels the
 		operations in flight on it.</p>
-	<p>A cancel does not undo what a write already sent, or a read already took: an operation that ended
-		cancelled or timed out may have done part of its work, and its answer does not say how much.</p>
+	<p>A cancel does not undo what a write already sent, or a read already took: an operation that ended cancelled or timed
+		out may have done part of its work, and its answer does not say how much.</p>
 
-	<h3>Sockets</h3>
-	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor.
-		Dropping it closes the socket, after whatever operations were started on it before. A
-		socket in a paused behaviour waits with the behaviour, as any value does
-		(<a href="conc-await.html#await-cross">What crosses an await</a>), so it stays open
-		until the behaviour ends.</p>
+	<h3 id="await-io-sockets">Sockets</h3>
+	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor. Dropping it closes the
+		socket, after whatever operations were started on it before. A socket in a paused behaviour waits with the
+		behaviour, as any value does (<a href="conc-await.html#await-cross">What crosses an await</a>), so it stays open until
+		the behaviour ends.</p>
 
 	<h3 id="await-io-udp">UDP sockets</h3>
-	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system
-		choose one, which <span class="pre">u.localAddr()</span> tells) and answers a
-		<span class="pre">UdpSocket</span>, out of the <span class="pre">Result</span> by a swap as a
-		<span class="pre">Socket</span> is. A <span class="pre">UdpSocket</span> is a kind of its own beside
-		<span class="pre">Socket</span> and <span class="pre">File</span>: <span class="pre">read</span>,
-		<span class="pre">write</span> and <span class="pre">accept</span> are not on it, and
-		<span class="pre">recvFrom</span> and <span class="pre">sendTo</span> are not on the others, so a call
-		of the wrong kind does not compile. It is not connected: each datagram names where it goes.</p>
+	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system choose one,
+		which <span class="pre">u.localAddr()</span> tells) and answers a <span class="pre">UdpSocket</span>, out of the
+		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is. A <span class="pre">UdpSocket</span>
+		is a kind of its own beside <span class="pre">Socket</span> and <span class="pre">File</span>:
+		<span class="pre">read</span>, <span class="pre">write</span> and <span class="pre">accept</span> are not on it, and
+		<span class="pre">recvFrom</span> and <span class="pre">sendTo</span> are not on the others, so a call of the wrong
+		kind does not compile. It is not connected: each datagram names where it goes.</p>
 	<ul>
-	<li><span class="pre">u.recvFrom(buf)</span>: one datagram, appended to the buffer, which is moved in. The
-		answer is a <span class="pre">Datagram</span>, whose <span class="pre">buf</span> is the buffer given
-		back, its length grown by the datagram's, and whose <span class="pre">from</span> is the sender's
-		<span class="pre">SocketAddr</span>. A datagram of no bytes is a datagram, not an end: the length does not
-		grow. A buffer with no room fails with 122, as a read's does.</li>
+	<li><span class="pre">u.recvFrom(buf)</span>: one datagram, appended to the buffer, which is moved in. The answer is a
+		<span class="pre">Datagram</span>, whose <span class="pre">buf</span> is the buffer given back, its length grown by
+		the datagram's, and whose <span class="pre">from</span> is the sender's <span class="pre">SocketAddr</span>. A
+		datagram of no bytes is a datagram, not an end: the length does not grow. A buffer with no room fails with 122, as a
+		read's does.</li>
 	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Error</span> whose
-		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span>
-		(<span class="pre">aio.isTruncated(e)</span> or <span class="pre">e.isTruncated()</span>; its
-		<span class="pre">code</span> is 10040, <span class="pre">WSAEMSGSIZE</span>, on both systems). The
-		rest of the datagram is lost, the next one is whole, and the buffer goes home to its pool as a
-		failed read's does, the bytes that fitted with it.</li>
-	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to
-		<span class="pre">addr</span>, the count its length, the buffer going home. UDP promises no
-		delivery: the answer says the system took the datagram. One too large for the network fails
-		with 10040.</li>
+		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span> (<span class="pre">aio.isTruncated(e)</span>
+		or <span class="pre">e.isTruncated()</span>; its <span class="pre">code</span> is 10040,
+		<span class="pre">WSAEMSGSIZE</span>, on both systems). The rest of the datagram is lost, the next one is whole, and
+		the buffer goes home to its pool as a failed read's does, the bytes that fitted with it.</li>
+	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to <span class="pre">addr</span>,
+		the count its length, the buffer going home. UDP promises no delivery: the answer says the system took the datagram.
+		One too large for the network fails with 10040.</li>
 	</ul>
 	<p>Both take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span> and
-		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A
-		<span class="pre">UdpSocket</span> moves and closes when dropped, as a <span class="pre">Socket</span>
-		does. One receive at a time per socket is the supported use; datagrams that arrive while none
-		is outstanding wait in the socket's buffer, which the operating system bounds.</p>
+		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A <span class="pre">UdpSocket</span>
+		moves and closes when dropped, as a <span class="pre">Socket</span> does. One receive at a time per socket is the
+		supported use; datagrams that arrive while none is outstanding wait in the socket's buffer, which the operating
+		system bounds.</p>
 <pre>
 actor Echo {
   pool Pool;
@@ -319,7 +347,7 @@ actor Echo {
         imm sent = await u.sendTo(d.from, reply);          // back to the sender
       }
       case imm e Error {
-        if aio.isTruncated(e) {...the datagram was longer than 1500 bytes...}
+        if aio.isTruncated(e) {say("too long", 0u64);}     // longer than 1500 bytes
       }
     }
   }
@@ -328,18 +356,16 @@ actor Echo {
 
 	<h3 id="await-io-files">Files</h3>
 	<p><span class="pre">aio.openFile(path, access)</span> opens a file on the I/O thread, with
-		<span class="pre">iocore</span>'s <span class="pre">Access</span>: <span class="pre">Read</span>
-		an existing file; <span class="pre">Create</span> a new one, or an existing one emptied, to read
-		and write; <span class="pre">Update</span> an existing one or a new one, its bytes kept, to read and
-		write. It answers a <span class="pre">File</span>, or the system's failure (a name that is not
-		there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2, on both systems). The path is copied.
-		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span>
-		work at a byte offset, with no position kept in the file, so any number may be in flight on one
-		file at once. A read appends what is there to the buffer, up to its room, and from the end of the
-		file or past it comes back with the buffer as it went; a buffer with no room fails with 122, as a
-		socket's does. A write answers the count written, all of its buffer. Both take the
-		<span class="pre">In</span> forms above, and answer exactly once, done, failed, cancelled or timed out.
-		<span class="pre">openFile</span> has no <span class="pre">In</span> form: opening is one call to the
+		<span class="pre">iocore</span>'s <span class="pre">Access</span>: <span class="pre">Read</span> an existing file;
+		<span class="pre">Create</span> a new one, or an existing one emptied, to read and write; <span class="pre">Update</span>
+		an existing one or a new one, its bytes kept, to read and write. It answers a <span class="pre">File</span>, or the
+		system's failure (a name that is not there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2, on both systems). The
+		path is copied. <span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span> work
+		at a byte offset, with no position kept in the file, so any number may be in flight on one file at once. A read
+		appends what is there to the buffer, up to its room, and from the end of the file or past it comes back with the
+		buffer as it went; a buffer with no room fails with 122, as a socket's does. A write answers the count written, all of
+		its buffer. Both take the <span class="pre">In</span> forms above, and answer exactly once, done, failed, cancelled or
+		timed out. <span class="pre">openFile</span> has no <span class="pre">In</span> form: opening is one call to the
 		system, which cannot be cancelled once begun.</p>
 <pre>
 actor Patcher {
@@ -357,31 +383,28 @@ actor Patcher {
   }                                                         // f closes here
 }
 </pre>
-	<p>A <span class="pre">File</span>, like a <span class="pre">Socket</span>, moves: it may be sent in a
-		message to another actor, and dropping it closes the file, after the operations started on it before,
-		cancelling any still in flight. On Windows the operations are the completion port's; on Linux they run
-		on a thread of the blocking pool (<span class="pre">pread</span> and <span class="pre">pwrite</span>),
-		and answer the same. <span class="pre">fileio</span>, the file service with classes and a queue-depth
-		governor, is a package of its own, to come.</p>
+	<p>A <span class="pre">File</span>, like a <span class="pre">Socket</span>, moves: it may be sent in a message to
+		another actor, and dropping it closes the file, after the operations started on it before, cancelling any still in
+		flight. On Windows the operations are the completion port's; on Linux they run on a thread of the blocking pool
+		(<span class="pre">pread</span> and <span class="pre">pwrite</span>), and answer the same.
+		<span class="pre">fileio</span>, the file service with classes and a queue-depth governor, is a package of its own,
+		not built yet.</p>
 
 	<h3 id="await-io-sleep">Sleeping</h3>
-	<p><span class="pre">aio.sleep(d)</span> and <span class="pre">aio.sleepUntil(at)</span> are timers an
-		actor awaits: the behaviour pauses, its actor and its worker go on with other messages, and the
-		rest of the behaviour runs when the time comes. <span class="pre">d</span> is a
-		<span class="pre">Duration</span>, counted from the <span class="pre">await</span>;
-		<span class="pre">at</span> is an absolute <span class="pre">Instant</span> (one already past is
-		answered at once, as is a zero <span class="pre">Duration</span>). Both answer
+	<p><span class="pre">aio.sleep(d)</span> and <span class="pre">aio.sleepUntil(at)</span> are timers an actor awaits, as
+		the kitchen above does: the behaviour pauses, its actor and its worker go on with other messages, and the rest of the
+		behaviour runs when the time comes. <span class="pre">d</span> is a <span class="pre">Duration</span>, counted from the
+		<span class="pre">await</span>; <span class="pre">at</span> is an absolute <span class="pre">Instant</span> (one already
+		past is answered at once, as is a zero <span class="pre">Duration</span>). Both answer
 		<span class="pre">Result[void, IoError]</span>: <span class="pre">Ok</span> when the time has come, an
-		<span class="pre">Error</span> of kind <span class="pre">Cancelled</span> or
-		<span class="pre">TimedOut</span> when the limits ended it first. Their
-		<span class="pre">In</span> forms, <span class="pre">aio.sleepIn(d, lim)</span> and
-		<span class="pre">aio.sleepUntilIn(at, lim)</span>, take the
-		<a href="#await-io-limits"><span class="pre">IoLimits</span></a> of the other operations. A group's
-		cancel ends the sleep as <span class="pre">Cancelled</span>, at once if the group is cancelled already.
-		A sleep due after the deadline (the limits' own, or the group's, the tighter) is answered
-		<span class="pre">TimedOut</span> at the deadline instead; one due at or before it is
-		<span class="pre">Ok</span> at its time, as <span class="pre">iocore</span>'s timer in a cancel group is
-		(<a href="lib-time.html">the time chapter</a> shows the same on a loop).</p>
+		<span class="pre">Error</span> of kind <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span> when
+		the limits ended it first. Their <span class="pre">In</span> forms, <span class="pre">aio.sleepIn(d, lim)</span> and
+		<span class="pre">aio.sleepUntilIn(at, lim)</span>, take the <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
+		of the other operations. A group's cancel ends the sleep as <span class="pre">Cancelled</span>, at once if the group is
+		cancelled already. A sleep due after the deadline (the limits' own, or the group's, the tighter) is answered
+		<span class="pre">TimedOut</span> at the deadline instead; one due at or before it is <span class="pre">Ok</span> at its
+		time, as <span class="pre">iocore</span>'s timer in a cancel group is (<a href="lib-time.html">the time chapter</a>
+		shows the same on a loop).</p>
 <pre>
   pub async do pause(self, group CancelGroup) {
     // Half a second, unless the group is cancelled first
@@ -394,36 +417,35 @@ actor Patcher {
 </pre>
 
 	<h3 id="await-io-pool">Names, file metadata and child processes</h3>
-	<p>Three things have no completion form of their own, and run on a thread of
-		<span class="pre">iocore</span>'s blocking pool: the behaviour pauses, a pool thread does the work,
-		and the answer comes back as the other operations' do.</p>
+	<p>Three things have no completion form of their own, and run on a thread of <span class="pre">iocore</span>'s
+		blocking pool: the behaviour pauses, a pool thread does the work, and the answer comes back as the other operations'
+		do.</p>
 	<ul>
-	<li><span class="pre">aio.resolve(host, port)</span> looks a name up (or an address written as text):
-		a <span class="pre">List[SocketAddr]</span>, every address found, each with the port (default 0).
-		A name with no address is the system's failure (<span class="pre">11001</span>,
-		<span class="pre">WSAHOST_NOT_FOUND</span>, for a name that is not there).</li>
+	<li><span class="pre">aio.resolve(host, port)</span> looks a name up (or an address written as text): a
+		<span class="pre">List[SocketAddr]</span>, every address found, each with the port (default 0). A name with no address
+		is the system's failure (<span class="pre">11001</span>, <span class="pre">WSAHOST_NOT_FOUND</span>, for a name that is
+		not there).</li>
 	<li><span class="pre">aio.stat(path)</span> asks a file's metadata: <span class="pre">iocore</span>'s
-		<span class="pre">FileStat</span>, with its <span class="pre">size</span>,
-		<span class="pre">attributes</span>, <span class="pre">modified</span> time and
-		<span class="pre">isDir()</span>. A path that is not there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2.</li>
-	<li><span class="pre">aio.run(args, opts, dir)</span> and <span class="pre">aio.runLine(line, opts, dir)</span>
-		run a child process and wait for it, as the <span class="pre">process</span> package's synchronous
-		<span class="pre">run</span> and <span class="pre">runLine</span> do, with the same
-		<span class="pre">Options</span> and the same <span class="pre">Output</span>: its exit code (an answer, not an
-		error), and what it wrote to its standard output and standard error, apart. The
-		<span class="pre">Error</span> is a program that could not be started, an
-		<span class="pre">IoError</span> whose code is the system's number. The synchronous
-		<span class="pre">process</span> package stays beside it.</li>
+		<span class="pre">FileStat</span>, with its <span class="pre">size</span>, <span class="pre">attributes</span>,
+		<span class="pre">modified</span> time and <span class="pre">isDir()</span>. A path that is not there is
+		<span class="pre">ERROR_FILE_NOT_FOUND</span>, 2.</li>
+	<li><span class="pre">aio.run(args, opts, dir)</span> and <span class="pre">aio.runLine(line, opts, dir)</span> run a
+		child process and wait for it, as the <span class="pre">process</span> package's synchronous
+		<span class="pre">run</span> and <span class="pre">runLine</span> do, with the same <span class="pre">Options</span>
+		and the same <span class="pre">Output</span>: its exit code (an answer, not an error), and what it wrote to its
+		standard output and standard error, apart. The <span class="pre">Error</span> is a program that could not be started,
+		an <span class="pre">IoError</span> whose code is the system's number. The synchronous <span class="pre">process</span>
+		package stays beside it.</li>
 	</ul>
 	<p>Each has an <span class="pre">In</span> form taking <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
 		(<span class="pre">resolveIn</span>, <span class="pre">statIn</span>, <span class="pre">runIn</span>,
-		<span class="pre">runLineIn</span>). A job still queued for a thread, which a cancel group's cancel or a
-		deadline takes out of its queue, is answered <span class="pre">Cancelled</span> or
-		<span class="pre">TimedOut</span> without having run. A job a thread has taken cannot be stopped: a cancel
-		waits for it to end, and a deadline answers <span class="pre">TimedOut</span> at the deadline while the work
-		goes on, its answer dropped. So a child process is not stopped by its limits: give its
-		<span class="pre">Options</span> a <span class="pre">timeout</span>, which stops it and everything it started.
-		At most four children run at once (the general lane's threads); more wait their turn.</p>
+		<span class="pre">runLineIn</span>). A job still queued for a thread, which a cancel group's cancel or a deadline takes
+		out of its queue, is answered <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span> without having
+		run. A job a thread has taken cannot be stopped: a cancel waits for it to end, and a deadline answers
+		<span class="pre">TimedOut</span> at the deadline while the work goes on, its answer dropped. So a child process is
+		not stopped by its limits: give its <span class="pre">Options</span> a <span class="pre">timeout</span>, which stops
+		it and everything it started. At most four children run at once (the general lane's threads); more wait their
+		turn.</p>
 <pre>
 actor Builder {
   pub async do build(self) u64 {
@@ -439,18 +461,17 @@ actor Builder {
   }
 }
 </pre>
-	<p>What is left out: a child's standard input and output as streams while it runs, and a spawn apart from the
-		wait (the <span class="pre">process</span> package offers neither), and a file's metadata by its open
+	<p>What is left out: a child's standard input and output as streams while it runs, a spawn apart from the wait (the
+		<span class="pre">process</span> package offers neither), and a file's metadata by its open
 		<span class="pre">File</span>.</p>
 
 	<h3 id="await-io-http">HTTP an actor awaits</h3>
-	<p>The <span class="pre">actorhttp</span> package (a working name, as <span class="pre">netmsg</span> is; the
-		final name is yet to be chosen) makes HTTP and HTTPS fetches awaitable the same way:
-		an actor writes <span class="pre">await client.get(url)</span> and the behaviour pauses until the whole
-		response is in. The fetch is <span class="pre">httpclient</span>'s &mdash; its pools of connections per
-		server, its retries and redirects, TLS under <span class="pre">https://</span> &mdash; run on a thread of
-		<span class="pre">actorhttp</span>'s own, and the answer comes back as a message, as an
-		<span class="pre">aio</span> operation's does:</p>
+	<p>The <span class="pre">actorhttp</span> package (a working name, as <span class="pre">netmsg</span> is; the final
+		name is yet to be chosen) makes HTTP and HTTPS fetches awaitable the same way: an actor writes
+		<span class="pre">await client.get(url)</span> and the behaviour pauses until the whole response is in. The fetch is
+		<span class="pre">httpclient</span>'s (its pools of connections per server, its retries and redirects, TLS under
+		<span class="pre">https://</span>), run on a thread of <span class="pre">actorhttp</span>'s own, and the answer comes
+		back as a message, as an <span class="pre">aio</span> operation's does:</p>
 <pre>
 actor Weather {
   client Client;
@@ -476,105 +497,101 @@ actor Weather {
   }
 }
 </pre>
-	<p>The output is <span class="pre">status 200</span> and the body, <span class="pre">sunny, 21 C</span>.</p>
+	<p>Fetching from a small server on this machine that answers with the weather, it prints
+		<span class="pre">status 200</span> and the body, <span class="pre">sunny, 21 C</span>. The
+		<span class="pre">done</span> it is handed is the sending end of a <a href="conc-threads.html#oneshot">one-shot
+		channel</a>, on which <span class="pre">main</span> waits, as the kitchen's waited on its channel.</p>
 	<p>A <span class="pre">Client</span> (<span class="pre">Client.standard()</span>, or
-		<span class="pre">Client.make(config, maxBody)</span> with an <span class="pre">httpclient.Config</span>
-		and the most body bytes a response may have) is a handle that moves: it may be sent in a message, and
-		<span class="pre">clone()</span> makes another handle to the same client, so any number of actors fetch
-		through one set of connection pools at once. The last handle's going ends the client, and every fetch of
-		it in flight is answered cancelled. <span class="pre">get(url)</span> and
-		<span class="pre">send(request)</span> (an <span class="pre">httpclient.Request</span>, with its method,
-		header fields, body, intent and redirect limit) answer a <span class="pre">Result</span>: the success is
-		<span class="pre">httpclient</span>'s <span class="pre">Response</span> &mdash; status, header fields, the whole
-		body as bytes, the URL that answered after any redirects, and its timing. An HTTP error status such as
-		404 is an answer, not an <span class="pre">Error</span>. The <span class="pre">Error</span> is a
-		<span class="pre">FetchError</span>: the network or the client refusing (a name not found, a refused
-		connection, a certificate refused, a body longer than the limit, a URL that does not parse), with
-		<span class="pre">httpclient</span>'s <span class="pre">Failure</span> in its
-		<span class="pre">failure</span> saying at which stage and why, or the fetch cancelled or past its deadline,
-		which <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> read; never a
-		panic. <span class="pre">getIn(url, lim)</span> and <span class="pre">sendIn(request, lim)</span> take the
-		same <span class="pre">IoLimits</span> as <span class="pre">aio</span>'s operations (a cancel group and an
-		absolute deadline), and a request's own deadline is kept beside it, the tighter winning.</p>
+		<span class="pre">Client.make(config, maxBody)</span> with an <span class="pre">httpclient.Config</span> and the most
+		body bytes a response may have) is a handle that moves: it may be sent in a message, and <span class="pre">clone()</span>
+		makes another handle to the same client, so any number of actors fetch through one set of connection pools at once.
+		The last handle's going ends the client, and every fetch of it in flight is answered cancelled.
+		<span class="pre">get(url)</span> and <span class="pre">send(request)</span> (an <span class="pre">httpclient.Request</span>,
+		with its method, header fields, body, intent and redirect limit) answer a <span class="pre">Result</span>: the success
+		is <span class="pre">httpclient</span>'s <span class="pre">Response</span>, with the status, the header fields, the
+		whole body as bytes, the URL that answered after any redirects, and its timing. An HTTP error status such as 404 is
+		an answer, not an <span class="pre">Error</span>. The <span class="pre">Error</span> is a
+		<span class="pre">FetchError</span>: the network or the client refusing (a name not found, a refused connection, a
+		certificate refused, a body longer than the limit, a URL that does not parse), with <span class="pre">httpclient</span>'s
+		<span class="pre">Failure</span> in its <span class="pre">failure</span> saying at which stage and why, or the fetch
+		cancelled or past its deadline, which <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span>
+		read; never a panic. <span class="pre">getIn(url, lim)</span> and <span class="pre">sendIn(request, lim)</span> take the
+		same <span class="pre">IoLimits</span> as <span class="pre">aio</span>'s operations (a cancel group and an absolute
+		deadline), and a request's own deadline is kept beside it, the tighter winning.</p>
 	<p>A program that wants one connection itself has <span class="pre">actorhttp.connect(host, port)</span> and
-		<span class="pre">actorhttp.connectSecure(host, port, tlsConfig)</span>, which answer a
-		<span class="pre">Conn</span> that moves like a <span class="pre">Socket</span>:
-		<span class="pre">conn.request(head, body)</span> writes a request head
-		(<span class="pre">RequestHead.make("GET", "/", "example.com")</span>) and a body and answers the
-		whole response; <span class="pre">conn.requestIn(head, body, lim)</span> adds limits. The connection
-		carries one exchange at a time; a request cancelled or timed out on the wire resets it (HTTP/1.1's only way
-		to stop one), and later requests on it fail as closed. A <span class="pre">connectSecure</span> connection is
-		made when the TCP connection is: the TLS handshake runs under the first request, and a certificate the
-		client's configuration refuses ends that request failed at the TLS stage (or at the read or closed
-		stage, if the connection broke before the request was asked for). Dropping a
+		<span class="pre">actorhttp.connectSecure(host, port, tlsConfig)</span>, which answer a <span class="pre">Conn</span> that
+		moves like a <span class="pre">Socket</span>: <span class="pre">conn.request(head, body)</span> writes a request head
+		(<span class="pre">RequestHead.make("GET", "/", "example.com")</span>) and a body and answers the whole response;
+		<span class="pre">conn.requestIn(head, body, lim)</span> adds limits. The connection carries one exchange at a time; a
+		request cancelled or timed out on the wire resets it (HTTP/1.1's only way to stop one), and later requests on it fail
+		as closed. A <span class="pre">connectSecure</span> connection is made when the TCP connection is: the TLS handshake
+		runs under the first request, and a certificate the client's configuration refuses ends that request failed at the
+		TLS stage (or at the read or closed stage, if the connection broke before the request was asked for). Dropping a
 		<span class="pre">Conn</span> closes the connection.</p>
-	<p>A response can instead be read as it arrives. <span class="pre">client.stream(request)</span> is answered when
-		the response's head is in, with a <span class="pre">BodyStream</span> (the status and header fields are fields
-		of it) whose <span class="pre">read()</span> awaits the next piece of the body: <span class="pre">Some(piece)</span>,
-		then <span class="pre">None</span> when the body is whole, or an <span class="pre">Error</span> as above.
-		<span class="pre">client.events(request)</span> is the same for server-sent events (the
-		<span class="pre">sse</span> package's, <a href="lib-http.html#sse">HTTP, TLS and URLs</a>): an
-		<span class="pre">EventStream</span> whose <span class="pre">next()</span> awaits the next
-		<span class="pre">sse.Event</span>. A reader that awaits slowly slows the sender (the connection is told to send
-		more only as the actor takes what is there), and dropping the stream cancels the rest of the fetch.</p>
-	<p>The other way round, <span class="pre">actorhttp.listen(addr, config)</span> answers a
-		<span class="pre">Server</span> (a handle that moves and <span class="pre">clone()</span>s; its last handle's
-		going closes it), and <span class="pre">await server.next()</span> answers the next request, whole, as an
-		<span class="pre">Exchange</span>: the <span class="pre">Request</span> (method, target, header fields, body, the
-		client's address) and the way to answer it. A server usually has one actor looping on
-		<span class="pre">next()</span> and giving each Exchange, which moves, to an actor of its own. The actor answers once:
-		<span class="pre">ex.respond(head, body)</span>, or <span class="pre">ex.start(head, length)</span> then
-		<span class="pre">await ex.write(bytes)</span> as often as it likes and <span class="pre">await ex.finish()</span>
-		(a body of unknown length goes chunked), or <span class="pre">ex.startEvents()</span> then
-		<span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of server-sent events. A write is answered when the
-		connection has taken the bytes, so an actor that awaits each is slowed to its peer's speed; a peer that has left
-		answers the write <span class="pre">Closed</span>. <span class="pre">ServerConfig.secure(tlsConfig)</span> makes the
-		connections TLS; its other fields bound the request body a server takes (past it, 413) and the requests that may
-		wait for an actor (past it, 503). An Exchange dropped without an answer is answered 500. The package's header
-		lists each choice; <span class="pre">tests/server.cone</span>, <span class="pre">events.cone</span> and
-		<span class="pre">tlsserver.cone</span> are these, run.</p>
+	<p>A response can instead be read as it arrives. <span class="pre">client.stream(request)</span> is answered when the
+		response's head is in, with a <span class="pre">BodyStream</span> (the status and header fields are fields of it) whose
+		<span class="pre">read()</span> awaits the next piece of the body: <span class="pre">Some(piece)</span>, then
+		<span class="pre">None</span> when the body is whole, or an <span class="pre">Error</span> as above.
+		<span class="pre">client.events(request)</span> is the same for server-sent events (the <span class="pre">sse</span>
+		package's, <a href="lib-http.html#sse">HTTP, TLS and URLs</a>): an <span class="pre">EventStream</span> whose
+		<span class="pre">next()</span> awaits the next <span class="pre">sse.Event</span>. A reader that awaits slowly slows the
+		sender (the connection is told to send more only as the actor takes what is there), and dropping the stream cancels
+		the rest of the fetch.</p>
+	<p>The other way round, <span class="pre">actorhttp.listen(addr, config)</span> answers a <span class="pre">Server</span>
+		(a handle that moves and <span class="pre">clone()</span>s; its last handle's going closes it), and
+		<span class="pre">await server.next()</span> answers the next request, whole, as an <span class="pre">Exchange</span>: the
+		<span class="pre">Request</span> (method, target, header fields, body, the client's address) and the way to answer it.
+		A server usually has one actor looping on <span class="pre">next()</span> and giving each Exchange, which moves, to an
+		actor of its own. The actor answers once: <span class="pre">ex.respond(head, body)</span>, or
+		<span class="pre">ex.start(head, length)</span> then <span class="pre">await ex.write(bytes)</span> as often as it likes
+		and <span class="pre">await ex.finish()</span> (a body of unknown length goes chunked), or
+		<span class="pre">ex.startEvents()</span> then <span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of
+		server-sent events. A write is answered when the connection has taken the bytes, so an actor that awaits each is
+		slowed to its peer's speed; a peer that has left answers the write <span class="pre">Closed</span>.
+		<span class="pre">ServerConfig.secure(tlsConfig)</span> makes the connections TLS; its other fields bound the request
+		body a server takes (past it, 413) and the requests that may wait for an actor (past it, 503). An Exchange dropped
+		without an answer is answered 500. The package's header lists each choice; <span class="pre">tests/server.cone</span>,
+		<span class="pre">events.cone</span> and <span class="pre">tlsserver.cone</span> are these, run.</p>
 	<p>A cancel and a completion that race, and a fetch dropped with its client, are settled as an
-		<span class="pre">aio</span> operation's are: exactly one answer. At the program's end, a behaviour still paused
-		on a fetch is abandoned, as one paused on a socket is (below).</p>
+		<span class="pre">aio</span> operation's are: exactly one answer. At the program's end, a behaviour still paused on a
+		fetch is abandoned, as one paused on a socket is (next).</p>
 
-	<h3>The I/O thread, and the program's end</h3>
-	<p>The operations run on one thread of their own, the I/O thread, which the first operation
-		awaited starts: it waits in <span class="pre">iocore</span>'s completion loop, and hands each
-		answer to the actor awaiting it as a message, in its mailbox. The worker threads never wait
-		on I/O. An operation in flight keeps the actor awaiting it alive, whether or not anything
-		else holds the actor, as a request to another actor does.</p>
-	<p>At the program's end, the final its entry runs waits until no actor is queued or
-		running &mdash; an actor paused on I/O is neither &mdash; and then ends the I/O: every
-		operation still in flight is cancelled and every socket closed, and the answers are not
-		delivered. Each behaviour still paused on one is <b>abandoned</b>: the rest of it never
-		runs, and every value it held when it paused is finalized, in the order it would have died
-		in had the behaviour ended there, once nothing else holds its actor. A server waiting for a
-		connection that never comes ends this way; so does a read from a peer that never
-		sends.</p>
+	<h3 id="io-thread">The I/O thread, and the program's end</h3>
+	<p>The operations run on one thread of their own, the I/O thread, which the first operation awaited starts: it waits
+		in <span class="pre">iocore</span>'s completion loop, and hands each answer to the actor awaiting it as a message, in
+		its mailbox. The worker threads never wait on I/O. An operation in flight keeps the actor awaiting it alive, whether
+		or not anything else holds the actor, as a request to another actor does.</p>
+	<p>But it does not keep the <i>program</i> alive. At the program's end, the final its entry runs waits until no actor
+		is queued or running (an actor paused on I/O is neither) and then ends the I/O: every operation still in flight is
+		cancelled and every socket closed, and the answers are not delivered. Each behaviour still paused on one is
+		<b>abandoned</b>: the rest of it never runs, and every value it held when it paused is finalized, in the order it
+		would have died in had the behaviour ended there, once nothing else holds its actor. A server waiting for a connection
+		that never comes ends this way; so does a read from a peer that never sends. A program whose work is waiting on I/O
+		therefore keeps <span class="pre">main</span> waiting until it is done, as the kitchen does on its channel.</p>
 
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>
-	<li>The blocking pool's other work (file metadata, name lookup), and a socket's half-close, awaited;
-		<span class="pre">fileio</span>, the file service.</li>
+	<li>A socket's half-close, awaited; <span class="pre">fileio</span>, the file service.</li>
 	<li>More than one I/O thread.</li>
-	<li>A request's body streamed from an actor or to one (a client sends it whole; a server delivers it whole,
-		up to a limit), a stream that reconnects, Upgrade and WebSocket, and
-		<span class="pre">httpclient</span> and <span class="pre">httpconn</span> running on
-		<span class="pre">aio</span>'s own sockets (<span class="pre">actorhttp</span> keeps a thread and a loop of its
-		own).</li>
+	<li>A request's body streamed from an actor or to one (a client sends it whole; a server delivers it whole, up to a
+		limit), a stream that reconnects, Upgrade and WebSocket, and <span class="pre">httpclient</span> and
+		<span class="pre">httpconn</span> running on <span class="pre">aio</span>'s own sockets (<span class="pre">actorhttp</span>
+		keeps a thread and a loop of its own).</li>
 	</ul>
-	<h2 id="fine-tuning">Fine-tuning</h2>
-	<p><i>The two sections below work with the <span class="pre">iocore</span> loop directly, the layer that awaiting I/O is built over. A program that awaits through <span class="pre">aio</span> rarely needs them.</i></p>
 
-	<h2 id="datagrams">Datagrams (UDP)</h2>
-	<p><span class="pre">lp.bindUdp(addr)</span> makes a UDP socket bound to an address (port 0 has the
-		system choose one, which <span class="pre">lp.localAddr(h)</span> tells). It is not
-		connected: each datagram names where it goes, and each one received names where it came from.
-		Two operations, one datagram each, answered like the others: <span class="pre">Op.SendTo(sock, addr, buf)</span>
-		sends all of the buffer as one datagram, and <span class="pre">Op.RecvFrom(sock, buf)</span> takes
-		one into the buffer's room, its sender in the answer's <span class="pre">peer</span>, a
-		<span class="pre">SocketAddr</span>. Deadlines, cancel groups and the handle's close end them as they end a
-		TCP socket's operations, the buffer back in the answer.</p>
+	<h2 id="loop">Below aio: the iocore loop</h2>
+	<p>The two sections below work with the <span class="pre">iocore</span> loop directly, the layer that awaiting I/O is
+		built over: a plain thread submits operations to a <span class="pre">Loop</span> and polls for their completions.
+		A program that awaits through <span class="pre">aio</span> rarely needs them.</p>
+
+	<h3 id="datagrams">Datagrams (UDP)</h3>
+	<p><span class="pre">lp.bindUdp(addr)</span> makes a UDP socket bound to an address (port 0 has the system choose one,
+		which <span class="pre">lp.localAddr(h)</span> tells). It is not connected: each datagram names where it goes, and
+		each one received names where it came from. Two operations, one datagram each, are answered like the others:
+		<span class="pre">Op.SendTo(sock, addr, buf)</span> sends all of the buffer as one datagram, and
+		<span class="pre">Op.RecvFrom(sock, buf)</span> takes one into the buffer's room, its sender in the answer's
+		<span class="pre">peer</span>, a <span class="pre">SocketAddr</span>. Deadlines, cancel groups and the handle's close
+		end them as they end a TCP socket's operations, the buffer back in the answer.</p>
 <pre>
 import stdio use *;
 import collections use List;
@@ -611,44 +628,38 @@ fn main() {
 </pre>
 	<p>This prints a line like the following, the client's port the one the system chose:</p>
 <pre>
-5 bytes from 127.0.0.1:63506
+5 bytes from 127.0.0.1:50526
 </pre>
 	<ul>
-	<li>A datagram of no bytes is a datagram: <span class="pre">RecvFrom</span> answers Done(0) and names its
-		sender. It is not the end of anything, as a stream's Done(0) is.</li>
+	<li>A datagram of no bytes is a datagram: <span class="pre">RecvFrom</span> answers Done(0) and names its sender. It is
+		not the end of anything, as a stream's Done(0) is.</li>
 	<li>A datagram longer than the receive's room is cut, as UDP cuts it: the answer is Failed with error 10040
-		(<span class="pre">WSAEMSGSIZE</span>, on Linux too), the room filled with its first bytes and the sender named;
-		the rest of that datagram is lost, and the next receive takes the next datagram whole. A
-		<span class="pre">SendTo</span> of more than UDP carries fails with the same number.</li>
-	<li>UDP promises no delivery: Done on a <span class="pre">SendTo</span> says the system took the datagram.
-		Datagrams that arrive while no receive is waiting are held by the socket, up to what the system
-		allows, and lost beyond it. Take them with one receive at a time on a socket; the order in which
-		several outstanding receives on one socket are filled is not promised.</li>
-	<li>On Windows a datagram sent to a port nobody holds would make the sender's next receive fail
-		(Winsock reports the ICMP "port unreachable" on it); that is turned off, so the receive simply goes on waiting, as it
-		does on Linux.</li>
+		(<span class="pre">WSAEMSGSIZE</span>, on Linux too), the room filled with its first bytes and the sender named; the
+		rest of that datagram is lost, and the next receive takes the next datagram whole. A <span class="pre">SendTo</span>
+		of more than UDP carries fails with the same number.</li>
+	<li>UDP promises no delivery: Done on a <span class="pre">SendTo</span> says the system took the datagram. Datagrams
+		that arrive while no receive is waiting are held by the socket, up to what the system allows, and lost beyond it.
+		Take them with one receive at a time on a socket; the order in which several outstanding receives on one socket are
+		filled is not promised.</li>
+	<li>On Windows a datagram sent to a port nobody holds would make the sender's next receive fail (Winsock reports the
+		ICMP "port unreachable" on it); that is turned off, so the receive goes on waiting, as it does on Linux.</li>
 	</ul>
-
 	<p>The <a href="lib-netmsg.html"><span class="pre">netmsg</span> package</a> is a game's protocol built on these two
 		operations: acknowledged packets, reliable messages and latest-wins values between a server and its clients.</p>
 
-	<h2 id="cancel-groups">Cancel groups</h2>
-	<p>Work in flight on the <span class="pre">iocore</span> package's completion loop, the layer
-		<span class="pre">aio</span> awaits through, can be asked to end. <span class="pre">lp.cancel(id)</span>
-		asks one operation to. A <span class="pre">CancelGroup</span> asks many at once, as the browser's
-		<i>AbortSignal</i> does. A group is a value: copying it makes another handle on the same group, it is
-		handed to many operations on any loops, and it crosses threads. Its one
-		<span class="pre">cancel()</span>, from any thread, asks every operation in it to end, and a loop asleep in
-		<span class="pre">poll</span> wakes at once to act on it.</p>
-	<p>An operation joins a group as it is submitted, with
-		<span class="pre">lp.submitIn(op, to, group, deadline)</span>, or
-		<span class="pre">lp.afterIn(at, to, group)</span> for a timer. A cancel is a request, so each operation
-		still answers exactly once, and its answer says how it ended: <span class="pre">Cancelled</span> if the
-		cancel caught it, or <span class="pre">Done</span> (or <span class="pre">Failed</span>) if it had finished
-		first, its buffer back either way. Cancelled is a state, not an event: from the cancel on,
-		<span class="pre">group.isCancelled()</span> is true, and an operation submitted into the group is
-		answered <span class="pre">Cancelled</span> at once, its buffer back, and never started.
-		<span class="pre">cancel()</span> is idempotent: it answers true the first time and false after.</p>
+	<h3 id="cancel-groups">Cancel groups</h3>
+	<p>Work in flight on the loop can be asked to end. <span class="pre">lp.cancel(id)</span> asks one operation to. A
+		<span class="pre">CancelGroup</span> asks many at once. A group is a value: copying it makes another handle on the same
+		group, it is handed to many operations on any loops, and it crosses threads. Its one <span class="pre">cancel()</span>,
+		from any thread, asks every operation in it to end, and a loop asleep in <span class="pre">poll</span> wakes at once to
+		act on it.</p>
+	<p>An operation joins a group as it is submitted, with <span class="pre">lp.submitIn(op, to, group, deadline)</span>, or
+		<span class="pre">lp.afterIn(at, to, group)</span> for a timer. A cancel is a request, so each operation still answers
+		exactly once, and its answer says how it ended: <span class="pre">Cancelled</span> if the cancel caught it, or
+		<span class="pre">Done</span> (or <span class="pre">Failed</span>) if it had finished first, its buffer back either way.
+		Cancelled is a state, not an event: from the cancel on, <span class="pre">group.isCancelled()</span> is true, and an
+		operation submitted into the group is answered <span class="pre">Cancelled</span> at once, its buffer back, and never
+		started. <span class="pre">cancel()</span> is idempotent: it answers true the first time and false after.</p>
 <pre>
 import stdio use *;
 import collections use List;
@@ -687,101 +698,28 @@ first cancel
 cancel again
 2 cancelled, 1 still waiting
 </pre>
-	<p>The timer outside the group is still in flight; the loop cancels it when it dies. Groups nest and carry
-		deadlines, which are absolute: an <span class="pre">Instant</span>, never a duration.</p>
+	<p>The timer outside the group is still in flight; the loop cancels it when it dies. Groups nest and carry deadlines,
+		which are absolute: an <span class="pre">Instant</span>, never a duration.</p>
 	<ul>
-	<li><span class="pre">group.child()</span> is cancelled with <span class="pre">group</span> and by its own
-		cancel, which does not reach <span class="pre">group</span>.</li>
+	<li><span class="pre">group.child()</span> is cancelled with <span class="pre">group</span> and by its own cancel, which
+		does not reach <span class="pre">group</span>.</li>
 	<li><span class="pre">CancelGroup.until(deadline)</span> is a group whose operations answer
 		<span class="pre">TimedOut</span> by the deadline, a timer among them: one due after the deadline answers
 		<span class="pre">TimedOut</span> at it, one due before answers <span class="pre">Done</span> at its own time.
-		<span class="pre">group.childUntil(d)</span> is a child whose
-		deadline is the tighter of its parent's and <span class="pre">d</span>, so deadlines are inherited as the
-		tighter, all the way down.</li>
+		<span class="pre">group.childUntil(d)</span> is a child whose deadline is the tighter of its parent's and
+		<span class="pre">d</span>, so deadlines are inherited as the tighter, all the way down.</li>
 	<li><span class="pre">group.shield(d)</span> is for cleanup after a cancel: the group's cancel and deadline do not
-		reach the shield, its own deadline <span class="pre">d</span> bounds it, and its own cancel still ends
-		it.</li>
+		reach the shield, its own deadline <span class="pre">d</span> bounds it, and its own cancel still ends it.</li>
 	</ul>
-	<p>An actor cannot yet cancel what it awaits: the awaited operations take no group
-		(<a href="#await-io-unbuilt">Not built yet</a>, above).</p>
+	<p>The same groups limit the operations an actor awaits, through <a href="#await-io-limits"><span class="pre">IoLimits</span></a>.
+		What an actor cannot do is cancel a paused behaviour itself, short of the operation it awaits
+		(<a href="conc-await.html#await-unbuilt">Not built yet</a>).</p>
 
-	<h2 id="original-exploration">Appendix: the original exploration (an archived design essay)</h2>
-
-	<p>The text under this heading is the original exploration of the question, kept as it was
-		written. What is built is described above.</p>
-	<p>I/O encompasses any processing activity that extends beyond the boundaries of CPU/memory computation,
-		including user input and presentation, file or network requests, timers, etc.
-		From the perspective of the CPU, I/O activity can often take a long, indeterminate amount of time,
-		which presents a complicating challenge to efficiently scheduling concurrent work.</p>
-	<p>In essence, we want to satisfy these essential requirements:</p>
-	<ul>
-	<li>We don't want I/O activity to block the CPU from performing other available work.</li>
-	<li>When any I/O activity reports progress, we often want to continue processing where we left off,
-		based on a remembered execution and data state (context).</li>
-	<li>We sometimes want the option to "cancel" already-requested i/o work based on time-outs, failures or other changed conditions.
-		Sometimes, we want to cascade cancellation through multiple levels of already-submitted requests.</li>
-	</ul>
-	
-	<p>There are several architectural approaches to satisfy these requirements:</p>
-	<ul>
-	<li><b>Async/Await.</b>
-		I/O requests are always issued asynchronously (non-blocking), whose returned type is a promise.
-		When I/O finishes or fails, the promise fires the appropriate pre-determined logic. 
-		<p>Syntactic sugar is used to hide the complexity of
-		the promise handling, so that the "before" and "after" code look like a single block of sequential code.
-		Under the covers, they are actually independent logic, with the context of the "before" code captured as
-		an implicit closure that is passed as a continuation to the "after" code.</p>
-		<p>There are two significant drawbacks to this approach:</p>
-		<ul>
-		<li>async/await logic infects all functions/methods above it in the execution stack</li>
-		<li>There is no graceful way to implement cancellability</li>
-		</ul></li>
-		
-	<li><b>Gothreads.</b>
-		I/O requests are synchronous (blocking). It is up to the runtime scheduler to detect that a gothread 
-		is effectively blocked on i/o and effectively re-balance work so that other gothreads keep all CPUs busy.
-		<p>Although this approach avoids the infectious coloring issue of async/await
-			and is easier on the programmer (no extra annotations), it has its own drawbacks:</p>
-		<ul>
-		<li>The runtime logic needed to detect that a gothread is blocked on i/o is not cheap, quick or foolproof.
-			The same holds true for the reverse, noticing when the gothread becomes unblocked.
-			As a result, this approach is likely slower than an equivalent async/await implementation.</li>
-		<li>There is no graceful way to implement cancellability</li>
-		</ul>
-		
-	<li><b>Actors.</b>
-		Whenever multi-step i/o is required, the requesting actor (Requester) spawns a new actor (Workflow).
-			Part of the spawning message is the id of the Requester actor to return the final result to.
-			Workflow issues i/o requests as asynchronous messages to some environmental i/o actor.
-			Completed (or failed) i/o are sent as messages to the Workflow actor who can use its preserved
-			context to know what to do next. When the Workflow actor is finished with all its processing,
-			it returns a response to the Requester workflow as a message.</p>
-		<p>Like async/await, this uses continuation-passing style. In this case, the continuation is an actor (and its state)
-			able to support multiple kinds of messages. Since the actor accepts asynchronous messages from
-			any actor, it can also support the notion of a cancel message, and even the ability to pass that
-			cancel message on, dependending on its state. Unlike async/await, there is no notion of infectious
-			function colors up the execution stack, as all actors are already found at the top of the execution stack from the
-			point-of-view of the runtime scheduler.</p>
-		<p>The primary challenge of this approach is that it requires the programmer to manage
-			the concurrent workflow explicitly with actors. This may be a challenge for programmers
-			who are only familiar with synchronous-style programming.</p></li>
-	</ul>
-		
-	<p>Currently, the projected design for Cone is leaning towards an Actor-based approach for handling asynchronous I/O,
-		sequential workflows, and cancellability.</p>
-
-	<h2 id="comes-back">Comes back in &hellip;</h2>
-	<ul>
-	<li><a href="conc-await.html">Awaiting in depth: what an <span class="pre">await</span> does, whatever it awaits.</a></li>
-	<li><a href="library.html#asyncio">The standard library: the I/O packages in the catalogue.</a></li>
-	<li><a href="lib-fs.html">Files and folders</a></li>
-	<li><a href="lib-time.html">Time</a></li>
-	<li><a href="lib-http.html">HTTP, TLS and URLs</a></li>
-	<li><a href="lib-netmsg.html">The <span class="pre">netmsg</span> package, built on UDP datagrams</a></li>
-	</ul>
+	<p>You can now serve, fetch, read files and sleep from an actor without holding a thread, and limit or cancel any of it.
+		All of it runs on the runtime's worker threads and its I/O thread; the next page opens up the runtime itself.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
-		<a href="conc-parallel.html"><img alt="_" src="next.png" /></a>
+		<a href="conc-runtime.html"><img alt="_" src="next.png" /></a>
 	</p>
 
 	</div>

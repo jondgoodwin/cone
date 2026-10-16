@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Encapsulation - Cone Reference</title>
+	  <title>Public and private: what a module shows - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,135 +8,192 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Encapsulation</div>
+			<div id="sub">Public and private: what a module shows</div>
 		</div>
 
     <div class="text">
 
+	<p>A part that shows everything can be depended on for everything, and then it can never change. So a
+		part publishes an interface, the names others may use, and keeps the rest to itself: a black box. In
+		Cone the line between the two is drawn at the module, with one word, <span class="pre">pub</span>. This
+		page shows what is public and what is private, for a module's names and a type's members, and why the
+		line is drawn where it is. Afterwards you can give a module an interface it can keep, and rules about
+		its state that nothing outside it can break.</p>
+<pre>
+// src/account.cone
+// A submodule: what it declares pub is all the rest of the program sees
+mod account;
+
+pub struct Account {
+  pub owner i32;     // public: any module may read it
+  cents i64;         // private: only this module's code reaches it
+
+  // The only way to add money: a deposit is never negative
+  pub fn deposit(self &amp;mut, amount i64) {
+    if amount &gt; 0 {
+      cents += amount;
+    }
+  }
+
+  pub fn balance(self &amp;) i64 {
+    cents;
+  }
+
+  // A static function: a new account, with nothing in it
+  pub fn open(owner i32) Account {
+    new Account(owner, 0);
+  }
+}
+</pre>
+<pre>
+// src/bank.cone
+mod bank;
+
+import stdio use *;
+
+use account;
+
+fn main() {
+  mut savings = Account.open(7);
+  savings.deposit(2500);
+  savings.deposit(-1000000);     // refused by deposit's own rule
+  print &lt;- "account ", savings.owner, " holds ", savings.balance(), " cents\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+account 7 holds 2500 cents
+</pre>
+	<p>The rule that an account never goes up by a negative deposit lives in one place, and nothing outside
+		<span class="pre">account</span> can get round it. Code in <span class="pre">bank</span> that reaches for
+		the money directly is refused, whether it writes the field or builds an account with the field already
+		filled in:</p>
+<pre>
+fn cheat(a &amp;mut Account) {
+  a.cents = 1000000;             // ERROR
+}
+fn forge() Account {
+  new Account(7, 1000000);       // ERROR
+}
+</pre>
+<pre>
+Error 1042: May not access the private method/field `cents`.
+Error 1042: May not give a value to the private field cents from outside the module that declares Account.
+</pre>
+	<p><b>Try this:</b> change <span class="pre">cents</span> into two fields, whole dollars and cents.
+		<span class="pre">bank</span> does not change at all, because it never could see the field.</p>
+
 	<h2 id="why">Publish the interface, hide the rest</h2>
-	<!-- NEW: drafted -->
-	<p>Encapsulation treats a component as a black box. It <b>publishes</b> an interface, the
-		names other components may use, and it <b>hides</b> everything else: the logic that does
-		the work, and the state and structures it does it with. Done well, it reduces coupling,
-		because there is less for anyone outside to depend on; it lets a reader hold a part in
-		mind without holding all of it; and it keeps most changes local, since what nobody
-		outside could reach, nobody outside can be broken by.</p>
-	<p>In Cone the boundary is the <b>module</b>. A name declared <span class="pre">pub</span> is
-		the module's interface, and every other name is private to the module, whatever kind of
-		name it is: a function, a global, a type, or a type's field or method. The same idea comes
-		back at the other layers:</p>
-	<ul>
-		<li>A block's local variables are private to the block
-			(<a href="mod-namespaces.html#fnblocks">Function Blocks</a>).</li>
-		<li>A type's members that are not <span class="pre">pub</span> are private to the module
-			that declares the type (<a href="#typenames">below</a>).</li>
-		<li>An <a href="guide-structs.html#opaque">opaque type</a>, declared
-			<span class="pre">struct @opaque SocketHandle;</span>, hides even its size and layout: its
-			values are reached only through references or pointers, and its fields are never read.</li>
-		<li>An actor's state is private to it: a field of an actor is never
-			<span class="pre">pub</span>, and nothing outside the actor reaches one
-			(<a href="conc-actors.html#confined">Private state</a>).</li>
-		<li>A type that <a href="mod-extensibility.html#encap">enriches</a> another is inside its
-			base's encapsulation, and sees what the base's own methods see.</li>
-	</ul>
+	<p>This is isolation, or encapsulation: a component <b>publishes</b> an interface and <b>hides</b>
+		everything else, the logic that does the work and the state it does it with. Done well, it pays three
+		ways. It reduces coupling, because there is less for anyone outside to depend on. It lets a reader hold a
+		part in mind without holding all of it. And it keeps most changes local, since what nobody outside could
+		reach, nobody outside can be broken by. The part also gets to keep promises about its state, as
+		<span class="pre">Account</span> does: a rule enforced by every way in is a rule that always holds.</p>
+	<p>In Cone the boundary is the <b>module</b>. A name declared <span class="pre">pub</span> is part of the
+		module's interface, and every other name is private to the module, whatever kind of name it is: a
+		function, a global, a type, or a type's field or method.</p>
 
 	<h2 id="modnames">A module's names</h2>
-	<p>Module names are:</p>
+	<p>A module's names follow three rules.</p>
 	<ul>
-		<li><b>unique</b>. no two items in a module may have the same name.
-			Several functions may nonetheless share one
-			<a href="guide-functions.html#overload">overload name</a>, which is itself
-			a single name in the module that maps to those functions.
-			A module may not bring one name in twice, even for the same item: listing
-			a name twice, writing the same <span class="pre">use</span> twice,
-			importing a module twice, or importing a module and also listing it
-			through another module that re-exports it, is an error.
-			Core is imported into every module automatically, so
-			<span class="pre">import core</span> in any module but a
-			<a href="safe-c.html#cnames">C-named</a> one is a second import of it, and the
-			error says so.
-			What a module never wrote is different. When a name arrives by a
-			wildcard <span class="pre">use *</span>, by <span class="pre">extends</span>,
-			or by the automatic import of core, and it is the same item the name
-			already has, it is not two items: when two wildcard imports each
-			re-export the same function, a module that extends this one hands
-			this one's own names back, or <span class="pre">import libc use *</span>
-			brings the <span class="pre">malloc</span> core already re-exports from it,
-			the name is bound once, and it is public if
-			either route made it public.</li>
-		<li><b>order-independent</b>. One can reference functions, variables,
-			or types whose names are not defined until later in the module.
-			The only exception to this are permissions and regions whose
-			definition must precede their use.</li>
-		<li><b>private unless <span class="pre">pub</span></b>.
-			A name declared <span class="pre">pub</span> may be referenced outside the module.
-			Any other name may not: it is private to the module, whatever it is spelled.
-			The interface of a module is what it says it is, and nothing more.
-			A type's members that are not <span class="pre">pub</span> are private to
-			its module in the same way (<a href="#typenames">A type's names</a>).</li>
+		<li><b>They are unique.</b> No two items in a module may have the same name. Several functions may
+			nonetheless share one <a href="guide-functions.html#overload">overload name</a>, which is itself a
+			single name in the module that maps to those functions. A module may not bring one name in twice, even
+			for the same item: listing a name twice, writing the same <span class="pre">use</span> twice, importing
+			a module twice, or importing a module and also listing it through another module that re-exports it,
+			is an error. Core is imported into every module automatically, so <span class="pre">import core</span>
+			in any module but a <a href="safe-c.html#cnames">C-named</a> one is a second import of it, and the
+			error says so.<br/>
+			What a module never wrote is different. When a name arrives by a wildcard
+			<span class="pre">use *</span>, by <a href="mod-extensibility.html#extends"><span class="pre">extends</span></a>,
+			or by the automatic import of core, and it is the same item the name already has, it is not two items.
+			So when two wildcard imports each re-export the same function, when a module that extends this one hands
+			this one's own names back, or when <span class="pre">import libc use *</span> brings the
+			<span class="pre">malloc</span> that core already re-exports from it, the name is bound once, and it is
+			public if either route made it public.</li>
+		<li><b>Their order does not matter.</b> A function, variable or type may be used before it is declared,
+			further down the file or in another file of the module. The only exceptions are permissions and
+			regions, whose definitions must come before their use.</li>
+		<li><b>They are private unless <span class="pre">pub</span>.</b> A name declared
+			<span class="pre">pub</span> may be used outside the module. Any other name may not: it is private to
+			the module, however it is spelled. The interface of a module is what it says it is, and nothing
+			more.</li>
 	</ul>
-	<p>What <span class="pre">pub</span> means for the other things a module holds is on the
-		pages that describe them: a <a href="mod-namespaces.html#submodule">submodule</a> is
-		private to its parent unless it is written <span class="pre">pub mod</span>, and the names
-		an <a href="mod-namespaces.html#reexport">import</a> or a
-		<a href="mod-namespaces.html#usesub"><span class="pre">use</span></a> folds in are private
-		to the module that folds them unless it writes <span class="pre">pub</span>.</p>
+	<p>The same word decides the rest of what a module holds. A <a href="mod-namespaces.html#submodule">submodule</a>
+		is private to its parent unless it is written <span class="pre">pub mod</span>, and the names an
+		<a href="mod-namespaces.html#reexport">import</a> or a
+		<a href="mod-namespaces.html#usesub"><span class="pre">use</span></a> folds in are private to the module
+		that folds them unless it writes <span class="pre">pub</span>.</p>
 
-	<h2 id="typenames">A type's names</h2>
-	<p>A type's names are:</p>
+	<h2 id="typenames">A type's members</h2>
+	<p>A type's members, its fields, methods and static functions, follow the module's rules, with the module
+		still the boundary.</p>
 	<ul>
-		<li><b>unique for every field, function and method</b>.
-			Every method and function has its own name, unique within the type.
-			Several methods or functions may additionally share one
-			<a href="guide-functions.html#overload">overload name</a>, which they declare with
-			<span class="pre">overload</span>.</li>
-		<li><b>order-independent</b>.
-			A name may be referenced before its declaration, and the order in which
-			the methods or functions sharing an overload name are declared never
-			affects which one a call selects.</li>
-		<li><b>private to the module unless <span class="pre">pub</span></b>.
-			A field, method or function declared <span class="pre">pub</span> may be used
-			anywhere the type's values reach. Any other member is private to the
-			module that declares the type: every function, method and type of that
-			module may use it, through any value of the type, in any file of the
-			module's folder, and nothing outside the module may. A sister, a
-			submodule and the parent are other modules, as is a file that opens
-			with its own <span class="pre">mod</span> line. A type that extends
-			another, a <a href="mod-extensibility.html#enrich">struct</a> enriching its base or an
-			<a href="mod-extensibility.html#enum-extends">enum</a> extending its base, is the one exception:
-			it is inside its base's boundary, so its code reaches the base's private
-			members wherever it is declared.
-			Fields and methods are accessed on a value using the dot (.) operator.
-			A static function is reached with the same operator, on the type's name.</li>
-		<li><b>a <span class="pre">pub</span> field of a <span class="pre">pub</span>
-			type names only types the outside can name</b>. Such a field is reached
-			from outside the module, so a type private to the module may not be its
-			type, alone or behind a reference, a pointer, an array or a type argument.
-			Either the field is made private, which the module still reaches, or the
-			type is made <span class="pre">pub</span>.</li>
+		<li><b>Every field, function and method has a name unique within the type.</b> Several methods or
+			functions may additionally share one <a href="guide-functions.html#overload">overload name</a>, which
+			they declare with <span class="pre">overload</span>. (That is why <span class="pre">Account</span>'s
+			field is <span class="pre">cents</span> and its method <span class="pre">balance</span>.)</li>
+		<li><b>Their order does not matter.</b> A name may be used before its declaration, and the order in which
+			the methods or functions sharing an overload name are declared never affects which one a call
+			selects.</li>
+		<li><b>A member is private to the module unless <span class="pre">pub</span>.</b> A field, method or
+			function declared <span class="pre">pub</span> may be used anywhere the type's values reach. Any other
+			member is private to the module that declares the type: every function, method and type of that module
+			may use it, through any value of the type, in any file of the module's folder, and nothing outside the
+			module may. A sister, a submodule and the parent are other modules, as is a file that opens with its
+			own <span class="pre">mod</span> line. Fields and methods are reached on a value with the dot operator,
+			and a static function with the same operator on the type's name. A private field may not be given a
+			value in a <span class="pre">new</span> from outside the module either, as the example above shows,
+			which is why <span class="pre">Account</span> offers <span class="pre">open</span>.</li>
+		<li><b>A <span class="pre">pub</span> field of a <span class="pre">pub</span> type names only types the
+			outside can name.</b> Such a field is reached from outside the module, so a type private to the module
+			may not be its type, alone or behind a reference, a pointer, an array or a type argument. Either the
+			field is made private, which the module still reaches, or the type is made
+			<span class="pre">pub</span>.</li>
 	</ul>
-	<p>A type's members and a module's names share one privacy boundary, the
-		module. The module is the unit of trust: the code that may see a type's
-		private members is decided by where it is written, not by a list the type
-		declares, so there is no <i>friend</i> declaration. A type whose state must
-		be kept even from its neighbours is declared in a module of its own.</p>
+	<p>One kind of type is the exception: a type that extends another, a
+		<a href="mod-extensibility.html#encap">struct enriching its base</a> or an
+		<a href="mod-extensibility.html#enum-extends">enum extending its base</a>, is inside its base's boundary,
+		so its code reaches the base's private members wherever it is declared. Why, and what that costs the
+		base's author, is in <a href="mod-extensibility.html#encap">Name folding</a>.</p>
 
-	<h2 id="comesback">Comes back in</h2>
+	<h3 id="nofriend">Why the module, and not the type</h3>
+	<p>A type's members and a module's names share one privacy boundary, the module. The module is the unit of
+		trust: the code that may see a type's private members is decided by where it is written, not by a list
+		the type declares, so there is no <i>friend</i> declaration. Two types that need each other's insides,
+		such as a collection and its cursor, live in one module. And a type whose state must be kept even
+		from its neighbours is declared in a module of its own, as <span class="pre">Account</span> is above.</p>
+
+	<h2 id="layers">Isolation at the other layers</h2>
+	<p>The same idea comes back wherever a part has a boundary:</p>
 	<ul>
-		<li><a href="mod-namespaces.html">Namespaces</a>: modules, submodules, imports and
-			re-exporting.</li>
-		<li><a href="mod-substitution.html#restrictions">Virtual references</a>: a trait's private
-			member has no slot, and is not reached through a virtual reference.</li>
-		<li><a href="mod-extensibility.html#encap">An enrichment is inside its base's
-			encapsulation</a>, and what that costs the base's author.</li>
-		<li><a href="guide-structs.html#opaque">Opaque types</a>, in Structs and enums in depth.</li>
-		<li><a href="conc-actors.html">Actors in depth</a>: an actor's state, isolated at the
-			actor's layer.</li>
+		<li><b>A block's local variables are private to it</b>, and are gone when it ends
+			(<a href="mod-namespaces.html#fnblocks">Types and blocks are namespaces too</a>).</li>
+		<li><b>An opaque type hides even its size and layout.</b> Declared
+			<span class="pre">struct @opaque SocketHandle;</span>, its values are reached only through references or
+			pointers, and its fields are never read. It is mostly met at the boundary with C
+			(<a href="safe-c.html">Talking to C</a>).</li>
+		<!-- Home for the moved block guide-enums.html#naming ("an enum's private members are its module's, with
+		     the Gauge example and an open review note", in moves/to-modularity.html): a bullet or short section
+		     here, after "A type's members". -->
+		<li><b>An actor's state is private to it.</b> A field of an actor is never <span class="pre">pub</span>,
+			and nothing outside the actor reaches one: other code only sends it messages
+			(<a href="conc-actors.html#confined">Private state</a>).</li>
+		<li><b>A trait's private member is no part of its interface.</b> It has no slot in the table a
+			<a href="mod-substitution.html#restrictions">virtual reference</a> dispatches through, so it is not
+			reached through one.</li>
+		<li><b>A package shows only what its root module re-exports.</b> A submodule written
+			<span class="pre">pub mod</span> is public within its package, never beyond it
+			(<a href="mod-packages.html#visibility">Packages</a>).</li>
 	</ul>
 
-	<p style="text-align: right; margin-top: 2em;">
-		<a href="mod-substitution.html"><img alt="_" src="next.png" /></a>
-	</p>
+	<p>You can now decide what each module shows and keep the rest to itself. A module that others depend on
+		is worth compiling and sharing on its own, which is what a package is for.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-packages.html"><img alt="_" src="next.png" /></a>
+		</p>
 
 	</div>
 	</body>

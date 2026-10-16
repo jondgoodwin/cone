@@ -13,425 +13,356 @@
 
     <div class="text">
 
-	<!-- DRAFT 15 Oct 2026: gathered from the old "Values, variables and expressions" page, unpolished until
-	     this page's turn in the review (Ruminations\manual-v2-page-review-2026-10-15.md). Jon, 15 Oct: type safety
-	     belongs in the advanced parts, not Part 1; first page of the Safety part for now, and where exactly it sits
-	     (perhaps between Modularity and Memory) is still open. -->
-	<p>What a type is, the types Cone has, and how a value crosses from one type to another: safely and
-		implicitly by coercion, or explicitly by conversion.</p>
+	<p>A type says what a value means, so Cone holds every value to its type. But real programs must cross from
+		one type to another: a byte into a wider sum, a count into a float, a float's bits into an integer. Cone
+		has three ways across, and each says how much may be lost: <b>coercion</b>, which happens by itself and
+		loses nothing; <b>conversion</b>, which you ask for and which may lose something; and
+		<b>reinterpretation</b>, which keeps the bits and changes the type. Here are all three, on one colour:</p>
 
-	<h3 id="vtype">Types you can name</h3>
-	<p>Every value has a type it belongs to. A type is a pattern that:</p>
-	<ul>
-	<li>Establishes all permissible values.
-		Thus, the <span class="pre">bool</span> type only supports <span class="pre">true</span> and <span class="pre">false</span> as values.
-		Integer types only support integer number values.
-		Floating point types support floating point number values, and so on.</li>
-	<li>Determines how values are digitally encoded, including how many binary bits are needed to encode them.</li>
-	<li>Specifies what operations can be performed on values of that type.
-			For example, an integer type permits two integers to be added together,
-			the result of which is another integer value.
-			These type operations are called <b>methods</b>.</li>
-	<li>Enforces <a href="#features">constraints</a> that ensure the type's values are handled consistently and safely.</li>
-	</ul>
-	<p>Every value in a program has a type,
-	  known at compile-time due to an explicit declaration or because the type can be easily inferred based on the context.
-	  By knowing the types of all values, the compiler can optimize a program's performance and memory use.
-	  Clear typing facilitates precise, flexible data manipulation and improves the safe and correct use of data.</p>
-	<p>The names of specific types are capitalized by convention.
-			This helps cleanly distinguish variable names from type names,
-			reducing unexpected naming conflicts and improving code clarity.
-			One notable exception to this naming convention is the type names for the primitive numeric types.</p>
-	<p>Besides the numbers below, two more types are built in.
-		<span class="pre">bool</span> holds <span class="pre">true</span> or <span class="pre">false</span>.
-		Text is built of <span class="pre">char</span>, a Unicode code point
-		(<a href="syntax-lexical.html#char">character literals</a>), which is compared but is no quantity.
-		And <a href="#void"><span class="pre">void</span></a> is the type of no value at all: the return type of
-		a function that returns nothing. The <a href="#repertoire">whole repertoire of types</a> is listed at the end of
-		this page.</p>
-
-	<h4 id="void">void, and Never</h4>
-	<p>The language's pre-defined <span class="pre">void</span> type is used whenever we want to represent that no value is expected.
-		This is useful in several circumstances:
-	<ul>
-	<li>As the return type for a function or method that accomplishes some effect, but returns no value.</li>
-	<li>As the value for a generic type for which it makes sense to substitute in the void type.
-		For example, a function that returns no value on success, but returns an E type on failure
-		would have a return type of <span class="pre">Result[void, E]</span>.</li>
-	</ul>
-	<p>There is only one possible value for a <span class="pre">void</span> type:
-		<span class="pre">nil</span>.
-		Any <span class="pre">return</span> or <span class="pre">break</span>
-		statement that specifies no expression value is effectively returning a value of
-		<span class="pre">nil</span>.</p>
-	<p>Zero-sized values may not be stored in memory. For this reason, one may not define a variable of type void nor
-		allocate space for a new value of type void. However, it is fine for a struct to define a void-typed field,
-		so long as at least one other field has a non-zero-sized type.</p>
-	<p id="never"><span class="pre">Never</span> is the return type of a function that does not return at all:
-		the core library's <span class="pre">panic</span>, or the C library's
-		<span class="pre">abort</span>. It is <span class="pre">void</span> wherever a value is asked
-		of it, and says one thing more: control does not come back from the call. So a call to one
-		may end a block that must produce a value, which then has no value on that path, and a function
-		declared to return <span class="pre">Never</span> must end in such a call.
-		<a href="safe-panics.html">Panics</a> has examples.</p>
-
-	<h3 id="conversion-coercion">Conversion, coercion and subtypes</h3>
-	<p style="margin-left: 40px;"><i>Note: Most of this is implemented to some degree.</i></p>
-
-	<h4 id="features">Features that enrich types</h4>
-	<p>We have introduced many different flavors of types.
-		Let's now talk about some type-based features that
-		enrich our use of types and typed values.</p>
-	<ul>
-		<li>A type's <span class="pre">from</span> method, <span class="pre">f32.from(x)</span>,
-			for explicit conversion of values from one type to another,
-			and <span class="pre">as</span> for reinterpretation.
-			Where subtyping is in play, values will implicitly coerce to their supertype.</li>
-		<li><span class="pre">alias</span>,
-			which gives some type a second name
-			(<a href="mod-namespaces.html">Namespaces</a>).</li>
-		<li><span class="pre">extend</span>,
-			which allows an existing type to be extended to support additional methods
-			(<a href="mod-extensibility.html">Extensibility</a>).</li>
-		</ul>
-
-	<p>Typing is strict: You cannot put a round peg in a square hole.</p>
-	<p>Since all values, expressions and variables have a type, the compiler can (and will)
-		check whether the use of types is consistent.
-		In most cases, an error will be reported wherever a program:</p>
-	<ul>
-		<li>Stores a value of one type into a variable or collection declared for a different type.</li>
-		<li>Passes an argument of one type to a function that expects a value of another type in that position.</li>
-		<li>Returns a value of one type when the function's signature declares a different type for the return value.</li>
-		<li>Creates a reference (or pointer) to an object whose type does not match the reference's type declaration.</li>
-	</ul>
-	<p>These constraints protect against a program manipulating a value in ways that make no sense or could be harmful,
-		due to acting as if the value has a different meaning than it actually does.</p>
-	<p>However, sometimes we <i>do</i> want to transform a value of one type to another type.
-		Cone supports three such capabilities:</p>
-	<ul>
-		<li><b>Coercion</b>,
-			which implicitly and safely converts a value to some other expected type (usually a supertype).</li>
-		<li><b>Conversion</b>,
-			which explicitly asks a method of another type for the closest "equivalent" value in that type.
-			This mapping is imperfect, as some (or all) of the meaning of the original value could be lost.</li>
-		<li><b>Reinterpretation</b>,
-			which explicitly preserves the original value but re-interprets it as if it has a different type.
-			This potentially unsafe capability will be described on another
-			<a href="safe-trust.html#reinterpret">page</a>.</li>
-	</ul>
-	<p>To distinguish between coercion and conversion,
-		it is first necessary to understand how subtyping works in Cone.</p>
-
-	<h4 id="subtype">Subtypes</h4>
-	<p>Subtyping captures a simple but powerful idea: if we have two types named
-		<span class="pre">Base</span> and <span class="pre">Subtype</span>,
-		how do we determine when it is safe to substitute in a value of
-		type <span class="pre">Subtype</span> whenever our program logic
-		is looking for a value of type <span class="pre">Base</span>?</p>
-		<p>Here are two essential criteria (there are others):</p>
-	<ul>
-		<li>Every possible value in <span class="pre">Subtype</span> can be mapped uniquely
-				to its semantically identical value in <span class="pre">Base</span>.</li>
-		<li>The behavior of values in <span class="pre">Subtype</span>
-			must correspond in every way to the behavior of equivalent
-			values in <span class="pre">Base</span>.
-			In our case, that means at minimum that for every method in <span class="pre">Base</span>,
-			there exists an equivalent method in <span class="pre">Subtype</span>
-			with the same type signature and constraints.</li>
-	</ul>
-	<p>Many type pairs in Cone comply with these criteria and support a safe subtyping relationship:</p>
-	<ul>
-		<li>Any variant type is a subtype of any trait or struct type
-			that it complies with, even if it does not inherit from it.</li>
-		<li>Any non-nullable type is a subtype of its
-			nullable equivalent (e.g., <span class="pre">&amp;Foo</span>
-			is a subtype of <span class="pre">?&amp;Foo</span>).</li>
-		<li>An owning reference is a subtype of the borrowed reference to the same value type
-			(e.g., <span class="pre">So[Foo]</span> is a subtype of <span class="pre">&amp;Foo</span>)</li>
-		<li>A <a href="safe-pointers.html">pointer</a>
-			is a subtype of any reference whose object type is the same.</li>
-		<li>Some reference permissions are subtypes of others
-			(e.g., <span class="pre">ro</span> is a subtype of
-			<span class="pre">imm</span> or <span class="pre">mut</span>).
-			Similarly, most permissions are a subtype of <span class="pre">uni</span>.</li>
-		<li>A smaller number type is a subtype of a larger version of the same type
-			(e.g., <span class="pre">u8</span> is a subtype of <span class="pre">u32</span>).</li>
-		<li>A struct is a subtype of any <a href="mod-substitution.html">trait</a> it conforms to.</li>
-	</ul>
-	<p>An important characteristic of subtyping relationships is that
-		it is trivially safe to transform a <span class="pre">Subtype</span> value
-		into its equivalent <span class="pre">Base</span> value.
-		However, the journey of a value back from <span class="pre">Base</span>
-		to <span class="pre">Subtype</span> often requires some sort of
-		pattern-matched guard, as there are likely to be values in <span class="pre">Base</span>
-		that do not have a valid mapping from
-		<span class="pre">Subtype</span> to <span class="pre">Base</span>.
-		A successful pattern match guarantees we will get back a valid
-		<span class="pre">Subtype</span> value when the reverse transformation is applied.</p>
-
-	<h4 id="coercion">Implicit Coercion</h4>
-	<p>We call it coercion when implicitly converting a value into
-		an expected type (usually a supertype).
-		Coercion is the one safe exception to the strict typing rule described earlier,
-		given that the type of a value and its receiver are not strictly the same.</p>
-	<p>Since coercion is always safe, Cone performs it implicitly
-		when copying or moving a subtype value
-		to any container (variable, parameter, return value, field, reference)
-		expecting a base value.
-		This happens during assignments, function calls and returns.
-		For example:</p>
 <pre>
-fn doStuff () {
-  imm bigint u32 = 101u8;        // Coerce a u8 to u32
-  mut matrix = new So[Mat4];     // Allocate a matrix
-  imm float = mat4det(matrix)?;  // Coerce So[Mat4] to &amp;Mat4
-}
+mod colour;
 
-fn mat4det(mat &amp;Mat4) f32 throws DivByZero {
-  // ...
-  return 1.0;                     // Coerce f32 to Result&lt;&gt;
+import stdio use *;
+
+fn main() {
+  // An orange, one byte for each of red, green and blue
+  imm red = 255u8;
+  imm green = 128u8;
+  imm blue = 0u8;
+
+  // Coercion: a u8 goes into a u32 by itself, since nothing can be lost
+  imm r u32 = red;
+  imm g u32 = green;
+  imm b u32 = blue;
+  imm packed = r &lt;&lt; 16u32 | g &lt;&lt; 8u32 | b;
+  print &lt;- "packed into one u32: ", packed, "\n";
+
+  // Conversion, asked for: u8.from keeps the low 8 bits
+  imm back = u8.from(packed &gt;&gt; 8u32);
+  print &lt;- "green, unpacked: ", back, "\n";
+
+  // Conversion to a float, to weigh each channel by how bright it looks
+  imm light = 0.2126d * f64.from(red) + 0.7152d * f64.from(green)
+    + 0.0722d * f64.from(blue);
+  print &lt;- "brightness: ", light, "\n";
+
+  // Reinterpretation: the same 64 bits, seen as an integer
+  imm bits = light as u64;
+  print &lt;- "its exponent field: ", bits &gt;&gt; 52u64 &amp; 0x7FFu64, "\n";
 }
 </pre>
-	<p>Coercion is more than just changing the type of some value.
-		It usually means creating a new value whose encoding is different
-		than its source value.</p>
-	<p>Coercion can also trigger compiler mechanics:
-		In the case of coercing an owning reference to a borrowed reference,
-		it triggers appropriate borrowing mechanics on the source variable.
-		Similarly, when coercing a non-copy value, move semantics apply.</p>
-	<p>If an expression requires, it is possible to explicitly request coercion.
-		For non-reference types, use the appropriate constructor
-		(as described below for conversion).
-		For references, use the <span class="pre">as</span> operator:</p>
+	<p>It prints:</p>
 <pre>
-imm newref = oldref as &amp;Point;  // Explicitly coerce to a borrowed reference
+packed into one u32: 16744448
+green, unpacked: 128
+brightness: 145.759
+its exponent field: 1030
 </pre>
-	<p>Between references, <span class="pre">as</span> may only be a coercion:
-		it never gives a reference a permission its source could not be coerced to
-		(<span class="pre">&amp;</span> to <span class="pre">&amp;mut</span>, or <span class="pre">&amp;mut</span>
-		to <span class="pre">&amp;uni</span>), which would need
-		<a href="safe-trust.html#reinterpret"><span class="pre">trust</span></a>.
-			For now there is one exception: the <span class="pre">imm</span> a type declaring
-			<span class="pre">Immutable</span> gives a reference written with no permission may come from a
-			<span class="pre">&amp;</span> (<span class="pre">bytes as &amp;str</span>); a permission written out may not.</p>
+	<p><b>Try this:</b> unpack red with <span class="pre">u8.from(packed &gt;&gt; 16u32)</span>, then try
+		<span class="pre">imm small u8 = packed;</span> and read what the compiler says.</p>
 
-	<h5>Implicit Coercion to bool</h5>
-	<p>In addition to supertype coercions, Cone supports the automatic coercion
-		of some value to bool, so long as the value's type implements the
-		<span class="pre">isTrue</span> method. This is implemented by the number
-		and pointer types. A number is true if it is not zero. A pointer is true
-		if it is not null.</p>
-	<p>The other direction is never implicit. A bool is not a number, so it does
-		not coerce to one anywhere a number is wanted: an initializer, an assignment,
-		an argument, an index or an operand of arithmetic. It is converted explicitly,
-		<span class="pre">usize.from(b)</span> (see <a href="guide-numbers.html#conversion">Explicit Conversion</a>),
-		which gives 0 for false and 1 for true:</p>
+	<h2 id="vtype">Types are strict</h2>
+	<p>A type promises a great deal about its values: which values are allowed (a <span class="pre">bool</span> is
+		only <span class="pre">true</span> or <span class="pre">false</span>), how they are encoded and in how many
+		bits, what can be done with them (its <b>methods</b>: two integers can be added, giving another integer),
+		and the constraints that keep them handled safely. Every value's type is known when the program is
+		compiled, written in a declaration or worked out from the context, which also lets the compiler lay out
+		memory and pick fast instructions.</p>
+	<p>So a value cannot quietly change its meaning. The compiler refuses a program that stores a value of one
+		type in a variable or collection of another, passes it where a parameter of another type is wanted, returns
+		it from a function declared to return another, or makes a reference of one type to a value of another:</p>
 <pre>
-imm count usize = flag;              // **ERROR** a bool is not a number
+imm small u8 = packed;      // **ERROR** 1013: Initialization value's type does not match
+                            //   variable's declared type
+imm t = takes(5i64);        // **ERROR** 1013: Expression's type does not match declared parameter
+                            //   (fn takes(n i32) i32)
+</pre>
+	<p>A value handled as though it had another type could behave in ways that make no sense, or do harm.
+		By convention a type's name is capitalized, which keeps type names apart from variable names; the number
+		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are the exception.</p>
+	<p id="conversion-coercion">Strictness does not mean a value can never cross. It means every crossing is one
+		of three kinds, and each is visible for what it is: a coercion is safe, so it happens by itself; a
+		conversion may lose something, so it is asked for by name; a reinterpretation trusts the bits, so it is
+		marked with <span class="pre">as</span>.</p>
+
+	<h2 id="coercion">Coercion: crossings that lose nothing</h2>
+	<p>A <b>coercion</b> carries a value into a related type that can hold everything it means. Because it is
+		always safe, Cone does it by itself whenever a value is copied or moved into a variable, parameter, return
+		value, field or reference that expects the related type: in an assignment, a call or a return. These are
+		the coercions you will meet most:</p>
+	<ul>
+		<li><b>A smaller number into a larger one of the same kind:</b> a <span class="pre">u8</span> into a
+			<span class="pre">u32</span>, an <span class="pre">i32</span> into an <span class="pre">i64</span>, an
+			<span class="pre">f32</span> into an <span class="pre">f64</span>. Never a whole number into a float,
+			which is a conversion. In arithmetic today, only the right-hand operand widens:
+			<span class="pre">wide + k</span> works for an <span class="pre">i64</span> and an
+			<span class="pre">i32</span>, while <span class="pre">k + wide</span> is refused (1056: No method declared
+			by `+` accepts the call's arguments). Put the wider value first, or convert.</li>
+		<li><b>An owning reference into a borrowed one:</b> a <span class="pre">So[Point]</span> passed where a
+			<span class="pre">&amp;Point</span> is wanted is lent, with the borrowing rules of
+			<a href="mem-borrowing.html">Borrowed references</a> applied to the owner.</li>
+		<li><b>A reference into one with fewer permissions:</b> a <span class="pre">&amp;mut</span> into a
+			<span class="pre">&amp;</span>, or a <span class="pre">&amp;uni</span> into a <span class="pre">&amp;mut</span>,
+			<span class="pre">&amp;imm</span> or <span class="pre">&amp;</span>
+			(<a href="mem-permissions.html">Permissions</a>).</li>
+		<li><b>A reference into a raw pointer</b> to the same type: <span class="pre">imm p *i32 = &amp;n;</span>
+			(<a href="safe-pointers.html">Raw pointers</a>).</li>
+		<li><b>A reference into a reference to a type it is a subtype of:</b> <span class="pre">&amp;cat</span> passed
+			where a <span class="pre">&amp;&lt;Named</span>, a virtual reference to a trait the struct conforms to, is
+			wanted; or a reference to an enum's variant where a reference to the enum is wanted.
+			<a href="mod-substitution.html">Substitution</a> explains subtyping, the relation that decides which of
+			these crossings are safe.</li>
+	</ul>
+	<p>A coercion is more than a new label. It usually makes a new value, encoded differently from its source,
+		and it can set compiler machinery going: lending an owner as a borrow starts the borrowing rules on the
+		owner's variable, and coercing a value that moves applies the move. Where an expression needs a coercion
+		said out loud, a reference type is named with <span class="pre">as</span>, and any other type with its
+		<a href="#from">conversion</a>:</p>
+<pre>
+imm owner = new So[Point](3, 4);
+imm r = owner as &amp;Point;            // the owner, lent as a borrowed reference
+</pre>
+
+	<h3 id="truthy">Coercion to bool</h3>
+	<p>A condition must be a <span class="pre">bool</span>, and one more coercion makes that convenient: any value
+		whose type has an <span class="pre">isTrue</span> method coerces to <span class="pre">bool</span> where a
+		condition is wanted. The number types and raw pointers have one: a number is true when it is not zero
+		(a float's 0 and -0 are false, and NaN is true), and a pointer when it is not null. So
+		<span class="pre">if count { ... }</span> means <span class="pre">if count != 0</span>. An
+		<a href="guide-enums.html#option">Option</a> has no <span class="pre">isTrue</span>; test it with
+		<span class="pre">is</span>.</p>
+	<p>The other direction is never implicit. A <span class="pre">bool</span> is not a number, so it coerces to
+		none, anywhere a number is wanted: an initializer, an assignment, an argument, an index or an operand of
+		arithmetic. The compiler names the conversion to write instead:</p>
+<pre>
+imm count usize = flag;              // **ERROR** 1238: A bool is not a number, and usize is wanted
+                                     //   here. Convert it explicitly, 'usize.from(b)', which gives 0 or 1.
 imm count usize = usize.from(flag);  // 0 or 1
 </pre>
 
-	<h5>A char Coerces to No Number</h5>
+	<h3 id="charnonumber">A char is no number</h3>
 	<p>A <a href="syntax-lexical.html#char"><span class="pre">char</span></a> is a Unicode code point held in
-		32 bits, and it is no number. It coerces to none, a wider unsigned type included,
-		and no number coerces to it, neither a <span class="pre">u8</span>, whose values above 127 would
-		be Latin-1 characters, nor a <span class="pre">u32</span>, which may be no code point at all.
-		Each direction is a conversion, asked for (see <a href="guide-numbers.html#conversion">Explicit Conversion</a>);
-		the one exception is the character literal that is ASCII, which is a <span class="pre">u8</span> where
-		a <span class="pre">u8</span> is wanted:</p>
+		32 bits, compared but never counted with, so it coerces to no number, a wider unsigned type included, and
+		no number coerces to it: not a <span class="pre">u8</span>, whose values above 127 would be Latin-1
+		characters, nor a <span class="pre">u32</span>, which may be no code point at all. Each direction is a
+		<a href="#from">conversion</a>. The one exception is a character literal that is ASCII, which is a
+		<span class="pre">u8</span> where a <span class="pre">u8</span> is wanted:</p>
 <pre>
-imm code u32 = c;                    // **ERROR** a char is not a number
+imm code u32 = c;                    // **ERROR** 1334: A char is not a number, and u32 is wanted here.
 imm code u32 = u32.from(c);          // the code point
 imm low u8 = u8.from(c);             // the low 8 bits: a code point past ASCII is not a byte
-imm c char = b;                      // **ERROR** a u8 is not a char
+imm c char = b;                      // **ERROR** 1334: u8 is not a char, and a char is wanted here.
 imm c char = char.from(b);           // U+00xx: a Latin-1 character when b is 128 or more
 imm b u8 = 'a';                      // fine: the literal is the byte 97
 </pre>
 
-	<h5 id="slicenoptr">A Slice Coerces to No Pointer</h5>
-	<p>A slice is an address and a count, so it is not a raw pointer, and it converts to none
-		implicitly: the count would be dropped without a word. A <a href="safe-pointers.html">pointer</a> to its
-		elements is asked for with <span class="pre">as</span>, which takes the address of the first
-		element. Only a pointer to the slice's own element type is made this way (it retypes nothing).
-		Text is neither: a <span class="pre">&amp;str</span> is no pointer, and reaches C as a
-		<a href="guide-text.html#cstr">cstr</a>, which a raw pointer is not either, except by
-		<span class="pre">cstr.fromPtr(p)</span>, whose caller promises the zero that ends it:</p>
+	<h3 id="slicenoptr">A slice is no pointer</h3>
+	<p>A slice is an address and a count, so it is not a raw pointer, and it coerces to none: the count would
+		be dropped without a word. A pointer to its first element is asked for with
+		<a href="#as"><span class="pre">as</span></a>, and only to the slice's own element type, since it retypes
+		nothing. Text is neither: a <span class="pre">&amp;str</span> is no pointer, and reaches C as a
+		<a href="guide-text.html#cstr">cstr</a>, which promises the zero that ends it. A raw pointer is no
+		<span class="pre">cstr</span> either, except through <span class="pre">cstr.fromPtr(p)</span>, whose caller
+		makes that promise:</p>
 <pre>
-imm p *u8 = bytes;                   // **ERROR** a slice is not a pointer
+imm p *u8 = bytes;                   // **ERROR** 1335: A slice is an address and a count, not a pointer.
+                                     //   Take its address explicitly, 'xs as *u8'
 imm p *u8 = bytes as *u8;            // the address of bytes[0]
 fwrite(bytes as *u8, 1usize, bytes.len, f);
-puts(text);                          // **ERROR** a &amp;str promises no zero after it: a literal or s.cstr() does
-imm c cstr = p;                      // **ERROR** a pointer promises no zero either
+puts(text);                          // **ERROR** 1335: Text or a slice promises no NUL after its bytes,
+                                     //   so it is no cstr. A literal is one, and so is a String's 'cstr()'
+imm c cstr = p;                      // **ERROR** 1335: A raw pointer is no cstr, which promises a NUL
+                                     //   after its bytes.
 imm c cstr = cstr.fromPtr(p);        // the caller promises it
 </pre>
 
-	<h5>Implicit Coercion of 'self'</h5>
-		<p>Cone offers a very different form of coercion when dealing with method calls
-		(or field access) and the 'self' value. This convenience sugar
-		automatically coerces self from a value to a reference (or the other way).</p>
-	<p>Cone will automatically transform 'self' to a mutable borrowed reference
-		for operators that expect an lval, such as <span class="pre">++</span>,
-		<span class="pre">+=</span>, or a 'set' method.</p>
+	<h3 id="self">Coercing a method's self</h3>
+	<p>A method call coerces its receiver, <span class="pre">self</span>, more freely than any other argument,
+		between a value and a reference to it, so that calls read naturally. A method called by name on a value
+		held in a variable (or a field of one), when no method accepts the value itself but one declares
+		<span class="pre">self</span> as a borrowed reference, is handed a borrow of it:</p>
 <pre>
-++a;    // equivalent to:  Type.`++`(&amp;mut a)
+list.push(x);   // the same as:  (&amp;mut list).push(x)
+list.len();     // the same as:  (&amp;list).len()
+++a;            // the same as:  Type.`++`(&amp;mut a)
 </pre>
-	<p>The same is true of a method called by name on a value held in a variable
-		(or a field of one): when no method accepts the value itself, but one
-		declares <span class="pre">self</span> as a borrowed reference,
-		the value is borrowed for it. A method that only reads is handed a
-		read-only borrow; one declaring <span class="pre">self &amp;mut</span>
-		is handed a mutable one, which the variable must permit;
-			one declaring <span class="pre">self &amp;uni</span> is handed a unique one,
-			which only a place that lends <span class="pre">&amp;uni</span> can give
-			(a <span class="pre">mut</span> variable, or a part of one held by value:
-			<a href="mem-permissions.html#uni">From 'uni'</a>), and the call is held to what
-			<span class="pre">(&amp;uni v).bump()</span> would be.
-		A temporary value has nowhere to be borrowed from, so such a call on one
-		is an error, and a pointer is never borrowed from.</p>
-<pre>
-list.push(x);   // equivalent to:  (&amp;mut list).push(x)
-list.len();     // equivalent to:  (&amp;list).len()
-</pre>
-	<p>Automatic de-reference of 'self' may happen when 'self' is a reference,
-		but no method matches with a reference-based self.
-		'self' is then automatically dereferenced in hopes of finding a matching
-		method that uses a value rather than a reference.</p>
-<pre>
-&amp;a + 5;  // may coerce to:  a + 5
-</pre>
-	<p>A method called by name on a reference to a reference (<span class="pre">&amp;&amp;T</span>,
-		<span class="pre">&amp;mut &amp;T</span>, a borrow of an owner) reaches through every level the same way,
-		the outermost level winning a name, and with the access the dereferences written out would give:
-		an owner reached through a <span class="pre">&amp;</span> lends only <span class="pre">&amp;</span>, so a
-		<span class="pre">self &amp;mut</span> method is not reached through it
-		(<a href="mem-borrowing.html#implicit">Implicit De-referencing</a>).</p>
-
-	<h4 id="repertoire">The repertoire of types</h4>
-	<p>As mentioned <a href="#vtype">earlier</a>, every value has a type it belongs to.
-		Each type establishes all its permissible data values, determines how those values are digitally encoded, and
-		specifies what operations can be performed on values of that type.</p>
-	<p>Cone offers a comprehensive repertoire of types:</p>
 	<ul>
-	<li><b>Primitive integer and floating-point number types.</b>
-		Several are built-in, such as
-		<a href="guide-numbers.html#numbertypes">i32, u8, f32</a> and
-		<span class="pre">bool</span>, as illustrated in prior page examples.
-		Text is built of <span class="pre">char</span>, a Unicode code point
-		(<a href="syntax-lexical.html#char">character literals</a>), which is compared but is no quantity.
-		Additional distinct number types may be defined using
-		the <b><a href="#customnbr">integer or float</a></b> keywords.</li>
-	<li><b><a href="guide-structs.html#struct">struct</a></b> types.
-		Each named struct type is composed of some number of co-located, named, and typed fields.</li>
-	<li><b><a href="guide-structs.html#array">array</a></b> types.
-		Statically-sized arrays are composed of a fixed, constant number of values, all of the same type.</li>
-	<li><b><a href="guide-enums.html#enum">enum</a></b> types.
-		Each named enum type declares a closed set of variants. Any value of the enum is exactly one
-		of them, and a variant may carry values of its own or carry nothing but its name.
-		Cone builds in support (and syntactic sugar) for two enum types:
-		<a href="guide-enums.html#option">Option</a> and <a href="guide-functions.html#result">Result</a>.</li>
-	<li><b><a href="mem-regions.html">reference</a></b> types.
-		These offer a safe way to point at some value stored in memory.
-		There are three flavors:  regular, array and virtual. References can additionally be
-		region-managed or borrowed. Race safety is protected via permissions.</li>
-	<li><b><a href="safe-pointers.html">pointer</a></b> types.
-		Like references, pointer types also point at some memory-stored value.
-		Unlike reference, pointers do not have compiler-enforced guard rails to ensure their use is safe.</li>
-	<li><b><a href="mod-substitution.html">traits</a></b> types.
-		Traits are supertypes that abstract the type signature (interface) that is common across several types.
-		They are very useful when we want to work with values of many different types in the same way.</li>
-	<li><b><a href="#void">void</a></b> type.
-		This built-in type represents the absence of any value. It does have its uses.</li>
+		<li>A method that only reads is handed a read-only borrow. One declaring <span class="pre">self &amp;mut</span>
+			is handed a mutable one, which the variable must permit, and so are the operators that change their
+			operand, such as <span class="pre">++</span>, <span class="pre">+=</span> or a "set" method.</li>
+		<li>One declaring <span class="pre">self &amp;uni</span> is handed a unique borrow, which only a place that
+			lends <span class="pre">&amp;uni</span> can give (a <span class="pre">mut</span> variable, or a part of one
+			held by value: <a href="mem-permissions.html#uni">From 'uni'</a>), and the call is held to what
+			<span class="pre">(&amp;uni v).bump()</span> would be.</li>
+		<li>A temporary value has nowhere to be borrowed from, so such a call on one is an error, and a pointer
+			is never borrowed from.</li>
+		<li>The other way, when <span class="pre">self</span> is a reference and no method takes a reference,
+			it is dereferenced in search of one that takes the value: <span class="pre">&amp;a + 5</span> may be
+			<span class="pre">a + 5</span>.</li>
+		<li>On a reference to a reference (<span class="pre">&amp;&amp;T</span>, <span class="pre">&amp;mut &amp;T</span>,
+			a borrow of an owner), a method called by name reaches through every level, the outermost level winning
+			a name, with the access the dereferences written out would give: an owner reached through a
+			<span class="pre">&amp;</span> lends only <span class="pre">&amp;</span>, so a
+			<span class="pre">self &amp;mut</span> method is not reached through it
+			(<a href="mem-borrowing.html#implicit">Implicit de-referencing</a>).</li>
 	</ul>
 
-	<h4 id="semantics">What the type system offers</h4>
-	<p>As you will see explored later, Cone's type system supports a rich and useful variety of semantics:</p>
-	<ul>
-	<li>Most types are concrete, but some (particularly trait) are abstract. Only concrete-typed values
-		can be passed around or stored in variables. Abstract values can only be pointed-at using a reference.</li>
-	<li>Most types are defined and used by name (nominal). Others are defined by their structure (e.g., arrays and references).</li>
-	<li>Some types enforce constraints on how its values may be used:
-		<ul>
-		<li>The values of most types may be freely copied. However, some types are defined with move semantics,
-			which prevents the existence of multiple copies of the same object.</li>
-		<li>Most values may freely move around anywhere in a program. However, some types restrict its values
-			to a particular scope, such as the lifetime of a block, a particular thread, or a region.</li>
-		</ul></li>
-	<li>In certain cases, it is safe and possible to implicitly coerce a value of one type into
-		its supertype's comparable value.</li>
-	<li>Named types can be genericized using type parameters.</li>
-	</ul>
-
-	<!-- Moved here 15 Oct 2026 from Numbers (guide-numbers.html): designing number types of your own, mostly not
-	     built, belongs with type safety rather than in the Guide. -->
-	<h4 id="intfloat">The primitive 'int' and 'float' number types</h4>
-	<p style="margin-left: 40px;"><i>Note: The primitive <span class="pre">int-</span> and
-		<span class="pre">float-</span> types are not implemented, and the standard number
-		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are built
-		into the compiler rather than defined in a library. A custom number type written as below,
-		with a standard number type as its field in place of <span class="pre">int-32</span>, does
-		work: a struct wrapping the number, methods on it, and its conversion from a number,
-		<span class="pre">Nbr32.from(somenbr)</span>, declared as below. The standard number
-		types' <span class="pre">from</span> is built into the compiler with them, and so are
-		<a href="guide-numbers.html#bits">an integer's bit methods</a>, which are implemented.</i></p>
-	<p><span class="pre">int-32</span> specifies a 32-bit integer.
-		Any integer value from 1 to 128 may be specified after the dash, to establish the number of bits.</p>
-	<p>Similarly, <span class="pre">float-32</span> is a 32-bit floating point number.
-		Floats only support 32 and 64-bit values.</p>
-	<p>Unlike <span class="pre">i32</span>, <span class="pre">int-32</span> does not define any methods
-		for manipulating its values (e.g., adding and subtracting).
-		It is also agnostic on the semantic interpretation of its values ... it does not even signify
-		whether the integer value should be interpreted as signed or unsigned.
-		Its lack of built-in methods and interpretation is what makes it an ideal foundation for defining
-		new types with very different interpretations and methods.</p>
-
-	<h4 id="customnbr">Custom Number Types</h4>
-	<p><i>Rarely needed, and largely hypothetical for now (see the note above): defining a number type of your own.</i></p>
-	<p>There are several reasons why we might want to define distinctly different
-		number types than those provided by the standard library:</p>
-	<ul>
-	<li>One might want to use different types to distinguish between units of measure,
-		thereby potentially avoiding problems like the loss of the $125 million Mars probe.</li>
-	<li>Different number types could make different promises for undefined behavior
-		(e.g., protecting against undesired overflows), or could guarantee the number values are bounded by some range.</li>
-	<li>Integers that support intrinsic atomic operations can be separately typed, as the
-		core package's <a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a> is.</li>
-	</ul>
-
-	<p>Creating a new numeric integer type is nearly as simple as wrapping an primitive integer
-		type as a field in a struct. For example:</p>
+	<h2 id="from">Conversion: from</h2>
+	<p>Sometimes the crossing cannot be perfect. The integer 1 becomes the float 1.0, but 2.75 becomes the
+		integer 2, and 300 has no <span class="pre">u8</span> at all. A <b>conversion</b> asks a type for its
+		closest equivalent to a value, knowing some of the meaning may be lost, so it is always asked for. It is a
+		method of the type converted <i>to</i>, named <span class="pre">from</span>, called on the type with the
+		value to convert:</p>
 <pre>
-struct Nbr32 {
-    pub nbr int-32;
+imm six = i32.from(6u8);           // 6
+imm sixf = f64.from(six);          // 6
+imm name = String.from("node");    // a String, from text
+</pre>
+	<p>Every number type has <span class="pre">from</span>, which takes a value of any number type. It may be
+		called on the type named directly, through an alias of it, or on a generic's type parameter:
+		<span class="pre">T.from(x)</span> converts to whichever type <span class="pre">T</span> is. (The old
+		<span class="pre">into</span> operator is retired; <span class="pre">from</span> is the conversion.) Between
+		numbers it does what the machine does:</p>
+	<ul>
+		<li>To a narrower integer, the low bits are kept: <span class="pre">u8.from(300)</span> is 44.</li>
+		<li>To a wider integer, a signed value going to a signed type is sign-extended, and every other value
+			is zero-extended from its own width, so <span class="pre">u64.from(-1i8)</span> is 255. Between a signed
+			and an unsigned type of one width the bits are kept: <span class="pre">i8.from(200u8)</span> is -56.</li>
+		<li>A float becomes an integer by truncating toward zero: <span class="pre">i32.from(-2.75)</span> is -2.
+			A float whose truncated value the integer type cannot hold, a negative one to an unsigned type among
+			them, has no defined result.</li>
+		<li>An integer becomes the nearest float, and a float the nearest float of the other width.</li>
+		<li>An integer literal with no suffix is an <span class="pre">i32</span> and converts as one:
+			<span class="pre">u64.from(-1)</span> is 4294967295. Converting a literal gives a literal, so the result
+			may be a global's value.</li>
+		<li>A number, reference or pointer converts to <span class="pre">bool</span> as its
+			<a href="#truthy"><span class="pre">isTrue</span></a> would answer: <span class="pre">bool.from(2)</span>
+			and <span class="pre">bool.from(0.5)</span> are true, and only 0, -0 and a null pointer are false. A
+			<span class="pre">bool</span> converts to a number as 0 or 1.</li>
+		<li>A <span class="pre">char</span> converts to a number as its code point, and a number to a
+			<span class="pre">char</span> as one (<a href="#charnonumber">above</a>).</li>
+	</ul>
+	<p>A number type takes no square brackets: <span class="pre">u64[count]</span> is refused (1207: A number type
+		takes no '[...]': a conversion is its method, u64.from(value)). And <span class="pre">from</span> is only the type's
+		<i>default</i> conversion: a different one, such as one that saturates at the type's limits or one that
+		checks the value fits, is an ordinary method with a name of its own.</p>
+
+	<h3 id="customnbr">Conversions of your own</h3>
+	<p>Strict types earn their keep when two values share a representation but not a meaning. In 1999 the Mars
+		Climate Orbiter, a $125 million probe, was lost because one program reported a thruster's impulse in
+		pound-seconds and the next read it as newton-seconds. Both were just floating-point numbers. Give each unit
+		a type of its own, a struct wrapping the number, and the mix-up cannot compile; give the receiving type a
+		<span class="pre">from</span>, and the crossing is written once, correctly:</p>
+<pre>
+mod units;
+
+import stdio use *;
+
+struct PoundSeconds {
+  pub n f64;
+}
+
+struct NewtonSeconds {
+  pub n f64;
+
+  // The conversion into NewtonSeconds, by the conventional name 'from'
+  pub fn from(ps PoundSeconds) NewtonSeconds {
+    new NewtonSeconds(ps.n * 4.448222d);
+  }
+}
+
+fn burn(impulse NewtonSeconds) {
+  print &lt;- "burning for ", impulse.n, " newton-seconds\n";
+}
+
+fn main() {
+  imm thrust = new PoundSeconds(10d);
+  burn(NewtonSeconds.from(thrust));
 }
 </pre>
-	<p>Methods may be added to this struct to define the operations that may be performed on values of this type.
-		These methods can make use of fast internal integer primitive functions (TBD).</p>
-	<p>Although numbers of one type are never implicitly converted into the equivalent number of another type,
-		a conversion may always be asked for explicitly. A conversion is a method of the type converted to,
-		named <span class="pre">from</span> and called on the type, which takes the value to convert:</p>
-<pre>
-imm converted = Nbr32.from(somenbr);
-</pre>
-	<p>Every standard number type has one, which takes a value of any number type
-		(<a href="guide-numbers.html#conversion">Explicit Conversion</a>).
-		A custom number type declares its own, an ordinary function of the type:</p>
-<pre>
-struct Nbr32 {
-    pub nbr int-32;
+	<p>It prints <span class="pre">burning for 44.4822 newton-seconds</span>. Write
+		<span class="pre">burn(thrust)</span> instead, and it is refused: 1013, Expression's type does not match
+		declared parameter.</p>
+	<p>Units are one reason to define a number type of your own. Others: a type can make different promises about
+		what is otherwise left undefined, such as refusing to overflow, or guarantee its values stay within a range;
+		and integers that support atomic operations can be typed apart, as the core library's
+		<a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a> is. Methods added to the struct
+		say what may be done with its values. Such a type's <span class="pre">from</span> is an ordinary function of
+		the type, as above; the standard number types' <span class="pre">from</span> is built into the compiler with
+		them, and so are <a href="guide-numbers.html#bits">an integer's bit methods</a>.</p>
 
-    pub fn from(n i32) Nbr32 {
-        new Nbr32(n);
-    }
-}
+	<h2 id="as">Reinterpretation: as</h2>
+	<p>A <b>reinterpretation</b> keeps a value's bits exactly and treats them as a value of another type of the
+		same size. <span class="pre">as</span> does it, with the type on its right. The colour program used it to
+		read a float's exponent: <span class="pre">light as u64</span> is the same 64 bits, now an integer whose
+		bits can be shifted and masked. This kind of access is what floating-point functions a processor does not
+		provide are built from.</p>
+	<p>The two types must be the same size on every target, not just the one being compiled for.
+		<span class="pre">usize</span> and <span class="pre">isize</span> are pointer-sized, 64 bits on some targets
+		and 32 on others, such as WebAssembly, so neither may be reinterpreted as a fixed-width number type, nor a
+		fixed-width number as either of them. Convert instead:</p>
+<pre>
+imm w = n as u64;                // **ERROR** 1257: usize and isize are pointer-sized, so 'as' may not
+                                 //   reinterpret one as a fixed-width number ... convert with
+                                 //   usize.from(x) or u64.from(x)
+imm count = usize.from(total);   // a conversion, not total as usize
+imm wide = u64.from(count);      // not count as u64
 </pre>
-	<p><span class="pre">from</span> is the type's default conversion from another type.
-		A conversion that differs from it, such as one that saturates at the type's limits
-		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
+	<p>Being pointer-sized, <span class="pre">usize</span> and <span class="pre">isize</span> are the same size as
+		each other and as a raw pointer or reference on every target, so each may be reinterpreted as the other, or
+		as a pointer or reference, and back. The bits are kept: <span class="pre">-1isize as usize</span> is all
+		ones, the largest <span class="pre">usize</span> (18446744073709551615 on a 64-bit target). A slice, two
+		words wide, is reinterpreted as neither; <span class="pre">bytes as *u8</span> takes the address of its first
+		element (<a href="#slicenoptr">above</a>).</p>
+	<p>Between two references, <span class="pre">as</span> may change the referenced type, but the permission
+		only as a coercion would: the permission it gives must be the source's or one it coerces to.
+		<span class="pre">&amp;uni</span> may be cast <span class="pre">&amp;mut</span>,
+		<span class="pre">&amp;imm</span> or <span class="pre">&amp;</span>, and <span class="pre">&amp;mut</span> or
+		<span class="pre">&amp;imm</span> may be cast <span class="pre">&amp;</span>; a slice or a virtual reference
+		is no different. The others would write through a reference that promised not to
+		(<span class="pre">&amp;</span> as <span class="pre">&amp;mut</span>), or make the only reference one that
+		other names still reach (<span class="pre">&amp;mut</span> as <span class="pre">&amp;uni</span>), and are
+		refused, naming both permissions:</p>
+<pre>
+fn poke(r &amp;P) { imm m = r as &amp;mut P; m.x = 99; }
+  // **ERROR** 1502: `as` changes the reference's permission from ro to mut, which is not a coercion.
+  //   Between references `as` may only be a legal coercion (`uni` to `mut`, `imm` or `&amp;`; `mut` or
+  //   `imm` to `&amp;`); anything else needs `trust`, which is not built yet.
+fn share(r &amp;mut P) &amp;uni P { r as &amp;uni P; }   // **ERROR** 1502, mut to uni
+</pre>
+	<p>A raw pointer cast to a reference is not asked this (it is how a library hands out memory it manages),
+		and neither is a reference cast to a pointer. One more exception stands for now: a type declaring
+		<span class="pre">Immutable</span> makes a reference written with no permission <span class="pre">imm</span>,
+		and <span class="pre">&amp;</span> may be cast to it. That is how a slice of bytes becomes text:
+		<span class="pre">bytes as &amp;str</span>, or <span class="pre">p as So[str]</span>
+		(<a href="guide-text.html#bytes">A String as a slice of bytes</a>). A permission written out is checked
+		like any other, so <span class="pre">bytes as &amp;imm str</span> and, from a <span class="pre">&amp;</span>,
+		<span class="pre">r as &amp;imm P</span> are refused. The cast promises that the bytes are text and that
+		nothing changes them while the text is used, which only the programmer can know.</p>
+	<p>That is the character of every reinterpretation that is not also a coercion: the compiler cannot see
+		whether the value will behave sensibly as its new type. In Cone's design such a cast is allowed only inside
+		<a href="safe-trust.html#reinterpret"><span class="pre">trust</span></a>, where the programmer takes that
+		responsibility in writing. <span class="pre">trust</span> is not built yet: today the casts above that need
+		it are refused, and those the compiler accepts, such as a float as an integer, need nothing.</p>
 
+	<h2 id="void">void: the type of no value</h2>
+	<p><span class="pre">void</span> is the type of no value at all. It is the return type of a function that does
+		its work and returns nothing, and it fills a type parameter where nothing is wanted: a function that returns
+		nothing on success, or an <span class="pre">E</span> on failure, returns
+		<span class="pre">Result[void, E]</span>. Its one value is <span class="pre">nil</span>, and a
+		<span class="pre">return</span> or <span class="pre">break</span> with no value gives
+		<span class="pre">nil</span>.</p>
+	<p>A value of size zero is never stored in memory, so a variable may not be declared
+		<span class="pre">void</span>, nor space allocated for one (not yet checked: the compiler accepts
+		<span class="pre">imm v void;</span> today). A struct may have a <span class="pre">void</span> field, as long as
+		some other field has a size. A function that never returns at all is declared
+		<span class="pre">Never</span> instead, which <a href="safe-panics.html#never">Panics</a> explains.</p>
+
+	<p>You can now move a value from one type to another and say what each crossing may lose. Next: what happens
+		when something that must never happen does, and the program stops.</p>
 
 		<p style="text-align: right; margin-top: 2em;">
-			<a href="safe-c.html"><img alt="_" src="next.png" /></a>
+			<a href="safe-panics.html"><img alt="_" src="next.png" /></a>
 		</p>
 
 	</div>

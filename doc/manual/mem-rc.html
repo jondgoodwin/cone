@@ -1,0 +1,167 @@
+<html>
+  <head>
+	  <title>Reference counting - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Reference counting: Rc and Arc</div>
+		</div>
+
+    <div class="text">
+
+	<p>A single owner cannot share: a song on two playlists, a texture used by many models, a node with two parents. A
+		<b>counted</b> region lets one value have several owners. It counts them, and frees the value when the last one
+		goes, promptly and predictably, with no collector. This page covers <span class="pre">Rc</span>, which counts on one
+		thread, and <span class="pre">Arc</span>, which counts across threads, and what counting costs. Afterwards you can
+		share values between parts of a program, and between threads:</p>
+
+<pre>
+mod playlists;
+
+import stdio use *;
+import collections use *;
+
+struct Song {
+  pub title &amp;str;
+  fn final(self &amp;uni) { print &lt;- "freed ", title, "\n"; }
+}
+
+alias Track = Rc[imm, Song];   // a counted owner of a song that never changes
+
+fn main() {
+  mut evening = List[Track].empty();
+  {
+    mut morning = List[Track].empty();
+    morning.push(new Track("ballad"));
+    imm anthem = new Track("anthem");
+    morning.push(anthem);        // a copy of the owner: the count is now 2
+    evening.push(anthem);        // and 3
+    print &lt;- "morning has ", morning.len(), " songs\n";
+  }                              // morning goes: the ballad's last owner with it
+  print &lt;- "evening still plays ", evening[0usize].title, "\n";
+}                                // the anthem's last owner goes
+</pre>
+	<p>It prints:</p>
+<pre>
+morning has 2 songs
+freed ballad
+evening still plays anthem
+freed anthem
+</pre>
+	<p><b>Try this:</b> make the track a single owner, <span class="pre">alias Track = So[Song];</span>. The compiler
+		refuses the second playlist: the anthem moved into the first (<i>This variable's value has been moved out</i>).</p>
+
+	<h2 id="rc">How counting works: Rc</h2>
+	<p>The <span class="pre">Rc</span> region keeps a count with every value it allocates. A new value's count starts at
+		one. Every copy of an owning reference adds one, and every owner that goes, at the end of its scope or when what holds
+		it is replaced, subtracts one. When the count reaches zero, the value is finalized and freed. In the program above,
+		the ballad's only owner was in <span class="pre">morning</span>, so it went with that list; the anthem had owners in
+		both lists and a variable, so it lived until <span class="pre">evening</span> went.</p>
+	<p>The permission decides whether owners may be copied at all. An <span class="pre">Rc[T]</span>, with no permission
+		written, is <span class="pre">uni</span>: the one owner, which moves, and which may later become shared
+		(<a href="mem-permissions.html#permanent">From uni, for good</a>). An <span class="pre">Rc[imm, T]</span> is copied
+		freely and never changes its value, and an <span class="pre">Rc[mut, T]</span> is copied freely and may change it,
+		through any copy, on one thread.</p>
+	<p>Counting is written in Cone, not built into the compiler. Its region ref is a struct declaring
+		<span class="pre">RegionRef</span> whose field is the count kept with each value, and whose methods the compiler calls when a value is allocated, when an owner is
+		copied and when one goes (<a href="mem-ownregion.html">Making your own region</a>):</p>
+<pre>
+struct Counted is RegionRef {
+    cnt u32;                       // the count is the bookkeeping kept with each value
+    fn alloc(size usize) *u8 {
+        RawBlocks.alloc(size, 16usize);
+    }
+    fn init(self &amp;new) {
+        *self = new Counted(1u32);   // a new value starts with one owner
+    }
+    fn aliasRef(self &amp;uni Counted) {
+        cnt = cnt + 1u32;          // an owner copied
+    }
+    fn dealiasRef(self &amp;uni Counted) bool {
+        cnt = cnt - 1u32;
+        cnt == 0u32;               // true: that was the last owner, so free the value
+    }
+    fn free(self &amp;uni Counted) {
+        RawBlocks.release(self as *u8);
+    }
+}
+</pre>
+	<p>Variations on this scheme count atomically, so that several threads may share owners
+		(<a href="#arc">Arc</a>, below), or use moves and borrowing to touch the count less often.</p>
+
+	<h3 id="choosing">When to count</h3>
+	<p>Counting suits shared data that is not cyclic, and that should go as soon as it is no longer needed: memory is
+		used tightly, values are freed as soon as their last owner goes, so a finalizer runs at a predictable point, and the
+		runtime is tiny. It pays in throughput, typically the worst of any strategy, since every copy and drop of an owner
+		updates a count, often in memory far from anything else the program is touching. A good habit keeps that cost down:
+		hold a counted owner where the value is kept, and hand <a href="mem-borrowing.html">borrows</a> to the functions that
+		only use it, which touch no count at all.</p>
+	<p>Its other weakness is cycles. Two values that own each other keep each other's counts above zero for ever, and an
+		island of them, unreachable from the rest of the program, leaks. The cure is to make one link of every cycle a
+		<a href="mem-weak.html">weak reference</a>, which does not count as an owner: a child holds its parent weakly, say,
+		while the parent owns its children.</p>
+
+	<h2 id="arc">Across threads: Arc</h2>
+	<p><span class="pre">Arc</span> is an <span class="pre">Rc</span> whose count several threads may change at once:
+		each change of its count is one atomic instruction. Owners of one value may be copied and dropped on different
+		threads, and the value is finalized and freed exactly once, after the last of them goes. Its strengths and weaknesses
+		are Rc's, with an atomic instruction in place of each plain change of the count.</p>
+	<p>Arc is in the <span class="pre">sync</span> package. It is not in core, whose names every module has, so a module
+		names it once it folds it in, <span class="pre">import sync use Arc</span> (or <span class="pre">use *</span>), and a
+		module that does not keeps <span class="pre">Arc</span> free for its own use. It is allocated as Rc is,
+		<span class="pre">new Arc[imm, T](...)</span>.</p>
+	<p>An <span class="pre">Arc[imm, T]</span> owner is the one to share between threads: hand it to
+		<span class="pre">thread.start</span>, or send it over a channel. Each thread gets an owner of its own:</p>
+<pre>
+mod tables;
+
+import stdio use *;
+import thread;
+import sync use Arc;
+
+struct Table {
+  pub scale i64;
+  fn final(self &amp;uni) { print &lt;- "table gone\n"; }
+}
+
+fn work(t Arc[imm, Table]) i64 { t.scale * 2; }
+
+fn main() {
+  imm shared = new Arc[imm, Table](21);
+  imm a = thread.start(shared, &amp;work);     // the thread gets an owner of its own
+  imm b = thread.start(shared, &amp;work);
+  imm total i64 = a.join() + b.join();
+  print &lt;- total, "\n";
+}
+</pre>
+	<p>This prints <span class="pre">84</span> and then <span class="pre">table gone</span>, once.</p>
+	<p>Arc declares the built-in trait <span class="pre">ThreadSafe</span>, which Rc does not: the region's own statement
+		that its owners may be held by several threads, which only a region may declare. The thread check reads it. An
+		<span class="pre">Arc[imm, T]</span> owner may be handed to another thread, while an <span class="pre">Rc[imm, T]</span>
+		one, whose count is not atomic, is refused (<i>Error 1194: start requires A is Sendable, and Rc[imm, Table] is not
+		Sendable: it is an owner that may be copied, and Rc does not declare ThreadSafe</i>). So is an
+		<span class="pre">Arc[mut, T]</span> one, which would let two threads change the value itself unsynchronized (<i>it is
+		an owner whose permission, mut, is not race-safe</i>); <a href="conc-sharing.html#race">What may cross a thread</a>
+		has the rules. A value that several threads change is shared as an <span class="pre">Arc[Mutex, T]</span> or an
+		<span class="pre">Arc[Rwlock, T]</span>, whose <a href="conc-locks.html">lock permission</a> makes every change wait
+		its turn.</p>
+	<p>The count's memory ordering is what makes the finalizer safe. A copy adds one to the count with relaxed ordering. A
+		drop subtracts one with release ordering, and the drop that reaches zero reads the count again with acquire ordering
+		before the value dies, so everything every owner did with the value happens before its finalizer.</p>
+	<p>Arc has no weak references: the <span class="pre">rcweak</span> package's <span class="pre">Weak</span> is made only
+		from an <span class="pre">Rcw</span> owner.</p>
+
+	<p>You can now share a value among several owners, on one thread or many, and know what each copy costs. Shared owners
+		bring one danger with them, the cycle that never frees itself. Next is how to break it.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-weak.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

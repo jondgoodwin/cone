@@ -1,0 +1,427 @@
+<html>
+  <head>
+	  <title>OS threads and channels - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">OS threads and channels</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">thread</span> and <span class="pre">sync</span> packages,
+		and so the channels and the actors built on them, run on Windows and Linux (x86-64), not yet on macOS.</i></p>
+
+	<p>Actors and <span class="pre">parallel each</span> run on a pool of worker threads that the runtime starts for you.
+		Sometimes you want a thread of your own instead: to run a library that blocks, to give one job a thread to itself, or
+		to build a scheduler, a server loop or a pipeline of your own design. This page and the next are the roll-your-own
+		layer. This one covers starting and joining operating-system threads, and passing values between them through
+		channels; the <a href="conc-primitives.html">next</a> covers atomic values, the futex and plain locks. Afterwards you
+		can write a program that manages its own threads, safely. Here four threads each count the primes in a quarter of a
+		million, and send their counts back over a channel:</p>
+
+<pre>
+mod quarters;
+
+import stdio use *;
+import thread;
+import sync use *;
+
+fn isPrime(n u64) bool {
+  if n &lt; 2u64 { return false; }
+  mut d = 2u64;
+  while d * d &lt;= n {
+    if n % d == 0u64 { return false; }
+    d += 1u64;
+  }
+  true;
+}
+
+// What a thread is handed: its stretch of numbers, and where to send the count
+struct Job {
+  pub from u64;
+  pub to u64;
+  pub out Sender[u64];
+}
+
+fn count(mut j Job) void {
+  mut found = 0u64;
+  mut n = j.from;
+  while n &lt; j.to {
+    if isPrime(n) { found += 1u64; }
+    n += 1u64;
+  }
+  j.out &lt;- found;                        // send the count back
+}
+
+fn main() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+
+  // Four OS threads, each counting the primes in a quarter of a million
+  imm a = thread.start(new Job(0u64, 250000u64, tx.clone()), &amp;count);
+  imm b = thread.start(new Job(250000u64, 500000u64, tx.clone()), &amp;count);
+  imm c = thread.start(new Job(500000u64, 750000u64, tx.clone()), &amp;count);
+  imm d = thread.start(new Job(750000u64, 1000000u64, tx.clone()), &amp;count);
+
+  mut total = 0u64;
+  each i in 1 .. 4 {
+    match rx.recv() {                    // waits for the next count
+      case imm n Some { total += n; }
+      else {}
+    }
+  }
+  print &lt;- "There are ", total, " primes below a million\n";
+  a.join(); b.join(); c.join(); d.join();
+}
+</pre>
+	<p>It prints the Guide's answer, found a different way:</p>
+<pre>
+There are 78498 primes below a million
+</pre>
+	<p>Compare it with the <a href="guide-parallel.html">Guide's <span class="pre">parallel each</span></a>, which did the
+		same in one line. Here the program decided how to split the work, and the split is uneven: testing a number near a
+		million takes longer than testing one near zero, so the last quarter's thread finishes well after the first's, which
+		then sits idle. A <span class="pre">parallel each</span> splits as it runs, and evens that out. That is the trade:
+		full control, and every choice yours.</p>
+
+	<h2 id="thread">OS threads: the thread package</h2>
+	<p>The <span class="pre">thread</span> package is the operating-system layer every other model is built on: starting
+		and joining OS threads. It is deliberately small, and it is ordinary library code, bound to the operating system
+		through <span class="pre">extern</span> functions; the compiler knows nothing of it. The one blocking primitive the
+		locks, the channels and the schedulers are written over, the <a href="conc-primitives.html#futex">futex</a>, is the
+		<span class="pre">sync</span> package's, which the thread package imports. Its source,
+		<span class="pre">packages/thread/src/thread.cone</span>, documents the same rules at greater length.</p>
+<pre>
+import thread;
+
+fn triangle(n i64) i64 { ... }
+
+fn main() {
+  imm t = thread.start(100i64, &amp;triangle);  // a new thread runs triangle(100)
+  ...                                        // while main goes on
+  imm total = t.join();                      // wait for it: 5050
+}
+</pre>
+
+	<h3 id="start">Starting a thread</h3>
+	<p><span class="pre">thread.start(arg, &amp;f)</span> starts a new OS thread running <span class="pre">f(arg)</span>
+		and returns its handle at once, a <span class="pre">Thread[R]</span>. The thread is given a function and one
+		value:</p>
+	<ul>
+	<li><b>The value is moved in.</b> The thread owns it, and it dies there when <span class="pre">f</span> is done with it.
+		A struct carries more than one value, as <span class="pre">Job</span> does above.</li>
+	<li><b><span class="pre">f</span> is a plain function</b> taking an <span class="pre">A</span> and returning an
+		<span class="pre">R</span>, which may be <span class="pre">void</span>. A function reference holds no state, which is
+		why a thread is given a value beside its function; a closure travels as that value, in an owner marked
+		<span class="pre">+ Sendable</span> (<a href="conc-sharing.html#marks">Saying what is behind a reference</a>).</li>
+	<li><b>The type arguments are inferred</b> from the value and from the function's signature. A number literal given as
+		the value keeps its own type, <span class="pre">i32</span> unless suffixed, and must agree with
+		<span class="pre">f</span>'s parameter: <span class="pre">100i64</span> for a function taking an
+		<span class="pre">i64</span>.</li>
+	<li><b>The value and the result must be <span class="pre">Sendable</span></b>, which the compiler checks where
+		<span class="pre">start</span> is called (<a href="#sendable">below</a>).</li>
+	</ul>
+	<p><span class="pre">thread.startWith(new thread.Options(name: n, stackSize: s), arg, &amp;f)</span> does the same with
+		options, each of which has a default and may be left out:</p>
+	<ul>
+	<li><span class="pre">name</span>, empty by default, is copied as the thread starts. It is Cone's own, seen through
+		<span class="pre">name()</span>; the operating system's debuggers do not see it.</li>
+	<li><span class="pre">stackSize</span>, 0 by default, is how many bytes of address space to reserve for the thread's
+		stack; 0 is the system's default, the executable's on Windows and the C library's on Linux (the process's stack limit,
+		usually 8 MB). A size is rounded up to 64 KB at least, and Windows rounds it up to its allocation granularity and takes
+		one of 4 GB or more as 4 GB less one byte.</li>
+	</ul>
+	<p>A thread that cannot be started, or memory that cannot be allocated for it, is a
+		<a href="safe-panics.html#panic">panic</a>. A panic or a trap on any thread ends the whole process: nothing unwinds,
+		so no thread fails alone while the others go on.</p>
+
+	<h3 id="sendable">What a thread may be handed</h3>
+	<p>The value handed to a thread, and the value it returns, must be <span class="pre">Sendable</span>: a value the thread
+		may own, or share with the others, without a race (<a href="conc-sharing.html">What may cross a thread</a> has the
+		whole rule). These cross:</p>
+	<ul>
+	<li>A value the thread owns outright: a number, a struct of them, a <span class="pre">So</span> owner, a
+		<span class="pre">uni</span> reference, a channel's end.</li>
+	<li>An <span class="pre">Arc[imm, T]</span> owner (the <span class="pre">sync</span> package's
+		<span class="pre">Arc</span>, folded in by <span class="pre">import sync use Arc</span>), which
+		<span class="pre">thread.start</span> copies, so the value is freed once, after the last thread lets it go
+		(<a href="mem-regions.html">regions</a>); and an <span class="pre">imm</span> or <span class="pre">opaq</span> borrow of
+		a global, <span class="pre">thread.start(&amp;imm table, &amp;sum)</span>, since a global lives for the whole
+		program.</li>
+	<li>A struct that carries raw pointers the program shares safely, with <a href="conc-primitives.html#atomic">atomic
+		values</a> or <a href="conc-primitives.html#locks">locks</a>, and declares <span class="pre">is Sendable</span>. That is
+		a promise the compiler takes on trust.</li>
+	</ul>
+	<p>These are refused, naming what is at fault (Error 1194):</p>
+	<ul>
+	<li>A <span class="pre">mut</span> or <span class="pre">ro</span> borrow, and any borrow into the starting thread's
+		stack (an <span class="pre">imm</span> borrow of a local is refused as not global, Error 1249).</li>
+	<li>An <span class="pre">Rc</span> owner that is not <span class="pre">uni</span>, since its count is not atomic.</li>
+	<li>A reference the <span class="pre">collector</span> package's <span class="pre">Gc</span> traces, since that collector
+		is single-threaded (<a href="#started">below</a>).</li>
+	<li>A raw pointer, since nothing checks what it points at, unless a struct holding it declares
+		<span class="pre">is Sendable</span>.</li>
+	</ul>
+	<p><a href="conc-sharing.html#sendable">Sendable</a> shows the refusal of a <span class="pre">Job</span> holding a
+		<span class="pre">&amp;mut</span>, with its message.</p>
+
+	<h3 id="handle">The handle: join, detach, and join on drop</h3>
+	<p>A <span class="pre">Thread[R]</span> is its thread's one owner, a move type.</p>
+	<ul>
+	<li><span class="pre">t.join()</span> waits for the thread to finish and returns what <span class="pre">f</span> returned.
+		It consumes the handle, so a thread is joined once.</li>
+	<li><span class="pre">t.detach()</span> consumes the handle and lets the thread run on alone. What
+		<span class="pre">f</span> returns is finalized on the thread, since nobody will read it.</li>
+	<li><b>A handle that dies unjoined joins</b>: its finalizer waits for the thread and finalizes the result nobody took.
+		This is tidiness, not safety. A handle can be kept where it never dies, and a process ends without finalizing what its
+		threads hold, so nothing a program depends on may rest on that join. A thread whose work must be finished is
+		joined.</li>
+	<li><span class="pre">t.id()</span>, <span class="pre">t.name()</span> and <span class="pre">t.unpark()</span> are the
+		thread's own, as below, and <span class="pre">t.threadRef()</span> is a <span class="pre">ThreadRef</span> to it.</li>
+	</ul>
+	<p>A handle kept in a field or a collection cannot yet be moved out of it to be joined (Cone does not move a value out of
+		a struct's field), so such a handle is joined by its container's death. When <span class="pre">main</span> returns,
+		the process ends, and every thread still running ends with it; handles in <span class="pre">main</span>'s locals have
+		been joined by then.</p>
+
+	<h3 id="current">The running thread</h3>
+	<ul>
+	<li><span class="pre">thread.current()</span> is a <span class="pre">ThreadRef</span> to the calling thread: its
+		identity, kept alive while the ThreadRef lives, which may be sent to other threads. It is a move type;
+		<span class="pre">r.copy()</span> makes another. <span class="pre">r.id()</span> is the operating system's thread id,
+		which it may reuse once a thread has ended and its handle is gone. <span class="pre">r.name()</span> is the name
+		<span class="pre">startWith</span> gave, and empty for any other thread, the main thread included. A thread the package
+		did not start takes up an identity the first time it asks for one, and keeps it, since nothing runs when such a thread
+		ends.</li>
+	<li><span class="pre">thread.parallelism()</span> is how many logical processors the machine has (on Linux, the ones
+		online), at least 1. It does not count what an affinity mask takes away.</li>
+	<li><span class="pre">thread.sleep(d)</span> sleeps at least <span class="pre">d</span>, a <span class="pre">Duration</span>
+		of the <a href="lib-time.html"><span class="pre">time</span> package</a>
+		(<span class="pre">thread.sleep(time.Duration.fromMillis(5))</span>), on Windows' high-resolution timer, so a 1 ms sleep
+		takes 1 to 2 ms rather than the 15.6 ms of the system's timer tick. Where that timer is missing (before Windows 10
+		version 1803) it falls back to whole milliseconds, rounded up. On Linux it is POSIX's <span class="pre">nanosleep</span>,
+		accurate to a few tens of microseconds. A sleep of zero, or of a negative duration, gives up the rest of the time
+		slice to another ready thread of the same priority. In an actor, sleep with <a href="conc-io.html#await-io-sleep">aio's
+		timers</a> instead, which hold no worker.</li>
+	<li><span class="pre">thread.yieldNow()</span> lets another thread ready to run on the same processor have it, and
+		returns at once if there is none.</li>
+	</ul>
+
+	<h3 id="park">Parking</h3>
+	<p>Each thread has one parking token, and starts without it. <span class="pre">thread.park()</span> takes the token,
+		sleeping until there is one; <span class="pre">unpark()</span>, on the thread's handle or a
+		<span class="pre">ThreadRef</span> to it, makes it available. An unpark sent before the park is therefore not lost, and
+		the park returns at once. Unparks do not add up: two before a park are one token. <span class="pre">park</span> never
+		returns without a token, but a parked thread still checks what it was waiting for, since a token may have been meant
+		for an earlier park. Parking is built on <a href="conc-primitives.html#futex">the futex</a>.</p>
+
+	<h3 id="started">What a started thread may not use yet</h3>
+	<p>The <span class="pre">collector</span> package's <span class="pre">Gc</span> collector is single-threaded: its roots
+		are one chain and its heap is not synchronized. A traced reference made, held, reached or dropped on a thread the
+		package started corrupts it. One is not <span class="pre">Sendable</span>, so it cannot be handed to a thread or
+		returned from one, but nothing stops a started thread from making one of its own (an actor and a
+		<span class="pre">parallel each</span> are refused one for now, <a href="conc-actors.html#inside">Inside an actor</a>
+		and <a href="conc-parallel.html#parallelbody">What the body may do</a>). A
+		<a href="mod-globals.html#threadlocal">thread-local global</a> gives each thread a copy starting from its initial value,
+		and nothing finalizes a thread's copies when it ends.</p>
+	<p>Deliberately not provided: killing a thread, priorities, pinning a thread to a processor, a flag asking a thread to
+		stop, and scoped threads, which would join before a function returns so that their threads could borrow.</p>
+
+	<h2 id="channel">Channels</h2>
+	<p>Threads that share nothing still need to talk. A <b>channel</b> is a queue between threads: any number of threads
+		put values in at one end, and one thread takes them out at the other, oldest first. The
+		<span class="pre">sync</span> package's <span class="pre">Channel[T]</span> has any number of sending ends and one
+		receiving end, and every value it carries must be <span class="pre">Sendable</span>.</p>
+	<p>An actor's mailbox is a queue of the same shape, many senders and one receiver, but it is the
+		<span class="pre">actors</span> package's own, built into each actor; a <span class="pre">Channel</span> is for plain
+		threads, and for anything else that wants a queue it can hold, such as the kitchen's "done" signal on the
+		<a href="conc-io.html">I/O page</a>. Today they are separate mechanisms.</p>
+	<p>There are three kinds:</p>
+	<ul>
+	<li><span class="pre">Channel[T].make()</span> answers both ends of an <b>unbounded</b> channel, whose sends never
+		wait.</li>
+	<li><span class="pre">Channel[T].bounded(n)</span> answers both ends of a <b>bounded</b> one, holding at most
+		<span class="pre">n</span> values (rounded up to a power of two), whose sends wait while it is full, so a sender faster
+		than its receiver is held to its pace. The two kinds' ends are the same types, so code taking a
+		<span class="pre">Sender[T]</span> takes either.</li>
+	<li><span class="pre">Channel[T].spsc(n)</span> makes a bounded channel with <b>one sender</b>. Its sending end is a
+		<span class="pre">SoloSender[T]</span>, which has no <span class="pre">clone()</span>, and whose sends take it as
+		<span class="pre">&amp;mut</span>: there is exactly one, and one thread sends at a time. Knowing that from the type,
+		the channel needs no atomic read-modify-write on either side, which makes it the fastest of the three where one thread
+		feeds another: a pipeline's stages, or a logging thread's own buffer. Its receiving end is the same
+		<span class="pre">Receiver[T]</span>, and its methods are the others'.</li>
+	</ul>
+	<p>Each end is a move type: another sender is made only by <span class="pre">clone()</span>, as the four threads' were
+		above, and the receiver has no clone, so exactly one thread takes from it.</p>
+<pre>
+import sync use *;
+
+fn main() {
+  mut tx Sender[Job];
+  mut rx Receiver[Job];
+  tx, rx = Channel[Job].make();   // the two ends; or Channel[Job].bounded(64)
+  imm tx2 = tx.clone();           // a second sender, said out loud
+  tx &lt;- job;                      // send: waits only while a bounded channel is full
+  match rx.recv() {               // waits while it is empty
+    case imm j Some {run(j);}
+    case is None[Job] {}          // closed, and every value taken
+  }
+
+  mut solo SoloSender[Job];
+  mut rx2 Receiver[Job];
+  solo, rx2 = Channel[Job].spsc(1024);  // one sender, no clone
+  solo &lt;- job;
+}
+</pre>
+	<ul>
+	<li><span class="pre">tx.send(v)</span>, or <span class="pre">tx &lt;- v</span>, puts a value in, waiting while a bounded
+		channel is full. It answers <span class="pre">None</span>, or, when the receiver has gone or closed the channel,
+		<span class="pre">Some</span> holding the value, handed back rather than lost. A list after
+		<span class="pre">&lt;-</span> sends each entry in turn, <span class="pre">tx &lt;- a, 3 of next()</span> (the
+		<a href="guide-collections.html#append">send operator's entries</a>), and drops what each send answers.
+		<span class="pre">tx.trySend(v)</span> never waits, handing the value back from a full channel too;
+		<span class="pre">tx.sendTimeout(v, d)</span> waits at most <span class="pre">d</span>, a <span class="pre">Duration</span>
+		of the <span class="pre">time</span> package, for room.</li>
+	<li><span class="pre">rx.recv()</span> waits for the next value, oldest first; <span class="pre">rx.tryRecv()</span> never
+		waits; <span class="pre">rx.recvTimeout(d)</span> waits at most <span class="pre">d</span>, a
+		<span class="pre">Duration</span>. Each answers an <span class="pre">Option</span>.</li>
+	<li>Nothing panics, and no one has to close the channel by hand. The last sender's death closes it: the receiver takes
+		what is left, and then <span class="pre">recv</span> answers <span class="pre">None</span>.
+		<span class="pre">rx.close()</span> refuses later sends while what came before still drains. The receiver's death
+		closes it too, wakes every send waiting for room to hand its value back, and finalizes each value still in it,
+		once.</li>
+	<li>A send waiting on a full bounded channel waits for as long as it stays full: a receiver that stops taking without
+		going leaves it waiting for good. Two threads that each send to the other through bounded channels can so wait on each
+		other; where that may happen, <span class="pre">trySend</span>, <span class="pre">sendTimeout</span> or an unbounded
+		channel is the answer.</li>
+	</ul>
+	<p>A send is one compare-and-swap, into blocks of 32 slots allocated a block at a time (unbounded) or a ring of
+		<span class="pre">n</span> slots allocated at the start (bounded); the receiver takes a value with no read-modify-write
+		at all. A single-sender channel's send is a plain store as well, into Lamport's ring, each side keeping a copy of the
+		other's index and reading the real one only when its copy says full or empty. A thread sleeps, on the
+		<a href="conc-primitives.html#futex">futex</a>, only when there is nothing to do: the receiver when the channel is
+		empty, a sender when a bounded channel is full.</p>
+
+	<h3 id="oneshot">The one-shot channel</h3>
+	<p>Often a thread needs exactly one value back: the answer to a request, or the result of a call made on another thread.
+		A <span class="pre">Oneshot[T]</span>, from the <span class="pre">sync</span> package, carries one value, once, from
+		one thread to one. <span class="pre">Oneshot[T].make()</span> answers its two ends as a tuple, as
+		<span class="pre">Channel[T].make()</span> does: a <span class="pre">OneshotSender[T]</span> and a
+		<span class="pre">OneshotReceiver[T]</span>. <span class="pre">T</span> must be <span class="pre">Sendable</span>. Each
+		end is a move type with no <span class="pre">clone()</span>, and each crosses threads. The sender typically moves to
+		the thread that will answer, and the requester waits on the receiver:</p>
+<pre>
+import stdio use *;
+import thread;
+import sync use *;
+
+// The answering thread: takes the sending end, sends one reply
+fn answer(tx OneshotSender[u64]) u64 {
+  mut t = tx;
+  t.send(42u64);
+  0u64;
+}
+
+fn main() {
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  imm t = thread.start(tx, &amp;answer);     // the sending end moves to the answering thread
+  match rx.recv() {                      // waits for the one value
+    case imm v Some {printUInt(v); printStr("\n");}
+    case is None[u64] {printStr("no reply\n");}
+  }
+  t.join();
+}
+</pre>
+	<p>This prints <span class="pre">42</span>.</p>
+	<ul>
+	<li><span class="pre">tx.send(v)</span> puts the value in, and never waits. It answers <span class="pre">None</span> once
+		the value is there, and <span class="pre">Some</span> holding the value, handed back rather than lost, when a value
+		was sent already or the receiver has gone. It takes the sender as <span class="pre">&amp;mut</span>, so a sender held
+		in a field sends in place.</li>
+	<li><span class="pre">rx.recv()</span> waits for the value, and answers <span class="pre">None</span> when the sender
+		went without sending, or the value was taken already. <span class="pre">rx.recvTimeout(d)</span> waits at most
+		<span class="pre">d</span>, a <span class="pre">Duration</span> of the <span class="pre">time</span> package (it may run
+		over by a tick); <span class="pre">rx.tryRecv()</span> never waits.</li>
+	<li><span class="pre">rx.isReady()</span> says whether the value is there to be taken; <span class="pre">rx.isClosed()</span>,
+		whether nothing more will come; <span class="pre">tx.isClosed()</span>, whether a send would hand its value back.</li>
+	<li>A sender that dies without sending closes the channel, so a receiver finds out, asleep or not. A value sent and
+		never taken is finalized exactly once, by whichever end goes last.</li>
+	</ul>
+<pre>
+import stdio use *;
+import sync use *;
+
+fn main() {
+  // A second send hands its value back, and a receive after the take finds nothing
+  {
+    mut tx OneshotSender[u64];
+    mut rx OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    tx.send(5u64);
+    match tx.send(6u64) {
+      case imm back Some {printStr("handed back "); printUInt(back); printStr("\n");}
+      case is None[u64] {}
+    }
+    match rx.recv() {
+      case imm v Some {printStr("received "); printUInt(v); printStr("\n");}
+      case is None[u64] {}
+    }
+    match rx.recv() {
+      case imm v Some {}
+      case is None[u64] {printStr("nothing more\n");}
+    }
+  }
+  // The sender going without sending: the receiver is told at once
+  {
+    mut rx OneshotReceiver[u64];
+    {
+      mut tx OneshotSender[u64];
+      tx, rx = Oneshot[u64].make();
+    }
+    match rx.recv() {
+      case imm v Some {}
+      case is None[u64] {printStr("the sender went\n");}
+    }
+  }
+  // The receiver going: a send would hand its value back
+  {
+    mut tx OneshotSender[u64];
+    {
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+    }
+    printStr(if tx.isClosed() {"the receiver went\n";} else {"?\n";});
+  }
+}
+</pre>
+<pre>
+handed back 6
+received 5
+nothing more
+the sender went
+the receiver went
+</pre>
+	<p>A send is one swap and a receive that finds the value is one load; the <a href="conc-primitives.html#futex">futex</a>
+		is used only when the receiver really sleeps. The <span class="pre">iocore</span> package's
+		<span class="pre">Target.Once</span> hands an I/O operation's answer to a thread waiting on one
+		(<a href="conc-io.html#loop">Below aio: the iocore loop</a>).</p>
+
+	<p>You can now start, join and park your own threads, and pass values between them with channels. Under the channels,
+		the parking and the runtime's idle workers lie three smaller pieces: atomic values, the futex, and the plain locks
+		built from them, which are the last page of this part.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-primitives.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -93,7 +93,7 @@ Weight: 1199.04 billion tonnes
 		suits the weight, which nobody needs to the milligram. <span class="pre">print</span> shows a float to six
 		significant digits, which is why the weight came out as 1199.04.</p>
 
-	<h2 id="writing">Writing numbers: literals and suffixes</h2>
+	<h2 id="writing"><span id="literals"></span><span id="typedlit"></span>Writing numbers: literals and suffixes</h2>
 	<!-- Literal defaults under design (number-literals conversation, 14-15 Oct 2026); replace this paragraph when it settles. -->
 	<p>A whole number with no suffix, such as <span class="pre">42</span>, is an <span class="pre">i32</span>, and one
 		with a decimal point or an exponent, such as <span class="pre">2.5</span> or <span class="pre">1e9</span>, is
@@ -107,7 +107,7 @@ Weight: 1199.04 billion tonnes
 	<p>Underscores group digits and are otherwise ignored, as in <span class="pre">1_000_000</span>, and
 		<span class="pre">0x</span> starts a hexadecimal number: <span class="pre">0xFF</span> is 255.</p>
 
-	<h2 id="computing">Arithmetic and comparison</h2>
+	<h2 id="computing"><span id="arith"></span><span id="arithops"></span>Arithmetic and comparison</h2>
 	<p><span class="pre">+</span>, <span class="pre">-</span>, <span class="pre">*</span>, <span class="pre">/</span> and
 		<span class="pre">%</span> work with the usual precedence. Dividing two whole numbers gives a whole number,
 		rounding toward zero, and <span class="pre">%</span> gives the remainder, which takes the sign of the number
@@ -124,7 +124,7 @@ imm d = 7.0 / 2.0;   // 3.5, between floats
 		operator two numbers of the same type; when they differ, convert one with <span class="pre">from</span>,
 		<a href="#converting">below</a>.</p>
 
-	<h2 id="bitwork">Working with bits</h2>
+	<h2 id="bitwork"><span id="bitwise"></span>Working with bits</h2>
 	<p>The total's surprise is in its bits. Each square's grains are a single 1 bit, one place further left than on the
 		square before, so adding all 64 squares sets every one of the <span class="pre">u64</span>'s 64 bits. The
 		total is 2<sup>64</sup> - 1, the largest <span class="pre">u64</span> there is, and
@@ -138,18 +138,40 @@ imm d = 7.0 / 2.0;   // 3.5, between floats
 0x0Cu &lt;&lt; 1u       // 24: one place left doubles it
 -8 &gt;&gt; 1           // -4: on a signed number, &gt;&gt; keeps the sign
 </pre>
-	<p>The amount to shift by is the same type as the number shifted, which is why the program counts its doublings
-		with <span class="pre">u64</span>s, <span class="pre">0u64 ..&lt; 64u64</span>. A shift by the type's width or
-		more shifts every bit out (<a href="#shift">Shift operators</a>).</p>
+	<p>The same <span class="pre">&amp;</span>, <span class="pre">|</span>, <span class="pre">^</span> and
+		<span class="pre">~</span> work on <span class="pre">bool</span> values too, as one bit each:
+		<span class="pre">true ^ false</span> is <span class="pre">true</span>. Unlike <span class="pre">and</span> and
+		<span class="pre">or</span>, they always work out both sides.</p>
+	<p id="shift">The amount to shift by is the same type as the number shifted, which is why the program counts its
+		doublings with <span class="pre">u64</span>s, <span class="pre">0u64 ..&lt; 64u64</span>.
+		<span class="pre">&lt;&lt;</span> fills the bits it vacates with zeros. <span class="pre">&gt;&gt;</span> fills
+		with zeros on an unsigned number, and with copies of the sign bit on a signed one, so a negative number stays
+		negative. Every amount has an answer, the same in every build: an amount of the type's width or more shifts
+		every bit out, so <span class="pre">1u64 &lt;&lt; 64u64</span> is 0, and <span class="pre">&gt;&gt;</span> on a
+		signed number leaves the sign in every bit, 0 or -1. The amount is read as an unsigned number of its width,
+		so a negative amount is past the width too. In a <a href="mod-globals.html#const">constant</a>, where the
+		compiler works the value out, such a shift is an error instead: <i>"Error 1231: This constant's shift is by 40,
+		so it has no value: a shift of u32 is by 0 to 31."</i></p>
 	<p>Every integer type also has methods that count and move its bits:</p>
 <pre>
 total.countOnes()               // 64: how many bits are 1
 40u32.trailingZeros()           // 3: the zeros below the lowest 1, as 40 is 8 * 5
 32u32 - 1000u32.leadingZeros()  // 10: the bits it takes to write 1000
 0x81u8.rotateLeft(1)            // 3: the bit shifted out of the top comes in at the bottom
+1u32.shlMasked(33)              // 2: the shift a processor does, by 33 modulo 32
 </pre>
+	<p id="bits">Each count is a <span class="pre">u32</span>, and each is defined for 0, as the width:
+		<span class="pre">0u32.trailingZeros()</span> is 32. A signed integer's bits are counted with its sign's:
+		<span class="pre">(-1i16).countOnes()</span> is 16. The methods that move bits take an amount, a
+		<span class="pre">u32</span>, used modulo the width: <span class="pre">rotateLeft</span> and
+		<span class="pre">rotateRight</span> bring the bits shifted out of one end back in at the other, and
+		<span class="pre">shlMasked</span> and <span class="pre">shrMasked</span> are the one-instruction shifts most
+		processors have, which differ from <span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span> only
+		past the width. <span class="pre">shrMasked</span> fills as <span class="pre">&gt;&gt;</span> does. The same
+		operations are core's intrinsics, <span class="pre">mem.countOnes(x)</span> and the rest
+		(<a href="safe-intrinsics.html#bits">Intrinsics</a>).</p>
 
-	<h2 id="updating">Changing a variable in place: += and ++</h2>
+	<h2 id="updating"><span id="lval"></span>Changing a variable in place: += and ++</h2>
 	<p><span class="pre">grains *= 2</span> and <span class="pre">total += 1u64 &lt;&lt; n</span> change a
 		<span class="pre">mut</span> variable using its own value. Every arithmetic and bitwise operator has this
 		form: <span class="pre">+=</span>, <span class="pre">-=</span>, <span class="pre">*=</span>,
@@ -165,7 +187,7 @@ count %= 4;          // 3
 imm was = count++;   // was is 4, and count is 5
 </pre>
 
-	<h2 id="converting">Converting between number types: from</h2>
+	<h2 id="converting"><span id="conversion"></span><span id="numrconv"></span>Converting between number types: from</h2>
 	<p>Other than a whole number widening into a bigger one, a number changes type only when the program asks. To
 		convert, call <span class="pre">from</span> on the type you want, with the value: <span class="pre">T.from(x)</span> gives <span class="pre">x</span> as a
 		<span class="pre">T</span>. That is how the program turned its count into something it could weigh,
@@ -183,7 +205,8 @@ imm wrong = million * million;                     // -727379968: too big for an
 imm right = i64.from(million) * i64.from(million); // 1000000000000
 </pre>
 	<p>Every number type has <span class="pre">from</span>, and it takes a value of any number type.
-		<a href="#conversion">Explicit Conversion</a> below gives every case.</p>
+		<a href="safe-types.html#from">Conversion: from</a> gives every case, among them
+		<span class="pre">bool.from(n)</span> and a number's conversion to and from a <span class="pre">char</span>.</p>
 
 	<h2 id="methods">Methods on numbers: sqrt, sin and cos</h2>
 	<p>Floats have <span class="pre">sqrt</span>, <span class="pre">sin</span> and <span class="pre">cos</span>,
@@ -200,309 +223,6 @@ imm pi = 3.14159265358979d;
 	<p>You can now pick a number type big enough for the job, write its literals, compute with it down to the bits,
 		and convert between types. Every example has also been printing text; next comes
 		<span class="pre">String</span>, text that a program builds and changes as it runs.</p>
-
-	<h2 id="indetail">In detail</h2>
-	<p><i>The rest of this page is the complete reference for number types, literals, operators, conversion and the
-		assignment forms; skip to the <a href="guide-text.html">next page</a> if the program above was enough.</i></p>
-
-	<h3 id="literals">Literals</h3>
-	<p>A literal is a specific, unchangeable value.
-		Each of these <a href="syntax-lexical.html#number">numbers</a> is a literal:</p>
-<pre>
-123
-3.14159
-1e6          // 1000000.0
--1_000_000   // underscores are ignored
-0x1000       // Hexadecimal
-</pre>
-	<p>Beyond numbers, other forms of literals will be introduced later, including:</p>
-	<ul>
-	<li><a href="syntax-lexical.html#string">string</a> and
-		<a href="syntax-lexical.html#char">character</a> literals
-		(e.g., "Hello" and 'a')
-	</li>
-	<li>boolean <span class="pre">true</span> and <span class="pre">false</span></li>
-	<li>struct, array, and other compound values</li>
-	</ul>
-
-	<h3 id="numbertypes">Integers and floats</h3>
-	<p>The built-in number types
-		specify their bit-size as part of the type's name. Here they are:</p>
-	<ul>
-	<li><b>Signed integer</b> types: <span class="pre">i8</span>, <span class="pre">i16</span>,
-	<span class="pre">i32</span> and <span class="pre">i64</span></li>
-	<li><b>Unsigned integer</b> types: <span class="pre">u8</span>, <span class="pre">u16</span>,
-	<span class="pre">u32</span> and <span class="pre">u64</span></li>
-	<li><b>Floating point</b> types: <span class="pre">f32</span> and <span class="pre">f64</span></li>
-	</ul>
-	<p>Later, a number of other types will be introduced.</p>
-	<h4 id="typedlit">Typed Number Literals</h4>
-	<p>To explicitly specify the type for a numeric literal,
-		append the type name right after the number:</p>
-<pre>
-65u8       // 8-bit unsigned integer
-1f64       // 64-bit floating point number
-</pre>
-	<!-- Literal defaults under design (number-literals conversation, 14-15 Oct 2026); revise with the paragraph under "Writing numbers" above. -->
-	<p>If the type is omitted, the number is understood to be 32-bits.
-		When the number explicitly includes a decimal point or exponent,
-		it is treated as a floating point number (f32).
-		Otherwise, it is considered to be a signed integer (i32).</p>
-<pre>
-3.14159    // f32 (because of the decimal point)
-1e6        // f32 (because of the exponent)
-1_000_000  // i32 (no decimal point or exponent)
-</pre>
-	<p>Type name shortcuts are also supported:</p>
-<pre>
-1000u      // u32
-1f         // f32
-1d         // f64
-</pre>
-
-	<h4 id="bits">An integer's bits</h4>
-	<p>Every integer type (<span class="pre">u8</span> to <span class="pre">u64</span>,
-		<span class="pre">i8</span> to <span class="pre">i64</span>, <span class="pre">usize</span>
-		and <span class="pre">isize</span>) has methods that count and move its bits.
-		Each count is a <span class="pre">u32</span>, and each is defined for 0, as the width:</p>
-	<dl>
-	<dt>x.countOnes()</dt>
-	<dd>How many of its bits are 1.</dd>
-	<dt>x.leadingZeros()</dt>
-	<dd>How many bits are 0 above its highest 1: the width, for 0.</dd>
-	<dt>x.trailingZeros()</dt>
-	<dd>How many bits are 0 below its lowest 1: the width, for 0.</dd>
-	</dl>
-<pre>
-0x2Cu8.countOnes()        // 3
-1u64.leadingZeros()       // 63
-0u32.trailingZeros()      // 32
-(-1i16).countOnes()       // 16: a signed integer's bits, the sign's among them
-</pre>
-	<p>The rest take an amount <span class="pre">n</span>, a <span class="pre">u32</span>,
-		and use it modulo the width, so every amount has an answer and 0, the width and twice
-		the width give the same one:</p>
-	<dl>
-	<dt>x.rotateLeft(n), x.rotateRight(n)</dt>
-	<dd>The bits moved by <span class="pre">n</span>, those shifted out of one end coming in at the other.</dd>
-	<dt>x.shlMasked(n), x.shrMasked(n)</dt>
-	<dd>A shift by <span class="pre">n</span> modulo the width: the shift most processors do in one
-		instruction. <span class="pre">shrMasked</span> fills with the sign bit on a signed integer
-		and with zeros on an unsigned one. The operators <span class="pre">&lt;&lt;</span> and
-		<span class="pre">&gt;&gt;</span> differ only past the width, where they shift every bit out
-		(<a href="#shift">Shift operators</a>).</dd>
-	</dl>
-<pre>
-0x81u8.rotateLeft(1)      // 0x03
-1u32.shlMasked(33)        // 2, a shift by 1
-1u32 &lt;&lt; 33u32            // 0
-(-16i8).shrMasked(10)     // -4, a shift by 2
-</pre>
-	<p>The same operations are core's intrinsics, <span class="pre">mem.countOnes(x)</span> and the
-		rest (<a href="safe-intrinsics.html#bits">Intrinsics</a>), whose type parameter is any of these
-		integer types.</p>
-
-	<h3 id="arith">Operators and precedence</h3>
-	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented
-		except the special <span class="pre">my</span> name and
-		<span class="pre">max</span> and <span class="pre">abs</span> on numbers, which are not built.</i></p>
-	<p>Now that we have literals and variables, we can construct more complex expressions that
-	use operators, methods and functions calls to calculate new values.
-	Although the expression examples on this page work with integer and floating point values,
-	similar expressions can be formulated that manipulate values of other types.</p>
-	<p>Expressions are gathered into blocks.
-			A block is the basic unit for structured control flow.
-			It holds a ordered collection of statements that are executed in order, starting with the first statement.
-			It may also accumulate its own temporary, local state.
-			Blocks that evaluate to some value may also be used in expressions.</p>
-
-	<h4 id="arithops">Arithmetic Operators</h4>
-	<p>Integer and floating point numbers may be computed using arithmetic operators:</p>
-	<dl>
-	<dt>'+'</dt>
-	<dd>Add</dd>
-	<dt>'-'</dt>
-	<dd>Subtract (or negate when used as a prefix operator)</dd>
-	<dt>'*'</dt>
-	<dd>Multiply</dd>
-	<dt>'/'</dt>
-	<dd>Divide</dd>
-	<dt>'%'</dt>
-	<dd>Modulo (remainder)</dd>
-	</dl>
-	<p>Thus:</p>
-<pre>
--12 + 14    // 2
-6 / 5       // 1
--4 % 3      // -1 (where -4/3 --&gt; -1, truncating towards zero)
-2*2 + 2*3   // 10 (standard algebraic operator precedence)
-2 * (4 + 1) // 10 (parentheses override operator precedence)
-</pre>
-
-	<h4 id="bitwise">Bitwise expressions</h4>
-	<p>The bitwise operators operate on true/false values:</p>
-	<dl>
-	<dt>'|'</dt>
-	<dd>Or</dd>
-	<dt>'&amp;'</dt>
-	<dd>And</dd>
-	<dt>'^'</dt>
-	<dd>Xor</dd>
-	<dt>'~'</dt>
-	<dd>Not</dd>
-	</dl>
-	<p>For example:</p>
-<pre>
-true | (false &amp; true) // true
-true ^ ~true          // true
-</pre>
-	<p>These bitwise operators may also be used on unsigned integers,
-	as they are viewed as a collection of true/false bits.</p>
-<pre>
-0xE0u | 0xB8u  // 0xF8u
-</pre>
-	<h4 id="shift">Shift operators</h4>
-	<p>The shifting of an integer's bits is accomplished
-	using the &lt;&lt; and &gt;&gt; operators:</p>
-<pre>
-0x0Cu &lt;&lt; 1    // 0x18, after shifting bits left once
-</pre>
-	<p>The amount to shift by is a value of the same integer type. <span class="pre">&lt;&lt;</span>
-		fills the bits it vacates with zeros, and the bits shifted past the top are gone.
-		<span class="pre">&gt;&gt;</span> on an unsigned integer fills with zeros; on a signed
-		integer it fills with copies of the sign bit, so a negative value stays negative.</p>
-	<p>Every amount gives an answer, the same in every build. An amount of the integer's width
-		or more shifts every bit out: <span class="pre">&lt;&lt;</span> gives 0, as does
-		<span class="pre">&gt;&gt;</span> on an unsigned integer, and <span class="pre">&gt;&gt;</span>
-		on a signed integer gives the sign in every bit, 0 or -1. The amount is read as an unsigned
-		number of its own width, so a negative amount of a signed type is past the width too:</p>
-<pre>
-imm n = 64u64;
-255u64 &gt;&gt; n         // 0
-(1u64 &lt;&lt; n) - 1u64  // all ones: 1 &lt;&lt; 64 is 0
--8i32 &gt;&gt; 40i32      // -1, at run time
-</pre>
-	<p>In a <a href="mod-globals.html#const">constant expression</a>, such as a <span class="pre">const</span>'s
-		value, a shift by the width or more, or by a negative amount, is an error.</p>
-	<p>An amount taken modulo the width is asked for by name: the integer methods
-		<span class="pre">shlMasked</span> and <span class="pre">shrMasked</span>, the processor's
-		one-instruction shift, and <span class="pre">rotateLeft</span> and
-		<span class="pre">rotateRight</span> (<a href="#bits">An integer's bits</a>).</p>
-
-	<h4 id="otherops">Other Expression Operators</h4>
-	<p>Cone supports several more expression operators.
-		Descriptions may be found in the chapters
-		relevant to their common use:</p>
-	<ul>
-	<li><a href="guide-conditionals.html#condexp">conditional expression operators</a></li>
-	<li><a href="mod-composition.html#with">'with' block operators</a></li>
-	<li>construction, <span class="pre">new Point(1, 2)</span>, which builds a struct's value by one of its
-		<a href="guide-structs.html#initializer">initializers</a></li>
-	</ul>
-	<p>The precedence of every operator is listed in <a href="syntax-lexical.html">Lexical Elements</a>.</p>
-
-	<h4 id="numrconv">Numeric conversions</h4>
-	<p>To convert a number from one type to another, call the intended type's method
-		<span class="pre">from</span> with the number:</p>
-<pre>
-imm six = i32.from(6u8);    // Converts 8-bit unsigned integer to 32-bit signed integer
-imm sixf = f64.from(six);   // Converts 32-bit signed integer to 64-bit floating point number
-</pre>
-	<p>If the receiving number type is a smaller size, numeric information may be lost.
-		<a href="#conversion">Explicit Conversion</a> gives what each conversion does.</p>
-
-	<h4 id="conversion">Explicit Conversion</h4>
-	<p>Type conversion involves transforming a value of one type
-		to the closest possible value in another type.
-		For example, converting the integer 1 to the floating point number 1.0,
-		or serializing it to text:  "1".
-		Unlike coercion, conversion may not map perfectly:
-		A valid mapping may not exist or some precision may be lost.
-	</p>
-	<p>A conversion is not a construction but a method of the new type,
-		<span class="pre">from</span>, called on the type with the value to convert.
-		It is the type's default conversion from another type;
-		any other way of converting, such as one that saturates at the type's limits
-		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
-<pre>
-imm float = f32.from(1);
-imm count = u32.from(list.len());
-imm name = String.from("node");    // collections' String, from a slice of bytes
-</pre>
-	<p>Every number type has <span class="pre">from</span>, which takes a value of any number type.
-		It may be called on the type named directly, through an alias of it,
-		or on a generic's type parameter: <span class="pre">T.from(x)</span>
-		converts to whichever type <span class="pre">T</span> is.
-		The <span class="pre">into</span> operator is retired: <span class="pre">from</span> is the conversion.
-		Between numbers it does what the machine does:</p>
-	<ul>
-		<li>To a narrower integer, the low bits are kept: <span class="pre">u8.from(300)</span> is 44.</li>
-		<li>To a wider integer, a signed value converting to a signed type is sign-extended;
-			every other value is zero-extended from its own width, so
-			<span class="pre">u64.from(-1i8)</span> is 255. Between a signed and an unsigned type of one width,
-			the bits are kept: <span class="pre">i8.from(200u8)</span> is -56.</li>
-		<li>A float converts to an integer by truncating toward zero:
-			<span class="pre">i32.from(-2.75)</span> is -2. A float whose truncated value
-			the integer type cannot hold, a negative one to an unsigned type among them, has no defined result.</li>
-		<li>An integer converts to the nearest float, and a float to the nearest float of the other width.</li>
-		<li>An integer literal with no suffix is an <span class="pre">i32</span> and converts as one:
-			<span class="pre">u64.from(-1)</span> is 4294967295. Converting a literal gives a literal,
-			so it may be a global's value.</li>
-	</ul>
-	<p>Converting a number, reference or pointer to <span class="pre">bool</span>,
-		written <span class="pre">bool.from(n)</span>,
-		gives the answer its <span class="pre">isTrue</span> method gives a condition
-		(see <a href="safe-types.html#coercion">Implicit Coercion to bool</a>):
-		<span class="pre">bool.from(2)</span> is true, as are <span class="pre">bool.from(0.5)</span>
-		and NaN; only 0, -0 and a null pointer are false.
-		A <span class="pre">bool</span> converts to a number as 0 or 1.</p>
-	<p>A number type takes no square brackets: <span class="pre">u64[count]</span> is an error
-		naming <span class="pre">u64.from(count)</span>.</p>
-	<p>In some cases, it may be more convenient to request conversion
-		by using some method in the old type:</p>
-<pre>
-imm text = 1.text;
-</pre>
-
-
-	<!-- Moved here 15 Oct 2026 from the draft "Blocks and scope" page (Jon: each type says what you can do with it). -->
-	<h3 id="lval">Assignment forms: +=, ++</h3>
-	<p>An 'lval'-based expression is one where the expression to the "left" represents a memory "container"
-		which holds a value. Lval-based expressions will change the stored value.
-		The <i>assignment</i> expression introduced on <a href="guide-values.html#vars">Variables, types and
-		expressions</a> is lval-based, as examples specified a variable to the left of the <span class="pre">=</span>.
-		Parallel assignment, <span class="pre">a, b = b, a</span>, is with <a href="guide-structs.html#parallel">tuples</a>.</p>
-
-	<h4 id="incrdecr">Increment/decrement Operators</h4>
-	<p>When used to the left of an lval, <span class="pre">++</span> will increment the number and
-	<span class="pre">--</span> will decrement it.</p>
-<pre>
-mut cnt = 10;
-++cnt;          // 11
---cnt;          // 10
-</pre>
-	<p>When used to the right of an lval, it will still increment and decrement, but the expression
-		will return the original value.</p>
-<pre>
-mut cnt = 10;
-imm x = cnt++;  // x is 10, cnt is 11
-</pre>
-
-	<h4 id="arithassign">Arithmetic Assignment</h4>
-	<p>The arithmetic assignment operators (e.g., '+=', '-=', '*=', '/=') offer a convenient way to update
-		an existing stored value:</p>
-<pre>
-counter = 3;
-counter += 1;  // 4. Equivalent to: counter = counter + 1
-</pre>
-
-	<h4 id="logicassign">Logical assignment operators</h4>
-	<p>These work similarly to the arithmetic assignment operators:</p>
-<pre>
-mut flags = 0xC0u;
-flags |= 0x01u;   // 0xC1u
-flags &gt;&gt;= 1;      // 0x60u
-</pre>
 
 		<p style="text-align: right; margin-top: 2em;">
 			<a href="guide-text.html"><img alt="_" src="next.png" /></a>

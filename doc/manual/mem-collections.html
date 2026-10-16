@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Collections in a Region or Arena - Cone Reference</title>
+	  <title>Collections in a region - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,56 +8,21 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Collections in a Region or Arena</div>
+			<div id="sub">Collections in a region: where a list's memory comes from</div>
 		</div>
 
     <div class="text">
 
-	<h2 id="region">Collections in a region or an arena</h2>
-	<p>Every growable collection (<span class="pre">List</span>, <span class="pre">String</span>,
-		<span class="pre">Deque</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>,
-		<span class="pre">Set</span> and the <span class="pre">pool</span> package's <span class="pre">Pool</span>)
-		gets, grows and gives back its block through a <span class="pre">*MemRegion</span> it holds as its
-		last field, not through the C library.</p>
-	<h3 id="heapregion">The heap's region and the raw blocks layer</h3>
-	<p>The heap's region, <span class="pre">heapRegion()</span>, is one static object that is
-		never null, whose functions take blocks from the program's heap through core's raw blocks layer
-		(<span class="pre">RawBlocks</span>: <span class="pre">alloc</span>, <span class="pre">resize</span> and
-		<span class="pre">release</span>, the one place the heap's bytes come from, which today forwards to
-		the C library's <span class="pre">malloc</span>, <span class="pre">realloc</span> and
-		<span class="pre">free</span>; a block comes back to it, never to the C library directly); a collection made
-		without a region points to it, so
-		<span class="pre">new List[i32]</span> and <span class="pre">List[i32].empty()</span> take
-		their blocks from the heap.</p>
-	<h3 id="startingsize">Starting sizes, and what the region word costs</h3>
-	<p>The word costs 8 bytes a collection:
-		a <span class="pre">List</span> and a <span class="pre">String</span> are 32 bytes, a
-		<span class="pre">Deque</span> 40, a <span class="pre">Dict</span> and a <span class="pre">Set</span> 56, an
-		<span class="pre">OrderedDict</span> 64. Every collection takes a starting size as its first
-		argument, <span class="pre">new Deque[i32](100)</span>, <span class="pre">new String(100)</span> (bytes),
-		<span class="pre">new Dict[String, i64](100)</span> and likewise <span class="pre">OrderedDict</span> and
-		<span class="pre">Set</span> (entries, without growing; the table rounds the room up to its size),
-		<span class="pre">new Pool[Npc](100)</span> (slots), and a <span class="pre">withCapacity(n)</span> function
-		makes one: <span class="pre">Dict[String, i64].withCapacity(100)</span>.</p>
-	<h3 id="inarena">A collection in an arena</h3>
-	<p>A collection made
-		in an arena, <span class="pre">new arena[List[i32]](16)</span> (<a href="mem-regions.html">the arena's
-		allocation</a>), has its own words in the arena and its block there too: an arena is a region, and the
-		construction hands the list the arena's unless the arguments pass another last. The list is built where
-		it stays: its words are placed first, then its block (made with a starting size, the block is allocated
-		after the words, so it is the last thing the arena allocated). The list grows its block in place while
-		it is the last thing the arena allocated and the room is there, so a list alone in its arena does, as
-		long as the block the arena is bumping through (4096 bytes, or the size of a value that needed more)
-		has the room; otherwise the arena bumps a new block, copies the values and abandons the old one, which
-		it holds until it dies. A block taken because a resize outgrew the arena's current one is twice the
-		size asked, so a lone list that keeps doubling finds the room for its next doubling where it is, and
-		is copied once for every block it fills, not at every doubling (100,000 values of 8 bytes: five copies,
-		through six blocks). Two lists in one arena that grow in turn still copy at every growth, each finding
-		the other's block last. Giving a block back
-		does nothing. When the arena dies it finalizes the list, which gives its elements' own memory back to
-		wherever it came from (a <span class="pre">List[String]</span> whose strings came from the heap frees
-		them then).</p>
+	<p>A list's elements live in a block of memory that grows, and that block has to come from somewhere. By default it
+		comes from the program's heap, but a list made in an arena should take its block from the arena too, and a list in an
+		actor from the actor's own region, so that the whole of it lives and dies by one strategy. This page covers how a
+		collection gets its block, how to make one in an arena or an actor's region, how collections of garbage-collected
+		references are traced, and how to give a collection a region of your own. Afterwards you can place a collection, and
+		everything it holds, under the strategy you chose:</p>
+
 <pre>
+mod placed;
+
 import stdio use *;
 import collections use *;
 import arena use *;
@@ -83,13 +48,58 @@ fn main() i32 {
   0i32;                          // the arena dies here and takes the list with it
 }
 </pre>
-	<p>This prints <span class="pre">100</span>, <span class="pre">40</span> and <span class="pre">39</span>.</p>
-	<h3 id="inactor">A collection in an actor's own region</h3>
-	<p>An actor's own region is one too: <span class="pre">new self[List[T]](16)</span> takes the
-		list's block from the region's allocate, resize and release, a block of its own that the region's
-		collector never moves, and the list's <span class="pre">final</span> gives it back
-		(<a href="conc-runtime.html#actor-gc">Its own region</a>).</p>
+	<p>It prints <span class="pre">100</span>, <span class="pre">40</span> and <span class="pre">39</span>.</p>
+
+	<h2 id="region">Every collection draws on a region</h2>
+	<p>Every growable collection (<span class="pre">List</span>, <span class="pre">String</span>,
+		<span class="pre">Deque</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>,
+		<span class="pre">Set</span>, and the <span class="pre">pool</span> package's <span class="pre">Pool</span>) gets, grows
+		and gives back its block through a <span class="pre">*MemRegion</span> it holds as its last field, not through the C
+		library. This is regions nesting (<a href="mem-regions.html#what">What a region is</a>): wherever the collection itself
+		lives, its block is managed by the region it was given, and inside the block the collection manages its elements.</p>
+
+	<h3 id="heapregion">The heap's region and the raw blocks layer</h3>
+	<p>The heap's region, <span class="pre">heapRegion()</span>, is one static object that is never null. Its functions take
+		blocks from the program's heap through core's raw blocks layer, <span class="pre">RawBlocks</span>, with
+		<span class="pre">alloc</span>, <span class="pre">resize</span> and <span class="pre">release</span>: the one place the
+		heap's bytes come from, which today forwards to the C library's <span class="pre">malloc</span>,
+		<span class="pre">realloc</span> and <span class="pre">free</span>. A block always comes back to it, never to the C
+		library directly. A collection made without a region points to the heap's, so <span class="pre">new List[i32]</span>
+		and <span class="pre">List[i32].empty()</span> take their blocks from the heap.</p>
+
+	<h3 id="startingsize">Starting sizes, and what the region word costs</h3>
+	<p>The region pointer costs 8 bytes a collection: a <span class="pre">List</span> and a <span class="pre">String</span>
+		are 32 bytes, a <span class="pre">Deque</span> 40, a <span class="pre">Dict</span> and a <span class="pre">Set</span> 56,
+		an <span class="pre">OrderedDict</span> 64. Every collection takes a starting size as its first argument:
+		<span class="pre">new Deque[i32](100)</span>, <span class="pre">new String(100)</span> (bytes),
+		<span class="pre">new Dict[String, i64](100)</span> and likewise <span class="pre">OrderedDict</span> and
+		<span class="pre">Set</span> (entries, without growing; the table rounds the room up to its size),
+		<span class="pre">new Pool[Npc](100)</span> (slots). A <span class="pre">withCapacity(n)</span> function makes one too:
+		<span class="pre">Dict[String, i64].withCapacity(100)</span>.</p>
+
+	<h2 id="inarena">A collection in an arena</h2>
+	<p>A collection made in an arena, <span class="pre">new arena[List[i32]](16)</span>
+		(<a href="mem-arenas.html#arenaalloc">Allocating in an arena</a>), has its own words in the arena and its block there
+		too: an arena is a region, and the construction hands the list the arena's unless the arguments pass another last. The
+		list is built where it stays: its words are placed first, then its block (made with a starting size, the block is
+		allocated after the words, so it is the last thing the arena allocated).</p>
+	<p>The list grows its block in place while it is the last thing the arena allocated and the room is there, so a list
+		alone in its arena does, as long as the block the arena is bumping through (4096 bytes, or the size of a value that
+		needed more) has the room. Otherwise the arena bumps a new block, copies the values and abandons the old one, which it
+		holds until it dies. A block taken because a resize outgrew the arena's current one is twice the size asked, so a lone
+		list that keeps doubling finds the room for its next doubling where it is, and is copied once for every block it fills,
+		not at every doubling (100,000 values of 8 bytes: five copies, through six blocks). Two lists in one arena that grow in
+		turn still copy at every growth, each finding the other's block last. Giving a block back does nothing. When the arena
+		dies it finalizes the list, which gives its elements' own memory back to wherever it came from (a
+		<span class="pre">List[String]</span> whose strings came from the heap frees them then).</p>
+
+	<h2 id="inactor">A collection in an actor's own region</h2>
+	<p>An actor's own region is a region too: <span class="pre">new self[List[T]](16)</span> takes the list's block from the
+		region's allocate, resize and release, a block of its own that the region's collector never moves, and the list's
+		<span class="pre">final</span> gives it back (<a href="conc-runtime.html#actor-gc">Its own region</a>):</p>
 <pre>
+mod tally;
+
 import stdio use *;
 import actors;
 import collections use *;
@@ -136,42 +146,41 @@ fn main() {
 }
 </pre>
 	<p>This prints <span class="pre">12</span>.</p>
+
 	<h2 id="gctrace">Collections of garbage-collected references</h2>
-	<p>A collection can hold garbage-collected references
-		(<a href="mem-ownregion.html#collectors">Gc</a>, or in an actor its own <span class="pre">ActorGc</span>): a
-		<span class="pre">List[Gc[mut, Node]]</span> is traced value by value. A collection, a <span class="pre">Pool</span> and an <span class="pre">Arena</span> each
-		declare the built-in trait <span class="pre">GcTraceElements</span> (a provisional name) and a method
-		<span class="pre">fn gcTraceElements(self &amp;mut) I</span> giving a cursor over a writable reference to each value
-		they hold (<span class="pre">I</span> declares <span class="pre">is Iterator[&amp;mut E]</span>, as
-		<span class="pre">List</span>'s <span class="pre">mutItems()</span> cursor does), and a type of your own
-		that holds values behind a raw pointer declares it the same way. The collector traces each reference the
-		cursor gives as it traces a value of its type, and rewrites it where it moves what it points at; a list
-		of numbers holds nothing to trace, and costs nothing. A <span class="pre">Dict</span> and an
-		<span class="pre">OrderedDict</span> give their values, and refuse a key that holds a traced reference
-		(a collector that moved a key would leave it hashed where it was). An arena holds values of many types,
-		so its cursor gives each value whose type holds a traced reference as an <span class="pre">Erased</span>
-		(core's address of a value and the <a href="safe-intrinsics.html">type record</a> of its type), traced by
-		its record's own trace. A type with a raw pointer to a value that holds a traced reference, that does
-		not declare <span class="pre">GcTraceElements</span>, cannot be traced, and a variable or a traced allocation of it
-		is refused.</p>
-	<h2 id="finetuning">Fine-tuning</h2>
-	<p>Rarely needed: a region of your own for a collection, and a type of your own that hands its region on.</p>
-	<h3 id="memregion">The region a collection's block comes from</h3>
-	<p>A <span class="pre">MemRegion</span> (core) is three
-		function references, <span class="pre">allocFn</span>, <span class="pre">resizeFn</span> and
-		<span class="pre">releaseFn</span>, held in a struct's first field and handed that field's
-		address: <span class="pre">allocate(bytes, align)</span> gives a block,
-		<span class="pre">resize(block, old, new, align)</span> makes it longer, in place or by copying to a new
-		one (a null block of 0 bytes is an allocation), and <span class="pre">release(block, bytes)</span>
-		gives it back.</p>
-	<h3 id="otherregion">Giving a collection another region</h3>
-	<p>Another region is the construction's last argument: <span class="pre">new List[i32](100,
-		r)</span>, <span class="pre">new Dict[String, i64](r)</span>, where <span class="pre">r</span> is a
-		<span class="pre">*MemRegion</span>. Every block of the collection is then the region's, and its death
-		gives each back to it. A collection that cannot hand its block over,
-		because the owner of <span class="pre">freeze()</span> gives it back to the heap, moves its values
-		into a heap block first when its region is not the heap's. This region counts what it is asked for:</p>
+	<p>A collection can hold garbage-collected references (<a href="mem-gc.html#gc">Gc</a>, or in an actor its own
+		<span class="pre">ActorGc</span>): a <span class="pre">List[Gc[mut, Node]]</span> is traced value by value. A
+		collection, a <span class="pre">Pool</span> and an <span class="pre">Arena</span> each declare the built-in trait
+		<span class="pre">GcTraceElements</span> (a provisional name) and a method <span class="pre">fn gcTraceElements(self
+		&amp;mut) I</span> giving a cursor over a writable reference to each value they hold (<span class="pre">I</span>
+		declares <span class="pre">is Iterator[&amp;mut E]</span>, as <span class="pre">List</span>'s
+		<span class="pre">mutItems()</span> cursor does), and a type of your own that holds values behind a raw pointer
+		declares it the same way. The collector traces each reference the cursor gives as it traces a value of its type, and
+		rewrites it where it moves what it points at; a list of numbers holds nothing to trace, and costs nothing.</p>
+	<p>A <span class="pre">Dict</span> and an <span class="pre">OrderedDict</span> give their values, and refuse a key that
+		holds a traced reference (a collector that moved a key would leave it hashed where it was). An arena holds values of
+		many types, so its cursor gives each value whose type holds a traced reference as an <span class="pre">Erased</span>
+		(core's address of a value and the <a href="safe-intrinsics.html">type record</a> of its type), traced by its record's
+		own trace. A type with a raw pointer to a value that holds a traced reference, that does not declare
+		<span class="pre">GcTraceElements</span>, cannot be traced, and a variable or a traced allocation of it is
+		refused.</p>
+
+	<h2 id="memregion">Giving a collection a region of your own</h2>
+	<p>Rarely needed, but it is how a program counts, limits or places its collections' memory. A
+		<span class="pre">MemRegion</span> (core) is three function references, <span class="pre">allocFn</span>,
+		<span class="pre">resizeFn</span> and <span class="pre">releaseFn</span>, held in a struct's first field and handed that
+		field's address: <span class="pre">allocate(bytes, align)</span> gives a block, <span class="pre">resize(block, old,
+		new, align)</span> makes it longer, in place or by copying to a new one (a null block of 0 bytes is an allocation), and
+		<span class="pre">release(block, bytes)</span> gives it back.</p>
+	<p id="otherregion">Another region is the construction's last argument: <span class="pre">new List[i32](100, r)</span>,
+		<span class="pre">new Dict[String, i64](r)</span>, where <span class="pre">r</span> is a
+		<span class="pre">*MemRegion</span>. Every block of the collection is then the region's, and its death gives each back
+		to it. A collection that cannot hand its block over, because the owner <span class="pre">freeze()</span> makes gives it
+		back to the heap, moves its values into a heap block first when its region is not the heap's. This region counts what
+		it is asked for:</p>
 <pre>
+mod counting;
+
 import stdio use *;
 import collections use *;
 import libc;
@@ -243,22 +252,18 @@ fn main() i32 {
 </pre>
 	<p>This prints <span class="pre">bytes held: 1024</span>, <span class="pre">bytes held after: 0</span>,
 		<span class="pre">bytes for the mesh: 200</span> and <span class="pre">50</span>.</p>
+
 	<h3 id="carriesregion">A type that carries a region</h3>
-	<p>A type declares <span class="pre">CarriesRegion</span> (a provisional name)
-		to say that it gets its memory this way: it declares an init, and every init it declares ends
-		with the parameter <span class="pre">region *MemRegion</span>, which a construction naming none
-		leaves out and the compiler fills in with the heap's. Any type
-		may declare <span class="pre">CarriesRegion</span>, not only a collection: a struct that holds lists declares it and
-		passes its own <span class="pre">region</span> on to them,
-		<span class="pre">init(self &amp;new, n usize, region *MemRegion) { *self = new Mesh(pts: new List[f32](n, region), ...) }</span>,
-		so everything it is made of comes from the one region it was handed (the <span class="pre">Mesh</span> above).</p>
-	<h2 id="comesback">Comes back in &hellip;</h2>
-	<ul>
-		<li><a href="guide-collections.html">Collections and the send operator</a>: the collections themselves.</li>
-		<li><a href="mem-regions.html#arena">Arena</a>, and <a href="mem-regions.html#actorgc">ActorGc, an actor&rsquo;s own region</a>.</li>
-		<li><a href="mem-ownregion.html#traced">Traced allocators</a>: where a traced reference may be held.</li>
-		<li><a href="conc-runtime.html#actor-gc">The actor&rsquo;s own garbage-collected region</a>.</li>
-	</ul>
+	<p>A type declares <span class="pre">CarriesRegion</span> (a provisional name) to say that it gets its memory this way:
+		it declares an init, and every init it declares ends with the parameter <span class="pre">region *MemRegion</span>,
+		which a construction naming none leaves out and the compiler fills in with the heap's. Any type may declare
+		<span class="pre">CarriesRegion</span>, not only a collection: a struct that holds lists declares it and passes its own
+		<span class="pre">region</span> on to them, so everything it is made of comes from the one region it was handed (the
+		<span class="pre">Mesh</span> above).</p>
+
+	<p>You can now put a collection, block and all, in an arena or an actor's region, and count or place its memory with a
+		region of your own. The last page goes one step further: writing a region ref of your own, the kind
+		<span class="pre">new</span> allocates through.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="mem-ownregion.html"><img alt="_" src="next.png" /></a>

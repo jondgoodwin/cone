@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Awaiting in depth - Cone Reference</title>
+	  <title>await and futures in depth - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,24 +8,34 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Awaiting in depth</div>
+			<div id="sub">await and futures in depth</div>
 		</div>
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Not built yet: an <span class="pre">await</span> in a few places within an expression, a time limit on an <span class="pre">await</span> of a reply (an I/O operation's has one), cancelling a paused behaviour, waiting for whichever of several futures arrives first, and a way to look at a future without opening it.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: an <span class="pre">await</span> in a few places within an
+		expression, a time limit on an <span class="pre">await</span> of an answer (an I/O operation's has one), cancelling
+		a paused behaviour, waiting for whichever of several futures arrives first, and a way to look at a future without
+		opening it.</i></p>
 
-	<h2 id="why">Why you&rsquo;d want it</h2>
-	<p>An actor that needs another actor&rsquo;s answer does not hold a worker thread while it waits. It <span class="pre">await</span>s: the behaviour pauses, the actor goes on with its other messages, and the reply resumes the behaviour just after the <span class="pre">await</span>. The rest of the page says what that costs and promises: which values wait, which borrows end, and what happens to the rest of a statement.</p>
+	<p>An actor that needs another actor's answer must not hold a worker thread while it waits, or a few waiting actors
+		would stall every core. So it <span class="pre">await</span>s: the behaviour pauses, the actor goes on with its other
+		messages, and the answer resumes the behaviour just after the <span class="pre">await</span>. The
+		<a href="guide-actors.html#awaiting">Guide</a> showed the idea. This page says exactly what the pause costs and
+		promises: which values wait, which borrows end, what happens to the rest of a statement, and what a future is.
+		Afterwards you can write behaviours that wait without surprises. Here a page loads through a fetcher, which reads
+		from the network:</p>
 
-	<h2 id="await">Awaiting a behaviour's reply</h2>
-	<p>A message is one-way: the sender goes on at once, and whatever the behaviour returns is
-		dropped. Inside an actor's own behaviour, <span class="pre">await</span> sends a message
-		and waits for what the behaviour it sends returns:</p>
 <pre>
+mod fetch;
+
+import stdio use *;
+import actors;
+
+// A connection: closing it prints a line
 struct Conn {
   pub url u64;
-  fn final(self &amp;uni) {say("  close", url);}
+  fn final(self &amp;uni) { print &lt;- "  close ", url, "\n"; }
 }
 
 struct Buffer {
@@ -34,7 +44,7 @@ struct Buffer {
 
 actor Net {
   pub async do read(self, url u64) Buffer {
-    say("  read", url);
+    print &lt;- "  read ", url, "\n";
     new Buffer(url * 100u64);
   }
 }
@@ -45,8 +55,8 @@ actor Fetcher {
   pub async do fetch(self, url u64) Buffer {
     imm conn = new Conn(url);             // opened
     imm buf = await net.read(conn.url);   // conn waits, with the method
-    say("  fetched", buf.size);
-    buf;                                  // the reply to the 'await' on fetch
+    print &lt;- "  fetched ", buf.size, "\n";
+    buf;                                  // the answer to the 'await' on fetch
   }                                       // conn closes here
 }
 
@@ -55,15 +65,19 @@ actor Page {
   body u64;
 
   pub async do load(self, u u64) {
-    say("load", u);
+    print &lt;- "load ", u, "\n";
     imm b = await fetcher.fetch(u);       // pauses here
-    body = b.size;                        // and resumes when the reply comes
-    say("loaded", body);
+    body = b.size;                        // and resumes when the answer comes
+    print &lt;- "loaded ", body, "\n";
   }
 }
+
+fn main() {
+  imm page = new Page(new Fetcher(new Net()), 0u64);
+  page.load(7u64);
+}
 </pre>
-	<p>(<span class="pre">say</span> prints a word and a number on a line.) Sent
-		<span class="pre">page.load(7u64)</span>, this prints:</p>
+	<p>It prints:</p>
 <pre>
 load 7
   read 7
@@ -71,36 +85,56 @@ load 7
   close 7
 loaded 700
 </pre>
-	<p>When <span class="pre">load</span> reaches its <span class="pre">await</span>, it sends
-		<span class="pre">fetch</span> to the fetcher and <b>pauses</b>. The worker running Page does
-		not wait with it: Page goes back to its mailbox, and its other messages run meanwhile. When
-		<span class="pre">fetch</span> returns its <span class="pre">Buffer</span>, the value comes
-		back to Page as a <i>reply</i>, and <span class="pre">load</span> <b>resumes</b> just after
-		the <span class="pre">await</span>, whose value it is. Fetcher does the same at its own
-		<span class="pre">await</span>: while Net reads, Fetcher is free to handle other fetches. Its
-		connection, <span class="pre">conn</span>, is still open while it waits, and closes when
-		<span class="pre">fetch</span> ends, after the reply came, just as it would if
-		<span class="pre">read</span> had been an ordinary call.</p>
-	<p>An I/O operation is awaited the same way, its answer coming back as a reply does: a
-		real <span class="pre">read</span> of a socket is
-		<span class="pre">await conn.read(buf)</span>
-		(<a href="conc-io.html#await-io">Awaiting I/O</a>).</p>
+	<p><b>Try this:</b> send <span class="pre">page.load(8u64)</span> straight after the first load, and see how the two
+		loads' lines interleave while each one waits.</p>
 
-	<h2 id="await-sync">Await in a behaviour</h2>
-	<p>An <span class="pre">await</span> stands only in a behaviour: not in a plain function or a
-		struct's method, and not in any <span class="pre">fn</span> of an actor's &mdash; its
-		<span class="pre">init</span>, which runs on the thread making the actor, before the actor
-		takes any message; its <span class="pre">final</span>, as it dies; or a helper, which runs inside the
-		method that calls it and cannot pause partway through the call. A behaviour may hold any
-		number of them. The behaviour's declaration says it may pause, and that is as far as the
-		marking goes: a caller does not await a behaviour in order to call it, since the code that
-		runs it is the actor's dispatcher, at the top of its worker's stack, and every message
-		already runs later than it was sent. So an <span class="pre">await</span> pauses only the
-		behaviour it is written in, and goes no further, where in C#, Rust and JavaScript a
-		caller that waits for an asynchronous function's result must be asynchronous itself, and
-		its callers in turn, all the way up the stack.</p>
-	<p>The awaits are at the top of an actor's work, in its behaviours, and the synchronous work
-		between them is pushed down, onto a helper or a type the actor owns:</p>
+	<h2 id="await">Awaiting a behaviour's answer</h2>
+	<p>A message is one-way: the sender goes on at once, and whatever the behaviour returns is dropped. Inside an actor's
+		own behaviour, <span class="pre">await</span> sends a message and waits for what the behaviour it sends returns.</p>
+	<p>When <span class="pre">load</span> reaches its <span class="pre">await</span>, it sends
+		<span class="pre">fetch</span> to the fetcher and <b>pauses</b>. The worker running the page does not wait with it:
+		the page goes back to its mailbox, and its other messages run meanwhile. When <span class="pre">fetch</span> returns
+		its <span class="pre">Buffer</span>, the value comes back to the page as an <i>answer</i>, and
+		<span class="pre">load</span> <b>resumes</b> just after the <span class="pre">await</span>, whose value it is. The
+		fetcher does the same at its own <span class="pre">await</span>: while the network reads, the fetcher is free to
+		handle other fetches. Its connection, <span class="pre">conn</span>, is still open while it waits, and closes when
+		<span class="pre">fetch</span> ends, after the answer came, just as it would if <span class="pre">read</span> had been
+		an ordinary call.</p>
+	<p>An I/O operation is awaited the same way, its answer coming back as a behaviour's does: a real read of a socket is
+		<span class="pre">await conn.read(buf)</span> (<a href="conc-io.html#await-io">Awaiting I/O</a>).</p>
+
+	<h2 id="await-does">What an await does</h2>
+	<ol>
+	<li><b>It asks.</b> What follows <span class="pre">await</span> is a behaviour of an actor that returns a value. It is
+		sent, as any message is, and the request carries where the answer goes. (Or it is a future, a request sent
+		earlier: <a href="#future">Futures</a>.)</li>
+	<li><b>The behaviour pauses.</b> It returns to its actor's dispatcher. What the rest of the behaviour needs waits in
+		the actor (<a href="#await-cross">below</a>), not on a stack, so the worker goes on to other work.</li>
+	<li><b>Other messages run.</b> The actor handles the rest of its mailbox meanwhile, one message at a time, as always,
+		messages it sends itself among them. So its state may have changed by the time the behaviour resumes: what it read
+		from its fields before the <span class="pre">await</span>, it reads again after.</li>
+	<li><b>The answer resumes it.</b> When the behaviour asked returns, its value comes back to the actor that awaited,
+		as a message in its mailbox. When that message's turn comes, the rest of the behaviour runs, with the value as the
+		<span class="pre">await</span>'s, perhaps on another worker thread.</li>
+	</ol>
+
+	<h2 id="await-sync">Await only in a behaviour</h2>
+	<p>An <span class="pre">await</span> stands only in a behaviour. It may not stand in a plain function or a struct's
+		method, nor in any <span class="pre">fn</span> of an actor's: its <span class="pre">init</span>, which runs on the
+		thread making the actor, before the actor takes any message; its <span class="pre">final</span>, as it dies; or a
+		helper, which runs inside the method that calls it and cannot pause partway through the call. A behaviour may hold
+		any number of them.</p>
+	<p>That restriction is what keeps waiting cheap to write. Where any function may wait for an asynchronous answer, a
+		caller that needs the result must become asynchronous itself, and its callers in turn, all the way up the stack:
+		the waiting spreads through the program. The other common cure, threads that block while the runtime
+		notices and runs something else, is slower and harder to get right, since noticing that a thread is blocked, and
+		that it has woken, is neither cheap nor certain. An actor's behaviour needs neither. It is already at the top of
+		its worker's stack, run by its actor's dispatcher, and every message already runs later than it was sent, so a
+		caller never awaits a behaviour in order to call it. An <span class="pre">await</span> pauses only the behaviour it
+		is written in, and goes no further. The behaviour's declaration says it may pause, and that is as far as the
+		marking goes.</p>
+	<p>So the awaits go at the top of an actor's work, in its behaviours, and the synchronous work between them is pushed
+		down, onto a helper or a type the actor owns:</p>
 <pre>
 actor Reporter {
   clock Clock;
@@ -121,37 +155,19 @@ actor Reporter {
 }
 </pre>
 <pre>
-'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is
-cut and returns to the actor's dispatcher to wait. This one is in stamp, a 'fn' of actor
-Reporter's: synchronous, run inside the method that calls it, which cannot pause partway
-through a call. An 'await' belongs at the top of a behaviour: await there, and push the
-synchronous work down, onto a helper like this one or a type the actor owns, to run
-between the awaits.
+Error 1270: 'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and
+returns to the actor's dispatcher to wait. This one is in stamp, a 'fn' of actor Reporter's: synchronous, run
+inside the method that calls it, which cannot pause partway through a call. An 'await' belongs at the top of a
+behaviour: await there, and push the synchronous work down, onto a helper like this one or a type the actor
+owns, to run between the awaits.
 </pre>
-
-	<h2 id="await-does">What an await does</h2>
-	<ol>
-	<li><b>It asks.</b> What follows <span class="pre">await</span> is a behaviour of an actor
-		that returns a value. It is sent, as any message is, and the request carries where the
-		reply goes. (Or it is a future, a request sent earlier: <a href="#future">Storing a
-		future</a>.)</li>
-	<li><b>The behaviour pauses.</b> It returns to its actor's dispatcher. What the rest of the
-		behaviour needs waits in the actor (below), not on a stack, so the worker goes on to other
-		work.</li>
-	<li><b>Other messages run.</b> The actor handles the rest of its mailbox meanwhile, one message
-		at a time, as always, messages it sends itself among them. So its state may have changed
-		by the time the behaviour resumes: what it read from its fields before the
-		<span class="pre">await</span>, it reads again after.</li>
-	<li><b>The reply resumes it.</b> When the behaviour asked returns, its value comes back to the
-		actor that awaited, as a message in its mailbox. When that message's turn comes, the rest
-		of the behaviour runs, with the value as the <span class="pre">await</span>'s, perhaps on
-		another worker thread.</li>
-	</ol>
+	<p>That is also why a program's <span class="pre">main</span>, a plain function, starts its actors with a send and
+		lets the waiting happen inside them, as the Guide's bakery does.</p>
 
 	<h2 id="await-scope">It reads as one scope</h2>
-	<p>The method runs in parts, with other messages between them, but it is still the one
-		method written, with one scope. Every value it holds when it pauses dies where it would if
-		the method had never paused, and in the same order:</p>
+	<p>The method runs in parts, with other messages between them, but it is still the one method written, with one
+		scope. Every value it holds when it pauses dies where it would if the method had never paused, and in the same
+		order:</p>
 <pre>
 struct Note {
   pub n u64;
@@ -174,31 +190,29 @@ actor Logger {
   }                                       // second dies, then first
 }
 </pre>
-	<p><span class="pre">logger.log()</span> prints <span class="pre">at 43</span>, then
-		<span class="pre">drop 2</span>, then <span class="pre">drop 1</span>.
-		<span class="pre">second</span> is never named after the <span class="pre">await</span>, yet
-		it waits too, and dies at the method's end, the last declared first, as it would in a
-		method with no <span class="pre">await</span>. Nothing is dropped early at an
-		<span class="pre">await</span>, so what a finalizer does (closing a file, giving back a
-		buffer) happens where the method's text says. An <span class="pre">await</span> returns to
-		the dispatcher, not to the author: the author reads one method, and the pause shows only
-		in when the rest of it runs, and in what the actor's other messages did meanwhile.</p>
+	<p>(<span class="pre">say</span> prints a word and a number on a line, here and below.)
+		<span class="pre">await logger.log()</span> prints <span class="pre">at 43</span>, then <span class="pre">drop 2</span>,
+		then <span class="pre">drop 1</span>, and is 42. <span class="pre">second</span> is never named after the
+		<span class="pre">await</span>, yet it waits too, and dies at the method's end, the last declared first, as it would
+		in a method with no <span class="pre">await</span>. Nothing is dropped early at an <span class="pre">await</span>, so
+		what a finalizer does (closing a file, giving back a buffer) happens where the method's text says. An
+		<span class="pre">await</span> returns to the dispatcher, not to the author: the author reads one method, and the
+		pause shows only in when the rest of it runs, and in what the actor's other messages did meanwhile.</p>
 
 	<h2 id="await-cross">What crosses an await</h2>
 	<ul>
-	<li><b>Values move.</b> Every value the method still needs after the
-		<span class="pre">await</span>, and every value with a finalizer it still holds, waits for
-		the reply, and comes back to the same local when the method resumes. It is moved, never
-		copied: a counted owner (an <span class="pre">Arc</span>, an actor's handle) is not counted
-		again, and a value that may only move waits like any other. A local that is not used
-		again and has nothing to do as it dies is simply left behind.</li>
-	<li><b>Borrows end.</b> Every borrowed reference the method holds ends at the
-		<span class="pre">await</span>, as if its scope ended there: while the method is paused,
-		other messages run, and may change or drop what was borrowed. Holding one at an
-		<span class="pre">await</span> is no error; <i>using</i> one after it is (next).</li>
-	<li><b>A <span class="pre">'static</span> borrow does not end.</b> A borrow of a global may
-		already be returned from a function, since what it points at outlives every function; for
-		the same reason it crosses an <span class="pre">await</span>:
+	<li><b>Values move.</b> Every value the method still needs after the <span class="pre">await</span>, and every value
+		with a finalizer it still holds, waits for the answer, and comes back to the same local when the method resumes. It
+		is moved, never copied: a counted owner (an <span class="pre">Arc</span>, an actor's handle) is not counted again,
+		and a value that may only move waits like any other. A local that is not used again and has nothing to do as it
+		dies is left behind.</li>
+	<li><b>Borrows end.</b> Every borrowed reference the method holds ends at the <span class="pre">await</span>, as if
+		its scope ended there: while the method is paused, other messages run, and may change or drop what was borrowed.
+		Holding one at an <span class="pre">await</span> is no error; <i>using</i> one after it is
+		(<a href="#await-borrow">below</a>).</li>
+	<li><b>A <span class="pre">'static</span> borrow does not end.</b> A borrow of a global may already be returned from
+		a function, since what it points at outlives every function; for the same reason it crosses an
+		<span class="pre">await</span>:
 <pre>
 imm limit u64 = 100u64;
 
@@ -208,14 +222,13 @@ actor Gauge {
   pub async do check(self) u64 {
     imm max = &amp;limit;                     // a borrow of a global: 'static
     imm t = await clock.now();
-    *max - t;                             // still valid after the 'await'
+    *max - t;                             // still valid after the 'await': 58
   }
 }
 </pre>
 		</li>
-	<li><b>A lock is given back.</b> A borrow through a
-		<a href="conc-locks.html">lock permission</a> holds its lock for as long as the borrow
-		lasts, so the borrow ends at the <span class="pre">await</span> and the lock is given back
+	<li><b>A lock is given back.</b> A borrow through a <a href="conc-locks.html">lock permission</a> holds its lock for
+		as long as the borrow lasts, so the borrow ends at the <span class="pre">await</span> and the lock is given back
 		there. To reach the value again, the method borrows it again:
 <pre>
 struct Count {pub n u64;}
@@ -229,23 +242,24 @@ actor Tally {
     c.n += 1u64;
     imm t = await clock.now();            // gives it back
     (&amp;mut *count).n += t;                 // takes it again, for the statement
-    (&amp;*count).n;
+    (&amp;*count).n;                          // 43, from a count of 0
   }
 }
 </pre>
-		A lock borrow is never <span class="pre">'static</span>, since it borrows a hidden local
-		that holds the lock, so it never crosses: no method holds a lock while it waits.</li>
-	<li><b>A reference into the actor's own region is kept.</b> The actor's collector keeps it: a paused behaviour's record, parked in the pending table, is one of its roots (<a href="conc-runtime.html#actor-gc">The actor's own garbage-collected region</a>). (The <span class="pre">collector</span> package's <span class="pre">Gc</span> is refused inside an actor altogether: <a href="conc-actors.html#inside">Inside an actor</a>.)</li>
-	<li><b>The state is lent afresh.</b> <span class="pre">self</span> and the actor's fields may
-		be used after an <span class="pre">await</span>: the dispatcher lends the state again when
-		the method resumes. A borrow made <i>through</i> <span class="pre">self</span> before the
-		<span class="pre">await</span> ends, as any borrow does.</li>
+		A lock borrow is never <span class="pre">'static</span>, since it borrows a hidden local that holds the lock, so
+		it never crosses: no method holds a lock while it waits.</li>
+	<li><b>A reference into the actor's own region is kept.</b> The actor's collector keeps it: a paused behaviour's
+		record, parked in the pending table, is one of its roots (<a href="conc-runtime.html#actor-gc">The actor's own
+		garbage-collected region</a>). The <span class="pre">collector</span> package's <span class="pre">Gc</span> is
+		refused inside an actor altogether (<a href="conc-actors.html#inside">Inside an actor</a>).</li>
+	<li><b>The state is lent afresh.</b> <span class="pre">self</span> and the actor's fields may be used after an
+		<span class="pre">await</span>: the dispatcher lends the state again when the method resumes. A borrow made
+		<i>through</i> <span class="pre">self</span> before the <span class="pre">await</span> ends, as any borrow does.</li>
 	</ul>
 
 	<h3 id="await-borrow">Using a borrow after an await</h3>
-	<p>A borrow used after the <span class="pre">await</span> that ended it is refused, with the
-		error any borrow used after its end gets, pointing at the <span class="pre">await</span> as
-		where it ended:</p>
+	<p>A borrow used after the <span class="pre">await</span> that ended it is refused, with the error any borrow used
+		after its end gets, pointing at the <span class="pre">await</span> as where it ended:</p>
 <pre>
 actor Meter {
   clock Clock;
@@ -262,19 +276,23 @@ actor Meter {
     imm r = &amp;reading;           // borrowed after the 'await'
     reading = *r + t;
   }
+}
 </pre>
 <pre>
-The borrow 'r' holds of '*self' (made at ..) ends at this 'await', where the method
-returns to its actor's dispatcher to wait, and 'r' is used again at ..
+Error 1168: The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its
+actor's dispatcher to wait, and 'r' is used again at 50:16.
 </pre>
-	<p>A lock borrow used after the <span class="pre">await</span> is refused the same way, the
-		message naming the lock it held.</p>
+	<p>A lock borrow used after the <span class="pre">await</span> is refused the same way, the message naming the lock it
+		held:</p>
+<pre>
+Error 1168: The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the
+method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5.
+</pre>
 
 	<h2 id="await-statement">Await inside a statement</h2>
-	<p>An <span class="pre">await</span> may stand inside a larger expression. What follows
-		<span class="pre">await</span> is worked out first, up to the request it sends; then the
-		behaviour pauses, and the rest of the statement runs when the reply comes, as the first
-		thing the behaviour does when it resumes:</p>
+	<p>An <span class="pre">await</span> may stand inside a larger expression. What follows <span class="pre">await</span>
+		is worked out first, up to the request it sends; then the behaviour pauses, and the rest of the statement runs when
+		the answer comes, as the first thing the behaviour does when it resumes:</p>
 <pre>
 actor Counter {
   pub async do next(self) u64 {2u64;}
@@ -295,34 +313,26 @@ actor Shelf {
   }
 }
 </pre>
-	<p><span class="pre">await shelf.stock()</span> is <span class="pre">11</span>. Each statement
-		runs as if the value awaited were made first, into a local of its own:
-		<span class="pre">imm i = await counter.next(); slots[i] = 7u64;</span>. So what the rest
-		of the statement reaches &mdash; <span class="pre">slots</span>, the state through
-		<span class="pre">self</span>, <span class="pre">total</span> &mdash; it reaches as it is
-		when the behaviour resumes, after whatever the actor's other messages did meanwhile, and
-		nothing of it is borrowed while the behaviour waits. A borrow written to the left of the
-		<span class="pre">await</span> is taken then too: <span class="pre">add(&amp;x, await
-		clock.now())</span> borrows <span class="pre">x</span> once the reply has come, and
-		<span class="pre">total += await counter.next()</span> loses nothing another message added
-		to <span class="pre">total</span> while it waited. Rust holds such a borrow across its
-		<span class="pre">await</span> instead, which it can because nothing else may change what
-		an exclusive borrow reaches while it waits; inside an actor, its other messages run
-		meanwhile.</p>
-	<p>A value is not reached again. One made to the left of the <span class="pre">await</span>,
-		in the order the statement is worked out &mdash; an argument before it, an operator's
-		operand &mdash; is made before the request is sent and waits with the method: in
-		<span class="pre">total + await counter.next()</span>, <span class="pre">total</span> is
-		read before the <span class="pre">await</span>. The value an assignment stores is made
-		before its place is reached, so in <span class="pre">slots[await counter.next()] =
-		f()</span>, <span class="pre">f</span> runs first.</p>
-	<p>What is reached again is a plain path: a local, <span class="pre">self</span>, a field, an
-		element at a plain index, or a borrow of one. A borrow a call made cannot be made again, so
-		a borrow, or a place, made by a call to the left of the <span class="pre">await</span> is
-		refused, and the message says to bind what the call makes to a local first. In
-		<span class="pre">Meter</span>, where <span class="pre">add</span> is a function taking a
-		<span class="pre">&amp;u64</span> and a number, and <span class="pre">compute</span> one
-		returning a number:</p>
+	<p><span class="pre">await shelf.stock()</span> is 11. Each statement runs as if the value awaited were made first,
+		into a local of its own: <span class="pre">imm i = await counter.next(); slots[i] = 7u64;</span>. So what the rest
+		of the statement reaches (<span class="pre">slots</span>, the state through <span class="pre">self</span>,
+		<span class="pre">total</span>) it reaches as it is when the behaviour resumes, after whatever the actor's other
+		messages did meanwhile, and nothing of it is borrowed while the behaviour waits. A borrow written to the left of the
+		<span class="pre">await</span> is taken then too: <span class="pre">add(&amp;x, await clock.now())</span> borrows
+		<span class="pre">x</span> once the answer has come, and <span class="pre">total += await counter.next()</span> loses
+		nothing another message added to <span class="pre">total</span> while it waited. Holding the borrow across the pause
+		instead would be safe only if nothing else could change what it reaches meanwhile, and inside an actor, its other
+		messages run meanwhile.</p>
+	<p>A value is not reached again. One made to the left of the <span class="pre">await</span>, in the order the
+		statement is worked out (an argument before it, an operator's operand), is made before the request is sent and waits
+		with the method: in <span class="pre">total + await counter.next()</span>, <span class="pre">total</span> is read
+		before the <span class="pre">await</span>. The value an assignment stores is made before its place is reached, so in
+		<span class="pre">slots[await counter.next()] = f()</span>, <span class="pre">f</span> runs first.</p>
+	<p>What is reached again is a plain path: a local, <span class="pre">self</span>, a field, an element at a plain
+		index, or a borrow of one. A borrow a call made cannot be made again, so a borrow, or a place, made by a call to the
+		left of the <span class="pre">await</span> is refused, and the message says to bind what the call makes to a local
+		first. In <span class="pre">Meter</span>, where <span class="pre">add</span> is a function taking a
+		<span class="pre">&amp;u64</span> and a number, and <span class="pre">compute</span> one returning a number:</p>
 <pre>
   pub async do fromCall(self) {
     reading = add(&amp;compute(), await clock.now());  // refused: compute() made what is borrowed
@@ -334,21 +344,18 @@ actor Shelf {
   }
 </pre>
 <pre>
-This borrow, written to the left of an 'await' in the same statement, is made by a call
-or a temporary, and is used after the 'await'. The rest of the statement runs after the
-'await', which ends every borrow: only a plain path -- a local, 'self', a field, an
-element at a plain index -- is reached again there, never what a call made. Bind what
-the call makes to a local first, and use the local here.
+Error 1279: This borrow, written to the left of an 'await' in the same statement, is made by a call or a
+temporary, and is used after the 'await'. The rest of the statement runs after the 'await', which ends every
+borrow: only a plain path -- a local, 'self', a field, an element at a plain index -- is reached again there,
+never what a call made. Bind what the call makes to a local first, and use the local here.
 </pre>
-	<p>More than one <span class="pre">await</span> may stand in a place, in both places a swap
-		exchanges, in a slice's bounds, in the places of a parallel assignment and among the entries
-		a <span class="pre">&lt;-</span> appends. Each is worked out first, from left to right,
-		every <span class="pre">await</span> once: the indexes of the place, those of the second
-		side of a swap after those of the first, and a parallel assignment's value before its
-		places. An index worked out waits with the method while the ones after it are awaited,
-		and the arrays and slices they index are reached after the last reply, as they are
-		with one <span class="pre">await</span>. The entries of a <span class="pre">&lt;-</span>
-		written before the last one that holds an <span class="pre">await</span> are made
+	<p>More than one <span class="pre">await</span> may stand in a place: in both places a swap exchanges, in a slice's
+		bounds, in the places of a parallel assignment, and among the entries a <span class="pre">&lt;-</span> appends.
+		Each is worked out first, from left to right, every <span class="pre">await</span> once: the indexes of the place,
+		those of the second side of a swap after those of the first, and a parallel assignment's value before its places. An
+		index worked out waits with the method while the ones after it are awaited, and the arrays and slices they index
+		are reached after the last answer, as they are with one <span class="pre">await</span>. The entries of a
+		<span class="pre">&lt;-</span> written before the last one that holds an <span class="pre">await</span> are made
 		before the list is borrowed, in the order written, and appended after it:</p>
 <pre>
 actor Lane {
@@ -370,11 +377,11 @@ actor Board {
   }
 }
 </pre>
-	<p><span class="pre">await board.fill()</span> is <span class="pre">259</span>.</p>
+	<p><span class="pre">await board.fill()</span> is 259.</p>
 
-	<h2 id="reply-once">One request, one reply</h2>
-	<p>An <span class="pre">await</span> sends one request and takes exactly one reply. A message
-		that returns a value answers once, when it returns, from whichever path it returns by:</p>
+	<h2 id="reply-once">One request, one answer</h2>
+	<p>An <span class="pre">await</span> sends one request and takes exactly one answer. A behaviour that returns a value
+		answers once, when it returns, from whichever path it returns by:</p>
 <pre>
 actor Cache {
   net Net;
@@ -385,21 +392,21 @@ actor Cache {
       return 1u64;                        // answered here, at once
     }
     imm b = await net.read(url);
-    b.size;                               // or here, once the reply came
+    b.size;                               // or here, once the answer came
   }
 }
 </pre>
-	<p>A reply always has an actor to go to: the request holds a counted handle of the actor that
-		awaited, so that actor cannot die while its reply is owed. A behaviour that returns a value
-		may also be sent with no <span class="pre">await</span>, and its value is then
-		dropped.</p>
+	<p>With 3 as the hot address, <span class="pre">await cache.get(3u64)</span> is 1 and reads nothing, and
+		<span class="pre">await cache.get(4u64)</span> reads and is 400. An answer always has an actor to go to: the request
+		holds a counted handle of the actor that awaited, so that actor cannot die while its answer is owed. A behaviour
+		that returns a value may also be sent with no <span class="pre">await</span>, and its value is then dropped.</p>
 
-	<h2 id="future">Futures: storing a call's value</h2>
-	<p>A call of a behaviour that returns a value, written where its value is kept &mdash; bound
-		to a local, passed on, returned &mdash; sends the request at once and gives back a
-		<i>future</i>: a value standing for what the behaviour will return. An
-		<span class="pre">await</span> on the future waits for that value. So several requests can
-		be in flight at once, and their answers collected later:</p>
+	<h2 id="future">Futures: keeping a call's answer for later</h2>
+	<p>Awaiting each call as it is made has an actor wait for one answer before it even sends the next request. A call of
+		a behaviour that returns a value, written where its value is kept (bound to a local, passed on, returned), sends the
+		request at once and gives back a <b>future</b>: a value standing for what the behaviour will return. An
+		<span class="pre">await</span> on the future waits for that value. So several requests can be in flight at once, and
+		their answers collected later:</p>
 <pre>
 actor Stock {
   pub async do price(self, item u64) u64 {item * 3u64;}
@@ -417,37 +424,30 @@ actor Basket {
   }
 }
 </pre>
-	<p><span class="pre">await basket.total()</span> is <span class="pre">27</span>. Both requests are
-		sent before either is waited for, so Stock may work on the second while Basket waits for
-		the first. A behaviour is declared once, and how it is called says what becomes of its
-		value:</p>
+	<p><span class="pre">await basket.total()</span> is 27. Both requests are sent before either is waited for, so the
+		stock may work on the second while the basket waits for the first. A behaviour is declared once, and how it is
+		called says what becomes of its value:</p>
 	<ul>
-	<li><span class="pre">await stock.price(4u64)</span> sends it and waits here: the
-		<span class="pre">await</span>'s value is the behaviour's, and no future is made.</li>
+	<li><span class="pre">await stock.price(4u64)</span> sends it and waits here: the <span class="pre">await</span>'s value
+		is the behaviour's, and no future is made.</li>
 	<li><span class="pre">imm f = stock.price(4u64)</span> sends it and keeps its future, an
-		<span class="pre">actors.Future[u64]</span>, for an <span class="pre">await</span>
-		later.</li>
-	<li><span class="pre">stock.price(4u64);</span>, a statement of its own, sends it and forgets
-		it: its value is dropped.</li>
+		<span class="pre">actors.Future[u64]</span>, for an <span class="pre">await</span> later.</li>
+	<li><span class="pre">stock.price(4u64);</span>, a statement of its own, sends it and forgets it: its value is
+		dropped.</li>
 	</ul>
-	<p>An <span class="pre">await</span> on a future pauses only if the value has not arrived. If
-		it has, the behaviour goes on at once: nothing pauses, nothing waits in the actor, and none
-		of the actor's other messages runs in between, so a future collected after other work is
-		often free. If it has not, the behaviour pauses just as on a reply
-		(<a href="#await-does">What an await does</a>), every borrow ending there, and resumes when the
-		value arrives. Either way, what crosses the <span class="pre">await</span> is
-		<a href="#await-cross">what crosses any await</a>.</p>
-	<p>A future is a value like any other. It may be stored and awaited much later, and it may be
-		handed to another actor in a message and awaited there: it belongs to whoever holds it,
-		never to the actor that made the call, and whoever holds it may await it. It crosses to
-		another thread where its value may: <span class="pre">Future[T]</span> is
-		<span class="pre">Sendable</span> where <span class="pre">T</span> is. It copies or moves
-		as its value does. <span class="pre">Future[u64]</span> copies, and each
-		<span class="pre">await</span> on a copy gives the value again. A future of a value that
-		moves, a <span class="pre">Future[Report]</span> where <span class="pre">Report</span> is a
-		move type, moves too: the <span class="pre">await</span> takes the value out of it, and
-		the future goes with it, so no second <span class="pre">await</span> could take the value
-		again:</p>
+	<p>An <span class="pre">await</span> on a future pauses only if the value has not arrived. If it has, the behaviour
+		goes on at once: nothing pauses, nothing waits in the actor, and none of the actor's other messages runs in between,
+		so a future collected after other work is often free. If it has not, the behaviour pauses just as on an answer
+		(<a href="#await-does">What an await does</a>), every borrow ending there, and resumes when the value arrives. Either
+		way, what crosses the <span class="pre">await</span> is <a href="#await-cross">what crosses any await</a>.</p>
+	<p>A future is a value like any other. It may be stored and awaited much later, and it may be handed to another actor
+		in a message and awaited there: it belongs to whoever holds it, never to the actor that made the call. It crosses to
+		another thread where its value may: <span class="pre">Future[T]</span> is <span class="pre">Sendable</span> where
+		<span class="pre">T</span> is. It copies or moves as its value does. <span class="pre">Future[u64]</span> copies,
+		and each <span class="pre">await</span> on a copy gives the value again. A future of a value that moves, a
+		<span class="pre">Future[Report]</span> where <span class="pre">Report</span> is a move type, moves too: the
+		<span class="pre">await</span> takes the value out of it, and the future goes with it, so no second
+		<span class="pre">await</span> could take the value again:</p>
 <pre>
 struct Report is Move {
   pub lines u64;
@@ -481,8 +481,7 @@ actor Office {
   }
 }
 </pre>
-	<p><span class="pre">await office.file()</span> is <span class="pre">20</span>, and
-		<span class="pre">await office.pass()</span> is <span class="pre">7</span>. Awaiting
+	<p><span class="pre">await office.file()</span> is 20, and <span class="pre">await office.pass()</span> is 7. Awaiting
 		<span class="pre">r</span> a second time is refused, as any use of a moved value is:</p>
 <pre>
 actor Desk {
@@ -497,44 +496,39 @@ actor Desk {
 }
 </pre>
 <pre>
-This variable's value has been moved out. It is no longer there to use.
+Error 1048: This variable's value has been moved out. It is no longer there to use.
 </pre>
-	<p>A future nobody awaits is no error and costs nothing more: the behaviour runs, its value
-		arrives, and it is finalized when the last holder of the future lets go, or when the value
-		arrives, whichever is later. Letting go of a future does not stop its behaviour, which is
-		already running on its own actor.</p>
-	<p>An <span class="pre">await</span> assumes the value arrives, as it nearly always does, and
-		hands it over directly, with no wrapper to unwrap. When the behaviour owing it can never
-		answer &mdash; its actor died while the behaviour was paused on something abandoned
-		itself, as at the program's end &mdash; the future is <i>abandoned</i>. A behaviour already
-		paused on it is abandoned with it, as one paused on the request itself would be: the rest
-		of it never runs, and the values it held are finalized, in the order its one scope gives,
-		once nothing else holds its actor. So the program's end, which ends what is outstanding,
-		ends <span class="pre">imm f = server.next(); await f</span> as it ends
-		<span class="pre">await server.next()</span>. An <span class="pre">await</span> that
-		finds the future abandoned already panics, reported at the
-		<span class="pre">await</span>:</p>
+	<p>A future nobody awaits is no error and costs nothing more: the behaviour runs, its value arrives, and it is
+		finalized when the last holder of the future lets go, or when the value arrives, whichever is later. Letting go of a
+		future does not stop its behaviour, which is already running on its own actor.</p>
+	<p>An <span class="pre">await</span> assumes the value arrives, as it nearly always does, and hands it over directly,
+		with no wrapper to unwrap. When the behaviour owing it can never answer (its actor died while the behaviour was
+		paused on something abandoned itself, as at the program's end), the future is <i>abandoned</i>. A behaviour already
+		paused on it is abandoned with it, as one paused on the request itself would be: the rest of it never runs, and the
+		values it held are finalized, in the order its one scope gives, once nothing else holds its actor. So the program's
+		end, which ends what is outstanding, ends <span class="pre">imm f = server.next(); await f</span> as it ends
+		<span class="pre">await server.next()</span>. An <span class="pre">await</span> that finds the future abandoned
+		already panics, reported at the <span class="pre">await</span>:</p>
 <pre>
-actors: an awaited future will never arrive: the behaviour owing it (request 1) ended without answering
+panic in thread 25268 at concurrency_future_abandoned.cone:30: actors: an awaited future will never arrive: the
+behaviour owing it (request 1) ended without answering
 </pre>
-	<p>The request number counts the futures the program has made, so the report says which one
-		it was. Where the failure is one the program should handle, the behaviour declares it in
-		its return type, a <span class="pre">Result</span>, and the future's value is that
+	<p>The request number counts the futures the program has made, so the report says which one it was. Where the failure
+		is one the program should handle, the behaviour declares it in its return type, a
+		<a href="guide-functions.html#result-tour"><span class="pre">Result</span></a>, and the future's value is that
 		<span class="pre">Result</span>.</p>
-	<p>Only a future, a behaviour's reply and an operation are awaited. An
-		<span class="pre">await</span> on anything else waits for no answer, and is refused: an
-		<span class="pre">await</span> on a function's call, whose value is there as soon as the
-		call returns (<a href="#await-unbuilt">below</a>), or on a number. And a behaviour that
-		returns nothing gives no future (<a href="#await-nothing">next</a>).</p>
-	<p>The compiler's <span class="pre">--await-direct</span> option, which is for testing the cut, runs the rest of
-		the behaviour at once after an <span class="pre">await</span> on anything else, with the value awaited.</p>
+	<p>Only a future, a behaviour's answer and an I/O operation are awaited. An <span class="pre">await</span> on anything
+		else waits for no answer, and is refused: an <span class="pre">await</span> on a function's call, whose value is
+		there as soon as the call returns (<a href="#await-unbuilt">below</a>), or on a number. And a behaviour that returns
+		nothing gives no future (<a href="#await-nothing">next</a>). The compiler's <span class="pre">--await-direct</span>
+		option, which is for testing the cut, runs the rest of the behaviour at once after an <span class="pre">await</span>
+		on anything else, with the value awaited.</p>
 
 	<h2 id="await-nothing">A behaviour that returns nothing</h2>
-	<p>Whether a reply is sent is the behaviour's declaration to say, never its caller's: one
-		with no return type sends none, so there is nothing to await, and an
-		<span class="pre">await</span> on it is refused. A caller that needs to know a behaviour
-		has finished needs to know whether it worked, too: the behaviour declares a return type,
-		a status, and the caller awaits that.</p>
+	<p>Whether an answer is sent is the behaviour's declaration to say, never its caller's: one with no return type sends
+		none, so there is nothing to await, and an <span class="pre">await</span> on it is refused. A caller that needs to
+		know a behaviour has finished needs to know whether it worked, too: the behaviour declares a return type, a status,
+		and the caller awaits that.</p>
 <pre>
 actor Log {
   pub async do flush(self) {}             // owes its caller nothing
@@ -546,18 +540,18 @@ actor Writer {
   saved bool;
 
   pub async do save(self) {
-    await log.flush();            // refused: flush sends no reply
+    await log.flush();            // refused: flush sends no answer
     saved = await log.commit();   // waits until commit has run, and learns whether it worked
   }
 }
 </pre>
 <pre>
-'await' waits for a behaviour's reply, and flush returns nothing, so it sends none: a
-behaviour with no return type owes its caller nothing. If the caller needs to know flush
-finished, declare a return type -- a status saying whether it worked -- and await that.
+Error 1274: 'await' waits for a behaviour's reply, and flush returns nothing, so it sends none: a behaviour with
+no return type owes its caller nothing. If the caller needs to know flush finished, declare a return type -- a
+status saying whether it worked -- and await that.
 </pre>
-	<p>For the same reason its call gives no future: one whose value is kept is refused. Written
-		as a statement of its own, it sends the message and forgets it.</p>
+	<p>For the same reason its call gives no future: one whose value is kept is refused. Written as a statement of its own,
+		it sends the message and forgets it.</p>
 <pre>
 actor Keeper {
   log Log;
@@ -569,20 +563,19 @@ actor Keeper {
 }
 </pre>
 <pre>
-flush returns nothing, so its call gives no future to keep: a behaviour with no return
-type owes its caller nothing, and calling it sends a message and forgets it. Call it as a
-statement of its own; or, if the caller needs to know flush finished, declare a return
-type -- a status saying whether it worked -- and keep or await that.
+Error 1282: flush returns nothing, so its call gives no future to keep: a behaviour with no return type owes its
+caller nothing, and calling it sends a message and forgets it. Call it as a statement of its own; or, if the
+caller needs to know flush finished, declare a return type -- a status saying whether it worked -- and keep or
+await that.
 </pre>
-	<p>An acknowledgement is not flow control. A sender that awaits each reply before sending
-		again has one message outstanding at a time, so the two run in lockstep, a round trip
-		each. To keep a fast sender from running far ahead of a slow receiver while both stay
-		busy, send through a bounded <a href="conc-sharing.html#channel">channel</a>: its capacity is how far
-		ahead the sender may get, and a send blocks only when it is full.</p>
+	<p>An acknowledgement is not flow control. A sender that awaits each answer before sending again has one message
+		outstanding at a time, so the two run in lockstep, a round trip each. To keep a fast sender from running far ahead
+		of a slow receiver while both stay busy, send through a bounded <a href="conc-threads.html#channel">channel</a>: its
+		capacity is how far ahead the sender may get, and a send blocks only when it is full.</p>
 
 	<h2 id="await-loop">An await in a loop</h2>
-	<p>An <span class="pre">await</span> may stand in a loop, and a loop's variables cross it as any
-		others do. It is legal, but poor practice:</p>
+	<p>An <span class="pre">await</span> may stand in a loop, and a loop's variables cross it as any others do. It is
+		legal, but poor practice:</p>
 <pre>
 actor Sizes {
   net Net;
@@ -597,39 +590,35 @@ actor Sizes {
   }
 }
 </pre>
-	<p>Each pass sends one request and waits for its reply before the next is sent, so the
-		requests run one after another, a round trip each, and the actor's other messages run in
-		between the passes, perhaps changing what the loop reads. A borrow the loop holds ends at
-		the <span class="pre">await</span> on every pass. Requests that do not depend on one
-		another's replies need not wait in turn: each call's future kept, they are all in flight at
-		once, and their values are awaited afterwards (<a href="#future">Storing a
-		future</a>).</p>
+	<p><span class="pre">await sizes.total(3u64)</span> reads 0, 1 and 2, one after another, and is 300. Each pass sends
+		one request and waits for its answer before the next is sent, so the requests run one after another, a round trip
+		each, and the actor's other messages run in between the passes, perhaps changing what the loop reads. A borrow the
+		loop holds ends at the <span class="pre">await</span> on every pass. Requests that do not depend on one another's
+		answers need not wait in turn: keep each call's future, and they are all in flight at once, their values awaited
+		afterwards (<a href="#future">Futures</a>).</p>
 
 	<h2 id="await-unbuilt">Not built yet</h2>
 	<p>Each of these is reported where it is written, as not built:</p>
 	<ul>
-	<li><b>A few places an <span class="pre">await</span> may not cut yet</b>: in the index of
-		a place whose base is itself an expression holding an <span class="pre">await</span>
-		(<span class="pre">(await f()).items[await g()]</span>), among the entries one
-		<span class="pre">&lt;-</span> appends that repeat or fill a value
-		(<span class="pre">v &lt;- 3 of await f()</span>), and in an array's contents that repeat
-		a value more than 16 times (<span class="pre">&lt;- fill await f()</span>). Written as a
-		statement of its own first, each <span class="pre">await</span> is built.</li>
-	<li><b>Timeouts and cancellation.</b> A paused behaviour waits until its reply comes. There
-		is no time limit on the wait, and no way to cancel a paused behaviour, except that an I/O
-		operation it awaits can be limited and cancelled
-		(<a href="conc-io.html#await-io-limits">Cancelling an operation, and limiting it</a>). Only the program's
-		end ends one early: a behaviour paused on I/O is abandoned then, the rest of it never run,
-		and its values are finalized once nothing else holds its actor
-		(<a href="conc-io.html#await-io">Awaiting I/O</a>); a behaviour whose reply was owed by
-		one abandoned so is abandoned with it, and a future it owed is abandoned
-		(<a href="#future">Storing a future</a>).</li>
-	<li><b>Awaiting several futures at once.</b> An <span class="pre">await</span> waits for one
-		future. Waiting for whichever of several arrives first, or for all of them in one
-		<span class="pre">await</span>, is not built: several are awaited one after another.</li>
-	<li><b>Looking at a future without opening it.</b> An <span class="pre">await</span> opens the
-		future and panics if its value never arrives. There is no way yet to ask whether it
-		arrived, or to handle an abandoned one, without the panic.</li>
+	<li><b>A few places an <span class="pre">await</span> may not cut yet</b>: in the index of a place whose base is
+		itself an expression holding an <span class="pre">await</span>
+		(<span class="pre">(await f()).items[await g()]</span>), among the entries one <span class="pre">&lt;-</span> appends
+		that repeat or fill a value (<span class="pre">v &lt;- 3 of await f()</span>), and in an array's contents that
+		repeat a value more than 16 times (<span class="pre">&lt;- fill await f()</span>). Written as a statement of its own
+		first, each <span class="pre">await</span> is built.</li>
+	<li><b>Timeouts and cancellation.</b> A paused behaviour waits until its answer comes. There is no time limit on the
+		wait, and no way to cancel a paused behaviour, except that an I/O operation it awaits can be limited and cancelled
+		(<a href="conc-io.html#await-io-limits">Cancelling an operation, and limiting it</a>). Only the program's end ends
+		one early: a behaviour paused on I/O is abandoned then, the rest of it never run, and its values are finalized once
+		nothing else holds its actor (<a href="conc-io.html#io-thread">The I/O thread, and the program's end</a>); a
+		behaviour whose answer was owed by one abandoned so is abandoned with it, and a future it owed is abandoned
+		(<a href="#future">Futures</a>).</li>
+	<li><b>Awaiting several futures at once.</b> An <span class="pre">await</span> waits for one future. Waiting for
+		whichever of several arrives first, or for all of them in one <span class="pre">await</span>, is not built: several
+		are awaited one after another.</li>
+	<li><b>Looking at a future without opening it.</b> An <span class="pre">await</span> opens the future and panics if
+		its value never arrives. There is no way yet to ask whether it arrived, or to handle an abandoned one, without the
+		panic.</li>
 	</ul>
 	<p>One of them, beside an <span class="pre">await</span> refused for what it awaits, where
 		<span class="pre">compute</span> is a plain function:</p>
@@ -648,15 +637,17 @@ actor Waiter {
   }
 }
 </pre>
+<pre>
+Error 1281: 'await' waits for an answer: a behaviour's reply, a future a behaviour's call gave, or an operation.
+This one awaits a u64, which is none of them, so nothing is generated for it. ...
+Error 1271: 'await' is not built here yet, so nothing is generated for it: it stands among the entries a '&lt;-'
+appends, whose receiver is borrowed once for all of them and would be held across the seam. Append the awaited
+value with a '&lt;-' of its own.
+</pre>
 
-	<h2 id="comes-back">Comes back in &hellip;</h2>
-	<ul>
-	<li><a href="guide-actors.html">The Guide, <i>Actors</i>: awaiting a reply as a tour.</a></li>
-	<li><a href="conc-actors.html">Actors in depth: the four behaviour shapes, and a behaviour that sends to itself.</a></li>
-	<li><a href="conc-io.html">I/O in depth: awaiting a socket, a file or a timer the same way, with cancelling and deadlines.</a></li>
-	<li><a href="conc-locks.html#giveback">Lock permissions in depth: a lock is given back at an <span class="pre">await</span>.</a></li>
-	<li><a href="mem-borrowing.html">Memory, borrowed references: why a borrow ends at an <span class="pre">await</span>.</a></li>
-	</ul>
+	<p>You can now write behaviours that wait for other actors without holding a thread, keep several requests in flight
+		with futures, and know what each pause does to the values and borrows a behaviour holds. The same
+		<span class="pre">await</span> waits for a socket, a file or a timer, which is next.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="conc-io.html"><img alt="_" src="next.png" /></a>

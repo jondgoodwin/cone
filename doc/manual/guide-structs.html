@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Structs and methods - Cone Reference</title>
+	  <title>Structs: named fields and methods - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,27 +8,22 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Structs and methods</div>
+			<div id="sub">Structs: named fields and methods</div>
 		</div>
 
     <div class="text">
 
-	<p>Numbers alone describe little. A program gathers the values that belong together into data of its own: a point
-		with its coordinates, a rectangle with its corner and size. A <b>struct</b> does that, and its <b>methods</b> say
-		what can be done with one. This page also covers the two simplest ways to group values without declaring
-		anything: tuples and arrays. Here is a program that works with points and rectangles:</p>
+	<p>A tuple keeps values together, but only by position: was it the width first, or the height? A
+		<b>struct</b> is a tuple whose values have names, plus everything names make possible: a type of your own,
+		values with defaults, parts kept private, and <b>methods</b>, the things a value of the type can do. This page
+		shows how to declare a struct, build its values, give it methods, and work on one value at a time. Here are
+		points and rectangles:</p>
 <pre>
-// Structs and methods
-//
-// A struct gathers values that belong together into a type of your own.
-// Its methods are functions that belong to the type: each takes the value
-// it works on as 'self', and here each one hands back an answer or a new
-// value rather than changing the old one.
-
 mod shapes;
 
 import stdio use *;
 
+// A Point is a pair of numbers whose values have names
 struct Point {
   pub x f32 = 0.;               // a field may have a default value
   pub y f32 = 0.;
@@ -39,26 +34,21 @@ struct Point {
   }
 
   // A method: 'x' and 'y' here are self.x and self.y
-  pub fn len(self) f32 {
-    (x * x + y * y).sqrt;
+  pub fn dist(self, other Point) f32 {
+    imm dx = other.x - x;
+    imm dy = other.y - y;
+    (dx * dx + dy * dy).sqrt;
   }
 
-  // A method that builds a new Point; the old one is left as it was
+  // A method that gives back a new Point, and leaves this one as it was
   pub fn scaled(self, k f32) Point {
     new Point(x * k, y * k);
   }
 
-  // A method named for an operator gives the type that operator: a + b
-  pub fn `+`(self, other Point) Point {
-    new Point(x + other.x, y + other.y);
-  }
-
-  pub fn `-`(self, other Point) Point {
-    new Point(x - other.x, y - other.y);
-  }
-
-  pub fn `==`(self, other Point) bool {
-    x == other.x and y == other.y;
+  // A method that changes the Point it is called on
+  pub fn moveBy(self &amp;mut, dx f32, dy f32) {
+    x += dx;
+    y += dy;
   }
 
   pub fn show(self) {
@@ -76,15 +66,11 @@ struct Rect {
     w * h;
   }
 
-  pub fn grown(self, extra f32) Rect {
-    new Rect(corner, w + extra, h + extra);
-  }
-
   pub fn center(self) Point {
-    corner + new Point(w / 2., h / 2.);
+    new Point(corner.x + w / 2., corner.y + h / 2.);
   }
 
-  // A tuple: two values handed back at once
+  // Two values handed back at once, as a tuple
   pub fn size(self) f32, f32 {
     w, h;
   }
@@ -93,1559 +79,165 @@ struct Rect {
 fn main() {
   imm a = new Point(x: 3., y: 4.);    // fields named...
   imm b = new Point(1., 2.);          // ...or listed in order
-  imm o = Point.origin();
+  print &lt;- "a is "; a.show(); print &lt;- ", ", a.dist(Point.origin()), " from the origin\n";
+  print &lt;- "a doubled is "; a.scaled(2.).show(); print &lt;- "\n";
 
-  print &lt;- "a is "; a.show(); print &lt;- ", length ", a.len(), "\n";
-  print &lt;- "a + b is "; (a + b).show(); print &lt;- "\n";
-  print &lt;- "a - b, doubled, is "; (a - b).scaled(2.).show(); print &lt;- "\n";
-  if a == o { print &lt;- "a is the origin\n"; } else { print &lt;- "a is not the origin\n"; }
+  mut box = new Rect(corner: b, w: 4., h: 2.);
+  print &lt;- "box area ", box.area(), ", center "; box.center().show(); print &lt;- "\n";
 
-  imm box = new Rect(corner: b, w: 4., h: 2.);
-  imm bigger = box.grown(1.);
-  print &lt;- "box area ", box.area(), ", bigger area ", bigger.area(), "\n";
-  print &lt;- "bigger's center is "; bigger.center().show(); print &lt;- "\n";
+  box.corner.moveBy(1., 1.);          // box is mut, so its corner may move
+  print &lt;- "moved, its center is "; box.center().show(); print &lt;- "\n";
 
   imm w f32;
   imm h f32;
-  w, h = bigger.size();
-  print &lt;- "bigger is ", w, " by ", h, "\n";
-
-  // An array: a fixed number of values of one type
-  imm path = [o, a, new Point(6., 0.)];
-  mut walked f32 = 0.;
-  each i in 1usize ..&lt; 3usize {
-    walked += (path[i] - path[i - 1usize]).len();
-  }
-  print &lt;- "walking the path covers ", walked, "\n";
-
-  mut far f32 = 0.;
-  each p in path {
-    if p.len() &gt; far {
-      far = p.len();
-    }
-  }
-  print &lt;- "the farthest point is ", far, " from the origin\n";
+  w, h = box.size();
+  print &lt;- "box is ", w, " by ", h, "\n";
 }
 </pre>
 	<p>It prints:</p>
 <pre>
-a is (3, 4), length 5
-a + b is (4, 6)
-a - b, doubled, is (4, 4)
-a is not the origin
-box area 8, bigger area 15
-bigger's center is (3.5, 3.5)
-bigger is 5 by 3
-walking the path covers 10
-the farthest point is 6 from the origin
+a is (3, 4), 5 from the origin
+a doubled is (6, 8)
+box area 8, center (3, 3)
+moved, its center is (4, 4)
+box is 4 by 2
 </pre>
-	<p><b>What to notice</b></p>
-	<ul>
-		<li>A struct declares named fields, each with a type, and <span class="pre">new Point(...)</span> builds a value:
-			fields named, listed in order, or left to their defaults.</li>
-		<li>A method is a function inside the struct whose first parameter is <span class="pre">self</span>. Inside it,
-			<span class="pre">x</span> means <span class="pre">self.x</span>.</li>
-		<li>These methods never change the value they are called on: <span class="pre">scaled</span> and
-			<span class="pre">grown</span> give back new values, and <span class="pre">a</span> and
-			<span class="pre">box</span> stay as they were.</li>
-		<li>A method named <span class="pre">`+`</span> or <span class="pre">`==`</span> gives the type that operator.</li>
-		<li>A tuple hands back several values at once; an array holds a fixed number of values of one type, read by
-			index from 0, and walked by <span class="pre">each</span>.</li>
-	</ul>
+	<p><b>Try this:</b> give <span class="pre">Rect</span> a <span class="pre">perimeter</span> method, or a
+		<span class="pre">grow</span> method that changes its width and height, and call it on
+		<span class="pre">box</span>.</p>
 
-	<h2 id="together">Values that belong together</h2>
+	<h2 id="together">Fields: values with names</h2>
 	<p>A struct gives a group of values a name, and the name is a new type, used like any other: for a variable, a
-		parameter, a return value or a field of another struct. <span class="pre">Point</span> has two
-		<b>fields</b>, <span class="pre">x</span> and <span class="pre">y</span>, each declared like a variable, with a
-		name and a type. <span class="pre">Rect</span> holds a <span class="pre">Point</span> as one of its fields, so
-		structs build on each other.</p>
-	<p>A value is built with <span class="pre">new</span>, the struct's name, and the fields' values in parentheses.
-		They may be named, <span class="pre">new Point(x: 3., y: 4.)</span>, or listed in the order the fields are
-		declared, <span class="pre">new Point(1., 2.)</span>. A field with a default value, as all of
-		<span class="pre">Point</span>'s have, may be left out, so <span class="pre">new Point()</span> is the origin.
-		A field is read with a dot, <span class="pre">a.x</span>.</p>
-	<p>The <span class="pre">pub</span> in front of each field and method makes it public: code anywhere may use it.
-		Without <span class="pre">pub</span> it is private to the module that declares the struct. That is how a type
-		keeps its promises: when a field's value must obey some rule, it is left private, and the type's own methods,
-		which keep the rule, are the only way to change it.</p>
-
-	<h2 id="methods-tour">Methods: what a value can do</h2>
-	<p>A <b>method</b> is a function written inside the struct, whose first parameter is named
-		<span class="pre">self</span>: the value the method is called on. <span class="pre">a.len()</span> calls
-		<span class="pre">len</span> with <span class="pre">a</span> as its <span class="pre">self</span>. Inside a method a
-		field or another method can be named on its own, so <span class="pre">x</span> is short for
-		<span class="pre">self.x</span>. A method's name belongs to its type, so <span class="pre">Point</span>'s
-		<span class="pre">len</span> and some other type's <span class="pre">len</span> never get in each other's way.</p>
-	<p>Every method in this program takes <span class="pre">self</span> as a value and gives back an answer, or a new
-		value. <span class="pre">scaled</span> builds a new <span class="pre">Point</span> and
-		<span class="pre">grown</span> a new <span class="pre">Rect</span>, and the values they were called on are just as
-		they were. That makes a program easy to follow: <span class="pre">a</span> and <span class="pre">box</span> are
-		the same after every call as before it. Methods that do change their value, and the initializers and finalizers
-		that run when a value is made and when it dies, are in <a href="#methods">In detail</a> below.</p>
-	<p>Since a method gives back a value, the next method can be called straight on it:
-		<span class="pre">(a - b).scaled(2.).show()</span>.</p>
-	<p>A function inside the struct that has no <span class="pre">self</span> belongs to the type rather than to a
-		value. It is called through the type's name: <span class="pre">Point.origin()</span>.</p>
-	<p>An <b>operator</b> is a method too. A method named <span class="pre">`+`</span> (in backticks, because the name is
-		punctuation) gives the type the <span class="pre">+</span> operator, so <span class="pre">a + b</span> calls
-		<span class="pre">a.`+`(b)</span>, exactly as it does for numbers. <span class="pre">`==`</span> gives it
-		<span class="pre">==</span>, and <span class="pre">!=</span> comes with it. A struct that declares no
-		<span class="pre">==</span> cannot be compared at all, since only the type knows what makes two of its values
-		equal.</p>
-
-	<h2 id="tuples-arrays">Tuples and arrays</h2>
-	<p>Not every group of values needs a name. A <b>tuple</b> is a few values, each with its own type, held together:
-		<span class="pre">size</span> gives back two, and the caller catches them with a parallel assignment,
-		<span class="pre">w, h = bigger.size()</span>. A variable may hold a tuple whole, and its elements are read by
-		number, from 0:</p>
-<pre>
-mut pair (i32, i32) = 7, 3;
-print &lt;- "pair is ", pair.0, " and ", pair.1, "\n";      // pair is 7 and 3
-pair = pair.1, pair.0;
-print &lt;- "swapped, ", pair.0, " and ", pair.1, "\n";     // swapped, 3 and 7
-</pre>
-	<p>An <b>array</b> holds a fixed number of values, all of one type. <span class="pre">[o, a, new Point(6., 0.)]</span>
-		is an array of three points, whose type is <span class="pre">Array[Point, 3]</span>. An element is read by its
-		index, an unsigned number counting from 0: <span class="pre">path[i]</span>, where <span class="pre">i</span> is a
-		<span class="pre">usize</span>. Every index is checked, and one past the end stops the program with a
-		<a href="safe-panics.html">panic</a> that names it: <span class="pre">index 3 is out of bounds for a count of
-		3</span>. <span class="pre">each p in path</span> walks the elements in order.</p>
-	<p>An array's size never changes, and that is why most programs reach for a list instead, which grows:
-		<a href="guide-collections.html">Collections</a> comes to lists, dictionaries and the rest, which are structs
-		built on arrays.</p>
-
-	<h2 id="indetail">In detail</h2>
-	<p><i>The rest of this page is the complete reference for structs, methods, operators, tuples and arrays; skip to the
-		next page if the program above was enough.</i></p>
-
-	<h3 id="struct">Structs: declare, build, read fields</h3>
-	<p>A struct holds one or more named values (fields), each with its own type.
-			The struct's fields are located together in memory.
-			A field's value can be individually accessed using the field's name.</p>
-	<p>Let's illustrate by declaring a new struct type:</p>
-<pre>
-struct Complex {
-  pub real f32;
-  pub imag f32;
-}
-</pre>
-	<p>This defines a new struct type called <span class="pre">Complex</span> that holds two fields of data.
-		The fields named <span class="pre">real</span> and <span class="pre">imag</span>
-		are both 32-bit floating point numbers.</p>
-	<p>Variables can be declared and initialized using this new type, each with its own values in these two fields:</p>
-<pre>
-imm comp1 = new Complex(real: 3.2, imag: 0.0);
-mut comp2 = new Complex(real: 0.0, imag: 1.0);
-</pre>
-	<p>This section focuses on using structs to hold field-oriented data.
-		Later sections and pages enrich what can be done with a struct by adding
-		<a href="#methods">methods</a>, <a href="mod-extensibility.html">inheritance</a>,
-		or <a href="mod-substitution.html">traits</a>.</p>
-
-	<h4 id="structdcl">Declaration</h4>
-	<p>Before we can make use of a specific data structure,
-		we need to declare it, giving it a name and specifying its fields:</p>
-<pre>
-struct Point {
-    pub x f32 = 0.;
-    pub y f32 = 0.;
-}
-</pre>
-	<p>The struct's declared name is effectively new, custom-defined type.
-		This type name can be used to declare any number of variables containing values of this type
-	  (e.g., <span class="pre">imm pt1 Point</span>).</p>
-	<p>Field declarations look like variable declarations, specifying the field's:</p>
-	<ul>
-		<li><b>Permission.</b>
-			The actual permission that governs field access is derived from
-			both the field's and struct's permissions
-			using a mechanism called <a href="mem-permissions.html#view">viewpoint adaptation</a>.
-			If unspecified, <span class="pre">mut</span> is assumed,
-			which effectively means the struct value's permission governs access.</li>
-		<li><b>Name.</b>
-			Each field must be given a unique name.
-			However, names used in one struct will not be confused with same-named
-			fields in other types, nor with variable or function names.
-			<p>A field is private unless it is declared <span class="pre">pub</span>.
-			A private field is private to the <a href="mod-namespaces.html#typens">module</a>
-			that declares the struct: any of that module's code may access it, through
-			any value of the struct, and code outside the module may not.
-			Fields should be left private if we don't want logic outside the module
-			to depend on this implementation detail or be able to change its value directly.
-			This is particularly important when the field's value should be subject to
-			additional invariant constraints that are properly enforced by the struct's methods.
-			A struct whose fields must be kept even from the rest of its module is
-			declared in a module of its own.</p>
-			<p>A <span class="pre">pub</span> field of a <span class="pre">pub</span> struct
-			may not have a type private to the module, since code outside the module
-			would reach into a type it cannot name.</p>
-			<p>The anonymous name <span class="pre">_</span> may be used for
-			any data segment of the struct that we don't want or need access to.</p></li>
-		<li><b>Type.</b>
-			This can be any type:  numeric, bool, an array, some other struct, etc.
-			The name <span class="pre">Self</span> may be used to refer to the struct
-			type currently being defined.
-			There is one important restriction: A field's type may not be the same
-			as the struct type we are declaring (or any recursive variation on this).
-			A field's type, however, may be a <a href="mem-regions.html">reference</a> to the struct type,
-			or to a type that holds it, whichever of them is declared first: a reference is a
-			pointer whatever it points at.
-			So may be a <span class="pre">List</span> of the struct, which holds its elements in a block of its own:
+		parameter, a return value, or a field of another struct, as <span class="pre">Rect</span> holds a
+		<span class="pre">Point</span>. Each <b>field</b> is declared like a variable, with a name and a type, and the
+		struct's values keep their fields together in memory. Names are what a tuple lacked:
+		<span class="pre">box.w</span> says what <span class="pre">pair.0</span> never could.</p>
+	<p id="struct">A value is built with <span class="pre">new</span>, the struct's name, and the fields' values in
+		parentheses. They may be named, <span class="pre">new Point(x: 3., y: 4.)</span>, or listed in the order the
+		fields are declared, <span class="pre">new Point(1., 2.)</span>. A field with a default value may be left out,
+		so <span class="pre">new Point()</span> is the origin, and with nothing to give, the empty parentheses may go
+		too: <span class="pre">new Point</span>. Every field without a default must be given a value; leave one out and
+		the compiler says <i>"Not enough values specified on type literal"</i>. A field's default must be a constant:
+		a literal, a named constant, a <a href="guide-values.html#const">constant expression</a> worked out from them,
+		a variant of an <a href="guide-enums.html">enum</a> that holds no value, or a tuple or an array of such
+		constants.</p>
+	<p id="fieldaccess">A field is read with a dot, <span class="pre">a.x</span>, and changed the same way,
+		<span class="pre">p.y = p.x</span>, if the variable holding the value is <span class="pre">mut</span>. In an
+		<span class="pre">imm</span> variable every field is as fixed as the variable: <i>"You do not have permission to
+		modify lval"</i>. A field of a field works the same way, which is how <span class="pre">box.corner</span>
+		moves above.</p>
+	<p id="structdcl">A struct may hold any type as a field except itself, since a value that contains itself would
+		be infinitely large, and the compiler says so: <i>"Bad contains Bad by value: infinite size. Break the cycle by
+		holding it through a reference."</i> A struct may hold a <a href="guide-list.html">List</a> of itself, though,
+		since a list keeps its items in a block of their own, and that is how a tree is built:</p>
 <pre>
 struct Node {
   pub id i64;
   pub kids List[Node];
 }
 </pre>
-			Such a struct moves, as any struct with a field that moves does
-			(<a href="mem-moves.html">move semantics</a>), without declaring
-			<span class="pre">is Move</span>. So does an enum with a variant that
-			holds a <span class="pre">List</span> of the enum, and each of two types that hold a
-			<span class="pre">List</span> of the other.
-		</li>
-		<li><b>Fold clause.</b>
-			A public field may end with <span class="pre">use</span> and a list of members of its type,
-			which become names of this struct reached through the field:
-			<a href="mod-extensibility.html">delegated inheritance</a>.</li>
-		<li><b>Default value.</b>
-			The default value must be a constant: a literal, <span class="pre">null</span>
-			for a pointer field among them, a named constant,
-			a <a href="guide-values.html#const">constant expression</a> computed from them
-			(<span class="pre">Red | Green</span>),
-			or a reinterpretation of one to a number or pointer type with
-			<span class="pre">as</span>, such as <span class="pre">4096usize as *u8</span>,
-			or an array, struct or tuple of such constants.
-			A variant of an <a href="guide-enums.html#enum">enum</a> that holds no value is one too
-			(<span class="pre">kind Kind = Kind.Os</span>, <span class="pre">next Option[i32] = None</span>);
-			a variant that holds a value is not.
-			Specifying default values makes initialization of a newly created struct more convenient.</li>
-	</ul>
+	<p id="empty">A struct may also have no fields at all, <span class="pre">struct Nothing {}</span>. Its values take
+		no room, yet they can be passed around and can have methods, which makes an empty struct a useful marker.
+		Cone's own <a href="safe-types.html#void"><span class="pre">void</span></a> is one.</p>
 
-	<h4 id="structinit">Initialization</h4>
-	<p>A new struct value is constructed with <span class="pre">new</span>:
-	the struct name followed by the arguments of one of its initializers in parentheses.
-	Every struct has an implicit initializer that takes its fields' values.
-	Values may be marked with field names or just listed in declared order:</p>
+	<h2 id="methods-tour">Methods: what a value can do</h2>
+	<p>A <b>method</b> is a function written inside the struct whose first parameter is named
+		<span class="pre">self</span>: the value the method is called on. <span class="pre">a.dist(b)</span> calls
+		<span class="pre">dist</span> with <span class="pre">a</span> as its <span class="pre">self</span> and
+		<span class="pre">b</span> as <span class="pre">other</span>. Inside a method, a field or another method of the
+		same type can be named on its own, so <span class="pre">x</span> is short for <span class="pre">self.x</span>
+		and <span class="pre">clear()</span> for <span class="pre">self.clear()</span>, as long as no local variable
+		of the method has the same name. Inside the struct, <span class="pre">Self</span> names the struct itself, and a
+		parameter's type may be left off when it is <span class="pre">Self</span>: <span class="pre">fn dist(self, other)
+		f32</span> means the same as the version above.</p>
+	<p id="methodname">A method's name belongs to its type, so <span class="pre">Point</span>'s
+		<span class="pre">dist</span> and some other type's <span class="pre">dist</span> never get in each other's way,
+		nor does either clash with a variable or function outside. Within one type, though, a field and a method may
+		not share a name: <i>"Duplicate name n: every function/method needs its own name."</i></p>
+	<p id="methods">Most methods in the program take <span class="pre">self</span> as a value and give back an answer,
+		or a new value. <span class="pre">scaled</span> builds a new <span class="pre">Point</span> and leaves
+		<span class="pre">a</span> as it was, and that makes a program easy to follow: <span class="pre">a</span> is
+		the same after every such call as before it. Since each gives back a value, the next method can be called
+		straight on it, <span class="pre">a.scaled(2.).show()</span>, a chain that reads left to right.</p>
+	<p>A function inside the struct with no <span class="pre">self</span> belongs to the type rather than to any one
+		value. It is called through the type's name: <span class="pre">Point.origin()</span>. It is the natural home
+		for ways of making a value that need a name of their own.</p>
+	<p>Methods belong to a type that has a declaration to write them in: a struct, an enum, or a trait. A tuple or an
+		array has none, so a group of values that needs methods is made a struct, with the tuple or the array as a
+		field.</p>
+
+	<h2 id="self">Methods that change their value</h2>
+	<p><span class="pre">moveBy</span> is different: its <span class="pre">self</span> is written
+		<span class="pre">self &amp;mut</span>, and that says the method may change the value it is called on.
+		<span class="pre">x += dx</span> changes this point's own <span class="pre">x</span>, not a copy of it. Such a
+		method can only be called on a value that may be changed: one in a <span class="pre">mut</span> variable, or a
+		field of one, as <span class="pre">box.corner.moveBy(1., 1.)</span> is. The variable is lent to the method for
+		the length of the call. On an <span class="pre">imm</span> variable the call is refused:</p>
 <pre>
-imm pt = new Point(x: 3., y: 4.);   // Using field names
-imm pt2 = new Point(3., 4.);        // When field names are omitted, order matters.
-imm pt3 = new Point();              // Uses x,y's declared default values of 0.
-imm pt4 = new Point;                // The same: empty parentheses may be left off
+imm p = new Point(1., 2.);
+p.moveBy(1., 1.);    // Error 1034: Cannot borrow a mutable reference to `p`, which is not mutable
 </pre>
-	<p>Several constraints apply to the implicit initializer:</p>
-	<ul>
-		<li>It must be given a value for every field lacking a default value.</li>
-		<li>Only code in the module that declares the type may use it to give a value
-			to a private field.
-			A private field with a default value may be left to its default from anywhere.</li>
-	</ul>
-	<p>A struct may also declare <a href="#initializer">initializer methods</a> of its own,
-		which may compute the value they build. The arguments of a construction select
-		the initializer that takes them. Where a declared initializer and the implicit one
-		both take values listed in order, the declared one is used;
-		naming the fields reaches the implicit one.</p>
-	<p>A construction fills its value where it goes: declaring a variable with one
-		hands the initializer the variable's own memory, so no copy is made.</p>
+	<p>The <span class="pre">&amp;</span> marks a <b>borrowed reference</b>: the method is handed a way to reach the
+		caller's value, rather than a copy of it. <span class="pre">self &amp;</span>, with no
+		<span class="pre">mut</span>, reaches the value only to read it, which spares copying a large one. The
+		<a href="memory.html">Memory</a> part explains borrowed references in full; for a method, it is enough to read
+		<span class="pre">self &amp;mut</span> as "may change the value it is called on", and to give the type's methods
+		that change nothing a plain <span class="pre">self</span>.</p>
 
-	<h4 id="fieldaccess">Field Access</h4>
-	<p>Use the <span class="pre">.</span> operator to access a struct field's value,
-	specifying the struct value on the left and the field name on the right:</p>
+	<h2 id="with">Working on one value: with blocks</h2>
+	<p>A chain suits methods that each hand back a value. When several statements in a row work on the same value, a
+		<span class="pre">with</span> block names it once. Inside the block the value is <span class="pre">this</span>,
+		and a bare dot reaches its fields and methods:</p>
 <pre>
-imm dist = (pt.x*pt.x + pt.y*pt.y).sqrt;
-</pre>
-	<p>A field's value may also be altered in this way:</p>
-<pre>
-pt.y = pt.x;
-</pre>
-	<p>The compiler applies field privacy and permission constraints to prevent invalid field accesses.
-		A private field can only be accessed by code in the module that declares the type.
-		Changing of a field's value is only allowed if the struct/field permissions allow mutability.</p>
-
-	<p>It is also possible to use the <span class="pre">&amp;</span> operator to
-	<a href="mem-borrowing.html#internal">borrow a reference</a> to a specific field within a struct value.</p>
-
-	<h4 id="empty">Empty structs</h4>
-	<p>It is perfectly legal to define a struct with no fields.
-		Nearly always, such types may be used like any struct type for variables, fields, parameters, etc.:</p>
-	<ul>
-		<li>Although its values take up no space, empty struct values can nonetheless be passed around.</li>
-		<li>Methods may be defined for an empty struct and used by its values.</li>
-	</ul>
-	<p>The most significant restriction is that it is not possible to allocate a zero-sized value on the heap,
-	which means you cannot create an owning reference to a value of an empty struct.</p>
-
-	<p>The language's pre-defined <a href="safe-types.html#void"><span class="pre">void</span></a> type is defined internally as an empty struct.</p>
-	<p>A struct may also hold a <span class="pre">static</span> variable, one copy shared by all its values
-		(<span class="pre">pub static mut made = 0;</span>), and a struct whose contents are hidden is
-		<span class="pre">@opaque</span>: <a href="mod-globals.html#static">Static variables in a struct</a> and
-		<a href="#opaque">Opaque Types</a>.</p>
-
-	<h3 id="methods">Methods and self</h3>
-	<p>Methods associate functional behavior to a defined type, offering capabilities consistent with
-		and helpful for values of that type.
-		For example (as mentioned <a href="guide-functions.html#method">earlier</a>),
-		<span class="pre">`+`</span> is one of several methods defined for the <span class="pre">i32</span> type.
-		It adds two integers together and returns the result.</p>
-	<p>This example defines several methods as part of the <span class="pre">Point</span> struct declaration:</p>
-<pre>
-struct Point {
-  pub x f32;
-  pub y f32;
-
-  // Calculate distance between two points
-  pub fn distance(self, pt2) f32 {
-    (self-pt2).len;
-  }
-
-  // Subtract two points
-  fn `-`(self, pt2) Point {
-    new Point(pt2.x - x, pt2.y - y);
-  }
-
-  // Calculate length of point
-  pub fn len(self) f32 {
-    lensq().sqrt; // lensq() is equivalent to self.lensq()
-  }
-
-  // A private method
-  fn lensq(self) f32 {
-		x*x + y*y;
-  }
+imm box = new Rect(corner: Point.origin(), w: 4.);
+with box {
+  print &lt;- .w, " by ", .h, ", area ", .area(), "\n";     // 4 by 1, area 4
 }
 </pre>
-	<p>There's a lot to unpack here, which we will get to soon.
-		The end result is that the above type definition for Point now makes
-		it possible to write logic that uses these methods:
-	</p>
+	<p><span class="pre">.w</span> is <span class="pre">box.w</span>, and <span class="pre">.area()</span> is
+		<span class="pre">box.area()</span>. In this form <span class="pre">this</span> is the value given, to read and
+		to call methods on; a block that changes the value works through a borrowed reference to it.
+		<a href="mod-composition.html#with">with blocks and this</a> has that form and the rest of the operators that act
+		on <span class="pre">this</span>.</p>
+
+	<h2 id="copying">Copying a struct</h2>
+	<p>Like a number, a struct value is copied when it is assigned, passed to a function or handed back from one. A
+		change to the copy leaves the original as it was:</p>
 <pre>
-imm from = new Point(x: 1., y: 1.);
-imm to   = new Point(x: 4., y: 5.);
-imm dist = from.distance(to);     // == 5.0. Pythagoras would be proud
+mut p = new Point(3., 4.);
+mut q = p;
+q.x = 0.;            // p.x is still 3
 </pre>
-	<p>Methods may be added to any named type declaration (e.g., struct, trait, enum, number type), but
-		not directly to any structural type (e.g., tuple, array, reference).
-		To apply methods to a structural type, wrap the structural type as a
-		field in a struct, and then add methods to that struct.</p>
-	<p>An <span class="pre">enum</span> type's methods may be written anywhere in its body, before or
-		after its variants: what makes a member common to every variant is that it is not a
-		<span class="pre">struct</span>. Such a method applies to all variants, but can only access
-		the enum's common fields.</p>
-	<p>Adding methods to a type after its declaration, with <span class="pre">extend</span>, is planned and
-		not built (<a href="mod-extensibility.html">Extensibility</a>).</p>
-
-	<h4 id="methoddef">Method definition</h4>
-	<p>A method definition looks (and behaves) like a function definition: It has a name, named parameter(s),
-		return value type(s), and a statement body.
-		What distinguishes a type's methods from its associated functions is that the first parameter is
-		named 'self'.</p>
-
-	<h4 id="methodname">Method name</h4>
-	<p>As with fields, the names given to methods will not conflict with another type's method or field names,
-		nor with the names of variables or functions outside the type.
-		However, a type cannot have a method and field with the same name.</p>
-	<p>Two or more methods <i>may</i> share one overload name.
-		This is called <b>method overloading</b>.
-		Each method still has its own unique name; it declares the shared name it overloads by placing the
-		<span class="pre">overload</span> keyword and that name between its own name and its signature:</p>
-<pre>
-struct Rect {
-  pub w f32;
-  pub h f32;
-
-  pub fn areaOf overload area(self) f32 {
-    w * h;
-  }
-  pub fn areaScaled overload area(self, scale f32) f32 {
-    w * h * scale;
-  }
-}
-
-imm r = new Rect(2., 3.);
-imm a = r.area();          // selects areaOf
-imm b = r.area(4.);        // selects areaScaled
-imm c = r.areaScaled(4.);  // calls the method directly by its own name
-</pre>
-	<p>Methods that overload one name should vary in their number of parameters or in the types of their
-		parameters, because two candidates that would accept exactly the same arguments are an error.
-		A call using the shared name is resolved by trying every method that overloads it and requiring
-		exactly one of them to accept the call's receiver and arguments, allowing for default parameter
-		values and permitted implicit coercions.
-		No matching method is an error, and more than one matching method is an ambiguity error;
-		an exact match is not preferred over a match requiring coercion, declaration order never breaks
-		a tie, and return types take no part in the choice.
-		A caller resolves an ambiguity by calling a method's own name or by converting arguments.
-		Sharing an overload name across methods makes it convenient for a type to
-		support a similar capability for a broad range of differently-typed values.</p>
-	<p>A shared name may only be used as the name of a method being called. Everywhere else, use the
-		method's own name.</p>
-	<p>A method a <a href="mod-substitution.html">trait</a> provides to every type that declares it (a shared method,
-		one the trait gives a body) is replaced by the type's own method of the same name, <b>whatever its shape</b>:
-		the own method need not take or give what the trait's does, and the type simply has no copy of the shared one.
-		Calls on the type, direct or from generic code over the trait, reach the type's own method; a type with none
-		gets the shared one.</p>
-	<p>A generic method joins a shared name on the same terms as a generic function: when every type parameter is
-		bound to a function signature (<a href="guide-functions.html#genericoverload">A generic function that overloads a shared name</a>).</p>
-
-	<h4 id="self">self Parameter</h4>
-	<p>A method's first parameter is always named <span class="pre">self</span>.
-		If the type of <span class="pre">self</span> is not specified,
-		it is assumed to be the same as the type we are specifying (<span class="pre">Self</span>).
-		If a type is specified for <span class="pre">self</span>, it must either be the same as <span class="pre">Self</span>,
-		or some kind of reference to <span class="pre">Self</span>.
-		A method whose <span class="pre">self</span> is a borrowed reference may still be
-		called on a value held in a variable, which is borrowed for the call
-		(see <a href="safe-types.html#coercion">Implicit Coercion of 'self'</a>).
-		A method may also ask for the owner of its value (<a href="#ownerself">below</a>).</p>
-
-	<h4 id="implparm">Implicit parameter types</h4>
-	<p>As with the <span class="pre">self</span> parameter,
-	a method's other parameters need not specify their type.
-	If omitted, <span class="pre">Self</span> is assumed.</p>
-
-	<h4 id="implaccess">Implicit field and method access</h4>
-	<p>Nearly always, a method's logic needs access to the data object referred to by
-			<span class="pre">self</span>. Often, it may also want to invoke other
-			methods in the same type. As one would expect,
-			such capabilities are easily achieved through the use of <span class="pre">self</span>:</p>
-<pre>
-imm len = (self.x * self.x + self.y * self.y).sqrt;
-self.clear();
-</pre>
-	<p>Fortunately, a more concise approach is possible,
-		by omitting "<span class="pre">self.</span>" altogether:</p>
-<pre>
-imm len = (x * x + y * y).sqrt;
-clear();
-</pre>
-	<p>Using the more concise syntax depends on not defining any local variables
-		in the method that would conflict with the type's field or method names
-		(<a href="#hiding">a member's name hides an outer one</a>).</p>
-
-	<!-- Moved here 15 Oct 2026 from the draft "Blocks and scope" page. Jon: with blocks belong with structs,
-	     beside chaining, as another way to simplify code focused on one struct and its fields; leave out the
-	     borrowed form when this page's turn comes. -->
-	<h3 id="with">Working on one value: with blocks</h3>
-	<p>A <span class="pre">with</span> block is a block that focuses its logic around one value, named
-		<span class="pre">this</span>, whose fields and methods it reaches with a bare dot:</p>
-<pre>
-with &amp;mut point {
-	.x /= len;      // the same as point.x /= len
-	.y /= len;
-}
-</pre>
-	<p><a href="mod-composition.html#with">with blocks and this</a> has the form in full, with the prefix
-		operators that act on <span class="pre">this</span>.</p>
-
-	<h3 id="initfinal">Making and cleaning up: init and final, briefly</h3>
-	<p>Initializers and finalizers are specialized methods a type may optionally define.
-		Their use bookends the life of a type's objects.
-		Initializers help create new objects. Finalizers help destroy them.</p>
-	<p>Many types don't need initializer or finalizer methods.
-		For those that do, here's how to define them.
-	</p>
-<pre>
-struct Seeded {
-  pub seed i32;
-  pub fn init(self &amp;new, n i32) {
-    *self = new Seeded(seed: n * 10 + 1);
-  }
-}
-
-imm a = new Seeded(5);        // the declared initializer: seed is 51
-imm b = new Seeded(seed: 5);  // the implicit initializer: seed is 5
-</pre>
-<pre>
-fn final(self &amp;uni) {
-  file.close;
-}
-</pre>
-	<p>An initializer is named <span class="pre">init</span>, fills <span class="pre">self</span> with another
-		initializer (typically the implicit one, by naming the fields), and returns nothing. A finalizer is named
-		<span class="pre">final</span>, and runs by itself when a value dies, to close or give back what the value
-		holds. A type with a finalizer moves rather than copies (<a href="mem-moves.html">Copy or move</a>).
-		The <a href="#initializer">full rules</a> are at the end of this page.</p>
-	<p>A method named <span class="pre">clone</span> takes no part in copying: it may be declared and called by name as an ordinary
-		method, but no copy, whether by assignment or by a function call's parameters, calls it
-		(<a href="#clone">Clone method</a>).</p>
-
-	<h3 id="operators">Operators and special methods</h3>
-	<p style="margin-left: 40px;"><i>Note: Most of this has been implemented, including the final method
-		and the append operator's list of entries (values, <span class="pre">n of x</span>,
-		<span class="pre">fill x</span>, pairs and <span class="pre">each</span>), after a value and
-		after a construction. The &amp;- operator is not, nor are an
-		<span class="pre">each</span> entry fed by iterator methods
-		(<span class="pre">.filter(...).map(...)</span>), which wait for the adapters. A computed property's
-		setter is not built: <span class="pre">x.prop = v</span> as a call of a setter is refused (1016).</i></p>
-
-	<p>Many operators are implemented as method calls. For instance, <span class="pre">x+3</span>
-		is treated as if it were:  <span class="pre">x.`+`(3)</span>
-		A type need only implement the <span class="pre">`+`</span> method to
-		make the <span class="pre">+</span> operator meaningful to values of that type.
-		If a program tries to apply the <span class="pre">+</span> operator to a value
-		whose type has not implemented the <span class="pre">`+`</span> method,
-		a compiler error results.</p>
-	<p>Let's explore the implications across a number of operators.</p>
-
-	<h4 id="opmethods">Value Operator Methods</h4>
-	<p>A type may support any of the <a href="guide-numbers.html#arith">arithmetic operators</a>
-		(<span class="pre">+</span>, <span class="pre">-</span>, <span class="pre">*</span>,
-		<span class="pre">/</span> and <span class="pre">%</span>)
-		by implementing them as methods.
-		The integer and floating point types do this, of course,
-		but really any type that effectively encodes numbers or number structures can do this.
-		This might include: complex numbers, "big" integers, rationals, unit-based numbers, vectors or matrices.</p>
-		<p>The <span class="pre">Point</span> type example <a href="#methods">above</a>
-		took advantage of this by implementing the subtraction method:</p>
-<pre>
-fn subPoint overload `-`(self, pt2) Point {
-	new Point(pt2.x - x, pt2.y - y);
-}
-</pre>
-	<p><b>Note:</b> Whenever a name includes non-alphanumeric (or underscore) characters,
-		it must be enclosed in backticks. This is why the shared operator name is shown as
-		<span class="pre">`-`</span>.</p>
-	<p>With this method implemented, one may simply subtract two Points in an expression:
-		<span class="pre">pt1 - pt2</span>.</p>
-	<p>Unary negation may also be implemented using the <span class="pre">`-`</span> operator.
-		The difference between the negation method and the subtraction method is that
-		the former needs only the self parameter. Because both methods overload one operator
-		name, each declares its own name as well:</p>
-<pre>
-fn negPoint overload `-`(self) Point {
-  new Point(-x, -y);
-}
-</pre>
-	<p>A call written as <span class="pre">-pt</span> or <span class="pre">pt1 - pt2</span>
-		selects whichever of these methods accepts the operands. Exactly one of them must,
-		as described for <a href="#methodname">method overloading</a>.</p>
-
-	<h5 id="logicops">Logic and Shift Operator Methods</h5>
-	<p>Similarly, a type may support any of the <a href="guide-numbers.html#bitwise">logic and shift operators</a>
-		(<span class="pre">!</span>, <span class="pre">&amp;</span>, <span class="pre">^</span>,
-		<span class="pre">~</span>, <span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span>)
-		by implementing them as methods.</p>
-
-	<h5 id="compare">Comparison Operator Methods</h5>
-	<p>To support operator-based comparison of two values, implement the appropriate
-		<a href="guide-conditionals.html#compare">comparison operator(s)</a>
-		(<span class="pre">==</span>, <span class="pre">&lt;</span>, <span class="pre">&lt;=</span>,
-		<span class="pre">&gt;</span>, or <span class="pre">&gt;=</span>)
-		as methods.
-		It is not necessary to implement the inequivalence operator (<span class="pre">!=</span>),
-		as this is supported automatically if <span class="pre">`==`</span> is implemented.
-	</p>
-	<p>These same methods are what a comparison of two <a href="mem-borrowing.html#ops">references</a>
-		uses, since <span class="pre">==</span> on references compares the values they refer to.
-		A method declared for references (<span class="pre">fn `==`(self &amp;, other &amp;Point) bool</span>)
-		is used as it is; otherwise the references are de-referenced and the value method is used.
-		The identity operators <span class="pre">===</span> and <span class="pre">!==</span>
-		are not methods: they ask whether two references point to the same place,
-		and no type implements or overrides them.</p>
-	<p>An <a href="guide-enums.html#compare">enum</a> is given its <span class="pre">==</span> (and so its
-		<span class="pre">!=</span>) rather than implementing one: it compares the tags, and then, where the
-		variant carries fields, calls the <span class="pre">==</span> that variant implements.</p>
-
-	<h5 id="truthy">isTrue "truthy" Method</h5>
-	<p>Conditional expressions depend on a boolean value of true or false.
-		If a conditional expression returns a value of some type other than bool,
-		Cone will check whether the type implements the <span class="pre">isTrue</span> method.
-		If so, it will use that method to convert a conditional expression's to true or false.</p>
-	<p>In effect, this is how Cone supports the notion of type-specific "truthy" values. For example:</p>
-	<ul>
-	<li>Integer values are false if 0, true otherwise.</li>
-	<li>Floating point values are false if 0 or -0, true otherwise.</li>
-	<li>Pointers are false if null, true otherwise.</li>
-	<li>Option values are false if None, and true if Some.</li>
-	</ul>
-
-	<h4 id="mutation">Value Mutation Methods</h4>
-	<p>Several operator methods may be implemented that change an existing mutable value in memory.
-		When the value is held by some variable, the compiler effectively obtains a mutable reference to the variable,
-		and calls the method using the mutable reference.</p>
-	<p>This can be illustrated with a simple example. Let's say that a type wants to override the simple assignment
-		operator with a method that performs a deep (rather than the default shallow) copy of the value.
-		The signature of the method will accept a mutable reference to the target:</p>
-<pre>
-fn `=`(self &amp;mut, value) Self {
-}
-</pre>
-	<p>When assignment is performed for a value of this type (<span class="pre">a = b</span>),
-		it will obtain a mutable borrowed reference to the lval 'a' and then
-		call the method like this:  <span class="pre">&amp;uni a.`=`(b)</span>.</p>
-
-	<h5 id="assignops">Arithmetic, Logic, Bitwise Assignment Operators</h5>
-	<p>A custom type may also support any of the <a href="guide-numbers.html#arithassign">arithmetic assignment operators</a>
-		(<span class="pre">+=</span>, <span class="pre">-=</span>, <span class="pre">*=</span>,
-		<span class="pre">/=</span> and <span class="pre">%=</span>)
-		by implementing them as methods.</p>
-	<p>If a type does not implement the arithmetic assignment operators,
-		the compiler will attempt to implement them using the arithmetic methods.
-		Thus, <span class="pre">pt1 += pt2</span> would be treated as if it were:
-		<span class="pre">pt1 = pt1 + pt2</span>.</p>
-	<p>Similarly, the logic and shift assignment operators may also be implemented as methods.
-		If not, they will be handled in the same way as the arithmetic assignment operators.</p>
-
-	<h5 id="incrdecr">Increment and Decrement Operators</h5>
-	<p>A type may implement the <a href="guide-numbers.html#incrdecr">increment or decrement operators</a>
-			(<span class="pre">++</span> and <span class="pre">--</span>) as methods.
-			When used as prefix operators, their names are <span class="pre">`++`</span> and <span class="pre">`--`</span>.
-			When used as postfix operators, their names are
-			<span class="pre">`_++`</span> and <span class="pre">`_--`</span>.
-	</p>
-
-	<h4 id="properties">Computed Properties</h4>
-	<p>For public fields, there is often no reason to implement getters and setters to offer
-		direct access to their values, because it is faster to access the fields directly.
-		However, if it would be unsafe to offer direct access to certain fields,
-		in order to preserve specific data invariants, one should make them private
-		and then potentially offer appropriate getter and setter methods that preserve the invariants.</p>
-
- 	<p>Implementing a getter and setter is easy:</p>
-<pre>
-struct Counter {
-	count u32 = 0;
-
-  // a getter
-  pub fn counter() u32 {
-    count;
-  }
-
-  // a setter (notice the use of a mutable reference, since the value will be changed)
-  pub fn count(self &amp;mut, cnt u32) {
-    count = cnt;
-  }
-}
-</pre>
-	<p>And here we use them:</p>
-<pre>
-mut x = new Counter();
-x.counter; // 0
-x.counter = 10; // uses the "setter" to set the value
-x.counter; // 10
-</pre>
-	<p>Since we can omit the parentheses when using a getter or setter,
-		their use looks just like access to a public field.
-		This makes it possible to start off with a type that makes a field public,
-		and then later changes it to private because of an invariant.
-		By implementing getters and setters instead, the API can be preserved
-		even as the implementation evolves.</p>
-
-	<h4 id="collops">Collection Operators</h4>
-	<p>By wrapping an array, or a pointer to elements it allocates, within a struct, one can
-		create all sorts of collections: indexed collections like vectors and dictionaries,
-		as well as stacks, queues, sets and more.
-		The difference between them is largely determined by which methods are implemented for
-		working with various elements of the collection.
-		Most collections will typically implement the
-		<span class="pre">len</span> method to find how many elements are currently in the collection,
-		and <span class="pre">iter</span> to enable iteration through the collection's elements.</p>
-	<p>A couple of operators make it easier to work with collections:
-		<span class="pre">[]</span> for indexed access and
-		<span class="pre">&lt;-</span> to add or remove an element.
-		Each collection type implements methods that determine how these operators work.</p>
-
-	<p>The <span class="pre">&lt;-</span> operator, which appends and streams entries into a collection, has a chapter of
-		its own: <a href="guide-collections.html#append">The send operator</a> (and
-		<a href="guide-collections.html#contents">a collection's contents</a>).</p>
-
-	<h5 id="indexop">[] Indexed Access Operator</h5>
-	<p>As we saw with arrays, the <span class="pre">[]</span> operator is used to
-		access a specific collection element according to its index.
-		Implementing the <span class="pre">[]</span> method as both a getter and setter
-		makes indexed access possible for other kinds of indexed collections.
-		The index need not even be an unsigned integer, as it is for an array.
-		Dictionaries, for example, often use strings as the index.</p>
-	<p>A type's <span class="pre">[]</span> method returns a borrowed reference to the element,
-		<span class="pre">&amp;T</span>, which a read goes through, and its
-		<span class="pre">&amp;[]</span> method the mutable one, <span class="pre">&amp;mut T</span>,
-		which <span class="pre">&amp;mut x[i]</span> asks for. Written to, the index is in
-		<i>set position</i>, and a type declaring <span class="pre">&amp;[]</span> lends through it:
-		<span class="pre">x[i] = v</span> stores through the reference
-		<span class="pre">&amp;[]</span> returns, as do <span class="pre">x[i].f = v</span>,
-		<span class="pre">x[i] += 1</span>, <span class="pre">x[i].f += 1</span>, and a method taking
-		<span class="pre">self &amp;mut</span> called on <span class="pre">x[i]</span>. A
-		<a href="mem-regions.html">dynamic arena</a>'s <span class="pre">ar[key] = v</span> is one.</p>
-	<p>The place may go on through any chain of fields and indexes, however long, and every
-		index in it lends through its type's <span class="pre">&amp;[]</span>:
-		<span class="pre">a[g].b[i].n = 5</span>, <span class="pre">a[g].b[i] = v</span>,
-		<span class="pre">a[g].b.push(v)</span>, <span class="pre">a[g].b[i].reset()</span> and
-		<span class="pre">&amp;mut a[g].b[i].f</span> all write through the elements, as the one index does.
-		The elements are reached only if everything on the way may be written: through a
-		<span class="pre">&amp;</span> reference, or in an <span class="pre">imm</span> variable, they are refused.</p>
-	<p>A swap, <span class="pre">x &lt;=&gt; y</span>, writes through both of its sides, so the
-		indexes of each are in set position: <span class="pre">u.fields[0].n &lt;=&gt; u.fields[1].n</span>
-		and <span class="pre">l[0] &lt;=&gt; l[1]</span> swap two elements of one list, which two
-		<span class="pre">&amp;mut</span> borrows of it, held together, may do
-		(<a href="mem-borrowing.html">borrowed references</a>). Only the elements change, never the list's shape.</p>
-
-	<h4 id="callop">() "Function call" Operator</h4>
-	<p>It is actually possible to "call" an object as if it were a function.
-		Doing so will actually invoke the <span class="pre">()</span> method
-		for the object.</p>
-
-	<h5 id="clotype">Closures as anonymous structs</h5>
-	<p>A <a href="guide-functions.html#closures">closure</a> is really just syntactic sugar for an anonymous struct
-		that implements the <span class="pre">()</span> method.
-		The closure <span class="pre">fn(n i32) [mut cnt = 0] { cnt += n; cnt; }</span>
-		is roughly equivalent to:</p>
-<pre>
-struct Cntstr {
-  cnt i32;
-  fn `()`(self &amp;mut, n i32) i32 {
-    cnt += n;
-    cnt;
-  }
-}
-
-mut counter = new Cntstr(0);
-counter(1);        // 1
-counter(2);        // 3
-</pre>
-	<p>As this example demonstrates, the closure itself is defined by the
-		<span class="pre">Cntstr</span> struct.
-		The closure's state is defined by its field(s): the entries of its state list, and a reference
-		for each variable of the code around it that its body borrows.
-		The functional logic is captured within a single method named
-		<span class="pre">()</span>, whose <span class="pre">self</span> permission follows the body.</p>
-	<p>Any explicitly callable struct is effectively also a closure: it meets the same
-		<a href="guide-functions.html#cloref">closure references</a> and the same
-		<a href="mod-generativity.html#sigbound">signature constraints</a>.</p>
-
-	<h3 id="tuple">Tuples</h3>
-	<p>A tuple is like a struct, as it holds multiple co-located values, each with its own type.
-		Unlike a struct, neither the tuple itself, nor its elements, are named.
-		Tuples match as equivalent if they have the same number of elements whose individual
-		types match in the same order.</p>
-	<p>Tuples are particularly valuable for returning multiple values (without having to
-		use a pre-defined struct). For example:</p>
-<pre>
-fn getxy(point Point) f32, f32 {
-  point.x, point.y;
-}
-
-fn main(point Point) {
-  imm x f32;
-  imm y f32;
-  x, y = getxy(point);
-}
-</pre>
-	<p>The getxy function returns a tuple holding two floating-point values. Notice that the tuple type
-		is defined by a comma-separated list of types. Similarly, the tuple value itself is
-		composed using comma-separated values.
-		(Note: In some other contexts, such as a parameter or field tuple, it will be necessary to wrap comma-separated
-		list of types or value within parentheses.)</p>
-	<p>When getxy is called by main, the two returned values are separately stored into the x and y variables.
-		Notice the types of the tuple's elements match those of the variables used to store its values.</p>
-
-	<p id="parallel">Another benefit lies with <b>parallel assignment</b>, which assigns several values to
-		several variables at once, as <span class="pre">x, y = getxy(point);</span> does above. Every value on the
-		right is worked out before any variable changes, so it can swap two values with no temporary variable:</p>
-<pre>
-  x, y = y, x;
-</pre>
-
-	<h4 id="tuplevar">A tuple held in one variable</h4>
-	<p>A variable may itself be of a tuple type, and hold the whole tuple.
-		Assigning a tuple value to it (one variable to the left of <span class="pre">=</span>,
-		not several) stores every value, just as its initial value would be stored.
-		Each value is coerced to its element's type, so a number literal with no suffix
-		takes the element's number type. Parentheses around the values change nothing.</p>
-<pre>
-  mut p (i64, i64) = 5, 6;
-  p = 7, 8;
-  p = (1, 2);
-</pre>
-	<p>The tuple must match the variable's type: as many values as it has elements, each
-		one's type matching its element's. So <span class="pre">p = 1, 2, 3;</span> is an error.</p>
-	<p>A tuple whose values are all constants is itself a constant, so it may be
-		the initial value of a global or a static variable, a named constant's value,
-		or a field's default:</p>
-<pre>
-imm origin (i64, i64) = 0, 0;
-const Unit (f32, f32) = 1, 1;
-</pre>
-
-	<h4 id="tupleelem">Accessing a single element of a tuple</h4>
-	<p>Similar to structs, the dot operator can be used to access a specific element of a tuple.
-		Since elements don't have names (like fields), use an integer constant to specify which element to
-		extract (with '0' as the first element):</p>
-<pre>
-  y = getxy(point).1;
-</pre>
-	<p>A number after the dot is always an element's number, never part of a decimal number,
-		so a further dot starts the next member: <span class="pre">t.1.0</span> is element 0 of
-		element 1 of <span class="pre">t</span>, and <span class="pre">pair.0.len()</span> calls
-		a method on element 0.</p>
-	<p>A tuple type given a name by <span class="pre">alias</span> is the tuple itself,
-		so its elements are reached the same way:</p>
-<pre>
-alias Pair = (i32, i32);
-fn first(a Pair) i32 { a.0; }
-</pre>
-
-	<h3 id="array">Arrays</h3>
-    <p style="margin-left: 40px;"><i>Note: Implemented: the array type, with one size or several,
-        array literals, nested arrays, elements given by expressions, a string as an array of u8,
-        construction with contents (<span class="pre">new Array[T, n] &lt;- fill x</span>), copying, getting and
-        setting one element by index, <span class="pre">each</span> over an array, and a run-time bounds check on every index. Not implemented:
-        the len method (a slice's is), the $- operator, multi-element segments and fills,
-        comparison, and pattern matching. An index out of range is caught only at run time, even
-        when it is a constant.</i></p>
-
-    <p>An array holds a specified number of values, all of the same type.
-		The size of the array (its number of elements) is a fixed, constant value and is not resizable.
-        The array's elements are located next to each other in memory.
-		Elements are individually accessed using an unsigned integer index.</p>
-        <p>For example:</p>
-<pre>
-mut numbers Array[f32, 3] = [3.1, 4.1, 5.92];
-imm nbr = numbers[1];     // nbr is 4.1
-numbers[0] = 2.;          // numbers is now [2., 4.1, 5.92]
-</pre>
-    <p>Here, <span class="pre">numbers</span> is an array containing three floating-point numbers as its elements.
-      As the redundant type specification <span class="pre">Array[f32, 3]</span> indicates, the type of its elements
-      is <span class="pre">f32</span> and the length of the array is 3.
-	  The <span class="pre">[]</span> operator enables access to a specific element.</p>
-
-    <h4 id="arraytype">The array type</h4>
-    <p>An array type is written <span class="pre">Array[T, n]</span>: the element type first, then the size.
-        The size is an integer literal from 0 through 4294967295, and is part of the type: an <span class="pre">Array[f32, 3]</span>
-        and an <span class="pre">Array[f32, 4]</span> are different types.
-        <span class="pre">Array</span> looks like a generic type taking a number, and is built into the language;
-        a module that declares its own <span class="pre">Array</span> names that one instead.
-        An array type may be written wherever a type may: a variable, a field, a parameter, a return value,
-        the type a reference refers to, or a generic's type argument
-        (<span class="pre">Option[Array[u8, 4]]</span>).
-        In a generic function or method the size may be a number parameter,
-        <span class="pre">Array[f32, N]</span>, and nothing computed from it
-        (<a href="mod-generativity.html#value">Value Parameters</a>).</p>
-	<p>An array type may give several sizes, one for each dimension.
-        Such an array is an array of arrays, the first size the outermost,
-        so <span class="pre">Array[f32, 2, 3]</span> is the same type as
-        <span class="pre">Array[Array[f32, 3], 2]</span>: two rows of three.
-        Its first index picks the row and its second the element in that row,
-        and the elements are stored row by row, the last index varying fastest,
-        as in C's <span class="pre">float m[2][3]</span>:</p>
-<pre>
-imm matrix Array[f32, 3, 3] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-imm val = matrix[1][1];  // 1.
-</pre>
-    <p>That is how the array itself is laid out. A library type built over an array decides what its
-        elements mean: <span class="pre">geomath</span>'s <span class="pre">Mat3</span> holds its nine
-        values column by column in an <span class="pre">Array[f32, 9]</span>.</p>
-	<p><b>Warning:</b> Typically, when you want a collection type capability, you won't reach directly for an array,
-		because of the fixed-size limitations and because you cannot implement methods directly on arrays.
-		More likely, you will use one of the library-based <a href="guide-collections.html">collection types</a>.
-		If you look under the covers of these, you will see these are
-		basically <span class="pre">struct</span> types that wrap around a specific array, or a pointer
-		to elements they allocate (as well as possibly other fields), and lend their elements as an
-		<a href="guide-collections.html#arrays">array reference</a>.
-		Being structs, they offer implemented methods to work with the collection and its elements.</p>
-
-    <h4 id="arrayinit">Initialization</h4>
-    <p>To create or initialize an array, specify the values of all its elements
-        separated by commas and enclosed within square brackets (as the above example demonstrates).
-        When this array constructor is used to initialize a global variable,
-        the element values must be constants.
-        When used as part of a function's logic, element values may be specified using expressions:
-    </p>
-<pre>
-imm pair = [nbr * nbr, nbr + nbr];
-</pre>
-    <p>An alternative way to create an array of bytes is to fill it from a string literal,
-        where the array's type says how many bytes it is:</p>
-<pre>
-imm hello Array[u8, 12] = "Hello world!";
-</pre>
-     <p>A string is encoded as an sequence of utf-8 code points.
-        The length is the number of bytes it occupies, and the array must be exactly that long:
-        any other length is an error. The type of each element is u8.
-        For C-compatibility, the zero terminator ('\0') is placed at the end of the string, but not counted in its length.
-        A string literal that is not filling an array is not an array: it is a
-        borrowed reference to its text, <span class="pre">&amp;str</span>
-        (<a href="guide-text.html#bytes">A String as a Slice of Bytes</a> describes how it converts to a slice of bytes, and
-        <a href="mem-regions.html">owning references</a> how it is copied into an owner).
-    </p>
-
-    <h5 id="contents">Contents</h5>
-    <p>An array may also be constructed with its contents: <span class="pre">new</span>, its type,
-        then <span class="pre">&lt;-</span> and the values that fill it, in order.
-        This is the <a href="guide-collections.html#append">send operator</a>'s list, which any collection takes,
-        and the same forms may be used:
-        values listed, <span class="pre">n of x</span> for n values, and <span class="pre">fill x</span>
-        for as many as are left to fill. A value that is repeated is evaluated once for each element.
-        This example creates a 100-byte string, where all bytes are spaces:</p>
-<pre>
-imm spaces = new Array[u8, 100] &lt;- fill ' ';
-imm row = new Array[f32, 4] &lt;- 1.0, 3 of 0.0;
-</pre>
-    <p>An array's size is fixed, so its contents give exactly that many values, and the count
-        before <span class="pre">of</span> is a constant, from 0 through 4294967295.
-        An array has no initializer, so the construction takes no parentheses, and a global's
-        contents, like its array literal's elements, are constants.</p>
-    <p>The contents of an array written with several sizes are its scalars, the values of the
-        element type written first, row by row, in the order the array stores them, so each
-        entry counts scalars and <span class="pre">n of x</span> and <span class="pre">fill</span>
-        run on across the rows. The contents give exactly as many as the product of the sizes,
-        which may be at most 4294967295. Written nested, the array's elements are its rows, and
-        its contents are those rows, each constructed in turn; inside the outer list, a row's own
-        list is parenthesized. The two spellings are still one type, so either construction is
-        assigned, passed and returned where the other is wanted:</p>
-<pre>
-imm grid = new Array[i32, 2, 3] &lt;- 1, 2, 3, 4, 5, 6;     // rows [1, 2, 3] and [4, 5, 6]
-imm cube = new Array[u8, 2, 3, 4] &lt;- fill 0u8;           // all 24 bytes
-imm rows = new Array[Array[i32, 3], 2] &lt;- fill new Array[i32, 3] &lt;- (1, 2, 3);
-</pre>
-    <p>An alias of an array type keeps the spelling it names. A generic's type parameter
-        stands for a type, not a spelling, so through it an array's contents are its rows.
-        An array written with several sizes whose element type is itself an array,
-        <span class="pre">Array[Array[u8, 4], 2, 3]</span>, takes no contents: whether they would
-        be its bytes or its four-byte arrays is not decided, so it is written nested to be
-        constructed with contents.</p>
-    <p>An allocation takes the same contents, and fills the array in the region's memory
-        (<a href="mem-regions.html#contents">owning references</a>).</p>
-
-    <h4 id="arraylen">Getting the length</h4>
-    <p style="margin-left: 40px;"><i>Note: Not built, as the note above says: <span class="pre">len</span> on an
-        array value is refused (Error 1025: Invalid operation on an array), so the example below does not compile.
-        A slice's <span class="pre">len</span> is built (<a href="guide-collections.html#slices">Slices</a>).</i></p>
-    <p>To get a count of how many elements are in an array,
-        use the <span class="pre">len</span> method:</p>
-<pre>
-imm hello Array[u8, 5] = "Hello";
-imm length = hello.len;   // =5
-</pre>
-
-    <h4 id="index">Indexing</h4>
-    <p>A <b>single element</b> within an array may be accessed using
-        an unsigned integer index value enclosed in square brackets.
-        The specified index may be an expression.
-        An index of <span class="pre">0</span> refers to the first element.</p>
-    <p>Indexing can be used to get or set the specified element:</p>
-<pre>
-mut c_array Array[u8, 4] = "coal";
-c_array[2] = c_array[1];    // the 3rd element is now the same as the second
-// c_array now holds the array value "cool"
-</pre>
-    <p>Array indexing is automatically bounds-checked by its known size.
-        Any attempt to supply an invalid index results in a compile-time or run-time error.
-        At run time it is a <a href="safe-panics.html#panic">panic</a> naming the index, the
-        size and the line: <span class="pre">index 4 is out of bounds for a count of 4</span>.</p>
-    <p><b>Note:</b> It is also possible to use the ampersand operator to <a href="mem-borrowing.html#internal">borrow a reference</a>
-        to a specific indexed element in an array.</p>
-
-    <h5 id="fromend">Indexing from the end</h5>
-    <p>Sometimes it is more convenient to index an element based on
-        its position relative to the end of the array.
-        This can be accomplished in a verbose way:
-    </p>
-<pre>
-imm nbrs = [2, 4, 6];
-imm four = nbrs[my.len - 2]; // =4 - the 2nd from the end
-</pre>
-    <p>The less verbose equivalent uses the <span class="pre">$-</span> operator:</p>
-<pre>
-imm four = nbrs[$-2];
-</pre>
-    <p><span class="pre">$-</span> is equivalent to <span class="pre">my.len - </span></p>
-
-    <h5 id="arrayiter">Iterating over an array</h5>
-    <p>Using indexing and the <span class="pre">len</span> method,
-    one can now easily iterate over every element in an array:</p>
-<pre>
-imm numbers = [3.5, 4.0, 5.5, 3.0];
-mut average = 0.0;
-mut i = 0;
-while i &lt; numbers.len {
-  average += numbers[i++];
-}
-average /= numbers.len;      // == 4.0
-</pre>
-    <p>A cleaner, more concise approach uses an <a href="guide-loops.html#each">each</a> block instead:</p>
-<pre>
-imm numbers = [3.5, 4.0, 5.5, 3.0];
-mut average = 0.0;
-each nbr in numbers {      // nbr borrows each element
-    average += nbr;
-}
-average /= 4.0;              // the number of elements: == 4.0
-</pre>
-
-    <h5 id="segcopy">Multi-element copying</h5>
-    <p>Multiple elements of an array may be copied into another array using a range index.</p>
-<pre>
-mut greetings Array[u8, 11] = "Hello Jeter";
-greetings[7,4] = greetings[1,4]; // "Hello Jello"
-greetings[6..10] = "Peter";      // "Hello Peter"
-greetings[6..&lt;11] = "Helen";      // "Hello Helen"
-greetings[6..] = "Jayne";        // "Hello Jayne" (end is assumed if unspecified)
-</pre>
-    <p>As the examples show, several range operators are supported.
-        The first number is always the index of the first element in the segment.
-        The meaning of the number after the range operator varies:</p>
-    <ul>
-        <li><span class="pre">,</span> - The second number specifies how many elements
-            are in the array segment.</li>
-        <li><span class="pre">..&lt;</span> - The second number specifies the index of the element
-            after the last element in the array segment.</li>
-        <li><span class="pre">..</span> - The second number specifies the index of the last
-            element in the array segment.
-            If unspecified, it is assumed to be the last element of the array.</li>
-    </ul>
-    <p>Both array segments must have the same element type and length.
-        Array segments can only be used for copying elements from one array to another
-        using assignment or variable initialization.
-        An array segment cannot be passed as an argument in a function call or used in a comparison.
-    </p>
-    <p><b>Note:</b> One can also use the ampersand operator to
-        <a href="guide-collections.html#slice">borrow an array reference (slice)</a>
-        to a specific set of elements in an array.</p>
-
-    <h5 id="segfill">Multi-element fills</h5>
-    <p>Using the same range operators, a single value can be repeatedly filled into a segment's elements:</p>
-<pre>
-mut numbers = [0, -1, -2, -3];
-numbers[1 ..&lt; 3] = 2;
-// numbers == [0, 2, 2, -3]
-</pre>
-    <p>The type of the fill value must be the same as the type of the array's elements.</p>
-
-	<h3 id="copying">Copying and comparing</h3>
-	<h4 id="structcopy">Copying a struct</h4>
-	<p>Like numbers, struct values may be passed around between variables and functions:</p>
-<pre>
-fn main() {
-	mut pt1 = new Point();
-	pt1 = change(pt1);
-}
-
-fn change(mut pt Point) Point {
-	pt = new Point(1., 2.);
-	pt;
-}
-</pre>
-	<p>Copies of the data structures are made as they are passed around
-		(e.g. into and returned by <span class="pre">change</span>).
-		Any changes made to a copy won't change the original struct value.
-		This may not always be the behavior that you want, though.
-		If a struct is too big to pass around efficiently,
-		or you want changes to apply to the source structure,
-		make use of <a href="mem-borrowing.html">references</a> to a struct instead.</p>
-
-	<h4 id="arraycopy">Copying an array</h4>
-    <p>Like numeric values, array values may be passed around between variables and functions:</p>
-<pre>
-imm hello Array[u8, 5] = "Hello";
-fn main() {
-  mut dessert = jello(hello);
-}
-
-fn jello(mut saying Array[u8, 5]) Array[u8, 5] {
-  saying = "jello";
-  saying;
-}
-</pre>
-    <p>In this example, a copy of the <span class="pre">hello</span> variable's array
-        is passed to the function <span class="pre">jello</span>.
-        It replaces that copy's contents with the string "jello" and returns it to <span class="pre">main</span>.
-        The mutable local variable <span class="pre">dessert</span> now holds a copy of the array string "jello".</p>
-    <p>When arrays are passed around, we always make copies of the array (just like we do with numbers).
-        Any changes made to a copy won't change the original array.
-        The exception is an array whose element type has <a href="mem-moves.html">move semantics</a>:
-        such an array moves rather than copies, whether its type is written out or inferred from an array literal.</p>
-    <p>This may not always be the behavior that you want, though.
-        If instead you want to pass around a reference to an array,
-        such that any changes <i>do</i> change the original array,
-        obtain and pass an <a href="guide-collections.html#arrays">array reference</a>.</p>
-
-	<h4 id="structcompare">Comparing structs</h4>
-	<p>It is not possible to check whether two structs have the same value if the struct defines only fields.
-		However, two struct values may be compared if the struct implements
-		the <a href="#compare">comparison methods</a>.
-		Also, it is possible to perform <a href="guide-enums.html#struct">partial matching</a>
-		of a struct against some pattern.
-	</p>
-
-    <h4 id="arraycompare">Comparing arrays</h4>
-    <p>Two arrays may be compared, so long as they have the same element type.</p>
-    <p>To be equivalent the arrays must have the same length and every element must be the same.
-        To make element comparison possible,
-        the element's type must support the <span class="pre">==</span> method.</p>
-<pre>
-imm somebody = "John";
-if somebody == "Jane" {
-  ....
-}
-</pre>
-    <p>Comparing for order (e.g., &lt;) is also handled by comparing the two arrays element-by-element,
-    stopping the first time two elements are not the same.
-    The number of elements compared is the minimum of the lengths of the two arrays.
-    If the element check shows them as equivalent, the lesser-sized array comes first in order.</p>
-    <p>The <a href="guide-conditionals.html#match"><span class="pre">match</span></a> statement
-        or <span class="pre">is</span> operator supports additional array comparison capability,
-        particularly for <a href="guide-enums.html#array">partial pattern matching</a>.</p>
-
-	<h3 id="finetuning">Fine-tuning</h3>
-	<p>Rarely needed on a first reading. These use borrowed references and owners, which
-		<a href="mem-borrowing.html">Borrowed references</a> and <a href="memory.html">Memory</a> explain.</p>
-
-	<h4 id="ownerself">A method that asks for its owner</h4>
-	<p>A method may also ask for the <b>owner</b> of its type: a <i>borrow of an owner</i>, written
-		<span class="pre">self &amp;So[Self]</span>, <span class="pre">self &amp;Rc[Self]</span>,
-		<span class="pre">self &amp;Arc[Self]</span> or the borrow of any other owning reference to the type.
-		Such a method is found only through an owner of that kind, which is borrowed for the call and is
-		still the caller's afterwards; a plain value, a borrow or an owner of another kind has no such
-		method, just as for any method that does not accept the receiver. It is tried after the ordinary
-		selection, so a type's other methods are unaffected. Inside the method <span class="pre">self</span> reads
-		through the owner to the value, so <span class="pre">self.n</span> is the field, and the owner itself is
-		what the method can hand on or inspect (as <span class="pre">str</span>'s <span class="pre">cstr()</span> does,
-		which needs the owner's zero after the text: <a href="guide-text.html#cstr">C Strings</a>).</p>
-<pre>
-struct Node {
-  n i64;
-  pub fn viaSo(self &amp;So[Node]) i64 { self.n + 1; }   // only an So[Node] has this method
-  pub fn plain(self &amp;) i64 { n; }                    // any Node, however held
-}
-imm a = new So[Node](10);
-imm x = a.viaSo();                                   // 11; the So is borrowed, 'a' is still ours
-imm y = Node(10).viaSo();                            // **ERROR** a Node value is no owner
-</pre>
-
-	<h4 id="hiding">A member's name hides an outer one</h4>
-	<p>Inside a type, a field's or method's name hides any name
-		of the same spelling further out, as an inner name hides an outer one
-		everywhere. That includes a module the type's module imports, and it holds
-		in the methods' signatures as well as their bodies. A signature has no
-		<span class="pre">self</span> to reach a field or method through, so a
-		module written there under a member's name is an error:</p>
-<pre>
-mod scene;
-import mesh;
-
-struct Model {
-  parts i64;
-  fn mesh(self &amp;) mesh.Mesh {   // error: in Model, 'mesh' is this method
-    new mesh.Mesh(parts);
-  }
-}
-</pre>
-	<p>The error on the signature names two ways round it. One is to
-		<a href="mod-namespaces.html#as">import the module under another name</a>,
-		which no member hides:</p>
-<pre>
-mod scenery;
-import mesh as meshes;
-
-struct Model {
-  parts i64;
-  fn mesh(self &amp;) meshes.Mesh {
-    new meshes.Mesh(parts);
-  }
-}
-</pre>
-	<p>The other is to reach the module through the module's own name, which is
-		<a href="mod-namespaces.html#dcl">one of the names in reach inside it</a> and
-		which no member hides either:</p>
-<pre>
-mod staging;
-import mesh;
-
-struct Model {
-  parts i64;
-  fn mesh(self &amp;) staging.mesh.Mesh {
-    new staging.mesh.Mesh(parts);
-  }
-}
-</pre>
-
-	<h4 id="opaque">Opaque Types</h4>
-	<p>Sometimes it is valuable to work with types where we have no idea about the size or layout
-		of any values of that type. This is useful when interfacing with some external system
-		which knows the layout and size of the type's data, but is reluctant to share (or we don't really care).</p>
-	<p>We call such types <b>opaque</b>, because we cannot directly view their contents.
-		Declaring an opaque type is easy:</p>
-<pre>
-struct @opaque SocketHandle;
-   // don't specify any fields as part of the type
-   // Methods may be defined.
-</pre>
-	<p>As one might expect, it is illegal for a variable or field to specify an opaque type.
-		An opaque value cannot be created or passed around. We cannot access its fields.
-		We cannot even determine its size.</p>
-	<p>Where opaque types are used is when pointed-at by references or pointers.
-		Such references can be obtained, passed around, and stored, like any reference.
-		We can call methods on a pointed-at value of an opaque type
-		(typically implemented by the external system that knows the data layout and can work with such values).
-		However, we may not use pointer de-referencing to read or mutate the pointed-at value.</p>
-
-	<h4 id="inbrief">Initializers and finalizers in brief</h4>
-	<p>A type may define one or more <b>initializers</b>, beside the implicit one every struct has,
-		which takes its fields' values.
-		A construction, <span class="pre">new</span> with the type and the initializer's arguments in parentheses,
-		runs the one initializer its arguments select:</p>
-<pre>
-imm pt = new Point(1.);
-</pre>
-	<p>An initializer is named <span class="pre">init</span>, several of them joining the overload name
-		<span class="pre">init</span>.
-		A method named <span class="pre">clone</span> takes no part in copying: it may be declared and called by name as an ordinary
-		method, but no copy, whether by assignment or by a function call's parameters, calls it
-		(<a href="#clone">Clone method</a>).</p>
-	<p>A type may also define a single <b>finalizer</b> called <span class="pre">final</span>.
-		This is automatically invoked immediately before any value of that type is destroyed,
-		and its memory space reclaimed.</p>
-	<p>Detailed advice on how to <a href="#initializer">define initializers</a> and
-		<a href="#finalizer">finalizers</a> follows.</p>
-
-	<h4 id="initializer">Initializers</h4>
-	<p style="margin-left: 40px;"><i>Note: A method taking <span class="pre">self &amp;new</span> is an initializer only if it
-		is named <span class="pre">init</span> or joins the overload name <span class="pre">init</span>;
-		under any other name it is refused. So a clone method written against the
-		<span class="pre">new</span> permission is refused too
-		(<a href="#clone">Clone method</a>).
-		A method named clone may be declared and called as an ordinary method,
-		but no copy calls it, and it does not make a type copyable.</i></p>
-	<p>Every new value of a struct is constructed by one of its initializers,
-		written <span class="pre">new</span>, the type, and the initializer's arguments in parentheses:</p>
-<pre>
-imm pt = new Point(1., 2., 3.);
-</pre>
-	<p>Every struct has an <b>implicit initializer</b>, which takes the values of its fields,
-		in the order they are declared or by name, a field left out taking its default value
-		(see <a href="#structinit">structs</a>). A struct may also declare initializer methods
-		of its own, which can use any sort of logic for initializing a new value,
-		even of private fields. They are useful when the implicit initializer would be:</p>
-	<ul>
-		<li><b>Insufficient</b>, because initialization needs to perform some logic that
-		 is more than simply assigning value(s).</li>
-		<li><b>Impossible</b>, because parts of the type are private and can only be set by code in the module that declares it.</li>
-		<li><b>Inconvenient</b>, because listing every field would be unnecessarily verbose in comparison to using an initializer.</li>
-	</ul>
-	<p>Here is a simple initializer:</p>
-<pre>
-fn init(self &amp;new) {
-  *self = new Self(x: 1., y: 1., z: 1.);
-}
-</pre>
-	<p>An initializer is a method, but it has a few differences from typical methods:</p>
-	<ul>
-		<li><b>Its name is <span class="pre">init</span></b>, so you need not
-			specify the initializer's name when using it to create a new value.
-			A type may declare more than one initializer as an overload set: each has
-			its own name and joins the overload name <span class="pre">init</span>
-			(<span class="pre">fn polar overload init(self &amp;new, r f32, theta f32)</span>).
-			A construction's arguments select the initializer that takes them.
-			Where a declared initializer and the implicit one both take values listed in order,
-			the declared one is used; if none takes them, or several declared ones do,
-			the construction is an error.
-			Only the implicit initializer takes values by name, so naming the fields always reaches it:
-<pre>
-struct Seeded {
-  pub seed i32;
-  pub fn init(self &amp;new, n i32) {
-    *self = new Seeded(seed: n * 10 + 1);
-  }
-}
-
-imm a = new Seeded(5);        // the declared initializer: seed is 51
-imm b = new Seeded(seed: 5);  // the implicit initializer: seed is 5
-</pre>
-		</li>
-		<li><b><span class="pre">self</span> is a borrowed reference using the
-			<span class="pre">new</span> permission</b>.
-			Here's why:  An initializer is called when memory has been set aside for the new value,
-			but it does not yet hold a valid value.
-			The borrowed reference effectively points to this location.
-			It uses the <span class="pre">new</span> permission to signal that the reference
-			does not yet point to a valid value. This prevents the initializer
-			from accessing any of the fields until after they have been initialized.
-			The permission is written only on an initializer's <span class="pre">self</span>.</li>
-		<li><b>Initializers don't return a value.</b>
-			After the initializer has finished running, the construction that invoked it
-			holds the value it wrote through <span class="pre">self</span>.
-			Thus, having the initializer return a value would be superfluous and confusing.</li>
-		<li><b>The initializer's logic uses another initializer to fill self.</b>
-			Essentially, an initializer's logic performs these steps in order:
-			<ol>
-				<li>Figure out what the values should be for every field
-					(if needed). The fields of self are inaccessible at this point,
-					as self is not pointing to a valid value.
-					This means it is also impossible to call any other methods on self.</li>
-				<li>Initialize the entire value of self at one time,
-					<span class="pre">*self = new Self(...)</span>, with an initializer
-					other than this one: typically the implicit one, reached by naming the fields
-					(as the above examples do). Values listed in order that this initializer
-					itself takes would select it again, and filling self that way is an error.
-					It must be done on every path before the initializer returns.</li>
-				<li>Perform any additional work on the value that the logic requires,
-					if needed. At this point, the initializer may access the value's
-					fields or call any other method on the value.</li>
-			</ol>
-		</li>
-		<li><b><span class="pre">self</span> does not escape.</b>
-			It is used only through itself: <span class="pre">*self</span>,
-			a field of it, or a method called on it. It may not be passed to a function,
-			stored, copied or returned.</li>
-		<li><b>An initializer runs only in a construction.</b>
-			It is never called by name on a value, which it would overwrite.</li>
-	</ul>
-	<p>The following code invokes the initializer defined above:</p>
-<pre>
-imm pt = new Point();  // x,y,z of the new Point value are 1.0
-</pre>
-	<p>A construction fills its value in place, where the value goes.
-		Declaring a variable with a construction hands the initializer the variable's own memory,
-		and allocating one hands it the memory the region obtained;
-		a value constructed where it has no place yet, as an argument to a function, or a field
-		of another construction, is built in a temporary and copied there.</p>
-	<p>A value is constructed once. <span class="pre">new Point(p)</span>, where <span class="pre">p</span>
-		is already a Point, is an error: a finished value needs no construction. An
-		<a href="mem-regions.html#value">allocation</a> takes one as its value, moving it in.</p>
-	<p>An enum's variant is constructed with parentheses, <span class="pre">Some(x)</span>,
-		and an empty one by its name alone, <span class="pre">None</span>
-		(<a href="guide-enums.html#init">Enums</a>).</p>
-	<p>Constructing a value in a region, and a <span class="pre">clone</span> method, are
-		<a href="#inregion">below</a>.</p>
-
-	<h4 id="finalizer">Finalizer</h4>
-	<p>When a object is destroyed at the end of its life,
-		its finalizer logic, if defined, is automatically invoked.
-		Only types that acquire a dependent relationship
-		with other system object(s) need to define a finalizer.
-		The finalizer releases, gives back, or safely breaks
-		all such dependencies (e.g., closing file/network handles, de-subscribing to services, etc.)
-		before the value's memory is reclaimed.</p>
-	<p>Here's a finalizer:</p>
-<pre>
-fn final(self &amp;uni) {
-  file.close;
-}
-</pre>
-	<p>Key to a finalizer definition:</p>
-	<ul>
-		<li><b>The method's name must be <span class="pre">final</span></b>.
-			Only one may be defined.</li>
-		<li><b><span class="pre">self</span> is a borrowed reference using the
-			<span class="pre">uni</span> permission</b>.
-			No other parameters should be specified.</li>
-		<li><b>Finalizers don't return a value.</b></li>
-		<li><b>The logic may access the value and call methods.</b>
-			However, a finalizer's logic should run quickly without blocking,
-			while still breaking all dependencies.
-		  After the finalizer finishes, the object will cease to exist.</li>
-	</ul>
-	<p>A value dies the same way wherever it lives &mdash; a local variable at the end of its
-		scope, a parameter at the end of its function, a field inside the value holding it,
-		a temporary at the end of its statement:
-		its finalizer runs first, then the finalizers of its fields, in the order they are
-		declared, then the owning references its fields hold are released, in the order they are
-		declared, and so on down, however deep. A tuple's elements die in order, as fields do, and so
-		do an array's, first element first.</p>
-	<p>A temporary is a value an expression produces that nothing takes: it is not bound to a
-		variable, stored in a field or element, passed by value, returned or moved. A call's
-		result whose field is read, an owning reference read through, an owner lent to a call
-		as a borrowed reference, a value thrown away by a statement: each is a temporary, and
-		dies at the end of the statement that produced it, the newest first, as locals die at the
-		end of their block. A temporary produced by the condition of an <span class="pre">if</span>
-		or a <span class="pre">while</span> dies once the condition is decided, before the branch
-		runs, so each pass of a loop finalizes its own; and one produced by the right operand of
-		<span class="pre">and</span> or <span class="pre">or</span>, which runs on some paths
-		only, dies at the end of that operand. A value moved out of a temporary owner belongs to
-		its new holder, and the owner's memory is freed without it, as above.</p>
-<pre>
-imm n = open(name).length;   // the file open returns is closed here, once its length is read
-take(open(name));            // moved: take closes it
-if open(name).length &gt; 0 {   // closed here, before the branch runs
-  ...
-}
-</pre>
-	<p>A temporary a variable's initializer borrows lives longer, to the end of the block the
-		variable is declared in, as Rust extends it: so the borrow is good for as long as the
-		variable can be used. That is a temporary the initializer borrows directly
-		(<span class="pre">&amp;make()</span>), a part of one (<span class="pre">&amp;make().x</span>),
-		what a temporary owner owns (<span class="pre">&amp;*makeOwner()</span>), or a temporary owner
-		the initializer lends where a borrowed reference is declared
-		(<span class="pre">imm r &amp;R = makeOwner()</span>), whether the borrow is the whole
-		initializer or an element of a tuple, an array or a variant literal it builds
-		(<span class="pre">(&amp;make(), 1)</span>, <span class="pre">Some[&amp;R](&amp;make())</span>),
-		or the value of a block, of an <span class="pre">if</span>'s arm or of a
-		<span class="pre">match</span>'s arm in one of those places
-		(<span class="pre">if c { &amp;make(); } else { &amp;other(); }</span>), as Rust 2024 extends
-		them. Such a temporary dies at the end of its block, with the block's locals, the latest
-		first; one an arm makes, only where that arm ran.
-		A temporary passed to a function, or a method's receiver, is not extended, even
-		in an initializer: it dies at the end of its statement, and a variable still holding a
-		borrow of it may not be used after that. A borrow of a temporary anywhere else
-		(<span class="pre">show(&amp;make())</span>) points at it until then.</p>
-<pre>
-imm r = &amp;make();             // the temporary lives to the end of the block
-imm s &amp;R = makeOwner();       // so does the owner, and what it owns
-imm t = pick(makeOwner());    // the owner dies here: t may not be used after this statement
-</pre>
-	<p>A temporary that a raw pointer made from it may outlive is not finalized at all. Nothing follows a
-		raw pointer, so the compiler leaves the value as it is rather than finalize it and leave the pointer
-		dangling. An ordinary borrow of the same temporary does not keep it:</p>
-<pre>
-fn mk(n i32) R {..}
-fn id(r &amp;R) &amp;R {..}          // answers the borrow it is handed
-
-imm p = id(&amp;mk(2)) as *R;    // p may outlive the temporary: R's final never runs for it
-imm q = id(&amp;mk(3));          // an ordinary borrow: R's final runs at the end of this statement
-</pre>
-	<p>A value dies on the path that still holds it, and only there. Where a variable's value was
-		moved out, or given, on only some of the paths that reach the end of its scope
-		&mdash; in one branch of an <span class="pre">if</span> or a <span class="pre">match</span>,
-		in a loop that may not run, before an early <span class="pre">return</span> or
-		<span class="pre">break</span> &mdash; the compiler keeps a hidden flag beside the variable,
-		set where its value arrives and cleared where it leaves, and the end of its scope finalizes
-		it only when the flag says the value is still there. A variable whose every path agrees has
-		no flag, and costs nothing for it.</p>
-<pre>
-imm f = File.open(name);
-if verbose {
-  log.keep(f);      // f moves to the log on this path
-}
-                    // f is closed here only if verbose was false
-</pre>
-	<p>A value assigned over dies as it is replaced: the new value is evaluated first, then the
-		old one is finalized, then the new one is stored. This is so for a variable, a field or an
-		element of one, and a value reached through a reference (<span class="pre">*r = v</span>).
-		Where the variable holds nothing to replace &mdash; it was never given a value, or its value
-		moved out &mdash; nothing is finalized; where that depends on the path, its flag decides.</p>
-	<p>A value allocated in a region is finalized when the region lets it go: when its single
-		owner expires, or, for a counted region, its last owner. It dies as above, and only
-		then is its memory freed, so a finalizer may still use everything its value owns.
-		A value moved out of a region's object belongs to its new holder, which finalizes it;
-		the object's memory is freed without finalizing what was moved out. Only the whole value
-		moves: a field of it may not be moved out (<a href="mem-moves.html">move semantics</a>),
-		so no object dies partly moved out.</p>
-	<p>A value typed as an <a href="guide-enums.html#enum">enum</a> is finalized as the variant it holds.
-		An enum may define its own <span class="pre">final</span>, which runs for every variant, and a
-		variant may define one too: the variant's finalizer runs first, then the enum's, then the
-		finalizers of the variant's fields (the enum's common fields among them), then the owning
-		references those fields hold are released &mdash; the more specific type before the
-		more general, as with inheritance in other languages. An enum none of whose variants has
-		anything to finalize, such as <span class="pre">Option[i32]</span>, costs nothing when its
-		value dies.</p>
-	<p>A global variable lives until the program shuts down. Whatever it holds is then finalized by its
-		module's finalizer, after the module's own <span class="pre">final</span>: a value whose type
-		finalizes, a tuple or an array of them, or an owning reference, which is released
-		(<a href="mod-globals.html#dyninit">Dynamic initialization of global variables</a>).
-		A module has an initializer and a finalizer of its own too, described there.</p>
-<pre>
-struct R {
-  pub n i32;
-  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
-}
-imm one R;
-imm pair (R, R);
-imm many Array[R, 2];
-imm owned So[R];
-fn @initpure init() {
-  one = new R(1);
-  pair = (new R(2), new R(3));
-  many = [new R(4), new R(5)];
-  owned = new So[R](6);
-}
-</pre>
-	<p>After <span class="pre">main</span> returns, this prints <span class="pre">final 1</span> through
-		<span class="pre">final 6</span>, one to a line.</p>
-
-	<h4 id="inregion">Constructing in a region</h4>
-	<p>An allocation constructs its value the same way, in the region. <span class="pre">new Rc[mut, Node](1)</span>
-		runs Node's initializer on the memory the region allocated, after the region's own initializer has filled
-		its bookkeeping. One given a finished Node instead, <span class="pre">new Rc[mut, Node](n)</span>,
-		moves it in and runs no initializer:</p>
-<pre>
-import stdio use *;
-import libc;
-
-struct Counted is RegionRef {
-  owners usize;
-  fn alloc(size usize) *u8 { libc.malloc(size); }
-  fn init(self &amp;new) {
-    print &lt;- "region init\n";
-    *self = new Counted(1usize);
-  }
-  fn aliasRef(self &amp;uni Counted) { owners = owners + 1usize; }
-  fn dealiasRef(self &amp;uni Counted) bool {
-    owners = owners - 1usize;
-    owners == 0usize;
-  }
-  fn free(self &amp;uni Counted) {
-    print &lt;- "free\n";
-    libc.free(self as *u8);
-  }
-}
-
-struct Node {
-  pub n i32;
-  pub fn init(self &amp;new, k i32) {
-    print &lt;- "node init\n";
-    *self = new Node(n: k * 10);
-  }
-  fn final(self &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
-}
-
-fn main() i32 {
-  {
-    imm a = new Counted[mut, Node](1);    // Node's initializer runs, on the region's memory
-    print &lt;- a.n;
-    print &lt;- "\n";
-  }
-  {
-    imm done = new Node(5);
-    imm b = new Counted[mut, Node](done); // a finished Node moves in: no initializer runs
-    print &lt;- "moved in\n";
-  }
-  0i32;
-}
-</pre>
-	<p>The first block prints <span class="pre">region init</span>, <span class="pre">node init</span>,
-		<span class="pre">10</span>, <span class="pre">node final 10</span> and <span class="pre">free</span>.
-		The second prints <span class="pre">node init</span> (for <span class="pre">new Node(5)</span>),
-		<span class="pre">region init</span>, <span class="pre">moved in</span>,
-		<span class="pre">node final 50</span> and <span class="pre">free</span>.
-		The allocator is described in <a href="mem-ownregion.html">custom allocators</a>.</p>
-
-	<h4 id="clone">Clone method</h4>
-<p>As discussed in <a href="mem-moves.html">Moves in depth</a>, it is not always obvious
-	how to create a faithful copy of some types' values.
-	When this difficulty exists (e.g., a value that contains references to other values),
-	a type may define a <span class="pre">clone</span> method
-	whose logic is capable of creating a faithful copy.</p>
-<p>A clone method is essentially an initializer whose second parameter
-	is a value or another borrowed reference to the value we want to copy:</p>
-<pre>
-fn clone(self &amp;new, from &amp;) {
-  *self = new Self(x: from.x, y: from.y, z: from.z);
-}
-</pre>
-	<p>A clone method takes no part in copying: whenever copies are automatically made (e.g., assignment or
-		function calls), no copy calls it, so declaring one does not make a type copyable. It is an ordinary method,
-		called by name. A clone method written against the <span class="pre">new</span> permission, as above, is refused
-		under that name (see the note at <a href="#initializer">Initializers</a>).</p>
-
-	<h2 id="comesback">Comes back in &hellip;</h2>
-	<ul>
-		<li><a href="guide-enums.html">Enums</a>: a type whose value is one of several variants, each of which may be a
-			struct with fields and methods of its own.</li>
-		<li><a href="guide-collections.html">Collections</a>: List, Dict, Set and String, built from structs over arrays.</li>
-		<li><a href="mem-moves.html">Moves in depth</a>: which types move and which copy, and a type with a finalizer
-			being a move type.</li>
-		<li><a href="mem-borrowing.html">Borrowed references in depth</a>: methods that change their value
-			(<span class="pre">self &amp;mut</span>), and borrowing a field or an element.</li>
-		<li><a href="guide-enums.html#struct">Enums</a>: partial matches on structs and arrays.</li>
-		<li><a href="guide-collections.html#arrays">Collections</a>: slices of an array.</li>
-		<li><a href="mem-regions.html">Owning references and regions</a>: <span class="pre">new</span> in a region, and
-			how a reference or allocation expires.</li>
-		<li><a href="mod-substitution.html">Substitution</a> and <a href="mod-extensibility.html">Extensibility</a>:
-			traits, inheritance, and the <span class="pre">extend</span> block.</li>
-		<li><a href="mod-globals.html">Global state and initialisation</a>: a static at the top of a module is a global
-			variable.</li>
-		<li><a href="safe-c.html">Talking to C</a>: opaque types.</li>
-	</ul>
-	<p>The playground's <i>Structs</i> lesson is the program at the top of this page.</p>
+	<p>That is usually what you want for a small value such as a point. For a large value, or when a function should
+		change the caller's value rather than its own copy, the function takes a borrowed reference instead, as a
+		method's <span class="pre">self &amp;mut</span> does. A struct with a field that is not copied, such
+		as a <a href="guide-text.html#moving">String</a> or a list, is moved instead of copied, as that field would be
+		(<a href="mem-moves.html">Moves</a> has the rule in full).</p>
+	<p id="structcompare">Two struct values cannot be compared with <span class="pre">==</span> until the struct says
+		what makes two of its values equal: <i>"Method or field `==` not found."</i> Only the type knows whether two
+		points that differ in the tenth decimal place are the same point. How a struct gains
+		<span class="pre">==</span>, and <span class="pre">+</span> and the rest, is on
+		<a href="guide-methods.html#operators">Method patterns</a>.</p>
+
+	<h2 id="private">Public and private</h2>
+	<p>The <span class="pre">pub</span> in front of each field and method makes it public: code anywhere may use it.
+		Without <span class="pre">pub</span> it is private to the <a href="mod-namespaces.html#typens">module</a> that
+		declares the struct: any code in that module may use it, through any value of the struct, and no code outside
+		may. That is how a type keeps its promises. When a field's value must obey some rule, a fraction's denominator
+		never 0, a list's count never more than its room, the field is left private, and the type's own methods, which
+		keep the rule, are the only way to change it. A struct whose fields must be kept even from the rest of its
+		module is declared in a module of its own.</p>
+	<p>Privacy reaches construction too. Code outside the module cannot give a private field a value with
+		<span class="pre">new</span>, though it may leave a private field with a default to its default. And a public
+		field of a public struct may not have a type that is private to the module, since code outside would then be
+		holding a type it cannot name.</p>
+
+	<p>You can now gather values into a type of your own, give it methods that answer questions or change it, and
+		decide what the rest of the program may touch. Given methods with particular names, a struct can become a good
+		deal more: added with <span class="pre">+</span>, indexed with <span class="pre">[]</span>, called like a
+		function, walked by <span class="pre">each</span>, and set to run code as each value is made and as it dies.
+		<a href="guide-methods.html">Method patterns</a> gathers those, once the collections have shown them at work.
+		First, though, a type whose values come in kinds: enums.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="guide-enums.html"><img alt="_" src="next.png" /></a>

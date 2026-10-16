@@ -52,7 +52,7 @@ fn main() {
 	<p><b>Try this:</b> set <span class="pre">terms</span> to 2, and watch pi fall apart; then to 20, and watch
 		the digits hold.</p>
 
-	<h2 id="repeating">Repeating while a condition holds</h2>
+	<h2 id="repeating"><span id="while"></span>Repeating while a condition holds</h2>
 	<p><span class="pre">while</span> takes a condition and a block. The condition is checked first, and if it holds the
 		block runs; then it is checked again, and so on, until it fails. A condition that is false from the start runs
 		the block no times at all. Something in the block has to change for the loop ever to end, here
@@ -84,11 +84,15 @@ while {
 }
 print &lt;- "27 takes ", steps, " steps\n";     // 27 takes 111 steps
 </pre>
-	<p><span class="pre">break if n == 1;</span> is the same as <span class="pre">if n == 1 { break; }</span>, written the
+	<p id="trailing-if"><span id="break"></span><span class="pre">break if n == 1;</span> is the same as <span class="pre">if n == 1 { break; }</span>, written the
 		way it reads. <span class="pre">break</span>, <span class="pre">continue</span> and
-		<span class="pre">return</span> can each take a condition after them like this.</p>
+		<span class="pre">return</span>, and only those three, can each take a condition after them like this, after
+		the value if they give one: <span class="pre">return x if x * x &gt; limit;</span>. A value that is itself an
+		<span class="pre">if</span> is told apart by the block after its condition, so
+		<span class="pre">return if c { 1; } else { 2; };</span> returns a value, while
+		<span class="pre">return if c;</span> returns when <span class="pre">c</span> holds.</p>
 
-	<h2 id="counting">Counting with each</h2>
+	<h2 id="counting"><span id="each"></span>Counting with each</h2>
 	<p>A great many loops just count, and writing the counter out by hand (start it, test it, step it) is where
 		mistakes creep in. <span class="pre">each</span> does the counting. Give it a variable, the word
 		<span class="pre">in</span>, and a range, and the block runs once for each number:</p>
@@ -109,6 +113,13 @@ print &lt;- "6! = ", f, "\n";     // 6! = 720
 	<p>A range never guesses its direction: <span class="pre">6 .. 2</span> on its own runs no passes, and counting
 		down takes a negative step. The loop's variable is fresh on every pass and belongs to the loop; the block can
 		read it but not change it. A loop that needs to steer its own count is a <span class="pre">while</span>.</p>
+	<p id="range">A range is worked out once, before the first pass. Changing the end inside the body
+		(<span class="pre">0 ..&lt; n</span> while the body adds to <span class="pre">n</span>) does not move it, and a
+		step held in a variable keeps the sign it had then. A step of zero runs no passes. A fractional step is not
+		added up pass after pass, which would gather rounding errors: each pass's number is the start plus the count of
+		steps taken times the step, so <span class="pre">0.0 .. 1.0 by 0.1</span> takes eleven passes, the last of them
+		exactly 1.0. And a range stops as soon as a step would carry it past its end, or past what its type can hold:
+		<span class="pre">250u8 .. 255 by 2</span> gives 250, 252 and 254, and never wraps round to 0.</p>
 
 	<h2 id="leaving">Skipping ahead and leaving early</h2>
 	<p><span class="pre">continue</span> abandons the rest of this pass and goes on with the next one;
@@ -121,7 +132,7 @@ each x in 0 ..&lt; 10 {
   odd += x;
 }                               // odd is 25: 1 + 3 + 5 + 7 + 9
 </pre>
-	<p>When the test is about which numbers to visit at all, it can go straight after the range instead, and the
+	<p id="filter">When the test is about which numbers to visit at all, it can go straight after the range instead, and the
 		numbers that fail it are skipped:</p>
 <pre>
 each x in 1 .. 50 if x % 7 == 0 {
@@ -173,6 +184,13 @@ imm perfect = while k &lt; 1000 {
 </pre>
 	<p>A <span class="pre">while</span> with no condition can end only at a <span class="pre">break</span>, so it takes no
 		<span class="pre">else</span>: every <span class="pre">break</span> gives its value.</p>
+	<p id="else">The loop's value has one type, whichever way it ends, so when the <span class="pre">else</span> gives
+		a value, a <span class="pre">break</span> with none is refused. The <span class="pre">else</span> is an
+		ordinary block that stands outside the loop: the loop's variables are out of sight there, a
+		<span class="pre">break</span> in it belongs to a loop further out, and it may do other work before its value,
+		or end in a <span class="pre">return</span> instead of giving one. A loop with an <span class="pre">else</span>
+		can also be a plain statement, its <span class="pre">else</span> run for what it does when the loop runs
+		out.</p>
 
 	<h2 id="more">each walks more than numbers</h2>
 	<p>A range is only the first thing <span class="pre">each</span> can walk. A function can hand out values one at a
@@ -181,328 +199,6 @@ imm perfect = while k &lt; 1000 {
 
 	<p>You can now repeat work, stop it early, and get an answer back from a loop. Next come functions, which give a
 		piece of work a name, so that pi can be worked out anywhere, to as many terms as you like.</p>
-
-	<h2 id="indetail">In detail</h2>
-	<p><i>The rest of this page is the complete reference for <span class="pre">while</span>,
-		<span class="pre">each</span> over a range, <span class="pre">break</span> and <span class="pre">continue</span>,
-		and loops as values; skip to the <a href="guide-functions.html">next page</a> if the program above was
-		enough.</i></p>
-
-	<h3 id="while">while, break, continue, and a loop that gives a value</h3>
-	<p>Use <span class="pre">while</span> to repetitively perform the same logic over and over again
-		so long as a specified condition is true. For example:</p>
-<pre>
-fn fact(mut n i32) i32 {
-  mut result = 1;
-  while n &gt; 1 {
-    result *= n;
-    --n;
-  }
-  result;
-}
-</pre>
-  <p>This function calculates the factorial of some number n.
-		So long as n stays greater than one, the inner block repeatedly multiplies result by n and then decrements n.
-		So, if n is 5, result will be calculated as 5 * 4 * 3 * 2, returning 120.
-	</p>
-	<p>The while statement's condition can be any conditional expression, as described for
-		<a href="guide-conditionals.html#condexp"><span class="pre">if</span></a>.
-	  The condition is checked when encountering the while statement, and then again every time after
-		the block's statements have been performed.
-		Whenever the condition evaluates as false, execution continues at the first statement after the while block.</p>
-	<p>The while statement's condition may be omitted, if there should not be an exit condition at the start of the loop.
-		Within the while block must be found at least one break statement (see below) that will terminate the loop.
-		A loop with no condition and no breaks would otherwise repeat forever.</p>
-
-	<h4 id="break">break</h4>
-	<p><span class="pre">break</span> statements may be placed anywhere within a while block
-		to terminate the repetitive loop early.
-		We can code the factorial function yet another way using 'break':</p>
-<pre>
-fn fact(mut n i32) i32 {
-  mut result = 1;
-  while true {
-    if n &lt; 2 { break; }
-    result *= n--;
-  }
-  result;
-}
-</pre>
-	<p>As this example shows,
-	<span class="pre">break</span> is typically found within an <span class="pre">if</span> block.
-	A <span class="pre">break</span> statement terminates the control flow for the innermost
-	loop block it is found within.</p>
-
-	<h4 id="continue">continue</h4>
-	<p>The <span class="pre">continue</span> statement also changes the loop's control flow.
-		Instead of terminating the loop, it resumes execution at the top of the loop,
-		re-evaluating the conditional expression.
-		Effectively, <span class="pre">continue</span> ignores all subsequent statements in the loop's block.</p>
-<pre>
-fn countOdd(mut n i32) i32 {
-  mut result = 0;
-  while n &gt; 0 {
-    if n-- % 2 == 0 { continue; }
-    ++result;
-  }
-  result;
-}
-</pre>
-
-	<h4 id="trailing-if">A trailing if</h4>
-	<p><span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span>,
-		and only those three, may end with an <span class="pre">if</span> and a condition. The statement is then
-		performed only when the condition holds, exactly as if it stood alone in an
-		<span class="pre">if</span> block:</p>
-<pre>
-fn countOdd(mut n i32) i32 {
-  mut result = 0;
-  while n &gt; 0 {
-    continue if n-- % 2 == 0;    // the same as: if n-- % 2 == 0 { continue; }
-    ++result;
-  }
-  result;
-}
-
-fn firstOver(list &amp;List[i32], limit i32) i32 {
-  each x in list {
-    return *x if x &gt; limit;    // a value, then the condition
-  }
-  -1;
-}
-
-break if done;                  // no value
-break idx if matches(idx);      // a value
-return if n == 0;               // no value
-</pre>
-	<p>Any other statement is written with an <span class="pre">if</span> block. A value that is itself an
-		<span class="pre">if</span> expression is told from a trailing one by the block that follows its condition:
-		<span class="pre">return if c { 1; } else { 2; };</span> returns the value of the expression, and
-		<span class="pre">return if c;</span> returns, when <span class="pre">c</span> holds. Writing the
-		expression in parentheses, <span class="pre">return (if c { 1; } else { 2; });</span>, leaves no doubt.</p>
-
-	<h4 id="loopexpr">A loop as an expression</h4>
-	<p>A <span class="pre">while</span> loop may be used within an expression, where it is expected to return a value.
-		The value(s) returned by a <span class="pre">while</span> loop are specified by the loop's
-		<span class="pre">break</span> statements.
-		A <span class="pre">while</span> with no condition has no way to leave except by a
-		<span class="pre">break</span>, so every one of its breaks gives the loop's value.</p>
-	<p>This example shows use of a <span class="pre">while</span> loop as an expression.
-		Notice the lack of conditional expression on the <span class="pre">while</span>
-		and the specification of values on the <span class="pre">break</span> statements.</p>
-<pre>
-imm found = while {
-  if idx &gt; maxidx { break -1; }
-  if matches(idx) { break idx; }
-  ++idx;
-}
-</pre>
-	<p>If this feature is used, all <span class="pre">break</span> statements in the loop
-		must return a value, all of the same type.</p>
-
-	<h5 id="whileelse">A loop with a condition: else</h5>
-	<p>A <span class="pre">while</span> with a condition has one more way out: the condition fails, and that exit
-		gives no value of its own. An <span class="pre">else</span> after the loop's block says what the loop gives
-		when it runs out, and with one the loop may be used as an expression. The <span class="pre">else</span>
-		block is an ordinary block: its last expression is the value, and it may do other work first.</p>
-<pre>
-imm found = while idx &lt;= maxidx {
-  if matches(idx) { break idx; }
-  ++idx;
-} else {
-  -1;               // the condition failed: nothing matched
-};
-</pre>
-	<p>The <span class="pre">else</span> block runs only when the loop runs out; a <span class="pre">break</span> skips it.
-		It stands outside the loop: the loop's variables are not in view, and a <span class="pre">break</span> or
-		<span class="pre">continue</span> in it belongs to the loop around. It may also end in a
-		<span class="pre">return</span>, which gives the loop no value:</p>
-<pre>
-imm found = while idx &lt;= maxidx {
-  if matches(idx) { break idx; }
-  ++idx;
-} else {
-  return notFound;
-};
-</pre>
-	<p>A <span class="pre">while</span> loop with an <span class="pre">else</span> may also be a statement,
-		with an <span class="pre">else</span> that is run for what it does. As a value, a
-		<span class="pre">break</span> that gives no value is refused when the <span class="pre">else</span> gives one: the
-		loop's value is of one type whichever way it ends. A <span class="pre">while</span> with no condition
-		never runs out, so it takes no <span class="pre">else</span>; a loop with a condition and no
-		<span class="pre">else</span> is a statement only.
-		<span class="pre">each</span> takes an <span class="pre">else</span> in the same way
-		(<a href="#else">below</a>).</p>
-
-	<h4 id="outer">Outer block breaks</h4>
-	<p>To make it possible for <span class="pre">break</span> or <span class="pre">continue</span>
-		to apply to a loop outside the loop it is in, mark the outer loop with a
-		<a href="syntax-lexical.html#lifetime">label</a> (a name after a single quote, such as
-		<span class="pre">'outer</span>) and then use that same
-		label on the <span class="pre">break</span> or <span class="pre">continue</span> statement.</p>
-<pre>
-'outer: each n in 1 .. 5 {
-	while obj.fireAShot() {
-		if obj.impacted { continue 'outer; }
-	}
-}
-</pre>
-
-	<h3 id="each">each over a range or a list</h3>
-	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
-		to iterate over a sequence of values.
-		For example, here's the factorial function using <span class="pre">each</span>:</p>
-<pre>
-fn fact(n i32) i32 {
-  mut result = 1;
-  each x in 2 .. n {
-    result *= x;
-  }
-  result;
-}
-</pre>
-	<p>Effectively this <span class="pre">each</span> statement binds the variable x to each iterated value
-		from 2 through n, each time performing the loop's inner block.</p>
-		<p>As this example shows, the <span class="pre">each</span> statement has a simple structure:</p>
-		<ul>
-			<li>One or more variables to be bound to values produced by the iterator.
-				These variables are local to the <span class="pre">each</span> block and cannot be accessed outside that scope.
-				Every pass binds new ones, and the block cannot change them: counting by hand is a
-				<span class="pre">while</span>. A write to one is refused, and the message says how to change
-				the items in place instead: walk <span class="pre">src.mutItems()</span>.</li>
-			<li>An iterator that produces different value(s) on each iteration of the loop.
-				The iterator follows <span class="pre">in</span>.</li>
-			<li>A block containing the logic to be performed on each iteration.</li>
-		</ul>
-
-<h4 id="range">Number Range Iterator</h4>
-	<p>As the above example shows, a range is written with a range operator between its first and last
-		numbers, and iterates successively over integers or floating point numbers. <span class="pre">a .. b</span>
-		runs <b>through</b> <span class="pre">b</span>: it includes it. <span class="pre">a ..&lt; b</span> stops
-		<b>before</b> <span class="pre">b</span>. Iteration begins with the first number and then increments by 1.
-		Expressions may be used in place of literal numbers, if desired. The same two operators make a
-		<a href="guide-conditionals.html#ranges">range pattern</a> and a <a href="guide-collections.html#slice">subslice</a>.</p>
-<pre>
-each x in 3 .. 7 {      // iterates:  3 4 5 6 7
-}
-each x in 3 ..&lt; 7 {     // iterates:  3 4 5 6
-}
-</pre>
-	<p>A range never guesses a direction: one that starts past its end is empty, so <span class="pre">6 .. 2</span>
-		runs no pass. To iterate <b>backwards</b>, count by a negative step:</p>
-<pre>
-each x in 6 ..&lt; 1 by -1 {  // iterates:  6 5 4 3 2
-}
-</pre>
-	<p>A <b>step value</b> may be specified after <span class="pre">by</span>.
-		Instead of incrementing by 1, the step value specifies how much to add to the iterated number each time,
-		and its sign says which way the range runs. A step of zero runs no pass:</p>
-<pre>
-mut sum = 0;
-each x in 0 .. 10 by 2 { // iterates: 0, 2, 4, 6, 8, 10
-  sum += x;
-}
-</pre>
-	<p>A range counting down takes a negative step value.
-		Iteration stops as soon as a step moves the number away from the end rather than toward it,
-		which is also what a step past the largest (or smallest) value the number's type can hold
-		amounts to:</p>
-<pre>
-each x in 10 .. 0 by -2 {      // iterates: 10, 8, 6, 4, 2, 0
-}
-each x in 250u8 .. 255 by 2 {  // iterates: 250, 252, 254
-}
-</pre>
-	<p>The end is read once, before the first pass, so an end that changes inside the body (<span class="pre">0 ..&lt; n</span>
-		while the body adds to <span class="pre">n</span>) does not move the range; a loop that needs the end read afresh
-		is a <span class="pre">while</span>. A step that is not a literal (<span class="pre">by dx</span>) is read once too,
-		and the sign it has then decides whether the range counts up or down.
-		A <b>fractional</b> step is not added up: the number of a pass is the first value plus the count of
-		steps taken times the step, so no rounding builds up in it. <span class="pre">0.0 .. 1.0 by 0.1</span> takes
-		eleven passes, the last of them exactly 1.0, in <span class="pre">f32</span> and <span class="pre">f64</span> alike.</p>
-	<p>A range gives one variable. The loop steps a counter of its own and each pass's
-		variable holds the number, so writing to the variable is refused. A loop that steers its count by hand
-		is a <span class="pre">while</span>.</p>
-
-	<h4 id="eachlist">each over a list</h4>
-	<p><span class="pre">each</span> can also walk every element of an array or a list, one at a time. The variable
-		borrows the element, which stays where it is; a number read that way needs no <span class="pre">*</span>
-		in arithmetic:</p>
-<pre>
-mut sum = 0;
-each x in [4, 3, 8, 2] {
-  sum += x;
-}
-</pre>
-	<p><a href="#range">Number Range Iterator</a> and
-		<a href="guide-collections.html#array">Array, Slice and List Iterators</a> have the rules for both;
-		<a href="guide-collections.html#iteration">Walking a collection</a> shows the other collections.</p>
-
-	<h4 id="eachbreak">break and continue</h4>
-	<p><span class="pre">break</span> and <span class="pre">continue</span> statements may be used within an
-		<span class="pre">each</span> block to stop or re-start the loop. Either may name a loop's
-		label, to leave or re-start an outer one, and <span class="pre">return</span> leaves the function.
-			Each of the three may end with an <span class="pre">if</span> and a condition, as
-			<span class="pre">continue if x % 2 == 0;</span> does
-			(<a href="#trailing-if">A trailing if</a>).</p>
-
-	<h4 id="filter">Skipping items: if</h4>
-	<p>An <span class="pre">if</span> and a condition after the source is a filter: the items for which the condition
-		is false are skipped, as if the block began with <span class="pre">if !cond { continue; }</span>.
-		It reads the loop's variables, and works for every kind of source, ranges included:</p>
-<pre>
-each x in 0 ..&lt; 10 if x % 2 == 0 {      // 0 2 4 6 8
-}
-each name in names if name.len &gt; 3 {   // a List[String]
-}
-each key, value in ages if value &gt; 18 {
-}
-each x in 100 .. 0 by -10 if x != 50 {
-}
-</pre>
-
-	<h4 id="else">A loop that gives a value: else</h4>
-	<p>A loop that is searching for something has two ways to end: it finds it and leaves with
-		<span class="pre">break</span>, or it runs out of items. An <span class="pre">else</span> after the loop's
-		block says what the loop is worth when it runs out, and with one the whole <span class="pre">each</span>
-		is an expression whose value is the <span class="pre">break</span>'s or the <span class="pre">else</span>'s:</p>
-<pre>
-fn firstBig(list &amp;List[i32], limit i32) i32 {
-  each x in list {
-    if x &gt; limit { break *x; }
-  } else {
-    -1;              // nothing was big enough
-  }
-}
-
-imm total = each x in 1 .. 100 {
-  if x * x &gt; 500 { break x; }
-} else {
-  0;
-};
-</pre>
-	<p>The value is of one type, whichever way the loop ends. The <span class="pre">else</span> block is
-		an ordinary block (its last expression is the value, and it may do other work first), run only when the
-		items run out; a <span class="pre">break</span> skips it. It stands outside the loop: the loop's variables are not in
-		view, and a <span class="pre">break</span> or <span class="pre">continue</span> in it belongs to the loop around.
-		It may end in a <span class="pre">return</span> instead, which gives the loop no value
-		(<span class="pre">else { return -1; }</span>).
-		An <span class="pre">each</span> with an <span class="pre">else</span> may also be a statement; a
-		<span class="pre">break</span> that gives no value is then fine, and the <span class="pre">else</span>
-		is run for what it does. An <span class="pre">each</span> without an <span class="pre">else</span> is a statement only.
-		<span class="pre">while</span> with a condition does the same
-		(<a href="#whileelse">above</a>).</p>
-
-	<h2 id="comesback">Comes back in &hellip;</h2>
-	<ul>
-		<li><a href="guide-functions.html">Functions</a>: the next page. Generators, functions that yield values
-			one at a time for <span class="pre">each</span> to walk.</li>
-		<li><a href="guide-collections.html">Collections</a>: walking a list, a dictionary or a set with
-			<span class="pre">each</span>, and building one collection from another.</li>
-		<li><a href="guide-parallel.html">parallel each</a>: one loop run on every core.</li>
-		<li><a href="guide-conditionals.html">Blocks and conditionals: if and match</a>: the conditions a loop tests, and the same
-			range operators in a <span class="pre">match</span>.</li>
-	</ul>
 
 		<p style="text-align: right; margin-top: 2em;">
 			<a href="guide-functions.html"><img alt="_" src="next.png" /></a>

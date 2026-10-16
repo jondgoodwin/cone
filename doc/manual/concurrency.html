@@ -13,69 +13,174 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Co-routines beyond generators (a two-way <span class="pre">yield</span>), green threads that are paused and resumed, processes working together on one job, and distributed computing are not implemented.</i></p>
+	<p>The Guide put every core to work with two tools, <a href="guide-actors.html">actors</a> and
+		<a href="guide-parallel.html"><span class="pre">parallel each</span></a>, and <a href="memory.html">Memory</a> showed
+		how permissions keep threads from tangling over the same data. A real program asks more: an actor that waits on the
+		network, a loop that fills a picture, a value several threads must change, a kernel for the GPU, a thread of your own.
+		This part goes deeper into each, from the tools most programs use to the pieces few need. Afterwards you can choose the
+		right tool for each piece of concurrent work, and know what the compiler guarantees about it. Here is one sum, worked
+		out three ways:</p>
 
-	<p>This part is for the program that has outgrown the tour. Actors and lock permissions are
-		already in the Guide (<a href="guide-actors.html">Actors</a>,
-		<a href="guide-parallel.html">parallel each</a>), so the pages here build on them
-		freely. They run from the most used (actors and their replies) to the least (threads, atomics and locks
-		you write yourself). What follows is the lay of the land: which kinds of concurrency Cone has, and
-		what can go wrong with any of them.</p>
+<pre>
+mod three;
 
-	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
+import stdio use *;
+import collections use *;
+import thread;
+import actors;
+
+fn squares(from u64, to u64) u64 {
+  mut sum = 0u64;
+  each n in from ..&lt; to { sum += n * n; }
+  sum;
+}
+
+// A standing role: an actor keeps a running total
+actor Tally {
+  total u64;
+  pub async do add(self, n u64) { total += n; }
+  pub async do report(self) { print &lt;- "an actor:        ", total, "\n"; }
+}
+
+fn half(top u64) u64 { squares(top / 2u64, top); }
+
+fn main() {
+  imm top = 1000u64;
+
+  // One big loop: parallel each, on every core
+  imm xs = new List[u64] &lt;- parallel each n in 0u64 ..&lt; top yield n * n;
+  print &lt;- "parallel each:   ", xs.parallel().sum(), "\n";
+
+  // A thread of your own, joined when its half is done
+  imm t = thread.start(top, &amp;half);
+  imm low = squares(0u64, top / 2u64);
+  print &lt;- "an OS thread:    ", low + t.join(), "\n";
+
+  // Messages to an actor, handled one at a time
+  imm tally = new Tally(0u64);
+  tally.add(low);
+  tally.add(squares(top / 2u64, top));
+  tally.report();
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+parallel each:   332833500
+an OS thread:    332833500
+an actor:        332833500
+</pre>
+	<p>The same answer three times, but not the same program. The loop split the work itself, as it ran; the thread was
+		given its half by hand, and joined; the actor kept a total that outlives any one message. Each suits a different
+		shape of work, and most of this part is about telling them apart.</p>
+
+	<h2 id="met">What you have already met</h2>
 	<ul>
-	<li>Distributing work across multiple CPUs (many hands make light work).</li>
-	<li>Keeping the CPU(s) busy with other work, rather than pausing all work while waiting on i/o to complete.</li>
+	<li><b>Actors</b> (<a href="guide-actors.html">the Guide</a>): workers with state of their own and an ongoing job,
+		called like methods, each handling one message at a time, waiting for each other with
+		<span class="pre">await</span>.</li>
+	<li><b><span class="pre">parallel each</span></b> (<a href="guide-parallel.html">the Guide</a>): one loop on every core,
+		its results gathered by the parallel builder or a reduction.</li>
+	<li><b>Permissions</b> (<a href="mem-permissions.html">Memory</a>): what a reference's holder may do, and what others may
+		do meanwhile, which is the first half of why threads cannot race on a value. <b>Lock permissions</b>
+		(<a href="conc-locks.html">Memory</a>) are the dynamic ones, for a value several threads change: a borrow takes the
+		lock, and its last use gives it back.</li>
 	</ul>
-	<p>Most of the heavy lifting for Cone's concurrency and parallelism capability is baked into library packages.
-		Depending on the library packages chosen, many work distribution and scheduling approaches can be taken
-		(ordered by context switching cost):</p>
+	<p>This part does not repeat them. It goes on from where they stop.</p>
+
+	<h2 id="choosing">Choosing a tool</h2>
+	<p>Concurrency can make a program faster in two ways: by spreading work over several cores (many hands make light
+		work), and by keeping the cores busy with other work, rather than idle, while it waits on the world. Every tool here
+		does one or both, and each fits a shape of work:</p>
 	<ul>
-	<li>Cooperative concurrency (generators or co-routines), where context switching is explicitly baked into the logic.
-		<a href="guide-functions.html#generators">Generators</a> are the form that exists.</li>
-	<li>Green (mxn) threads, where context-switching is cooperatively handled by the runtime's work-stealing scheduler, rather than the OS.
-		The <span class="pre">actors</span> package (<a href="conc-actors.html">Actors</a>) is the nearest thing:
-		actors are multiplexed on a pool of worker threads by a work-stealing scheduler, and each message is
-		handled to completion on a worker's own stack, or up to an <span class="pre">await</span>, where the compiler
-		cuts the behaviour in two. An actor is not a green thread that is paused and resumed.</li>
-	<li>OS threads, where context-switching is handled by the OS scheduler. Threads share memory and resources.
-		The <span class="pre">thread</span> package provides them, <a href="conc-primitives.html#thread">below</a>, with
-		<a href="conc-primitives.html#atomic">atomic values</a>, <a href="conc-primitives.html#futex">the futex</a> and <a href="conc-primitives.html#locks">locks</a> to share
-		memory safely, and <a href="conc-sharing.html#channel">channels</a> to pass messages.</li>
-	<li>OS processes, where context-switching is handled by the OS. Processes are isolated, largely communicating via pipes.</li>
-	<li>Distributed computing, where work is distributed across different machines, communicating via network sockets.</li>
+	<li><b>Parts with state and an ongoing job</b>, such as a stock room, a connection, a cache: give each an
+		<a href="conc-actors.html">actor</a>. It needs no lock, since one message at a time reaches its state.</li>
+	<li><b>One big job of independent pieces</b>: a <a href="conc-parallel.html"><span class="pre">parallel each</span></a>,
+		which splits the work as it runs.</li>
+	<li><b>Waiting on other actors, or on the world</b> (sockets, files, timers, child processes, HTTP): an actor
+		<a href="conc-await.html"><span class="pre">await</span>s</a> the answer or the <a href="conc-io.html">I/O</a>, and its
+		worker runs other actors meanwhile.</li>
+	<li><b>Thousands of identical small computations</b> over plain numbers: a kernel on <a href="conc-gpu.html">the
+		GPU</a>, which runs as its twin on the CPU too.</li>
+	<li><b>A thread of your own</b>, for a library that blocks, a pipeline, or a scheduler you design:
+		<a href="conc-threads.html">OS threads and channels</a>.</li>
+	<li><b>The cheapest possible sharing</b>, such as a counter every thread bumps, or a data structure of your own:
+		<a href="conc-primitives.html">atomics, the futex and locks</a>.</li>
 	</ul>
-	<p>As always there are trade-offs: Sometimes the loss in context-switching cost (latency) can be justified by 
-		improvements in scalability, fault tolerance, i/o handling, etc.</p>
-	<p>All the above models support structured concurrency. 
-		All new processes or threads are effectively owned resources. 
-		Like all owned resources, there is a programmatic point-in-time when owned threads are joined, terminated and freed
-		according to the logic of the finalizer.
-		Libraries also support the ability to split m pieces of work across n independent processes/logic.
-		(A <a href="conc-parallel.html#parallel"><span class="pre">parallel each</span></a> loop splits the pieces of a loop
-		across the actors package's worker threads; splitting across processes is not implemented.)</p>
-	<p>Concurrency (and parallelism) introduce safety risks, when implemented poorly:</p>
+	<p>Whatever the tool, share as little that changes as you can. Shared, changing data costs synchronization on every
+		change, costs the other cores their cached copies, and is where deadlocks come from. Moving a value from one thread to
+		the next, and sharing freely what nobody changes, cost nothing at run time
+		(<a href="conc-sharing.html#mutable">Sharing what changes</a>).</p>
+
+	<h2 id="kinds">Kinds of concurrency</h2>
+	<p>Ways of running work at once differ most in what it costs to switch from one piece of work to another. From the
+		cheapest:</p>
 	<ul>
-	<li><b>Race conditions</b>, where a system's behavior varies inconsistently, depending on the sequence or timing of independent operations.</li>
-	<li><b>Deadlocks</b>, where forward progress has stalled out because independent operations have unresolved contention 
-		over the temporary ownership of multiple resources.</li>
-	<li><b>Livelocks</b>, where forward progress has stalled out because of resource starvation that is not caused by deadlocks.</li>
+	<li><b>Cooperative concurrency</b>, where the switch is written into the logic: <a href="guide-functions.html#generators-tour">generators</a>
+		are the form that exists. Co-routines beyond them are not built yet.</li>
+	<li><b>Actors on a pool of worker threads</b>, which the runtime's work-stealing scheduler multiplexes
+		(<a href="conc-runtime.html">How the runtime works</a>). Each message is handled to completion on a worker's own
+		stack, or up to an <span class="pre">await</span>, where the compiler cuts the behaviour in two. An actor is not a
+		green thread that is paused and resumed, and green threads are not built.</li>
+	<li><b>OS threads</b>, switched by the operating system's scheduler, which share memory and resources: the
+		<span class="pre">thread</span> package (<a href="conc-threads.html">OS threads and channels</a>).</li>
+	<li><b>OS processes</b>, switched by the operating system and isolated from each other. A program can run a child
+		process and wait for it, from a plain thread or an actor (<a href="conc-io.html#await-io-pool">child processes</a>);
+		processes working together on one job are not built.</li>
+	<li><b>Distributed computing</b>, across machines that talk over the network: not built, beyond the sockets and HTTP an
+		actor awaits.</li>
 	</ul>
-	<p>Subsequent pages highlight Cone language features (e.g., permissions and queued methods)
-		that can be used to make synchronized, inter-thread communications easier and safer.</p>
+	<p>As always there are trade-offs: a dearer switch can be worth it for scalability, fault isolation or simpler handling
+		of I/O.</p>
+
+	<h2 id="safety">What can go wrong, and what Cone prevents</h2>
+	<p>Concurrency done carelessly fails in three ways:</p>
+	<ul>
+	<li><b>Race conditions</b>, where a program's behaviour varies with the order or timing of independent operations. The
+		worst, a <b>data race</b>, is two threads reaching the same memory at once, one of them writing. Cone refuses data
+		races when the program is compiled, through the permissions and the rules on what may cross a thread
+		(<a href="conc-sharing.html#race">Race safety</a>, which also names the few places it trusts the program). A race in
+		the wider sense, where the outcome depends on which thread got there first, is a program's own logic, and no compiler
+		can rule it out: the Guide's bakery could not say which customer would go short.</li>
+	<li><b>Deadlocks</b>, where progress stops because operations each hold something another is waiting for. Cone does
+		not prevent them (<a href="conc-locks.html">Lock permissions</a>). An actor never holds a lock while it awaits: an
+		<span class="pre">await</span> gives every lock back (<a href="conc-await.html#await-cross">What crosses an
+		await</a>).</li>
+	<li><b>Livelocks</b>, where progress stops for want of a resource, though nothing is deadlocked.</li>
+	</ul>
+
+	<h2 id="structured">Work that finishes where it is begun</h2>
+	<p>Concurrent work is easiest to reason about when it finishes inside the code that started it, as a function call
+		does. Cone's tools go a long way towards that. A <span class="pre">parallel each</span> has finished every pass when
+		control reaches the statement after it, and so has <span class="pre">actors.parallelRange</span>. A thread's handle is
+		its one owner: joining it waits for the thread, and a handle that dies unjoined joins as it dies, though that is
+		tidiness rather than a guarantee (<a href="conc-threads.html#handle">The handle</a>). The program itself ends only when
+		no actor is queued or running (<a href="conc-runtime.html#runtime">How the runtime works</a>). And an actor's state is
+		finalized exactly once, when its last handle has gone and its mailbox is empty.</p>
 
 	<h2 id="pages">The pages of this part</h2>
 	<ol>
-	<li><a href="conc-actors.html">Actors in depth</a>: the four shapes of behaviour, the declaration, making an actor, an actor&rsquo;s life, <span class="pre">selfactor</span> and private state.</li>
-	<li><a href="conc-await.html">Awaiting in depth</a>: what crosses an <span class="pre">await</span>, an <span class="pre">await</span> inside a statement, futures, loops.</li>
-	<li><a href="conc-io.html">I/O in depth</a>: sockets, UDP, files, sleeping, processes, cancel groups, deadlines, the I/O thread.</li>
-	<li><a href="conc-parallel.html">Data parallelism in depth</a>: what a <span class="pre">parallel each</span> body may do, filling buffers, the parallel builder, reductions.</li>
-	<li><a href="conc-sharing.html">What may cross a thread: Sendable and Shareable</a>: channels, the one-shot reply channel, <span class="pre">Arc</span>, and the marker traits in one place.</li>
-	<li><a href="conc-locks.html">Lock permissions in depth</a>: how a borrow takes and gives back a lock, which regions take which lock, defining one.</li>
-	<li><a href="conc-gpu.html">The GPU</a>: kernels, buffers, workgroups, barriers.</li>
-	<li><a href="conc-runtime.html">How the runtime works</a>: the scheduler, an actor&rsquo;s garbage-collected region, the parallel loop underneath.</li>
-	<li><a href="conc-primitives.html">Roll your own: threads, atomics and locks</a>: OS threads, parking, atomic values, the futex, <span class="pre">Mutex</span>, <span class="pre">Condvar</span> and <span class="pre">Once</span>.</li>
+	<li><a href="conc-actors.html">Actors in depth</a>: the four shapes of behaviour, the declaration, making an actor, an
+		actor's life, <span class="pre">self</span> and <span class="pre">selfactor</span>, private state.</li>
+	<li><a href="conc-parallel.html"><span class="pre">parallel each</span> in depth</a>: what it can walk, what its body may
+		do, the parallel builder, reductions, filling buffers, a loop in an actor.</li>
+	<li><a href="conc-sharing.html">What may cross a thread: Sendable and Shareable</a>: race safety, the two markers,
+		borrows that last the whole program, sharing what changes.</li>
+	<li><a href="conc-await.html"><span class="pre">await</span> and futures in depth</a>: what crosses an
+		<span class="pre">await</span>, an <span class="pre">await</span> inside a statement, futures.</li>
+	<li><a href="conc-io.html">I/O in depth</a>: sockets, datagrams, files, timers, child processes and HTTP, awaited;
+		cancelling and deadlines; the loop underneath.</li>
+	<li><a href="conc-runtime.html">How the runtime works</a>: the workers and the scheduler, an actor's own
+		garbage-collected region, the parallel loop underneath.</li>
+	<li><a href="conc-gpu.html">The GPU: compute kernels</a>: kernels and their CPU twins, buffers, atomics, workgroup
+		memory, barriers.</li>
+	<li><a href="conc-threads.html">OS threads and channels</a>: starting, joining and parking threads; channels and the
+		one-shot channel.</li>
+	<li><a href="conc-primitives.html">Roll your own: atomics, the futex and locks</a>: atomic values, the futex,
+		<span class="pre">Mutex</span>, <span class="pre">Rwlock</span>, <span class="pre">Condvar</span> and
+		<span class="pre">Once</span>.</li>
 	</ol>
+	<p>Lock permissions, the checked way for threads to share a value that changes, are in Memory:
+		<a href="conc-locks.html">Lock permissions</a>.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="conc-actors.html"><img alt="_" src="next.png" /></a>

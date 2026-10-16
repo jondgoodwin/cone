@@ -13,84 +13,101 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64), not yet on macOS.</i></p>
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64),
+		not yet on macOS.</i></p>
 
-	<h2 id="why">Why you&rsquo;d want it</h2>
-	<p>Most programs never look at this page: the runtime starts and stops by itself. It is for the program that tunes the workers, wants to know when an actor&rsquo;s memory is collected, or needs to see what a parallel loop becomes underneath.</p>
+	<p>Every actor, every <span class="pre">parallel each</span> and every awaited answer so far has run on a runtime that
+		started and stopped by itself. Most programs never need to look at it. This page is for the program that does: one
+		that tunes how many workers there are, wants to know when an actor's memory is collected, or needs to call the
+		parallel loop underneath directly. It is ordinary library code, the <span class="pre">actors</span> package, and
+		afterwards you will know what it does on your behalf and which knobs it has. Here the workers are set before the
+		first actor, and asked afterwards what they did:</p>
+
+<pre>
+mod workers;
+
+import stdio use *;
+import actors;
+
+actor Counter {
+  n u64;
+  pub async do add(self, k u64) { n = n + k; }
+  pub async do total(self) u64 { n; }
+}
+
+actor Boss {
+  c Counter;
+  pub async do run(self) {
+    each i in 1u64 .. 1000u64 {
+      c.add(i);
+    }
+    imm t = await c.total();
+    imm s = actors.stats();
+    print &lt;- "total ", t, " from ", s.workers, " workers\n";
+    print &lt;- "at least ", s.messages, " messages handled so far\n";
+  }
+}
+
+fn main() {
+  // Before the first actor: four workers, each running at most
+  // 16 of an actor's messages at a turn
+  actors.configure(new actors.Options(workers: 4u32, batch: 16u32));
+  imm b = new Boss(new Counter(0u64));
+  b.run();
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+total 500500 from 4 workers
+at least 1002 messages handled so far
+</pre>
 
 	<h2 id="runtime">The runtime starts and stops by itself</h2>
-	<p>The workers start with the first actor, on
-		whichever thread starts it; two threads starting a first actor at once start them once. A
-		program that starts no actor starts no thread. They start then, not in the module's
-		initializer, which is <span class="pre">initpure</span>. Before the first actor,
-		<span class="pre">actors.configure(new actors.Options(workers: n, batch: b))</span> sets
-		<span class="pre">n</span> workers (by default one per logical processor), each running at
-		most <span class="pre">b</span> of an actor's messages at a turn (100 by default) before
-		the actor goes to the back of the queue; once the workers run, it is a panic. The
-		<span class="pre">actors</span> module's finalizer, run by
-		the program's entry runs after <span class="pre">main</span> returns, waits until the runtime is <i>quiescent</i> &mdash;
-		no actor queued or running, so no message in any mailbox &mdash; then stops the workers
-		and joins them. The final finalizes the program's own module
-		first, so the handles its globals hold are let go before the wait; handles in
-		<span class="pre">main</span>'s locals go when it returns, before the final begins. A
-		program that calls <span class="pre">finalAll()</span> itself, as programs did before the
-		entry was built, waits at that call, and handles still held in its locals are not let go
-		by then: it starts its actors in a block that ends before the call. The runtime is not started again: starting an actor
-		or sending a message once the workers have stopped is a panic, since nothing would run the
-		message. Quiescence assumes that once the finalizer has begun every message comes from an
-		actor: another thread that goes on sending is joined first.
-		<span class="pre">actors.stats()</span> answers what the workers have done so far
-		(<span class="pre">Stats</span>: workers, messages handled, turns, steals, loop pieces stolen), without
-		stopping them, and the run's totals once they have stopped.
-		<span class="pre">actors.workerIndex()</span> is the index of the worker running the
-		caller, or <span class="pre">actors.noWorker</span>.</p>
-	<p><i>The final runs when <span class="pre">main</span> returns
-		(<a href="mod-globals.html#initall">Running every module's initializer and finalizer</a>). A
-		program that panics or calls the C library's <span class="pre">exit</span> ends whatever its
-		actors are doing: messages still in flight are silently dropped, and no actor still alive is
-		finalized.</i></p>
+	<p>The workers start with the first actor, on whichever thread starts it; two threads starting a first actor at once
+		start them once. A program that starts no actor starts no thread. They start then, not in the module's initializer,
+		which is <span class="pre">initpure</span>. Before the first actor,
+		<span class="pre">actors.configure(new actors.Options(workers: n, batch: b))</span> sets <span class="pre">n</span>
+		workers (by default one per logical processor), each running at most <span class="pre">b</span> of an actor's
+		messages at a turn (100 by default) before the actor goes to the back of the queue; once the workers run, it is a
+		panic.</p>
+	<p>The <span class="pre">actors</span> module's finalizer, which the program's entry runs after
+		<span class="pre">main</span> returns, waits until the runtime is <i>quiescent</i> (no actor queued or running, so no
+		message in any mailbox), then stops the workers and joins them. The final finalizes the program's own module first,
+		so the handles its globals hold are let go before the wait; handles in <span class="pre">main</span>'s locals go when
+		it returns, before the final begins. An actor paused on I/O is neither queued nor running, so it does not hold the
+		program open (<a href="conc-io.html#io-thread">The I/O thread, and the program's end</a>). A program that calls
+		<span class="pre">finalAll()</span> itself, as programs did before the entry was built, waits at that call, and
+		handles still held in its locals are not let go by then: it starts its actors in a block that ends before the call.
+		The runtime is not started again: starting an actor or sending a message once the workers have stopped is a panic,
+		since nothing would run the message. Quiescence assumes that once the finalizer has begun every message comes from an
+		actor: another thread that goes on sending is joined first.</p>
+	<p><span class="pre">actors.stats()</span> answers what the workers have done so far (<span class="pre">Stats</span>:
+		<span class="pre">workers</span>, <span class="pre">messages</span> handled, <span class="pre">activations</span> or
+		turns, <span class="pre">steals</span>, and <span class="pre">taskSteals</span>, loop pieces stolen), without stopping
+		them, and the run's totals once they have stopped. <span class="pre">actors.workerIndex()</span> is the index of the
+		worker running the caller, or <span class="pre">actors.noWorker</span>.</p>
+	<p>The final runs when <span class="pre">main</span> returns
+		(<a href="mod-globals.html#initall">Running every module's initializer and finalizer</a>). A program that panics or
+		calls the C library's <span class="pre">exit</span> ends whatever its actors are doing: messages still in flight are
+		silently dropped, and no actor still alive is finalized.</p>
 
-	<h3 id="how-it-works">How it works</h3>
-	<p>A mailbox is Vyukov's intrusive queue of many senders and one
-		receiver, as Pony's runtime has it: a send is one atomic exchange and one store; the worker
-		running the actor takes messages with no read-modify-write; a mark on the mailbox says the
-		actor is idle, and the send that finds it queues the actor. Each worker has a run queue of
-		its own, and there is one shared inject queue: an actor made runnable by a send from a
-		worker is queued on that worker, one made runnable by any other thread on the inject queue.
-		A worker with nothing of its own takes a share of the inject queue, then steals half of
-		another worker's queue. An idle worker parks on the <a href="conc-primitives.html#futex">futex</a>,
-		and is woken, one at a time, as work arrives. Quiescence is found by counting the
-		activations each worker begins and ends, and reading the counts twice.</p>
+	<h3 id="how-it-works">How the scheduler works</h3>
+	<p>A mailbox is Vyukov's intrusive queue of many senders and one receiver: a send is one atomic exchange and one store;
+		the worker running the actor takes messages with no read-modify-write; and a mark on the mailbox says the actor is
+		idle, so the send that finds it so queues the actor. Each worker has a run queue of its own, and there is one shared
+		inject queue: an actor made runnable by a send from a worker is queued on that worker, one made runnable by any other
+		thread on the inject queue. A worker with nothing of its own takes a share of the inject queue, then steals half of
+		another worker's queue. An idle worker parks on the <a href="conc-primitives.html#futex">futex</a>, and is woken, one
+		at a time, as work arrives. Quiescence is found by counting the activations each worker begins and ends, and reading
+		the counts twice.</p>
 
 	<h2 id="actor-gc">The actor's own garbage-collected region</h2>
-	<p>Every actor owns a garbage-collected region, part of the <span class="pre">actors</span> package: nothing is imported beyond
-		<span class="pre">import actors;</span>, which also binds <span class="pre">ActorGc</span>, the
-		region's reference. Each actor's state has a method <span class="pre">allocRegion</span> that
-		answers the region, and
-		<span class="pre">new self[T](args)</span> inside the actor's methods &mdash; behaviours and synchronous
-		methods alike, <span class="pre">init</span> after <span class="pre">*self</span> is filled &mdash; allocates there, as
-		<span class="pre">new a[T](args)</span> allocates in an arena
-		(<a href="mem-regions.html">Region strategies</a>): it is
-		<span class="pre">self.allocRegion().alloc(new T(args))</span>, the general rule that
-		<span class="pre">new x[T](...)</span> allocates in the region <span class="pre">x</span> is or leads to
-		(<b>provisional</b>: the <span class="pre">allocRegion</span> method behind it is not settled). A reference is an
-		<span class="pre">ActorGc[mut, T]</span> (or <span class="pre">ActorGc[imm, T]</span>, from
-		<span class="pre">self.allocRegion().allocImm(v)</span>, a <b>provisional</b> spelling that stands in for
-		<span class="pre">new self[imm, T]</span>, which is not decided). A bare
-		<span class="pre">new ActorGc[mut, T](...)</span> names no actor, so it has no region to be in and
-		panics. The region's record is made when the
-		actor first asks for it, and holds no memory until it first allocates, so an actor that never does
-		pays only one pointer in its header (8 bytes). Each object in the region carries a header of its own, 24
-		bytes before the value, and every object is rounded up to a multiple of 16 bytes.
-		Only the actor's own code holds
-		<span class="pre">self</span>, so only it allocates in the region; other code is handed the actor's state
-		to allocate there. A collection made so, <span class="pre">new self[List[T]](16)</span>, is
-		handed the region as any collection made in a region is (<a href="mem-collections.html#region">a collection</a>):
-		its words are an object of the region, and its block comes from the region's own allocate,
-		resize and release, which count it with what the actor has allocated. The block is a block of its own,
-		never moved by a collection (a collection's block pointer is a raw pointer, which the collector
-		has no way to find and rewrite), and the list's own <span class="pre">final</span> gives it back, which
-		the collector runs when it finds the list unreached, or at the actor's death.</p>
+	<p>Some data is a graph: nodes that point at each other, shared and cyclic, which a single owner cannot hold and
+		reference counting cannot free. An actor may keep such a graph in a garbage-collected region of its own, part of the
+		<span class="pre">actors</span> package: nothing is imported beyond <span class="pre">import actors;</span>, which also
+		binds <span class="pre">ActorGc</span>, the region's reference. Only one worker at a time runs an actor, and between
+		its messages nothing holds a reference into the region but the actor's state and its paused behaviours, so the
+		region is collected there, between that actor's own messages (<a href="#actor-gc-collect">below</a>).</p>
 <pre>
 import actors;
 
@@ -106,102 +123,117 @@ actor Keeper {
   }
 }
 </pre>
+	<p>Each actor's state has a method <span class="pre">allocRegion</span> that answers the region, and
+		<span class="pre">new self[T](args)</span> inside the actor's methods (behaviours and synchronous methods alike,
+		<span class="pre">init</span> after <span class="pre">*self</span> is filled) allocates there, as
+		<span class="pre">new a[T](args)</span> allocates in an arena (<a href="mem-regions.html">Region strategies</a>): it
+		is <span class="pre">self.allocRegion().alloc(new T(args))</span>, the general rule that
+		<span class="pre">new x[T](...)</span> allocates in the region <span class="pre">x</span> is or leads to
+		(<b>provisional</b>: the <span class="pre">allocRegion</span> method behind it is not settled). A reference is an
+		<span class="pre">ActorGc[mut, T]</span>, or an <span class="pre">ActorGc[imm, T]</span> from
+		<span class="pre">self.allocRegion().allocImm(v)</span>, a <b>provisional</b> spelling that stands in for
+		<span class="pre">new self[imm, T]</span>, which is not decided. A bare <span class="pre">new ActorGc[mut, T](...)</span>
+		names no actor, so it has no region to be in and panics.</p>
+	<p>The region's record is made when the actor first asks for it, and holds no memory until it first allocates, so an
+		actor that never does pays only one pointer in its header (8 bytes). Each object in the region carries a header of
+		its own, 24 bytes before the value, and every object is rounded up to a multiple of 16 bytes. Only the actor's own
+		code holds <span class="pre">self</span>, so only it allocates in the region; other code is handed the actor's state
+		to allocate there. A collection made so, <span class="pre">new self[List[T]](16)</span>, is handed the region as any
+		collection made in a region is (<a href="mem-collections.html#region">a collection in a region</a>): its words are an
+		object of the region, and its block comes from the region's own allocate, resize and release, which count it with
+		what the actor has allocated. The block is a block of its own, never moved by a collection (a collection's block
+		pointer is a raw pointer, which the collector has no way to find and rewrite), and the list's own
+		<span class="pre">final</span> gives it back, which the collector runs when it finds the list unreached, or at the
+		actor's death.</p>
 	<p>A reference into the region is made, held and copied in the actor's state, its locals, a
 		<span class="pre">List</span>, a <span class="pre">Dict</span>'s values (a traced key is refused) or an
-		<span class="pre">Rc</span> it owns, and a
-		record parked by an <span class="pre">await</span>. It is never Sendable: it stays in its actor, so it
-		is refused in a message, a reply or a thread's start (<span class="pre">ErrorNotSendable</span>). It has no write barrier and no count, so a
-		reference behind an <span class="pre">Rc</span> is allowed (the <span class="pre">Rc</span> is traced once for each
-		collection, so a cycle of them ends).</p>
+		<span class="pre">Rc</span> it owns, and a record parked by an <span class="pre">await</span>. It is never Sendable: it
+		stays in its actor, so it is refused in a message, an answer or a thread's start
+		(<a href="conc-sharing.html#sendable">Sendable</a>). It has no write barrier and no count, so a reference behind an
+		<span class="pre">Rc</span> is allowed (the <span class="pre">Rc</span> is traced once for each collection, so a cycle
+		of them ends).</p>
 
 	<h3 id="actor-gc-collect">Collected between messages, by a copying collector</h3>
-	<p>After each message
-		(and after the rest of a behaviour that began a <span class="pre">parallel each</span>, once the loop has
-		finished) the worker may collect, when the bytes allocated since the last collection exceed the
-		bytes that survived it, and not before 64 KiB have been allocated (a floor, so a tiny actor does not
-		collect all the time). The roots are the actor's state and the records
-		its <span class="pre">await</span>s have parked; nothing else holds a reference, since no borrow
-		and no stack of the actor's exists between messages. Everything reached is copied into new chunks
-		and the references are rewritten, so <b>an object moves</b>: nothing holds its address across a
-		message. An object over 4096 bytes (its header counted) is a <i>large object</i>, a block of its own
-		that is marked where it sits and never moves. A value with a
-		<span class="pre">final</span>, or a field that needs finalizing, is finalized when a collection finds
-		it unreached (it and what it reaches are kept for that one cycle, its death run once, newest first,
-		and the collection after frees it), and when the actor dies, after its state's own death, every one
-		still alive is finalized, newest first, and the region is freed whole.</p>
-	<p><span class="pre">actors.setFloor(bytes)</span> and <span class="pre">actors.setStress(on)</span> (collect after
-		every message; the environment variable <span class="pre">CONE_ACTORGC_STRESS</span> does the same for
-		a whole run) tune it, for the process, before the first actor allocates;
-		<span class="pre">self.allocRegion().stats()</span> says what the region holds and has done, for
-		tests. Inside a <span class="pre">parallel each</span> a pass reads a read-only reference
-		(<a href="conc-parallel.html#parallelactor">Parallel each in a behaviour</a>), and allocates nothing.</p>
+	<p>After each message (and after the rest of a behaviour that began a <span class="pre">parallel each</span>, once the
+		loop has finished) the worker may collect, when the bytes allocated since the last collection exceed the bytes that
+		survived it, and not before 64 KiB have been allocated (a floor, so a tiny actor does not collect all the time). The
+		roots are the actor's state and the records its <span class="pre">await</span>s have parked; nothing else holds a
+		reference, since no borrow and no stack of the actor's exists between messages. Everything reached is copied into new
+		chunks and the references are rewritten, so <b>an object moves</b>: nothing holds its address across a message. An
+		object over 4096 bytes (its header counted) is a <i>large object</i>, a block of its own that is marked where it sits
+		and never moves. A value with a <span class="pre">final</span>, or a field that needs finalizing, is finalized when a
+		collection finds it unreached (it and what it reaches are kept for that one cycle, its death run once, newest first,
+		and the collection after frees it), and when the actor dies, after its state's own death, every one still alive is
+		finalized, newest first, and the region is freed whole.</p>
+	<p><span class="pre">actors.setFloor(bytes)</span> and <span class="pre">actors.setStress(on)</span> (collect after every
+		message; the environment variable <span class="pre">CONE_ACTORGC_STRESS</span> does the same for a whole run) tune it,
+		for the process, before the first actor allocates; <span class="pre">self.allocRegion().stats()</span> says what the
+		region holds and has done, for tests. Inside a <span class="pre">parallel each</span> a pass reads a read-only
+		reference (<a href="conc-parallel.html#parallelactor">In an actor's behaviour</a>), and allocates nothing.</p>
 
 	<h2 id="parallelrange">The parallel loop underneath</h2>
-	<p>A parallel loop runs on the same workers. The language writes one as
-		<a href="conc-parallel.html#parallel"><span class="pre">parallel each</span></a>, which in an actor's behaviour
-		<a href="conc-parallel.html#parallelactor">cuts the behaviour at the loop's end</a>; below it is the
-		low-level form it is written over, called as a library function:</p>
+	<p>A parallel loop runs on the same workers as the actors. The language writes one as
+		<a href="conc-parallel.html#parallel"><span class="pre">parallel each</span></a>, with its checked body. Below it is the
+		low-level form it is written over, a library function, for code that writes through raw pointers or needs control
+		of the grain:</p>
 <pre>
+import libc;
 import actors;
 
+imm out = libc.calloc(100000usize, 8usize) as *u64;
 // the body is a closure taking a sub-range [lo, hi); it lists the pointer it writes through
 actors.parallelRange(0usize, 100000usize, 256usize, fn(lo usize, hi usize) [out] {
   mut i = lo;
   while i &lt; hi {*(out + i) = u64.from(i) * u64.from(i); i = i + 1usize;}
 });
+// *(out + 99999usize) is 9999800001
 </pre>
-	<p><span class="pre">actors.parallelRange(lo, hi, grain, body)</span> calls
-		<span class="pre">body(a, b)</span> over pieces of <span class="pre">[lo, hi)</span> of
-		at most <span class="pre">grain</span> items, on any worker and at once, and returns when
-		every piece has finished. The body is any callable taking two <span class="pre">usize</span>:
-		a closure written at the call (<a href="mod-substitution.html">Closures</a>), a function
-		reference, or a struct with a <span class="pre">()</span>; it is a
-		<span class="pre">[F fn(lo usize, hi usize) + Shareable]</span>
-		(<a href="mod-generativity.html">Generics</a>), lent for the call and compiled for each body, so the
-		call of it from a piece is the body itself. Its pieces run at once, so the compiler
-		refuses a body that is not <span class="pre">Shareable</span>: one that changes a variable it
-		borrows, borrows a <span class="pre">&amp;mut</span>, or holds an <span class="pre">Rc</span>.
-		The loop starts as one task for the whole range; whoever runs a
-		task splits it in half while it is longer than the grain, puts one half on top of its
-		worker's queue of tasks, and works the other, and an idle worker steals the oldest, largest
-		half, so uneven work spreads itself and nothing is divided ahead of time. A worker takes its
-		own tasks before its actors, and a worker that steals prefers tasks to actors. The caller
-		works on its own loop while it waits, so the loop may be called from
-		<span class="pre">main</span> (it starts the workers if no actor has), from any thread, from
-		inside the body of another loop, and from inside an actor's behaviour: there the actor is not
-		run again until the loop has finished, while its mailbox goes on accepting messages, which
-		are handled afterwards in order. <b>It trusts its caller</b> beyond that check: the body must write only
-		its own sub-range's items (through a raw pointer or an atomic), must not <span class="pre">await</span>, and must not wait on
-		another piece; nothing checks it. <span class="pre">actors.parallelRangeThen(lo, hi, grain,
-		body, onDone)</span> starts the same loop and returns at once, and the piece
-		that finishes last calls <span class="pre">onDone()</span> on whichever thread it
-		runs. Both callables outlive the call, so they are moved in and kept in owners until the loop has
-		finished: closures that list what they use (a closure that borrows a local is refused), the body
-		<span class="pre">Sendable</span> and <span class="pre">Shareable</span>, <span class="pre">onDone</span>
-		<span class="pre">Sendable</span>. <span class="pre">actors.parallelEach(lo, hi, piece, data)</span> is the loop a
-		<span class="pre">parallel each</span> becomes, called by the compiler's code with the loop it outlined into a
-		function reference and a pointer to the record of the variables it uses (the one place that form stays): the same loop with the grain chosen for the workers
-		(pieces of about an eighth of a worker's even share, but never split below 128 items, so a loop
-		of 128 items or fewer is one piece, run at once on the caller's thread), and with the messages the pieces send to actors
-		gathered: a piece's sends are kept, not made, and made after the loop by the code that began it, in
-		the order of the passes, so that an actor sees the same order every run
-		(<span class="pre">parallelRange</span> sends at once, in no defined order).
-			<span class="pre">actors.parSum</span>, <span class="pre">parFold</span> and <span class="pre">parFindFirst</span>
-			are the functions the <a href="conc-parallel.html#parallelreduce">parallel reductions</a>
-			(<span class="pre">xs.parallel().sum()</span>) become: they cut a view into runs by its item count alone,
-			never by the workers, run the runs on the same workers and join their results pairwise up a tree fixed by the
-			count, so the result is the same on every run with any number of workers.</p>
-
-	<h2 id="comes-back">Comes back in &hellip;</h2>
+	<p><span class="pre">actors.parallelRange(lo, hi, grain, body)</span> calls <span class="pre">body(a, b)</span> over pieces
+		of <span class="pre">[lo, hi)</span> of at most <span class="pre">grain</span> items, on any worker and at once, and
+		returns when every piece has finished. The body is any callable taking two <span class="pre">usize</span>: a closure
+		written at the call (<a href="mod-substitution.html">Closures</a>), a function reference, or a struct with a
+		<span class="pre">()</span>. It is a <span class="pre">[F fn(lo usize, hi usize) + Shareable]</span>
+		(<a href="mod-generativity.html">Generics</a>), lent for the call and compiled for each body, so the call of it from a
+		piece is the body itself. Its pieces run at once, so the compiler refuses a body that is not
+		<span class="pre">Shareable</span>: one that changes a variable it borrows, borrows a <span class="pre">&amp;mut</span>,
+		or holds an <span class="pre">Rc</span>.</p>
+	<p>The loop starts as one task for the whole range; whoever runs a task splits it in half while it is longer than the
+		grain, puts one half on top of its worker's queue of tasks, and works the other, and an idle worker steals the oldest,
+		largest half, so uneven work spreads itself and nothing is divided ahead of time. A worker takes its own tasks before
+		its actors, and a worker that steals prefers tasks to actors. The caller works on its own loop while it waits, so the
+		loop may be called from <span class="pre">main</span> (it starts the workers if no actor has), from any thread, from
+		inside the body of another loop, and from inside an actor's behaviour: there the actor is not run again until the loop
+		has finished, while its mailbox goes on accepting messages, which are handled afterwards in order.</p>
+	<p><b>It trusts its caller</b> beyond the Shareable check: the body must write only its own sub-range's items (through
+		a raw pointer or an atomic), must not <span class="pre">await</span>, and must not wait on another piece; nothing
+		checks it. That is the price of the low-level form, and the reason <span class="pre">parallel each</span> exists.</p>
 	<ul>
-	<li><a href="conc-actors.html">Actors in depth: the actors this runtime runs.</a></li>
-	<li><a href="conc-parallel.html">Data parallelism in depth: <span class="pre">parallel each</span>, the loop this page&rsquo;s last section underlies.</a></li>
-	<li><a href="conc-primitives.html#futex">Roll your own: the futex an idle worker parks on.</a></li>
-	<li><a href="mod-globals.html#dyninit">Global state: the module&rsquo;s initializer and finalizer the runtime starts and stops by.</a></li>
+	<li><span class="pre">actors.parallelRangeThen(lo, hi, grain, body, onDone)</span> starts the same loop and returns at
+		once, and the piece that finishes last calls <span class="pre">onDone()</span> on whichever thread it runs. Both
+		callables outlive the call, so they are moved in and kept in owners until the loop has finished: closures that list
+		what they use (a closure that borrows a local is refused), the body <span class="pre">Sendable</span> and
+		<span class="pre">Shareable</span>, <span class="pre">onDone</span> <span class="pre">Sendable</span>.</li>
+	<li><span class="pre">actors.parallelEach(lo, hi, piece, data)</span> is the loop a <span class="pre">parallel each</span>
+		becomes, called by the compiler's code with the loop it outlined into a function reference and a pointer to the
+		record of the variables it uses (the one place that form stays). It is the same loop with the grain chosen for the
+		workers (pieces of about an eighth of a worker's even share, but never split below 128 items, so a loop of 128 items
+		or fewer is one piece, run at once on the caller's thread), and with the messages the pieces send to actors gathered:
+		a piece's sends are kept, not made, and made after the loop by the code that began it, in the order of the passes, so
+		that an actor sees the same order every run (<span class="pre">parallelRange</span> sends at once, in no defined
+		order).</li>
+	<li><span class="pre">actors.parSum</span>, <span class="pre">parFold</span> and <span class="pre">parFindFirst</span>
+		are the functions the <a href="conc-parallel.html#parallelreduce">parallel reductions</a>
+		(<span class="pre">xs.parallel().sum()</span>) become. They cut a view into runs by its item count alone, never by
+		the workers, run the runs on the same workers, and join their results pairwise up a tree fixed by the count, so the
+		result is the same on every run with any number of workers.</li>
 	</ul>
 
+	<p>You can now tune the workers, keep a graph in an actor's own collected region, and call the parallel loop beneath
+		<span class="pre">parallel each</span>. All of that runs on the CPU; the next page runs the same kind of loop on the
+		GPU.</p>
+
 	<p style="text-align: right; margin-top: 2em;">
-		<a href="conc-primitives.html"><img alt="_" src="next.png" /></a>
+		<a href="conc-gpu.html"><img alt="_" src="next.png" /></a>
 	</p>
 
 	</div>

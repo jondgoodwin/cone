@@ -56,7 +56,7 @@ Weekday number 1, counting Saturday as 0
 	<p>Day 1 is a Sunday. But the program can only say "1", and the formula has a catch: it is right only from
 		March to December.</p>
 
-	<h2 id="choosing">Choosing with if</h2>
+	<h2 id="choosing"><span id="if"></span><span id="ifexpr"></span><span id="elif"></span>Choosing with if</h2>
 	<p>The formula counts January and February as months 13 and 14 of the year before. An
 		<span class="pre">if</span> chooses between two blocks, and since a block is a value, so is the
 		<span class="pre">if</span>: it gives the value of whichever block ran. Put these two lines in place of
@@ -77,14 +77,23 @@ if day == 1 and month == 1 {
   print &lt;- "Merry Christmas!\n";
 }
 </pre>
-	<p id="asking">Conditions are written without parentheses around them. They compare with
+	<p id="asking"><span id="condexp"></span><span id="boolops"></span>Conditions are written without parentheses around them. They compare with
 		<span class="pre">==</span>, <span class="pre">!=</span>, <span class="pre">&lt;</span>,
 		<span class="pre">&lt;=</span>, <span class="pre">&gt;</span> and <span class="pre">&gt;=</span>, and combine
 		with the words <span class="pre">and</span>, <span class="pre">or</span> and <span class="pre">not</span>,
-		which stop as soon as the answer is known. A condition is a value of type <span class="pre">bool</span>,
-		<span class="pre">true</span> or <span class="pre">false</span>, and can be kept in a variable.</p>
+		which stop as soon as the answer is known. <span class="pre">not</span> (also written
+		<span class="pre">!</span>) binds tightest, then <span class="pre">and</span>, then <span class="pre">or</span>, and all
+		three come after the comparisons, so <span class="pre">a &lt; 3 or not done and b == 0</span> needs no
+		parentheses. A condition is a value of type <span class="pre">bool</span>, <span class="pre">true</span> or
+		<span class="pre">false</span>, and can be kept in a variable: <span class="pre">imm leap = year % 4 == 0;</span>.</p>
+	<p>A comparison takes two values of the same type: <span class="pre">2 &lt;= 2.0</span> is refused, since an
+		<span class="pre">i32</span> is not an <span class="pre">f32</span>, until one of them is converted
+		(<a href="guide-numbers.html#converting">Numbers</a>). A number may also stand alone as a condition, true when
+		it is not zero, so <span class="pre">if count { ... }</span> means <span class="pre">if count != 0 { ... }</span>
+		(<a href="safe-types.html#truthy">Coercion to bool</a>). The types you make yourself are compared once they
+		declare <span class="pre">==</span> (<a href="guide-methods.html#compare">Method patterns</a>).</p>
 
-	<h2 id="matching">Choosing with match</h2>
+	<h2 id="matching"><span id="match"></span>Choosing with match</h2>
 	<p>Now to turn the number into a name. A chain of seven <span class="pre">elif</span>s would work, but
 		<span class="pre">match</span> names the value once and lists the cases, like a table. Here is the whole
 		program, trying it on the first day of 2000, the date so many feared computers would get wrong:</p>
@@ -144,6 +153,29 @@ imm kind = match weekday {
 };
 </pre>
 	<p>Order matters, because the first case that fits wins: a Friday the 13th never reaches the working days.</p>
+	<p id="patterns"><span id="ranges"></span><span id="equivpat"></span><span id="comparepat"></span>A pattern is a value to compare with, and the value can be more than a literal: a named
+		constant, <span class="pre">case LIMIT</span>, or any expression written after <span class="pre">==</span>,
+		<span class="pre">case ==limit * 2</span>. A comparison leaves out the matched value, as
+		<span class="pre">case &gt;3</span>; a negative number after <span class="pre">&lt;</span> takes a space,
+		<span class="pre">case &lt; -1</span>, since <span class="pre">&lt;-</span> is the send operator. A whole
+		condition is not a pattern, and the compiler says so:</p>
+<pre>
+case n &gt; 3 { ... }     // Error 1117: A condition is not a pattern: a value alone is compared with the
+                       // matched value. Write the comparison with the matched value left out, as '&gt;3',
+                       // or put the condition in an 'if' guard.
+</pre>
+	<p>Text matches text, so <span class="pre">case "ball" or "bat"</span> holds when the text is exactly one of
+		those, and anything that can be ordered matches a range, characters among them:
+		<span class="pre">case 'a' .. 'z'</span>. A case joins several patterns with <span class="pre">or</span>.</p>
+	<p id="cover">The compiler checks that a match says what happens to every value. It can count only an enum's
+		variants and a <span class="pre">bool</span>'s two values, so a match on a <span class="pre">bool</span> with
+		<span class="pre">case true</span> and <span class="pre">case false</span> needs no
+		<span class="pre">else</span>, while a match on a number, a character or text always ends with one. Where no
+		other value can happen, <span class="pre">else {}</span> says so. A case with a guard may fail, so it never
+		counts toward covering its value. The opposite mistake is caught too: a case that the cases above it already
+		match, or an <span class="pre">else</span> after cases that cover everything, can never run, and is refused
+		(Error 1418). <a href="guide-enums.html">Enums</a> shows covering at its most useful, where every variant must
+		have its case.</p>
 
 	<h2 id="twovalues">Two values at once</h2>
 	<p>A match can look at several values at once, separated by commas, with one pattern for each in every case.
@@ -159,680 +191,88 @@ match t / 100, t % 100 {
 </pre>
 	<p>It reads like a small decision table, which is exactly what it is. A case can also compare, as
 		<span class="pre">&lt; 30</span> does here.</p>
+	<p id="columns">The values after <span class="pre">match</span> are worked out once each, left to right, before any
+		case is tried; no tuple is made, the commas are all it takes. <span class="pre">_</span> belongs to this form
+		alone, and a column's pattern does not bind a variable. Where every column is an enum or a
+		<span class="pre">bool</span>, the compiler counts the combinations, and a match that has a case for each needs
+		no <span class="pre">else</span>.</p>
 
-	<p>You can now group work into blocks, and choose between them. Next, loops: running a block again and again,
-		which is how one short program can close in on the digits of pi.</p>
-
-	<h2 id="indetail">In detail</h2>
-	<p><i>The rest of this page is the complete reference for <span class="pre">if</span>, conditions and
-		<span class="pre">match</span> on values; skip to the <a href="guide-loops.html">next page</a> if the program
-		above was enough.</i></p>
-
-	<p style="margin-left: 40px;"><i>Note: Not built: an Option as an <span class="pre">if</span> condition
-		(<span class="pre">if maybeInt { ... }</span>), because Option has no <span class="pre">isTrue</span>
-		yet. Test it with <span class="pre">is</span>, <span class="pre">== None</span> or a binding
-		(<a href="guide-enums.html#option">Option types</a>).</i></p>
-
-	<p>A program rarely runs straight through. It decides which code to perform, and it repeats code
-		until some work is done.</p>
-	<p id="statements">Control flow statements direct the flow of execution from
-		one block to another:</p>
-	<ul>
-		<li><b><a href="#if">if .. elif .. else.</a></b>
-			Choose which block to execute based on evaluating one or more conditional expressions.</li>
-		<li><b><a href="#match">pattern matching.</a></b>
-			Choose which block to execute based on which pattern first matches some value</li>
-		<li><b><a href="guide-loops.html#while">while, break and continue.</a></b>
-			Repeatedly execute some block while certain conditional expressions are true, or until a break.</li>
-		<li><b><a href="guide-loops.html#each">each iteration.</a></b>
-			Repeatedly perform some block for each every value in some iterated sequence.</li>
-		<li><b><a href="guide-functions.html">exception handling.</a></b>
-			Support different control flows for successful processing vs. thrown exceptions.</li>
-	</ul>
-
-	<h3 id="if">if, elif, else, and if as a value</h3>
-	<p><span class="pre">if</span> decides which code block
-	to perform based on the truth of one or more conditional expressions.
-	Consider:</p>
-
+	<h2 id="using">Patterns of your own: using</h2>
+	<p>A literal, a range and a comparison cover most cases, but not a test such as "is it odd?" or "does the line
+		start with <span class="pre">GET</span>?". For those, any ordinary function can be a pattern, with nothing to
+		declare. <span class="pre">using</span> calls it with the matched value as its first argument, followed by the
+		arguments written. What the function gives back says what the case does: a <span class="pre">bool</span> only
+		tests, and an <span class="pre">Option</span> tests and binds, the case being taken when it gives
+		<span class="pre">Some</span>, and the name before <span class="pre">using</span> getting what is inside. Two things
+		here arrive ahead of their own pages: an <span class="pre">Option</span> is a value that may hold something
+		(<span class="pre">Some</span>) or nothing (<span class="pre">None</span>), which <a href="guide-dict.html#option">Dict</a>
+		teaches properly, and <span class="pre">&amp;str</span> is a view of a piece of text, as
+		<a href="guide-text.html">String</a> explains:</p>
 <pre>
-fn abs(x i32) i32 {
-  mut result i32;
-  if x &lt; 0 {
-    result = -x;
-  } else {
-    result = x;
-  }
-  result;
-}
-</pre>
-	<p><span class="pre">if</span> is used by this function to correctly
-	return the positive, absolute value of x.
-	<span class="pre">x &lt; 0</span> is a conditional expression that evaluates
-	to true whenever x is a negative number. When the conditional evaluates as true,
-	the subsequent block is performed, which converts x to its positive equivalent.
-	When the conditional is not true, the block after the
-	<span class="pre">else</span> is performed instead, which captures the value of x.
-	The <span class="pre">else</span> clause is optional; it need not be specified if there
-	is no alternative action to perform when the condition is false.
-</p>
-	<p>Before covering the logic of conditional expressions,
-	let's summarize various ways to use
-	<span class="pre">if</span>.</p>
+mod router;
 
-	<h4 id="ifexpr">if as expression</h4>
-	<p>As with blocks, <span class="pre">if</span> can be used as an expression.
-	This (along with implicit return) provides us with another way to write this function:</p>
-<pre>
-fn abs(x i32) i32 {
-  if x &lt; 0 {
-    -x;
-  } else {
-    x;
-  }
-}
-</pre>
-	<p>Where the value of an <span class="pre">if</span> is wanted as a known type &mdash;
-	a variable's declared type, a function's return type, the parameter
-	it is passed to, or the field it gives a value to &mdash;
-	each branch's value is <a href="safe-types.html#coercion">coerced</a> to that type.
-	So two string literals, which are each a <span class="pre">&amp;str</span>, are each taken as the slice wanted:</p>
-<pre>
-imm label &amp;Array[u8] = if orbiting {"orbit";} else {"flight";};  // each branch a &amp;Array[u8]
-</pre>
-	<p>Where no type is wanted, the branches must agree on one:
-	either the same type, or a supertype they share.
-	The same holds for the value of a block and of a
-	<a href="#match"><span class="pre">match</span></a>.</p>
-	<p>An <span class="pre">if</span> used as a value needs its <span class="pre">else</span>, since every
-	path must give a value. A <span class="pre">match</span> is not an <span class="pre">if</span> chain in this:
-	it must <a href="#cover">cover every value</a> it matches, statement or value, and its cases
-	may do so (every variant of an enum, both values of a <span class="pre">bool</span>) without
-	writing an <span class="pre">else</span>. An <span class="pre">if</span> chain of
-	<span class="pre">is</span> tests that names every variant of an enum is a value without an
-	<span class="pre">else</span> too, but is not asked to name them all.</p>
-	<p style="margin-left: 40px;"><i>Note: A call gives its arguments their parameters' types
-	when the function or method it calls is a single declaration that is not generic.
-	The arguments of an overload set, such as those of <span class="pre">print &lt;-</span>,
-	a generic function's arguments, and an operator's operands are given no type,
-	since their own types are what choose what is called: there, the branches must agree
-	on their own, or be given a type first, as in
-	<span class="pre">imm s &amp;Array[u8] = if ...;</span>.</i></p>
+import stdio use *;
 
-	<h4 id="elif">Multiple conditions</h4>
-	<p>If we have more than one condition to test, each corresponding to
-	a different block to perform, every condition after the first
-	is preceded with <span class="pre">elif</span> (short for "else if").
-	For example:</p>
-<pre>
-fn abs(x i32) i32 {
-  if x &lt; 0 {
-    -x;
-  } elif x == 0 {
-    0;
-  } else {
-    x;
-  }
-}
-</pre>
-
-	<h3 id="condexp">Conditions: comparing, and/or/not, what counts as true</h3>
-	<p>Conditional expressions are often just simple comparisons, as shown above.
-	However, complex conditional expressions can be formulated that use
-	logical operators, pattern matching, functions or methods.
-	Let's walk through the possibilities, beginning with the basics.</p>
-
-	<h4 id="truth">True vs. False</h4>
-	<p>A conditional expression must evaluate to <span class="pre">true</span> or <span class="pre">false</span>.
-	If it does not, an attempt is made to find and use the value type's <span>isTrue</span> method.
-	Several types (but not all) support this method. For example:
-	<ul>
-	<li>Integers. isTrue evaluates 0 as false, and all other integer values as true.
-<pre>
-if 0 {
-  a += 1;  // This statement will never execute, because 0 evaluates to false
-}
-</pre></li>
-	<li>Floats. isTrue evaluates 0 and -0 as false, and all other values (NaN included) as true.</li>
-	<li>Option type. An Option has no <span>isTrue</span> method, so it is not a condition on its own.
-	Test it with <span class="pre">is</span> (<span class="pre">if m is Some</span>), or bind the value inside
-	(<span class="pre">if imm n Some = m</span>), as <a href="guide-enums.html#option">Option Types</a> shows.</li>
-	</ul>
-
-	<h4 id="compare">Equivalence</h4>
-	<p>With most values, we can compare whether they are the same by using an equivalence operator.
-	The <span class="pre">==</span> operator returns true if two values have the same content and type.
-	<span class="pre">!=</span> (not equal) is true if they do not. For example:</p>
-<pre>
-x == 3.0        // Returns true if the local variable x's value is 3.0
-x+1 != y        // Returns true if x is not exactly 1 greater than y
-true != false   // Returns true
-</pre>
-	<p>As with the arithmetic operators, the <span class="pre">==</span> and <span class="pre">!=</span>
-	operators are implemented as type-specific methods.
-	Thus, each type can establish its own rules for equivalence.
-	For example, two floating point numbers could be evaluated as equal
-	if they are within some margin of error (resulting from floating point calculation rounding errors).
-	Similarly, two lists might be equal if they have the exact same contents.
-	A type must implement the <span class="pre">==</span> method to ensure its values can be compared.</p>
-	<p>Two <a href="mem-borrowing.html#implicit">borrowed values</a> compare the values they refer to.
-	To ask instead whether two of them point to the same place, use the identity operator
-	<span class="pre">===</span> (or <span class="pre">!==</span>).</p>
-
-	<h4 id="compop">Ordered Comparison</h4>
-	<p>Comparison operators determine whether one value is greater or less than some other value.
-	They work only on types that are comparable, such as numbers.</p>
-<pre>
-x &gt;= 2          // Returns true if x is greater than or equal to 2 (&gt;, &lt;, &lt;= are variants)
-2 &lt;= 2.0        // Returns false any time the types do not agree
-</pre>
-
-	<h4 id="boolops">Boolean Operators</h4>
-	<p>Sometimes a conditional expression requires checking multiple conditions
-	and then combining those results together into a single true/false determination.
-	The boolean operators
-	'and', 'or' and 'not' ('!') are used to accomplish this.
-	These operators are distinctly different than the bitwise logic operators
-	('&amp;', '|', and '~') introduced in an <a href="guide-numbers.html#bitwise">earlier section</a>.</p>
-	<p>For example:</p>
-<pre>
-0==3 or not 2&lt;3 and 3==3   // Returns true ('and' is evaluated before 'or')
-</pre>
-	<p>The logical operators work mostly how you would expect:</p>
-	<ul>
-	<li>As mentioned earlier, they treat 0 and false as false. All other values are considered true.</li>
-	<li>The boolean operators 'and' and 'or' will stop evaluating any time the answer is known for sure.
-	Thus, the .isEmpty method will never be performed in this expression:
-<pre>
-false and list.isEmpty
-</pre>
-	</li>
-	<li>The logical operators have a lower precedence than evaluation operators, but higher than assignment.
-	'not' has the highest precedence, then 'and', then 'or'.</li>
-	</ul>
-
-	<h4 id="condusage">Expression usage</h4>
-	<p>Conditional expressions need not only be found on control flow statements
-	like <span class="pre">if</span>. They may also be incorporated as part of any
-	arbitrary expression. For example:</p>
-<pre>
-imm isOne = (a == 1);    // isOne will be either true or false
-</pre>
-
-	<h3 id="match">match, lightly: values, ranges, or, guards</h3>
-	<p>As with <span class="pre">if</span>, pattern matching is about deciding
-  which code path to perform.
-  Its approach is to match a single value against multiple patterns.
-  The code block associated with the first matching pattern is performed.</p>
-  <p>Let's illustrate this with a simple (but mathematically unusual) example:</p>
-<pre>
-fn power(n i32, pow i32) i32 {
-  match pow {
-    case ==0 { 1; }
-    case ==1 { n; }
-    case ==2 { n * n; }
-    else { -1; }
-  }
-}
-</pre>
-  <p>This example calculates its value differently based on the value of pow.
-  If pow is zero, we return 1. If pow is 1, we return n.
-  If pow is two, we return n squared.
-  Finally, if pow is any other value, we return -1.</p>
-  <p>The structure of this form of pattern matching is straightforward:</p>
-  <ul>
-  <li>Any normal expression can be used after <span class="pre">match</span>.
-  This expression's evaluated value is what patterns are matched with.
-  If desired, an assignment expression can be used here to capture
-  this matchee value for later use in matched code blocks.</li>
-  <li>Any number of pattern blocks may follow. Each is comprised of the <span class="pre">case</span> keyword,
-    followed by a match pattern, which is followed by a block.
-  When a match pattern matches, the evaluated value of its block is the match's value</li>
-  <li>Using the <span class="pre">else</span> pattern will always match any value.
-  If specified, it must be the last pattern used.</li>
-  </ul>
-  <p>A match on an enum's variants, and on an <span class="pre">Option</span>, comes back with
-  <a href="guide-enums.html#matchvariants">your own data</a>.</p>
-
-  <h4 id="cover">Covering every value</h4>
-  <p>Every match must cover the values it matches, statement or value alike, or end in
-  <span class="pre">else</span>. The compiler counts what simple, clear logic can count, and asks
-  for an <span class="pre">else</span> wherever it cannot:</p>
-  <ul>
-  <li>A match on an <b>enum</b> is covered when every variant has a case. A case names a variant
-  alone (<span class="pre">case Circle</span>), binds it (<span class="pre">case imm c Circle</span>)
-  or <span class="pre">or</span>s several (<span class="pre">case Rect or Dot</span>); each counts toward
-  every variant it names. A trait (<span class="pre">case imm m Measured</span>) names every variant that
-  complies with it (<a href="guide-enums.html#traitpat">Trait patterns</a>).</li>
-  <li>A match on a <b>bool</b> is covered by <span class="pre">case true</span> and
-  <span class="pre">case false</span>.</li>
-  <li>A match on several values is covered when every <i>combination</i> of its columns is
-  (<a href="#columns">below</a>).</li>
-  <li>Anything else &mdash; numbers, characters, text, floats, a comparison, a range, a value held in a
-  variable, a guarded case &mdash; matches some values, and which only running says. The compiler does not
-  try to prove it covers them all. End such a match with <span class="pre">else</span>, which may
-  say only that no other value can happen: <span class="pre">else {}</span>.</li>
-  </ul>
-  <p>A match with a case that uses a <a href="#using">function's pattern</a> always ends in
-  <span class="pre">else</span>, whatever its other cases cover: which values a function matches only running
-  it says, and the compiler does not try to prove it. The <span class="pre">else</span> may say that no other
-  value can happen, and is not an error when the other cases already cover every value.</p>
-  <p>A match that is not covered is an error that names what is missing, so a statement match
-  that handles some variants needs <span class="pre">else {}</span> to say the rest need no action.
-  The opposite is an error too: a case that can never run, because the cases before it match every
-  value it matches (a variant, or a number or character, named twice, a variant after a trait that names it,
-  a trait after the variants it names, a case after the cases cover everything), and an
-  <span class="pre">else</span> after cases that already cover everything. Open traits never count: a match on a
-  trait that other modules may add structs to needs its <span class="pre">else</span>.</p>
-<pre>
-fn name(s &amp;imm Shape) i32 {
-  match s {
-    case imm c Circle { c.radius; }
-    case Rect or Dot { 0; }          // every variant: no else
-  }
-}
-fn side(n i32) i32 {
-  match n {
-    case 0 { 1; }
-    case 1 ..&lt; 10 { 2; }
-    else { 3; }                       // numbers cannot be counted
-  }
-}
-</pre>
-  <p>A versatile range of patterns are supported,
-  able to match wholly to specified values, partially, or using a <a href="#using">first-class pattern</a>.
-  Pattern matching also supports de-structuring portions of the original value
-  into bound variables.</p>
-
-  <h4 id="wholevalue">Whole Value Matches</h4>
-  <p>These patterns involve straightforward comparisons between the matchee value
-  and one or more pattern values.</p>
-  <h5 id="equivpat">Equivalence</h5>
-  <p>The simplest form of matching uses a value as the pattern.
-  This can be a constant value (as above) or any expression that evaluates to some value,
-  for example:</p>
-<pre>
-match val {
-  case ==anotherval.len { 4; }
-  else { 0; }
-}
-</pre>
-  <p>The type of the pattern value must match the type of the matchee value.
-  An equivalence match is performed between these values as if using the '==' operator.</p>
-  <p>The <span class="pre">==</span> may be left out: a value on its own is an equivalence
-  pattern, so <span class="pre">case 0</span> means <span class="pre">case ==0</span>,
-  <span class="pre">case true</span> means <span class="pre">case ==true</span>, and a named
-  constant, <span class="pre">case LIMIT</span>, is compared the same way. A name on its own
-  that is a variant of the matched value's enum is that variant's pattern instead:
-  <span class="pre">case Circle</span> on a <span class="pre">Shape</span> means
-  <span class="pre">case is Circle</span> (see <a href="guide-enums.html#variantpartial">Variant type partial matches</a>).</p>
-<pre>
-match val {
-  case 0 { 4; }
-  case LIMIT { 5; }
-  else { 0; }
-}
-</pre>
-  <p>A string matched against a slice of bytes is compared as two <a href="guide-collections.html">slices</a>
-  are, element by element, so <span class="pre">case "box"</span> holds when the slice holds
-  exactly those three bytes:</p>
-<pre>
-match word {
-  case "box" { 1; }
-  case "ball" or "bat" { 2; }
-  else { 0; }
-}
-</pre>
-  <p>An equivalence pattern counts toward <a href="#cover">covering every value</a> only as the
-  literal <span class="pre">true</span> or <span class="pre">false</span> on a <span class="pre">bool</span>,
-  with or without <span class="pre">==</span>. A variant named on its own counts, as
-  <span class="pre">case is</span> does. A number, a character, a string or a named constant does not:
-  the match ends in <span class="pre">else</span>.</p>
-
-  <h5 id="comparepat">Comparisons</h5>
-  <p>Comparison patterns make use of the <a href="#compop">comparison operators</a>
-  (including <span class="pre">!=</span>).
-  The left hand value is not specified, as it is understood to be the match value:</p>
-<pre>
-match n {
-  case &lt;0 { -1; }
-  case &gt;0 { 1; }
-  else { 0; }
-}
-</pre>
-  <p>A negative value after <span class="pre">&lt;</span> needs a space between them,
-  as in <span class="pre">case &lt; -1</span>: <span class="pre">&lt;-</span> is the
-  <a href="guide-collections.html#stream">send operator</a>.</p>
-  <p>A condition is not a pattern. A value on its own is compared with the matched value, so a
-  condition written where a pattern is expected, such as <span class="pre">case not b</span> or
-  <span class="pre">case n &gt; 3</span>, is refused (Error 1117, "A condition is not a pattern").
-  The comparison <span class="pre">case &gt;3</span> and an <a href="#guards"><span class="pre">if</span> guard</a>
-  say it.</p>
-
-  <h5 id="ranges">Range pattern</h5>
-  <p>The range pattern checks whether the matchee value lies within a specified
-  range. This is specified by placing either the
-  <span class="pre">..</span> or <span class="pre">..&lt;</span> range operator
-  between two expressions. The two mean what they do in
-  <a href="guide-loops.html#range">a number range of each</a> and in a
-  <a href="guide-collections.html#slice">subslice</a>: <span class="pre">..</span> includes its end and
-  <span class="pre">..&lt;</span> stops before it. Anything that can be ordered, characters
-  among them, can be matched against a range:</p>
-<pre>
-match n {
-  case 0 ..&lt; 3 { 1; } // matches 0, 1, or 2 (but not 3)
-  case 3 .. 6 { 2; }  // matches 3, 4, 5 or 6 inclusively
+// The text after a prefix, if the line starts with it
+fn prefix(line &amp;str, p &amp;str) Option[&amp;str] {
+  if line.startsWith(p) { Some(&amp;line[p.len() ..]); } else { None[&amp;str]; }
 }
 
-match c {
-  case 'a' .. 'z' { 1; }  // a lower case letter
-  case 'A' ..&lt; 'Z' { 2; } // an upper case letter but Z
-  else { 0; }
-}
-</pre>
-  <p>A range pattern is not a step: <span class="pre">by</span> belongs to
-  <span class="pre">each</span> alone.</p>
-
-  <h4 id="patexpr">Pattern Expressions</h4>
-  <p>Let's introduce ways to enhance the match patterns already described
-  as part of a more comprehensive pattern expression.</p>
-
-  <h5 id="orpat">Multiple patterns</h5>
-  <p>It is possible to list more than one possible pattern to match,
-  using <span class="pre">or</span> between each pattern:</p>
-<pre>
-match n {
-  case 2 or 3 or 5 or 7 { 2; }
-  case -6 or -1..1 or 6 { 1; }
-  else { 0; }
-}
-</pre>
-  <p>Each pattern joined by <span class="pre">or</span> may be any of the
-  whole value patterns, or an <span class="pre">is</span> test. A pattern that binds a
-  variable stands alone.</p>
-
-  <h5 id="columns">Several values</h5>
-  <p>Several values can be matched at once by writing them after <span class="pre">match</span>,
-  separated by commas. No tuple is made: the commas are all it takes. Each case then gives one pattern
-  for each value, separated by commas, and matches when every value matches its pattern. The values are
-  evaluated once each, left to right, before any pattern is tried. <span class="pre">_</span> is the
-  pattern that takes any value; it belongs to this form alone (a match of one value ends in
-  <span class="pre">else</span>):</p>
-<pre>
-match key, value {
-  case 0, _ { 0; }
-  case _, 0 { 1; }
-  else { 2; }
-}
-
-match state, byte {
-  case Start, 'G' { 1; }
-  case Start, _ { 0; }
-  case Done, _ { 2; }
-}
-</pre>
-  <p>A pattern of a column is any pattern of a single value, <span class="pre">or</span> included
-  (<span class="pre">case Start or Done, 'G'</span>), followed by one <span class="pre">if</span> guard for the
-  case. A pattern of a column does not bind a variable. The second match above (where
-  <span class="pre">state</span> is an enum of just <span class="pre">Start</span> and
-  <span class="pre">Done</span>) has no <span class="pre">else</span>: it is
-  <a href="#cover">covered</a>, because every combination of the variants is. The compiler
-  counts the combinations of the values it can count (variants and <span class="pre">bool</span>s), and a
-  case that tests a number or a character in a column counts toward none. The first
-  <span class="pre">Start</span> case tests a character, so it is <span class="pre">case Start, _</span>
-  that covers <span class="pre">Start</span>; without it the match would need its
-  <span class="pre">else</span>.</p>
-
-  <h5 id="guards">if Guards</h5>
-  <p>An 'if' clause may be specified following all patterns as an additional guard.
-  The condition expression after the 'if' must evaluate to true in order for the
-  match to take place.</p>
-<pre>
-match nbr {
-  case ==4 if cnt &gt; 0 { 0; } // matches only if nbr==4 and cnt&gt;0
-  case ==4 { 1; } // matches when nbr==4 and cnt&lt;=0
-  else { 2; }  // matches when nbr != 4
-}
-</pre>
-  <p>A guard may follow a pattern that binds a variable, and may use it:</p>
-<pre>
-match opt {
-  case imm x Some if x &gt; 0 { x; }
-  case imm x Some { 0; }
-  case is None { -1; }
-}
-</pre>
-  <p>Because a guard can fail, a case with a guard does not account for its variant when
-  deciding whether a match <a href="#cover">covers every value</a>. Above, the unguarded
-  <span class="pre">Some</span> case does.</p>
-
-<h3 id="using">First-class patterns</h3>
-  <p>Whole and partial matching patterns handle many situations, but not all.
-  First-class patterns make it possible to support more sophisticated matching
-  algorithms: a pattern is an ordinary function, or a method, that tests the matched value,
-  and nothing about it is special to the language. Nothing is declared to make a function
-  a pattern, and a library's patterns are written and used the same way as one's own.</p>
-  <p>A pattern is used with the <span class="pre">using</span> keyword and the call of the function,
-  written without the matched value: the matched value is the first argument of the function, and,
-  of a method, the argument after <span class="pre">self</span>. The arguments written are the
-  ones that follow. What the function gives back says what the pattern does:</p>
-  <ul>
-  <li>a <b>bool</b> only tests. <span class="pre">case using isOdd()</span> calls
-  <span class="pre">isOdd(n)</span>, and the case is taken when it is true;</li>
-  <li>an <b>Option</b> tests and binds. <span class="pre">case imm rest using prefix("GET ")</span>
-  calls <span class="pre">prefix(line, "GET ")</span>, and the case is taken when it gives
-  <span class="pre">Some</span>, <span class="pre">rest</span> being what it holds. The name comes first, as in
-  <span class="pre">case imm n Ok</span>, and may be <span class="pre">mut</span>.</li>
-  </ul>
-<pre>
-fn prefix(s &amp;str, p &amp;str) Option[&amp;str] {
-  if s.startsWith(p) { Some(&amp;s[p.len ..]); } else { None[&amp;str]; }
-}
 fn isOdd(n i32) bool { n % 2 == 1; }
 
-fn route(line &amp;str) i32 {
+fn between(n i32, lo i32, hi i32) bool { n &gt;= lo and n &lt;= hi; }
+
+fn route(line &amp;str) {
   match line {
-    case imm path using prefix("GET ") { get(path); }   // prefix(line, "GET ")
-    case imm path using prefix("PUT ") { put(path); }
-    case "HEAD" { head(); }
-    else { 0; }
+    case imm path using prefix("GET ") { print &lt;- "fetch ", path, "\n"; }   // prefix(line, "GET ")
+    case imm path using prefix("PUT ") { print &lt;- "store ", path, "\n"; }
+    case "HEAD" { print &lt;- "headers only\n"; }
+    else { print &lt;- "not understood\n"; }
   }
 }
 
-fn kind(n i32) i32 {
+fn kind(n i32) &amp;str {
   match n {
-    case 0 { 100; }
-    case using isOdd() { 1; }          // isOdd(n)
-    case using between(10, 20) { 2; }  // between(n, 10, 20)
-    else { 3; }
+    case 0 { "zero"; }
+    case using isOdd() { "odd"; }             // isOdd(n)
+    case using between(10, 20) { "teen"; }    // between(n, 10, 20)
+    else { "other"; }
   }
 }
-</pre>
-  <p><b>A binding gets what the function gave back,</b> as a variant's does: the contents of the
-  <span class="pre">Some</span>, a copy of plain data, a move of what owns something (which is finalized as the
-  arm ends, as any bound value is). A pattern with several results gives them as a struct, bound whole and read by
-  field name, or a tuple, read by position, <span class="pre">m.left</span> or <span class="pre">f.0</span>;
-  a function with several outcomes gives an enum, matched as any is.</p>
-  <p><b>Cases are tried from the top, and a function runs only when its case is reached,</b> at most once for it.
-  A case of another kind before it that matches means it is never called, and the cases after it are tried
-  when it does not match. What a pattern costs shows where it is declared, not at the case, and whether a
-  pattern is <span class="pre">inline</span> is its author's choice. A method pattern may keep a state that its
-  calls change, since each call is made as written, in this order.</p>
-  <p><b>A pattern never advances anything.</b> It tests the matched value and gives back what is left of it,
-  as <span class="pre">prefix</span> does, and the case moves on, by assigning the rest
-  (<span class="pre">text = rest;</span>), as it would change any state. Nothing is half consumed by a
-  pattern that did not match.</p>
-  <p>A bool test may be joined to other patterns with <span class="pre">or</span>
-  (<span class="pre">case using isOdd() or using isPrime()</span>) and followed by an
-  <span class="pre">if</span> <a href="#guards">guard</a>, as any pattern is; a case that binds stands alone and may have a guard that
-  uses the binding. A <span class="pre">match a, b</span> may test a column with a function but binds nothing in
-  it. The matched value of a bound case may be a call, which is made once, as for every pattern.</p>
-  <p><b>A match with a function's pattern ends in <span class="pre">else</span>,</b> whatever its other cases cover
-  (<a href="#cover">Covering every value</a>): which values a function matches only running it says. It may say
-  that nothing else can happen, <span class="pre">else {}</span>. A match as a jump table
-  (<a href="#switch">Jump tables</a>) takes its cases up to the first function's pattern, and the pattern and the
-  cases after it are tried in order.</p>
-  <p>The same patterns bind in an <span class="pre">if</span>, an <span class="pre">elif</span>, and a declaration
-  that leaves when it does not match, with the matched value after the <span class="pre">=</span>, as the
-  variants' bindings do (<a href="guide-enums.html#letelse">Binding past an early exit</a>); a function that only
-  tests is simply the condition of the <span class="pre">if</span>, <span class="pre">if isOdd(n) { ++nbr; }</span>:</p>
-<pre>
-if imm rest using prefix("GET ") = line { get(rest); }
-elif imm other using prefix("DEL ") = line { del(other); }
-imm path using prefix("PUT ") = line else { return -1; };   // leaves unless it matches
-</pre>
-  <p>That is what lets a parser be written as a match over the text that is left. Each case below
-  tests a sign or a number, hands back the rest, and the case moves on:</p>
-<pre>
-fn expr(text &amp;str) Option[i64] {
-  mut rest = blank(text);
-  mut acc = 0i64;
-  mut sign = 1i64;                 // the sign before the number that is due
-  mut open = true;
-  while open {
-    match rest {
-      case imm after using digits() { acc = acc + sign * value(rest, after); rest = blank(after); }
-      else { return None[i64]; }
-    }
-    match rest {
-      case imm p using lit("+") { sign = 1; rest = blank(p); }
-      case imm p using lit("-") { sign = -1; rest = blank(p); }
-      case using atEnd() { open = false; }
-      else { return None[i64]; }
-    }
-  }
-  Some(acc);
+
+fn main() {
+  route("GET /index.html");
+  route("PUT /notes.txt");
+  route("DELETE /");
+  print &lt;- kind(7), " ", kind(12), " ", kind(40), "\n";
 }
 </pre>
-
-<h3 id="flow">Flow typing</h3>
-  <p>A test of a variant tells the compiler what the tested name is, and it uses the name that way
-  until something may have changed it. After <span class="pre">if s is Circle</span>, inside its block
-  <span class="pre">s</span> is a <span class="pre">Circle</span> wherever a field or a method of
-  <span class="pre">Circle</span> is named on it: <span class="pre">s.radius</span> reads it,
-  <span class="pre">s.radius = 2</span> writes it, <span class="pre">s.grow()</span> calls it. The name is
-  narrowed:</p>
-  <ul>
-  <li>in the block of an <span class="pre">if</span>, an <span class="pre">elif</span>, or the
-  <span class="pre">case</span> of a match that names the variant, and on the right of an
-  <span class="pre">and</span> whose left tests it (<span class="pre">if s is Circle and s.radius &gt; 3</span>);</li>
-  <li>after a branch that leaves, for what follows: after
-  <span class="pre">if s is Circle { return 0; }</span>, <span class="pre">s</span> is not a
-  <span class="pre">Circle</span>;</li>
-  <li>by elimination: when the variants that remain are one, <span class="pre">s</span> is that one, in the
-  <span class="pre">else</span> of a two-variant test, in the last <span class="pre">case</span> of a
-  match, after an early exit;</li>
-  <li>by an assignment of a known variant: after <span class="pre">state = State.Run(speed)</span>,
-  <span class="pre">state.speed</span> reads the field.</li>
-  </ul>
-  <p>It is a name that is narrowed &mdash; a local variable or a parameter, held by value or through a
-  reference &mdash; and only to name a member of the variant. Narrowing does not retype the name for anything
-  else: it is still the original, whole value, passed and returned as the enum, and
-  <span class="pre">takesCircle(s)</span> is still an error (bind it for that). A variant declared as a
-  type, <span class="pre">Ok(i32);</span>, has no fields to name: the narrowed name has nothing more to
-  offer, and a binding is how to reach what it holds. The test <span class="pre">if x</span> is a plain truth
-  test, and never narrows: only the language's own tests do, <span class="pre">is</span> and a binding, never what
-  a method returns (<a href="guide-enums.html#option">Option</a> unwraps with them).</p>
-  <p>A narrowing ends when the name may hold another variant: an assignment to the whole of it, a
-  mutable borrow of the whole enum (a call that takes <span class="pre">&amp;mut Shape</span>), a swap, a
-  reference stored over (<span class="pre">*s = ...</span>), or a path where one branch did one of these.
-  Writing a field within the variant is not a change, whether a field of the variant or a field the
-  variants share. After a change the name is its whole type again, and a use that needed the variant
-  says so, at the use, naming the change:</p>
+	<p>It prints:</p>
 <pre>
-fn step(state &amp;mut Machine) {
-  if state is Run {
-    state.speed = state.speed + 1;   // Ok
-    *state = Machine.Stop;          // the whole value is replaced: the narrowing ends
-    state.speed;                    // Error: `state` is not known to be Run here: it was changed at ...
-  }
-}
+fetch /index.html
+store /notes.txt
+not understood
+odd teen other
 </pre>
-  <p>A name that is a reference others may share (<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span>)
-  is narrowed through a reference the compiler declares where the test was made, and the loan walk follows it as it
-  follows a binding (<a href="mem-borrowing.html">Borrowed references</a>): a call handed another name for the
-  enum, a store through one, a swap, or a call whose body it cannot read is a change, refused at the next use of
-  the narrowed name; a call that cannot reach the enum is none. Nothing follows the reference between the test and the block's start (or, inside one condition, the use), so a call or a store made in a later operand of the condition ends the narrowing, whatever it reaches: <span class="pre">if s is Circle and toRect(t) and s.radius &gt; 0</span> is refused at <span class="pre">s.radius</span>, naming the call. A name held by value, or through an
-  <span class="pre">imm</span>, <span class="pre">uni</span> or <span class="pre">mut1</span> reference, has no other
-  name that can change it, so only its own assignments and mutable borrows are changes.</p>
-  <p>A narrowing from before a loop is good for the loop's first pass. A use of it that a change later in
-  the loop reaches again by the loop's back edge is an error, reported at the use. Test again inside the loop
-  to narrow afresh, which is how a state machine reads its next state:</p>
+	<p>Cases are still tried from the top, and a function runs only when its case is reached, at most once. A case
+		that binds stands alone, never joined to others with <span class="pre">or</span>. Which
+		values a function matches only running it can say, so a match with one ends with
+		<span class="pre">else</span>. A pattern never consumes anything: <span class="pre">prefix</span> hands back
+		what is left of the line, and the case carries on with that. The same patterns bind in an
+		<span class="pre">if</span>, and in a declaration that leaves when the pattern does not match:</p>
 <pre>
-while running {
-  if state is Idle { start(); state = State.Run(1); }       // tested each pass
-  else if state is Run { state.speed = state.speed + 1; }   // narrowed by its own test
-}
+if imm rest using prefix("GET ") = line { print &lt;- rest; }
+imm path using prefix("PUT ") = line else { return; };    // leaves unless it matches
 </pre>
+	<p>That is how a parser can be written as a match over the text that is left, a case for each thing the text
+		may start with.</p>
+	<p>However its cases are written, a match on one integer, character or enum compiles to a single
+		<span class="pre">switch</span> for the cases that compare with constants, which the back end turns into a jump
+		table or a quick search; nothing is written to ask for it.</p>
 
-	<h3 id="finetuning">Fine-tuning</h3>
-  <h4 id="form">What a match takes</h4>
-  <p>The form of the expression after <span class="pre">match</span> decides what the match
-  does with it, and a bound <span class="pre">if</span>, <span class="pre">if imm c Circle = s</span>,
-  reads its value the same way. (Borrowing and moving are explained in
-  <a href="mem-moves.html">Moves in depth</a> and <a href="mem-borrowing.html">Borrowed references in depth</a>.)</p>
-  <ul>
-  <li><b>A place</b> &mdash; a variable, a field of one, a dereference, an element at a name or a
-  literal, <span class="pre">match r</span> &mdash; is matched as the value it holds. Every test
-  reads it where it stands and takes nothing, so a match that only tests moves no resource away, and
-  <span class="pre">r</span> is whole after it. An arm that binds is the one that takes: the binding
-  holds the payload by value, a copy of a copy type, or a move of one that owns, which consumes
-  <span class="pre">r</span> on the paths that reach that arm. A <span class="pre">mut</span> binding
-  changes what the arm took and never <span class="pre">r</span>.</li>
-  <li><b>A borrow</b> &mdash; <span class="pre">match &amp;r</span>, <span class="pre">&amp;imm r</span>,
-  <span class="pre">&amp;mut r</span>, <span class="pre">&amp;uni r</span> &mdash; binds a reference of
-  that kind into <span class="pre">r</span>, which stays frozen to the match for as long as the
-  bindings are used. That is how a match changes <span class="pre">r</span>:
-  <span class="pre">match &amp;mut r</span>.</li>
-  <li><b>Any other value</b> &mdash; a call, <span class="pre">match f()</span> &mdash; is a temporary
-  the match owns: it is made once, every pattern reads it, and it is finalized as the match ends.</li>
-  </ul>
-  <p>A binding takes only what it binds. Where the payload is plain data (a number, a borrowed
-  reference, a struct of them), the arm copies it and the place is whole after the arm, even
-  where the enum holds an owner in another variant. A bound <span class="pre">if</span> guard
-  (<span class="pre">case imm x Some if x &gt; 0</span>) reads its binding before the arm is chosen, so it takes
-  nothing from the matched value at all, a place or a call's temporary alike: it sees a copy of plain data, and
-  a payload that owns something through a read-only borrow of it. A guard that fails leaves the value whole
-  for the cases after it, and the arm that runs is the one that takes.</p>
-
-<h4 id="switch">Jump tables</h4>
-	<p><i>Nothing is written for this: it is what the cases mean. It matters only when you tune a hot match.</i></p>
-  <p>A match on <b>one integer, character or enum</b> compiles to a single <span class="pre">switch</span>
-  on that value in every build, which the back end makes a jump table, a binary search or a bit test
-  as the cases lie. Nothing is written for it: it is what the cases mean.
-  The cases that count are those before the first that does not test the value against constants:
-  a constant (a literal or a named constant), a range, <span class="pre">or</span> of those, and,
-  on an enum, a variant, a binding of one, and a trait that names variants
-  (<a href="guide-enums.html#traitpat">Trait patterns</a>). Those cases are the <span class="pre">switch</span>; the rest, from the first
-  case with an <span class="pre">if</span> guard, a comparison such as <span class="pre">&gt; 3</span>, a text or a
-  range too wide to list (more than 128 values), a <a href="#using">function's pattern</a>, or from the
-  <span class="pre">else</span>, is tried in order as the default. A match that covers an enum with no <span class="pre">else</span> has its last case as the default.
-  Cases are still tried top to bottom: a value two cases share belongs to the first.</p>
-<pre>
-fn kind(c char) i32 {
-  match c {
-    case 'a' or 'e' or 'i' or 'o' or 'u' { 1; }   // these four cases are the switch
-    case 'b' .. 'd' { 2; }
-    case '0' .. '9' { 3; }
-    case ' ' { 4; }
-    case 'Ā' .. '\U0010ffff' { 5; }          // too wide: tried after the switch, in order
-    else { 0; }
-  }
-}
-</pre>
-
-	<h2 id="comesback">Comes back in &hellip;</h2>
-	<ul>
-		<li><a href="guide-loops.html">Repeating: while and each</a>: the next page. The same range operators count
-			a loop.</li>
-		<li><a href="guide-functions.html">Functions</a>: the functions these examples are written in, and
-			<span class="pre">Result</span>, which a <span class="pre">match</span> checks.</li>
-		<li><a href="guide-enums.html">Enums</a>: <span class="pre">match</span> again, on an enum's variants, where
-			the compiler counts the cases for you; partial matches, trait patterns and binding past an early exit.</li>
-		<li><a href="guide-collections.html">Collections</a>: matching text and slices.</li>
-		<li><a href="mod-substitution.html">Substitution</a>: traits, virtual references, and matching a virtual
-			reference back to its concrete type.</li>
-	</ul>
+	<p>You can now group work into blocks, and choose between them, with conditions, cases and patterns of your own.
+		Next, loops: running a block again and again, which is how one short program can close in on the digits of
+		pi.</p>
 
 		<p style="text-align: right; margin-top: 2em;">
 			<a href="guide-loops.html"><img alt="_" src="next.png" /></a>

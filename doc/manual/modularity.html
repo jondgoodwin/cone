@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Modularity and Reuse - Cone Reference</title>
+	  <title>Modularity: dividing a program into parts - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,170 +8,208 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Modularity and Reuse</div>
+			<div id="sub">Modularity: dividing a program into parts</div>
 		</div>
 
     <div class="text">
 
-	<!-- NEW: drafted -->
-	<p>This part is for a programmer who has written programs with
-		<a href="guide.html">The Guide</a>, and now wants to divide a larger one into parts,
-		or to write a library that others will use. It covers modules and packages, and also
-		everything underneath them that lets a part be written once and used again: names and
-		name folding, what a part shows and hides, traits and dispatch, generics and macros, and
-		the ways a part is extended without being changed. It opens with <i>why</i>, because each
-		of these mechanisms is an answer to the same few requirements.</p>
+	<p>A program that lives long enough changes, and the hardest part of a large one is keeping a change from
+		spreading. The answer is to divide it into parts, each with a job and a boundary, so that a change stays
+		inside the part it concerns and a part written once can be used again. This part of the manual is about
+		where to draw those boundaries and what Cone gives you to draw them with. Afterwards you can split a
+		program into modules and packages, decide what each part shows, and build parts that can be swapped,
+		reused and extended.</p>
 
-	<h2 id="why">Why modularity</h2>
-	<!-- NEW: drafted -->
-	<p>A program that lives long enough changes. Modularity is the way a program is decomposed
-		into parts so that a future change stays inside the part it concerns, and so that a part
-		written once can be used again somewhere else. Those are its two requirements:
-		<b>insulation from change</b>, and <b>reuse</b>. A third runs underneath both:
-		<b>isolation</b>, a part keeping its state and its workings to itself, so that nothing
-		outside it comes to depend on them.</p>
-	<p>How well this works depends on where the boundaries between parts are drawn. Count the
-		dependencies among the pieces inside a part, its <i>cohesion</i>, and the dependencies
-		that cross from one part to another, its <i>coupling</i>: a good decomposition has a great
-		deal of the first and little of the second. Separating concerns, one responsibility to a
-		part, is the everyday way to get there. It can be overdone: a program cut into too many
-		small parts pays more in coupling between them than it saves in complexity inside each.</p>
-	<p>A language that supports modularity well is a larger language than one that does not.
-		What it gives back is reuse and versatility, and programs that are easier to reason about
-		and to debug.</p>
+	<p>Here is one small program with boundaries at four sizes: a block, a function, a type and a trait.</p>
+<pre>
+mod tally;
+
+import stdio use *;
+
+// A type: its state, and the methods that are its interface.
+// count has no pub, so no code outside this module can reach it
+struct Tally {
+  count i32;
+
+  pub fn add(self &amp;mut, n i32) {
+    count += n;
+  }
+  pub fn total(self &amp;) i32 {
+    count;
+  }
+}
+
+// A trait: whatever has a total method may stand in for it
+trait Totalled {
+  pub fn total(self &amp;) i32;
+}
+
+// A function: its parameter and its workings are its own
+fn report(what &amp;&lt;Totalled) {
+  print &lt;- "total: ", what.total(), "\n";
+}
+
+fn main() {
+  mut days = new Tally(0);
+  // A block: n belongs to the loop, and is gone when it ends
+  each n in 1 .. 10 {
+    days.add(n);
+  }
+  report(&amp;days);
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+total: 55
+</pre>
+	<p><b>Try this:</b> change how <span class="pre">Tally</span> keeps its count, say by counting how many
+		times <span class="pre">add</span> is called as well. Nothing outside the struct needs to change, and
+		<span class="pre">report</span> never knows. That is the whole idea of this part, in miniature.</p>
+
+	<h2 id="why">Why divide a program</h2>
+	<p>Dividing a program into parts serves two needs. The first is <b>insulation from change</b>: when the
+		way a part works has to change, the change should stay inside it. The second is <b>reuse</b>: a part
+		written once should be usable somewhere else, by another part of the program or by another program.
+		Both rest on a third idea, <b>isolation</b>: a part keeps its state and its workings to itself, so that
+		nothing outside it comes to depend on them. What nothing outside could reach, nothing outside can be
+		broken by.</p>
+	<p>How well this works depends on where the boundaries are drawn. Count the dependencies among the pieces
+		inside a part, its <i>cohesion</i>, and the dependencies that cross from one part to another, its
+		<i>coupling</i>. A good division has much of the first and little of the second. The everyday way to get
+		there is to separate concerns, one responsibility to a part. But it can be overdone: a program cut into
+		too many small parts pays more in coupling between them than it saves in complexity inside each, so the
+		goal is the fewest boundaries that keep each part's concerns together.</p>
+	<p>A language that supports all of this well is a larger language than one that does not. What it gives
+		back is reuse and versatility, and programs that are easier to reason about and to debug.</p>
+
+	<h2 id="layers">The layers of a program</h2>
+	<p>A program is divided at several sizes at once, each layer built from the one below. Some layers are
+		about logic, the work being done, and some about data, the state it is done to:</p>
+	<table>
+		<tr><th>Logic</th><th>Data</th><th>Where Cone has it</th></tr>
+		<tr><td>Block</td><td>Tuple</td><td><a href="guide-conditionals.html#blocks">Blocks</a>, and tuples on
+			<a href="guide-structs.html">Structs</a></td></tr>
+		<tr><td>Function</td><td>Type</td><td><a href="guide-functions.html">Functions</a>,
+			<a href="guide-structs.html">structs</a> and <a href="guide-enums.html">enums</a></td></tr>
+		<tr><td>Thread</td><td>Actor</td><td><a href="guide-actors.html">Actors</a>, and
+			<a href="concurrency.html">Concurrency</a></td></tr>
+		<tr><td>Program</td><td>Package</td><td><a href="mod-namespaces.html">Modules</a> and
+			<a href="mod-packages.html">packages</a>, in this part</td></tr>
+	</table>
+	<p>In the small, at blocks and functions, programming languages largely agree on how a part is made and
+		kept to itself. The further down the table, the less they agree. Cone's approach is to give each
+		mechanism the same shape at every layer where it appears, so that what you learn for a type carries
+		over to a module, and what you learn for a module carries over to a package.</p>
 
 	<h2 id="strategies">Six strategies, each building on the last</h2>
-	<!-- NEW: drafted -->
-	<p>The mechanisms a language offers for modularity cluster around six strategies. Each one
-		builds on those before it, and this part takes them in that order:</p>
+	<p>The mechanisms for dividing a program cluster around six strategies. Each builds on the ones before it,
+		so they are worth knowing in order:</p>
 	<ol>
-		<li><a href="mod-composition.html"><b>Composition</b></a>: a component is assembled from
-			parts, in some arrangement. A struct's fields, an enum's variants, a block's statements
-			and a module's files are all parts.</li>
-		<li><a href="mod-namespaces.html"><b>Namespaces</b></a>: each part is given a name, unique
-			within its component, by which it is reached from outside:
-			<span class="pre">geometry.Point</span>, <span class="pre">point.x</span>. A name may
-			also be folded in, so that it is reached bare.</li>
-		<li><a href="mod-encapsulation.html"><b>Encapsulation</b></a>: a component publishes its
-			interface and hides how it is implemented, which shrinks the surface that others can
-			couple to. In Cone a name is private to its module unless it is
-			<span class="pre">pub</span>.</li>
-		<li><a href="mod-substitution.html"><b>Substitution</b></a>: one part may be swapped for
-			another that meets the same interface, the way any bulb of the right fitting goes into a
-			light socket. Traits, virtual references, function and closure references, and module
-			traits are the interfaces.</li>
-		<li><a href="mod-generativity.html"><b>Generativity</b></a>: many concrete components are
-			generated from one template, by substituting parameters into it. Generics, macros and
-			metaprogramming do this.</li>
-		<li><a href="mod-extensibility.html"><b>Extensibility</b></a>: usable parts are added to a
-			component without changing it. Folding a part's names in, enriching a concrete type,
-			and extending an enum or a module do this.</li>
+		<li id="composition"><b>Composition.</b> A part is assembled from smaller parts, which it owns: a
+			block from its statements, a struct from its fields, an enum from its variants, an actor from its
+			state and behaviours, a module from its files and submodules, a package from its modules. Layer
+			under layer, the parts form a tree. A <a href="mod-composition.html"><span class="pre">with</span>
+			block</a> works on one value's parts without repeating its name.</li>
+		<li><b>Namespaces.</b> Each part is given a name, unique within the part that holds it, by which it is
+			reached from outside: <span class="pre">geometry.Point</span>, <span class="pre">room.x</span>.
+			<a href="mod-namespaces.html">Modules</a> covers names across modules and inside types.</li>
+		<li><b>Isolation, or encapsulation.</b> A part publishes its interface and hides how it is made, which
+			shrinks the surface others can couple to. A function's locals are its own; a struct's private
+			fields are its module's; a module's names are private unless it says
+			<span class="pre">pub</span>. <a href="mod-encapsulation.html">Public and private</a> has the
+			rules.</li>
+		<li><b>Substitution.</b> One part may be swapped for another that meets the same interface, the way
+			any bulb of the right fitting goes into a light socket. Cone's subtyping is this: a struct stands
+			in for a trait it meets, an enum's variant for its enum, a function for a function reference of its
+			signature. <a href="mod-substitution.html">Traits and subtyping</a> covers it.</li>
+		<li><b>Generativity.</b> Many concrete parts are made from one template, by putting parameters into
+			it: <a href="mod-generativity.html">generics and macros</a>.</li>
+		<li><b>Extensibility.</b> A part gains usable pieces without being changed: a type reaches a part's
+			names as its own, reuses another type's capabilities, or adds to a type somebody else wrote. Cone
+			ties these together as <a href="mod-extensibility.html">name folding</a>.</li>
 	</ol>
-	<p>Two more pages finish the part: <a href="mod-packages.html">packages and the build</a>,
-		where modules are compiled apart and shared, and
-		<a href="mod-globals.html">global state and initialization</a>, a module's own variables and
-		the order in which they are set up.</p>
 
-	<h2 id="layers">One mechanism, several sizes</h2>
-	<!-- NEW: drafted -->
-	<p>A program is modular at several layers, from small to large: a block, a function, a type,
-		an actor, a module, a package. The same strategies come back at each layer. In the small,
-		languages largely agree on how to offer them; the larger the layer, the less they agree.
-		Cone gives a strategy the same shape at every layer where it has it, so what is learned for
-		a type carries over to a module. The table shows where each strategy is found:</p>
+	<h2 id="symmetry">The same shape at every layer</h2>
+	<p>The table shows where each strategy is found at each layer. Read across a row, and the mechanism is
+		recognisably the same one each time:</p>
 	<table>
 		<tr><th></th><th>Block and function</th><th>Type</th><th>Module</th><th>Actor</th></tr>
 		<tr><td><b>Composition</b></td>
 			<td><a href="guide-conditionals.html#blocks">a block's statements</a></td>
-			<td><a href="guide-structs.html">fields and variants</a>, <a href="mod-composition.html#with"><span class="pre">with</span> blocks</a></td>
+			<td><a href="guide-structs.html">fields</a> and <a href="guide-enums.html">variants</a></td>
 			<td><a href="mod-namespaces.html#dcl">a folder's files</a>, <a href="mod-namespaces.html#submodule">submodules</a></td>
 			<td><a href="conc-actors.html#declaration">its state and behaviours</a></td></tr>
 		<tr><td><b>Namespaces</b></td>
 			<td><a href="mod-namespaces.html#fnblocks">local variables</a></td>
-			<td><a href="mod-namespaces.html#typens">types as namespaces</a></td>
+			<td><a href="mod-namespaces.html#typens">a type's members</a></td>
 			<td><a href="mod-namespaces.html#import">modules and imports</a></td>
 			<td></td></tr>
-		<tr><td><b>Encapsulation</b></td>
+		<tr><td><b>Isolation</b></td>
 			<td><a href="mod-namespaces.html#fnblocks">locals private to their block</a></td>
 			<td><a href="mod-encapsulation.html#typenames">private members</a></td>
 			<td><a href="mod-encapsulation.html#modnames">private names</a></td>
 			<td><a href="conc-actors.html#confined">private state</a></td></tr>
 		<tr><td><b>Substitution</b></td>
-			<td><a href="mod-substitution.html#fnref">function</a> and <a href="mod-substitution.html#cloref">closure references</a></td>
+			<td><a href="mod-substitution.html#fnref">function references</a>, closure references</td>
 			<td><a href="mod-substitution.html#traits">traits</a>, <a href="mod-substitution.html#virtref">virtual references</a></td>
 			<td><a href="mod-substitution.html#modtrait">module traits</a></td>
 			<td><span class="pre">actor trait</span> (not built)</td></tr>
 		<tr><td><b>Generativity</b></td>
-			<td><a href="mod-generativity.html">generic functions</a>, <a href="mod-generativity.html#macros">macros</a></td>
+			<td><a href="mod-generativity.html#genericfns">generic functions</a>, <a href="mod-generativity.html#macros">macros</a></td>
 			<td><a href="mod-generativity.html#generictypes">generic types</a></td>
 			<td><a href="mod-generativity.html#generic">generic modules</a></td>
 			<td>a generic actor (not built)</td></tr>
 		<tr><td><b>Extensibility</b></td>
 			<td></td>
-			<td><a href="mod-extensibility.html">name folding</a>, <a href="mod-extensibility.html#enrich">enrichment</a>, <a href="mod-extensibility.html#enum-extends">enum extension</a></td>
-			<td><a href="mod-extensibility.html#extends">a module extending a module</a></td>
+			<td><a href="mod-extensibility.html#delegated">a field's names folded in</a>, <a href="mod-extensibility.html#enrich">enrichment</a>, <a href="mod-extensibility.html#enum-extends">enum extension</a></td>
+			<td><a href="mod-extensibility.html#globals">a global's names folded in</a>, <a href="mod-extensibility.html#extends">a module extending a module</a></td>
 			<td></td></tr>
 	</table>
-	<p>The clearest case is name folding, which the manual describes as one operation wherever
-		it appears: "the names in there are now names in here." A type folds in a part's names, a
-		module folds in a global's or another module's, and a type or a module is built out of
-		another of its own kind, with the same words in each place:</p>
-<pre>
-struct Car {
-  pub engine Engine use fuel, thrust;     // a type folds in a part's names
-  pub body   SportyLook;
-  pub wheels RimWheels;
-}
+	<p>The spelling follows the mechanism, not the layer. The same few words do the same job for a type and
+		for a module:</p>
+	<table>
+		<tr><th>What it says</th><th>For a type</th><th>For a module</th></tr>
+		<tr><td>these names in there are now names in here</td>
+			<td><span class="pre">pub engine Engine use fuel, thrust;</span></td>
+			<td><span class="pre">import math3d use Point3, Mat3;</span></td></tr>
+		<tr><td>built out of another of its kind</td>
+			<td><span class="pre">struct Gauge extends Meter</span></td>
+			<td><span class="pre">mod solids extends shapes;</span></td></tr>
+		<tr><td>meets an abstraction</td>
+			<td><span class="pre">struct Node is Id</span></td>
+			<td><span class="pre">mod plain is Runner;</span></td></tr>
+		<tr><td>generic over a type</td>
+			<td><span class="pre">struct Box[T]</span></td>
+			<td><span class="pre">mod stack[T];</span></td></tr>
+	</table>
 
-imm config Config = new Config(80i64, 24i64) use *;   // a module folds in a global's
-import math3d use Point3, Mat3;                         // and another module's
-
-struct Gauge extends Meter { ... }      // a type built out of a type
-mod solids extends shapes;              // a module built out of a module
-
-struct Node is Id { ... }               // a type says which abstraction it meets
-mod plain is Runner;                    // and so does a module
-
-fn max[T](a T, b T) T { ... }           // a function generic over a type
-struct Box[T] { ... }                   // a type
-mod stack[T];                           // and a module
-</pre>
-
-	<h2 id="pages">The pages of this part</h2>
+	<h2 id="pages">How this part is laid out</h2>
+	<p>It starts with the decisions every program larger than a page has to make, and goes deeper from
+		there:</p>
 	<ul>
-		<li><a href="mod-composition.html">Composition</a>: assembling from parts, and
-			<span class="pre">with</span> blocks, which focus a block on one value.</li>
-		<li><a href="mod-namespaces.html">Namespaces</a>: modules and submodules,
-			<span class="pre">import</span> in full, re-exporting, folding names in, types as
-			namespaces, and <span class="pre">alias</span>.</li>
-		<li><a href="mod-encapsulation.html">Encapsulation</a>: <span class="pre">pub</span> and
-			private, for a module's names and a type's members.</li>
-		<li><a href="mod-substitution.html">Substitution</a>: traits, open variants, virtual
-			references, function references, closures, closure references and module traits.</li>
-		<li><a href="mod-generativity.html">Generativity</a>: generic functions, types and modules,
-			their constraints, macros, and metaprogramming.</li>
-		<li><a href="mod-extensibility.html">Extensibility</a>: delegated inheritance, enrichment,
-			retroactive conformance, extending an enum or a module, and
-			<span class="pre">extend</span>.</li>
-		<li><a href="mod-packages.html">Packages and the build</a>: packages, Congo, the build
-			description, and why imports never loop.</li>
-		<li><a href="mod-globals.html">Global state and initialization</a>: global variables,
-			thread-local globals, and every module's initializer and finalizer.</li>
+		<li><a href="mod-namespaces.html">Modules: files, submodules and imports</a>: dividing a program into
+			modules, and reaching one module's names from another.</li>
+		<li><a href="mod-encapsulation.html">Public and private</a>: what a module, and a type inside it,
+			shows to the rest of the program.</li>
+		<li><a href="mod-packages.html">Packages</a>: a module compiled on its own and shared, and the rule
+			that dependencies run one way.</li>
+		<li><a href="mod-globals.html">Global state and initialization</a>: a module's own variables, and the
+			order in which every module is set up and taken down.</li>
+		<li><a href="mod-extensibility.html">Name folding</a>: reaching a part's names as your own, reusing
+			another type's capabilities, and extending a type you did not write.</li>
+		<li><a href="mod-substitution.html">Traits and subtyping</a>: interfaces, and the parts that meet
+			them, settled while the program is compiled or while it runs.</li>
+		<li><a href="mod-generativity.html">Generics and macros</a>: one template, many versions.</li>
 	</ul>
+	<p>The same strategies come back at the actor's layer in <a href="concurrency.html">Concurrency</a>, and a
+		module's boundary with code written in C is in <a href="safe-c.html">Talking to C</a>.</p>
 
-	<h2 id="comesback">Comes back in</h2>
-	<ul>
-		<li><a href="guide-structs.html">Structs and methods</a> and <a href="guide-enums.html">Enums, and match on variants</a> are where the parts that
-			types are composed of are described in full.</li>
-		<li><a href="conc-actors.html">Actors in depth</a> is the same modularity at the actor's
-			layer.</li>
-		<li><a href="safe-c.html">Talking to C</a> takes modules, packages and
-			<span class="pre">extern</span> across the boundary with C.</li>
-	</ul>
+	<p>You now have the map: the layers, the strategies, and where each is in this part. The first boundary
+		almost every program needs is the module, so that is where we start.</p>
 
-	<p style="text-align: right; margin-top: 2em;">
-		<a href="mod-composition.html"><img alt="_" src="next.png" /></a>
-	</p>
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-namespaces.html"><img alt="_" src="next.png" /></a>
+		</p>
 
 	</div>
 	</body>

@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>Safety and the Boundary with C - Cone Reference</title>
+	  <title>Safety and the boundary with C - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,120 +8,117 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Safety and the Boundary with C</div>
+			<div id="sub">Safety and the boundary with C</div>
 		</div>
 
     <div class="text">
 
-	<p>We want programs to be well-behaved,
-		doing what we intend without misbehaving in the process.
-		Unfortunately, mistakes are both inevitable and costly.
-		An obvious cost is the productivity loss due to correcting found mistakes.
-		The more significant cost may result from
-		security and opportunity risks due to latent bugs.</p>
+	<p>Mistakes are inevitable, and the costly ones are those that hide: a reference to memory already freed, two
+		threads changing one value, bytes read as the wrong type. Cone's compiler catches whole classes of them
+		before a program runs, or stops the program the moment one shows. This
+		part says what it promises, where its promises stop (at C, at raw pointers, at <span class="pre">trust</span>),
+		and what a program does when something goes wrong anyway. Afterwards you know which guarantees you are relying
+		on, and how to step outside them on purpose. Here is a guarantee at work:</p>
 
-	<p>This part of the manual is for the programmer who wants to know exactly what the compiler promises,
-		and for the one who must step outside those promises: to call C, to work with raw memory,
-		or to tell the compiler "trust me on this". It begins with the promises and ends
-		with a page on which platforms and targets Cone code is known to run on.</p>
+<pre>
+mod guard;
 
-	<h2>Compile-time Safety</h2>
-	<p>To help mitigate these costs, the Cone compiler can detect and prevent these safety violations:</p>
+import stdio use *;
+
+fn main() {
+  imm shelves = [12, 0, 7];
+  mut total = 0;
+  mut n = 0usize;
+  while n &lt;= 3usize {           // one pass too many: the shelves are 0, 1 and 2
+    total += shelves[n];
+    n += 1usize;
+  }
+  print &lt;- "loaves: ", total, "\n";
+}
+</pre>
+	<p>Instead of adding whatever lies past the end of the array, it stops, and says why:</p>
+<pre>
+panic at guard.cone:10: index 3 is out of bounds for a count of 3
+</pre>
+
+	<h2 id="promises">What the compiler guarantees</h2>
+	<p>Cone's compiler detects and prevents these violations of safety, each by a mechanism this manual describes
+		where it is used:</p>
 	<ul>
-		<li><b>Null pointer exceptions</b>.
-			References are not nullable by default.
-			When a reference is nullable, it may only be used after runtime logic first ensures it is not null</li>
-		<li><b>Uninitialized values</b>.
-			It is not legal to access a variable's, field's, or reference's value until it has
-			at least been given some valid, initial value.</li>
-		<li><b>Out-of-bounds access</b>.
-			Array indexing is only permitted when the index lies wholly wihin
-			the start and end bounds of the array.</li>
-		<li><b>Dangling pointer</b>.
-			All references to an object cease to exist before the object is freed.
-			Thus, a reference cannot be used-after-free nor can an object be freed twice.</li>
-		<li><b>Data races</b>.
-			One reference may not access an object while another reference is non-atomically mutating it.</li>
-		<li><b>Type violation</b>.
-			Every variable, field and reference can only hold values of their declared type.
-			Further, if a value can unwrap to one of several variant types,
-			runtime logic must first determine which variant it holds before unwrapping it.</li>
+		<li><b>Null pointer exceptions.</b> A reference is never null. A value that may be absent is an
+			<a href="guide-enums.html#option">Option</a>, which can be used only after a check finds something in it;
+			only a <a href="safe-pointers.html#null">raw pointer</a> may be null.</li>
+		<li><b>Uninitialized values.</b> A variable's, field's or reference's value cannot be read until it has been
+			given a valid initial value: a local declared now and assigned later
+			(<a href="guide-values.html">Variables, types and expressions</a>), or a global its module's initializer
+			assigns (<a href="mod-globals.html">Global state and initialisation</a>).</li>
+		<li><b>Out-of-bounds access.</b> An index into an array, list or slice, and a range taken from one, must lie
+			within it. The check runs as the program does, and a failure <a href="safe-panics.html#checks">panics</a>, as
+			above. Only a raw pointer's index is unchecked (<a href="safe-pointers.html#deref">Raw pointers</a>).</li>
+		<li><b>Dangling pointers.</b> Every reference to a value is gone before the value is freed, so a reference
+			cannot be used after the value is freed, nor the value freed twice
+			(<a href="mem-borrowing.html">Borrowed references</a>, <a href="mem-lifetimes.html">Lifetimes</a>,
+			<a href="mem-regions.html">Regions</a>).</li>
+		<li><b>Data races.</b> No reference may reach a value while another is changing it without atomic operations
+			(<a href="mem-permissions.html">Permissions</a>, <a href="conc-locks.html">Lock permissions</a>,
+			<a href="conc-sharing.html">What may cross a thread</a>).</li>
+		<li><b>Type violations.</b> Every variable, field and reference holds only values of its declared type
+			(<a href="safe-types.html">Type safety</a>), and a value that may be one of several variants must be matched
+			to find out which before its contents are used (<a href="guide-enums.html">Enums</a>).</li>
+	</ul>
+	<p>These are the language's promises. Not every check behind them is complete yet, and <a href="safe-trust.html"><span class="pre">trust</span></a>, which is to mark the operations
+		the compiler cannot check, is not built, so those operations compile without it for now.</p>
+
+	<h2 id="yours">What stays the programmer's job</h2>
+	<p>A compiler can point out inconsistencies and constraints plainly broken. It cannot know what a program is
+		meant to do, so these remain the programmer's to prevent:</p>
+	<ul>
+		<li>memory waste, and running out of stack or memory;</li>
+		<li>deadlocks, and race conditions other than data races;</li>
+		<li>loops that never end;</li>
+		<li>broken invariants, and mutation nobody expected;</li>
+		<li>fragile dependencies, and names that crowd a namespace;</li>
+		<li>arithmetic errors: integer overflow wraps silently, and division by zero is not checked;</li>
+		<li>and every other kind of wrong logic.</li>
+	</ul>
+	<p>The language still helps: errors reported with <a href="guide-functions.html#result-tour">Result</a>
+		(exceptions are planned), isolation of names and of mutation, iteration that is bounded by what it walks,
+		private fields that protect a type's invariants, <a href="mod-substitution.html">traits</a> where inheritance is
+		not needed, finalizers, and moves.</p>
+
+	<h2 id="teammate">A teammate, not a guard</h2>
+	<p>The compiler will never understand what a program is for as well as the programmer does. What it brings is
+		rigour no person can match: it notices every time code breaks a rule it has been given. Safety comes from the
+		two working together, and the programmer keeps the final responsibility.</p>
+	<p>Most of Cone's checks are made as it compiles and cost nothing at run time (bounds checks are the exception);
+		they are paid for in complexity instead. References carry
+		permissions and lifetimes, and a program spells out what a pointer never would. That is the real price of
+		safety, the attention it asks of the programmer, and it is better named than hidden. So where a rule refuses
+		code that the programmer's judgement, experience and tests show is safe, there should be a straightforward way
+		to write it anyway: in the open, marked as the programmer's responsibility. That is what this part's later pages
+		are about. Likewise, a few data structures with several owners are not worth proving safe in the language at
+		all; they are better built with raw pointers behind a small, safe interface.</p>
+
+	<h2 id="inthispart">In this part</h2>
+	<ul>
+		<li><a href="safe-types.html"><b>Type safety: coercion and conversion</b></a>: moving a value from one type to
+			another, by coercion, <span class="pre">from</span> and <span class="pre">as</span>.</li>
+		<li><a href="safe-panics.html"><b>Panics and assert</b></a>: what happens when something that must never
+			happen does.</li>
+		<li><a href="safe-c.html"><b>Calling C</b></a>: <span class="pre">extern</span>, <span class="pre">@c</span>,
+			bindings, exporting to C, and structs by value.</li>
+		<li><a href="safe-pointers.html"><b>Raw pointers</b></a>: memory without a reference's guarantees.</li>
+		<li><a href="safe-trust.html"><b>trust</b></a>: marking what only the programmer can vouch for.</li>
+		<li><a href="safe-purity.html"><b>Inline and pure functions</b></a>: two promises a function's declaration can
+			make.</li>
+		<li><a href="safe-platforms.html"><b>Platforms and targets</b></a>: where Cone runs, and choosing by
+			target.</li>
+		<li><a href="safe-intrinsics.html"><b>Intrinsics</b></a>: what library code asks of the compiler, to build its
+			own containers, regions and locks.</li>
 	</ul>
 
-	<h2>Safety is the Programmer's Responsibility</h2>
-	<p>At the end of the day, the compiler can only act as a valuable assistant,
-		skilled at pointing out inconsistencies and obviously-violated constraints.
-		It is up to the programmer to write code that protects against:
-	<ul>
-		<li><b>Memory waste</b>.</li>
-		<li><b>Stack and memory overflow</b>.</li>
-		<li><b>Deadlocks and other race conditions</b>.</li>
-		<li><b>Non-terminating loops</b>.</li>
-		<li><b>Broken invariants</b>.</li>
-		<li><b>Unanticipated mutation</b>.</li>
-		<li><b>Fragile dependencies</b>.</li>
-		<li><b>Namespace pollution</b>.</li>
-		<li><b>Arithmetic errors</b>.</li>
-		<li>and any other kind of bad logic...</li>
-	</ul></p>
-	<p>To help reduce the likelihood of experiencing the above problems,
-		the experienced programmer can leverage helpful language features, such as:
-		exception handling, namespace and mutation isolation, bounded iteration,
-		private fields on types (to help protect invariants), 
-		polymorphism (when inheritance is unnecessary), finalizers, and move semantics.</p>
-
-	<h2>Versatility vs. Safety</h2>
-	<p>Although safety matters a lot, we don't want compiler-enforced safety features 
-		to negatively impact the productivity of the professional programmer.
-		As much as possible, there should be a straightforward way for the programmer
-		to write code that their judgement, experience and tests demonstrate is safe.
-		Over the next few pages, let's explore several fine-grained controls the programmer
-		can use to customize the language's built-in safety constraints.</p>
-
-	<!-- NEW: drafted -->
-	<h2>At a glance: what the compiler guarantees, and where to read how</h2>
-	<p>The six guarantees listed under Compile-time Safety above, each with the pages of this manual that
-		describe the mechanism behind it. (This list only points at existing pages; the guarantee itself is
-		stated, with its conditions, in the list above and on those pages.)</p>
-	<table border="1" cellpadding="4" cellspacing="0">
-	<tr><th>The compiler prevents</th><th>Read how in</th></tr>
-	<tr><td>Null pointer exceptions</td><td>
-		<a href="guide-enums.html#option">Option</a> (an absence is <span class="pre">None</span>);
-		<a href="mem-borrowing.html">borrowed references</a> (a reference is not nullable by default);
-		<a href="safe-pointers.html">Raw Pointers</a> (the only kind that may be null);
-		<a href="safe-types.html#conversion-coercion">Values, variables and expressions</a> (nullable and non-nullable references)</td></tr>
-	<tr><td>Uninitialized values</td><td>
-		<a href="guide-values.html">Values, variables and expressions</a> (delayed initialisation);
-		<a href="mod-globals.html">Global state and initialisation</a> (a global without an initial value is assigned by its module's initializer)</td></tr>
-	<tr><td>Out-of-bounds access</td><td>
-		<a href="guide-structs.html">Structs and methods</a> (arrays);
-		<a href="guide-collections.html">Collections and the send operator</a> (slices);
-		<a href="safe-pointers.html">Raw Pointers</a> (where the check is skipped, and why)</td></tr>
-	<tr><td>Dangling pointers</td><td>
-		<a href="mem-borrowing.html">Borrowed references in depth</a>;
-		<a href="mem-lifetimes.html">Lifetimes</a>;
-		<a href="mem-regions.html">Owning references and regions</a></td></tr>
-	<tr><td>Data races</td><td>
-		<a href="mem-permissions.html">Permissions in depth</a>;
-		<a href="conc-sharing.html">What may cross a thread: Sendable and Shareable</a>;
-		<a href="conc-locks.html">Lock permissions in depth</a></td></tr>
-	<tr><td>Type violations</td><td>
-		<a href="guide-structs.html">Structs and methods</a>;
-		<a href="guide-enums.html">Enums, and match on variants</a> (determining which variant a value holds before unwrapping it);
-		<a href="safe-types.html#conversion-coercion">Values, variables and expressions</a>;
-		<a href="safe-trust.html">Trust</a> (the reinterpretations the compiler cannot check)</td></tr>
-	</table>
-
-	<h2>In this part</h2>
-	<ul>
-		<li><a href="safe-c.html"><b>Talking to C</b></a> &mdash; <span class="pre">extern</span>, <span class="pre">@c</span>, exporting to C, C-named modules, structs by value.</li>
-		<li><a href="safe-pointers.html"><b>Raw Pointers</b></a> &mdash; the alternative to references, free of lifetimes, permissions and regions.</li>
-		<li><a href="safe-trust.html"><b>Trust</b></a> &mdash; the annotation that turns off some safety checks, and type reinterpretation.</li>
-		<li><a href="safe-intrinsics.html"><b>Intrinsics</b></a> &mdash; <span class="pre">sizeof</span>, raw memory, atomic operations, bit operations and GPU barriers.</li>
-		<li><a href="safe-purity.html"><b>Purity</b></a> &mdash; pure functions, and inline functions.</li>
-		<li><a href="safe-panics.html"><b>When a program stops: panics</b></a> &mdash; <span class="pre">panic</span>, <span class="pre">assert</span>, <span class="pre">assertDebug</span>, the panic hook and the <span class="pre">Never</span> type.</li>
-		<li><a href="safe-platforms.html"><b>Platforms and Targets</b></a> &mdash; Windows, Linux, WebAssembly, SPIR-V, and what is not supported yet.</li>
-	</ul>
+	<p>The first of these is the one you will use every day: getting a value from one type into another without
+		losing what it means.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="safe-types.html"><img alt="_" src="next.png" /></a>

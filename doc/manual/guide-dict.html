@@ -1,0 +1,172 @@
+<html>
+  <head>
+	  <title>Dict: finding a value by its key - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Dict: finding a value by its key</div>
+		</div>
+
+    <div class="text">
+
+	<p>A list finds a value by its position, but often what a program has in hand is a name: a word, a product code, a
+		user. A <b>Dict</b>, short for dictionary, pairs each <b>key</b> with a value, and finds the value again by its
+		key. This page shows how to fill one, look values up, walk its pairs, and handle the lookup that finds nothing,
+		which is where <span class="pre">Option</span> comes in. Here is one counting the words of a sentence:</p>
+<pre>
+mod words;
+
+import stdio use *;
+import collections use *;
+
+fn main() {
+  imm text = String.from("the cat sat on the mat and the dog sat on the log");
+
+  // Each word, paired with how many times it appears
+  mut counts = new Dict[String, i32];
+  each w in text.split(' ') {         // split gives back a List of the words
+    if counts.contains(w) {
+      counts[w] += 1;                 // seen before: one more
+    } else {
+      counts &lt;- w.copy(): 1;          // new: send the word and its first count
+    }
+  }
+  print &lt;- counts.len(), " different words; the: ", counts["the"], ", sat: ", counts["sat"], "\n";
+
+  // A word that may not be there: get gives back an Option
+  each word in ["dog", "fish"] {
+    match counts.get(*word) {
+      case imm n Some {print &lt;- *word, ": ", n, "\n";}
+      case is None {print &lt;- "no ", *word, "\n";}
+    }
+  }
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+8 different words; the: 4, sat: 2
+dog: 1
+no fish
+</pre>
+	<p><b>Try this:</b> add <span class="pre">"mat"</span> and <span class="pre">"rat"</span> to the words looked up at
+		the end, and predict what each line will say before you run it.</p>
+
+	<h2 id="lookup">Pairing keys with values</h2>
+	<p>A Dict's brackets hold two types, the keys' and then the values': a <span class="pre">Dict[String, i32]</span>
+		pairs words with counts. The send operator gives it a key and its value together, with a colon between them,
+		<span class="pre">counts &lt;- w.copy(): 1</span>, and a later value for a key it already holds replaces the
+		earlier one. The dictionary keeps its keys, so it is given a copy of the word, <span class="pre">w.copy()</span>,
+		and the list of words keeps its own. A dictionary can be built in one go as a list can
+		(<a href="guide-collections.html#giving">Collections</a>), its entries pairs:
+		<span class="pre">new Dict[String, i32] &lt;- String.from("Ann"): 31, String.from("Bo"): 12</span>, or
+		<span class="pre">&lt;- each w in words yield w.copy(): w.len()</span>.</p>
+	<p><span class="pre">counts["the"]</span> looks a value up by its key, and a dictionary whose keys are Strings is
+		asked with plain text. In a dictionary held in a <span class="pre">mut</span> variable, the value can be changed where it stands, as
+		<span class="pre">counts[w] += 1</span> does. A key it does not hold stops the program with a
+		<a href="safe-panics.html">panic</a>, <i>"no entry for the key "fish""</i>, so a program that is not sure asks
+		first, with <span class="pre">contains</span>, as the counting loop does. The counting loop searches twice for
+		each word, once to ask and once to add; <span class="pre">getOrInsert</span> does both in one search, handing back
+		the value held, or the value given, put in place, to change:</p>
+<pre>
+each w in text.split(' ') {
+  *counts.getOrInsert(w.copy(), 0) += 1;      // the same counts, one search a word
+}
+</pre>
+	<p><span class="pre">remove</span> takes a key and its value out, and <span class="pre">len()</span> says how many
+		pairs it holds.</p>
+
+	<h2 id="option">Option: a lookup that may find nothing</h2>
+	<p>A lookup with <span class="pre">[]</span> trusts that the key is there. Often it may not be, and that is no
+		mistake: "fish" was never in the sentence. <span class="pre">get</span> asks without that trust, and its answer
+		says which way it went. It gives back an <b>Option</b>: <span class="pre">Some</span> holding what it found, or
+		<span class="pre">None</span>. Option is an <a href="guide-enums.html#option">enum</a> from the core library,
+		declared as <span class="pre">enum Option[T] {None; Some(T);}</span>, so everything Enums showed works on it. The
+		program's <span class="pre">match</span> is the usual one: <span class="pre">case imm n Some</span> binds what
+		was found, and <span class="pre">case is None</span> handles its absence. The match must cover both, so the
+		missing word cannot be forgotten.</p>
+	<p>When only one case needs handling, the shorter forms from Enums apply. A binding in an
+		<span class="pre">if</span> uses the value only when it is there:</p>
+<pre>
+if imm n Some = counts.get("cat") {
+  print &lt;- "cat: ", *n, "\n";
+}
+</pre>
+	<p>A declaration whose <span class="pre">else</span> leaves carries on with the value, and leaves when there is
+		none (<a href="guide-enums.html#letelse">Enums</a>):</p>
+<pre>
+imm n Some = counts.get(word) else { return; };
+</pre>
+	<p>And to ask without the value, test the variant, <span class="pre">maybe is None</span>, or compare,
+		<span class="pre">maybe == None</span> and <span class="pre">maybe != None</span>.</p>
+	<p>What <span class="pre">get</span> finds is the value where it lies in the dictionary, a borrow, so the
+		<span class="pre">n</span> it binds is one too: it prints and computes like the number, and
+		<span class="pre">*n</span> fetches a copy. A list's <span class="pre">get(i)</span>, <span class="pre">pop()</span>
+		and <span class="pre">peek()</span>, from <a href="guide-list.html#maybe">List</a>, answer the same way.</p>
+	<p id="option-create">Your own functions can answer with an Option too, when the absence of an answer is a normal
+		outcome rather than a failure. <span class="pre">?i32</span> is short for <span class="pre">Option[i32]</span>,
+		and the function returns <span class="pre">Some</span> with the value, or <span class="pre">None</span>:</p>
+<pre>
+// Half of n, when n is even
+fn half(n i32) ?i32 {
+  if n % 2 == 1 { return None; }
+  Some(n / 2);
+}
+</pre>
+	<p><span class="pre">None</span> takes its type from where it goes, here the function's return type. With nothing
+		to say what it holds, as in <span class="pre">mut maybe = None;</span>, the compiler asks for it:
+		<i>"Could not infer the type parameter T of None &hellip; Write the type arguments out: None[T]."</i>, so
+		<span class="pre">None[i32]</span>, or better, <span class="pre">mut maybe ?i32 = None;</span>. Option is to a
+		missing value what <a href="guide-functions.html#result-tour">Result</a> is to a failure: both put what might
+		not be there into the type, where the compiler checks that it is handled.</p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: an Option used directly as a condition
+		(<span class="pre">if maybe</span> is refused: the condition requires a true/false value), a plain value where an
+		Option is wanted (write <span class="pre">Some(5)</span>), and shorter operators for unwrapping an Option or
+		giving it a default. The match and the binding forms above are how an Option is handled today.</i></p>
+
+	<h2 id="walk">Walking a dictionary</h2>
+	<p><span class="pre">each</span> with two variables walks a dictionary's keys and their values:</p>
+<pre>
+mut repeated = 0;
+each word, count in counts {
+  if count &gt; 1 { repeated += 1; }
+}                                  // repeated is 3: the, sat and on
+</pre>
+	<p>A dictionary is <b>unordered</b>. The order it visits its keys in is not the order they went in, and it changes
+		from one run to the next, so a program that prints them in order sorts them first, or uses an
+		<a href="lib-collections.html#ordereddict">OrderedDict</a>, which visits its keys in the order they were
+		added. <span class="pre">keys()</span> and <span class="pre">values()</span> walk one side only.</p>
+
+	<h2 id="keys">What can be a key</h2>
+	<p>A key must be a type that can be <b>hashed</b>: turned into a number that says where in the dictionary to look.
+		Integers, <span class="pre">bool</span> and <span class="pre">String</span> can, and so can a struct that declares
+		<span class="pre">is Hash</span>, which has the compiler work out its hash from its fields, and which writes the
+		<span class="pre">==</span> that goes with it:</p>
+<pre>
+struct Pt is Hash {
+  pub x i32;
+  pub y i32;
+  pub fn `==`(self &amp;, o &amp;Pt) bool { x == o.x and y == o.y; }
+}
+
+mut grid = new Dict[Pt, i32];
+grid &lt;- new Pt(1, 2): 5;
+</pre>
+	<p>A floating-point key is refused: <i>"Dict requires K is Hash, and f64 is not Hash"</i>. A key that is not text is looked up through a borrow of it, written
+		with <span class="pre">&amp;</span>: <span class="pre">squares[&amp;3]</span>,
+		<span class="pre">grid[&amp;new Pt(1, 2)]</span>, <span class="pre">squares.get(&amp;k)</span>.</p>
+
+	<p>You can now pair keys with values, look them up, walk them, and handle a lookup that finds nothing, with the
+		compiler making sure you do. With List and Dict at work, it is time to see how they work: the method names that
+		give a struct indexing, the send operator, iteration and more.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-methods.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

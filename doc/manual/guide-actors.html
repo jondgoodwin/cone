@@ -107,7 +107,7 @@ Left on the shelf: 30
 		Cone has other ways to make work happen at the same time, and the <a href="concurrency.html">Concurrency</a>
 		part has them all; actors and <span class="pre">parallel each</span> are the two to build on first.</p>
 
-	<h2 id="first-actor">Declaring an actor</h2>
+	<h2 id="first-actor"><span id="making"></span>Declaring an actor</h2>
 	<p>An actor is written like a <a href="guide-structs.html">struct</a>, with <span class="pre">actor</span> in place of
 		<span class="pre">struct</span>, in a module that imports the <span class="pre">actors</span> package. Its fields
 		are its state, and they are never <span class="pre">pub</span>: only its own behaviours reach them. Code outside
@@ -122,6 +122,38 @@ Left on the shelf: 30
 		as <span class="pre">loaves i32 = 100</span>, takes it when the argument is left off. A handle may be copied as
 		often as you like: the shop and both tills hold the one stock room's handle, and whatever any of them sends lands
 		in the same mailbox.</p>
+	<p id="declaring">Beside its behaviours, an actor may have what a struct has: an <span class="pre">init</span>, run
+		inside the actor when <span class="pre">new</span> makes it; plain <span class="pre">fn</span> methods, helpers
+		its behaviours call directly, with no message; and a <span class="pre">final</span>, run when it dies. Inside a
+		behaviour, <span class="pre">selfactor</span> is the actor's own handle, which it can send a message to, or hand
+		to another actor:</p>
+<pre>
+actor Oven {
+  baked i32;
+
+  fn init(self &amp;new, start i32) {          // run by 'new Oven(0)', inside the actor
+    *self = new Self(baked: start);
+  }
+
+  fn batch(self &amp;, trays i32) i32 {         // a helper: an ordinary call, no message
+    trays * 12;
+  }
+
+  pub async do bake(self, trays i32) i32 {
+    baked += self.batch(trays);
+    baked;
+  }
+
+  pub async do bakeTwice(self, trays i32) i32 {
+    await selfactor.bake(trays);           // a message to itself
+    await selfactor.bake(trays);
+  }
+}
+</pre>
+	<p>An actor lives as long as something holds its handle or its mailbox holds a message, so a handle dropped with
+		messages still queued leaves the actor alive until they are handled. Actors holding each other's handles in a
+		cycle never die, until one lets go. <a href="conc-actors.html">Actors in depth</a> has the four shapes a
+		behaviour can take, and the rest of an actor's life.</p>
 
 	<h2 id="sending">Calling a behaviour sends a message</h2>
 	<p><span class="pre">east.serve(30)</span> looks like a method call, and that is how you write it. What it does is
@@ -153,8 +185,14 @@ Left on the shelf: 30
 		either answer is needed, so the two tills serve them at the same time, and the shop awaits the futures
 		afterwards. The stock room's count is right by the time the shop asks for it, because each till had its answer
 		from the stock room before it answered the shop.</p>
+	<p id="await">So how a behaviour is called says what becomes of its answer: <span class="pre">await</span> waits for
+		it here, a variable keeps its future for later, and a call written as a statement of its own sends the message
+		and drops the answer. Whether there is an answer at all is the behaviour's to say: one with no return type sends
+		none, and awaiting it is refused, with the advice to declare a return type, a status, if the caller needs to know
+		it finished. An <span class="pre">await</span> also lets go of every borrow the behaviour holds, since the actor
+		handles other messages while it waits. <a href="conc-await.html">Awaiting in depth</a> has the rest.</p>
 
-	<h2 id="sharing">What you can send</h2>
+	<h2 id="sharing"><span id="arc"></span>What you can send</h2>
 	<p>A message carries its values to another actor, which may be running on another core, and each kind of value
 		crosses in its own safe way.</p>
 	<p><b>Numbers are copied.</b> <span class="pre">east.serve(30)</span> puts a copy of 30 in the message.</p>
@@ -203,314 +241,24 @@ imm prices = new Arc[imm, Prices](loaf: 3, bun: 1);
 imm east = new Till(prices);
 imm west = new Till(prices);
 </pre>
-	<p>The compiler checks all of this for you, from what each behaviour's parameters hold, with nothing for you to
-		write; a value that could not travel safely is refused where the behaviour is declared. When several actors
+	<p id="sendable">The compiler checks all of this for you, from what each behaviour's parameters hold, with nothing for
+		you to write; a value that could not travel safely is refused where the behaviour is declared. A borrow
+		(<span class="pre">&amp;x</span>) is the usual one, since it points into memory its own thread may free, and an
+		<span class="pre">Rc</span>, whose count only one thread may keep. The actor's own fields are never sent, so they
+		may hold anything. When several actors
 		truly must <i>change</i> one value, give that value to an actor of its own, as the bakery gives the loaves to the
-		stock room. The rest of what may cross, and the locks for the rare case that needs one, are in
-		<a href="conc-sharing.html">What may cross a thread</a>.</p>
+		stock room. The rest of what may cross is in <a href="conc-sharing.html">What may cross a thread</a>, and the
+		locks for the rare case that needs one, permissions such as <span class="pre">Arc[Mutex, T]</span> that take a
+		lock whenever the value is borrowed, are in <a href="conc-locks.html">Lock permissions</a>.</p>
+
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> and <span class="pre">sync</span>
+		packages run on Windows and Linux (x86-64), not yet on macOS. What is not built yet, among it a time limit on
+		an <span class="pre">await</span> and waiting for whichever of several answers comes first, is listed in
+		<a href="conc-actors.html">Actors in depth</a> and <a href="conc-await.html">Awaiting in depth</a>.</i></p>
 
 	<p>You can now give each part of a program to an actor of its own, call it like a method, and let the actors work
 		side by side on every core. When the work is one big loop rather than standing roles, there is something simpler
 		still: one word in front of an <span class="pre">each</span>.</p>
-
-	<h2 id="indetail">In detail</h2>
-	<p>The rest of this page is the complete reference for actors at this level, with excerpts from
-		<a href="concurrency.html">Concurrency in depth</a>, which carries the whole of it; skip to the
-		<a href="guide-parallel.html">next page</a> if the program above was enough.</p>
-
-	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> and <span class="pre">sync</span>
-		packages run on Windows and Linux (x86-64), not yet on macOS. Not implemented: <span class="pre">actor
-		trait</span>, a generic actor, a time limit on an <span class="pre">await</span> of a reply, cancelling a
-		paused behaviour, and waiting for whichever of several replies arrives first. Of the lock permissions, not
-		implemented: a borrow that tries the lock and gives up rather than waiting, a time limit on the wait, taking
-		the locks of several values at once, and anything preventing a deadlock, which Cone does not do.</i></p>
-
-	<h3 id="declaring">Declaring one: state and behaviours</h3>
-	<p>An actor is declared with <span class="pre">actor</span>, and it runs on the <span class="pre">actors</span>
-		package, which a module declaring one imports. Its body is written as a struct's: fields, an
-		<span class="pre">init</span>, behaviours, synchronous methods, a <span class="pre">final</span>:</p>
-<pre>
-import actors;
-
-actor Counter {
-  count u64;                       // its state: private to it
-
-  fn init(self &amp;new, start u64) {   // run by 'new Counter(start)', in the actor
-    *self = new Self(count: start);
-  }
-
-  pub async do add(self, n u64) {  // a behaviour: sent as a message
-    count = count + n;
-  }
-
-  fn doubled(self &amp;) u64 {         // synchronous: called, inside the actor
-    count * 2u64;
-  }
-}
-</pre>
-	<ul>
-	<li><b>The fields are its state</b>, private to it: a field is never <span class="pre">pub</span>, and nothing
-		outside the actor reaches one.</li>
-	<li><b>A method declared <span class="pre">async do</span> is a behaviour</b>: a message, run later, when the
-		actor is scheduled. <span class="pre">async do</span> is one keyword of two words.</li>
-	<li><b>A method declared <span class="pre">fn</span> is synchronous</b>: the actor's
-		<span class="pre">init</span> and <span class="pre">final</span>, and any helper, which runs inside the method
-		that calls it, as a struct's method does. It is the actor's alone.</li>
-	</ul>
-	<p>Whether a behaviour declares a return type decides whether a reply is sent; whether it holds an
-		<span class="pre">await</span> decides whether it waits. So a behaviour is <i>fire and forget</i> (neither), <i>a
-		cheap query</i> (a return type), one that <i>awaits and owes nobody</i>, or <i>the full handshake</i> (both).
-		(<a href="conc-actors.html#behaviours">Behaviours and methods</a>,
-		<a href="conc-actors.html#shapes">The four behaviour shapes</a>,
-		<a href="conc-actors.html#declaration">The declaration</a>.)</p>
-	<p><i>From <a href="conc-actors.html#making">Making an actor</a>:</i> The initializer's parameters
-		must be <span class="pre">Sendable</span> too, since the state made from them runs on
-		other threads. An actor may declare several initializers, as a struct may, each joining
-		the overload name <span class="pre">init</span>. One that declares none is made by its
-		state's implicit initializer: <span class="pre">new Counter(5u64)</span> takes the fields
-		whose types are written, in order, a field with a default taking it where the argument is
-		left out. That initializer is the module's own, as a struct's implicit one is where its
-		fields are private, except for a <span class="pre">pub</span> actor with no fields at all.
-		There is no other way to make an actor, and no creation function:
-		<span class="pre">spawn</span> stays reserved.</p>
-
-	<h3 id="making">Making one and sending it messages</h3>
-<pre>
-fn main() {
-  imm c = new Counter(0u64);       // the first actor starts the workers
-  c.add(5u64);                     // a message: queued, and run later
-  c.add(7u64);                     // run after the first
-}                                  // then the program waits until all is quiet, and stops the workers
-</pre>
-	<p><span class="pre">new Counter(args)</span> makes an actor and answers its <i>handle</i>. Calling a behaviour
-		on the handle, <span class="pre">c.add(5u64)</span>, sends that message: a send is one-way, it queues the
-		message and returns. Each sender's messages to one actor are handled in the order sent. A handle may be
-		copied: passed, stored, kept in another actor's state, or put in a message, as
-		the bakery's tills hold the <span class="pre">StockRoom</span> above. An actor dies when its last
-		handle has gone <i>and</i> its mailbox is empty.</p>
-	<p>The runtime starts and stops by itself: the first actor made starts the worker threads, one per logical
-		processor by default, and when <span class="pre">main</span> returns the program waits until no actor is queued
-		or running, then stops them. (<a href="conc-actors.html#making">Making an actor</a>,
-		<a href="conc-actors.html#messages">Messages</a>, <a href="conc-actors.html#selfactor">self and
-		selfactor</a>, <a href="conc-runtime.html">How the runtime works</a>.)</p>
-	<p><i>From <a href="conc-actors.html#messages">Messages</a>:</i> A send is one-way: it queues the message and
-		returns. An answer comes back only to an <span class="pre">await</span>, or as a message sent back to a handle
-		passed along. Each sender's messages to one actor are handled in the order sent, and a message is never
-		overtaken by one it caused. Each argument arrives moved into the behaviour's call, once: a
-		value that may only move (a <span class="pre">uni</span> or <span class="pre">So</span>
-		owner) arrives whole, and a counted one (a handle, an <span class="pre">Arc</span>, a
-		lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
-	<p><i>From <a href="conc-actors.html#life">An actor's life</a>:</i> While an actor is queued to run, or running,
-		the scheduler holds one owner more, taken by the send that found it idle and dropped when its mailbox is found
-		empty. So an actor dies exactly once, when its last handle has gone <i>and</i> its mailbox
-		is empty: a handle dropped with messages still queued leaves the actor alive until they are
-		handled. At its death its state is finalized (its <span class="pre">final</span>, then its
-		fields, handles to other actors among them), on whichever thread let go last, then the
-		block is freed. Actors that hold handles to each other in a cycle never die by counting, as
-		a cycle of <span class="pre">Arc</span> owners never does, until one of them lets go.</p>
-	<p><i>From <a href="conc-actors.html#selfactor"><span class="pre">self</span> and
-		<span class="pre">selfactor</span></a>:</i> An actor has two selves. <span class="pre">self</span> is its
-		<i>state</i>, lent to the method while it runs; it never leaves the actor. <span class="pre">selfactor</span>
-		is its <i>handle</i>: another owner of the actor, a value that may go anywhere a handle may &mdash;
-		into a message, into another actor's state, or to an <span class="pre">await</span> on one
-		of its own behaviours:</p>
-<pre>
-actor Doubler {
-  pub async do double(self, n u64) u64 {n * 2u64;}
-
-  pub async do twice(self, n u64) u64 {
-    imm once = await selfactor.double(n);  // a message to itself
-    imm again = await selfactor.double(once);
-    again;
-  }
-}
-</pre>
-	<p><span class="pre">await doubler.twice(5u64)</span> is <span class="pre">20</span>. (The rest, sending to
-		itself with <span class="pre">self.m()</span> and where <span class="pre">selfactor</span> may be written:
-		<a href="conc-actors.html#self-send">Sending to itself</a>.)</p>
-
-	<h3 id="await">Awaiting a reply</h3>
-	<p>A message is one-way: whatever the behaviour returns is dropped. Inside an actor's own behaviour,
-		<span class="pre">await</span> sends a message and waits for what the behaviour it sends returns:</p>
-<pre>
-actor Store {
-  total u64;
-
-  pub async do add(self, k u64) {           // fire and forget
-    total = self.plus(k);
-  }
-
-  pub async do count(self) u64 {total;}     // a cheap query
-
-  fn plus(self &amp;, k u64) u64 {total + k;}   // synchronous: an ordinary call
-}
-
-actor Client {
-  store Store;
-
-  pub async do run(self) {                  // awaits, owes nobody
-    store.add(5u64);
-    store.add(7u64);
-    imm c = await store.count();
-    say("count", c);
-  }
-}
-</pre>
-	<p>Sent <span class="pre">client.run()</span>, with a Store whose total starts at 0, this prints
-		<span class="pre">count 12</span>: both adds reach the Store before the count does, since one sender's
-		messages are handled in the order sent. What an <span class="pre">await</span> does:</p>
-	<ol>
-	<li><b>It asks.</b> The behaviour after <span class="pre">await</span> is sent, as any message is.</li>
-	<li><b>The behaviour pauses.</b> The worker does not wait with it: it goes on to other work.</li>
-	<li><b>Other messages run.</b> The actor handles the rest of its mailbox meanwhile, so its state may have changed
-		by the time the behaviour resumes.</li>
-	<li><b>The reply resumes it,</b> with the value as the <span class="pre">await</span>'s.</li>
-	</ol>
-	<p>An <span class="pre">await</span> stands only in a behaviour, never in a <span class="pre">fn</span>, and it
-		pauses only the behaviour it is written in. The method still reads as one scope: every value it holds when
-		it pauses dies where it would if the method had never paused. An I/O operation is awaited the same way
-		(<a href="conc-io.html#await-io-http">HTTP an actor awaits</a>). (<a href="conc-await.html">Awaiting in
-		depth</a>: what crosses an await, an await inside a statement, futures.)</p>
-	<p><i>From <a href="conc-await.html#future">Futures: storing a call's value</a>:</i> A call of a behaviour that
-		returns a value, written where its value is kept &mdash; bound
-		to a local, passed on, returned &mdash; sends the request at once and gives back a
-		<i>future</i>: a value standing for what the behaviour will return. An
-		<span class="pre">await</span> on the future waits for that value. So several requests can
-		be in flight at once, and their answers collected later:</p>
-<pre>
-actor Stock {
-  pub async do price(self, item u64) u64 {item * 3u64;}
-}
-
-actor Basket {
-  stock Stock;
-
-  pub async do total(self) u64 {
-    imm apples = stock.price(4u64);     // sent: a future comes back at once
-    imm pears = stock.price(5u64);      // both requests are in flight
-    imm a = await apples;               // waits for the first
-    imm p = await pears;                // then for the second
-    a + p;
-  }
-}
-</pre>
-	<p><span class="pre">await basket.total()</span> is <span class="pre">27</span>. Both requests are
-		sent before either is waited for, so Stock may work on the second while Basket waits for
-		the first. A behaviour is declared once, and how it is called says what becomes of its
-		value:</p>
-	<ul>
-	<li><span class="pre">await stock.price(4u64)</span> sends it and waits here: the
-		<span class="pre">await</span>'s value is the behaviour's, and no future is made.</li>
-	<li><span class="pre">imm f = stock.price(4u64)</span> sends it and keeps its future, an
-		<span class="pre">actors.Future[u64]</span>, for an <span class="pre">await</span>
-		later.</li>
-	<li><span class="pre">stock.price(4u64);</span>, a statement of its own, sends it and forgets
-		it: its value is dropped.</li>
-	</ul>
-	<p>An <span class="pre">await</span> on a future pauses only if the value has not arrived. If
-		it has, the behaviour goes on at once. (A future handed to another actor, a future of a value that moves, and
-		one that never arrives: <a href="conc-await.html#future">Futures</a>.)</p>
-	<p><i>From <a href="conc-await.html#await-nothing">A behaviour that returns nothing</a>:</i> Whether a reply is
-		sent is the behaviour's declaration to say, never its caller's: one
-		with no return type sends none, so there is nothing to await, and an
-		<span class="pre">await</span> on it is refused. A caller that needs to know a behaviour
-		has finished needs to know whether it worked, too: the behaviour declares a return type,
-		a status, and the caller awaits that.</p>
-<pre>
-actor Log {
-  pub async do flush(self) {}             // owes its caller nothing
-  pub async do commit(self) bool {true;}  // answers with a status
-}
-
-actor Writer {
-  log Log;
-  saved bool;
-
-  pub async do save(self) {
-    await log.flush();            // refused: flush sends no reply
-    saved = await log.commit();   // waits until commit has run, and learns whether it worked
-  }
-}
-</pre>
-
-	<h3 id="sendable">What may be sent</h3>
-	<p>A message carries its arguments to the thread the actor runs on, so every parameter of a behaviour, and of
-		an actor's initializer, must be <span class="pre">Sendable</span>, and one that is not is refused where it is
-		declared. The compiler works out <span class="pre">Sendable</span> from what a type holds, with nothing to
-		write:</p>
-	<ul>
-	<li><b>Sent freely:</b> numbers and other plain values; a value that moves, which arrives whole (a
-		<span class="pre">So</span> owner, a <span class="pre">List</span> of such values); an
-		<span class="pre">Arc[imm, T]</span>, an <span class="pre">Arc[Mutex, T]</span>; another actor's handle.</li>
-	<li><b>Refused:</b> a borrow (<span class="pre">&amp;x</span>, <span class="pre">&amp;mut x</span>, but for a
-		borrow of something that lasts the whole program, written so), an <span class="pre">Rc</span>, and anything
-		holding one. The refusal names the part of the type that binds it to its thread.</li>
-	</ul>
-	<p>The actor's state is not asked, since it never crosses as a value: it may hold an <span class="pre">Rc</span>,
-		and its methods may borrow freely. (<a href="conc-sharing.html#race">Race condition safety</a>,
-		<a href="conc-sharing.html#shareable">Sendable and Shareable</a>.)</p>
-
-	<h3 id="arc">Sharing read-only data: <span class="pre">Arc</span></h3>
-	<p>Immutable data is shared between threads through the <span class="pre">sync</span> package's
-		<span class="pre">Arc</span> region (<span class="pre">import sync use Arc</span>), whose count is atomic:
-		<span class="pre">Arc[imm, T]</span> owners may be copied and dropped on any thread, and the value is freed
-		once, after the last. An <span class="pre">Rc</span> owner's count is not atomic, and it must stay on one
-		thread. (<a href="conc-sharing.html#arc">Sharing immutable data: Arc</a>,
-		and <a href="mem-regions.html">regions in depth</a>.)</p>
-
-	<h3 id="locks">Sharing and changing: lock permissions</h3>
-	<p>When several threads or actors must <i>change</i> one value, a lock permission guards it. A lock permission
-		is a type, written where a permission goes, and its value is the lock: <span class="pre">Mutex</span> and
-		<span class="pre">Rwlock</span>, the <span class="pre">sync</span> package's, on <span class="pre">Arc</span>,
-		and <span class="pre">Rwcell</span>, core's, for one thread, on <span class="pre">Rc</span>:</p>
-<pre>
-import sync use Arc, Mutex;
-
-alias Counter = Arc[Mutex, Count];
-imm c = new Counter(0u64);
-imm point = new Arc[Mutex, Point](x: 2, y: 3);
-</pre>
-	<p>An <span class="pre">Arc[Mutex, T]</span> may be copied, and handed to another thread or actor. But it gives no
-		direct access to its value: the value is reached only by <b>borrowing</b>
-		(<a href="mem-borrowing.html">Borrowed references</a>), and obtaining the borrow takes the lock first:</p>
-<pre>
-imm n = c.n;            // refused: a read without the lock
-c.n += 1u64;            // refused
-imm v = (&amp;*c).n;       // a borrow takes the lock: allowed
-</pre>
-	<p>A borrow that may write takes the lock for writing; a read-only borrow takes it for reading (a
-		<span class="pre">Rwlock</span> lets several readers in at once). A borrow that finds the lock held waits.
-		The lock is given back at the borrow's <b>last use</b>:</p>
-<pre>
-imm point = new Arc[Mutex, Point](x: 2, y: 3);
-{
-  imm pointref = &amp;mut *point;  // takes the lock
-  pointref.x += pointref.y;     // the point is reached only while it is held: the last use
-  show(point);                  // the lock was given back after that statement, so a
-}                               // borrow in show does not wait for this block's end
-bump(&amp;mut *point);              // taken and given back within the statement
-</pre>
-	<p>So nothing reaches the value unlocked, and nothing is left locked by forgetting to unlock it. An
-		<span class="pre">await</span> ends every borrow the behaviour holds, so no lock is held while a behaviour waits;
-		to reach the value again, the behaviour borrows it again. Cone does not prevent deadlock: a thread borrowing
-		through a <span class="pre">Mutex</span> it already holds through another borrow waits forever.
-		(<a href="conc-locks.html">Lock permissions in depth</a>, <a href="mem-permissions.html">Permissions in
-		depth</a>.)</p>
-
-	<h2 id="comesback">Comes back in &hellip;</h2>
-	<ul>
-		<li><a href="guide-parallel.html"><span class="pre">parallel each</span></a>: one loop on every core, inside a
-			behaviour too.</li>
-		<li><a href="conc-actors.html">Actors in depth</a>: an actor's life, <span class="pre">selfactor</span>,
-			sending to itself, private state.</li>
-		<li><a href="conc-await.html">Awaiting in depth</a>: what crosses an <span class="pre">await</span>, an
-			<span class="pre">await</span> inside a statement, futures.</li>
-		<li><a href="conc-io.html">I/O in depth</a>: an actor awaiting files, timers and the web.</li>
-		<li><a href="conc-sharing.html">What may cross a thread</a>: channels, Sendable and Shareable.</li>
-		<li><a href="conc-locks.html">Lock permissions in depth</a>: which regions take which lock, and defining one.</li>
-		<li><a href="conc-runtime.html">How the runtime works</a>: the scheduler, and the actor's own
-			garbage-collected region.</li>
-	</ul>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="guide-parallel.html"><img alt="_" src="next.png" /></a>

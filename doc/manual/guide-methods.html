@@ -1,0 +1,410 @@
+<html>
+  <head>
+	  <title>Method patterns: what a struct can become - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Method patterns: what a struct can become</div>
+		</div>
+
+    <div class="text">
+
+	<p>How does <span class="pre">+</span> know how to add two numbers, <span class="pre">[]</span> how to find a list's
+		value, or <span class="pre">each</span> how to walk a dictionary? Each is a method with a particular name, and any
+		struct that has a method of that name gains the same ability. Nothing is declared but the method itself. This page
+		gathers those patterns: operators, properties, indexing, calling a value like a function, running code as a value
+		is made and as it dies, and being walked by <span class="pre">each</span>. The scribes of ancient Egypt wrote
+		fractions as sums of fractions with 1 on top; here is a fraction that adds and compares like a number:</p>
+<pre>
+mod rhind;
+
+import stdio use *;
+
+// Euclid's greatest common divisor, from Functions
+fn gcd(a i64, b i64) i64 {
+  if b == 0 { a; } else { gcd(b, a % b); }
+}
+
+struct Fraction {
+  pub num i64;
+  pub den i64;
+
+  // An initializer: new Fraction(6, 8) is made in lowest terms, 3/4
+  pub fn init(self &amp;new, n i64, d i64) {
+    imm g = gcd(n, d);
+    *self = new Fraction(num: n / g, den: d / g);
+  }
+
+  // A method named for an operator gives Fraction that operator
+  pub fn `+`(self, other Fraction) Fraction {
+    new Fraction(num * other.den + other.num * den, den * other.den);
+  }
+
+  pub fn `==`(self, other Fraction) bool {
+    num == other.num and den == other.den;
+  }
+
+  pub fn show(self) {
+    print &lt;- num, "/", den;
+  }
+}
+
+fn main() {
+  // The Rhind papyrus writes 2/5 as 1/3 + 1/15
+  imm parts = new Fraction(1, 3) + new Fraction(1, 15);
+  print &lt;- "1/3 + 1/15 = ";
+  parts.show();
+  print &lt;- "\n";
+  if parts == new Fraction(2, 5) {
+    print &lt;- "The scribe was right\n";
+  }
+  if parts != new Fraction(1, 2) {
+    print &lt;- "and it is not a half\n";
+  }
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+1/3 + 1/15 = 2/5
+The scribe was right
+and it is not a half
+</pre>
+	<p><b>Try this:</b> the papyrus writes 2/7 as 1/4 + 1/28. Check it, then give <span class="pre">Fraction</span> a
+		<span class="pre">`*`</span> method and work out half of two thirds.</p>
+	<p>Two things here are patterns. The method named <span class="pre">`+`</span> is what
+		<span class="pre">a + b</span> calls, and <span class="pre">`==`</span> is what <span class="pre">==</span> calls,
+		bringing <span class="pre">!=</span> with it. And the method named <span class="pre">init</span> runs whenever a
+		Fraction is made, so every fraction comes out in lowest terms, including the one <span class="pre">+</span>
+		builds. The rest of the page takes the patterns one at a time.</p>
+
+	<h2 id="operators">Operators: a method named for one</h2>
+	<p id="opmethods">Most operators are method calls in disguise: <span class="pre">a + b</span> is
+		<span class="pre">a.`+`(b)</span>, exactly as it is for numbers. A name made of punctuation is written in
+		backticks. A type that implements the method has the operator; a type that does not is refused with
+		<i>"Method or field `+` not found"</i>, which is why a struct cannot be compared until it says how. Any type that
+		encodes numbers or number-like things can use this: fractions, complex numbers, big integers, money in cents,
+		vectors and matrices. The methods are:</p>
+	<ul>
+		<li><b>Arithmetic:</b> <span class="pre">`+`</span>, <span class="pre">`-`</span>,
+			<span class="pre">`*`</span>, <span class="pre">`/`</span> and <span class="pre">`%`</span>, taking the
+			value on the right.</li>
+		<li id="logicops"><b>Logic and shifts:</b> <span class="pre">!</span>, <span class="pre">&amp;</span>,
+			<span class="pre">^</span>, <span class="pre">~</span>, <span class="pre">&lt;&lt;</span> and
+			<span class="pre">&gt;&gt;</span>, as the <a href="guide-numbers.html#bitwork">number types</a> have
+			them.</li>
+		<li id="compare"><b>Comparison:</b> <span class="pre">`==`</span>, which brings <span class="pre">!=</span> with
+			it, and <span class="pre">`&lt;`</span>, <span class="pre">`&lt;=`</span>, <span class="pre">`&gt;`</span>
+			and <span class="pre">`&gt;=`</span>, each its own method: declaring <span class="pre">&lt;</span> gives a
+			type <span class="pre">&lt;</span> and nothing more.</li>
+	</ul>
+	<p>A fraction is less than another when crossing the denominators says so:</p>
+<pre>
+pub fn `&lt;`(self, other Fraction) bool {
+  num * other.den &lt; other.num * den;
+}
+</pre>
+	<p>The same <span class="pre">==</span> serves a comparison of two <a href="mem-borrowing.html">borrowed
+		references</a>, since <span class="pre">==</span> on references compares the values they refer to: a method
+		declared for references, <span class="pre">fn `==`(self &amp;, other &amp;Point) bool</span>, is used as it is,
+		and otherwise the value method is. The identity operators <span class="pre">===</span> and
+		<span class="pre">!==</span>, which ask whether two references point to the same place, are not methods, and no
+		type overrides them. An <a href="guide-enums.html#compare">enum</a> is given its <span class="pre">==</span>
+		rather than declaring one.</p>
+	<p id="methodname"><span class="pre">-</span> is two operators, taking away and negating, so it shows how two
+		methods share one name. Each has its own name, and declares the shared one with <span class="pre">overload</span>
+		between its name and its parameters:</p>
+<pre>
+pub fn sub overload `-`(self, other Fraction) Fraction {
+  new Fraction(num * other.den - other.num * den, den * other.den);
+}
+pub fn neg overload `-`(self) Fraction {
+  new Fraction(num: -num, den: den);
+}
+</pre>
+	<p><span class="pre">half - third</span> calls <span class="pre">sub</span>, and <span class="pre">-half</span> calls
+		<span class="pre">neg</span>. A call by the shared name tries every method that overloads it, and exactly one must
+		accept the arguments; none, or more than one, is an error, and calling a method by its own name,
+		<span class="pre">half.sub(third)</span>, always picks that one. Any method may join a shared name this way, not
+		only an operator: a type might have <span class="pre">area()</span> and <span class="pre">area(scale)</span>.
+		<a href="guide-functions.html#naming">Functions</a> share names the same way.</p>
+	<p id="mutation">The operators that change a variable come almost free. <span class="pre">a += b</span> uses a
+		<span class="pre">`+=`</span> method if the type has one, and otherwise works as <span class="pre">a = a + b</span>,
+		so a Fraction with <span class="pre">+</span> already has <span class="pre">+=</span>; the same holds for the
+		other arithmetic, logic and shift operators. <span class="pre">++x</span> and <span class="pre">--x</span> call
+		methods named <span class="pre">`++`</span> and <span class="pre">`--`</span>, taking <span class="pre">self
+		&amp;mut</span>.</p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: the postfix forms, <span class="pre">x++</span> and
+		<span class="pre">x--</span>, on a type of your own (their methods are to be named <span class="pre">`_++`</span>
+		and <span class="pre">`_--`</span>), and a method named <span class="pre">`=`</span> that would take over
+		assignment, for a type whose copy must do more than copy its fields.</i></p>
+	<p id="truthy">One more method lets a value stand as a condition. When an <span class="pre">if</span> or a
+		<span class="pre">while</span> is given something other than a <span class="pre">bool</span>, it calls the value's
+		<span class="pre">isTrue</span> method, if it has one. A fraction might count as true when it is not zero:</p>
+<pre>
+pub fn isTrue(self) bool {
+  num != 0;
+}
+
+if new Fraction(0, 5) {
+  print &lt;- "never\n";
+} else {
+  print &lt;- "zero is false\n";              // this one runs
+}
+</pre>
+
+	<h2 id="properties">Computed properties</h2>
+	<p>A method that takes nothing but <span class="pre">self</span> may be called without its parentheses, so it reads
+		like a field:</p>
+<pre>
+pub fn value(self) f64 {
+  f64.from(num) / f64.from(den);
+}
+
+print &lt;- third.value, "\n";          // 0.333333
+</pre>
+	<p>That matters when a type changes. A field made public at first may later need to obey a rule, and become
+		private; a method of the same name, computing the value or checking it, takes the field's place, and code that
+		read <span class="pre">x.value</span> reads it still.</p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: a setter, a method that would let
+		<span class="pre">x.value = v</span> store through it; that assignment is refused (Error 1016: Expression must be
+		lval).</i></p>
+
+	<h2 id="collops">Being a collection: [] and &lt;-</h2>
+	<p>A List is a struct, and what makes <span class="pre">xs[i]</span> and <span class="pre">xs &lt;- v</span> work on
+		it is two methods any struct can have. Here is a sum written down term by term, the way a scribe would list it:</p>
+<pre>
+struct Sum {
+  terms List[Fraction];
+
+  pub fn init(self &amp;new) {
+    *self = new Sum(terms: List[Fraction].empty());
+  }
+  // sum &lt;- f adds a term
+  pub fn add overload `&lt;-`(self &amp;mut, f Fraction) {
+    terms.push(f);
+  }
+  // sum[i] reads term i
+  pub fn `[]`(self &amp;, i usize) &amp;Fraction {
+    terms[i];
+  }
+  // sum[i] = f, and sum[i].num = n, write through this one
+  pub fn `&amp;[]`(self &amp;mut, i usize) &amp;mut Fraction {
+    &amp;mut terms[i];
+  }
+}
+
+mut s = new Sum();
+s &lt;- new Fraction(1, 4), new Fraction(1, 18), new Fraction(1, 468);
+print &lt;- "the second term is 1/", s[1].den, "\n";     // the second term is 1/18
+s[2] = new Fraction(1, 500);
+</pre>
+	<p id="indexop">The <span class="pre">[]</span> method hands back a borrowed reference to the item, which a read goes
+		through; the index may be anything, not only a number, which is how a Dict is indexed by its keys. The
+		<span class="pre">&amp;[]</span> method hands back a reference that may be written through, and is used wherever
+		the indexed item is changed: <span class="pre">s[i] = v</span>, <span class="pre">s[i].num = 3</span>,
+		<span class="pre">s[i] += v</span>, a method taking <span class="pre">self &amp;mut</span> called on
+		<span class="pre">s[i]</span>, or <span class="pre">&amp;mut s[i]</span>. The place can run on through any chain
+		of fields and indexes, <span class="pre">a[g].b[i].n = 5</span>, each index writing through its own type's
+		<span class="pre">&amp;[]</span>, as long as everything on the way may be written. A swap,
+		<span class="pre">s[0] &lt;=&gt; s[1]</span>, writes through both sides the same way.</p>
+	<p id="append">The send operator is the method named <span class="pre">`&lt;-`</span>, joined with
+		<span class="pre">overload</span> as <span class="pre">add</span> does here, so a type can take several kinds of
+		value: <span class="pre">print</span> has one for text, one for each kind of number, one for
+		<span class="pre">bool</span>. Every entry form of <a href="guide-collections.html#giving">Collections</a> then
+		works: several values, <span class="pre">3 of x</span>, <span class="pre">each &hellip; yield</span>, and
+		<span class="pre">fill x</span>, which also asks the type's <span class="pre">len()</span> and
+		<span class="pre">capacity()</span> to know when it is full. What is sent need not be kept: a send can serialize a
+		value to a stream, hand it to another thread, or be a directive that changes how the receiver formats what comes
+		next. The receiver is lent to the method as its <span class="pre">self</span> says: a
+		<span class="pre">self &amp;mut</span> method, as a collection's is, needs a receiver that may be changed, while
+		<span class="pre">print</span>'s take <span class="pre">self &amp;</span> and work on an
+		<span class="pre">imm</span> global.</p>
+
+	<h2 id="callop">Being called: ()</h2>
+	<p>A value can be called like a function, if its type has a method named <span class="pre">`()`</span>. A fraction
+		is a natural share of something, so a Fraction might apply itself to a number:</p>
+<pre>
+pub fn `()`(self &amp;, n i64) i64 {
+  n * num / den;
+}
+
+imm twoThirds = new Fraction(2, 3);
+print &lt;- "two thirds of 90 is ", twoThirds(90), "\n";    // two thirds of 90 is 60
+</pre>
+	<p id="clotype">If that looks like a closure, it is one. A <a href="guide-functions.html#closures-tour">closure</a>
+		is a struct with no name and one method, <span class="pre">`()`</span>: its state entries are the struct's
+		fields, and its body is the method. So a struct with a <span class="pre">`()`</span> method goes wherever a closure
+		goes. A parameter written <span class="pre">&amp;&lt;fn(n i64) i64</span> takes any closure that is called that
+		way, and takes a callable struct just the same:</p>
+<pre>
+fn applyTwice(f &amp;&lt;fn(n i64) i64, n i64) i64 {
+  f(f(n));
+}
+
+imm k = 3i64;
+imm triple = fn(n i64) i64 { n * k; };
+applyTwice(&amp;twoThirds, 90)      // 40
+applyTwice(&amp;triple, 5)          // 45
+</pre>
+	<p>A <span class="pre">`()`</span> method passed that way takes <span class="pre">self &amp;</span>, since it is only
+		lent; one that takes <span class="pre">self</span> by value is refused there, with a message that says so. A method
+		taking <span class="pre">self &amp;mut</span> is a callable value with state that changes from one call to the
+		next, as a closure with <span class="pre">mut</span> state is. <a href="guide-functions.html#cloref">Closure
+		references</a> has the forms in full.</p>
+
+	<h2 id="initializer">Making a value: init</h2>
+	<p id="initfinal">Every struct has an <b>implicit initializer</b>, which takes its fields' values in order or by
+		name. A struct may declare initializers of its own, as Fraction does, when the implicit one would not do: when
+		making a value takes more than storing values, as reducing a fraction does; when a field is private and code
+		outside the module must still make values; or when listing every field is more than callers should have to
+		write. An initializer is a method with these differences from the rest:</p>
+	<ul>
+		<li><b>It is named <span class="pre">init</span></b>, and called by <span class="pre">new</span>:
+			<span class="pre">new Fraction(6, 8)</span> runs it. A type may have several, each with its own name joining
+			the overload name <span class="pre">init</span> (<span class="pre">fn polar overload init(self &amp;new, r f32,
+			theta f32)</span>), and a construction's arguments select the one that takes them. Where a declared
+			initializer and the implicit one both take values listed in order, the declared one is used; naming the
+			fields always reaches the implicit one, so <span class="pre">new Fraction(num: 6, den: 8)</span> is 6/8,
+			unreduced.</li>
+		<li><b>Its <span class="pre">self</span> is <span class="pre">self &amp;new</span></b>: memory set aside for a
+			value that does not exist yet. Until it is filled, its fields cannot be read and its methods cannot be
+			called. The <span class="pre">new</span> permission is written only here.</li>
+		<li><b>It fills <span class="pre">self</span> whole, with another initializer</b>: <span class="pre">*self = new
+			Fraction(num: &hellip;, den: &hellip;)</span>, usually the implicit one, reached by naming the fields. Values
+			listed in order that this same initializer takes would select it again, and that is an error. Filling
+			<span class="pre">self</span> must happen on every path. After it, the initializer may use the value as any
+			method would.</li>
+		<li><b>It returns nothing</b>: the construction that called it holds what it wrote.</li>
+		<li><b><span class="pre">self</span> does not escape</b>: it is used only through itself, never passed to a
+			function, stored, copied or returned.</li>
+		<li><b>It runs only in a construction</b>, never called by name on a value, which it would overwrite.</li>
+	</ul>
+	<p>A value is constructed once: <span class="pre">new Fraction(p)</span>, where <span class="pre">p</span> is already
+		a Fraction, is an error, since a finished value needs no construction. An enum's variant is constructed
+		without <span class="pre">new</span>, as <a href="guide-enums.html#init">Enums</a> showed.</p>
+
+	<h2 id="finalizer">Ending a value: final</h2>
+	<p>Some values hold something that must be given back when they are done with: a file to close, a connection to
+		end, a subscription to cancel. A <b>finalizer</b>, the method named <span class="pre">final</span>, runs by itself
+		when a value dies, just before its memory is reclaimed. Here a lamp says when it goes off:</p>
+<pre>
+struct Lamp {
+  id i32;
+  pub fn init(self &amp;new, n i32) {
+    print &lt;- "lamp ", n, " on\n";
+    *self = new Lamp(id: n);
+  }
+  fn final(self &amp;uni) {
+    print &lt;- "lamp ", id, " off\n";
+  }
+}
+
+fn main() {
+  imm a = new Lamp(1);
+  {
+    imm b = new Lamp(2);
+    print &lt;- "inside the block\n";
+  }
+  print &lt;- "end of main\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+lamp 1 on
+lamp 2 on
+inside the block
+lamp 2 off
+end of main
+lamp 1 off
+</pre>
+	<p>A type has at most one finalizer. Its <span class="pre">self</span> is <span class="pre">self &amp;uni</span>, a
+		reference that nothing else shares, and it takes nothing else and returns nothing. It may read the value and call
+		its methods, and should do its work quickly, without waiting on anything. A value dies the same way wherever it
+		lives: a local variable at the end of its block, the newest first, a parameter at the end of its function, a field
+		inside the value holding it. Its own finalizer runs first, then its fields' finalizers, in the order the fields
+		are declared, and so on down; a tuple's elements and an array's die in order too.</p>
+	<p>A type with a finalizer is moved rather than copied (<a href="mem-moves.html">Moves</a>). And a method named <span class="pre">clone</span> is an ordinary method: no copy
+		calls it, and declaring one does not make a type copyable. Exactly when a value dies in every case, including a
+		value made in the middle of an expression, a value moved out on only some paths, and a value in a region, is in
+		<a href="memory.html">Memory</a>.</p>
+
+	<h2 id="iterator">Being walked: next</h2>
+	<p><span class="pre">each</span> walks anything with a method named <span class="pre">next</span> that answers an
+		<a href="guide-dict.html#option">Option</a>: <span class="pre">Some</span> with the next item, or
+		<span class="pre">None</span> when there are no more. Such a value is called a <b>cursor</b>. Fibonacci, the same
+		one whose sequence fills the Functions page, also worked out how to write any fraction as Egyptian unit
+		fractions: take the largest one that fits, and repeat with what is left. As a cursor:</p>
+<pre>
+// Hands out the unit fractions that add up to num/den, largest first:
+// each next() gives one more denominator, or None when nothing is left
+struct Egyptian is Iterator[i64] {
+  num i64;
+  den i64;
+
+  pub fn next(self &amp;mut) Option[i64] {
+    if num == 0 { return None; }
+    imm d = (den + num - 1) / num;      // the largest unit fraction 1/d that fits
+    num = num * d - den;                 // what is left: num/den - 1/d
+    den = den * d;
+    Some(d);
+  }
+}
+
+print &lt;- "4/13 =";
+each d in new Egyptian(4, 13) {
+  print &lt;- " 1/", d;                    // 4/13 = 1/4 1/18 1/468
+}
+</pre>
+	<p>The cursor keeps its place in its own fields, and <span class="pre">each</span> calls
+		<span class="pre">next</span> until it answers <span class="pre">None</span>. A cursor in a variable is advanced
+		there, so a loop left early with <span class="pre">break</span> can be followed by another that carries on from
+		where it stopped.</p>
+	<p id="adapters">A cursor needs nothing but <span class="pre">next</span> for <span class="pre">each</span> to walk it.
+		The <span class="pre">is Iterator[i64]</span> after the struct's name does one thing more: it declares that this
+		cursor hands out <span class="pre">i64</span>s, and with that it gains every step from
+		<a href="guide-collections.html#walking">Collections</a>: <span class="pre">map</span>,
+		<span class="pre">filter</span>, <span class="pre">count</span>, <span class="pre">sum</span> and the rest. Each of
+		those is an <b>adapter</b>, a method that takes a cursor and hands back another cursor, one that changes each item
+		on its way through (<span class="pre">map</span>) or lets only some through (<span class="pre">filter</span>),
+		doing no work until something walks it:</p>
+<pre>
+new Egyptian(4, 13).count()                          // 3
+new Egyptian(4, 13).filter(d =&gt; *d &lt; 100).count()    // 2: 1/4 and 1/18
+new Egyptian(3, 7).map(d =&gt; d * 2).sum()             // 490: 3/7 is 1/3 + 1/11 + 1/231
+</pre>
+	<p>Without the declaration, <span class="pre">each</span> still walks the cursor, but asking it for
+		<span class="pre">map</span> is an error that says to declare it. That is the one place in this page where a
+		declaration is needed: the adapters are written once, in the core library's <span class="pre">Iterator</span>
+		trait, and a type declares the trait to have them. <a href="lib-collections.html#adapters">The adapters</a>
+		lists every one, and <a href="mod-substitution.html">Substitution</a> explains traits.</p>
+	<p id="iter-cursor">A collection is not a cursor itself, since walking it should not use it up. It has a method named
+		<span class="pre">iter</span> that hands out a fresh cursor, and <span class="pre">each</span> calls it, so
+		<span class="pre">each x in xs</span> means <span class="pre">each x in xs.iter()</span>. The scribe's Sum can do
+		the same by lending its list's cursor:</p>
+<pre>
+pub fn iter(self &amp;) ListIter[Fraction] {
+  terms.iter();
+}
+
+each f in s {
+  print &lt;- " 1/", f.den;                  // 1/4 1/18 1/468
+}
+</pre>
+
+	<p>You can now give a struct of your own the operators of a number, the indexing and sending of a collection, the
+		calling of a function, a say in how its values begin and end, and the ability to be walked. That is how List,
+		Dict and the rest are built, and nothing about them is reserved for the library. Next comes the first thing in
+		this Guide that may be new to you: actors, which run at the same time as one another, each with state of its
+		own.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-actors.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
