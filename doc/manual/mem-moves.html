@@ -93,7 +93,10 @@ struct Handle is Move {
 		<li><b>It has a finalizer.</b> A type that needs a <a href="guide-methods.html#finalizer">final</a> method to
 			clean up after it almost certainly owns something, and each copy would clean it up again. The
 			<span class="pre">Socket</span> above moves for this reason alone.</li>
-		<li><b>Any of its fields moves.</b> If part of a value cannot be copied, the whole value cannot be.</li>
+		<li><b>Any of its fields moves.</b> If part of a value cannot be copied, the whole value cannot be. A struct
+			holding a <span class="pre">List</span> of itself is one, without declaring <span class="pre">is Move</span>, and
+			so is an enum with a variant that holds a <span class="pre">List</span> of the enum, and each of two types that
+			hold a <span class="pre">List</span> of the other.</li>
 		<li><b>It is an enum and any of its variants moves</b>, by any of these rules, since a value of the enum may
 			be that variant.</li>
 		<li><b>It is an owning reference that may not be shared:</b> one whose permission forbids aliasing, or whose
@@ -168,8 +171,10 @@ fn looping() {
   }
 }
 </pre>
-	<p>The value is still finalized exactly once. On the path that moved it, its new holder finalizes it; on the path
-		that did not, it is finalized at the end of its scope, as any value is. To know which happened, the compiler
+	<p>The value is still finalized exactly once, and only on a path that still holds it. On the path that moved it, its
+		new holder finalizes it; on the path that did not, it is finalized at the end of its scope, as any value is. The
+		paths may part in one branch of an <span class="pre">if</span> or a <span class="pre">match</span>, in a loop that
+		may not run, or before an early <span class="pre">return</span> or <span class="pre">break</span>. To know which happened, the compiler
 		keeps a hidden <b>drop flag</b> beside such a variable, set where its value arrives and cleared where it moves
 		out, and the end of the scope tests it. A variable moved on every path, or on none, needs no flag and costs
 		nothing:</p>
@@ -194,7 +199,7 @@ fn run(done bool, id i32) {
 		<span class="pre">end of run</span>. <span class="pre">run(false, 2)</span> prints
 		<span class="pre">end of run</span> and then <span class="pre">close 2</span>. Neither closes a socket twice.
 		The same flag serves a variable given a new value on only some paths, or assigned over
-		(<a href="guide-methods.html#finalizer">finalizers</a>).</p>
+		(<a href="#dies">When a value dies</a>).</p>
 
 	<h3 id="surfing">From scope to scope</h3>
 	<p>A moving value can be pictured as surfing from scope to scope, its life lengthened each time it is handed on.
@@ -292,6 +297,149 @@ conn.s &lt;=&gt; x;                    // conn now holds socket 2, and x socket 
 <pre>
 mut y = conn.s := new Socket(3); // conn now holds socket 3, and y the one it held before
 </pre>
+
+	<h2 id="dies">When a value dies</h2>
+	<p>Moves decide who holds a value; its holder decides when it dies, and so when its
+		<a href="guide-methods.html#finalizer">finalizer</a> runs. For a value with a finalizer, a socket, a file, a lock,
+		the moment matters, so here it is exactly. A local dies at the end of its block, the newest first. The rest
+		follows:</p>
+<pre>
+mod lifecycle;
+
+import stdio use *;
+
+struct Log {
+  pub n i32;
+  fn final(self &amp;uni) { print &lt;- "  final ", n, "\n"; }
+}
+
+fn make(n i32) Log { print &lt;- "  make ", n, "\n"; new Log(n); }
+fn take(l Log) { print &lt;- "  take ", l.n, "\n"; }
+
+fn main() {
+  print &lt;- "a field of a temporary:\n";
+  imm n = make(1).n;            // the Log dies at the end of this statement
+  print &lt;- "moved into a call:\n";
+  take(make(2));                // take's parameter finalizes it
+  print &lt;- "a condition:\n";
+  if make(3).n &gt; 0 {            // dies once the condition is decided, before the branch
+    print &lt;- "  branch\n";
+  }
+  print &lt;- "assigned over:\n";
+  mut v = make(4);
+  v = make(5);                  // 5 is made, then 4 finalized, then 5 stored
+  print &lt;- "end of main:\n";
+}                               // v, holding 5, dies here
+</pre>
+	<p>It prints:</p>
+<pre>
+a field of a temporary:
+  make 1
+  final 1
+moved into a call:
+  make 2
+  take 2
+  final 2
+a condition:
+  make 3
+  final 3
+  branch
+assigned over:
+  make 4
+  make 5
+  final 4
+end of main:
+  final 5
+</pre>
+	<p id="temporaries"><b>A temporary</b> is a value an expression produces that nothing takes: it is not bound to a
+		variable, stored in a field or element, passed by value, returned or moved. A call's result whose field is read, an
+		owning reference read through, an owner lent to a call as a borrowed reference, a value thrown away by a statement:
+		each is a temporary, and dies at the end of the statement that produced it, the newest first. One produced by the
+		condition of an <span class="pre">if</span> or a <span class="pre">while</span> dies once the condition is decided,
+		before the branch runs, so each pass of a loop finalizes its own; and one produced by the right operand of
+		<span class="pre">and</span> or <span class="pre">or</span>, which runs on some paths only, dies at the end of that
+		operand. A value moved out of a temporary owner belongs to its new holder, and the owner's memory is freed without
+		it. A temporary that a variable's initializer borrows lives on to the end of the variable's block instead
+		(<a href="mem-borrowing.html#temporary">Borrowing a temporary</a>).</p>
+	<p>A temporary that a raw pointer made from it may outlive is not finalized at all. Nothing follows a raw pointer, so
+		the compiler leaves the value as it is rather than finalize it and leave the pointer dangling. An ordinary borrow of
+		the same temporary does not keep it:</p>
+<pre>
+fn mk(n i32) R {..}
+fn id(r &amp;R) &amp;R {..}          // answers the borrow it is handed
+
+imm p = id(&amp;mk(2)) as *R;    // p may outlive the temporary: R's final never runs for it
+imm q = id(&amp;mk(3));          // an ordinary borrow: R's final runs at the end of this statement
+</pre>
+	<p id="assigned"><b>A value assigned over</b> dies as it is replaced: the new value is evaluated first, then the old
+		one is finalized, then the new one is stored. This is so for a variable, a field or an element of one, and a value
+		reached through a reference (<span class="pre">*r = v</span>). Where the variable holds nothing to replace, because it
+		was never given a value or its value moved out, nothing is finalized; where that depends on the path, its
+		<a href="#condmoves">drop flag</a> decides.</p>
+	<p><b>A value allocated in a region</b> is finalized when the region lets it go: when its single owner goes, or, for
+		a counted region, its last owner (<a href="mem-regions.html#expire">When a value is freed</a>). It dies as above, and
+		only then is its memory freed, so a finalizer may still use everything its value owns. A value moved out of a
+		region's object belongs to its new holder, which finalizes it; the object's memory is freed without finalizing what
+		was moved out. Only the whole value moves, never one of its fields (<a href="#outof">above</a>), so no object dies
+		partly moved out.</p>
+	<p id="final"><b>An enum's value</b> is finalized as the variant it holds would be: the tag says which. An enum may
+		declare its own <span class="pre">final</span>, which runs for every variant, and a variant may declare one too: the
+		variant's finalizer runs first, then the enum's, then the finalizers of the variant's fields (the enum's common
+		fields among them), then the owning references those fields hold are released: the more specific type before the
+		more general. An enum none of whose variants has anything to finalize costs nothing when its value dies: dropping an
+		<span class="pre">Option[i32]</span> does no work, while dropping an <span class="pre">Option[String]</span>
+		finalizes the string when it holds one, and the owner held in a <span class="pre">Some</span> is let go with its
+		Option:</p>
+<pre>
+struct Handle { pub fd i32; }
+struct Named { pub n i32; fn final(self &amp;uni) { print &lt;- "field final\n"; } }
+
+enum Resource {
+  fn final(self &amp;uni) { print &lt;- "released\n"; }       // runs for every variant, after its own
+  struct File {
+    pub handle Handle;
+    pub name Named;
+    fn final(self &amp;uni) { print &lt;- "close ", handle.fd, "\n"; }   // runs first, for a File
+  }
+  struct Nothing {}
+}
+
+imm r Resource = Resource.File(new Handle(7), new Named(1));   // dies: close 7, released, field final
+imm s Resource = Resource.Nothing;                             // dies: released
+</pre>
+	<p id="globals"><b>A global variable</b> lives until the program shuts down. Whatever it holds is then finalized by
+		its module's finalizer, after the module's own <span class="pre">final</span>: a value whose type finalizes, a tuple
+		or an array of them, or an owning reference, which is released
+		(<a href="mod-globals.html#dyninit">Dynamic initialization of global variables</a>, where a module's own
+		initializer and finalizer are described):</p>
+<pre>
+mod globals;
+
+import stdio use *;
+
+struct R {
+  pub n i32;
+  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
+}
+
+imm one R;
+imm pair (R, R);
+imm many Array[R, 2];
+imm owned So[R];
+
+fn @initpure init() {
+  one = new R(1);
+  pair = (new R(2), new R(3));
+  many = [new R(4), new R(5)];
+  owned = new So[R](6);
+}
+
+fn main() {
+  print &lt;- "main ends\n";
+}
+</pre>
+	<p>This prints <span class="pre">main ends</span>, and then, after <span class="pre">main</span> returns,
+		<span class="pre">final 1</span> through <span class="pre">final 6</span>, one to a line.</p>
 
 	<h2 id="conditional">A generic type that moves for some instances</h2>
 	<p>A generic type that holds a value of its type parameter already moves exactly when the parameter does, by the

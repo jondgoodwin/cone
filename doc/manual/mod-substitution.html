@@ -82,8 +82,8 @@ area 100, perimeter 40
 			members. An <a href="guide-enums.html">enum</a> is the closed form: its variants are the subtypes, all
 			declared in one place, and a value of any of them is a value of the enum. A set of variants that other
 			modules may add to is an <a href="#traitvar">open trait</a>.</li>
-		<li>For a <b>function</b>, the interface is its signature. A <a href="#fnref">function reference</a> takes
-			any function of the signature, and a <a href="#cloref">closure reference</a> any closure, or any struct
+		<li>For a <b>function</b>, the interface is its signature. A <a href="mod-functions.html#fnref">function reference</a> takes
+			any function of the signature, and a <a href="mod-functions.html#cloref">closure reference</a> any closure, or any struct
 			with a <span class="pre">()</span> method, of it.</li>
 		<li>For a <b>module</b>, the interface is a <a href="#modtrait">module trait</a>, settled when the program is
 			compiled.</li>
@@ -97,14 +97,15 @@ area 100, perimeter 40
 		owning reference given where a borrowed one is wanted; those are described with the types they belong to,
 		in <a href="safe-types.html#conversion-coercion">Type safety: coercion and conversion</a> and
 		<a href="mem-permissions.html">Permissions</a>.</p>
-	<!-- Home for the moved block safe-types.html#subtype ("Subtypes": the two criteria, the list of subtype
-	     pairs, and the one-way safety of upcasting), in moves/to-modularity.html. The criteria and the closing
-	     paragraph fit here. Its list of pairs disagrees with this page in places, so it waits for Jon (see Lane D's
-	     report): "any variant type is a subtype of any trait or struct type", "a smaller number type is a subtype
-	     of a larger", reference permissions and owning-to-borrowed references as subtypes, against "Subtypes in
-	     Cone are always abstractions" above; and Lane E measured "&Foo is a subtype of ?&Foo" as not holding
-	     implicitly today. -->
-	<!-- Home for guide-enums.html#enum ("closed enum versus open trait") is #choosing, below. -->
+	<p id="subtype">What makes it safe to hand in a value of one type where another is wanted? Two criteria
+		matter most, among others. Every value of the subtype must map to exactly one value of the supertype with the
+		same meaning. And the subtype must behave as the supertype does: at the least, for every method of the
+		supertype, the subtype has one with the same signature and constraints. When both hold, turning a subtype's
+		value into the supertype's is trivially safe, and Cone does it implicitly wherever the supertype is wanted
+		(upcasting). The way back is not: the supertype has values that are no value of a particular subtype, so
+		recovering the subtype needs a guard, a pattern that checks which it is, and a match that succeeds guarantees
+		a valid value of the subtype: <a href="#downcast">from a virtual reference</a>, and
+		<a href="#flow">from an enum</a>.</p>
 
 	<h2 id="traits">Traits</h2>
 	<p style="margin-left: 40px;"><i>Note: All of this is implemented, except <span class="pre">actor trait</span>,
@@ -233,9 +234,9 @@ struct Node is Id {
 		<li><b>An enum and its variants declare it too.</b> <span class="pre">enum Shape is Named</span> gives every
 			variant the trait's requirements and defaults, and a variant may name traits of its own beyond its enum:
 			<span class="pre">struct Square is Measured</span>, written inside the enum. Neither list has a base, so
-			neither may name a trait that requires fields; <a href="#enumtraits">Enums: a closed set of subtypes</a>
+			neither may name a trait that requires fields; <a href="#enumisa">An enum that meets a trait</a>
 			has the details. A match on an enum may name such a trait as a pattern, which matches the variants that
-			comply (also <a href="#enumtraits">there</a>).</li>
+			comply (<a href="#traitpat">Trait patterns</a>).</li>
 		<li><b>Every name in the list is an open trait.</b> An enum is closed: its variants are all declared inside
 			it, so naming one anywhere in an <span class="pre">is</span> list, first or later, is refused. So is naming
 			a struct: the base of an <span class="pre">is</span> is always an abstraction. A type may write
@@ -436,7 +437,7 @@ fn which(shape &amp;&lt;Shape) i32 {
 		reference made from a reference to an enum was made from one of its variants, and it is the variant that a
 		pattern names. A trait is a pattern only in the other direction, a match on an enum, where it names the
 		variants that comply with the trait and binds a virtual reference built from one
-		(<a href="#enumtraits">Enums: a closed set of subtypes</a>); an open trait has no such pattern.</p>
+		(<a href="#traitpat">Trait patterns</a>); an open trait has no such pattern.</p>
 
 	<h3 id="restrictions">What a virtual reference cannot reach</h3>
 	<p>Some traits cannot be the type of a virtual reference. That is so if any method the trait requires is
@@ -537,51 +538,351 @@ don't change that state.
 		of the same idea. Its variants are its subtypes, all declared inside it, and a value or a reference of any
 		variant stands wherever the enum is wanted. A method the enum declares without a body is a requirement every
 		variant implements, and a call through a reference to the enum runs the variant's own, chosen by the tag the
-		value carries. An enum may also say that it meets traits, which reach every variant:</p>
+		value carries. An enum may also say that it meets traits, which then reach every variant. And a value of the
+		enum can be tested and narrowed to the variant it holds. This section has all four.</p>
+
+	<h3 id="enumdcl">Members every variant shares</h3>
+	<p>An enum may declare <b>members in common</b>: fields every variant has, and methods every variant answers.
+		They are what let a caller do useful work with a value whose variant it has not yet recovered.</p>
+<pre>
+enum Event {
+	pub time i64;                                  // a field every variant has
+
+	pub fn stamp(self &amp;) i64 {time;}               // a method with a body: a default
+	pub fn describe(self &amp;) i32;                   // a method without one: a requirement
+
+	pub struct ButtonEvent {
+		pub button u8;
+		pub pushed bool;
+		pub fn describe(self &amp;) i32 {1;}
+	}
+	pub struct KeyEvent {
+		pub key char;
+		pub fn describe(self &amp;) i32 {2;}
+	}
+	pub struct QuitEvent {
+		pub fn describe(self &amp;) i32 {3;}
+	}
+}
+
+imm k Event = Event.KeyEvent(17, 'q');
+(&amp;k).stamp();       // 17
+(&amp;k).describe();    // 2, KeyEvent's own
+</pre>
+	<p>All three variants begin with the <span class="pre">time</span> field, ahead of any fields they declare
+		themselves. A method with a body is a <b>default</b>, which each variant gets unless it declares that name
+		itself; a method without one is a <b>requirement</b>, which every variant must implement, and calling it
+		through a reference to the enum dispatches on the variant (<a href="#dispatch">below</a>). Either way, what a
+		variant has is its own copy of the method. It is called on a value, <span class="pre">event.stamp()</span>, or
+		named through the variant, <span class="pre">Event.KeyEvent.stamp</span>. Naming it through the enum,
+		<span class="pre">Event.stamp</span>, is an error: the enum keeps no copy of its methods, only of its static
+		functions.</p>
+	<p><b>A common member may be written anywhere in the body</b>, before or after the variants. What makes a member
+		common is its kind, not its position: a <span class="pre">struct</span> is a variant, and anything else is
+		common. A common method applies to every variant but reaches only the enum's common fields, and the layout
+		puts the common fields first in every variant.</p>
+
+	<h3 id="dispatch">Method dispatch</h3>
+	<p>When every variant should answer the same method with its own implementation, the enum declares the method
+		without a body and each variant implements it:</p>
+<pre>
+enum Number {
+	pub fn double(self &amp;mut Self);
+
+	pub struct Real {
+		pub n f32;
+		pub fn double(self &amp;mut Self) {
+			n *= 2.;
+		}
+	}
+
+	pub struct Complex {
+		pub r f32;
+		pub i f32;
+		pub fn double(self &amp;mut Self) {
+			r *= 2.;
+			i *= 2.;
+		}
+	}
+}
+</pre>
+	<p>Calling <span class="pre">number.double()</span> on a reference to a <span class="pre">Number</span> runs the
+		implementation of whichever variant the reference points at: the tag says which variant it is, that selects
+		the variant's vtable, and the vtable holds the method. The same goes for any other trait the enum complies
+		with. A reference to a <span class="pre">Number</span> may be passed where a
+		<a href="#virtref">virtual reference</a> to such a trait is expected, and the virtual reference it becomes
+		carries the vtable of whichever variant it points at, chosen by the tag, exactly as a reference to that variant
+		would. Narrowing it with <span class="pre">is</span> or <span class="pre">match</span> therefore names a
+		variant, never the enum. The enum need not comply as a whole for a match to use a trait: see
+		<a href="#traitpat">Trait patterns</a>.</p>
+	<p>A method may also take <span class="pre">self</span> by value, and a variant's value calls its own copy:</p>
+<pre>
+enum Reading {
+	pub id i32;
+	pub fn get(self) i32 {id;}
+	pub struct Low {}
+	pub struct High {pub n i32;}
+}
+
+Reading.High(1, 4).get()      // 1: High's own copy of get
+</pre>
+	<p style="margin-left: 40px;"><i>Not built yet: on a value typed as the enum itself, which variant's copy runs
+		would have to be read from the tag the same way, and that is not built for a value. Calling such a method on a
+		value of the enum is an error today; <span class="pre">match</span> to recover the variant, or declare the
+		method with a reference receiver, which dispatches as above, or <a href="#wholeenum">name the enum as the
+		receiver</a>.</i></p>
+
+	<h4 id="wholeenum">One function over the whole enum</h4>
+	<p>The receiver a method names decides which kind it is. A method written with <span class="pre">self
+		&amp;</span> or <span class="pre">self &amp;Self</span> belongs to the variants: it is copied into each, and
+		inside a copy <span class="pre">self</span> is that variant. A method whose receiver <b>names the enum</b>
+		(<span class="pre">self &amp;Lamp</span>, <span class="pre">self &amp;mut Lamp</span>, any other kind of
+		reference, or by value <span class="pre">self Lamp</span>) is <b>one function over the whole enum</b>. It is
+		not copied, nothing is dispatched on the tag, and inside it <span class="pre">self</span> is the enum, so
+		<span class="pre">match self</span>, <span class="pre">case is</span> and <span class="pre">self is Red</span>
+		work as they do anywhere else:</p>
+<pre>
+enum Lamp {
+	pub n i32 = 7;
+	Red;
+	Green;
+	Off;
+
+	pub fn describe(self &amp;Lamp) i32 {      // one function over the whole enum
+		match self {
+			case Red   {10;}
+			case Green {20;}
+			case Off   {30;}
+		}
+	}
+	pub fn next(self &amp;mut Lamp) {          // may store any variant through self
+		match self {
+			case Red   {*self = Lamp.Green;}
+			case Green {*self = Lamp.Off;}
+			case Off   {*self = Lamp.Red;}
+		}
+	}
+	pub fn get(self &amp;) i32 {n;}            // copied into each variant, as above
+}
+
+imm l Lamp = Lamp.Green;
+l.describe()               // 20
+Lamp.Red.describe()        // 10: a variant's value calls it, widened to Lamp
+</pre>
+	<p>A method over the whole enum is called on a value of the enum or on a value of one of its variants, which is
+		widened to the enum for the call, and by value it takes a copy. A variant's value cannot lend
+		<span class="pre">&amp;mut Lamp</span>, since the method could store another variant in it: declare the value
+		as the enum, <span class="pre">mut l Lamp = Lamp.Red</span>. If a variant declares a method of the same name, a
+		value typed as that variant calls the variant's own, and a value typed as the enum calls the enum's. Within one
+		enum a name is declared once, so the two kinds cannot share a name there. A package that declares such a method
+		defines it once, and an importer calls it. An enum that <a href="mod-extensibility.html#enum-extends">extends</a>
+		another does not inherit its base's methods over the base, since a value of the extension is not a value of the
+		base. A generic enum's method over the whole enum, <span class="pre">self &amp;Option[T]</span>, is not available
+		yet. Inside a variant, <span class="pre">Self</span> names the variant, so a variant holding the enum writes the
+		enum's name: <span class="pre">Branch(List[Tree])</span>, not <span class="pre">List[Self]</span>.</p>
+
+	<h3 id="enumisa">An enum that meets a trait</h3>
+	<p>An enum may say in its declaration that it complies with one or more open traits, exactly as a struct does,
+		with <a href="#isa"><span class="pre">is</span></a> after its name. What the trait requires and what it gives
+		then reach <b>every variant</b>: a default the variant does not declare becomes its own copy, and a requirement
+		is met by the variant's own method or by one with a body the enum gives every variant.</p>
 <pre>
 trait Named {
-  pub fn label(self &amp;) i32;
+	pub fn label(self &amp;) i32;
+	pub fn loud(self &amp;) i32 {label() * 100;}
 }
 
-// Each variant is a subtype of Figure; area is required of every one
-enum Figure is Named {
-  pub fn area(self &amp;) f32;
-  pub fn label(self &amp;) i32 { 7; }
-
-  pub struct Square {
-    pub side f32;
-    pub fn area(self &amp;) f32 { side * side; }
-  }
-  pub struct Disc {
-    pub r f32;
-    pub fn area(self &amp;) f32 { 3.14159 * r * r; }
-  }
+trait Measured {
+	fn size(self &amp;) i32 {7;}
 }
 
-fn total(a &amp;Figure, b &amp;Figure) f32 {
-  a.area() + b.area();       // each call dispatches on the variant's tag
+enum Shape is Named {
+	pub k i32;
+	pub fn label(self &amp;) i32 {k;}    // meets Named's requirement for every variant
+
+	pub struct Circle {
+		pub r i32;
+		pub fn label(self &amp;) i32 {r * 10;}
+	}
+	pub struct Square is Measured {        // a variant may name traits of its own
+		pub s i32;
+	}
 }
 
-fn named(n &amp;&lt;Named) i32 { n.label(); }
+fn loudOf(n &amp;&lt;Named) i32 {n.loud();}
+fn shapeLoud(s &amp;Shape) i32 {loudOf(s);}   // passes the variant's vtable, chosen by the tag
 
-imm sq = Figure.Square(2.);
-imm d = Figure.Disc(1.);
-total(&amp;sq, &amp;d);      // 7.14159
-named(&amp;sq);          // 7
+loudOf(&amp;Shape.Circle(1, 7))     // 7000: Circle's own label, Named's loud
+loudOf(&amp;Shape.Square(2, 3))     // 200: the enum's label, Named's loud
 </pre>
-	<!-- Home for the moved blocks, in moves/to-modularity.html, in this order:
-	     1. guide-enums.html#enumdcl ("members in common: shared fields, default methods and required methods,
-	        dispatch on the variant") and guide-structs.html#methods ("an enum's methods may be written anywhere in
-	        its body; common to all variants");
-	     2. guide-enums.html#dispatch, #wholeenum, #isa ("method dispatch through the tag, by-value methods, one
-	        function over the whole enum, an enum or variant complying with traits"). Its anchor isa collides with
-	        this page's struct "is" section: rename it enumisa when folding, and point links to it;
-	     3. guide-enums.html#traitpat ("trait patterns: a match case naming a trait");
-	     4. guide-enums.html#enum ("closed enum versus open trait"), which joins #choosing below;
-	     5. guide-conditionals.html#flow ("flow typing: after 'if s is Circle' the name is narrowed to the
-	        variant") and guide-conditionals.html#ifexpr ("an if chain of is tests naming every variant is a value
-	        without else"): narrowing a value to its subtype, as a subsection here, "Narrowing to a variant: is and
-	        flow typing", after trait patterns. -->
+	<p>A <b>variant</b> may name traits of its own in the same way, beyond its enum: <span class="pre">struct Square
+		is Measured</span> above. Its enum is its base without being written, and naming the enum in the list is an
+		error, since a variant is already a member of the enum it is written inside. An enum's list and a variant's name
+		only <b>open</b> traits, and none of them is a base in the sense a struct's first one is: the enum lays out
+		itself and every variant, discriminant first, so a trait either one names may not require fields. Nor may any
+		<span class="pre">is</span> list name an enum, whether first or later: an enum's variants are all declared
+		inside it, and nothing outside may join the set. An enum that
+		<a href="mod-extensibility.html#enum-extends">extends</a> another takes its base's traits with the variants it
+		copies and names none of its own.</p>
+
+	<h3 id="traitpat">Trait patterns</h3>
+	<p>In a match on an enum, a pattern may name a <i>trait</i> instead of a variant. It matches every variant that
+		complies with the trait, by declaring it with <span class="pre">is</span> or by having what it requires,
+		including what the enum gives every variant. A variant that does not comply, <span class="pre">Third</span>
+		below, is left to the cases after it. The match compiles to tests of the tags of the variants that comply, so it
+		costs nothing beyond them, and it counts toward covering every value as the variants it names, so this match
+		needs no <span class="pre">else</span>:</p>
+<pre>
+trait Measured {
+  pub fn size(self &amp;) i32;
+}
+
+enum Shape {
+  struct Circle is Measured { pub r i32; pub fn size(self &amp;) i32 {r * 10;} }
+  struct Square is Measured { pub s i32; pub fn size(self &amp;) i32 {s * 100;} }
+  struct Third { pub t i32; }
+}
+
+fn measure(s &amp;Shape) i32 {
+  match s {
+    case imm m Measured { m.size(); }   // Circle's or Square's own size, by their vtables
+    case is Third { 7; }
+  }
+}
+</pre>
+	<p>The binding is a virtual reference to the trait, built
+		from the variant the matched reference points at, so a call through it goes through that variant's vtable. As
+		for a binding to a variant (<a href="guide-enums.html#matchvariants">match on variants</a>), the matched value
+		supplies the kind and the permission: on a <span class="pre">&amp;mut Shape</span>, <span class="pre">m</span>
+		is a <span class="pre">&amp;&lt;mut Measured</span> and may call what needs <span class="pre">self &amp;mut</span>;
+		on a <span class="pre">&amp;Shape</span> it is read-only. It is a reference into the variant, so it follows the
+		collection rule as a binding to a variant does, and it may not outlive the value it borrows. Because only a
+		borrowed reference can lend a virtual reference, a pattern that <i>binds</i> a trait needs the matched value to
+		be one (<span class="pre">match &amp;s</span>, <span class="pre">match &amp;mut s</span>); a value or an owner
+		such as an <span class="pre">Rc</span> can be asked, <span class="pre">case is Measured</span>, and not bound. A
+		pattern may not be written as a plain reference to the trait (<span class="pre">&amp;Measured</span>), which has
+		no vtable to carry. The patterns work in a bound <span class="pre">if</span>, <span class="pre">imm m Measured =
+		s</span>, in let-else, and joined by <span class="pre">or</span> and guarded like any other.</p>
+	<p>Which variants comply is decided as a generic's <span class="pre">where T is Measured</span> decides it: by
+		declaring the trait, or structurally for a trait that requires something. A marker trait, which requires
+		nothing, is complied with by declaring it alone. A method written over the whole enum
+		(<span class="pre">fn size(self &amp;Shape)</span>) is one function that no variant has a copy of, so it makes
+		no variant comply; a trait that no variant complies with is an error, since the pattern could never match. Only
+		a closed family can say which of its values comply, so an <b>open</b> trait has no trait patterns: a
+		<span class="pre">&amp;&lt;Measured</span> can be narrowed to the concrete type it was made from, and only to that
+		(<a href="#downcast">Getting the concrete type back</a>).</p>
+
+	<h3 id="flow">Narrowing to a variant: is and flow typing</h3>
+	<p>A test of a variant tells the compiler what the tested name is, and it uses the name that way until something
+		may have changed it. After <span class="pre">if s is Circle</span>, inside its block <span class="pre">s</span>
+		is a <span class="pre">Circle</span> wherever a field or a method of <span class="pre">Circle</span> is named on
+		it: <span class="pre">s.radius</span> reads it, <span class="pre">s.radius = 2</span> writes it,
+		<span class="pre">s.grow()</span> calls it. This is <b>flow typing</b>, the guard that brings a value from the
+		enum back down to its subtype:</p>
+<pre>
+enum Shape {
+  struct Circle {
+    pub radius i32;
+    pub fn grow(self &amp;mut) { radius += 1; }
+  }
+  struct Rect {
+    pub w i32;
+    pub h i32;
+  }
+}
+
+fn area(s &amp;Shape) i32 {
+  if s is Circle {
+    return 3 * s.radius * s.radius;   // s is a Circle in this block
+  }
+  s.w * s.h;                          // and by elimination a Rect after it
+}
+
+fn big(s &amp;Shape) bool {
+  if s is Circle and s.radius &gt; 3 { true; } else { false; }
+}
+
+fn kind(s &amp;Shape) i32 {
+  if s is Circle { 1; } elif s is Rect { 2; }   // names every variant: a value with no else
+}
+</pre>
+	<p>The name is narrowed:</p>
+	<ul>
+		<li>in the block of an <span class="pre">if</span>, or the <span class="pre">case</span> of a match that names
+			the variant, and on the right of an <span class="pre">and</span> whose left tests it, as in
+			<span class="pre">big</span>;</li>
+		<li>after a branch that leaves, for what follows: after <span class="pre">if s is Circle { return ...; }</span>,
+			<span class="pre">s</span> is not a <span class="pre">Circle</span>;</li>
+		<li>by elimination: when the variants that remain are one, <span class="pre">s</span> is that one, in the
+			<span class="pre">else</span> of a two-variant test, in the last <span class="pre">case</span> of a match,
+			after an early exit, as in <span class="pre">area</span>;</li>
+		<li>by an assignment of a known variant: after <span class="pre">state = State.Run(speed)</span>,
+			<span class="pre">state.speed</span> reads the field.</li>
+	</ul>
+	<p style="margin-left: 40px;"><i>Not followed yet: the block of an <span class="pre">elif</span> (or
+		<span class="pre">else if</span>) whose own test names a variant is meant to be narrowed too, and today it is
+		not (<span class="pre">elif state is Run { state.speed ...</span> gives 1024, "Method or field `speed` not
+		found"). Test with a separate <span class="pre">if</span>, or match.</i></p>
+	<p>An <span class="pre">if</span> used as a value needs its <span class="pre">else</span>, since every path must
+		give a value. But an <span class="pre">if</span> chain of <span class="pre">is</span> tests that names every
+		variant of an enum is a value without one, as <span class="pre">kind</span> is; unlike a match, which must
+		<a href="guide-conditionals.html#cover">cover every value</a>, the chain is not asked to name them all.</p>
+	<p>It is a name that is narrowed (a local variable or a parameter, held by value or through a reference), and
+		only to name a member of the variant. Narrowing does not retype the name for anything else: it is still the
+		original, whole value, passed and returned as the enum, and <span class="pre">takesCircle(s)</span> is still an
+		error (bind it for that). A variant declared as a type, <span class="pre">Ok(i32);</span>, has no fields to
+		name: the narrowed name has nothing more to offer, and a binding is how to reach what it holds. The test
+		<span class="pre">if x</span> is a plain truth test, and never narrows: only the language's own tests do,
+		<span class="pre">is</span> and a binding, never what a method returns
+		(<a href="guide-enums.html#option">Option</a> unwraps with them).</p>
+	<p>A narrowing ends when the name may hold another variant: an assignment to the whole of it, a mutable borrow of
+		the whole enum (a call that takes <span class="pre">&amp;mut Shape</span>), a swap, a reference stored over
+		(<span class="pre">*s = ...</span>), or a path where one branch did one of these. Writing a field within the
+		variant is not a change, whether a field of the variant or a field the variants share. After a change the name
+		is its whole type again, and a use that needed the variant says so, at the use, naming the change:</p>
+<pre>
+enum Machine {
+  struct Stop {}
+  struct Run { pub speed i32; }
+}
+
+fn step(state &amp;mut Machine) {
+  if state is Run {
+    state.speed = state.speed + 1;   // Ok
+    *state = Machine.Stop;          // the whole value is replaced: the narrowing ends
+    state.speed;                    // ERROR
+  }
+}
+</pre>
+<pre>
+Error 1460: `state` is not known to be Run here, and `speed` is a member of Run: it was changed at 9:5. Test
+it again with 'is', or bind it with 'if imm x Run = state'.
+</pre>
+	<p>A name that is a reference others may share (<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span>)
+		is narrowed through a reference the compiler declares where the test was made, and the loan walk follows it as
+		it follows a binding (<a href="mem-borrowing.html">Borrowed references</a>): a call handed another name for the
+		enum, a store through one, a swap, or a call whose body it cannot read is a change, refused at the next use of
+		the narrowed name; a call that cannot reach the enum is none. Nothing follows the reference between the test and
+		the block's start (or, inside one condition, the use), so a call or a store made in a later operand of the
+		condition ends the narrowing, whatever it reaches: <span class="pre">if s is Circle and toRect(t) and s.radius
+		&gt; 0</span> is refused at <span class="pre">s.radius</span>, naming the call. A name held by value, or through an
+		<span class="pre">imm</span>, <span class="pre">uni</span> or <span class="pre">mut1</span> reference, has no
+		other name that can change it, so only its own assignments and mutable borrows are changes.</p>
+	<p>A narrowing from before a loop is good for the loop's first pass. A use of it that a change later in the loop
+		reaches again by the loop's back edge is an error, reported at the use. Test again inside the loop to narrow
+		afresh, which is how a state machine reads its next state:</p>
+<pre>
+enum State {
+  struct Idle {}
+  struct Run { pub speed i32; }
+}
+
+mut state State = State.Idle;
+while running {
+  if state is Idle { start(); state = State.Run(1); }   // tested each pass
+  if state is Run { state.speed = state.speed + 1; }    // narrowed by its own test
+}
+</pre>
 
 	<h2 id="traitvar">Open traits: variants other modules may add</h2>
 	<p style="margin-left: 40px;"><i>Note: All of this is implemented.</i></p>
@@ -642,11 +943,13 @@ fn when(e &amp;&lt;Event) i64 { e.time; }
 	<p>Choose an <b>open trait</b> only if you really need other modules to be able to add variants. Otherwise
 		choose an <b>enum</b>, which is closed, tagged, exhaustively matchable, and by default holdable by value. The
 		middle case is a closed set whose variants differ enough in size that padding them all to the largest is not
-		worth it. That is an enum too, written <span class="pre">enum @unsized</span>, which keeps the tag, the
-		exhaustive match and the fast dispatch, and gives up only the value semantics: a value of it is reached only
-		through a reference.</p>
-	<!-- Home for the moved block guide-enums.html#unsized ("@unsized: declining the padding", sent to
-	     moves/to-memory.html with Modularity as the alternative): if Memory does not take it, it goes here. -->
+		worth it.</p>
+	<p id="unsized">That is an enum too, written <span class="pre">enum @unsized</span>: it keeps the tag, the exhaustive
+		match and the fast dispatch, and gives up only the value semantics, so it is reached only through a reference,
+		as an open trait's variants are. It is for a set that is genuinely closed, wants exhaustive matching, and has
+		variants whose sizes differ enough to matter; graphs and trees, reached by reference anyway, are usually better
+		served by an open trait. Memory has the details: <a href="mem-regions.html#unsized">An enum reached only by
+		reference: @unsized</a>.</p>
 
 	<h2 id="marker">Marker traits: facts about a type</h2>
 	<p>Plenty of useful traits carry no fields and no methods at all: they are testable invariants, adjectives a
@@ -773,194 +1076,181 @@ imm number = h.finish();
 		<span class="pre">Hasher.withSeed(n)</span> starts it from a seed of your own, and then the same keys give the
 		same numbers on every run and build, for a table whose order must be reproducible.</p>
 
-	<h3 id="iterators">Iterator and Iterable</h3>
+	<h3 id="iterators"><span id="iterator"></span>Iterator and Iterable</h3>
 	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that is generic over
 		them. A type is an <span class="pre">Iterator[T]</span> by having <span class="pre">next</span>, and an
-		<span class="pre">Iterable[T, I]</span> by having <span class="pre">iter</span>, and a type that says
-		<span class="pre">is Iterator[T]</span> gets the adapters, <span class="pre">map</span>,
-		<span class="pre">filter</span> and the rest, as the trait's generic defaults. Making an iterator of your own
-		is in <a href="guide-methods.html#iterator">Method patterns</a>.</p>
-	<!-- Home for the moved blocks, in moves/to-modularity.html, in this order:
-	     1. guide-collections.html#iterator ("the Iterator and Iterable traits, as bounds and as virtual
-	        references"), here under #iterators;
-	     2. guide-collections.html#adapters ("how a chain compiles: generic closures, one loop, vectorization; a
-	        next without the declaration; terminal methods take &mut"), after it;
-	     3. guide-collections.html#traits ("the collection traits Collection, Indexed, Stack, Queue, Map, with a
-	        program"), as a section "The collection traits" (anchor collectiontraits);
-	     4. guide-structs.html#methodname ("a type's own method replaces a trait's shared method whatever its
-	        shape") joins the "inherited free" bullet of #takes above, which already says most of it. -->
-
-	<h2 id="fnref">Function references: any function of a signature</h2>
-	<p style="margin-left: 40px;"><i>Note: This is implemented: borrowing a reference to a named function, holding
-		one in a variable, passing it to a parameter that spells out its signature, with the signature's parameters
-		named or written as their types alone, calling through it, writing an anonymous function where the reference
-		is wanted, and giving it a closure that holds and borrows nothing.</i></p>
-	<p>At the function's layer, the interface is a signature, and the subtypes are the functions that have it. A
-		<b>function reference</b> lets part of some code's logic be done by any of several compatible functions,
-		chosen while the program runs. The ampersand borrows a reference to any function:</p>
+		<span class="pre">Iterable[T, I]</span> by having <span class="pre">iter</span>. The cursors of
+		<span class="pre">str</span> and of every collection have them, and so may a struct of your own
+		(<a href="guide-methods.html#iterator">Method patterns</a> shows how):</p>
 <pre>
-fn incr(nbr u32) u32 {
-  nbr + 1;
+pub trait Iterator[T] {
+  pub fn next(self &amp;mut) Option[T];     // the next value, None once there are no more
 }
 
-// The parameter's type is the signature it takes
-fn dostuff(fnref &amp;fn(u32) u32) u32 {
-  fnref(4);         // Call the function
-}
-
-imm fnref = &amp;incr;  // points to the function incr
-dostuff(&amp;incr);     // 5
-</pre>
-	<p>As with any borrowed reference, a function reference may be copied between variables and functions. It
-		carries no lifetime restrictions, as there is no risk of a global function going away. Its type is its
-		signature. Its parameters may be written as their types alone, as here, or with names, as in
-		<span class="pre">&amp;fn(nbr u32) u32</span>: only the types are part of the type, so either spelling accepts
-		a reference to <span class="pre">incr</span>. Its permission is <span class="pre">opaq</span>, the default and
-		the only one permitted, which allows no dereference at all, so the function's code can be neither read nor
-		changed through it.</p>
-	<p>A function-reference parameter may stand anywhere in a parameter list. Inside a list in parentheses (a
-		function's parameters, or a function type's own) a function type's return type ends at the comma, which goes
-		on to the next parameter. A function type there that returns several values writes them as a tuple, in
-		parentheses:</p>
-<pre>
-fn combine(f &amp;fn(u32) u32, g &amp;fn(n u32) (u32, u32), x u32) u32 {
-	mut a u32;
-	mut b u32;
-	a, b = g(f(x));
-	a + b;
-}
-
-// A field whose function takes another function and a u32
-struct Applier {
-	pub run &amp;fn(&amp;fn(u32) u32, u32) u32;
+pub trait Iterable[T, I] where I is Iterator[T] {
+  pub fn iter(self &amp;) I;                // a cursor over what it holds, without consuming it
 }
 </pre>
-	<p>Outside a list, as a field's or a variable's whole type, a comma after the return type adds another return
-		type, as it does on a <a href="guide-functions.html#return">function's own signature</a>: a field typed
-		<span class="pre">&amp;fn(u32) u32, u32</span> holds a function returning two values.</p>
-	<p>A function reference is one code address, so it takes only a function: no state travels with it.
-		Something that should take a function, a closure that carries state, or any struct with a
-		<span class="pre">()</span> method of the same signature asks for one of two things instead:</p>
+	<p>A function asks for one as a <a href="mod-generativity.html#constraints">bound</a>, decided where it is called
+		and compiled for the type's own methods, or as a <a href="#virtref">virtual reference</a>
+		(<span class="pre">&amp;&lt;mut Iterator[i64]</span>), which takes any cursor through one compiled function:</p>
+<pre>
+fn count[T, S Iterator[T]](it &amp;mut S) usize {
+  mut n = 0usize;
+  while true {
+    match it.next() {
+      case imm v Some {n = n + 1usize;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+fn total[S Iterator[&amp;i64]](it &amp;mut S) i64 {   // a cursor that lends numbers
+  mut sum = 0i64;
+  while true {
+    match it.next() {
+      case imm v Some {sum = sum + *v;}
+      case is None {break;}
+    }
+  }
+  sum;
+}
+
+fn walk[T, I, C Iterable[T, I]](c &amp;C) usize where I is Iterator[T] {
+  mut it = c.iter();
+  count[T, I](&amp;mut it);
+}
+</pre>
+	<p><span class="pre">T</span> is what <span class="pre">next</span> gives, so a cursor that lends its values (a
+		<span class="pre">Deque</span>'s <span class="pre">items()</span>, a <span class="pre">Dict</span>'s
+		<span class="pre">keys()</span>) is an <span class="pre">Iterator[&amp;V]</span>. The <span class="pre">&amp;V</span>
+		of a bound names no lifetime, and a cursor whose <span class="pre">next</span> returns the lifetime its own struct
+		declares (<span class="pre">Option[&amp;'a V]</span>) meets it, as a method with no other parameter has nothing
+		to store through its receiver. The cursor's own signature is what a bound's call reads, so borrows given by two
+		calls of <span class="pre">next</span> may be held together; through a virtual reference the trait's signature
+		is read, which ties a result to the whole cursor. <span class="pre">Iterable</span> takes its cursor's type as a
+		second argument, <span class="pre">I</span>, because a trait cannot yet name a type its implementer chooses;
+		both arguments are found from the type passed. A type with no <span class="pre">next</span> (or
+		<span class="pre">iter</span>), or with one that gives another type, is refused where the function is
+		called.</p>
+	<p id="adapters">Fitting is by shape, and the trait's shared methods come with the declaration. A type that says
+		<span class="pre">struct Countdown is Iterator[i64]</span> has, beside its own <span class="pre">next</span>, the
+		steps that work on a whole sequence, <span class="pre">map</span>, <span class="pre">filter</span>,
+		<span class="pre">take</span>, <span class="pre">skip</span>, <span class="pre">fold</span>,
+		<span class="pre">any</span>, <span class="pre">all</span>, <span class="pre">count</span>,
+		<span class="pre">find</span>, <span class="pre">sum</span>, <span class="pre">min</span> and
+		<span class="pre">max</span> (<a href="lib-collections.html#adapters">the adapters</a>), which the trait writes
+		once as generic defaults. An <i>adapter</i> is one of these steps: it takes a cursor and gives a cursor, or an
+		answer. A type with a <span class="pre">next</span> that does not declare the trait meets a bound on it all the
+		same, and <span class="pre">each</span> walks it, but it has none of the shared methods: asking it for
+		<span class="pre">map</span> is an error that says to declare it. A generic default has no slot behind a virtual
+		reference (<span class="pre">&amp;&lt;mut Iterator[i64]</span> calls <span class="pre">next</span>), and a default
+		that exists only where a condition holds (<span class="pre">sum</span> wants number items) has none either.</p>
+<pre>
+struct Countdown is Iterator[i64] {
+  pub n i64;
+  pub fn next(self &amp;mut) Option[i64] {
+    if n == 0 { None; } else { n = n - 1; Some(n + 1); }
+  }
+}
+
+mut cd = new Countdown(4);
+cd.map(x =&gt; x * 10).sum();      // 100: 40 + 30 + 20 + 10
+</pre>
+	<p>Each step of a chain is a cursor of its own type (the whole chain's, so a chain is held in a variable of
+		inferred type, or walked at once), and the terminal methods take the cursor by <span class="pre">&amp;mut</span>,
+		so one called on a chain made in the same expression needs no name for it. The closures are generic arguments
+		(<span class="pre">[F fn(x T) U]</span>), each its own type, so a chain is compiled into <b>one loop</b> with
+		every closure's body inline and no call through a pointer for any item. A closure that changes a variable
+		(<span class="pre">x =&gt; { n += 1; *x; }</span>) is run once for each item the chain asks for and no more. Over
+		a cursor that gives numbers (not a borrow), a <span class="pre">map</span> and a <span class="pre">sum</span> is
+		vectorized as the hand-written loop is. Over a cursor that lends, the loop is not vectorized, since each step
+		answers an <span class="pre">Option</span> of a borrow, which is a pointer tested for null: the same loop a
+		hand-written <span class="pre">while</span> over <span class="pre">next()</span> is.</p>
+
+	<h3 id="collectiontraits">The collection traits</h3>
+	<p>The <span class="pre">collections</span> package declares five small traits, one for each thing a collection
+		can do, so that a function asks for exactly the ability it uses. Each is met structurally, by having the
+		methods, so none of the collections declares one:</p>
 	<ul>
-		<li>a <a href="#cloref">closure reference</a>, <span class="pre">&amp;&lt;fn(u32) u32</span> (or
-			<span class="pre">&amp;&lt;mut fn(u32) u32</span> where the callable may change its state), which is compiled
-			once and calls through the reference; a reference to a plain function, <span class="pre">&amp;incr</span>,
-			is accepted where one is wanted;</li>
-		<li>the signature as a constraint, <span class="pre">fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut
-			Array[T], order &amp;F)</span>, which is compiled for each type it is given and is given
-			<span class="pre">&amp;byName</span>, a closure, or a struct (<a href="mod-generativity.html#sigbound">A
-			function signature as a constraint</a>).</li>
+		<li><span class="pre">Collection</span> (<span class="pre">len</span>, <span class="pre">isEmpty</span>:
+			<span class="pre">List</span>, <span class="pre">Deque</span>, <span class="pre">String</span>,
+			<span class="pre">Dict</span>, <span class="pre">OrderedDict</span>, <span class="pre">Set</span>);</li>
+		<li><span class="pre">Indexed[T]</span> (<span class="pre">get(i)</span>: <span class="pre">List</span>,
+			<span class="pre">Deque</span>);</li>
+		<li><span class="pre">Stack[T]</span> (<span class="pre">push</span> and <span class="pre">pop</span> at the
+			back, <span class="pre">peek</span>: <span class="pre">List</span>, <span class="pre">Deque</span>);</li>
+		<li><span class="pre">Queue[T]</span> (<span class="pre">push</span> at the back,
+			<span class="pre">popFront</span>: <span class="pre">Deque</span>);</li>
+		<li><span class="pre">Map[K, V]</span> (<span class="pre">get</span>, <span class="pre">insert</span>,
+			<span class="pre">remove</span>, <span class="pre">contains</span> by a <span class="pre">&amp;K</span>:
+			<span class="pre">Dict</span>, <span class="pre">OrderedDict</span>).</li>
 	</ul>
-	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what another Cone function taking
-		a function takes. A C library's callback parameter takes the reference to a <a href="#cnamed">C-named
-		function</a> instead, <span class="pre">&amp;fn @c (sig)</span>.</p>
-
-	<h3 id="anonymous">Anonymous functions</h3>
-	<p>When the function you want a reference to is small, it may be written right where the reference is wanted,
-		with no name:</p>
+	<p>A function asks for one as a static bound (<a href="mod-generativity.html#generictrait">A generic trait as a
+		constraint</a>), <span class="pre">fn drain[S Stack[i64]](s &amp;mut S)</span>, <span class="pre">fn drain[T, S
+		Stack[T]](s &amp;mut S)</span> or <span class="pre">fn drain[T, S](s &amp;mut S) where S is Stack[T]</span>, called
+		with <span class="pre">&amp;mut list</span> or <span class="pre">&amp;mut deque</span>; the bound is decided where
+		the function is called, so the call is to the type's own methods. A trait is given all its type arguments
+		(<span class="pre">[S Stack]</span> is refused), while <span class="pre">Collection</span>, which has none, is
+		written alone, <span class="pre">fn count[C Collection](c &amp;C)</span>. The other form is a virtual reference,
+		<span class="pre">fn drain(s &amp;&lt;mut Stack[i64])</span>, which takes the same arguments through one compiled
+		function and a table of methods, for a value whose type is not known where the function is compiled; every
+		trait works either way. <span class="pre">Map</span>'s <span class="pre">insert</span> answers the old value, an
+		<span class="pre">Option</span> (<span class="pre">None</span> for a new key). A <span class="pre">Set</span>'s
+		<span class="pre">insert</span> answers whether the element was new.</p>
 <pre>
-dostuff(&amp;fn(nbr u32) u32 {nbr+1;});      // 5
-dostuff(&amp;fn(nbr u32) u32 {nbr+nbr;});    // 8
-</pre>
-	<p>An anonymous function is a function that happens to be written in place. It is made at the module level, so
-		it sees none of the variables around it, and it is the same function every time. A
-		<a href="guide-functions.html#closures-tour">closure literal</a>, written without the ampersand,
-		<span class="pre">fn(nbr u32) u32 {nbr+1;}</span> or <span class="pre">nbr =&gt; nbr+1</span>, may name those
-		variables. Given where a function reference is wanted, a closure that holds and borrows nothing becomes a
-		plain function reference, so either spelling works for such a case:</p>
-<pre>
-dostuff(fn(nbr u32) u32 {nbr+1;});    // a closure, here a plain function
-dostuff(nbr =&gt; nbr+nbr);              // the parameter's type comes from the signature
-</pre>
-	<p>A closure that does name a variable of the code around it cannot be a function reference, which has no place
-		to keep it, and is refused there: "This closure borrows step, so it is not a function and cannot be given
-		where a function reference, '&amp;fn(...)', is wanted: only a closure that holds and borrows nothing is one."
-		The parameter is then declared <span class="pre">&amp;&lt;fn(u32) u32</span>, a closure reference.</p>
+mod abilities;
 
-	<h3 id="cnamed">A reference to a C-named function</h3>
-	<p>A Cone function and a <a href="safe-c.html#cnaming">C-named</a> one (an <span class="pre">extern</span>
-		function C defines, a <span class="pre">fn @c</span>, a function of an <span class="pre">@c</span> module) are
-		called differently: C passes a struct by value in registers or through a pointer as its ABI says
-		(<a href="safe-c.html#cabi">Structs by value</a>), and Cone keeps its own convention for its own functions. So
-		the calling convention is part of a function reference's type. A reference to a C-named function has the type
-		<span class="pre">&amp;fn @c (Vec3) f32</span>, marked as <span class="pre">fn @c</span> marks a function; a
-		reference to a Cone function is the plain <span class="pre">&amp;fn(Vec3) f32</span>. In a declaration a name
-		always follows the attribute, and in a type it never does, so in a type a <span class="pre">(</span> after
-		<span class="pre">@c</span> opens the parameters: the type's <span class="pre">@c</span> takes no arguments. If
-		a second C convention is ever needed, it gets its own attribute name, not <span class="pre">@c(...)</span>
-		arguments in a type; <span class="pre">&amp;fn @c(system)</span> is not a spelling.</p>
-<pre>
-struct Vec3 { pub x f32; pub y f32; pub z f32; }
+import stdio use *;
+import collections use *;
 
-extern fn @c vec3_len(v Vec3) f32;          // defined by C
-fn @c doubled(v Vec3) f32 { v.x * 2.; }     // a Cone function C may call
-fn sum(v Vec3) f32 { v.x + v.y + v.z; }     // Cone's own
+// A function asks for exactly the ability it uses
+fn countOf[C Collection](c &amp;C) usize { c.len(); }
 
-fn doit(v Vec3) {
-  imm a &amp;fn @c (Vec3) f32 = &amp;vec3_len;     // a C-named function's reference
-  imm b &amp;fn @c (Vec3) f32 = &amp;doubled;      // so is this
-  imm c &amp;fn(Vec3) f32 = &amp;sum;              // a Cone function's
-  a(v);                                    // called as C passes a struct
-  c(v);                                    // called as Cone does
+fn drainSum[S Stack[i64]](s &amp;mut S) i64 {
+  mut total = 0i64;
+  while true {
+    match s.pop() {
+      case imm v Some {total = total + v;}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+// The other form: one compiled function, called through a table of methods
+fn peekTop(s &amp;&lt;mut Stack[i64]) i64 {
+  match s.peek() {
+    case imm v Some {*v;}
+    case is None {-1i64;}
+  }
+}
+
+fn main() i32 {
+  mut list = List[i64].empty();
+  list &lt;- 1i64, 2i64, 3i64;
+  mut deque = Deque[i64].empty();
+  deque &lt;- 10i64, 20i64;
+  imm word = String.from("four");
+  print &lt;- countOf(&amp;list), " ", countOf(&amp;deque), " ", countOf(&amp;word), "\n";
+  print &lt;- peekTop(&amp;mut list), "\n";
+  print &lt;- drainSum(&amp;mut list), " ", drainSum(&amp;mut deque), "\n";   // a List and a Deque are Stacks
+  0i32;
 }
 </pre>
-	<p>Neither converts to the other, and there is no thunk to bridge them: giving one where the other is wanted,
-		in an initializer, an assignment, an argument, a returned value or a struct's field, is a compile error, so a
-		call through a reference never passes its values the wrong way. A C library's callback parameter is typed
-		<span class="pre">&amp;fn @c</span>, and the Cone function handed to it is written
-		<span class="pre">fn @c</span>; handing C a plain Cone function is refused:</p>
+	<p>It prints:</p>
 <pre>
-extern fn @c c_apply(n i32, f &amp;fn @c (Vec3) f32) f32;   // C calls f
-
-fn @c scale(v Vec3) f32 { v.x * 3.; }      // C-named, so C may call it
-fn twice(v Vec3) f32 { v.x * 2.; }
-
-fn doit() {
-  c_apply(1, &amp;scale);      // fine
-  c_apply(1, &amp;twice);      // ERROR: a Cone function, where a C-named one is wanted
-}
+3 2 4
+3
+6 30
 </pre>
-<pre>
-Error 1503: `&amp;fn(Vec3) f32` is a reference to a Cone function, and `&amp;fn @c (Vec3) f32`, a C-named
-function's, is wanted. C would call it in C's convention, which passes a struct differently from Cone's, so
-its values would arrive wrong, and neither converts to the other. Make the function C-named,
-`fn @c name(...)`, or put it in an `@c` module.
-</pre>
-	<p>A closure has no C form, so it is never <span class="pre">@c</span>, and an anonymous function with a body
-		has no name for <span class="pre">@c</span> to give C spelling to. A type's method keeps Cone's convention even
-		when <span class="pre">@c</span> names its symbol (a vtable calls it by its Cone signature), so a reference to
-		a method is a plain <span class="pre">&amp;fn</span>. A closure reference (<span class="pre">&amp;&lt;fn</span>,
-		<span class="pre">So[fn]</span>) calls what it holds in Cone's convention, so a C-named function's reference is
-		not accepted where one is wanted: call the C function from a Cone function and make that the callable.</p>
 
-	<h2 id="cloref">Closure references: any callable of a signature</h2>
-	<p id="closures">A function reference takes only a function. A <b>closure reference</b>,
-		<span class="pre">&amp;&lt;fn(u32) u32</span>, takes any callable of the signature, whatever holds its state: a
-		function, a closure, or a struct with a <span class="pre">()</span> method. It is to a signature what a virtual
-		reference is to a trait. Closures and closure references are described in full with functions, and each link
-		below goes straight to one part:</p>
-	<ul>
-		<li>Closures: <span id="closuredef"><a href="guide-functions.html#closuredef">how one is written</a></span>,
-			<span id="full"><a href="guide-functions.html#full">the full form</a></span> and
-			<span id="short"><a href="guide-functions.html#short">the short form</a></span>;
-			<span id="capture"><a href="guide-functions.html#capture">what a closure captures</a></span> and
-			<span id="own"><a href="guide-functions.html#own">giving it its own value</a></span>;
-			<span id="closure-self"><a href="guide-functions.html#closure-self">whether it changes</a></span>;
-			<span id="ret"><a href="guide-functions.html#ret">its return type</a></span>;
-			<span id="nothing"><a href="guide-functions.html#nothing">a closure that holds nothing</a></span>;
-			<span id="goes"><a href="guide-functions.html#goes">where a closure may go</a></span>;
-			<span id="closurerules"><a href="guide-functions.html#closurerules">rules that follow</a></span>; and
-			<span id="closurevalues"><a href="guide-functions.html#closurevalues">closures are values</a></span>.</li>
-		<li>Closure references: <span id="forms"><a href="guide-functions.html#forms">their forms</a></span> and
-			<span id="meets"><a href="guide-functions.html#meets">what meets one</a></span>;
-			<span id="lent"><a href="guide-functions.html#lent">a closure literal, lent</a></span>;
-			<span id="owner"><a href="guide-functions.html#owner">an owner of a closure</a></span>;
-			<span id="alias"><a href="guide-functions.html#alias">naming a signature</a></span>;
-			<span id="field"><a href="guide-functions.html#field">a callable held in a field</a></span>;
-			<span id="markers"><a href="guide-functions.html#markers">saying what is behind a reference</a></span>;
-			<span id="traitlit"><a href="guide-functions.html#traitlit">a literal that fills a trait</a></span>; and
-			<span id="static"><a href="guide-functions.html#static">a signature as a generic bound</a></span>.</li>
-	</ul>
+	<h2 id="functionlayer">Functions as interchangeable parts</h2>
+	<p>At the function's layer the interface is a signature, and the subtypes are the functions and callables that
+		have it: a function reference takes any function of the signature, and a closure reference any callable of it,
+		whatever state it carries. Those, with closures themselves and generators (functions that are iterators), have a
+		page of their own, next: <a href="mod-functions.html">Function references, closures and generators</a>.</p>
 
 	<h2 id="modtrait">Module traits: a module that plugs into a framework</h2>
 	<p style="margin-left: 40px;"><i>A module may conform to a module trait, taking the trait's defaults it does not
@@ -1042,18 +1332,17 @@ pub mut @threadlocal scale = 2i64;
 		narrowed into an enum's variant). The cures are to lend the collection <span class="pre">&amp;imm</span>, which
 		nothing can write, to mark the reference <span class="pre">+ ShapeKeeping</span>, or to copy what is needed out
 		before the call. A read-only virtual reference (<span class="pre">&amp;&lt;Trait</span>,
-		<span class="pre">&amp;&lt;fn</span>) cannot write what it reaches and is not affected.
-		<span id="closure-reshape">The same rule, seen from a closure, with the visitor example, is in
-		<a href="guide-functions.html#closure-reshape">Calling a closure while a collection is borrowed</a>, and the
-		rule itself in <a href="mem-shape.html#shapechanging">Elements of a collection and changing its
-		shape</a>.</span></p>
+		<span class="pre">&amp;&lt;fn</span>) cannot write what it reaches and is not affected. The rule itself, for
+		every call, is in <a href="mem-shape.html#shapechanging">Elements of a collection and changing its
+		shape</a>, and the same rule seen from a closure, with a visitor example, in
+		<a href="mod-functions.html#closure-reshape">Calling a closure while a collection is borrowed</a>.</p>
 
 	<p>You can now write code against an interface, and choose whether the part behind it is settled while the
-		program is compiled or while it runs. The compile-time choice is a generic, and generics, with macros, are
-		the last page of this part.</p>
+		program is compiled or while it runs. The same idea at the function's layer, behaviour handed around as a
+		part, is next.</p>
 
 		<p style="text-align: right; margin-top: 2em;">
-			<a href="mod-generativity.html"><img alt="_" src="next.png" /></a>
+			<a href="mod-functions.html"><img alt="_" src="next.png" /></a>
 		</p>
 
 	</div>

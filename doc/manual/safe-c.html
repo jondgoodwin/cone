@@ -114,38 +114,139 @@ pub struct Acc {
 	<h3 id="assoctypes">The types a C library uses</h3>
 	<p>A C library's functions and globals usually come with types and constants of its own. These are declared
 		beside the <span class="pre">extern</span> declarations, in the same module, since an
-		<span class="pre">extern</span> block holds functions and variables only. A struct C shares is declared with
-		the same fields in the same order, as <span class="pre">DivT</span> is above. Constants can be an
-		<span class="pre">enum</span> whose tag values match the library's
-		(<a href="guide-enums.html#tags">Tag values</a>). And a type whose insides C keeps to itself is an
-		<b>opaque</b> struct: declared with no fields, so no value of it can be made, held, copied or read, only
-		pointed at and handed back to the functions that know it:</p>
+		<span class="pre">extern</span> block holds functions and variables only. Marking an external function
+		<a href="safe-trust.html">trustable</a>, so that a call to it that passes a pointer needs no
+		<span class="pre">trust</span> block, is not built yet.</p>
+	<p id="anonfield">A struct C shares is declared with the same fields in the same order, as
+		<span class="pre">DivT</span> is above. Where C's layout has a part Cone has no use for, padding or a reserved
+		slot, the field may be named <span class="pre">_</span>: it keeps its place in the layout, and nothing can read
+		it by name. Since a value must still be built with every field, give such a field a default, or a value in its
+		place when the fields are listed in order:</p>
+<pre>
+struct Header {
+  pub kind u16;
+  _ u16 = 0u16;      // C's reserved half-word
+  pub size u32;
+}
+
+imm h = new Header(kind: 1u16, size: 64u32);     // 8 bytes, as C lays it out
+</pre>
+
+	<h3 id="tags">C's constants as an enum: tag values</h3>
+	<p>A C library's constants are often a list of named numbers, and an <span class="pre">enum</span> whose tag
+		values match them lines up with it. <a href="guide-enums.html#tags">Enums</a> shows the basics: a variant may
+		write its own tag value, counting resumes from the last value written, and the enum may name the integer type
+		its tags are laid out in. Naming that type fixes the tag's width, so a value too large for it is an error
+		rather than a silent widening away from the layout you asked for:</p>
+<pre>
+enum TooBig u8 {
+  Fine = 1,
+  Large = 300;      // **ERROR** 1092: Tag value 300 of Large does not fit u8, this enum's integer type,
+}                   //   whose values run from 0 to 255.
+</pre>
+	<p>Without a named type, the tag is as wide as the largest value needs. Note that this follows the largest
+		<i>value</i>, not the number of variants: an enum of two variants, one of them 300, has a 2-byte tag.</p>
+	<p>A tag value may be negative, as some libraries' constants are. Each value must fit the named integer type the
+		way any <a href="syntax-lexical.html#number">integer literal</a> must fit its type, and a negative sign counts:
+		<span class="pre">-4</span> fits <span class="pre">i32</span>, while its bit pattern
+		<span class="pre">0xFFFFFFFC</span> does not (1092 again), and a negative value fits no unsigned type. Counting
+		resumes from a negative value too, counting up. An enum that names no type and holds a negative value gets the
+		narrowest signed tag that holds every value: one holding -3 and 100 takes a single byte.</p>
+<pre>
+enum VkResult i32 {
+  Success = 0,
+  NotReady,                  // 1
+  ErrorOutOfHostMemory = -1,
+  ErrorOutOfDeviceMemory = -2,
+  ErrorDeviceLost = -4;
+}
+</pre>
+	<p>For alignment, the tag may be wanted somewhere other than first. Write an anonymous field of type
+		<span class="pre">tag</span> where it should go. <span class="pre">tag</span> means this only where a field's type
+		is written, so it is not a reserved word, and a field may still be named <span class="pre">tag</span>:</p>
+<pre>
+enum Aligned {
+  pub wide i64;
+  _ tag;
+
+  pub struct Small {pub n i32;}
+  pub struct Large {pub a i64; pub b i64;}
+}
+</pre>
+
+	<h3 id="opaque">Opaque types</h3>
+	<p>Some types only the C library knows the size and layout of: it hands out pointers to them and takes them
+		back, and is reluctant to say more, or the program has no need to know. Such a type is <b>opaque</b>, since its
+		contents cannot be seen, and it is declared as a struct with no fields:</p>
 <pre>
 struct @opaque Handle;
 
 extern fn @c fopen(path cstr, mode cstr) *Handle;
 extern fn @c fclose(f *Handle) i32;
-
+</pre>
+	<p>No variable or field may hold an opaque value, so none can be created or passed around, its fields cannot be
+		reached, and even its size is unknown (<span class="pre">mem.sizeof</span> refuses it). It is used through
+		references and pointers, which can be obtained, passed around and stored like any other. Methods may be
+		declared on it, typically implemented by the library that knows its layout, but a pointer to it may not be
+		dereferenced to read or change the value:</p>
+<pre>
 imm h = *f;    // **ERROR** 1069: Variable h cannot be held by value: Handle is declared @opaque,
                //   so this program is not told how large it is. Hold it through a reference.
 </pre>
-	<p>Methods may still be declared on an opaque type, typically implemented by the library that knows its
-		layout; what may not be done is reach through a pointer to read or change the value. Marking an external function <a href="safe-trust.html">trustable</a>, so that a call to it that passes a
-		pointer needs no <span class="pre">trust</span> block, is not built yet.</p>
 
 	<h3 id="cstr">Text and buffers</h3>
 	<p>C passes text as a pointer to bytes ending in a zero. Cone's name for that is
 		<span class="pre">cstr</span>, and a binding declares C's strings with it, as <span class="pre">strlen</span>
 		does above. A string literal is a <span class="pre">cstr</span> wherever one is wanted, and so is a
 		<span class="pre">String</span>'s <span class="pre">cstr()</span>, with no copy; a plain
-		<span class="pre">&amp;str</span> is not, since it promises no zero after its bytes
-		(<a href="guide-text.html#cstr">C strings: cstr</a>). A C buffer is a pointer and a count, two parameters:
-		a slice is passed as <span class="pre">xs as *T</span> and its length
-		(<a href="safe-types.html#slicenoptr">A slice is no pointer</a>). A list that a C function fills, in the "ask
-		how many, then fill" shape of many C APIs, needs no unsafe code: <span class="pre">list.resize(n, zero)</span>
-		makes room, C is handed <span class="pre">list.viewMut() as *T</span> and the count, and
-		<span class="pre">list.truncate(written)</span> cuts the list to what C wrote
-		(<a href="lib-collections.html">Collections reference</a>).</p>
+		<span class="pre">&amp;str</span> is not, since it promises no zero after its bytes. Everything about C strings,
+		including how text C hands back is read and kept, is in <a href="lib-string.html#cstr">C strings: cstr</a>. A C
+		buffer is a pointer and a count, two parameters: a slice is passed as <span class="pre">xs as *T</span> and its
+		length (<a href="safe-types.html#slicenoptr">A slice is no pointer</a>).</p>
+
+	<h3 id="listcfill">A list that a C function fills</h3>
+	<p>Many C functions fill a buffer the caller provides, after the caller asks how many values there will be.
+		A <span class="pre">List</span> handles that shape with no unsafe code:
+		<span class="pre">list.resize(n, zero)</span> makes it <span class="pre">n</span> copies of a value long (or drops
+		the values past <span class="pre">n</span>), the C function is handed <span class="pre">list.viewMut()</span>, as a
+		pointer, <span class="pre">list.viewMut() as *T</span>, with the count, and
+		<span class="pre">list.truncate(written)</span> cuts it to the count C wrote, finalizing the values it drops (it
+		does nothing when <span class="pre">written</span> is not less than the length). <span class="pre">resize</span>
+		exists only where <span class="pre">T</span> copies; a list of values with finalizers is shortened with
+		<span class="pre">truncate</span>. Here a Cone function stands in for the C one:</p>
+<pre>
+mod cfill;
+
+import stdio use *;
+import collections use *;
+
+// Stands in for a C function that fills at most out.len values and says how many it wrote
+fn squares(out &amp;mut Array[i32]) usize {
+  mut n = 0usize;
+  while n &lt; out.len and n &lt; 5usize {
+    out[n] = i32.from(n) * i32.from(n);
+    n = n + 1usize;
+  }
+  n;
+}
+
+fn main() i32 {
+  mut xs = List[i32].empty();
+  xs.resize(8usize, 0);                 // room to fill: eight zeros
+  imm written = squares(xs.viewMut());
+  xs.truncate(written);                 // keep only what was written
+  print &lt;- xs.len();
+  print &lt;- ": ";
+  each x in xs {
+    print &lt;- *x;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>It prints <span class="pre">5: 0 1 4 9 16</span>. The list's other methods are in the
+		<a href="lib-collections.html#list">Collections reference</a>.</p>
 
 	<h3>extern in a file of its own</h3>
 	<p>It can help to put the <span class="pre">extern</span> declarations for a C library (libcurl, say, or
@@ -226,7 +327,7 @@ fn @c("main") start() i32 {    // the program's entry, under another Cone name
 		<span class="pre">qsort</span>'s <span class="pre">compare</span> is, and the Cone function handed to it is
 		declared <span class="pre">fn @c</span>. That reference type is never taken for a Cone function's
 		<span class="pre">&amp;fn(sig)</span>, since the two are called differently
-		(<a href="mod-substitution.html#cnamed">A reference to a C-named function</a>). A pointer C hands Cone to a
+		(<a href="mod-functions.html#cnamed">A reference to a C-named function</a>). A pointer C hands Cone to a
 		function is called as C calls it, too. A type's method named with <span class="pre">@c</span> keeps Cone's
 		convention, since a vtable calls it by its Cone signature.</p>
 

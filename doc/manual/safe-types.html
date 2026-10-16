@@ -122,6 +122,33 @@ imm t = takes(5i64);        // **ERROR** 1013: Expression's type does not match 
 imm owner = new So[Point](3, 4);
 imm r = owner as &amp;Point;            // the owner, lent as a borrowed reference
 </pre>
+	<p>Not every reference coercion can be asked for this way yet: <span class="pre">&amp;cat as &amp;&lt;Named</span> is
+		refused (1013: May only reinterpret value to the same sized primitive type), though passing
+		<span class="pre">&amp;cat</span> where a <span class="pre">&amp;&lt;Named</span> is wanted coerces it.</p>
+
+	<h3 id="ifexpr">Where a type is wanted</h3>
+	<p>A coercion needs a type to aim at, and the place a value goes supplies it. That includes the value of an
+		<span class="pre">if</span>, a <span class="pre">match</span> or a block: where it is wanted as a known type
+		(a variable's declared type, a function's return type, the parameter it is passed to, or the field it gives a
+		value to), each branch's value is coerced to that type. So two string literals, each a
+		<span class="pre">&amp;str</span>, are each taken as the slice of bytes wanted, and a function returning an
+		<span class="pre">i64</span> may end in a branch that gives an <span class="pre">i32</span>:</p>
+<pre>
+imm label &amp;Array[u8] = if orbiting {"orbit";} else {"flight";};  // each branch a &amp;Array[u8]
+
+fn width(orbiting bool) i64 {
+  if orbiting { 7i64; } else { 3; }     // the i32 3 is coerced to the i64 wanted
+}
+</pre>
+	<p>Where no type is wanted, the branches must agree on one: either the same type, or a supertype they share
+		(a <span class="pre">u8</span> branch and a <span class="pre">u32</span> branch give a
+		<span class="pre">u32</span>). The same holds for the value of a block and of a
+		<a href="guide-conditionals.html#matching"><span class="pre">match</span></a>.</p>
+	<p>A call gives its arguments their parameters' types only when the function or method it calls is a single
+		declaration that is not generic. The arguments of an overload set, such as those of
+		<span class="pre">print &lt;-</span>, a generic function's arguments, and an operator's operands are given no
+		type, since their own types are what choose what is called. There the branches must agree on their own, or be
+		given a type first, as in <span class="pre">imm s &amp;Array[u8] = if ...;</span>.</p>
 
 	<h3 id="truthy">Coercion to bool</h3>
 	<p>A condition must be a <span class="pre">bool</span>, and one more coercion makes that convenient: any value
@@ -129,7 +156,7 @@ imm r = owner as &amp;Point;            // the owner, lent as a borrowed referen
 		condition is wanted. The number types and raw pointers have one: a number is true when it is not zero
 		(a float's 0 and -0 are false, and NaN is true), and a pointer when it is not null. So
 		<span class="pre">if count { ... }</span> means <span class="pre">if count != 0</span>. An
-		<a href="guide-enums.html#option">Option</a> has no <span class="pre">isTrue</span>; test it with
+		<a href="guide-dict.html#option">Option</a> has no <span class="pre">isTrue</span>; test it with
 		<span class="pre">is</span>.</p>
 	<p>The other direction is never implicit. A <span class="pre">bool</span> is not a number, so it coerces to
 		none, anywhere a number is wanted: an initializer, an assignment, an argument, an index or an operand of
@@ -161,7 +188,7 @@ imm b u8 = 'a';                      // fine: the literal is the byte 97
 		be dropped without a word. A pointer to its first element is asked for with
 		<a href="#as"><span class="pre">as</span></a>, and only to the slice's own element type, since it retypes
 		nothing. Text is neither: a <span class="pre">&amp;str</span> is no pointer, and reaches C as a
-		<a href="guide-text.html#cstr">cstr</a>, which promises the zero that ends it. A raw pointer is no
+		<a href="lib-string.html#cstr">cstr</a>, which promises the zero that ends it. A raw pointer is no
 		<span class="pre">cstr</span> either, except through <span class="pre">cstr.fromPtr(p)</span>, whose caller
 		makes that promise:</p>
 <pre>
@@ -335,7 +362,7 @@ fn share(r &amp;mut P) &amp;uni P { r as &amp;uni P; }   // **ERROR** 1502, mut 
 		<span class="pre">Immutable</span> makes a reference written with no permission <span class="pre">imm</span>,
 		and <span class="pre">&amp;</span> may be cast to it. That is how a slice of bytes becomes text:
 		<span class="pre">bytes as &amp;str</span>, or <span class="pre">p as So[str]</span>
-		(<a href="guide-text.html#bytes">A String as a slice of bytes</a>). A permission written out is checked
+		(<a href="lib-string.html#bytes">Text and bytes</a>). A permission written out is checked
 		like any other, so <span class="pre">bytes as &amp;imm str</span> and, from a <span class="pre">&amp;</span>,
 		<span class="pre">r as &amp;imm P</span> are refused. The cast promises that the bytes are text and that
 		nothing changes them while the text is used, which only the programmer can know.</p>

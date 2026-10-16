@@ -98,7 +98,7 @@ Error 1042: May not give a value to the private field cents from outside the mod
 	<p>A module's names follow three rules.</p>
 	<ul>
 		<li><b>They are unique.</b> No two items in a module may have the same name. Several functions may
-			nonetheless share one <a href="guide-functions.html#overload">overload name</a>, which is itself a
+			nonetheless share one <a href="mod-namespaces.html#overload">overload name</a>, which is itself a
 			single name in the module that maps to those functions. A module may not bring one name in twice, even
 			for the same item: listing a name twice, writing the same <span class="pre">use</span> twice, importing
 			a module twice, or importing a module and also listing it through another module that re-exports it,
@@ -131,7 +131,7 @@ Error 1042: May not give a value to the private field cents from outside the mod
 		still the boundary.</p>
 	<ul>
 		<li><b>Every field, function and method has a name unique within the type.</b> Several methods or
-			functions may additionally share one <a href="guide-functions.html#overload">overload name</a>, which
+			functions may additionally share one <a href="mod-namespaces.html#overload">overload name</a>, which
 			they declare with <span class="pre">overload</span>. (That is why <span class="pre">Account</span>'s
 			field is <span class="pre">cents</span> and its method <span class="pre">balance</span>.)</li>
 		<li><b>Their order does not matter.</b> A name may be used before its declaration, and the order in which
@@ -158,6 +158,36 @@ Error 1042: May not give a value to the private field cents from outside the mod
 		so its code reaches the base's private members wherever it is declared. Why, and what that costs the
 		base's author, is in <a href="mod-extensibility.html#encap">Name folding</a>.</p>
 
+	<h3 id="enumprivate">An enum's private members</h3>
+	<p>An enum's members follow the same rule. A member not declared <span class="pre">pub</span> is private to the
+		module that declares the enum, as a struct's is. So code written anywhere inside the enum's braces (the enum's
+		methods, its static functions, and every variant's methods) reads and writes the private fields of the enum and
+		of every variant, calls their private methods, and gives private fields their values when it builds a variant,
+		through any value and not only through <span class="pre">self</span>; and so does every other function and type of
+		the module. Outside the module they stay private. So <span class="pre">pub</span> means what it means
+		everywhere: part of the enum's interface to the rest of the program, and not a way for one variant to reach
+		another.</p>
+<pre>
+enum Gauge {
+	struct Low {
+		lo i32;
+		pub fn above(self &amp;, h &amp;High) bool {h.hi &gt; lo;}   // High's private field
+	}
+	struct High {
+		hi i32;
+	}
+	pub fn level(g &amp;imm Gauge) i32 {                      // a static function
+		match g {
+			case imm l Low {l.lo;}
+			case imm h High {h.hi;}
+		}
+	}
+}
+</pre>
+	<p><i>(This sentence is the compiler's current reading and is still to be reviewed.)</i> An anonymous function
+		written inside the braces is not part of this: like one written in a struct's method, it belongs to the
+		module.</p>
+
 	<h3 id="nofriend">Why the module, and not the type</h3>
 	<p>A type's members and a module's names share one privacy boundary, the module. The module is the unit of
 		trust: the code that may see a type's private members is decided by where it is written, not by a list
@@ -174,9 +204,6 @@ Error 1042: May not give a value to the private field cents from outside the mod
 			<span class="pre">struct @opaque SocketHandle;</span>, its values are reached only through references or
 			pointers, and its fields are never read. It is mostly met at the boundary with C
 			(<a href="safe-c.html">Talking to C</a>).</li>
-		<!-- Home for the moved block guide-enums.html#naming ("an enum's private members are its module's, with
-		     the Gauge example and an open review note", in moves/to-modularity.html): a bullet or short section
-		     here, after "A type's members". -->
 		<li><b>An actor's state is private to it.</b> A field of an actor is never <span class="pre">pub</span>,
 			and nothing outside the actor reaches one: other code only sends it messages
 			(<a href="conc-actors.html#confined">Private state</a>).</li>

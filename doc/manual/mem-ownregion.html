@@ -124,6 +124,63 @@ fn main() i32 {
 		safe to free. When the last owner goes, the compiler runs the value's finalizer before calling
 		<span class="pre">free</span>, which disposes of any resources the value holds.</p>
 
+	<h3 id="inregion">Constructing in a region</h3>
+	<p>The value's own initializer runs in the region too. <span class="pre">new Counted[mut, Node](1)</span> runs Node's
+		initializer on the memory the region allocated, after the region's own <span class="pre">init</span> has filled its
+		bookkeeping. One given a finished Node instead, <span class="pre">new Counted[mut, Node](done)</span>, moves it in and
+		runs no initializer (<a href="mem-regions.html#inplace">a construction fills its value in place</a>):</p>
+<pre>
+mod inregion;
+
+import stdio use *;
+import libc;
+
+struct Counted is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 { libc.malloc(size); }
+  fn init(self &amp;new) {
+    print &lt;- "region init\n";
+    *self = new Counted(1usize);
+  }
+  fn aliasRef(self &amp;uni Counted) { owners = owners + 1usize; }
+  fn dealiasRef(self &amp;uni Counted) bool {
+    owners = owners - 1usize;
+    owners == 0usize;
+  }
+  fn free(self &amp;uni Counted) {
+    print &lt;- "free\n";
+    libc.free(self as *u8);
+  }
+}
+
+struct Node {
+  pub n i32;
+  pub fn init(self &amp;new, k i32) {
+    print &lt;- "node init\n";
+    *self = new Node(n: k * 10);
+  }
+  fn final(self &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
+}
+
+fn main() i32 {
+  {
+    imm a = new Counted[mut, Node](1);    // Node's initializer runs, on the region's memory
+    print &lt;- a.n;
+    print &lt;- "\n";
+  }
+  {
+    imm done = new Node(5);
+    imm b = new Counted[mut, Node](done); // a finished Node moves in: no initializer runs
+    print &lt;- "moved in\n";
+  }
+  0i32;
+}
+</pre>
+	<p>The first block prints <span class="pre">region init</span>, <span class="pre">node init</span>,
+		<span class="pre">10</span>, <span class="pre">node final 10</span> and <span class="pre">free</span>. The second prints
+		<span class="pre">node init</span> (for <span class="pre">new Node(5)</span>), <span class="pre">region init</span>,
+		<span class="pre">moved in</span>, <span class="pre">node final 50</span> and <span class="pre">free</span>.</p>
+
 	<h2 id="owners">Single owner, shared, and counted</h2>
 	<p>Single ownership is declared, not read off a missing <span class="pre">aliasRef</span>. A region ref declaring the
 		built-in trait <span class="pre">Move</span> (<span class="pre">struct So is RegionRef, Move</span>) is single-owner, and

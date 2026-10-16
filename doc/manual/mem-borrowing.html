@@ -151,9 +151,8 @@ imm ref3 = &amp;vec[3].x;      // a field within an element
 	</ul>
 	<p>A plain <span class="pre">each</span> borrows each item to read it. To change items in place, walk a source
 		that lends mutable references, <span class="pre">mutItems()</span>
-		(<a href="guide-list.html#changing">Changing items in place</a>), and a pattern match borrows the
-		matched value with the permission its case asks for (<a href="guide-enums.html#matchvariants">match on
-		variants</a>):</p>
+		(<a href="guide-list.html#changing">Changing items in place</a>), and a match on a borrow binds references
+		into the matched value (<a href="#bindings">Matching through a borrow</a>, below):</p>
 <pre>
 each x in list.mutItems() {
   ++*x;                    // x is a mutable reference to each number in turn
@@ -264,6 +263,27 @@ mut p = new Point(1d, 2d);
 imm r = &amp;mut p;
 r.scale(3d);               // p is now 3, 6
 </pre>
+	<p id="ownerself">A method may also ask for the <b>owner</b> of its type: a borrow of an owner, written
+		<span class="pre">self &amp;So[Self]</span>, <span class="pre">self &amp;Rc[Self]</span>,
+		<span class="pre">self &amp;Arc[Self]</span>, or the borrow of any other owning reference to the type. Such a method is
+		found only through an owner of that kind, which is borrowed for the call and is still the caller's afterwards; a
+		plain value, a borrow, or an owner of another kind has no such method, just as for any method that does not accept
+		the receiver. It is tried after the ordinary selection, so a type's other methods are unaffected. Inside the method,
+		<span class="pre">self</span> reads through the owner to the value, so <span class="pre">self.n</span> is the field,
+		and the owner itself is what the method can hand on or inspect, as <span class="pre">str</span>'s
+		<span class="pre">cstr()</span> does, which needs the owner's zero byte after the text
+		(<a href="lib-string.html#cstr">C strings</a>):</p>
+<pre>
+struct Node {
+  n i64;
+  pub fn viaSo(self &amp;So[Node]) i64 { self.n + 1; }   // only an So[Node] has this method
+  pub fn plain(self &amp;) i64 { n; }                    // any Node, however held
+}
+
+imm a = new So[Node](10);
+imm x = a.viaSo();                // 11; the So is borrowed, and a is still ours
+imm y = new Node(10).viaSo();     // Error 1056: No method declared by `viaSo` accepts the call's arguments
+</pre>
 
 	<h3 id="nullable">A reference that may be missing</h3>
 	<p>A reference always points at a valid value. One that may be missing is an
@@ -277,7 +297,8 @@ if imm point Some = maybePoint {   // bound only if maybePoint holds a reference
 }
 imm point2 = *maybePoint;          // Error 1031: May only de-reference a simple reference or pointer.
 </pre>
-	<p>A special layout makes an optional reference the same size as a plain one.</p>
+	<p id="option-refs">An optional reference takes no more room than a plain one: <span class="pre">None</span> is an
+		address no value can have (typically 0), so no separate tag is needed.</p>
 
 	<h3 id="fat">Slices and virtual references</h3>
 	<p>Two kinds of reference carry more than an address. A <a href="lib-collections.html#slices">slice</a>,
@@ -603,6 +624,126 @@ fn byField(p &amp;uni Pair) {
   two(&amp;uni p.a, &amp;uni p.b);               // Ok: distinct fields
 }
 </pre>
+
+	<h2 id="bindings">Matching through a borrow: what a binding takes</h2>
+	<p>A <span class="pre">match</span>, a bound <span class="pre">if</span> and a let-else binding all take something
+		from the value they look at: a copy, a move, or a borrow into it. Which one is decided by two things, the form of
+		the value being matched and the form of the variant being bound, and getting it right is what lets a match change
+		a value in place, or look at one without consuming it.</p>
+
+	<h3 id="form">What a match takes</h3>
+	<p>The form of the expression after <span class="pre">match</span> decides what the match does with it, and a bound
+		<span class="pre">if</span>, <span class="pre">if imm c Circle = s</span>, reads its value the same way:</p>
+	<ul>
+	<li><b>A place</b>, a variable, a field of one, a dereference, an element at a name or a literal
+		(<span class="pre">match r</span>), is matched as the value it holds. Every test reads it where it stands and
+		takes nothing, so a match that only tests moves nothing away, and <span class="pre">r</span> is whole after it. An
+		arm that binds is the one that takes: the binding holds the payload by value, a copy of a copy type, or a
+		<a href="mem-moves.html">move</a> of one that owns, which consumes <span class="pre">r</span> on the paths that
+		reach that arm. A <span class="pre">mut</span> binding changes what the arm took and never
+		<span class="pre">r</span>.</li>
+	<li><b>A borrow</b>, <span class="pre">match &amp;r</span>, <span class="pre">&amp;imm r</span>,
+		<span class="pre">&amp;mut r</span>, <span class="pre">&amp;uni r</span>, binds a reference of that kind into
+		<span class="pre">r</span>, which stays frozen to the match for as long as the bindings are used
+		(<a href="#freezing">above</a>). That is how a match changes <span class="pre">r</span>:
+		<span class="pre">match &amp;mut r</span>.</li>
+	<li><b>Any other value</b>, a call, <span class="pre">match f()</span>, is a temporary the match owns: it is made
+		once, every pattern reads it, and it is finalized as the match ends, whichever case ran.</li>
+	</ul>
+	<p>A binding takes only what it binds. Where the payload is plain data (a number, a borrowed reference, a struct of
+		them), the arm copies it, and the place is whole after the arm, even where the enum holds an owner in another
+		variant. A guard (<span class="pre">case imm x Some if x &gt; 0</span>) reads its binding before the arm is
+		chosen, so it takes nothing from the matched value at all, a place or a call's temporary alike: it sees a copy of
+		plain data, and a payload that owns something through a read-only borrow of it. A guard that fails leaves the
+		value whole for the cases after it, and the arm that runs is the one that takes.</p>
+	<p>An Option shows the difference plainly. Bound from a variable, an <span class="pre">Option[String]</span> is
+		moved from on the path that binds, while an <span class="pre">else</span> block still has it; bound from a borrow,
+		<span class="pre">if imm text Some = &amp;maybe</span>, it gives an <span class="pre">&amp;String</span> into the
+		Option and takes nothing:</p>
+<pre>
+imm maybe Option[String] = Some(String.from("kept"));
+if imm text Some = &amp;maybe {      // a borrow: binds a &amp;String, takes nothing
+  print &lt;- text.view(), "\n";
+}
+if imm text Some = maybe {       // a place: the binding moves the String out
+  print &lt;- text.view(), "\n";
+}
+</pre>
+	<p>A let-else binding binds the same way, <span class="pre">imm n Ok = &amp;mut r else { return 0; };</span> giving
+		an <span class="pre">&amp;mut i32</span> into <span class="pre">r</span>; it may be <span class="pre">mut</span>, and
+		its <span class="pre">else</span> must leave (<i>Error 1462: The 'else' of a binding like this must leave</i>), so
+		<span class="pre">r</span> is known to be the variant after the declaration, as after any branch that leaves
+		(<a href="guide-enums.html#letelse">Binding past an early exit</a>).</p>
+
+	<h3 id="variantpartial">What a binding gets</h3>
+	<p><b>A binding gets what the variant holds.</b> A variant declared as a type, <span class="pre">SomeInt(i32);</span>
+		(<a href="guide-enums.html#forms">variant forms</a>), holds that type itself, with no field to name:
+		<span class="pre">Some</span>, <span class="pre">Ok</span> and <span class="pre">Error</span> are declared this
+		way. Bound by value, the binding is a copy of the <span class="pre">i32</span>, or, when what it holds moves, a move
+		of it out of the matched value, which is then finalized without it; a <span class="pre">mut</span> binding changes
+		the copy, not the matched value. Bound through a reference (<span class="pre">case imm n SomeInt</span> on a
+		reference to the enum), it is a reference of the same permission to what the variant holds, an
+		<span class="pre">&amp;i32</span> here. A variant declared as a struct binds the struct, whose tag is never a
+		visible field.</p>
+	<p><b>A pattern names only the variant</b>, bare, with no <span class="pre">use</span>: the match already knows which
+		enum the value belongs to. That holds for every pattern on a value, a <span class="pre">case</span>, a bound
+		<span class="pre">if</span> or <span class="pre">elif</span>, and an <span class="pre">is</span> test, and it looks
+		through a reference, so <span class="pre">case imm c Circle</span> on a <span class="pre">&amp;Shape</span> names
+		<span class="pre">Shape.Circle</span>. The matched value supplies the rest: the type arguments, and, where it is a
+		reference, the kind of reference, its region and its permission. On a <span class="pre">&amp;imm Shape</span>,
+		<span class="pre">case imm c Circle</span> binds an <span class="pre">&amp;imm Circle</span>; on a
+		<span class="pre">&amp;mut Shape</span> (a borrow made at the match), an <span class="pre">&amp;mut Circle</span>; on an
+		<span class="pre">Rc[imm, Shape]</span>, an <span class="pre">Rc[imm, Circle]</span>; on a
+		<span class="pre">Shape</span>, a <span class="pre">Circle</span>. A test with no binding,
+		<span class="pre">case Circle</span> or <span class="pre">s is Circle</span>, asks only whether the value is that
+		variant. A pattern may still be written as the reference, <span class="pre">case imm c &amp;Circle</span>, which then
+		checks that the matched value is one: it is an error where the value is no reference, or is in another region, or
+		has a weaker permission than the pattern asks for. A managed reference is never spelled in a pattern, and the older
+		<span class="pre">+Rc-mut Circle</span> is refused.</p>
+	<p>The matched value's enum is asked first. A bare name in a pattern means that enum's variant whenever the enum has
+		one of that name, whatever the name means elsewhere in the module, so a <span class="pre">use Colors;</span> whose
+		enum has a <span class="pre">Red</span> does not change what <span class="pre">case is Red</span> means on a
+		<span class="pre">Lamp</span>. Only a name the enum has no variant of is looked up as any other name is. A qualified
+		pattern, <span class="pre">case is Colors.Red</span>, is taken as written, and a variant named through its enum
+		alone, <span class="pre">case Colors.Red</span>, means <span class="pre">case is Colors.Red</span>. Likewise the value
+		supplies a generic variant's type arguments: on an <span class="pre">Option[i32]</span>, <span class="pre">case imm s
+		Some</span> means <span class="pre">Some[i32]</span>. Arguments may still be written where the name is in scope, as
+		<span class="pre">Some[i32]</span> always is; written on a variant that is in scope only because the matched enum has
+		it, they are refused (<i>Error 1115: Circle is a variant of the enum being matched, and that value supplies its type
+		arguments. Drop the arguments, or name the variant through its enum</i>).</p>
+	<p><b>A binding through a reference points into the variant.</b> It is a borrow into the enum, as an element is a
+		borrow into a list, so it is allowed through any reference, and refused only if something could change which variant
+		the enum holds while the binding is still to be used. The full rule, with what counts as a change, is with
+		<a href="mem-shape.html#enums">an enum's variant</a>. A change after the binding's last use is fine, which is how a
+		state machine moves to its next state:</p>
+<pre>
+struct Machine { pub state Shape; }
+
+fn step(m &amp;mut Machine) {
+  match &amp;mut m.state {
+    case mut c Circle {
+      c.radius = c.radius + 1;
+      m.state = Shape.Rect(1, 1, 2, 3);   // Ok: c is not used again
+    }
+    else {}
+  }
+}
+</pre>
+	<p>A value owned by an <span class="pre">Rc</span> is another owner of the same value. Where no owner can store
+		another variant (<span class="pre">Rc[imm, Shape]</span>), the binding is a copy of the owner, counted one more and let
+		go as the arm ends, typed as the variant (<span class="pre">Rc[imm, Circle]</span>); the variant is at its enum's
+		address, so nothing moves. Where another owner could change the variant (<span class="pre">Rc[mut, Shape]</span>,
+		<span class="pre">Rc[ro, Shape]</span>), the narrowing is refused: bind the payload by copy, or match through a borrow
+		of the value, which is followed. An <span class="pre">is</span> test binds nothing.</p>
+	<p><b>A struct variant bound by value is the value the arm took</b>, under its variant's name, not a second copy of
+		it. The arm takes the matched value into a variable of its own (a move of one that owns, which consumes a matched
+		place on the paths to that arm), and when the arm ends it is finalized once, as the variant it is
+		(<a href="mem-moves.html#final">an enum's value</a>). Moving the bound variable, or handing it back as the case's
+		value, moves that value. A bound variable declared <span class="pre">mut</span> changes that value, not a matched
+		place: assigning over it, or over one of its fields, finalizes what is replaced, and a value swapped out of it with
+		<span class="pre">&lt;=&gt;</span> leaves what was swapped in to be finalized with it. As with a plain
+		<span class="pre">mut</span> local, one moved out (on every path or only on some) and then assigned over holds the new
+		value, which is finalized with the matched value.</p>
 
 	<p>You can now lend values instead of moving them, write functions that serve every region at once, and read the
 		compiler's borrow errors as the promises they protect. Every borrow above carried a permission; next is what each

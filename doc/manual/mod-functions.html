@@ -1,0 +1,920 @@
+<html>
+  <head>
+	  <title>Function references, closures and generators: behaviour as a part - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Function references, closures and generators: behaviour as a part</div>
+		</div>
+
+    <div class="text">
+
+	<p>Sometimes the part you want to swap is not a type but a piece of behaviour: the order a sort uses, what a
+		button does when it is pressed, the next value of a sequence. At the function's layer the interface is a
+		signature, and anything that can be called that way may stand in. This page covers the ways Cone lets behaviour
+		be handed around as a part: function references, closures that carry state, closure references that take any
+		callable of a signature, and generators, functions whose result is a sequence. Afterwards you can write code
+		that takes its behaviour from its caller, and choose how that behaviour is held and called.</p>
+<pre>
+mod behaviour;
+
+import stdio use *;
+
+// A function reference: any function of this signature will do
+fn twice(f &amp;fn(x i32) i32, x i32) i32 {
+  f(f(x));
+}
+fn inc(x i32) i32 { x + 1; }
+
+// A closure reference: any callable of the signature, whatever state it carries
+fn sumOf(f &amp;&lt;mut fn(x i32) i32) i32 {
+  f(1) + f(2) + f(3);
+}
+
+// A generator: a function that hands out a sequence, one value at a time
+fn evens(n i32) yields i32 {
+  mut i = 0;
+  while i &lt; n {
+    yield i * 2;
+    i += 1;
+  }
+}
+
+fn main() {
+  print &lt;- "twice inc: ", twice(&amp;inc, 5), "\n";
+
+  mut calls = 0;
+  imm total = sumOf(fn(x i32) i32 { calls += 1; x * 10; });
+  print &lt;- "sum: ", total, " in ", calls, " calls\n";
+
+  each e in evens(4) {
+    print &lt;- e, " ";
+  }
+  print &lt;- "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+twice inc: 7
+sum: 60 in 3 calls
+0 2 4 6
+</pre>
+	<p><b>Try this:</b> give <span class="pre">sumOf</span> a struct with a <span class="pre">()</span> method of the
+		same signature instead of the closure. <span class="pre">sumOf</span> does not change.</p>
+	<p>This is subtyping at the function's layer (<a href="mod-substitution.html#why">Traits and subtyping</a>): the
+		signature is the interface, and the parts are settled while the program runs, through a reference. The same
+		signature may instead be a <a href="mod-generativity.html#sigbound">generic constraint</a>, settled when the
+		program is compiled, which is on the next page.</p>
+
+	<h2 id="fnref">Function references: any function of a signature</h2>
+	<p style="margin-left: 40px;"><i>Note: This is implemented: borrowing a reference to a named function, holding
+		one in a variable, passing it to a parameter that spells out its signature, with the signature's parameters
+		named or written as their types alone, calling through it, writing an anonymous function where the reference
+		is wanted, and giving it a closure that holds and borrows nothing.</i></p>
+	<p>At the function's layer, the interface is a signature, and the subtypes are the functions that have it. A
+		<b>function reference</b> lets part of some code's logic be done by any of several compatible functions,
+		chosen while the program runs. The ampersand borrows a reference to any function:</p>
+<pre>
+fn incr(nbr u32) u32 {
+  nbr + 1;
+}
+
+// The parameter's type is the signature it takes
+fn dostuff(fnref &amp;fn(u32) u32) u32 {
+  fnref(4);         // Call the function
+}
+
+imm fnref = &amp;incr;  // points to the function incr
+dostuff(&amp;incr);     // 5
+</pre>
+	<p>As with any borrowed reference, a function reference may be copied between variables and functions. It
+		carries no lifetime restrictions, as there is no risk of a global function going away. Its type is its
+		signature. Its parameters may be written as their types alone, as here, or with names, as in
+		<span class="pre">&amp;fn(nbr u32) u32</span>: only the types are part of the type, so either spelling accepts
+		a reference to <span class="pre">incr</span>. Its permission is <span class="pre">opaq</span>, the default and
+		the only one permitted, which allows no dereference at all, so the function's code can be neither read nor
+		changed through it.</p>
+	<p>A function-reference parameter may stand anywhere in a parameter list. Inside a list in parentheses (a
+		function's parameters, or a function type's own) a function type's return type ends at the comma, which goes
+		on to the next parameter. A function type there that returns several values writes them as a tuple, in
+		parentheses:</p>
+<pre>
+fn combine(f &amp;fn(u32) u32, g &amp;fn(n u32) (u32, u32), x u32) u32 {
+	mut a u32;
+	mut b u32;
+	a, b = g(f(x));
+	a + b;
+}
+
+// A field whose function takes another function and a u32
+struct Applier {
+	pub run &amp;fn(&amp;fn(u32) u32, u32) u32;
+}
+</pre>
+	<p>Outside a list, as a field's or a variable's whole type, a comma after the return type adds another return
+		type, as it does on a <a href="guide-functions.html#return">function's own signature</a>: a field typed
+		<span class="pre">&amp;fn(u32) u32, u32</span> holds a function returning two values.</p>
+	<p>A function reference is one code address, so it takes only a function: no state travels with it.
+		Something that should take a function, a closure that carries state, or any struct with a
+		<span class="pre">()</span> method of the same signature asks for one of two things instead:</p>
+	<ul>
+		<li>a <a href="#cloref">closure reference</a>, <span class="pre">&amp;&lt;fn(u32) u32</span> (or
+			<span class="pre">&amp;&lt;mut fn(u32) u32</span> where the callable may change its state), which is compiled
+			once and calls through the reference; a reference to a plain function, <span class="pre">&amp;incr</span>,
+			is accepted where one is wanted;</li>
+		<li>the signature as a constraint, <span class="pre">fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut
+			Array[T], order &amp;F)</span>, which is compiled for each type it is given and is given
+			<span class="pre">&amp;byName</span>, a closure, or a struct (<a href="mod-generativity.html#sigbound">A
+			function signature as a constraint</a>).</li>
+	</ul>
+	<p>The one-word <span class="pre">&amp;fn(sig)</span> stays what it is, and is what another Cone function taking
+		a function takes. A C library's callback parameter takes the reference to a <a href="#cnamed">C-named
+		function</a> instead, <span class="pre">&amp;fn @c (sig)</span>.</p>
+
+	<h3 id="anonymous">Anonymous functions</h3>
+	<p>When the function you want a reference to is small, it may be written right where the reference is wanted,
+		with no name:</p>
+<pre>
+dostuff(&amp;fn(nbr u32) u32 {nbr+1;});      // 5
+dostuff(&amp;fn(nbr u32) u32 {nbr+nbr;});    // 8
+</pre>
+	<p>An anonymous function is a function that happens to be written in place. It is made at the module level, so
+		it sees none of the variables around it, and it is the same function every time. A
+		<a href="guide-functions.html#closures-tour">closure literal</a>, written without the ampersand,
+		<span class="pre">fn(nbr u32) u32 {nbr+1;}</span> or <span class="pre">nbr =&gt; nbr+1</span>, may name those
+		variables. Given where a function reference is wanted, a closure that holds and borrows nothing becomes a
+		plain function reference, so either spelling works for such a case:</p>
+<pre>
+dostuff(fn(nbr u32) u32 {nbr+1;});    // a closure, here a plain function
+dostuff(nbr =&gt; nbr+nbr);              // the parameter's type comes from the signature
+</pre>
+	<p>A closure that does name a variable of the code around it cannot be a function reference, which has no place
+		to keep it, and is refused there: "This closure borrows step, so it is not a function and cannot be given
+		where a function reference, '&amp;fn(...)', is wanted: only a closure that holds and borrows nothing is one."
+		The parameter is then declared <span class="pre">&amp;&lt;fn(u32) u32</span>, a closure reference.</p>
+
+	<h3 id="cnamed">A reference to a C-named function</h3>
+	<p>A Cone function and a <a href="safe-c.html#cnaming">C-named</a> one (an <span class="pre">extern</span>
+		function C defines, a <span class="pre">fn @c</span>, a function of an <span class="pre">@c</span> module) are
+		called differently: C passes a struct by value in registers or through a pointer as its ABI says
+		(<a href="safe-c.html#cabi">Structs by value</a>), and Cone keeps its own convention for its own functions. So
+		the calling convention is part of a function reference's type. A reference to a C-named function has the type
+		<span class="pre">&amp;fn @c (Vec3) f32</span>, marked as <span class="pre">fn @c</span> marks a function; a
+		reference to a Cone function is the plain <span class="pre">&amp;fn(Vec3) f32</span>. In a declaration a name
+		always follows the attribute, and in a type it never does, so in a type a <span class="pre">(</span> after
+		<span class="pre">@c</span> opens the parameters: the type's <span class="pre">@c</span> takes no arguments. If
+		a second C convention is ever needed, it gets its own attribute name, not <span class="pre">@c(...)</span>
+		arguments in a type; <span class="pre">&amp;fn @c(system)</span> is not a spelling.</p>
+<pre>
+struct Vec3 { pub x f32; pub y f32; pub z f32; }
+
+extern fn @c vec3_len(v Vec3) f32;          // defined by C
+fn @c doubled(v Vec3) f32 { v.x * 2.; }     // a Cone function C may call
+fn sum(v Vec3) f32 { v.x + v.y + v.z; }     // Cone's own
+
+fn doit(v Vec3) {
+  imm a &amp;fn @c (Vec3) f32 = &amp;vec3_len;     // a C-named function's reference
+  imm b &amp;fn @c (Vec3) f32 = &amp;doubled;      // so is this
+  imm c &amp;fn(Vec3) f32 = &amp;sum;              // a Cone function's
+  a(v);                                    // called as C passes a struct
+  c(v);                                    // called as Cone does
+}
+</pre>
+	<p>Neither converts to the other, and there is no thunk to bridge them: giving one where the other is wanted,
+		in an initializer, an assignment, an argument, a returned value or a struct's field, is a compile error, so a
+		call through a reference never passes its values the wrong way. A C library's callback parameter is typed
+		<span class="pre">&amp;fn @c</span>, and the Cone function handed to it is written
+		<span class="pre">fn @c</span>; handing C a plain Cone function is refused:</p>
+<pre>
+extern fn @c c_apply(n i32, f &amp;fn @c (Vec3) f32) f32;   // C calls f
+
+fn @c scale(v Vec3) f32 { v.x * 3.; }      // C-named, so C may call it
+fn twice(v Vec3) f32 { v.x * 2.; }
+
+fn doit() {
+  c_apply(1, &amp;scale);      // fine
+  c_apply(1, &amp;twice);      // ERROR: a Cone function, where a C-named one is wanted
+}
+</pre>
+<pre>
+Error 1503: `&amp;fn(Vec3) f32` is a reference to a Cone function, and `&amp;fn @c (Vec3) f32`, a C-named
+function's, is wanted. C would call it in C's convention, which passes a struct differently from Cone's, so
+its values would arrive wrong, and neither converts to the other. Make the function C-named,
+`fn @c name(...)`, or put it in an `@c` module.
+</pre>
+	<p>A closure has no C form, so it is never <span class="pre">@c</span>, and an anonymous function with a body
+		has no name for <span class="pre">@c</span> to give C spelling to. A type's method keeps Cone's convention even
+		when <span class="pre">@c</span> names its symbol (a vtable calls it by its Cone signature), so a reference to
+		a method is a plain <span class="pre">&amp;fn</span>. A closure reference (<span class="pre">&amp;&lt;fn</span>,
+		<span class="pre">So[fn]</span>) calls what it holds in Cone's convention, so a C-named function's reference is
+		not accepted where one is wanted: call the C function from a Cone function and make that the callable.</p>
+
+	<h2 id="closures">Closures: functions with state</h2>
+	<p style="margin-left: 40px;"><i>Note: Closures are implemented, except a closure that calls itself, and calling a
+		closure once and consuming it (a body that moves one of its state entries out). For closure references, calling a
+		closure once, which consumes it, through an owner, and <span class="pre">+</span> joining any trait but the markers
+		<span class="pre">Sendable</span>, <span class="pre">Shareable</span> and <span class="pre">ShapeKeeping</span>,
+		are not built.</i></p>
+	<p>A function reference carries no state, and a function written in place sees nothing around it. A
+		<b>closure</b> is the function that does: a function that keeps its state from one call to the next, and may use
+		the variables of the code it is written in. <a href="guide-functions.html#closures-tour">Functions</a> introduces
+		closures; this section has their rules, and the next the references that take any closure of a signature.
+		Closures are useful for:</p>
+	<ul>
+		<li>the steps a cursor's chain applies to each item (<span class="pre">map</span>, <span class="pre">filter</span>,
+			<span class="pre">fold</span>), written once as the methods every cursor declaring
+			<span class="pre">is Iterator[T]</span> shares (<a href="mod-substitution.html#adapters">adapters</a>); a source that runs its own
+			loop around the body of an <span class="pre">each</span> is not built yet;</li>
+		<li>sequences handed out one value at a time, though a <a href="#generators">generator</a> needs no closure;</li>
+		<li>event-triggered callbacks, whose state guides what happens after an event;</li>
+		<li>function-valued inputs of a library, such as the profile a sweep follows or the order a sort uses, whose
+			numbers belong to the caller rather than to a fixed function.</li>
+	</ul>
+
+	<h3 id="closuredef">Writing one</h3>
+	<p>A closure is written where it is used, in the body of a function, in one of two forms.</p>
+	<p id="full"><b>The full form</b> resembles a function definition, with three differences: the name is left out,
+		the return type may be left out (and inferred), and the state the closure carries may be listed in square
+		brackets after the parameters: <span class="pre">fn (parameters) [state] returnType { body }</span>.</p>
+<pre>
+mut counter = fn(n i32) [mut cnt = 0] { cnt += n; cnt; };
+counter(1);        // 1
+counter(2);        // 3
+</pre>
+	<p>This closure takes one parameter, <span class="pre">n</span>, and infers that it returns an integer, since its
+		last expression is <span class="pre">cnt</span>, an <span class="pre">i32</span>. The state list holds the
+		variables the closure owns. Each entry is a field of the closure, written as a field is: a name with an initial
+		value, <span class="pre">cnt = 0</span>, whose type is the value's. Entries are separated by commas. An entry is
+		<span class="pre">imm</span> unless written <span class="pre">mut</span>, so a closure that changes its state lists
+		it <span class="pre">mut</span>. The list may be left out. The brackets sit after the parameters because a bracket
+		never begins a type, so they cannot be taken for the return type.</p>
+	<p>A parameter's type may be left out where the closure is given to something that says what the signature is
+		(<span class="pre">fn(x) { x + off; }</span>, below); nothing else may leave a type out. Three places say it: a
+		parameter taken by <span class="pre">&amp;&lt;fn(sig)</span> or <span class="pre">&amp;&lt;mut fn(sig)</span>
+		(<a href="#lent">a closure literal, lent</a>), a generic parameter bound <span class="pre">F fn(sig)</span>, and
+		<span class="pre">new So[fn(sig)](...)</span> (<a href="#owner">an owner of a closure</a>). A parameter of type
+		<span class="pre">So[fn(sig)]</span> does not: it takes an owner, and a closure literal is not one, so a literal
+		given straight to it is refused (for an untyped one, error 1391, "The type of a is not written, and nothing here
+		says what it is"). Wrap it: <span class="pre">c.set(new So[fn(a i64, b i64) bool]((a, b) =&gt; a &lt; b))</span>.
+		An <span class="pre">imm</span> given an untyped closure is refused the same way, even where the
+		<span class="pre">imm</span> is written with a <span class="pre">&amp;&lt;fn(sig)</span> type.</p>
+	<p id="short"><b>The short form</b>, for a small closure, puts the parameter names, an arrow, and the body:
+		<span class="pre">x =&gt; x * 2</span>, <span class="pre">(a, b) =&gt; a.len() &lt; b.len()</span>,
+		<span class="pre">() =&gt; 5</span>, <span class="pre">n =&gt; total += n</span>. It takes parameter names only, whose
+		types come from the signature the closure is given to, and a body that is one expression, an assignment, or a
+		block. It has no state list and no written return type; a closure that needs either is written in the full
+		form. A comma after the body belongs to the list the closure is in, so <span class="pre">f(x =&gt; x + 1,
+		3)</span> is a call with two arguments. The arrow is <span class="pre">=&gt;</span>, not
+		<span class="pre">-&gt;</span>, which would read as "returns".</p>
+<pre>
+fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
+
+imm off = 10;
+apply(x =&gt; x * 2, 21);                     // 42
+apply(fn(x i32) i32 { x + off; }, 1);      // 11
+apply(fn(x) { x + off; }, 1);              // 11: the type comes from the signature
+</pre>
+
+	<h3 id="capture">What a closure captures</h3>
+	<p>A closure's body may name variables of the function around it. Each one it names is <b>borrowed</b>: the
+		closure holds a reference to it, <span class="pre">&amp;</span> where the body only reads it and
+		<span class="pre">&amp;mut</span> where the body changes it, and the compiler works out which from the body. The
+		variable around shows the change:</p>
+<pre>
+mut total = 10;
+mut add = fn(x i32) { total += x; };   // borrows total as &amp;mut
+add(3);
+add(4);
+total;                                 // 17
+</pre>
+	<p>Only a <span class="pre">mut</span> variable can be changed by a closure; changing any other is the ordinary
+		"no permission to modify" error, reported inside the body. Because the closure holds a variable it changes by
+		<span class="pre">&amp;mut</span>, its body cannot lend that variable <span class="pre">&amp;uni</span>
+		(<span class="pre">bump(&amp;uni total)</span> is refused): a shared reference does not see through to a unique
+		one. The borrow is an ordinary one (<a href="mem-borrowing.html">Borrowed references</a>), so it holds the
+		variable as borrows do: while a closure that reads a variable is still to be used, the variable cannot be changed
+		or moved, and after the closure's last use it can.</p>
+<pre>
+imm limit = 100;
+mut count = 1;
+imm sum = fn(x i32) i32 { x + limit + count; };
+sum(1);        // 102
+count = 5;     // fine here; an ERROR if sum were called again below this line:
+               // 'count' is borrowed (at 5:13), and that borrow is used again at 8:3 ...
+</pre>
+	<p>Borrowing is the default because a copy made silently would duplicate state: a closure that added to its own
+		copy of <span class="pre">total</span> would leave <span class="pre">total</span> unchanged and would give no sign
+		that it had. When a closure should hold its own value instead, it is listed.</p>
+
+	<h4 id="own">Giving the closure its own value</h4>
+	<p>A variable listed in the state list is no longer borrowed. The entry is a field with an initializer, so the
+		ordinary rules for values decide what the closure holds:</p>
+<pre>
+imm ribs = 3;
+imm shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
+shape(2);                              // 2 * 3 + 11: 17
+
+mut xs = new List[i32];
+imm count = fn(x i32) [buf = xs] i32 { x + i32.from(buf.len()); };   // xs is moved in
+
+imm p = new Pt(4, 5);
+imm viaRef = fn(k i32) [r = &amp;p] i32 { r.x * k; };              // a borrow, written out
+
+imm mesh = new Rc[imm, Pt](7, 8);
+imm h = fn() [mesh] i32 { mesh.y; };   // a counted owner is copied: mesh is still held
+</pre>
+	<ul>
+		<li><b>A copy</b>: <span class="pre">[ribs]</span>. An entry with no <span class="pre">=</span> starts from the
+			variable of that name around the closure. A value that copies is copied and one that moves is moved, as it
+			would be passed to a function.</li>
+		<li><b>A move</b>: <span class="pre">[buf = xs]</span>, for a value that moves. The closure owns it, and
+			<span class="pre">xs</span> can no longer be used.</li>
+		<li><b>Shared ownership</b>: list a handle of a region that counts its owners, such as an
+			<span class="pre">Rc</span> or an <span class="pre">Arc</span>. The closure holds one count and the original
+			holds another. The permission of the handle decides whether the closure may change what it points at
+			(<span class="pre">Rc[mut, T]</span>).</li>
+		<li><b>New state</b>: <span class="pre">[mut n = 0]</span>, which has no variable around it to mirror.</li>
+		<li><b>A borrow, written out</b>: <span class="pre">[r = &amp;p]</span>. The closure then has the lifetime of the
+			borrow, as it does for a borrow it makes itself.</li>
+	</ul>
+	<p>An entry's initial value is read in the code around the closure, not from the entries before it: in
+		<span class="pre">[a = 1, b = a]</span> the <span class="pre">a</span> that <span class="pre">b</span> starts from
+		is the one outside. Naming the state has other benefits: it tells the reader which variables are the closure's
+		own, and an entry may be given a name of its own, as a field may. Listing is optional where borrowing will
+		do.</p>
+	<p>A closure written in a method that names a member of the object, <span class="pre">hits</span> or
+		<span class="pre">step</span>, reaches it through the method's <span class="pre">self</span>, which it borrows as
+		it borrows any variable. A closure sees exactly what the code around it sees, private members included, wherever
+		it is later called from:</p>
+<pre>
+struct Tally {
+  hits i32;
+  step i32;
+  pub fn run(self &amp;mut) i32 {
+    mut bump = fn(x i32) i32 { hits += x * step; hits; };
+    bump(1) + bump(2);
+  }
+}
+</pre>
+
+	<h3 id="closure-self">Whether the closure changes</h3>
+	<p>A closure is a value whose one method, <span class="pre">()</span>, is the body. That method's
+		<span class="pre">self</span> permission is not written: it follows the body. A body that only reads what the
+		closure holds and borrows has <span class="pre">self &amp;</span>. A body that changes a captured variable or a
+		<span class="pre">mut</span> state entry has <span class="pre">self &amp;mut</span>. This decides what the closure
+		may be used for. A closure whose <span class="pre">()</span> takes <span class="pre">self &amp;mut</span> is held
+		in a <span class="pre">mut</span> variable to be called, and goes only where a callable may change its state,
+		<span class="pre">&amp;mut F</span> and <span class="pre">&amp;&lt;mut fn(sig)</span>
+		(<a href="mod-generativity.html#sigbound">Generics</a>, <a href="#cloref">Closure references</a>). Given to a
+		parameter that promises only to read it (<span class="pre">&amp;F</span>,
+		<span class="pre">&amp;&lt;fn(sig)</span>), it is refused, and the error says that this closure changes its
+		state.</p>
+
+	<h3 id="ret">The return type</h3>
+	<p>The return type is, in order of preference:</p>
+	<ol>
+		<li>the one written, <span class="pre">fn(x i32) i64 { ... }</span>;</li>
+		<li>the one the expected signature gives, where the closure is passed or assigned to one, every path being
+			checked against it;</li>
+		<li>read off the body's paths: the first <span class="pre">return</span> or final expression the check meets fixes
+			it, and the others must fit it. A body whose last statement changes something (<span class="pre">total +=
+			x;</span>) returns nothing; any other last expression is the value;</li>
+		<li>otherwise an error at the closure: <span class="pre">fn(x i32) { if x &gt; 0 { x; } else { 0u8; } }</span>
+			gives "The paths of this closure give different types, so its return type cannot be read off them: write the
+			closure's return type, as in 'fn (x i32) i32 { ... }'."</li>
+	</ol>
+	<p><span class="pre">return</span> in a closure returns from the closure, never from the function around it:</p>
+<pre>
+imm early = fn(x i32) i32 { if x &gt; 5 { return 1; } x + 2; };
+early(9);      // 1
+early(3);      // 5
+</pre>
+
+	<h3 id="nothing">A closure that holds nothing</h3>
+	<p>A closure that borrows nothing and has no state is a plain function, so where a
+		<a href="#fnref">function reference</a> is wanted it becomes one, and one that holds or borrows something is
+		refused there (<a href="#anonymous">Anonymous functions</a>, above, shows both, and the anonymous function written
+		with an ampersand, which is not a closure at all).</p>
+
+	<h3 id="goes">Where a closure may go</h3>
+	<p>A closure is a value of a struct of what it holds and borrows, so where it can go is decided by the rules for
+		its fields, with nothing special for closures. A closure that borrows a variable cannot outlive it:</p>
+	<ul>
+		<li><b>Down a call</b>, passed to a function that uses it and returns, it may borrow any variable of the function
+			around it, with one exception: a call that is also handed a <span class="pre">&amp;mut</span> (or
+			<span class="pre">&amp;uni</span>) borrow, a method's receiver among them, of something that can hold borrows
+			(a struct with a borrowed-reference field, a list of borrowed references) that the caller lent, since the call
+			could store the closure's borrow there, where it would outlive the variable. That call is refused (error 1085)
+			when the closure borrows a local of the function, or another argument is a borrow of a local, even though the
+			callee only reads the closure. The error names the variable. A closure lists the variable,
+			<span class="pre">fn(x &amp;i64) [k] bool { *x &gt; k; }</span>, to hold its own copy and borrow nothing. A
+			receiver the function owns is not refused, and nor is one that cannot hold a borrow, such as a
+			<span class="pre">List[i64]</span>.</li>
+		<li><b>Kept in a local</b>, it blocks moving or reshaping what it borrows until its last use.</li>
+		<li><b>Stored past the function or returned</b> (in a field, in an owner such as
+			<span class="pre">So[fn(sig)]</span>, or as a returned borrow), it is refused if it borrows a local. The error
+			names the variable and says to list it, so that the closure holds its own copy.</li>
+		<li><b>Stored in the object that made it</b>: a closure in a method that names a member borrows
+			<span class="pre">self</span>, so it cannot be stored in <span class="pre">self</span>. The error says to copy the
+			members it needs into its list (<span class="pre">[tag = tag]</span>), or to capture a counted handle to the
+			object.</li>
+		<li><b>Sent to another thread or actor</b>, or run in a <span class="pre">parallel each</span>, it must be
+			<span class="pre">Sendable</span>, or <span class="pre">Shareable</span> for the loop, judged by what it holds
+			(<a href="conc-sharing.html#shareable">Sendable and Shareable</a>). A closure that borrows a variable is
+			neither; the error names the variable and says to list it. A closure holding an <span class="pre">Rc</span> is
+			told to hold an <span class="pre">Arc</span>.</li>
+	</ul>
+<pre>
+fn returned() So[fn(x i32) i32] {
+  imm k = 3;
+  return new So[fn(x i32) i32](fn(x i32) i32 { x * k; });    // ERROR
+}
+
+fn listed() So[fn(x i32) i32] {
+  imm k = 3;
+  return new So[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });   // its own copy of k
+}
+</pre>
+<pre>
+Error 1249: An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any
+borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow
+of 'k' (made at 4:32), which belongs to this function. The closure borrows 'k' because its body names it:
+list it to give the closure its own copy instead, 'fn (...) [k] ... { ... }'.
+</pre>
+	<p>And the exception for a call down a function, with a holder of borrows that the caller lent:</p>
+<pre>
+struct Seen {
+  pub items List[&amp;i64];
+  pub fn count[F fn(x &amp;i64) bool](self &amp;mut, f F) i64 {
+    mut n = 0i64;
+    mut i = 0usize;
+    while i &lt; self.items.len() {
+      if f(*self.items[i]) { n = n + 1; }
+      i = i + 1usize;
+    }
+    n;
+  }
+}
+
+fn refused(seen &amp;mut Seen) i64 {
+  imm k = 3i64;
+  seen.count(x =&gt; *x &gt; k);     // ERROR 1085: seen holds borrows, and the call could store k's borrow in it
+}
+
+fn listed(seen &amp;mut Seen) i64 {
+  imm k = 3i64;
+  seen.count(fn(x &amp;i64) [k] bool { *x &gt; k; });   // its own copy of k: nothing borrowed
+}
+
+fn owned() i64 {
+  imm base = 5i64;
+  imm k = 3i64;
+  mut seen = new Seen(List[&amp;i64].empty());
+  seen.items.push(&amp;base);
+  seen.count(x =&gt; *x &gt; k);   // fine: this function owns seen
+}
+</pre>
+
+	<h3 id="closurerules">Rules that follow</h3>
+	<ul>
+		<li><b>A closure cannot call itself.</b> The variable it is the value of is not a name inside it. Recursion uses a
+			named function.</li>
+		<li><b>A closure is written in a function</b>, never at the module level as a global's value or a field's default:
+			there is nothing there to borrow.</li>
+		<li><b>On a GPU</b> a closure is allowed in its static form only (<a href="conc-gpu.html#closures">Closures on the
+			GPU</a>).</li>
+		<li><b>While a collection is borrowed</b>, a call of a closure that may change what it reaches is limited: see
+			<a href="#closure-reshape">Calling a closure while a collection is borrowed</a>.</li>
+	</ul>
+
+	<h3 id="closurevalues">Closures are values</h3>
+	<p>A closure may be thought of as a function with persistent state, but it is more accurate to see it as a value
+		that carries one method. It is <a href="guide-methods.html#clotype">a struct with no name</a>, whose fields are the
+		state list's entries and a reference for each variable it borrows; since the struct has no name that can be
+		written, a closure is held in a variable whose type is inferred, and handed on as one of the references below.
+		Like any value it may be put on the heap, in an owner such as <span class="pre">So[fn(sig)]</span>. A function that
+		should accept any closure of a signature, whatever the shape of its state, takes it as a
+		<a href="#cloref">closure reference</a>, <span class="pre">&amp;&lt;fn(sig)</span>, or as a
+		<a href="mod-generativity.html#sigbound">generic over the signature</a>, <span class="pre">[F fn(sig)]</span>, which
+		is compiled for each closure and inlined. And a closure may fill a <a href="mod-substitution.html#closure">trait with one required
+		method</a>, as a struct does.</p>
+
+	<h2 id="cloref">Closure references: any callable of a signature</h2>
+	<p>A closure is a value of a struct that has no name, and its size and fields depend on what it holds. That is a
+		problem when a function, or a field, should take any closure of one calling signature, whatever struct holds its
+		state. A <b>closure reference</b> solves it: the closure is passed as a reference to the signature it calls. It is
+		to a signature what a virtual reference is to a trait. Here a button holds whatever click handler it is
+		given:</p>
+<pre>
+struct Window { pub id i32; }
+
+struct Button {
+  pub label i32;
+  pub onClick So[fn(n i32)];
+  pub fn setHandler(self &amp;mut, f So[fn(n i32)]) { onClick = f; }
+  pub fn press(self &amp;mut, n i32) { onClick(n); }
+}
+
+imm w = new Window(7);
+mut b = new Button(1, new So[fn(n i32)](fn(n i32) { }));
+b.setHandler(new So[fn(n i32)](fn(n i32) [id = w.id] { print &lt;- id + n, "\n"; }));
+b.press(5);      // 12
+</pre>
+	<p>The click handler is allocated in the single-owner region, so it is freed when it is replaced or discarded. Its
+		state remembers the window's <span class="pre">id</span>, which its logic uses when the button is pressed. The
+		<span class="pre">Button</span> holds it as a <span class="pre">So[fn(n i32)]</span>, which accepts any closure,
+		whatever its state, whose signature matches: one <span class="pre">i32</span> in, no value back. The button calls
+		the handler by the field's name, <span class="pre">onClick(n)</span>.</p>
+
+	<h3 id="forms">The forms of a closure reference</h3>
+	<p>The reference is written as the signature of the call, <span class="pre">fn(x i32) i32</span>, behind a reference
+		or an owner. The signature stands for the idea "anything that can be called like this", a trait that needs no
+		declaring, and the reference is a <a href="mod-substitution.html#virtref">virtual reference</a> to it:</p>
+	<ul>
+		<li><span class="pre">&amp;&lt;fn(x i32) i32</span>, a borrowed reference that may <b>read</b> what it points at.
+			The closure's <span class="pre">()</span> takes <span class="pre">self &amp;</span>.</li>
+		<li><span class="pre">&amp;&lt;mut fn(x i32) i32</span>, a borrowed reference that may <b>change</b> what it points
+			at: a closure that counts, or changes a variable it borrows.</li>
+		<li><span class="pre">So[fn(x i32) i32]</span>, an owner of a closure on the heap. The permission of an owner works
+			as it does for any owner: <span class="pre">So[fn(sig)]</span> may change the closure's state,
+			<span class="pre">So[imm, fn(sig)]</span> only reads it.</li>
+		<li><span class="pre">Rc[imm, fn(x i32) i32]</span>, shared owners of a closure that only reads;
+			<span class="pre">Rc[mut, fn(x i32) i32]</span>, shared owners of a state they all change, so every holder sees
+			one count. <span class="pre">Rc[fn(x i32) i32]</span> with no permission is <span class="pre">uni</span>, the
+			sole owner, as for any <span class="pre">Rc</span>, and moves when copied.</li>
+	</ul>
+	<p>These are the same permissions as elsewhere, so the call kind is the reference's permission, with no separate
+		families of function types: a function that takes a callable it only reads takes
+		<span class="pre">&amp;&lt;fn(sig)</span>; one that lets it change takes <span class="pre">&amp;&lt;mut
+		fn(sig)</span>. The call is written as any call, and goes through the reference to the closure's code:</p>
+<pre>
+fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
+fn applyMut(f &amp;&lt;mut fn(x i32) i32, x i32) i32 { f(x); }
+fn run(f So[fn(x i32) i32], x i32) i32 { f(x); }
+</pre>
+
+	<h4 id="meets">What meets it</h4>
+	<p>Anything that has a <span class="pre">pub</span> <span class="pre">()</span> method of the signature, parameters
+		and return type exactly (the parameters' names do not matter):</p>
+<pre>
+struct Triple { pub k i32; pub fn `()`(self &amp;, x i32) i32 { x * k; } }
+struct Count  { pub n i32; pub fn `()`(self &amp;mut, x i32) i32 { n = n + x; n; } }
+fn succ(x i32) i32 { x + 1; }
+
+imm off = 10;
+imm shift = fn(x i32) i32 { x + off; };
+imm t = new Triple(3);
+mut tally = new Count(0);
+
+apply(&amp;shift, 5);              // 15: a closure
+apply(&amp;t, 5);                  // 15: a struct with a '()'
+apply(&amp;succ, 5);               // 6: a plain function
+applyMut(&amp;mut tally, 5);       // 5
+applyMut(&amp;mut tally, 7);       // 12, and tally.n is 12
+</pre>
+	<p>A plain function needs no state, so a reference to it meets any of the references above. A callable that reads
+		meets <span class="pre">&amp;&lt;mut fn</span> as well, since a reference that may change can read. A callable that
+		<i>changes</i> its state (its <span class="pre">()</span> takes <span class="pre">self &amp;mut</span>) is refused
+		behind <span class="pre">&amp;&lt;fn(sig)</span>, which promises only to read: "`&amp;&lt;fn(i32) i32` may only call a
+		callable that reads its state; this closure changes it (its `()` takes `self &amp;mut`). To let it change, the type
+		is `&amp;&lt;mut fn(i32) i32`." Likewise a <span class="pre">&amp;&lt;mut fn</span> is not lent where a
+		<span class="pre">&amp;&lt;fn</span> is wanted, nor is a <span class="pre">So[fn(sig)]</span>, which may change: the
+		callable behind it might. An owner meant to be lent to a reader is made <span class="pre">So[imm,
+		fn(sig)]</span>.</p>
+
+	<h4 id="lent">A closure literal, lent</h4>
+	<p>A closure literal written as an argument to a parameter taken by <span class="pre">&amp;&lt;fn</span> or
+		<span class="pre">&amp;&lt;mut fn</span> is lent as a temporary, dropped at the end of the statement. The permission
+		lent is the parameter's, so a literal given to <span class="pre">&amp;&lt;fn</span> that changes a variable is
+		refused by the message above. The literal's parameter types come from the signature:</p>
+<pre>
+apply(x =&gt; x * 2, 21);                                    // 42
+applyMut(fn(x i32) i32 { total += x; total; }, 10);       // total is changed
+</pre>
+	<p>A literal is lent only as an argument. To keep one, move it into an owner.</p>
+
+	<h4 id="owner">An owner of a closure</h4>
+	<p><span class="pre">new So[fn(sig)](value)</span> takes one value, a closure literal or a struct with a
+		<span class="pre">()</span> of the signature, moves it into an allocation of its own, and gives the owner of that as
+		the callable. The literal's parameter types may come from the signature. The same holds for
+		<span class="pre">Rc</span>:</p>
+<pre>
+mut owned So[fn(x i32) i32] = new So[fn(x i32) i32](fn(x i32) [mut sum = 100] i32 { sum += x; sum; });
+owned(1);             // 101
+applyMut(owned, 2);   // 103: an owner is lent as &amp;&lt;mut
+run(owned, 3);        // 106: or handed on whole, moved
+
+imm shared = new Rc[imm, fn(x i32) i32](new Triple(4));
+imm again = shared;   // another holder of the same closure
+</pre>
+	<p>The owner holds whatever the closure holds, and finalizes it when the last owner dies. A closure that holds
+		nothing is allocated like any other. A plain function is wrapped by giving its reference,
+		<span class="pre">new So[fn(sig)](&amp;f)</span>; a function of another signature, or a value with no
+		<span class="pre">()</span> of the signature, is an error. An owner outlives the function that made it, so the
+		closure in it may not borrow a local: the refusal is the one in <a href="#goes">Where a closure may go</a>.</p>
+
+	<h4 id="alias">Naming a signature</h4>
+	<p>An alias gives a signature a name, and the name works wherever the signature does:</p>
+<pre>
+alias Profile = fn(u i32) i32;
+
+fn viaAlias(f &amp;&lt;Profile, u i32) i32 { f(u); }
+</pre>
+	<p>A bare <span class="pre">fn(sig)</span> is read as a signature in the brackets of a type
+		(<span class="pre">So[fn(i32) i32]</span>, <span class="pre">Applied[fn(i32) i32]</span>), as the target of an
+		<span class="pre">alias</span> and as a generic's bound (<a href="mod-generativity.html#sigbound">Generics</a>). It is
+		not itself the type of a variable or a return value: write <span class="pre">&amp;&lt;fn(..)</span>,
+		<span class="pre">So[fn(..)]</span> or the alias. A signature is a trait, so it has no size, and a field of a
+		generic type holds it by an owner or a reference, not by value:</p>
+<pre>
+struct Applied[F] { pub f So[F]; }     // Applied[fn(i32) i32] holds a So[fn(i32) i32]
+</pre>
+
+	<h4 id="field">A callable held in a field</h4>
+	<p>A field that holds a callable is called by its name, with no parentheses around it:
+		<span class="pre">b.onClick(5)</span> calls the closure in <span class="pre">onClick</span>, and
+		<span class="pre">(b.onClick)(5)</span> works too. A field and a method of one name cannot both exist, so there is
+		nothing to choose between. A field that cannot be called, an <span class="pre">i32</span> given arguments, is an
+		error that says what the field holds. An owner whose state may change is called through a reference that may
+		change, so a method that calls a <span class="pre">So[fn(sig)]</span> field takes <span class="pre">self
+		&amp;mut</span>, as <span class="pre">press</span> does above. The handler is replaced by assigning the field.</p>
+
+	<h4 id="markers">Saying what is behind a reference</h4>
+	<p>A virtual reference hides the type behind it, so a reference to a callable or a trait is not
+		<span class="pre">Sendable</span> or <span class="pre">Shareable</span> unless it says so. The markers follow the
+		signature or the trait with a <span class="pre">+</span>, <span class="pre">So[fn(x i32) i32 + Sendable]</span>, and
+		a third, <span class="pre">ShapeKeeping</span>, says that a call through the reference reshapes nothing the caller
+		holds a borrow into. All three are described together, with the other rules for what may cross a thread, in
+		<a href="conc-sharing.html#marks">Sendable and Shareable</a>.</p>
+
+	<h4 id="static"><span id="traitlit"></span>The other two ways to take a callable</h4>
+	<p>A function may instead be generic over the signature, <span class="pre">[F fn(x i32) i32]</span>. That form is
+		compiled for each closure and inlined, where the references above are compiled once and call through the
+		closure's code (<a href="mod-generativity.html#sigbound">A function signature as a constraint</a>). The reference is
+		what a field or a variable of unknown closure holds; the generic is what a function that only calls it uses. And a
+		closure literal also fills a trait that has exactly one required method, wherever that trait is wanted
+		(<a href="mod-substitution.html#closure">A closure written where a trait is wanted</a>).</p>
+
+	<h2 id="generators">Generators: functions that are iterators</h2>
+	<p style="margin-left: 40px;"><i>Note: Generators are built: a function declared <span class="pre">yields</span>, with
+		<span class="pre">yield</span> and <span class="pre">yield each</span>, among a module's functions or as a method of
+		a struct, generic or not. A generator may not be <span class="pre">inline</span>, have a
+		<span class="pre">where</span> clause, or be a method of a trait, an enum, an actor or a type that declares
+		lifetimes. Two-way <span class="pre">yield</span> is an idea that is not built.</i></p>
+	<p>A generator is a function that hands its caller values one at a time
+		(<a href="guide-functions.html#generators-tour">Functions</a> introduces them). It runs until it reaches a
+		<span class="pre">yield</span>, gives the caller the value written there, and waits. When the caller asks for the
+		next value it goes on from that <span class="pre">yield</span>, with its local variables as they were. It is a
+		function whose result is a sequence, written as the loop that makes the sequence, and what it gives back is an
+		<a href="mod-substitution.html#iterators">Iterator</a>:</p>
+<pre>
+fn count(n i64) yields i64 {
+  mut i = 0i64;
+  while i &lt; n {
+    yield i;
+    i = i + 1i64;
+  }
+}
+</pre>
+	<p>After <span class="pre">yields</span> comes the type of each value handed out. Calling
+		<span class="pre">count(4i64)</span> runs nothing. It gives a value that holds the parameters, and every call of its
+		<span class="pre">next</span> runs the body up to the next <span class="pre">yield</span>.
+		<span class="pre">next</span> gives <span class="pre">Some(value)</span> for each value handed out and
+		<span class="pre">None</span> once the body ends, by its last statement or by a <span class="pre">return</span>, which
+		takes no value:</p>
+<pre>
+mut g = count(4i64);
+while true {
+  match g.next() {
+    case imm v Some { print &lt;- v, " "; }         // 0 1 2 3
+    case is None { break; }
+  }
+}
+
+each x in count(4i64) { print &lt;- x, " "; }        // the same, 0 1 2 3
+</pre>
+	<p>A loop that leaves early, by <span class="pre">break</span> or <span class="pre">return</span>, leaves the generator
+		suspended, and it dies there (<a href="#dying">When a generator dies</a>).</p>
+	<p>The value a generator gives is a struct made for it, of a type no source names; a message that has to spell it
+		writes <span class="pre">count.Gen</span>. Since no source can write that type, a function cannot declare a generator
+		as its result, nor a struct as a field. It is a move type: it is moved, not copied, so two walks of one generator
+		never run. Having <span class="pre">next(self &amp;mut) Option[i64]</span>, it complies with core's
+		<span class="pre">Iterator[i64]</span> as any cursor does, so it is passed to generic code bounded by that trait, or
+		lent as a virtual reference:</p>
+<pre>
+fn sum[S Iterator[i64]](s &amp;mut S) i64 {
+  mut t = 0i64;
+  each v in s { t = t + v; }
+  t;
+}
+
+mut g = count(4i64);
+sum(&amp;mut g);         // 6
+</pre>
+	<p>A <span class="pre">yield</span> is a statement of its own. It stands in a block, or in the arms of an
+		<span class="pre">if</span> or <span class="pre">match</span> written as statements, and in a loop, but not inside an
+		expression: <span class="pre">f(a(), if c { yield 1; 2; } else { 3; })</span> would have to keep the value of
+		<span class="pre">a()</span> across the wait, and is refused. Compute it into a variable first.</p>
+
+	<h3 id="yieldeach">Yielding another generator's values</h3>
+	<p><span class="pre">yield each</span> hands on every value of another generator, or of anything with a
+		<span class="pre">next</span>, in turn, and goes on when they are all handed on. It joins sequences, and it makes a
+		recursive walk as short as the recursion:</p>
+<pre>
+fn joined(a i64, b i64) yields i64 {
+  yield each count(a);
+  yield 99;
+  yield each count(b);
+}
+// joined(2i64, 2i64) hands out 0 1 99 0 1
+
+struct Node {
+  pub val i64;
+  pub left i64;      // the index of the left child, or -1
+  pub right i64;
+}
+
+// In order, a tree kept in an array
+fn inorder(nodes &amp;Array[Node], at usize) yields &amp;Node {
+  imm n = &amp;nodes[at];
+  if n.left &gt;= 0 { yield each inorder(nodes, usize.from(n.left)); }
+  yield n;
+  if n.right &gt;= 0 { yield each inorder(nodes, usize.from(n.right)); }
+}
+</pre>
+	<p>The generator being handed on is kept in the one that hands it on, in its own storage, when its size is known. A
+		generator that hands on one of its own kind, as <span class="pre">inorder</span> does, would have to hold itself, so
+		that one is kept on the heap, one for each <span class="pre">yield each</span> that needs it, made when the walk
+		begins and freed when the generator dies. A value handed on is the sub-generator's own
+		<span class="pre">Some(value)</span>: it is moved up, not copied. Each value costs a step through every generator that
+		hands it on.</p>
+
+	<h3 id="genmethods">Generator methods</h3>
+	<p>A method may be a generator, called as any method is. In its body <span class="pre">self</span> is the receiver,
+		exactly as in any method. The generator holds the receiver as it holds a parameter, so what the receiver was lent as
+		stays lent for as long as the generator lives:</p>
+<pre>
+struct Tree {
+  nodes Array[Node, 3];
+
+  fn walk(self &amp;) yields &amp;Node {            // in order
+    yield each self.from(0);
+  }
+
+  fn from(self &amp;, at usize) yields &amp;Node {
+    imm n = &amp;self.nodes[at];
+    if n.left &gt;= 0 { yield each self.from(usize.from(n.left)); }
+    yield n;
+    if n.right &gt;= 0 { yield each self.from(usize.from(n.right)); }
+  }
+}
+
+each n in tree.walk() { print &lt;- n.val, " "; }
+</pre>
+	<ul>
+		<li>A receiver borrowed with <span class="pre">self &amp;</span> may be read, not changed, while the generator may
+			still be resumed; one borrowed with <span class="pre">self &amp;mut</span> may be neither read nor changed. The
+			generator may change what it was lent, and may hand out borrows of it, <span class="pre">yields &amp;mut
+			i64</span> among them. The borrow lasts until the generator dies, not until it is last called: a block around
+			the generator ends it.</li>
+		<li>A receiver taken by value, <span class="pre">fn run(self) yields i64</span>, moves into the generator and dies
+			with it, after its locals. As with any parameter, the body may borrow or copy it (and change it, if declared
+			<span class="pre">mut self</span>), not move it out.</li>
+		<li><span class="pre">Self</span> in the body is the type the method belongs to.</li>
+		<li>A bare name that is a field of the receiver's type means <span class="pre">self.name</span>, as it does in any
+			method, unless a local or a parameter of the generator is named so, which shadows it. A bare name of a
+			<i>method</i> of the type is refused: write <span class="pre">self.name()</span>.</li>
+		<li>A function of a type with no receiver, <span class="pre">fn range(from i64, to i64) yields i64</span>, is a
+			generator too, called as <span class="pre">Span.range(3, 7)</span>.</li>
+	</ul>
+	<p>The method that makes the generator is the one written; the struct that is the generator is made beside the type
+		and has no name in source (a message spells it <span class="pre">Tree.walk.Gen</span>). A method of a trait or of
+		an enum cannot be a generator, since a trait's methods are copied into each type that implements it and an enum's
+		into each of its variants; nor can an actor's, or a method of a type that declares lifetimes. Write a function that
+		takes what the method would.</p>
+
+	<h3 id="gengeneric">Generic generators</h3>
+	<p>A generator may be generic, a function over a type or a method of a generic type or both. The struct that is
+		the generator takes the type parameters, with their bounds as written, so each use is a generator of its own kind,
+		made for the types it was called with, and checked as any generic is, where it is used:</p>
+<pre>
+fn items[T](l &amp;List[T]) yields &amp;T {
+  each x in l.iter() { yield x; }
+}
+
+each x in items(&amp;ints) { print &lt;- *x, " "; }      // a generator over i64s
+</pre>
+	<p>A generic generator may hand on another, itself included, with <span class="pre">yield each</span>, and a
+		recursive one keeps its sub-generator on the heap in each instance as a plain one does. A type parameter of a
+		generator does not name lifetimes (<span class="pre">[T + 'a]</span>) yet.</p>
+
+	<h3 id="genpackages">Generators across packages</h3>
+	<p>A <span class="pre">pub</span> generator of a package, a function, a method or a method of a generic type, can be
+		walked from another package as it is from its own. The struct that is the generator, and the frame that holds its
+		locals across a <span class="pre">yield</span>, are made from its body, so the package's
+		<a href="mod-packages.html#build">include file</a> carries the generator's declaration whole, as it carries an
+		<span class="pre">inline</span> or a generic function, and the importer makes the struct again from it. What the
+		body names in the package, a private type, a private function or another private generator, is declared beside it
+		and exported. A generator that is not <span class="pre">pub</span> stays inside the package, unless a body the
+		include file carries names it; neither it nor the private names only it uses are in the file, and no other package
+		can name them.</p>
+
+	<h3 id="genborrows">Borrows across a yield</h3>
+	<p>A <span class="pre">yield</span> leaves the body, and the generator, a value, may be moved by its caller before it
+		is resumed. What the body keeps across a <span class="pre">yield</span> is held in the generator's value, so:</p>
+	<ul>
+		<li>A borrow of what the generator was lent, a parameter that is a reference, lasts across it. So does a copy of
+			any value.</li>
+		<li>A borrow of one of the body's own local variables, or of a parameter the generator holds by value, does not
+			last: it ends at the <span class="pre">yield</span>, and it is an error to use it after. The error names the
+			<span class="pre">yield</span>.</li>
+		<li>What a <span class="pre">yield</span> hands the caller may borrow only what the generator was lent, as
+			<span class="pre">items</span> above hands out borrows of the list. It is a borrow of that, not of the
+			generator, so a caller may keep a value handed out for as long as the generator lives, several of them at
+			once.</li>
+		<li>So the body holds each borrow it has handed out, from the <span class="pre">yield</span> to the end of the body,
+			as if a variable of its own held it. It may go on reading what it lent, or change another part of it, but it
+			may not change the thing the borrow points into, or call anything that could change the shape of the collection
+			it points into (a <span class="pre">push</span> or a <span class="pre">clear</span> on a list). The error is at
+			the change. Copy the value to hand it out, or hand out the borrow once the body has done changing what it
+			borrows.</li>
+	</ul>
+<pre>
+fn grows(xs &amp;mut List[i64]) yields &amp;i64 {
+  yield xs[0usize];
+  xs.push(1i64);   // ERROR 1339: the caller may still hold the borrow just yielded,
+                   // and the push could move the list's elements
+}
+
+fn bad(k i64) yields i64 {
+  mut x = 5i64;
+  imm r = &amp;x;
+  yield k;         // ERROR 1168: r borrows a local, which cannot last across this yield
+  yield *r;
+}
+</pre>
+	<p>The parameters are held in the generator, and the body names them as a method names its fields. It may borrow or
+		copy one, or change one declared <span class="pre">mut</span>, but it may not move one out. A parameter lives as long
+		as the generator does, not as long as the body, and dies after the locals.</p>
+
+	<h3 id="generatorsfine"><span id="dying"></span>When a generator dies</h3>
+	<p>The locals of the body die as they would in a function, in the order they were declared, last first, where the
+		body ends. A generator that dies while it waits at a <span class="pre">yield</span> finalizes the locals it holds
+		there, in the same order, and then its parameters. One never run holds only its parameters. A local moved on some
+		paths only is finalized only if it still holds its value, as anywhere.</p>
+
+
+	<h2 id="closure-reshape">Calling a closure while a collection is borrowed</h2>
+	<p>Seen from a closure: a call through a <span class="pre">&amp;&lt;mut fn(sig)</span> parameter is assumed able to
+		reshape any container, because the closure behind it may have captured one. A visitor that walks a list while its
+		closure may push to that list would move the block the walk reads:</p>
+<pre>
+fn visit[T](xs &amp;List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }          // ERROR 1339: f may push to xs
+}
+fn grow(list &amp;mut List[i64]) {
+  mut push = fn(x &amp;i64) { list.push(*x); };
+  visit(list, &amp;mut push);
+}
+</pre>
+<pre>
+Error 1339: This call could change the shape of a 'List' while a borrow into it (made by 'iter' at 4:13,
+through a path other references share) is still to be used by this call or by a value around it: '()' is
+handed something that reaches a 'List' it may change, and its body is not visible here, so it is assumed to
+change its shape (a virtual reference marked '+ ShapeKeeping' keeps the borrow across the call). A 'List'
+that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what
+is needed out before this call.
+</pre>
+	<p>Lending the list <span class="pre">&amp;imm</span> cures it: nothing can write it, so no closure handed in can have
+		captured it by <span class="pre">&amp;mut</span> (the caller's list is an <span class="pre">imm</span> variable).
+		Marking the closure <span class="pre">+ ShapeKeeping</span>, or copying what is needed out before the call, also
+		works. A read-only <span class="pre">&amp;&lt;fn</span> is not affected.</p>
+<pre>
+fn visit[T](xs &amp;imm List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }          // Ok
+}
+
+imm nums = numbers;                      // 1, 5, 9 and 12, in an imm variable
+mut sum = 0i64;
+visit(&amp;imm nums, fn(x &amp;i64) { sum += *x; });   // sum is 27
+</pre>
+	<p>A closure, read-only or not, may also write a <span class="pre">mut</span> global by its name, so a view into a
+		global is refused across a call of a closure, read-only or not, and across a call of a function that makes one
+		(<a href="mem-shape.html#globalview">A borrow into a mut global</a>).</p>
+
+
+	<p>You can now hand behaviour around as a part: a function by reference, a closure with its state, any callable
+		of a signature, or a sequence a generator makes. Each of these is chosen while the program runs; the next page
+		makes the same choices while it is compiled, with generics, and adds macros.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-generativity.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>
