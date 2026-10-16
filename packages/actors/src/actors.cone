@@ -47,6 +47,9 @@
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
 //   actors.waitQuiet()              wait until no actor is queued or running
+//   actors.waitUntilIdle()          INTERIM: wait until no actor is queued or
+//                                   running and no awaited operation is
+//                                   outstanding (WAITING FOR IDLE, below)
 //   actors.parallelRange(lo, hi, grain, body)
 //                                   run body, a callable taking (lo, hi), over
 //                                   [lo, hi) in pieces spread over the workers,
@@ -341,6 +344,24 @@
 // when main returns. A program that panics or calls C's exit ends whatever
 // the actors are doing: messages still in flight are dropped silently, and no
 // actor still alive is finalized.
+//
+// WAITING FOR IDLE (INTERIM). A program whose actors await I/O or a timer
+// ends as soon as 'main' returns if no actor is queued or running: an actor
+// paused on an operation is neither, so the finalizer above finds quiet, the
+// aio package ends the I/O, and the paused behaviour is abandoned. A program
+// that wants that work done calls 'actors.waitUntilIdle()' as the last thing
+// 'main' does. It returns when no actor is queued or running AND no awaited
+// operation is outstanding: every operation an 'await' started (an
+// Awaitable's, which the aio package's I/O all is) has been answered, and
+// what its answer started has run. A program that never goes idle, a
+// listening server above all, never returns from the call; it has no timeout.
+// A call made when nothing is going on returns at once, and one before any
+// actor starts starts no worker. The call is a stopgap: how a program ends
+// with I/O in flight is to be designed (the concurrency skein), and this
+// call may then change or go. A program that does not call it ends as it did.
+// An operation is counted from the seam that starts it (startAwait) until its
+// reply is spent, answered or dropped (Reply's finalizer), so any
+// Awaitable's maker is counted without doing anything.
 //
 // Quiescence is judged on the assumption that, once the finalizer has begun,
 // every message is sent by an actor: a thread other than main that goes on
@@ -840,10 +861,12 @@ pub struct Reply is Sendable {
   node *Link = null;
   data *u8 = null;
   cell *u8 = null;
+  op u8 = 0u8;           // 1 for the reply of an awaited operation, counted in opsStarted until it is spent
 
   // A reply never sent: its node is freed (its resume message holds nothing
   // to finalize) and its count let go. A future's is abandoned: nothing will
-  // ever arrive in it, and whoever awaits it is told so
+  // ever arrive in it, and whoever awaits it is told so. An operation's, sent
+  // or never sent, is spent here: it is no longer outstanding (waitUntilIdle)
   fn final(self &uni) {
     if to as usize != 0usize {
       libc.free(node as *u8);
@@ -852,6 +875,9 @@ pub struct Reply is Sendable {
     }
     elif cell as usize != 0usize {
       futureEnd(cell, futAbandoned);
+    }
+    if op != 0u8 {
+      opSpent();
     }
   }
 }
@@ -1225,7 +1251,10 @@ pub struct Awaitable[R] is Move {
 // Awaitable[R] is laid out alike, whatever its R
 pub fn startAwait(a *u8, rp Reply) {
   mut aw = mem.readRaw[Awaitable[u8]](a as *Awaitable[u8]);
-  aw.start(rp);
+  mut r = rp;
+  r.op = 1u8;
+  opsStarted.addOrdered(1u64, MemOrder.SeqCst);
+  aw.start(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,6 +1803,8 @@ imm statWorkers Atomic[u32];   // how many slots; 0 before the workers have star
 imm taskStealsTotal Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
+  opsStarted = Atomic[u64].of(0u64);
+  opsEnded = Atomic[u64].of(0u64);
   startOnce = sync.Once.make();
   envOnce = sync.Once.make();
   floorBytes = Atomic[usize].of(defaultFloor);
@@ -1877,6 +1908,63 @@ pub fn waitQuiet() {
     die("actors: waitQuiet called on one of the runtime's own workers, which would wait for itself");
   }
   quiesce(running.load() as *Sched);
+}
+
+// Awaited operations: how many have been started (by startAwait), and how
+// many are spent (answered, or dropped without an answer). Each only grows;
+// they are equal when none is outstanding. Not in the Sched, which the stop
+// frees: a reply may be spent while it is freed
+imm opsStarted Atomic[u64];
+imm opsEnded Atomic[u64];
+
+// An awaited operation's reply is spent, by its answer (after the answer's
+// push, so that the actor it woke is already counted as scheduled) or by its
+// drop: count it, and wake a thread waiting for idle to look again
+fn opSpent() {
+  opsEnded.addOrdered(1u64, MemOrder.SeqCst);
+  imm s = running.load() as *Sched;
+  if s as usize != 0usize {
+    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
+    sync.futexWake(&(*s).quiet);
+  }
+}
+
+// Whether nothing is going on: no operation outstanding and no actor active.
+// The spent count is read before the started one, as quiescent reads its
+// counts, so equal sums were equal at the moment between; and the started
+// count is read again after quiescent, for an operation an active actor
+// started and an answer then woke and ended, between the two looks
+fn idleNow(s *Sched) bool {
+  imm spent = opsEnded.loadOrdered(MemOrder.SeqCst);
+  imm started = opsStarted.loadOrdered(MemOrder.SeqCst);
+  started == spent and quiescent(s) and opsStarted.loadOrdered(MemOrder.SeqCst) == started;
+}
+
+// INTERIM (the package's header, WAITING FOR IDLE): wait until no actor is
+// queued or running and no awaited operation is outstanding, then return,
+// leaving the runtime running. It does not return while an actor awaits a
+// timer or a socket, nor while an operation it started is unanswered, so a
+// program that never goes idle (a listening server) never returns from it,
+// and it has no timeout. Nothing if no actor ever started the workers; a
+// panic on one of them, which would wait for itself. Messages sent from
+// threads other than main while it waits may arrive after it returns
+pub fn waitUntilIdle() {
+  if running.load() == 0usize {
+    return;
+  }
+  if me != 0usize {
+    die("actors: waitUntilIdle called on one of the runtime's own workers, which would wait for itself");
+  }
+  imm s = running.load() as *Sched;
+  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
+  while true {
+    imm q = ld32(&(*s).quiet as *u32);
+    if idleNow(s) {
+      break;
+    }
+    sync.futexWait(&(*s).quiet, q);
+  }
+  mem.atomicStore[u32](&(*s).done as *u32, 0u32, MemOrder.SeqCst);
 }
 
 // Wait until quiescent, then stop and join the workers, keeping their totals
