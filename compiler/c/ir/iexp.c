@@ -94,6 +94,29 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     return NoMatch;
 }
 
+INode *iexpMutDclEnum(INode *perm, INode **valuep) {
+    if (perm == NULL || itypeGetTypeDcl(perm) != (INode*)mutPerm || !isExpNode(*valuep))
+        return NULL;
+    INode *vtype = ((IExpNode*)*valuep)->vtype;
+    StructNode *enumdcl = structVariantEnum(itypeGetTypeDcl(vtype));
+    if (enumdcl == NULL)
+        return NULL;
+    // The enum of a generic's variant is the instance the initializer fixes ('Some(5)'
+    // is an 'Option[i32]'); a variant whose type arguments nothing fixed ('None') is of
+    // the generic itself, and keeps the variant's type
+    if (enumdcl->genericinfo != NULL)
+        return NULL;
+    // An '@unsized' enum has no size to hold a variant at, and a variant that does
+    // not coerce to it keeps its own type
+    INode *nosizeroot;
+    if (itypeNoSizeCause((INode*)enumdcl, &nosizeroot) != NULL
+        || itypeMatches((INode*)enumdcl, vtype, Coercion) == NoMatch)
+        return NULL;
+    if (!iexpCoerce(valuep, (INode*)enumdcl))
+        return NULL;
+    return (INode*)enumdcl;
+}
+
 // Is this the type of a borrowed reference, whose scope is a lifetime? A key's
 // invariant lifetime is no scope: it goes anywhere.
 int iexpIsBorrowType(INode *type) {

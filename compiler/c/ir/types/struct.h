@@ -203,6 +203,10 @@ int structIsWholeEnumMethod(INode *meth);
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
 
+// The enum a type is a variant of, or NULL where the type is not a variant of an
+// enum (an enum itself, a trait, a plain struct, anything that is not a struct)
+StructNode *structVariantEnum(INode *typedcl);
+
 // Does this type's 'is' list name this trait (once it has been taken in)?
 int structDeclaresTrait(StructNode *node, StructNode *trait);
 

@@ -504,7 +504,8 @@ fields.
 (`fnCallLowerEnumTagTest`, tried first by `fnCallLowerEnumEq`). When either
 operand is statically an empty variant of the enum, written out or held in a
 variable (a variant with nothing beyond the tag; anything else is not read, so
-nothing with an effect is dropped), the call becomes `other is &Variant` on a
+nothing with an effect is dropped), and the other is the enum or one of its variants
+(`structVariantEnum`), a value or a borrow, the call becomes `other is &Variant` on a
 read-only borrow of the other operand, with no `-eq` and no `==` of any variant
 needed. The test is built here and put in the call's place by `fnCallTypeCheck`
 (`fnCallTagTest`), under the `not` for `!=`. An empty variant on the left has no `==`

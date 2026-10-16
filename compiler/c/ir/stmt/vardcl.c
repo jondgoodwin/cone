@@ -614,6 +614,18 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
                 && borrowUniReborrows(name->value, iexpGetTypeDcl(name->value)))
                 borrowUniReborrow(&name->value, iexpGetTypeDcl(name->value));
             name->vtype = ((IExpNode *)name->value)->vtype;
+            // A 'mut' one that starts as a variant holds its enum, so another variant can follow.
+            // Not a pattern's binding, which is the matched value's own storage under its
+            // variant's name, nor a variable the compiler makes (its name starts with '-').
+            // Not a global or a static either: globals are held (the 12 Oct globals hold),
+            // so a global keeps the type its initializer has
+            if (name->scope >= 1 && !(name->flags & FlagStatic)
+                && !(name->value->tag == CastTag && (name->value->flags & FlagMatchBind))
+                && name->namesym != anonName && (&name->namesym->namestr)[0] != '-') {
+                INode *enumtype = iexpMutDclEnum(name->perm, &name->value);
+                if (enumtype)
+                    name->vtype = enumtype;
+            }
         }
         // A declared borrowed-reference type is a shared node carrying no
         // lifetime, so the variable takes a copy of it scoped as its initializer

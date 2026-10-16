@@ -1,0 +1,135 @@
+// A 'mut' local, parameter or field whose type is inferred from an initializer that
+// is a variant (a static function returning one included) holds the variant's ENUM, so another variant can be stored in it later,
+// a '&mut' of it goes where a '&mut' of the enum is wanted, and 'match' and 'is' ask it
+// which variant it holds. An 'imm' keeps the variant's own type, so its fields stay
+// reachable ('c.r'); a declared type, and a pattern's 'mut' binding, are never changed.
+//
+// Comparing with '==' or '!=' asks the tag when either operand is an empty variant of
+// the other's enum, and the other is the enum or one of its variants: two variables
+// that each hold a variant, a variable and a variant written out, either way round.
+// Each printed value was worked out by hand: 1 is true.
+
+mod enum_mut_infers_enum;
+
+import stdio use *;
+
+fn show(label &str, b bool) {
+  printStr(label);
+  printStr(" ");
+  printInt(if b {1;} else {0;});
+  printStr("\n");
+}
+
+enum Status { Todo; Done; Failed(i32); }
+enum Size { Small; Medium; Large; }
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub side i32; }
+}
+use Status;
+use Shape;
+
+// A field is inferred like a variable: 'mut' (the default) holds the enum, 'imm' the variant
+struct Holder {
+  pub mut st = Status.Todo;
+  pub imm fixed = Status.Done;
+  pub shape = Shape.Circle(4);
+}
+
+// A global keeps the type its initializer has (the globals hold), 'mut' or not
+imm gsize = Size.Large;
+
+fn reset(s &mut Status) { *s = Status.Todo; }
+
+// A 'mut' parameter that infers its type from a variant default is the enum, so a
+// caller may pass another variant and the body may store one
+fn flip(mut s = Status.Done) bool {
+  imm was = s == Status.Done;
+  s = Status.Todo;
+  was and s == Status.Todo;
+}
+
+// A static function returning a variant is a variant initializer
+enum Light {
+  Off;
+  On;
+  pub fn lit() On { On; }
+}
+
+fn kind(s &Shape) i32 {
+  match s {
+    case Circle { 1; }
+    case Square { 2; }
+  }
+}
+
+fn main() {
+  // Another variant, and the variable lent where the enum is wanted
+  mut st = Status.Done;
+  show("done-is-done", st == Status.Done);          // 1
+  st = Status.Failed(3);
+  show("failed-is-not-done", st == Status.Done);    // 0
+  show("failed-ne-done", st != Status.Done);        // 1
+  reset(&mut st);
+  show("reset-by-reference", st == Status.Todo);    // 1
+  show("is-todo", st is Todo);                      // 1
+  match st {
+    case Todo { printStr("match todo\n"); }
+    else { printStr("match other\n"); }
+  }
+
+  // A variant with fields, kept reachable by flow typing until it changes
+  mut c = Shape.Circle(r: 7);
+  printInt(i64.from(c.r));
+  printStr("\n");
+  c = Shape.Square(3);
+  show("circle-became-square", kind(&c) == 2);      // 1
+
+  // An 'imm' keeps its variant
+  imm k = Shape.Circle(r: 5);
+  printInt(i64.from(k.r));
+  printStr("\n");
+
+  // A field
+  mut h = new Holder();
+  h.st = Status.Failed(2);
+  h.shape = Shape.Square(9);
+  show("field-reassigned", kind(&h.shape) == 2);    // 1
+  show("field-status-not-todo", h.st != Status.Todo); // 1
+  show("imm-field-done", h.fixed == Status.Done);   // 1
+
+  // A parameter's variant default, and a static function that gives a variant
+  show("param-default-flips", flip());              // 1
+  show("param-other-variant", flip(Status.Failed(1))); // 0
+  mut lamp = Light.lit();
+  lamp = Light.Off;
+  show("static-fn-variant-reassigned", lamp == Light.Off); // 1
+
+  // A generic enum's variant is its instance where the initializer fixes the type arguments
+  mut o = Some(5);
+  o = None;
+  show("option-reassigned", o == None);             // 1
+  mut res = Ok[i32, i32](4);
+  res = Error[i32, i32](2);
+  show("result-reassigned", res is Error);          // 1
+  mut none = None[i32];
+  none = Some(1);
+  show("none-then-some", none != None);             // 1
+
+  // '==' between variant-typed values of one enum is a tag comparison
+  imm s = Size.Large;
+  imm m = Size.Medium;
+  imm e Size = Size.Large;
+  show("var-eq-variant", s == Size.Large);          // 1
+  show("variant-eq-var", Size.Large == s);          // 1
+  show("var-eq-var", s == m);                       // 0
+  show("var-ne-var", s != m);                       // 1
+  show("var-eq-enum", s == e);                      // 1
+  show("enum-eq-var", e == s);                      // 1
+  show("variant-eq-other-variant", Size.Small == Size.Large); // 0
+  show("global-eq-variant", gsize == Size.Large);   // 1
+  imm d = Status.Done;
+  imm f = Status.Failed(1);
+  show("payload-variant-ne-empty", f != Status.Done); // 1
+  show("empty-eq-payload-variant", d == f);         // 0
+}

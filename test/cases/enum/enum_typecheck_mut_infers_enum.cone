@@ -1,0 +1,58 @@
+// What a 'mut' declaration that infers its type from a variant (enum_mut_infers_enum)
+// leaves as it was. Type-check stage only.
+//
+// - A pattern's 'mut' binding is the matched value's own storage under its variant's
+//   name, so it stays that variant and cannot be given another.
+// - A variable of an '@unsized' enum has no size to hold the enum at, so it keeps the
+//   variant it started as.
+// - A global keeps the type its initializer has: globals are held.
+// - A generic variant whose type arguments nothing fixes ('mut n = None') is refused as
+//   it always was; 'mut o = Some(5)' is an 'Option[i32]' (enum_mut_infers_enum).
+// - '==' on two variables that each hold a variant which carries fields is still not
+//   a comparison the tag answers: the variant declares no '==' to ask.
+
+mod enum_typecheck_mut_infers_enum;
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub side i32; }
+}
+use Shape;
+
+enum @unsized Packet {
+  pub id i32;
+  struct Ping {}
+  struct Payload { pub a i64; pub b i64; pub c i64; }
+}
+use Packet;
+
+fn bindingStaysVariant() {
+  imm e Shape = Circle(1);
+  match e {
+    case mut a Circle { a = Square(1); }   //~ ErrorInvType:35 "does not match lval's type"
+    else { }
+  }
+}
+
+fn unsizedStaysVariant() {
+  mut p = Ping(1);
+  p = Payload(1, 2, 3, 4);                 //~ ErrorInvType:14 "does not match lval's type"
+}
+
+// A global keeps the type its initializer has
+mut gshape = Circle(1);
+
+fn globalStaysVariant() {
+  gshape = Square(2);                      //~ ErrorInvType:18 "does not match lval's type"
+}
+
+// A generic variant whose type arguments nothing fixes has no instance to be
+fn noTypeArguments() {
+  mut n = None;                            //~ ErrorInvType:11 "Could not infer the type parameter T of None"
+}
+
+fn payloadVariantsNotCompared() {
+  imm a = Circle(5);
+  imm b = Circle(6);
+  imm same = a == b;                       //~ ErrorNoMbr:16 "`==` not found"
+}

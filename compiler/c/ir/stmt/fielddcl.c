@@ -212,8 +212,13 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
         // constants is folded into the one it computes (litFoldConst)
         else if (!litFoldConst(&name->value))
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a constant value.");
-        else if (name->vtype == unknownType)
+        else if (name->vtype == unknownType) {
             name->vtype = ((IExpNode *)name->value)->vtype;
+            // A 'mut' one that starts as a variant holds its enum, so another variant can follow
+            INode *enumtype = iexpMutDclEnum(name->perm, &name->value);
+            if (enumtype)
+                name->vtype = enumtype;
+        }
     }
 
     // A field holds its type by value, so that type has to be able to say how

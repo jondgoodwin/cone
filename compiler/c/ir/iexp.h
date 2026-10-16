@@ -38,6 +38,14 @@ int iexpCharNumberMismatch(INode *from, INode *totypedcl);
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
 
+// A 'mut' declaration (variable or field) that takes its type from a type checked
+// initializer which is a variant of an enum ('mut st = Status.Done') holds the
+// enum, so it may be given another variant later. The initializer is coerced to the
+// enum, and the enum type is the answer. NULL, changing nothing, for any other
+// declaration: an 'imm' keeps the variant's type, as does a declared type (which
+// this is never asked of).
+INode *iexpMutDclEnum(INode *perm, INode **valuep);
+
 // The type a value coerced to 'totypedcl' carries: a borrowed reference keeps
 // the lifetime (scope) it was borrowed with, and an owner lent as a borrowed
 // reference takes the lifetime of a borrow through it, on a copy of the type

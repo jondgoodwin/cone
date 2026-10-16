@@ -2813,6 +2813,18 @@ StructNode *structBaseTraitDcl(StructNode *node) {
     return (StructNode*)itypeGetTypeDcl(trait);
 }
 
+// The enum a type is a variant of, or NULL. A variant is the one struct that has a
+// tag and an enum for its base trait.
+StructNode *structVariantEnum(INode *typedcl) {
+    if (typedcl == NULL || typedcl->tag != StructTag || (typedcl->flags & (EnumType | TraitType))
+        || !(typedcl->flags & HasTagField))
+        return NULL;
+    StructNode *base = structBaseTraitDcl((StructNode*)typedcl);
+    if (base == NULL || base->tag != StructTag || !(base->flags & EnumType))
+        return NULL;
+    return base;
+}
+
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node) {
     StructNode *base = structBaseTraitDcl(node);

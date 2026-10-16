@@ -195,6 +195,22 @@ imm phone = PhoneType.Work;
 </pre>
 	<p>Notice that the constructor supplies a value for every common field, and never for the tag:
 		that one is settled by which variant was named.</p>
+	<p>A <span class="pre">mut</span> variable, parameter or field whose type is left to be inferred from a
+		variant holds the variant's <i>enum</i>, so another variant can be stored in it later, a
+		<span class="pre">&amp;mut</span> of it goes where a <span class="pre">&amp;mut</span> of the enum is wanted, and
+		<span class="pre">match</span> and <span class="pre">is</span> ask which variant it holds:
+		<span class="pre">mut st = Status.Done</span> is a <span class="pre">Status</span>. A variant's fields stay
+		reachable by name until the variable changes (<span class="pre">mut c = Shape.Circle(5); c.r</span>).
+		An <span class="pre">imm</span> keeps the variant's own type, so <span class="pre">imm c = Shape.Circle(5)</span>
+		is a <span class="pre">Circle</span> throughout. A declared type is never changed, and neither is a
+		<span class="pre">mut</span> pattern binding, which is the matched value's own storage under its
+		variant's name. A generic enum's variant whose type arguments the value fixes gives its instance:
+		<span class="pre">mut o = Some(5)</span> is an <span class="pre">Option[i32]</span>, while
+		<span class="pre">mut o = None</span> is refused for want of the type. A global, a static and a
+		variable of an <span class="pre">@unsized</span> enum keep the variant's type. A method that only the
+		variant has is reached by name (<span class="pre">c.grow()</span>) and not through a borrow
+		(<span class="pre">(&amp;c).grow()</span>) until the variable is declared as the variant,
+		<span class="pre">mut c Shape.Circle = ...</span>.</p>
 	<p>A generic variant takes its type arguments from where its value goes, as every generic does (<a href="refgeneric.html#expected">Generics</a>): <span class="pre">imm none Option[i32] = None;</span>. Where nothing says, they are written in brackets after the name, and the values after them: <span class="pre">None[i32]</span>, <span class="pre">Some[i32](5)</span>. Square brackets after a variant give type arguments and never values, so <span class="pre">Some[5]</span> and <span class="pre">None[]</span> are refused, naming the spelling that replaces them. In a pattern or after <span class="pre">is</span> a name stays a type: <span class="pre">case is None[IoBuf]</span>.</p>
 	<p>An empty variant's name is a value, so a method can be called on it directly: with <span class="pre">pub fn get(self &amp;) i32</span> in <span class="pre">Lamp</span>, <span class="pre">Lamp.Red.get()</span> constructs <span class="pre">Red</span> and calls <span class="pre">get</span> on it, as <span class="pre">(Lamp.Red).get()</span> does. Only a method reads this way (one that takes <span class="pre">self</span>); a variant that holds values is not a value by its name alone, so <span class="pre">Shape.Circle.area()</span> is still refused for the <span class="pre">self</span> it lacks. A generic enum's empty variant has nothing to take its type arguments from as a receiver, so they are written: <span class="pre">Pending.Waiting[i64].key()</span>.</p>
 
@@ -447,7 +463,9 @@ Lamp.Red.describe()        // 10: a variant's value calls it, widened to Lamp
 	<p>A method over the whole enum is called on a value of the enum or on a value of one of its
 		variants, which is widened to the enum for the call, and by value it takes a copy. A variant's
 		value cannot lend <span class="pre">&amp;mut Lamp</span>, since the method could store another
-		variant in it: declare the value as the enum, <span class="pre">mut l Lamp = Lamp.Red</span>.
+		variant in it: a <span class="pre">mut</span> variable that starts as a variant is the enum already
+		(<span class="pre">mut l = Lamp.Red</span>), and a variable of another kind declares it,
+		<span class="pre">mut l Lamp = Lamp.Red</span>.
 		If a variant declares a method of the same name, a value typed as that variant calls the
 		variant's own, and a value typed as the enum calls the enum's. Within one enum a name is
 		declared once, so the two kinds cannot share a name there. A package that declares such a
@@ -553,8 +571,11 @@ unit != Shape.Dot                     // true
 		<span class="pre">maybeInt == None</span> and <span class="pre">maybeInt != None</span> need no
 		<span class="pre">==</span> on <span class="pre">Some</span>. The empty variant takes the type
 		of the other operand where it needs one, as it does wherever its enum is
-		<a href="refgeneric.html#expected">expected</a>. Two values that both carry fields still
-		compare as above, and are refused where a variant declares no <span class="pre">==</span>.</p>
+		<a href="refgeneric.html#expected">expected</a>. The other operand is the enum or one of its
+		variants, so a variable that holds a variant is compared too, with a variant written out or with
+		another such variable (<span class="pre">imm s = Size.Large; s == Size.Large</span>). Two values
+		that both carry fields still compare as above, and are refused where a variant declares no
+		<span class="pre">==</span>.</p>
 	<p>A variant carries fields when it holds anything beyond the tag, and that includes the
 		fields every variant of the enum has in common: an enum with
 		<span class="pre">pub time i32;</span> compares the time through each variant's own

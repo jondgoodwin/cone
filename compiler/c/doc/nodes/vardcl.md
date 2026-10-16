@@ -199,6 +199,29 @@ nothing.
    initializer's lifetime either way, and returning or storing it is judged by
    it ([references](references.md)). Before that, a local's initializer has
    the temporaries it extends made hidden locals (`varDclExtend`, below).
+   **A `mut` variable, parameter or field that infers its type from a variant of an
+   enum takes the enum** (`iexpMutDclEnum`, from `varDclTypeCheck` and
+   `fieldDclTypeCheck`): the initializer is coerced to the enum, so another variant can
+   be stored in it, and `narrowDeclared` still narrows a local to the variant it
+   started as ([narrow](narrow.md)). Left as the variant: an `imm`, a declared type, a
+   `mut` pattern binding (`FlagMatchBind`, the matched value's own storage under its
+   variant's name), a variable the compiler makes (its name starts with `-`), a
+   global or a static (globals are held, so they keep the type their initializer has),
+   a variant of the generic itself (`mut n = None`, whose type arguments nothing
+   fixes, is refused as before), and one of an `@unsized` enum or any that does not
+   coerce to its enum. A variant of a generic enum whose arguments the initializer
+   fixes takes that instance (`mut o = Some(5)` is an `Option[i32]`). A static function
+   that returns a variant counts as a variant initializer.
+
+   **KNOWN, NOT BUILT:** (1) a method only a variant has, called through a borrow of
+   the variable (`(&a).m()`), is not found, because the narrowing that lets `a.m()`
+   reach the variant ([narrow](narrow.md)) reads a name and not a borrow of one. (2)
+   A variant's own by-value method (`d.drop()`) called on an enum-typed variable
+   needs a dispatch on the tag that a value receiver does not have (`ErrorEnumValueDispatch`,
+   1150). A program that needs either declares the variant as the type: `mut d Dv.Own = ...`.
+   A writable borrow of the whole variable also ends its narrowing (`narrowBorrowed`),
+   so a field read after `&mut v` is `ErrorNarrowStale` for a variable that started
+   as a variant.
 6. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` folds the value (`litFoldConst`: an expression of constants
    becomes the literal it computes, [literals](literals.md), "Folding a

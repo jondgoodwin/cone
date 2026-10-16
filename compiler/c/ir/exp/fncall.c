@@ -1344,7 +1344,9 @@ static INode *fnCallTagTest = NULL;
 // '==' on an enum where either operand is statically an empty variant of it
 // ('x == None', 'event == Lamp.Off'): the other operand is that variant or
 // is not, so the comparison asks the tag alone, whatever the other variants
-// carry, as 'x is &None' does of a borrow. Two variants that both carry fields
+// carry, as 'x is &None' does of a borrow. The other operand is the enum or one of
+// its variants (a variable holding the first 'imm s = Size.Large; s == Size.Large'),
+// a value or a borrow of it. Two operands that both carry fields
 // are not asked this way (fnCallLowerEnumEq). Lowers the call to the test, left
 // for fnCallTypeCheck to put in its place, and answers 1; answers 0, touching
 // nothing, where the comparison is not of that shape.
@@ -1365,9 +1367,9 @@ static int fnCallLowerEnumTagTest(TypeCheckState *pstate, FnCallNode *callnode, 
         return 0;
     // The tested operand is the enum itself, a value or a borrow of it
     INode *ttype = iexpGetTypeDcl(tested);
-    int isenum = ttype == (INode*)enumnode
-        || (ttype->tag == RefTag && itypeGetTypeDcl(((RefNode*)ttype)->region) == borrowRef
-            && itypeGetTypeDcl(((RefNode*)ttype)->vtexp) == (INode*)enumnode);
+    INode *theld = ttype->tag == RefTag && itypeGetTypeDcl(((RefNode*)ttype)->region) == borrowRef
+        ? itypeGetTypeDcl(((RefNode*)ttype)->vtexp) : ttype;
+    int isenum = theld == (INode*)enumnode || structVariantEnum(theld) == enumnode;
     if (!isenum)
         return 0;
     fnCallLendEnumOperand(pstate, &tested);
