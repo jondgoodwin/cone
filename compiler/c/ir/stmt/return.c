@@ -216,8 +216,13 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
             ;
         else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
             char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype) : NULL;
+            char privwhy[400];
             if (why)
                 errorMsgNode((INode*)retnode, ErrorFnRefConv, "%s", why);
+            else if (isExpNode(retnode->exp)
+                && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
+                errorMsgNode((INode*)retnode, ErrorPrivateMatch,
+                    "Return expression type does not match return type on function.%s", privwhy);
             else
                 errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function%s",
                     iexpImmBorrowHint(retnode->exp, fnsig->rettype));

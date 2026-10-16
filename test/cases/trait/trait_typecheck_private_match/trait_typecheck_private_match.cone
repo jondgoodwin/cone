@@ -1,0 +1,66 @@
+// A private member does not meet a trait's requirement from outside its module.
+// Privacy is module-wide (doc/reference/refmodule.html: a member not 'pub' is
+// private to the module declaring its type), and a type meets a trait by the
+// members the code asking could itself name through it
+// (doc/reference/reftrait.html, "Complying with a trait"). A type whose field or
+// method the trait's requirement names, but which keeps it private to another
+// module, was taken to meet the trait anyway, and a virtual reference or a
+// generic bound then read and called it from where the name is not visible.
+//
+// vault.cone beside this file declares the types. Every way of meeting a trait
+// is refused for its private members and accepted for the same members made
+// 'pub': a virtual reference, borrowed and mutable, a plain reference to the
+// trait, and a generic's bound, written '[T Trait]', as 'where T is Trait' and
+// on a generic type. trait_private_match runs the fits that stay.
+
+mod trait_typecheck_private_match;
+
+trait Id {
+  pub id u32;
+}
+
+trait Hidden {
+  pub fn hidden(self &) u32;
+}
+
+trait Counts {
+  pub fn bump(self &mut);
+}
+
+struct Wrap[T] where T is Hidden {
+  pub v T;
+}
+
+fn readId(x &<Id) u32 { x.id; }
+fn plainId(x &Id) u32 { x.id; }
+fn callHidden(x &<Hidden) u32 { x.hidden(); }
+fn countVia(x &<mut Counts) { x.bump(); }
+fn boundId[T Id](x &T) u32 { 1u32; }
+fn boundHidden[T Hidden](x &T) u32 { 1u32; }
+fn whereHidden[T](x &T) u32 where T is Hidden { 1u32; }
+
+fn private() u32 {
+  imm s = vault.make(7u32);
+  readId(&s);          //~ ErrorPrivateMatch:10 "The field `id` of Secret is private to its module, so it does not meet Id's requirement for it from here"
+  plainId(&s);         //~ ErrorPrivateMatch:11 "The field `id` of Secret is private to its module"
+  callHidden(&s);      //~ ErrorPrivateMatch:14 "The method `hidden` of Secret is private to its module, so it does not meet Hidden's requirement for it from here"
+  imm v &<Hidden = &s; //~ ErrorPrivateMatch:20 "The method `hidden` of Secret is private to its module"
+  boundId(&s);         //~ ErrorPrivateMatch:10 "boundId requires T is Id, and Secret is not Id. The field `id` of Secret is private to its module"
+  boundHidden(&s);     //~ ErrorPrivateMatch:14 "boundHidden requires T is Hidden, and Secret is not Hidden. The method `hidden` of Secret is private to its module"
+  whereHidden(&s);     //~ ErrorPrivateMatch:14 "whereHidden requires T is Hidden, and Secret is not Hidden."
+  imm w = new Wrap(s); //~ ErrorPrivateMatch:11 "Wrap requires T is Hidden, and Secret is not Hidden."
+  0u32;
+}
+
+// A virtual reference that can write through the trait is no different: the
+// method it calls is private all the same
+fn mutate() {
+  mut c = vault.makeCounter();
+  countVia(&mut c);    //~ ErrorPrivateMatch:12 "The method `bump` of Counter is private to its module, so it does not meet Counts's requirement for it from here"
+}
+
+// The same members made 'pub' meet the traits from here
+fn open() u32 {
+  imm o = vault.makeOpen(2u32);
+  readId(&o) + plainId(&o) + callHidden(&o) + boundId(&o) + boundHidden(&o) + whereHidden(&o);
+}

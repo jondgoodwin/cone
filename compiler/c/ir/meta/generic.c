@@ -2251,8 +2251,13 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
         genericFitWhy(why, sizeof(why), inst, arg);
     if (inst == NULL)
         inst = trait;
+    // A type that has what the trait requires but keeps it private to its own
+    // module does not meet it from another, and is told so under its own code
+    int privacy = 0;
+    if (why[0] == '\0' && inst && itypeGetTypeDcl(arg)->tag == StructTag)
+        privacy = structPrivateWhy(why, sizeof(why), inst, (StructNode*)itypeGetTypeDcl(arg));
     int usermarker = why[0] == '\0' && inst && genericTraitIsMarker(inst) && !corelibIsBuiltinTrait((INode*)inst);
-    errorMsgNode((INode*)srcgencall, ErrorWhereUnmet,
+    errorMsgNode((INode*)srcgencall, privacy ? ErrorPrivateMatch : ErrorWhereUnmet,
         "%s requires %s is %s, and %s is not %s.%s%s",
         &name->namestr, &parm->namesym->namestr, isname, argname, isname, why,
         usermarker ? " A trait requiring nothing of a value is met only by a type declaring it with 'is'." : "");

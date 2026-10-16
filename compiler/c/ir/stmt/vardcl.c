@@ -596,8 +596,13 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         if (!matches) {
             int whycode;
             char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype, &whycode) : NULL;
+            char privwhy[400];
             if (why)
                 errorMsgNode(name->value, whycode, "%s", why);
+            else if (isExpNode(name->value)
+                && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)name->value)->vtype, name->vtype))
+                errorMsgNode(name->value, ErrorPrivateMatch,
+                    "Initialization value's type does not match variable's declared type.%s", privwhy);
             else
                 errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type%s",
                     iexpImmBorrowHint(name->value, name->vtype));

@@ -402,10 +402,35 @@ name it through a virtual reference, or call an enum's through a plain reference
 reaches generation. Making the virtual reference is not refused: one that reaches
 only public members is sound. A private method is still reached through `self`
 in a default's copies, where `self` is the implementer, and on the concrete type.
-An implementer's member fills a slot whatever its own visibility: matching
-(`structMapVtableImpl`) compares names and signatures only.
+An implementer's member fills a slot whatever its own visibility, for the code
+that can name it (next paragraph): `structMapVtableImpl` compares names and
+signatures only, and the visibility test is separate.
 `trait_typecheck_vref_private` pins the refusals and `trait_vref_private` what
 runs.
+
+⚠ **A private member of a type meets a trait's requirement only for code inside
+the module declaring the type.** A member not `pub` is private to that module
+(`structSeesPrivate`), and a structural fit is a discovery the asking code makes,
+so it counts only what that code could itself name through the type.
+`structMemberHidden` is the test, and it is asked in each place a fit is made:
+the field and method loops of `structMatches` (the generic bound, `where T is
+Trait`, a generic type's `where`, and the plain reference to a trait whose fields
+lead the type), and `structVirtRefHidden`, which `refvirtMatchesRef` asks after
+`structVirtRefMatches` has said yes, so the vtable's implementation list, which
+is the same for every asker, is left alone and a view the type's own module made
+still works from outside. **Which code is asking** is `inodeCheckState`, the
+`TypeCheckState` of the innermost `inodeTypeCheck` running, because a type
+comparison is handed none; outside a type check, or with neither a function nor a
+type in it, nothing is hidden and the check that made the fit stands. A type that
+declares the trait (`structDeclaresTraitTree`: `is`, through a trait naming it, or
+as a variant) has asserted the fit and is never hidden; an enrichment declared in
+the asking module is inside its base's encapsulation, so the members it takes
+across are that module's own. A refusal is `ErrorPrivateMatch`, with
+`structPrivateWhy` naming the member where the cause is privacy alone (the same
+fit holds when no code is asking): from the coercion sites (`iexpMismatchMsg`, a
+call's argument, a variable's initializer, a return) and from the unmet bound
+(`genericRequirementsMetIn`). `trait_typecheck_private_match` pins the refusals
+and `trait_private_match` what still fits.
 
 ⚠ **A slot is filled by no stronger a `self` than the trait's method declares.**
 `fnSigVrefEqual` skips the receiver, so a vtable slot's match would meet a trait's

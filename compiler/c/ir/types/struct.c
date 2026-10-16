@@ -4861,6 +4861,133 @@ FieldDclNode *structVirtRefFieldVariant(StructNode *trait, StructNode *strnode, 
     return NULL;
 }
 
+// Does the type say, in its own declaration, that it complies with the trait: by
+// 'is', directly or through a trait that names it, or as a variant of the trait?
+static int structDeclaresTraitTree(StructNode *strnode, StructNode *trait, int depth) {
+    if (strnode == trait)
+        return 1;
+    if (depth > 8)
+        return 0;
+    if (strnode->basetrait && itypeGetTypeDcl(strnode->basetrait) == (INode*)trait)
+        return 1;
+    if (strnode->traits == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(strnode->traits, cnt, nodesp)) {
+        if ((*nodesp)->tag == StructTag && structDeclaresTraitTree((StructNode*)*nodesp, trait, depth + 1))
+            return 1;
+    }
+    return 0;
+}
+
+// Is this member of a type, found by the name a trait requires, one the code
+// asking cannot count towards the trait? A member not 'pub' is private to the
+// module declaring the type (structSeesPrivate), and a requirement of a trait
+// is met by what the code asking could itself name through the type: a private
+// member does not fill it from another module, whether the fit is for a
+// reference or for a generic's bound. A type that declares the trait with 'is'
+// has said so itself, and the fit is no one's discovery. Where no type check is
+// in progress, or none with a function or a type to say whose code it is, the
+// answer is no: the check that made the fit stands.
+static int structMemberHidden(StructNode *strnode, StructNode *trait, INode *binding) {
+    if (binding == NULL || !inodeIsPrivate(binding))
+        return 0;
+    TypeCheckState *state = inodeCheckState;
+    if (state == NULL || (state->fn == NULL && state->typenode == NULL))
+        return 0;
+    if (structSeesPrivate(state, (INode*)strnode))
+        return 0;
+    return !structDeclaresTraitTree(strnode, trait, 0);
+}
+
+// Has a type, made a virtual reference to the trait by structVirtRefMatches, a
+// member the code asking cannot count towards one of the trait's slots?
+int structVirtRefHidden(StructNode *trait, StructNode *strnode) {
+    if (trait->vtable == NULL || (strnode->flags & TraitType))
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(trait->vtable->methfld, cnt, nodesp)) {
+        Name *name = (*nodesp)->tag == FnDclTag ? ((FnDclNode*)*nodesp)->namesym : ((FieldDclNode*)*nodesp)->namesym;
+        if (structMemberHidden(strnode, trait, namespaceFind(&strnode->namespace, name)))
+            return 1;
+    }
+    return 0;
+}
+
+// Why a type does not meet a trait, when the reason is that what it has of a
+// requirement is private to its module and the code asking is not in it, into
+// 'buf': the first such member, a method or a field that would otherwise fit.
+// Answers 0, leaving 'buf' empty, when no member is held back by privacy.
+static int structPrivateMember(char *buf, size_t size, StructNode *trait, StructNode *strnode) {
+    buf[0] = '\0';
+    if (!(trait->flags & TraitType) || (strnode->flags & TraitType))
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        if (meth->value)
+            continue;
+        INode *binding = namespaceFind(&strnode->namespace, meth->namesym);
+        if (binding == NULL || iNsTypeFindVrefMethod(binding, meth, (INode*)strnode) == NULL
+            || !structMemberHidden(strnode, trait, binding))
+            continue;
+        snprintf(buf, size, " The method `%s` of %s is private to its module, so it does not meet %s's requirement for it from here: declare it 'pub', or make the fit in that module.",
+            &meth->namesym->namestr, &strnode->namesym->namestr, &trait->namesym->namestr);
+        return 1;
+    }
+    for (nodelistFor(&trait->fields, cnt, nodesp)) {
+        FieldDclNode *tofld = (FieldDclNode*)*nodesp;
+        INode *fromfld = namespaceFind(&strnode->namespace, tofld->namesym);
+        if (fromfld == NULL || fromfld->tag != FieldDclTag || ((FieldDclNode*)fromfld)->hop
+            || !structMemberHidden(strnode, trait, fromfld))
+            continue;
+        INode *fld = fromfld;
+        TypeCompare match = iexpMatches(&fld, tofld->vtype, Monomorph);
+        if (match != EqMatch && match != ConvSubtype && match != CastSubtype)
+            continue;
+        snprintf(buf, size, " The field `%s` of %s is private to its module, so it does not meet %s's requirement for it from here: declare it 'pub', or make the fit in that module.",
+            &tofld->namesym->namestr, &strnode->namesym->namestr, &trait->namesym->namestr);
+        return 1;
+    }
+    return 0;
+}
+
+// The reason is privacy alone only if the fit holds when no code is asking
+int structPrivateWhy(char *buf, size_t size, StructNode *trait, StructNode *strnode) {
+    buf[0] = '\0';
+    if (trait == strnode)
+        return 0;
+    TypeCheckState *svState = inodeCheckState;
+    inodeCheckState = NULL;
+    int fits = structMatches(trait, (INode*)strnode, Monomorph) != NoMatch;
+    inodeCheckState = svState;
+    return fits && structPrivateMember(buf, size, trait, strnode);
+}
+
+// structPrivateWhy for a reference to a type refused where a reference to a trait
+// is wanted
+int structPrivateRefWhy(char *buf, size_t size, INode *fromtype, INode *totype) {
+    buf[0] = '\0';
+    INode *from = itypeGetTypeDcl(fromtype);
+    INode *to = itypeGetTypeDcl(totype);
+    if ((from->tag != RefTag && from->tag != VirtRefTag) || (to->tag != RefTag && to->tag != VirtRefTag))
+        return 0;
+    from = itypeGetTypeDcl(((RefNode*)from)->vtexp);
+    to = itypeGetTypeDcl(((RefNode*)to)->vtexp);
+    if (from->tag != StructTag || to->tag != StructTag || from == to)
+        return 0;
+    TypeCheckState *svState = inodeCheckState;
+    inodeCheckState = NULL;
+    int fits = itypeMatches(totype, fromtype, Coercion) != NoMatch;
+    inodeCheckState = svState;
+    return fits && structPrivateMember(buf, size, (StructNode*)to, (StructNode*)from);
+}
+
 // Is from-type a subtype of to-struct (we know they are not the same)
 // Subtyping is complex on structs for coercions, because we want to avoid the memory management
 // messiness of converting struct values from one type to another due to depth/width polymorphism.
@@ -4975,6 +5102,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         // to the trait is a view of any implementer, so there it is the trait.
         if (iNsTypeFindVrefMethod(frombinding, meth, constraint == Monomorph ? fromdcl : NULL) == NULL)
             return NoMatch;
+        if (structMemberHidden(from, to, frombinding))
+            return NoMatch;
     }
     // Technique for comparing fields varies ...
     if (constraint == Monomorph) {
@@ -4989,6 +5118,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;
             }
+            if (structMemberHidden(from, to, fromfld))
+                return NoMatch;
             TypeCompare match = iexpMatches(&fromfld, tofld->vtype, Monomorph);
             if (match != EqMatch && match != ConvSubtype && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
@@ -5012,6 +5143,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;
             }
+            if (structMemberHidden(from, to, fromfld))
+                return NoMatch;
             TypeCompare match = iexpMatches(&fromfld, tofld->vtype, Coercion);
             if (match != EqMatch && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",

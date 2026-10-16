@@ -370,6 +370,15 @@ void structMakeVtable(StructNode *node);
 
 // Populate the vtable implementation info for a struct ref being coerced to some trait
 TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode);
+// After structVirtRefMatches answered yes: does the type fill a slot of the trait
+// with a member private to its module that the code being checked cannot count?
+int structVirtRefHidden(StructNode *trait, StructNode *strnode);
+// Words for a fit refused for privacy alone: the first member of the type that
+// would meet the trait's requirement but is private to its module, into 'buf',
+// leading space included. Answer 1 with the words, 0 and an empty 'buf' if the
+// refusal has another cause. The second spelling takes a reference to each.
+int structPrivateWhy(char *buf, size_t size, StructNode *trait, StructNode *strnode);
+int structPrivateRefWhy(char *buf, size_t size, INode *fromtype, INode *totype);
 
 // The first field 'trait' requires that 'strnode' (or, for a trait or enum, one of its
 // implementers or variants, returned in 'offender' when given) holds under a different

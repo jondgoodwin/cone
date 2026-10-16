@@ -528,8 +528,11 @@ const char *iexpImmBorrowHint(INode *node, INode *totype) {
 // Report that expression 'node' was refused where 'totype' is wanted
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
     char *why = isExpNode(node) ? fnSigConvRefusal(((IExpNode*)node)->vtype, totype) : NULL;
+    char privwhy[400];
     if (why)
         errorMsgNode(node, ErrorFnRefConv, "%s", why);
+    else if (isExpNode(node) && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
+        errorMsgNode(node, ErrorPrivateMatch, "%s.%s", msg, privwhy);
     else
         errorMsgNode(node, code, "%s%s", msg, iexpImmBorrowHint(node, totype));
 }

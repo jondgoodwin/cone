@@ -755,6 +755,9 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
         if ((permGetFlags(to->perm) & MayWrite)
             && structVirtRefFieldVariant((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl, NULL))
             return NoMatch;
+        // A member private to another module fills no slot from here
+        if (structVirtRefHidden((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl))
+            return NoMatch;
         return ConvSubtype;  // Creating a virtual reference is always a conversion
     default:
         return NoMatch;
