@@ -76,6 +76,45 @@ fn gcd(a i32, b i32) i32 {
 gcd(84, 36)       // 12
 </pre>
 
+	<h2 id="result-tour">Functions that can fail: Result</h2>
+	<p>Some work can fail for reasons that are not a bug: a file that is not there, text that is not a number, an
+		average of nothing at all. A function like that says so in its return type, and gives back a
+		<b>Result</b>: <span class="pre">Ok</span> holding the answer, or <span class="pre">Error</span> holding what went
+		wrong. It is a good habit from the start, because it is how a program stays honest about everything that can
+		go wrong:</p>
+<pre>
+fn average(total i32, count i32) Result[i32, &amp;str] {
+  if count == 0 {
+    return Error("there is nothing to average");
+  }
+  Ok(total / count);
+}
+</pre>
+	<p>The caller cannot use a Result as though it were the answer. It checks which one it got, and a
+		<span class="pre">match</span> does that, with a case for each; a case names the variable that receives what is
+		inside. The match must cover both, so a failure cannot be overlooked by accident:</p>
+<pre>
+match average(30, 0) {
+  case imm avg Ok { print &lt;- "average: ", avg, "\n"; }
+  case imm why Error { print &lt;- "no average: ", why, "\n"; }   // this one runs
+}
+</pre>
+	<p>When only the failure matters, <span class="pre">is</span> asks which it is:
+		<span class="pre">if r is Error { ... }</span>. And a function that cannot deal with a failure itself passes it
+		on to its own caller:</p>
+<pre>
+fn doubledAverage(total i32, count i32) Result[i32, &amp;str] {
+  match average(total, count) {
+    case imm avg Ok { Ok(avg * 2); }
+    case imm why Error { Error(why); }
+  }
+}
+</pre>
+	<p>Those are the patterns in use today. Shorter ways to pass an error on are planned
+		(<a href="#planned">below</a>). The <span class="pre">&amp;str</span> here is a view of a piece of text, which
+		<a href="guide-text.html">Text</a> explains, and <span class="pre">Result</span> itself is an ordinary enum, as
+		<a href="guide-enums.html#resultenum">Enums</a> shows.</p>
+
 	<h2 id="closures-tour">Closures: functions with state</h2>
 	<p>A <b>closure</b> is a function written right where it is used, with no name of its own. It is a value like any
 		other, so it is kept in a variable and called through it. In its simplest form it uses the variables around
@@ -151,7 +190,7 @@ each f in fibonacci(10) {
 		exceptions (a <span class="pre">throws</span> signature, <span class="pre">throw</span>,
 		<span class="pre">catch</span>), a plain value returned where a Result is expected, and the
 		<span class="pre">?</span> and <span class="pre">||</span> operators on a throwing call or a Result; their
-		planned forms are gathered <a href="guide-enums.html#planned">below</a>. Generators are built: a function declared
+		planned forms are gathered <a href="#planned">below</a>. Generators are built: a function declared
 		<span class="pre">yields</span>, with <span class="pre">yield</span> and <span class="pre">yield each</span>, among
 		a module's functions or as a method of a struct, generic or not. A generator may not be
 		<span class="pre">inline</span>, have a <span class="pre">where</span> clause, or be a method of a trait, an
@@ -361,7 +400,7 @@ fn applyBoth(g &amp;fn(u32) (u32, u32), x u32) u32 {
 		that a function may throw an error value
 		(using <span class="pre">throw</span> instead of <span class="pre">return</span>)
 		if something goes wrong.
-		See <a href="guide-enums.html#throws">Results and throws</a> for more information.</p>
+		See <a href="#throws">Results and throws</a> for more information.</p>
 <pre>
 // returns an integer on success, or else throws ErrorCond value for an exception
 fn dosomething() i32 throws ErrorCond;
@@ -988,6 +1027,170 @@ struct Applied[F] { pub f So[F]; }     // Applied[fn(i32) i32] holds a So[fn(i32
 		for each closure and inlined, where the references above are compiled once and call through the closure's
 		code (<a href="mod-generativity.html#sigbound">Generics</a>). The reference is what a field or a variable of unknown
 		closure holds; the generic is what a function that only calls it uses.</p>
+
+	<h3 id="result">Result: success or an error</h3>
+	<p>In many cases it is possible and desirable to recover from an exception, when a program tries to do
+		something and fails. Today a program does it with core's enums: a <span class="pre">Result</span>, for a
+		success or an error (and an <a href="guide-enums.html#option">Option</a>, for a value that may be missing).
+		What must not happen at all is a <a href="safe-panics.html">panic</a>.</p>
+
+	<h4 id="enum">Result is an enum</h4>
+	<p>Core declares <span class="pre">enum Result[T, E] {Ok(T); Error(E);}</span>: each is a
+		<a href="guide-enums.html#forms">variant declared as a type</a>, holding its value with no field name,
+		and a pattern that binds one, <span class="pre">case imm n Ok</span>, gives that value itself.
+		A Result is built, passed, returned and matched like any
+		<a href="guide-enums.html">enum</a>, and its variants, <span class="pre">Ok</span> and
+		<span class="pre">Error</span>, are names in every module.</p>
+	<p>The standard library's functions that can fail answer one: the <span class="pre">fs</span> package's
+		(<a href="lib-fs.html#fs-failure">Failure: Result and FsError</a>), and an I/O operation an actor awaits
+		(<a href="conc-io.html#await-io">Awaiting I/O</a>).</p>
+
+	<h3 id="planned">Planned, not built: exceptions, and the operators</h3>
+	<p style="margin-left: 40px;"><i>Note: Nothing in this section is built. It is the design these pages
+		first described, kept as it was written. The design of error handling is under way, and will rewrite
+		this section, and with it the operators a Result is meant to have; the <span class="pre">?</span> operator and
+		its companions are coming soon. Today a Result is handled with <span class="pre">match</span>, as
+		<a href="#result-tour">above</a>. The operators planned for an Option are with
+		<a href="guide-enums.html#option">Option</a>.</i></p>
+
+	<h4 id="throwing">Throwing Exceptions</h4>
+	<p>Recoverable exceptions are always directly communicated from one function
+		back to the function that called it.
+		Instead of returning the expected value, it throws an exception value.</p>
+<pre>
+fn factorial(mut n i32) i32 throws bool {
+  if n &lt;= 0 { throw false; }
+  mut result = 1;
+  while n {
+    result *= n--;
+  }
+  result;
+}
+</pre>
+	<p>This function specifies <span class="pre">throws</span> as part of its signature
+		to indicate that if it cannot successfully return an integer value,
+		it will throw a boolean exception instead.
+		The first line does exactly that: If the parameter is a negative number,
+		it throws an exception value of <span class="pre">false</span>.</p>
+
+	<h4 id="handling">Exception Handling</h4>
+	<p>Now that we have a function that can throw an exception,
+		let's show different ways to handle it.</p>
+
+	<h5>Give exception a default value</h5>
+	<p>Use the <span class="pre">||</span> operator to establish
+		a default value in the event of a thrown exception.</p>
+<pre>
+fn calc(n i32) i32 {
+  factorial(n) || 0;
+}
+</pre>
+	<p>If <span class="pre">factorial</span> throws an exception,
+		it is treated as if it had returned 0 instead.
+		The value to the right of the operator must be a plain value,
+		and its type must match that of the success value on the left.</p>
+
+	<h5>Panic on exception</h5>
+	<p>Use the <span class="pre">?</span> operator following any call
+		to an exception-throwing function.</p>
+<pre>
+fn calc(n i32) i32 {
+  factorial(n)? + 10;
+}
+</pre>
+	<p>This checks whether the function call succeeds
+		and returns a value. If so, it adds 10 to that result and returns it.
+		Since this function gives no clue on how to handle an exception,
+		the default behavior on a thrown exception will be that the program
+		panics and shuts down.</p>
+
+	<h5>Exception propagation</h5>
+	<p>Another approach involves
+		re-throwing the exception to the next caller up the call stack.</p>
+<pre>
+fn calc(n i32) i32 throws bool {
+  factorial(n)? + 10;
+}
+</pre>
+	<p>Even though this function still does not specify an exception handler,
+		its signature shows that it also throws exceptions.
+		As a result, if the call to factorial throws an exception,
+		that exception will be re-thrown to the function which called
+		<span class="pre">calc</span>.
+		Importantly, there must be a type match between the exception value
+		received and the one the function re-throws.</p>
+
+	<h5>catch exception handlers</h5>
+	<p>If we want some other behavior than panic or re-throw,
+		one or more exception handlers must be specified in the form of
+		a <span class="pre">catch</span> blocks.
+		This block appears at some point after the
+		<span class="pre">try</span>, but need not be
+		immediately afterwards.</p>
+<pre>
+fn calc(n i32) i32 {
+  factorial(n)? + 10;
+
+  catch {
+    0;
+  }
+}
+</pre>
+	<p>Should the call to <span class="pre">factorial</span>
+		throw an exception, the <span class="pre">catch</span>
+		block handler will be run. In this case, it returns the number 0.
+		In effect, we have completely recovered from the thrown exception,
+		as this <span class="pre">calc</span> itself throws no exception.</p>
+	<p>Alternatively, we could handle it by throwing an
+		exception of a different type or value.</p>
+<pre>
+fn calc(n i32) i32 throws i32 {
+  factorial(n)? + 10;
+
+  catch {
+    throw 0;
+  }
+}
+</pre>
+	<p>If we need more information about the exception,
+		a variable name (and optionally a type) may also be specified on
+		the <span class="pre">catch</span> statement.
+		This binds to the exception value, so that it may be interrogated:
+	</p>
+<pre>
+fn calc(n i32) i32 throws i32 {
+  factorial(n)? + 10;
+
+  catch err {
+    if err {
+      panic("factorial failed");
+    } else {
+      throw 0;
+    }
+  }
+}
+</pre>
+	<p>This handler will trigger a <span class="pre">panic</span>
+		if the thrown exception value is <span class="pre">false</span>.
+		Otherwise, it will throw a new exception value of 0.</p>
+
+	<h4 id="throws">Results and throws</h4>
+	<p>In the discussion of <a href="#throwing">exception handling</a> above,
+		we introduced the idea that some functions can choose to throw an exception value
+		on failure and a regular value on success.
+		This is actually just a Result value being returned.
+		Built-in language syntax just makes it clearer and simpler to work with such values:</p>
+	<ul>
+		<li>A function whose return signature is <span class="pre">i32 throws bool</span> is
+			another way to write a Result type: <span class="pre">Result[i32, bool]</span></li>
+		<li><span class="pre">return 3</span> is equivalent to <span class="pre">return Ok(3)</span>.</li>
+		<li><span class="pre">throw false</span> is equivalent to <span class="pre">return Error(false)</span>.</li>
+	</ul>
+
+	<h4 id="operators">The ? and || operators</h4>
+	<p>The <span class="pre">?</span> operator (try) and <span class="pre">||</span> operator (or else)
+		offer more concise and readable ways to perform various common patterns for applying
+		pattern matching blocks against a Result value.</p>
 
 	<h3 id="generators">Generators</h3>
 
