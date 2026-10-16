@@ -1,0 +1,138 @@
+// actors.waitUntilIdle from main with I/O in flight (INTERIM: the package's
+// header says what it is and why). Without the call, main returning ends the
+// program while an actor awaits a timer, and the actor's work is lost. With
+// it, main waits for the actors AND for every awaited operation:
+//
+//   one actor awaits a 200 ms timer and then records: the call returns after
+//   it has recorded, no sooner than the timer;
+//   with no actor and nothing awaited, the call returns at once;
+//   five actors each await a timer, one of them a chain of three sleeps whose
+//   later sleeps start only after the earlier ones are answered, and another
+//   sends a message to a second actor whose behaviour then awaits a timer of
+//   its own: the call returns only when every one of them has recorded;
+//   a timer cancelled by its group still counts as an operation until it is
+//   answered (Cancelled), after which the call returns.
+//
+// The calls are made in one program, one after another, each on the
+// still-running runtime.
+
+mod idlewait;
+
+import testing use *;
+import time use Duration, Instant;
+import iocore use CancelGroup;
+import actors;
+import aio use IoLimits;
+
+imm rang Atomic[u64];
+imm chained Atomic[u64];
+imm relayed Atomic[u64];
+imm cancelled Atomic[u64];
+
+fn @initpure init() {
+  rang = Atomic[u64].of(0u64);
+  chained = Atomic[u64].of(0u64);
+  relayed = Atomic[u64].of(0u64);
+  cancelled = Atomic[u64].of(0u64);
+}
+
+fn ms(since Instant) u64 {
+  imm n = since.elapsed().millis();
+  if n < 0i64 {0u64;} else {u64.from(n);};
+}
+
+actor Timer {
+  pub async do ring(self, millis i64) {
+    imm r = await aio.sleep(Duration.fromMillis(millis));
+    rang.add(1u64);
+  }
+}
+
+actor Chained {
+  pub async do run(self) {
+    imm a = await aio.sleep(Duration.fromMillis(60i64));
+    chained.add(1u64);
+    imm b = await aio.sleep(Duration.fromMillis(60i64));
+    chained.add(1u64);
+    imm c = await aio.sleep(Duration.fromMillis(60i64));
+    chained.add(1u64);
+  }
+}
+
+actor Second {
+  pub async do late(self) {
+    imm r = await aio.sleep(Duration.fromMillis(80i64));
+    relayed.add(1u64);
+  }
+}
+
+actor First {
+  second Second;
+
+  pub async do early(self) {
+    imm r = await aio.sleep(Duration.fromMillis(80i64));
+    second.late();
+  }
+}
+
+actor Waiter {
+  pub async do hold(self, g CancelGroup) {
+    imm r = await aio.sleepIn(Duration.fromSeconds(3600i64), IoLimits.within(g));
+    cancelled.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    imm t = new Timer();
+    imm began = Instant.now();
+    t.ring(200i64);
+    actors.waitUntilIdle();
+    expectUInt(rang.load(), 1u64, "the actor awaiting a timer had recorded when the wait returned");
+    expect(ms(began) >= 190u64, "...and the wait lasted as long as the timer");
+  }
+
+  imm began = Instant.now();
+  actors.waitUntilIdle();
+  expect(ms(began) < 100u64, "nothing outstanding: the wait returns at once");
+
+  {
+    imm t1 = new Timer();
+    imm t2 = new Timer();
+    imm t3 = new Timer();
+    imm ch = new Chained();
+    imm second = new Second();
+    imm first = new First(second);
+    t1.ring(50i64);
+    t2.ring(120i64);
+    t3.ring(30i64);
+    ch.run();
+    first.early();
+    actors.waitUntilIdle();
+  }
+  expectUInt(rang.load(), 4u64, "all three more timers recorded");
+  expectUInt(chained.load(), 3u64, "all three sleeps of the chain ran, each started after the one before it was answered");
+  expectUInt(relayed.load(), 1u64, "the second actor's timer, started by a message after the first timer, ran");
+
+  {
+    imm g = CancelGroup.make();
+    imm w = new Waiter();
+    w.hold(g);
+    imm cut = new Cutter(g);
+    cut.later();
+    actors.waitUntilIdle();
+  }
+  expectUInt(cancelled.load(), 1u64, "the hour's sleep was cancelled, answered, and the actor finished before the wait returned");
+  finalAll();
+  done();
+}
+
+actor Cutter {
+  group CancelGroup;
+
+  pub async do later(self) {
+    imm r = await aio.sleep(Duration.fromMillis(100i64));
+    imm was = group.cancel();
+  }
+}

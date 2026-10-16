@@ -1,0 +1,66 @@
+// actors.waitUntilIdle from main, with no I/O in play (INTERIM: the package's
+// header says what it is and why). Called before any actor exists, it returns
+// at once and starts no worker. Called after sending, it returns only when
+// every message is handled, including those the handlers send on: a counter
+// actor sends itself 200 more messages, one at a time, and 50 plain messages
+// go to a second actor, and all 251 + 50 have been handled when the call
+// returns, with no finalAll before it. The call can be made again, with
+// nothing outstanding (at once), and again after more messages. The actors
+// are still alive afterwards: they handle a last message after the calls.
+
+mod idlewait;
+
+import testing use *;
+import actors;
+
+imm chain Atomic[u64];
+imm plain Atomic[u64];
+
+fn @initpure init() {
+  chain = Atomic[u64].of(0u64);
+  plain = Atomic[u64].of(0u64);
+}
+
+actor Chain {
+  pub async do link(self, left u64) {
+    chain.add(1u64);
+    if left > 0u64 {
+      selfactor.link(left - 1u64);
+    }
+  }
+}
+
+actor Plain {
+  pub async do bump(self) {
+    plain.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.waitUntilIdle();
+  expectUInt(u64.from(actors.stats().workers), 0u64, "no actor started: the wait started no worker");
+
+  imm c = new Chain();
+  imm p = new Plain();
+  c.link(200u64);
+  mut i = 0u64;
+  while i < 50u64 {
+    p.bump();
+    i = i + 1u64;
+  }
+  actors.waitUntilIdle();
+  expectUInt(chain.load(), 201u64, "the chain of messages sent on ran to its end before the wait returned");
+  expectUInt(plain.load(), 50u64, "every plain message handled before the wait returned");
+
+  actors.waitUntilIdle();
+  expectUInt(chain.load(), 201u64, "a second wait with nothing outstanding changes nothing");
+
+  c.link(9u64);
+  p.bump();
+  actors.waitUntilIdle();
+  expectUInt(chain.load(), 211u64, "more messages after a wait: handled before the next wait returns");
+  expectUInt(plain.load(), 51u64, "...and the plain one");
+  finalAll();
+  done();
+}
