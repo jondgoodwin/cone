@@ -380,7 +380,22 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 // - expectType is the type expected of an expression node (or unknownType/noCareType)
+static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expectType);
+
+// The state of the type check in progress, for a question that cannot be handed
+// it: a type comparison asks which code wants the answer, since a member private
+// to a module counts for the code inside it and not for the code outside
+// (structMemberHidden). NULL outside a type check.
+TypeCheckState *inodeCheckState = NULL;
+
 void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
+    TypeCheckState *svState = inodeCheckState;
+    inodeCheckState = pstate;
+    inodeTypeCheckWalk(pstate, node, expectType);
+    inodeCheckState = svState;
+}
+
+static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     // A declaration is type checked once, however many places reach it. This
     // pass lowers and replaces nodes, so a second walk of one corrupts it; the

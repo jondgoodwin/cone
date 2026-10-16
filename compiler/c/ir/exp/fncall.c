@@ -862,8 +862,11 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
             else {
                 int whycode;
                 char *why = fnSigCallRefusal(argtype, parmtype, &whycode);
+                char privwhy[400];
                 if (why)
                     errorMsgNode(*argsp, whycode, "%s", why);
+                else if (structPrivateRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
+                    errorMsgNode(*argsp, ErrorPrivateMatch, "Expression's type does not match declared parameter.%s", privwhy);
                 else
                     errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
                         iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));

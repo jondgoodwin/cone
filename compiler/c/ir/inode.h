@@ -558,6 +558,10 @@ void inodeNameRes(NameResState *pstate, INode **pgm);
 // See conec.c for high-level info about the type checking pass
 void inodeTypeCheck(TypeCheckState *pstate, INode **pgm, INode *expectType);
 
+// The state of the innermost inodeTypeCheck still running, or NULL when no type
+// check is: what a type comparison reads to know which code is asking
+extern TypeCheckState *inodeCheckState;
+
 // Perform a node walk for the current semantic analysis pass (w/ no type expected)
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
