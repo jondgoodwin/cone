@@ -607,7 +607,12 @@ A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) w
 method takes a stronger `self` than the trait's method declares (`self &mut` for
 `self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal
 that changes state, which needs `self &mut`, given where a trait is wanted whose
-method says `self &` (under any holder, a generic's `[S Trait]` included). An owner held in a
+method says `self &` (under any holder, a generic's `[S Trait]` included). A struct viewed
+as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `So[Trait]`)
+whose field has a narrower type than the trait gives it (`Shape.Circle` for `Shape`;
+for an enum, any variant's) is `ErrorVtableField`: a store through the trait would leave
+a value of another type in the field, so a view that writes sees each field at exactly
+the trait's type, and a read-only `&<` still takes the narrower one. An owner held in a
 place reached through a reference that only reads, lent as a `&mut` or `&uni`
 (a receiver, an argument, an initializer, a `So[fn]` called), is `ErrorBadPerm`,
 as a written `&mut` of the same place is; so is a `&mut` or `&uni` borrowed

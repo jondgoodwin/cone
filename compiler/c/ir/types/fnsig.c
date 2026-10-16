@@ -617,6 +617,30 @@ char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl) {
     return NULL;
 }
 
+// Why 'impl' cannot be viewed as 'trait' behind a virtual reference that may write
+// when a field the trait requires has a narrower type in 'impl' (structVirtRefFieldVariant);
+// NULL when it is not that
+char *fnSigVrefFieldRefusal(StructNode *trait, StructNode *impl) {
+    if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType))
+        return NULL;
+    StructNode *offender = impl;
+    FieldDclNode *fld = structVirtRefFieldVariant(trait, impl, &offender);
+    if (fld == NULL)
+        return NULL;
+    INode *strfld = namespaceFind(&offender->namespace, fld->namesym);
+    static char msg[900];
+    char traittype[200], impltype[200];
+    traittype[0] = impltype[0] = '\0';
+    itypeSpellCat(traittype, sizeof(traittype), fld->vtype, 0);
+    itypeSpellCat(impltype, sizeof(impltype), strfld->tag == FieldDclTag ? ((FieldDclNode*)strfld)->vtype : fld->vtype, 0);
+    snprintf(msg, sizeof(msg),
+        "%s's field `%s` is `%s`, but %s declares it `%s`: a virtual reference that may write (`&<mut`, `&<uni`, `So[Trait]`) stores a value of the trait's type, which a field of the narrower type cannot hold. A reference that writes sees a field at exactly the trait's type, so declare `%s` as `%s` in %s; a read-only `&<` may see the narrower field.",
+        &offender->namesym->namestr, &fld->namesym->namestr, impltype,
+        &trait->namesym->namestr, traittype,
+        &fld->namesym->namestr, traittype, &offender->namesym->namestr);
+    return msg;
+}
+
 // A callable reference or owner as it is written, for a message: '&<fn(i32) i32',
 // '&<mut fn(i32) i32', 'So[imm, fn(i32) i32]'. 'ref' says the region and the
 // permission it was written with, 'trait' the signature and the kind.
@@ -739,6 +763,11 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
         char *selfwhy = target->tag == StructTag ? fnSigVrefSelfRefusal(trait, (StructNode*)target) : NULL;
         if (selfwhy)
             *code = ErrorVtableSelf;
+        else if (target->tag == StructTag && (permGetFlags(toref->perm) & MayWrite)) {
+            selfwhy = fnSigVrefFieldRefusal(trait, (StructNode*)target);
+            if (selfwhy)
+                *code = ErrorVtableField;
+        }
         return selfwhy;
     }
     // A callable that may change, where one that only reads is wanted

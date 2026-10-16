@@ -387,7 +387,11 @@ an `Rc[Node]` moves while an `Rc[mut, Node]` copies.
 
 So `&mut T` is invariant in `T` and `&ro T` is covariant — the opposite of the
 intuition that a mutable reference is "more capable" and therefore more
-permissive.
+permissive. A virtual reference follows the same rule for the fields a trait
+requires: a view that may write (`&<mut`, `&<uni`, `So[Trait]`) sees each field
+at exactly the trait's type, because a store through the trait writes a value of
+that type, while a read-only one may see a narrower field (a `Shape.Circle` as the
+`Shape` the trait asks for).
 
 **Covariance does not turn a move type behind a reference into a copy type.**
 A read through the reference copies what it holds when that is a copy type, so

@@ -434,7 +434,12 @@ still coerces `uni` down. A `So[T]` owner keeps its view as `So[mut, T]`, since
 every `So` reference moves and a move out through a borrow is refused in flow.
 
 `refvirtMatchesRef` builds a fat pointer, so it refuses `Monomorph` outright and
-applies **no** value-type variance. Same-struct requires `HasTagField`, since
+applies **no** variance to the value type itself (it is a struct or trait, and the
+view never changes which). The fields the trait requires are another matter: a
+reference whose permission has `MayWrite` stores a value of the trait's field type
+through the view, so it needs each field at exactly that type
+(`structVirtRefFieldVariant`, `ErrorVtableField`), while a read-only one still
+takes a narrower field (a `Shape.Circle` seen as a `Shape`). Same-struct requires `HasTagField`, since
 the tag is what selects the vtable at runtime. A reference to an enum converted
 to a different trait needs the tag for the same reason: `structVirtRefMatches`
 registers each variant's implementation, not the enum's, and the conversion

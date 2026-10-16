@@ -4811,6 +4811,56 @@ TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode) {
     return structAddVtableImpl(trait, strnode)? ConvSubtype : NoMatch;
 }
 
+// The first field a trait requires that a type holds under a different type, or NULL
+// when every field has exactly the type the trait gives it.
+//
+// A virtual reference with write permission is INVARIANT in the type of each field it
+// reaches: a store through the trait writes a value of the trait's field type, so the
+// type's own field must be that type and no narrower. (A read-only view may widen a
+// field's type -- a Circle where the trait says Shape -- and structVirtRefMatches
+// allows it; a write of any other Shape through a writable view would leave a Square
+// in a Circle's storage.) The same holds for every conversion the field type accepts
+// without changing the stored bytes: a variant for its enum, a non-nullable reference
+// for a nullable one, a stronger reference permission for a weaker.
+//
+// Mirrors the fields structMapVtableImpl maps. A trait or enum standing for several
+// implementers answers for each of them, and 'offender' (when given) is the one that
+// differs.
+FieldDclNode *structVirtRefFieldVariant(StructNode *trait, StructNode *strnode, StructNode **offender) {
+    if (trait->vtable == NULL)
+        structMakeVtable(trait);
+
+    if (strnode->flags & TraitType) {
+        if (strnode->derived == NULL)
+            return NULL;
+        INode **varp;
+        uint32_t varcnt;
+        for (nodesFor(strnode->derived, varcnt, varp)) {
+            FieldDclNode *bad = structVirtRefFieldVariant(trait, (StructNode*)*varp, offender);
+            if (bad)
+                return bad;
+        }
+        return NULL;
+    }
+
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(trait->vtable->methfld, cnt, nodesp)) {
+        if ((*nodesp)->tag != FieldDclTag)
+            continue;
+        FieldDclNode *fld = (FieldDclNode *)*nodesp;
+        INode *strfld = namespaceFind(&strnode->namespace, fld->namesym);
+        if (strfld == NULL || strfld->tag != FieldDclTag)
+            continue;   // a missing field is the match's to refuse, not the variance's
+        if (iexpMatches(&strfld, fld->vtype, Coercion) != EqMatch) {
+            if (offender)
+                *offender = strnode;
+            return fld;
+        }
+    }
+    return NULL;
+}
+
 // Is from-type a subtype of to-struct (we know they are not the same)
 // Subtyping is complex on structs for coercions, because we want to avoid the memory management
 // messiness of converting struct values from one type to another due to depth/width polymorphism.

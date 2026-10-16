@@ -719,6 +719,7 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
 
     // Handle value type without worrying about mutability-triggered variance
     // This is because a virtual reference "supertype" can never change the value's underlying type
+    // (the fields it reaches are another matter: see the write test below)
     // Virtual references are based on structs/traits
     StructNode *tovtypedcl = (StructNode*)itypeGetTypeDcl(to->vtexp);
     StructNode *fromvtypedcl = (StructNode*)itypeGetTypeDcl(from->vtexp);
@@ -748,6 +749,12 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     case EqMatch:
     case CastSubtype:
     case ConvSubtype:
+        // The value's type cannot change, but a field of it can be stored into through
+        // the trait: a reference that may write sees each field at exactly the trait's
+        // type, while a read-only one may see a narrower field as the trait's wider type
+        if ((permGetFlags(to->perm) & MayWrite)
+            && structVirtRefFieldVariant((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl, NULL))
+            return NoMatch;
         return ConvSubtype;  // Creating a virtual reference is always a conversion
     default:
         return NoMatch;

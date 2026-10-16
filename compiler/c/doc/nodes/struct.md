@@ -1454,6 +1454,22 @@ also *registers* the vtable implementation — which is why narrowing a
 `&<Shape` back to a structural conformer works at all. Its failures are silent;
 the diagnostics are commented out.
 
+**A virtual reference that may write is invariant in its fields' types.** The
+structural field comparison above accepts a field of a narrower type than the
+trait gives it (depth subtyping with no conversion: a `Shape.Circle` for a `Shape`,
+a non-nullable reference for a nullable one), which is sound for a view that only
+reads. `refvirtMatchesRef` therefore asks `structVirtRefFieldVariant` after
+`structVirtRefMatches` accepts, when the reference's permission has `MayWrite`
+(`&<mut`, `&<uni`, `So[Trait]`): each public field the trait requires must be the
+type the trait declares, in the struct, or in every variant of a trait or enum
+(`ErrorVtableField`, said by `fnSigVrefFieldRefusal` at an argument, an initializer
+and an owner's making). Without it, `h.item = Shape.Square(9)` through a `&<mut Holds`
+of a `Ring` whose `item` is a `Shape.Circle` left a Square in a Circle's field. A
+plain `&mut` reference is already invariant (`refMatches`), and a generic's instance
+is checked against the concrete type, so only the virtual reference needed it.
+`trait_typecheck_vref_field` pins the refusals and `trait_vref_field` the read-only
+view and the exact-type write.
+
 ## Enrichment
 
 `extends` names a concrete base whose members become this type's, and whose

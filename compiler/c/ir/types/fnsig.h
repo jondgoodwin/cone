@@ -82,6 +82,11 @@ int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth);
 // method asks for a stronger 'self' than the trait's; NULL when it is not that
 char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl);
 
+// Why 'impl' cannot be viewed as 'trait' behind a virtual reference that may write
+// because a field the trait requires has a narrower type in 'impl'; NULL when it is
+// not that
+char *fnSigVrefFieldRefusal(StructNode *trait, StructNode *impl);
+
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
 // when that is the permission of its '()'; NULL when it is not that. '*code' is
 // the error code to report it under.

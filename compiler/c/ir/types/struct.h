@@ -371,6 +371,12 @@ void structMakeVtable(StructNode *node);
 // Populate the vtable implementation info for a struct ref being coerced to some trait
 TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode);
 
+// The first field 'trait' requires that 'strnode' (or, for a trait or enum, one of its
+// implementers or variants, returned in 'offender' when given) holds under a different
+// type than the trait gives it, or NULL when every field has exactly that type. A
+// writable virtual reference needs NULL: it is invariant in its fields' types.
+FieldDclNode *structVirtRefFieldVariant(StructNode *trait, StructNode *strnode, StructNode **offender);
+
 // Will from-type coerce to to-struct (we know they are not the same)
 // We can only do this for a same-sized trait supertype
 TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint constraint);

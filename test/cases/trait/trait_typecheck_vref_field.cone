@@ -1,0 +1,43 @@
+// A struct is viewed as a trait behind a virtual reference ('&<Holds',
+// 'So[Holds]') by what it declares, and a field it declares under a narrower type
+// than the trait gives it ('Shape.Circle' where the trait says 'Shape') is
+// accepted only by a reference that cannot write: trait_vref_field runs the read.
+// A reference that may write ('&<mut', 'So[Holds]') stores a value of the trait's
+// type, which would leave a Square in a field declared Circle, so it sees each
+// field at exactly the trait's type. Each is refused where the struct is given as
+// the reference: an argument, a local's initializer, an owner's making, and an
+// enum whose variant has the narrower field.
+
+mod trait_typecheck_vref_field;
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+trait Holds {
+  pub item Shape;
+}
+
+struct Ring {
+  pub item Shape.Circle;
+}
+
+enum Pet {
+  struct Dog { pub item Shape.Circle; }
+  struct Cat { pub item Shape.Circle; }
+}
+
+fn put(h &<mut Holds) {
+  h.item = Shape.Square(9);
+}
+
+fn main() {
+  mut g = new Ring(Shape.Circle(4));
+  mut p = Pet.Dog(Shape.Circle(1));
+
+  put(&mut g);                      //~ ErrorVtableField:7 "Ring's field `item` is `Circle`, but Holds declares it `Shape`"
+  mut w &<mut Holds = &mut g;       //~ ErrorVtableField:23 "a virtual reference that may write"
+  mut o So[Holds] = new So[Ring](new Ring(Shape.Circle(2))); //~ ErrorVtableField:21 "declare `item` as `Shape` in Ring"
+  put(&mut p);                      //~ ErrorVtableField:7 "Dog's field `item` is `Circle`"
+}

@@ -1,0 +1,55 @@
+// A virtual reference sees a field of the type it points at. One that cannot
+// write may see a field under a narrower type than the trait gives it: a Ring
+// declares 'item' as a Circle, and a '&<Holds' reads it as a Shape. One that may
+// write ('&<mut', 'So[Holds]') stores a value of the trait's type, so it sees a
+// field only at exactly that type: a Plate declares 'item' as a Shape, and a
+// store through the trait lands in its field. trait_typecheck_vref_field holds
+// the writable view of the narrower field, refused.
+
+mod trait_vref_field;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+trait Holds {
+  pub item Shape;
+}
+
+struct Ring {
+  pub item Shape.Circle;
+}
+
+struct Plate {
+  pub item Shape;
+}
+
+// A circle's radius, or 100 more than a square's side
+fn describe(h &<Holds) i32 {
+  match h.item {
+    case imm c Shape.Circle {c.r;}
+    case imm s Shape.Square {100 + s.s;}
+  }
+}
+
+fn swapIn(h &<mut Holds) {
+  h.item = Shape.Square(9);
+}
+
+fn main() {
+  imm ring = new Ring(Shape.Circle(4));
+  print <- "ring-read = ", describe(&ring), "\n";
+
+  mut plate = new Plate(Shape.Circle(5));
+  print <- "plate-read = ", describe(&plate), "\n";
+  swapIn(&mut plate);
+  print <- "plate-after = ", describe(&plate), "\n";
+
+  mut owned So[Holds] = new So[Plate](new Plate(Shape.Circle(6)));
+  print <- "owned-read = ", describe(owned), "\n";
+  swapIn(owned);
+  print <- "owned-after = ", describe(owned), "\n";
+}
