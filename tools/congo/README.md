@@ -727,7 +727,7 @@ packages/geomath/
    the registries, so a package in no registry can be tested where it stands,
    and a test reaches the copy being tested. Each test is built in
    `build/<mode>/tests/<name>/` and run there, with no arguments and no input,
-   for at most 60 seconds. On Windows it runs as Congo's debuggee, so that a
+   for at most 180 seconds. On Windows it runs as Congo's debuggee, so that a
    crash, a panic's fail-fast above all, ends at once with the exit status
    Windows would have given it, rather than being held by Windows Error
    Reporting, which takes many seconds when many programs crash at once

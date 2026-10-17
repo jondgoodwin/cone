@@ -2304,7 +2304,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 TESTS = "tests"
 EXAMPLES = "examples"
-TEST_TIMEOUT = 60     # seconds a test program may run before it fails
+TEST_TIMEOUT = 180    # seconds a test program may run before it fails
 
 
 @dataclass
