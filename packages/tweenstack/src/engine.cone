@@ -30,6 +30,11 @@ pub const ST_WAITING = 0u32;
 pub const ST_RUNNING = 1u32;
 pub const ST_DONE = 2u32;
 pub const ST_REMOVED = 3u32;
+// ended, pure, and kept (holding its end value) as the field's most recent
+// animator until a later start on the field supersedes it: not in the
+// registry as far as a handle is concerned, but time moving backward before
+// its end brings it back
+pub const ST_RETIRED = 4u32;
 
 pub const EV_STARTED = 0u32;
 pub const EV_ENDED = 1u32;
@@ -74,6 +79,15 @@ pub struct Running {
   pub keys List[u64];
   // it has taken the fields it writes (when it began)
   pub claimed bool;
+  // when it finished, in the registry's time, and its own clock then: where
+  // it can be put back from if time runs backward
+  pub doneAt f64;
+  pub doneClock f64;
+  // what each of its fields held when it took them (parallel to 'keys'), the
+  // value they go back to if time runs back to before its start
+  pub befores List[Value];
+  pub befHas List[bool];
+  pub beforeSet bool;
 
   pub fn make(id u32, root &Anim, startAt f64, status u32) Running {
     mut st = List[f32].empty();
@@ -82,7 +96,7 @@ pub struct Running {
     mut rc = root.copy();
     resolveDefaults(&mut rc);
     mut r = new Running(id, rc, startAt, 0.0f64, 0.0f64, 1., false, status, st, List[Value].empty(),
-      List[u32].empty(), List[u64].empty(), false);
+      List[u32].empty(), List[u64].empty(), false, 0.0f64, 0.0f64, List[Value].empty(), List[bool].empty(), false);
     gatherKeys(root, &mut r.keys);
     r;
   }
@@ -322,12 +336,12 @@ pub fn collectNode(r &Running, a &Anim, ix usize, t f64, force bool, filt &Filte
       }
       if ready {
         imm s = if tr.dur > 0. { clampf(f32.from(loc) / tr.dur, 0., 1.); } else { 1.; };
-        emit(filt, tr.target, tr.prop, mixValue(from, tr.to, tr.easing.apply(s), tr.space), out);
+        emit(filt, tr.target, tr.prop, mixValue(from, tr.to, tr.easing.applyOver(s, tr.dur), tr.space), out);
       }
     }
     case imm k Keys {
       mut lt = f32.from(loc);
-      if k.dur > 0. and !(k.easing.id == EASE_LINEAR and !k.easing.bez) { lt = k.easing.apply(lt / k.dur) * k.dur; }
+      if k.dur > 0. and !k.easing.isLinear() { lt = k.easing.applyOver(lt / k.dur, k.dur) * k.dur; }
       if lt > k.clip.length { lt = k.clip.length; }
       mut smp = Sample.empty();
       k.clip.sampleLocal(lt, &mut smp);
@@ -346,11 +360,16 @@ pub fn collectNode(r &Running, a &Anim, ix usize, t f64, force bool, filt &Filte
       }
     }
     case imm al Along {
-      imm s = al.easing.apply(if al.dur > 0. { clampf(f32.from(loc) / al.dur, 0., 1.); } else { 1.; });
+      imm s = al.easing.applyOver(if al.dur > 0. { clampf(f32.from(loc) / al.dur, 0., 1.); } else { 1.; }, al.dur);
       imm uu = if al.arc { al.curve.uAtFraction(s); } else { s; };
       emit(filt, al.target, al.prop, Value.ofVec3(al.curve.point(uu)), out);
       if al.faceProp != 0u32 {
-        emit(filt, al.target, al.faceProp, Value.ofQuat(faceRotation(al.curve.direction(uu), new Vec3(0., 1., 0.))), out);
+        if al.headings.len() > 0usize {
+          imm h = headingAlong(&al.curve, &al.headings, uu);
+          emit(filt, al.target, al.faceProp, Value.ofQuat(new Quat(0., sin(h * 0.5), 0., cos(h * 0.5))), out);
+        } else {
+          emit(filt, al.target, al.faceProp, Value.ofQuat(faceRotation(al.curve.direction(uu), new Vec3(0., 1., 0.))), out);
+        }
       }
     }
     case imm c Chase {
@@ -470,6 +489,21 @@ pub fn nodePure(r &Running, a &Anim, ix usize) bool {
 // ---------------------------------------------------------------------------
 // Advancing: stepping the stateful parts and finding the markers crossed
 
+// How far apart two values of a kind are: the length of the difference for
+// numbers, vectors and colours; the angle between two rotations, in radians
+fn valueDistance(kind u32, a Value, b Value) f32 {
+  if kind == TK_QUAT { return quatAngle(a.asQuat(), b.asQuat()); }
+  imm n = kindComps(kind);
+  mut sum f32 = 0.;
+  mut i = 0usize;
+  while i < n {
+    imm d = b.get(i) - a.get(i);
+    sum = sum + d * d;
+    i = i + 1usize;
+  }
+  sum.sqrt();
+}
+
 // Step a stepped leaf over its internal time c0 to c1 (c0 < c1, both inside its life)
 fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
   imm o = ix * SLOT;
@@ -481,9 +515,24 @@ fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
       if seq != stGet(r, o + 23usize) {
         stPut(r, o + 5usize, goalOf(r, a));
         stSet(r, o + 23usize, seq);
+        // a goal that moved wakes a chase that had arrived
+        stSet(r, o + 18usize, 0.);
       }
       imm goal = stValue(r, o + 5usize, kind);
       imm dt = f32.from(c1 - c0);
+      if ch.mode == CHASE_SPEED {
+        imm cur = stValue(r, o + 13usize, kind);
+        imm dist = valueDistance(kind, cur, goal);
+        imm step = ch.speed * dt;
+        if dist <= step {
+          // reaches the goal this step: lands exactly on it, never past it
+          stPut(r, o + 13usize, goal);
+          if ch.endOnArrival { stSet(r, o + 18usize, 1.); }
+        } else {
+          stPut(r, o + 13usize, mixValue(cur, goal, step / dist, ch.space));
+        }
+        return;
+      }
       imm f = if ch.tau <= 0. { 1.; } else { 1. - libc.expf(-dt / ch.tau); };
       stPut(r, o + 13usize, mixValue(stValue(r, o + 13usize, kind), goal, f, ch.space));
     }
@@ -599,9 +648,9 @@ pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool,
           mut found = List[Fired].empty();
           mut e0 = l0;
           mut e1 = l1;
-          if !(kk.easing.id == EASE_LINEAR and !kk.easing.bez) and d > 0. {
-            e0 = f64.from(kk.easing.apply(f32.from(l0 / d)) * kk.dur);
-            e1 = f64.from(kk.easing.apply(f32.from(l1 / d)) * kk.dur);
+          if !kk.easing.isLinear() and d > 0. {
+            e0 = f64.from(kk.easing.applyOver(f32.from(l0 / d), kk.dur) * kk.dur);
+            e1 = f64.from(kk.easing.applyOver(f32.from(l1 / d), kk.dur) * kk.dur);
           }
           kk.clip.crossings(e0, e1, 0u32, &mut found);
           mut j = 0usize;
