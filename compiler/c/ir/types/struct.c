@@ -353,6 +353,24 @@ int structIsWholeEnumMethod(INode *meth) {
     return owner == dcl;
 }
 
+// Is this a method with a body whose receiver, 'self', is taken by value? Read
+// from the parameter as written ('self' alone is 'self Self'): not a reference.
+int structTakesSelfByValue(INode *meth) {
+    if (meth == NULL || meth->tag != FnDclTag || !(meth->flags & FlagMethFld))
+        return 0;
+    FnDclNode *fn = (FnDclNode*)meth;
+    if (fn->value == NULL || fn->vtype == NULL || fn->vtype->tag != FnSigTag)
+        return 0;
+    Nodes *parms = ((FnSigNode*)fn->vtype)->parms;
+    if (parms == NULL || parms->used == 0)
+        return 0;
+    INode *self = nodesGet(parms, 0);
+    if (self->tag != VarDclTag || ((VarDclNode*)self)->namesym != selfName)
+        return 0;
+    INode *type = ((VarDclNode*)self)->vtype;
+    return type != NULL && type != unknownType && itypeGetTypeDcl(type)->tag != RefTag;
+}
+
 // Keep a clone of the enum's 'final' in a variant that declares its own, under
 // a name no source spells: it is this variant's method, so its symbol is spelled
 // after the variant, and it is in the method list, so it is checked and generated
@@ -2874,6 +2892,12 @@ static void structCheckTraitReqs(StructNode *node) {
             // An enum's method over the whole enum is no requirement of its variants
             if (structIsWholeEnumMethod(*nodesp))
                 continue;
+            // Nor is an enum's method with a body that takes 'self' by value: each
+            // variant's copy has its own 'Self' (the variant) for the receiver, the
+            // parameters and the result, and no call is dispatched on the tag for
+            // it, so nothing is required that the copy could fail to meet
+            if ((trait->flags & EnumType) && structTakesSelfByValue(*nodesp))
+                continue;
             FnDclNode *traitmeth = (FnDclNode*)*nodesp;
             INode *binding = namespaceFind(&node->namespace, traitmeth->namesym);
             // An 'extern' method has no body here and is implemented all the same:
@@ -4731,6 +4755,13 @@ void structMakeVtable(StructNode *node) {
         // Nor has an enum's method over the whole enum ('self &Lamp'): it is one
         // function, and no variant has a copy for a slot to point at
         if (structIsWholeEnumMethod(*nodesp))
+            continue;
+        // Nor has an enum's method that takes 'self' by value: a call on a value
+        // of the enum is refused (the variant's copy would have to be read from the
+        // tag), so each variant's copy is its own and meets no requirement. A slot
+        // for it would be one a variant whose copy differs in 'Self' cannot fill,
+        // leaving that variant out of the enum's vtables
+        if ((node->flags & EnumType) && structTakesSelfByValue(*nodesp))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         // A generic default is cloned into the types that declare the trait and is

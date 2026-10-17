@@ -200,6 +200,10 @@ void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INod
 // 'self &' or 'self &Self' is the variant's.
 int structIsWholeEnumMethod(INode *meth);
 
+// Is this a method with a body that takes 'self' by value ('self', 'mut self')?
+// An enum's such method is copied into each variant and requires nothing of it.
+int structTakesSelfByValue(INode *meth);
+
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
 

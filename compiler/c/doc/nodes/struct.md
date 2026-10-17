@@ -2246,6 +2246,18 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   one a variant-typed value calls. A generic enum's (`self &Box[T]`) is not built:
   the receiver is not a plain name, so it stays a per-variant method and is
   refused as before (`ErrorInvType`).
+  **A by-value receiver that names no enum is the other half**
+  (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
+  one naming the enum is whole-enum above): each variant's clone has its own
+  `Self` for the receiver, a parameter and the result, so
+  `setN(mut self, v i32) Self` is `setN(mut self A, v i32) A` in `A`.
+  The enum's own copy says `Self` = the enum, and nothing dispatches it (the call
+  on an enum value is refused above), so it is no requirement:
+  `structCheckTraitReqs` skips it, and `structMakeVtable` gives it no slot.
+  Without the second a variant whose clone differs in `Self` could not fill the
+  slot, `structMapVtableImpl` would drop the variant from the enum's vtable list,
+  and a tag index would read past it. A `self &` copy stays a requirement and a
+  slot, met by exactly its signature (`selftype` NULL in `structCheckTraitReqs`).
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.
 - **An enum's equality is declared even where it cannot be given.** Where a variant

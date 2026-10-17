@@ -1,0 +1,90 @@
+// An enum's method with a body whose receiver is written 'self' or 'mut self', by value and
+// untyped, is copied into each variant, and inside a copy 'Self' is that variant. So in A the
+// method below is 'setN(mut self A, v i32) A', and calling it on an A returns an A: the
+// result still has A's own field. The enum requires nothing of such a copy, so a copy that
+// returns 'Self', or takes it, is not held to the enum's own 'Self'. A reference receiver
+// ('self &') stays a requirement, dispatched on the tag from a reference to the enum.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_byvalue_self_copy;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+enum E {
+  pub n i32;
+  pub fn setN(mut self, v i32) Self { n = v; self; }             // returns the variant
+  pub fn total(self) i32 { n + 100; }                            // a result that is not Self
+  pub fn pick(self, other Self) Self { if n > other.n { self; } else { other; } }  // takes and returns Self
+  pub fn kind(self &) i32;                                       // a reference receiver: dispatched
+  pub struct A {
+    pub a i32;
+    pub fn kind(self &) i32 { 1; }
+  }
+  pub struct B {
+    pub b i32;
+    pub fn kind(self &) i32 { 2; }
+    pub fn total(self) i32 { n + 200; }                          // a variant's own copy replaces it
+  }
+}
+
+// A generic enum, and an extension of an enum, are copied into their variants the same way
+enum Opt[T] {
+  pub n i32;
+  pub fn setN(mut self, v i32) Self { n = v; self; }
+  pub struct Has { pub v T; }
+  pub struct Nada {}
+}
+
+enum Base {
+  pub n i32;
+  pub fn setN(mut self, v i32) Self { n = v; self; }
+  pub struct First { pub f i32; }
+}
+
+enum Ext extends Base {
+  pub fn twice(mut self) Self { n = n * 2; self; }
+  pub struct Second { pub s i32; }
+}
+
+fn viaRef(r &E) i32 { r.kind(); }
+
+fn main() {
+  // The result is the variant: its own field is still there
+  imm x = E.A(0, 5).setN(1);
+  show("A n", i64.from(x.n));                  // 1
+  show("A a", i64.from(x.a));                  // 5
+  imm y = E.B(3, 6).setN(4);
+  show("B n", i64.from(y.n));                  // 4
+  show("B b", i64.from(y.b));                  // 6
+
+  // A copy returning something that is not Self; B has its own
+  show("A total", i64.from(E.A(8, 5).total()));     // 108
+  show("B total", i64.from(y.total()));              // 204
+
+  // A copy taking and returning Self
+  imm w = E.A(1, 5).pick(E.A(7, 9));
+  show("pick n", i64.from(w.n));               // 7
+  show("pick a", i64.from(w.a));               // 9
+
+  // The variant widens to the enum, and its reference copy still dispatches on the tag
+  imm e E = x;
+  show("kind A", i64.from(viaRef(&e)));        // 1
+  imm f E = y;
+  show("kind B", i64.from(viaRef(&f)));        // 2
+
+  // A generic enum, and an extension
+  imm h = Opt.Has[i32](0, 5).setN(2);
+  show("generic n", i64.from(h.n));            // 2
+  show("generic v", i64.from(h.v));            // 5
+  imm z = Ext.Second(0, 7).setN(3).twice();
+  show("ext n", i64.from(z.n));                // 6
+  show("ext s", i64.from(z.s));                // 7
+}
