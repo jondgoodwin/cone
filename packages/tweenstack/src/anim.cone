@@ -72,6 +72,9 @@ pub struct Anim {
   // it is done, or for its life) and a group holding one
   pub life f32;
   pub easing Easing;
+  // the author named an easing; if not, starting the animator picks the default
+  // (linear if it repeats, cubic in-out if not) once
+  pub easingSet bool;
   pub space u32;
   // spring and chase
   pub zeta f32;
@@ -101,13 +104,13 @@ pub struct Anim {
   pub flags u32;
 
   fn blank(kind u32) Anim {
-    new Anim(kind, 0u32, 0u32, TK_F32, false, Value.rest(TK_F32), Value.rest(TK_F32), 0., 0., Easing.of(EASE_IN_OUT_CUBIC),
+    new Anim(kind, 0u32, 0u32, TK_F32, false, Value.rest(TK_F32), Value.rest(TK_F32), 0., 0., Easing.of(EASE_IN_OUT_CUBIC), false,
       SPACE_LINEAR, 0.5, 8., 0.4, 0u32, true, 0., 1., DIR_NORMAL, HOLD_END, 1., 0u32, List[Clip].empty(),
       List[Curve3].empty(), 0u32, false, List[Anim].empty(), List[f32].empty(), 1usize, 0u32);
   }
 
   pub fn copy(self &) Anim {
-    mut a = new Anim(kind, target, prop, vkind, hasFrom, from, to, dur, life, easing, space, zeta, omega, tau, slot,
+    mut a = new Anim(kind, target, prop, vkind, hasFrom, from, to, dur, life, easing, easingSet, space, zeta, omega, tau, slot,
       inheritVel, delay, repeat, direction, hold, rate, xgroup, List[Clip].empty(), List[Curve3].empty(), faceProp, arc,
       List[Anim].empty(), List[f32].empty(), size, flags);
     mut i = 0usize;
@@ -145,6 +148,7 @@ pub struct Anim {
     a.dur = clip.length;
     a.life = clip.length;
     a.easing = Easing.linear();
+    a.easingSet = true;
     if clip.mode == LOOP_LOOP { a.repeat = FOREVER; }
     if clip.mode == LOOP_PINGPONG { a.repeat = FOREVER; a.direction = DIR_ALTERNATE; }
     if clip.markers.len() > 0usize { a.flags = F_MARKERS; }
@@ -179,7 +183,7 @@ pub struct Anim {
   pub fn chase(target u32, prop u32, goal Value, tau f32) Anim {
     mut a = Anim.blank(AK_CHASE);
     a.target = target; a.prop = prop; a.vkind = goal.kind; a.to = goal; a.from = Value.rest(goal.kind);
-    a.tau = tau; a.dur = FOREVER; a.life = FOREVER; a.easing = Easing.linear();
+    a.tau = tau; a.dur = FOREVER; a.life = FOREVER; a.easing = Easing.linear(); a.easingSet = true;
     a.flags = F_STEPPED | F_NEEDS_INIT;
     a;
   }
@@ -192,6 +196,7 @@ pub struct Anim {
     a.target = target; a.prop = prop; a.vkind = goal.kind; a.to = goal; a.from = Value.rest(goal.kind);
     a.zeta = zeta; a.omega = omega; a.dur = springSettle(zeta, omega, SETTLE_EPS); a.life = FOREVER;
     a.easing = Easing.linear();
+    a.easingSet = true;
     a.flags = F_STEPPED | F_NEEDS_INIT;
     a;
   }
@@ -209,11 +214,22 @@ pub struct Anim {
     if kind == AK_TRANSITION { flags = flags & (F_STEPPED | F_MARKERS); }
     self;
   }
-  pub fn withEase(mut self, id u32) Anim { easing = Easing.of(id); self; }
-  pub fn withEaseParams(mut self, id u32, p0 f32, p1 f32) Anim { easing = Easing.withParams(id, p0, p1); self; }
-  pub fn withEasing(mut self, e Easing) Anim { easing = e; self; }
-  pub fn withLinear(mut self) Anim { easing = Easing.linear(); self; }
-  pub fn withBezier(mut self, x1 f32, y1 f32, x2 f32, y2 f32) Anim { easing = Easing.bezier(x1, y1, x2, y2); self; }
+  // An easing named by the author is kept, whatever else is set and in
+  // whatever order. With none named, starting the animator picks linear if it
+  // repeats (a count above one, or forever) and cubic in-out if not.
+  pub fn withEase(mut self, id u32) Anim { easing = Easing.of(id); easingSet = true; self; }
+  pub fn withEaseParams(mut self, id u32, p0 f32, p1 f32) Anim {
+    easing = Easing.withParams(id, p0, p1);
+    easingSet = true;
+    self;
+  }
+  pub fn withEasing(mut self, e Easing) Anim { easing = e; easingSet = true; self; }
+  pub fn withLinear(mut self) Anim { easing = Easing.linear(); easingSet = true; self; }
+  pub fn withBezier(mut self, x1 f32, y1 f32, x2 f32, y2 f32) Anim {
+    easing = Easing.bezier(x1, y1, x2, y2);
+    easingSet = true;
+    self;
+  }
   pub fn withSpace(mut self, s u32) Anim { space = s; self; }
 
   // How long a stepped animator lives, in seconds
@@ -223,19 +239,9 @@ pub struct Anim {
 
   pub fn withDelay(mut self, d f32) Anim { delay = d; self; }
 
-  // More than one iteration is a loop, and a loop that still has the default
-  // ease (cubic in-out) is made linear, so its repeats join without a pause;
-  // an ease chosen after this call is kept
-  pub fn withRepeat(mut self, n f32) Anim {
-    repeat = n;
-    if n > 1. and !easing.bez and easing.id == EASE_IN_OUT_CUBIC { easing = Easing.linear(); }
-    self;
-  }
-  pub fn forever(mut self) Anim {
-    repeat = FOREVER;
-    if !easing.bez and easing.id == EASE_IN_OUT_CUBIC { easing = Easing.linear(); }
-    self;
-  }
+  // The number of iterations (fractions allowed), or forever
+  pub fn withRepeat(mut self, n f32) Anim { repeat = n; self; }
+  pub fn forever(mut self) Anim { repeat = FOREVER; self; }
   pub fn withDirection(mut self, d u32) Anim { direction = d; self; }
   pub fn withHold(mut self, h u32) Anim { hold = h; self; }
   pub fn withRate(mut self, r f32) Anim { rate = r; self; }
@@ -276,6 +282,20 @@ pub struct Anim {
 
   // How many animators the tree holds
   pub fn count(self &) usize { size; }
+}
+
+// Pick the easing of every animator in the tree whose author named none:
+// linear if it repeats (more than one iteration, or forever), cubic in-out if
+// not. Done once, on the copy a registry starts, so it does not depend on the
+// order the author's calls were made in. A member of a repeated group is
+// judged by its own repeat.
+pub fn resolveDefaults(a &mut Anim) {
+  if !a.easingSet {
+    a.easing = if a.repeat > 1. { Easing.linear(); } else { Easing.of(EASE_IN_OUT_CUBIC); };
+    a.easingSet = true;
+  }
+  mut i = 0usize;
+  while i < a.kids.len() { resolveDefaults(&mut a.kids[i]); i = i + 1usize; }
 }
 
 fn flagsOfKids(a &Anim) u32 {

@@ -1,0 +1,76 @@
+// The default ease does not depend on call order or on comparing ids. An
+// animator with no easing named gets one when it is started: linear if it
+// repeats (a count above one, or forever), cubic in-out if not. An easing the
+// author named is kept, in either call order, whatever it is, even cubic
+// in-out. 0 to 10 over 1 s, read at 0.25 s: linear 2.5, cubic in-out 0.625,
+// out-quad 10 * (1 - 0.75^2) = 4.375.
+//
+//   no ease, once                         cubic in-out   0.625
+//   no ease, forever                      linear         2.5
+//   no ease, repeat 2                     linear         2.5
+//   no ease, repeat 1                     cubic in-out   0.625
+//   ease cubic in-out, then forever       cubic in-out   0.625   (the named ease kept)
+//   forever, then ease cubic in-out       cubic in-out   0.625   (either order)
+//   ease out-quad, then forever           out-quad       4.375
+//   forever, then ease out-quad           out-quad       4.375
+//   forever, then linear                  linear         2.5
+// A member of a group is judged by its own repeat: a once-only member of a
+// group that repeats gets cubic in-out; a member that repeats gets linear.
+// An animator started again from the same value gets the same answer (the
+// choice is made on the copy the registry starts, not on the value).
+
+mod defaults;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+import tweenstack use *;
+
+const X = 1030u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn base() Anim { Anim.transitionFrom(1u32, X, Value.ofF32(0.), Value.ofF32(10.), 1.); }
+
+fn atQuarter(a &Anim) f32 {
+  mut reg = Animators.make();
+  reg.start(a);
+  reg.tick(0.25f64);
+  reg.valueF32(1u32, X, -1.);
+}
+
+fn main() i32 {
+  near(atQuarter(&base()), 0.625, 0.0001, "no ease, once: cubic in-out");
+  near(atQuarter(&base().forever()), 2.5, 0.0001, "no ease, forever: linear");
+  near(atQuarter(&base().withRepeat(2.)), 2.5, 0.0001, "no ease, repeat 2: linear");
+  near(atQuarter(&base().withRepeat(1.)), 0.625, 0.0001, "no ease, repeat 1: cubic in-out");
+  near(atQuarter(&base().withEase(EASE_IN_OUT_CUBIC).forever()), 0.625, 0.0001, "named cubic in-out, then forever: kept");
+  near(atQuarter(&base().forever().withEase(EASE_IN_OUT_CUBIC)), 0.625, 0.0001, "forever, then named cubic in-out: kept");
+  near(atQuarter(&base().withEase(EASE_OUT_QUAD).forever()), 4.375, 0.0001, "named out-quad, then forever: kept");
+  near(atQuarter(&base().forever().withEase(EASE_OUT_QUAD)), 4.375, 0.0001, "forever, then named out-quad: kept");
+  near(atQuarter(&base().forever().withLinear()), 2.5, 0.0001, "forever, then linear");
+  near(atQuarter(&base().withEase(EASE_IN_OUT_CUBIC).withRepeat(3.)), 0.625, 0.0001, "named cubic in-out, repeat 3: kept");
+  // a member of a group is judged by its own repeat
+  {
+    mut parts = List[Anim].empty();
+    parts.push(Anim.transitionFrom(2u32, X, Value.ofF32(0.), Value.ofF32(10.), 1.));
+    parts.push(Anim.transitionFrom(3u32, X, Value.ofF32(0.), Value.ofF32(10.), 1.).forever());
+    imm g = together(&parts).withRepeat(2.);
+    mut reg = Animators.make();
+    reg.start(&g);
+    reg.tick(0.25f64);
+    near(reg.valueF32(2u32, X, -1.), 0.625, 0.0001, "a once-only member of a repeating group: cubic in-out");
+    near(reg.valueF32(3u32, X, -1.), 2.5, 0.0001, "a repeating member: linear");
+  }
+  // the same Anim started twice gives the same answer
+  {
+    imm a = base().forever();
+    near(atQuarter(&a), atQuarter(&a), 0.0, "the same value started twice behaves the same");
+    near(atQuarter(&a), 2.5, 0.0001, "and is linear");
+  }
+  done();
+}
