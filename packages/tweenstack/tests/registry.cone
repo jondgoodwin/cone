@@ -1,0 +1,221 @@
+// The registry: ownership of a field, interruption, and the handle's
+// operations. D and E are targets; X and Y property keys.
+//
+// REPLACEMENT. A linear 0 to 10 over 2 s at 1 s shows 5. A new animator
+//   (cubic in-out to 0 over 1 s) started there takes the field: evaluating at
+//   once still shows 5 (no jump), the old animator ends with reason
+//   END_SUPERSEDED and its handle is gone, the new one owns the field, and at
+//   1.5 s (half way, in-out gives 0.5) it shows 2.5. A third started while
+//   the second runs begins from where the second is.
+// PARTIAL OWNERSHIP. A group writing X and Y is taken from only on X by a
+//   transition on X: the group goes on writing Y and keeps running; a
+//   transition on Y then takes that too and the group, owning nothing, ends
+//   (superseded).
+// OPERATIONS. 0 to 10 over 10 s: 2 at 2 s; paused, still 2 at 5 s; resumed, 3
+//   at 6 s; rate 2, 5 at 7 s; seek to 8 shows 8 after an evaluate; stop leaves
+//   8 in the field with reason END_STOPPED and no owner. 'complete' jumps to
+//   the end: the end value at the next evaluate, then it is removed. startAt
+//   a future moment: nothing until then, a started event at it, the value from
+//   it. step moves clocks but writes nothing until evaluate.
+// FORGETTING. forgetTarget stops what writes the target's fields and drops
+//   their values. writeSample puts the values in a keyframetracks Sample.
+// COUNTS. count is the animators in the registry.
+
+mod registry;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+import tweenstack use *;
+
+const D = 1u32;
+const E = 2u32;
+const X = 1030u32;
+const Y = 1031u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn countKind(evs &List[AnimEvent], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() { if (*evs[i]).kind == kind { n = n + 1i64; } i = i + 1usize; }
+  n;
+}
+
+fn reasonOf(evs &List[AnimEvent], handle u32) i64 {
+  mut i = 0usize;
+  while i < evs.len() {
+    if (*evs[i]).kind == EV_ENDED and (*evs[i]).handle == handle { return i64.from((*evs[i]).reason); }
+    i = i + 1usize;
+  }
+  -1i64;
+}
+
+fn main() i32 {
+  // replacement
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm old = reg.start(&Anim.transition(D, X, Value.ofF32(10.), 2.).withLinear());
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "the first shows 5");
+    reg.takeEvents();
+    imm second = reg.start(&Anim.transition(D, X, Value.ofF32(0.), 1.));
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "evaluating at once: no jump");
+    expect(!reg.exists(old), "the old handle is gone");
+    expect(reg.ownerOf(D, X) == second, "the new animator owns the field");
+    expectInt(reasonOf(&reg.takeEvents(), old), i64.from(END_SUPERSEDED), "the old one ended, superseded");
+    expectInt(i64.from(reg.count()), 1i64, "one animator");
+    reg.tick(1.25f64);
+    near(reg.valueF32(D, X, -1.), 5. * (1. - 0.0625), 0.0001, "in-out a quarter in: 5 - 5 * 0.0625");
+    reg.tick(1.5f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "half way: 2.5");
+    imm shown = reg.valueF32(D, X, -1.);
+    imm third = reg.start(&Anim.transition(D, X, Value.ofF32(20.), 1.).withLinear());
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), shown, 0.00001, "a third begins where the second is");
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, X, -1.), shown + (20. - shown) * 0.5, 0.0001, "and runs from there");
+    expect(reg.exists(third), "third still runs");
+    expect(!reg.exists(second), "second is gone");
+  }
+  // a smooth replacement of motion at speed, by a spring
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    mut t f64 = 0.;
+    mut i = 0;
+    while i < 10 { t = t + 0.1f64; reg.tick(t); i = i + 1; }
+    imm at = reg.valueF32(D, X, -1.);
+    reg.start(&Anim.transition(D, X, Value.ofF32(3.), 0.5));
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), at, 0.00001, "replacing a moving transition shows no jump");
+  }
+  // partial ownership
+  {
+    mut reg = Animators.make();
+    mut parts = List[Anim].empty();
+    parts.push(Anim.transitionFrom(D, X, Value.ofF32(0.), Value.ofF32(10.), 10.).withLinear());
+    parts.push(Anim.transitionFrom(D, Y, Value.ofF32(0.), Value.ofF32(10.), 10.).withLinear());
+    imm g = together(&parts);
+    imm hg = reg.start(&g);
+    reg.tick(1.0f64);
+    reg.start(&Anim.transitionFrom(D, X, Value.ofF32(100.), Value.ofF32(100.), 1.));
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, X, -1.), 100., 0.00001, "X is the new animator's");
+    near(reg.valueF32(D, Y, -1.), 2., 0.00001, "the group still writes Y");
+    expect(reg.exists(hg), "the group runs on");
+    reg.start(&Anim.transitionFrom(D, Y, Value.ofF32(-5.), Value.ofF32(-5.), 1.));
+    expect(!reg.exists(hg), "a group that owns nothing ends");
+    expectInt(reasonOf(&reg.takeEvents(), hg), i64.from(END_SUPERSEDED), "superseded");
+  }
+  // operations
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.00001, "2 at 2 s");
+    expect(reg.pause(h), "pause");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.00001, "paused: still 2");
+    expect(reg.resume(h), "resume");
+    reg.tick(6.0f64);
+    near(reg.valueF32(D, X, -1.), 3., 0.00001, "resumed: 3");
+    expect(reg.setRate(h, 2.), "rate");
+    reg.tick(7.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "rate 2: 5");
+    near(f32.from(reg.time(h)), 5., 0.00001, "its own time is 5");
+    expect(reg.seek(h, 8.0f64), "seek");
+    expect(reg.valueF32(D, X, -1.) < 6., "seek writes nothing until evaluate");
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), 8., 0.00001, "seek to 8");
+    reg.takeEvents();
+    expect(reg.stop(h), "stop");
+    expect(!reg.exists(h), "gone");
+    expect(reg.ownerOf(D, X) == 0u32, "no owner");
+    reg.tick(20.0f64);
+    near(reg.valueF32(D, X, -1.), 8., 0.00001, "the field keeps what it had");
+    expectInt(reasonOf(&reg.takeEvents(), h), i64.from(END_STOPPED), "stopped");
+    expect(!reg.stop(h), "a gone handle answers false");
+    expect(!reg.pause(h), "pause of a gone handle");
+    expect(!reg.isPure(h), "isPure of a gone handle");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    reg.tick(1.0f64);
+    expect(reg.complete(h), "complete");
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "complete: the end value");
+    expect(!reg.exists(h), "and it is removed");
+    expectInt(countKind(&reg.takeEvents(), EV_ENDED), 1i64, "one ended event");
+    imm e = reg.start(&Anim.chase(D, Y, Value.ofF32(1.), 1.));
+    expect(!reg.complete(e), "a chase has no end to complete");
+  }
+  // future start
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.startAt(&Anim.transition(D, X, Value.ofF32(10.), 4.).withLinear(), 5.0f64);
+    expect(reg.exists(h), "waiting animators exist");
+    expect(!reg.isRunning(h), "but are not running");
+    reg.tick(4.0f64);
+    near(reg.valueF32(D, X, -1.), 0., 0.00001, "nothing before the start");
+    expectInt(countKind(&reg.takeEvents(), EV_STARTED), 0i64, "and no started event");
+    expect(reg.ownerOf(D, X) == 0u32, "it has not taken the field");
+    reg.tick(6.0f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "1 s in: 2.5");
+    expectInt(countKind(&reg.takeEvents(), EV_STARTED), 1i64, "one started event");
+  }
+  {
+    // a waiting animator does not disturb the one running until it begins
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm a = reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    imm b = reg.startAt(&Anim.transition(D, X, Value.ofF32(0.), 2.).withLinear(), 4.0f64);
+    reg.tick(3.0f64);
+    expect(reg.exists(a), "the first still runs");
+    near(reg.valueF32(D, X, -1.), 3., 0.00001, "and writes");
+    reg.tick(4.0f64);
+    expect(!reg.exists(a), "begun, the second took the field");
+    near(reg.valueF32(D, X, -1.), 4., 0.00001, "and starts from where the first had got, with no jump (4 at 4 s)");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.00001, "1 s in, half way from 4 to 0");
+    expect(reg.exists(b), "the second runs");
+  }
+  // step and evaluate
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    reg.step(3.0f64);
+    near(reg.valueF32(D, X, -1.), 0., 0.00001, "step alone writes nothing");
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), 3., 0.00001, "evaluate writes");
+  }
+  // forgetting and samples
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 1.);
+    reg.setF32(E, X, 2.);
+    imm h = reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    reg.tick(1.0f64);
+    mut smp = Sample.empty();
+    reg.writeSample(&mut smp);
+    near(smp.getF32(D, X, -1.), 1.9, 0.0001, "sample D.X");
+    near(smp.getF32(E, X, -1.), 2., 0.0001, "sample E.X");
+    reg.forgetTarget(D);
+    expect(!reg.exists(h), "forgetting a target stops what writes it");
+    expect(!reg.hasValue(D, X), "and drops its values");
+    expect(reg.hasValue(E, X), "the other target is untouched");
+  }
+  done();
+}

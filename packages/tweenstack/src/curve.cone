@@ -1,0 +1,169 @@
+// Curve3: a path in space for an 'along' animator to ride. A curve is plain
+// data (its kind and control points) with a table of arc lengths, so it can
+// be walked by distance as well as by parameter. Parameter u runs 0 to 1
+// over the whole curve.
+//
+// - CURVE_POLY: straight segments between the points.
+// - CURVE_CATMULL: a uniform Catmull-Rom spline through the points (a
+//   tangent at each point of half the chord between its neighbours, the end
+//   points using the one-sided chord). It passes through every point.
+// - CURVE_BEZIER: a chain of cubic Beziers; the points are p0 c0 c1 p1 c2
+//   c3 p2 ... (3n + 1 of them), the same control points geomath's
+//   CubicBezier3 takes.
+//
+// A parameter-speed walk (u = progress) runs fast where the control points
+// are far apart; the arc-length walk ('uAtFraction') runs at one speed.
+
+pub const CURVE_POLY = 0u32;
+pub const CURVE_CATMULL = 1u32;
+pub const CURVE_BEZIER = 2u32;
+
+pub struct Curve3 {
+  pub kind u32;
+  pub pts List[Vec3];
+  pub lens List[f32];
+  pub total f32;
+
+  pub fn make(kind u32, points &List[Vec3]) Curve3 {
+    mut c = new Curve3(kind, List[Vec3].empty(), List[f32].empty(), 0.);
+    mut i = 0usize;
+    while i < points.len() { c.pts.push(*points[i]); i = i + 1usize; }
+    c.measure();
+    c;
+  }
+
+  pub fn poly(points &List[Vec3]) Curve3 { Curve3.make(CURVE_POLY, points); }
+  pub fn catmull(points &List[Vec3]) Curve3 { Curve3.make(CURVE_CATMULL, points); }
+  pub fn bezier(points &List[Vec3]) Curve3 { Curve3.make(CURVE_BEZIER, points); }
+
+  pub fn copy(self &) Curve3 { Curve3.make(kind, &pts); }
+
+  // The number of segments (0 for a curve with fewer than two points, or
+  // for a Bezier chain that is not 3n + 1 points)
+  pub fn segments(self &) usize {
+    if pts.len() < 2usize { return 0usize; }
+    if kind == CURVE_BEZIER {
+      if (pts.len() - 1usize) % 3usize != 0usize { return 0usize; }
+      return (pts.len() - 1usize) / 3usize;
+    }
+    pts.len() - 1usize;
+  }
+
+  fn at(self &, i usize) Vec3 { *pts[i]; }
+
+  // The point of segment seg at its local parameter s (0 to 1)
+  fn segPoint(self &, seg usize, s f32) Vec3 {
+    if kind == CURVE_POLY { return self.at(seg).lerp(self.at(seg + 1usize), s); }
+    if kind == CURVE_BEZIER {
+      imm b = new CubicBezier3(self.at(seg * 3usize), self.at(seg * 3usize + 1usize), self.at(seg * 3usize + 2usize),
+        self.at(seg * 3usize + 3usize));
+      return b.point(s);
+    }
+    imm p0 = self.at(seg);
+    imm p1 = self.at(seg + 1usize);
+    imm m0 = self.catmullTangent(seg);
+    imm m1 = self.catmullTangent(seg + 1usize);
+    imm s2 = s * s;
+    imm s3 = s2 * s;
+    p0 * (2. * s3 - 3. * s2 + 1.) + m0 * (s3 - 2. * s2 + s) + p1 * (-2. * s3 + 3. * s2) + m1 * (s3 - s2);
+  }
+
+  fn segTangent(self &, seg usize, s f32) Vec3 {
+    if kind == CURVE_POLY { return self.at(seg + 1usize) - self.at(seg); }
+    if kind == CURVE_BEZIER {
+      imm b = new CubicBezier3(self.at(seg * 3usize), self.at(seg * 3usize + 1usize), self.at(seg * 3usize + 2usize),
+        self.at(seg * 3usize + 3usize));
+      return b.tangent(s);
+    }
+    imm p0 = self.at(seg);
+    imm p1 = self.at(seg + 1usize);
+    imm m0 = self.catmullTangent(seg);
+    imm m1 = self.catmullTangent(seg + 1usize);
+    imm s2 = s * s;
+    p0 * (6. * s2 - 6. * s) + m0 * (3. * s2 - 4. * s + 1.) + p1 * (-6. * s2 + 6. * s) + m1 * (3. * s2 - 2. * s);
+  }
+
+  // Half the chord between a point's neighbours (the end points' own side)
+  fn catmullTangent(self &, i usize) Vec3 {
+    imm n = pts.len();
+    imm a = if i > 0usize { i - 1usize; } else { i; };
+    imm b = if i + 1usize < n { i + 1usize; } else { i; };
+    imm d = (self.at(b) - self.at(a)) * 0.5;
+    // an end point uses the whole chord of its one neighbour
+    if a == i or b == i { return d * 2.; }
+    d;
+  }
+
+  // Which segment and where in it for the whole-curve parameter u
+  fn locate(self &, u f32, seg &mut usize, s &mut f32) {
+    imm n = self.segments();
+    if n == 0usize { *seg = 0usize; *s = 0.; return; }
+    imm x = clamp01(u) * f32.from(n);
+    mut k = usize.from(libc.floorf(x));
+    if k >= n { k = n - 1usize; }
+    *seg = k;
+    *s = x - f32.from(k);
+  }
+
+  // The point at the whole-curve parameter u (0 to 1)
+  pub fn point(self &, u f32) Vec3 {
+    if self.segments() == 0usize { return if pts.len() > 0usize { self.at(0usize); } else { new Vec3(0., 0., 0.); }; }
+    mut seg = 0usize;
+    mut s f32 = 0.;
+    self.locate(u, &mut seg, &mut s);
+    self.segPoint(seg, s);
+  }
+
+  // The unit direction of travel at u (the last good direction at a cusp)
+  pub fn direction(self &, u f32) Vec3 {
+    if self.segments() == 0usize { return new Vec3(0., 0., 1.); }
+    mut seg = 0usize;
+    mut s f32 = 0.;
+    self.locate(u, &mut seg, &mut s);
+    mut t = self.segTangent(seg, s);
+    if t.lengthSquared() < 0.0000001 {
+      // a stopped tangent (a doubled control point): nudge along the curve
+      t = self.segPoint(seg, clamp01(s + 0.01)) - self.segPoint(seg, clamp01(s - 0.01));
+    }
+    if t.lengthSquared() < 0.00000001 { return new Vec3(0., 0., 1.); }
+    t.normalize();
+  }
+
+  // Fill the arc-length table: 16 samples to a segment
+  fn measure(self &mut) {
+    lens.clear();
+    total = 0.;
+    imm n = self.segments();
+    lens.push(0.);
+    if n == 0usize { return; }
+    imm m = n * 16usize;
+    mut prev = self.point(0.);
+    mut i = 1usize;
+    while i <= m {
+      imm p = self.point(f32.from(i) / f32.from(m));
+      total = total + p.distance(prev);
+      lens.push(total);
+      prev = p;
+      i = i + 1usize;
+    }
+  }
+
+  // The length of the curve
+  pub fn length(self &) f32 { total; }
+
+  // The parameter u at which the fraction f (0 to 1) of the length is behind
+  pub fn uAtFraction(self &, f f32) f32 {
+    if total <= 0. or lens.len() < 2usize { return clamp01(f); }
+    imm want = clamp01(f) * total;
+    mut lo = 0usize;
+    mut hi = lens.len() - 1usize;
+    while hi - lo > 1usize {
+      imm mid = (lo + hi) / 2usize;
+      if *lens[mid] <= want { lo = mid; } else { hi = mid; }
+    }
+    imm l0 = *lens[lo];
+    imm l1 = *lens[hi];
+    imm k = if l1 > l0 { (want - l0) / (l1 - l0); } else { 0.; };
+    (f32.from(lo) + k) / f32.from(lens.len() - 1usize);
+  }
+}

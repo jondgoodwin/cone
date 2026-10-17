@@ -1,0 +1,332 @@
+// The animator kinds other than a plain transition: keys, along, chase and
+// spring. D is target 1; X, Y and Q are property keys.
+//
+// KEYS. A clip with a track 0 to 10 over 1 s and a marker (id 7, argument 2)
+//   at 0.5 s: 2.5 at 0.25 s; the marker is raised once, crossing 0.5 s, with
+//   the clip time 0.5. A LOOP clip repeats (2.5 at 1.25 s, the marker again
+//   at 1.5 s: two by 2 s); a PINGPONG clip goes back (7.5 at 1.25 s).
+//   'scrub' raises the markers crossed, either way; 'seek' none.
+// ALONG. A polyline (0,0,0) (10,0,0) (10,10,0) of length 20: at progress
+//   0.25 it is at (5,0,0), at 0.5 at (10,0,0), at 0.75 at (10,5,0). By arc
+//   length on (0,0,0) (1,0,0) (1,9,0) (length 10) half way is 5 along: (1,4,0),
+//   while by parameter it is the corner (1,0,0). A Catmull-Rom curve passes
+//   through its middle point at 0.5; a Bezier at 0.5 is (p0 + 3 c0 + 3 c1 +
+//   p1) / 8. Facing turns +Z to the direction of travel: along +x that is
+//   90 degrees about y, and along +y (the up axis, a degenerate case) it
+//   still sends +Z to +y.
+// CHASE. A time constant 1 s towards 10 from 0: 10 * (1 - e^-1) = 6.3212 at
+//   1 s, the same in two steps of 0.5 s (frame-rate independent). Moved to
+//   0 at 1 s, a second later it is 6.3212 * e^-1 = 2.3254. Never ends, not
+//   pure.
+// SPRING. Damping 0.5, omega 10 from 0 to 1: the closed form of
+//   keyframetracks' springValue at 0.3 s. It settles (EV_ENDED) and lands
+//   exactly on 1. Critical damping omega 10: at 0.2 s the position is 1 -
+//   3 e^-2 and the velocity 100 * 0.2 * e^-2 = 2.7067; retargeted to 2 there
+//   the position in the next millisecond moves by that velocity, the
+//   velocity carried over. Pure until the goal moves. A spring started over
+//   a running 1 unit/s transition takes that velocity (its next millisecond
+//   moves by about 0.001, not 0.0001). A rotation spring ends on its goal
+//   and a mid-flight retarget is continuous.
+
+mod kinds;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+import tweenstack use *;
+
+const D = 1u32;
+const X = 1030u32;
+const Y = 1031u32;
+const Q = 1032u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn countKind(evs &List[AnimEvent], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() { if (*evs[i]).kind == kind { n = n + 1i64; } i = i + 1usize; }
+  n;
+}
+
+fn rampClip(mode u32) Clip {
+  mut c = Clip.make("ramp", mode);
+  mut t = Track.make(TK_F32);
+  t.addF32(0., 0., INTERP_LINEAR);
+  t.addF32(1., 10., INTERP_LINEAR);
+  c.addTrack(D, X, t);
+  c.addMarker(0.5, 7u32, 2.);
+  c;
+}
+
+fn polyPts(a Vec3, b Vec3, c Vec3) List[Vec3] {
+  mut l = List[Vec3].empty();
+  l.push(a); l.push(b); l.push(c);
+  l;
+}
+
+fn main() i32 {
+  // keys
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.keys(&rampClip(LOOP_ONCE)));
+    reg.tick(0.25f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "keys at 0.25");
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 0i64, "no marker yet");
+    reg.tick(0.75f64);
+    near(reg.valueF32(D, X, -1.), 7.5, 0.00001, "keys at 0.75");
+    imm evs = reg.takeEvents();
+    expectInt(countKind(&evs, EV_MARKER), 1i64, "one marker crossed");
+    mut mk = newEvent(EV_MARKER, 0u32);
+    mut i = 0usize;
+    while i < evs.len() { if (*evs[i]).kind == EV_MARKER { mk = *evs[i]; } i = i + 1usize; }
+    expectInt(i64.from(mk.id), 7i64, "marker id");
+    near(mk.arg, 2., 0.00001, "marker argument");
+    near(mk.time, 0.5, 0.00001, "marker clip time");
+    expectInt(i64.from(mk.handle), i64.from(h), "marker names the handle");
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "keys end value");
+    expectInt(i64.from(reg.count()), 0i64, "keys animator removed at its end");
+  }
+  {
+    mut reg = Animators.make();
+    imm h = reg.start(&Anim.keys(&rampClip(LOOP_LOOP)));
+    reg.tick(1.25f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.0001, "loop clip repeats");
+    reg.tick(2.0f64);
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 2i64, "marker at 0.5 and 1.5");
+    expect(reg.isRunning(h), "a loop clip does not end");
+  }
+  {
+    mut reg = Animators.make();
+    reg.start(&Anim.keys(&rampClip(LOOP_PINGPONG)));
+    reg.tick(1.25f64);
+    near(reg.valueF32(D, X, -1.), 7.5, 0.0001, "ping-pong clip goes back");
+  }
+  {
+    mut reg = Animators.make();
+    imm h = reg.start(&Anim.keys(&rampClip(LOOP_ONCE)));
+    reg.tick(0.1f64);
+    reg.seek(h, 0.75f64);
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), 7.5, 0.0001, "seek puts the clock there");
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 0i64, "seek raises no marker");
+    reg.scrub(h, 0.25f64);
+    reg.evaluate();
+    near(reg.valueF32(D, X, -1.), 2.5, 0.0001, "scrub puts the clock there");
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 1i64, "scrubbing back across the marker raises it");
+    reg.scrub(h, 0.75f64);
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 1i64, "and forward again");
+  }
+  {
+    mut reg = Animators.make();
+    mut t = Track.make(TK_VEC3);
+    t.addVec3(0., new Vec3(0., 0., 0.), INTERP_LINEAR);
+    t.addVec3(2., new Vec3(4., 8., 12.), INTERP_LINEAR);
+    reg.start(&Anim.keysTrack(D, Y, &t));
+    reg.tick(1.0f64);
+    imm v = reg.valueVec3(D, Y, new Vec3(0., 0., 0.));
+    near(v.y, 4., 0.00001, "keysTrack on a vec3");
+  }
+  // along
+  {
+    mut reg = Animators.make();
+    imm curve = Curve3.poly(&polyPts(new Vec3(0., 0., 0.), new Vec3(10., 0., 0.), new Vec3(10., 10., 0.)));
+    near(curve.length(), 20., 0.001, "curve length");
+    reg.start(&Anim.along(D, X, &curve, 4.).withLinear());
+    reg.tick(1.0f64);
+    imm p = reg.valueVec3(D, X, new Vec3(-1., -1., -1.));
+    near(p.x, 5., 0.0001, "along at 0.25: x");
+    near(p.y, 0., 0.0001, "along at 0.25: y");
+    reg.tick(2.0f64);
+    imm p2 = reg.valueVec3(D, X, new Vec3(-1., -1., -1.));
+    near(p2.x, 10., 0.0001, "corner x");
+    near(p2.y, 0., 0.0001, "corner y");
+    reg.tick(3.0f64);
+    imm p3 = reg.valueVec3(D, X, new Vec3(-1., -1., -1.));
+    near(p3.x, 10., 0.0001, "third quarter x");
+    near(p3.y, 5., 0.0001, "third quarter y");
+    reg.tick(4.0f64);
+    imm p4 = reg.valueVec3(D, X, new Vec3(-1., -1., -1.));
+    near(p4.y, 10., 0.0001, "end y");
+  }
+  {
+    imm pts = polyPts(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(1., 9., 0.));
+    imm curve = Curve3.poly(&pts);
+    mut reg = Animators.make();
+    reg.start(&Anim.along(D, X, &curve, 2.).withLinear());
+    reg.start(&Anim.along(D, Y, &curve, 2.).withLinear().byArcLength(true));
+    reg.tick(1.0f64);
+    imm a = reg.valueVec3(D, X, new Vec3(-1., -1., -1.));
+    imm b = reg.valueVec3(D, Y, new Vec3(-1., -1., -1.));
+    near(a.x, 1., 0.0001, "by parameter, half way is the corner: x");
+    near(a.y, 0., 0.0001, "by parameter: y");
+    near(b.x, 1., 0.0001, "by arc length, half way: x");
+    near(b.y, 4., 0.001, "by arc length, half way is 5 along: y");
+  }
+  {
+    imm cm = Curve3.catmull(&polyPts(new Vec3(0., 0., 0.), new Vec3(3., 4., 0.), new Vec3(6., 0., 0.)));
+    imm m = cm.point(0.5);
+    near(m.x, 3., 0.0001, "Catmull-Rom passes through the middle: x");
+    near(m.y, 4., 0.0001, "Catmull-Rom passes through the middle: y");
+    near(cm.point(0.).x, 0., 0.0001, "starts at the first point");
+    near(cm.point(1.).x, 6., 0.0001, "ends at the last");
+    mut bp = List[Vec3].empty();
+    bp.push(new Vec3(0., 0., 0.)); bp.push(new Vec3(0., 8., 0.)); bp.push(new Vec3(8., 8., 0.)); bp.push(new Vec3(8., 0., 0.));
+    imm bz = Curve3.bezier(&bp);
+    imm bm = bz.point(0.5);
+    near(bm.x, 4., 0.0001, "Bezier at 0.5: x = (0 + 0 + 24 + 8) / 8");
+    near(bm.y, 6., 0.0001, "Bezier at 0.5: y = (0 + 24 + 24 + 0) / 8");
+  }
+  {
+    mut reg = Animators.make();
+    imm curve = Curve3.poly(&polyPts(new Vec3(0., 0., 0.), new Vec3(10., 0., 0.), new Vec3(10., 10., 0.)));
+    reg.start(&Anim.along(D, X, &curve, 4.).withLinear().facing(Q));
+    reg.tick(1.0f64);
+    imm q = reg.valueQuat(D, Q, Quat.identity());
+    imm f = q * new Vec3(0., 0., 1.);
+    near(f.x, 1., 0.0001, "facing along +x: forward x");
+    near(f.z, 0., 0.0001, "facing along +x: forward z");
+    near(q.y, 0.707107, 0.0001, "90 degrees about y");
+    reg.tick(3.0f64);
+    imm q2 = reg.valueQuat(D, Q, Quat.identity());
+    imm f2 = q2 * new Vec3(0., 0., 1.);
+    near(f2.y, 1., 0.0001, "facing along +y: forward y");
+    near(q2.length(), 1., 0.0001, "unit quaternion");
+  }
+  // chase
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.chase(D, X, Value.ofF32(10.), 1.));
+    expect(!reg.isPure(h), "a chase is not pure");
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 6.3212, 0.001, "chase after one time constant");
+    expect(reg.setGoal(h, 0u32, Value.ofF32(0.)), "set the goal");
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, X, -1.), 2.3254, 0.001, "chase after the goal moved");
+    reg.tick(50.0f64);
+    expect(reg.isRunning(h), "a chase does not end");
+    near(reg.valueF32(D, X, -1.), 0., 0.001, "and arrives");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&Anim.chase(D, X, Value.ofF32(10.), 1.));
+    reg.tick(0.5f64);
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 6.3212, 0.001, "chase in two steps is the same");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&Anim.chase(D, X, Value.ofF32(10.), 1.).withLife(1.));
+    reg.tick(2.0f64);
+    expectInt(i64.from(reg.count()), 0i64, "a chase with a life ends at it");
+  }
+  // spring
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.spring(D, X, Value.ofF32(1.), 0.5, 10.));
+    expect(reg.isPure(h), "a spring with a fixed goal is pure");
+    reg.tick(0.3f64);
+    near(reg.valueF32(D, X, -1.), springValue(0.5, 10., 0., 0., 1., 0.3), 0.0001, "spring is the closed form");
+    reg.tick(0.6f64);
+    near(reg.valueF32(D, X, -1.), springValue(0.5, 10., 0., 0., 1., 0.6), 0.0001, "and at 0.6 s");
+    imm settle = springSettle(0.5, 10., SETTLE_EPS);
+    reg.takeEvents();
+    reg.tick(f64.from(settle) + 0.1f64);
+    near(reg.valueF32(D, X, -1.), 1., 0.0, "it lands exactly on the goal");
+    expectInt(countKind(&reg.takeEvents(), EV_ENDED), 1i64, "and ends once");
+    expect(!reg.exists(h), "removed");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.spring(D, X, Value.ofF32(1.), 1., 10.));
+    reg.tick(0.2f64);
+    imm x = reg.valueF32(D, X, -1.);
+    near(x, 1. - 3. * libc.expf(-2.), 0.0001, "critical spring position at 0.2");
+    near(springVelocity(1., 10., -1., 0., 0.2), 2.7067, 0.001, "and the analytic velocity");
+    expect(reg.isPure(h), "still pure");
+    reg.setGoal(h, 0u32, Value.ofF32(2.));
+    reg.tick(0.201f64);
+    expect(!reg.isPure(h), "retargeted: not pure");
+    imm moved = reg.valueF32(D, X, -1.) - x;
+    near(moved, 0.0027067, 0.0002, "the velocity carries over a retarget");
+    imm v = reg.velocity(D, X).x;
+    near(v, 2.7067, 0.25, "and the field velocity agrees");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.0, "ends on the new goal");
+  }
+  {
+    // a spring over a running transition takes its velocity
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    mut t f64 = 0.;
+    mut i = 0;
+    while i < 10 { t = t + 0.1f64; reg.tick(t); i = i + 1; }
+    near(reg.valueF32(D, X, -1.), 1., 0.0001, "transition at 1 s");
+    imm before = reg.valueF32(D, X, -1.);
+    reg.start(&Anim.spring(D, X, Value.ofF32(10.), 1., 5.));
+    reg.tick(1.001f64);
+    near(reg.valueF32(D, X, -1.) - before, 0.0011, 0.0002, "the spring continues at the field's velocity");
+    mut reg2 = Animators.make();
+    reg2.setF32(D, X, 0.);
+    reg2.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    t = 0.;
+    i = 0;
+    while i < 10 { t = t + 0.1f64; reg2.tick(t); i = i + 1; }
+    reg2.start(&Anim.spring(D, X, Value.ofF32(10.), 1., 5.).withInheritVelocity(false));
+    reg2.tick(1.001f64);
+    near(reg2.valueF32(D, X, -1.) - before, 0.0001, 0.00006, "without it, the spring starts from rest");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setQuat(D, Q, Quat.identity());
+    imm goal = new Quat(0., sin(pi / 4.), 0., cos(pi / 4.));
+    imm h = reg.start(&Anim.spring(D, Q, Value.ofQuat(goal), 0.8, 12.));
+    reg.tick(0.2f64);
+    imm q1 = reg.valueQuat(D, Q, Quat.identity());
+    near(q1.length(), 1., 0.0001, "rotation spring stays unit");
+    imm goal2 = new Quat(sin(pi / 8.), 0., 0., cos(pi / 8.));
+    reg.setGoal(h, 0u32, Value.ofQuat(goal2));
+    reg.tick(0.2005f64);
+    imm q2 = reg.valueQuat(D, Q, Quat.identity());
+    near(q1.dot(q2), 1., 0.00001, "a retarget does not jump the rotation");
+    reg.tick(10.0f64);
+    imm q3 = reg.valueQuat(D, Q, Quat.identity());
+    near(q3.dot(goal2), 1., 0.00001, "and it ends on the new goal");
+  }
+  // the modifiers that belong to one kind work through the enum-level builders
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 100.);
+    reg.start(&Anim.transition(D, X, Value.ofF32(10.), 1.).withLinear().withFrom(Value.ofF32(0.)));
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "withFrom on a transition ignores the field");
+    reg.setF32(D, Y, 100.);
+    reg.start(&Anim.chase(D, Y, Value.ofF32(10.), 1.).withFrom(Value.ofF32(0.)));
+    reg.setF32(D, Q, 100.);
+    reg.start(&Anim.spring(D, Q, Value.ofF32(1.), 0.5, 10.).withFrom(Value.ofF32(0.)));
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, Y, -1.), 10. * (1. - libc.expf(-0.5)), 0.001, "withFrom on a chase");
+    near(reg.valueF32(D, Q, -1.), springValue(0.5, 10., 0., 0., 1., 0.5), 0.0001, "withFrom on a spring");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.chase(D, X, Value.ofF32(10.), 1.).withSlot(3u32));
+    reg.setGoal(h, 3u32, Value.ofF32(-10.));
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), -6.3212, 0.001, "withSlot: the goal set on slot 3 is the chase's");
+  }
+  done();
+}
