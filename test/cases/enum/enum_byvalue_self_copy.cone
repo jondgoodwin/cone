@@ -3,7 +3,9 @@
 // method below is 'setN(mut self A, v i32) A', and calling it on an A returns an A: the
 // result still has A's own field. The enum requires nothing of such a copy, so a copy that
 // returns 'Self', or takes it, is not held to the enum's own 'Self'. A reference receiver
-// ('self &') stays a requirement, dispatched on the tag from a reference to the enum.
+// ('self &') stays a requirement, dispatched on the tag from a reference to the enum. A variant
+// may replace the copy with its own method of the name, which must have the enum's signature,
+// 'Self' read as the variant (enum_typecheck_byvalue_override refuses one that differs).
 //
 // Each printed value was checked by hand against the source.
 
@@ -31,7 +33,8 @@ enum E {
   pub struct B {
     pub b i32;
     pub fn kind(self &) i32 { 2; }
-    pub fn total(self) i32 { n + 200; }                          // a variant's own copy replaces it
+    pub fn total(self) i32 { n + 200; }                          // its own copy replaces it, with the enum's signature
+    pub fn setN(mut self, v i32) Self { n = v + 10; self; }      // so does an override that returns Self (B)
   }
 }
 
@@ -62,12 +65,12 @@ fn main() {
   show("A n", i64.from(x.n));                  // 1
   show("A a", i64.from(x.a));                  // 5
   imm y = E.B(3, 6).setN(4);
-  show("B n", i64.from(y.n));                  // 4
+  show("B n", i64.from(y.n));                  // 14: B's own setN adds 10
   show("B b", i64.from(y.b));                  // 6
 
   // A copy returning something that is not Self; B has its own
   show("A total", i64.from(E.A(8, 5).total()));     // 108
-  show("B total", i64.from(y.total()));              // 204
+  show("B total", i64.from(y.total()));              // 214: 14 + 200
 
   // A copy taking and returning Self
   imm w = E.A(1, 5).pick(E.A(7, 9));

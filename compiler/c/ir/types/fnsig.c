@@ -173,8 +173,32 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
 // a requirement naming its trait outright means the trait, and so does a virtual
 // reference to Self, '&<Self', which is a reference to the trait. With no
 // 'selftype' the match is exact.
+//
+// In an enum's own method 'Self' is bound to the enum, so the requirement's 'Self'
+// would equal the enum by itself; but the method is each variant's copy, where 'Self'
+// is the variant, and a variant's own method meeting it with the enum for 'Self' would
+// be a conversion. So with a 'selftype' that name is never read as the enum.
+static int fnSigReqNamesEnumSelf(INode *req) {
+    for (;;) {
+        if (isNameUseNode(req) && ((NameUseNode*)req)->namesym == selfTypeName)
+            return (itypeGetTypeDcl(req)->flags & EnumType) != 0;
+        INode *dcl = itypeGetTypeDcl(req);
+        switch (dcl->tag) {
+        case RefTag:
+        case ArrayRefTag:
+            req = ((RefNode*)dcl)->vtexp;
+            break;
+        case PtrTag:
+            req = ((StarNode*)dcl)->vtexp;
+            break;
+        default:
+            return 0;
+        }
+    }
+}
+
 static int fnSigReqTypeSame(INode *req, INode *impl, INode *selftype) {
-    if (itypeIsSame(req, impl))
+    if (itypeIsSame(req, impl) && !(selftype && fnSigReqNamesEnumSelf(req)))
         return 1;
     if (selftype == NULL)
         return 0;

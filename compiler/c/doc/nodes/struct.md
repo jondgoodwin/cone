@@ -2252,9 +2252,17 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   `Self` for the receiver, a parameter and the result, so
   `setN(mut self, v i32) Self` is `setN(mut self A, v i32) A` in `A`.
   The enum's own copy says `Self` = the enum, and nothing dispatches it (the call
-  on an enum value is refused above), so it is no requirement:
-  `structCheckTraitReqs` skips it, and `structMakeVtable` gives it no slot.
-  Without the second a variant whose clone differs in `Self` could not fill the
+  on an enum value is refused above), so the copy itself is no requirement:
+  `structMakeVtable` gives it no slot. A variant that declares its OWN method of
+  the name replaces the clone, and `structCheckTraitReqs` holds it to the enum's
+  signature with `Self` read as that variant (`selftype` = the variant, not NULL),
+  so a different parameter or result is `ErrorInvType` naming the signature
+  (`structSpellByValueSig`). It is held because by-value dispatch on an enum value
+  is not built yet, not ruled out: when it is, every variant's method of the name
+  must meet the enum's. In the enum's own method `Self` is bound to the enum, so
+  `fnSigReqTypeSame` never takes the enum for it (`fnSigReqNamesEnumSelf`): a
+  variant returning the enum where `Self` is wanted is a conversion and is refused.
+  Without the vtable rule a variant whose clone differs in `Self` could not fill the
   slot, `structMapVtableImpl` would drop the variant from the enum's vtable list,
   and a tag index would read past it. A `self &` copy stays a requirement and a
   slot, met by exactly its signature (`selftype` NULL in `structCheckTraitReqs`).

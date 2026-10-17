@@ -1,0 +1,31 @@
+// An enum's method that takes 'self' by value is copied into each variant, and the enum
+// requires nothing of the copy. A variant that declares its OWN method of that name replaces the
+// copy, and must meet the enum's signature with 'Self' read as the variant, as an override meets
+// what it overrides: the same parameters and result, 'Self' being the variant. By-value dispatch
+// on a value of the enum is not built yet; when it is, every variant's method of the name has to
+// meet the enum's, so a variant that differs is refused now. A variant that declares no method of
+// the name takes the copy, and a same-signature override is accepted (enum_byvalue_self_copy).
+
+mod enum_typecheck_byvalue_override;
+
+enum E {
+  pub n i32;
+  pub fn total(self) i32 { n + 100; }
+  pub fn setN(mut self, v i32) Self { n = v; self; }
+  pub fn bump(self) Self { self; }
+  pub struct Same {                              // the enum's signature: accepted
+    pub fn total(self) i32 { n + 1; }
+    pub fn setN(mut self, v i32) Self { n = v; self; }
+  }
+  pub struct Res {                               //~ ErrorInvType:14 "total(self) i32"
+    pub fn total(self) bool { true; }            // a different result
+  }
+  pub struct Param {                             //~ ErrorInvType:14 "setN(self, i32) Self"
+    pub fn setN(mut self, v i64) Self { self; }  // a different parameter
+  }
+  pub struct Whole {                             //~ ErrorInvType:14 "bump(self) Self"
+    pub fn bump(self) E { self; }                // the enum for the variant: a conversion
+  }
+}
+
+fn main() {}

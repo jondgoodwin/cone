@@ -2870,6 +2870,42 @@ void structTypeCheckBaseTrait(StructNode *node) {
     }
 }
 
+// A parameter or result type of an enum's method as its signature spells it, for a
+// message: 'Self' as written, a reference with its '&' or '&mut', any other type by name
+static void structSpellSigType(char *buf, size_t size, INode *type) {
+    if (isNameUseNode(type) && ((NameUseNode*)type)->namesym == selfTypeName) {
+        snprintf(buf, size, "Self");
+        return;
+    }
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag == RefTag) {
+        RefNode *ref = (RefNode*)dcl;
+        char inner[120];
+        structSpellSigType(inner, sizeof(inner), ref->vtexp);
+        snprintf(buf, size, "%s%s", (permGetFlags(itypeGetTypeDcl(ref->perm)) & MayWrite) ? "&mut " : "&", inner);
+        return;
+    }
+    snprintf(buf, size, "%s", itypeName(type));
+}
+
+// An enum's by-value method as the signature a variant's own method of that name must
+// meet, spelled for a message: 'total(self) i32', 'setN(self, i32) Self'
+static void structSpellByValueSig(char *buf, size_t size, FnDclNode *meth) {
+    FnSigNode *sig = (FnSigNode*)meth->vtype;
+    int used = snprintf(buf, size, "%s(self", &meth->namesym->namestr);
+    uint32_t pos;
+    for (pos = 1; pos < sig->parms->used && used > 0 && (size_t)used < size; ++pos) {
+        char one[120];
+        structSpellSigType(one, sizeof(one), ((IExpNode*)nodesGet(sig->parms, pos))->vtype);
+        used += snprintf(buf + used, size - used, ", %s", one);
+    }
+    if (used > 0 && (size_t)used < size) {
+        char one[120];
+        structSpellSigType(one, sizeof(one), sig->rettype);
+        snprintf(buf + used, size - used, ") %s", one);
+    }
+}
+
 // Verify that this type meets every method requirement of the traits mixed
 // into it. A default the type did not declare was cloned in at expansion and
 // meets its requirement by construction. What is left is a name the type
@@ -2892,12 +2928,13 @@ static void structCheckTraitReqs(StructNode *node) {
             // An enum's method over the whole enum is no requirement of its variants
             if (structIsWholeEnumMethod(*nodesp))
                 continue;
-            // Nor is an enum's method with a body that takes 'self' by value: each
-            // variant's copy has its own 'Self' (the variant) for the receiver, the
-            // parameters and the result, and no call is dispatched on the tag for
-            // it, so nothing is required that the copy could fail to meet
-            if ((trait->flags & EnumType) && structTakesSelfByValue(*nodesp))
-                continue;
+            // An enum's method with a body that takes 'self' by value is each variant's
+            // copy, with 'Self' the variant for the receiver, the parameters and the
+            // result; no call is dispatched on the tag for it, so the enum requires
+            // nothing of the copy. A variant that declares its own method of the name
+            // replaces the copy, and must meet the enum's signature with 'Self' read
+            // as the variant, as an override does (the copy meets it by construction)
+            int byvalue = (trait->flags & EnumType) && structTakesSelfByValue(*nodesp);
             FnDclNode *traitmeth = (FnDclNode*)*nodesp;
             INode *binding = namespaceFind(&node->namespace, traitmeth->namesym);
             // An 'extern' method has no body here and is implemented all the same:
@@ -2950,10 +2987,18 @@ static void structCheckTraitReqs(StructNode *node) {
             // cloned into it -- except in a closed trait's, which is reached
             // through its tag's vtable from a reference to any of its variants,
             // and so must be met by exactly its signature
-            INode *selftype = (trait->flags & (HasTagField | SameSize)) ? NULL : (INode*)node;
+            INode *selftype = (trait->flags & (HasTagField | SameSize)) && !byvalue ? NULL : (INode*)node;
             if (iNsTypeFindVrefMethod(binding, traitmeth, selftype) == NULL) {
                 FnSigLayoutDiff layout;
-                if (iNsTypeVrefLayoutDiff(binding, traitmeth, selftype, &layout)) {
+                if (byvalue && !iNsTypeVrefLayoutDiff(binding, traitmeth, selftype, &layout)) {
+                    char want[400];
+                    structSpellByValueSig(want, sizeof(want), traitmeth);
+                    errorMsgNode((INode*)node, ErrorInvType,
+                        "%s declares %s, which replaces the copy of it that %s gives every variant, so it must have that signature with Self read as %s: %s",
+                        &node->namesym->namestr, &traitmeth->namesym->namestr, &trait->namesym->namestr,
+                        &node->namesym->namestr, want);
+                }
+                else if (iNsTypeVrefLayoutDiff(binding, traitmeth, selftype, &layout)) {
                     char why[700];
                     fnSigLayoutSpell(why, sizeof(why), &layout, "the trait", "the trait");
                     errorMsgNode((INode*)node, ErrorFnRefByValue,
