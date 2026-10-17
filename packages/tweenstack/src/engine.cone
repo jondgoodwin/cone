@@ -101,23 +101,45 @@ fn addKey(out &mut List[u64], k u64) {
 
 // Every field a tree can write
 pub fn gatherKeys(a &Anim, out &mut List[u64]) {
-  if a.kind == AK_GROUP {
-    mut i = 0usize;
-    while i < a.kids.len() { gatherKeys(a.kids[i], out); i = i + 1usize; }
-    return;
-  }
-  if a.kind == AK_KEYS {
-    imm clip = a.clips[0usize];
-    mut i = 0usize;
-    while i < clip.bindings.len() {
-      addKey(out, keyOf((*clip.bindings[i]).target, (*clip.bindings[i]).prop));
-      i = i + 1usize;
+  match a {
+    case imm g Group {
+      mut i = 0usize;
+      while i < g.kids.len() { gatherKeys(g.kids[i], out); i = i + 1usize; }
     }
-    return;
+    case imm k Keys {
+      mut i = 0usize;
+      while i < k.clip.bindings.len() {
+        addKey(out, keyOf((*k.clip.bindings[i]).target, (*k.clip.bindings[i]).prop));
+        i = i + 1usize;
+      }
+    }
+    case imm al Along {
+      addKey(out, keyOf(al.target, al.prop));
+      if al.faceProp != 0u32 { addKey(out, keyOf(al.target, al.faceProp)); }
+    }
+    else { addKey(out, keyOf(a.target, a.prop)); }
   }
-  addKey(out, keyOf(a.target, a.prop));
-  if a.kind == AK_ALONG and a.faceProp != 0u32 { addKey(out, keyOf(a.target, a.faceProp)); }
 }
+
+// The goal slot of a stepped kind
+fn slotOf(a &Anim) u32 {
+  match a {
+    case imm c Chase { c.slot; }
+    case imm s Spring { s.slot; }
+    else { 0u32; }
+  }
+}
+
+// The value a transition, chase or spring goes to
+fn toOf(a &Anim) Value {
+  match a {
+    case imm t Transition { t.to; }
+    case imm c Chase { c.to; }
+    case imm s Spring { s.to; }
+    else { Value.rest(TK_F32); }
+  }
+}
+
 
 pub fn ldf(l &List[f32], i usize) f32 { *l[i]; }
 
@@ -134,9 +156,9 @@ fn stSet(r &mut Running, o usize, v f32) { r.state.set(o, v); }
 
 // The goal of a stepped node: the one the host last set on its slot, else its own
 fn goalOf(r &Running, a &Anim) Value {
-  imm s = usize.from(a.slot);
+  imm s = usize.from(slotOf(a));
   if s < r.goals.len() and *r.goalSeq[s] > 0u32 { return *r.goals[s]; }
-  a.to;
+  toOf(a);
 }
 
 fn seqOfSlot(r &Running, slot u32) f32 {
@@ -145,7 +167,7 @@ fn seqOfSlot(r &Running, slot u32) f32 {
   0.;
 }
 
-fn goalSeqOf(r &Running, a &Anim) f32 { seqOfSlot(r, a.slot); }
+fn goalSeqOf(r &Running, a &Anim) f32 { seqOfSlot(r, slotOf(a)); }
 
 // ---------------------------------------------------------------------------
 // Phase
@@ -193,14 +215,16 @@ pub fn phaseOf(a &Anim, t f64) Phase {
 // The pre-order index of a group's i-th member, given the group's own
 fn kidIndex(a &Anim, ix usize, i usize) usize {
   mut k = ix + 1usize;
-  mut j = 0usize;
-  while j < i { k = k + a.kids[j].size; j = j + 1usize; }
+  match a {
+    case imm g Group {
+      mut j = 0usize;
+      while j < i { k = k + g.kids[j].size; j = j + 1usize; }
+    }
+    else {}
+  }
   k;
 }
 
-fn needsState(a &Anim) bool {
-  a.isStepped() or (a.kind == AK_TRANSITION and !a.hasFrom);
-}
 
 // The node has run its course at time t (see the header of animators.cone for
 // the stepped kinds)
@@ -211,17 +235,22 @@ pub fn nodeFinished(r &Running, a &Anim, ix usize, t f64) bool {
     if ph.state == PH_AFTER { return true; }
     return stGet(r, ix * SLOT + 18usize) > 0.5;
   }
-  if a.kind != AK_GROUP { return ph.state == PH_AFTER; }
+  if !a.isGroup() { return ph.state == PH_AFTER; }
   imm n = f64.from(a.iterations());
   if isForever(n) { return false; }
   if !isForever(f64.from(a.life)) { return ph.state == PH_AFTER; }
   // a group with an endless member: finished when every member is
-  mut i = 0usize;
-  while i < a.kids.len() {
-    if !nodeFinished(r, a.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*a.offs[i])) { return false; }
-    i = i + 1usize;
+  match a {
+    case imm g Group {
+      mut i = 0usize;
+      while i < g.kids.len() {
+        if !nodeFinished(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i])) { return false; }
+        i = i + 1usize;
+      }
+      true;
+    }
+    else { true; }
   }
-  true;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,19 +279,18 @@ fn emit(filt &Filter, target u32, prop u32, v Value, out &mut List[Emit]) {
 fn clampf(x f32, lo f32, hi f32) f32 { if x < lo { lo; } elif x > hi { hi; } else { x; }; }
 
 // A spring's value at time tl into its segment, from the state at offset o
-fn springAt(r &Running, a &Anim, o usize, tl f32) Value {
-  imm kind = a.vkind;
+fn springAt(r &Running, kind u32, zeta f32, omega f32, o usize, tl f32) Value {
   imm goal = stValue(r, o + 5usize, kind);
   if stGet(r, o + 18usize) > 0.5 { return goal; }
   if kind == TK_QUAT {
-    imm d = springValue(a.zeta, a.omega, stGet(r, o + 20usize), stGet(r, o + 21usize), 0., tl);
+    imm d = springValue(zeta, omega, stGet(r, o + 20usize), stGet(r, o + 21usize), 0., tl);
     return mixValue(goal, stValue(r, o + 1usize, kind), d, SPACE_LINEAR);
   }
   imm n = kindComps(kind);
   mut v = Value.rest(kind);
   mut c = 0usize;
   while c < n {
-    v = v.setAt(c, springValue(a.zeta, a.omega, stGet(r, o + 1usize + c), stGet(r, o + 9usize + c),
+    v = v.setAt(c, springValue(zeta, omega, stGet(r, o + 1usize + c), stGet(r, o + 9usize + c),
       stGet(r, o + 5usize + c), tl));
     c = c + 1usize;
   }
@@ -276,66 +304,65 @@ pub fn collectNode(r &Running, a &Anim, ix usize, t f64, force bool, filt &Filte
   imm ph = phaseOf(a, t);
   if ph.state == PH_BEFORE and (a.hold & HOLD_START) == 0u32 { return; }
   if ph.state == PH_AFTER and (a.hold & HOLD_END) == 0u32 and !force { return; }
-  if a.kind == AK_GROUP {
-    mut i = 0usize;
-    while i < a.kids.len() {
-      collectNode(r, a.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*a.offs[i]), false, filt, out);
-      i = i + 1usize;
-    }
-    return;
-  }
   imm loc = ph.loc;
   imm o = ix * SLOT;
-  if a.kind == AK_TRANSITION {
-    mut from = a.from;
-    if !a.hasFrom {
-      if stGet(r, o) < 0.5 { return; }
-      from = stValue(r, o + 1usize, a.vkind);
-    }
-    imm s = if a.dur > 0. { clampf(f32.from(loc) / a.dur, 0., 1.); } else { 1.; };
-    emit(filt, a.target, a.prop, mixValue(from, a.to, a.easing.apply(s), a.space), out);
-    return;
-  }
-  if a.kind == AK_KEYS {
-    imm clip = a.clips[0usize];
-    mut lt = f32.from(loc);
-    if a.dur > 0. and !(a.easing.id == EASE_LINEAR and !a.easing.bez) { lt = a.easing.apply(lt / a.dur) * a.dur; }
-    if lt > clip.length { lt = clip.length; }
-    mut smp = Sample.empty();
-    clip.sampleLocal(lt, &mut smp);
-    mut i = 0usize;
-    while i < smp.len() {
-      imm kind = *smp.kinds[i];
-      imm vk = if kind == TK_BOOL or kind == TK_DISCRETE { TK_F32; } else { kind; };
-      if supportedKind(vk) {
-        mut raw = List[f32].empty();
-        mut c = 0usize;
-        imm off = *smp.offs[i];
-        while c < *smp.counts[i] { raw.push(ldf(&smp.data, off + c)); c = c + 1usize; }
-        emit(filt, *smp.targets[i], *smp.props[i], valueFromFloats(kind, &raw), out);
+  match a {
+    case imm g Group {
+      mut i = 0usize;
+      while i < g.kids.len() {
+        collectNode(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i]), false, filt, out);
+        i = i + 1usize;
       }
-      i = i + 1usize;
     }
-    return;
-  }
-  if a.kind == AK_ALONG {
-    imm curve = a.curves[0usize];
-    imm s = a.easing.apply(if a.dur > 0. { clampf(f32.from(loc) / a.dur, 0., 1.); } else { 1.; });
-    imm uu = if a.arc { curve.uAtFraction(s); } else { s; };
-    emit(filt, a.target, a.prop, Value.ofVec3(curve.point(uu)), out);
-    if a.faceProp != 0u32 {
-      emit(filt, a.target, a.faceProp, Value.ofQuat(faceRotation(curve.direction(uu), new Vec3(0., 1., 0.))), out);
+    case imm tr Transition {
+      mut from = tr.from;
+      mut ready = true;
+      if !tr.hasFrom {
+        if stGet(r, o) < 0.5 { ready = false; } else { from = stValue(r, o + 1usize, tr.vkind); }
+      }
+      if ready {
+        imm s = if tr.dur > 0. { clampf(f32.from(loc) / tr.dur, 0., 1.); } else { 1.; };
+        emit(filt, tr.target, tr.prop, mixValue(from, tr.to, tr.easing.apply(s), tr.space), out);
+      }
     }
-    return;
+    case imm k Keys {
+      mut lt = f32.from(loc);
+      if k.dur > 0. and !(k.easing.id == EASE_LINEAR and !k.easing.bez) { lt = k.easing.apply(lt / k.dur) * k.dur; }
+      if lt > k.clip.length { lt = k.clip.length; }
+      mut smp = Sample.empty();
+      k.clip.sampleLocal(lt, &mut smp);
+      mut i = 0usize;
+      while i < smp.len() {
+        imm kind = *smp.kinds[i];
+        imm vk = if kind == TK_BOOL or kind == TK_DISCRETE { TK_F32; } else { kind; };
+        if supportedKind(vk) {
+          mut raw = List[f32].empty();
+          mut c = 0usize;
+          imm off = *smp.offs[i];
+          while c < *smp.counts[i] { raw.push(ldf(&smp.data, off + c)); c = c + 1usize; }
+          emit(filt, *smp.targets[i], *smp.props[i], valueFromFloats(kind, &raw), out);
+        }
+        i = i + 1usize;
+      }
+    }
+    case imm al Along {
+      imm s = al.easing.apply(if al.dur > 0. { clampf(f32.from(loc) / al.dur, 0., 1.); } else { 1.; });
+      imm uu = if al.arc { al.curve.uAtFraction(s); } else { s; };
+      emit(filt, al.target, al.prop, Value.ofVec3(al.curve.point(uu)), out);
+      if al.faceProp != 0u32 {
+        emit(filt, al.target, al.faceProp, Value.ofQuat(faceRotation(al.curve.direction(uu), new Vec3(0., 1., 0.))), out);
+      }
+    }
+    case imm c Chase {
+      if stGet(r, o) > 0.5 { emit(filt, c.target, c.prop, stValue(r, o + 13usize, c.vkind), out); }
+    }
+    case imm sp Spring {
+      if stGet(r, o) > 0.5 {
+        imm tl = f32.from(loc) - stGet(r, o + 17usize);
+        emit(filt, sp.target, sp.prop, springAt(r, sp.vkind, sp.zeta, sp.omega, o, tl), out);
+      }
+    }
   }
-  if stGet(r, o) < 0.5 { return; }
-  if a.kind == AK_CHASE {
-    emit(filt, a.target, a.prop, stValue(r, o + 13usize, a.vkind), out);
-    return;
-  }
-  // spring
-  imm tl = f32.from(loc) - stGet(r, o + 17usize);
-  emit(filt, a.target, a.prop, springAt(r, a, o, tl), out);
 }
 
 // What the running animator writes now
@@ -345,6 +372,10 @@ pub fn collectRun(r &Running, force bool, filt &Filter, out &mut List[Emit]) {
 
 // ---------------------------------------------------------------------------
 // Initialisation
+
+pub const PK_TRANSITION = 0u32;
+pub const PK_CHASE = 1u32;
+pub const PK_SPRING = 2u32;
 
 // A node that must capture something when it begins
 pub struct Pend {
@@ -364,16 +395,30 @@ pub fn findPending(r &Running, a &Anim, ix usize, t f64, out &mut List[Pend]) {
   if (a.flags & F_NEEDS_INIT) == 0u32 { return; }
   imm ph = phaseOf(a, t);
   if ph.state == PH_BEFORE { return; }
-  if a.kind == AK_GROUP {
-    mut i = 0usize;
-    while i < a.kids.len() {
-      findPending(r, a.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*a.offs[i]), out);
-      i = i + 1usize;
+  match a {
+    case imm g Group {
+      mut i = 0usize;
+      while i < g.kids.len() {
+        findPending(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i]), out);
+        i = i + 1usize;
+      }
     }
-    return;
-  }
-  if needsState(a) and stGet(r, ix * SLOT) < 0.5 {
-    out.push(new Pend(ix, a.kind, a.target, a.prop, a.vkind, a.hasFrom, a.from, goalOf(r, a), a.inheritVel, a.slot));
+    case imm tr Transition {
+      if !tr.hasFrom and stGet(r, ix * SLOT) < 0.5 {
+        out.push(new Pend(ix, PK_TRANSITION, tr.target, tr.prop, tr.vkind, false, tr.from, tr.to, false, 0u32));
+      }
+    }
+    case imm c Chase {
+      if stGet(r, ix * SLOT) < 0.5 {
+        out.push(new Pend(ix, PK_CHASE, c.target, c.prop, c.vkind, c.hasFrom, c.from, goalOf(r, a), false, c.slot));
+      }
+    }
+    case imm s Spring {
+      if stGet(r, ix * SLOT) < 0.5 {
+        out.push(new Pend(ix, PK_SPRING, s.target, s.prop, s.vkind, s.hasFrom, s.from, goalOf(r, a), s.inheritVel, s.slot));
+      }
+    }
+    else {}
   }
 }
 
@@ -389,10 +434,10 @@ pub fn applyPending(r &mut Running, p &Pend, hasShown bool, shown Value, vel Val
   }
   stSet(r, o, 1.);
   stPut(r, o + 1usize, from);
-  if p.kind == AK_TRANSITION { return; }
+  if p.kind == PK_TRANSITION { return; }
   stPut(r, o + 5usize, p.to);
   stSet(r, o + 23usize, seqOfSlot(r, p.slot));
-  if p.kind == AK_CHASE { stPut(r, o + 13usize, from); return; }
+  if p.kind == PK_CHASE { stPut(r, o + 13usize, from); return; }
   stPut(r, o + 9usize, v0);
   stSet(r, o + 17usize, 0.);
   stSet(r, o + 20usize, 1.);
@@ -406,16 +451,20 @@ pub fn applyPending(r &mut Running, p &Pend, hasShown bool, shown Value, vel Val
 // No part of the running animator needs stepping or has been retargeted: its
 // whole output is a function of its start moment and its parameters
 pub fn nodePure(r &Running, a &Anim, ix usize) bool {
-  if a.kind == AK_CHASE { return false; }
-  if a.kind == AK_SPRING { return stGet(r, ix * SLOT + 19usize) < 0.5; }
-  if a.kind == AK_GROUP {
-    mut i = 0usize;
-    while i < a.kids.len() {
-      if !nodePure(r, a.kids[i], kidIndex(a, ix, i)) { return false; }
-      i = i + 1usize;
+  match a {
+    case is Chase { false; }
+    case is Spring { stGet(r, ix * SLOT + 19usize) < 0.5; }
+    case imm g Group {
+      mut pure = true;
+      mut i = 0usize;
+      while i < g.kids.len() {
+        if !nodePure(r, g.kids[i], kidIndex(a, ix, i)) { pure = false; }
+        i = i + 1usize;
+      }
+      pure;
     }
+    else { true; }
   }
-  true;
 }
 
 // ---------------------------------------------------------------------------
@@ -425,33 +474,35 @@ pub fn nodePure(r &Running, a &Anim, ix usize) bool {
 fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
   imm o = ix * SLOT;
   if stGet(r, o) < 0.5 { return; }
-  imm kind = a.vkind;
   imm seq = goalSeqOf(r, a);
-  if a.kind == AK_CHASE {
-    if seq != stGet(r, o + 23usize) {
-      stPut(r, o + 5usize, goalOf(r, a));
-      stSet(r, o + 23usize, seq);
+  match a {
+    case imm ch Chase {
+      imm kind = ch.vkind;
+      if seq != stGet(r, o + 23usize) {
+        stPut(r, o + 5usize, goalOf(r, a));
+        stSet(r, o + 23usize, seq);
+      }
+      imm goal = stValue(r, o + 5usize, kind);
+      imm dt = f32.from(c1 - c0);
+      imm f = if ch.tau <= 0. { 1.; } else { 1. - libc.expf(-dt / ch.tau); };
+      stPut(r, o + 13usize, mixValue(stValue(r, o + 13usize, kind), goal, f, ch.space));
     }
-    imm goal = stValue(r, o + 5usize, kind);
-    imm dt = f32.from(c1 - c0);
-    imm f = if a.tau <= 0. { 1.; } else { 1. - libc.expf(-dt / a.tau); };
-    stPut(r, o + 13usize, mixValue(stValue(r, o + 13usize, kind), goal, f, a.space));
-    return;
-  }
-  // spring
-  if seq != stGet(r, o + 23usize) {
-    retargetSpring(r, a, o, f32.from(c0), goalOf(r, a));
-    stSet(r, o + 23usize, seq);
-  }
-  if stGet(r, o + 18usize) < 0.5 {
-    imm tl = f32.from(c1) - stGet(r, o + 17usize);
-    if tl >= springSettle(a.zeta, a.omega, SETTLE_EPS) { stSet(r, o + 18usize, 1.); }
+    case imm sp Spring {
+      if seq != stGet(r, o + 23usize) {
+        retargetSpring(r, sp.vkind, sp.zeta, sp.omega, o, f32.from(c0), goalOf(r, a));
+        stSet(r, o + 23usize, seq);
+      }
+      if stGet(r, o + 18usize) < 0.5 {
+        imm tl = f32.from(c1) - stGet(r, o + 17usize);
+        if tl >= springSettle(sp.zeta, sp.omega, SETTLE_EPS) { stSet(r, o + 18usize, 1.); }
+      }
+    }
+    else {}
   }
 }
 
 // Move a spring to a new goal at its internal time c, carrying position and velocity
-fn retargetSpring(r &mut Running, a &Anim, o usize, c f32, goal Value) {
-  imm kind = a.vkind;
+fn retargetSpring(r &mut Running, kind u32, zeta f32, omega f32, o usize, c f32, goal Value) {
   imm tl = c - stGet(r, o + 17usize);
   imm wasDone = stGet(r, o + 18usize) > 0.5;
   stSet(r, o + 19usize, 1.);
@@ -461,8 +512,8 @@ fn retargetSpring(r &mut Running, a &Anim, o usize, c f32, goal Value) {
     imm oldFrom = stValue(r, o + 1usize, kind);
     imm d0 = stGet(r, o + 20usize);
     imm dv0 = stGet(r, o + 21usize);
-    imm cur = if wasDone { oldGoal; } else { mixValue(oldGoal, oldFrom, springValue(a.zeta, a.omega, d0, dv0, 0., tl), SPACE_LINEAR); };
-    imm dd = if wasDone { 0.; } else { springVelocity(a.zeta, a.omega, d0, dv0, tl); };
+    imm cur = if wasDone { oldGoal; } else { mixValue(oldGoal, oldFrom, springValue(zeta, omega, d0, dv0, 0., tl), SPACE_LINEAR); };
+    imm dd = if wasDone { 0.; } else { springVelocity(zeta, omega, d0, dv0, tl); };
     imm thetaOld = stGet(r, o + 22usize);
     imm thetaNew = quatAngle(cur.asQuat(), goal.asQuat());
     stPut(r, o + 1usize, cur);
@@ -484,8 +535,8 @@ fn retargetSpring(r &mut Running, a &Anim, o usize, c f32, goal Value) {
     } else {
       imm xi = stGet(r, o + 1usize + i);
       imm vi = stGet(r, o + 9usize + i);
-      x0 = x0.setAt(i, springValue(a.zeta, a.omega, xi, vi, g, tl));
-      v0 = v0.setAt(i, springVelocity(a.zeta, a.omega, xi - g, vi, tl));
+      x0 = x0.setAt(i, springValue(zeta, omega, xi, vi, g, tl));
+      v0 = v0.setAt(i, springVelocity(zeta, omega, xi - g, vi, tl));
     }
     i = i + 1usize;
   }
@@ -534,31 +585,36 @@ pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool,
     imm dir = a.direction;
     imm l0 = dirMap(dir, k, fromP, d);
     imm l1 = dirMap(dir, k, toP, d);
-    if a.kind == AK_GROUP {
-      mut i = 0usize;
-      while i < a.kids.len() {
-        advanceNode(r, a.kids[i], kidIndex(a, ix, i), l0 - f64.from(*a.offs[i]), l1 - f64.from(*a.offs[i]), step,
-          markers, evs);
-        i = i + 1usize;
+    match a {
+      case imm g Group {
+        mut i = 0usize;
+        while i < g.kids.len() {
+          advanceNode(r, g.kids[i], kidIndex(a, ix, i), l0 - f64.from(*g.offs[i]), l1 - f64.from(*g.offs[i]), step,
+            markers, evs);
+          i = i + 1usize;
+        }
       }
-    } elif a.kind == AK_KEYS and markers {
-      imm clip = a.clips[0usize];
-      mut found = List[Fired].empty();
-      mut e0 = l0;
-      mut e1 = l1;
-      if !(a.easing.id == EASE_LINEAR and !a.easing.bez) and d > 0. {
-        e0 = f64.from(a.easing.apply(f32.from(l0 / d)) * a.dur);
-        e1 = f64.from(a.easing.apply(f32.from(l1 / d)) * a.dur);
+      case imm kk Keys {
+        if markers {
+          mut found = List[Fired].empty();
+          mut e0 = l0;
+          mut e1 = l1;
+          if !(kk.easing.id == EASE_LINEAR and !kk.easing.bez) and d > 0. {
+            e0 = f64.from(kk.easing.apply(f32.from(l0 / d)) * kk.dur);
+            e1 = f64.from(kk.easing.apply(f32.from(l1 / d)) * kk.dur);
+          }
+          kk.clip.crossings(e0, e1, 0u32, &mut found);
+          mut j = 0usize;
+          while j < found.len() {
+            imm f = *found[j];
+            mut e = newEvent(EV_MARKER, r.id);
+            e.id = f.id; e.arg = f.arg; e.time = f.clipTime;
+            evs.push(e);
+            j = j + 1usize;
+          }
+        }
       }
-      clip.crossings(e0, e1, 0u32, &mut found);
-      mut j = 0usize;
-      while j < found.len() {
-        imm f = *found[j];
-        mut e = newEvent(EV_MARKER, r.id);
-        e.id = f.id; e.arg = f.arg; e.time = f.clipTime;
-        evs.push(e);
-        j = j + 1usize;
-      }
+      else {}
     }
     k = k + 1.0f64;
   }
