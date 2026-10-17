@@ -1,0 +1,99 @@
+// A name narrowed to a variant through a reference others may share ('&' or '&mut') is
+// followed by the loan walk only from where the compiler declares the reference that holds
+// the narrowing: the head of the branch, the statement after the 'if', or, inside one
+// condition, the use. A call or a store made between the test and there ends the narrowing
+// only if it could change which variant the enum holds, as the loan walk judges a call made
+// while the narrowed reference is held: handed a way to write an enum of the type whose
+// body stores over it, a body that cannot be seen, or a global the enum may be reached
+// through. A call that reaches nothing, reads the enum, or writes a field within a variant
+// is none. enum_typecheck_flow_typing holds the calls that do reach it, refused.
+//
+// The expected lines are worked out by hand in the comments.
+
+mod enum_flow_narrow_reach;
+
+import stdio use *;
+
+enum Shape {
+  kind i32;
+  struct Circle { pub radius i32; }
+  struct Rect { pub w i32; pub h i32; }
+  struct Dot {}
+}
+use Shape;
+
+enum Pair {
+  struct Left { pub a i32; }
+  struct Right { pub b i32; }
+}
+
+fn num(n i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+fn quiet() bool { true; }
+fn small(n i32) bool { n > 0; }
+fn peek(t &Shape) bool { t.kind > 0; }
+fn mark(t &mut Shape) bool { t.kind = 7; true; }
+
+// A call that reaches nothing in a later operand of the condition, then the use in it.
+// Circle(radius 3): 3 ; Rect: 0
+fn inCondition(s &mut Shape) i32 {
+  if s is Circle and quiet() and small(2) and s.radius > 1 { return s.radius; }
+  return 0;
+}
+
+// ... then the use in the branch. 3 ; 0
+fn thenBlock(s &mut Shape) i32 {
+  if s is Circle and quiet() { return s.radius; }
+  return 0;
+}
+
+// ... after a branch that left, by elimination. Left, 0: 0 ; Right(6), 0: 6 ; Right(6), 1: 0
+fn afterExit(p &mut Pair, n i32) i32 {
+  if p is Left or small(n) { return 0; }
+  return p.b;
+}
+
+// A call handed another name for the enum that only reads it; one that writes a field the
+// variants share; a store of such a field, in the condition. With Circle(3) and Circle(8):
+// 3 ; 3, then the other's kind, 7 ; 8, then the other's kind, 5
+fn otherRead(s &mut Shape, t &mut Shape) i32 {
+  if s is Circle and peek(t) and s.radius > 0 { return s.radius; }
+  return 0;
+}
+fn otherField(s &mut Shape, t &mut Shape) i32 {
+  if s is Circle and mark(t) { return s.radius; }
+  return 0;
+}
+fn storeField(s &mut Shape, t &mut Shape) i32 {
+  if s is Circle and { t.kind = 5; true; } and s.radius > 0 { return s.radius; }
+  return 0;
+}
+
+// The callee is declared below the caller. 3
+fn forward(s &mut Shape) i32 {
+  if s is Circle and later() { return s.radius; }
+  return 0;
+}
+fn later() bool { true; }
+
+fn main() i32 {
+  mut c Shape = Shape.Circle(1, 3);
+  mut r Shape = Shape.Rect(2, 4, 5);
+  mut c2 Shape = Shape.Circle(1, 8);
+  mut pl Pair = Pair.Left(4);
+  mut pr Pair = Pair.Right(6);
+  num(inCondition(&mut c)); num(inCondition(&mut r)); end();
+  num(thenBlock(&mut c)); num(thenBlock(&mut r)); end();
+  num(afterExit(&mut pl, 0)); num(afterExit(&mut pr, 0)); num(afterExit(&mut pr, 1)); end();
+  num(otherRead(&mut c, &mut c2)); end();
+  num(otherField(&mut c, &mut c2)); num(c2.kind); end();
+  num(storeField(&mut c2, &mut c)); num(c.kind); end();
+  num(forward(&mut c)); end();
+  0i32;
+}

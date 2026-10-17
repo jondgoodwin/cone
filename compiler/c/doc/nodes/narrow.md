@@ -71,11 +71,19 @@ shares are reached exactly as they were. Then:
   **The loan walk follows the local only from where it is declared.** A call or a store made
   between the test and there, in a later operand of the condition, could change the variant
   unseen, and so could one between the test and the use of a transient copy. So type check
-  counts them (`narrowCallMade`: a call that is not an operator on numbers, a store through a
-  name, a swap), keeps the count with each environment as the path's own (a branch's calls are
-  its own), and records the count at each test (`narrowNoteTest`). A fact made by a test is
-  anchored, or used as a transient copy, only if no call has been made since; otherwise the
-  narrowing ends, and the use is `ErrorNarrowStale` naming the call or store.
+  logs them (`narrowCallMade`: a call that is not an operator on numbers, a store through a
+  name, a swap) as a chain of `NarrowCall`s kept with each environment as the path's own (a
+  branch's calls are its own; where two paths meet the chain holds both), and notes the chain
+  at each test (`narrowNoteTest`). A fact made by a test is anchored, or used as a transient
+  copy, if every call or store logged since could not change the variant
+  (`narrowReachedSince`); otherwise the narrowing ends, and the use is `ErrorNarrowStale`
+  naming the first that could. A call is asked what the loan walk asks of one made while the
+  narrowed reference is held (`reshapeCall`, with the enum as the container and every call
+  taken to be able to write a global): handed a way to write an enum of the type whose body
+  stores over it, a body that cannot be seen, or one that writes a global through which the
+  enum is reached. A store is asked `reshapeStoreHits`: replacing a value that holds the enum
+  whole, not writing a field within a variant. A callee whose body is not type checked yet
+  (a recursion) is taken to reach it. Nothing is logged before the first test of a function.
 
 A member the variant has, asked of a name that was narrowed and has been changed, is
 `ErrorNarrowStale` (type check), naming the change and where. A loop is walked once, so a
