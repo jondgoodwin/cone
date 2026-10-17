@@ -1,0 +1,68 @@
+// The tweenstack package (a working name; Jon names packages): animators that
+// run over time and write the value of a field each tick. A program reaches
+// it with 'import tweenstack'. It builds on keyframetracks (clips, easing,
+// quaternion and colour mixing) and adds what that package leaves out: a
+// registry of running animators over many targets, with handles, events and
+// composition, and the kinds that depend on the value a field has now.
+//
+//   mut reg = Animators.make();
+//   reg.setF32(LAMP, GLOW, 0.);                                     // the field's value now
+//   imm a = Anim.transition(LAMP, GLOW, Value.ofF32(1.), 15.);      // BUILT: a value, nothing runs
+//   imm h = reg.start(&a);                                          // STARTED: a handle
+//   // every frame, where the host wants it relative to physics:
+//   reg.tick(now);                                                  // or reg.step(now) ... reg.evaluate()
+//   imm glow = reg.valueF32(LAMP, GLOW, 0.);
+//   each ev in reg.takeEvents() { ... }                             // started, ended, repeated, marker
+//
+// The invariants:
+//
+// - **An animator is a value until it is started.** Anim is plain data
+//   (storable, copyable, composable). 'start' copies it into the registry and
+//   returns a u32 handle; 'stop', 'pause', 'resume', 'seek', 'scrub',
+//   'setRate', 'setGoal', 'complete' act on a handle.
+// - **An animator writes its field directly and leaves.** There are no
+//   weights, layers or combine modes; when an animator ends it is removed and
+//   the value stays where it was left. A field has one writer at a time:
+//   starting an animator takes the fields it writes from whatever wrote them,
+//   and the new one starts from the value the field has now, so replacing
+//   one by another shows no jump. How several effects combine on one thing
+//   is the author's own formula over separate values.
+// - **Pure kinds are a function of time since the start; stepped kinds are
+//   stepped.** A transition, keys, along and groups of them (and a spring
+//   whose goal never moves) are a function of their start moment and
+//   parameters: 'isPure' says so, and it decides what a network must send.
+//   A chase, and a spring after its goal moved, are stepped by the host's
+//   'setGoal'.
+// - **The registry holds no references.** A field is (target id, property
+//   key) as keyframetracks tracks are addressed, and the registry keeps only
+//   its current value. The host reads it back after 'evaluate'.
+// - **The host decides where a tick runs.** Time is a number the host gives;
+//   'step' moves clocks and raises events, 'evaluate' writes the fields.
+//
+// - value.cone      Value: one field's value of any supported type (f32,
+//                   Vec2, Vec3, Quat, Color), and how two mix
+// - motion.cone     Easing as a value, a damped spring's velocity and
+//                   settling time, a facing rotation
+// - curve.cone      Curve3: polyline, Catmull-Rom and Bezier paths with an
+//                   arc-length table, for 'along'
+// - anim.cone       Anim: transition, keys, along, chase, spring and group,
+//                   the timing fields (delay, repeat, direction, hold,
+//                   rate), together / sequence / stagger / lagged / oneOf and
+//                   the Timeline builder
+// - engine.cone     one running animator: the phase of a node in time, the
+//                   walk that writes its values, the walks that step its
+//                   stateful parts and find markers and repeats
+// - animators.cone  the registry: fields and their owners, start / stop /
+//                   pause / seek / rate, setGoal, tick, events
+//
+// Conventions are keyframetracks' and geomath's: right-handed, f32, quaternions
+// x y z w, colours linear sRGB (mixed in linear light unless an animator
+// asks for OKLab), times in seconds (the registry's clock is f64), property
+// keys u32 (keyframetracks' PROP_FIRST_USER and up for a program's own).
+
+mod tweenstack;
+
+import libc;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;

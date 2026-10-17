@@ -1,0 +1,122 @@
+// Motion helpers the animators share: an easing description, the damped
+// spring's velocity and settling time (keyframetracks has its displacement),
+// and a facing rotation.
+
+// An easing curve as a value: a Penner id with its two parameters, or a CSS
+// cubic-bezier. 'apply' is keyframetracks' 'ease' / 'bezierEase'.
+pub struct Easing {
+  pub id u32;
+  pub p0 f32;
+  pub p1 f32;
+  pub bez bool;
+  pub x1 f32;
+  pub y1 f32;
+  pub x2 f32;
+  pub y2 f32;
+
+  pub fn linear() Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0.); }
+  pub fn of(id u32) Easing { new Easing(id, 0., 0., false, 0., 0., 0., 0.); }
+  pub fn withParams(id u32, p0 f32, p1 f32) Easing { new Easing(id, p0, p1, false, 0., 0., 0., 0.); }
+  pub fn spring(zeta f32, omega f32) Easing { new Easing(EASE_SPRING, zeta, omega, false, 0., 0., 0., 0.); }
+  pub fn bezier(x1 f32, y1 f32, x2 f32, y2 f32) Easing { new Easing(EASE_LINEAR, 0., 0., true, x1, y1, x2, y2); }
+
+  // The eased progress for progress s (clamped to 0..1)
+  pub fn apply(self, s f32) f32 {
+    if bez { return bezierEase(x1, y1, x2, y2, clamp01(s)); }
+    ease(id, s, p0, p1);
+  }
+}
+
+// The slope of springDisplacement (keyframetracks) at t: the velocity of a
+// damped harmonic oscillator released at displacement d0 with velocity v0
+pub fn springVelocity(zeta f32, omega f32, d0 f32, v0 f32, t f32) f32 {
+  if t <= 0. { return v0; }
+  if zeta < 0.9999 {
+    imm wd = omega * (1. - zeta * zeta).sqrt();
+    imm decay = libc.expf(-zeta * omega * t);
+    imm b = (v0 + zeta * omega * d0) / wd;
+    imm c = cos(wd * t);
+    imm s = sin(wd * t);
+    return decay * (-zeta * omega * (d0 * c + b * s) + wd * (-d0 * s + b * c));
+  }
+  if zeta <= 1.0001 {
+    imm e = libc.expf(-omega * t);
+    imm k = v0 + omega * d0;
+    return e * (k - omega * (d0 + k * t));
+  }
+  imm root = (zeta * zeta - 1.).sqrt();
+  imm r1 = -omega * (zeta - root);
+  imm r2 = -omega * (zeta + root);
+  imm c2 = (v0 - r1 * d0) / (r2 - r1);
+  imm c1 = d0 - c2;
+  c1 * r1 * libc.expf(r1 * t) + c2 * r2 * libc.expf(r2 * t);
+}
+
+// How long a spring takes to settle: the time after which its displacement
+// and its velocity (over omega) are under 'eps' times the scale of its
+// release (|d0| + |v0| / omega). From an envelope bound, not a search of the
+// oscillation, so it never ends early.
+pub fn springSettle(zeta f32, omega f32, eps f32) f32 {
+  if omega <= 0. or zeta <= 0. { return 1.0e30; }
+  mut rate = zeta * omega;
+  mut grow = 1.;
+  if zeta > 1.0001 {
+    rate = omega * (zeta - (zeta * zeta - 1.).sqrt());
+  }
+  mut t f32 = 0.;
+  mut i = 0;
+  while i < 8 {
+    if zeta < 0.9999 {
+      grow = 2. / (1. - zeta * zeta).sqrt();
+    } else {
+      grow = 1. + omega * t;
+    }
+    t = libc.logf(grow / eps) / rate;
+    i = i + 1;
+  }
+  t;
+}
+
+// Stiffness / damping / mass, as a mass on a spring has them, in the
+// damping ratio and angular frequency the rest of this package uses
+pub fn springZeta(stiffness f32, damping f32, mass f32) f32 { damping / (2. * (stiffness * mass).sqrt()); }
+pub fn springOmegaOf(stiffness f32, mass f32) f32 { (stiffness / mass).sqrt(); }
+
+// The rotation that turns the model's forward axis (+Z, glTF's) to 'dir' and
+// keeps its up axis (+Y) towards 'up' as far as it can
+pub fn faceRotation(dir Vec3, up Vec3) Quat {
+  imm f = dir.normalize();
+  mut u = up.normalize();
+  if libc.fabsf(f.dot(u)) > 0.9999 {
+    // looking along up: any perpendicular will do
+    u = if libc.fabsf(f.x) < 0.9 { new Vec3(1., 0., 0.); } else { new Vec3(0., 0., 1.); };
+  }
+  imm r = u.cross(f).normalize();
+  imm u2 = f.cross(r);
+  // columns right, up, forward
+  imm m00 = r.x; imm m01 = u2.x; imm m02 = f.x;
+  imm m10 = r.y; imm m11 = u2.y; imm m12 = f.y;
+  imm m20 = r.z; imm m21 = u2.z; imm m22 = f.z;
+  imm tr = m00 + m11 + m22;
+  if tr > 0. {
+    imm s = (tr + 1.).sqrt() * 2.;
+    return new Quat((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s).normalize();
+  }
+  if m00 > m11 and m00 > m22 {
+    imm s = (1. + m00 - m11 - m22).sqrt() * 2.;
+    return new Quat(0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s).normalize();
+  }
+  if m11 > m22 {
+    imm s = (1. + m11 - m00 - m22).sqrt() * 2.;
+    return new Quat((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s).normalize();
+  }
+  imm s = (1. + m22 - m00 - m11).sqrt() * 2.;
+  new Quat((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s).normalize();
+}
+
+// The angle in radians between two unit quaternions' rotations
+pub fn quatAngle(a Quat, b Quat) f32 {
+  mut d = libc.fabsf(a.dot(b));
+  if d > 1. { d = 1.; }
+  2. * acos(d);
+}

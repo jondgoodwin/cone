@@ -1,0 +1,284 @@
+// Transitions and the timing fields. D is target 1; X, Y and Z are property
+// keys. 'tick(t)' moves the registry to the moment t and evaluates.
+//
+// LINEAR. 0 to 10 over 2 s: 2.5 at 0.5 s, 5 at 1 s, 10 at 2 s; the animator
+//   ends there, is removed, and the field keeps 10.
+// DEFAULT EASE. Cubic in-out over 1 s, 0 to 10: at 0.25 s, 4 * 0.25^3 = 0.0625
+//   so 0.625; at 0.75 s, 1 - 0.5^3 / 2 = 0.9375 so 9.375.
+// FROM CURRENT. A field set to 4, a transition to 8 over 2 s: 6 at 1 s. With a
+//   given 'from' (3 to 7) the field's own value is not read.
+// DELAY AND HOLD. A 1 s delay: nothing is written before it (the field keeps
+//   its value), 5 at 1.5 s for a 1 s linear 0 to 10. With hold both the 'from'
+//   value shows during the delay.
+// REPEAT AND DIRECTION. 0 to 10 over 1 s repeated 3 times alternating: 5 at
+//   0.5 s, 7.5 at 1.25 s (the reverse leg is a quarter in), 2.5 at 2.25 s,
+//   and the end of the third leg (forward) 10 at 3 s. 'repeated' events carry
+//   the count of iterations completed: 1 at 1 s and 2 at 2 s, none at the end.
+//   Reverse once: 7.5 at 0.25 s. A repeat above one makes a default ease
+//   linear: 2.5 at 0.25 s. Forever never ends.
+// RATE. Rate 2 on a 2 s transition: 5 at 0.5 s of registry time, ends at 1 s.
+// TYPES. A colour half way from red to blue: (0.5, 0, 0.5) in linear light,
+//   and the OKLab mix keyframetracks' mixColor gives when asked. A rotation
+//   half way from the identity to 90 degrees about y is 45 degrees: y =
+//   sin(22.5 degrees) = 0.382683, w = cos(22.5 degrees) = 0.923880. A Vec3
+//   goes component by component.
+// EVENTS. started when it starts, ended with reason END_FINISHED at its end.
+// DETERMINISM. Two registries given the same calls hold the same values to
+//   the last bit; stepping in 0.1 s steps or one big step reaches the same
+//   value to rounding.
+
+mod transitions;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+import tweenstack use *;
+
+const D = 1u32;
+const X = 1030u32;
+const Y = 1031u32;
+const Z = 1032u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn countKind(evs &List[AnimEvent], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() { if (*evs[i]).kind == kind { n = n + 1i64; } i = i + 1usize; }
+  n;
+}
+
+fn tenTo(dur f32) Anim { Anim.transition(D, X, Value.ofF32(10.), dur); }
+
+fn run(script u32) List[f32] {
+  mut reg = Animators.make();
+  reg.setF32(D, X, 1.);
+  reg.setF32(D, Y, 0.);
+  mut out = List[f32].empty();
+  imm a = Anim.transition(D, X, Value.ofF32(9.), 1.5);
+  imm b = Anim.transitionFrom(D, Y, Value.ofF32(2.), Value.ofF32(-3.), 1.).withRepeat(3.).withDirection(DIR_ALTERNATE);
+  reg.start(&a);
+  mut t f64 = 0.;
+  mut i = 0;
+  while i < 40 {
+    t = t + 0.0731f64 * f64.from(1 + (i % 3));
+    if i == 5 { reg.start(&b); }
+    if i == 11 { reg.start(&Anim.transition(D, X, Value.ofF32(0.), 2.).withDelay(0.3)); }
+    reg.tick(t);
+    out.push(reg.valueF32(D, X, -99.));
+    out.push(reg.valueF32(D, Y, -99.));
+    i = i + 1;
+  }
+  out;
+}
+
+fn main() i32 {
+  // linear, ends, value stays
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&tenTo(2.).withLinear());
+    expect(reg.isRunning(h), "running after start");
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "linear at 0.5 s");
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "linear at 1 s");
+    expect(reg.ownerOf(D, X) == h, "the animator owns the field while it runs");
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "linear end value");
+    expectInt(i64.from(reg.count()), 0i64, "removed when it ends");
+    expect(!reg.exists(h), "its handle is gone");
+    expect(reg.ownerOf(D, X) == 0u32, "no owner after it leaves");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "the value stays where it was left");
+    imm evs = reg.takeEvents();
+    expectInt(countKind(&evs, EV_STARTED), 1i64, "one started event");
+    expectInt(countKind(&evs, EV_ENDED), 1i64, "one ended event");
+    expectInt(i64.from((*evs[1]).reason), i64.from(END_FINISHED), "ended by finishing");
+    expectInt(i64.from((*evs[1]).handle), i64.from(h), "the event names the handle");
+  }
+  // default ease
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&tenTo(1.));
+    reg.tick(0.25f64);
+    near(reg.valueF32(D, X, -1.), 0.625, 0.00001, "cubic in-out at 0.25");
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "cubic in-out at 0.5");
+    reg.tick(0.75f64);
+    near(reg.valueF32(D, X, -1.), 9.375, 0.00001, "cubic in-out at 0.75");
+  }
+  // from current, and a given from
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 4.);
+    reg.start(&Anim.transition(D, X, Value.ofF32(8.), 2.).withLinear());
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 6., 0.00001, "from the current value");
+    reg.setF32(D, Y, 100.);
+    reg.start(&Anim.transitionFrom(D, Y, Value.ofF32(3.), Value.ofF32(7.), 2.).withLinear());
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, Y, -1.), 5., 0.00001, "a given from ignores the field");
+  }
+  // no value yet: the transition has nothing to move from, so it takes the target
+  {
+    mut reg = Animators.make();
+    reg.start(&tenTo(1.).withLinear());
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "a field with no value jumps to the target");
+  }
+  // delay and hold
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&tenTo(1.).withLinear().withDelay(1.));
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 0., 0.00001, "nothing written during the delay");
+    reg.tick(1.5f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "5 half way after the delay");
+    reg.setF32(D, Y, 50.);
+    reg.start(&Anim.transitionFrom(D, Y, Value.ofF32(3.), Value.ofF32(7.), 1.).withLinear().withDelay(1.).withHold(HOLD_BOTH));
+    reg.tick(1.75f64);
+    near(reg.valueF32(D, Y, -1.), 3., 0.00001, "hold start shows the from value during the delay");
+    reg.tick(3.25f64);
+    near(reg.valueF32(D, Y, -1.), 6., 0.00001, "and then runs (started at 1.5 s, delay 1 s, so 0.75 s in at 3.25 s)");
+  }
+  // repeat and direction
+  {
+    mut reg = Animators.make();
+    imm a = Anim.transitionFrom(D, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withRepeat(3.).withDirection(DIR_ALTERNATE);
+    reg.start(&a);
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "alternate leg 1 at 0.5");
+    reg.tick(1.0f64);
+    reg.tick(1.25f64);
+    near(reg.valueF32(D, X, -1.), 7.5, 0.00001, "alternate leg 2 (reverse) a quarter in");
+    reg.tick(2.0f64);
+    reg.tick(2.25f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "alternate leg 3 a quarter in");
+    reg.tick(3.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "alternate ends at the end of a forward leg");
+    imm evs = reg.takeEvents();
+    expectInt(countKind(&evs, EV_REPEATED), 2i64, "two repeated events");
+    mut counts = List[i64].empty();
+    mut i = 0usize;
+    while i < evs.len() { if (*evs[i]).kind == EV_REPEATED { counts.push(i64.from((*evs[i]).count)); } i = i + 1usize; }
+    expectInt(*counts[0usize], 1i64, "first repeat is count 1");
+    expectInt(*counts[1usize], 2i64, "second repeat is count 2");
+    expectInt(countKind(&evs, EV_ENDED), 1i64, "ended once");
+  }
+  {
+    mut reg = Animators.make();
+    reg.start(&Anim.transitionFrom(D, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withLinear().withDirection(DIR_REVERSE));
+    reg.tick(0.25f64);
+    near(reg.valueF32(D, X, -1.), 7.5, 0.00001, "reverse at 0.25");
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 0., 0.00001, "reverse ends at the from value");
+  }
+  {
+    mut reg = Animators.make();
+    reg.start(&Anim.transitionFrom(D, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withRepeat(2.));
+    reg.tick(0.25f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "a repeated default ease is linear");
+    reg.tick(1.25f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.00001, "and the second pass repeats it");
+  }
+  {
+    mut reg = Animators.make();
+    imm h = reg.start(&Anim.transitionFrom(D, X, Value.ofF32(0.), Value.ofF32(10.), 1.).forever());
+    reg.tick(100.25f64);
+    near(reg.valueF32(D, X, -1.), 2.5, 0.001, "forever loops");
+    expect(reg.isRunning(h), "forever does not end");
+    expect(reg.isPure(h), "a looped transition is pure");
+  }
+  // rate
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&tenTo(2.).withLinear().withRate(2.));
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "rate 2 halves the time");
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "and ends at 1 s");
+    expect(!reg.exists(h), "removed");
+  }
+  // types
+  {
+    mut reg = Animators.make();
+    reg.setColor(D, X, new Color(1., 0., 0., 1.));
+    reg.start(&Anim.transition(D, X, Value.ofColor(new Color(0., 0., 1., 1.)), 1.).withLinear());
+    reg.tick(0.5f64);
+    imm c = reg.valueColor(D, X, new Color(9., 9., 9., 9.));
+    near(c.red, 0.5, 0.00001, "colour red half way, linear light");
+    near(c.green, 0., 0.00001, "colour green");
+    near(c.blue, 0.5, 0.00001, "colour blue half way");
+    reg.setColor(D, Y, new Color(1., 0., 0., 1.));
+    reg.start(&Anim.transition(D, Y, Value.ofColor(new Color(0., 0., 1., 1.)), 1.).withLinear().withSpace(SPACE_OKLAB));
+    reg.tick(1.0f64);
+    reg.setColor(D, Z, new Color(1., 0., 0., 1.));
+    reg.start(&Anim.transition(D, Z, Value.ofColor(new Color(0., 0., 1., 1.)), 1.).withLinear().withSpace(SPACE_OKLAB));
+    reg.tick(1.5f64);
+    imm want = mixColor(new Color(1., 0., 0., 1.), new Color(0., 0., 1., 1.), 0.5, SPACE_OKLAB);
+    imm got = reg.valueColor(D, Z, new Color(9., 9., 9., 9.));
+    near(got.red, want.red, 0.00001, "OKLab mix red agrees with mixColor");
+    near(got.green, want.green, 0.00001, "OKLab mix green");
+    near(got.blue, want.blue, 0.00001, "OKLab mix blue");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setQuat(D, X, Quat.identity());
+    imm goal = new Quat(0., sin(pi / 4.), 0., cos(pi / 4.));
+    reg.start(&Anim.transition(D, X, Value.ofQuat(goal), 1.).withLinear());
+    reg.tick(0.5f64);
+    imm q = reg.valueQuat(D, X, Quat.identity());
+    near(q.y, 0.382683, 0.00001, "quaternion half way: y");
+    near(q.w, 0.923880, 0.00001, "quaternion half way: w");
+    near(q.length(), 1., 0.00001, "and unit length");
+  }
+  {
+    mut reg = Animators.make();
+    reg.setVec3(D, X, new Vec3(1., 2., 3.));
+    reg.start(&Anim.transition(D, X, Value.ofVec3(new Vec3(3., 4., 5.)), 2.).withLinear());
+    reg.tick(1.0f64);
+    imm v = reg.valueVec3(D, X, new Vec3(0., 0., 0.));
+    near(v.x, 2., 0.00001, "vec3 x");
+    near(v.y, 3., 0.00001, "vec3 y");
+    near(v.z, 4., 0.00001, "vec3 z");
+    reg.setVec2(D, Y, new Vec2(0., 10.));
+    reg.start(&Anim.transition(D, Y, Value.ofVec2(new Vec2(4., 0.)), 2.).withLinear());
+    reg.tick(2.0f64);
+    imm w = reg.valueVec2(D, Y, new Vec2(9., 9.));
+    near(w.x, 2., 0.00001, "vec2 x half way (started at 1 s, 2 s long, now 2 s)");
+    near(w.y, 5., 0.00001, "vec2 y");
+  }
+  // determinism
+  {
+    imm a = run(0u32);
+    imm b = run(0u32);
+    mut same = a.len() == b.len();
+    mut i = 0usize;
+    while same and i < a.len() { if *a[i] != *b[i] { same = false; } i = i + 1usize; }
+    expect(same, "two identical runs give identical values");
+    expectInt(i64.from(a.len()), 80i64, "80 samples");
+  }
+  {
+    mut r1 = Animators.make();
+    mut r2 = Animators.make();
+    r1.setF32(D, X, 0.);
+    r2.setF32(D, X, 0.);
+    r1.start(&tenTo(3.).withLinear());
+    r2.start(&tenTo(3.).withLinear());
+    mut t f64 = 0.;
+    mut i = 0;
+    while i < 20 { t = t + 0.1f64; r1.tick(t); i = i + 1; }
+    r2.tick(2.0f64);
+    near(r1.valueF32(D, X, -1.), r2.valueF32(D, X, -1.), 0.00001, "small steps and one step agree");
+    near(r2.valueF32(D, X, -1.), 10. * 2. / 3., 0.00001, "and are the formula");
+  }
+  done();
+}

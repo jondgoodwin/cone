@@ -1,0 +1,260 @@
+// Composition: together, sequence, stagger, a lag ratio, a Timeline with
+// labels, nested timing, and one_of. A, B and C are targets 1, 2 and 3; X and
+// Y property keys. Every part is 0 to 1 or 0 to 10 over 1 s, linear.
+//
+// TOGETHER. X 0 to 10 and Y 0 to 20 over 1 s: 5 and 10 at 0.5 s.
+// SEQUENCE. X 0 to 10 over 1 s then X back to 0 over 1 s with no from: the
+//   second starts from where the first ended (10) even when one tick jumps
+//   from 0 to 1.5 s: 5 at 1.5 s; the same in small steps. Total 2 s.
+// STAGGER. Three parts a quarter of a second apart: at 0.5 s they are at
+//   0.5, 0.25 and 0; at 0.75 s, 0.75, 0.5, 0.25; the group ends at 1.5 s.
+// LAG RATIO. Parts of 1 s: ratio 0.5 starts them at 0, 0.5 and 1 (at 1 s:
+//   1, 0.5, 0); ratio 1 is a sequence (0, 1, 2); ratio 0 is together.
+// TIMELINE. add puts a part at the end of what is there; addWith a part with
+//   the last (its start plus an offset); addAfter after the last's end;
+//   labels and named members place by name. Built offsets, in order: 'a' at
+//   0 (1 s), 'b' after it at 1, 'c' with 'b' + 0.25 = 1.25, label 'here' at
+//   2.25 (the end of c), 'd' at the label 'here' + 0.5 = 2.75, 'e' at the end
+//   of 'a' + 0.5 = 1.5, 'f' at the start of 'b' + 0.1 = 1.1. The whole is
+//   3.75 s.
+// NESTED TIMING. A sequence of X 0 to 10 and X 10 to 20 (1 s each) repeated
+//   twice, alternating: 5 at 0.5 s, 15 at 1.5 s, 15 at 2.5 s (the reverse
+//   pass), 5 at 3.5 s, 0 at the end (4 s); one repeated event at 2 s. A group
+//   delayed by 1 s and with rate 2 runs its 2 s in 1 s.
+// ONE_OF. Three members of an exclusive group: starting walk ends idle (an
+//   ended event, reason END_SUPERSEDED) and starting run ends walk; a member
+//   outside the group is untouched.
+
+mod compose;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+import tweenstack use *;
+
+const A = 1u32;
+const B = 2u32;
+const C = 3u32;
+const X = 1030u32;
+const Y = 1031u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn countKind(evs &List[AnimEvent], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() { if (*evs[i]).kind == kind { n = n + 1i64; } i = i + 1usize; }
+  n;
+}
+
+fn rise(target u32, hi f32) Anim {
+  Anim.transitionFrom(target, X, Value.ofF32(0.), Value.ofF32(hi), 1.).withLinear();
+}
+
+fn list3(a Anim, b Anim, c Anim) List[Anim] {
+  mut l = List[Anim].empty();
+  l.push(a); l.push(b); l.push(c);
+  l;
+}
+
+fn main() i32 {
+  // together
+  {
+    mut reg = Animators.make();
+    mut parts = List[Anim].empty();
+    parts.push(Anim.transitionFrom(A, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withLinear());
+    parts.push(Anim.transitionFrom(A, Y, Value.ofF32(0.), Value.ofF32(20.), 1.).withLinear());
+    imm g = together(&parts);
+    near(f32.from(g.span()), 1., 0.00001, "together lasts as long as the longest");
+    reg.start(&g);
+    reg.tick(0.5f64);
+    near(reg.valueF32(A, X, -1.), 5., 0.00001, "together X");
+    near(reg.valueF32(A, Y, -1.), 10., 0.00001, "together Y");
+  }
+  // sequence, from the end of the first, even across a big step
+  {
+    mut parts = List[Anim].empty();
+    parts.push(Anim.transition(A, X, Value.ofF32(10.), 1.).withLinear());
+    parts.push(Anim.transition(A, X, Value.ofF32(0.), 1.).withLinear());
+    imm g = sequence(&parts);
+    near(f32.from(g.span()), 2., 0.00001, "sequence lasts the sum");
+    mut reg = Animators.make();
+    reg.setF32(A, X, 0.);
+    reg.start(&g);
+    reg.tick(1.5f64);
+    near(reg.valueF32(A, X, -1.), 5., 0.00001, "second part starts from the end of the first (one big step)");
+    mut reg2 = Animators.make();
+    reg2.setF32(A, X, 0.);
+    reg2.start(&g);
+    mut t f64 = 0.;
+    mut i = 0;
+    while i < 15 { t = t + 0.1f64; reg2.tick(t); i = i + 1; }
+    near(reg2.valueF32(A, X, -1.), 5., 0.0005, "and in small steps");
+    reg2.tick(2.0f64);
+    near(reg2.valueF32(A, X, -1.), 0., 0.00001, "sequence ends at 0");
+    expectInt(i64.from(reg2.count()), 0i64, "and is removed");
+  }
+  // stagger and lag ratio
+  {
+    imm g = stagger(&list3(rise(A, 1.), rise(B, 1.), rise(C, 1.)), 0.25);
+    near(f32.from(g.span()), 1.5, 0.00001, "stagger lasts to the last end");
+    mut reg = Animators.make();
+    reg.setF32(A, X, 0.);
+    reg.setF32(B, X, 0.);
+    reg.setF32(C, X, 0.);
+    reg.start(&g);
+    reg.tick(0.5f64);
+    near(reg.valueF32(A, X, -1.), 0.5, 0.00001, "stagger A at 0.5");
+    near(reg.valueF32(B, X, -1.), 0.25, 0.00001, "stagger B at 0.5");
+    near(reg.valueF32(C, X, -1.), 0., 0.00001, "stagger C at 0.5");
+    reg.tick(0.75f64);
+    near(reg.valueF32(A, X, -1.), 0.75, 0.00001, "stagger A at 0.75");
+    near(reg.valueF32(B, X, -1.), 0.5, 0.00001, "stagger B at 0.75");
+    near(reg.valueF32(C, X, -1.), 0.25, 0.00001, "stagger C at 0.75");
+  }
+  {
+    imm half = lagged(&list3(rise(A, 1.), rise(B, 1.), rise(C, 1.)), 0.5);
+    near(*half.offs[1usize], 0.5, 0.00001, "ratio 0.5: second at 0.5");
+    near(*half.offs[2usize], 1., 0.00001, "ratio 0.5: third at 1");
+    near(f32.from(half.span()), 2., 0.00001, "ratio 0.5: total 2");
+    mut reg = Animators.make();
+    reg.setF32(A, X, 0.);
+    reg.setF32(B, X, 0.);
+    reg.setF32(C, X, 0.);
+    reg.start(&half);
+    reg.tick(1.0f64);
+    near(reg.valueF32(A, X, -1.), 1., 0.00001, "ratio 0.5 at 1: A done");
+    near(reg.valueF32(B, X, -1.), 0.5, 0.00001, "B half");
+    near(reg.valueF32(C, X, -1.), 0., 0.00001, "C not begun");
+    imm seq = lagged(&list3(rise(A, 1.), rise(B, 1.), rise(C, 1.)), 1.);
+    near(*seq.offs[2usize], 2., 0.00001, "ratio 1 is a sequence");
+    imm tog = lagged(&list3(rise(A, 1.), rise(B, 1.), rise(C, 1.)), 0.);
+    near(*tog.offs[2usize], 0., 0.00001, "ratio 0 is together");
+  }
+  // timeline
+  {
+    mut tl = Timeline.make();
+    tl = tl.add(&rise(A, 1.)).named("a");
+    tl = tl.add(&rise(B, 1.)).named("b");
+    tl = tl.addWith(&rise(C, 1.), 0.25).named("c");
+    tl = tl.labelHere("here");
+    tl = tl.addAtLabel(&rise(A, 2.), "here", 0.5).named("d");
+    tl = tl.addAtEndOf(&rise(B, 2.), "a", 0.5).named("e");
+    tl = tl.addAtStartOf(&rise(C, 2.), "b", 0.1).named("f");
+    imm g = tl.build();
+    near(*g.offs[0usize], 0., 0.00001, "a at 0");
+    near(*g.offs[1usize], 1., 0.00001, "b at 1");
+    near(*g.offs[2usize], 1.25, 0.00001, "c with b + 0.25");
+    near(*g.offs[3usize], 2.75, 0.00001, "d at the label + 0.5");
+    near(*g.offs[4usize], 1.5, 0.00001, "e at the end of a + 0.5");
+    near(*g.offs[5usize], 1.1, 0.00001, "f at the start of b + 0.1");
+    near(f32.from(g.span()), 3.75, 0.00001, "the timeline lasts to the last end");
+    mut reg = Animators.make();
+    reg.setF32(A, X, 0.);
+    reg.start(&g);
+    reg.tick(3.25f64);
+    near(reg.valueF32(A, X, -1.), 1., 0.00001, "'a' ran to 1 and 'd' (0.5 s in, 0 to 2) writes on top: 1");
+  }
+  {
+    mut tl = Timeline.make();
+    tl = tl.add(&rise(A, 1.));
+    tl = tl.addAfter(&rise(B, 1.), 0.5);
+    tl = tl.addAt(&rise(C, 1.), 4.);
+    imm g = tl.build();
+    near(*g.offs[1usize], 1.5, 0.00001, "addAfter: end of the last + 0.5");
+    near(*g.offs[2usize], 4., 0.00001, "addAt");
+    near(f32.from(g.span()), 5., 0.00001, "span 5");
+    expectInt(i64.from(g.count()), 4i64, "four nodes: the group and three parts");
+  }
+  // nested timing
+  {
+    mut parts = List[Anim].empty();
+    parts.push(Anim.transitionFrom(A, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withLinear());
+    parts.push(Anim.transitionFrom(A, X, Value.ofF32(10.), Value.ofF32(20.), 1.).withLinear());
+    imm g = sequence(&parts).withRepeat(2.).withDirection(DIR_ALTERNATE);
+    mut reg = Animators.make();
+    reg.start(&g);
+    reg.tick(0.5f64);
+    near(reg.valueF32(A, X, -1.), 5., 0.00001, "nested 0.5");
+    reg.tick(1.5f64);
+    near(reg.valueF32(A, X, -1.), 15., 0.00001, "nested 1.5");
+    reg.tick(2.5f64);
+    near(reg.valueF32(A, X, -1.), 15., 0.00001, "nested 2.5 (reverse pass)");
+    reg.tick(3.5f64);
+    near(reg.valueF32(A, X, -1.), 5., 0.00001, "nested 3.5");
+    reg.tick(4.0f64);
+    near(reg.valueF32(A, X, -1.), 0., 0.00001, "nested end (a reverse pass ends at its start)");
+    imm evs = reg.takeEvents();
+    expectInt(countKind(&evs, EV_REPEATED), 1i64, "one repeat");
+    expectInt(countKind(&evs, EV_ENDED), 1i64, "one end");
+  }
+  {
+    mut parts = List[Anim].empty();
+    parts.push(Anim.transitionFrom(A, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withLinear());
+    parts.push(Anim.transitionFrom(B, X, Value.ofF32(0.), Value.ofF32(10.), 1.).withLinear().withDelay(1.));
+    imm g = sequence(&parts).withDelay(1.).withRate(2.);
+    near(f32.from(g.span()), 2.5, 0.00001, "a delayed, doubled-rate group: 1 s delay + its 3 s of parts at twice the speed");
+    mut reg = Animators.make();
+    reg.start(&g);
+    reg.tick(1.25f64);
+    near(reg.valueF32(A, X, -1.), 0.5 * 10., 0.00001, "group at rate 2: 0.25 s in is 0.5 s of its time");
+  }
+  // markers inside a repeated group, and purity of a group
+  {
+    mut c = Clip.make("c", LOOP_ONCE);
+    mut t = Track.make(TK_F32);
+    t.addF32(0., 0., INTERP_LINEAR);
+    t.addF32(1., 1., INTERP_LINEAR);
+    c.addTrack(A, X, t);
+    c.addMarker(0.25, 3u32, 0.);
+    mut parts = List[Anim].empty();
+    parts.push(Anim.keys(&c).withDelay(0.5));
+    imm g = together(&parts).withRepeat(2.);
+    mut reg = Animators.make();
+    imm h = reg.start(&g);
+    expect(reg.isPure(h), "a group of keys is pure");
+    reg.tick(3.0f64);
+    imm evs = reg.takeEvents();
+    expectInt(countKind(&evs, EV_MARKER), 2i64, "the marker fires in each pass of a repeated group");
+    expectInt(countKind(&evs, EV_REPEATED), 1i64, "and the group repeats once");
+    mut parts2 = List[Anim].empty();
+    parts2.push(rise(A, 1.));
+    parts2.push(Anim.chase(B, X, Value.ofF32(1.), 1.));
+    imm h2 = reg.start(&together(&parts2));
+    expect(!reg.isPure(h2), "a group holding a chase is not pure");
+  }
+  // one_of
+  {
+    mut reg = Animators.make();
+    mut members = List[Anim].empty();
+    members.push(Anim.transitionFrom(A, X, Value.ofF32(0.), Value.ofF32(1.), 10.).withLinear());
+    members.push(Anim.transitionFrom(A, Y, Value.ofF32(0.), Value.ofF32(1.), 10.).withLinear());
+    members.push(Anim.transitionFrom(B, X, Value.ofF32(0.), Value.ofF32(1.), 10.).withLinear());
+    imm set = oneOf(&members, 5u32);
+    imm other = Anim.transitionFrom(C, X, Value.ofF32(0.), Value.ofF32(1.), 10.).withLinear();
+    imm hi = reg.start(set[0usize]);
+    imm ho = reg.start(&other);
+    reg.tick(1.0f64);
+    reg.takeEvents();
+    imm hw = reg.start(set[1usize]);
+    expect(!reg.exists(hi), "starting walk ends idle");
+    imm evs = reg.takeEvents();
+    mut found = false;
+    mut i = 0usize;
+    while i < evs.len() {
+      if (*evs[i]).kind == EV_ENDED and (*evs[i]).handle == hi and (*evs[i]).reason == END_SUPERSEDED { found = true; }
+      i = i + 1usize;
+    }
+    expect(found, "idle's ended event says superseded");
+    imm hr = reg.start(set[2usize]);
+    expect(!reg.exists(hw), "starting run ends walk");
+    expect(reg.exists(hr), "run runs");
+    expect(reg.exists(ho), "a member outside the group is untouched");
+    near(reg.valueF32(A, X, -1.), 0.1, 0.00001, "idle's value stays where it was left");
+  }
+  done();
+}

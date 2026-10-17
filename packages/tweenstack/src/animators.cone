@@ -1,0 +1,650 @@
+// Animators: the registry of running animators over many targets. An
+// animator WRITES the value of the field it animates, directly, each tick;
+// when it ends it is removed and the value stays where it was left.
+//
+//   mut reg = Animators.make();
+//   reg.set(DOOR, ANGLE, Value.ofF32(0.));                 // tell it the field's value (once)
+//   imm h = reg.start(&Anim.transition(DOOR, ANGLE, Value.ofF32(1.6), 1.2));
+//   // every frame, in the host's loop:
+//   reg.step(now);                  // clocks move, stepped animators step, events and ends happen
+//   ...                             // (the host runs physics here)
+//   reg.evaluate();                 // animators write their fields; ended ones leave
+//   imm angle = reg.valueF32(DOOR, ANGLE, 0.);
+//   each ev in reg.takeEvents() { ... }
+//
+// 'tick(now)' is 'step(now)' then 'evaluate()'. The package decides nothing
+// about where in a frame these run relative to physics: that is the host's.
+// Time is a number the host gives (seconds, f64); nothing here reads a clock.
+//
+// A field is addressed by (target id, property key) as keyframetracks tracks
+// are; the registry holds no references to anything, only the current value
+// of each field it has been told of or has written. The host reads it back
+// after 'evaluate' and applies it to its world.
+//
+// ONE ANIMATOR PER FIELD. A field is written by one animator at a time, its
+// OWNER. Starting an animator takes every field it writes: the animator that
+// owned one stops writing it, and if it owns nothing any more it is stopped
+// (an EV_ENDED event with reason END_SUPERSEDED). The new animator starts from
+// the value the field has now (a transition, chase or spring without a
+// 'from'), so replacing one by another shows no jump. A spring also takes the
+// velocity the field had (from the last two evaluations) unless told not to.
+//
+// ENDING. An animator that has run its course is removed at the next
+// 'evaluate', after writing its end value; the field keeps it. There is no
+// hold, commit or vanish option. Combining several effects on one thing is
+// the author's own formula over separate values.
+//
+// PURE OR STEPPED. A running animator is PURE (isPure) when its output is a
+// function of its start moment and parameters alone: transitions, keys,
+// along, groups of them, and a spring whose goal has not moved. A chase, and a
+// spring after it has been retargeted, are not: they are stepped (the
+// host's setGoal gives them the goal each frame). A pure animator can be
+// sent to a remote machine as (kind, parameters, start moment) and sampled
+// identically there; a stepped one must be streamed or stepped from the same
+// inputs.
+
+pub struct Field {
+  pub target u32;
+  pub prop u32;
+  pub kind u32;
+  pub hasCur bool;
+  pub cur Value;
+  pub vel Value;
+  // the handle of the animator that writes it, or 0
+  pub owner u32;
+}
+
+pub struct Animators {
+  pub now f64;
+  pub evalTime f64;
+  pub nextId u32;
+  pub fields List[Field];
+  pub index Dict[u64, usize];
+  pub runs List[Running];
+  pub events List[AnimEvent];
+
+  pub fn make() Animators {
+    new Animators(0.0f64, 0.0f64, 1u32, List[Field].empty(), Dict[u64, usize].empty(), List[Running].empty(),
+      List[AnimEvent].empty());
+  }
+
+  // ---- fields ----
+
+  fn fieldIx(self &, target u32, prop u32) i64 {
+    imm key = keyOf(target, prop);
+    match self.index.getCopy(&key) {
+      case imm s Some { i64.from(s); }
+      case is None[usize] { -1i64; }
+    }
+  }
+
+  fn ensureField(self &mut, target u32, prop u32, kind u32) usize {
+    imm i = self.fieldIx(target, prop);
+    if i >= 0i64 { return usize.from(i); }
+    self.fields.push(new Field(target, prop, kind, false, Value.rest(TK_F32), Value.rest(TK_F32), 0u32));
+    imm k = self.fields.len() - 1usize;
+    self.index.insert(keyOf(target, prop), k);
+    k;
+  }
+
+  // Tell the registry the value a field has now (the host moved the thing, or
+  // this is its first value). A field an animator owns is overwritten by it
+  // at the next evaluate.
+  pub fn set(self &mut, target u32, prop u32, v Value) {
+    imm i = self.ensureField(target, prop, v.kind);
+    self.fields[i].kind = v.kind;
+    self.fields[i].hasCur = true;
+    self.fields[i].cur = v;
+  }
+
+  pub fn setF32(self &mut, target u32, prop u32, v f32) { self.set(target, prop, Value.ofF32(v)); }
+  pub fn setVec2(self &mut, target u32, prop u32, v Vec2) { self.set(target, prop, Value.ofVec2(v)); }
+  pub fn setVec3(self &mut, target u32, prop u32, v Vec3) { self.set(target, prop, Value.ofVec3(v)); }
+  pub fn setQuat(self &mut, target u32, prop u32, v Quat) { self.set(target, prop, Value.ofQuat(v)); }
+  pub fn setColor(self &mut, target u32, prop u32, v Color) { self.set(target, prop, Value.ofColor(v)); }
+
+  // Forget a target's fields (a thing that is gone); animators that owned them are stopped
+  pub fn forgetTarget(self &mut, target u32) {
+    mut i = 0usize;
+    while i < self.fields.len() {
+      if self.fields[i].target == target {
+        self.fields[i].hasCur = false;
+        imm o = self.fields[i].owner;
+        self.fields[i].owner = 0u32;
+        if o != 0u32 { self.stopIfOwnsNothing(o); }
+      }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn hasValue(self &, target u32, prop u32) bool {
+    imm i = self.fieldIx(target, prop);
+    if i < 0i64 { return false; }
+    self.fields[usize.from(i)].hasCur;
+  }
+
+  // The field's value as of the last evaluate (or set)
+  pub fn value(self &, target u32, prop u32, fallback Value) Value {
+    imm i = self.fieldIx(target, prop);
+    if i < 0i64 { return fallback; }
+    imm f = self.fields[usize.from(i)];
+    if f.hasCur { f.cur; } else { fallback; };
+  }
+
+  pub fn valueF32(self &, target u32, prop u32, fallback f32) f32 {
+    self.value(target, prop, Value.ofF32(fallback)).asF32();
+  }
+  pub fn valueVec2(self &, target u32, prop u32, fallback Vec2) Vec2 {
+    self.value(target, prop, Value.ofVec2(fallback)).asVec2();
+  }
+  pub fn valueVec3(self &, target u32, prop u32, fallback Vec3) Vec3 {
+    self.value(target, prop, Value.ofVec3(fallback)).asVec3();
+  }
+  pub fn valueQuat(self &, target u32, prop u32, fallback Quat) Quat {
+    self.value(target, prop, Value.ofQuat(fallback)).asQuat();
+  }
+  pub fn valueColor(self &, target u32, prop u32, fallback Color) Color {
+    self.value(target, prop, Value.ofColor(fallback)).asColor();
+  }
+
+  // The handle of the animator writing the field, or 0
+  pub fn ownerOf(self &, target u32, prop u32) u32 {
+    imm i = self.fieldIx(target, prop);
+    if i < 0i64 { return 0u32; }
+    self.fields[usize.from(i)].owner;
+  }
+
+  // How fast the field's value was changing between the last two
+  // evaluations (per second; zero for a quaternion)
+  pub fn velocity(self &, target u32, prop u32) Value {
+    imm i = self.fieldIx(target, prop);
+    if i < 0i64 { return Value.rest(TK_F32); }
+    self.fields[usize.from(i)].vel;
+  }
+
+  // Write every field that has a value into a keyframetracks Sample (so
+  // code that reads a Player's Sample can read these)
+  pub fn writeSample(self &, out &mut Sample) {
+    mut i = 0usize;
+    while i < self.fields.len() {
+      imm f = self.fields[i];
+      if f.hasCur {
+        mut v = List[f32].empty();
+        mut c = 0usize;
+        while c < kindComps(f.kind) { v.push(f.cur.get(c)); c = c + 1usize; }
+        out.put(f.target, f.prop, f.kind, &v);
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // ---- animators ----
+
+  fn findRun(self &, h u32) i64 {
+    mut i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].id == h and self.runs[i].status != ST_REMOVED { return i64.from(i); }
+      i = i + 1usize;
+    }
+    -1i64;
+  }
+
+  // Start 'a' now. Returns its handle
+  pub fn start(self &mut, a &Anim) u32 { self.startAt(a, self.now); }
+
+  // Start 'a' at the moment 'at' (now if that is past). It takes its fields
+  // when it begins
+  pub fn startAt(self &mut, a &Anim, at f64) u32 {
+    if a.xgroup != 0u32 { self.stopGroup(a.xgroup); }
+    imm id = self.nextId;
+    self.nextId = self.nextId + 1u32;
+    imm when = if at > self.now { at; } else { self.now; };
+    imm running = when <= self.now;
+    self.runs.push(Running.make(id, a, when, if running { ST_RUNNING; } else { ST_WAITING; }));
+    if running {
+      imm ri = self.runs.len() - 1usize;
+      self.events.push(newEvent(EV_STARTED, id));
+      // capture first, while the field's owner still writes it, then take it
+      self.initPass(ri);
+      self.claim(ri);
+    }
+    id;
+  }
+
+  // Take the fields the animator writes; a former owner that owns nothing
+  // now is stopped
+  fn claim(self &mut, ri usize) {
+    self.runs[ri].claimed = true;
+    imm id = self.runs[ri].id;
+    mut olds = List[u32].empty();
+    mut k = 0usize;
+    while k < self.runs[ri].keys.len() {
+      imm key = *self.runs[ri].keys[k];
+      imm fi = self.ensureField(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64), NO_KIND);
+      imm o = self.fields[fi].owner;
+      if o != 0u32 and o != id { olds.push(o); }
+      self.fields[fi].owner = id;
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < olds.len() {
+      self.stopIfOwnsNothing(*olds[k]);
+      k = k + 1usize;
+    }
+  }
+
+  fn ownsAny(self &, ri usize) bool {
+    mut k = 0usize;
+    while k < self.runs[ri].keys.len() {
+      imm key = *self.runs[ri].keys[k];
+      imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
+      if fi >= 0i64 and self.fields[usize.from(fi)].owner == self.runs[ri].id { return true; }
+      k = k + 1usize;
+    }
+    false;
+  }
+
+  fn stopIfOwnsNothing(self &mut, h u32) {
+    imm i = self.findRun(h);
+    if i < 0i64 { return; }
+    imm k = usize.from(i);
+    if self.ownsAny(k) { return; }
+    if self.runs[k].status == ST_DONE {
+      self.runs[k].status = ST_REMOVED;
+    } else {
+      mut e = newEvent(EV_ENDED, h);
+      e.reason = END_SUPERSEDED;
+      self.events.push(e);
+      self.runs[k].status = ST_REMOVED;
+    }
+  }
+
+  // The animator leaves: the fields it owned have no owner (they keep their values)
+  fn release(self &mut, ri usize) {
+    imm id = self.runs[ri].id;
+    mut k = 0usize;
+    while k < self.runs[ri].keys.len() {
+      imm key = *self.runs[ri].keys[k];
+      imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
+      if fi >= 0i64 and self.fields[usize.from(fi)].owner == id { self.fields[usize.from(fi)].owner = 0u32; }
+      k = k + 1usize;
+    }
+  }
+
+  fn stopGroup(self &mut, g u32) {
+    mut i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].root.xgroup == g and self.runs[i].status != ST_REMOVED {
+        if self.runs[i].status != ST_DONE {
+          mut e = newEvent(EV_ENDED, self.runs[i].id);
+          e.reason = END_SUPERSEDED;
+          self.events.push(e);
+        }
+        self.release(i);
+        self.runs[i].status = ST_REMOVED;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Take it out now: it stops writing, and its fields keep what they have
+  pub fn stop(self &mut, h u32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    imm k = usize.from(i);
+    if self.runs[k].status != ST_DONE {
+      mut e = newEvent(EV_ENDED, h);
+      e.reason = END_STOPPED;
+      self.events.push(e);
+    }
+    self.release(k);
+    self.runs[k].status = ST_REMOVED;
+    true;
+  }
+
+  pub fn pause(self &mut, h u32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    self.runs[usize.from(i)].paused = true;
+    true;
+  }
+
+  pub fn resume(self &mut, h u32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    self.runs[usize.from(i)].paused = false;
+    true;
+  }
+
+  // The rate its clock runs at (1 normal, 0.5 half speed; negative runs it backward)
+  pub fn setRate(self &mut, h u32, r f32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    self.runs[usize.from(i)].rate = r;
+    true;
+  }
+
+  // Put its clock at t seconds from its start, raising no events. An animator
+  // that has ended but not yet been removed runs again if moved to before its end
+  pub fn seek(self &mut, h u32, t f64) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    imm k = usize.from(i);
+    imm c = if t < 0. { 0.0f64; } else { t; };
+    self.runs[k].clock = c;
+    self.runs[k].prevClock = c;
+    if self.runs[k].status == ST_DONE and !nodeFinished(self.runs[k], &self.runs[k].root,0usize, c) {
+      self.runs[k].status = ST_RUNNING;
+    }
+    true;
+  }
+
+  // Put its clock at t, raising the markers crossed on the way
+  pub fn scrub(self &mut, h u32, t f64) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    imm k = usize.from(i);
+    imm c = if t < 0. { 0.0f64; } else { t; };
+    mut evs = List[AnimEvent].empty();
+    advanceNode(&mut self.runs[k], &self.runs[k].root,0usize, self.runs[k].clock, c, false, true, &mut evs);
+    self.runs[k].clock = c;
+    self.runs[k].prevClock = c;
+    if self.runs[k].status == ST_DONE and !nodeFinished(self.runs[k], &self.runs[k].root,0usize, c) {
+      self.runs[k].status = ST_RUNNING;
+    }
+    mut j = 0usize;
+    while j < evs.len() { self.events.push(*evs[j]); j = j + 1usize; }
+    true;
+  }
+
+  // Jump to its end: it ends now and writes its end value at the next
+  // evaluate. Not for an animator that has no end
+  pub fn complete(self &mut, h u32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    imm k = usize.from(i);
+    imm end = self.runs[k].root.lifeSpan();
+    if isForever(end) { return false; }
+    if self.runs[k].status == ST_DONE { return true; }
+    if self.runs[k].status == ST_WAITING {
+      self.runs[k].status = ST_RUNNING;
+      self.claim(k);
+    }
+    self.runs[k].clock = end;
+    self.runs[k].prevClock = end;
+    self.runs[k].status = ST_DONE;
+    mut e = newEvent(EV_ENDED, h);
+    e.reason = END_FINISHED;
+    self.events.push(e);
+    true;
+  }
+
+  // Give the stepped animator its goal for slot 'slot' (a chase's, or a
+  // spring's, which carries its position and velocity to the new goal). A
+  // spring that had settled but is not yet removed wakes. False if the
+  // animator is gone.
+  pub fn setGoal(self &mut, h u32, slot u32, v Value) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    imm k = usize.from(i);
+    imm s = usize.from(slot);
+    while self.runs[k].goals.len() <= s {
+      self.runs[k].goals.push(Value.rest(TK_F32));
+      self.runs[k].goalSeq.push(0u32);
+    }
+    self.runs[k].goals.set(s, v);
+    self.runs[k].goalSeq.set(s, *self.runs[k].goalSeq[s] + 1u32);
+    if self.runs[k].status == ST_DONE and (self.runs[k].root.flags & F_STEPPED) != 0u32 {
+      self.runs[k].status = ST_RUNNING;
+    }
+    true;
+  }
+
+  // ---- asking ----
+
+  // The animator is in the registry (waiting, running, or ended and not yet removed)
+  pub fn exists(self &, h u32) bool { self.findRun(h) >= 0i64; }
+
+  // It has been started and has not ended
+  pub fn isRunning(self &, h u32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    self.runs[usize.from(i)].status == ST_RUNNING;
+  }
+
+  // Its output is a function of its start moment and parameters alone (see
+  // the header). False for a handle that is gone
+  pub fn isPure(self &, h u32) bool {
+    imm i = self.findRun(h);
+    if i < 0i64 { return false; }
+    imm k = usize.from(i);
+    nodePure(self.runs[k], &self.runs[k].root,0usize);
+  }
+
+  // Seconds of its own time since it started
+  pub fn time(self &, h u32) f64 {
+    imm i = self.findRun(h);
+    if i < 0i64 { return 0.0f64; }
+    self.runs[usize.from(i)].clock;
+  }
+
+  // How many animators are in the registry
+  pub fn count(self &) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].status != ST_REMOVED { n = n + 1usize; }
+      i = i + 1usize;
+    }
+    n;
+  }
+
+  // The events since the last call, in order
+  pub fn takeEvents(self &mut) List[AnimEvent] {
+    mut out = List[AnimEvent].empty();
+    mut i = 0usize;
+    while i < self.events.len() { out.push(*self.events[i]); i = i + 1usize; }
+    self.events.clear();
+    out;
+  }
+
+  // ---- the frame ----
+
+  // Move to the moment 'now' and evaluate
+  pub fn tick(self &mut, now f64) {
+    self.step(now);
+    self.evaluate();
+  }
+
+  // Move time to 'now': animators' clocks advance (by the time since the
+  // last step, times their rate; a pause holds them), those that begin take
+  // their fields and capture what they start from, stepped parts step, and
+  // markers, repeats and ends are raised. Writes no field.
+  pub fn step(self &mut, now f64) {
+    imm prev = self.now;
+    imm t = if now < prev { prev; } else { now; };
+    mut evs = List[AnimEvent].empty();
+    mut i = 0usize;
+    while i < self.runs.len() {
+      advanceClock(&mut self.runs[i], prev, t, &mut evs);
+      i = i + 1usize;
+    }
+    self.now = t;
+    i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].status == ST_RUNNING { self.initPass(i); }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].status == ST_RUNNING and !self.runs[i].claimed { self.claim(i); }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < self.runs.len() {
+      stepRun(&mut self.runs[i], &mut evs);
+      i = i + 1usize;
+    }
+    mut j = 0usize;
+    while j < evs.len() { self.events.push(*evs[j]); j = j + 1usize; }
+    self.compact();
+  }
+
+  fn compact(self &mut) {
+    mut any = false;
+    mut i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].status == ST_REMOVED { any = true; }
+      i = i + 1usize;
+    }
+    if !any { return; }
+    mut old = List[Running].empty();
+    old <=> self.runs;
+    each r in old.drain() {
+      if r.status != ST_REMOVED { self.runs.push(r); }
+    }
+  }
+
+  // Capture what a node that has just begun needs from the field it animates
+  fn initPass(self &mut, ri usize) {
+    mut pend = List[Pend].empty();
+    findPending(self.runs[ri], &self.runs[ri].root,0usize, self.runs[ri].clock, &mut pend);
+    mut k = 0usize;
+    while k < pend.len() {
+      imm p = *pend[k];
+      mut cur = Value.rest(p.vkind);
+      mut vel = Value.rest(p.vkind);
+      mut has = false;
+      if !p.hasFrom {
+        has = self.freshValue(p.target, p.prop, &mut cur);
+        imm fi = self.fieldIx(p.target, p.prop);
+        if fi >= 0i64 { vel = self.fields[usize.from(fi)].vel; }
+      }
+      applyPending(&mut self.runs[ri], &p, has, cur, vel);
+      k = k + 1usize;
+    }
+  }
+
+  // What the field has if its owner wrote it at this instant
+  fn freshValue(self &, target u32, prop u32, out &mut Value) bool {
+    imm fi = self.fieldIx(target, prop);
+    mut has = false;
+    mut v = Value.rest(TK_F32);
+    if fi < 0i64 { *out = v; return false; }
+    imm f = self.fields[usize.from(fi)];
+    if f.hasCur { has = true; v = f.cur; }
+    if f.owner != 0u32 {
+      imm ri = self.findRun(f.owner);
+      if ri >= 0i64 {
+        imm r = self.runs[usize.from(ri)];
+        if r.status == ST_RUNNING or r.status == ST_DONE {
+          mut em = List[Emit].empty();
+          imm fl = new Filter(true, target, prop);
+          collectRun(r, r.status == ST_DONE, &fl, &mut em);
+          if em.len() > 0usize { has = true; v = (*em[em.len() - 1usize]).value; }
+        }
+      }
+    }
+    *out = v;
+    has;
+  }
+
+  // Every animator writes the fields it owns; those that have ended write
+  // their end value and leave
+  pub fn evaluate(self &mut) {
+    imm dt = self.now - self.evalTime;
+    self.evalTime = self.now;
+    mut oldHas = List[bool].empty();
+    mut oldCur = List[Value].empty();
+    mut i = 0usize;
+    while i < self.fields.len() {
+      oldHas.push(self.fields[i].hasCur);
+      oldCur.push(self.fields[i].cur);
+      i = i + 1usize;
+    }
+    imm off = new Filter(false, 0u32, 0u32);
+    i = 0usize;
+    while i < self.runs.len() {
+      imm st = self.runs[i].status;
+      if st == ST_RUNNING or st == ST_DONE {
+        mut em = List[Emit].empty();
+        collectRun(self.runs[i], st == ST_DONE, &off, &mut em);
+        mut k = 0usize;
+        while k < em.len() {
+          imm e = *em[k];
+          imm fi = self.fieldIx(e.target, e.prop);
+          if fi >= 0i64 and self.fields[usize.from(fi)].owner == self.runs[i].id {
+            self.fields[usize.from(fi)].kind = e.value.kind;
+            self.fields[usize.from(fi)].hasCur = true;
+            self.fields[usize.from(fi)].cur = e.value;
+          }
+          k = k + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+    if dt > 0. {
+      imm inv = 1. / f32.from(dt);
+      i = 0usize;
+      while i < self.fields.len() {
+        mut vel = Value.rest(self.fields[i].kind);
+        if i < oldHas.len() and *oldHas[i] and self.fields[i].hasCur and (*oldCur[i]).kind == self.fields[i].cur.kind
+            and self.fields[i].kind != TK_QUAT {
+          imm a = self.fields[i].cur;
+          imm b = *oldCur[i];
+          vel = new Value(a.kind, (a.x - b.x) * inv, (a.y - b.y) * inv, (a.z - b.z) * inv, (a.w - b.w) * inv);
+        }
+        self.fields[i].vel = vel;
+        i = i + 1usize;
+      }
+    }
+    // the ended leave; their fields keep the values just written
+    i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].status == ST_DONE {
+        self.release(i);
+        self.runs[i].status = ST_REMOVED;
+      }
+      i = i + 1usize;
+    }
+    self.compact();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One running animator's frame
+
+fn advanceClock(r &mut Running, prev f64, now f64, evs &mut List[AnimEvent]) {
+  if r.status == ST_REMOVED { return; }
+  r.prevClock = r.clock;
+  if r.status == ST_WAITING {
+    if now < r.startAt { return; }
+    r.status = ST_RUNNING;
+    r.clock = 0.0f64;
+    r.prevClock = 0.0f64;
+    evs.push(newEvent(EV_STARTED, r.id));
+  } elif r.status == ST_DONE {
+    return;
+  }
+  imm begin = if prev > r.startAt { prev; } else { r.startAt; };
+  imm len = now - begin;
+  if r.paused or len <= 0. { return; }
+  imm nc = r.clock + len * f64.from(r.rate);
+  r.clock = if nc < 0. { 0.0f64; } else { nc; };
+}
+
+fn stepRun(r &mut Running, evs &mut List[AnimEvent]) {
+  if r.status != ST_RUNNING { return; }
+  imm a = r.prevClock;
+  imm b = r.clock;
+  if b != a {
+    advanceNode(r, &r.root,0usize, a, b, b > a, true, evs);
+    if b > a { repeatsCrossed(&r.root,a, b, evs, r.id); }
+  }
+  if b >= a and !r.paused and nodeFinished(r, &r.root,0usize, b) {
+    r.status = ST_DONE;
+    mut e = newEvent(EV_ENDED, r.id);
+    e.reason = END_FINISHED;
+    evs.push(e);
+  }
+}
