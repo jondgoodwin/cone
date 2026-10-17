@@ -1,0 +1,306 @@
+// Starting in the past, the newest start call winning, and the world's clock
+// running backward. D is target 1; X and Y property keys.
+//
+// START IN THE PAST. A pure animator started at a moment already gone is
+//   sampled at (now - at): a linear 0 to 10 over 10 s started at 15 s, seen
+//   at 20 s, shows 5; one started past its end shows its end value and ends.
+//   A transition with no 'from' reads the field's value at the call. No marker
+//   of the skipped time is raised. A spring with a fixed goal is pure, so it
+//   is sampled at (now - at) too (0.3 s in: keyframetracks' springValue). A
+//   chase (stepped) starts NOW whatever 'at' says: its value at its start is
+//   its from, and it moves from there.
+// NEWEST TAKES OVER. A start call supersedes every earlier animator on the
+//   fields it writes, waiting or running. A waiting one cancelled never
+//   starts and ends with END_SUPERSEDED; a start that comes before a
+//   waiting one retimes it by cancelling it; a group waiting on X and Y that
+//   loses X still writes Y when it begins.
+// CLOCK BACKWARD. 'step' to an earlier moment moves a pure animator's clock
+//   back with it: a linear 0 to 10 over 10 s shows 2, 8, 3 and 5 at 2, 8, 3
+//   and 5 s; having ended at 10 s (and been removed, the field holding 10) it
+//   is brought back by time at 7 s, showing 7, and ends again at 10 s. Set
+//   back before its start it is waiting again with the field as it was (a
+//   field set to 5, a transition to 15 over 10 s started at 2 s: 10 at 7 s, 5
+//   at 1 s), and starts again, with a second 'started' event, at 2.5 s. Only
+//   the latest animator of a field is kept: once another has started on it,
+//   time set back to before that one shows the field as it was when that one
+//   started. No marker or repeat is raised by the jump back; crossing them
+//   forward again raises them again. A chase does not run backward: set back
+//   it holds its value, and from the earlier moment it goes on forward.
+
+mod pasttime;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import keyframetracks use *;
+import tweenstack use *;
+
+const D = 1u32;
+const X = 1030u32;
+const Y = 1031u32;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn countKind(evs &List[AnimEvent], kind u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() { if (*evs[i]).kind == kind { n = n + 1i64; } i = i + 1usize; }
+  n;
+}
+
+fn reasonOf(evs &List[AnimEvent], handle u32) i64 {
+  mut i = 0usize;
+  while i < evs.len() {
+    if (*evs[i]).kind == EV_ENDED and (*evs[i]).handle == handle { return i64.from((*evs[i]).reason); }
+    i = i + 1usize;
+  }
+  -1i64;
+}
+
+fn startedFor(evs &List[AnimEvent], handle u32) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < evs.len() {
+    if (*evs[i]).kind == EV_STARTED and (*evs[i]).handle == handle { n = n + 1i64; }
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn ramp(target u32, prop u32, hi f32, dur f32) Anim {
+  Anim.transitionFrom(target, prop, Value.ofF32(0.), Value.ofF32(hi), dur).withLinear();
+}
+
+fn main() i32 {
+  // ---- start in the past ----
+  {
+    mut reg = Animators.make();
+    reg.tick(20.0f64);
+    imm h = reg.startAt(&ramp(D, X, 10., 10.), 15.0f64);
+    expect(reg.isRunning(h), "a past start is running at once");
+    reg.tick(20.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "started at 15 s, seen at 20 s: 5");
+    expectInt(countKind(&reg.takeEvents(), EV_STARTED), 1i64, "and one started event");
+    reg.tick(22.0f64);
+    near(reg.valueF32(D, X, -1.), 7., 0.00001, "and it goes on from there");
+    near(f32.from(reg.time(h)), 7., 0.00001, "its own time is the time since its start");
+  }
+  {
+    mut reg = Animators.make();
+    reg.tick(20.0f64);
+    imm h = reg.startAt(&ramp(D, X, 10., 2.), 5.0f64);
+    reg.tick(20.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "started past its end: the end value");
+    expect(!reg.exists(h), "and it has gone");
+    expectInt(countKind(&reg.takeEvents(), EV_ENDED), 1i64, "ended once");
+  }
+  {
+    // a transition with no from reads the field's value at the call
+    mut reg = Animators.make();
+    reg.setF32(D, X, 4.);
+    reg.tick(20.0f64);
+    reg.startAt(&Anim.transition(D, X, Value.ofF32(14.), 10.).withLinear(), 15.0f64);
+    reg.tick(20.0f64);
+    near(reg.valueF32(D, X, -1.), 9., 0.00001, "from the field's value at the call (4), half way to 14");
+  }
+  {
+    // the markers of the time skipped are not raised
+    mut c = Clip.make("c", LOOP_ONCE);
+    mut t = Track.make(TK_F32);
+    t.addF32(0., 0., INTERP_LINEAR);
+    t.addF32(1., 1., INTERP_LINEAR);
+    c.addTrack(D, X, t);
+    c.addMarker(0.5, 7u32, 0.);
+    mut reg = Animators.make();
+    reg.tick(20.0f64);
+    reg.startAt(&Anim.keys(&c), 19.0f64);
+    reg.tick(20.0f64);
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 0i64, "no marker of the skipped time");
+    reg.startAt(&Anim.keys(&c), 19.75f64);
+    reg.tick(20.5f64);
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 1i64, "a marker still ahead is raised");
+  }
+  {
+    // a spring with a fixed goal is pure: sampled at (now - at)
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.tick(20.0f64);
+    imm h = reg.startAt(&Anim.spring(D, X, Value.ofF32(1.), 0.5, 10.), 19.7f64);
+    reg.tick(20.0f64);
+    near(reg.valueF32(D, X, -1.), springValue(0.5, 10., 0., 0., 1., 0.3), 0.0001, "a spring started 0.3 s ago");
+    expect(reg.isPure(h), "and still pure");
+  }
+  {
+    // a chase starts now
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.tick(20.0f64);
+    imm h = reg.startAt(&Anim.chase(D, X, Value.ofF32(10.), 1.), 10.0f64);
+    reg.tick(20.0f64);
+    near(reg.valueF32(D, X, -1.), 0., 0.00001, "a chase has not moved at its start, whatever 'at' said");
+    near(f32.from(reg.time(h)), 0., 0.00001, "its own time starts now");
+    reg.tick(21.0f64);
+    near(reg.valueF32(D, X, -1.), 6.3212, 0.001, "and moves from there");
+  }
+
+  // ---- the newest start call takes over ----
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm w = reg.startAt(&ramp(D, X, 100., 10.), 5.0f64);
+    imm n = reg.start(&Anim.transitionFrom(D, X, Value.ofF32(0.), Value.ofF32(50.), 10.).withLinear());
+    expect(!reg.exists(w), "the later call cancelled the waiting animator");
+    imm evs = reg.takeEvents();
+    expectInt(reasonOf(&evs, w), i64.from(END_SUPERSEDED), "which ended, superseded");
+    expectInt(startedFor(&evs, w), 0i64, "without ever starting");
+    reg.tick(6.0f64);
+    near(reg.valueF32(D, X, -1.), 30., 0.00001, "at 6 s the field is the newer one's, not the waiting one's");
+    expect(reg.exists(n), "the newer one runs");
+    expectInt(startedFor(&reg.takeEvents(), w), 0i64, "and the cancelled one never started");
+  }
+  {
+    // retiming: a second waiting start replaces the first
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm w1 = reg.startAt(&ramp(D, X, 10., 10.), 5.0f64);
+    imm w2 = reg.startAt(&ramp(D, X, 20., 10.), 7.0f64);
+    expect(!reg.exists(w1), "the first waiting animator was replaced by the second");
+    reg.tick(6.0f64);
+    near(reg.valueF32(D, X, -1.), 0., 0.00001, "nothing writes while the second waits");
+    reg.tick(8.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.00001, "and then the second, 1 s in");
+    expect(reg.exists(w2), "it runs");
+  }
+  {
+    // a running animator is replaced at the call, even by one that waits; the
+    // field keeps its value and the new one starts from it
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm a = reg.start(&ramp(D, X, 10., 10.));
+    reg.tick(2.0f64);
+    imm b = reg.startAt(&Anim.transition(D, X, Value.ofF32(0.), 2.).withLinear(), 4.0f64);
+    expect(!reg.exists(a), "the running one ended at the call");
+    reg.tick(3.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.00001, "the field keeps its value");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 1., 0.00001, "and the waiting one began from 2, a second in: 1");
+    expect(reg.exists(b), "it runs");
+  }
+  {
+    // a group waiting on X and Y that loses X still writes Y
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.setF32(D, Y, 0.);
+    mut parts = List[Anim].empty();
+    parts.push(ramp(D, X, 10., 10.));
+    parts.push(ramp(D, Y, 10., 10.));
+    imm g = reg.startAt(&together(&parts), 2.0f64);
+    reg.start(&Anim.transitionFrom(D, X, Value.ofF32(-5.), Value.ofF32(-5.), 100.));
+    expect(reg.exists(g), "the group still waits: it holds Y");
+    reg.tick(3.0f64);
+    near(reg.valueF32(D, Y, -1.), 1., 0.00001, "and writes Y once begun");
+    near(reg.valueF32(D, X, -1.), -5., 0.00001, "while X is the newer one's");
+    reg.start(&Anim.transitionFrom(D, Y, Value.ofF32(-5.), Value.ofF32(-5.), 100.));
+    expect(!reg.exists(g), "a group that holds nothing ends");
+  }
+
+  // ---- the clock running backward ----
+  {
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&ramp(D, X, 10., 10.));
+    reg.tick(2.0f64);
+    near(reg.valueF32(D, X, -1.), 2., 0.00001, "2 at 2 s");
+    reg.tick(8.0f64);
+    near(reg.valueF32(D, X, -1.), 8., 0.00001, "8 at 8 s");
+    reg.tick(3.0f64);
+    near(reg.valueF32(D, X, -1.), 3., 0.00001, "set back to 3 s: 3");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "forward to 5 s: 5");
+    expect(reg.isRunning(h), "still running");
+    reg.takeEvents();
+    reg.tick(10.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "the end value at 10 s");
+    expect(!reg.exists(h), "ended and gone");
+    expectInt(countKind(&reg.takeEvents(), EV_ENDED), 1i64, "one ended event");
+    reg.tick(7.0f64);
+    near(reg.valueF32(D, X, -1.), 7., 0.00001, "set back to 7 s after its end: 7");
+    expect(reg.exists(h), "the ended animator is brought back by time before its end");
+    expect(reg.ownerOf(D, X) == h, "and writes the field");
+    reg.tick(10.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "and ends again at 10 s");
+    expectInt(countKind(&reg.takeEvents(), EV_ENDED), 1i64, "with a second ended event");
+    expect(!reg.exists(h), "and is gone again");
+    reg.tick(30.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "the field keeps 10");
+    reg.tick(4.0f64);
+    near(reg.valueF32(D, X, -1.), 4., 0.00001, "set far back, long after its end: 4");
+  }
+  {
+    // set back to before the start
+    mut reg = Animators.make();
+    reg.setF32(D, X, 5.);
+    imm h = reg.startAt(&Anim.transition(D, X, Value.ofF32(15.), 10.).withLinear(), 2.0f64);
+    reg.tick(7.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "5 s in, half way from 5 to 15");
+    reg.takeEvents();
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "set back to 1 s: the field as it was");
+    expect(reg.exists(h), "the animator is still there");
+    expect(!reg.isRunning(h), "waiting again");
+    expect(reg.ownerOf(D, X) == 0u32, "owning nothing");
+    reg.tick(2.5f64);
+    near(reg.valueF32(D, X, -1.), 5.5, 0.00001, "it starts again at 2 s: 0.5 s in, 5.5");
+    expectInt(startedFor(&reg.takeEvents(), h), 1i64, "with a started event");
+  }
+  {
+    // only the latest animator of a field is kept
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    reg.start(&ramp(D, X, 10., 10.));
+    reg.tick(10.0f64);
+    imm b = reg.start(&Anim.transition(D, X, Value.ofF32(0.), 10.).withLinear());
+    reg.tick(15.0f64);
+    near(reg.valueF32(D, X, -1.), 5., 0.00001, "the second goes back 10 to 0: 5 at 15 s");
+    reg.tick(12.0f64);
+    near(reg.valueF32(D, X, -1.), 8., 0.00001, "set back into the second: 8");
+    reg.tick(5.0f64);
+    near(reg.valueF32(D, X, -1.), 10., 0.00001, "set back before the second: the field as it was when it started");
+    expect(reg.exists(b), "the second waits");
+  }
+  {
+    // events: a jump back is silent, crossing forward again raises them again
+    mut c = Clip.make("c", LOOP_ONCE);
+    mut t = Track.make(TK_F32);
+    t.addF32(0., 0., INTERP_LINEAR);
+    t.addF32(1., 1., INTERP_LINEAR);
+    c.addTrack(D, X, t);
+    c.addMarker(0.5, 7u32, 0.);
+    mut reg = Animators.make();
+    reg.start(&Anim.keys(&c));
+    reg.tick(0.75f64);
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 1i64, "marker crossed going forward");
+    reg.tick(0.25f64);
+    near(reg.valueF32(D, X, -1.), 0.25, 0.00001, "set back: 0.25");
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 0i64, "no marker for the jump back");
+    reg.tick(0.75f64);
+    expectInt(countKind(&reg.takeEvents(), EV_MARKER), 1i64, "crossed forward again: raised again");
+  }
+  {
+    // a chase does not run backward
+    mut reg = Animators.make();
+    reg.setF32(D, X, 0.);
+    imm h = reg.start(&Anim.chase(D, X, Value.ofF32(10.), 1.));
+    reg.tick(1.0f64);
+    near(reg.valueF32(D, X, -1.), 6.3212, 0.001, "chase at 1 s");
+    reg.tick(0.5f64);
+    near(reg.valueF32(D, X, -1.), 6.3212, 0.001, "set back to 0.5 s: it holds");
+    reg.tick(1.5f64);
+    near(reg.valueF32(D, X, -1.), 10. * (1. - libc.expf(-2.)), 0.001, "and goes on forward from there: a second more");
+    expect(reg.isRunning(h), "still running");
+  }
+  done();
+}

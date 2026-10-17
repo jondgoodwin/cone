@@ -2,8 +2,11 @@
 // spring's velocity and settling time (keyframetracks has its displacement),
 // and a facing rotation.
 
-// An easing curve as a value: a Penner id with its two parameters, or a CSS
-// cubic-bezier. 'apply' is keyframetracks' 'ease' / 'bezierEase'.
+// An easing curve as a value: a Penner id with its two parameters, a CSS
+// cubic-bezier, or END RAMPS (a speed that rises as 1 - cos over a fixed
+// number of seconds at each end and is steady between; see 'endRamps').
+// 'apply' is keyframetracks' 'ease' / 'bezierEase'; 'applyOver' is the same
+// for the ramps too, which need the animator's duration.
 pub struct Easing {
   pub id u32;
   pub p0 f32;
@@ -13,18 +16,58 @@ pub struct Easing {
   pub y1 f32;
   pub x2 f32;
   pub y2 f32;
+  // seconds of the 1 - cos ramp at each end (0 for none)
+  pub ramp f32;
 
-  pub fn linear() Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0.); }
-  pub fn of(id u32) Easing { new Easing(id, 0., 0., false, 0., 0., 0., 0.); }
-  pub fn withParams(id u32, p0 f32, p1 f32) Easing { new Easing(id, p0, p1, false, 0., 0., 0., 0.); }
-  pub fn spring(zeta f32, omega f32) Easing { new Easing(EASE_SPRING, zeta, omega, false, 0., 0., 0., 0.); }
-  pub fn bezier(x1 f32, y1 f32, x2 f32, y2 f32) Easing { new Easing(EASE_LINEAR, 0., 0., true, x1, y1, x2, y2); }
+  pub fn linear() Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0., 0.); }
+  pub fn of(id u32) Easing { new Easing(id, 0., 0., false, 0., 0., 0., 0., 0.); }
+  pub fn withParams(id u32, p0 f32, p1 f32) Easing { new Easing(id, p0, p1, false, 0., 0., 0., 0., 0.); }
+  pub fn spring(zeta f32, omega f32) Easing { new Easing(EASE_SPRING, zeta, omega, false, 0., 0., 0., 0., 0.); }
+  pub fn bezier(x1 f32, y1 f32, x2 f32, y2 f32) Easing { new Easing(EASE_LINEAR, 0., 0., true, x1, y1, x2, y2, 0.); }
 
-  // The eased progress for progress s (clamped to 0..1)
+  // The speed rises as 1 - cos from rest over the first 'seconds', is steady,
+  // and falls the same way over the last 'seconds' (at most half the duration
+  // each). The progress is then the distance covered as a fraction of the
+  // whole. Defined over FIXED end durations, not as a fraction of the
+  // duration, so lengthening the animator lengthens only the steady part.
+  pub fn endRamps(seconds f32) Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0., seconds); }
+
+  // No easing at all: progress is time
+  pub fn isLinear(self) bool { id == EASE_LINEAR and !bez and ramp <= 0.; }
+
+  // The eased progress for progress s (clamped to 0..1). End ramps need the
+  // duration to know their share of it: here they act as linear
   pub fn apply(self, s f32) f32 {
     if bez { return bezierEase(x1, y1, x2, y2, clamp01(s)); }
     ease(id, s, p0, p1);
   }
+
+  // The same, for an animator whose iteration lasts 'dur' seconds
+  pub fn applyOver(self, s f32, dur f32) f32 {
+    if ramp > 0. { return rampProgress(s, dur, ramp); }
+    self.apply(s);
+  }
+}
+
+// The distance covered at fraction s of 'dur' seconds, as a fraction of the
+// whole, when the speed rises as 1 - cos over the first 'ramp' seconds, is
+// steady, and falls the same way over the last 'ramp' (clamped to half the
+// duration). With vmax the steady speed the distance in the rise is
+// vmax (t / 2 - ramp / (2 pi) sin(pi t / ramp)), and the whole is vmax (dur - ramp).
+pub fn rampProgress(s f32, dur f32, ramp f32) f32 {
+  imm x = clamp01(s);
+  if dur <= 0. or ramp <= 0. { return x; }
+  imm r = if ramp > dur * 0.5 { dur * 0.5; } else { ramp; };
+  imm t = x * dur;
+  imm whole = dur - r;
+  if t <= 0. { return 0.; }
+  if t >= dur { return 1.; }
+  if t < r { return (0.5 * t - r / (2. * pi) * sin(pi * t / r)) / whole; }
+  if t > dur - r {
+    imm u = dur - t;
+    return 1. - (0.5 * u - r / (2. * pi) * sin(pi * u / r)) / whole;
+  }
+  (t - 0.5 * r) / whole;
 }
 
 // The slope of springDisplacement (keyframetracks) at t: the velocity of a

@@ -22,17 +22,29 @@
 //   'setRate', 'setGoal', 'complete' act on a handle.
 // - **An animator writes its field directly and leaves.** There are no
 //   weights, layers or combine modes; when an animator ends it is removed and
-//   the value stays where it was left. A field has one writer at a time:
-//   starting an animator takes the fields it writes from whatever wrote them,
-//   and the new one starts from the value the field has now, so replacing
-//   one by another shows no jump. How several effects combine on one thing
-//   is the author's own formula over separate values.
+//   the value stays where it was left. A field has one writer at a time, and
+//   the NEWEST START CALL on it wins: it supersedes every earlier animator on
+//   the field, running or still waiting for a later 'startAt', and the new one
+//   starts from the value the field has then, so replacing one by another
+//   shows no jump. How several effects combine on one thing is the author's
+//   own formula over separate values.
 // - **Pure kinds are a function of time since the start; stepped kinds are
 //   stepped.** A transition, keys, along and groups of them (and a spring
 //   whose goal never moves) are a function of their start moment and
 //   parameters: 'isPure' says so, and it decides what a network must send.
 //   A chase, and a spring after its goal moved, are stepped by the host's
 //   'setGoal'.
+// - **A pure animator may start in the past and the world's clock may be set
+//   back.** 'startAt' with a moment already gone samples a pure animator at
+//   (now - at), so a reader that arrives late agrees with one that was there;
+//   a stepped one (a chase) starts now, because its value depends on a goal
+//   history the registry never saw. 'step' to an earlier moment moves a pure
+//   animator back with it, whatever its kind, keeping the field's latest pure
+//   animator (even ended, holding its end value) until a later start on the
+//   field supersedes it. A stepped animator does not run backward: its clock
+//   holds, and it goes on from where it is when time moves forward again. A
+//   clock set back raises no event; crossing a marker forward again raises it
+//   again (see animators.cone).
 // - **The registry holds no references.** A field is (target id, property
 //   key) as keyframetracks tracks are addressed, and the registry keeps only
 //   its current value. The host reads it back after 'evaluate'.
@@ -41,10 +53,13 @@
 //
 // - value.cone      Value: one field's value of any supported type (f32,
 //                   Vec2, Vec3, Quat, Color), and how two mix
-// - motion.cone     Easing as a value, a damped spring's velocity and
-//                   settling time, a facing rotation
-// - curve.cone      Curve3: polyline, Catmull-Rom and Bezier paths with an
-//                   arc-length table, for 'along'
+// - motion.cone     Easing as a value (Penner ids, a Bezier, end ramps), a
+//                   damped spring's velocity and settling time, a facing
+//                   rotation
+// - curve.cone      Curve3: polyline, Catmull-Rom (uniform and centripetal) and
+//                   Bezier paths with an arc-length table, for 'along', and
+//                   headings along a path
+// - easeconsts.cone keyframetracks' EASE_* ids, re-exported as this package's
 // - anim.cone       Anim: transition, keys, along, chase, spring and group,
 //                   the timing fields (delay, repeat, direction, hold,
 //                   rate), together / sequence / stagger / lagged / oneOf and
@@ -66,3 +81,4 @@ import libc;
 import collections use *;
 import geomath use *;
 import keyframetracks use *;
+pub use easeconsts;

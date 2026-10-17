@@ -21,18 +21,51 @@
 // of each field it has been told of or has written. The host reads it back
 // after 'evaluate' and applies it to its world.
 //
-// ONE ANIMATOR PER FIELD. A field is written by one animator at a time, its
-// OWNER. Starting an animator takes every field it writes: the animator that
-// owned one stops writing it, and if it owns nothing any more it is stopped
-// (an EV_ENDED event with reason END_SUPERSEDED). The new animator starts from
-// the value the field has now (a transition, chase or spring without a
-// 'from'), so replacing one by another shows no jump. A spring also takes the
-// velocity the field had (from the last two evaluations) unless told not to.
+// ONE ANIMATOR PER FIELD, THE NEWEST START CALL WINNING. A field is written by
+// one animator at a time, its OWNER. Ownership goes by the ORDER OF START
+// CALLS: a start supersedes every earlier animator on the fields it writes,
+// running or waiting (for a later 'startAt'), at the call. Such an animator,
+// if it holds no field any more, is stopped (an EV_ENDED event with reason
+// END_SUPERSEDED; a waiting one never starts). A new animator that waits
+// leaves its fields without a writer until its moment comes; they keep their
+// value, and it starts from the value they have then (a transition, chase or
+// spring without a 'from'), so replacing one by another shows no jump. A
+// spring also takes the velocity the field had (from the last two
+// evaluations) unless told not to. A group that loses some of its fields to a
+// later start goes on writing the rest.
 //
-// ENDING. An animator that has run its course is removed at the next
-// 'evaluate', after writing its end value; the field keeps it. There is no
-// hold, commit or vanish option. Combining several effects on one thing is
-// the author's own formula over separate values.
+// ENDING. An animator that has run its course writes its end value at the
+// next 'evaluate' and leaves; the field keeps the value. There is no hold,
+// commit or vanish option. Combining several effects on one thing is the
+// author's own formula over separate values. A PURE animator that ended is
+// kept out of sight (no handle, not counted) as its field's latest, until a
+// later start on the field supersedes it, so time set back can bring it back.
+//
+// STARTING IN THE PAST. 'startAt(a, at)' with 'at' before the registry's now
+// starts a pure animator as if it began then: its clock is (now - at), no
+// event of the skipped time is raised (a 'started' event is, now), and one
+// already past its end writes its end value and ends. Whatever an animator
+// reads from the field when it starts (a transition's 'from' when none is
+// given) is the field's value AT THE CALL, so a late reader sets the field to
+// what it held at 'at' before the call. A STEPPED animator (a chase, or any
+// group holding one) starts now instead: its value depends on the goals it was
+// given along the way, a history the registry cannot replay. A spring is
+// pure until its goal moves, so it is sampled in the past like a transition.
+//
+// TIME SET BACK. 'step' to a moment before the last one is allowed. A pure
+// animator's clock moves back by the time times its rate (a paused one stays
+// put): evaluating at the earlier moment shows what it showed then. One that
+// had ended and is still its field's latest comes back if the moment is before
+// its end (and ends again, with a second 'ended' event, going forward); one
+// put back before its start is waiting again and the field shows what it held
+// before the animator took it (and it starts again, with a second 'started'
+// event). Only the field's LATEST animator is kept, so time set back past a
+// later one's start shows the field as that one found it, not what an earlier,
+// superseded animator showed. A STEPPED animator may clamp: its clock holds
+// while time runs backward, and it goes on from where it is when time next
+// moves forward (a chase does not wait for the clock to catch up). Events: the
+// jump back raises none (it is a seek, not playback), and crossing a marker or
+// a repeat or an end forward again raises it again.
 //
 // PURE OR STEPPED. A running animator is PURE (isPure) when its output is a
 // function of its start moment and parameters alone: transitions, keys,
@@ -52,6 +85,9 @@ pub struct Field {
   pub vel Value;
   // the handle of the animator that writes it, or 0
   pub owner u32;
+  // the handle of the animator most recently STARTED on it (by call order):
+  // running, waiting, or ended and kept
+  pub newest u32;
 }
 
 pub struct Animators {
@@ -81,7 +117,7 @@ pub struct Animators {
   fn ensureField(self &mut, target u32, prop u32, kind u32) usize {
     imm i = self.fieldIx(target, prop);
     if i >= 0i64 { return usize.from(i); }
-    self.fields.push(new Field(target, prop, kind, false, Value.rest(TK_F32), Value.rest(TK_F32), 0u32));
+    self.fields.push(new Field(target, prop, kind, false, Value.rest(TK_F32), Value.rest(TK_F32), 0u32, 0u32));
     imm k = self.fields.len() - 1usize;
     self.index.insert(keyOf(target, prop), k);
     k;
@@ -110,8 +146,11 @@ pub struct Animators {
       if self.fields[i].target == target {
         self.fields[i].hasCur = false;
         imm o = self.fields[i].owner;
+        imm n = self.fields[i].newest;
         self.fields[i].owner = 0u32;
-        if o != 0u32 { self.stopIfOwnsNothing(o); }
+        self.fields[i].newest = 0u32;
+        if o != 0u32 { self.dropIfUnheld(o); }
+        if n != 0u32 and n != o { self.dropIfUnheld(n); }
       }
       i = i + 1usize;
     }
@@ -180,7 +219,20 @@ pub struct Animators {
 
   // ---- animators ----
 
+  // A live animator: waiting, running, or ended and not yet removed
   fn findRun(self &, h u32) i64 {
+    mut i = 0usize;
+    while i < self.runs.len() {
+      if self.runs[i].id == h and self.runs[i].status != ST_REMOVED and self.runs[i].status != ST_RETIRED {
+        return i64.from(i);
+      }
+      i = i + 1usize;
+    }
+    -1i64;
+  }
+
+  // The same, an ended one that is kept included
+  fn findRunAny(self &, h u32) i64 {
     mut i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].id == h and self.runs[i].status != ST_REMOVED { return i64.from(i); }
@@ -192,17 +244,51 @@ pub struct Animators {
   // Start 'a' now. Returns its handle
   pub fn start(self &mut, a &Anim) u32 { self.startAt(a, self.now); }
 
-  // Start 'a' at the moment 'at' (now if that is past). It takes its fields
-  // when it begins
+  // Start 'a' at the moment 'at', which may be in the past (see the header).
+  // The call itself takes the fields: every earlier animator on them, running
+  // or waiting, is superseded now, and the new one writes them from its start
+  // moment on.
   pub fn startAt(self &mut, a &Anim, at f64) u32 {
     if a.xgroup != 0u32 { self.stopGroup(a.xgroup); }
     imm id = self.nextId;
     self.nextId = self.nextId + 1u32;
-    imm when = if at > self.now { at; } else { self.now; };
+    mut r = Running.make(id, a, at, ST_WAITING);
+    // a stepped animator (a chase) cannot be replayed from a moment it was not
+    // stepped through: it starts no earlier than now
+    imm pure = nodePure(&r, &r.root, 0usize);
+    imm when = if at < self.now and !pure { self.now; } else { at; };
+    r.startAt = when;
     imm running = when <= self.now;
-    self.runs.push(Running.make(id, a, when, if running { ST_RUNNING; } else { ST_WAITING; }));
     if running {
-      imm ri = self.runs.len() - 1usize;
+      r.status = ST_RUNNING;
+      r.clock = self.now - when;
+      r.prevClock = r.clock;
+    }
+    self.runs.push(r);
+    imm ri = self.runs.len() - 1usize;
+    // this call is now the newest on each field it writes
+    mut prevs = List[u32].empty();
+    mut owners = List[u32].empty();
+    mut k = 0usize;
+    while k < self.runs[ri].keys.len() {
+      imm key = *self.runs[ri].keys[k];
+      imm fi = self.ensureField(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64), NO_KIND);
+      imm p = self.fields[fi].newest;
+      if p != 0u32 and p != id { prevs.push(p); }
+      self.fields[fi].newest = id;
+      if !running {
+        // a waiting animator still ends the earlier writer's turn at once
+        imm o = self.fields[fi].owner;
+        if o != 0u32 { owners.push(o); }
+        self.fields[fi].owner = 0u32;
+      }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < prevs.len() { self.dropIfUnheld(*prevs[k]); k = k + 1usize; }
+    k = 0usize;
+    while k < owners.len() { self.dropIfUnheld(*owners[k]); k = k + 1usize; }
+    if running {
       self.events.push(newEvent(EV_STARTED, id));
       // capture first, while the field's owner still writes it, then take it
       self.initPass(ri);
@@ -211,52 +297,104 @@ pub struct Animators {
     id;
   }
 
-  // Take the fields the animator writes; a former owner that owns nothing
-  // now is stopped
+  // Take the fields the animator writes that no later start call has taken
+  // (noting what each held, for time running back to before its start); a
+  // former owner that holds nothing now is stopped
   fn claim(self &mut, ri usize) {
     self.runs[ri].claimed = true;
     imm id = self.runs[ri].id;
+    imm capture = !self.runs[ri].beforeSet;
+    if capture {
+      self.runs[ri].befores.clear();
+      self.runs[ri].befHas.clear();
+    }
     mut olds = List[u32].empty();
     mut k = 0usize;
     while k < self.runs[ri].keys.len() {
       imm key = *self.runs[ri].keys[k];
-      imm fi = self.ensureField(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64), NO_KIND);
-      imm o = self.fields[fi].owner;
-      if o != 0u32 and o != id { olds.push(o); }
-      self.fields[fi].owner = id;
+      imm target = u32.from(key / 4294967296u64);
+      imm prop = u32.from(key % 4294967296u64);
+      imm fi = self.ensureField(target, prop, NO_KIND);
+      mut bv = Value.rest(TK_F32);
+      mut bh = false;
+      if self.fields[fi].newest == id {
+        if capture { bh = self.freshValue(target, prop, &mut bv); }
+        imm o = self.fields[fi].owner;
+        if o != 0u32 and o != id { olds.push(o); }
+        self.fields[fi].owner = id;
+      }
+      if capture {
+        self.runs[ri].befores.push(bv);
+        self.runs[ri].befHas.push(bh);
+      }
       k = k + 1usize;
     }
+    self.runs[ri].beforeSet = true;
     k = 0usize;
     while k < olds.len() {
-      self.stopIfOwnsNothing(*olds[k]);
+      self.dropIfUnheld(*olds[k]);
       k = k + 1usize;
     }
   }
 
-  fn ownsAny(self &, ri usize) bool {
+  // The animator is the writer of, or the latest start on, some field
+  fn holds(self &, ri usize) bool {
     mut k = 0usize;
     while k < self.runs[ri].keys.len() {
       imm key = *self.runs[ri].keys[k];
       imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
-      if fi >= 0i64 and self.fields[usize.from(fi)].owner == self.runs[ri].id { return true; }
+      if fi >= 0i64 {
+        imm f = self.fields[usize.from(fi)];
+        if f.owner == self.runs[ri].id or f.newest == self.runs[ri].id { return true; }
+      }
       k = k + 1usize;
     }
     false;
   }
 
-  fn stopIfOwnsNothing(self &mut, h u32) {
-    imm i = self.findRun(h);
+  // An animator every field of which a later start has taken is superseded:
+  // a live one ends (END_SUPERSEDED), an ended one is simply dropped
+  fn dropIfUnheld(self &mut, h u32) {
+    imm i = self.findRunAny(h);
     if i < 0i64 { return; }
     imm k = usize.from(i);
-    if self.ownsAny(k) { return; }
-    if self.runs[k].status == ST_DONE {
-      self.runs[k].status = ST_REMOVED;
-    } else {
+    if self.holds(k) { return; }
+    imm st = self.runs[k].status;
+    if st != ST_DONE and st != ST_RETIRED {
       mut e = newEvent(EV_ENDED, h);
       e.reason = END_SUPERSEDED;
       self.events.push(e);
-      self.runs[k].status = ST_REMOVED;
     }
+    self.runs[k].status = ST_REMOVED;
+  }
+
+  // Time ran back to before the animator started: it is waiting again, and
+  // the fields it had taken hold what they held before
+  fn revert(self &mut, ri usize) {
+    imm id = self.runs[ri].id;
+    mut k = 0usize;
+    while k < self.runs[ri].keys.len() {
+      imm key = *self.runs[ri].keys[k];
+      imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
+      if fi >= 0i64 {
+        imm f = usize.from(fi);
+        if self.fields[f].newest == id and k < self.runs[ri].befHas.len() and *self.runs[ri].befHas[k] {
+          imm v = *self.runs[ri].befores[k];
+          self.fields[f].cur = v;
+          self.fields[f].kind = v.kind;
+          self.fields[f].hasCur = true;
+        }
+        if self.fields[f].owner == id { self.fields[f].owner = 0u32; }
+      }
+      k = k + 1usize;
+    }
+    mut j = 0usize;
+    while j < self.runs[ri].state.len() { self.runs[ri].state.set(j, 0.); j = j + 1usize; }
+    self.runs[ri].status = ST_WAITING;
+    self.runs[ri].claimed = false;
+    self.runs[ri].beforeSet = false;
+    self.runs[ri].clock = 0.0f64;
+    self.runs[ri].prevClock = 0.0f64;
   }
 
   // The animator leaves: the fields it owned have no owner (they keep their values)
@@ -275,7 +413,7 @@ pub struct Animators {
     mut i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].root.xgroup == g and self.runs[i].status != ST_REMOVED {
-        if self.runs[i].status != ST_DONE {
+        if self.runs[i].status != ST_DONE and self.runs[i].status != ST_RETIRED {
           mut e = newEvent(EV_ENDED, self.runs[i].id);
           e.reason = END_SUPERSEDED;
           self.events.push(e);
@@ -372,6 +510,8 @@ pub struct Animators {
     }
     self.runs[k].clock = end;
     self.runs[k].prevClock = end;
+    self.runs[k].doneAt = self.now;
+    self.runs[k].doneClock = end;
     self.runs[k].status = ST_DONE;
     mut e = newEvent(EV_ENDED, h);
     e.reason = END_FINISHED;
@@ -433,7 +573,7 @@ pub struct Animators {
     mut n = 0usize;
     mut i = 0usize;
     while i < self.runs.len() {
-      if self.runs[i].status != ST_REMOVED { n = n + 1usize; }
+      if self.runs[i].status != ST_REMOVED and self.runs[i].status != ST_RETIRED { n = n + 1usize; }
       i = i + 1usize;
     }
     n;
@@ -462,11 +602,11 @@ pub struct Animators {
   // markers, repeats and ends are raised. Writes no field.
   pub fn step(self &mut, now f64) {
     imm prev = self.now;
-    imm t = if now < prev { prev; } else { now; };
+    imm t = now;
     mut evs = List[AnimEvent].empty();
     mut i = 0usize;
     while i < self.runs.len() {
-      advanceClock(&mut self.runs[i], prev, t, &mut evs);
+      if t < prev { self.rewind(i, prev, t); } else { advanceClock(&mut self.runs[i], prev, t, &mut evs); }
       i = i + 1usize;
     }
     self.now = t;
@@ -482,12 +622,46 @@ pub struct Animators {
     }
     i = 0usize;
     while i < self.runs.len() {
-      stepRun(&mut self.runs[i], &mut evs);
+      stepRun(&mut self.runs[i], t, &mut evs);
       i = i + 1usize;
     }
     mut j = 0usize;
     while j < evs.len() { self.events.push(*evs[j]); j = j + 1usize; }
     self.compact();
+  }
+
+  // The world's clock has been set back from 'prev' to 't'. A PURE animator is
+  // a function of time in both directions: its clock moves back by the time
+  // times its rate, it raises no events (a clock set back is a jump, as
+  // 'seek' is), and an ended one kept for its field comes back to life if the
+  // time is before its end; one put back before its start waits again. A
+  // STEPPED animator (a chase, a retargeted spring) does not run backward: its
+  // clock holds, and it goes on from where it is when time next moves forward.
+  fn rewind(self &mut, i usize, prev f64, t f64) {
+    imm st = self.runs[i].status;
+    if st == ST_WAITING or st == ST_REMOVED { return; }
+    self.runs[i].prevClock = self.runs[i].clock;
+    if !nodePure(self.runs[i], &self.runs[i].root, 0usize) { return; }
+    mut c = self.runs[i].clock;
+    if st == ST_RUNNING {
+      if self.runs[i].paused { return; }
+      c = c + (t - prev) * f64.from(self.runs[i].rate);
+    } else {
+      // ended: where its clock would be, if it is still before the end
+      if t >= self.runs[i].doneAt { return; }
+      c = self.runs[i].doneClock + (t - self.runs[i].doneAt) * f64.from(self.runs[i].rate);
+      if nodeFinished(self.runs[i], &self.runs[i].root, 0usize, c) { return; }
+      self.runs[i].status = ST_RUNNING;
+    }
+    if c < 0. {
+      // before its start: waiting again, to start at the world time its clock was 0
+      imm rt = f64.from(self.runs[i].rate);
+      self.runs[i].startAt = if rt > 0.000001f64 { t - c / rt; } else { t; };
+      self.revert(i);
+      return;
+    }
+    self.runs[i].clock = c;
+    self.runs[i].prevClock = c;
   }
 
   fn compact(self &mut) {
@@ -597,13 +771,27 @@ pub struct Animators {
         self.fields[i].vel = vel;
         i = i + 1usize;
       }
+    } elif dt < 0. {
+      // time was set back: no velocity to speak of
+      i = 0usize;
+      while i < self.fields.len() {
+        self.fields[i].vel = Value.rest(self.fields[i].kind);
+        i = i + 1usize;
+      }
     }
-    // the ended leave; their fields keep the values just written
+    // the ended leave; their fields keep the values just written. A pure one
+    // that is still the latest start on a field is kept, ready for time to
+    // run back to before its end; others are removed
     i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].status == ST_DONE {
         self.release(i);
-        self.runs[i].status = ST_REMOVED;
+        if nodePure(self.runs[i], &self.runs[i].root, 0usize) and self.holds(i) {
+          self.runs[i].status = ST_RETIRED;
+          self.runs[i].claimed = false;
+        } else {
+          self.runs[i].status = ST_REMOVED;
+        }
       }
       i = i + 1usize;
     }
@@ -615,7 +803,7 @@ pub struct Animators {
 // One running animator's frame
 
 fn advanceClock(r &mut Running, prev f64, now f64, evs &mut List[AnimEvent]) {
-  if r.status == ST_REMOVED { return; }
+  if r.status == ST_REMOVED or r.status == ST_RETIRED { return; }
   r.prevClock = r.clock;
   if r.status == ST_WAITING {
     if now < r.startAt { return; }
@@ -633,7 +821,7 @@ fn advanceClock(r &mut Running, prev f64, now f64, evs &mut List[AnimEvent]) {
   r.clock = if nc < 0. { 0.0f64; } else { nc; };
 }
 
-fn stepRun(r &mut Running, evs &mut List[AnimEvent]) {
+fn stepRun(r &mut Running, now f64, evs &mut List[AnimEvent]) {
   if r.status != ST_RUNNING { return; }
   imm a = r.prevClock;
   imm b = r.clock;
@@ -643,6 +831,8 @@ fn stepRun(r &mut Running, evs &mut List[AnimEvent]) {
   }
   if b >= a and !r.paused and nodeFinished(r, &r.root,0usize, b) {
     r.status = ST_DONE;
+    r.doneAt = now;
+    r.doneClock = r.clock;
     mut e = newEvent(EV_ENDED, r.id);
     e.reason = END_FINISHED;
     evs.push(e);

@@ -16,7 +16,9 @@
 //   8 in the field with reason END_STOPPED and no owner. 'complete' jumps to
 //   the end: the end value at the next evaluate, then it is removed. startAt
 //   a future moment: nothing until then, a started event at it, the value from
-//   it. step moves clocks but writes nothing until evaluate.
+//   it. step moves clocks but writes nothing until evaluate. A start call
+//   that waits supersedes a running animator on its field at the call (the
+//   field keeps its value, and the new one starts from it when it begins).
 // FORGETTING. forgetTarget stops what writes the target's fields and drops
 //   their values. writeSample puts the values in a keyframetracks Sample.
 // COUNTS. count is the animators in the registry.
@@ -176,19 +178,21 @@ fn main() i32 {
     expectInt(countKind(&reg.takeEvents(), EV_STARTED), 1i64, "one started event");
   }
   {
-    // a waiting animator does not disturb the one running until it begins
+    // a waiting animator supersedes the running one at the call (the field's
+    // owner goes by the order of start calls, not by who begins first); the
+    // field keeps its value until the new one begins, and it starts from there
     mut reg = Animators.make();
     reg.setF32(D, X, 0.);
     imm a = reg.start(&Anim.transition(D, X, Value.ofF32(10.), 10.).withLinear());
+    reg.tick(1.0f64);
     imm b = reg.startAt(&Anim.transition(D, X, Value.ofF32(0.), 2.).withLinear(), 4.0f64);
+    expect(!reg.exists(a), "the call superseded the running first");
     reg.tick(3.0f64);
-    expect(reg.exists(a), "the first still runs");
-    near(reg.valueF32(D, X, -1.), 3., 0.00001, "and writes");
+    near(reg.valueF32(D, X, -1.), 1., 0.00001, "the field keeps its value while the second waits");
     reg.tick(4.0f64);
-    expect(!reg.exists(a), "begun, the second took the field");
-    near(reg.valueF32(D, X, -1.), 4., 0.00001, "and starts from where the first had got, with no jump (4 at 4 s)");
+    near(reg.valueF32(D, X, -1.), 1., 0.00001, "and the second starts from the field's current value, no jump");
     reg.tick(5.0f64);
-    near(reg.valueF32(D, X, -1.), 2., 0.00001, "1 s in, half way from 4 to 0");
+    near(reg.valueF32(D, X, -1.), 0.5, 0.00001, "1 s in, half way from 1 to 0");
     expect(reg.exists(b), "the second runs");
   }
   // step and evaluate

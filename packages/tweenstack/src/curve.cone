@@ -7,6 +7,14 @@
 // - CURVE_CATMULL: a uniform Catmull-Rom spline through the points (a
 //   tangent at each point of half the chord between its neighbours, the end
 //   points using the one-sided chord). It passes through every point.
+// - CURVE_CATMULL_CENTRIPETAL: a Catmull-Rom spline whose knots are spaced by
+//   the square root of the chord between points (alpha 0.5), so a corner
+//   between unevenly spaced points never overshoots into a loop, where the
+//   uniform one can stray metres (a hairpin of 10 m legs and a 0.5 m turn: the
+//   uniform spline's middle span bulges 1.25 m past the turn, this one 0.1 m).
+//   It passes through every point. Past each end a point is mirrored (twice
+//   the end point less its neighbour), so the path leaves and arrives along
+//   its first and last chord.
 // - CURVE_BEZIER: a chain of cubic Beziers; the points are p0 c0 c1 p1 c2
 //   c3 p2 ... (3n + 1 of them), the same control points geomath's
 //   CubicBezier3 takes.
@@ -17,6 +25,7 @@
 pub const CURVE_POLY = 0u32;
 pub const CURVE_CATMULL = 1u32;
 pub const CURVE_BEZIER = 2u32;
+pub const CURVE_CATMULL_CENTRIPETAL = 3u32;
 
 pub struct Curve3 {
   pub kind u32;
@@ -34,6 +43,7 @@ pub struct Curve3 {
 
   pub fn poly(points &List[Vec3]) Curve3 { Curve3.make(CURVE_POLY, points); }
   pub fn catmull(points &List[Vec3]) Curve3 { Curve3.make(CURVE_CATMULL, points); }
+  pub fn centripetal(points &List[Vec3]) Curve3 { Curve3.make(CURVE_CATMULL_CENTRIPETAL, points); }
   pub fn bezier(points &List[Vec3]) Curve3 { Curve3.make(CURVE_BEZIER, points); }
 
   pub fn copy(self &) Curve3 { Curve3.make(kind, &pts); }
@@ -61,8 +71,14 @@ pub struct Curve3 {
     }
     imm p0 = self.at(seg);
     imm p1 = self.at(seg + 1usize);
-    imm m0 = self.catmullTangent(seg);
-    imm m1 = self.catmullTangent(seg + 1usize);
+    mut m0 = new Vec3(0., 0., 0.);
+    mut m1 = new Vec3(0., 0., 0.);
+    if kind == CURVE_CATMULL_CENTRIPETAL {
+      self.centripetalTangents(seg, &mut m0, &mut m1);
+    } else {
+      m0 = self.catmullTangent(seg);
+      m1 = self.catmullTangent(seg + 1usize);
+    }
     imm s2 = s * s;
     imm s3 = s2 * s;
     p0 * (2. * s3 - 3. * s2 + 1.) + m0 * (s3 - 2. * s2 + s) + p1 * (-2. * s3 + 3. * s2) + m1 * (s3 - s2);
@@ -77,10 +93,48 @@ pub struct Curve3 {
     }
     imm p0 = self.at(seg);
     imm p1 = self.at(seg + 1usize);
-    imm m0 = self.catmullTangent(seg);
-    imm m1 = self.catmullTangent(seg + 1usize);
+    mut m0 = new Vec3(0., 0., 0.);
+    mut m1 = new Vec3(0., 0., 0.);
+    if kind == CURVE_CATMULL_CENTRIPETAL {
+      self.centripetalTangents(seg, &mut m0, &mut m1);
+    } else {
+      m0 = self.catmullTangent(seg);
+      m1 = self.catmullTangent(seg + 1usize);
+    }
     imm s2 = s * s;
     p0 * (6. * s2 - 6. * s) + m0 * (3. * s2 - 4. * s + 1.) + p1 * (-6. * s2 + 6. * s) + m1 * (3. * s2 - 2. * s);
+  }
+
+  // Control point i of a centripetal spline, with one mirrored point past
+  // each end
+  fn mirrored(self &, i i64) Vec3 {
+    imm n = i64.from(pts.len());
+    if i < 0i64 { return self.at(0usize) * 2. - self.at(1usize); }
+    if i >= n { return self.at(pts.len() - 1usize) * 2. - self.at(pts.len() - 2usize); }
+    self.at(usize.from(i));
+  }
+
+  // The spacing of knots: the square root of the chord (a tiny step for
+  // doubled points, which would otherwise divide by zero)
+  fn knotStep(a Vec3, b Vec3) f32 {
+    imm d = (b - a).length();
+    if d < 0.0001 { 0.01; } else { d.sqrt(); }
+  }
+
+  // The tangents (derivative with respect to the span's own parameter) of the
+  // cubic Hermite that equals the centripetal Catmull-Rom (Barry and
+  // Goldman's pyramid) between points seg and seg + 1
+  fn centripetalTangents(self &, seg usize, m0 &mut Vec3, m1 &mut Vec3) {
+    imm i = i64.from(seg);
+    imm a = self.mirrored(i - 1i64);
+    imm b = self.mirrored(i);
+    imm c = self.mirrored(i + 1i64);
+    imm d = self.mirrored(i + 2i64);
+    imm k1 = Curve3.knotStep(a, b);
+    imm k2 = Curve3.knotStep(b, c);
+    imm k3 = Curve3.knotStep(c, d);
+    *m0 = ((b - a) * (1. / k1) - (c - a) * (1. / (k1 + k2)) + (c - b) * (1. / k2)) * k2;
+    *m1 = ((c - b) * (1. / k2) - (d - b) * (1. / (k2 + k3)) + (d - c) * (1. / k3)) * k2;
   }
 
   // Half the chord between a point's neighbours (the end points' own side)
@@ -95,7 +149,7 @@ pub struct Curve3 {
   }
 
   // Which segment and where in it for the whole-curve parameter u
-  fn locate(self &, u f32, seg &mut usize, s &mut f32) {
+  pub fn locate(self &, u f32, seg &mut usize, s &mut f32) {
     imm n = self.segments();
     if n == 0usize { *seg = 0usize; *s = 0.; return; }
     imm x = clamp01(u) * f32.from(n);
@@ -166,4 +220,56 @@ pub struct Curve3 {
     imm k = if l1 > l0 { (want - l0) / (l1 - l0); } else { 0.; };
     (f32.from(lo) + k) / f32.from(lens.len() - 1usize);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Headings along a curve
+
+fn wrapAngle(a f32) f32 { a - 2. * pi * libc.floorf((a + pi) / (2. * pi)); }
+
+// Headings (angles in radians) given at each waypoint of a path, unwound so
+// each is the SHORT way round from the one before: the first as given, each
+// next the one before plus the wrapped difference. Over a whole ride the
+// angle then runs on past a half turn (a ride that turns once round ends a
+// full turn from where it began) rather than flipping back across the seam.
+pub fn unwindHeadings(raw &List[f32]) List[f32] {
+  mut out = List[f32].empty();
+  mut i = 0usize;
+  while i < raw.len() {
+    if i == 0usize {
+      out.push(*raw[0usize]);
+    } else {
+      imm prev = *out[i - 1usize];
+      out.push(prev + wrapAngle(*raw[i] - prev));
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The heading at the whole-curve parameter u: a uniform Catmull-Rom through
+// the unwound headings 'h' of the waypoints (one per control point where the
+// span ends: points for a polyline or Catmull-Rom curve, every third for a
+// Bezier chain), along the span's own parameter, the end headings repeated
+// past each end
+pub fn headingAlong(c &Curve3, h &List[f32], u f32) f32 {
+  imm n = h.len();
+  if n == 0usize { return 0.; }
+  if n == 1usize { return *h[0usize]; }
+  mut seg = 0usize;
+  mut s f32 = 0.;
+  c.locate(u, &mut seg, &mut s);
+  imm i = i64.from(seg);
+  imm last = i64.from(n) - 1i64;
+  imm i0 = if i - 1i64 < 0i64 { 0i64; } elif i - 1i64 > last { last; } else { i - 1i64; };
+  imm i1 = if i < 0i64 { 0i64; } elif i > last { last; } else { i; };
+  imm i2 = if i + 1i64 > last { last; } else { i + 1i64; };
+  imm i3 = if i + 2i64 > last { last; } else { i + 2i64; };
+  imm h0 = *h[usize.from(i0)];
+  imm h1 = *h[usize.from(i1)];
+  imm h2 = *h[usize.from(i2)];
+  imm h3 = *h[usize.from(i3)];
+  imm s2 = s * s;
+  imm s3 = s2 * s;
+  0.5 * (2. * h1 + (h2 - h0) * s + (2. * h0 - 5. * h1 + 4. * h2 - h3) * s2 + (3. * h1 - h0 - 3. * h2 + h3) * s3);
 }
