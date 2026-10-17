@@ -1,0 +1,112 @@
+// The arc-length table of a long, sharply cornered ride. A centripetal spline
+// through points hundreds of metres apart, with a hairpin in the middle, is
+// measured against a reference this test builds itself by dense sampling
+// (4096 samples to a segment, summed in f64). The table's length, and the
+// point 'uAtFraction' finds at a series of distances along the path, must be
+// within 1 cm of the reference: with too few samples to a segment the table
+// misses the chord-to-curve difference over a long span and the walker runs
+// metres of curve out of step with its distance. This ride (461 m, 7
+// segments) measured, against the reference: 16 samples to a segment, 8.8 cm
+// short in length and up to 12.3 cm out in position; 64, 0.6 cm and 0.7 cm.
+
+mod arclength;
+
+import libc;
+import testing use *;
+import collections use *;
+import geomath use *;
+import tweenstack use *;
+
+const DENSE = 4096usize;
+
+fn near(got f32, want f32, within f32, label &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn ridePoints() List[Vec3] {
+  mut l = List[Vec3].empty();
+  l.push(new Vec3(0., 0., 0.));
+  l.push(new Vec3(70., 15., 8.));
+  l.push(new Vec3(140., 23., 8.));
+  l.push(new Vec3(147., 35., 11.));
+  l.push(new Vec3(46., 42., 31.));
+  l.push(new Vec3(-54., 38., 62.));
+  l.push(new Vec3(-57., 27., 65.));
+  l.push(new Vec3(15., 8., 35.));
+  l;
+}
+
+// The reference: the whole path sampled DENSE times to a segment, the running
+// length (in f64) and the point at each sample
+struct Reference {
+  lens List[f64];
+  pts List[Vec3];
+}
+
+fn reference(c &Curve3) Reference {
+  mut r = new Reference(List[f64].empty(), List[Vec3].empty());
+  imm m = c.segments() * DENSE;
+  mut sum = 0.0f64;
+  mut prev = c.point(0.);
+  r.lens.push(0.0f64);
+  r.pts.push(prev);
+  mut i = 1usize;
+  while i <= m {
+    imm p = c.point(f32.from(i) / f32.from(m));
+    sum = sum + f64.from(p.distance(prev));
+    r.lens.push(sum);
+    r.pts.push(p);
+    prev = p;
+    i = i + 1usize;
+  }
+  r;
+}
+
+// The reference point at distance d along the path
+fn referenceAt(r &Reference, d f64) Vec3 {
+  mut lo = 0usize;
+  mut hi = r.lens.len() - 1usize;
+  while hi - lo > 1usize {
+    imm mid = (lo + hi) / 2usize;
+    if *r.lens[mid] <= d { lo = mid; } else { hi = mid; }
+  }
+  imm l0 = *r.lens[lo];
+  imm l1 = *r.lens[hi];
+  imm k = if l1 > l0 { (d - l0) / (l1 - l0); } else { 0.0f64; };
+  (*r.pts[lo]).lerp(*r.pts[hi], f32.from(k));
+}
+
+fn main() i32 {
+  imm pts = ridePoints();
+  imm c = Curve3.centripetal(&pts);
+  imm ref = reference(&c);
+  imm refTotal = *ref.lens[ref.lens.len() - 1usize];
+
+  expect(c.length() > 400., "a ride of hundreds of metres");
+  expectFloat(f64.from(c.length()), refTotal, 0.01f64, "the table's length is within 1 cm of the dense reference");
+
+  // the point found at each distance, against the reference point there
+  mut worst = 0.0f64;
+  mut k = 1usize;
+  while k <= 24usize {
+    imm d = refTotal * f64.from(k) / 25.0f64;
+    imm got = c.point(c.uAtFraction(f32.from(d) / c.length()));
+    imm want = referenceAt(&ref, d);
+    imm err = f64.from(got.distance(want));
+    if err > worst { worst = err; }
+    k = k + 1usize;
+  }
+  expectFloat(worst, 0.0f64, 0.01f64, "24 points along the ride are within 1 cm of the reference");
+
+  // and a few singly, including the hairpin's neighbourhood and both ends
+  mut j = 0usize;
+  while j < 5usize {
+    imm f = if j == 0usize { 0.0f64; } elif j == 1usize { 0.43f64; } elif j == 2usize { 0.5f64; } elif j == 3usize { 0.57f64; } else { 1.0f64; };
+    imm d = refTotal * f;
+    imm got = c.point(c.uAtFraction(f32.from(d) / c.length()));
+    imm want = referenceAt(&ref, d);
+    expectFloat(f64.from(got.distance(want)), 0.0f64, 0.01f64, "a point at a set distance is within 1 cm");
+    j = j + 1usize;
+  }
+  done();
+}
