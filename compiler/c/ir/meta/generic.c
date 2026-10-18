@@ -467,11 +467,11 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
 static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall);
 static FnSigNode *genericFnTypeSig(INode *type);
 
-// An unsuffixed integer literal passed for a parameter that is a bare type
+// An unsuffixed number literal passed for a parameter that is a bare type
 // parameter, 'v T': it is whichever number type is wanted, and only defaults to
-// i32 if nothing else says (litAdoptNumberType)
+// i32 (an integer) or f64 (a float) if nothing else says (litAdoptNumberType)
 static int genericArgIsAdaptable(INode *arg, INode *parmtype) {
-    return arg->tag == ULitTag && (arg->flags & FlagUnkType) && nameUseNames(parmtype, GenVarDclTag);
+    return litIsUntypedNumber(arg) && nameUseNames(parmtype, GenVarDclTag);
 }
 
 // The type a bare type parameter has been given so far, or NULL

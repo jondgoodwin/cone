@@ -70,6 +70,9 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
         && (totyp->tag == UintNbrTag || totyp->tag == IntNbrTag || totyp->tag == FloatNbrTag)) {
         return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
     }
+    // An untyped float literal likewise stands for any float type, f32 included
+    if ((*from)->tag == FLitTag && ((*from)->flags & FlagUnkType) && totyp->tag == FloatNbrTag)
+        return ConvSubtype;
 
     // An ASCII character literal, as written, stands for a u8 where one is wanted
     if (litCharMatchesByte(*from, totyp))

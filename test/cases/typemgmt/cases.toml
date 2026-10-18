@@ -61,9 +61,10 @@
 #   typemgmt_typecheck_litrange. typemgmt_success prints the ends that still
 #   fit, and lexical_literals each suffix's.
 #
-# - The float-literal counterpart is asserted rather than excluded, because it
-#   is a settled rule and not a defect: an unsuffixed float literal is f32, so a
-#   value needing f64 precision needs the 'd' suffix.
+# - The float-literal counterpart follows the same rule: an unsuffixed float
+#   literal takes the float type of its place and is an f64 where nothing gives
+#   one, so a value that needs f32's rounding is written with the 'f' suffix
+#   (typemgmt_floatlit, typemgmt_typecheck_floatlit).
 
 support = []
 
@@ -282,8 +283,9 @@ diagnostics = 2
 # An unsuffixed integer literal that nothing gave a type keeps its i32 default
 # to generation, which is where it is refused when its value does not fit:
 # every such literal is reached there, after everything that could have typed
-# it has run. An operand's 'if' is the case that matters -- an operator's
-# candidates are chosen by its operands' types, so no type reaches its branches.
+# it has run. An operand's block is the case that matters -- an operator's
+# candidates are chosen by its operands' types, so no type reaches the block's
+# value. (An 'if' beside a number is wanted as that number's type.)
 [scenario.typemgmt_genllvm_litrange]
 category = "reject"
 description = "An untyped integer literal that nothing types, too large for its i32 default"
@@ -294,3 +296,24 @@ diagnostics = 8
 category = "run"
 description = "A parameter whose default is a string literal, for a type declaring 'fromLiteral': made at each call that omits the argument as a written literal is, a temporary borrow dropped at the statement's end or a value given to the callee, once per call, never for a call that gives the argument"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# Number literals with no suffix: the type of the place they are written into
+# (a declaration, an assignment, a field, an argument, a return, an array's
+# element), of the other operand beside a binary operator, of the other
+# arguments or the bounds in a call of a generic, of the branches that are not
+# literals; an expression made only of literals as one literal; the default of
+# the kind (i32, f64) where nothing gives one. Integers and floats both.
+[scenario.typemgmt_floatlit]
+category = "run"
+description = "Number literals with no suffix take the type of the place, the operand, the generic's other arguments or the other branches; an expression of literals is one literal; i32 and f64 are the defaults"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# The refusals of those rules: a float literal whose value an f32 cannot hold, a
+# float where an integer is wanted or beside integers, an expression of integer
+# literals past the type it is given, a literal branch past the type of the
+# others. typemgmt_floatlit has what they accept.
+[scenario.typemgmt_typecheck_floatlit]
+category = "reject"
+description = "A number literal with no suffix refused where its place, operand or branches cannot take it: a float past f32, a float for an integer, an integer expression past its type, a literal branch or element past the others' type"
+tags = ["typecheck"]
+diagnostics = 13

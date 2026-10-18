@@ -711,6 +711,71 @@ static NarrowEnv *ifNarrowAfter(NarrowEnv *armends, int livearms, NarrowEnv *pat
     return livearms ? armends : pathenv;
 }
 
+// Is this branch one whose value is a number literal with no suffix, so that the branches
+// that are not literals may type it?
+static int ifArmIsLiteral(INode *arm) {
+    if (arm->tag != BlockTag || ifBlockJumps((BlockNode *)arm) || ((BlockNode *)arm)->stmts->used == 0)
+        return 0;
+    return litIsUntypedNumber(nodesLast(((BlockNode *)arm)->stmts));
+}
+
+// An 'if' or 'match' whose value goes to no place that names its type: a branch that
+// is a number literal with no suffix takes the type of the branches that are not,
+// as a literal beside an operator takes the other operand's. 'if c {0.} else {d}' is
+// d's type, an f32 say, and 'match n { case 1 {0} case 2 {1} else {b} }' is the u8 b is.
+// This applies when every branch that is no such literal has the one same number type;
+// where they differ, or there are none, the branches are joined as ever and literals
+// alone are the default of their kind. A float literal beside integer branches is not
+// taken up, and is refused as it has been.
+static void ifLiteralArmsFollow(IfNode *ifnode, INode **maybeType, TypeCompare *match) {
+    int floats = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    // The type the branches that are no literal came to in common, if there is one
+    INode *common = *maybeType == unknownType ? NULL : itypeGetTypeDcl(*maybeType);
+    int usable = common != NULL
+        && (common->tag == IntNbrTag || common->tag == UintNbrTag || common->tag == FloatNbrTag)
+        && common != (INode*)boolType && common != (INode*)charType;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        if (ifArmIsLiteral(*nodesp) && nodesLast(((BlockNode *)*nodesp)->stmts)->tag == FLitTag)
+            ++floats;
+    }
+    // A float literal beside integer branches is not taken up, nor is a branch
+    // that is no number: the literals are joined with the others as ever
+    int follow = common != NULL && usable && !(floats && common->tag != FloatNbrTag);
+    if (!follow) {
+        // The branches are joined in the order written, as if none had waited. The ones that
+        // are no literal were joined without a complaint (else it was made, and stands), so a
+        // mismatch is the literals' to bring, and is reported at the branch that brings it
+        if (*match == NoMatch)
+            return;
+        TypeCompare joined = EqMatch;
+        *maybeType = unknownType;
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            if ((*nodesp)->tag != BlockTag || ifBlockJumps((BlockNode *)*nodesp))
+                continue;
+            switch (iexpMultiInfer(unknownType, maybeType, nodesp)) {
+            case NoMatch: joined = NoMatch; break;
+            case ConvSubtype: if (joined != NoMatch) joined = ConvSubtype; break;
+            case CastSubtype: if (joined != NoMatch) joined = CastSubtype; break;
+            default: break;
+            }
+        }
+        *match = joined;
+        return;
+    }
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        if (!ifArmIsLiteral(*nodesp))
+            continue;
+        BlockNode *blk = (BlockNode *)*nodesp;
+        if (litAdoptNumberType(&nodesLast(blk->stmts), common))
+            blk->vtype = common;
+    }
+}
+
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
@@ -795,6 +860,9 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
         // return -- gives the 'if' no value, so has no say in its type
         else if (ifBlockJumps((BlockNode *)*nodesp))
             ;
+        // A branch that is a literal waits for the others to say its type (ifLiteralArmsFollow)
+        else if (expectType == unknownType && ifArmIsLiteral(*nodesp))
+            ;
         else {
             switch (iexpMultiInfer(expectType, &maybeType, nodesp)) {
             case NoMatch:
@@ -850,6 +918,8 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     if (expectType != unknownType)
         ifnode->vtype = expectType;
     else {
+        // A branch that is a literal follows the others' number type
+        ifLiteralArmsFollow(ifnode, &maybeType, &match);
         // If expected type is unknown, set the inferred type
         ifnode->vtype = maybeType;
 

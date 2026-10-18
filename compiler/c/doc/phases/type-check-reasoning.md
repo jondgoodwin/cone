@@ -92,11 +92,13 @@ So the normal path is `iexpTypeCheckCoerce`:
    does not carry ([literals](../nodes/literals.md), "A literal and its neighbours").
    `fnCallFinalizeArgs` coerces each argument the same way.
 
-`litTypeCheck` uses `expectType` for one case: an untyped integer literal takes
-a number expected type and keeps it — an integer type by retyping, a float type
-by becoming a float literal — so its constant is built at that width, and one
+`litTypeCheck` uses `expectType` for one case: an untyped number literal takes
+a number expected type and keeps it — an integer literal an integer type by retyping,
+or a float type by becoming a float literal, and a float literal a float type — so its
+constant is built at that width, and one
 whose value an integer type cannot hold is refused there (`ErrorLitRange`), as
-a suffixed literal is against its own type. `iexpCoerce` does the same for a literal that reaches it still untyped, because
+a suffixed literal is against its own type, and a float literal an `f32` cannot hold
+is `ErrorFloatRange`. `iexpCoerce` does the same for a literal that reaches it still untyped, because
 an overload set's, a generic's or an operator's argument is checked before its
 callee is chosen. Neither reaches the branches of an `if` or a block passed as
 such an argument, whose literals keep the `i32` default; generation refuses one
@@ -175,7 +177,8 @@ for anything else.
    This branch returns in both arms, so a `bool` target never reaches the two
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and
-   the target is any number type: `ConvSubtype`. Deliberately not a subtype
+   the target is any number type, or **an untyped float literal** (`FLitTag` with
+   `FlagUnkType`) and the target is a float type: `ConvSubtype`. Deliberately not a subtype
    check — a literal goes wherever the author wrote it. `iexpCoerce` retypes
    such a literal before it asks, so this answers only the callers that ask
    without coercing: overload resolution, struct field matching and the branch

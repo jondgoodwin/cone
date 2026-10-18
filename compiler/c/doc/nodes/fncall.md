@@ -239,7 +239,10 @@ each value expecting the field it will fill (`fnCallTypeLitField`). Then every
 argument is checked, against that type where there is one, so an `if`, a block
 or an array literal is coerced branch by branch as an initializer is; an
 overload set's, an operator's and a generic's arguments get none, because their
-types are what selects or infers the callee. **A closure literal among a
+types are what selects or infers the callee -- but for an `if` that is the argument of a
+number operator, which is given the receiver's number type (checked first for that, as
+`==`'s and `<-`'s are for a call), and an `if` that is the receiver, which is given the
+argument's. **A closure literal among a
 generic's or an overload set's arguments waits for the others** and is checked
 after them (`fnCallClosureArgs`): its signature is what the other arguments leave
 the callee's bound, or the overload its parameter count and written types pick
@@ -794,7 +797,11 @@ a `char`, and a character literal of 128 or more where it declares a `u8`, as
 `ErrorCharNotNbr` (`iexpCharNumberMismatch`). Neither probe changes anything;
 the refusal is the same. Before any candidate is tried, a character literal that
 is a binary operator's receiver, beside a `u8` argument, is retyped `u8`
-(`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`.
+(`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`. So is an untyped
+number literal beside an argument of a number type (`litAdoptBesideOperand`), so `0.5 - s`
+selects `s`'s type's `-`; and an operator whose operands are untyped literals is
+folded into one literal before any candidate is tried (`litFoldUntyped`), at the
+point type check has checked the operands (see [literals](literals.md)).
 
 A call that selects nothing, a method's or an overload set's, is `errorType`
 from then on: a variable it initializes, a condition it is, or a generic

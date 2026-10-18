@@ -504,19 +504,20 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    clause naming a generic trait; any other parameter of the shape `&T`, given a
    slice, is matched as ever.
 
-   **An unsuffixed integer literal passed for a bare type parameter** (`v T`;
-   `ULitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
+   **An unsuffixed number literal passed for a bare type parameter** (`v T`;
+   a `ULitTag` or `FLitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is
    wanted. `genericInferFnParms` runs in three steps: every other argument, then
    the bounds (`genericInferFromBounds`), then the literals. A literal meets a
    slot already given by taking it, where `iexpMatches` accepts it as that type
    (the call's own check then converts it and judges its range,
    `ErrorLitRange`), else `ErrorInvType` "Inconsistent type"; it fills an empty slot
-   with its own type, `i32`, only when nothing else did. So `fill(&mut box, 8)` on
+   with its own type, `i32` or `f64`, only when nothing else did. So `fill(&mut box, 8)` on
    a stack of `i64` types the 8 as `i64`, and `max(big, 6)` follows `big`, in
    either order. Only this shape defers: a literal for `&T` or `Box[T]` matches
-   nothing anyway. A float literal has no such flag and is an `f32`, as it is
-   anywhere. A type literal's values defer the same way
+   nothing anyway. A float literal defers the same way, and
+   `second(x, 0.1)` with an `f64` or `f32` `x` types the 0.1 as `x` is. An expression of
+   literals is one literal (literals.md). A type literal's values defer the same way
    (`genericInferStructParms` leaves such a literal, written by position or by
    name, to `genericInferStructLiterals`, which runs last), so `Some(5)` and
    `Pair[a: 1i64, b: 2]` agree on one type.

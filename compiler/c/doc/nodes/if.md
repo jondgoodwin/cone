@@ -88,6 +88,11 @@ patterns are fewer or more than the values, and a column that binds a variable
 (`case let x Some, …`; whether a column may bind is not decided) are `ErrorMatchColumn`,
 reported at parse. At most `MatchMaxColumns` values.
 
+**An `if` or `match` whose value has no place to give its type lets the arms that are
+untyped number literals follow the others.** `ifLiteralArmsFollow` runs after the
+arms are joined: they were left out of the join, and take the number type the others met at,
+or are joined as ever when it is none (see [literals](literals.md)).
+
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
 operand (`parseOr`); a following `..` or `..<` makes it a range. A comparison

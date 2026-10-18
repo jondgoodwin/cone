@@ -1,0 +1,195 @@
+// Number literals with no suffix, and what types them.
+//
+// A literal takes the number type of the place it is written into -- a typed
+// declaration, an assignment, a field, an argument, a returned value, an array's
+// element -- an integer literal any integer or float type, a float literal any
+// float type; where no place gives one it is the default of its kind, i32 or f64.
+// A literal beside a binary operator takes the other operand's type when that is
+// a number, and a call of a generic takes the one the other arguments or the
+// bounds give it. An expression made only of such literals is one literal, and
+// an 'if' or 'match' whose branches are literals and one that is not follows the
+// one that is not. The 'f', 'f32' and 'f64' suffixes give a float its type at
+// once. Every line prints 'ok' when the type came out as the label says.
+//
+// A type is observed two ways: by passing the value where only that type is
+// accepted, and by whether a float held the rounding of f32 or was exact in f64.
+// 0.1 is the case: its f32 value widened to f64 is not the f64 nearest 0.1.
+
+mod typemgmt_floatlit;
+
+import stdio use *;
+
+struct Pt { pub a f32; pub b f64; pub n u8; }
+
+fn ok(label &str, good bool) {
+  printStr(label);
+  if good { printStr(": ok\n"); } else { printStr(": FAILED\n"); }
+}
+
+fn tenth() f64 { f64.from(1) / f64.from(10) }
+fn takesF32(x f32) f32 { x }
+fn takesF64(x f64) f64 { x }
+fn takesI64(x i64) i64 { x }
+fn takesU8(x u8) u8 { x }
+fn retF32() f32 { 0.1 }
+fn retF64() f64 { 0.1 }
+fn retExprF32() f32 { 2.0 * 0.05 }
+fn retExprU8() u8 { 200 + 50 }
+fn id[T](x T) T { x }
+fn second[T](a T, b T) T { b }
+
+fn defaults() {
+  // No place: a float is an f64, exact; an integer is an i32
+  let x = 0.1;
+  ok("default float is f64", x == tenth());
+  let y = takesF64(x);
+  ok("default float passes where f64 is wanted", y == tenth());
+  let n = 5;
+  ok("default integer is i32", takesI64(i64.from(n)) == 5i64);
+}
+
+fn places() {
+  let a f64 = 0.1;
+  ok("float into an f64 declaration is exact", a == tenth());
+  let b f32 = 0.1;
+  ok("float into an f32 declaration is rounded", f64.from(b) != tenth() and b == 0.1f);
+  var c f64 = 0.0;
+  c = 0.1;
+  ok("float assigned to an f64 is exact", c == tenth());
+  var d f32 = 0.0;
+  d = 0.1;
+  ok("float assigned to an f32 is rounded", d == 0.1f);
+  ok("float argument to an f64 is exact", takesF64(0.1) == tenth());
+  ok("float argument to an f32 is rounded", takesF32(0.1) == 0.1f);
+  ok("float returned as an f64 is exact", retF64() == tenth());
+  ok("float returned as an f32 is rounded", retF32() == 0.1f);
+  let p = new Pt(0.1, 0.1, 9);
+  ok("float in an f32 field is rounded", p.a == 0.1f);
+  ok("float in an f64 field is exact", p.b == tenth());
+  ok("integer in a u8 field", p.n == 9u8);
+  let e f64 = 7;
+  ok("integer into an f64 declaration", e == 7.0);
+  let arr = [0.1f, 0.2, 0.3];
+  ok("floats in an array follow its typed element", arr[0usize] == 0.1f and arr[1usize] == 0.2f);
+  let arr64 Array[f64, 3] = [0.1, 0.2, 0.3];
+  ok("floats in a declared f64 array are exact", arr64[0usize] == tenth());
+  let ints = [1u8, 2, 3];
+  ok("integers in an array follow its typed element", takesU8(ints[2usize]) == 3u8);
+}
+
+fn suffixes() {
+  let f = 0.1f;
+  ok("f suffix is f32", takesF32(f) == 0.1f);
+  let g = 0.1f32;
+  ok("f32 suffix is f32", takesF32(g) == f);
+  let h = 0.1f64;
+  ok("f64 suffix is f64", takesF64(h) == tenth());
+  let w f64 = 0.1f;
+  ok("an f32 literal widens, it does not turn into the f64", w != tenth());
+}
+
+fn generics() {
+  let x64 f64 = tenth();
+  let x32 f32 = 0.5;
+  ok("generic with a literal alone is the default", second(0.1, 0.1) == tenth());
+  ok("generic: f64 first, literal second", second(x64, 0.1) == tenth());
+  ok("generic: literal first, f64 second", second(0.1, x64) == x64);
+  ok("generic: f32 argument and literal", takesF32(second(x32, 0.1)) == 0.1f);
+  let r f32 = id(0.1);
+  ok("generic result placed in an f32", r == 0.1f);
+  let q f64 = id(0.1);
+  ok("generic result placed in an f64", q == tenth());
+  let i64v i64 = 4;
+  ok("generic integer literal beside an i64", second(i64v, 7) == 7i64);
+}
+
+fn operators() {
+  let s f64 = tenth();
+  let n i64 = 5;
+  let u usize = 7usize;
+  let x f32 = 1.5;
+  let k i32 = 4;
+  ok("0.5 - an f64", 0.5 - s == 0.5 - tenth());
+  ok("1 - an i64", 1 - n == -4i64);
+  ok("0 < a usize", 0 < u);
+  ok("0 < an i64", 0 < n);
+  ok("2.0 * an f32 is an f32", takesF32(2.0 * x) == 3.0f);
+  ok("2 * an f32 is an f32", takesF32(2 * x) == 3.0f);
+  ok("an f64 * 0.5", s * 0.5 == tenth() * 0.5);
+  ok("an f32 * 2.0 is an f32", takesF32(x * 2.0) == 3.0f);
+  ok("0.1 == an f64", 0.1 == s);
+  ok("an i32 + 1 is an i32", k + 1 == 5);
+  ok("two literals take the default", 1.5 + 2.5 == 4.0 and 7 / 2 == 3);
+  var total i64 = 0;
+  each q in 0 ..< n { total = total + q; }
+  ok("a range whose first bound is a literal takes the end's type", total == 10i64);
+  var totalu usize = 0usize;
+  each q in 0 .. u { totalu = totalu + q; }
+  ok("a range over a usize", totalu == 28usize);
+  var count = 0;
+  each r in 0.0 ..< s by 0.025 { count = count + 1; }
+  ok("a float range with literal bounds and step", count == 4);
+  let rf = &s;
+  ok("1.0 - a borrow of an f64", 1.0 - rf == 1.0 - tenth());
+}
+
+fn expressions() {
+  let a f32 = 2.0 * 3.0;
+  ok("an expression of float literals placed in an f32", a == 6.0f);
+  let b u8 = 2 * 3;
+  ok("an expression of integer literals placed in a u8", b == 6u8);
+  let c u8 = 200 + 50;
+  ok("a sum placed in a u8 within its range", c == 250u8);
+  let d = 1.0 / 3.0;
+  ok("an expression of float literals alone is an f64", d == f64.from(1) / f64.from(3));
+  let e f32 = 1.0 / 3.0;
+  ok("one quotient rounded once to the f32", e == 1.0f / 3.0f);
+  ok("an integer quotient truncates", 7 / 2 == 3 and 7 % 4 == 3 and -7 / 2 == -3);
+  ok("a float literal after an integer quotient", 7 / 2 + 0.5 == 3.5);
+  let f f32 = 1 + 2.5;
+  ok("integer and float literals in an f32 place", f == 3.5f);
+  ok("negated sum", takesF32(-(1.0 + 2.0)) == -3.0f);
+  ok("an expression placed in a parameter", takesF32(1.0 + 2.0) == 3.0f and takesU8(2 + 3) == 5u8);
+  ok("an expression returned", retExprF32() == 0.1f and retExprU8() == 250u8);
+  let p = new Pt(1.5 * 2.0, 0.5 + 0.5, 4 + 5);
+  ok("an expression in fields", p.a == 3.0f and p.b == 1.0 and p.n == 9u8);
+  ok("an expression for a generic beside an f32", takesF32(second(0.5f, 1.0 + 2.0)) == 3.0f);
+  ok("a large product placed in an i64", takesI64(1000000 * 1000000) == 1000000000000i64);
+}
+
+fn branches() {
+  let x32 f32 = 3.5;
+  let u u8 = 7u8;
+  let q i64 = 9;
+  let yes = u > 3u8;
+  let a = if yes { 0.0 } else { x32 };
+  ok("a literal first, an f32 second: f32", takesF32(a) == 0.0f);
+  let b = if yes { x32 } else { 0.0 };
+  ok("an f32 first, a literal second: f32", takesF32(b) == 3.5f);
+  let c = if yes { 0 } else { u };
+  ok("an integer literal against a u8: u8", takesU8(c) == 0u8);
+  let d = match u { case 1 { 0 } case 2 { 5 } else { u } };
+  ok("match arms that are literals follow the arm that is not", takesU8(d) == 7u8);
+  let e = if yes { 1 } else { if u > 9u8 { 2 } else { q } };
+  ok("a literal against a nested if that is an i64", takesI64(e) == 1i64);
+  let f = if yes { 1.5 } else { 2.5 };
+  ok("literal branches alone are the default", f == 1.5);
+  let g f32 = if yes { 1.5 } else { 2.5 };
+  ok("literal branches placed in an f32", takesF32(g) == 1.5f);
+  let h = x32 * (if yes { 2.0 } else { 3.0 });
+  ok("an if beside an f32 operand is an f32", takesF32(h) == 7.0f);
+  let i = (if yes { 2.0 } else { 3.0 }) * x32;
+  ok("an if on the left of an f32 operand", takesF32(i) == 7.0f);
+  let j = if yes { x32 } else { 1.0 + 2.0 };
+  ok("an expression of literals as a branch", takesF32(j) == 3.5f);
+}
+
+fn main() {
+  defaults();
+  places();
+  suffixes();
+  generics();
+  operators();
+  expressions();
+  branches();
+}

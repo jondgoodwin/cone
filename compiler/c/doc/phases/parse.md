@@ -107,7 +107,7 @@ taken a decimal point or an exponent (`isFloat` is set) a further `.` ends the n
 `.` of `25.0.sqrt()`, `1e2.sqrt()` and `0x1p4.sqrt()` is the method call's. A `.` straight
 after integer digits is a decimal point (`3.` is the float 3.0) unless `lexDotStartsMember`
 sees another `.` or a name after it: `1..4` is a range and `4.sqrt()`, `3.e5` and `1_000.abs`
-are calls. A float suffix is no name (`1.d`, `0.f`, `1.f32` and `1.f64` stay floats, which
+are calls. A float suffix is no name (`0.f`, `1.f32` and `1.f64` stay floats, which
 packages use widely). In a hex literal a name of hex digits alone is a call (`0x1f.foo`)
 unless the hex float's `p` follows it (`0x1.Ep2` is a float). `lexical_float_method` holds
 the floats and `lexical_reject_int_method` the calls (integers have no such methods, so it
@@ -159,11 +159,15 @@ carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
 `lexical_reject_overflow` holds the boundary in both bases.
 
-**A float literal must fit the type its suffix gives it.** Its type is decided
-here — `f32` unless suffixed `d` or `f64` — and nothing later changes it, so a
-value past that type's range would be generated as infinity. `lexScanNumber`
+**A float literal must fit the type its suffix gives it.** With a suffix its type is
+decided here — `f32` for `f` and `f32`, `f64` for `f64` — and nothing later changes it, so
+a value past that type's range would be generated as infinity. `lexScanNumber`
 refuses one (`ErrorFloatRange`), rounding to `f32` as generation does, so a
-value just past `f32`'s maximum that rounds down to it still fits.
+value just past `f32`'s maximum that rounds down to it still fits. With no suffix the lexer
+passes `unknownType` on and the literal is an `f64` that a place may make an `f32`
+(literals.md), so only `f64`'s range is judged here. The retired `d` suffix is not
+read: the `d` is a name after a finished number, and refused where a name cannot follow
+(`lexical_reject_d_suffix`).
 `lexical_reject_float_range` holds the boundary. A value too small for the type
 is not refused: it rounds to zero or to a subnormal.
 

@@ -177,11 +177,17 @@ void ulitPrint(ULitNode *lit) {
     }
 }
 
-// Create a new unsigned literal node
+// Create a new float literal node. With no suffix its type is unknownType: it is
+// built an f64, and FlagUnkType lets it take the float type it is wanted as
+// (litAdoptNumberType), as an integer literal does
 FLitNode *newFLitNode(double nbr, INode *type) {
     FLitNode *lit;
     newNode(lit, FLitNode, FLitTag);
     lit->floatlit = nbr;
+    if (type == unknownType) {
+        lit->flags |= FlagUnkType;
+        type = (INode*)f64Type;
+    }
     NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
     lit->vtype = (INode*)typename;
     return lit;
@@ -235,6 +241,26 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // bool through coercion instead, read as true.
 int litAdoptNumberType(INode **nodep, INode *totype) {
     INode *node = *nodep;
+    // A float literal with no suffix is an f64 until a float type is wanted of
+    // it, whose precision it is then rounded to; no other type is its to adopt
+    if (node->tag == FLitTag && (node->flags & FlagUnkType)) {
+        INode *floattype = itypeGetTypeDcl(totype);
+        if (floattype->tag != FloatNbrTag)
+            return 0;
+        FLitNode *flit = (FLitNode*)node;
+        if (((NbrNode*)floattype)->bits == 32) {
+            if (isinf((float)flit->floatlit)) {
+                errorMsgNode(node, ErrorFloatRange,
+                    "Float literal %g does not fit f32, the type wanted here.", flit->floatlit);
+                flit->floatlit = 0.0;
+            }
+            else
+                flit->floatlit = (double)(float)flit->floatlit;
+        }
+        flit->vtype = floattype;
+        node->flags &= ~FlagUnkType;
+        return 1;
+    }
     if (node->tag != ULitTag || !(node->flags & FlagUnkType))
         return 0;
     INode *nbrtype = itypeGetTypeDcl(totype);
@@ -305,9 +331,161 @@ int litAdoptCharBesideByte(INode **objp, Nodes *args) {
     return litAdoptCharAsByte(objp, (INode*)u8Type);
 }
 
+// Is this a number literal written with no suffix, whose type is still its default
+// (i32 for an integer, f64 for a float) and may become any number type that fits?
+int litIsUntypedNumber(INode *node) {
+    return (node->tag == ULitTag || node->tag == FLitTag) && (node->flags & FlagUnkType);
+}
+
+// A number literal beside a binary operator's other operand takes that operand's
+// type when it is known, so '0.5 - s' is an f64's subtraction when 's' is an f64,
+// and '1 - n' an i64's: the literal on the left is the receiver, which would
+// otherwise decide the type by its default. 'othertype' is the type of the
+// other operand. Two literals together keep their defaults, an operand whose
+// type is no number is none to take, and a float literal takes only a float
+// type. Returns 1 when the literal was retyped.
+int litAdoptBesideOperand(INode **objp, INode *othertype) {
+    if (!litIsUntypedNumber(*objp) || othertype == NULL || othertype == unknownType || othertype == noCareType)
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(othertype);
+    if (nbrtype->tag != IntNbrTag && nbrtype->tag != UintNbrTag && nbrtype->tag != FloatNbrTag)
+        return 0;
+    return litAdoptNumberType(objp, nbrtype);
+}
+
 int litCharRefusedAsByte(INode *node, INode *totypedcl) {
     return node->tag == ULitTag && (node->flags & FlagCharLit) && totypedcl == (INode*)u8Type
         && ((ULitNode*)node)->uintlit >= 128;
+}
+
+// A number literal's value as a signed 64-bit integer. 0 when its magnitude is
+// beyond what a signed 64 bits holds, which is none this folds.
+static int litUntypedInt(INode *node, int64_t *v) {
+    ULitNode *lit = (ULitNode*)node;
+    int negated = (lit->flags & FlagLitNeg) != 0;
+    uint64_t magnitude = negated ? 0 - lit->uintlit : lit->uintlit;
+    if (negated ? magnitude > (uint64_t)INT64_MAX + 1 : magnitude > (uint64_t)INT64_MAX)
+        return 0;
+    *v = negated ? (int64_t)(0 - magnitude) : (int64_t)magnitude;
+    return 1;
+}
+
+static double litUntypedDouble(INode *node) {
+    if (node->tag == FLitTag)
+        return ((FLitNode*)node)->floatlit;
+    int64_t v;
+    if (!litUntypedInt(node, &v)) {
+        ULitNode *lit = (ULitNode*)node;
+        double magnitude = (double)((lit->flags & FlagLitNeg) ? 0 - lit->uintlit : lit->uintlit);
+        return (lit->flags & FlagLitNeg) ? -magnitude : magnitude;
+    }
+    return (double)v;
+}
+
+// An expression made only of number literals with no suffix -- '2.0 * 3.0', '200 + 100',
+// '-(1 + 2)' -- takes the type its place gives it, as a single such literal does,
+// and the default of its kind where nothing does. So it is folded here, as its operands
+// are known, into one untyped literal whose value is what the expression comes to;
+// where a place names the type the literal then adopts it, and a value that type
+// cannot hold is refused at the literal (litCheckRange). A sum, difference, product,
+// quotient or remainder, and a negation. Integers are computed exactly, in 64 bits,
+// division truncating toward zero; a float is computed as an f64, the result
+// rounded once to the f32 a place may ask for. An integer operand beside a float one
+// is that number as a float, the operand's own kind deciding the subexpression it
+// is in ('7 / 2 + 0.5' is 3.5). What would not be a finite literal or fits no 64 bits
+// is not folded, nor a division by zero: the operation is left for type check and
+// generation to judge as it has been. The node is made the literal in place: both are
+// expression nodes with the same header, and nothing yet points into the call's
+// operands. Returns 1 when it was folded.
+int litFoldUntyped(FnCallNode *call) {
+    if (!(call->flags & FlagOperator) || call->methfld == NULL || !isNameUseNode(call->methfld) || call->objfn == NULL)
+        return 0;
+    Name *op = ((NameUseNode*)call->methfld)->namesym;
+    int unary = call->args == NULL || call->args->used == 0;
+    if (!unary && call->args->used != 1)
+        return 0;
+    if (op != plusName && op != minusName && op != multName && op != divName && op != remName)
+        return 0;
+    if (unary && op != minusName)
+        return 0;
+    INode *a = call->objfn;
+    INode *b = unary ? NULL : nodesGet(call->args, 0);
+    if (!litIsUntypedNumber(a) || (a->flags & FlagCharLit) || (b && (!isExpNode(b) || !litIsUntypedNumber(b) || (b->flags & FlagCharLit))))
+        return 0;
+    // (a ULit's FlagMatchAny shares a bit with other nodes' flags: a literal 'case' pattern is no operand)
+    if ((a->tag == ULitTag && (a->flags & FlagMatchAny)) || (b && b->tag == ULitTag && (b->flags & FlagMatchAny)))
+        return 0;
+
+    int isfloat = a->tag == FLitTag || (b && b->tag == FLitTag);
+    uint64_t ibits = 0;
+    int ineg = 0;
+    double fval = 0.0;
+    if (!isfloat) {
+        int64_t x, y, r;
+        if (!litUntypedInt(a, &x) || (b && !litUntypedInt(b, &y)))
+            return 0;
+        if (unary) {
+            if (x == INT64_MIN) return 0;
+            r = -x;
+        }
+        else if (op == plusName) {
+            if ((y > 0 && x > INT64_MAX - y) || (y < 0 && x < INT64_MIN - y)) return 0;
+            r = x + y;
+        }
+        else if (op == minusName) {
+            if ((y < 0 && x > INT64_MAX + y) || (y > 0 && x < INT64_MIN + y)) return 0;
+            r = x - y;
+        }
+        else if (op == multName) {
+            if (x != 0 && y != 0) {
+                if ((x == -1 && y == INT64_MIN) || (y == -1 && x == INT64_MIN)) return 0;
+                r = (int64_t)((uint64_t)x * (uint64_t)y);
+                if (r / y != x) return 0;
+            }
+            else
+                r = 0;
+        }
+        else {
+            if (y == 0 || (x == INT64_MIN && y == -1)) return 0;
+            r = op == divName ? x / y : x % y;
+        }
+        ineg = r < 0;
+        ibits = (uint64_t)r;
+    }
+    else {
+        double x = litUntypedDouble(a);
+        double y = b ? litUntypedDouble(b) : 0.0;
+        double r;
+        if (unary) r = -x;
+        else if (op == plusName) r = x + y;
+        else if (op == minusName) r = x - y;
+        else if (op == multName) r = x * y;
+        else if (op == divName) r = x / y;
+        else r = fmod(x, y);
+        if (!isfinite(r))
+            return 0;
+        fval = r;
+    }
+
+    // The call's memory becomes the literal's
+    INode *deftype = isfloat ? (INode*)f64Type : (INode*)i32Type;
+    NameUseNode *typename = newNameUseNode(((NbrNode*)deftype)->namesym);
+    typename->dclnode = deftype;
+    if (isfloat) {
+        FLitNode *lit = (FLitNode*)call;
+        lit->tag = FLitTag;
+        lit->flags = FlagUnkType;
+        lit->vtype = (INode*)typename;
+        lit->floatlit = fval;
+    }
+    else {
+        ULitNode *lit = (ULitNode*)call;
+        lit->tag = ULitTag;
+        lit->flags = FlagUnkType | FlagLitFolded | (ineg ? FlagLitNeg : 0);
+        lit->vtype = (INode*)typename;
+        lit->uintlit = ibits;
+    }
+    return 1;
 }
 
 // Widen a float literal to a wider float type at compile time, in place of
@@ -437,6 +615,23 @@ static void litCheckRange(ULitNode *lit, int defaulted) {
         return;
     NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
     int negated = (lit->flags & FlagLitNeg) != 0;
+
+    // An expression of integer literals, computed (litFoldUntyped): no digits were
+    // written for it, so the value it came to is what is quoted
+    if (lit->flags & FlagLitFolded) {
+        uint64_t magnitude = negated ? 0 - lit->uintlit : lit->uintlit;
+        if (defaulted)
+            errorMsgNode((INode*)lit, ErrorLitRange,
+                "The value %s%" PRIu64 " of this expression of literals does not fit %s, the type it defaults to where nothing gives it one. Give it a declared type, or a suffix on one of its literals.",
+                negated ? "-" : "", magnitude, &type->namesym->namestr);
+        else
+            errorMsgNode((INode*)lit, ErrorLitRange,
+                "The value %s%" PRIu64 " of this expression of literals does not fit %s.",
+                negated ? "-" : "", magnitude, &type->namesym->namestr);
+        lit->uintlit = 0;
+        lit->flags &= ~(FlagUnkType | FlagLitNeg | FlagLitFolded);
+        return;
+    }
 
     // Quoted as written, digits and suffix, with the minus that was folded in
     int len = 0;

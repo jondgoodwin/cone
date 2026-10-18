@@ -762,17 +762,17 @@ double lexToFloat(char *srcp, char *srcend) {
  * UTF-8 lead byte). In a hex literal the letters a-f are digits, so a name that
  * is hex digits only starts a member access too, unless the 'p' of a hex float's
  * exponent follows them: '0x1.Ep2' is a float, '0x1f.abs' a call on 0x1f.
- * A decimal's float suffix is no name: '1.d', '0.f' and '1.f32' stay floats. */
+ * A decimal's float suffix is no name: '0.f', '1.f32' and '1.f64' stay floats. */
 static int lexDotStartsMember(char *p, uint64_t base) {
     char *q = p + 1;
     if (!((*q>='a' && *q<='z') || (*q>='A' && *q<='Z') || *q=='_' || (unsigned char)*q>=0x80))
         return 0;
     if (base == 10) {
-        // '1.d', '0.f32': the point and a float suffix, which is a float
-        // literal and not a call of a method named d or f32
+        // '0.f', '0.f32': the point and a float suffix, which is a float
+        // literal and not a call of a method named f or f32
         char *r = q + 1;
-        if (*q=='d' || *q=='f') {
-            if (*q=='f' && ((r[0]=='3' && r[1]=='2') || (r[0]=='6' && r[1]=='4')))
+        if (*q=='f') {
+            if ((r[0]=='3' && r[1]=='2') || (r[0]=='6' && r[1]=='4'))
                 r += 2;
             if (!((*r>='a' && *r<='z') || (*r>='A' && *r<='Z') || (*r>='0' && *r<='9') || *r=='_' || (unsigned char)*r>=0x80))
                 return 0;
@@ -868,11 +868,7 @@ void lexScanNumber(char *srcp) {
     }
 
     // Process number's explicit type as part of the token
-    if (*srcp=='d') {
-        isFloat = 'd';
-        srcp++;
-        lex->langtype = (INode*)f64Type;
-    } else if (*srcp=='f') {
+    if (*srcp=='f') {
         isFloat = 'f';
         lex->langtype = (INode*)f32Type;
         if (*(++srcp)=='6' && *(srcp+1)=='4') {
@@ -909,22 +905,25 @@ void lexScanNumber(char *srcp) {
         }
     }
     else
-        lex->langtype = isFloat ? (INode*)f32Type : unknownType;
+        // With no suffix a float takes the type of the place it is written into,
+        // as an integer does (litAdoptNumberType), and is an f64 where nothing
+        // says: unknownType here is newFLitNode's cue
+        lex->langtype = unknownType;
 
     // Set value and type
     if (isFloat) {
         lex->val.floatlit = lexToFloat(srcbeg, srcp);
         lex->toktype = FloatLitToken;
-        // A float literal is never context-typed, so the type decided here is
-        // the one it is generated at, and a value past its range was generated
-        // as infinity: '1e39' is an f32 and printed inf, even as an f64's
-        // initializer. Rounded as generation rounds it, so a value just past
-        // f32's maximum that rounds down to it still fits
+        // A suffixed literal has its type from here and is generated at it, so a
+        // value past its range was generated as infinity. Rounded as generation
+        // rounds it, so a value just past f32's maximum that rounds down to it
+        // still fits. An unsuffixed literal must fit f64 here; the f32 it may be
+        // given is judged where it is given (litAdoptNumberType)
         int f32lit = lex->langtype == (INode*)f32Type;
         double value = lex->val.floatlit;
         if (isinf(value) || (f32lit && isinf((float)value)))
             errorMsgLex(ErrorFloatRange, f32lit
-                ? "Float literal '%.*s' does not fit f32, the type of a float literal with no suffix or 'f'. An f64 is written with the 'd' suffix."
+                ? "Float literal '%.*s' does not fit f32, the type its 'f' suffix gives it."
                 : "Float literal '%.*s' does not fit f64.",
                 (int)(srcp - srcbeg), srcbeg);
     }

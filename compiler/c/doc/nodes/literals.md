@@ -32,10 +32,17 @@ constants where it can.
 | `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems`; `repeats`, how many elements each of `elems` fills, NULL for one each; `nsizes`, a type's written sizes or a literal's scalar levels (below) |
 | type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
 
-**`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
-suffix. **There is no float equivalent** — a suffix-less float defaults to `f32`
-concretely, and the lexer refuses a float literal past its type's range
-(`ErrorFloatRange`; [Parse](../phases/parse.md)).
+**`FlagUnkType`** is set by `newULitNode` and by `newFLitNode`, only when the lexer gave
+no type suffix (it passes `unknownType`): the node is built an `i32` or an `f64`, the
+default of its kind, and may be given another number type by where it is written (below).
+The lexer refuses a float literal past `f64`'s range, and one past the range of the type its
+suffix gives it (`ErrorFloatRange`; [Parse](../phases/parse.md)); a literal with no suffix
+that is given `f32` and holds more than `f32` does is refused where it is given
+(`litAdoptNumberType`).
+
+**`FlagLitFolded`** marks an integer literal no digits were written for: the value an
+expression of untyped literals came to (`litFoldUntyped`, below). Its `srcp` is the
+expression's, so `litCheckRange` quotes the value instead.
 
 **`FlagLitNeg`** says `uintlit` is the negation of the digits written. It is set
 only by `parsePrefix`'s fold (see Parse), and toggled, so a minus applied twice
@@ -123,12 +130,15 @@ bound, because it is matched against a field by symbol later.
 
 ## Type check
 
-**An untyped integer literal takes the number type it is wanted as, wherever it
+**An untyped number literal takes the number type it is wanted as, wherever it
 meets it, and no other literal is context-typed but `null` (below).** `litAdoptNumberType` is the
 one rule: a `ULitTag` carrying `FlagUnkType` against an integer type takes that
 type and drops the flag; against a float type it is replaced by an `FLitNode`
 holding the full 64-bit magnitude written, negated when `FlagLitNeg` says so,
-rounded once at the target's own precision. `litTypeCheck` applies it when `expectType` is a number type, and
+rounded once at the target's own precision. An `FLitTag` carrying `FlagUnkType` against
+a float type takes it and drops the flag, its value rounded to the `float` an `f32` is (a
+value that overflows one is `ErrorFloatRange`); against any other type it is left, and
+the mismatch is judged by the coercion that follows. `litTypeCheck` applies it when `expectType` is a number type, and
 `iexpCoerce` applies it to a literal that reaches coercion still untyped — an
 argument to an overload set, a generic or an operator, which is type checked
 before its callee is chosen. Every other literal is typed by
@@ -170,7 +180,7 @@ position a literal meets a type: initializer, assignment, argument, return value
 and struct field, for `i64`, `u64`, `f32` and `f64`.
 
 **A float literal widened to a wider float type is widened in place.** A float
-literal is not context-typed: `0.5` is an `f32` wherever it is written, and it
+literal with an `f` or `f32` suffix is an `f32` wherever it is written, and it
 reaches an `f64` by the implicit widening every `f32` value has. When
 `iexpCoerce` finds that widening (`ConvSubtype`) and the value is a float
 literal, `litWidenFloat` replaces it with an `FLitNode` of the wider type
@@ -179,7 +189,7 @@ The value is exactly what the conversion generated, so no position's value
 moves; what moves is that the result is still a literal, which the global,
 static, parameter-default and typed-constant rules ask for ([vardcl](vardcl.md)),
 so `let g f64 = 0.5` is accepted as it is in a function body. It is still the
-`f32` value: `let g f64 = 0.1` holds `0.100000001490116…`, as a local, an
+`f32` value: `let g f64 = 0.1f` holds `0.100000001490116…`, as a local, an
 argument, a return value and a field do. `typemgmt_success` pins the positions
 that require a literal, with values exact in `f32`, and pins that a global and a
 local given the same literal agree.
@@ -204,21 +214,68 @@ global, a static, a parameter default and a typed constant initialized from a
 widened constant, with the edge values above.
 
 **`FlagUnkType` is also read by `iexpMatches`**, which returns `ConvSubtype` for
-an untyped integer literal against any number type. `iexpCoerce` adopts before
+an untyped integer literal against any number type, and for an untyped float literal
+against any float type. `iexpCoerce` adopts before
 it asks, so this answers only the callers that ask without coercing: overload
 resolution, struct field matching and the branch meet. It deliberately ignores
-subtype direction "for user convenience".
+subtype direction "for user convenience". Overload resolution has no ranking, so an
+untyped literal that two candidates of different kinds take is ambiguous
+(`print <- 5`, `ErrorAmbigCandidate`), and so is an expression made of them
+(`print <- 2 * 3`); a float literal meets `print <- 2.0 * 3.0` as an `f64`, which one
+candidate takes exactly.
+
+**A literal beside a binary operator takes the other operand's type.** An operator
+application is a method call on its left operand, so an untyped literal there would
+decide the type by its default. `fnCallLowerMethodOn` asks `litAdoptBesideOperand` first:
+when the receiver is an untyped number literal and the argument is an expression of a
+number type (a borrow of a number is read through, as an operator reads it), the
+literal adopts that type, and `0.5 - s`, `1 - n`, `0 < u` and `2.0 * x` are the
+operations on `s`, `n`, `u` and `x`. A literal on the right is the argument and is
+matched by `iexpMatches`. Two untyped literals keep their defaults. An `if` or `match`
+that is the other operand is wanted as the number's type: as the argument, the receiver
+is checked first and the `if` given it (`numericif`, `fnCallOperandNumber`); as the
+receiver, it is given the argument's, which is checked first (`rcvexpect`). A range's
+first bound is the same operand: `each i in 0 ..< n` holds the bound in a hidden
+variable, and when the end is not a literal the end is checked first and gives the
+bound its type (`eachRangeFirstFollowsEnd`, `eachRangeFirstAdopt`; the same question
+the parallel range answers with `parallelEachBoundsFirst`).
+
+**An expression made only of untyped number literals is one literal.** Once a call's
+operands are checked, `fnCallTypeCheckNode` asks `litFoldUntyped`: a sum, difference,
+product, quotient, remainder or negation of two untyped literals, or of one, becomes a single
+untyped literal holding what it comes to, and the call's memory is made that literal in
+place (an `FnCallNode` is larger than a literal and shares its header; nothing yet points
+into its operands). Integers are computed exactly in 64 bits, a division truncating toward
+zero; a float is computed as an `f64`, so it is rounded once to the `f32` a place may ask
+for; an integer beside a float is that number as a float, the kind of each subexpression
+deciding its own (`7 / 2 + 0.5` is `3.5`). A result that is no finite number, a division
+by zero or an overflow of 64 bits is not folded, and is judged as it has been. The
+literal then takes its place's type as any untyped literal does (`let a f32 = 2.0 * 3.0`,
+`let b u8 = 200 + 50`), or the default of its kind: `2147483647 + 1` is the `i32` default's
+value past its range, refused at generation like any such literal. Folding is on the
+operator's own operands, so `x * (1.0 / 3.0)` has an untyped literal for its argument,
+and `(2.0).sqrt()` is a call on an `f64`: a method call has no place to ask.
+
+**A branch or an element that is a literal follows the others.** `if` and `match` arms
+that are untyped number literals wait for the others (`ifLiteralArmsFollow`): when the arms
+that are not literals met at one number type they take it (`if c {0.} else {d}` with an
+`f32` `d` is an `f32`, and `if c {0} else {u}` with a `u8` `u` a `u8`, which was a mismatch),
+and when there are none they are joined as ever and are the default of their kind. A float
+literal beside integer arms, or a type that is no number, is joined as before, and refused
+as before. An array literal does the same for its elements (`arrayLitSettle`), so
+`[0.1f, 0.2]` is an array of `f32`. Both apply where no place names the type: where one
+does, `expectType` reaches the literal first.
 
 **A literal nothing typed keeps its `i32` default, and must fit it.** Some
 literals are reached by neither `litTypeCheck`'s `expectType` nor `iexpCoerce`:
-the branches of an `if` or a block passed as an operand, or as an argument to
-an overload set or a generic, which get no type because theirs chooses the
+the value of a block passed as an operand, or the branches of an `if` given to an overload
+set, which get no type because theirs chooses the
 callee, and every literal whose type comes from nothing but itself — a
 variable, global or constant declared without a type, an array literal's
 elements. Such a literal still carries `FlagUnkType` when it is
 generated, so the `i32` is final, and `litCheckDefaultRange`, called from
 `genlExpr`, refuses one whose value does not fit it (`ErrorLitRange`) rather than
-materializing it at 32 bits — `x + if v {5000000000} else {1}` would add
+materializing it at 32 bits — `x - {5000000000}` would subtract
 `705032704`. It is checked there because generation is the one place every such
 literal is reached, in a body, a global's initializer and a constant's value
 alike, after everything that could have typed it has run.
@@ -762,7 +819,16 @@ is its type exactly and has no terminator.
 - **An `f32` literal's `floatlit` is the double written, not the `f32`.** It is
   rounded when generated, so anything that computes with it rounds it first
   (`(double)(float)`), as `litWidenFloat` and the fold's `litNbrRead` do; read
-  raw, `f64.from(0.1f32)` folded to the double 0.1.
+  raw, `f64.from(0.1f32)` folded to the double 0.1. One adopted from an untyped
+  literal is already rounded (`litAdoptNumberType`).
+- **A float with no suffix that nothing types is an `f64` where it was an `f32`, and
+  nothing says so.** `var amax = 0.` compared with `f32` values was an `f32` and is now an
+  `f64`, which `amax > x` and the next use of it as an `f32` refuse, but `let total = 0.`
+  summed from `f32` values, or `fold(0.0, ...)` over an `f32` list, is accepted as an
+  `f64` and computes in it. A program whose meaning is its `f32` rounding says `f`.
+- **`litFoldUntyped` retags the call in place.** The node keeps its header and its
+  address, so a pointer held to the call (`fnCallExpectNode`) still reaches a node; its
+  `objfn`, `methfld` and `args` are gone, so nothing may read them after the fold.
 - **The fold computes floats with the host's C arithmetic.** That is the
   target's IEEE result only where the host rounds each `float` and `double`
   operation once, as x64's SSE does; a `conec` built for x87's extended

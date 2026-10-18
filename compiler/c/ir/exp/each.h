@@ -56,4 +56,13 @@ extern Name *eachRangeStepName;
 void eachRangeNames();
 int eachRangeStepLower(TypeCheckState *pstate, FnCallNode **nodep);
 
+// A number range whose first bound is a literal with no suffix and whose end is
+// not a literal ('each i in 0 ..< n'): the end is held in a variable of the loop,
+// and the first bound takes its type, as a literal beside an operator takes
+// its other operand's. eachRangeFirstFollowsEnd says whether this block is
+// one, and eachRangeFirstAdopt, once the end's variable has been checked, gives
+// the first bound that variable's type when it is a number type.
+int eachRangeFirstFollowsEnd(BlockNode *outer);
+void eachRangeFirstAdopt(BlockNode *outer);
+
 #endif
