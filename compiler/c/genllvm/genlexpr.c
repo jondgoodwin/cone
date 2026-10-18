@@ -415,7 +415,7 @@ static LLVMValueRef genlBitIntrinsic(GenState *gen, int16_t kind, INode *type, L
 
 // Expand a call to an intrinsic declared in core with '@intrinsic'. What each
 // one means is the registry's (ir/stmt/intrinsic.c) and the reference manual's
-// (refintrinsic.html); this is LLVM's implementation of it. The type it acts on
+// (safe-intrinsics.html); this is LLVM's implementation of it. The type it acts on
 // is the Cone type the instance carries, 'typearg', never an argument's LLVM
 // type. Answers NULL for one that gives no value.
 static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMValueRef *fnargs) {
@@ -1767,7 +1767,7 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         }
     }
     if (totype->tag == StructTag || totype->tag == ArrayTag) {
-        // refrust.html: a reinterpretation re-casts a value "as if it were a
+        // safe-trust.html: a reinterpretation re-casts a value "as if it were a
         // value of a different, but same-sized type". castTypeCheck enforces
         // that by comparing castBitsize, which has no answer for a struct --
         // it knows nothing of field layout, padding or alignment. So a struct
@@ -2067,7 +2067,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     //
     // The vtable to look in is the one the reference's own type names, not the
     // one the concrete type inherits from. A type may satisfy a trait
-    // structurally without naming it -- which refvirtref.html treats as the
+    // structurally without naming it -- which mod-substitution.html#virtref treats as the
     // ordinary case -- so it has no base trait to ask, and where it does have
     // one, a reference to an intermediate trait carries that trait's vtable
     // rather than the bottom-most one. The coercion that built the reference
@@ -2732,7 +2732,7 @@ static LLVMValueRef genlAddrIn(GenState *gen, INode *lval) {
         if (dclnode->tag == FnDclTag)
             return genlFnSym(gen, (FnDclNode*)dclnode);
         // A named constant has no storage of its own: each use is its literal
-        // value (refterm.html, "Named constants"), so its address is the one
+        // value (mod-globals.html#const, "Named constants"), so its address is the one
         // that literal gets. A constant array or string literal is placed in a
         // constant global; a struct or tuple one, only read here, in a temporary.
         if (dclnode->tag == ConstDclTag)

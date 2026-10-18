@@ -168,7 +168,7 @@ value just past `f32`'s maximum that rounds down to it still fits.
 is not refused: it rounds to zero or to a subnormal.
 
 **A string literal whose opening quote ends its line is a multi-line string
-literal**, read by the rules of `doc/reference/reftoken.html`, "Multi-line String
+literal**, read by the rules of `doc/manual/syntax-lexical.html#multiline`, "Multi-line String
 Literals". `lexScanString` finds the closing quote first, stepping over each
 escape sequence whole, and takes its indentation — the spaces and tabs before it
 on its line — as the literal's margin. `lexStringMargin` reads the start of

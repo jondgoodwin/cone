@@ -730,7 +730,7 @@ static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype,
 // reference: the value it holds is where a loan points, and what is lent of it
 // is held to that loan's permission? An owner whose own permission is shared
 // and writable ('Rc[mut, T]', 'Arc[mut, T]') is a shared path as well
-// (refborref.html, "Freezing access to the source of a borrow"): another name
+// (mem-borrowing.html#freezing, "What a borrow leaves its source free to do"): another name
 // for the owner reaches the same value. A lock permission is not one: its value
 // is reached only through the lock's guard.
 int iexpPathThroughBorrow(INode *lval) {
@@ -764,7 +764,7 @@ int iexpPathThroughBorrow(INode *lval) {
 // T]'). Its type is answered, NULL where every link is 'uni' or the place is
 // reached through none (a variable, a field of a value held by value). A 'uni'
 // reference is the one name for what it points at; a '&uni' field is seen
-// only through such links (refperm.html, "Viewpoint Adaptation"). A lock
+// only through such links (mem-permissions.html#view, "Viewpoint Adaptation"). A lock
 // permission is not asked: its value is reached only by the lock's guard, a
 // '&mut' that is asked.
 INode *iexpPathNonUniLink(INode *lval) {
@@ -822,7 +822,7 @@ int iexpReachWrites(INode *lval) {
 // at, 'refperm' being the reference's own. The reference's permission is what it
 // grants its holder; a place reached through a borrow grants only what that borrow
 // let it be held with, so the permission is the intersection of all those along
-// the path (refperm.html, "Viewpoint Adaptation"): a '&mut' held in a place
+// the path (mem-permissions.html#view, "Viewpoint Adaptation"): a '&mut' held in a place
 // reached through a '&' (or a '&imm') lends '&' and reads, no more (a '&uni' field
 // is not seen through one at all: fnCallUniFieldSeen). A place
 // not reached through a borrow (a variable, or a field of a value held by value:

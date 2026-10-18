@@ -629,9 +629,9 @@ reference dereferenced, which for an owner (`So`, `Rc`) is its own, `uni` for a
 `So`. Held in a field of a `&Holder`, the owner would lend `&mut` and change what
 the borrow was lent to read; held in a field of a `&mut Holder`, it would lend
 `&uni` or `&imm`, promises that another name for the holder breaks by replacing
-the owner ([refborref](../../../../doc/reference/refborref.html), "Freezing access
-to the source of a borrow"). Viewpoint adaptation
-([refperm](../../../../doc/reference/refperm.html)) is the intersection. So where
+the owner ([mem-borrowing](../../../../doc/manual/mem-borrowing.html#freezing), "What a borrow leaves its source free to do").
+Viewpoint adaptation
+([mem-permissions](../../../../doc/manual/mem-permissions.html)) is the intersection. So where
 the owner's place is reached through a borrow, or through an owner whose own
 permission is shared and writable (`Rc[mut, T]`, `Arc[mut, T]`; a lock permission
 is not one), (`iexpPathThroughBorrow`) whose permission is not `uni`, and the
@@ -649,7 +649,7 @@ called. A local, a field of one held by value, or a field reached through a
 
 **A borrowed reference that may write, held in a place reached through a borrow
 that only reads, reads and lends only `&`.** The permissions of a path are the
-intersection of every reference gone through ([refperm](../../../../doc/reference/refperm.html),
+intersection of every reference gone through ([mem-permissions](../../../../doc/manual/mem-permissions.html#view),
 "Viewpoint Adaptation"): `car.owner.age = 18` through a `car &Car` is refused
 though `owner` is a `&mut Person`, as is `target.push(x)` in a `self &` method of
 a struct holding `target &mut List`. `iexpReachWrites` asks whether every
@@ -673,7 +673,7 @@ runs.
 
 **A `&uni` field or element is seen only through `uni` references, or in a holder
 held by value.** "A shared reference cannot see through a uni reference"
-([refperm](../../../../doc/reference/refperm.html), "Viewpoint Adaptation"), and
+([mem-permissions](../../../../doc/manual/mem-permissions.html#view), "Viewpoint Adaptation"), and
 "shared" includes `&mut`: `a.holder` with `holder &uni App`, reached through two
 `&mut Cell` names of one cell, would hand the one reference that promised to be
 unique to both, and the shape check that guards an element borrowed through a

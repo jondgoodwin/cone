@@ -547,7 +547,7 @@ lets the match run again. Only a borrow of a literal written in place is
 retyped; a named array is not coerced.
 
 **A named constant is borrowed as its literal would be.** A use of a constant is
-its value (refterm, "Named constants"), so `borrowIsConstLit` follows a
+its value (mod-globals.html#const, "Named constants"), so `borrowIsConstLit` follows a
 `ConstDclTag` use to the literal it holds: `&K` for `const K = [1, 2, 3]` is
 `&[1, 2, 3]`, `imm`, the program's lifetime, and placed in a constant global
 (`genlAddr` recurses into the value, [vardcl](vardcl.md), "Shape"). Not

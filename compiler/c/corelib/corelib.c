@@ -330,7 +330,7 @@ void stdlibInit(int ptrsize) {
     // break common collection code -- reading a 'List[String]' element
     // through a '&List' parameter -- whose alternatives (a '&uni' borrowed
     // from, so a 'self &uni' method may be called twice) are writable now.
-    // That is a documented hole (refborref.html).
+    // That is a documented hole (mem-borrowing.html).
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);

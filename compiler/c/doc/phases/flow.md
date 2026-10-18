@@ -621,7 +621,7 @@ A temporary is a value an expression makes that nothing takes — not bound,
 stored, passed by value, handed back or moved — whose death does something
 (`itypeNeedsFinal`), or which a borrow points at, whatever its type; it dies at
 the end of the statement that made it, newest first
-(`doc/reference/refinitdrop.html`). Flow finds each where it is read or
+(`doc/manual/rec-methods.html#initfinal`). Flow finds each where it is read or
 thrown away and wraps it in a `TempNode` (`flowTempRead`); generation keeps it
 in a slot and finalizes it at the end of its part ([Generation](generation.md),
 "Temporaries"). A temporary is never a variable here, so it has no flags and
@@ -755,7 +755,7 @@ are disjoint. Nothing is tracked through a raw pointer.
 
 **Cone's `mut` is not Rust's `&mut`.** `uni` is Rust's `&mut` (one active
 reference); `mut` is shared mutable within a thread, `ro` a view others may
-change (`refperm.html`). So how a place is reached decides what a borrow of it
+change (`mem-permissions.html`). So how a place is reached decides what a borrow of it
 may freeze. A place is reached **as `uni`** when no reference on the way to it
 may alias: a local (its only owner is the stack, whatever its declaration says),
 a field of one, or what a `uni` reference points at. It is reached through a
@@ -991,7 +991,7 @@ nothing of `seen`, a `List[&Array[u8]]`, and each is free while the other is use
 **Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,
 carries the loans of every argument: Cone's rule for a signature without
 lifetime annotations is that every borrowed reference in it shares one
-lifetime (`reflifefn.html`), which `fnCallFinalizeArgs` already applies to the
+lifetime (`mem-lifetimes.html`), which `fnCallFinalizeArgs` already applies to the
 result's scope. So a borrow a method returns keeps its receiver loaned while
 it is used, the Rust way — the loan is the receiver's own: `list[0usize]`'s
 `&list`, read-only, lets `list` be read but not pushed onto; a method taking
@@ -1283,7 +1283,7 @@ through another name" below. Refusing every element
 borrow through a shared path would refuse ordinary code — reading a
 `List[String]` element through a `&List` parameter, a method reading its own
 `self` list field — so (b) is a rule on the change, not a refusal of the
-borrow. `collection_flow_freeze_shared` pins the frozen path, and `refborref.html`
+borrow. `collection_flow_freeze_shared` pins the frozen path, and `mem-borrowing.html`
 each shape. A
 borrow of the container itself that is not a method's returned borrow
 (`imm r = &mut *l`) is not frozen, and needs no freeze: it points at the
@@ -1970,7 +1970,7 @@ move out of a field is, worded for it (`flowRefuseMoveField`).
 
 An init's `self &new` (`fnDclIsInit`) is a reference to memory that holds no
 value until the init writes one, and that the construction running the init
-holds once it returns (doc/reference/refinitdrop.html). Flow holds it to that
+holds once it returns (doc/manual/rec-methods.html#initfinal). Flow holds it to that
 with one flag and one context:
 
 - **`VarUnfilled`** is set on `self` as the init's flow begins

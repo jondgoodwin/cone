@@ -826,7 +826,7 @@ static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
 // fields. So it has the base's representation exactly, and values of the two
 // substitute for each other in both directions at no cost (structExtendsEquiv,
 // below). The language is in
-// doc/reference/refinherit.html, "Enriching a concrete type".
+// doc/manual/mod-extensibility.html#enrich, "Extending a type you did not write".
 //
 // What it costs the compiler is a NAME FOLD, bar the value's lifecycle. One
 // representation means a base method already takes exactly the right receiver,
@@ -1088,7 +1088,7 @@ StructNode *structExtendsRoot(StructNode *node) {
 // each in one set, each with a layout of its own. The two enums are TWO DISTINCT
 // TYPES that do not substitute for each other in either direction, and a variant
 // is a value of the one enum whose set holds it. The language is in
-// doc/reference/refenum.html, "Extending an enum"; the mechanism is in
+// doc/manual/mod-extensibility.html#enum-extends, "Extending an enum: more variants"; the mechanism is in
 // compiler/c/doc/nodes/struct.md, "An enum extending an enum".
 //
 // A copy is made the way a generic instance is: the base's variant is resolved
@@ -2138,7 +2138,7 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
 }
 
 // A member not 'pub' is private to the module that declares its type, the
-// boundary a private name of the module has (refmodule.html): every function,
+// boundary a private name of the module has (mod-namespaces.html): every function,
 // method and type of that module reaches it through any value of the type --
 // a local, a parameter, a field, a borrow -- in any of the module's files. A
 // sister or a submodule is another module and sees none. The code is the

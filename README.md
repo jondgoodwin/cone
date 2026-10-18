@@ -22,7 +22,7 @@ The current status and next steps are documented in [PLAN.md][plan].
 This repository also holds the Congo build tool (`tools/congo/`) and
 example Cone programs (`samples/`), both brought in with their history from
 the former [Cone home repository](https://github.com/jondgoodwin/conehome).
-The language reference's source is in `doc/reference/`.
+The language manual's source is in `doc/manual/`.
 
 ## Language Features
 
@@ -124,7 +124,7 @@ See LICENSE and COPYRIGHT for details. The two Phacelle noise files in
 [gmm]: http://jondgoodwin.com/pling/gmm.pdf
 [plan]: https://github.com/jondgoodwin/cone/blob/master/PLAN.md
 [coneref]: http://cone.jondgoodwin.com/coneref/index.html
-[showcase]: http://cone.jondgoodwin.com/coneref/showcase.html
+[showcase]: http://cone.jondgoodwin.com/showcase.html
 [playground]: http://cone.jondgoodwin.com/play/index.html
 [examples]: http://github.com/jondgoodwin/cone/tree/master/text
 [acorn]: https://github.com/jondgoodwin/acornvm

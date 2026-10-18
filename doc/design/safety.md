@@ -105,7 +105,7 @@ indexing and arithmetic — all compile with no guard anywhere, which means none
 of the checks it would switch off are switched on to begin with. The same holds
 for the intrinsics whose misuse breaks memory safety (`finalize`, the slice
 constructors, `readRaw`, `writeRaw`, `moveRaw`, the atomic operations): the compiler's registry marks
-each as needing `trust`, and nothing yet asks for it (`refintrinsic.html`).
+each as needing `trust`, and nothing yet asks for it (`safe-intrinsics.html`).
 
 **`trust` is meant to be narrow.** It is framed as a remedy for compiler
 over-reach — constraints that are "sometimes overzealous, preventing behavior

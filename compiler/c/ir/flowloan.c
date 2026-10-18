@@ -16,7 +16,7 @@
 // How a loan restricts its source, from the borrow's permission and from the
 // path the source is reached by. Cone's 'mut' is shared: other references may
 // read and change the value too, so only a source reached as 'uni' (a local,
-// or through 'uni' references) can be frozen against them. The refperm.html
+// or through 'uni' references) can be frozen against them. The mem-permissions.html
 // manual page, "From 'uni'", is the rule; flow.md, "The loan walk", the note.
 enum LoanKind {
     LoanShared,     // read-only: 'ro' or 'imm' of a 'uni' source; '&imm' of a shared one

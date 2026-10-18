@@ -490,8 +490,8 @@ static char *castPermName(INode *perm) {
 
 // 'as' from one reference to another: reinterpretation is trusted, but a
 // reference's permission is what flow and the race checks rest on, so between
-// references it may only be a legal coercion (reftypesafe.html, "Type
-// Reinterpretation"): the permission is the same or a supertype of the
+// references it may only be a legal coercion (safe-types.html#as, "Reinterpretation: as"):
+// the permission is the same or a supertype of the
 // source's, the same check an implicit coercion asks (permMatches). Anything
 // else needs 'trust', which is not built yet (but for a defaulted 'imm', below). A pointer 'as' a reference, which
 // is where library code trusts memory it manages, and a reference 'as' a
@@ -505,8 +505,8 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
         return 0;
     // The one case let through, until 'trust' is built: a 'ro' reference made
     // the 'imm' a type declaring Immutable gives a reference that writes no
-    // permission, 'bytes as &str', 'p as So[str]' (refarrayref.html, "A String as
-    // a Slice of Bytes"). The permission is the type's default, not written: a
+    // permission, 'bytes as &str', 'p as So[str]' (lib-string.html#bytes, "Text and bytes").
+    // The permission is the type's default, not written: a
     // written '&imm' (or '&imm str') is checked as any other. It promises that
     // nothing changes the bytes while the text is used, and that they are text,
     // neither of which is checked.

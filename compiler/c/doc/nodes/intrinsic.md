@@ -9,7 +9,7 @@ they differ in who declares them and in how their meaning is decided.
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
 | Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `MulFoldIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
-| Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
+| Reference page | none: the number and pointer methods | `doc/manual/safe-intrinsics.html` |
 
 The kinds built in C are left as they are until the number types are rebuilt
 over generics; nothing new is to be added to them. **A new intrinsic is declared

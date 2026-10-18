@@ -261,7 +261,7 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
 
     // A private name belongs to the module that declares it, and naming a path
     // through that module reaches past it. Refusing it here is what
-    // refmodule.html says, and is also the only answer generation can honour:
+    // mod-namespaces.html says, and is also the only answer generation can honour:
     // it emits no symbol for a private declaration of a module whose bodies
     // this compile does not generate, so the call site would otherwise be left
     // with nothing to call. A private candidate selected through a *public*
@@ -406,7 +406,7 @@ static int fnCallRangeReceiver(INode *objtype) {
 // A place -- a field, an array element, a tuple element -- whose type is a
 // '&uni' reference is seen -- read, lent or written -- only where every
 // reference on the way to it is 'uni' too, or what holds it is held by value
-// (refperm.html, "Viewpoint Adaptation"): through a '&' or a '&mut' there may
+// (mem-permissions.html#view, "Viewpoint Adaptation"): through a '&' or a '&mut' there may
 // be another name for the same holder, and the one reference that promised to
 // be unique would be reached by both. The access 'access', of type 'placetype'
 // and naming the field 'fldname' (NULL for an element), is refused otherwise.
@@ -480,7 +480,7 @@ void fnCallArrIndex(FnCallNode *node) {
     }
 
     // A range, 'x[a..<b]', is a slice of part of the array only when borrowed.
-    // Unborrowed it would copy or fill a segment (refarrayref.html, "Copy or
+    // Unborrowed it would copy or fill a segment (lib-collections.html, "Copy or
     // Fill Elements"), which is not implemented.
     if ((node->flags & FlagRange) && !(node->flags & FlagBorrow)) {
         errorMsgNode((INode *)node, ErrorBadIndex,
@@ -647,7 +647,7 @@ FnCallNode *fnCallSetIndexRoot(INode *lval) {
 // Every borrowed reference in a signature written without a lifetime shares
 // one, and every one written with a name shares it with the others written
 // with that name, and with those its 'where' clause orders shorter, and with
-// nothing else (doc/reference/reflifefn.html): so 'wanted' may hold the borrows
+// nothing else (doc/manual/mem-lifetimes.html): so 'wanted' may hold the borrows
 // of an argument whose parameter's own lifetime flows to it (lifeCarry), or,
 // where only what that points at holds one that does, the borrows held there,
 // and the only lifetime those have in common is the shortest. What a borrowed
@@ -1181,8 +1181,8 @@ static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 // A receiver held as a value -- 'v.push(x)' for a 'mut v List[i64]' -- reaches
 // a method that declared 'self &' or 'self &mut' by being borrowed, as though
 // '(&v).len()' or '(&mut v).push(x)' had been written: "Cone will automatically
-// transform 'self' to a mutable borrowed reference" (doc/reference/
-// reftypesafe.html, "Implicit Coercion of 'self'"), as lval operators already
+// transform 'self' to a mutable borrowed reference" (doc/manual/
+// safe-types.html#self, "Coercing a method's self"), as lval operators already
 // do. Asked only when no candidate accepts the receiver as it is, so a method
 // taking 'self' by value is always preferred, and never of a receiver that is
 // already a reference or a pointer: a pointer is not borrowed from.
@@ -1214,8 +1214,8 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     // borrow is not accepted as, so 'imm' is tried between the two
     // A method declaring 'self &uni' is reached last: a local is unique, so
     // lending it 'uni' is the one borrow left, and the borrow keeps every other
-    // name from reaching it while the call runs (doc/reference/refperm.html,
-    // "From 'uni'")
+    // name from reaching it while the call runs (doc/manual/mem-permissions.html#fromuni,
+    // "From uni, for a while")
     PermNode *perms[4];
     int nperms = 0;
     perms[nperms++] = roPerm;
@@ -1387,7 +1387,7 @@ static int fnCallLowerEnumTagTest(TypeCheckState *pstate, FnCallNode *callnode, 
 }
 
 // '==' on an enum where a variant carries fields: tags first, then the variant's
-// own '==' on the two payloads (doc/reference/refenum.html, "Comparing"). The
+// own '==' on the two payloads (doc/manual/guide-enums.html#compare, "Comparing enum values"). The
 // comparison is a function the compiler gave the enum (structSetEnumEqFn), made
 // when every variant that carries fields declares a '==', and the call becomes a
 // call of it on the two operands lent. Where one does not, the call is refused
@@ -2260,7 +2260,7 @@ static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
     return NULL;
 }
 
-// '==' on two slices compares their elements (doc/reference/refarrayref.html,
+// '==' on two slices compares their elements (doc/manual/lib-collections.html,
 // "Comparison"): equal when the counts are and each element is '==' to its
 // partner. '!=' arrives here as '==' under a 'not' (fnCallNeFromEq) unless the
 // elements have no '==', which is reported under the '!=' that was written. A
@@ -2588,7 +2588,7 @@ static void fnCallLentOperands(TypeCheckState *pstate, FnCallNode *node) {
 // is what left the call naming a declaration with no symbol, and generation
 // dereferenced that null.
 //
-// The route is the one doc/reference/reftraitvar.html describes -- the tag says which
+// The route is the one doc/manual/mod-substitution.html#traitvar describes -- the tag says which
 // variant, that selects the vtable, and the vtable holds the method -- and it is
 // already built as the coercion from '&Trait' to '&<Trait'. So this coerces and
 // then dispatches virtually, which is what a caller otherwise has to write by
@@ -2768,7 +2768,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
 }
 
 // A type that declares '==' and no '!=' has its '!=' derived, as 'not (a == b)'
-// (doc/reference/refmethop.html, "Comparison Operator Methods"). Asked of a struct
+// (doc/manual/rec-methods.html#compare, "Comparison Operator Methods"). Asked of a struct
 // receiver's own type, or of the struct a reference refers to, through any
 // number of references, since '!=' on references compares the values
 // (fnCallLowerRefCompare). A type that declares its own '!=' keeps it, an

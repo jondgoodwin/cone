@@ -83,7 +83,7 @@ void awaitNameRes(NameResState *pstate, AwaitNode *node) {
 // method of an actor's state, where the state is in the actor: its 'init'
 // too, which runs on the state in the actor's block, the actor real already
 // (parseactor.c), so what it sends waits in the mailbox until the init has
-// returned; but not its 'final', which runs as it dies (refconccomm.html: an
+// returned; but not its 'final', which runs as it dies (conc-sharing.html: an
 // actor's body is fields, an init, behaviours, synchronous methods, a final).
 static char *actorMethodNotPlaced(FnDclNode *fn) {
     if (fn == NULL)

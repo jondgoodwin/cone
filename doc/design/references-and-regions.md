@@ -210,7 +210,7 @@ the order a value on the stack is finalized in. A value moved out through its
 sole owner leaves that owner **hollow**: its memory is still freed, but nothing
 that moved is finalized there. The whole value moves, never a field of it:
 nothing moves out of a field, so no value dies with a hole in it
-(`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
+(`doc/manual/rec-moves.html`). The compiler checks the methods' shapes where the struct is declared,
 refusing only contradictions — `Move` with `aliasRef`, `Move` with `Traced` — and
 a `Traced` region without its `mark` (or with a `writeBarrier` of another
 shape); and the test corpus
@@ -285,7 +285,7 @@ Two consequences worth knowing:
   permission wherever one is crossed and downgrading on a field's. So a `mut`
   field is not writable through an `imm` value or a `&` reference, and an `imm`
   field is not writable through a `&mut` one. That is the write half of what
-  `doc/reference/refstruct.html` calls *viewpoint adaptation*, and it is the half that
+  `doc/manual/guide-structs.html` calls *viewpoint adaptation*, and it is the half that
   exists, with one rule from the sharing side: a `&uni` field, array element or
   tuple element is seen only through `uni` references or a holder held by value
   (`ErrorUniShared`). The rest of
@@ -332,7 +332,7 @@ nothing; a borrow through it takes the lock, waiting for a lock for threads,
 panicking for `Rwcell`, and the borrow's last use gives it back: the end of its
 statement, or, where a local's initializer made it, the last use of the local
 (or of what holds the borrow on) on each path. What is built
-and what is not is `doc/reference/refpermlock.html`; how,
+and what is not is `doc/manual/conc-locks.html`; how,
 [references](../../compiler/c/doc/nodes/references.md), "Lock permissions".
 
 The permissions are meant to be the *race-safe strategies* — the programmer

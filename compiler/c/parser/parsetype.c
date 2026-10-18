@@ -39,7 +39,7 @@ INode *parsePerm() {
 //
 // The defaults differ, and deliberately: a variable defaults to 'imm', so
 // mutation is opted into, while a field defaults to 'mut', which per
-// doc/reference/refstruct.html means the container's permission governs.
+// doc/manual/guide-structs.html means the container's permission governs.
 //
 // workitems/permissions.md records what is not settled here, including that a
 // global needs a third answer this vocabulary cannot give.
@@ -982,7 +982,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         // into 'extendsbase' -- the slot for whatever base an 'extends' names --
         // and never into 'basetrait', because 'basetrait' is what every
         // substitution walk follows and these two enums do not substitute for each
-        // other in either direction (doc/reference/refenum.html, compiler/c/doc/nodes/struct.md).
+        // other in either direction (doc/manual/guide-enums.html, compiler/c/doc/nodes/struct.md).
         if (isenum) {
             if (sawextends++)
                 errorMsgLex(ErrorExtends, "An enum extends one enum.");
@@ -1375,7 +1375,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // each variant a value. A trait is open, so its implementers may be extended
     // by another module and no value could be unique: there is nothing to
     // synthesize, and dispatch and narrowing go through a virtual reference
-    // instead (doc/reference/refvirtref.html). One is inserted here unless the enum
+    // instead (doc/manual/mod-substitution.html#virtref). One is inserted here unless the enum
     // placed its own, which the walk above has already marked.
     //
     // An extension has no discriminant of its own to place or synthesize: its

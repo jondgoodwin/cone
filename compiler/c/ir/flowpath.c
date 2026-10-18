@@ -1668,7 +1668,7 @@ static INode *pwLendSite(INode *arg) {
 // A call handed a writable borrow of a place that can hold a borrow --
 // 'l.push(x)', 'stash(&mut outer, v)', 'fill(r, v)' for 'r &mut Option[&T]'
 // -- may store there anything its other arguments carry: every borrow in an
-// unannotated signature shares one lifetime (reflifefn.html), and with
+// unannotated signature shares one lifetime (mem-lifetimes.html), and with
 // lifetimes named, what may be held where that parameter points
 // (pwArgCarries), with no slot's tag, since which field it lands in is not
 // known. Into a place of the function's own, that is no error: the place now
@@ -2245,7 +2245,7 @@ static void pwShapeStore(INode *lval, Place *pl) {
 // order, each carrying its loans in flight until the call is made. A borrow
 // the call returns (or a value holding one) carries every argument's loans --
 // Cone's rule for an unannotated signature is that every borrow in it shares
-// one lifetime (reflifefn.html) -- so a borrow a method returns keeps its
+// one lifetime (mem-lifetimes.html) -- so a borrow a method returns keeps its
 // receiver loaned while it is used. Where the signature names lifetimes, it
 // carries of each argument what the result may hold (pwArgCarries): all of
 // it, where its parameter's own lifetime flows to one the result holds; only

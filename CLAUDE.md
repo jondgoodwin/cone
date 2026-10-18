@@ -19,14 +19,14 @@ compiler or package behaviour, because a sentence here goes stale unnoticed. Rea
   libraries), `flowbench/` (flow-analysis cost), `release/` (builds the download archives, install
   scripts and Downloads page from one commit; the docstring of `release.py` is the guide).
 - `test/`: the language test suite (`run.py`, `cases/<group>/`, `codes.toml`).
-- `doc/`: `reference/` (reference manual) and `design/` (design notes).
+- `doc/`: `manual/` (the language manual, "The Cone Programming Language") and `design/` (design notes).
 - `samples/`: sample programs. `conesite/`: cone.jondgoodwin.com content. `workitems/`: a pointer
   only; the plan and backlog live outside this repository.
 
 ## Where the truth lives
 
 - Source code is the truth for current compiler behaviour.
-- `doc/reference/index.html`: the reference manual. Its chapter list is also the spine of the test
+- `doc/manual/index.html`: the language manual. Its chapter list is also the spine of the test
   suite's groups: adding a chapter implies asking whether a coverage group is needed, and a feature
   with no chapter has nowhere to be tested. Consult it and `conesite/` when changing published
   language documentation or playground behaviour.
@@ -179,17 +179,17 @@ build description saying `output: library` (a scenario's `link` key in the suite
   - the **implementation-status annotations** on every design note the change touches: a `[planned]`
     now built is deleted, a `[differs]` whose divergence is closed goes with it
     (`doc/design/_index.md`, "Implementation status", has the scheme);
-  - the **reference page** under `doc/reference/` for any feature whose built status changed. The
-    italic status note at the top of a page says only what is still missing: update it, delete it
-    when nothing is missing, never append what was built. Something a reader would look for by name
-    gets its own heading (h2/h3) or page with an entry in `doc/reference/index.html`, never only a
+  - the **manual page** under `doc/manual/` for any feature whose built status changed. The
+    italic status note at the top of a page or section says only what is still missing: update it,
+    delete it when nothing is missing, never append what was built. Something a reader would look for
+    by name gets its own heading (h2/h3) or page with an entry in `doc/manual/index.html`, never only a
     status note or a corner of another feature's section; a minor change or extension goes into the
     existing section's prose. Update any marking on the page's examples too;
   - when you have access to the owner's plan, the work item that owns the subsystem, so what the
     change closed stops being listed as owed and what it opened is recorded.
 - **The dependency runs one way: a work item may point at a design note; a design note never points
   at a work item.** That is what makes closing an item prompt the question of which notes, tests and
-  reference pages need updating.
+  manual pages need updating.
 - Where the change contradicts something a note asserts, fix the note in that commit. A stale note is
   worse than a missing one, because it gets trusted. If a note needs no change (the normal case for a
   tactical fix), say so in the PR description rather than silently skipping the check.

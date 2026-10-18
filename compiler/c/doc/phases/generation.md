@@ -1091,7 +1091,7 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **A shift is a compare and a select, never a bare LLVM shift.** Cone's `<<`
   and `>>` are defined for every amount: the width or more gives 0, or the sign
   for `>>` on a signed integer, the amount read unsigned so a negative one is
-  past the width too (`doc/reference/refexpr.html`, "Shift operators"). LLVM's
+  past the width too (`doc/manual/guide-numbers.html#shift`, "Shift operators"). LLVM's
   `shl`, `lshr` and `ashr` by the width or more are poison, so `genlShift`
   compares a run-time amount with the width and uses the shift's result only
   below it (a signed `>>` instead clamps its amount to width - 1), and writes no
@@ -2017,7 +2017,7 @@ validator refused.
 **A compute entry point is a kernel beside its function** (`genlgpu.c`). A
 function declared `@compute(x, y, z)` (the parser reads the size; type check,
 `fnDclComputeCheck`, its signature and what its buffers hold;
-[reference](../../../../doc/reference/refgpu.html)) is generated as every
+[conc-gpu](../../../../doc/manual/conc-gpu.html)) is generated as every
 function is, internal and inlined, and on the Vulkan form `genlComputeEntry`
 makes the kernel: an LLVM function of no parameters named as the Cone function
 is (which, if its symbol is the same, takes `.body` after its name), marked as
@@ -2130,7 +2130,7 @@ over 65,536 arguments a function: `fabs`, `floor` and `ceil` bit for bit;
 `acos`, `atan` and `atan2` within 2; `exp` within 8 over [-10, 10]; `pow`
 within 27; `log` within 87 ulp near 1, where it is near 0; `sin` and `cos`
 within 4e-7 absolute in [-pi, pi], 1e-5 in [-100, 100]; `tan` within 4e-5 in
-[-1.5, 1.5]. Vulkan's own bounds are in the [reference](../../../../doc/reference/refgpu.html).
+[-1.5, 1.5]. Vulkan's own bounds are in the [conc-gpu](../../../../doc/manual/conc-gpu.html).
 
 **Every float operation but the remainder is decorated `NoContraction`**
 (`genlGpuNoContraction`), as slangc's `-fp-mode precise` does, so no driver
@@ -2177,7 +2177,7 @@ straight back into an `srem`. An unsigned remainder is `OpUMod`, as it was
 ### What invocations share
 
 **Invocations share a storage buffer and a `@workgroup` global**
-(`genlgpusync.c`; [reference](../../../../doc/reference/refgpu.html#atomics)).
+(`genlgpusync.c`; [conc-gpu](../../../../doc/manual/conc-gpu.html#atomics)).
 A buffer of `Atomic[u32]` or `Atomic[i32]` is a run-time array of core's
 `Atomic` struct, one `i32` wide, and an atomic method is core's: a call to
 mem's intrinsic on `self as *T`, the same `atomicrmw`, atomic `load` or
@@ -2263,7 +2263,7 @@ core's `setBarrierHook` sets and `clearBarrierHook` clears
 two thread-locals itself, by their C names, as it declares `cone_gcframes`.
 With none set a barrier costs the thread-local load (on Windows `_tls_index`,
 the TEB's TLS array, the block, the value) and a not-taken branch; the
-measured cost is in `refgpu.html`, "Barriers". The call is indirect, so no
+measured cost is in `conc-gpu.html#barriers`, "Barriers". The call is indirect, so no
 alias analysis lets LLVM move an access to a `@workgroup` global, an internal
 global whose address never escapes, across it: GlobalsAA's answer for an
 internal global is only for a direct call. The hook being the thread's own

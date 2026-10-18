@@ -194,8 +194,8 @@ asks (`permMatches`): `uni` to `mut`, `imm`, `&`; `mut` and `imm` to `&`; the
 same to the same. Anything else, `&` to `&mut`, `&imm` to `&uni`, `&mut` to
 `&uni`, is `ErrorCastPerm`, whose message names both permissions and says it
 needs `trust`, which is not built yet. Reinterpretation is trusted
-([reftrust.html](../../../../doc/reference/reftrust.html), "Type
-Reinterpretation"), but a reference's permission is what flow, the loan walk and
+([safe-trust.html](../../../../doc/manual/safe-trust.html#reinterpret), "Reinterpretations that need trust"),
+but a reference's permission is what flow, the loan walk and
 the checks of `parallel each` rest on, so a cast that changed it would be a way
 round every one (`&mut` as `&uni` slips past `ErrorParRoot`; `&` as `&mut`
 writes through a read-only view). **A raw pointer `as` a reference is not asked**
@@ -205,7 +205,7 @@ needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast
 **One case is let through for now: a `ro` source made the `imm` a type
 declaring `Immutable` gives a reference that writes no permission**, which is how
 a slice of bytes is made text (`bytes as &str`, `p as So[str]`, documented in
-refarrayref.html). It is keyed on the target being *defaulted*, not written:
+lib-collections.html). It is keyed on the target being *defaulted*, not written:
 `refTypeCheck` sets `RefNode.permImmDefault` when it replaces the unwritten
 permission with `refImmutableDefaultPerm`, and `castRefPermCheck` asks it of the
 target. A permission written out (`as &imm P` from a `&`, `bytes as &imm str`,

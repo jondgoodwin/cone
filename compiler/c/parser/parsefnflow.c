@@ -2256,10 +2256,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // '@c' after the keyword: this function's symbol is a C name, its own name
     // or the string written, and 'system' its calling convention [Jon 23 Sep].
     // '@initpure' there too, before or after it: a function a module's 'init'
-    // may call, as 'init' itself is declared (refmodule.html, "Dynamic
-    // initialization"). Recorded, not yet checked
+    // may call, as 'init' itself is declared (mod-globals.html#dyninit, "The module's initializer").
+    // Recorded, not yet checked
     // '@intrinsic' there too, first or after the others: a function whose meaning
-    // the compiler supplies, declared in core (refintrinsic.html). Where it may
+    // the compiler supplies, declared in core (safe-intrinsics.html). Where it may
     // be and what it must say is checked by intrinsicDclNameRes
     // '@compute(x, y, z)' there too, first or after the others: a compute
     // entry point (fnDclComputeCheck checks its signature)

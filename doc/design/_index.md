@@ -236,27 +236,27 @@ Most real work crosses phases. Start here instead.
 
 The other two tables route by *compiler* structure. This one routes by the
 language itself — start here when you know what the feature is called to a
-programmer but not which phase or node owns it. The reference pages under
-`doc/reference/` are the user-facing description; the notes are the
+programmer but not which phase or node owns it. The manual pages under
+`doc/manual/` are the user-facing description; the notes are the
 design behind it.
 
-| Category | Reference pages | Design note |
+| Category | Manual pages | Design note |
 | --- | --- | --- |
-| **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](../../compiler/c/doc/phases/parse.md) |
-| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refparallel` · `refblock` · `refmatch` · `refflow` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
-| **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](../../compiler/c/doc/nodes/fncall.md) |
-| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refenum` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](../../compiler/c/doc/nodes/struct.md) · [literals](../../compiler/c/doc/nodes/literals.md) |
-| **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](../../compiler/c/doc/nodes/struct.md) · [generic](../../compiler/c/doc/nodes/generic.md) |
-| **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](../../compiler/c/doc/nodes/references.md) · [References and Regions](references-and-regions.md) · [Flow Analysis](../../compiler/c/doc/phases/flow.md) |
-| **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
-| **Modules and packages** | `refmodule` · `refinclude` | [module](../../compiler/c/doc/nodes/module.md) |
-| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
-| **Error handling** | `refexcept` · `refoption` · `refresult` | [Panics](panics.md); ⚠ **no note for recoverable errors** |
-| **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
-| **Concurrency** | `refconc` · `refconccomm` · `refactor` · `refawait` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refactor`, and `await` in an actor's behaviour in `refawait`, a behaviour's value kept as a future in its "Futures", and on an I/O operation of the `aio` package in `refconcio`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
-| **Collections** | `reftypecoll` | ⚠ **no note** |
+| **Lexical and basic form** | `syntax-lexical` · `guide-first` · `guide-values` · `syntax-ebnf` | [Parse](../../compiler/c/doc/phases/parse.md) |
+| **Expressions and control flow** | `guide-numbers` · `guide-conditionals` · `guide-loops` · `guide-parallel` · `conc-parallel` · `rec-with` · `rec-patterns` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
+| **Functions** | `guide-functions` · `guide-structs` (methods) · `rec-methods` · `mod-functions` | [fncall](../../compiler/c/doc/nodes/fncall.md) |
+| **Core types** | `guide-values` · `guide-numbers` · `guide-structs` · `guide-enums` · `guide-tuples` · `lib-collections` (arrays) · `mod-namespaces` (alias) · `safe-types` (void) | [struct](../../compiler/c/doc/nodes/struct.md) · [literals](../../compiler/c/doc/nodes/literals.md) |
+| **Traits and polymorphism** | `mod-substitution` · `mod-subtyping` · `mod-extensibility` · `mod-generativity` | [struct](../../compiler/c/doc/nodes/struct.md) · [generic](../../compiler/c/doc/nodes/generic.md) |
+| **References, permissions, regions** | `memory` · `safe-pointers` · `mem-borrowing` · `mem-shape` · `mem-permissions` · `conc-locks` · `mem-weak` · `mem-regions` · `mem-rc` · `mem-arenas` · `mem-pools` · `mem-gc` · `mem-collections` · `mem-ownregion` · `rec-moves` · `mem-lifetimes` | [references](../../compiler/c/doc/nodes/references.md) · [References and Regions](references-and-regions.md) · [Flow Analysis](../../compiler/c/doc/phases/flow.md) |
+| **Lifetime and construction** | `rec-methods` (init, final) · `mem-lifecycle` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
+| **Modules and packages** | `mod-namespaces` · `mod-encapsulation` · `mod-packages` · `mod-globals` · `guide-congo` | [module](../../compiler/c/doc/nodes/module.md) |
+| **Safety and trust** | `safety` · `safe-types` · `safe-trust` · `safe-c` · `safe-purity` · `safe-intrinsics` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
+| **Error handling** | `safe-panics` · `guide-enums` (Option, Result) | [Panics](panics.md); ⚠ **no note for recoverable errors** |
+| **Metaprogramming** | `mod-generativity` (macros; `#meta`) | [generic](../../compiler/c/doc/nodes/generic.md) |
+| **Concurrency** | `guide-actors` · `concurrency` · `conc-actors` · `conc-await` · `conc-io` · `conc-ioloop` · `conc-runtime` · `conc-sharing` · `conc-threads` · `conc-primitives` · `rec-generators` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `conc-threads` and `conc-primitives`; the `actor` declaration and the `actors` package it runs on are described in `conc-actors`, and `await` in an actor's behaviour in `conc-await`, a behaviour's value kept as a future in its "Futures", and on an I/O operation of the `aio` package in `conc-io`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
+| **Collections** | `guide-collections` · `guide-list` · `guide-dict` · `lib-collections` · `mem-collections` | ⚠ **no note** |
 
-⚠ **A reference page shows the language's *intended* shape, not only what is
+⚠ **A manual page shows the language's *intended* shape, not only what is
 built** — see "The language reference" below. Two categories above have no
 design note at all, and error handling has one for panics only; the
 concurrency one has no implementation either.
@@ -374,7 +374,7 @@ it or not writing it.
 
 ## The language reference
 
-`doc/reference/` shows the language's **intended** shape, not only what
+`doc/manual/` shows the language's **intended** shape, not only what
 is built. With no users yet, the breadth is what a reader needs to see.
 
 Each page opens with an italic status note naming the exceptions — the form 31 of
@@ -406,7 +406,7 @@ worthless; any two notes in this folder are "related".
 ```
 The symbol scheme — consumed by `compiler/c/doc/phases/generation.md` (lowering), by
 `nameSymbol`, `nameType` and `genlLinkage`, and by
-`doc/reference/refmodule.html` (name qualification).
+`doc/manual/mod-namespaces.html` (name qualification).
 ```
 
 **Name an area, never a precise location.** Same reason a code pointer names a

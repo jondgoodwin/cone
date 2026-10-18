@@ -201,7 +201,7 @@ the target's permission, and the lifetime of a borrow of `*p` from
 `iexpGetLvalInfo`, as `borrowTypeCheck` gives a written one; for a slice an
 `ArrayBorrowTag` of the dereference the slice's `ArrayDerefTag` type gives, which
 generation hands on as the slice itself), a fresh and shorter loan, recovered
-after the borrow's last use (`refperm.html`, "Borrowed reference recovery").
+after the borrow's last use (`mem-permissions.html#recovery`, "Getting a permission back").
 Every coercion site gets it: an argument and a method's receiver
 (`fnCallFinalizeArgs`), a declaration or an assignment, a branch's value, a
 return. A local with no declared type, whose initializer is such a reference,

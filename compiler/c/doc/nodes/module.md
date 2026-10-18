@@ -865,7 +865,7 @@ it builds the package into its own object (below), so `fileFindPackage` tries
 and one left behind must not stand in for the source. Only a bare name is
 looked for there. **The source root is the designated file of `src`**, the
 package's name standing in for the folder's, as the reference manual has it
-(`refmodule.html`, "Packages and Congo": under `src` the module rules apply
+(`mod-packages.html#package`, "What a package is": under `src` the module rules apply
 unchanged). `fileFindPackage` says when that is what it found, and
 `parseLoadModulePath` then sets `foldersym` to the package's name rather than
 asking `parseDesignatedFolder`, which would see `src` and not `name`. So `src` is
@@ -1948,7 +1948,7 @@ such a function call only `pure` or `initpure` functions needs `pure`, which is
 not built.
 
 **Every global without an initial value must be assigned by its module's
-`init`** (refmodule.html). The check is `init`'s own data flow pass
+`init`** (mod-namespaces.html). The check is `init`'s own data flow pass
 (`fnDclTypeCheck` asks `modInitOf`): `modInitFlowBegin` clears `VarInitialized`
 on each global the module declares without a value — an `extern` one excepted,
 its value being another object's, and a `@workgroup` one, whose value each
@@ -2902,7 +2902,7 @@ a reference names is a type, and that is what is built.
   That was stated here and contradicted in the packages backlog item, with
   nothing saying which won.
 - **Module `init` and `final` and the program's entry are built; purity is not** ("Init
-  and final"). What `refmodule.html` specifies and nothing checks is the
+  and final"). What `mod-namespaces.html` specifies and nothing checks is the
   `initpure` rule that such a function call only `pure` or `initpure` functions,
   and that one other than `init` read no uninitialized global of its module:
   `pure` itself is unbuilt. The entry the compiler builds runs the stitched init

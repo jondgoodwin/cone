@@ -3,7 +3,7 @@
 A panic is the program saying that something which must not happen has: an
 index past the end, memory exhausted, an invariant broken. It is a bug report,
 not error handling — a failure a program expects and recovers from is an
-`Option` or a `Result` (and, unbuilt, `throw`; `refexcept.html`). This note
+`Option` or a `Result` (and, unbuilt, `throw`; `safe-panics.html`). This note
 follows panics through the language, core, the compiler and the C runtime.
 
 ## Principles
@@ -64,7 +64,7 @@ is for now: whether Cone has a naming convention is a question Jon has queued
 for review, as is the design of compile-time constants (C's `-D` and `#if`),
 of which `isDebugBuild()` was the first, narrow case. The target's OS and
 `conec -D` are built beside it as a provisional mechanism whose final design
-is open (`doc/reference/refintrinsic.html`, "Constants of the build").
+is open (`doc/manual/safe-intrinsics.html#buildconst`, "Constants of the build: a provisional mechanism; its final design is open").
 
 **The location is a default argument.** `srcFile()` and `srcLine()` are core
 intrinsics answering where their call is written, the file's name without its
@@ -117,8 +117,8 @@ Everything above is built. Not built:
 
 ## What lives elsewhere
 
-- What a panic looks like to a programmer: `doc/reference/refexcept.html`
-- `srcFile`, `srcLine` and `isDebugBuild`: `doc/reference/refintrinsic.html`
+- What a panic looks like to a programmer: `doc/manual/safe-panics.html`
+- `srcFile`, `srcLine` and `isDebugBuild`: `doc/manual/safe-intrinsics.html`
 - Where a failed check branches and what it calls: [Generation](../../compiler/c/doc/phases/generation.md), "Statements and expressions"
 - How a block ending in a call returning `Never` becomes a `return`: [block](../../compiler/c/doc/nodes/block.md), [return](../../compiler/c/doc/nodes/return.md)
 - Which checks exist: [Safety](safety.md), the scorecard

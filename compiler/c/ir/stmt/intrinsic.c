@@ -36,7 +36,7 @@ INode *cloneIntrinsicNode(CloneState *cstate, IntrinsicNode *node) {
 // what the name means in Cone's terms: its signature, whether a call is unsafe,
 // whether a Cone fallback body may be written, where in the compiler it is
 // answered, and whether this back end lowers it itself. The reference manual
-// (refintrinsic.html) states each one's meaning and edge cases in words, and the
+// (safe-intrinsics.html) states each one's meaning and edge cases in words, and the
 // 'intrinsic' test group pins them. An LLVM name appears nowhere here: the LLVM
 // instructions that implement an entry live in genlDeclaredIntrinsic, as one
 // implementation of it [Jon 26 Sep: capabilities we would be proud to build in
@@ -342,7 +342,7 @@ static int intrinsicSigMatches(FnDclNode *fndcl, IntrinsicSpec *spec) {
 // or a submodule of it at any depth, or a function (not a method: it takes no
 // 'self') of a plain struct one of them declares. The struct is how core names
 // its intrinsics through one name, 'mem', while a submodule of core cannot be
-// reached from outside it (refintrinsic.html). A generic type's or a trait's is
+// reached from outside it (safe-intrinsics.html). A generic type's or a trait's is
 // refused: it would be cloned into each instance or implementer. The root is
 // the module with no owner, as an imported package's and a compile's root are
 static int intrinsicModuleIsCore(INode *owner) {

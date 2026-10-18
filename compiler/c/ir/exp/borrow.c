@@ -32,7 +32,7 @@ INode *newBorrowMutRef(INode *node, INode* type, INode *perm) {
 
 // Refuse a borrow of a place within a named constant's own value, reporting it
 // once, where the whole constant array or string (borrowIsConstLit) was not
-// what was borrowed. A constant is its literal wherever it is used (refterm.html,
+// what was borrowed. A constant is its literal wherever it is used (mod-globals.html#const,
 // "Named constants"), so '&K' for 'const K = 5' is '&5', a temporary, and so is
 // a borrow of a field or element of any constant. A place reached through a
 // reference the constant holds is where that reference points, and is not
@@ -58,7 +58,7 @@ static int borrowRefusesConst(INode *place) {
 // through a borrow that only reads ('car.owner' for a 'car &Car' holding
 // 'owner &mut Person'), used where one that may write is wanted -- a receiver, an
 // argument, an initializer -- is refused: through a '&' it is a '&', the
-// permissions being the intersection of all gone through (refperm.html,
+// permissions being the intersection of all gone through (mem-permissions.html#view,
 // "Viewpoint Adaptation"). 'perm' is the permission the use asks for. Reports
 // it and answers 1 when refused.
 static int borrowHeldRefLendRefused(INode *held, INode *perm) {
@@ -80,8 +80,8 @@ static int borrowHeldRefLendRefused(INode *held, INode *perm) {
 // ('h.app' for a 'h &Holder' holding 'app So[App]'), lent as a borrow that may
 // write, is refused: a '&' lends only '&' of what it holds, owners included.
 // So is one reached through a borrow that others share ('h &mut Holder'), lent
-// as a '&uni' or a '&imm': a '&mut' lends only '&mut' (refborref.html, "Freezing
-// access to the source of a borrow"); the shared path may replace the owner and
+// as a '&uni' or a '&imm': a '&mut' lends only '&mut' (mem-borrowing.html#freezing, "What a borrow leaves its source free to do");
+// the shared path may replace the owner and
 // end what was lent. 'perm' is the permission the lend asks for. Reports it and
 // answers 1 when refused.
 int borrowOwnerLendRefused(INode *owner, INode *perm) {
@@ -220,8 +220,8 @@ void borrowAuto(INode **from, INode *totypedcl) {
 // '&uni'? Handing it over borrows from it, a fresh and shorter loan, rather than
 // handing over the reference itself: "a uni can be borrowed as mut or imm. After
 // the borrowed references' last use, you once again have the original uni
-// reference" (refperm.html, "Borrowed reference recovery"). That holds for a
-// '&uni' wanted as a '&uni' too (refborref.html, "Reference Handling"). An
+// reference" (mem-permissions.html#recovery, "Getting a permission back"). That holds for a
+// '&uni' wanted as a '&uni' too (mem-borrowing.html#handle, "Passing a borrow on"). An
 // owning reference is not part of this: it is not a borrowed one.
 // Note: totypedcl has already done GetTypeDcl
 int borrowUniReborrows(INode *from, INode *totypedcl) {
@@ -275,8 +275,8 @@ void borrowUniReborrow(INode **from, INode *totypedcl) {
 // may not be shared ('&uni')? An owning reference coerced to a borrowed one is
 // borrowed from, whatever the borrow's permission: the owner stays, frozen
 // while the borrow is used, and still ends its value at its own scope's end
-// (refborref.html, "Borrowing from another reference"; refperm.html, "From
-// 'uni'"). A coercion to '&' or '&mut' is a recast that flow analysis already
+// (mem-borrowing.html#handle, "Passing a borrow on"; mem-permissions.html#fromuni, "From uni, for a while").
+// A coercion to '&' or '&mut' is a recast that flow analysis already
 // sees as that borrow (pwOwnedLent); one to a '&uni' is a move type, which would
 // move the owner into a reference that ends nothing. Note: totypedcl has
 // already done GetTypeDcl
@@ -387,7 +387,7 @@ static int borrowReassocIndex(RefNode *node) {
 // ('&[1, 2, 3]'). Generation places either in a constant global, so it is
 // borrowed as a global constant is: for as long as the program runs, and
 // immutably. An array literal with a computed element has no such place. A
-// named constant is its literal wherever it is used (refterm.html, "Named
+// named constant is its literal wherever it is used (mod-globals.html#const, "Named
 // constants"), so '&K' is borrowed as its literal would be.
 int borrowIsConstLit(INode *node) {
     while (nameUseNames(node, ConstDclTag))
@@ -547,10 +547,10 @@ uint16_t borrowTempScope(TypeCheckState *pstate) {
 }
 
 // A 'mut' local variable, or a part of one held by value, lends '&uni': a source
-// reached as 'uni' is what a local variable is (refperm.html, "From 'uni'"). The
+// reached as 'uni' is what a local variable is (mem-permissions.html#fromuni, "From uni, for a while"). The
 // stack alone owns it, so nothing else can name it, and the loan walk freezes it
-// against reading and changing until the borrow's last use (refborref.html,
-// "Freezing access to the source of a borrow"). Nothing is reached through a
+// against reading and changing until the borrow's last use (mem-borrowing.html#freezing,
+// "What a borrow leaves its source free to do"). Nothing is reached through a
 // reference that is not 'uni' on the way (iexpPathNonUniLink), and the variable
 // is not a global, which others may name. An 'imm' local promises no change and
 // lends no '&uni'. 'lvalperm' is what the place grants (a local's own 'mut');

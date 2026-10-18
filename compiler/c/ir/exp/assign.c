@@ -373,7 +373,7 @@ static int assignIsLocalPlace(INode *lval) {
 // 'lvalscope', when the value is a borrowed reference the lval would outlive.
 // Assignment stores one way; swap stores both ways and so calls this twice.
 // A slice (ArrayRefTag) borrows exactly as a single reference does, and so
-// does a virtual reference (VirtRefTag), which doc/reference/refvirtref.html
+// does a virtual reference (VirtRefTag), which doc/manual/mod-substitution.html#virtref
 // describes as a borrowed reference carrying a vtable; all three tags carry
 // the same scope and are subject to the same rule. A store into a variable's
 // own storage is the loan walk's (assignIsLocalPlace); this refuses a store

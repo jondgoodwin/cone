@@ -140,11 +140,11 @@ a package may coexist in one binary; the residue is that renaming or retyping a
 private field at the same size is invisible to everyone but an extender, so a
 type that may be extended has its representation in its contract. That is a
 documentation obligation and it is discharged in
-[refinherit](../../../../doc/reference/refinherit.html).
+[mod-extensibility](../../../../doc/manual/mod-extensibility.html).
 
 **The module is the privacy boundary for a type's members, as for its names.** A
 member not `pub` is private to the module that declares the type
-([refmodule](../../../../doc/reference/refmodule.html), "Types as Namespaces"):
+([mod-namespaces](../../../../doc/manual/mod-namespaces.html#typens), "Types and blocks are namespaces too"):
 every function, method and type of that module, in any file of its folder,
 reaches it through any value of the type — a local, a parameter, a field, a
 borrow written out — as the type's own methods do through `self`. A sister, a
@@ -389,7 +389,7 @@ the trait, once per trait, when the first virtual reference to it asks for a
 vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
 `trait_typecheck_vref` pins all three, and
-`doc/reference/refvirtref.html`, "Type Restrictions", is the rule.
+`doc/manual/mod-substitution.html#restrictions`, "What a virtual reference cannot reach", is the rule.
 
 ⚠ **The vtable holds a trait's public members only, so a private one is never
 dispatched.** `structMakeVtable` gives a slot, and a `vtblidx`, to each public
@@ -1414,7 +1414,7 @@ The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 
 A field's `use` clause (`FoldClause`, on the `FieldDclNode`) admits names of
 the field's type as names of this type. The language is in
-[refinherit](../../../../doc/reference/refinherit.html); this is the
+[mod-extensibility](../../../../doc/manual/mod-extensibility.html); this is the
 mechanism, in `structFoldExpand` and what reads its results.
 
 **What every fold site shares lives in `ir/stmt/fold.c`**, lifted there when a
@@ -1559,7 +1559,7 @@ view and the exact-type write.
 
 `extends` names a concrete base whose members become this type's, and whose
 values and this type's substitute for each other freely. The language is in
-[refinherit](../../../../doc/reference/refinherit.html); this is the
+[mod-extensibility](../../../../doc/manual/mod-extensibility.html); this is the
 mechanism, in `structEnrichFromBase` and `structExtendsEquiv`.
 
 **It is a name fold, bar the value's lifecycle, and that is the whole finding.**
@@ -1672,7 +1672,7 @@ A `use` in a struct's body folds in a **sibling**: another type that declared
 this type's base. So one base plus two libraries that each enriched it become one
 type, declared once, in the namespace of whoever needs it and without either
 library being touched. The language is in
-[refinherit](../../../../doc/reference/refinherit.html); this is the
+[mod-extensibility](../../../../doc/manual/mod-extensibility.html); this is the
 mechanism, in `structUseSiblings` and what it calls.
 
 **The shared base is the whole licence, and it is the substitution rule above
@@ -1721,8 +1721,8 @@ type is (`struct_use_sibling`, `a-folded-method-is-not-cloned-per-folding-type`)
 `use str via view;` in a struct's body folds in the **body the type lends**: the
 public methods of `str` become names of the type, each reached through the
 borrow the type's own `view` method gives. The language is in
-[refinherit](../../../../doc/reference/refinherit.html), "Folding a body the type
-lends"; this is the mechanism, built generally and applied today to
+[mod-extensibility](../../../../doc/manual/mod-extensibility.html#lend), "Delegating to a view the type lends";
+this is the mechanism, built generally and applied today to
 collections' `String` (`str`'s methods are written once, in core) and `List[T]`
 (`use Array[T] via view;`, `Array[T]` being core's generic body of a run-time
 length: its instance is the body, found as a clause's sibling once the list's
@@ -1817,8 +1817,8 @@ collections spells the type there through an alias.
 ## An enum extending an enum
 
 `extends` on an enum names the enum whose variants this one copies into its set. The
-language is in [refenum](../../../../doc/reference/refenum.html), "Extending an
-enum"; this is the mechanism, in `structEnumSeedVariants`, `structEnumCopyVariant`
+language is in [mod-extensibility](../../../../doc/manual/mod-extensibility.html#enum-extends), "Extending an enum: more variants";
+this is the mechanism, in `structEnumSeedVariants`, `structEnumCopyVariant`
 and what reaches the copies.
 
 **Each base variant is copied the way a generic template is instantiated.** At the
@@ -2033,7 +2033,7 @@ and they are what the outer one copies, so every copy keeps the tag value it was
 declared with and the whole chain shares the bottom enum's discriminant. A method
 the middle declares comes along the same way: its copies and the variants it adds
 have it by the time the outer enum copies them. It is claimed language
-(refenum.html, "Extending an extension"), plain and generic, and enum_extends pins
+(mod-extensibility.html#enumchain, "Extending an extension"), plain and generic, and enum_extends pins
 it. The outer enum sees every level's names bare: the chain is walked for them.
 
 ## Flow

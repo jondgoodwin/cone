@@ -92,11 +92,11 @@ Two of the rows above have no group directory, and the reasons differ.
 feature, nothing to test yet; its row stays and the group appears when the
 feature does. `concurrency` has a group for what the compiler knows of it,
 atomic values (the `AtomicValue` marker's rules, and core's `Atomic[T]`, which
-declares it); the thread and sync packages are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `refmeta.html` is
+declares it); the thread and sync packages are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `mod-generativity.html#meta` is
 unimplemented down to the token, and the only metaprogramming that *is*
 implemented — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
-above, which the manual agrees with by nesting `refmacro.html` under
-`refgeneric.html`. **The `meta` row is reserved for `refmeta.html`'s `#`
+above, which the manual agrees with by describing macros (`mod-generativity.html#macros`)
+on its generics page. **The `meta` row is reserved for `mod-generativity.html#meta`'s `#`
 language.** Do not resolve the apparent overlap by moving macros out of
 `generic`.
 

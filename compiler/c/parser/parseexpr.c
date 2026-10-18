@@ -559,8 +559,8 @@ void parseRangeEllipsis(void) {
 }
 
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
-// that a borrow makes a slice of part of an array (doc/reference/
-// refarrayref.html, "Subslices"). 'a..b' includes b and 'a..<b' stops before it; a
+// that a borrow makes a slice of part of an array (doc/manual/
+// lib-collections.html#subslices, "Subslices"). 'a..b' includes b and 'a..<b' stops before it; a
 // missing start is 0, and a missing end, 'a..', is the array's end. A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
 // to the end, the end; FlagRangeIncl says the end was written with '..'.
@@ -893,7 +893,7 @@ INode *parseAmper(ParseState *parse) {
 
     // A borrow applies to the whole suffixed term, at the same precedence every
     // other prefix operator has: '&x.a' references the field and '&x[4]' the
-    // fifth element, which is what doc/reference/refborref.html documents.
+    // fifth element, which is what doc/manual/mem-borrowing.html documents.
     //
     // This used to consume only the prefixed term and then re-apply the suffixes
     // to the borrow, so '&x.a' was '(&x).a' and reached codegen typed as the

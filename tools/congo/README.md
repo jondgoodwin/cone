@@ -26,8 +26,8 @@ congo publish              point an index registry at this package's current com
 `-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
 every `conec` compile of the build, the packages it imports included, where
 core's `isDefined` and `definedInt` read them. They are a provisional
-mechanism whose final design is open (`doc/reference/refintrinsic.html`,
-"Constants of the build").
+mechanism whose final design is open (`doc/manual/safe-intrinsics.html#buildconst`,
+"Constants of the build: a provisional mechanism; its final design is open").
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or
 as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.

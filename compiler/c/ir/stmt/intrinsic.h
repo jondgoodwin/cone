@@ -82,7 +82,7 @@ enum IntrinsicFn {
     InitAllIntrinsic,
     FinalAllIntrinsic,
 
-    // Declared in Cone, in core, with '@intrinsic' (refintrinsic.html), and
+    // Declared in Cone, in core, with '@intrinsic' (safe-intrinsics.html), and
     // defined by the registry in intrinsic.c in Cone's terms. Unlike the kinds
     // above, generation never asks the LLVM type of an argument what one of
     // these means: the type it acts on is the Cone type its node carries
@@ -180,7 +180,7 @@ typedef struct IntrinsicNode {
 
 // Set by '--intrinsic-fallback': every intrinsic declared with a body uses that
 // body, even where the back end lowers it itself, so the bodies can be tested
-// against the lowerings (refintrinsic.html, "Fallback bodies")
+// against the lowerings (safe-intrinsics.html#fallback, "Fallback bodies")
 extern int intrinsicForceFallback;
 
 IntrinsicNode *newIntrinsicNode(int16_t intrinsicFn);

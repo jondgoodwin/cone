@@ -1035,7 +1035,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
 // A value an expression makes and nothing takes -- a call's result whose field
 // is read, a sole owner read through, an owner lent to a call as a borrow, a
 // value thrown away -- dies at the end of the statement that made it, newest
-// first, as a scope's locals do at its end (doc/reference/refinitdrop.html).
+// first, as a scope's locals do at its end (doc/manual/rec-methods.html#initfinal).
 // Flow finds each where it is read or thrown away and wraps it in a TempNode;
 // generation keeps it and finalizes it there. A temporary in an 'if' or
 // 'while' condition dies at the condition's end, and one in the right operand

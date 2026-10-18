@@ -189,7 +189,7 @@ void keywordInit() {
     // costs one rename in a program written today; letting a program bind one
     // costs that program a rewrite when the feature arrives.
     //
-    // The first group is every keyword reftoken.html already publishes as
+    // The first group is every keyword syntax-lexical.html already publishes as
     // reserved that is not a token above. 'self' and 'this' are on that list too
     // and are deliberately absent here: both already work, as a method's first
     // parameter and as a 'with' block's value, so they are implemented rather
@@ -201,8 +201,8 @@ void keywordInit() {
     keyAdd("wait", ReservedToken);
 
     // The second group spells the syntax of features the reference describes but
-    // reftoken.html has not caught up with: refexcept.html for error handling,
-    // refcorout.html for coroutines, refconccomm.html for actors. 'actor' itself
+    // syntax-lexical.html has not caught up with: safe-panics.html for error handling,
+    // rec-generators.html for coroutines, conc-sharing.html for actors. 'actor' itself
     // is not here: it names a kind of declaration, so it is a token above and
     // the parser reports it where the declaration is written. 'panic' and
     // 'assert' are not here: they are core's functions, not syntax.
@@ -578,7 +578,7 @@ static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
 }
 
 // A string literal whose opening quote ends its line is a multi-line string
-// literal (doc/reference/reftoken.html, "Multi-line String Literals"). The
+// literal (doc/manual/syntax-lexical.html#multiline, "Multi-line String Literals"). The
 // end of line after the opening quote is not content. The closing quote must
 // begin a later line, after any spaces or tabs, and those are the literal's
 // margin: a content line of nothing but spaces and tabs is an empty line, and
@@ -1186,7 +1186,7 @@ void lexNextTokenx() {
             return;
 
         // A range operator is two or three periods. Only a match's range
-        // pattern reads one today (refmatch.html); an integer literal already
+        // pattern reads one today (guide-conditionals.html); an integer literal already
         // stops at '..', so '0..3' is a range and not a float.
         case '.':
             if (*(srcp + 1) == '.') {
@@ -1347,7 +1347,7 @@ void lexNextTokenx() {
                 lexReturnPuncTok(GtToken, 1);
             }
 
-        // '?.' is held for None propagation (refoption.html). It is reported
+        // '?.' is held for None propagation (guide-enums.html#option). It is reported
         // and read as '.', so the member it reaches is parsed as it was meant.
         case '?':
             if (*(srcp + 1) == '.') {

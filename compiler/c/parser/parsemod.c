@@ -1829,8 +1829,8 @@ void parseBuildModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, B
 // 'name/src/name.cone'. That is the designated file of the package's 'src'
 // folder, the package's name standing in for the folder's, so the module is
 // named for the package and sweeps 'src' by the rules any module folder
-// follows -- the files Congo's scan of the package lists (refmodule.html,
-// "Packages and Congo")
+// follows -- the files Congo's scan of the package lists (mod-packages.html#package,
+// "What a package is")
 static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag, BuildModule *build, int pkgsrc) {
     Name *pathsym = nametblFind(path, strlen(path));
 

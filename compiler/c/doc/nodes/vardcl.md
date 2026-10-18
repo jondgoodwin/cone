@@ -278,7 +278,7 @@ requires a literal.
 
 A temporary dies at the end of its statement ([Flow](../phases/flow.md),
 "Temporaries"), but Rust extends one to the end of the enclosing block where a
-`let`'s initializer borrows it, and Cone follows (`refinitdrop.html`). The
+`let`'s initializer borrows it, and Cone follows (`rec-methods.html#initfinal`). The
 *extending positions* of a local's initializer are the initializer itself and,
 recursively, the operand of a borrow or a recast in one, and each element of a
 tuple, array or variant literal (`Some(..)`, a `TypeLitTag` with `FlagIndex`)

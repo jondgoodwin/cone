@@ -762,7 +762,7 @@ which the rules of section 2 together forbid.
    slice or a struct by value, at most seven of the last two (`ErrorComputeSig`);
    and what each buffer holds 32-bit numbers and structs and fixed arrays of
    them, walked field by field (`ErrorComputeData`), on every target, so the CPU
-   and the GPU agree on one source ([GPU Compute](../../../../doc/reference/refgpu.html)).
+   and the GPU agree on one source ([GPU Compute](../../../../doc/manual/conc-gpu.html)).
    These do not stop the body's check.
 4. If it is an intrinsic declared in core, with its meaning from the registry,
    **→** analyze the type it acts on (its instance's type argument), which must
