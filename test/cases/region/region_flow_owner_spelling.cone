@@ -1,0 +1,60 @@
+mod region_flow_owner_spelling;
+
+// How the shape-change message spells the owner it says could be replaced. It
+// writes the owner as the type printer does (region_flow_owner_replace holds the
+// shapes that are refused): the permission an owner takes when none is written is
+// left out, 'Uni[Item]' and 'Rc[Item]', and any other is written, 'Rc[mut, Item]',
+// 'Uni[uni, Tag]' (a type declaring Immutable moves the default to 'imm'), so that
+// the spelling reads back as the same type. Both messages that name an owner carry
+// it: a call that could replace it (1339) and a store that does (1426).
+
+struct Item { pub v i64; }
+
+// Immutable moves the default: an owner of it is 'imm' unwritten, so 'uni' is the
+// one to write there
+struct Tag is Immutable { pub v i64; }
+
+fn clobber(x &mut Uni[Item], y &Item) { *x = new Uni[Item](9); }
+fn clobberRc(x &mut Rc[Item], y &Item) { *x = new Rc[Item](9); }
+fn clobberRcMut(x &mut Rc[mut, Item], y &Item) { *x = new Rc[mut, Item](9); }
+
+// A call: the default permission left out ...
+fn callUni() { mut s = new Uni[Item](1); clobber(&mut s, s); }               //~ ErrorShapeReshape "could replace the 'Uni[Item]' that owns"
+fn callRc() { mut s = new Rc[Item](1); clobberRc(&mut s, s); }               //~ ErrorShapeReshape "could replace the 'Rc[Item]' that owns"
+
+// ... and any other written
+fn callRcMut() { mut s = new Rc[mut, Item](1); clobberRcMut(&mut s, s); }    //~ ErrorShapeReshape "could replace the 'Rc[mut, Item]' that owns"
+
+// A store: default
+fn storeUni(a &mut Uni[Item], b &mut Uni[Item]) i64 {
+  imm y = &mut **a;
+  *b = new Uni[Item](9);                                                     //~ ErrorShapeStore "could replace the 'Uni[Item]' that owns"
+  y.v;
+}
+
+fn storeRc(a &mut Rc[Item], b &mut Rc[Item]) i64 {
+  imm y = &mut **a;
+  *b = new Rc[Item](9);                                                      //~ ErrorShapeStore "could replace the 'Rc[Item]' that owns"
+  y.v;
+}
+
+fn storeImmTag(a &mut Uni[Tag], b &mut Uni[Tag]) i64 {
+  imm y = &**a;
+  *b = new Uni[Tag](9);                                                      //~ ErrorShapeStore "could replace the 'Uni[Tag]' that owns"
+  y.v;
+}
+
+// ... and a permission that is not the default written
+fn storeRcMut(a &mut Rc[mut, Item], b &mut Rc[mut, Item]) i64 {
+  imm y = &mut **a;
+  *b = new Rc[mut, Item](9);                                                 //~ ErrorShapeStore "could replace the 'Rc[mut, Item]' that owns"
+  y.v;
+}
+
+fn storeUniTag(a &mut Uni[uni, Tag], b &mut Uni[uni, Tag]) i64 {
+  imm y = &**a;
+  *b = new Uni[uni, Tag](9);                                                 //~ ErrorShapeStore "could replace the 'Uni[uni, Tag]' that owns"
+  y.v;
+}
+
+fn main() {}

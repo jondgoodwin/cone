@@ -215,7 +215,8 @@ check lowers it into a `RefNode`. Everything from type check on sees only the
   left out where it is the one an owner takes unwritten (`refOwnerPermIsDefault`:
   `uni`, or `imm` over a type declaring `Immutable`) and given otherwise, so a
   spelling reads back as the same type: `Uni[Point]`, `Rc[mut, Point]`,
-  `Uni[uni, str]` (`itypeSpellCat`, `regionTracedTypeName`). A borrow's
+  `Uni[uni, str]` (`itypeSpellCat`, which the shape-change messages' owner
+  name, `loanShapeContName`, calls, and `regionTracedTypeName`). A borrow's
   permission is always given.
 
 ## Name resolution

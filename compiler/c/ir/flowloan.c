@@ -2101,13 +2101,11 @@ static int loanShapeIsOwner(uint32_t loan) {
 
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
     if (loanShapeIsOwner(loan)) {
-        // An owner: its region and what it points at, as written ('Uni[Item]')
-        RefNode *ref = (RefNode *)loans[loan].shapecont;
-        INode *region = ref->region ? itypeGetTypeDcl(ref->region) : NULL;
-        INode *pointee = ref->vtexp ? itypeGetTypeDcl(ref->vtexp) : NULL;
-        Name *rname = region ? inodeGetName(region) : NULL;
-        Name *pname = pointee ? inodeGetName(pointee) : NULL;
-        snprintf(buf, size, "'%s[%s]'", rname ? &rname->namestr : "owner", pname ? &pname->namestr : "..");
+        // An owner as the type printer spells it: its permission left out where it is the
+        // default ('Uni[Item]'), written otherwise ('Rc[mut, Item]')
+        char spelled[100] = "";
+        itypeSpellCat(spelled, sizeof(spelled), loans[loan].shapecont, 0);
+        snprintf(buf, size, "'%s'", spelled);
         return;
     }
     StructNode *st = (StructNode *)loans[loan].shapecont;
