@@ -133,7 +133,7 @@ such as Arc. A message carries its arguments to the thread the actor runs on, so
 	<li><b>a raw pointer</b>, whose target nothing checks.</li>
 	</ul>
 	<p>An owner that moves takes its value with it: a <span class="pre">uni</span> owner of any region, and any owner of
-		<span class="pre">So</span>, crosses when what it points at may. So does an <span class="pre">Arc[imm, T]</span>
+		<span class="pre">Uni</span>, crosses when what it points at may. So does an <span class="pre">Arc[imm, T]</span>
 		owner: an <span class="pre">Arc</span> of a value holding a <span class="pre">mut</span> reference is refused. A
 		reference to a function crosses, and so does an actor's handle, whatever its state holds. A type holding raw
 		pointers it shares safely declares <span class="pre">is Sendable</span>, which the compiler takes on trust, as a
@@ -182,7 +182,7 @@ value holds, not how a variable was declared: a local declared 'mut x = 5' holds
 		<span class="pre">&amp;mut</span> field;</li>
 	<li><b>a reference to a trait or a callable that does not say what is behind it</b>
 		(<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;fn(i32) i32</span>,
-		<span class="pre">So[Shape]</span>): the implementers are not known, so nothing says a borrow of the value may be
+		<span class="pre">Uni[Shape]</span>): the implementers are not known, so nothing says a borrow of the value may be
 		shared. <span class="pre">+ Shareable</span>, or <span class="pre">+ Sendable</span>, vouches for it
 		(<a href="#marks">below</a>).</li>
 	</ul>
@@ -203,9 +203,9 @@ value holds, not how a variable was declared: a local declared 'mut x = 5' holds
 		<span class="pre">Sendable</span> or <span class="pre">Shareable</span> unless it says so. The markers follow the
 		signature or the trait with a <span class="pre">+</span>, in either order:</p>
 <pre>
-fn work(f So[fn(x i32) i32 + Sendable]) i32 { f(1); }
+fn work(f Uni[fn(x i32) i32 + Sendable]) i32 { f(1); }
 fn read(f &amp;&lt;fn(x i32) i32 + Shareable, x i32) i32 { f(x); }
-So[Shape + Sendable + Shareable]
+Uni[Shape + Sendable + Shareable]
 </pre>
 	<p>The marker is a requirement on the closure or value put behind the reference: a value is made such a reference
 		only if its type is each marker, and one that is not is refused where the reference is made, naming the variable it
@@ -213,24 +213,24 @@ So[Shape + Sendable + Shareable]
 		copy:</p>
 <pre>
 imm k = 3;
-imm c = new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });   // k is listed: its own copy
+imm c = new Uni[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });   // k is listed: its own copy
 imm th = thread.start(c, &amp;work);                                          // th.join() is 3
 </pre>
 	<p>A closure that holds an <span class="pre">Rc</span> is refused, and told what to hold instead:</p>
 <pre>
 imm hf = new Rc[imm, Grid](h: 0.5);
-imm flock = new So[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { x + z + hf.h; });
+imm flock = new Uni[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { x + z + hf.h; });
 </pre>
 <pre>
-Error 1194: `So[uni, fn(f32, f32) f32 + Sendable]` says the closure behind it is Sendable, and this closure is
+Error 1194: `Uni[uni, fn(f32, f32) f32 + Sendable]` says the closure behind it is Sendable, and this closure is
 not: it holds 'hf' (Rc[imm, Grid]), which is an owner that may be copied, and Rc does not declare ThreadSafe:
 its copies could not be made and dropped on several threads at once. It may cross as a uni owner, which moves
 it, or as an owner of a region declaring ThreadSafe, such as Arc. Its list holds 'hf' as its own: give it
 something that can go there (an Arc where it is an Rc, a value copied where it is a borrow).
 </pre>
 	<p>With <span class="pre">hf</span> an <span class="pre">Arc[imm, Grid]</span>, the same closure goes to a thread. A
-		reference with markers is a reference with fewer, never the other way: a <span class="pre">So[fn() +
-		Sendable]</span> goes where a <span class="pre">So[fn()]</span> is wanted. A <span class="pre">parallel each</span>
+		reference with markers is a reference with fewer, never the other way: a <span class="pre">Uni[fn() +
+		Sendable]</span> goes where a <span class="pre">Uni[fn()]</span> is wanted. A <span class="pre">parallel each</span>
 		body may name a reference to a trait or a callable from outside the loop only if it carries one of the two
 		markers.</p>
 	<p>A third marker, <span class="pre">ShapeKeeping</span>, says that a call through the reference reshapes nothing the

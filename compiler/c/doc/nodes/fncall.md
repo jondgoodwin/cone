@@ -355,7 +355,7 @@ the parameters its arguments are wanted as, and after the callee is checked;
 and in `fnCallMethodTypeArgs`). While the receiver is a `RefTag` (a borrow or an
 owner) whose referent is a `RefTag`, `ArrayRefTag` or `VirtRefTag`, it injects a
 dereference (`derefInject`), so `r.x`, `r.len()`, `r[i]` and `r.pick[T](v)` on a
-`&&Pt`, `&&&Pt`, `&mut &Pt` or `&So[Pt]` see a receiver of one reference level,
+`&&Pt`, `&&&Pt`, `&mut &Pt` or `&Uni[Pt]` see a receiver of one reference level,
 exactly as the explicit `(**r).x` would. Not done for an operator (`FlagOperator`),
 a call with no member name, or a borrowed or ranged index, whose receiver is the
 borrow the parser put round it; and it stops at a key (`lifeIsKey`), a
@@ -395,7 +395,7 @@ whether a receiver's type, through any references and owners, is `str` or a
 struct that lends it (`structLentBody`). Then: (1) `==`, `!=` and the orderings
 between two texts of different kinds replace each operand that lends by the call
 of its lending method (`fnCallLentOperands`, `structLendView`), so the comparison
-is `str`'s own operator on two borrows, and `String == So[str]` needs no operator
+is `str`'s own operator on two borrows, and `String == Uni[str]` needs no operator
 of either; (2) a borrowed range of text, `&s[a..<b]`, `&s[a..]`, `&s[a..b]`, is a
 call of the `slice`, `sliceFrom` or `sliceThrough` method (`fnCallLowerStrRange`,
 asked once the receiver is checked, as the dispatch's first test of a range). The
@@ -433,10 +433,10 @@ candidate. `fnCallLowerRefCompare`:
   both sides, and the result compared as it would be by value: a pointer by its
   own operators, a reference by this same function again, a slice by
   `fnCallLowerSliceCompare`. The exception is text: an owner of it,
-  `&So[str]` or `&Rc[str]`, whose referent is a reference, against a `&str`,
+  `&Uni[str]` or `&Rc[str]`, whose referent is a reference, against a `&str`,
   whose referent is `str` itself, is read through on the owner's side only,
-  and the comparison goes on between `So[str]` and `&str`. That is what
-  `&str == &So[str]` already does by the `str` operator's taking the owner as
+  and the comparison goes on between `Uni[str]` and `&str`. That is what
+  `&str == &Uni[str]` already does by the `str` operator's taking the owner as
   its other side, so text compares alike in either order.
 - **A referent whose type declares the operator** is asked first with the
   operands as written, so a method declared for references (`self &`,
@@ -722,9 +722,9 @@ Three adjustments, two of them asymmetric on purpose:
   does: `mk().get()`. **A pointer is never borrowed from** — a pointer receiver,
   and a dereference of one written out, are left as the deref retry left them.
   An ambiguity among the probed candidates is reported as one. **An owner
-  receiver is borrowed too** (a `So[T]`, `Rc[T]`, `Arc[T]`, any reference that
+  receiver is borrowed too** (a `Uni[T]`, `Rc[T]`, `Arc[T]`, any reference that
   is not a borrow): it is a reference and so passed as it is, but any type's
-  method may declare `self &So[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
+  method may declare `self &Uni[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
   borrow of an owner of its type — core's `str.cstr`, which a plain `&str`
   therefore has no candidate for, is one — and that is what the probe's borrow of
   the owner finds. The form is general: no owner kind is named in the compiler.

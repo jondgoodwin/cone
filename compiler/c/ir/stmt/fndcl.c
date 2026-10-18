@@ -599,7 +599,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
             && itypeIsArrayBody((INode*)pstate->typenode)
             && itypeIsSame(((RefNode*)selfdcl)->vtexp, itypeLenBodyElem((INode*)pstate->typenode));
         // A method may ask for the owner of its type, as Rust's 'self: &Rc<Self>'
-        // does: 'self &So[str]' is a borrow of an owner of 'str', and a receiver
+        // does: 'self &Uni[str]' is a borrow of an owner of 'str', and a receiver
         // that is not an owner (a plain '&str') has no such method
         int selfisowner = 0;
         if (selfdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)selfdcl)->region) == borrowRef) {

@@ -294,6 +294,26 @@ static char *refLockRegionName(RefNode *node) {
     return dcl && dcl->tag == StructTag ? &((StructNode*)dcl)->namesym->namestr : "the region";
 }
 
+// Which permissions a region of one owner fits. 'mut' says several owners may
+// write one value, and a 'Move' region's value has one owner, which nothing
+// else shares: the permission means nothing on it, so it is refused where it is
+// written, and the reference stands as 'uni' after (the region's default), so its
+// uses check quietly. 'imm' stays: a promise that the value never changes, which
+// is how an owned callable says it only reads its state. Asked of every route a
+// reference type is built by (refTypeCheck, refvirtTypeCheck), and so of an
+// allocation, whose type is one.
+void refSoleOwnerPermCheck(RefNode *node) {
+    if (node->region == borrowRef || !isTypeNode(node->region) || node->perm == unknownType)
+        return;
+    if (itypeGetTypeDcl(node->perm) != (INode*)mutPerm || !regionIsMove(node->region))
+        return;
+    char *regname = refLockRegionName(node);
+    errorMsgNode((INode*)node, ErrorSoleOwnerMut,
+        "%s has one owner per value, which nothing else shares: 'mut' is shared mutable, so it means nothing on a single owner. Write %s[T], or %s[imm, T] to promise the value never changes.",
+        regname, regname, regname);
+    node->perm = newPermUseNode(uniPerm);
+}
+
 // Which regions a lock fits. A lock is for a value several owners share, so its
 // region counts them ('aliasRef' and 'dealiasRef'); a 'Move' region's one owner
 // has nothing to lock against. A lock declaring 'ThreadSafe' ('Mutex',

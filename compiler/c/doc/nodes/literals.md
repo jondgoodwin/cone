@@ -727,11 +727,11 @@ reads to it.
 **An owner of `str` keeps a NUL after its bytes too.** The allocation that copies a
 `&str` into a region (`genlAllocate`, a body whose reference carries its length)
 asks the region for the header, the bytes and one more byte, and stores a zero
-there after the copy, in every region, so `So[str]`, `Rc[str]` and the rest are as
+there after the copy, in every region, so `Uni[str]`, `Rc[str]` and the rest are as
 much a C string as the literal they may have been copied from (`s.cstr()` on a
-`So[str]`, which calls `cstr.fromOwned`).
+`Uni[str]`, which calls `cstr.fromOwned`).
 The count leaves the byte out. A `String` keeps its own (collections), and
-`freeze` carries it into the `So[str]` it makes.
+`freeze` carries it into the `Uni[str]` it makes.
 
 **So does a global byte array initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the

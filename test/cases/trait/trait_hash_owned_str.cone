@@ -1,4 +1,4 @@
-// A struct declaring core's Hash may hold an owner of text, a So[str] or an
+// A struct declaring core's Hash may hold an owner of text, a Uni[str] or an
 // Rc[str] [WI hashing-and-dict, Jon 6 Oct: "is Hash with compiler supplied hash?
 // Sounds good to me"]. The owner is Hash already (its '==' compares the bytes,
 // and the 'hash' a call on it reaches is str's), so the supplied 'hash' feeds
@@ -6,21 +6,21 @@
 // Nothing here is a number worked out apart; each case compares the supplied
 // hash with the same bytes fed by hand, so a miscompile cannot be blessed:
 //
-// - a lone So[str] or Rc[str] field hashes as the str it owns;
+// - a lone Uni[str] or Rc[str] field hashes as the str it owns;
 // - the fields after a text owner still follow it in order, and where the text
 //   ends is fed, so ("ab", "c") and ("a", "bc") differ as the parts of one key;
 // - a struct holding a supplied struct that holds an owner is supplied alike,
 //   and a generic's instance of an owner is too;
-// - equal text in a So[str] and an Rc[str] hashes alike (the '==' of the two
+// - equal text in a Uni[str] and an Rc[str] hashes alike (the '==' of the two
 //   agrees across the kinds), different text differently.
 
 mod trait_hash_owned_str;
 
 import stdio use *;
 
-struct OneSo is Hash {
-  pub s So[str];
-  pub fn `==`(self, o OneSo) bool {s == o.s;}
+struct OneUni is Hash {
+  pub s Uni[str];
+  pub fn `==`(self, o OneUni) bool {s == o.s;}
 }
 
 struct OneRc is Hash {
@@ -30,19 +30,19 @@ struct OneRc is Hash {
 
 struct IdName is Hash {
   pub id u32;
-  pub name So[str];
+  pub name Uni[str];
   pub tail u8;
   pub fn `==`(self, o IdName) bool {id == o.id and name == o.name and tail == o.tail;}
 }
 
-struct TwoSo is Hash {
-  pub first So[str];
-  pub second So[str];
-  pub fn `==`(self, o TwoSo) bool {first == o.first and second == o.second;}
+struct TwoUni is Hash {
+  pub first Uni[str];
+  pub second Uni[str];
+  pub fn `==`(self, o TwoUni) bool {first == o.first and second == o.second;}
 }
 
 struct Wraps is Hash {
-  pub inner OneSo;
+  pub inner OneUni;
   pub n u16;
   pub fn `==`(self, o Wraps) bool {inner.s == o.inner.s and n == o.n;}
 }
@@ -65,15 +65,15 @@ fn yes(label &str, b bool) {
 
 fn main() {
   // A lone owner is the str it owns
-  imm so = new OneSo("abc");
+  imm so = new OneUni("abc");
   mut byhand = Hasher.withSeed(3u64);
   byhand.writeStr("abc");
-  yes("So[str] field is its str", hashOf(&so, 3u64) == byhand.finish());
+  yes("Uni[str] field is its str", hashOf(&so, 3u64) == byhand.finish());
   imm rc = new OneRc("abc");
   yes("Rc[str] field is its str", hashOf(&rc, 3u64) == byhand.finish());
-  yes("So and Rc of one text", hashOf(&so, 3u64) == hashOf(&rc, 3u64));
-  yes("another text", hashOf(&so, 3u64) != hashOf(&new OneSo("abd"), 3u64));
-  yes("the same again", hashOf(&so, 3u64) == hashOf(&new OneSo("abc"), 3u64));
+  yes("Uni and Rc of one text", hashOf(&so, 3u64) == hashOf(&rc, 3u64));
+  yes("another text", hashOf(&so, 3u64) != hashOf(&new OneUni("abd"), 3u64));
+  yes("the same again", hashOf(&so, 3u64) == hashOf(&new OneUni("abc"), 3u64));
   yes("another seed", hashOf(&so, 3u64) != hashOf(&so, 4u64));
 
   // Fields before and after it, in order
@@ -87,25 +87,25 @@ fn main() {
   yes("the number after changed", hashOf(&full, 5u64) != hashOf(&new IdName(7u32, "key", 8u8), 5u64));
 
   // Where the text ends is fed
-  imm t1 = new TwoSo("ab", "c");
-  imm t2 = new TwoSo("a", "bc");
+  imm t1 = new TwoUni("ab", "c");
+  imm t2 = new TwoUni("a", "bc");
   yes("split apart", hashOf(&t1, 1u64) != hashOf(&t2, 1u64));
-  yes("split again", hashOf(&t1, 1u64) == hashOf(&new TwoSo("ab", "c"), 1u64));
+  yes("split again", hashOf(&t1, 1u64) == hashOf(&new TwoUni("ab", "c"), 1u64));
   mut two = Hasher.withSeed(1u64);
   two.writeStr("ab");
   two.writeStr("c");
   yes("two texts as two strs", hashOf(&t1, 1u64) == two.finish());
 
   // A supplied struct holding it, and a generic's instance
-  imm w = new Wraps(new OneSo("abc"), 4u16);
+  imm w = new Wraps(new OneUni("abc"), 4u16);
   mut wh = Hasher.withSeed(2u64);
   wh.writeStr("abc");
   wh.writeU16(4u16);
   yes("a supplied struct holding it", hashOf(&w, 2u64) == wh.finish());
-  imm g = new Held[So[str]]("abc");
+  imm g = new Held[Uni[str]]("abc");
   mut gh = Hasher.withSeed(2u64);
   gh.writeStr("abc");
-  yes("a generic of So[str]", hashOf(&g, 2u64) == gh.finish());
+  yes("a generic of Uni[str]", hashOf(&g, 2u64) == gh.finish());
   imm gr = new Held[Rc[str]]("abc");
   yes("a generic of Rc[str]", hashOf(&gr, 2u64) == gh.finish());
 }

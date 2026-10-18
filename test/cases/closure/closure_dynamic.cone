@@ -1,5 +1,5 @@
 // A callable used dynamically: '&<fn(sig)' and '&<mut fn(sig)' take anything with
-// a pub '()' of that signature, and 'So[fn(sig)]' and 'Rc[fn(sig)]' own one. A
+// a pub '()' of that signature, and 'Uni[fn(sig)]' and 'Rc[fn(sig)]' own one. A
 // closure, a struct of the author's with a '()' and a plain function meet the
 // same parameter; '&<' reads (the '()' takes 'self &'), '&<mut' may change
 // state ('self &mut'). A closure literal given to either is lent as a
@@ -31,7 +31,7 @@ fn succ(x i32) i32 { x + 1; }
 fn apply(f &<fn(x i32) i32, x i32) i32 { f(x); }
 fn applyMut(f &<mut fn(x i32) i32, x i32) i32 { f(x); }
 fn viaAlias(f &<Profile, u i32) i32 { f(u); }
-fn run(f So[fn(x i32) i32], x i32) i32 { f(x); }
+fn run(f Uni[fn(x i32) i32], x i32) i32 { f(x); }
 fn share(f Rc[imm, fn(x i32) i32], x i32) i32 { f(x); }
 fn shareMut(f Rc[mut, fn(x i32) i32], x i32) i32 { f(x); }
 
@@ -64,7 +64,7 @@ fn pickTwo overload pick(f &<fn(x i32, y i32) i32, x i32) i32 { f(x, x); }
 
 // A bare signature is a type argument: the owner of one is what the field holds
 struct Applied[F] {
-  pub f So[F];
+  pub f Uni[F];
   pub fn go(self &mut, x i32) i32 { f(x); }
 }
 
@@ -73,8 +73,8 @@ struct Fin {
   fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
 }
 
-fn keeping(n i64) So[fn(x i64) i64] {
-  new So[fn(x i64) i64](fn(x i64) [h = new Fin(n)] i64 { h.n + x; });
+fn keeping(n i64) Uni[fn(x i64) i64] {
+  new Uni[fn(x i64) i64](fn(x i64) [h = new Fin(n)] i64 { h.n + x; });
 }
 
 // A plain function's stub forwards every kind of parameter and return as it came:
@@ -134,7 +134,7 @@ fn main() {
   print <- seen, "\n";                                                 // 27
 
   // Owners, made from a closure value or a struct
-  mut owned So[fn(x i32) i32] = new So[fn(x i32) i32](fn(x i32) [mut sum = 100] i32 { sum += x; sum; });
+  mut owned Uni[fn(x i32) i32] = new Uni[fn(x i32) i32](fn(x i32) [mut sum = 100] i32 { sum += x; sum; });
   print <- owned(1), "\n";                 // 101
   print <- applyMut(owned, 2), "\n";       // 103
   print <- run(owned, 3), "\n";            // 106
@@ -147,14 +147,14 @@ fn main() {
   imm cell2 = cell;
   print <- shareMut(cell, 5), "\n";        // 5
   print <- shareMut(cell2, 6), "\n";       // both see one state: 11
-  mut ap = new Applied[fn(x i32) i32](new So[fn(x i32) i32](fn(x i32) [b = 100] i32 { x + b; }));
+  mut ap = new Applied[fn(x i32) i32](new Uni[fn(x i32) i32](fn(x i32) [b = 100] i32 { x + b; }));
   print <- ap.go(5), "\n";                 // 105
 
   // What an owner's closure kept is finalized when it dies, newest first
   {
     imm a = keeping(10);
     printInt(a(1)); printStr("\n");        // 11
-    imm b = new So[fn(x i64) i64](new Pair(new Fin(20)));
+    imm b = new Uni[fn(x i64) i64](new Pair(new Fin(20)));
     printInt(b(2)); printStr("\n");        // 22
   }
   printStr("done\n");                      // F20 F10 done

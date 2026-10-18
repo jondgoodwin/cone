@@ -66,7 +66,7 @@ typedef struct {
                         // the variable points (flowloan.h, LoanFar)
     uintptr_t steps[PlaceMaxSteps];
     INode *use;         // the name use of the root variable, where a use of it is reported
-    INode *ownertype;   // the type of the last owning reference ('So', 'Rc', ...) a step dereferenced on the way,
+    INode *ownertype;   // the type of the last owning reference ('Uni', 'Rc', ...) a step dereferenced on the way,
                         // whose value the place is in; NULL where none was. A borrow of the place is into
                         // what that owner frees when it is stored over (reshape.h, reshapeOwnerCont)
     INode *referent;    // deref: the type the root variable, read itself as the reference, points

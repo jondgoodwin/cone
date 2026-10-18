@@ -42,7 +42,7 @@ fn report(t &amp;Tally) {
 
 fn main() {
   mut hall = new Tally(0, 0);          // a local variable
-  imm online = new So[Tally](0, 0);    // a single owner
+  imm online = new Uni[Tally](0, 0);    // a single owner
 
   vote(&amp;mut hall, true);               // lend hall, mutably, for the call
   vote(&amp;mut hall, true);
@@ -69,7 +69,7 @@ the hall's ayes: 2
 	<p>Borrowing needs no region at all: <span class="pre">hall</span> is an ordinary local variable, and a global
 		can be borrowed just as well. That is why borrowing comes first in this part. And because a borrow does not care
 		where its value lives, <span class="pre">report</span> serves the local and the
-		<span class="pre">So</span> alike, as <span class="pre">describe</span> served every strategy on the
+		<span class="pre">Uni</span> alike, as <span class="pre">describe</span> served every strategy on the
 		<a href="memory.html">opening page</a>.</p>
 
 	<h2 id="making">Making a borrow</h2>
@@ -105,7 +105,7 @@ fn incr(nbr &amp;i32) i32 {
   *nbr + 1;
 }
 
-imm allocref = new So[i32](1);   // an owning reference to an allocated 1
+imm allocref = new Uni[i32](1);   // an owning reference to an allocated 1
 incr(allocref);                  // lends a borrow of the 1: gives 2
 </pre>
 	<p>The owner is borrowed from, not moved. It is frozen while the borrow is still to be used
@@ -114,7 +114,7 @@ incr(allocref);                  // lends a borrow of the 1: gives 2
 		a call may not be handed a <span class="pre">&amp;uni</span> of an owner beside another borrow of it,
 		<span class="pre">twoUni(a, a)</span>, nor lend the owner to a <span class="pre">self &amp;mut</span> method
 		while moving it in as the argument, <span class="pre">a.absorb(a)</span>. An owner that is its value's only
-		holder (a <span class="pre">So</span> reference, or an <span class="pre">Rc</span> one not yet shared) may lend
+		holder (a <span class="pre">Uni</span> reference, or an <span class="pre">Rc</span> one not yet shared) may lend
 		any permission, <span class="pre">&amp;uni</span> included, so <span class="pre">fn f(p &amp;uni Point)</span>
 		may be called twice with one owner. A shared owner, such as an <span class="pre">Rc[mut, T]</span> reference,
 		cannot lend a <span class="pre">&amp;uni</span>.</p>
@@ -209,7 +209,7 @@ ref1 === &amp;a        // true
 	<p>Since a reference stands in for its value, most uses read through it without a <span class="pre">*</span>. A
 		field, a method called by name, or an index reaches through <i>every</i> level of reference: a reference to a
 		reference (<span class="pre">&amp;&amp;Pt</span>, <span class="pre">&amp;mut &amp;Pt</span>), an owner behind a
-		borrow (<span class="pre">&amp;So[Pt]</span>), a slice or a virtual reference behind one. That is what the
+		borrow (<span class="pre">&amp;Uni[Pt]</span>), a slice or a virtual reference behind one. That is what the
 		closure of <span class="pre">iter().filter(...)</span> relies on, since it is handed a borrow of the borrowed
 		item:</p>
 <pre>
@@ -227,7 +227,7 @@ imm n = rr.len();                                    // rr is &amp;&amp;&amp;Pt:
 	<p>The access is exactly what the dereferences written out would give, and each level keeps its own permission.
 		Through <span class="pre">&amp;mut &amp;Pt</span> a write <span class="pre">r.x = 9</span> is refused, as it is
 		written out, since the inner level only reads. An owner reached through a <span class="pre">&amp;</span> lends
-		only <span class="pre">&amp;</span>: through <span class="pre">r &amp;So[Pt]</span>,
+		only <span class="pre">&amp;</span>: through <span class="pre">r &amp;Uni[Pt]</span>,
 		<span class="pre">r.x = 9</span> is refused (<i>Error 1017: You do not have permission to modify lval</i>) and so
 		is a <span class="pre">self &amp;mut</span> method (<i>Error 1034: Cannot lend `&amp;mut` of this owner: it is
 		reached through a reference that only reads</i>).</p>
@@ -269,7 +269,7 @@ imm r = &amp;mut p;
 r.scale(3d);               // p is now 3, 6
 </pre>
 	<p id="ownerself">A method may also ask for the <b>owner</b> of its type: a borrow of an owner, written
-		<span class="pre">self &amp;So[Self]</span>, <span class="pre">self &amp;Rc[Self]</span>,
+		<span class="pre">self &amp;Uni[Self]</span>, <span class="pre">self &amp;Rc[Self]</span>,
 		<span class="pre">self &amp;Arc[Self]</span>, or the borrow of any other owning reference to the type. Such a method is
 		found only through an owner of that kind, which is borrowed for the call and is still the caller's afterwards; a
 		plain value, a borrow, or an owner of another kind has no such method, just as for any method that does not accept
@@ -281,13 +281,13 @@ r.scale(3d);               // p is now 3, 6
 <pre>
 struct Node {
   n i64;
-  pub fn viaSo(self &amp;So[Node]) i64 { self.n + 1; }   // only an So[Node] has this method
+  pub fn viaUni(self &amp;Uni[Node]) i64 { self.n + 1; }   // only a Uni[Node] has this method
   pub fn plain(self &amp;) i64 { n; }                    // any Node, however held
 }
 
-imm a = new So[Node](10);
-imm x = a.viaSo();                // 11; the So is borrowed, and a is still ours
-imm y = new Node(10).viaSo();     // Error 1056: No method declared by `viaSo` accepts the call's arguments
+imm a = new Uni[Node](10);
+imm x = a.viaUni();                // 11; the Uni is borrowed, and a is still ours
+imm y = new Node(10).viaUni();     // Error 1056: No method declared by `viaUni` accepts the call's arguments
 </pre>
 
 	<h3 id="nullable">A reference that may be missing</h3>
@@ -362,15 +362,15 @@ struct R { pub n i64; }
 struct H { pub r &amp;R; }
 
 fn inStruct() H {
-  imm x = new So[R](4);
+  imm x = new Uni[R](4);
   new H(&amp;*x);              // Error 1064: Returned value carries a borrow of 'x', which it
 }                          //   would outlive: 'x' belongs to this function.
 fn inOption() Option[&amp;R] {
-  imm x = new So[R](4);
+  imm x = new Uni[R](4);
   Some[&amp;R](&amp;*x);           // Error 1064, the same
 }
 fn inRc() Rc[H] {
-  imm x = new So[R](4);
+  imm x = new Uni[R](4);
   new Rc[H](new H(&amp;*x));   // Error 1064, the same
 }
 </pre>
@@ -493,7 +493,7 @@ fn aliases(n i32) i32 {
 		<li>It may not be borrowed <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>, which promise
 			what the live borrow could break. (A shared path cannot lend either today in any case: an owner held in a
 			field of a <span class="pre">&amp;mut</span> parameter's value or of an <span class="pre">Rc[mut, T]</span>'s,
-			<span class="pre">h.app</span> for <span class="pre">app So[App]</span>, lends <span class="pre">&amp;mut</span>
+			<span class="pre">h.app</span> for <span class="pre">app Uni[App]</span>, lends <span class="pre">&amp;mut</span>
 			and <span class="pre">&amp;</span> and no more.)</li>
 		<li>An <span class="pre">&amp;imm</span> borrow of it still forbids changing it, and an
 			<span class="pre">&amp;opaq</span> borrow is as above.</li>
@@ -554,7 +554,7 @@ first.x;                       //   again below. It may not be borrowed mutably 
 		<span class="pre">v.push(v.len())</span> reads <span class="pre">v</span> first and then pushes, as does
 		<span class="pre">v.push(takeLast(&amp;mut v))</span>, which works the argument out before the push.</p>
 	<p>An owning reference used where a borrowed one is wanted lends what it owns, and is frozen the same way: after
-		<span class="pre">imm b &amp;Point = u</span>, for <span class="pre">u</span> a <span class="pre">So[Point]</span>,
+		<span class="pre">imm b &amp;Point = u</span>, for <span class="pre">u</span> a <span class="pre">Uni[Point]</span>,
 		<span class="pre">u</span> may not be moved while <span class="pre">b</span> is still to be used. A container may
 		also declare that the borrows it hands out need no loan on it, as an arena does
 		(<a href="mem-arenas.html#noloan">NoLoanMut</a>), and a borrow carried inside a value a call returns is held like

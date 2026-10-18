@@ -1,7 +1,7 @@
 // Where a traced reference may be held: only where a collector can find it --
 // a local, a parameter, a temporary, a value held inline in one of those, a
 // value a traced region allocated, or behind what a trace passes through (an
-// 'Rc' or 'So' owner, a collection that declares how to trace its elements). So each of
+// 'Rc' or 'Uni' owner, a collection that declares how to trace its elements). So each of
 // these is refused, each with its own code:
 //
 // 1. an owning reference of a region that is not traced to a value holding a
@@ -25,7 +25,7 @@
 //    be traced: it holds a raw pointer to a value that may hold a traced
 //    reference, that no 'GcTraceElements' reaches (ErrorTraceRoot).
 //
-// What a traced region allocates may hold 'Rc' and 'So' owners, which its
+// What a traced region allocates may hold 'Rc' and 'Uni' owners, which its
 // finalizer releases and its trace passes through; a borrow or a raw pointer to
 // a value holding traced references may be held anywhere, being unchecked or
 // lifetime-bound. Every judgment waits until each type is laid out, which is
@@ -65,26 +65,26 @@ struct PairB { pub left TrB[mut, Leaf]; }
 struct Fin { pub v i32; fn final(self &uni) { } }
 struct Box { pub b Tr[mut, Leaf]; }
 
-// Accepted: a traced object holding 'Rc' and 'So' owners, a function
+// Accepted: a traced object holding 'Rc' and 'Uni' owners, a function
 // reference, and a traced object holding another
 struct Mixed {
   pub g Tr[mut, Leaf];
   pub r Rc[mut, Fin];
-  pub s So[Fin];
+  pub s Uni[Fin];
   pub f &fn(x i32) i32;
   pub p Tr[mut, Pair];
 }
 
 // Rule 1 is refused for a region that cannot be passed through, and accepted
-// for 'Rc' and 'So', which a trace passes through to the traced reference they
+// for 'Rc' and 'Uni', which a trace passes through to the traced reference they
 // hold: in fields, however it is held inside, in a generic's instance and in a
 // parameter. A self-referring type is traced once, as a cycle is
 struct RcHolder {
   pub pr Rc[mut, Pair];
   pub ok Rc[mut, Leaf];
 }
-struct SoOption {
-  pub o So[Option[Tr[mut, Leaf]]];
+struct UniOption {
+  pub o Uni[Option[Tr[mut, Leaf]]];
 }
 struct Node {
   pub next Rc[mut, Node];
@@ -100,7 +100,7 @@ struct Counts {
 }
 struct Barriered {
   pub b Rc[mut, PairB];              //~ ErrorTracedHeld "writeBarrier"
-  pub ok So[Leaf];
+  pub ok Uni[Leaf];
 }
 
 // Rule 2: a global
@@ -166,7 +166,7 @@ fn main() {
   // Accepted: a borrow and a raw pointer to a value holding traced references
   imm b = &pr;
   imm rp = &pr as *Pair;
-  imm mx = new Tr[mut, Mixed](l, new Rc[mut, Fin](1i32), new So[Fin](2i32), &nothing, new Tr[mut, Pair](l, l));
+  imm mx = new Tr[mut, Mixed](l, new Rc[mut, Fin](1i32), new Uni[Fin](2i32), &nothing, new Tr[mut, Pair](l, l));
   // Accepted: an 'Rc' holding traced references, passed through by a trace
   imm rc = new Rc[mut, Pair](l, l);
   imm n = 3i32;

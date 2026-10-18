@@ -213,7 +213,7 @@ method's `self` is, so `s.len()` borrows from a `&uni` slice `s` and does not
 move it.
 
 An owning reference that is its value's only holder (`borrowOwnerLendsUni`: a
-move-typed owner, a `So` or a `Rc` still `uni`, held in a place), wanted as a
+move-typed owner, a `Uni` or a `Rc` still `uni`, held in a place), wanted as a
 borrowed reference that may not be shared (`&uni`, `&mut1`), is a
 `CastSubtype`, and a recast to a move type would move the owner into a borrow
 that ends nothing. `iexpCoerce` rewrites it to the borrow `&uni *o`
@@ -223,7 +223,7 @@ where the wanted type is an enrichment's. An owner wanted as a `&` or `&mut` is
 left the recast flow analysis reads as a borrow (`pwOwnedLent`). A temporary
 owner is not a place, and is not rewritten.
 
-An owning virtual reference (`So[Trait]`) wanted as a borrowed one (`&<mut
+An owning virtual reference (`Uni[Trait]`) wanted as a borrowed one (`&<mut
 Trait`, `&<Trait`) is the same recast, read as the same borrow. A virtual
 dispatch's receiver is the one argument no coercion reaches — the selected
 method's `self` is a plain reference to the trait, which a virtual reference
@@ -236,7 +236,7 @@ receiver, which is not recast) still moves.
 
 **One rule, spelled once, for a callable meeting a signature** (`fnSigMeetKind`):
 a function reference's type (`fnSigMatches`), a callable made of a plain function
-(`&<fn`, `refvirtMatchesRef`), an owner `So[fn(sig)]` (`typelit.c`), a generic's
+(`&<fn`, `refvirtMatchesRef`), an owner `Uni[fn(sig)]` (`typelit.c`), a generic's
 `fn(sig)` constraint (`genericSigMeets`), a module meeting a module trait
 (`modtrait.c`) and a method meeting a trait's (`fnSigVrefMeets`) all ask it, and
 the variance is easy to get backwards:

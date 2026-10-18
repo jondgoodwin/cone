@@ -15,7 +15,7 @@ borrowed references used to shed the overhead wherever region oversight is not
 needed. Safety is preserved across all of it.
 
 **The distance** is large and worth stating plainly. Two regions ship in the
-core package, `So` and `Rc`, and a third, `Arc`, in the `sync` package (`Rc`
+core package, `Uni` and `Rc`, and a third, `Arc`, in the `sync` package (`Rc`
 with its count changed atomically, declaring the built-in marker
 **`ThreadSafe`**, which the thread check asks of a reference's region: an owner
 that may be aliased crosses threads only in a region declaring it, so
@@ -30,7 +30,7 @@ and trace) by taking one after the size. A region may declare itself
 hands each reference into the region a value holds to the region's `mark` (with
 the reference's permission and a mode, where `mark` asks), and the compiler
 refuses a traced reference wherever a collector could not find it — behind an
-`Rc` or `So` owner, in a global, in raw memory placed by `mem.writeRaw` (an
+`Rc` or `Uni` owner, in a global, in raw memory placed by `mem.writeRaw` (an
 arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
@@ -181,25 +181,25 @@ concept. It is named at each allocation site, so the choice is per-object and
 lexically visible:
 
 ```cone
-imm person = new So[Person]("Tako")     // single-owner: freed when the owner drops
+imm person = new Uni[Person]("Tako")     // single-owner: freed when the owner drops
 imm shared = new Rc[Person]("Tako")     // counted: freed at zero
 ```
 
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `So` | `struct So is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
+| `Uni` | `struct Uni is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
 | `Rc` | `struct Rc is RegionRef { cnt usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
 | `Rcw` | `struct Rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
-**`So` and `Rc` are Cone source, not built into the compiler**, and nothing in
+**`Uni` and `Rc` are Cone source, not built into the compiler**, and nothing in
 the compiler names either. Each method is optional, and an absent one's
 operation does not happen: without `aliasRef` a copy of a reference calls nothing;
 `dealiasRef` answers whether the owner that went was the last, and without it an
 owner's going asks nothing; `free` gives the memory back. **One owner per value
 is declared, not read off a missing method** [Jon 26 Sep]: a region ref
-declaring the built-in trait `Move`, as `So` does, has its copies moved and
+declaring the built-in trait `Move`, as `Uni` does, has its copies moved and
 every owner's going is the value's death. One declaring neither `Move` nor
 `aliasRef` shares its references for nothing, and with no `dealiasRef` either its
 owners' going does nothing at all — the compiler never frees such a value, the
@@ -214,7 +214,7 @@ nothing moves out of a field, so no value dies with a hole in it
 refusing only contradictions — `Move` with `aliasRef`, `Move` with `Traced` — and
 a `Traced` region without its `mark` (or with a `writeBarrier` of another
 shape); and the test corpus
-declares regions of its own that get every call `Rc` and `So` get
+declares regions of its own that get every call `Rc` and `Uni` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
 **But the intended shape is much larger than that.** A region is meant to be a
@@ -372,7 +372,7 @@ anything.
 
 **Move-ness.** `refAdoptInfections` is the whole rule: a reference is a move
 type **when its permission lacks `MayAlias`, or its region is itself a move
-type**. `So` declares `is Move`, which makes it one, so every `So` reference moves; `Rc` with the
+type**. `Uni` declares `is Move`, which makes it one, so every `Uni` reference moves; `Rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
 an `Rc[Node]` moves while an `Rc[mut, Node]` copies.
 
@@ -388,7 +388,7 @@ an `Rc[Node]` moves while an `Rc[mut, Node]` copies.
 So `&mut T` is invariant in `T` and `&ro T` is covariant — the opposite of the
 intuition that a mutable reference is "more capable" and therefore more
 permissive. A virtual reference follows the same rule for the fields a trait
-requires: a view that may write (`&<mut`, `&<uni`, `So[Trait]`) sees each field
+requires: a view that may write (`&<mut`, `&<uni`, `Uni[Trait]`) sees each field
 at exactly the trait's type, because a store through the trait writes a value of
 that type, while a read-only one may see a narrower field (a `Shape.Circle` as the
 `Shape` the trait asks for).
@@ -398,8 +398,10 @@ A read through the reference copies what it holds when that is a copy type, so
 a borrow of a sole owner may not be seen as a borrow of a shared one:
 `&Rc[mut, T]` from `&Rc[T]` would copy a second, writable owner out of a value
 `uni` promised unique. The permission lattice still lets `uni` coerce down
-where the owner itself is moved. A `So[T]` owner may be seen as `So[mut, T]` behind
-a borrow, since both move and a move out through a borrow is refused.
+where the owner itself is moved. A single owner has no shared view to be
+seen as: `mut` is shared mutable and a `Move` region shares nothing, so `Uni[mut, T]`
+is refused where it is written (`ErrorSoleOwnerMut`), while `Uni[imm, T]` stays, a
+promise that the value never changes.
 
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
 parameter, 2+ a local. It is not a type parameter, not a constraint variable,
@@ -446,7 +448,7 @@ asked by a constraint (`where T is DynSized`).
 **A body whose length a reference carries has no size to hold.** `str` is never
 a local, a field or a parameter, only the target of a reference; so is
 `Array[T]`, the body of a run-time length, whose borrow is the slice. It is allocated
-by copying a borrow of one, `new So[str](view)`, as long as the view, into the
+by copying a borrow of one, `new Uni[str](view)`, as long as the view, into the
 memory the region gives. Each owner carries its own count, which is right
 because the body never grows: a growable one would need a count every holder
 sees, and keeps it (`List`, below).
@@ -464,12 +466,12 @@ declare it.
 array reference.** A statically sized array is reached by a thin reference with
 its size in the type; an array whose length is chosen at run time and never
 changes is the body `Array[T]`, owned by a fat reference in any region
-(`So[Array[T]]`, `Rc[Array[T]]`), one hop; and one that may grow is a
+(`Uni[Array[T]]`, `Rc[Array[T]]`), one hop; and one that may grow is a
 collection, a `List`, shared as a managed reference to it, `Rc[List[T]]`: a
 length carried in each fat pointer works against sharing a growable array,
 where every holder needs the one count the list keeps. Sharing costs a second
 block and a second hop; a list held in a local is used directly, lends its
-elements as the slice, and `freeze()` moves its block into a `So[Array[T]]`.
+elements as the slice, and `freeze()` moves its block into a `Uni[Array[T]]`.
 
 Three of the five are fat pointers, and **the first two are indistinguishable at
 runtime** — region and permission are entirely compile-time. That is the single
@@ -493,6 +495,7 @@ gap:
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
 | a sole owner behind a borrow is not seen as a shared one | `refHeldMoveSeenAsCopy`, from `refMatches` and `arrayRefMatchesRef` | type check |
+| `mut` is not written on an owner of a `Move` region | `refSoleOwnerPermCheck`, from `refTypeCheck` and `refvirtTypeCheck` | type check |
 | region coercion direction | `regionMatches` | type check |
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |

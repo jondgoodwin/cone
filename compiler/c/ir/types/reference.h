@@ -31,7 +31,7 @@ typedef struct {
     uint16_t scope;   // Lifetime: its band, 0 global, 1 the caller's, 2+ a block
     Name *lifename;   // The lifetime a signature names on it, or NULL (lifetime.h)
     Name *bound;      // A virtual reference's bound, '&<Trait + 'a': what the referenced value's borrows outlive, or NULL (lifetime.h)
-    // A virtual reference's markers, '&<Trait + Shareable', 'So[fn() + Sendable]':
+    // A virtual reference's markers, '&<Trait + Shareable', 'Uni[fn() + Sendable]':
     // what the value behind it is promised to be, since its type is hidden. A
     // value is made one only if its type is each (refvirtMatchesRef), and one
     // with fewer markers is a reference with more, never the other way
@@ -54,7 +54,7 @@ typedef struct {
     uint16_t bracketSpelled;
     // The permission was written nowhere and is 'imm' because the type referred
     // to declares Immutable (refTypeCheck, refImmutableDefaultPerm): '&str',
-    // 'So[str]'. The one reference `as` may make from a 'ro' one while 'trust' is
+    // 'Uni[str]'. The one reference `as` may make from a 'ro' one while 'trust' is
     // not built (castRefPermCheck); a written '&imm str' is not
     uint8_t permImmDefault;
 } RefNode;
@@ -167,6 +167,10 @@ void refRegionCheck(INode **regionp);
 // Judge a managed reference type whose permission is a struct: it must be a
 // lock permission, and its region one the lock fits (ir/types/permission.c)
 void refLockCheck(RefNode *node);
+
+// Refuse 'mut' on an owner of a region declaring 'Move': a single owner is
+// never shared (ir/types/permission.c)
+void refSoleOwnerPermCheck(RefNode *node);
 
 // Check what a reference, pointer or slice points at: resolved, and laid out
 // only where no layout is in flight, since a reference's size is its kind's.

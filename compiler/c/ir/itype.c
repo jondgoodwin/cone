@@ -400,7 +400,7 @@ int itypeDropReadsBorrow(INode *type) {
 // arguments is. An open trait's implementers are not all known, so a
 // reference to one is bound.
 //
-// A type may reach itself through a reference ('next So[Node]'), and a type
+// A type may reach itself through a reference ('next Uni[Node]'), and a type
 // reached through a reference need not be laid out yet, so the walk is the
 // same fixed point as itypeCarriesBorrow's: a struct reached again while it is
 // being asked adds nothing (what it holds is found where it was first asked),
@@ -1064,7 +1064,7 @@ int itypeHoldsAtomic(INode *type) {
     }
 }
 
-// An owning reference into a region that is not traced ('Rc', 'So', any
+// An owning reference into a region that is not traced ('Rc', 'Uni', any
 // counted region): a trace passes through it to the value it holds. The type a
 // thin one points at, or the element of the array body a fat one does; NULL
 // where a trace could find nothing there (text, a borrow, a virtual reference,
@@ -1184,7 +1184,7 @@ static int itypeStructCannotTrace(StructNode *type) {
 
 // Does a value of this type hold a traced reference where it sits: is it a
 // reference into a region declaring 'Traced', or an owning reference of any
-// other region to a value that does (a trace passes through 'Rc' and 'So'), or
+// other region to a value that does (a trace passes through 'Rc' and 'Uni'), or
 // a tuple, array, struct or enum holding one inline, or a type declaring GcTraceElements
 // whose gcTraceElements gives references to values that do? The walk stops at
 // borrows and at raw pointers, which a type covers by declaring it (itypeCannotTrace).
@@ -1857,9 +1857,9 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
 
     // A body whose length a reference carries has no size of its own to hold
     if (itypeIsArrayBody(dcltype))
-        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&Array[T]', 'So[Array[T]]', 'Rc[Array[T]]'";
+        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&Array[T]', 'Uni[Array[T]]', 'Rc[Array[T]]'";
     if (itypeLenBodyElem(dcltype) != NULL)
-        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&str', 'So[str]', 'Rc[str]'";
+        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&str', 'Uni[str]', 'Rc[str]'";
 
     if (dcltype->tag == StructTag) {
         // Opacity is infectious. Where a field carried it, this type is not the

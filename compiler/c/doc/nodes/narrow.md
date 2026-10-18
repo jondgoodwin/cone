@@ -42,7 +42,7 @@ narrowing of this pass (`NarrowFact.depth`).
 starts with `-`, or is `_`), of a closed enum (`narrowClosedEnum`: a trait with no base that has
 a tag or is `SameSize`, at most 64 variants), held by value or through a borrowed reference.
 Not a field, an element, a dereference, a global or a static; not a value reached through an
-owner (`Rc`, `So`), whose referent others reach; not a value already typed as a variant.
+owner (`Rc`, `Uni`), whose referent others reach; not a value already typed as a variant.
 
 ## Reading it
 

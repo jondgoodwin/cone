@@ -37,7 +37,7 @@ struct TlsMaker {
   server tls.Server;
   pool Pool;
 
-  pub fn make(self &mut) So[Layer] {new So[tls.Stream](server.stream(pool));}
+  pub fn make(self &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool));}
 }
 
 // Work that holds a lane's thread for arg milliseconds
@@ -125,7 +125,7 @@ fn main() i32 {
   require(silentPort != 0u16, "the silent server listens");
 
   // A deadline during the handshake
-  mut c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](rootsClient.stream("localhost", pool)),
+  mut c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
     Sink.Here(tokConn));
   mut asked = Instant.now();
   drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
@@ -135,7 +135,7 @@ fn main() i32 {
   expect(Instant.now() - asked >= Duration.fromMillis(140i64), "...not before its deadline");
 
   // A cancel during the handshake
-  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](rootsClient.stream("localhost", pool)),
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
     Sink.Here(tokConn));
   imm r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
   idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
@@ -145,7 +145,7 @@ fn main() i32 {
   report("cancel during the handshake", &seen, EventKind.Cancelled, asked);
 
   // A cancel group's cancel during the handshake
-  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](rootsClient.stream("localhost", pool)),
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
     Sink.Here(tokConn));
   imm group = CancelGroup.make();
   drv.requestIn(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq), group, forever());
@@ -162,7 +162,7 @@ fn main() i32 {
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
     case imm r Ok {
       imm srv = r;
-      match drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(srv, pool)),
+      match drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(srv, pool)),
           Sink.Here(tokServer)) {
         case imm l Ok {
           match drv.localAddr(&lp, l) {
@@ -184,7 +184,7 @@ fn main() i32 {
   // A deadline while the verification waits for the lane
   lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf.empty()), Target.Here(tokBlock));
   imm v0 = tls.stats().verifications;
-  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](platformClient.stream("localhost", pool)),
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](platformClient.stream("localhost", pool)),
     Sink.Here(tokConn));
   asked = Instant.now();
   drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
@@ -197,7 +197,7 @@ fn main() i32 {
 
   // A cancel while the verification waits for the lane
   lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf.empty()), Target.Here(tokBlock));
-  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](platformClient.stream("localhost", pool)),
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](platformClient.stream("localhost", pool)),
     Sink.Here(tokConn));
   imm r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
   imm giveUp = Instant.now() + Duration.fromSeconds(5i64);

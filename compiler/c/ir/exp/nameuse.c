@@ -312,6 +312,11 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             errorMsgNode((INode*)name, ErrorUnkName,
                 "The name %s does not refer to a declared name: this module imports %s as %s, which is the name it is reached by here.",
                 &name->namesym->namestr, &name->namesym->namestr, &renaming->rename->namestr);
+        // The single-owner region was called 'So' once; no alias is kept, so the old
+        // name is an unknown one, and says what it became
+        else if (strcmp(&name->namesym->namestr, "So") == 0)
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "The name So does not refer to a declared name: So is now Uni, the single-owner region.");
         else
             errorMsgNode((INode*)name, ErrorUnkName,
                 "The name %s does not refer to a declared name", &name->namesym->namestr);

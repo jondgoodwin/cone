@@ -364,7 +364,7 @@ static const char *closureGpuWhy(INode *type, int depth) {
         if (ref->vtexp && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
             return "a function reference, a pointer to code, which a GPU has none of";
         if (ref->region == NULL || itypeGetTypeDcl(ref->region) != borrowRef)
-            return "an owning reference (So, Rc, Arc, Gc), which needs an allocator a GPU has none of";
+            return "an owning reference (Uni, Rc, Arc, Gc), which needs an allocator a GPU has none of";
         return closureGpuWhy(ref->vtexp, depth + 1);
     }
     case VirtRefTag:

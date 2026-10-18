@@ -778,9 +778,9 @@ user type named `i64` inside a module is still a path:
 
 `n` and `o`, v0's i128 and u128, are read by the demangler and declared by
 nothing. A region and a permission are each the identifier of the declaration
-they name — `2So`, `2Rc`, `3mut`, `2ro`, `4opaq` — and a borrowed reference,
-which names no region, spells the empty identifier `0`: `R2So3mutl` is
-`So[mut, i32]`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
+they name — `3Uni`, `2Rc`, `3imm`, `2ro`, `4opaq` — and a borrowed reference,
+which names no region, spells the empty identifier `0`: `R3Uni3imml` is
+`Uni[imm, i32]`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
 dimensions is an array of arrays, one `A` per dimension and the extents
 innermost first: `AAx3_2_` is `Array[i64, 2, 3]`. A signature whose named
 lifetimes promise other than it would unannotated spells the promises after
@@ -874,8 +874,8 @@ in the type's namespace, so `Nt` then `Nv` says it directly and reads as
 `S`, `V` and `P` for what v0 cannot say, region and permission spelled as the
 identifiers of the declarations they name. Region and permission are always
 spelled, and lifetime only as what a signature's named lifetimes promise,
-because those are the distinctions `itypeIsSame` draws — an encoding that omitted the region would spell `So[mut, T]` and
-`Rc[mut, T]` alike, a collision rather than a distinction. Not v0's `R`/`Q`
+because those are the distinctions `itypeIsSame` draws — an encoding that omitted the region would spell `Uni[imm, T]` and
+`Rc[imm, T]` alike, a collision rather than a distinction. Not v0's `R`/`Q`
 for `&`/`&mut`: they carry no region, and permission is not two-valued in
 Cone. Not v0's `K…` const encoding for array extents: decimal is readable,
 and `K` is the Rust-shaped place for const generics when Cone has them.

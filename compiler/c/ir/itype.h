@@ -79,7 +79,7 @@ int itypeDropReadsBorrow(INode *type);
 
 // Does a value of this type need tracing: hold a traced reference where it
 // sits, a reference into a region declaring 'Traced'; or through an owning
-// reference of another region ('Rc', 'So'); or in a tuple, array, struct or
+// reference of another region ('Rc', 'Uni'); or in a tuple, array, struct or
 // enum, or in what a type declaring GcTraceElements gives references to? Not through a
 // borrow or a raw pointer. Remembered per struct once it is type checked.
 int itypeHoldsTraced(INode *type);

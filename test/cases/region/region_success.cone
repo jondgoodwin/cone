@@ -8,13 +8,13 @@
 // the alias that made it went out of scope.
 //
 // Two regions exist, both defined in the core package: 'Rc', which carries a reference
-// count and frees at zero, and 'So', which declares 'Move' and is freed by its
+// count and frees at zero, and 'Uni', which declares 'Move' and is freed by its
 // single owner. A third is declared here, because a region is an ordinary
 // struct declaring 'is RegionRef' and nothing in the compiler restricts the set
 // to the two in core.
 //
 // Four things are deliberately absent, each with its own xfail scenario naming
-// the defect: moving a 'So' reference between variables, releasing a
+// the defect: moving a 'Uni' reference between variables, releasing a
 // region-allocated struct that owns a reference, assigning to an 'Rc' variable
 // declared without an initial value, and passing an owning reference to a
 // parameter expecting a borrowed one.
@@ -53,7 +53,7 @@ struct Held {
 }
 
 struct Owned {
-  pub r So[i32];
+  pub r Uni[i32];
   pub n i32;
 }
 
@@ -67,8 +67,8 @@ fn allocates() {
   *r = *r + 1u;
   show("rc-written-through", i64.from(*r));
 
-  // 'So' is the single-owner region: no counter, freed when its owner dies
-  imm s = new So[i32](21);
+  // 'Uni' is the single-owner region: no counter, freed when its owner dies
+  imm s = new Uni[i32](21);
   show("so-allocated", i64.from(*s));
 
   // A region is not a fixed set of two. This one is declared above.
@@ -76,7 +76,7 @@ fn allocates() {
   show("custom-region-allocated", i64.from(*a));
 
   // The value allocated may be a struct as easily as a number
-  imm w = new So[Plain](41);
+  imm w = new Uni[Plain](41);
   show("allocated-struct-field", i64.from(w.n));
 }
 
@@ -139,15 +139,15 @@ fn fields() {
   show("rc-field-written", i64.from(*h.r));
   show("plain-field-beside-it", i64.from(h.n));
 
-  // ... and a 'So' field, which the struct then solely owns
-  mut o = new Owned(r: new So[i32](73), n: 74);
+  // ... and a 'Uni' field, which the struct then solely owns
+  mut o = new Owned(r: new Uni[i32](73), n: 74);
   show("so-field", i64.from(*o.r));
   show("plain-field-beside-so", i64.from(o.n));
 
   // An owning field is an lval like any other, and a tuple assignment reaches
   // two of them at once. The 'Rc' field's previous allocation loses a count on
-  // the way; the 'So' one's is only leaked, because genlStore counts 'Rc' alone.
-  h.r, o.r = new Rc[mut, i32](75), new So[i32](76);
+  // the way; the 'Uni' one's is only leaked, because genlStore counts 'Rc' alone.
+  h.r, o.r = new Rc[mut, i32](75), new Uni[i32](76);
   show("rc-field-reassigned", i64.from(*h.r));
   show("so-field-reassigned", i64.from(*o.r));
 }
@@ -158,8 +158,8 @@ fn makeRc() Rc[mut, i32] { new Rc[mut, i32](80); }
 fn takeRc(r Rc[mut, i32]) i32 { *r; }
 fn passRc(r Rc[mut, i32]) Rc[mut, i32] { r; }
 
-fn makeSo() So[i32] { new So[i32](83); }
-fn takeSo(r So[i32]) i32 { *r; }
+fn makeUni() Uni[i32] { new Uni[i32](83); }
+fn takeUni(r Uni[i32]) i32 { *r; }
 
 // A branch may choose between an existing owning reference and a new allocation,
 // because both branches have the one reference type
@@ -181,10 +181,10 @@ fn calls() {
   show("branch-kept-argument", i64.from(*chooseRc(r)));
   show("branch-allocated-instead", i64.from(*chooseRc(new Rc[mut, i32](9))));
 
-  // 'So' travels into and out of a call the same way, so long as it lands in
+  // 'Uni' travels into and out of a call the same way, so long as it lands in
   // no more than one variable on the way
-  show("so-into-call", i64.from(takeSo(new So[i32](84))));
-  show("so-out-of-call", i64.from(*makeSo()));
+  show("so-into-call", i64.from(takeUni(new Uni[i32](84))));
+  show("so-out-of-call", i64.from(*makeUni()));
 
   // A tuple return carries an owning reference alongside a plain value
   imm pair = pairOut();

@@ -7,8 +7,8 @@
 //
 // Beside them, 'crosses' asks the marker of the types that are Sendable
 // without running anything: numbers, plain and nested structs, arrays, enums,
-// a struct reaching itself through a 'So' owner (the walk's cycle), owners
-// that move ('uni' of any region, any owner of 'So'), owners that are shared
+// a struct reaching itself through a 'Uni' owner (the walk's cycle), owners
+// that move ('uni' of any region, any owner of 'Uni'), owners that are shared
 // through a region declaring ThreadSafe with a race-safe permission
 // ('Arc[imm, T]', 'Arc[opaq, T]'), a function reference, a struct declaring
 // 'Sendable' over a raw pointer, and the library's own: a List or Dict of
@@ -33,7 +33,7 @@ enum Shape {
 
 struct Node {
   pub v i32;
-  pub next Option[So[Node]];
+  pub next Option[Uni[Node]];
 }
 
 // A raw pointer, carried on the author's word
@@ -42,18 +42,18 @@ struct Handle is Sendable {pub p *u8;}
 // Moves to the consumer: an owner of the line it carries
 struct Job {
   pub id u64;
-  pub line So[Line];
+  pub line Uni[Line];
 }
 
 // Takes each job off the channel until it closes, and sums what they carry
-fn consume(rx Receiver[So[Job]]) i64 {
+fn consume(rx Receiver[Uni[Job]]) i64 {
   mut rx2 = rx;
   mut total = 0i64;
   mut more = true;
   while more {
     match rx2.recv() {
       case imm j Some {total = total + i64.from(j.id) * 100i64 + i64.from((j.line.b.x - j.line.a.x) + (j.line.b.y - j.line.a.y));}
-      case is None[So[Job]] {more = false;}
+      case is None[Uni[Job]] {more = false;}
     }
   }
   total;
@@ -74,29 +74,29 @@ fn main() {
   crosses[Array[Point, 4]]();
   crosses[Shape]();
   crosses[Node]();
-  crosses[So[Point]]();
-  crosses[So[mut, Point]]();
+  crosses[Uni[Point]]();
+  crosses[Uni[imm, Point]]();
   crosses[Rc[uni, Point]]();
   crosses[Arc[imm, Point]]();
   crosses[Arc[opaq, Point]]();
-  crosses[So[Node]]();
+  crosses[Uni[Node]]();
   crosses[&fn(n i32) i32]();
   crosses[Handle]();
   crosses[List[Point]]();
-  crosses[List[So[Line]]]();
+  crosses[List[Uni[Line]]]();
   crosses[String]();
   crosses[Dict[String, i64]]();
   crosses[Sender[u64]]();
-  crosses[Receiver[So[Job]]]();
+  crosses[Receiver[Uni[Job]]]();
   crosses[thread.ThreadRef]();
 
   // A 'uni' owner sent over a channel moves to the consumer
-  mut tx Sender[So[Job]];
-  mut rx Receiver[So[Job]];
-  tx, rx = Channel[So[Job]].make();
+  mut tx Sender[Uni[Job]];
+  mut rx Receiver[Uni[Job]];
+  tx, rx = Channel[Uni[Job]].make();
   imm consumer = thread.start(rx, &consume);
-  tx <- new So[Job](1u64, new So[Line](new Point(0i32, 0i32), new Point(3i32, 4i32)));
-  tx <- new So[Job](2u64, new So[Line](new Point(1i32, 1i32), new Point(2i32, 2i32)));
+  tx <- new Uni[Job](1u64, new Uni[Line](new Point(0i32, 0i32), new Point(3i32, 4i32)));
+  tx <- new Uni[Job](2u64, new Uni[Line](new Point(1i32, 1i32), new Point(2i32, 2i32)));
   {
     imm last = tx;   // the last sender goes at this block's end, closing the channel
   }

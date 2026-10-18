@@ -154,7 +154,7 @@ static inline void flowGateShapeStore(FlowState *fstate, INode *lval) {
 }
 
 // Gate trigger: a conversion, which may make an owning virtual reference of
-// a value holding a borrow ('So[Trait]' from a 'So[H]'): a number's
+// a value holding a borrow ('Uni[Trait]' from a 'Uni[H]'): a number's
 // conversion is dismissed by its operand's type
 static inline void flowGateBoxed(FlowState *fstate, INode *cast) {
     if ((cast->flags & FlagConvert) && flowGateOpen(fstate, FlowGateBoxed)

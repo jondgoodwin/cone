@@ -74,7 +74,7 @@ enum ReshapeReach {
     ReachBorrowed = 2,      // through some reference, pointer or owner
     ReachVirtual = 4,       // through a virtual reference, which could be anything
     ReachGaveUp = 8,        // the type graph was too large to follow: taken as reaching
-    ReachOwned = 16         // set beside ReachBorrowed when every reference on the way owns what it points at ('So', 'Rc', 'Arc')
+    ReachOwned = 16         // set beside ReachBorrowed when every reference on the way owns what it points at ('Uni', 'Rc', 'Arc')
 };
 
 // Can a value of 'type' reach a value of the struct 'cont'? 'writable' asks only
@@ -106,7 +106,7 @@ int reshapeIsSum(INode *type);
 int reshapeStoreHits(INode *lval, INode *cont);
 
 // The container may be an owner instead of a struct: a borrow into what an owning reference
-// ('So', 'Rc', 'Arc', a region a program declares) points at is a borrow into a value that is
+// ('Uni', 'Rc', 'Arc', a region a program declares) points at is a borrow into a value that is
 // freed when the owner is stored over, by this name or another, in the function or in a callee.
 // The container is then the owner's reference type, one node for all the same types
 // (reshapeOwnerCont); a call reshapes it when it is handed a path it may write to a place

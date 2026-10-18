@@ -54,7 +54,7 @@ struct TlsMaker {
   server tls.Server;
   pool Pool;
 
-  pub fn make(self &mut) So[Layer] {new So[tls.Stream](server.stream(pool));}
+  pub fn make(self &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool));}
 }
 
 fn server(cert &str, key &str) tls.Server {
@@ -257,7 +257,7 @@ fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &m
 // A connection whose handshake is refused: its request's failure
 fn refused(label &str, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
     stream tls.Stream, port u16, want &str) {
-  imm conn = drv.connectWith(lp, "127.0.0.1", port, new So[tls.Stream](stream), Sink.Here(tokConn));
+  imm conn = drv.connectWith(lp, "127.0.0.1", port, new Uni[tls.Stream](stream), Sink.Here(tokConn));
   exchange(drv, lp, sv, cl, events, conn, RequestHead.get("/hello", "localhost"), "");
   printStr(label);
   printStr(": ");
@@ -272,7 +272,7 @@ fn refused(label &str, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, 
 
 fn listenOn(drv &mut Driver, lp &mut Loop, srv tls.Server, pool Pool, token u64) u16 {
   mut port = 0u16;
-  match drv.listenWith(lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(srv, pool)), Sink.Here(token)) {
+  match drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(srv, pool)), Sink.Here(token)) {
     case imm r Ok {
       match drv.localAddr(lp, r) {
         case imm a Ok {port = a.port();}
@@ -303,7 +303,7 @@ fn main() i32 {
   imm before = tls.stats();
 
   // One connection: a GET, a POST echoed, 1 MiB, then 50 GETs kept alive
-  imm conn = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](roots.stream("localhost", pool)),
+  imm conn = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done, "GET /hello: Done");
@@ -345,7 +345,7 @@ fn main() i32 {
   expectUInt(closing.handshakes - before.handshakes, 2u64, "one handshake on each side");
 
   // A second connection resumes the first's session
-  imm conn2 = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](roots.stream("localhost", pool)),
+  imm conn2 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn2, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "a second connection's GET");
@@ -358,14 +358,14 @@ fn main() i32 {
   // it lives, each resume from one
   imm fresh = client(tls.Verifier.roots(readText("ca.pem").view()));
   imm atOnce = tls.stats();
-  imm connA = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](fresh.stream("localhost", pool)),
+  imm connA = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connA, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the first connection's GET");
   expectUInt(u64.from(fresh.cachedSessions()), 2u64, "at once: the first, open, has given two tickets");
-  imm connB = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](fresh.stream("localhost", pool)),
+  imm connB = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
-  imm connC = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](fresh.stream("localhost", pool)),
+  imm connC = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
   expectUInt(u64.from(fresh.cachedSessions()), 0u64, "at once: the second and third took one each");
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connB, RequestHead.get("/hello", "localhost"), "");
@@ -393,7 +393,7 @@ fn main() i32 {
   // Pinning: the server's key, and another
   imm pin = readText("server.pin");
   imm pinned = client(tls.Verifier.pinnedSha256(pin.view()));
-  imm conn3 = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](pinned.stream("localhost", pool)),
+  imm conn3 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](pinned.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn3, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "pinned: the server's key is accepted");

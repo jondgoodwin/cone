@@ -5,7 +5,7 @@
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
 # Two regions are declared in packages/core, the prelude: 'Rc', which counts
-# its owners and frees at the last, and 'So', which declares 'Move' and is
+# its owners and frees at the last, and 'Uni', which declares 'Move' and is
 # freed by its single owner. A third is the sync package's, reached by
 # 'import sync use Arc': 'Arc', which counts as 'Rc' does with its count
 # changed atomically and declares 'ThreadSafe' (region_arc; its threads are the
@@ -65,7 +65,7 @@
 #   rcweak package's 'Weak[T]' over its 'Rcw' region, which its own tests run;
 #   what the ordinary rules refuse of it is region_flow_rcweak_refuse.
 # - An owning array reference. There is none: an owned runtime-sized array is
-#   a 'So[Array[T]]', shared as 'Rc[Array[T]]', and '+[]' is refused where it is parsed
+#   a 'Uni[Array[T]]', shared as 'Rc[Array[T]]', and '+[]' is refused where it is parsed
 #   (region_parse_owned_arrayref). What a borrowed slice is and does belongs to
 #   collection.
 # - Virtual owning references, allocated as their concrete type and coerced
@@ -83,18 +83,18 @@
 # stays ErrorInvType, because that is a type error rather than a region one.
 #
 # Five defects this group recorded as xfails are now fixed, and their scenarios
-# assert the behavior instead: a moved 'So' reference frees once, a first
+# assert the behavior instead: a moved 'Uni' reference frees once, a first
 # assignment to an uninitialized owning variable releases nothing, a region-
 # allocated struct's 'Rc' owning field is released through the reference it holds
 # rather than its address, and an owning reference coerces to a borrowed one.
 # region_typecheck_coerce pins the direction that must stay refused, which could
-# not be asserted while the coercion rule read backwards. region_so_reassign
+# not be asserted while the coercion rule read backwards. region_uni_reassign
 # is the other half of the first-assignment one: a variable that does hold an
-# 'So' value releases it when reassigned, and one moved out does not.
+# 'Uni' value releases it when reassigned, and one moved out does not.
 #
 # The pair of owning-field scenarios are the same shape in the two regions, and
 # together they are what reference counting means here: region_owning_field's 'Rc'
-# field is a second holder and is counted, while region_owning_field_so's 'So'
+# field is a second holder and is counted, while region_owning_field_uni's 'Uni'
 # field is the only holder, so naming it in the literal moves it.
 #
 # An array's contents repeating a counted reference copy it into each element,
@@ -134,7 +134,7 @@ support = []
 # called, and nothing was freed.
 [scenario.region_regionref]
 category = "run"
-description = "A region written in Cone and named neither 'Rc' nor 'So' has its alloc, init, aliasRef, dealiasRef and free called at each reference event, and one declaring 'Move' is a single owner"
+description = "A region written in Cone and named neither 'Rc' nor 'Uni' has its alloc, init, aliasRef, dealiasRef and free called at each reference event, and one declaring 'Move' is a single owner"
 tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # A body whose length a reference carries ('str', the body of bytes), owned in
@@ -159,7 +159,7 @@ description = "An Array body copied into a region's block writes nothing past th
 tags = ["genllvm", "runtime"]
 
 # A string literal copied into an owner of 'str' in regions written here, as
-# 'new R[str](literal)' copies it: ref_literal runs it in So, Rc and Arc.
+# 'new R[str](literal)' copies it: ref_literal runs it in Uni, Rc and Arc.
 [scenario.region_literal]
 category = "run"
 description = "A string literal wanted as an owner of the body of bytes in a counting region and a Move one: a variable and a parameter, the region's alloc asked for the header and the text, each copy freed once"
@@ -196,14 +196,14 @@ tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # A region ref whose 'alloc' asks for the value's type record, by taking one
 # after the size, is handed it at every allocation; one whose 'alloc' does not
-# ask ('Rc', 'So') is called with the size alone, as before records existed.
+# ask ('Rc', 'Uni') is called with the size alone, as before records existed.
 # The region keeps each record in its header and later finalizes each value
 # through it alone, in its own loop, as a collector will: the .out file shows
 # each record's size, alignment and flags, and each value's death in the ruled
 # order, run from the record.
 [scenario.region_typerecord]
 category = "run"
-description = "A region ref whose alloc takes 'ty *TypeRecord' is handed the value type's record (size, alignment, flags, the same record mem.typeRecord gives) and finalizes each value later through it alone; Rc and So, whose alloc takes only the size, are called as before"
+description = "A region ref whose alloc takes 'ty *TypeRecord' is handed the value type's record (size, alignment, flags, the same record mem.typeRecord gives) and finalizes each value later through it alone; Rc and Uni, whose alloc takes only the size, are called as before"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [[scenario.region_typerecord.check]]
@@ -218,13 +218,13 @@ contains = [
 
 # What a trace reaches beyond a value's fields: what a type declaring
 # GcTraceElements holds in memory it points to (a list, a deque, a dictionary, a
-# pool, an arena of many types), the traced references behind an Rc or an So
+# pool, an arena of many types), the traced references behind an Rc or a Uni
 # owner once for each collection (a cycle too), and the slot 'mark' is handed,
 # which it rewrites. The .out file shows every mark, the object's id and a *
 # where it rewrote its slot.
 [scenario.region_gc_trace_elements]
 category = "run"
-description = "A trace reaches the values a type declaring GcTraceElements holds where it points (List, Deque, Dict, OrderedDict, Pool, and an Arena of many types, whose Erased values are traced by their own records), passes through Rc and So to the traced references behind them once for each collection, so a shared owner and a cycle are traced once, and hands mark the slot, which it rewrites"
+description = "A trace reaches the values a type declaring GcTraceElements holds where it points (List, Deque, Dict, OrderedDict, Pool, and an Arena of many types, whose Erased values are traced by their own records), passes through Rc and Uni to the traced references behind them once for each collection, so a shared owner and a cycle are traced once, and hands mark the slot, which it rewrites"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # A type declaring GcTraceElements says how a collector reaches what it holds
@@ -269,7 +269,7 @@ tags = ["genllvm", "runtime"]
 # file shows every mark, as header id / permission / mode.
 [scenario.region_traced]
 category = "run"
-description = "A region ref declaring Traced: each type's record's trace (and mem.trace in line) hands every traced reference a value holds to its region's mark, with its permission and the trace's mode -- struct fields, nesting, tuples, fixed arrays in a loop, an enum's variant by its tag, the nullable-pointer Option, a generic's instance; null passed over; Rc and So fields of a traced object not traced but released by its finalizer"
+description = "A region ref declaring Traced: each type's record's trace (and mem.trace in line) hands every traced reference a value holds to its region's mark, with its permission and the trace's mode -- struct fields, nesting, tuples, fixed arrays in a loop, an enum's variant by its tag, the nullable-pointer Option, a generic's instance; null passed over; Rc and Uni fields of a traced object not traced but released by its finalizer"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [[scenario.region_traced.check]]
@@ -424,7 +424,7 @@ category = "reject"
 description = "A weak reference is made only from a shared 'Rcw[mut, T]' owner, cannot be read through or opened, moves, and takes a unique owner by giving it up"
 tags = ["typecheck", "flow"]
 
-# A value held by 'So' or 'Rc' is finalized when it dies -- its 'final', its
+# A value held by 'Uni' or 'Rc' is finalized when it dies -- its 'final', its
 # finalizing fields, then the owners its fields hold, then 'free' -- and only
 # once: 'Rc' at its last owner, a reassignment's old value when it is
 # replaced, a value moved to a callee there. Before this, a region-held value
@@ -471,12 +471,12 @@ tags = ["flow", "runtime"]
 
 [scenario.region_new]
 category = "run"
-description = "'new Rc[mut, Node](1)' allocates in So, Rc, Arc, Rcw, a region written in Cone and a generic region's instance; uni when the permission is left out, through an alias, named fields, coerced to a virtual reference; the order arguments, alloc, region init, value init in place; 'trynew' gives Some, or None from a failing region"
+description = "'new Rc[mut, Node](1)' allocates in Uni, Rc, Arc, Rcw, a region written in Cone and a generic region's instance; uni when the permission is left out, through an alias, named fields, coerced to a virtual reference; the order arguments, alloc, region init, value init in place; 'trynew' gives Some, or None from a failing region"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
 
 [scenario.region_new_value]
 category = "run"
-description = "An allocation's one argument a finished value, moved in: in So, Rc, Arc, Rcw and a region written in Cone; a number literal adopting the value type, a variable, a call's result, an array literal, a tuple, a variant becoming its enum; a struct's own value (through an alias too) moved in while other arguments go to its inits; the order value, alloc, region init, store; 'trynew' giving Some, or None from a failing region"
+description = "An allocation's one argument a finished value, moved in: in Uni, Rc, Arc, Rcw and a region written in Cone; a number literal adopting the value type, a variable, a call's result, an array literal, a tuple, a variant becoming its enum; a struct's own value (through an alias too) moved in while other arguments go to its inits; the order value, alloc, region init, store; 'trynew' giving Some, or None from a failing region"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # An allocation with contents after '<-'. A 'run' because the claim is that
@@ -487,7 +487,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 # aggregate the size of the array.
 [scenario.region_new_contents]
 category = "run"
-description = "An allocation's contents after '<-' fill its value in place: an array in Rc, So and a region written in Cone, every entry form, several sizes by scalars, nested by rows, through an alias; a million scalars; the order alloc, region init, each value; 'trynew' filling only on Some; a List's contents appended through the reference"
+description = "An allocation's contents after '<-' fill its value in place: an array in Rc, Uni and a region written in Cone, every entry form, several sizes by scalars, nested by rows, through an alias; a million scalars; the order alloc, region init, each value; 'trynew' filling only on Some; a List's contents appended through the reference"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.region_new_contents.check]]
@@ -507,12 +507,12 @@ category = "run"
 description = "An allocation whose initial value holds another allocation"
 tags = ["genllvm", "runtime"]
 
-[scenario.region_so_move]
+[scenario.region_uni_move]
 category = "run"
-description = "Moving a 'So' reference between variables transfers ownership, and frees it once"
+description = "Moving a 'Uni' reference between variables transfers ownership, and frees it once"
 tags = ["flow", "genllvm", "runtime"]
 
-# The accepting half of region_flow_shared_move: a sole owner ('So[T]', 'Rc[uni, T]',
+# The accepting half of region_flow_shared_move: a sole owner ('Uni[T]', 'Rc[uni, T]',
 # 'Rc[T]') gives its value up and the new holder finalizes it once, and a copy
 # value reads out through a shared owner. A field of the value is never given
 # up (move_flow_field). The .out file is the whole assertion.
@@ -540,7 +540,7 @@ tags = ["flow", "genllvm", "runtime"]
 # one never assigns at all. The run is the claim -- without the fix the program
 # frees the garbage in the declared slots and dies of heap corruption -- and the
 # check says why in the one place it can be seen: the module holds no release at
-# all, neither the 'free' an 'So' variable would get nor the count adjustment an
+# all, neither the 'free' a 'Uni' variable would get nor the count adjustment an
 # 'Rc' one would. Read before optimization, as region_tuple_return is. Every
 # call of a region's 'aliasRef', 'dealiasRef' or 'free' is handed the allocation's
 # header, which generation names 'header', so '%header' is excluded here and in
@@ -559,7 +559,7 @@ excludes = ["allocref", "call %void @cone_rawBlockRelease(", "add i64", "sub i64
 # The run is the claim: without the fix the compiler faults before emitting
 # anything. The check is the layout, which the run cannot see: an Option of an
 # owning reference takes the nullable-pointer shape enum_nullable_ptr owns, so
-# the locals 'main' holds one in for Rc, So and NeverAllocs are each a bare pointer,
+# the locals 'main' holds one in for Rc, Uni and NeverAllocs are each a bare pointer,
 # and no tag or wrapper struct is emitted for the Option or either variant.
 # Read before optimization, where the locals are still allocas.
 [scenario.region_fallible_alloc]
@@ -609,9 +609,9 @@ category = "compile"
 description = "An owning reference coerces to a borrowed reference"
 tags = ["typecheck"]
 
-[scenario.region_owning_field_so]
+[scenario.region_owning_field_uni]
 category = "run"
-description = "Releasing a region-allocated struct releases the 'So' reference its field owns, once"
+description = "Releasing a region-allocated struct releases the 'Uni' reference its field owns, once"
 tags = ["flow", "genllvm", "runtime"]
 
 # The claim is the count, because a run cannot see it: without the fix the read
@@ -665,9 +665,9 @@ excludes = ["allocref", "call %void @cone_rawBlockRelease(", "add i64", "sub i64
 # destructuring's one counted element and the '-1' the tuple's release of it; in
 # 'wholeCopy' the two '-1' lines are the previous value released when 'v' is
 # overwritten, read from what the store loads as 'dealiasref'. Without the fix
-# the module holds no '+1' at all and no tuple release. The 'So' spelling is a
+# the module holds no '+1' at all and no tuple release. The 'Uni' spelling is a
 # move, so the destructured 't' releases nothing and the run is the whole claim
-# there; a 'So' tuple left in its variable is freed through it, and the last
+# there; a 'Uni' tuple left in its variable is freed through it, and the last
 # check names the two elements 'soWholeVariable' finalizes in place, each
 # reached by its address in the variable, and the free of each.
 [scenario.region_tuple_destructure]
@@ -727,7 +727,7 @@ contains = ["%100 = sub i32 %99, 1", "%107 = sub i32 %106, 1", "%114 = sub i32 %
 # holds nothing else, which is what lets the check exclude the free and the
 # counter adjustment across the whole module rather than having to name a
 # register. Without the fix each of the four final-position spellings frees or
-# decrements what it just handed over -- a double free for 'So', a count too
+# decrements what it just handed over -- a double free for 'Uni', a count too
 # many for 'Rc' -- in a program that compiled clean. Read before optimization,
 # as region_tuple_return is: after it the module holds nothing at all and the
 # exclude would pass for the wrong reason.
@@ -795,14 +795,14 @@ name = "break-releases-the-scopes-between"
 target = "preir"
 contains = ["%6 = sub i32 %5, 1", "%13 = sub i32 %12, 1"]
 
-# Reassigning a variable that holds an 'So' reference frees the value it held,
+# Reassigning a variable that holds a 'Uni' reference frees the value it held,
 # in every spelling the store has: a single reference, a struct field, and each
 # iteration of a loop. The run shows the new values arrive, and that
 # nothing is freed twice -- a first assignment to a declared-but-empty variable
 # and a reassignment after a move both release nothing first, and on Windows a
 # double free dies of heap corruption. What the run cannot show is that the
 # release is emitted at all, since a leak prints the same. The store releases
-# the old value through what it loads as 'dealiasref', and 'So''s 'free' is
+# the old value through what it loads as 'dealiasref', and 'Uni''s 'free' is
 # handed that value's header, so the first check names the previous value
 # freed: 'dealiasref' stored as the header 'free' takes as 'self'; the free
 # reassign and fieldReassign each make of it (%4, the same register in both);
@@ -812,12 +812,12 @@ contains = ["%6 = sub i32 %5, 1", "%13 = sub i32 %12, 1"]
 # the reassignment, which the run cannot see because the decrement lands in
 # freed memory. Its one decrement, 'Rc''s 'dealiasRef' written out in line, is the
 # scope exit's, at the register it has only when no other precedes it.
-[scenario.region_so_reassign]
+[scenario.region_uni_reassign]
 category = "run"
-description = "Reassigning an 'So' reference or field frees the value it held; a variable holding nothing -- uninitialized or moved out -- releases nothing first"
+description = "Reassigning a 'Uni' reference or field frees the value it held; a variable holding nothing -- uninitialized or moved out -- releases nothing first"
 tags = ["flow", "genllvm", "runtime"]
 
-[[scenario.region_so_reassign.check]]
+[[scenario.region_uni_reassign.check]]
 name = "reassignment-frees-the-previous-so-value"
 target = "preir"
 contains = [
@@ -826,7 +826,7 @@ contains = [
   "%5 = call %void @cone_rawBlockRelease(ptr %block19)",
 ]
 
-[[scenario.region_so_reassign.check]]
+[[scenario.region_uni_reassign.check]]
 name = "moved-out-uni-rc-not-dropped-again-on-reassignment"
 target = "preir"
 contains = ["%10 = sub i32 %9, 1"]
@@ -835,7 +835,7 @@ contains = ["%10 = sub i32 %9, 1"]
 # released exactly as the type it names is. Nothing rewrites the alias away: a
 # declaration keeps the name it was written with as its 'vtype', so every site
 # that asks what a variable or field holds must resolve it. The run covers the
-# spellings that already did -- a local, a reassignment and a move-out, in 'So',
+# spellings that already did -- a local, a reassignment and a move-out, in 'Uni',
 # 'Rc', an alias of an alias, and a struct with a finalizer --
 # and the check covers the one that did not: the release of a struct's fields
 # read a field's declared type raw, so a struct's owning field spelled through an
@@ -856,7 +856,7 @@ contains = [
   "%s = getelementptr inbounds nuw %Held, ptr %0, i32 0, i32 1",
 ]
 
-# A program that declares C's 'free' itself links beside the releases 'So' and
+# A program that declares C's 'free' itself links beside the releases 'Uni' and
 # 'Rc' make, which go through the raw blocks layer. The run is the claim, since a
 # second declaration of 'free' would be renamed 'free.1' and fail at the linker;
 # the check names the two releases (soValue's, and rcValue's at a zero count)
@@ -864,7 +864,7 @@ contains = [
 # no renamed one exists. The registers were read out of the dump.
 [scenario.region_program_free]
 category = "run"
-description = "A program declaring C's 'free' in its own signature links and runs beside 'So' and 'Rc' releases, which go through the raw blocks layer, so the program's declaration is the only one"
+description = "A program declaring C's 'free' in its own signature links and runs beside 'Uni' and 'Rc' releases, which go through the raw blocks layer, so the program's declaration is the only one"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_program_free.check]]
@@ -879,12 +879,12 @@ excludes = ["@free.1"]
 
 # The raw blocks layer, core's 'RawBlocks': alloc, resize (grown and shrunk with
 # the first bytes kept, a null block allocated) and release (a null block
-# nothing), and 'So' and 'Rc', which allocate and release through it. The run is
+# nothing), and 'Uni' and 'Rc', which allocate and release through it. The run is
 # the claim; the sums were added by hand (1 to 16 is 136, 1 to 8 is 36) and 41 +
 # 43 is 84. The check names the three calls the layer's functions are bound to.
 [scenario.region_raw_blocks]
 category = "run"
-description = "The raw blocks layer: a block allocated, grown and shrunk with its first bytes kept, a null block resized into an allocation, a null block released as nothing, and 'So' and 'Rc' values made and let go through it"
+description = "The raw blocks layer: a block allocated, grown and shrunk with its first bytes kept, a null block resized into an allocation, a null block released as nothing, and 'Uni' and 'Rc' values made and let go through it"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_raw_blocks.check]]
@@ -908,11 +908,11 @@ diagnostics = 4
 # once at the token wherever it is written -- an alias, a field, a parameter, a
 # return type, an allocation of a listed array, a generic's
 # parameter -- and read through, so nothing after it is reported as well. The
-# message names 'So[Array[T]]', the owned run-time-sized array, and '&Array[T]',
+# message names 'Uni[Array[T]]', the owned run-time-sized array, and '&Array[T]',
 # the borrowed slice, which stays.
 [scenario.region_parse_owned_arrayref]
 category = "reject"
-description = "'+[]', as a type or an allocation, refused: an owned run-time-sized array is a So[Array[T]], shared as Rc[Array[T]]"
+description = "'+[]', as a type or an allocation, refused: an owned run-time-sized array is a Uni[Array[T]], shared as Rc[Array[T]]"
 tags = ["parse"]
 diagnostics = 7
 
@@ -986,7 +986,7 @@ diagnostics = 9
 
 [scenario.region_typecheck_traced_place]
 category = "reject"
-description = "Where a traced reference may not be held: behind an owning reference of a region a trace cannot pass through (several owners and no visit; a traced region with a write barrier), in a global, placed raw by mem.writeRaw or mem.moveRaw from a type declaring no GcTraceElements (directly, and through a container of the program's own, reported at the program's instantiation); in a root whose type needs tracing and cannot be traced; and what a traced region may not allocate: a value holding a borrow, a virtual reference, a lock permission. Rc and So (also self-referring), List, Arena and Pool holding traced references are accepted"
+description = "Where a traced reference may not be held: behind an owning reference of a region a trace cannot pass through (several owners and no visit; a traced region with a write barrier), in a global, placed raw by mem.writeRaw or mem.moveRaw from a type declaring no GcTraceElements (directly, and through a container of the program's own, reported at the program's instantiation); in a root whose type needs tracing and cannot be traced; and what a traced region may not allocate: a value holding a borrow, a virtual reference, a lock permission. Rc and Uni (also self-referring), List, Arena and Pool holding traced references are accepted"
 tags = ["typecheck"]
 diagnostics = 12
 
@@ -998,9 +998,21 @@ diagnostics = 3
 
 [scenario.region_typecheck_uni_view]
 category = "reject"
-description = "A borrow of a sole owner seen as a borrow of a shared one -- 'Rc[T]' as 'Rc[mut, T]', 'Rc[imm, T]' or 'Rc[ro, T]', a slice of them, a returned borrow, a user region -- is refused; the same view of a 'So' owner, and a move, are not"
+description = "A borrow of a sole owner seen as a borrow of a shared one -- 'Rc[T]' as 'Rc[mut, T]', 'Rc[imm, T]' or 'Rc[ro, T]', a slice of them, a returned borrow, a user region -- is refused; a move is not"
 tags = ["typecheck"]
 diagnostics = 8
+
+[scenario.region_typecheck_sole_owner_mut]
+category = "reject"
+description = "'mut' on an owner of a region declaring Move -- core's 'Uni' and a user's -- is refused wherever a reference type is written (a parameter, result, field, alias, type argument, borrow's pointee, virtual reference, callable, cast, 'new', 'trynew', a region named through an alias), and the owner stands as 'uni' after; 'Uni[T]', 'Uni[imm, T]' and 'Uni[uni, T]', and 'mut' on a region that counts its owners, are not"
+tags = ["typecheck"]
+diagnostics = 14
+
+[scenario.region_nameres_so_renamed]
+category = "reject"
+description = "The old name of the single-owner region, 'So', is an unknown name in a type and in an allocation, and the message says it is now Uni"
+tags = ["nameres"]
+diagnostics = 2
 
 # -------- flow stage --------
 
@@ -1028,7 +1040,7 @@ diagnostics = 6
 # is region_owner_replace_success
 [scenario.region_flow_owner_replace]
 category = "reject"
-description = "A borrow of what an owner ('So', 'Rc') owns, held beside a call whose body stores over an owner of the type, or a store over one: a local lent '&mut' with its contents to one call (also an owner lent as its own method's receiver, a shared 'Rc' a local holds, a callee of the callee), an array element, two '&mut' owner parameters, the same name, a swap, an owner in a field, in a ship nested in another or in an Option, the whole ship stored over, a method of the holder"
+description = "A borrow of what an owner ('Uni', 'Rc') owns, held beside a call whose body stores over an owner of the type, or a store over one: a local lent '&mut' with its contents to one call (also an owner lent as its own method's receiver, a shared 'Rc' a local holds, a callee of the callee), an array element, two '&mut' owner parameters, the same name, a swap, an owner in a field, in a ship nested in another or in an Option, the whole ship stored over, a method of the holder"
 tags = ["flow"]
 diagnostics = 21
 
@@ -1037,8 +1049,8 @@ category = "run"
 description = "A borrow of what an owner owns beside a callee that only reads, writes the Item or replaces it in place, an owner of another type replaced, another field written, the owner replaced after the borrow's last use, a local owner no borrow points into, a method that leaves the owner alone, an owner lent as the receiver of its own method that stores over an owner of its type in a field, and a counted owner replaced after the last use; values and finalizers checked"
 tags = ["flow", "genllvm", "runtime"]
 
-# The same check on the owners of other kinds: an owner of an array ('So[Array[Item]]', a list
-# frozen) and an owner of a trait object ('So[Gadget]', 'Rc[mut, Gadget]'), whose type hides the
+# The same check on the owners of other kinds: an owner of an array ('Uni[Array[Item]]', a list
+# frozen) and an owner of a trait object ('Uni[Gadget]', 'Rc[mut, Gadget]'), whose type hides the
 # struct a method lends a borrow into. The accepting half is region_owner_kinds_success
 [scenario.region_flow_owner_kinds]
 category = "reject"
@@ -1175,7 +1187,7 @@ tags = ["flow", "genllvm", "runtime"]
 
 [scenario.region_lockperm_typecheck]
 category = "reject"
-description = "A lock permission's methods and their shapes; a struct in the permission slot that is none; the regions a lock fits (Mutex on Rc, Rwcell on Arc, either on So, a region counting no owners, a virtual reference refused); a method, a lend and an operator in place through a lock-managed reference refused; Arc[Mutex, T] crossing threads only where T may"
+description = "A lock permission's methods and their shapes; a struct in the permission slot that is none; the regions a lock fits (Mutex on Rc, Rwcell on Arc, either on Uni, a region counting no owners, a virtual reference refused); a method, a lend and an operator in place through a lock-managed reference refused; Arc[Mutex, T] crossing threads only where T may"
 tags = ["typecheck"]
 
 [scenario.region_lockperm_flow]

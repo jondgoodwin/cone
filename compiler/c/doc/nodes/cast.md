@@ -204,12 +204,12 @@ writes through a read-only view). **A raw pointer `as` a reference is not asked*
 needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast.
 **One case is let through for now: a `ro` source made the `imm` a type
 declaring `Immutable` gives a reference that writes no permission**, which is how
-a slice of bytes is made text (`bytes as &str`, `p as So[str]`, documented in
+a slice of bytes is made text (`bytes as &str`, `p as Uni[str]`, documented in
 lib-collections.html). It is keyed on the target being *defaulted*, not written:
 `refTypeCheck` sets `RefNode.permImmDefault` when it replaces the unwritten
 permission with `refImmutableDefaultPerm`, and `castRefPermCheck` asks it of the
 target. A permission written out (`as &imm P` from a `&`, `bytes as &imm str`,
-`So[imm, str]`) is checked as any other and is `ErrorCastPerm`; so is `&mut` as
+`Uni[imm, str]`) is checked as any other and is `ErrorCastPerm`; so is `&mut` as
 `&imm`. The name `str` appears nowhere in the test. The cast promises that the
 bytes are text and that nothing changes them while the text is used, neither of
 which is checked, so it is for `trust` to guard too once that is built.

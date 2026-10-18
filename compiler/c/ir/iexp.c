@@ -791,7 +791,7 @@ INode *iexpPathNonUniLink(INode *lval) {
 
 // Does every reference the place 'lval' is reached through grant write? A
 // reference that only reads ('&', '&imm', a read-only virtual reference or slice,
-// a 'So[imm, T]') on the way makes the place one nothing is written through,
+// a 'Uni[imm, T]') on the way makes the place one nothing is written through,
 // whatever the place's own slot says: whether the slot can be assigned to (an
 // 'imm' field, a variable) is another matter, and does not reach what a
 // reference held in it points at. A lock permission is not asked: its value is

@@ -751,7 +751,7 @@ int fnCallIsNever(INode *node) {
     return node->tag == FnCallTag && itypeIsNever(((FnCallNode *)node)->vtype);
 }
 
-// A virtual dispatch's receiver that is an owning virtual reference ('So[Trait]',
+// A virtual dispatch's receiver that is an owning virtual reference ('Uni[Trait]',
 // Trait an open trait) is lent to the method as a borrowed one, with the permission the
 // method declares for 'self', as a plain owner is lent to a 'self &' or 'self
 // &mut' method: a recast that flow analysis reads as a borrow of what the owner
@@ -1200,7 +1200,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     // A reference is passed as it is, but for an owner (not a borrow) of the type: a
-    // method declaring 'self &So[str]' (fnDclTypeCheck) takes the borrow of the owner
+    // method declaring 'self &Uni[str]' (fnDclTypeCheck) takes the borrow of the owner
     INode *ownerof = objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != borrowRef
         ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : NULL;
     if (ownerof ? !isMethodType(ownerof)
@@ -1660,7 +1660,7 @@ static int fnCallCopiesFreely(INode *type) {
 
 // Is this type a borrow of a value that copies freely, so that an operator
 // wanting the value may read through an operand of it? Only a borrow: an owner
-// (So, Rc), a key and a lock-managed reference reach their value in ways of their own.
+// (Uni, Rc), a key and a lock-managed reference reach their value in ways of their own.
 static int fnCallBorrowTypeReadsThrough(INode *type) {
     if (type->tag != RefTag)
         return 0;
@@ -2391,9 +2391,9 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
 
-    // Text through an owner, '&So[str]' or '&Rc[str]', against text one level
+    // Text through an owner, '&Uni[str]' or '&Rc[str]', against text one level
     // shallower, '&str': only the owner's side is read through, as '&str ==
-    // &So[str]' already reads through the owner when it takes its other side, so
+    // &Uni[str]' already reads through the owner when it takes its other side, so
     // the comparison does not depend on operand order
     if (referent->tag == RefTag && iexpGetTypeDcl(*argp)->tag == RefTag) {
         INode *otherreferent = itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp);
@@ -3166,7 +3166,7 @@ int fnCallRefusePermArg(FnCallNode **nodep) {
 }
 
 // The markers written after a type in a reference type's brackets,
-// 'So[Shape + Sendable + Shareable]' (the parser joins them with '+', as
+// 'Uni[Shape + Sendable + Shareable]' (the parser joins them with '+', as
 // any sum): the type they follow is returned and the markers, RefMark bits, are
 // put in *marks. A '+' joining anything but a marker is reported, and the
 // operands that are not markers are left in place.
@@ -3200,7 +3200,7 @@ static INode *fnCallMarkSplit(INode *arg, uint8_t *marks) {
 // brackets hold an optional permission, 'uni' when it is left out, then the
 // value type. The reference is virtual exactly when the value type is an open
 // trait: an enum is a trait to the compiler too, and a reference to one is thin.
-// A virtual one may say what the value behind it is, 'So[fn() + Sendable]'.
+// A virtual one may say what the value behind it is, 'Uni[fn() + Sendable]'.
 // From here on nothing downstream sees how the type was written.
 static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
@@ -3251,7 +3251,7 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
         INode *vdcl = itypeGetTypeDcl(vtype);
         if (vdcl->tag == StructTag && (vdcl->flags & TraitType) && !(vdcl->flags & HasTagField))
             tag = VirtRefTag;
-        // 'So[fn(i32) i32]': an owner of anything callable with that signature
+        // 'Uni[fn(i32) i32]': an owner of anything callable with that signature
         else if (vdcl->tag == FnSigTag)
             tag = VirtRefTag;
     }
@@ -3314,7 +3314,7 @@ static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
 }
 
 // Can a value of this type be called: a function reference, a reference or owner
-// of a callable ('&<fn(...)', 'So[fn(...)]'), or a struct with a '()'?
+// of a callable ('&<fn(...)', 'Uni[fn(...)]'), or a struct with a '()'?
 static int fnCallTypeCallable(INode *type) {
     if (type == NULL || type == unknownType || !isTypeNode(type))
         return 1;
@@ -3339,7 +3339,7 @@ static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNod
         char held[200] = "";
         itypeSpellCat(held, sizeof(held), fld->vtype, 0);
         errorMsgNode((INode*)node, ErrorFldArgs,
-            "`%s` is a field of %s holding %s, which is not callable, so it takes no arguments. A field is called when it holds a function reference, a `&<fn(...)`, a `So[fn(...)]` or `Rc[fn(...)]`, or a struct with a `()` method.",
+            "`%s` is a field of %s holding %s, which is not callable, so it takes no arguments. A field is called when it holds a function reference, a `&<fn(...)`, a `Uni[fn(...)]` or `Rc[fn(...)]`, or a struct with a `()` method.",
             &fld->namesym->namestr, itypeName(rcvtype), held);
         node->vtype = errorType;
         return 0;
@@ -3589,7 +3589,7 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
 
 // A field, a method or an index reached through a reference to a reference, to
 // an owner of one, to a slice or to a virtual reference ('&&Pt', '&&&Pt',
-// '&mut &Pt', '&So[&Pt]') reads through every reference but the last: the
+// '&mut &Pt', '&Uni[&Pt]') reads through every reference but the last: the
 // receiver becomes '*r', '**r', ... as though the dereferences were written, so
 // everything after sees a receiver of one reference level. Only a '.name' or an
 // index reads through, never an operator: the outer reference's own operators
@@ -4676,7 +4676,7 @@ dispatch:
                     fnCallLowerPtrMethod(node, ptrType);
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
-                // A borrow of an owner ('self &So[Node]', a method's receiver form) is
+                // A borrow of an owner ('self &Uni[Node]', a method's receiver form) is
                 // read through to the owner, whose value's fields and methods these are
                 else if (!ownerread && objdereftype->tag == RefTag
                     && itypeGetTypeDcl(((RefNode*)objdereftype)->region) != borrowRef

@@ -433,11 +433,11 @@ fn two() {
 		(<span class="pre">*m = List[String].empty();</span>), a struct holding one, or an element that owns something, or a
 		field of one, found by indexing the collection (<span class="pre">m[0usize] = s</span> finalizes the old String, so a
 		view of its bytes dangles). So is a store over a field that owns the collection through an owning reference
-		(<span class="pre">So</span>, <span class="pre">Rc</span>, <span class="pre">Arc</span>, or a region a program
+		(<span class="pre">Uni</span>, <span class="pre">Rc</span>, <span class="pre">Arc</span>, or a region a program
 		declares), and a store over the whole struct that holds it. These are refused with error 1426:</p>
 <pre>
 struct Item { pub n i64; }
-struct Ship { pub fuel i64; pub vec So[List[Item]]; }
+struct Ship { pub fuel i64; pub vec Uni[List[Item]]; }
 
 fn whole(l &amp;mut List[String], m &amp;mut List[String]) usize {
   imm t = l[0usize].view();
@@ -453,7 +453,7 @@ fn elem(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
 
 fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
   imm e = a.vec[0usize];
-  b.vec = new So[List[Item]](List[Item].empty());   // Error 1426: the list the owner held is freed
+  b.vec = new Uni[List[Item]](List[Item].empty());   // Error 1426: the list the owner held is freed
   e.n;
 }
 
@@ -484,7 +484,7 @@ fn fieldOfElem(l &amp;mut List[Pt]) i64 {
 		(<a href="#reshape">above</a>).</p>
 
 	<h3 id="owners">An owner stored over</h3>
-	<p>The same rule covers what an owning reference (<span class="pre">So</span>, <span class="pre">Rc</span>,
+	<p>The same rule covers what an owning reference (<span class="pre">Uni</span>, <span class="pre">Rc</span>,
 		<span class="pre">Arc</span>, or a region a program declares) owns. Storing over an owner frees what it points at, as
 		replacing a list frees its block, so the owner is the shape-changing value of a borrow into its contents:
 		<span class="pre">&amp;mut *s</span>, a field of what it owns, or the owner itself lent where a borrow of its
@@ -497,21 +497,21 @@ fn fieldOfElem(l &amp;mut List[Pt]) i64 {
 		with error 1426:</p>
 <pre>
 struct Item { pub v i64; }
-struct Ship { pub fuel i64; pub it So[Item]; }
+struct Ship { pub fuel i64; pub it Uni[Item]; }
 
-fn clobber(x &amp;mut So[Item], y &amp;mut Item) {
-  *x = new So[Item](9);         // the old Item is freed
+fn clobber(x &amp;mut Uni[Item], y &amp;mut Item) {
+  *x = new Uni[Item](9);         // the old Item is freed
   y.v;                          // and read
 }
 
 fn lend() {
-  mut s = new So[Item](1);
+  mut s = new Uni[Item](1);
   clobber(&amp;mut s, s);           // Error 1339: clobber stores over the owner it is handed,
 }                               //   beside a borrow of its contents
 
 fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
   imm y = &amp;mut *a.it;
-  b.it = new So[Item](9);       // Error 1426: b may be a
+  b.it = new Uni[Item](9);       // Error 1426: b may be a
   y.v;
 }
 </pre>
@@ -519,25 +519,25 @@ fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
 		frees, so a callee that only reads, or writes through the borrow, is accepted, as is an owner of another type,
 		another field of the ship, and an owner stored over after the borrow's last use:</p>
 <pre>
-fn writes(x &amp;mut So[Item], y &amp;mut Item) {
+fn writes(x &amp;mut Uni[Item], y &amp;mut Item) {
   x.v = 5;                      // Ok: a field of the Item
   **x = new Item(7);            // Ok: the Item replaced in place, at the same address
   y.v;
 }
 
-fn after(a &amp;mut So[Item]) i64 {
+fn after(a &amp;mut Uni[Item]) i64 {
   imm n = (**a).v;
-  *a = new So[Item](n + 1);     // Ok: the borrow was used up first
+  *a = new Uni[Item](n + 1);     // Ok: the borrow was used up first
   n;
 }
 </pre>
-	<p>An owner of an array (<span class="pre">So[Array[Item]]</span>, what a list's <span class="pre">freeze</span>
-		gives) and an owner of a trait object (<span class="pre">So[Gadget]</span>, <span class="pre">Rc[mut, Gadget]</span>)
+	<p>An owner of an array (<span class="pre">Uni[Array[Item]]</span>, what a list's <span class="pre">freeze</span>
+		gives) and an owner of a trait object (<span class="pre">Uni[Gadget]</span>, <span class="pre">Rc[mut, Gadget]</span>)
 		are owners like any other, the borrow an element's, or one a method of the trait lent into the object's state. A call
 		through a mutable virtual reference runs code the compiler cannot read, so it is assumed to replace an owner of the
 		type as it is assumed to reshape a collection (<a href="#shapekeeping">ShapeKeeping</a>): calling another method of
 		the object while a borrow its <span class="pre">count()</span> lent is held is refused, unless the owner is declared
-		<span class="pre">So[Gadget + ShapeKeeping]</span>.</p>
+		<span class="pre">Uni[Gadget + ShapeKeeping]</span>.</p>
 
 	<h2 id="enums">An enum's variant</h2>
 	<p>For an enum, nothing is frozen. A reference into the payload of an enum's variant, the binding of
@@ -769,12 +769,12 @@ fn viaParam(h &amp;Holder, g &amp;mut Ed) {
 <pre>
 fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
   imm e = l[0usize];
-  imm m = new So[List[Pt]](List[Pt].empty());
+  imm m = new Uni[List[Pt]](List[Pt].empty());
   bump(&amp;mut *m, p);            // Error 1339: refused, though m cannot be l
   e.x;
 }
 </pre>
-	<p>The same holds of owners (<a href="#owners">above</a>): a callee that replaces some <span class="pre">So[Node]</span>
+	<p>The same holds of owners (<a href="#owners">above</a>): a callee that replaces some <span class="pre">Uni[Node]</span>
 		is taken to replace the one a borrow is into, though it replaces a different node's. A borrow into the owner a method
 		is called through is its receiver and no other name for the owner, so <span class="pre">left.insert(v)</span> is asked
 		only of the other arguments.</p>

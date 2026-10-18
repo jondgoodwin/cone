@@ -42,7 +42,7 @@ pub use Option;
 pub use Result;
 
 // 'str', the body of text: bytes, UTF-8 by convention, held only through a
-// reference that carries their count ('&str', 'So[str]', 'Rc[str]'). The
+// reference that carries their count ('&str', 'Uni[str]', 'Rc[str]'). The
 // compiler makes the type (corelib.c); this is its methods, written once, and
 // a 'String' or any owner of either reaches them. Positions are bytes, and a
 // position that is not the start of a character is a program error where a
@@ -64,9 +64,9 @@ pub struct @opaque str {
   }
 
   // The C string of an owner of text, which keeps a NUL after its bytes: 's.cstr()'
-  // for a 'So[str]'. A plain '&str' promises no NUL after its bytes, so it has no
+  // for a 'Uni[str]'. A plain '&str' promises no NUL after its bytes, so it has no
   // such method. A NUL inside the text is a panic.
-  pub fn cstr(self &So[str], file &Array[u8] = srcFile(), line u32 = srcLine()) CStrType inline {
+  pub fn cstr(self &Uni[str], file &Array[u8] = srcFile(), line u32 = srcLine()) CStrType inline {
     CStrType.fromOwned(self, file, line);
   }
 
@@ -223,7 +223,7 @@ pub struct @opaque str {
 
   // What identifies the text to a Hasher: its bytes, then the terminator that
   // marks where they end (Hasher.writeStr). Every kind of text feeds the same,
-  // so a literal, a String and a So[str] of the same bytes hash alike, and a
+  // so a literal, a String and a Uni[str] of the same bytes hash alike, and a
   // collection looks a key up by whichever it holds
   pub fn hash(self &, h &mut Hasher) inline {
     imm b &Array[u8] = self;
@@ -233,7 +233,7 @@ pub struct @opaque str {
 
 // 'Array[T]', the body of T values whose count is known only at run time, held
 // only through a reference that carries the count: its borrow is the slice,
-// '&Array[T]', and 'So[Array[T]]',
+// '&Array[T]', and 'Uni[Array[T]]',
 // 'Rc[Array[T]]', 'Arc[Array[T]]' and 'Gc[Array[T]]' are each a pointer and a
 // count. With sizes, 'Array[T, n]', it is the value array of n elements in
 // place, which the compiler makes (arrayTypeLower); this is the same name
@@ -793,7 +793,7 @@ pub fn zip[A, I, C Iterable[A, I], B, J, D Iterable[B, J]](xs &C, ys &D) Zip[A, 
 // What reaches C as one: a literal, which converts where a 'cstr' is wanted
 // ('fromLiteral'; the compiler refuses a literal holding a NUL byte, which C
 // would read up to); a String's 'cstr()' (collections); an owner of text, 's.cstr()'
-// on a 'So[str]' (str's method, which is 'cstr.fromOwned(&s)'). A general '&str'
+// on a 'Uni[str]' (str's method, which is 'cstr.fromOwned(&s)'). A general '&str'
 // promises no NUL after its bytes (it may be a part of a longer text), so it is
 // copied into a String first: 'String.from(s).cstr()'.
 pub struct cstr {
@@ -814,7 +814,7 @@ pub struct cstr {
 
   // The C string of an owner of text, which keeps a NUL after its bytes. A NUL
   // inside the text would end the string early for C, so it is a panic.
-  pub fn fromOwned(owner &So[str], file &Array[u8] = srcFile(), line u32 = srcLine()) cstr inline {
+  pub fn fromOwned(owner &Uni[str], file &Array[u8] = srcFile(), line u32 = srcLine()) cstr inline {
     imm b &Array[u8] = &**owner;
     if libc.memchr(b as *u8, 0i32, b.len) != null {
       panic("cstr: text holding a NUL byte cannot be a C string", file, line);
@@ -1441,7 +1441,7 @@ pub extern {
 
 // The raw blocks layer: where the runtime gets the bytes that hold a program's
 // values, and gives them back. It sits under every region that keeps its memory
-// on the heap (the heap's own, the regions of 'So', 'Rc' and the other managed
+// on the heap (the heap's own, the regions of 'Uni', 'Rc' and the other managed
 // references, a collection's block, an arena's blocks, an actor's chunks and
 // large objects), and is the one place that names where those bytes come from.
 // Today each function is the C library's 'malloc', 'realloc' and 'free' and
@@ -1485,13 +1485,13 @@ extern {
 // the region's own fields, which is where 'alloc' returned. They are private,
 // called by the compiler alone, and inline, like everything in core.
 //
-// 'So' is the single owner: it declares 'Move', so a copy of a reference is a
+// 'Uni' is the single owner: it declares 'Move', so a copy of a reference is a
 // move, and its one owner going away is the value's death, which ends in
 // 'free'. A region ref declaring neither 'Move' nor 'aliasRef' would share its
 // references freely, and its owners' going would do nothing.
-pub struct So is RegionRef, Move {
+pub struct Uni is RegionRef, Move {
   fn alloc(size usize) *u8 inline {RawBlocks.alloc(size, 16usize);}
-  fn free(self &uni So) inline {RawBlocks.release(self as *u8);}
+  fn free(self &uni Uni) inline {RawBlocks.release(self as *u8);}
 }
 
 // 'Rc' counts its owners in its header. 'aliasRef' is called for each copy that
@@ -1565,7 +1565,7 @@ pub struct Rwcell is LockPermission {
 // Dict, Deque, OrderedDict, Set or Pool lives on the heap, in an arena or in an
 // actor's own memory by being handed another region when it is made. (This is
 // not the 'RegionRef' above, a type-level region that managed references name,
-// 'Rc' and 'So'.)
+// 'Rc' and 'Uni'.)
 //
 // A region is any struct whose FIRST field is a MemRegion, filled with the three
 // functions below, each handed the region itself as a pointer to that first

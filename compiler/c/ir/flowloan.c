@@ -1186,14 +1186,14 @@ void loanNotBoxable(INode *node, uint32_t loan) {
     if (loans[loan].kind == LoanCaller) {
         char lent[160];
         errorMsgNode(node, ErrorLifetimeBound,
-            "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds the borrow the caller lent through %s, which is not ordered to last ''static'.",
+            "An owning virtual reference ('Uni[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds the borrow the caller lent through %s, which is not ordered to last ''static'.",
             loanLentThrough(loan, lent, sizeof(lent)));
         return;
     }
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
     char advice[400];
     errorMsgNode(node, ErrorLifetimeBound,
-        "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.%s",
+        "An owning virtual reference ('Uni[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.%s",
         srcname, loanWhere(&loans[loan], where, sizeof(where)), loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
@@ -2101,7 +2101,7 @@ static int loanShapeIsOwner(uint32_t loan) {
 
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
     if (loanShapeIsOwner(loan)) {
-        // An owner: its region and what it points at, as written ('So[Item]')
+        // An owner: its region and what it points at, as written ('Uni[Item]')
         RefNode *ref = (RefNode *)loans[loan].shapecont;
         INode *region = ref->region ? itypeGetTypeDcl(ref->region) : NULL;
         INode *pointee = ref->vtexp ? itypeGetTypeDcl(ref->vtexp) : NULL;

@@ -241,7 +241,7 @@ struct Pt is Same {
 
 	<h2 id="virtref">Virtual references: choosing the part while the program runs</h2>
 	<p style="margin-left: 40px;"><i>Note: Borrowed virtual references are implemented. An owning one
-		(<span class="pre">So[Shape]</span>) is built, dispatched through, lent as a borrowed one, and finalized and
+		(<span class="pre">Uni[Shape]</span>) is built, dispatched through, lent as a borrowed one, and finalized and
 		freed when its last owner goes, but a <span class="pre">&amp;&lt;uni</span> borrow still moves it. A method
 		is dispatched only through a virtual reference whose permission grants what its <span class="pre">self</span>
 		declares, but dispatching through a <span class="pre">&amp;&lt;uni</span> hands the method that reference
@@ -280,7 +280,7 @@ imm virtref &amp;&lt;Shape = &amp;circle;
 		other references. But a virtual reference may not be dereferenced with <span class="pre">*</span>, since it
 		may point at values of very different size and composition.</p>
 	<p>An owning virtual reference's type is written as any <a href="mem-regions.html#type">owning reference
-		type</a> is, <span class="pre">So[Shape]</span>: it is virtual because its value type is an open trait. It is
+		type</a> is, <span class="pre">Uni[Shape]</span>: it is virtual because its value type is an open trait. It is
 		made by coercing an owning reference, and it lends as any owning reference does
 		(<a href="mem-borrowing.html">Borrowed references</a>): where a borrowed virtual reference is wanted, the owner
 		is borrowed from, not moved. Dispatching a method through it hands the method a borrowed virtual reference
@@ -289,7 +289,7 @@ imm virtref &amp;&lt;Shape = &amp;circle;
 		to one call beside another lend or a move of it (<span class="pre">app.mix(app)</span>, for a
 		<span class="pre">self &amp;mut</span> method, is refused):</p>
 <pre>
-mut app So[Shape] = new So[Circle](5.);
+mut app Uni[Shape] = new Uni[Circle](5.);
 app.area();                       // lends app to the method
 imm view &amp;&lt;Shape = app;          // borrows from app
 describe(app);                    // and so does passing it
@@ -309,7 +309,7 @@ describe(app);                    // and so does passing it
 		'static</span> points at a value holding only global borrows. With no bound, a borrowed virtual reference
 		holds its own lifetime only.</p>
 	<p>An owning virtual reference names no lifetime at all, so it may outlive any borrow:
-		<span class="pre">So[Shape]</span> is bounded by <span class="pre">'static</span>. A value holding a borrow
+		<span class="pre">Uni[Shape]</span> is bounded by <span class="pre">'static</span>. A value holding a borrow
 		that is not global may not be made one, since nothing after it would follow what that value holds:</p>
 <pre>
 struct Ring['a] is Shape {
@@ -318,12 +318,12 @@ struct Ring['a] is Shape {
   pub fn perimeter(self &amp;) f32 { inner.perimeter(); }
 }
 
-mut app So[Shape] = new So[Circle](5.);   // Ok: a Circle holds no borrow
+mut app Uni[Shape] = new Uni[Circle](5.);   // Ok: a Circle holds no borrow
 imm c = new Circle(2.);
-app = new So[Ring](new Ring(&amp;c));       // ERROR: a Ring holds a borrow of c
+app = new Uni[Ring](new Ring(&amp;c));       // ERROR: a Ring holds a borrow of c
 </pre>
 <pre>
-Error 1249: An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any
+Error 1249: An owning virtual reference ('Uni[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any
 borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow
 of 'c' (made at 19:31), which belongs to this function.
 </pre>
@@ -333,7 +333,7 @@ of 'c' (made at 19:31), which belongs to this function.
 		method is dispatched through it only when the reference's permission grants what the method's
 		<span class="pre">self</span> declares. A method taking <span class="pre">self &amp;mut</span> needs a virtual
 		reference that permits mutation (<span class="pre">&amp;&lt;mut</span>, <span class="pre">&amp;&lt;uni</span>,
-		or an owner such as <span class="pre">So[Shape]</span>); through a <span class="pre">&amp;&lt;</span> or
+		or an owner such as <span class="pre">Uni[Shape]</span>); through a <span class="pre">&amp;&lt;</span> or
 		<span class="pre">&amp;&lt;imm</span> one, only methods taking <span class="pre">self &amp;</span> may be
 		called:</p>
 <pre>
@@ -442,7 +442,7 @@ imm p = new V(3., 4.);
 depth(q =&gt; q.x * q.x + q.y * q.y - 5., p);     // the static form: 40
 lend(q =&gt; q.x + q.y, p);                       // the dynamic form: 100 - 7: 93
 imm k = 10.;
-imm own = new So[Shape](fn(q V) [off = k] f32 { q.x + off; });
+imm own = new Uni[Shape](fn(q V) [off = k] f32 { q.x + off; });
 own.distance(p);     // 13
 own.nearness(p);     // 87
 </pre>
@@ -450,7 +450,7 @@ own.nearness(p);     // 87
 		<span class="pre">S</span>, <span class="pre">&amp;S</span> or <span class="pre">&amp;mut S</span>), a borrowed
 		virtual reference (<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;mut Shape</span>, which
 		lend the literal for the statement), and an owner made with <span class="pre">new</span>
-		(<span class="pre">So[Shape]</span>, <span class="pre">Rc[imm, Shape]</span>). It applies only to a literal,
+		(<span class="pre">Uni[Shape]</span>, <span class="pre">Rc[imm, Shape]</span>). It applies only to a literal,
 		written at the point the trait is expected, so no struct of yours meets a trait any differently. A generic
 		trait's instance as the constraint (<span class="pre">[S Shape[T]]</span>), and a literal as a field's initial
 		value or a variable's, are not built.</p>
@@ -471,7 +471,7 @@ own.nearness(p);     // 87
 		declares. So a literal that changes state fills a trait whose method says <span class="pre">self
 		&amp;mut</span>, and is refused where the method says <span class="pre">self &amp;</span>, under every holder,
 		<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;mut Shape</span>,
-		<span class="pre">So[Shape]</span> and a generic's <span class="pre">S</span> alike. A literal that only reads
+		<span class="pre">Uni[Shape]</span> and a generic's <span class="pre">S</span> alike. A literal that only reads
 		meets a method of either kind.</p>
 <pre>
 trait Counter {
@@ -954,7 +954,7 @@ fn when(e &amp;&lt;Event) i64 { e.time; }
 			turns out to move, including one that also says <span class="pre">Move</span>.</li>
 		<li><span class="pre">RegionRef</span>, which a region's reference struct declares
 			(<a href="mem-regions.html">Regions</a>). A region ref may also declare <span class="pre">Move</span>, as
-			<span class="pre">So</span> does: <span class="pre">struct So is RegionRef, Move</span>.</li>
+			<span class="pre">Uni</span> does: <span class="pre">struct Uni is RegionRef, Move</span>.</li>
 		<li><span class="pre">AtomicValue</span>, which marks a value changed only by atomic operations, even where
 			it is <span class="pre">imm</span>: core's <span class="pre">Atomic[T]</span> declares it
 			(<a href="conc-primitives.html#atomic">Atomic values</a>). A type declaring it moves.</li>
@@ -981,7 +981,7 @@ fn when(e &amp;&lt;Event) i64 { e.time; }
 			outside its loop, and a generic constrains on it, <span class="pre">[F fn() + Shareable]</span>
 			(<a href="conc-sharing.html#shareable">Sendable and Shareable</a>). A type may declare it, taken on trust,
 			like <span class="pre">Sendable</span>. A reference to a trait or a callable may say what the value behind
-			it is: <span class="pre">&amp;&lt;Shape + Shareable</span>, <span class="pre">So[fn() + Sendable]</span>.</li>
+			it is: <span class="pre">&amp;&lt;Shape + Shareable</span>, <span class="pre">Uni[fn() + Sendable]</span>.</li>
 		<li><span class="pre">ShapeKeeping</span>, <span class="pre">ShapeChanging</span>'s twin, which the compiler
 			finds of the methods a virtual reference calls and not of a type: they reshape no collection they reach
 			through a path others share, so a call through <span class="pre">&amp;&lt;mut Scorer + ShapeKeeping</span>
@@ -1044,7 +1044,7 @@ imm number = h.finish();
   }
 </pre>
 	<p>Every integer type and <span class="pre">bool</span> is <span class="pre">Hash</span>, feeding its bits, and
-		so is an owner of text, a <span class="pre">So[str]</span> or an <span class="pre">Rc[str]</span>, feeding the
+		so is an owner of text, a <span class="pre">Uni[str]</span> or an <span class="pre">Rc[str]</span>, feeding the
 		bytes as the <span class="pre">str</span> it lends does; a float is not. A struct may hold such an owner as a
 		field and still be given its <span class="pre">hash</span>, which feeds the field as the
 		<span class="pre">str</span> it lends. A value whose length varies feeds a terminator after its bytes,

@@ -510,7 +510,7 @@ function made a callable** (`refvirtMatchesRef`, `&<fn(sig)`), whose stub
 (`genlFnStubVtable`) calls the function with the callable's own values, **a module
 meeting a module trait's function** (`modTraitFindFn`, the exact candidate first and
 else the sole one that meets it; module.md, "Module traits"), **an owner made of a
-plain function reference** (`So[fn(sig)]`, `typeLitNewCallable`), whose holder
+plain function reference** (`Uni[fn(sig)]`, `typeLitNewCallable`), whose holder
 (`closureFnHolder`) is an ordinary checked body that calls the function with the
 callable's own values, and **a generic's `fn(sig)` condition** (`genericSigMeets`: a
 function type by `fnSigMeets`, a struct's pub `()` by `fnSigMeetsMethod`, which
@@ -535,7 +535,7 @@ their `typecheck` scenarios pin them.
 | `traits` | every abstraction whose members were taken — the base, and each further name in the `is` list (every name, for an enum or a variant) — or NULL. Written where the members are taken (`structInheritTrait`), and for an instance's `is` entry whose condition it meets as the instance is cloned (`cloneStructNode`), and read by type check's two requirement checks and by a library compile's export of the methods meeting a requirement (`fnIsTraitMethod`), the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
-| `callsig`, `callmut` | on the trait the compiler writes for a signature behind a virtual reference or an owner (`&<fn(sig)`, `So[fn(sig)]`; `fnSigCallTrait`): the signature, and whether its one `()` takes `self &mut` (else `self &`). NULL and 0 on every other type. `structMapVtableImpl` holds an implementer's `()` to that `self` (`fnSigCallSelfFits`) ([closure](closure.md)) |
+| `callsig`, `callmut` | on the trait the compiler writes for a signature behind a virtual reference or an owner (`&<fn(sig)`, `Uni[fn(sig)]`; `fnSigCallTrait`): the signature, and whether its one `()` takes `self &mut` (else `self &`). NULL and 0 on every other type. `structMapVtableImpl` holds an implementer's `()` to that `self` (`fnSigCallSelfFits`) ([closure](closure.md)) |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, which may be negative, or the next in sequence (`structTagFollow`). **All 64 bits, read as `tagstate` says** |
 | `tagstate` | `TagUnassigned` between reading a variant's name and settling its value, so keeping a pinned value and assigning the next in sequence are one test; after that, **whether `tagnbr` is below zero** (`TagNegative`) or reads unsigned (`TagNonNeg`). A value may be anything `u64` or `i64` holds, and 64 bits hold either but not both — `0xFFFFFFFFFFFFFFFF` and `-1` are the same bits — so the duplicate check (`structTagSame`) and the fit check against a declared type (`enumTagFits`) each read the number the author meant. **A variant of an extension stays unassigned until name resolution**, which is when the base's values are known and its own can continue from them |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
@@ -1399,10 +1399,10 @@ too. What the compiler adds:
   (never a float) asked `is Hash`, and `nbrAddHashMethods` (`corenumber.c`)
   gives each a `hash` method so a generic's `key.hash(h)` reaches something:
   [intrinsic](intrinsic.md), "An integer's and bool's `hash`". It answers true
-  of `So[str]` and `Rc[str]` too (`genericIsTextOwner`), which have no method of
+  of `Uni[str]` and `Rc[str]` too (`genericIsTextOwner`), which have no method of
   their own: a call on one reaches `str`'s `hash` through the text it lends, so a
   generic hashes a key it holds by reference as `(*key).hash(h)`: a method call
-  reads through one reference, and `&So[str]` is two. A struct field of that
+  reads through one reference, and `&Uni[str]` is two. A struct field of that
   type is supplied like any other: `structHashCheck` accepts a reference-tagged
   field type that `genericTypeIs` answers true for, which is only an owner of text.
 - **An `==`.** A type declaring it with none is `ErrorHashNoEq`, whether or not
@@ -1562,7 +1562,7 @@ trait gives it (depth subtyping with no conversion: a `Shape.Circle` for a `Shap
 a non-nullable reference for a nullable one), which is sound for a view that only
 reads. `refvirtMatchesRef` therefore asks `structVirtRefFieldVariant` after
 `structVirtRefMatches` accepts, when the reference's permission has `MayWrite`
-(`&<mut`, `&<uni`, `So[Trait]`): each public field the trait requires must be the
+(`&<mut`, `&<uni`, `Uni[Trait]`): each public field the trait requires must be the
 type the trait declares, in the struct, or in every variant of a trait or enum
 (`ErrorVtableField`, said by `fnSigVrefFieldRefusal` at an argument, an initializer
 and an owner's making). Without it, `h.item = Shape.Square(9)` through a `&<mut Holds`
@@ -1771,7 +1771,7 @@ already has `ErrorDupName`, with `as` or `but` to settle it.
 rewrites the receiver `x` into the call `x.view()`, lowered by
 `fnCallLowerMethod` (the receiver is checked already, and checking it again
 fails on a node that is not idempotent, `new Greeting(..)` among them). Selection
-then goes on against a `&str` receiver, so a value, a borrow, a `So[T]` and an
+then goes on against a `&str` receiver, so a value, a borrow, a `Uni[T]` and an
 `Rc[T]` of the lending type all arrive, each by the receiver coercion a method
 call always has. The call's returned borrow keeps the receiver loaned, as any
 method's does. A vtable slot satisfied by a lent method is filled by a thunk
@@ -1784,7 +1784,7 @@ type is not an implementer.
 **Three places in the call lowering know a lend,** all through `fnCallTextOf`,
 which answers whether a type is `str` or lends it, through any references:
 `==` and the orderings between two kinds of text replace a lending operand by its
-view (`fnCallLentOperands`, before the dispatch), so `String == So[str]` is
+view (`fnCallLentOperands`, before the dispatch), so `String == Uni[str]` is
 `str`'s `==` on two borrows whichever side is which; a borrowed range `&x[a..<b]`
 of such a type is the call of `slice`, `sliceFrom` or `sliceThrough`
 (`fnCallLowerStrRange`, which drops the borrow the parser put around the
@@ -1822,8 +1822,8 @@ compiler's field. A literal converts to it through `fromLiteral` (`slitFromLiter
 so the hook is not special to it; the one case `slitCoerce` adds for the struct is
 the refusal of a literal holding a NUL (`slitCStrCheck`, `ErrorCStrNul`).
 An owner of text reaches C by `s.cstr()`, a method of `str` declared `self
-&So[str]` (a borrow of an owner of the type, which `fnDclTypeCheck` allows as a
-`self`; [fncall](fncall.md), "The borrow retry", is how a `So[str]` receiver finds
+&Uni[str]` (a borrow of an owner of the type, which `fnDclTypeCheck` allows as a
+`self`; [fncall](fncall.md), "The borrow retry", is how a `Uni[str]` receiver finds
 it, and a `&str` finds nothing) that calls `fromOwned`. A type that folds in
 `str`'s methods and declares a `cstr` of its own leaves the fold's out
 (`use str via view but cstr, ...`, as `String` does).

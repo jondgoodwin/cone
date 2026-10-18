@@ -158,7 +158,7 @@ Put these first, because every one of them is load-bearing.
    outgrown — the block-structured IR is held to be easy enough to follow
    directly, joins and all.
 5. **Ownership is not one model, and flow reads which one from the region
-   ref.** One with `aliasRef` (`Rc`) is counted; one declaring `Move` (`So`) has a
+   ref.** One with `aliasRef` (`Rc`) is counted; one declaring `Move` (`Uni`) has a
    single owner, and a copy of a reference to it is a move; one with neither
    (a collector's shape) shares its references for nothing; `borrowRef` is a
    sentinel node, not a struct, and is a reference's default region. No region
@@ -198,7 +198,7 @@ one bit per trigger:
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow, a bare borrowed reference too: its scope number does not follow a borrow through a variable, a value holding it, or a call's by-value argument |
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
-| `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`So[Trait]` from a `So[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
+| `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
 | `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `mut` global's own place is no plain local, and a container some `mut` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
@@ -213,7 +213,7 @@ one, or through one, is a place assigned.
 For `FlowGateInCall`, each operand that is a borrow (`BorrowTag` or
 `ArrayBorrowTag`, through casts), or an owner lent by a recast to a borrowed
 reference of its kind (`flowGateIsOwnedLent`, the recast `pwOwnedLent` reads:
-`both(a, a)` for `a` a `So[R]` or a `So[App]`, and a lent receiver), pushes
+`both(a, a)` for `a` a `Uni[R]` or a `Uni[App]`, and a lent receiver), pushes
 the variable at the root of its place onto `inflight` once it is walked, and
 the call or literal pops back to where it started. A lend the compiler makes
 must trigger it exactly as a written borrow does: a function holding no other
@@ -287,7 +287,7 @@ does. A type acquires it from `is Move`, a finalizer, a move-typed field or
 array element, a move-typed tuple element, and — for references —
 `refAdoptInfections`: **a reference is a move type when its permission lacks
 `MayAlias` or its region ref is itself a move type**, which a region ref is by
-declaring `is Move`, as `So` does. That sentence is why an `Rc[T]` moves while
+declaring `is Move`, as `Uni` does. That sentence is why an `Rc[T]` moves while
 an `Rc[mut, T]` copies, on the same region, and why a reference into a region ref
 declaring neither `Move` nor `aliasRef` copies freely under any aliasable
 permission.
@@ -300,7 +300,7 @@ dereference arms that walk inwards to the variable.
 **Nothing moves out of an element of an array.** The index arm refuses a
 move-typed element whose array is a variable, a parameter or a temporary
 (`a[0]`, `make()[1]`, `grid[1][0]`, an array literal's element), or the array a
-local or temporary sole owner points at (`s[0]` and `(*s)[0]` for `s` a `So`,
+local or temporary sole owner points at (`s[0]` and `(*s)[0]` for `s` a `Uni`,
 also by a variable index) with `ErrorMoveElem`, at the move: the array would be
 left with a hole in it, and the elements that stayed would never be finalized
 (a sole owner's hollow death frees without finalizing). The refused move
@@ -347,7 +347,7 @@ a **shared owning reference** — one that is not a move type, so may be aliased
 `Rc[mut, T]`, `Rc[imm, T]`, `Rc[ro, T]`, `Rc[mut1, T]`, single or virtual — is one of possibly
 many holders of the value, and the others still point at it after the move, so
 it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A **sole**
-owning reference — any `So`, and `Rc[uni, T]` (what `Rc` means) — is not
+owning reference — any `Uni`, and `Rc[uni, T]` (what `Rc` means) — is not
 refused, and moving out through one held in a local variable **hollows** the
 variable, below. Copy values are never
 walked, so they read out through a borrow or a shared owner freely, and swap
@@ -425,7 +425,7 @@ as its enrichment or base is still the scope's result). Missing any one of them
 leaves one value under two names: finalized or freed twice, or counted once for
 two holders. A converting cast (`FlagConvert`) makes a new value and is not
 looked through, but for one: **a conversion into an owning virtual reference
-carries its operand's owner** (`So[App]` from a `So[Spinner]`), adding a vtable
+carries its operand's owner** (`Uni[App]` from a `Uni[Spinner]`), adding a vtable
 to the one owner, so these walks, and `blockResultMove` and the path walk's
 `pwValue`, look through it as through a recast (`flowCastCarries`).
 
@@ -550,7 +550,7 @@ per element that is or holds a counted reference and `0` per other element,
 owners to each such element after an `extractvalue`. The struct, enum and array
 arm (`genlAliasHeld`) mirrors the death: through each field of a struct, the
 variant an enum's tag picks, and each element of an array. A reference into a
-`Move` region (`So`) and a `uni`-permissioned reference into one with `aliasRef`
+`Move` region (`Uni`) and a `uni`-permissioned reference into one with `aliasRef`
 are both move types and take the move path instead, as does a tuple carrying
 one. A reference into a region with neither is copied with no node at all.
 
@@ -595,7 +595,7 @@ back no value; anything else with anything to do as it dies
 own such a reference —
 is added to the list itself, and generation finalizes it in place
 (`genlFinalizeAt`), a tuple element by element, an array in element order. A
-tuple carrying a `So` reference is a move type, so destructuring or copying it
+tuple carrying a `Uni` reference is a move type, so destructuring or copying it
 deactivates the variable and the scope releases nothing of it.
 
 **The result expression is walked before the list is built.** `blockFlow` calls
@@ -888,8 +888,8 @@ operand carries — a recast, a borrow coerced to a virtual reference, and the
 conversion a `case` binding makes of the matched value alike; an `if`, a
 block, and a tuple, struct or array literal, the union of theirs; a call,
 below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
-`u` a `So[Pt]`: a recast from an owning to a borrowed reference; or `imm b
-&<App = v`, `v` a `So[App]`, between virtual references) is a borrow of
+`u` a `Uni[Pt]`: a recast from an owning to a borrowed reference; or `imm b
+&<App = v`, `v` a `Uni[App]`, between virtual references) is a borrow of
 what it owns, `*u`, so `u` may not be moved while `b` is used
 (`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
 by type check to the borrow `&uni *u`, since a recast to a move type would be a
@@ -1000,7 +1000,7 @@ taken by reference is a loan whether the call borrows it (`list.push(x)` is
 `(&mut list).push(x)`, the borrow injected) or it is handed a reference (`r.push(x)`
 for `r &uni List` reborrows `*r`, with the permission the method declares for
 `self`), or is an owner type check lent to a `self &` or `self &mut` method (a
-`So[R]`, or a `So[App]` dispatched through: the recast `pwOwnedLent` reads,
+`Uni[R]`, or a `Uni[App]` dispatched through: the recast `pwOwnedLent` reads,
 a loan of `*a` reached as its owner reaches it, so `a.absorb(a)` moving `a`
 conflicts) (`pwReceiver`). A message names the method: "'list' is borrowed (by
 '[]' at 5:15)".
@@ -1071,7 +1071,7 @@ without a bound. The bound adds `'a` to what the type holds
 an `'a` borrow's are, and `'a >= 'r` to the order of a signature naming
 `&<'r Trait + 'a` (`lifeImplied`).
 
-An owning virtual reference (`So[Trait]`, `Rc[Trait]`, `Arc[Trait]`) takes
+An owning virtual reference (`Uni[Trait]`, `Rc[Trait]`, `Arc[Trait]`) takes
 no bound and names no lifetime, so it carries no borrow (`itypeCarriesBorrow`
 answers for its trait) and no holder follows what its value holds: it is
 bounded by `'static`, Rust's `Box<dyn Trait>`. Wherever a value is made one,
@@ -1502,7 +1502,7 @@ locals, which only a call that reaches one of them is asked of):
   named whole is asked for those; `ReshapeStore`, `ErrorShapeStore`). It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
   a value that holds one by value (`ReachContained`) or through owning references
-  alone (`ReachOwned`: `So`, `Rc`, `Arc` or a region a program declares, with fields and
+  alone (`ReachOwned`: `Uni`, `Rc`, `Arc` or a region a program declares, with fields and
   elements, but no borrow or raw pointer, between: a replaced owner is freed, or
   loses a count, and the last owner's going frees the collection; so a store over the
   owning reference, a field holding it, or a struct holding it is refused), or, for a collection, an element
@@ -1518,7 +1518,7 @@ locals, which only a call that reaches one of them is asked of):
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
 
-**An owner is a shape-changing value too.** Storing over an owning reference (`So`, `Rc`, `Arc`, a
+**An owner is a shape-changing value too.** Storing over an owning reference (`Uni`, `Rc`, `Arc`, a
 program's region) frees what it points at, so a borrow into what an owner owns (`&mut *s`, a field of the
 pointee, an owner lent where a borrow of its contents is wanted: a place that dereferences an owner,
 `Place.ownertype`) is marked for the same check, with the owner's reference type as its container
@@ -1540,13 +1540,13 @@ root variables are listed beside the loan even where the owner is shared (`loanR
 (`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
 only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
 reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
-An owner of a trait object (`So[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
+An owner of a trait object (`Uni[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
 owner like any other (`reshapeIsOwner`), the borrow a method of the trait lends an owner's contents. `rcWalk`
 reads a virtual reference as it does for a collection: its implementers are unknown, so it reaches any container
 (`ReachVirtual`), an owner included. A call through a mutable virtual reference is then asked as a call whose body
 cannot be read, and replaces any owner of the type a borrow is held into, the object's own other methods
 (`o.bump()` while a borrow `o.count()` lent is held) and the owner lent as `&<mut` beside a `&<` of it included.
-`+ ShapeKeeping` on the owner (`So[Gadget + ShapeKeeping]`) and on the virtual reference it is lent as is the
+`+ ShapeKeeping` on the owner (`Uni[Gadget + ShapeKeeping]`) and on the virtual reference it is lent as is the
 cure, as for a collection.
 
 **A reference a call returned** is held by a stand-in variable (`pwStandIn`) when a method
