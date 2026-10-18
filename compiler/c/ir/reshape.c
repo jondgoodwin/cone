@@ -170,7 +170,7 @@ static void rcWalk(INode *type, int ind) {
         }
         // A 'mut' reference beneath a read-only view can be written through
         uint16_t pflags = perm && perm->tag == PermTag ? ((PermNode *)perm)->permflags : 0;
-        // An owning reference ('So', 'Rc', 'Arc', a user region) keeps what it points at alive:
+        // An owning reference ('Uni', 'Rc', 'Arc', a user region) keeps what it points at alive:
         // the walk stays 'owned' through it (ReachOwned); a borrow does not
         int owning = ref->region && itypeGetTypeDcl(ref->region) != borrowRef;
         int nind = 1 | (owning ? (ind & 4) : 4) | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0);
@@ -478,7 +478,7 @@ int reshapeIsOwner(INode *cont) {
     return cont && (cont->tag == RefTag || cont->tag == VirtRefTag);
 }
 
-// A borrow into what an owning reference ('So', 'Rc', 'Arc', a program's region) points at
+// A borrow into what an owning reference ('Uni', 'Rc', 'Arc', a program's region) points at
 // is a borrow into a value the owner frees when it is stored over, as a list is when its
 // block is replaced. The owner's type stands for it, one node for all the types that are
 // the same (the inference keeps its answers by the node)
@@ -518,7 +518,7 @@ int reshapeStoreHits(INode *lval, INode *cont) {
             && !((stored->tag == RefTag || stored->tag == ArrayRefTag) && ((RefNode *)stored)->region
                 && itypeGetTypeDcl(((RefNode *)stored)->region) != borrowRef))
         return 0;
-    // A value holding the other by value, or through owning references alone ('So', 'Rc',
+    // A value holding the other by value, or through owning references alone ('Uni', 'Rc',
     // 'Arc'): replaced whole, it takes the old one with it (the last owner's going frees it)
     if (reshapeReach(stored, cont, 0) & (ReachContained | ReachOwned))
         return 1;

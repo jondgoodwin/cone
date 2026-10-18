@@ -273,7 +273,7 @@ size question (section 6): one of its types is always asked while in flight.
 **Only by-value containment lays a type out.** A struct's field, an array's
 element, a tuple's element and a variant's payload hold a value of their type,
 so each asks that type its size, which is read from its layout. A reference of
-any kind — `&T`, `*T`, `&Array[T]`, `&<Trait`, an owning one (`So[T]`, `Rc[perm, T]`,
+any kind — `&T`, `*T`, `&Array[T]`, `&<Trait`, an owning one (`Uni[T]`, `Rc[perm, T]`,
 `Arc[perm, T]`, a traced region's, with or without a lock permission), a
 function reference — is one or two pointers whatever it points at, and an
 `Option` of one is still one pointer, its null the `None`. So laying a
@@ -372,9 +372,9 @@ signature's lifetimes read it, as it always did.
 **What it fixed.** Measured on `877be3a1`, each refused as `ErrorNoSize` "still
 being laid out" in one declaration order and compiled in the other: `B_state`
 holding `Option[A]` written above `A_state` holding `Option[A]` and `B`, each
-held through `So[...]` (two actors holding each other's handles) — `Option[A]`
+held through `Uni[...]` (two actors holding each other's handles) — `Option[A]`
 lays out `Some[A]`, which holds A, whose owning reference laid `A_state` out,
-which found `Option[A]`'s `Some` in flight; a variant's `&W` or `So[W]` with `W`,
+which found `Option[A]`'s `Some` in flight; a variant's `&W` or `Uni[W]` with `W`,
 holding the enum, written below it; three such states in a ring; and an
 actor's message enum, holding the handle by value, written after the handle or
 its state (`concurrency_actors_declared_last`). Refused in
@@ -411,7 +411,7 @@ it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 | Cause | Where it comes from | Remedy the message names |
 | --- | --- | --- |
 | declared `@opaque` | the `@opaque` marker, `parsetype.c` | hold it through a reference |
-| a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `So[str]`, `&Array[T]` or `So[Array[T]]` |
+| a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `Uni[str]`, `&Array[T]` or `Uni[Array[T]]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
 | a struct with an unsized field, or a tuple with an unsized element | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
@@ -810,6 +810,7 @@ elsewhere, whichever walk arrived at it.
 | `ErrorNoSize` (1069) | a value's type cannot say how large it is — six causes, named in the message |
 | `ErrorSizeMarkerUse` (1296) | a type declares `Sized` or `DynSized`, which the compiler grants from the type's size |
 | `ErrorImmutableWrite` (1297) | `mut`, `mut1` or a lock permission written on a reference to a type declaring `Immutable` (`refImmutableBan`, from `refTypeCheck` and `borrowTypeCheck`) |
+| `ErrorSoleOwnerMut` (1507) | `mut` written on an owner of a region declaring `Move` (`refSoleOwnerPermCheck`, from `refTypeCheck` and `refvirtTypeCheck`) |
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or name the other in an `is` |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 

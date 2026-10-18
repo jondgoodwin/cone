@@ -344,7 +344,7 @@ static LLVMValueRef genlTraceFnOf(GenState *gen, INode *vtype, LLVMTypeRef *fnty
 }
 
 // A trace reaches an owning reference of a region that is not traced ('Rc',
-// 'So'), whose value holds a traced reference: it passes through to the value,
+// 'Uni'), whose value holds a traced reference: it passes through to the value,
 // once per collection where the region has several owners and says so ('visit',
 // called with the trace's mode, the collection's epoch), by the value's type's
 // own trace. A null reference is passed over.
@@ -998,7 +998,7 @@ static LLVMValueRef genlVirtRecord(GenState *gen, LLVMValueRef ref, RefNode *ref
 // type, so the value sits at the region and permission's size rounded up to
 // its own alignment. The first part is the reference type's; the alignment is
 // the concrete type's, read from its record at run time, and only where the
-// header is not empty (a 'So' allocation's value is its start).
+// header is not empty (a 'Uni' allocation's value is its start).
 static LLVMValueRef genlVirtHeader(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode) {
     LLVMTypeRef hdrtypes[2];
     hdrtypes[0] = genlType(gen, refnode->region);
@@ -1443,7 +1443,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         count = LLVMBuildExtractValue(gen->builder, value, 1, "count");
         // One byte more than the elements: the NUL that text always keeps after
         // its bytes. An 'Array[T]' keeps nothing there, so it takes only what
-        // its elements take, except that an empty one with no header (a 'So')
+        // its elements take, except that an empty one with no header (a 'Uni')
         // would ask its region for no memory at all
         spare = itypeIsArrayBody(reftype->vtexp) && header > 0 ? 0 : 1;
         sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header + spare, 0),

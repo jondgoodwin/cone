@@ -1,18 +1,18 @@
 // Assigning to a variable that already holds an owning reference releases the
-// value it held, in region 'So' as in 'Rc': freed once, before the store, in
+// value it held, in region 'Uni' as in 'Rc': freed once, before the store, in
 // every spelling the store has -- a single reference, a field, and each
 // iteration of a loop. A variable that holds nothing releases nothing first:
 // one declared without a value, and one whose value was moved out.
 //
 // genlStore released a previous value only for an 'Rc' reference, so every
-// reassignment of an 'So' variable leaked what it held. It now hands the old
+// reassignment of a 'Uni' variable leaked what it held. It now hands the old
 // value to the same release scope exit uses. The gate is FlagFirstAssign, which
 // flow sets on the assignment site when the variable was never initialized;
 // a moved-out variable holds nothing either, and the flag now says so too --
-// for 'So', where a move is the ordinary hand-over, and for a 'uni' 'Rc'
+// for 'Uni', where a move is the ordinary hand-over, and for a 'uni' 'Rc'
 // reference, whose count the reassignment used to drop a second time.
 
-mod region_so_reassign;
+mod region_uni_reassign;
 
 import stdio use *;
 
@@ -23,7 +23,7 @@ fn show(label &str, n i64) {
   printStr("\n");
 }
 
-fn take(p So[i32]) i64 {
+fn take(p Uni[i32]) i64 {
   i64.from(*p);
 }
 
@@ -32,21 +32,21 @@ fn takeUni(p Rc[uni, i32]) i64 {
 }
 
 fn firstAssign() {
-  mut p So[i32];
-  p = new So[i32](1);
+  mut p Uni[i32];
+  p = new Uni[i32](1);
   show("first-assignment", i64.from(*p));
 }
 
 fn reassign() {
-  mut p = new So[i32](1);
-  p = new So[i32](2);
+  mut p = new Uni[i32](1);
+  p = new Uni[i32](2);
   show("reassigned", i64.from(*p));
 }
 
 fn reassignAfterMove() {
-  mut p = new So[i32](1);
+  mut p = new Uni[i32](1);
   imm t = take(p);
-  p = new So[i32](2);
+  p = new Uni[i32](2);
   show("reassigned-after-move", i64.from(*p) + t);
 }
 
@@ -58,22 +58,22 @@ fn uniReassignAfterMove() {
 }
 
 fn loopAssign() {
-  mut p = new So[i32](0);
+  mut p = new Uni[i32](0);
   mut i = 0;
   while i < 3 {
-    p = new So[i32](i);
+    p = new Uni[i32](i);
     i = i + 1;
   }
   show("reassigned-in-loop", i64.from(*p));
 }
 
 struct Holder {
-  pub p So[i32];
+  pub p Uni[i32];
 }
 
 fn fieldReassign() {
-  mut s = new Holder(new So[i32](1));
-  s.p = new So[i32](2);
+  mut s = new Holder(new Uni[i32](1));
+  s.p = new Uni[i32](2);
   show("field-reassigned", i64.from(*s.p));
 }
 

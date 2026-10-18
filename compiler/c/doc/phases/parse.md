@@ -588,7 +588,7 @@ value, with no `&`: `fn (u f32) [ribs, mut n = 0] f32 { ... }`, read by
 followed by `=>` (`FatArrowToken`). Both build a `ClosureNode`
 ([closure](../nodes/closure.md)), which `&fn(...) { ... }` does not. **A bare `fn(sig)`
 where a type is written** is a signature, read as a generic bound is
-(`parseFnBound`): as an argument inside brackets (`parseIndexArg`: `So[fn(i32) i32]`,
+(`parseFnBound`): as an argument inside brackets (`parseIndexArg`: `Uni[fn(i32) i32]`,
 `Applied[fn(i32) i32]`, since nothing indexes by a closure), as a term while
 `ParseState.intype` is set, and as an alias's target (`parseAlias`). **A `+` after a
 virtual reference's pointee** is read by `parseRefBounds` (`&<Trait + 'a + Shareable`):
@@ -596,7 +596,7 @@ a lifetime bound (`RefNode.bound`), or one of the markers `Sendable`, `Shareable
 `ShapeKeeping` (`RefNode.marks`, `refMarkOfName`), in either order; another name is
 `ErrorMarkUse`. A `&<fn(...)` that returns nothing takes its marker straight after the
 parameters: `parseFnSig` does not read a `+` and a marker's name there as the start of a
-return type. In brackets, `So[Shape + Sendable]` parses as the sum it looks like
+return type. In brackets, `Uni[Shape + Sendable]` parses as the sum it looks like
 (a plus-operator call, `parseAdd`), and a bare signature takes its markers the same way
 (`parseIndexArg` builds the sum), for `fnCallMarkSplit` to take apart where the managed
 reference type is lowered.

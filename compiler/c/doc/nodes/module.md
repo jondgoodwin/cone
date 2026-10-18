@@ -935,7 +935,7 @@ private `extern` declarations bound by `@c` to `cone_rawBlockAlloc`,
 `cone_rawBlockResize` and `cone_rawBlockRelease`, which conestd's `rawblocks.cone`
 defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. It is
 the one place that names where the heap's bytes come from: the heap region
-(`heapregion.c`), `So`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
+(`heapregion.c`), `Uni`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
 blocks and an actor's chunks and large objects go through it, so an allocator
 can replace the three functions and no caller. Bookkeeping objects (mailbox
 nodes, tables, the runtime's own records) and generated code's own boxes
@@ -2694,7 +2694,7 @@ the value holds to its region's `mark`), and flags saying whether finalizing
 does anything and whether the value holds a traced reference. With it a region
 that owns death in its own loop, as a collector does, can finalize a value it
 cannot name the type of (`region_typerecord`). An `alloc` taking only the size
-is called with only the size, so a region that does not ask pays nothing: `So`
+is called with only the size, so a region that does not ask pays nothing: `Uni`
 and `Rc` are generated exactly as they were before records existed. The type
 record is recognized as core's struct named `TypeRecord` (`typeRecordIsPtr`),
 as the intrinsics are recognized as core's, and its layout is the one the
@@ -2703,7 +2703,7 @@ module cannot declare its own `TypeRecord`, since core's public names are
 folded into every module.
 
 Whether the region has one owner per value is not read off a missing method
-but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct So is
+but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct Uni is
 RegionRef, Move`. It marks the struct `MoveType` like any type declaring it
 (`structNameRes`), which every reference type into the region asks
 (`refAdoptInfections`), and `regionIsMove` is what a release asks. A missing
@@ -2740,7 +2740,7 @@ held at the declaration (`ErrorRegionMeth`); on a region not declaring
 **A traced reference may be held only where a collector can find it**: a
 local, a parameter, a temporary, a value inline in one of those, a value a
 traced region allocates, or behind what a trace passes through. A trace passes
-through an owning reference of a region that is not traced (`Rc`, `So`) to the
+through an owning reference of a region that is not traced (`Rc`, `Uni`) to the
 value it holds (`genlTraceThrough`: by the value type's own record, so a type
 reaching itself through an owner traces in a finite function; once for each
 collection where the region has several owners, by `visit`, called with the
@@ -2843,7 +2843,7 @@ private method -- is exported for it the same way: the `collector` package's
 inline `writeBarrier` tests a private global in line and calls its private
 `shade` only while a collection marks.
 
-`So` and `Rc` are written this way in `packages/core/src/core.cone`, `inline`,
+`Uni` and `Rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `alloc` and `free` calling the raw blocks layer, `RawBlocks.alloc` and
 `RawBlocks.release`, by its qualified name, since inside a method named
 `free` a bare `free` is the method. Core is their module wrapper; a region

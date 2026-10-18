@@ -362,7 +362,7 @@ INode *parseTerm(ParseState *parse) {
     // A closure in the full form, a value: 'fn (u f32) [ribs] f32 { ... }'
     case FnToken:
         // Where a type is written, 'fn(i32) i32' is a signature: the callable
-        // type of 'So[fn(i32) i32]' and of a type argument
+        // type of 'Uni[fn(i32) i32]' and of a type argument
         if (parse->intype)
             return parseFnBound(parse);
         return parseClosureFn(parse);
@@ -485,11 +485,11 @@ static INode *parseIndexArg(ParseState *parse) {
         lexNextToken();
         return life;
     }
-    // A signature, 'So[fn(i32) i32]' or 'apply[fn(i32) i32](...)': a type
+    // A signature, 'Uni[fn(i32) i32]' or 'apply[fn(i32) i32](...)': a type
     // argument. Nothing indexes by a closure.
     if (lexIsToken(FnToken)) {
         INode *sig = parseFnBound(parse);
-        // 'So[fn(i32) i32 + Sendable]': markers of the value, joined as any type
+        // 'Uni[fn(i32) i32 + Sendable]': markers of the value, joined as any type
         // joined to another, by '+' (a sum node type check reads, fnCallMarkSplit)
         while (lexIsToken(PlusToken)) {
             FnCallNode *sum = newFnCallOpname(sig, plusName, 2);
@@ -918,7 +918,7 @@ INode *parseAmper(ParseState *parse) {
 // variant.
 //
 // There is no owning array reference: an owned run-time-sized array is a
-// 'So[Array[T]]' (shared, 'Rc[Array[T]]'), a growable one a List. '+[]' stays a token so that it can be
+// 'Uni[Array[T]]' (shared, 'Rc[Array[T]]'), a growable one a List. '+[]' stays a token so that it can be
 // refused, once, at the token, and read through as the thin form so that what
 // follows parses as written. A parse diagnostic ends the compile before name
 // resolution, so what is built for it is never analysed.
@@ -930,7 +930,7 @@ INode *parsePlus(ParseState *parse) {
         anode = newRefNode(RefTag); break;
     case PlusArrayRefToken:
         errorMsgLex(ErrorOwnedArrayRef,
-            "There is no owning array reference '+[]': an owned run-time-sized array is a 'So[Array[T]]', shared as 'Rc[Array[T]]', and a growable one a List; a borrowed slice is '&Array[T]'.");
+            "There is no owning array reference '+[]': an owned run-time-sized array is a 'Uni[Array[T]]', shared as 'Rc[Array[T]]', and a growable one a List; a borrowed slice is '&Array[T]'.");
         anode = newRefNode(RefTag); break;
     case PlusVirtRefToken:
         anode = newRefNode(VirtRefTag); break;

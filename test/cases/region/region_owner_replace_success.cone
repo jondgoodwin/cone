@@ -12,63 +12,63 @@ import stdio use *;
 
 struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); printStr("\n"); } }
 struct Other { pub w i64; }
-struct Ship { pub fuel i64; pub it So[Item]; }
+struct Ship { pub fuel i64; pub it Uni[Item]; }
 struct ShipRc { pub fuel i64; pub it Rc[mut, Item]; }
 struct Game {
   pub fuel i64;
-  pub p So[Item];
+  pub p Uni[Item];
   fn peek(self &mut) i64 { fuel = fuel + 1; fuel; }
-  fn reset(self &mut) { p = new So[Item](50); }
+  fn reset(self &mut) { p = new Uni[Item](50); }
   fn frame(self &mut) i64 { imm pp = &mut *p; peek(); pp.v; }
 }
 
-fn reads(x &mut So[Item], y &mut Item) { printInt(x.v); printInt(y.v); printStr("\n"); }
-fn writes(x &mut So[Item], y &mut Item) { x.v = 5; y.v = y.v + 1; printInt(y.v); printStr("\n"); }
-fn inPlace(x &mut So[Item], y &mut Item) { **x = new Item(7); printInt(y.v); printStr("\n"); }
-fn other(o &mut So[Other], y &mut Item) { *o = new So[Other](3); printInt(y.v); printStr("\n"); }
+fn reads(x &mut Uni[Item], y &mut Item) { printInt(x.v); printInt(y.v); printStr("\n"); }
+fn writes(x &mut Uni[Item], y &mut Item) { x.v = 5; y.v = y.v + 1; printInt(y.v); printStr("\n"); }
+fn inPlace(x &mut Uni[Item], y &mut Item) { **x = new Item(7); printInt(y.v); printStr("\n"); }
+fn other(o &mut Uni[Other], y &mut Item) { *o = new Uni[Other](3); printInt(y.v); printStr("\n"); }
 fn fuel(s &mut Ship, y &mut Item) { s.fuel = 4; printInt(y.v + s.fuel); printStr("\n"); }
 
 // 1 and 1: the callee reads both names
-fn readOnly() { mut s = new So[Item](1); reads(&mut s, s); }
+fn readOnly() { mut s = new Uni[Item](1); reads(&mut s, s); }
 
 // the Item is 1, set to 5 through the owner, then 5 + 1 through the borrow
-fn writeThrough() { mut s = new So[Item](2); writes(&mut s, s); }
+fn writeThrough() { mut s = new Uni[Item](2); writes(&mut s, s); }
 
 // the Item 3 is replaced in place by 7 (3 finalized); the owner and the borrow still reach it
-fn writeInPlace() { mut s = new So[Item](3); inPlace(&mut s, s); }
+fn writeInPlace() { mut s = new Uni[Item](3); inPlace(&mut s, s); }
 
 // an owner of another type is replaced; the Item is still 4
-fn otherOwner() { mut s = new So[Item](4); mut o = new So[Other](1); other(&mut o, s); }
+fn otherOwner() { mut s = new Uni[Item](4); mut o = new Uni[Other](1); other(&mut o, s); }
 
 // another field of the ship is written: 5 + 4
-fn otherField() { mut sh = new Ship(0, new So[Item](5)); fuel(&mut sh, sh.it); }
+fn otherField() { mut sh = new Ship(0, new Uni[Item](5)); fuel(&mut sh, sh.it); }
 
 // the borrow is used up first, then the other owner is replaced
-fn usedFirst(a &mut So[Item], b &mut So[Item]) i64 {
+fn usedFirst(a &mut Uni[Item], b &mut Uni[Item]) i64 {
   imm n = (**a).v;
-  *b = new So[Item](n + 100);
+  *b = new Uni[Item](n + 100);
   n;
 }
 
 // the owner is replaced after the last use of the borrow
-fn lastUse(a &mut So[Item]) i64 {
+fn lastUse(a &mut Uni[Item]) i64 {
   imm y = &mut **a;
   imm n = y.v;
-  *a = new So[Item](n + 10);
+  *a = new Uni[Item](n + 10);
   n;
 }
 
 // a local owner no borrow points into is replaced beside the borrow
-fn localOther(a &mut So[Item]) i64 {
+fn localOther(a &mut Uni[Item]) i64 {
   imm y = &mut **a;
-  mut t = new So[Item](20);
-  t = new So[Item](21);
+  mut t = new Uni[Item](20);
+  t = new Uni[Item](21);
   y.v + t.v;
 }
 
 // the method that holds the borrow calls one that leaves the owner alone, and then one that does not
 fn game() i64 {
-  mut g = new Game(0, new So[Item](8));
+  mut g = new Game(0, new Uni[Item](8));
   imm n = g.frame();
   g.reset();
   n + g.p.v;
@@ -80,13 +80,13 @@ fn game() i64 {
 struct Tally { pub v i64; }
 struct Chain {
   pub n i64;
-  pub next Option[So[Chain]];
-  fn addAfter(self &mut, x i64, log &mut Tally) { next = Some(new So[Chain](x, None)); log.v = log.v + 1; }
+  pub next Option[Uni[Chain]];
+  fn addAfter(self &mut, x i64, log &mut Tally) { next = Some(new Uni[Chain](x, None)); log.v = log.v + 1; }
 }
 
 // the head is 1, the tally 5 + 2
 fn chainLocal(log &mut Tally) i64 {
-  mut head = new So[Chain](1, None);
+  mut head = new Uni[Chain](1, None);
   imm l = &mut *log;
   head.addAfter(5, l);
   head.addAfter(6, l);
@@ -94,7 +94,7 @@ fn chainLocal(log &mut Tally) i64 {
 }
 
 // the head is 2, the tally one more
-fn chainParam(h &mut So[Chain], log &mut Tally) i64 {
+fn chainParam(h &mut Uni[Chain], log &mut Tally) i64 {
   imm l = &mut *log;
   h.addAfter(7, l);
   h.n;
@@ -114,8 +114,8 @@ fn main() {
   writeInPlace();
   otherOwner();
   otherField();
-  mut a = new So[Item](30);
-  mut b = new So[Item](40);
+  mut a = new Uni[Item](30);
+  mut b = new Uni[Item](40);
   printInt(usedFirst(&mut a, &mut b)); printStr("\n");
   printInt(lastUse(&mut a)); printStr("\n");
   printInt(localOther(&mut a)); printStr("\n");
@@ -123,7 +123,7 @@ fn main() {
   mut tally = new Tally(5);
   printInt(chainLocal(&mut tally)); printStr("\n");
   printInt(tally.v); printStr("\n");
-  mut h = new So[Chain](2, None);
+  mut h = new Uni[Chain](2, None);
   printInt(chainParam(&mut h, &mut tally)); printStr("\n");
   printInt(tally.v); printStr("\n");
   mut r = new ShipRc(0, new Rc[mut, Item](60));

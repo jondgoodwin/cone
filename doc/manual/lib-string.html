@@ -19,7 +19,7 @@
 	<p>Text comes in a few forms in Cone, each for a job. A string literal is a <span class="pre">&amp;str</span>, a
 		borrow of text that lasts as long as the program; a <span class="pre">String</span>, from the
 		<span class="pre">collections</span> package, is text that grows; an owner of text,
-		<span class="pre">So[str]</span> or <span class="pre">Rc[str]</span>, owns fixed text; and a
+		<span class="pre">Uni[str]</span> or <span class="pre">Rc[str]</span>, owns fixed text; and a
 		<span class="pre">cstr</span> is text on its way to a C function. They share one set of methods, written once on
 		<span class="pre">str</span>, and one convention: text is UTF-8, and every length and position in it is a
 		number of <b>bytes</b>, so it costs nothing to find. Where a position must fall between characters, the
@@ -27,7 +27,7 @@
 		lists it.</p>
 
 	<h2 id="strmethods">The methods of str</h2>
-	<p>A literal, a <span class="pre">&amp;str</span>, a <span class="pre">So[str]</span> or
+	<p>A literal, a <span class="pre">&amp;str</span>, a <span class="pre">Uni[str]</span> or
 		<span class="pre">Rc[str]</span>, and any type that <a href="mod-extensibility.html#lend">lends one</a>, a
 		<span class="pre">String</span> among them, reaches them all.</p>
 	<ul>
@@ -68,7 +68,7 @@
 			<span class="pre">&lt;=</span>, <span class="pre">&gt;</span>, <span class="pre">&gt;=</span> and
 			<span class="pre">compare(o)</span> (-1, 0 or 1): the bytes compared, and UTF-8's byte order is the order of
 			the code points, so every capital comes before every small letter. They work between
-			<span class="pre">&amp;str</span>, <span class="pre">So[str]</span>, <span class="pre">Rc[str]</span>, a
+			<span class="pre">&amp;str</span>, <span class="pre">Uni[str]</span>, <span class="pre">Rc[str]</span>, a
 			literal and a <span class="pre">String</span>, in any pair. <span class="pre">===</span> asks whether two
 			references are the same place.</li>
 		<li><span class="pre">hash(h)</span>: feeds a <a href="mod-substitution.html#hash">hasher</a> the bytes, then
@@ -77,7 +77,7 @@
 			<span class="pre">&amp;str</span> for that reason.</li>
 		<li><span class="pre">cstr()</span>, on an owner of text only: <a href="#cstr">C strings</a>, below.</li>
 	</ul>
-	<p>How an owner of text (<span class="pre">So[str]</span>, <span class="pre">Rc[str]</span>) is counted and freed
+	<p>How an owner of text (<span class="pre">Uni[str]</span>, <span class="pre">Rc[str]</span>) is counted and freed
 		is described with <a href="mem-regions.html#dynbody">owning references</a>.</p>
 
 	<h2 id="string">String, the growable string</h2>
@@ -131,7 +131,7 @@
 		last two a <span class="pre">List[String]</span>, <span class="pre">split</span> on a byte such as
 		<span class="pre">','</span>.</p>
 	<p id="stringc"><b>Finishing it:</b> <span class="pre">s.freeze()</span> consumes the String and moves its block,
-		shrunk to the text and its NUL, into a <span class="pre">So[str]</span>: the bytes are not copied.
+		shrunk to the text and its NUL, into a <span class="pre">Uni[str]</span>: the bytes are not copied.
 		<span class="pre">s.cstr()</span> is its <a href="#cstr">C string</a>, the NUL already there, so nothing is
 		copied; it is good until the String next changes, and a NUL inside the text is a panic, at the caller's line,
 		since C would stop reading there.</p>
@@ -156,7 +156,7 @@ fn main() {
   print &lt;- parts.len(), " ", parts[1usize].view(), "\n";
   imm joined = String.join(parts.view(), "-");
   print &lt;- joined.view(), "\n";
-  imm frozen = s.freeze();                 // the bytes move into a So[str]
+  imm frozen = s.freeze();                 // the bytes move into a Uni[str]
   print &lt;- frozen.len, "\n";
 }
 </pre>
@@ -204,7 +204,7 @@ say("Padma");                       // the literal, as a slice of bytes
 			until the String next changes or dies.</li>
 		<li>An <b>owner of text</b> keeps the zero after its bytes too, however it was made (copied from a literal or
 			a view, or by <span class="pre">s.freeze()</span>): <span class="pre">owner.cstr()</span> on a
-			<span class="pre">So[str]</span> is its C string, with no copy, checking the text for a zero inside as a
+			<span class="pre">Uni[str]</span> is its C string, with no copy, checking the text for a zero inside as a
 			String's <span class="pre">cstr()</span> does (<span class="pre">cstr.fromOwned(&amp;owner)</span> is the
 			same call). A plain <span class="pre">&amp;str</span> has no <span class="pre">cstr()</span>: it promises no
 			zero.</li>
@@ -224,7 +224,7 @@ say("Padma");                       // the literal, as a slice of bytes
 imm name String = "core";
 libc.remove(name.cstr());                    // a pointer to its bytes and the zero, no copy
 libc.remove("old.tmp");                      // a literal is a cstr where one is wanted
-imm owner So[str] = "scratch.tmp";
+imm owner Uni[str] = "scratch.tmp";
 libc.remove(owner.cstr());                   // an owner of text is one too, no copy
 imm text = libc.strerror(2i32).view();       // a &amp;str of C's answer, scanned
 libc.fwrite(bytes as *u8, 1usize, bytes.len, f);  // a buffer and a count: a pointer, asked for

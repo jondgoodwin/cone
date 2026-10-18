@@ -1103,7 +1103,7 @@ void parallelHelperGlobalsCheckAll(void) {
 // A traced reference (Gc) is counted as one: it has no count, but a copy of it
 // held in a local is a root the function links into the collector's one chain
 // of frames (conestd's roots.cone, single threaded), written without atomics.
-// A move owner (So) cannot be copied. (Only what the body itself copies is
+// A move owner (Uni) cannot be copied. (Only what the body itself copies is
 // seen: a function it calls that copies a borrow it was handed is kept out by
 // the reach rule below, which refuses the body naming what it could copy.
 // A traced reference the pass makes itself is refused too, below.)

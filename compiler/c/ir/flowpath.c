@@ -1172,7 +1172,7 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
 }
 
 // An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
-// 'So[i32]'; or 'imm b &<mut App = v', 'v' a 'So[App]'): a borrow of what it
+// 'Uni[i32]'; or 'imm b &<mut App = v', 'v' a 'Uni[App]'): a borrow of what it
 // owns, so 'u' may not be moved, replaced or ended while the borrow is used
 static int pwIsOwnedLent(CastNode *cast) {
     INode *to = iexpGetTypeDcl((INode *)cast);
@@ -1286,8 +1286,8 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
         *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
         return pwLend(recv, pl, perm, reserve ? pwReserved(*access) : *access, loan);
     }
-    // An owner lent as the receiver ('a.bump()', 'a' a 'So[R]' or a
-    // 'So[App]'): a borrow of what it owns, as pwOwnedLent reads any other lent
+    // An owner lent as the receiver ('a.bump()', 'a' a 'Uni[R]' or a
+    // 'Uni[App]'): a borrow of what it owns, as pwOwnedLent reads any other lent
     // owner, and not a borrowed reference read through, which would make the
     // path shared
     if (recv->tag == CastTag && pwIsOwnedLent((CastNode *)recv)) {
@@ -3498,7 +3498,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         // its value holds came from its operand ('case imm e Some' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
-        // One into an owning virtual reference ('So[Trait]' from a 'So[H]')
+        // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')
         // keeps its operand's value under a type that names no lifetime, so
         // nothing after follows what it holds: it may hold only global
         // borrows, Rust's 'Box<dyn Trait>' being 'dyn Trait + 'static'

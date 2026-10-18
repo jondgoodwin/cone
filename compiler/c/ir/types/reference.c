@@ -80,7 +80,7 @@ INode *refImmutableDefaultPerm(INode *target) {
 // is refused on a reference to a type declaring Immutable, written or
 // inherited from a generic's argument. 'uni' is not refused: it is the one
 // holder's, a 'final' receives its 'self' as it, and a unique owner of a str
-// ('So[uni, str]') is that alone, there being no write to make through a str.
+// ('Uni[str]') is that alone, there being no write to make through a str.
 // This is the rule a later loosening narrows (a 'uni' borrow of an owned 'str'
 // given length-preserving methods) without touching rule one. Answers whether
 // the permission is refused, after saying so.
@@ -167,7 +167,7 @@ void refAdoptInfections(RefNode *refnode) {
 // - A traced reference never crosses while the collector is single threaded,
 //   whatever its permission or its region declares.
 // - An owner that cannot be aliased moves, taking its value with it: a 'uni'
-//   owner of any region, and any owner of a 'Move' region ('So').
+//   owner of any region, and any owner of a 'Move' region ('Uni').
 // - Any other owner may be shared: its permission must be RaceSafe ('imm',
 //   'opaq'), and its region must declare ThreadSafe, so that its aliasRef and
 //   dealiasRef may run on several threads at once ('Arc' does; 'Rc' does not).
@@ -200,7 +200,7 @@ RefBinds refThreadBinds(RefNode *ref) {
 // into the collector's one chain of frames (conestd's roots.cone, single
 // threaded; a reference into an actor-local region is not counted, since each
 // thread has a chain of its own and the actor's roots are found between its
-// messages). A move owner (So) cannot be copied. Any other owner that may be
+// messages). A move owner (Uni) cannot be copied. Any other owner that may be
 // aliased writes its count, which only a region declaring ThreadSafe makes
 // atomic.
 int refCountsPlain(RefNode *ref) {
@@ -396,7 +396,7 @@ int refAllowNewPerm = 0;
 // refused again
 int refNewTypeWritten = 0;
 
-// An owning reference type written in GPU code, 'So[T]', 'Rc[T]', 'Arc[imm, T]',
+// An owning reference type written in GPU code, 'Uni[T]', 'Rc[T]', 'Arc[imm, T]',
 // is refused: a GPU has no allocator, so nothing could own memory, and a kernel
 // has only its locals and the buffers it is bound. A borrow, whose region is
 // the borrow's own, is what a GPU has.
@@ -460,6 +460,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refGpuOwnerCheck(node, newtype);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
+    refSoleOwnerPermCheck(node);
     // A type checked once is not checked again, so this is said once
     if (itypeGetTypeDcl(node->perm) == (INode*)newPerm && (!allownew || node->region != borrowRef)) {
         errorMsgNode((INode*)node, ErrorPermNew,
@@ -529,6 +530,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refGpuOwnerCheck(node, newtype);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
+    refSoleOwnerPermCheck(node);
     int waiting;
     if (refTargetTypeCheck(pstate, &node->vtexp, &waiting) == 0)
         return;
@@ -538,11 +540,11 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
     // A signature behind a virtual reference is the callable trait of that
     // signature, of the kind this reference's permission allows to be called
-    // ('&<fn(i32) i32', 'So[fn(i32) i32]')
+    // ('&<fn(i32) i32', 'Uni[fn(i32) i32]')
     INode *target = itypeGetTypeDcl(node->vtexp);
     if (target->tag == FnSigTag && ((FnSigNode*)target)->ccall) {
         errorMsgNode((INode*)node, ErrorFnRefConv,
-            "A callable (`&<fn`, `So[fn]`) holds a closure, a Cone function or a struct with a `()`, and calls it in Cone's convention; `@c` marks a plain function reference, `&fn @c (...)`, one that C can be handed or hands over.");
+            "A callable (`&<fn`, `Uni[fn]`) holds a closure, a Cone function or a struct with a `()`, and calls it in Cone's convention; `@c` marks a plain function reference, `&fn @c (...)`, one that C can be handed or hands over.");
         return;
     }
     if (target->tag == FnSigTag) {

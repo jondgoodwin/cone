@@ -53,7 +53,7 @@ int fnSigVrefMeets(FnSigNode *impl, FnSigNode *req, INode *selftype);
 
 // The same test for two signatures with no receiver: a function reference's, a
 // plain function standing where a callable's '()' is wanted, a module's function
-// where a module trait asks for one, a function made a 'So[fn(sig)]', a generic's
+// where a module trait asks for one, a function made a 'Uni[fn(sig)]', a generic's
 // 'fn(sig)' condition. Anything fnSigEqual accepts, this accepts. One rule, asked
 // by every route a callable meets a signature through.
 int fnSigMeets(FnSigNode *impl, FnSigNode *req);

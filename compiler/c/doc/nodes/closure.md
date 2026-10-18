@@ -164,7 +164,7 @@ which say what its signature is, then `fnCallClosureArgs` checks it.
 
 ## A callable used dynamically
 
-`&<fn(sig)`, `&<mut fn(sig)`, `So[fn(sig)]` and `Rc[fn(sig)]` take anything with a
+`&<fn(sig)`, `&<mut fn(sig)`, `Uni[fn(sig)]` and `Rc[fn(sig)]` take anything with a
 pub `()` of that signature. The signature is **a trait the compiler writes**
 (`fnSigCallTrait`, `ir/types/fnsig.c`): a `StructNode` flagged `TraitType` whose
 `callsig` is the signature and whose one method is a `()` of it, with a `self` of
@@ -177,14 +177,14 @@ trait that already exists.
 
 - **Where it is made.** `refvirtTypeCheck` replaces a signature target by the
   trait, choosing its `self` from the reference's permission: one that may write
-  (`&<mut`, `So`, `Rc[mut, ...]`) is the `self &mut` trait, any other
-  (`&<`, `So[imm, ...]`) the `self &` one. `fnCallLowerManagedRef` makes
-  `So[fn(sig)]` a virtual reference as it does for a trait. The signature is
+  (`&<mut`, `Uni`, `Rc[mut, ...]`) is the `self &mut` trait, any other
+  (`&<`, `Uni[imm, ...]`) the `self &` one. `fnCallLowerManagedRef` makes
+  `Uni[fn(sig)]` a virtual reference as it does for a trait. The signature is
   written bare in a type argument or an index (`parseIndexArg`, `parseFnBound`), as
   a term where a type is expected (`parseTerm` with `intype`), and as an alias's
   target (`parseAlias`). A bare signature held by value (`Applied[fn(i32) i32]`
   with a field `f F`) is `ErrorNoSize`, a function signature being no value;
-  `So[F]` and `&<F` with it as the argument are the callable references.
+  `Uni[F]` and `&<F` with it as the argument are the callable references.
 - **What meets it.** `structMapVtableImpl` maps a struct's `()` as it does any slot
   and, for a callable trait, asks `fnSigCallSelfFits`: a reference that only reads
   takes a `self &` (or `imm`, `opaq`) and one that may write also a `self &mut`; a
@@ -211,13 +211,13 @@ trait that already exists.
   carries the parameter's permission, so a literal that changes a variable is a
   `self &mut` struct behind a `&` and is refused by the callable's own message. A
   literal anywhere else is not lent: to keep one it is moved into an owner.
-- **An owner.** `new So[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
+- **An owner.** `new Uni[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
   it against the signature's hint if it is a literal, allocates that value's own
   type and converts the owner to the callable's. **A callable that holds nothing**
   (a zero-size struct) is allocated as any other: the allocation of a value with no
   size asks the region for one byte (`genlallocref`; `allocateZeroSizeOk` lets the
   value check pass only here), and it is freed as any block is, with nothing
-  special at its death. **A plain function** (`new So[fn(sig)](&f)`) is held by a
+  special at its death. **A plain function** (`new Uni[fn(sig)](&f)`) is held by a
   struct of the compiler's, `closureFnHolder`: one field, the function reference,
   and a `()` that calls it, made as a closure's struct is and owned like it; a
   function whose signature does not meet the callable's (`fnSigMeets`, the one rule:
@@ -262,7 +262,7 @@ method is named for the trait's method, not `()` (`ClosurePlan.method`,
   The instance's `S` is the hidden struct, which meets the bound structurally.
 - **A borrowed reference to the trait** (`&<Shape`, `&<mut Shape`): lent as a
   temporary, as a callable reference is (`fnCallLendParm`).
-- **An owner** (`new So[Shape](literal)`): `typeLitNewCallable`, the callable's
+- **An owner** (`new Uni[Shape](literal)`): `typeLitNewCallable`, the callable's
   making, for any trait when the one argument is a literal.
 
 A trait with other than one required method, or with a field, is `ErrorClosureTrait`,
@@ -272,7 +272,7 @@ parameter type or a written return type that is not the method's is
 as `()`'s does: a literal whose body changes state has `self &mut`. It is held to
 the trait's `self` as any implementer is (`fnSigVrefSelfFits`): where the trait's
 method says `self &` it is refused, under every holder -- `&<Shape`, `&<mut Shape`,
-`So[Shape]`, `[S Shape]` by `&S`, `&mut S` or value -- as `ErrorVtableSelf`, in
+`Uni[Shape]`, `[S Shape]` by `&S`, `&mut S` or value -- as `ErrorVtableSelf`, in
 the literal's words (`fnSigVrefSelfRefusal`: it needs `self &mut` because it
 changes state it holds or borrows; declare the trait's method `self &mut`, or do
 not change it). The vtable cases reach it through `structMapVtableImpl` and
@@ -315,13 +315,13 @@ instead of borrowing it.
   variable, `[k]`; for `self` (a body that names a member borrows `self`), copy the
   members into the list or capture a counted handle. A borrow stored in `self`
   that borrows `self` is the same `ErrorLifetimeBound` an owner of a callable
-  holding any borrow of the function's gets (`So[fn]` bounds its value by
+  holding any borrow of the function's gets (`Uni[fn]` bounds its value by
   `'static`). A `&<fn` returned by borrow of a local closure is
   `ErrorEscape` from `returnFlowEscape`, which says the closure can leave as an
   owner and names what it borrows.
 - **Threads.** `closureFirstCap` finds the first captured variable (a list entry or
   a borrowed variable) whose field the check refuses; `genericNotSendableMsg`,
-  `genericNotShareableMsg`, `fnSigMarkRefusal` (a value made `So[fn() + Sendable]`
+  `genericNotShareableMsg`, `fnSigMarkRefusal` (a value made `Uni[fn() + Sendable]`
   or `&<fn() + Shareable`) and the `parallel each` reach message
   (`parCheckReach`) say it as "it borrows 'k' (&ro i32)" and add
   `closureCapAdvice`. A list entry holding an `Rc` is told to hold an `Arc`; a
@@ -339,7 +339,7 @@ it is left to run. Three refusals keep it so:
 - **What it holds** (`closureGpuCheck`, `closureGpuWhy`, `ErrorGpuClosureData`):
   the type of each state entry and of each variable it borrows may hold numbers,
   structs and arrays of them, and borrows (a slice's element, a reference's
-  target) of such types; an owning reference (`So`, `Rc`, `Arc`, `Gc`), a function
+  target) of such types; an owning reference (`Uni`, `Rc`, `Arc`, `Gc`), a function
   reference, a virtual reference or a raw pointer, anywhere inside, is refused,
   naming the variable. The closure is built all the same, so the call it is
   given to goes on and says nothing more.
@@ -403,6 +403,6 @@ says so, and the object defines the hidden struct's methods, internally
 | `ir/types/struct.c` | `structInheritDefaults` | the trait's default methods cloned into the hidden struct |
 | `ir/exp/fncall.c` | `fnCallLendParm`, `fnCallClosureTraitRefused` | `&<Shape` takes a lent literal; a trait without exactly one required method, or with a field, refuses it |
 | `ir/meta/generic.c` | `genericParmTraitBound` | the plain trait that bounds a parameter a literal is given to |
-| `ir/exp/typelit.c` | `typeLitNewCallable` | `new So[fn(sig)](c)` |
+| `ir/exp/typelit.c` | `typeLitNewCallable` | `new Uni[fn(sig)](c)` |
 | `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
 | `shared/error.c` | `errorSilent` | diagnostics counted and not printed |

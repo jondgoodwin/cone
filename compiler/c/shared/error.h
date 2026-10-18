@@ -153,7 +153,7 @@ enum ErrorCode {
     // Traced regions: a region ref declaring 'Traced', and where its references may be held (ir/types/region.c)
     ErrorTracedUse = 1169,      // 'Traced' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
     ErrorTracedMark = 1170,     // A region declaring 'Traced' with no 'mark' method for its trace to call
-    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: 'Rc[T]', 'So[T]' with T holding one
+    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: 'Rc[T]', 'Uni[T]' with T holding one
     ErrorTracedGlobal = 1172,   // A global or static whose type holds a traced reference, which no collector finds
     ErrorTracedBorrow = 1173,   // A traced region's reference to a value that holds a borrowed reference, which its trace cannot see and no lifetime covers
     ErrorTracedRaw = 1174,      // mem.writeRaw or mem.moveRaw of a type holding a traced reference: placing one in raw memory no collector traces (an arena's, a pool's, a collection's)
@@ -459,11 +459,11 @@ enum ErrorCode {
     // Lock permissions: a struct declaring 'LockPermission' in a managed reference's permission slot (ir/types/permission.c, ir/exp/borrow.c)
     ErrorNotLockPerm = 1245,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
     ErrorLockPermShape = 1246,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
-    ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
+    ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('Uni'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
     ErrorLockAccess = 1248,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
     // Lifetime bounds: '[T + 'a]', 'where T + 'a', '&<Trait + 'a' (ir/types/lifetime.h)
-    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('So[Trait]', bounded by ''static'), a bound on a generic type's parameter
+    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('Uni[Trait]', bounded by ''static'), a bound on a generic type's parameter
 
     // Actors: 'actor Name { ... }' (parser/parseactor.c, ir/types/actor.h). A
     // behaviour's argument that is not Sendable is ErrorNotSendable; the state
@@ -552,7 +552,7 @@ enum ErrorCode {
 
     // Shape-changing types (ir/shapeinfer.c, ir/reshape.c)
     ErrorShapeMark = 1338,      // A type declaring 'ShapeChanging' that the compiler does not find so from its methods: none writes storage the type owns and lends a borrow. A declaration may only assert what is found
-    ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string, an owner such as a 'So', whose replacing frees what it owns) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
+    ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string, an owner such as a 'Uni', whose replacing frees what it owns) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
 
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
@@ -599,15 +599,15 @@ enum ErrorCode {
     ErrorParAlias = 1396,       // A 'parallel each' that writes through its source (mutChunks, mutItems, a zip of them, a '&mut' slice) reads, by a path or as a whole, an outside variable that could reach a written element behind a reference: a read while a pass writes would race
 
     // Callable references (ir/types/fnsig.c, ir/exp/fncall.c)
-    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
-    ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
+    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'Uni[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
+    ErrorCallableUse = 1398,    // A value made into a 'Uni[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
     ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one required method (and no field) for it to fill
 
     // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c, ir/types/reference.c, ir/exp/fncall.c, ir/exp/pareach.c, ir/exp/await.c, parser/parseactor.c)
-    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('new So[T]', 'new Rc[T]', ...), an owning reference type written ('So[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
+    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('new Uni[T]', 'new Rc[T]', ...), an owning reference type written ('Uni[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
 
     // A virtual reference's trait method met by a stronger 'self' (ir/types/fnsig.c)
-    ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose method takes a stronger `self` permission than the trait's method declares
+    ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `Uni[Trait]`) whose method takes a stronger `self` permission than the trait's method declares
 
     // Value parameters of a generic, '[N usize]' (ir/meta/generic.c, ir/types/array.c)
     ErrorGenValueParm = 1402,   // A value parameter, '[N usize]', that is not built: its annotation is not an integer type, it has another annotation beside it, it is on a generic type, or a 'where' clause asks about it
@@ -617,7 +617,7 @@ enum ErrorCode {
 
     // The share check: the built-in marker 'Shareable' and markers after a '+' in a reference type (ir/itype.c, ir/meta/generic.c, ir/types/reference.c)
     ErrorNotShareable = 1406,   // An instance whose 'T is Shareable' is unmet, or a value made a reference marked '+ Shareable' (or '+ Sendable') that is not: the type holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path ('&mut')
-    ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'So[fn() + Sendable]')
+    ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'Uni[fn() + Sendable]')
 
     // A string literal where a cstr is wanted (ir/exp/literal.c)
     ErrorCStrNul = 1408,        // A string literal holding a NUL byte ('"ab\x00cd"') where a cstr is wanted: C would read it as 'ab', cutting the text short
@@ -656,7 +656,7 @@ enum ErrorCode {
 
     // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
     ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used
-    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string, an owner such as a 'So'), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
+    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string, an owner such as a 'Uni'), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
 
     // What a collector reaches in memory a type points to (ir/types/struct.c, region.c)
     ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
@@ -696,10 +696,13 @@ enum ErrorCode {
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly
 
     // A callable's by-value parameter or result (ir/types/fnsig.c)
-    ErrorFnRefByValue = 1506,   // A callable given where a signature is wanted that differs from it in a parameter or the result held by value that is not one layout: a variant for its enum (`&mk` returning `Shape.Circle` as `&fn(n i32) Shape`, `&area` taking `Shape` as `&fn(s Shape.Circle) i32`) or the reverse. The same on every route a callable meets a signature by: a function reference, a callable `&<fn`, `So[fn(sig)]`, a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic bound, `is`) and a module trait's function. A call through the wanted signature would pass or read the value as another, and no cast converts it, so it is refused where it is written and a wrapper function converts
+    ErrorFnRefByValue = 1506,   // A callable given where a signature is wanted that differs from it in a parameter or the result held by value that is not one layout: a variant for its enum (`&mk` returning `Shape.Circle` as `&fn(n i32) Shape`, `&area` taking `Shape` as `&fn(s Shape.Circle) i32`) or the reverse. The same on every route a callable meets a signature by: a function reference, a callable `&<fn`, `Uni[fn(sig)]`, a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic bound, `is`) and a module trait's function. A call through the wanted signature would pass or read the value as another, and no cast converts it, so it is refused where it is written and a wrapper function converts
 
     // A virtual reference that may write sees each field at exactly the trait's type (ir/types/fnsig.c, ir/types/reference.c)
-    ErrorVtableField = 1504,    // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `So[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
+    ErrorVtableField = 1504,    // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
+
+    // 'mut' on an owner of a region with one owner per value (ir/types/permission.c)
+    ErrorSoleOwnerMut = 1507,   // 'mut' written on a reference of a region declaring 'Move' (`Uni[mut, T]`, `new Uni[mut, T](...)`, a `Uni[mut, Trait]`): 'mut' is shared mutable, and a region whose values have one owner shares nothing, so the permission means nothing on it. `Uni[T]` is the normal spelling; `imm` stays legal as a promise the value never changes
 
     // Warnings
     WarnCode = 3000,

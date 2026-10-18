@@ -505,7 +505,7 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
         return 0;
     // The one case let through, until 'trust' is built: a 'ro' reference made
     // the 'imm' a type declaring Immutable gives a reference that writes no
-    // permission, 'bytes as &str', 'p as So[str]' (lib-string.html#bytes, "Text and bytes").
+    // permission, 'bytes as &str', 'p as Uni[str]' (lib-string.html#bytes, "Text and bytes").
     // The permission is the type's default, not written: a
     // written '&imm' (or '&imm str') is checked as any other. It promises that
     // nothing changes the bytes while the text is used, and that they are text,
@@ -768,7 +768,7 @@ int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
         RefNode *ref = (RefNode*)type;
         if (itypeGetTypeDcl(ref->region) != borrowRef) {
             errorMsgNode((INode*)var, ErrorTypeVariant,
-                "A reference into a managed value (an Rc, an So) cannot lend the contents of %s as a binding yet: match a borrow of the value, '&', or the value itself.",
+                "A reference into a managed value (an Rc, a Uni) cannot lend the contents of %s as a binding yet: match a borrow of the value, '&', or the value itself.",
                 &variant->namesym->namestr);
             var->vtype = errorType;
             var->value = NULL;

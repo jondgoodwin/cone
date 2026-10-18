@@ -4,7 +4,7 @@
 // - an arena finalizes its values newest first (the reverse of allocation);
 // - a value's death is its own 'final', then each field's, in field order and
 //   recursively, then the owning references its fields hold are released: a
-//   'So' one's value dies and is freed, an 'Rc' one's only if that was its
+//   'Uni' one's value dies and is freed, an 'Rc' one's only if that was its
 //   last owner;
 // - a value typed as an enum dies as the variant it holds;
 // - a tuple dies element by element, and an array in element order, first
@@ -37,14 +37,14 @@ struct Inner { pub n i64; fn final(self &uni) { note(n); } }
 struct Middle { pub n i64; pub c Inner; pub f Fin; fn final(self &uni) { note(n); } }
 struct Outer { pub n i64; pub b Middle; fn final(self &uni) { note(n); } }
 
-struct HoldsSo { pub n i64; pub o So[Fin]; fn final(self &uni) { note(n); } }
+struct HoldsUni { pub n i64; pub o Uni[Fin]; fn final(self &uni) { note(n); } }
 struct HoldsRc { pub n i64; pub r Rc[mut, Fin]; fn final(self &uni) { note(n); } }
 
 // An owning reference held two fields deep: in a field of a field
-struct TwoDeep { pub n i64; pub h HoldsSo; }
+struct TwoDeep { pub n i64; pub h HoldsUni; }
 
 // A chain of single owners: each owner's release runs the next one's death
-struct ChainTop { pub n i64; pub o So[HoldsSo]; fn final(self &uni) { note(n); } }
+struct ChainTop { pub n i64; pub o Uni[HoldsUni]; fn final(self &uni) { note(n); } }
 
 // Refers to another value, which it does not own
 struct Watches { pub n i64; pub r &mut Fin; fn final(self &uni) { note(n); } }
@@ -75,12 +75,12 @@ fn nested() {
 
 fn soField() {
   mut a = Arena.empty();
-  a.alloc(new HoldsSo(1, new So[Fin](2)));
+  a.alloc(new HoldsUni(1, new Uni[Fin](2)));
 }
 
 fn soChain() {
   mut a = Arena.empty();
-  a.alloc(new ChainTop(1, new So[HoldsSo](2, new So[Fin](3))));
+  a.alloc(new ChainTop(1, new Uni[HoldsUni](2, new Uni[Fin](3))));
 }
 
 fn rcShared() {
@@ -149,12 +149,12 @@ fn tuple() {
 
 fn twoDeep() {
   mut a = Arena.empty();
-  a.alloc(new TwoDeep(1, new HoldsSo(2, new So[Fin](3))));
+  a.alloc(new TwoDeep(1, new HoldsUni(2, new Uni[Fin](3))));
 }
 
 fn ownerAsValue() {
   mut a = Arena.empty();
-  imm r = a.alloc(new So[Fin](6));
+  imm r = a.alloc(new Uni[Fin](6));
   expectInt((*r).n, 6, "read through the owner held in the arena");
 }
 
@@ -186,7 +186,7 @@ fn nestedArenas() {
 }
 
 fn soHeldArena() {
-  imm a = new So[Arena](Arena.empty());
+  imm a = new Uni[Arena](Arena.empty());
   a.alloc(new Fin(1));
   a.alloc(new Fin(2));
 }
@@ -235,10 +235,10 @@ fn main() i32 {
   expectInt(log, 1234, "own final, then fields in order, recursively");
   log = 0;
   soField();
-  expectInt(log, 12, "own final, then the So owner's value");
+  expectInt(log, 12, "own final, then the Uni owner's value");
   log = 0;
   soChain();
-  expectInt(log, 123, "a chain of So owners, each released in turn");
+  expectInt(log, 123, "a chain of Uni owners, each released in turn");
   log = 0;
   rcShared();
   expectInt(log, 13, "the shared value dies with its last owner, outside");
@@ -280,7 +280,7 @@ fn main() i32 {
   expectInt(log, 321, "an arena in an arena dies in its place, and its values with it");
   log = 0;
   soHeldArena();
-  expectInt(log, 21, "an arena behind So dies with its owner");
+  expectInt(log, 21, "an arena behind Uni dies with its owner");
   log = 0;
   swapOut();
   expectInt(log, 12, "the swapped-out value dies where it went, the swapped-in with the arena");

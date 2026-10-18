@@ -3,11 +3,11 @@ mod region_flow_owner_kinds;
 import stdio use *;
 import collections use *;
 
-// region_flow_owner_replace holds the check on 'So[Item]' and 'Rc[mut, Item]': a borrow into what an owner
+// region_flow_owner_replace holds the check on 'Uni[Item]' and 'Rc[mut, Item]': a borrow into what an owner
 // owns is refused beside a call or a store that could replace the owner through another name. It is no
 // different for the owners of other kinds, which this file pins:
-//   - an owner of an array ('So[Array[Item]]', what a list's 'freeze' gives), the borrow an element's;
-//   - an owner of a trait object ('So[Gadget]', 'Rc[mut, Gadget]'): the owner's type hides the struct behind
+//   - an owner of an array ('Uni[Array[Item]]', what a list's 'freeze' gives), the borrow an element's;
+//   - an owner of a trait object ('Uni[Gadget]', 'Rc[mut, Gadget]'): the owner's type hides the struct behind
 //     it, and a method of the trait lends a borrow into that struct's own state.
 // Run, each of these read an Item (or a counter) the callee's replacement had freed, after its 'final' had run.
 // region_owner_kinds_success holds what is accepted beside each refusal.
@@ -26,22 +26,22 @@ struct Real is Gadget {
   fn final(self &uni) { printStr("final real "); printInt(n); printStr("\n"); }
 }
 
-struct Holder { pub g So[Gadget]; }
+struct Holder { pub g Uni[Gadget]; }
 
-fn mkArr(n i64) So[Array[Item]] {
+fn mkArr(n i64) Uni[Array[Item]] {
   mut l = List[Item].empty();
   l.push(new Item(n));
   l.push(new Item(n + 100));
   l.freeze();
 }
-fn mkG(n i64) So[Gadget] { new So[Real](new Real(n)); }
+fn mkG(n i64) Uni[Gadget] { new Uni[Real](new Real(n)); }
 fn mkR(n i64) Rc[mut, Gadget] { new Rc[mut, Real](new Real(n)); }
 
 // The callees: each stores over the owner it is handed
-fn replaceArr(a &mut So[Array[Item]]) { *a = mkArr(9); }
-fn clobberArr(a &mut So[Array[Item]], e &mut Item) { *a = mkArr(9); printInt(e.v); }
-fn replaceG(o &mut So[Gadget]) { *o = mkG(9); }
-fn clobberG(o &mut So[Gadget], c &mut i64) { *o = mkG(9); printInt(*c); }
+fn replaceArr(a &mut Uni[Array[Item]]) { *a = mkArr(9); }
+fn clobberArr(a &mut Uni[Array[Item]], e &mut Item) { *a = mkArr(9); printInt(e.v); }
+fn replaceG(o &mut Uni[Gadget]) { *o = mkG(9); }
+fn clobberG(o &mut Uni[Gadget], c &mut i64) { *o = mkG(9); printInt(*c); }
 fn replaceHolder(h &mut Holder) { h.g = mkG(9); }
 fn replaceR(o &mut Rc[mut, Gadget]) { *o = mkR(9); }
 
@@ -59,13 +59,13 @@ fn arrHeld() i64 {
 }
 
 // Two '&mut' parameters that may be one owner
-fn arrTwoCall(a &mut So[Array[Item]], b &mut So[Array[Item]]) i64 {
+fn arrTwoCall(a &mut Uni[Array[Item]], b &mut Uni[Array[Item]]) i64 {
   imm e = &mut a[0usize];
   replaceArr(b);                                                        //~ ErrorShapeReshape
   e.v;
 }
 
-fn arrTwoStore(a &mut So[Array[Item]], b &mut So[Array[Item]]) i64 {
+fn arrTwoStore(a &mut Uni[Array[Item]], b &mut Uni[Array[Item]]) i64 {
   imm e = &mut a[0usize];
   *b = mkArr(9);                                                        //~ ErrorShapeStore
   e.v;
@@ -85,13 +85,13 @@ fn gadgetHeld() i64 {
 }
 
 // Two '&mut' parameters that may be one owner
-fn gadgetTwoCall(a &mut So[Gadget], b &mut So[Gadget]) i64 {
+fn gadgetTwoCall(a &mut Uni[Gadget], b &mut Uni[Gadget]) i64 {
   imm c = a.count();
   replaceG(b);                                                          //~ ErrorShapeReshape
   *c;
 }
 
-fn gadgetTwoStore(a &mut So[Gadget], b &mut So[Gadget]) i64 {
+fn gadgetTwoStore(a &mut Uni[Gadget], b &mut Uni[Gadget]) i64 {
   imm c = a.count();
   *b = mkG(9);                                                          //~ ErrorShapeStore
   *c;
@@ -150,7 +150,7 @@ fn gadgetRcBump() i64 {
 // The owner lent as a '&<mut' beside a '&<' of it, to one call
 fn both(x &<mut Gadget, y &<Gadget) { x.bump(); }
 fn bothLent() {
-  imm a So[Gadget] = mkG(1);
+  imm a Uni[Gadget] = mkG(1);
   both(a, a);                                                           //~ ErrorShapeReshape
 }
 

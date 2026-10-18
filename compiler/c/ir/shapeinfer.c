@@ -927,7 +927,7 @@ int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
 }
 
 // Can a value of this type reach anything callable: a '&fn' (a reference to a function), a virtual
-// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('So[fn]',
+// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('Uni[fn]',
 // 'Rc[Trait]')? By containment, a field, an element, or through a pointer or a reference: the same
 // idea as reshapeReach, with code to call as the thing wanted. A type graph too large to follow is
 // taken as reaching one. Only a positive answer is kept, for a struct, for a negative one found

@@ -422,7 +422,7 @@ parameter bounded by `'static`, or for a parameter `&<Trait + 'static`,
 carrying a borrow that is not global; a value returned or stored through a
 parameter as a virtual reference bounded by `'a` holding a borrow not known to
 last `'a`; a value holding a borrow that is not global made an owning
-virtual reference (`So[Trait]`), whose bound, unwritten, is `'static`; a
+virtual reference (`Uni[Trait]`), whose bound, unwritten, is `'static`; a
 bound on a generic type's parameter, or on a reference that is not virtual.
 A bound of a callee's own lifetime is not checked by name at a call: the call carries the argument wherever the bound's lifetime flows, and
 a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
@@ -435,7 +435,7 @@ share, is refused only if something could reshape the value while it is still to
 be used, and the something names the code. A call that could reshape a collection (a
 list, a string) is `ErrorShapeReshape`; a store through another name that could, the
 whole collection or an element that owns something replaced, `ErrorShapeStore` (an
-owning reference, `So` or `Rc`, is asked the same of a borrow into what it owns: the owner
+owning reference, `Uni` or `Rc`, is asked the same of a borrow into what it owns: the owner
 stored over frees it, so a call whose body stores over one is `ErrorShapeReshape` and
 a store over one `ErrorShapeStore`); and
 anything that could change which variant an enum holds under a reference narrowed
@@ -491,7 +491,7 @@ check, `castRefPermCheck` in `cast.c`): between references `as` is only a legal 
 question an implicit coercion asks of the permissions (`permMatches`), and the message names both
 permissions and says the cast needs `trust`, which is not built yet ([cast](../nodes/cast.md),
 "`castTypeCheck`"). A `&` made the `imm` a type declaring `Immutable` defaults to, with no permission written
-(`bytes as &str`, `p as So[str]`), is let through for now; the same permission written out
+(`bytes as &str`, `p as Uni[str]`), is let through for now; the same permission written out
 (`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
 made a pointer, are not asked.
 
@@ -560,7 +560,7 @@ A callable behind a reference or an owner has three more: a callable refused for
 permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
 `&<fn`, a read-only borrow given to a `&<mut fn`, a `&<mut fn` lent as a `&<fn`, a
 generic's `&F` given one that changes) is `ErrorCallablePerm`;
-an owner `So[fn(sig)]` made of a value that is no callable of its signature (no `()`
+an owner `Uni[fn(sig)]` made of a value that is no callable of its signature (no `()`
 of it, or a function of another signature) is `ErrorCallableUse`; and a closure literal
 given where a trait is wanted that has not exactly one required method (a method
 with a body is a default, and comes with the literal) and no field is
@@ -574,7 +574,7 @@ written on a callable are all `ErrorFnRefConv`; the message says which side is w
 A callable given where a signature is wanted whose parameter or result, held by value,
 is not one layout with the wanted one's (a variant for its enum, or the reverse) is
 `ErrorFnRefByValue`, on every route a callable meets a signature by (`fnSigMeets`'
-cause, `fnSigLayoutDiff`): a function reference, a callable `&<fn`, an owner `So[fn(sig)]`,
+cause, `fnSigLayoutDiff`): a function reference, a callable `&<fn`, an owner `Uni[fn(sig)]`,
 a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic
 bound, `is`) and a module trait's function. The message names the position and both
 types, each route in its own words, and says to write a wrapper function (or, for a
@@ -612,18 +612,18 @@ borrow of its own storage, which its owner may change or move after the call
 ([flow](../phases/flow.md), "Stores through a reference"). A store into a place
 of the function's own, or of another parameter, is the other stores' business.
 
-A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
+A struct viewed as a trait behind a virtual reference (`&<Trait`, `Uni[Trait]`) whose
 method takes a stronger `self` than the trait's method declares (`self &mut` for
 `self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal
 that changes state, which needs `self &mut`, given where a trait is wanted whose
 method says `self &` (under any holder, a generic's `[S Trait]` included). A struct viewed
-as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `So[Trait]`)
+as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`)
 whose field has a narrower type than the trait gives it (`Shape.Circle` for `Shape`;
 for an enum, any variant's) is `ErrorVtableField`: a store through the trait would leave
 a value of another type in the field, so a view that writes sees each field at exactly
 the trait's type, and a read-only `&<` still takes the narrower one. An owner held in a
 place reached through a reference that only reads, lent as a `&mut` or `&uni`
-(a receiver, an argument, an initializer, a `So[fn]` called), is `ErrorBadPerm`,
+(a receiver, an argument, an initializer, a `Uni[fn]` called), is `ErrorBadPerm`,
 as a written `&mut` of the same place is; so is a `&mut` or `&uni` borrowed
 reference held in such a place, used where one that may writes is wanted
 (`car.owner.birthday()` through a `car &Car` holding `owner &mut Person`), and a

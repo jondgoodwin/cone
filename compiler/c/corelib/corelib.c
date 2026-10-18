@@ -71,7 +71,7 @@ void stdPermInit() {
     newPerm = newPermDclNode(nametblFind("new", 3), MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
 }
 
-// What core declares in Cone -- Option, Result, and the 'So' and 'Rc' regions --
+// What core declares in Cone -- Option, Result, and the 'Uni' and 'Rc' regions --
 // is the core package's source, packages/core/src/core.cone, not this file's.
 
 FnDclNode *initAllFn;
@@ -242,7 +242,7 @@ void stdlibInit(int ptrsize) {
 
     // 'str', the dynamically sized body of bytes. It has no fields and no size
     // of its own, so it is held only through a reference, which carries the
-    // count of bytes: '&str', 'So[str]', 'Rc[str]'. A name every module
+    // count of bytes: '&str', 'Uni[str]', 'Rc[str]'. A name every module
     // reaches, as 'Array' is, and a module may not declare it itself.
     strTypeDcl = newStructNode(strTypeName);
     strTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;

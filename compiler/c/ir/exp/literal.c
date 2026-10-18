@@ -596,7 +596,7 @@ static void slitCStrCheck(SLitNode *lit, INode *totypedcl) {
 
 // Coerce a string literal to a byte array it fills or an owner of 'str' it is
 // copied into [Jon 6 Oct: "Implicit copy is better."]. The copy is the
-// allocation 'new So[str](lit)' builds, region and permission as the wanted
+// allocation 'new Uni[str](lit)' builds, region and permission as the wanted
 // type has them. Only the literal itself is taken this way: any other '&str'
 // needs the 'new'. Returns 1 when *nodep now has the wanted type, 0 when the
 // literal is not wanted as either (nothing changed, nothing reported).

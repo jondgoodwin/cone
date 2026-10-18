@@ -22,22 +22,22 @@ fn show(label &str, n i64) {
 // -------- Two actors holding each other's handles --------
 
 // B's state written first. 'Option[A1]' lays out 'Some[A1]', which holds A1 by
-// value; A1 holds 'So[A1_state]', and A1_state holds 'Option[A1]' again. When
+// value; A1 holds 'Uni[A1_state]', and A1_state holds 'Option[A1]' again. When
 // the owning reference laid A1_state out on the spot, A1_state found
 // 'Option[A1]' with its 'Some' still in flight.
 struct B1_state { pub first Option[A1]; pub n i64; }
-struct B1 { pub st So[B1_state]; }
+struct B1 { pub st Uni[B1_state]; }
 struct A1_state { pub next Option[A1]; pub b B1; pub n i64; }
-struct A1 { pub st So[A1_state]; }
+struct A1 { pub st Uni[A1_state]; }
 
 // The same four, A's written first, which always compiled
 struct A2_state { pub next Option[A2]; pub b B2; pub n i64; }
-struct A2 { pub st So[A2_state]; }
+struct A2 { pub st Uni[A2_state]; }
 struct B2_state { pub first Option[A2]; pub n i64; }
-struct B2 { pub st So[B2_state]; }
+struct B2 { pub st Uni[B2_state]; }
 
 fn a1(n i64, next Option[A1]) A1 {
-  new A1(new So[A1_state](next, new B1(new So[B1_state](None, n * 10)), n));
+  new A1(new Uni[A1_state](next, new B1(new Uni[B1_state](None, n * 10)), n));
 }
 
 // The values along a chain of A1's, each with its B's
@@ -50,7 +50,7 @@ fn sumA1(a &imm A1) i64 {
 }
 
 fn a2(n i64, next Option[A2]) A2 {
-  new A2(new So[A2_state](next, new B2(new So[B2_state](None, n * 10)), n));
+  new A2(new Uni[A2_state](next, new B2(new Uni[B2_state](None, n * 10)), n));
 }
 
 fn sumA2(a &imm A2) i64 {
@@ -69,7 +69,7 @@ fn sumA2(a &imm A2) i64 {
 enum E1 {
   struct Leaf1 { pub n i64; }
   struct Ref1 { pub w &imm W1; }
-  struct Own1 { pub w So[W1]; }
+  struct Own1 { pub w Uni[W1]; }
 }
 struct W1 { pub e E1; pub k i64; }
 
@@ -78,7 +78,7 @@ struct W2 { pub e E2; pub k i64; }
 enum E2 {
   struct Leaf2 { pub n i64; }
   struct Ref2 { pub w &imm W2; }
-  struct Own2 { pub w So[W2]; }
+  struct Own2 { pub w Uni[W2]; }
 }
 
 fn sumE1(e &imm E1) i64 {
@@ -104,21 +104,21 @@ fn sumE2(e &imm E2) i64 {
 // handle as in the first shape, three deep: X's state holds 'Option[X]' and Y,
 // Y's holds 'Option[Z]', Z's holds 'Option[X]'.
 struct X_state { pub again Option[X]; pub y Y; pub n i64; }
-struct X { pub st So[X_state]; }
+struct X { pub st Uni[X_state]; }
 struct Y_state { pub z Option[Z]; pub n i64; }
-struct Y { pub st So[Y_state]; }
+struct Y { pub st Uni[Y_state]; }
 struct Z_state { pub x Option[X]; pub n i64; }
-struct Z { pub st So[Z_state]; }
+struct Z { pub st Uni[Z_state]; }
 
 // The same ring with Y's state written first, and Z's before X's: refused,
 // with X found in flight inside 'Some[X]', until the owning references stopped
 // laying their targets out
 struct Yb_state { pub z Option[Zb]; pub n i64; }
-struct Yb { pub st So[Yb_state]; }
+struct Yb { pub st Uni[Yb_state]; }
 struct Zb_state { pub x Option[Xb]; pub n i64; }
-struct Zb { pub st So[Zb_state]; }
+struct Zb { pub st Uni[Zb_state]; }
 struct Xb_state { pub again Option[Xb]; pub y Yb; pub n i64; }
-struct Xb { pub st So[Xb_state]; }
+struct Xb { pub st Uni[Xb_state]; }
 
 fn ringSumB(x &imm Xb) i64 {
   mut total = x.st.n + x.st.y.st.n;
@@ -214,24 +214,24 @@ fn main() {
   imm w1 = new W1(E1.Leaf1(4), 100);
   imm r1 E1 = E1.Ref1(&imm w1);
   show("E1 through a borrow, W1 below", sumE1(&imm r1));
-  imm o1 E1 = E1.Own1(new So[W1](E1.Leaf1(5), 200));
+  imm o1 E1 = E1.Own1(new Uni[W1](E1.Leaf1(5), 200));
   show("E1 through an owner, W1 below", sumE1(&imm o1));
   imm w2 = new W2(E2.Leaf2(6), 300);
   imm r2 E2 = E2.Ref2(&imm w2);
   show("E2 through a borrow, W2 above", sumE2(&imm r2));
-  imm o2 E2 = E2.Own2(new So[W2](E2.Leaf2(7), 400));
+  imm o2 E2 = E2.Own2(new Uni[W2](E2.Leaf2(7), 400));
   show("E2 through an owner, W2 above", sumE2(&imm o2));
 
   // X 1 -> Y 2 -> Z 3 -> X 10 -> Y 20, which ends the ring
-  imm inner = new X(new So[X_state](None, new Y(new So[Y_state](None, 20)), 10));
-  imm z = new Z(new So[Z_state](Some(inner), 3));
-  imm y = new Y(new So[Y_state](Some(z), 2));
-  imm x = new X(new So[X_state](None, y, 1));
+  imm inner = new X(new Uni[X_state](None, new Y(new Uni[Y_state](None, 20)), 10));
+  imm z = new Z(new Uni[Z_state](Some(inner), 3));
+  imm y = new Y(new Uni[Y_state](Some(z), 2));
+  imm x = new X(new Uni[X_state](None, y, 1));
   show("ring X Y Z", ringSum(&imm x));
-  imm innerb = new Xb(new So[Xb_state](None, new Yb(new So[Yb_state](None, 200)), 100));
-  imm zb = new Zb(new So[Zb_state](Some(innerb), 30));
-  imm yb = new Yb(new So[Yb_state](Some(zb), 20));
-  imm xb = new Xb(new So[Xb_state](None, yb, 10));
+  imm innerb = new Xb(new Uni[Xb_state](None, new Yb(new Uni[Yb_state](None, 200)), 100));
+  imm zb = new Zb(new Uni[Zb_state](Some(innerb), 30));
+  imm yb = new Yb(new Uni[Yb_state](Some(zb), 20));
+  imm xb = new Xb(new Uni[Xb_state](None, yb, 10));
   show("ring Y Z X, Y's state first", ringSumB(&imm xb));
 
   imm arg1 = new Arg1(new Cb1(&useArg1, 5), 7);

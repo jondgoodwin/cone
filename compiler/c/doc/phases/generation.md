@@ -387,8 +387,8 @@ kernels are settled.
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |
-| **`&T`, `&mut T`, `Rc[T]`, `So[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
-| **`&str`, `So[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
+| **`&T`, `&mut T`, `Rc[T]`, `Uni[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
+| **`&str`, `Uni[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
 | **`&Array[T]`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A signature marked `ccall` (a C-named function's, and the pointee of `&fn @c`) has its structs lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
@@ -405,7 +405,7 @@ Lowering a `*T`, `&T` or `&Array[T]` queues `T`, and `genlType` generates the qu
 when the outermost type it was asked for is done, before returning to anything
 but type generation. Generated in place, a struct reaching itself through a
 reference is reached again while its own body is still empty: with `A` holding
-`So[AState]` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
+`Uni[AState]` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
 `A` as nothing, and `Option[A]` came out one byte. Nothing outside type
 generation sees the difference, since every pointee is generated before
 `genlType` returns to it — which the nullable-pointer flag (below), set when an
@@ -655,8 +655,8 @@ What follows from that:
 
 - **A region method is handed the header, found from the layout.**
   `genlRegionHeader` steps back from the value pointer, a GEP over `i8`, by
-  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `Rc`, 0 for `So`,
-  16 for a region with a `{usize, u32}` header; for `So` the header is the
+  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `Rc`, 0 for `Uni`,
+  16 for a region with a `{usize, u32}` header; for `Uni` the header is the
   value pointer itself, and no instruction is emitted. Every call of `aliasRef`, `dealiasRef` and `free` goes through it, so a
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
@@ -681,7 +681,7 @@ What follows from that:
   value as generated. Its type has no `typeinfo`, so `genlOwnerHeader` steps back by the
   region and permission's size rounded up to the `align` of the implementer's
   `TypeRecord`, loaded through word 1 (`genlVirtHeader`; nothing is loaded for
-  a `So`, whose header is empty), and its death calls the record's `finalize`
+  a `Uni`, whose header is empty), and its death calls the record's `finalize`
   on the object (`genlVirtFinalize`) where a plain reference's calls
   `genlFinalizeAt`.
 - **An owning reference to a body that carries its length is the fat `{ptr, usize}`
@@ -790,7 +790,7 @@ out in line up to `RegionAliasUnroll` (16), a loop beyond, since calls written
 out fold together in either pipeline, while a loop of them folds only where the
 release pipeline chooses to unroll it. Core's methods are
 `inline`, so each call is the method's body pasted at the site
-(`genlFnCallInternal`); after optimization `Rc`'s and `So`'s events are the
+(`genlFnCallInternal`); after optimization `Rc`'s and `Uni`'s events are the
 instructions the compiler used to emit itself.
 
 **A type record is a constant, one per type in each object**
@@ -903,7 +903,7 @@ one never written is reported (`errorUnreachable`) rather than left unbuilt.
 A value that is not a construction by a declared init (a struct literal, a
 variable, a finished value) is passed as before.
 
-`So` and `Rc` are declared in Cone source in the core package,
+`Uni` and `Rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). Their
 `alloc` and `free` call core's `RawBlocks`, the raw blocks layer, which `conestd`
 defines (`rawblocks.cone`: `cone_rawBlockAlloc`, `cone_rawBlockResize`,
@@ -1034,7 +1034,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `genlExpr(nameuse)` | the loaded value |
 | `genlAddr(x)` | pointer to `x`'s type |
 | `&T` value | a `ptr` to the `T` |
-| `&Array[T]` value, `&<Trait` value, a reference whose target carries its length (`&str`, `So[str]`) | an **aggregate value**, not a pointer |
+| `&Array[T]` value, `&<Trait` value, a reference whose target carries its length (`&str`, `Uni[str]`) | an **aggregate value**, not a pointer |
 | owning reference value | a `ptr` to the `T`, **past** the header |
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |
@@ -1908,7 +1908,7 @@ the `ConvSubtype` case), whose table of code pointers LLVM's SPIR-V backend
 crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, `new` or
 `trynew` of an owner (`allocateValueCheck`), whose allocator call becomes an
 import the Vulkan form does not allow (`Capability Linkage`). Also an owning
-reference type written at all, `So[T]`, `Rc[T]`, `Arc[imm, T]`, `Rc[Rwcell, T]`
+reference type written at all, `Uni[T]`, `Rc[T]`, `Arc[imm, T]`, `Rc[Rwcell, T]`
 (`refTypeCheck` and `refvirtTypeCheck`, `refGpuOwnerCheck`), in any declaration but
 the type a `new` names, which `allocateValueCheck` reports as the allocation it
 is (`refNewTypeWritten`); a function reference can still arrive as a parameter
@@ -2446,7 +2446,7 @@ variables.
 | | `genlBarrierAt`, `itypeHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
-| `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `So`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
+| `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `Uni`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
 | `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s` on Windows, `getentropy` elsewhere) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
 | `packages/conestd/cnames.c` | `cone_stdin`, `cone_stdout`, `cone_stderr`, `cone_errno`, `cone_time`, `cone_timespec_get`; the globals `EILSEQ`, `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` | the C library's names that differ by platform or that Cone cannot spell, each answered from the C library's own header, which `libc`'s `stdin()`, `stdout()`, `stderr()`, `errno()`, `time`, `timespec_get`, `EILSEQ` and the locale categories bind (`libc` is C-named, with no prelude and so no `isWindows()`, so a number that differs by C library is a global read as a constant is) |
 | `packages/conestd/floatfmt.cone` | `floatText` (private; `printFloat` and `eprintFloat` call it) | a float as C's `%g` writes it: six significant digits of the exact value, correctly rounded (a tie to the even digit), the digits found over a 1536-bit integer so no C library's `printf` is involved, an infinity as `inf` and every NaN as `nan`; the text is the same on every OS |

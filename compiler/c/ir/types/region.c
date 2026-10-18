@@ -310,7 +310,7 @@ static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
 // happen [Jon 25 Sep, 26 Sep]; no combination is refused for what it leaves
 // out. One owner per value is said explicitly, by 'is Move' [Jon 26 Sep]:
 // - no 'aliasRef': a copy of a reference calls nothing. It is a move where the
-//   region is 'Move' ('So'), and free where it is not (a collector's shape).
+//   region is 'Move' ('Uni'), and free where it is not (a collector's shape).
 // - no 'dealiasRef': an owner going away asks nothing. Where the region is
 //   'Move', every owner's going is the value's death. Where it is not, the
 //   going does nothing: the value never dies by an owner, and the compiler
@@ -401,7 +401,7 @@ void regionActorLocalUseCheck(StructNode *node) {
 
 // Does the region's 'alloc' take the value type's record as well as the size?
 // Only a region whose 'alloc' asks is handed one, so a region that does not
-// ask (So, Rc) is called exactly as it would be if records did not exist
+// ask (Uni, Rc) is called exactly as it would be if records did not exist
 int regionAllocTakesRecord(INode *region) {
     FnDclNode *allocmeth = regionMethod(region, allocMethodName);
     if (allocmeth == NULL)

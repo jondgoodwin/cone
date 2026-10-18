@@ -1667,7 +1667,7 @@ AliasDclNode *parseAlias(ParseState *parse) {
     lexNextToken();
     if (lexIsToken(AssgnToken)) {
         lexNextToken();
-        // A callable's type, 'alias Profile = fn(u f32) f32;', which '&<Profile' and 'So[Profile]' name
+        // A callable's type, 'alias Profile = fn(u f32) f32;', which '&<Profile' and 'Uni[Profile]' name
         if (lexIsToken(FnToken))
             newnode->target = parseFnBound(parse);
         else

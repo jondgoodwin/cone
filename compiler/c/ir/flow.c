@@ -58,7 +58,7 @@ int flowMatchInPlace(VarDclNode *var) {
 // may be sharing? An owning reference that may be aliased ('Rc[mut, T]', 'Rc[imm, T]',
 // 'Rc[ro, T]', and every 'Rc' form but 'Rc[uni, T]') is one of possibly many holders
 // counting the same value, so it does not solely own it. An owning reference
-// that is a move type -- a 'uni' one, or any in the 'Move' region 'So' -- is
+// that is a move type -- a 'uni' one, or any in the 'Move' region 'Uni' -- is
 // the only holder, and may give the value up. One into a region that is
 // neither counted nor 'Move' -- a collector's -- is shared freely, and is
 // refused too.
@@ -961,7 +961,7 @@ void flowInjectRefCount(INode **nodep) {
 
 // Does this cast hand on what its operand holds? A recast is its operand under
 // another type name. A conversion makes a new value, except one into an owning
-// virtual reference ('So[App]' from a 'So[Spinner]', or from a virtual 'So' of
+// virtual reference ('Uni[App]' from a 'Uni[Spinner]', or from a virtual 'Uni' of
 // a trait it extends): that adds a vtable to the operand's one owner and keeps
 // it, so the operand is moved out of, or counted, as a recast's would be.
 int flowCastCarries(INode *cast) {
@@ -1957,7 +1957,7 @@ int flowGpuExternRefused(FnDclNode *callee, unsigned nargs) {
 // Whether 'node' is written in GPU code that the refusal of what a GPU lacks
 // reads: any code of a GPU compile but core's own, whose regions are written
 // with the owners and the allocator that a kernel is refused (core's
-// 'inline fn alloc', 'So' and 'Rc' themselves), and are reached only by an
+// 'inline fn alloc', 'Uni' and 'Rc' themselves), and are reached only by an
 // allocation or an owner that is refused where it is written
 int flowGpuRefuses(INode *node) {
     if (!flowGpu)

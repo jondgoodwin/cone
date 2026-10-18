@@ -77,7 +77,7 @@ static int borrowHeldRefLendRefused(INode *held, INode *perm) {
 }
 
 // An owning reference held in a place reached through a borrow that only reads
-// ('h.app' for a 'h &Holder' holding 'app So[App]'), lent as a borrow that may
+// ('h.app' for a 'h &Holder' holding 'app Uni[App]'), lent as a borrow that may
 // write, is refused: a '&' lends only '&' of what it holds, owners included.
 // So is one reached through a borrow that others share ('h &mut Holder'), lent
 // as a '&uni' or a '&imm': a '&mut' lends only '&mut' (mem-borrowing.html#freezing, "What a borrow leaves its source free to do");
@@ -270,7 +270,7 @@ void borrowUniReborrow(INode **from, INode *totypedcl) {
     borrowDerefOf(from, totype->perm, totype->vtexp);
 }
 
-// Is 'from' an owning reference that is the only holder of its value (a 'So',
+// Is 'from' an owning reference that is the only holder of its value (a 'Uni',
 // a 'Rc' still 'uni'), held in a place, wanted as a borrowed reference that
 // may not be shared ('&uni')? An owning reference coerced to a borrowed one is
 // borrowed from, whatever the borrow's permission: the owner stays, frozen

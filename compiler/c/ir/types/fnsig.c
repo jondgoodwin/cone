@@ -371,7 +371,7 @@ static void fnSigPosSpell(char *buf, size_t size, FnSigNode *req, uint32_t at) {
 // the lifetimes it promises are the requirement's or more (lifeSigMeets: a
 // result may hold fewer borrows). THIS IS THE ONE RULE for a callable meeting a
 // signature: a function reference's, a callable's, a module trait's, a trait's
-// method, 'So[fn(sig)]' and a generic's 'fn(sig)' condition each ask it, none
+// method, 'Uni[fn(sig)]' and a generic's 'fn(sig)' condition each ask it, none
 // spelling it again. An equal signature meets it as the special case where every
 // type is the same, and is the more specific: a requirement an exact candidate
 // meets is not left to the looser reading (iNsTypeFindVrefMethod). 'receiver'
@@ -608,7 +608,7 @@ char *fnSigConvRefusal(INode *from, INode *to, int *code) {
         *code = ErrorFnRefConv;
         fnSigRefSpell(have, sizeof(have), fromsig);
         snprintf(msg, sizeof(msg),
-            "`%s` is a reference to a C-named function, and a callable (`&<fn`, `So[fn]`) calls what it holds in Cone's convention, which passes a struct differently from C's. Neither converts to the other. Call the function from a Cone function, and make that the callable.",
+            "`%s` is a reference to a C-named function, and a callable (`&<fn`, `Uni[fn]`) calls what it holds in Cone's convention, which passes a struct differently from C's. Neither converts to the other. Call the function from a Cone function, and make that the callable.",
             have);
         return msg;
     }
@@ -699,7 +699,7 @@ int fnSigViableCall(FnSigNode *to, INode **self, Nodes *args) {
 }
 
 // ---------------------------------------------------------------------------
-// The signature as a trait: '&<fn(sig)', 'So[fn(sig)]'
+// The signature as a trait: '&<fn(sig)', 'Uni[fn(sig)]'
 
 // The callable traits made so far, one per signature and kind of 'self'
 static Nodes *fnCallTraits = NULL;
@@ -805,7 +805,7 @@ int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth) {
 }
 
 // The permission a method's 'self' borrows with, or NULL when 'self' is not a
-// borrow ('self So[T]', a by-value self, a static function)
+// borrow ('self Uni[T]', a by-value self, a static function)
 INode *fnSigSelfBorrowPerm(FnDclNode *meth) {
     FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
     if (msig->tag != FnSigTag || msig->parms->used == 0)
@@ -894,7 +894,7 @@ char *fnSigVrefFieldRefusal(StructNode *trait, StructNode *impl) {
     itypeSpellCat(traittype, sizeof(traittype), fld->vtype, 0);
     itypeSpellCat(impltype, sizeof(impltype), strfld->tag == FieldDclTag ? ((FieldDclNode*)strfld)->vtype : fld->vtype, 0);
     snprintf(msg, sizeof(msg),
-        "%s's field `%s` is `%s`, but %s declares it `%s`: a virtual reference that may write (`&<mut`, `&<uni`, `So[Trait]`) stores a value of the trait's type, which a field of the narrower type cannot hold. A reference that writes sees a field at exactly the trait's type, so declare `%s` as `%s` in %s; a read-only `&<` may see the narrower field.",
+        "%s's field `%s` is `%s`, but %s declares it `%s`: a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`) stores a value of the trait's type, which a field of the narrower type cannot hold. A reference that writes sees a field at exactly the trait's type, so declare `%s` as `%s` in %s; a read-only `&<` may see the narrower field.",
         &offender->namesym->namestr, &fld->namesym->namestr, impltype,
         &trait->namesym->namestr, traittype,
         &fld->namesym->namestr, traittype, &offender->namesym->namestr);
@@ -902,7 +902,7 @@ char *fnSigVrefFieldRefusal(StructNode *trait, StructNode *impl) {
 }
 
 // A callable reference or owner as it is written, for a message: '&<fn(i32) i32',
-// '&<mut fn(i32) i32', 'So[imm, fn(i32) i32]'. 'ref' says the region and the
+// '&<mut fn(i32) i32', 'Uni[imm, fn(i32) i32]'. 'ref' says the region and the
 // permission it was written with, 'trait' the signature and the kind.
 static void fnCallSpell(char *buf, size_t size, RefNode *ref, StructNode *trait) {
     char sig[300] = "";
@@ -912,7 +912,7 @@ static void fnCallSpell(char *buf, size_t size, RefNode *ref, StructNode *trait)
         snprintf(buf, size, "&<%s%s", trait->callmut ? "mut " : "", sig);
         return;
     }
-    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
+    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "Uni";
     INode *perm = itypeGetTypeDcl(ref->perm);
     int permwrites = perm->tag == PermTag && (permGetFlags(perm) & MayWrite);
     if (trait->callmut && (!permwrites || perm == (INode*)uniPerm))

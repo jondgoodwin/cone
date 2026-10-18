@@ -85,7 +85,7 @@ struct Conn {
   listener ListenerId;
   sock Handle;
   core http1.Connection;
-  layer So[Layer];
+  layer Uni[Layer];
   sink Sink;
   addrs List[SocketAddr];   // a client's addresses to try, in order
   nextAddr usize;
@@ -141,7 +141,7 @@ struct Lst {
   open bool;
   sock Handle;
   sink Sink;
-  make So[LayerMaker + ShapeKeeping];
+  make Uni[LayerMaker + ShapeKeeping];
   acceptsOut u32;
 }
 
@@ -292,7 +292,7 @@ pub struct Driver {
   }
 
   // A new connection, its core in its role, its layer and sink given
-  fn newConn(self &mut, server bool, layer So[Layer], sink Sink, now Instant) u32 {
+  fn newConn(self &mut, server bool, layer Uni[Layer], sink Sink, now Instant) u32 {
     if freeConn == noEntry {
       imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Conn]()) as *Conn;
       if block as usize == 0usize {panic("httpconn: out of memory for the connection table");}
@@ -1210,7 +1210,7 @@ pub struct Driver {
   }
 
   // A client connection whose bytes pass through layer (see LAYERS)
-  pub fn connectWith(self &mut, lp &mut Loop, host &str, port u16, layer So[Layer], sink Sink) ConnId {
+  pub fn connectWith(self &mut, lp &mut Loop, host &str, port u16, layer Uni[Layer], sink Sink) ConnId {
     imm now = Instant.now();
     self.stamp(lp);
     imm i = self.openClient(lp, layer, sink, now);
@@ -1253,7 +1253,7 @@ pub struct Driver {
 
   // A client connection's record; one past maxConnections is refused at
   // once, its Closed saying so
-  fn openClient(self &mut, lp &mut Loop, layer So[Layer], sink Sink, now Instant) u32 {
+  fn openClient(self &mut, lp &mut Loop, layer Uni[Layer], sink Sink, now Instant) u32 {
     imm full = liveConns >= cfg.maxConnections;
     imm i = self.newConn(false, layer, sink, now);
     imm c = self.connAt(i) as &mut Conn;
@@ -1378,12 +1378,12 @@ pub struct Driver {
   // Listen at addr: each connection accepted is a server connection, its
   // life and its requests told to sink (see the package's header, SERVING)
   pub fn listen(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) Result[ListenerId, IoError] {
-    self.listenWith(lp, addr, new So[PlainMaker](PlainMaker.start()), sink);
+    self.listenWith(lp, addr, new Uni[PlainMaker](PlainMaker.start()), sink);
   }
 
   // Listen, each accepted connection's bytes passing through a layer 'make'
   // makes (see LAYERS)
-  pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make So[LayerMaker + ShapeKeeping], sink Sink) Result[ListenerId, IoError] {
+  pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make Uni[LayerMaker + ShapeKeeping], sink Sink) Result[ListenerId, IoError] {
     self.stamp(lp);
     mut h = Handle.none();
     match lp.listen(addr) {

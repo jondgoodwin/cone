@@ -461,12 +461,12 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
     INode **argp = args && args->used == 1 && nodesGet(args, 0)->tag != NamedValTag ? &nodesGet(args, 0) : NULL;
 
     // A body whose length a reference carries has no value to construct or
-    // move in: it is allocated by copying a borrow of one, 'new So[str](view)',
+    // move in: it is allocated by copying a borrow of one, 'new Uni[str](view)',
     // into the memory the region gives, as long as the view
     if (itypeLenBodyElem(vtype)) {
         if (argp == NULL) {
             errorMsgNode((INode*)node, ErrorAllocValue,
-                "%s has no value to construct: its allocation copies a borrow of one, 'new So[%s](view)'.",
+                "%s has no value to construct: its allocation copies a borrow of one, 'new Uni[%s](view)'.",
                 itypeName(vtype), itypeName(vtype));
             return NULL;
         }
@@ -474,7 +474,7 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
         // an owner of moving elements is made by moving them in (a List's 'freeze')
         if (itypeIsArrayBody(vtype) && itypeIsMove(itypeLenBodyElem(vtype))) {
             errorMsgNode((INode*)node, ErrorAllocValue,
-                "%s is allocated by copying a borrow of its elements, and an element of this type moves, so it cannot be copied. Move them in: 'list.freeze()' makes a So[%s] of a List's elements.",
+                "%s is allocated by copying a borrow of its elements, and an element of this type moves, so it cannot be copied. Move them in: 'list.freeze()' makes a Uni[%s] of a List's elements.",
                 itypeName(vtype), itypeName(vtype));
             return NULL;
         }
@@ -527,7 +527,7 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
 
 static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option, INode *value);
 
-// 'new So[fn(i32) i32](c)': an owner of a callable, made from one value that has a
+// 'new Uni[fn(i32) i32](c)': an owner of a callable, made from one value that has a
 // pub '()' of that signature, a closure or a struct of the author's. The value
 // is moved into an allocation of its own type, and the owner of that is viewed
 // as the callable's, as an owner of a trait is made from one of an implementer.
@@ -542,7 +542,7 @@ static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     else
         snprintf(sig, sizeof(sig), "%s", &trait->namesym->namestr);
     INode *region = itypeGetTypeDcl(reftype->region);
-    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
+    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "Uni";
     if (node->args == NULL || node->args->used != 1 || nodesGet(node->args, 0)->tag == NamedValTag) {
         errorMsgNode((INode*)node, ErrorCallableUse,
             "%s[%s] is made from one callable value, a closure or a struct with a pub `()` of that signature: 'new %s[%s](fn (...) { ... })'.",

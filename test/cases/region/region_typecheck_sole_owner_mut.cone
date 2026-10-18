@@ -1,0 +1,63 @@
+// A single owner is never shared, so 'mut' -- shared mutable -- means nothing on
+// it: 'Uni[mut, T]' is refused wherever a reference type is written, for any region
+// declaring 'Move' (a user's as much as core's 'Uni'), and the reference stands as
+// 'Uni[T]' after, so its uses check quietly. 'Uni[T]' is the spelling, and
+// 'Uni[imm, T]' stays: a promise that the value never changes, which is how an owned
+// callable says it only reads its state. A region that counts its owners takes 'mut'
+// as ever.
+//
+// Every route that gives an owner its permission is a written type: a parameter,
+// a result, a field, an alias, a type argument, a borrow's pointee, a virtual
+// reference, a cast, an allocation ('new', 'trynew'), and a region named through
+// an alias. Nothing infers or defaults 'mut' onto an owner (the default is 'uni',
+// 'imm' for a type declaring Immutable), so nothing else reaches the check.
+
+mod region_typecheck_sole_owner_mut;
+
+trait Shape { fn area(self &) i32; }
+struct Square is Shape { pub s i32; fn area(self &) i32 { s * s; } }
+
+struct Solo is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+// Counts nothing and declares no Move: its owners may be copied
+struct Shared is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+alias Owned = Uni[mut, i32];            //~ ErrorSoleOwnerMut "Uni has one owner per value"
+alias Sole = Uni;
+
+fn param(a Uni[mut, i32]) {}            //~ ErrorSoleOwnerMut "Uni has one owner per value"
+fn result() Uni[mut, i32] { new Uni[i32](1); }   //~ ErrorSoleOwnerMut "'mut' is shared mutable"
+fn viaAlias(a Sole[mut, i32]) {}        //~ ErrorSoleOwnerMut "Uni has one owner per value"
+fn inOption(a Option[Uni[mut, i32]]) {} //~ ErrorSoleOwnerMut "Uni has one owner per value"
+fn behindBorrow(a &Uni[mut, i32]) {}    //~ ErrorSoleOwnerMut "Uni has one owner per value"
+fn virtualTrait(a Uni[mut, Shape]) {}   //~ ErrorSoleOwnerMut "Uni has one owner per value"
+fn virtualCallable(a Uni[mut, fn(i32) i32]) {}   //~ ErrorSoleOwnerMut "Uni has one owner per value"
+fn userRegion(a Solo[mut, i32]) {}      //~ ErrorSoleOwnerMut "Solo has one owner per value"
+
+struct Holder {
+  pub field Uni[mut, i32];              //~ ErrorSoleOwnerMut "Uni has one owner per value"
+}
+
+fn allocations() {
+  imm a = new Uni[mut, i32](1);         //~ ErrorSoleOwnerMut "Uni has one owner per value"
+  imm b = trynew Uni[mut, i32](2);      //~ ErrorSoleOwnerMut "Uni has one owner per value"
+  imm c = new Solo[mut, i32](3);        //~ ErrorSoleOwnerMut "Solo has one owner per value"
+  imm d = new Uni[i32](4);
+  imm e = d as Uni[mut, i32];           //~ ErrorSoleOwnerMut "Uni has one owner per value"
+}
+
+// What stays: the spelling, the promise, a written uni, and the regions that count
+fn spelling(a Uni[i32], b Uni[imm, i32], c Uni[uni, i32], d Solo[i32]) {}
+fn promise(a Uni[imm, fn(i32) i32], b Uni[imm, Shape]) {}
+fn counted(a Rc[mut, i32], b Rc[imm, i32], c Shared[mut, i32], d Shared[imm, i32]) {}
+fn made() {
+  imm a = new Uni[i32](1);
+  imm b = new Uni[imm, i32](2);
+  imm c = new Rc[mut, i32](3);
+  imm d = new Shared[mut, i32](4);
+  imm e = trynew Uni[i32](5);
+}

@@ -207,7 +207,7 @@ via `extractvalue`, then `genlStore`.
 `genlStore` **skips a store to the anonymous name entirely**, and otherwise
 releases the lval's previous value before overwriting, after the new value is
 evaluated: an owning reference through the `genlReleaseOwning` scope exit uses
-— an `So` reference or slice is freed, an `Rc` one drops a holder, a tuple's
+— a `Uni` reference or slice is freed, an `Rc` one drops a holder, a tuple's
 owning elements each — and anything else with a death in place
 (`genlFinalizeAt`), unless `FlagFirstAssign` (a variable) or `FlagPartNoPrior`
 (a part of a local's own value) is present, and under `FlagDropTest` only when

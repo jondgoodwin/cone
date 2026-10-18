@@ -878,8 +878,8 @@ static INode *genericNamedType(INode *node) {
 }
 
 // A type written out as an instance, where a 'where' clause names one:
-// 'where K is So[str]', 'where T is Option[i64]'. A generic type given its
-// arguments, or a reference type (a region's, 'So[str]', is one), whose parts
+// 'where K is Uni[str]', 'where T is Option[i64]'. A generic type given its
+// arguments, or a reference type (a region's, 'Uni[str]', is one), whose parts
 // may name the generic's own parameters. It is met by that type alone, as a
 // named type is; it is made at the arguments when the clause is decided
 // (genericConditionValue).
@@ -1223,7 +1223,7 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
     }
 }
 
-// Is this reference an owner of core's 'str' (So[str], Rc[str]: any region but
+// Is this reference an owner of core's 'str' (Uni[str], Rc[str]: any region but
 // a borrow's)?
 static int genericIsTextOwner(RefNode *ref) {
     return itypeGetTypeDcl(ref->region) != borrowRef && refIsFat(ref)
@@ -1251,7 +1251,7 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     // equal to 0, so no hash of a float's bits agrees with its '=='
     if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && coreIsHashTrait((INode*)trait))
         return 1;
-    // and to an owner of text, So[str] and Rc[str]: its '==' compares the
+    // and to an owner of text, Uni[str] and Rc[str]: its '==' compares the
     // bytes, and the 'hash' a call on it reaches is str's, which feeds them
     if (dcl->tag == RefTag && coreIsHashTrait((INode*)trait) && genericIsTextOwner((RefNode*)dcl))
         return 1;
@@ -1317,7 +1317,7 @@ typedef enum {
 static INode *genericCondSite = NULL;
 static TypeCheckState *genericCondState = NULL;
 
-// What a clause names written out as an instance, 'Stack[T]' or 'So[str]', at
+// What a clause names written out as an instance, 'Stack[T]' or 'Uni[str]', at
 // these arguments: a clone of it with the parameters substituted, checked as
 // the same spelling in a signature is, so that it is the instance the program's
 // other uses of it name -- 'Stack[i64]' where T is i64. NULL if it could not be
@@ -1612,7 +1612,7 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
             return WhereUnknown;
     }
     INode *named = trait ? NULL : genericNamedType(((CastNode*)cond)->typ);
-    // A type written as an instance, 'So[str]', is made at these arguments and
+    // A type written as an instance, 'Uni[str]', is made at these arguments and
     // met by itself alone
     if (trait == NULL && named == NULL && genericIsTypeInstance(((CastNode*)cond)->typ)) {
         if (type == NULL || (parm == NULL && !nested))
@@ -1921,7 +1921,7 @@ void genericNotShareableReason(INode *culprit, int fix, char *reason, size_t siz
     else if (culprit->tag == VirtRefTag && !refWritesShared(ref))
         snprintf(reason, size,
             "a reference to a trait or a callable, whose implementers are not all known here, so nothing says a borrow of what it points at may be shared between threads%s",
-            fix ? ". Say what the value behind it is where the reference is written: '+ Shareable' (or '+ Sendable'), as in '&<Shape + Shareable' or 'So[fn(i32) i32 + Sendable]'" : "");
+            fix ? ". Say what the value behind it is where the reference is written: '+ Shareable' (or '+ Sendable'), as in '&<Shape + Shareable' or 'Uni[fn(i32) i32 + Sendable]'" : "");
     else
         snprintf(reason, size,
             "a reference of permission %s, which may write: Cone's %s is shared mutable, so whatever holds one writes through a borrow of it, and two threads holding that borrow could write at once%s",

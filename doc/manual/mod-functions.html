@@ -199,7 +199,7 @@ its values would arrive wrong, and neither converts to the other. Make the funct
 		has no name for <span class="pre">@c</span> to give C spelling to. A type's method keeps Cone's convention even
 		when <span class="pre">@c</span> names its symbol (a vtable calls it by its Cone signature), so a reference to
 		a method is a plain <span class="pre">&amp;fn</span>. A closure reference (<span class="pre">&amp;&lt;fn</span>,
-		<span class="pre">So[fn]</span>) calls what it holds in Cone's convention, so a C-named function's reference is
+		<span class="pre">Uni[fn]</span>) calls what it holds in Cone's convention, so a C-named function's reference is
 		not accepted where one is wanted: call the C function from a Cone function and make that the callable.</p>
 
 	<h2 id="closures">Closures as parts</h2>
@@ -226,7 +226,7 @@ its values would arrive wrong, and neither converts to the other. Make the funct
 		that carries one method. It is <a href="rec-methods.html#clotype">a struct with no name</a>, whose fields are the
 		state list's entries and a reference for each variable it borrows; since the struct has no name that can be
 		written, a closure is held in a variable whose type is inferred, and handed on as one of the references below.
-		Like any value it may be put on the heap, in an owner such as <span class="pre">So[fn(sig)]</span>. A function that
+		Like any value it may be put on the heap, in an owner such as <span class="pre">Uni[fn(sig)]</span>. A function that
 		should accept any closure of a signature, whatever the shape of its state, takes it as a
 		<a href="#cloref">closure reference</a>, <span class="pre">&amp;&lt;fn(sig)</span>, or as a
 		<a href="mod-generativity.html#sigbound">generic over the signature</a>, <span class="pre">[F fn(sig)]</span>, which
@@ -267,7 +267,7 @@ its values would arrive wrong, and neither converts to the other. Make the funct
 			<span class="pre">List[i64]</span>.</li>
 		<li><b>Kept in a local</b>, it blocks moving or reshaping what it borrows until its last use.</li>
 		<li><b>Stored past the function or returned</b> (in a field, in an owner such as
-			<span class="pre">So[fn(sig)]</span>, or as a returned borrow), it is refused if it borrows a local. The error
+			<span class="pre">Uni[fn(sig)]</span>, or as a returned borrow), it is refused if it borrows a local. The error
 			names the variable and says to list it, so that the closure holds its own copy.</li>
 		<li><b>Stored in the object that made it</b>: a closure in a method that names a member borrows
 			<span class="pre">self</span>, so it cannot be stored in <span class="pre">self</span>. The error says to copy the
@@ -282,18 +282,18 @@ its values would arrive wrong, and neither converts to the other. Make the funct
 			GPU</a>).</li>
 	</ul>
 <pre>
-fn returned() So[fn(x i32) i32] {
+fn returned() Uni[fn(x i32) i32] {
   imm k = 3;
-  return new So[fn(x i32) i32](fn(x i32) i32 { x * k; });    // ERROR
+  return new Uni[fn(x i32) i32](fn(x i32) i32 { x * k; });    // ERROR
 }
 
-fn listed() So[fn(x i32) i32] {
+fn listed() Uni[fn(x i32) i32] {
   imm k = 3;
-  return new So[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });   // its own copy of k
+  return new Uni[fn(x i32) i32](fn(x i32) [k] i32 { x * k; });   // its own copy of k
 }
 </pre>
 <pre>
-Error 1249: An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any
+Error 1249: An owning virtual reference ('Uni[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any
 borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow
 of 'k' (made at 4:32), which belongs to this function. The closure borrows 'k' because its body names it:
 list it to give the closure its own copy instead, 'fn (...) [k] ... { ... }'.
@@ -349,19 +349,19 @@ struct Window { pub id i32; }
 
 struct Button {
   pub label i32;
-  pub onClick So[fn(n i32)];
-  pub fn setHandler(self &amp;mut, f So[fn(n i32)]) { onClick = f; }
+  pub onClick Uni[fn(n i32)];
+  pub fn setHandler(self &amp;mut, f Uni[fn(n i32)]) { onClick = f; }
   pub fn press(self &amp;mut, n i32) { onClick(n); }
 }
 
 imm w = new Window(7);
-mut b = new Button(1, new So[fn(n i32)](fn(n i32) { }));
-b.setHandler(new So[fn(n i32)](fn(n i32) [id = w.id] { print &lt;- id + n, "\n"; }));
+mut b = new Button(1, new Uni[fn(n i32)](fn(n i32) { }));
+b.setHandler(new Uni[fn(n i32)](fn(n i32) [id = w.id] { print &lt;- id + n, "\n"; }));
 b.press(5);      // 12
 </pre>
 	<p>The click handler is allocated in the single-owner region, so it is freed when it is replaced or discarded. Its
 		state remembers the window's <span class="pre">id</span>, which its logic uses when the button is pressed. The
-		<span class="pre">Button</span> holds it as a <span class="pre">So[fn(n i32)]</span>, which accepts any closure,
+		<span class="pre">Button</span> holds it as a <span class="pre">Uni[fn(n i32)]</span>, which accepts any closure,
 		whatever its state, whose signature matches: one <span class="pre">i32</span> in, no value back. The button calls
 		the handler by the field's name, <span class="pre">onClick(n)</span>.</p>
 
@@ -374,9 +374,9 @@ b.press(5);      // 12
 			The closure's <span class="pre">()</span> takes <span class="pre">self &amp;</span>.</li>
 		<li><span class="pre">&amp;&lt;mut fn(x i32) i32</span>, a borrowed reference that may <b>change</b> what it points
 			at: a closure that counts, or changes a variable it borrows.</li>
-		<li><span class="pre">So[fn(x i32) i32]</span>, an owner of a closure on the heap. The permission of an owner works
-			as it does for any owner: <span class="pre">So[fn(sig)]</span> may change the closure's state,
-			<span class="pre">So[imm, fn(sig)]</span> only reads it.</li>
+		<li><span class="pre">Uni[fn(x i32) i32]</span>, an owner of a closure on the heap. The permission of an owner works
+			as it does for any owner: <span class="pre">Uni[fn(sig)]</span> may change the closure's state,
+			<span class="pre">Uni[imm, fn(sig)]</span> only reads it.</li>
 		<li><span class="pre">Rc[imm, fn(x i32) i32]</span>, shared owners of a closure that only reads;
 			<span class="pre">Rc[mut, fn(x i32) i32]</span>, shared owners of a state they all change, so every holder sees
 			one count. <span class="pre">Rc[fn(x i32) i32]</span> with no permission is <span class="pre">uni</span>, the
@@ -389,7 +389,7 @@ b.press(5);      // 12
 <pre>
 fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
 fn applyMut(f &amp;&lt;mut fn(x i32) i32, x i32) i32 { f(x); }
-fn run(f So[fn(x i32) i32], x i32) i32 { f(x); }
+fn run(f Uni[fn(x i32) i32], x i32) i32 { f(x); }
 </pre>
 
 	<h4 id="meets">What meets it</h4>
@@ -421,8 +421,8 @@ applyMut(&amp;mut tally, 7);       // 12, and tally.n is 12
 		behind <span class="pre">&amp;&lt;fn(sig)</span>, which promises only to read: "`&amp;&lt;fn(i32) i32` may only call a
 		callable that reads its state; this closure changes it (its `()` takes `self &amp;mut`). To let it change, the type
 		is `&amp;&lt;mut fn(i32) i32`." Likewise a <span class="pre">&amp;&lt;mut fn</span> is not lent where a
-		<span class="pre">&amp;&lt;fn</span> is wanted, nor is a <span class="pre">So[fn(sig)]</span>, which may change: the
-		callable behind it might. An owner meant to be lent to a reader is made <span class="pre">So[imm,
+		<span class="pre">&amp;&lt;fn</span> is wanted, nor is a <span class="pre">Uni[fn(sig)]</span>, which may change: the
+		callable behind it might. An owner meant to be lent to a reader is made <span class="pre">Uni[imm,
 		fn(sig)]</span>.</p>
 
 	<h4 id="lent">A closure literal, lent</h4>
@@ -437,12 +437,12 @@ applyMut(fn(x i32) i32 { total += x; total; }, 10);       // total is changed
 	<p>A literal is lent only as an argument. To keep one, move it into an owner.</p>
 
 	<h4 id="owner">An owner of a closure</h4>
-	<p><span class="pre">new So[fn(sig)](value)</span> takes one value, a closure literal or a struct with a
+	<p><span class="pre">new Uni[fn(sig)](value)</span> takes one value, a closure literal or a struct with a
 		<span class="pre">()</span> of the signature, moves it into an allocation of its own, and gives the owner of that as
 		the callable. The literal's parameter types may come from the signature. The same holds for
 		<span class="pre">Rc</span>:</p>
 <pre>
-mut owned So[fn(x i32) i32] = new So[fn(x i32) i32](fn(x i32) [mut sum = 100] i32 { sum += x; sum; });
+mut owned Uni[fn(x i32) i32] = new Uni[fn(x i32) i32](fn(x i32) [mut sum = 100] i32 { sum += x; sum; });
 owned(1);             // 101
 applyMut(owned, 2);   // 103: an owner is lent as &amp;&lt;mut
 run(owned, 3);        // 106: or handed on whole, moved
@@ -452,12 +452,12 @@ imm again = shared;   // another holder of the same closure
 </pre>
 	<p>The owner holds whatever the closure holds, and finalizes it when the last owner dies. A closure that holds
 		nothing is allocated like any other. A plain function is wrapped by giving its reference,
-		<span class="pre">new So[fn(sig)](&amp;f)</span>; a function of another signature, or a value with no
+		<span class="pre">new Uni[fn(sig)](&amp;f)</span>; a function of another signature, or a value with no
 		<span class="pre">()</span> of the signature, is an error. An owner outlives the function that made it, so the
 		closure in it may not borrow a local: the refusal is the one in <a href="#goes">Where a closure may go</a>.</p>
-	<p>A parameter of type <span class="pre">So[fn(sig)]</span> takes an owner, and a closure literal is not one, so a
+	<p>A parameter of type <span class="pre">Uni[fn(sig)]</span> takes an owner, and a closure literal is not one, so a
 		literal given straight to it is refused (for one whose parameter types are left out, error 1391, "The type of a is
-		not written, and nothing here says what it is"). Wrap it: <span class="pre">c.set(new So[fn(a i64, b i64)
+		not written, and nothing here says what it is"). Wrap it: <span class="pre">c.set(new Uni[fn(a i64, b i64)
 		bool]((a, b) =&gt; a &lt; b))</span>. An <span class="pre">imm</span> given a closure whose parameter types are left
 		out is refused the same way, even where the <span class="pre">imm</span> is written with a
 		<span class="pre">&amp;&lt;fn(sig)</span> type.</p>
@@ -470,13 +470,13 @@ alias Profile = fn(u i32) i32;
 fn viaAlias(f &amp;&lt;Profile, u i32) i32 { f(u); }
 </pre>
 	<p>A bare <span class="pre">fn(sig)</span> is read as a signature in the brackets of a type
-		(<span class="pre">So[fn(i32) i32]</span>, <span class="pre">Applied[fn(i32) i32]</span>), as the target of an
+		(<span class="pre">Uni[fn(i32) i32]</span>, <span class="pre">Applied[fn(i32) i32]</span>), as the target of an
 		<span class="pre">alias</span> and as a generic's bound (<a href="mod-generativity.html#sigbound">Generics</a>). It is
 		not itself the type of a variable or a return value: write <span class="pre">&amp;&lt;fn(..)</span>,
-		<span class="pre">So[fn(..)]</span> or the alias. A signature is a trait, so it has no size, and a field of a
+		<span class="pre">Uni[fn(..)]</span> or the alias. A signature is a trait, so it has no size, and a field of a
 		generic type holds it by an owner or a reference, not by value:</p>
 <pre>
-struct Applied[F] { pub f So[F]; }     // Applied[fn(i32) i32] holds a So[fn(i32) i32]
+struct Applied[F] { pub f Uni[F]; }     // Applied[fn(i32) i32] holds a Uni[fn(i32) i32]
 </pre>
 
 	<h4 id="field">A callable held in a field</h4>
@@ -485,13 +485,13 @@ struct Applied[F] { pub f So[F]; }     // Applied[fn(i32) i32] holds a So[fn(i32
 		<span class="pre">(b.onClick)(5)</span> works too. A field and a method of one name cannot both exist, so there is
 		nothing to choose between. A field that cannot be called, an <span class="pre">i32</span> given arguments, is an
 		error that says what the field holds. An owner whose state may change is called through a reference that may
-		change, so a method that calls a <span class="pre">So[fn(sig)]</span> field takes <span class="pre">self
+		change, so a method that calls a <span class="pre">Uni[fn(sig)]</span> field takes <span class="pre">self
 		&amp;mut</span>, as <span class="pre">press</span> does above. The handler is replaced by assigning the field.</p>
 
 	<h4 id="markers">Saying what is behind a reference</h4>
 	<p>A virtual reference hides the type behind it, so a reference to a callable or a trait is not
 		<span class="pre">Sendable</span> or <span class="pre">Shareable</span> unless it says so. The markers follow the
-		signature or the trait with a <span class="pre">+</span>, <span class="pre">So[fn(x i32) i32 + Sendable]</span>, and
+		signature or the trait with a <span class="pre">+</span>, <span class="pre">Uni[fn(x i32) i32 + Sendable]</span>, and
 		a third, <span class="pre">ShapeKeeping</span>, says that a call through the reference reshapes nothing the caller
 		holds a borrow into. All three are described together, with the other rules for what may cross a thread, in
 		<a href="conc-sharing.html#marks">Sendable and Shareable</a>.</p>
