@@ -30,8 +30,8 @@ pub const LIE_SIDE = 3;
 
 // How a body whose pelvis has this orientation (in the world) lies
 pub fn lyingFrom(pelvis Quat) i32 {
-  imm up = pelvis * new Vec3(0., 1., 0.);
-  imm front = pelvis * new Vec3(0., 0., -1.);
+  let up = pelvis * new Vec3(0., 1., 0.);
+  let front = pelvis * new Vec3(0., 0., -1.);
   if up.y > 0.7 { return LIE_UPRIGHT; }
   if front.y > 0.5 { return LIE_FACE_UP; }
   if front.y < -0.5 { return LIE_FACE_DOWN; }
@@ -90,8 +90,8 @@ fn rz(a f32) Quat { Quat.angleAxis(a, new Vec3(0., 0., 1.)); }
 
 // The pose of the humanoid 'skel' for a stance (the root at height 0.53 H until grounded)
 pub fn stancePose(skel &Skeleton, st &Stance) Pose {
-  mut p = skel.restPose();
-  imm rootT = skel.restOf(PELVIS).translation;
+  var p = skel.restPose();
+  let rootT = skel.restOf(PELVIS).translation;
   p.locals.set(PELVIS, new Transform3(new Vec3(st.x, rootT.y, st.z), rx(st.pitch), new Vec3(1., 1., 1.)));
   p.setRotation(SPINE, rx(-st.spine));
   p.setRotation(CHEST, rx(-st.chest));
@@ -108,7 +108,7 @@ pub fn stancePose(skel &Skeleton, st &Stance) Pose {
   p.setRotation(FOOT_L, rx(st.ankleL));
   p.setRotation(FOOT_R, rx(st.ankleR));
   if st.flat {
-    mut models = List[Transform3].empty();
+    var models = List[Transform3].empty();
     skel.modelTransforms(&p, &mut models);
     p.setRotation(FOOT_L, (*models[SHIN_L]).rotation.conjugate());
     p.setRotation(FOOT_R, (*models[SHIN_R]).rotation.conjugate());
@@ -118,15 +118,15 @@ pub fn stancePose(skel &Skeleton, st &Stance) Pose {
 
 // The lowest world y of the body's shapes in 'pose' (model space, the root as it is)
 pub fn lowestOfPose(skel &Skeleton, spec &RigSpec, pose &Pose) f32 {
-  mut models = List[Transform3].empty();
+  var models = List[Transform3].empty();
   skel.modelTransforms(pose, &mut models);
-  mut lowest = 1000000.;
-  mut i = 0usize;
+  var lowest = 1000000.;
+  var i = 0usize;
   while i < skel.boneCount() {
-    imm bs = spec.bones[i];
+    let bs = spec.bones[i];
     if bs.hasBody {
-      imm bm = *models[i];
-      mut shapeRot = Quat.identity();
+      let bm = *models[i];
+      var shapeRot = Quat.identity();
       if bs.shape == SHAPE_CAPSULE { shapeRot = Quat.fromVectors(new Vec3(0., 1., 0.), bs.axis.normalize()); }
       lowest = minf(lowest, shapeLowest(bs, bm.translation + bm.rotation * bs.center, bm.rotation * shapeRot));
     }
@@ -137,9 +137,9 @@ pub fn lowestOfPose(skel &Skeleton, spec &RigSpec, pose &Pose) f32 {
 
 // 'pose' with its root moved vertically until the lowest point of the shapes is on the floor (y = 0)
 pub fn groundPose(skel &Skeleton, spec &RigSpec, pose &Pose) Pose {
-  mut out = pose.copy();
-  imm lowest = lowestOfPose(skel, spec, pose);
-  imm t = (*pose.locals[PELVIS]).translation;
+  var out = pose.copy();
+  let lowest = lowestOfPose(skel, spec, pose);
+  let t = (*pose.locals[PELVIS]).translation;
   out.setTranslation(PELVIS, new Vec3(t.x, t.y - lowest, t.z));
   out;
 }
@@ -155,7 +155,7 @@ pub struct GetUpClips {
 fn standStance() Stance { Stance.rest(); }
 
 fn crouchStance() Stance {
-  mut s = Stance.rest();
+  var s = Stance.rest();
   s.pitch = -0.55;
   s.legs(2.0, 1.95);
   s.arms(0.9, 0.1, 0.4);
@@ -164,7 +164,7 @@ fn crouchStance() Stance {
 }
 
 fn riseStance() Stance {
-  mut s = Stance.rest();
+  var s = Stance.rest();
   s.pitch = -0.30;
   s.legs(1.1, 1.2);
   s.arms(0.4, 0.15, 0.2);
@@ -173,15 +173,15 @@ fn riseStance() Stance {
 }
 
 fn key(clip &mut Clip, skel &Skeleton, spec &RigSpec, t f32, st &Stance) {
-  imm p = groundPose(skel, spec, &stancePose(skel, st));
+  let p = groundPose(skel, spec, &stancePose(skel, st));
   clip.addKey(t, &p);
 }
 
 // The three get-up clips for 'skel' (the humanoid) and its recipe
 pub fn getUpClips(skel &Skeleton, spec &RigSpec) GetUpClips {
   // ---- face up
-  mut up = Clip.make(3.4, false);
-  mut s = Stance.rest();
+  var up = Clip.make(3.4, false);
+  var s = Stance.rest();
   s.pitch = 1.5708; s.flat = false; s.arms(0., 0.2, 0.); s.legs(0.05, 0.05);
   key(&mut up, skel, spec, 0., &s);
   key(&mut up, skel, spec, 0.3, &s);
@@ -199,7 +199,7 @@ pub fn getUpClips(skel &Skeleton, spec &RigSpec) GetUpClips {
   key(&mut up, skel, spec, 3.4, &s);
 
   // ---- face down
-  mut dn = Clip.make(3.3, false);
+  var dn = Clip.make(3.3, false);
   s = Stance.rest();
   s.pitch = -1.5708; s.flat = false; s.arms(0., 0.2, 0.); s.legs(0.0, 0.05);
   key(&mut dn, skel, spec, 0., &s);
@@ -218,7 +218,7 @@ pub fn getUpClips(skel &Skeleton, spec &RigSpec) GetUpClips {
   key(&mut dn, skel, spec, 3.3, &s);
 
   // ---- upright
-  mut ur = Clip.make(1.2, false);
+  var ur = Clip.make(1.2, false);
   s = crouchStance();
   s.pitch = -0.35; s.legs(1.5, 1.7);
   key(&mut ur, skel, spec, 0., &s);
@@ -233,14 +233,14 @@ pub fn getUpClips(skel &Skeleton, spec &RigSpec) GetUpClips {
 // root's height is only interpolated, so a keyed clip sinks into the floor between keys; a baked one is grounded in
 // every frame
 fn bake(clip &Clip, skel &Skeleton, spec &RigSpec) Clip {
-  mut out = Clip.make(clip.duration, false);
-  mut t = 0.;
+  var out = Clip.make(clip.duration, false);
+  var t = 0.;
   while t < clip.duration - 0.001 {
-    imm p = groundPose(skel, spec, &clip.sample(t));
+    let p = groundPose(skel, spec, &clip.sample(t));
     out.addKey(t, &p);
     t = t + 1. / 30.;
   }
-  imm last = groundPose(skel, spec, &clip.sample(clip.duration));
+  let last = groundPose(skel, spec, &clip.sample(clip.duration));
   out.addKey(clip.duration, &last);
   out;
 }
@@ -265,7 +265,7 @@ pub struct GetUp {
 
   // The pose now, in the model space of 'placement'
   pub fn pose(self &, clips &GetUpClips) Pose {
-    imm c = if clip == 0 { clips.faceUp.sample(t); } else if clip == 1 { clips.faceDown.sample(t); } else { clips.upright.sample(t); };
+    let c = if clip == 0 { clips.faceUp.sample(t); } else if clip == 1 { clips.faceDown.sample(t); } else { clips.upright.sample(t); };
     if t >= matchTime { return c; }
     blendPoses(&start, &c, smoothstep(0., matchTime, t));
   }
@@ -276,26 +276,26 @@ fn horizontal(v Vec3) Vec3 { new Vec3(v.x, 0., v.z); }
 // Begin a get-up from a settled ragdoll: the clip for how it lies, placed under the pelvis on the floor at
 // 'groundY' and turned to the ragdoll's head. 'base' is a pose giving the bones' local translations (the rest pose).
 pub fn beginGetUp(rig &Ragdoll, w &World, skel &Skeleton, base &Pose, groundY f32, matchTime f32) GetUp {
-  imm pelvisId = rig.bodyOfBone(PELVIS);
-  imm pelvisRot = w.rotationOf(pelvisId) * rig.links[0].shapeRot.conjugate();
-  imm kind = lyingFrom(pelvisRot);
-  imm front = pelvisRot * new Vec3(0., 0., -1.);
+  let pelvisId = rig.bodyOfBone(PELVIS);
+  let pelvisRot = w.rotationOf(pelvisId) * rig.links[0].shapeRot.conjugate();
+  let kind = lyingFrom(pelvisRot);
+  let front = pelvisRot * new Vec3(0., 0., -1.);
   // which clip, and the direction its head points in its model space
-  mut clip = 2;
-  mut headDir = new Vec3(0., 0., -1.);
+  var clip = 2;
+  var headDir = new Vec3(0., 0., -1.);
   if kind == LIE_FACE_UP or (kind == LIE_SIDE and front.y >= 0.) { clip = 0; headDir = new Vec3(0., 0., 1.); }
   else if kind == LIE_FACE_DOWN or kind == LIE_SIDE { clip = 1; headDir = new Vec3(0., 0., -1.); }
   // the ragdoll's own direction: pelvis to head on the floor, or, upright, the way it faces
   // the pelvis bone's own place (its body's centre is above it, along its up)
-  imm pelvisPos = w.positionOf(pelvisId) - w.rotationOf(pelvisId) * rig.links[0].center;
-  mut h = horizontal(w.positionOf(rig.carrierBody(HEAD)) - pelvisPos);
+  let pelvisPos = w.positionOf(pelvisId) - w.rotationOf(pelvisId) * rig.links[0].center;
+  var h = horizontal(w.positionOf(rig.carrierBody(HEAD)) - pelvisPos);
   if clip == 2 or h.length() < 0.05 { h = horizontal(front); }
   if h.length() < 0.001 { h = headDir; }
   h = h.normalize();
-  imm sinY = headDir.z * h.x - headDir.x * h.z;
-  imm cosY = headDir.dot(h);
-  imm yaw = atan2(sinY, cosY);
-  imm placement = new Rigid(new Vec3(pelvisPos.x, groundY, pelvisPos.z), Quat.angleAxis(yaw, new Vec3(0., 1., 0.)));
-  imm start = rig.bodiesToPose(w, skel, base, placement);
+  let sinY = headDir.z * h.x - headDir.x * h.z;
+  let cosY = headDir.dot(h);
+  let yaw = atan2(sinY, cosY);
+  let placement = new Rigid(new Vec3(pelvisPos.x, groundY, pelvisPos.z), Quat.angleAxis(yaw, new Vec3(0., 1., 0.)));
+  let start = rig.bodiesToPose(w, skel, base, placement);
   new GetUp(kind, clip, start, placement, 0., matchTime);
 }

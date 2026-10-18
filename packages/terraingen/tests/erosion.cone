@@ -27,24 +27,24 @@ fn inv(x u32, z u32) Invocation {
 }
 
 fn filled(n usize, v f32) List[f32] {
-  mut l = List[f32].withCapacity(n);
+  var l = List[f32].withCapacity(n);
   l.resize(n, v);
   l;
 }
 
 fn sum(l &List[f32]) f64 {
-  mut s = 0d;
-  mut i = 0usize;
+  var s = 0d;
+  var i = 0usize;
   while i < l.len() { s = s + f64.from(*l[i]); i = i + 1usize; }
   s;
 }
 
 fn roughness(hf &Heightfield) f32 {
-  mut s = 0.;
-  mut n = 0.;
-  mut iz = 1usize;
+  var s = 0.;
+  var n = 0.;
+  var iz = 1usize;
   while iz + 1usize < hf.h {
-    mut ix = 1usize;
+    var ix = 1usize;
     while ix + 1usize < hf.w {
       s = s + libc.fabsf(hf.at(ix - 1usize, iz) + hf.at(ix + 1usize, iz) + hf.at(ix, iz - 1usize) + hf.at(ix, iz + 1usize) - 4. * hf.at(ix, iz));
       n = n + 1.;
@@ -57,7 +57,7 @@ fn roughness(hf &Heightfield) f32 {
 
 fn main() i32 {
   // 1. erode, by hand
-  mut p = ErosionParams.standard(4u32, 4u32, 1.);
+  var p = ErosionParams.standard(4u32, 4u32, 1.);
   p.capacity = 0.35;
   p.dissolve = 0.3;
   p.deposit = 0.2;
@@ -65,18 +65,18 @@ fn main() i32 {
   p.maxDepth = 2.5;
   p.maxSpeed = 10.;
   p.maxStep = 0.08;
-  mut terrain = filled(16usize, 10.);
-  imm water = filled(16usize, 0.5);
-  mut vel = filled(32usize, 0.);
-  mut k = 0usize;
+  var terrain = filled(16usize, 10.);
+  let water = filled(16usize, 0.5);
+  var vel = filled(32usize, 0.);
+  var k = 0usize;
   while k < 16usize { vel.set(k * 2usize, 2.); k = k + 1usize; }
-  imm tl = filled(16usize, 0.3);
-  mut sed = filled(16usize, 0.);
+  let tl = filled(16usize, 0.3);
+  var sed = filled(16usize, 0.);
   sed.set(5usize, 0.5);
-  imm before = sum(&terrain) + sum(&sed);
-  mut z = 0u32;
+  let before = sum(&terrain) + sum(&sed);
+  var z = 0u32;
   while z < 4u32 {
-    mut x = 0u32;
+    var x = 0u32;
     while x < 4u32 { erode(inv(x, z), p, terrain.viewMut(), water.view(), vel.view(), tl.view(), sed.viewMut()); x = x + 1u32; }
     z = z + 1u32;
   }
@@ -86,40 +86,40 @@ fn main() i32 {
   expectFloat(sum(&terrain) + sum(&sed), before, 0.00001, "terrain plus sediment is conserved");
 
   // 2. water spreads and is conserved
-  mut pw = ErosionParams.standard(33u32, 33u32, 1.);
+  var pw = ErosionParams.standard(33u32, 33u32, 1.);
   pw.rain = 0.;
   pw.evaporation = 0.;
   pw.edgeDrain = 0u32;
   pw.dt = 0.05;
-  imm ground = filled(33usize * 33usize, 0.);
-  mut depth = filled(33usize * 33usize, 0.);
-  mut dz = 15;
+  let ground = filled(33usize * 33usize, 0.);
+  var depth = filled(33usize * 33usize, 0.);
+  var dz = 15;
   while dz <= 17 {
-    mut dx = 15;
+    var dx = 15;
     while dx <= 17 { depth.set(usize.from(dz * 33 + dx), 2.); dx = dx + 1; }
     dz = dz + 1;
   }
-  mut fl = filled(33usize * 33usize * 4usize, 0.);
-  mut vl = filled(33usize * 33usize * 2usize, 0.);
-  imm volume0 = sum(&depth);
-  mut it = 0;
+  var fl = filled(33usize * 33usize * 4usize, 0.);
+  var vl = filled(33usize * 33usize * 2usize, 0.);
+  let volume0 = sum(&depth);
+  var it = 0;
   while it < 150 {
-    mut zz = 0u32;
+    var zz = 0u32;
     while zz < 33u32 {
-      mut xx = 0u32;
+      var xx = 0u32;
       while xx < 33u32 { flux(inv(xx, zz), pw, ground.view(), depth.view(), fl.viewMut()); xx = xx + 1u32; }
       zz = zz + 1u32;
     }
     zz = 0u32;
     while zz < 33u32 {
-      mut xx = 0u32;
+      var xx = 0u32;
       while xx < 33u32 { waterStep(inv(xx, zz), pw, fl.view(), depth.viewMut(), vl.viewMut()); xx = xx + 1u32; }
       zz = zz + 1u32;
     }
     it = it + 1;
   }
-  mut deepest = 0.;
-  mut negative = false;
+  var deepest = 0.;
+  var negative = false;
   k = 0usize;
   while k < depth.len() {
     if *depth[k] > deepest { deepest = *depth[k]; }
@@ -131,19 +131,19 @@ fn main() i32 {
   expect(!negative, "no depth is negative");
 
   // 3. thermal
-  mut pt = ErosionParams.standard(41u32, 41u32, 1.);
+  var pt = ErosionParams.standard(41u32, 41u32, 1.);
   pt.talus = 0.5;
   pt.thermalRate = 0.5;
-  mut hgt = filled(41usize * 41usize, 0.);
+  var hgt = filled(41usize * 41usize, 0.);
   hgt.set(20usize * 41usize + 20usize, 30.);
   hgt.set(20usize * 41usize + 21usize, 12.);
-  imm total0 = sum(&hgt);
-  mut spare = filled(41usize * 41usize, 0.);
+  let total0 = sum(&hgt);
+  var spare = filled(41usize * 41usize, 0.);
   it = 0;
   while it < 600 {
-    mut zz = 0u32;
+    var zz = 0u32;
     while zz < 41u32 {
-      mut xx = 0u32;
+      var xx = 0u32;
       while xx < 41u32 { thermal(inv(xx, zz), pt, hgt.view(), spare.viewMut()); xx = xx + 1u32; }
       zz = zz + 1u32;
     }
@@ -151,12 +151,12 @@ fn main() i32 {
     it = it + 1;
   }
   expectFloat(sum(&hgt), total0, total0 * 0.00001, "thermal erosion conserves the sum of heights");
-  mut steepest = 0.;
-  mut iz = 0usize;
+  var steepest = 0.;
+  var iz = 0usize;
   while iz < 41usize {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix + 1usize < 41usize {
-      imm s1 = libc.fabsf(*hgt[iz * 41usize + ix + 1usize] - *hgt[iz * 41usize + ix]);
+      let s1 = libc.fabsf(*hgt[iz * 41usize + ix + 1usize] - *hgt[iz * 41usize + ix]);
       if s1 > steepest { steepest = s1; }
       ix = ix + 1usize;
     }
@@ -165,48 +165,48 @@ fn main() i32 {
   expect(steepest < 0.5 * 1.1, "after 600 iterations no neighbouring pair is steeper than the talus 0.5 plus 10 percent");
 
   // 4. the plan on a valley
-  mut valley = Heightfield.make(48usize, 48usize, 5., 0., 0., 0.);
+  var valley = Heightfield.make(48usize, 48usize, 5., 0., 0., 0.);
   iz = 0usize;
   while iz < 48usize {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < 48usize {
       // down toward +z at 0.08, a V across x with its floor at ix = 24, 6 m deep
-      imm across = libc.fabsf(f32.from(ix) - 24.) * 0.5;
+      let across = libc.fabsf(f32.from(ix) - 24.) * 0.5;
       valley.set(ix, iz, 100. - 0.4 * f32.from(iz) + (if across < 6. { across; } else { 6.; }));
       ix = ix + 1usize;
     }
     iz = iz + 1usize;
   }
-  imm floor0 = valley.at(24usize, 20usize);
-  imm start = valley.tile(0, 0, 48usize, 48usize);
-  imm pv = ErosionParams.standard(48u32, 48u32, 5.);
-  imm plan = ErosionPlan.make(80u32, 0u32, 0u32);
-  mut run1 = valley.tile(0, 0, 48usize, 48usize);
-  mut run2 = valley.tile(0, 0, 48usize, 48usize);
-  imm r1 = erodeCpu(&mut run1, &pv, &plan);
-  imm r2 = erodeCpu(&mut run2, &pv, &plan);
+  let floor0 = valley.at(24usize, 20usize);
+  let start = valley.tile(0, 0, 48usize, 48usize);
+  let pv = ErosionParams.standard(48u32, 48u32, 5.);
+  let plan = ErosionPlan.make(80u32, 0u32, 0u32);
+  var run1 = valley.tile(0, 0, 48usize, 48usize);
+  var run2 = valley.tile(0, 0, 48usize, 48usize);
+  let r1 = erodeCpu(&mut run1, &pv, &plan);
+  let r2 = erodeCpu(&mut run2, &pv, &plan);
   expect(run1.at(24usize, 20usize) < floor0 - 0.02, "the valley floor is cut");
   expectFloat(sum(&run1.data) + sum(&r1.sediment), sum(&start.data), sum(&start.data) * 0.03, "terrain plus sediment is conserved within 3 percent (advection's loss)");
-  mut identical = true;
+  var identical = true;
   k = 0usize;
   while k < run1.data.len() { if *run1.data[k] != *run2.data[k] { identical = false; } k = k + 1usize; }
   expect(identical, "the same run twice is the same bit for bit");
 
   // 5. no roughening of a smooth hill
-  mut hill = Heightfield.make(64usize, 64usize, 8., 0., 0., 0.);
+  var hill = Heightfield.make(64usize, 64usize, 8., 0., 0., 0.);
   iz = 0usize;
   while iz < 64usize {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < 64usize {
-      imm dx = f32.from(ix) - 32.;
-      imm dz2 = f32.from(iz) - 32.;
+      let dx = f32.from(ix) - 32.;
+      let dz2 = f32.from(iz) - 32.;
       hill.set(ix, iz, 80. * libc.expf(0. - (dx * dx + dz2 * dz2) / 500.));
       ix = ix + 1usize;
     }
     iz = iz + 1usize;
   }
-  imm rough0 = roughness(&hill);
-  imm ph = ErosionParams.standard(64u32, 64u32, 8.);
+  let rough0 = roughness(&hill);
+  let ph = ErosionParams.standard(64u32, 64u32, 8.);
   erodeCpu(&mut hill, &ph, &ErosionPlan.make(60u32, 10u32, 5u32));
   expect(roughness(&hill) <= rough0 * 1.5, "a smooth hill is not roughened more than half again at cell scale");
   done();

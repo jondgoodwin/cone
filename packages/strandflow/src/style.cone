@@ -19,8 +19,8 @@ pub struct Rand {
 }
 
 fn pcg(v u32) u32 {
-  imm state = v * 747796405u32 + 2891336453u32;
-  imm word = ((state >> ((state >> 28u32) + 4u32)) ^ state) * 277803737u32;
+  let state = v * 747796405u32 + 2891336453u32;
+  let word = ((state >> ((state >> 28u32) + 4u32)) ^ state) * 277803737u32;
   (word >> 22u32) ^ word;
 }
 
@@ -108,19 +108,19 @@ pub struct StrandRoot {
 
 // A unit vector perpendicular to 'a'
 pub fn perpendicularTo(a Vec3) Vec3 {
-  imm ref = if absf(a.x) > 0.8 { new Vec3(0., 0., 1.); } else { new Vec3(1., 0., 0.); };
+  let ref = if absf(a.x) > 0.8 { new Vec3(0., 0., 1.); } else { new Vec3(1., 0., 0.); };
   (ref - a * ref.dot(a)).normalize();
 }
 
 fn absf(x f32) f32 { if x < 0. { -x; } else { x; }; }
 fn smooth01(x f32) f32 {
-  imm t = if x < 0. { 0.; } elif x > 1. { 1.; } else { x; };
+  let t = if x < 0. { 0.; } elif x > 1. { 1.; } else { x; };
   t * t * (3. - 2. * t);
 }
 
 // The length this strand has
 pub fn strandLength(style &StrandStyle, seed u32) f32 {
-  mut r = Rand.make(seed);
+  var r = Rand.make(seed);
   style.length * (1. + style.lengthVar * r.signed());
 }
 
@@ -128,32 +128,32 @@ pub fn strandLength(style &StrandStyle, seed u32) f32 {
 // root along its direction reversed; the second the root; then one a link on, each turning from the direction the strand left
 // by towards 'fall' once the strand is past its hold, with a sideways wave that grows from nothing at the root.
 pub fn styledCurve(root &StrandRoot, style &StrandStyle) List[Vec3] {
-  mut r = Rand.make(root.seed);
-  imm len = style.length * (1. + style.lengthVar * r.signed());
-  imm n = usize.from(style.segments);
-  imm ds = len / f32.from(n);
-  imm phase = r.unit() * 2. * pi;
-  imm jitter = new Vec3(r.signed(), r.signed(), r.signed()) * 0.04;
-  mut d = (root.dir + jitter).normalize();
-  imm fall = style.fall.normalize();
-  mut side = d.cross(fall);
+  var r = Rand.make(root.seed);
+  let len = style.length * (1. + style.lengthVar * r.signed());
+  let n = usize.from(style.segments);
+  let ds = len / f32.from(n);
+  let phase = r.unit() * 2. * pi;
+  let jitter = new Vec3(r.signed(), r.signed(), r.signed()) * 0.04;
+  var d = (root.dir + jitter).normalize();
+  let fall = style.fall.normalize();
+  var side = d.cross(fall);
   if side.length() < 0.001 { side = perpendicularTo(d); }
   side = side.normalize();
-  mut pts = List[Vec3].empty();
+  var pts = List[Vec3].empty();
   pts.push(root.pos - d * ds);
-  mut p = root.pos;
+  var p = root.pos;
   pts.push(p);
-  mut base = root.pos;
-  mut k = 1usize;
+  var base = root.pos;
+  var k = 1usize;
   while k <= n {
-    imm s = f32.from(k) * ds;
+    let s = f32.from(k) * ds;
     if s > style.rootHold * len {
-      imm w = 1. - libc.expf(-style.bendRate * ds);
+      let w = 1. - libc.expf(-style.bendRate * ds);
       d = (d * (1. - w) + fall * w).normalize();
     }
     base = base + d * ds;
-    imm t = s / len;
-    imm wave = side * (style.waveAmp * sin(2. * pi * style.waveCycles * t + phase) * smooth01(t / 0.3));
+    let t = s / len;
+    let wave = side * (style.waveAmp * sin(2. * pi * style.waveCycles * t + phase) * smooth01(t / 0.3));
     pts.push(base + wave);
     k = k + 1usize;
   }
@@ -165,18 +165,18 @@ pub fn styledCurve(root &StrandRoot, style &StrandStyle) List[Vec3] {
 // Roots on a disc: a ring-free sunflower pattern (Vogel's golden angle, equal area for each) from 'inner' to 'outer' radius
 // round 'centre', in the plane perpendicular to 'up'. Each strand leaves 'tilt' radians from 'up' towards outward.
 pub fn rootsOnDisc(group usize, centre Vec3, up Vec3, inner f32, outer f32, count usize, tilt f32, seed u32) List[StrandRoot] {
-  mut out = List[StrandRoot].empty();
-  imm u = up.normalize();
-  imm e1 = perpendicularTo(u);
-  imm e2 = u.cross(e1);
-  mut rnd = Rand.make(seed);
-  mut i = 0usize;
+  var out = List[StrandRoot].empty();
+  let u = up.normalize();
+  let e1 = perpendicularTo(u);
+  let e2 = u.cross(e1);
+  var rnd = Rand.make(seed);
+  var i = 0usize;
   while i < count {
-    imm f = (f32.from(i) + 0.5) / f32.from(count);
-    imm r = (inner * inner + (outer * outer - inner * inner) * f).sqrt();
-    imm a = f32.from(i) * 2.3999632 + rnd.signed() * 0.15;
-    imm outward = e1 * cos(a) + e2 * sin(a);
-    imm dir = (u * cos(tilt) + outward * sin(tilt)).normalize();
+    let f = (f32.from(i) + 0.5) / f32.from(count);
+    let r = (inner * inner + (outer * outer - inner * inner) * f).sqrt();
+    let a = f32.from(i) * 2.3999632 + rnd.signed() * 0.15;
+    let outward = e1 * cos(a) + e2 * sin(a);
+    let dir = (u * cos(tilt) + outward * sin(tilt)).normalize();
     out.push(new StrandRoot(group, centre + outward * r, dir, outward, rnd.next()));
     i = i + 1usize;
   }
@@ -186,27 +186,27 @@ pub fn rootsOnDisc(group usize, centre Vec3, up Vec3, inner f32, outer f32, coun
 // Roots along a path: a polyline of points with the unit direction strands leave in at each (and the direction a card faces),
 // 'count' of them evenly spaced by length with a jitter of 'jitter' of a spacing.
 pub fn rootsAlongPath(group usize, points &List[Vec3], dirs &List[Vec3], normals &List[Vec3], count usize, jitter f32, seed u32) List[StrandRoot] {
-  mut out = List[StrandRoot].empty();
-  mut cum = List[f32].empty();
+  var out = List[StrandRoot].empty();
+  var cum = List[f32].empty();
   cum.push(0.);
-  mut i = 1usize;
+  var i = 1usize;
   while i < points.len() {
     cum.push(*cum[i - 1usize] + (*points[i] - *points[i - 1usize]).length());
     i = i + 1usize;
   }
-  imm total = *cum[cum.len() - 1usize];
-  mut rnd = Rand.make(seed);
-  mut k = 0usize;
+  let total = *cum[cum.len() - 1usize];
+  var rnd = Rand.make(seed);
+  var k = 0usize;
   while k < count {
-    imm f = (f32.from(k) + 0.5 + rnd.signed() * 0.5 * jitter) / f32.from(count);
-    imm s = f * total;
-    mut seg = 0usize;
+    let f = (f32.from(k) + 0.5 + rnd.signed() * 0.5 * jitter) / f32.from(count);
+    let s = f * total;
+    var seg = 0usize;
     while seg + 2usize < points.len() and *cum[seg + 1usize] < s { seg = seg + 1usize; }
-    imm span = *cum[seg + 1usize] - *cum[seg];
-    imm t = if span > 0.000001 { (s - *cum[seg]) / span; } else { 0.; };
-    imm p = (*points[seg]).lerp(*points[seg + 1usize], t);
-    imm dir = (*dirs[seg]).lerp(*dirs[seg + 1usize], t).normalize();
-    imm nrm = (*normals[seg]).lerp(*normals[seg + 1usize], t).normalize();
+    let span = *cum[seg + 1usize] - *cum[seg];
+    let t = if span > 0.000001 { (s - *cum[seg]) / span; } else { 0.; };
+    let p = (*points[seg]).lerp(*points[seg + 1usize], t);
+    let dir = (*dirs[seg]).lerp(*dirs[seg + 1usize], t).normalize();
+    let nrm = (*normals[seg]).lerp(*normals[seg + 1usize], t).normalize();
     out.push(new StrandRoot(group, p, dir, nrm, rnd.next()));
     k = k + 1usize;
   }
@@ -218,44 +218,44 @@ pub fn rootsAlongPath(group usize, points &List[Vec3], dirs &List[Vec3], normals
 // combed towards the tangent part of 'comb' by 'combAmount' (0: straight out). The mesh needs normals.
 pub fn rootsOnMesh(group usize, mesh &Mesh, count usize, density &<fn(p Vec3, n Vec3) f32, comb Vec3, combAmount f32,
     seed u32) List[StrandRoot] {
-  mut out = List[StrandRoot].empty();
-  imm tris = mesh.indices.len() / 3usize;
+  var out = List[StrandRoot].empty();
+  let tris = mesh.indices.len() / 3usize;
   if tris == 0usize { return out; }
-  mut cum = List[f32].empty();
-  mut acc = 0.;
-  mut t = 0usize;
+  var cum = List[f32].empty();
+  var acc = 0.;
+  var t = 0usize;
   while t < tris {
-    imm a = *mesh.positions[usize.from(*mesh.indices[3usize * t])];
-    imm b = *mesh.positions[usize.from(*mesh.indices[3usize * t + 1usize])];
-    imm c = *mesh.positions[usize.from(*mesh.indices[3usize * t + 2usize])];
+    let a = *mesh.positions[usize.from(*mesh.indices[3usize * t])];
+    let b = *mesh.positions[usize.from(*mesh.indices[3usize * t + 1usize])];
+    let c = *mesh.positions[usize.from(*mesh.indices[3usize * t + 2usize])];
     acc = acc + 0.5 * (b - a).cross(c - a).length();
     cum.push(acc);
     t = t + 1usize;
   }
-  mut rnd = Rand.make(seed);
-  mut tries = 0usize;
+  var rnd = Rand.make(seed);
+  var tries = 0usize;
   while out.len() < count and tries < count * 40usize {
     tries = tries + 1usize;
-    imm target = rnd.unit() * acc;
-    mut lo = 0usize;
-    mut hi = tris - 1usize;
+    let target = rnd.unit() * acc;
+    var lo = 0usize;
+    var hi = tris - 1usize;
     while lo < hi {
-      imm mid = (lo + hi) / 2usize;
+      let mid = (lo + hi) / 2usize;
       if *cum[mid] < target { lo = mid + 1usize; } else { hi = mid; }
     }
-    imm i0 = usize.from(*mesh.indices[3usize * lo]);
-    imm i1 = usize.from(*mesh.indices[3usize * lo + 1usize]);
-    imm i2 = usize.from(*mesh.indices[3usize * lo + 2usize]);
-    mut u = rnd.unit();
-    mut v = rnd.unit();
+    let i0 = usize.from(*mesh.indices[3usize * lo]);
+    let i1 = usize.from(*mesh.indices[3usize * lo + 1usize]);
+    let i2 = usize.from(*mesh.indices[3usize * lo + 2usize]);
+    var u = rnd.unit();
+    var v = rnd.unit();
     if u + v > 1. { u = 1. - u; v = 1. - v; }
-    imm w = 1. - u - v;
-    imm p = *mesh.positions[i0] * w + *mesh.positions[i1] * u + *mesh.positions[i2] * v;
-    imm nrm = (*mesh.normals[i0] * w + *mesh.normals[i1] * u + *mesh.normals[i2] * v).normalize();
-    imm keep = density(p, nrm);
+    let w = 1. - u - v;
+    let p = *mesh.positions[i0] * w + *mesh.positions[i1] * u + *mesh.positions[i2] * v;
+    let nrm = (*mesh.normals[i0] * w + *mesh.normals[i1] * u + *mesh.normals[i2] * v).normalize();
+    let keep = density(p, nrm);
     if rnd.unit() < keep {
-      imm tangent = comb - nrm * comb.dot(nrm);
-      imm dir = (nrm + tangent * combAmount).normalize();
+      let tangent = comb - nrm * comb.dot(nrm);
+      let dir = (nrm + tangent * combAmount).normalize();
       out.push(new StrandRoot(group, p, dir, nrm, rnd.next()));
     }
   }

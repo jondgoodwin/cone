@@ -67,8 +67,8 @@ fn same(a *u8, b cstr) i64 {yes(strcmp(cstr.fromPtr(a), b) == 0i32);}
 // A type's size in bytes, read off the address of the second of an array of
 // them laid at address zero
 fn sizeOf[T]() usize {
-  imm zero *T = null;
-  imm one = zero + 1;
+  let zero *T = null;
+  let one = zero + 1;
   one as usize;
 }
 
@@ -81,7 +81,7 @@ fn newFindData() FindData64 {
 }
 
 fn writeFile(name cstr, text cstr) {
-  imm f = fopen(name, "wb");
+  let f = fopen(name, "wb");
   fwrite(text.ptr(), 1usize, strlen(text), f);
   fclose(f);
 }
@@ -89,8 +89,8 @@ fn writeFile(name cstr, text cstr) {
 // What a command prints, read to the end through a pipe into 'buf', which is
 // left NUL-terminated with its final line end taken off; the command's status
 fn capture(command cstr, buf *u8, size usize) i32 {
-  imm pipe = popen(command, "r");
-  imm got = fread(buf, 1usize, size - 1usize, pipe);
+  let pipe = popen(command, "r");
+  let got = fread(buf, 1usize, size - 1usize, pipe);
   buf[got] = 0u8;
   if got > 0usize and buf[got - 1usize] == '\n' {buf[got - 1usize] = 0u8;};
   pclose(pipe);
@@ -102,53 +102,53 @@ fn exitCode(status i32) i32 {if isWindows() {status;} else {status >> 8i32;};}
 
 // The folder the test works in: TEMP's on Windows, TMPDIR's or /tmp
 fn tempDir() cstr {
-  mut dir cstr = "/tmp";
+  var dir cstr = "/tmp";
   if isWindows() {
     dir = cstr.fromPtr(getenv("TEMP"));
   } else {
-    imm t = getenv("TMPDIR");
+    let t = getenv("TMPDIR");
     if t != null {dir = cstr.fromPtr(t);};
   };
   dir;
 }
 
 fn layouts() {
-  imm rawStat = if isWindows() {sizeOf[WinStat64]() == 56usize;} else {sizeOf[LinuxStat]() == 144usize;};
+  let rawStat = if isWindows() {sizeOf[WinStat64]() == 56usize;} else {sizeOf[LinuxStat]() == 144usize;};
   show("native-stat-size-ok", yes(rawStat));
   show("finddata-size", i64.from(sizeOf[FindData64]()));
-  imm rawEntry = if isWindows() {sizeOf[dirent]() == 272usize;} else {sizeOf[LinuxDirent]() == 280usize;};
+  let rawEntry = if isWindows() {sizeOf[dirent]() == 272usize;} else {sizeOf[LinuxDirent]() == 280usize;};
   show("native-dirent-size-ok", yes(rawEntry));
 }
 
 fn environment() {
-  imm name cstr = "CONE_POSIX_TEST";
+  let name cstr = "CONE_POSIX_TEST";
   show("setenv", i64.from(setenv(name, "first", 1i32)));
   showText("getenv", getenv(name));
   show("setenv-keep", i64.from(setenv(name, "second", 0i32)));
   showText("getenv-kept", getenv(name));
   show("setenv-replace", i64.from(setenv(name, "second", 1i32)));
   showText("getenv-replaced", getenv(name));
-  imm wide cstr = "CONE_POSIX_TEST_É";
+  let wide cstr = "CONE_POSIX_TEST_É";
   show("setenv-utf8", i64.from(setenv(wide, "日本 é", 1i32)));
   show("getenv-utf8-same", same(getenv(wide), "日本 é"));
   show("unsetenv-utf8", i64.from(unsetenv(wide)));
   // Windows refuses what is not UTF-8; POSIX takes the bytes
-  imm refused = setenv(wide, "\xFF", 1i32) == EINVAL;
+  let refused = setenv(wide, "\xFF", 1i32) == EINVAL;
   show("setenv-not-utf8-refused-on-windows-only", yes(refused == isWindows()));
   unsetenv(wide);
 }
 
 // After the processes have seen it
 fn unsetting() {
-  imm name cstr = "CONE_POSIX_TEST";
+  let name cstr = "CONE_POSIX_TEST";
   show("unsetenv", i64.from(unsetenv(name)));
   show("getenv-after-unsetenv-null", yes(getenv(name) == null));
   show("unsetenv-again", i64.from(unsetenv(name)));
 }
 
 fn processes() {
-  mut buf = new Array[u8, 64] <- fill 0u8;
-  imm at *u8 = &[]buf as *u8;
+  var buf = new Array[u8, 64] <- fill 0u8;
+  let at *u8 = &[]buf as *u8;
   show("popen-status", i64.from(capture("echo hello", at, 64usize)));
   showText("captured", at);
   capture(if isWindows() {"echo %CONE_POSIX_TEST%";} else {"echo $CONE_POSIX_TEST";}, at, 64usize);
@@ -169,26 +169,26 @@ fn clearAway(dir cstr) {
 }
 
 fn filesAndDirectories() {
-  imm dir cstr = "module_package_posix.dir";
+  let dir cstr = "module_package_posix.dir";
   show("chdir-temp", i64.from(chdir(tempDir())));
   clearAway(dir);
 
   show("mkdir", i64.from(mkdir(dir, 0x1EDu32)));
   show("mkdir-again", i64.from(mkdir(dir, 0x1EDu32)));
-  mut st = newStat();
+  var st = newStat();
   show("stat-dir", i64.from(stat(dir, &mut st)));
   show("stat-dir-is-dir", yes((st.st_mode & S_IFMT) == S_IFDIR));
 
   // In and back out: getcwd inside is getcwd outside, a separator and the name
-  mut outside = new Array[u8, 4096] <- fill 0u8;
-  mut inside = new Array[u8, 4096] <- fill 0u8;
-  imm out *u8 = &[]outside as *u8;
-  imm in2 *u8 = &[]inside as *u8;
+  var outside = new Array[u8, 4096] <- fill 0u8;
+  var inside = new Array[u8, 4096] <- fill 0u8;
+  let out *u8 = &[]outside as *u8;
+  let in2 *u8 = &[]inside as *u8;
   show("getcwd-null", yes(getcwd(out, 4096usize) == null));
   show("chdir-in", i64.from(chdir(dir)));
   getcwd(in2, 4096usize);
-  imm outlen = strlen(cstr.fromPtr(out));
-  imm separator = if isWindows() {92u8;} else {47u8;};   // '\' or '/'
+  let outlen = strlen(cstr.fromPtr(out));
+  let separator = if isWindows() {92u8;} else {47u8;};   // '\' or '/'
   show("getcwd-inside-extends-outside",
     yes(strlen(cstr.fromPtr(in2)) == outlen + 25usize and in2[outlen] == separator and same(in2 + outlen + 1usize, dir) == 1i64));
 
@@ -199,11 +199,11 @@ fn filesAndDirectories() {
 
   // realpath, into a buffer and malloc'd: the directory and the file's name.
   // (POSIX's wants the path there, which Windows' does not.)
-  mut real = new Array[u8, 4096] <- fill 0u8;
-  imm rp *u8 = &[]real as *u8;
+  var real = new Array[u8, 4096] <- fill 0u8;
+  let rp *u8 = &[]real as *u8;
   realpath("a.txt", rp);
   show("realpath-length", i64.from(strlen(cstr.fromPtr(rp)) - strlen(cstr.fromPtr(in2))));
-  imm grown = realpath("./sub/../a.txt", null);
+  let grown = realpath("./sub/../a.txt", null);
   show("realpath-malloced-same", same(grown, cstr.fromPtr(rp)));
   free(grown);
 
@@ -220,16 +220,16 @@ fn filesAndDirectories() {
   // The Windows-only listing, of the current directory (in the branch, so no
   // function holding only Windows' calls is generated on Linux)
   if isWindows() {
-    mut info = newFindData();
-    imm handle = _findfirst64("*", &mut info);
+    var info = newFindData();
+    let handle = _findfirst64("*", &mut info);
     show("findfirst-failed", yes(handle == -1isize));
-    mut entries = 0i64;
-    mut aSize = -1i64;
-    mut bSize = -1i64;
-    mut subIsDir = 0i64;
-    mut going = handle != -1isize;
+    var entries = 0i64;
+    var aSize = -1i64;
+    var bSize = -1i64;
+    var subIsDir = 0i64;
+    var going = handle != -1isize;
     while going {
-      imm name *u8 = &[]info.name as *u8;
+      let name *u8 = &[]info.name as *u8;
       if same(name, "a.txt") == 1i64 {aSize = info.size;};
       if same(name, "b.txt") == 1i64 {bSize = info.size;};
       if same(name, "sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
@@ -250,8 +250,8 @@ fn filesAndDirectories() {
   show("chdir-up", i64.from(chdir("..")));
   show("rmdir-full-ENOTEMPTY", yes(rmdir(dir) != 0i32 and *errno() == ENOTEMPTY));
   show("chdir-back-in", i64.from(chdir(dir)));
-  imm tooLong = if isWindows() {38i32;} else {36i32;};
-  imm notEmpty = if isWindows() {41i32;} else {39i32;};
+  let tooLong = if isWindows() {38i32;} else {36i32;};
+  let notEmpty = if isWindows() {41i32;} else {39i32;};
   show("system-error-numbers", yes(ENAMETOOLONG == tooLong and ENOTEMPTY == notEmpty));
 
   show("unlink-a", i64.from(unlink("a.txt")));
@@ -266,16 +266,16 @@ fn filesAndDirectories() {
 // POSIX's listing, of the current directory: the three entries and '.' and
 // '..', each with its kind
 fn posixListing() {
-  imm dir = opendir(".");
+  let dir = opendir(".");
   show("opendir-null", yes(dir == null));
-  mut entries = 0i64;
-  mut dots = 0i64;
-  mut aType = 0i64;
-  mut subType = 0i64;
-  mut e = readdir(dir);
+  var entries = 0i64;
+  var dots = 0i64;
+  var aType = 0i64;
+  var subType = 0i64;
+  var e = readdir(dir);
   while e != null {
-    imm entry = e as &dirent;
-    imm name *u8 = &[]entry.d_name as *u8;
+    let entry = e as &dirent;
+    let name *u8 = &[]entry.d_name as *u8;
     if same(name, ".") == 1i64 or same(name, "..") == 1i64 {
       dots = dots + 1i64;
       if entry.d_type != DT_DIR {dots = dots + 100i64;};
@@ -293,14 +293,14 @@ fn posixListing() {
   show("readdir-end-null", yes(readdir(dir) == null));
   show("closedir", i64.from(closedir(dir)));
 
-  imm missing = opendir("missing");
+  let missing = opendir("missing");
   show("opendir-missing-null", yes(missing == null));
   show("opendir-missing-ENOENT", yes(*errno() == ENOENT));
-  imm file = opendir("a.txt");
+  let file = opendir("a.txt");
   show("opendir-file-null", yes(file == null));
   show("opendir-file-ENOTDIR", yes(*errno() == ENOTDIR));
 
-  mut st = newStat();
+  var st = newStat();
   show("lstat-file", i64.from(lstat("a.txt", &mut st)));
   show("lstat-file-is-regular", yes((st.st_mode & S_IFMT) == S_IFREG));
   show("lstat-file-size", st.st_size);

@@ -98,8 +98,8 @@ static INode *eachBreakIf(INode *cond, BlockNode *loop, BlockNode *elseblk, INod
 // the loop when there is none: what 'match' de-sugars to (parseMatch,
 // parseBoundMatch), with the matched value held in a variable of the block that
 // is the initializer:
-//   { imm m = cursor.next();
-//     if m is Some { imm s = [Some]m; s } elif m is None { break } }
+//   { let m = cursor.next();
+//     if m is Some { let s = [Some]m; s } elif m is None { break } }
 // 'scope' is that block's.
 static INode *eachNextItem(INode *cursor, BlockNode *loop, BlockNode *elseblk, uint16_t scope, INode *lexnode) {
     BlockNode *blk = newBlockNode();
@@ -407,7 +407,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     }
 
     if (isslice || isarray || islent || itemskind) {
-        // imm s = [the slice]; mut i = 0; loop { if i >= s.len {break}; imm x = &s[i]; i++; ... }
+        // let s = [the slice]; var i = 0; loop { if i >= s.len {break}; let x = &s[i]; i++; ... }
         VarDclNode *slicedcl = srcdcl;
         INode *start = (INode*)newULitNodeTC(0, (INode*)usizeType);
         if (itemskind) {

@@ -26,26 +26,26 @@ import diag;
 
 // Poll until out holds at least n answers, or two seconds pass
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(2i64);
+  let limit = Instant.now() + Duration.fromSeconds(2i64);
   while out.len() < n and Instant.now() < limit {
     lp.poll(limit, out);
   }
 }
 
 fn pattern(b &mut IoBuf, seed u8) {
-  imm room = b.whole();
-  mut i = 0usize;
+  let room = b.whole();
+  var i = 0usize;
   while i < room.len {
     room[i] = u8.from(i % 251usize) ^ seed;
     i = i + 1usize;
   }
-  imm n = room.len;
+  let n = room.len;
   b.setLen(n);
 }
 
 fn matches(b &IoBuf, seed u8) bool {
-  imm v = b.view();
-  mut i = 0usize;
+  let v = b.view();
+  var i = 0usize;
   while i < v.len {
     if v[i] != u8.from(i % 251usize) ^ seed {return false;}
     i = i + 1usize;
@@ -55,16 +55,16 @@ fn matches(b &IoBuf, seed u8) bool {
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
 
     // 1. Timers
-    imm t0 = Instant.now();
+    let t0 = Instant.now();
     lp.after(t0 + Duration.fromMillis(6i64), Target.Here(3u64));
     lp.after(t0 + Duration.fromMillis(2i64), Target.Here(1u64));
     lp.after(t0 + Duration.fromMillis(4i64), Target.Here(2u64));
-    imm doomed = lp.after(t0 + Duration.fromMillis(3i64), Target.Here(9u64));
+    let doomed = lp.after(t0 + Duration.fromMillis(3i64), Target.Here(9u64));
     expect(lp.cancel(doomed), "a pending timer's cancel is taken");
     expect(not lp.cancel(doomed), "asked twice: its answer, Cancelled, is decided already");
     waitFor(&mut lp, &mut out, 4usize);
@@ -81,22 +81,22 @@ fn main() i32 {
     out.clear();
 
     // 2. A file
-    mut fh = Handle.none();
+    var fh = Handle.none();
     match lp.openFile("basics.tmp", Access.Create) {
-      case imm r Ok {fh = r;}
-      case imm e Error {}
+      case let r Ok {fh = r;}
+      case let e Error {}
     }
     require(lp.isOpen(fh), "the file opened");
-    mut s = 0u64;
+    var s = 0u64;
     while s < 3u64 {
-      mut b = pool.mustTake(65536usize);
+      var b = pool.mustTake(65536usize);
       pattern(&mut b, u8.from(s + 1u64));
       lp.submit(Op.WriteAt(fh, s * 65536u64, b), Target.Here(10u64 + s));
       s = s + 1u64;
     }
     waitFor(&mut lp, &mut out, 3usize);
     requireUInt(u64.from(out.len()), 3u64, "three writes answered");
-    mut k = 0usize;
+    var k = 0usize;
     while k < 3usize {
       expectUInt(u64.from(out[k].count()), 65536u64, "each wrote 64 KiB");
       expectUInt(u64.from(out[k].buf.len()), 65536u64, "and its buffer came back full");
@@ -113,7 +113,7 @@ fn main() i32 {
     requireUInt(u64.from(out.len()), 4u64, "four reads answered");
     k = 0usize;
     while k < 4usize {
-      imm c = out[k];
+      let c = out[k];
       if c.token == 29u64 {
         expect(c.isDone() and c.count() == 0usize, "a read past the end is Done(0)");
       } else {
@@ -128,22 +128,22 @@ fn main() i32 {
     expect(not lp.isOpen(fh), "its handle names nothing now");
 
     // 3. TCP to itself
-    imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-    mut port = 0u16;
+    let listener = lp.mustListen(SocketAddr.localhost(0u16));
+    var port = 0u16;
     match lp.localAddr(listener) {
-      case imm a Ok {port = a.port();}
-      case imm e Error {}
+      case let a Ok {port = a.port();}
+      case let e Error {}
     }
     require(port != 0u16, "the OS chose a port");
     lp.submit(Op.Accept(listener), Target.Here(30u64));
     lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(31u64));
     waitFor(&mut lp, &mut out, 2usize);
     requireUInt(u64.from(out.len()), 2u64, "accept and connect answered");
-    mut server = Handle.none();
-    mut client = Handle.none();
+    var server = Handle.none();
+    var client = Handle.none();
     k = 0usize;
     while k < 2usize {
-      imm c = out[k];
+      let c = out[k];
       expect(c.isDone(), "each Done");
       if c.token == 30u64 {server = c.handle;} else {client = c.handle;}
       k = k + 1usize;
@@ -151,14 +151,14 @@ fn main() i32 {
     out.clear();
     require(lp.isOpen(server) and lp.isOpen(client), "both ends are handles");
 
-    mut hello = pool.mustTake(5usize);
+    var hello = pool.mustTake(5usize);
     hello.append("hello");
     lp.submit(Op.Send(client, hello), Target.Here(40u64));
     lp.submit(Op.Recv(server, pool.mustTake(100usize)), Target.Here(41u64));
     waitFor(&mut lp, &mut out, 2usize);
     k = 0usize;
     while k < out.len() {
-      imm c = out[k];
+      let c = out[k];
       if c.token == 41u64 {expectStr(c.buf.view(), "hello", "the server received hello");}
       else {expectUInt(u64.from(c.count()), 5u64, "the client sent 5 bytes");}
       k = k + 1usize;
@@ -169,13 +169,13 @@ fn main() i32 {
     lp.submit(Op.RecvReady(client), Target.Here(50u64));
     lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "nothing has come: RecvReady waits");
-    mut world = pool.mustTake(5usize);
+    var world = pool.mustTake(5usize);
     world.append("world");
     lp.submit(Op.SendBytes(server, world.freeze()), Target.Here(51u64));
     waitFor(&mut lp, &mut out, 2usize);
     k = 0usize;
     while k < out.len() {
-      imm c = out[k];
+      let c = out[k];
       if c.token == 50u64 {
         expect(c.isDone() and c.count() == 0usize, "RecvReady is Done(0) once bytes are there");
         expectUInt(u64.from(c.buf.capacity()), 0u64, "and held no buffer");
@@ -210,7 +210,7 @@ fn main() i32 {
     expectStr(SocketAddr.v6Localhost(443u16).text().view(), "[0:0:0:0:0:0:0:1]:443", "IPv6's loopback as text");
     {
       // Groups of one to four hex digits, each written whole
-      imm a6 Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0x0au8, 0u8, 0u8, 0xffu8, 0x00u8, 0x00u8, 0x42u8, 0x83u8, 0x29u8];
+      let a6 Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0x0au8, 0u8, 0u8, 0xffu8, 0x00u8, 0x00u8, 0x42u8, 0x83u8, 0x29u8];
       expectStr(SocketAddr.v6(&a6, 80u16).text().view(), "[2001:db8:0:a:0:ff00:42:8329]:80", "an IPv6 address as text");
     }
     expect(SocketAddr.localhost(9u16).isLoopback(), "127.0.0.1 is loopback");
@@ -220,18 +220,18 @@ fn main() i32 {
     expect(not SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 9u16).isLoopback(), "nor 10.0.0.7");
     expect(SocketAddr.v6Localhost(9u16).isLoopback(), "::1 is loopback");
     {
-      imm zero6 Array[u8, 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
-      imm near6 Array[u8, 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8, 1u8];
-      imm other6 Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8];
+      let zero6 Array[u8, 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+      let near6 Array[u8, 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8, 1u8];
+      let other6 Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8];
       expect(not SocketAddr.v6(&zero6, 9u16).isLoopback(), "the IPv6 wildcard (::) is not");
       expect(not SocketAddr.v6(&near6, 9u16).isLoopback(), "nor ::101");
       expect(not SocketAddr.v6(&other6, 9u16).isLoopback(), "nor 2001:db8::1");
     }
-    imm l6 = lp.mustListen(SocketAddr.v6Localhost(0u16));
-    mut port6 = 0u16;
+    let l6 = lp.mustListen(SocketAddr.v6Localhost(0u16));
+    var port6 = 0u16;
     match lp.localAddr(l6) {
-      case imm a Ok {port6 = a.port(); expect(a.isV6(), "an IPv6 listener");}
-      case imm e Error {}
+      case let a Ok {port6 = a.port(); expect(a.isV6(), "an IPv6 listener");}
+      case let e Error {}
     }
     lp.submit(Op.Accept(l6), Target.Here(80u64));
     lp.submit(Op.Connect(SocketAddr.v6Localhost(port6)), Target.Here(81u64));
@@ -239,7 +239,7 @@ fn main() i32 {
     expect(out.len() == 2usize and out[0usize].isDone() and out[1usize].isDone(), "accepted and connected over ::1");
     out.clear();
 
-    imm c = lp.counters();
+    let c = lp.counters();
     expectUInt(c.delivered, c.submitted, "every operation answered");
     expectUInt(c.inFlight, 0u64, "nothing in flight");
     expectUInt(c.delivered, 22u64, "twenty-two answers in all");

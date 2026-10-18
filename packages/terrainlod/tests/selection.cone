@@ -54,7 +54,7 @@ fn ground(x f32, z f32) f32 {
 }
 
 fn config(horizon f32) TerrainConfig {
-  mut cfg = TerrainConfig.make();
+  var cfg = TerrainConfig.make();
   cfg.cell = 1.;
   cfg.nodeCells = 32u32;
   cfg.horizon = horizon;
@@ -66,7 +66,7 @@ fn config(horizon f32) TerrainConfig {
 }
 
 fn camera(eye Vec3, target Vec3) Camera {
-  mut c = Camera.make();
+  var c = Camera.make();
   c.fov = radians(60.);
   c.near = 0.5;
   c.far = 100000.;
@@ -80,9 +80,9 @@ fn rnd(seed &mut u32) f32 {
 }
 
 fn main() i32 {
-  imm aspect = 1920. / 1080.;
-  mut terrain = Terrain.createCpu(config(8000.));
-  mut cams = List[Camera].empty();
+  let aspect = 1920. / 1080.;
+  var terrain = Terrain.createCpu(config(8000.));
+  var cams = List[Camera].empty();
   cams.push(camera(new Vec3(100., ground(100., 200.) + 2., 200.), new Vec3(1000., 0., 700.)));
   cams.push(camera(new Vec3(-300., ground(-300., 40.) + 2., 40.), new Vec3(-1000., 50., -400.)));
   cams.push(camera(new Vec3(500., 400., -600.), new Vec3(900., 0., 100.)));
@@ -96,73 +96,73 @@ fn main() i32 {
   cams.push(camera(new Vec3(64.5, ground(64.5, 64.5) + 3., 64.5), new Vec3(400., 20., 300.)));
   cams.push(camera(new Vec3(3000., 1200., 3000.), new Vec3(2000., 0., 2000.)));
 
-  mut seed = 99u32;
-  mut totalLeaves = 0;
-  mut overlaps = 0;
-  mut levelJumps = 0;
-  mut touching = 0;
-  mut sameTouch = 0;
-  mut oneApart = 0;
-  mut worstBorder = 0.;
-  mut missed = 0;
-  mut doubled = 0;
-  mut sampled = 0;
-  mut worstError = 0.;
-  mut errorOver = 0;
-  mut c = 0usize;
+  var seed = 99u32;
+  var totalLeaves = 0;
+  var overlaps = 0;
+  var levelJumps = 0;
+  var touching = 0;
+  var sameTouch = 0;
+  var oneApart = 0;
+  var worstBorder = 0.;
+  var missed = 0;
+  var doubled = 0;
+  var sampled = 0;
+  var worstError = 0.;
+  var errorOver = 0;
+  var c = 0usize;
   while c < cams.len() {
-    imm cam = *cams[c];
+    let cam = *cams[c];
     terrain.walk(&cam, 1920u32, 1080u32, &ground);
-    imm eye = cam.position();
-    imm n = terrain.leafCount();
+    let eye = cam.position();
+    let n = terrain.leafCount();
     totalLeaves = totalLeaves + i32.from(n);
     // ---- the leaves' squares and their neighbours ----
-    mut a = 0usize;
+    var a = 0usize;
     while a < n {
-      imm la = terrain.leaf(a);
-      imm sa = terrain.sizeOfLevel(la.level);
-      imm ax0 = f32.from(la.ix) * sa;
-      imm az0 = f32.from(la.iz) * sa;
-      mut b = 0usize;
+      let la = terrain.leaf(a);
+      let sa = terrain.sizeOfLevel(la.level);
+      let ax0 = f32.from(la.ix) * sa;
+      let az0 = f32.from(la.iz) * sa;
+      var b = 0usize;
       while b < n {
         if a != b {
-          imm lb = terrain.leaf(b);
-          imm sb = terrain.sizeOfLevel(lb.level);
-          imm bx0 = f32.from(lb.ix) * sb;
-          imm bz0 = f32.from(lb.iz) * sb;
-          imm ox = fmin2(ax0 + sa, bx0 + sb) - fmax2(ax0, bx0);
-          imm oz = fmin2(az0 + sa, bz0 + sb) - fmax2(az0, bz0);
+          let lb = terrain.leaf(b);
+          let sb = terrain.sizeOfLevel(lb.level);
+          let bx0 = f32.from(lb.ix) * sb;
+          let bz0 = f32.from(lb.iz) * sb;
+          let ox = fmin2(ax0 + sa, bx0 + sb) - fmax2(ax0, bx0);
+          let oz = fmin2(az0 + sa, bz0 + sb) - fmax2(az0, bz0);
           if ox > 0.001 and oz > 0.001 { overlaps = overlaps + 1; }
           // Touching along an edge: overlap in one axis, none in the other
-          imm touchX = libc.fabsf(ax0 + sa - bx0) < 0.001 or libc.fabsf(bx0 + sb - ax0) < 0.001;
-          imm touchZ = libc.fabsf(az0 + sa - bz0) < 0.001 or libc.fabsf(bz0 + sb - az0) < 0.001;
+          let touchX = libc.fabsf(ax0 + sa - bx0) < 0.001 or libc.fabsf(bx0 + sb - ax0) < 0.001;
+          let touchZ = libc.fabsf(az0 + sa - bz0) < 0.001 or libc.fabsf(bz0 + sb - az0) < 0.001;
           if (touchX and oz > 0.001) or (touchZ and ox > 0.001) {
             touching = touching + 1;
-            imm dl = i32.from(la.level) - i32.from(lb.level);
+            let dl = i32.from(la.level) - i32.from(lb.level);
             if dl > 1i32 or dl < -1i32 { levelJumps = levelJumps + 1; }
             if dl == 0i32 { sameTouch = sameTouch + 1; }
             if dl == 1i32 or dl == -1i32 { oneApart = oneApart + 1; }
             // Each vertex of A on the shared edge, against B's drawn surface
-            imm cellsA = i32.from(32u32);
-            mut k = 0i32;
+            let cellsA = i32.from(32u32);
+            var k = 0i32;
             while k <= cellsA {
               // Vertex position along each of A's four edges, the one that touches B
-              mut i = 0i32;
-              mut j = 0i32;
-              mut onEdge = false;
+              var i = 0i32;
+              var j = 0i32;
+              var onEdge = false;
               if touchX and libc.fabsf(ax0 + sa - bx0) < 0.001 { i = cellsA; j = k; onEdge = true; }
               elif touchX { i = 0i32; j = k; onEdge = true; }
               if !onEdge and touchZ and libc.fabsf(az0 + sa - bz0) < 0.001 { i = k; j = cellsA; onEdge = true; }
               elif !onEdge and touchZ { i = k; j = 0i32; onEdge = true; }
               if onEdge {
-                imm ca = terrain.cellOfLevel(la.level);
-                imm x = f32.from(la.ix * cellsA + i) * ca;
-                imm z = f32.from(la.iz * cellsA + j) * ca;
+                let ca = terrain.cellOfLevel(la.level);
+                let x = f32.from(la.ix * cellsA + i) * ca;
+                let z = f32.from(la.iz * cellsA + j) * ca;
                 // Within B's extent along the edge (both ends included)?
                 if x >= bx0 - 0.001 and x <= bx0 + sb + 0.001 and z >= bz0 - 0.001 and z <= bz0 + sb + 0.001 {
-                  imm mine = terrain.leafVertex(a, eye, i, j);
-                  imm theirs = terrain.leafSurface(b, eye, x, z);
-                  imm diff = libc.fabsf(mine - theirs);
+                  let mine = terrain.leafVertex(a, eye, i, j);
+                  let theirs = terrain.leafSurface(b, eye, x, z);
+                  let diff = libc.fabsf(mine - theirs);
                   if diff > worstBorder { worstBorder = diff; }
                 }
               }
@@ -175,27 +175,27 @@ fn main() i32 {
       a = a + 1usize;
     }
     // ---- every point in view lies in one leaf ----
-    imm vp = cam.projectionMatrix(aspect) * cam.viewMatrix();
-    imm frustum = Frustum.fromMatrix(vp);
-    mut s = 0;
+    let vp = cam.projectionMatrix(aspect) * cam.viewMatrix();
+    let frustum = Frustum.fromMatrix(vp);
+    var s = 0;
     while s < 400 {
-      imm r = terrain.sizeOfLevel(terrain.lod.top()) * 0.0 + 3500. * libc.sqrtf(rnd(&mut seed));
-      imm ang = rnd(&mut seed) * 6.2831853;
-      imm x = eye.x + r * libc.cosf(ang);
-      imm z = eye.z + r * libc.sinf(ang);
-      imm p = new Vec3(x, ground(x, z), z);
+      let r = terrain.sizeOfLevel(terrain.lod.top()) * 0.0 + 3500. * libc.sqrtf(rnd(&mut seed));
+      let ang = rnd(&mut seed) * 6.2831853;
+      let x = eye.x + r * libc.cosf(ang);
+      let z = eye.z + r * libc.sinf(ang);
+      let p = new Vec3(x, ground(x, z), z);
       if frustum.containsPoint(p) {
-        mut found = false;
-        imm h = terrain.displayedHeight(eye, x, z, &mut found);
+        var found = false;
+        let h = terrain.displayedHeight(eye, x, z, &mut found);
         sampled = sampled + 1;
         if !found { missed = missed + 1; }
         else {
           // Exactly one leaf holds it
-          mut holding = 0;
-          mut q = 0usize;
+          var holding = 0;
+          var q = 0usize;
           while q < n {
-            imm lq = terrain.leaf(q);
-            imm sq = terrain.sizeOfLevel(lq.level);
+            let lq = terrain.leaf(q);
+            let sq = terrain.sizeOfLevel(lq.level);
             if x > f32.from(lq.ix) * sq and x < f32.from(lq.ix + 1i32) * sq and z > f32.from(lq.iz) * sq and z < f32.from(lq.iz + 1i32) * sq {
               holding = holding + 1;
             }
@@ -204,18 +204,18 @@ fn main() i32 {
           if holding != 1 { doubled = doubled + 1; }
           // Within the bound of the function: the surface of the leaf is
           // within lodError of twice its cell
-          mut lvl = 0u32;
+          var lvl = 0u32;
           q = 0usize;
           while q < n {
-            imm lq = terrain.leaf(q);
-            imm sq = terrain.sizeOfLevel(lq.level);
+            let lq = terrain.leaf(q);
+            let sq = terrain.sizeOfLevel(lq.level);
             if x >= f32.from(lq.ix) * sq and x <= f32.from(lq.ix + 1i32) * sq and z >= f32.from(lq.iz) * sq and z <= f32.from(lq.iz + 1i32) * sq {
               lvl = lq.level;
             }
             q = q + 1usize;
           }
-          imm bound = lodError(2. * terrain.cellOfLevel(lvl), 1.3);
-          imm err = libc.fabsf(h - ground(x, z));
+          let bound = lodError(2. * terrain.cellOfLevel(lvl), 1.3);
+          let err = libc.fabsf(h - ground(x, z));
           if err > worstError { worstError = err; }
           if err > bound { errorOver = errorOver + 1; }
         }
@@ -235,38 +235,38 @@ fn main() i32 {
   expectInt(i64.from(errorOver), 0i64, "the drawn surface is within slope x 2 cells x sqrt 2 of the function");
 
   // ---- 2. No pop ----
-  mut pts = List[Vec2].empty();
-  mut pi = 0usize;
+  var pts = List[Vec2].empty();
+  var pi = 0usize;
   while pi < 20usize {
     pts.push(new Vec2(150. + f32.from(pi) * 150. + rnd(&mut seed) * 50., (rnd(&mut seed) - 0.5) * 400.));
     pi = pi + 1usize;
   }
-  mut last = List[f32].empty();
-  mut lastLevel = List[i32].empty();
+  var last = List[f32].empty();
+  var lastLevel = List[i32].empty();
   pi = 0usize;
   while pi < 20usize { last.push(0.); lastLevel.push(-1i32); pi = pi + 1usize; }
-  mut maxJump = 0.;
-  mut switches = 0;
-  mut compared = 0;
-  mut step = 0;
+  var maxJump = 0.;
+  var switches = 0;
+  var compared = 0;
+  var step = 0;
   // A fresh terrain with a cache big enough for the whole run
-  mut walker = Terrain.createCpu(config(8000.));
+  var walker = Terrain.createCpu(config(8000.));
   while step <= 800 {
-    imm ex = 0. + 0.25 * f32.from(step);
-    imm cam = camera(new Vec3(ex, 40., 0.), new Vec3(ex + 100., 30., 0.));
+    let ex = 0. + 0.25 * f32.from(step);
+    let cam = camera(new Vec3(ex, 40., 0.), new Vec3(ex + 100., 30., 0.));
     walker.walk(&cam, 1920u32, 1080u32, &ground);
-    imm eye = cam.position();
+    let eye = cam.position();
     pi = 0usize;
     while pi < 20usize {
-      imm p = *pts[pi];
-      mut found = false;
-      imm h = walker.displayedHeight(eye, p.x + ex * 0., p.y, &mut found);
+      let p = *pts[pi];
+      var found = false;
+      let h = walker.displayedHeight(eye, p.x + ex * 0., p.y, &mut found);
       // Which level holds the point
-      mut lvl = -1i32;
-      mut q = 0usize;
+      var lvl = -1i32;
+      var q = 0usize;
       while q < walker.leafCount() {
-        imm lq = walker.leaf(q);
-        imm sq = walker.sizeOfLevel(lq.level);
+        let lq = walker.leaf(q);
+        let sq = walker.sizeOfLevel(lq.level);
         if p.x >= f32.from(lq.ix) * sq and p.x <= f32.from(lq.ix + 1i32) * sq and p.y >= f32.from(lq.iz) * sq and p.y <= f32.from(lq.iz + 1i32) * sq {
           lvl = i32.from(lq.level);
         }
@@ -274,7 +274,7 @@ fn main() i32 {
       }
       if found and *lastLevel[pi] >= 0i32 {
         compared = compared + 1;
-        imm jump = libc.fabsf(h - *last[pi]);
+        let jump = libc.fabsf(h - *last[pi]);
         if jump > maxJump { maxJump = jump; }
         if lvl != *lastLevel[pi] { switches = switches + 1; }
       }
@@ -288,12 +288,12 @@ fn main() i32 {
   expectBool(maxJump < 0.01, true, "no pop: no point's drawn height changed by 1 cm between steps of 0.25 m");
 
   // ---- 3. Bounded cost ----
-  mut counts = List[i32].empty();
-  mut hz = 0;
+  var counts = List[i32].empty();
+  var hz = 0;
   while hz < 3 {
-    imm horizon = if hz == 0 { 4000.; } elif hz == 1 { 40000.; } else { 400000.; };
-    mut t = Terrain.createCpu(config(horizon));
-    imm cam = camera(new Vec3(0., 60., 0.), new Vec3(1000., 30., 600.));
+    let horizon = if hz == 0 { 4000.; } elif hz == 1 { 40000.; } else { 400000.; };
+    var t = Terrain.createCpu(config(horizon));
+    let cam = camera(new Vec3(0., 60., 0.), new Vec3(1000., 30., 600.));
     t.walk(&cam, 1920u32, 1080u32, &ground);
     counts.push(i32.from(t.leafCount()));
     hz = hz + 1;
@@ -303,42 +303,42 @@ fn main() i32 {
   expectBool(*counts[2] < *counts[0] * 3i32, true, "100 times the horizon: under three times the leaves");
 
   // ---- 4. The cache ----
-  mut ct = Terrain.createCpu(config(8000.));
-  imm camA = camera(new Vec3(100., 60., 100.), new Vec3(900., 30., 500.));
+  var ct = Terrain.createCpu(config(8000.));
+  let camA = camera(new Vec3(100., 60., 100.), new Vec3(900., 30., 500.));
   ct.walk(&camA, 1920u32, 1080u32, &ground);
   print <- "first walk built "; print <- ct.stats.builtPatches; print <- " patches, "; print <- ct.stats.heightSamples; print <- " samples, "; print <- ct.leafCount(); print <- " leaves\n";
   expectBool(ct.stats.builtPatches > 200u32, true, "cache: the first walk builds the patches it needs");
   ct.walk(&camA, 1920u32, 1080u32, &ground);
   expectInt(i64.from(ct.stats.builtPatches), 0i64, "cache: the same camera again builds none");
-  imm camB = camera(new Vec3(103., 60., 100.), new Vec3(903., 30., 500.));
+  let camB = camera(new Vec3(103., 60., 100.), new Vec3(903., 30., 500.));
   ct.walk(&camB, 1920u32, 1080u32, &ground);
   expectBool(ct.stats.builtPatches < 40u32, true, "cache: a move of 3 m builds a few");
-  mut small = config(8000.);
+  var small = config(8000.);
   small.cacheNodes = 900u32;
-  mut st = Terrain.createCpu(small);
-  mut jump = 0;
+  var st = Terrain.createCpu(small);
+  var jump = 0;
   while jump < 5 {
-    imm cam = camera(new Vec3(f32.from(jump) * 20000., 60., 0.), new Vec3(f32.from(jump) * 20000. + 800., 30., 500.));
+    let cam = camera(new Vec3(f32.from(jump) * 20000., 60., 0.), new Vec3(f32.from(jump) * 20000. + 800., 30., 500.));
     st.walk(&cam, 1920u32, 1080u32, &ground);
     expectBool(st.stats.resident <= 900u32, true, "cache: no more than 900 patches held");
     expectBool(!st.overflow(), true, "cache: no overflow");
     jump = jump + 1;
   }
-  imm back = camera(new Vec3(0., 60., 0.), new Vec3(800., 30., 500.));
+  let back = camera(new Vec3(0., 60., 0.), new Vec3(800., 30., 500.));
   st.walk(&back, 1920u32, 1080u32, &ground);
   expectBool(st.stats.builtPatches > 100u32, true, "cache: returning after the cache turned over builds again");
 
   // ---- 5. Tiles ----
-  mut tiles = HeightTiles.make(-512., -512., 2., 64u32, 8u32, 8u32, 0.);
-  mut ti = 0u32;
+  var tiles = HeightTiles.make(-512., -512., 2., 64u32, 8u32, 8u32, 0.);
+  var ti = 0u32;
   while ti < 64u32 {
-    mut samples = List[f32].empty();
-    mut jj = 0u32;
+    var samples = List[f32].empty();
+    var jj = 0u32;
     while jj <= 64u32 {
-      mut ii = 0u32;
+      var ii = 0u32;
       while ii <= 64u32 {
-        imm wx = -512. + f32.from((ti % 8u32) * 64u32 + ii) * 2.;
-        imm wz = -512. + f32.from((ti / 8u32) * 64u32 + jj) * 2.;
+        let wx = -512. + f32.from((ti % 8u32) * 64u32 + ii) * 2.;
+        let wz = -512. + f32.from((ti / 8u32) * 64u32 + jj) * 2.;
         samples.push(ground(wx, wz));
         ii = ii + 1u32;
       }
@@ -347,27 +347,27 @@ fn main() i32 {
     tiles.setTile(ti % 8u32, ti / 8u32, samples);
     ti = ti + 1u32;
   }
-  mut tcfg = config(2000.);
+  var tcfg = config(2000.);
   tcfg.cell = 2.;
-  mut tt = Terrain.createCpu(tcfg);
-  imm tcam = camera(new Vec3(0., 100., 0.), new Vec3(300., 20., 300.));
-  imm fromTiles = fn(x f32, z f32) f32 { tiles.sample(x, z); };
+  var tt = Terrain.createCpu(tcfg);
+  let tcam = camera(new Vec3(0., 100., 0.), new Vec3(300., 20., 300.));
+  let fromTiles = fn(x f32, z f32) f32 { tiles.sample(x, z); };
   tt.walk(&tcam, 1920u32, 1080u32, &fromTiles);
   expectBool(tt.leafCount() > 20usize, true, "tiles: a terrain over tiles draws leaves");
   // The finest leaves' vertices are the tiles' samples: the leaf's own height at its vertex, and the function
-  mut agree = 0;
-  mut leaves = 0;
-  mut q = 0usize;
+  var agree = 0;
+  var leaves = 0;
+  var q = 0usize;
   while q < tt.leafCount() {
-    imm lf = tt.leaf(q);
+    let lf = tt.leaf(q);
     if lf.level == 0u32 {
       leaves = leaves + 1;
-      imm x = f32.from(lf.ix * 32i32 + 5i32) * 2.;
-      imm z = f32.from(lf.iz * 32i32 + 7i32) * 2.;
+      let x = f32.from(lf.ix * 32i32 + 5i32) * 2.;
+      let z = f32.from(lf.iz * 32i32 + 7i32) * 2.;
       // As drawn for an eye right over it (no morph): the stored sample itself
-      imm got = tt.leafVertex(q, new Vec3(x, 100., z), 5i32, 7i32);
+      let got = tt.leafVertex(q, new Vec3(x, 100., z), 5i32, 7i32);
       // Inside the tiles (-512 to 512) the stored sample; outside them, 'outside' (0)
-      imm inside = x >= -512. and x < 512. and z >= -512. and z < 512.;
+      let inside = x >= -512. and x < 512. and z >= -512. and z < 512.;
       if libc.fabsf(got - (if inside { ground(x, z); } else { 0.; })) < 0.02 { agree = agree + 1; }
     }
     q = q + 1usize;

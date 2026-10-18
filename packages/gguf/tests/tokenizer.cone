@@ -11,14 +11,14 @@ import testing use *;
 import collections use *;
 import gguf use *;
 
-fn orS(o Option[&str], d &str) &str { match o { case imm v Some { return v; } case is None { return d; } } }
-fn orU(o Option[u64], d u64) u64 { match o { case imm v Some { return v; } case is None { return d; } } }
-fn orI(o Option[i64], d i64) i64 { match o { case imm v Some { return v; } case is None { return d; } } }
-fn orF(o Option[f64], d f64) f64 { match o { case imm v Some { return v; } case is None { return d; } } }
-fn orB(o Option[bool], d bool) bool { match o { case imm v Some { return v; } case is None { return d; } } }
+fn orS(o Option[&str], d &str) &str { match o { case let v Some { return v; } case is None { return d; } } }
+fn orU(o Option[u64], d u64) u64 { match o { case let v Some { return v; } case is None { return d; } } }
+fn orI(o Option[i64], d i64) i64 { match o { case let v Some { return v; } case is None { return d; } } }
+fn orF(o Option[f64], d f64) f64 { match o { case let v Some { return v; } case is None { return d; } } }
+fn orB(o Option[bool], d bool) bool { match o { case let v Some { return v; } case is None { return d; } } }
 
 fn tokenText(i usize) String {
-  mut s = String.empty();
+  var s = String.empty();
   if i == 0usize { s.append("<unk>"); return s; }
   if i == 1usize { s.append("<s>"); return s; }
   if i == 2usize { s.append("</s>"); return s; }
@@ -36,7 +36,7 @@ fn tokenText(i usize) String {
 }
 
 fn mergeText(i usize) String {
-  mut s = String.empty();
+  var s = String.empty();
   s.append("t");
   s.appendUInt(u64.from(i));
   s.append(" ok");
@@ -44,14 +44,14 @@ fn mergeText(i usize) String {
 }
 
 fn main() i32 {
-  imm n = 32000usize;
-  mut w = Writer.make();
+  let n = 32000usize;
+  var w = Writer.make();
   w.putText("general.architecture", "llama");
   w.putText("tokenizer.ggml.model", "llama");
-  mut tokens = List[String].withCapacity(n);
-  mut scores = List[Value].withCapacity(n);
-  mut types = List[Value].withCapacity(n);
-  mut i = 0usize;
+  var tokens = List[String].withCapacity(n);
+  var scores = List[Value].withCapacity(n);
+  var types = List[Value].withCapacity(n);
+  var i = 0usize;
   while i < n {
     tokens.push(tokenText(i));
     scores.push(Value.F32(0.0 - f32.from(i32.from(i))));
@@ -61,7 +61,7 @@ fn main() i32 {
   w.putTexts("tokenizer.ggml.tokens", tokens.view());
   w.put("tokenizer.ggml.scores", Value.Items(ValueType.F32, scores));
   w.put("tokenizer.ggml.token_type", Value.Items(ValueType.I32, types));
-  mut merges = List[String].withCapacity(5000usize);
+  var merges = List[String].withCapacity(5000usize);
   i = 0usize;
   while i < 5000usize { merges.push(mergeText(i)); i = i + 1usize; }
   w.putTexts("tokenizer.ggml.merges", merges.view());
@@ -69,28 +69,28 @@ fn main() i32 {
   w.putU32("tokenizer.ggml.eos_token_id", 2u32);
   w.put("tokenizer.ggml.add_bos_token", Value.Bool(true));
 
-  mut bytes = List[u8].empty();
+  var bytes = List[u8].empty();
   match w.finish() {
-    case mut ok Ok { bytes <=> ok; }
-    case imm e Error {
-      imm m = e.message();
+    case var ok Ok { bytes <=> ok; }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<written>", "finish");
     }
   }
   expect(bytes.len() > 400000usize, "a few hundred kilobytes");
 
   match parse(bytes.view()) {
-    case imm m Ok {
+    case let m Ok {
       match m.list("tokenizer.ggml.tokens") {
-        case imm l Some {
+        case let l Some {
           expectUInt(u64.from(l.len()), u64.from(n), "32000 tokens");
           expect(l.elem == ValueType.Str, "an array of strings");
-          mut bad = 0u32;
+          var bad = 0u32;
           i = 0usize;
           while i < n {
-            imm want = tokenText(i);
+            let want = tokenText(i);
             match l.text(i) {
-              case imm got Some { if got != want.view() { bad = bad + 1u32; } }
+              case let got Some { if got != want.view() { bad = bad + 1u32; } }
               case is None { bad = bad + 1u32; }
             }
             i = i + 1usize;
@@ -101,7 +101,7 @@ fn main() i32 {
         case is None { expect(false, "tokens"); }
       }
       match m.list("tokenizer.ggml.scores") {
-        case imm l Some {
+        case let l Some {
           expectUInt(u64.from(l.len()), u64.from(n), "32000 scores");
           expect(l.elem == ValueType.F32, "an array of f32");
           expectFloat(orF(l.float(31999usize), 0.0d), -31999.0d, 0.0d, "last score");
@@ -110,7 +110,7 @@ fn main() i32 {
         case is None { expect(false, "scores"); }
       }
       match m.list("tokenizer.ggml.token_type") {
-        case imm l Some {
+        case let l Some {
           expect(l.elem == ValueType.I32, "an array of i32");
           expectInt(orI(l.int(0usize), 0i64), 3i64, "control token");
           expectInt(orI(l.int(100usize), 0i64), 6i64, "byte token");
@@ -119,7 +119,7 @@ fn main() i32 {
         case is None { expect(false, "token types"); }
       }
       match m.list("tokenizer.ggml.merges") {
-        case imm l Some {
+        case let l Some {
           expectUInt(u64.from(l.len()), 5000u64, "5000 merges");
           expectStr(orS(l.text(4999usize), ""), "t4999 ok", "last merge");
         }
@@ -130,12 +130,12 @@ fn main() i32 {
       expect(orB(m.flag("tokenizer.ggml.add_bos_token"), false), "add_bos");
       // multi-byte UTF-8 tokens survive as bytes
       match m.list("tokenizer.ggml.tokens") {
-        case imm l Some { expectStr(orS(l.text(997usize), ""), "é✓tok997", "a UTF-8 token"); }
+        case let l Some { expectStr(orS(l.text(997usize), ""), "é✓tok997", "a UTF-8 token"); }
         case is None {}
       }
     }
-    case imm e Error {
-      imm msg = e.message();
+    case let e Error {
+      let msg = e.message();
       expectStr(msg.view(), "<parsed>", "parse");
     }
   }

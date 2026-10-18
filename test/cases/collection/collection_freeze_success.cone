@@ -32,7 +32,7 @@ fn show(label &str, n i64) {
 
 // Two-phase receivers: the argument reads the list the push then changes
 fn twoPhase() {
-  mut v = List[i64].empty();
+  var v = List[i64].empty();
   v.push(i64.from(v.len()));
   v.push(i64.from(v.len()));
   v.push(*v[1usize] + 10);
@@ -42,9 +42,9 @@ fn twoPhase() {
 // A read-only element borrow: the list may be read while it is used, and
 // pushed onto after its last use
 fn readThenPush() {
-  mut list = List[Pt].empty();
+  var list = List[Pt].empty();
   list.push(new Pt(1, 2));
-  imm first = list[0usize];
+  let first = list[0usize];
   show("list-read-under-element", i64.from(list.len()) * 100 + first.x);
   list.push(new Pt(3, 4));
   show("pushed-after-last-use", i64.from(list.len()));
@@ -53,9 +53,9 @@ fn readThenPush() {
 // A borrow returned through another: a String element of a local list, and
 // its bytes, read while the list is read
 fn elementChain() {
-  mut names = List[String].empty();
+  var names = List[String].empty();
   names.push(String.from("core"));
-  imm bytes = names[0usize].view();
+  let bytes = names[0usize].view();
   show("element-view", i64.from(bytes.len) * 10 + i64.from(names.len()));
   names.push(String.from("stdio"));
   show("pushed-after-view", i64.from(names.len()));
@@ -63,11 +63,11 @@ fn elementChain() {
 
 // A borrow in a loop, dead before the push on every iteration
 fn loopThenPush() {
-  mut v = List[i64].empty();
+  var v = List[i64].empty();
   v.push(1);
-  mut i = 0usize;
+  var i = 0usize;
   while i < 3usize {
-    imm last = v[v.len() - 1usize];
+    let last = v[v.len() - 1usize];
     v.push(*last * 2);
     i = i + 1usize;
   }
@@ -76,9 +76,9 @@ fn loopThenPush() {
 
 // A pool's value read while the pool is read, then removed
 fn poolRead() {
-  mut p = Pool[Pt].empty();
-  imm id = p.add(new Pt(7, 8));
-  imm e = p[id];
+  var p = Pool[Pt].empty();
+  let id = p.add(new Pt(7, 8));
+  let e = p[id];
   show("pool-read-under-borrow", i64.from(p.len()) * 100 + e.x);
   p.remove(id);
   show("pool-after-remove", i64.from(p.len()));
@@ -94,12 +94,12 @@ fn make(s &mut Arena, n i64) &mut Pt { s.alloc(new Pt(n, n)); }
 
 // Allocations live together, and one may hold a '&mut' of its arena
 fn arenaAllocations() {
-  mut a = Arena.empty();
-  imm r1 = a.alloc(new Pt(1, 2));
-  imm r2 = a.alloc(new Pt(3, 4));
-  imm x = make(&mut a, 5);
-  imm y = make(&mut a, 6);
-  imm node = a.alloc(new Node(7, &mut a));
+  var a = Arena.empty();
+  let r1 = a.alloc(new Pt(1, 2));
+  let r2 = a.alloc(new Pt(3, 4));
+  let x = make(&mut a, 5);
+  let y = make(&mut a, 6);
+  let node = a.alloc(new Node(7, &mut a));
   show("arena-live-together", r1.x + r2.x * 10 + x.x * 100 + y.x * 1000 + node.n * 10000);
 }
 
@@ -108,12 +108,12 @@ fn arenaAllocations() {
 // 'viewMut' again and viewed; a change of shape is what collection_flow_freeze
 // refuses
 fn viewMutBorrowsAlias() {
-  mut list = List[i64].empty();
+  var list = List[i64].empty();
   list.push(1);
-  imm s = list.viewMut();
-  imm t = list.viewMut();
-  imm r = list.view();
-  imm n = list.len();
+  let s = list.viewMut();
+  let t = list.viewMut();
+  let r = list.view();
+  let n = list.len();
   s[0usize] = 5;
   t[0usize] = t[0usize] + 10;
   show("views-alias", r[0usize] * 10 + i64.from(n));
@@ -126,9 +126,9 @@ struct Cell {
 }
 
 fn cellReadUnderMut() {
-  mut c = new Cell(5);
-  imm r = c.get();
-  imm seen = c.v;
+  var c = new Cell(5);
+  let r = c.get();
+  let seen = c.v;
   *r = 6;
   show("cell-read-under-mut", seen * 10 + c.v);
 }
@@ -137,7 +137,7 @@ fn fill(l &mut List[i64], n usize) { l.push(i64.from(n)); }
 
 fn takeLast(l &mut List[i64]) i64 {
   match l.pop() {
-    case imm n Some { n; }
+    case let n Some { n; }
     else { 0; }
   }
 }
@@ -146,7 +146,7 @@ fn takeLast(l &mut List[i64]) i64 {
 // receiver's push beside an argument borrowing the list mutably: the borrows
 // are all aliases, and the argument is worked out before the push
 fn explicitAndReceiver() {
-  mut v = List[i64].empty();
+  var v = List[i64].empty();
   fill(&mut v, v.len());
   v.push(7);
   v.push(takeLast(&mut v));
@@ -157,8 +157,8 @@ fn consumePt(p Uni[Pt]) i64 { p.x; }
 
 // An owning reference coerced to a borrow, moved after the borrow's last use
 fn ownedLent() {
-  imm u = new Uni[Pt](4, 5);
-  imm b &Pt = u;
+  let u = new Uni[Pt](4, 5);
+  let b &Pt = u;
   show("owned-lent", b.y);
   show("owner-moved-after", consumePt(u));
 }

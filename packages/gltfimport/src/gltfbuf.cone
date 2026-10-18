@@ -23,7 +23,7 @@ fn ldFail(ld &mut Ld, why &str) {
 
 fn ldFail2(ld &mut Ld, a &str, b &str) {
   if ld.failed { return; }
-  mut s = String.from(a);
+  var s = String.from(a);
   s.append(b);
   ld.failed = true;
   ld.reason = s;
@@ -31,7 +31,7 @@ fn ldFail2(ld &mut Ld, a &str, b &str) {
 
 fn ldFailIdx(ld &mut Ld, a &str, i usize, b &str) {
   if ld.failed { return; }
-  mut s = String.from(a);
+  var s = String.from(a);
   s.appendUInt(u64.from(i));
   s.append(b);
   ld.failed = true;
@@ -59,14 +59,14 @@ fn b64Val(c u8) i32 {
 // The bytes of base64 text from 'start'; false on a character that is not
 // base64 (whitespace is skipped, '=' padding ends the data)
 fn base64Decode(t &Array[u8], start usize, out &mut List[u8]) bool {
-  mut acc = 0u32;
-  mut bits = 0u32;
-  mut i = start;
+  var acc = 0u32;
+  var bits = 0u32;
+  var i = start;
   while i < t.len {
-    imm c = t[i];
+    let c = t[i];
     if c == '=' { break; }
     if c == ' ' or c == '\n' or c == '\r' or c == '\t' { i += 1usize; continue; }
-    imm v = b64Val(c);
+    let v = b64Val(c);
     if v < 0i32 { return false; }
     acc = (acc << 6u32) | u32.from(v);
     bits += 6u32;
@@ -81,10 +81,10 @@ fn base64Decode(t &Array[u8], start usize, out &mut List[u8]) bool {
 
 // %XX escapes decoded, as a relative uri's file name needs
 fn percentDecode(s &str) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < s.len() {
-    imm c = s[i];
+    let c = s[i];
     if c == '%' and i + 2usize < s.len() + 0usize and hexVal(s[i + 1usize]) >= 0i32 and hexVal(s[i + 2usize]) >= 0i32 {
       out.appendByte(u8.from(hexVal(s[i + 1usize]) * 16i32 + hexVal(s[i + 2usize])));
       i += 3usize;
@@ -101,10 +101,10 @@ fn percentDecode(s &str) String {
 fn loadUri(ld &Ld, uri &str, out &mut List[u8], why &mut String) bool {
   if uri.startsWith("data:") {
     // data:[<mediatype>][;base64],<data>
-    mut comma = 5usize;
+    var comma = 5usize;
     while comma < uri.len() and uri[comma] != ',' { comma += 1usize; }
     if comma >= uri.len() { *why = String.from("a data uri with no comma"); return false; }
-    imm head = uri.slice(5usize, comma);
+    let head = uri.slice(5usize, comma);
     if not head.endsWith(";base64") {
       *why = String.from("a data uri that is not base64");
       return false;
@@ -113,7 +113,7 @@ fn loadUri(ld &Ld, uri &str, out &mut List[u8], why &mut String) bool {
     return true;
   }
   if not ld.canReadFiles {
-    mut m = String.from("the external file ");
+    var m = String.from("the external file ");
     m.append(uri);
     m.append(" cannot be read, because this load has no folder (use loadGltf or loadGltfBytesIn)");
     *why = m;
@@ -123,18 +123,18 @@ fn loadUri(ld &Ld, uri &str, out &mut List[u8], why &mut String) bool {
     *why = String.from("a uri on the network");
     return false;
   }
-  imm file = ld.baseDir.join(percentDecode(uri).view());
+  let file = ld.baseDir.join(percentDecode(uri).view());
   match fs.readFile(&file) {
-    case mut ok Ok {
-      mut s = String.empty();
+    case var ok Ok {
+      var s = String.empty();
       s <=> ok;
-      mut i = 0usize;
+      var i = 0usize;
       out.reserve(s.len());
       while i < s.len() { out.push(s[i]); i += 1usize; }
       return true;
     }
-    case imm e Error {
-      mut m = String.from("cannot read ");
+    case let e Error {
+      var m = String.from("cannot read ");
       m.append(file.view());
       *why = m;
       return false;
@@ -192,10 +192,10 @@ fn noLay() Lay { new Lay(false, 0usize, 1usize, 1usize, 0u32, false, false, 0usi
 // A buffer view's place: its buffer, offset, length and stride; false on a
 // bad view (reported)
 fn viewPlace(ld &mut Ld, vi usize, buf &mut usize, off &mut usize, len &mut usize, stride &mut usize) bool {
-  imm views = rootArray(ld, "bufferViews");
-  imm v = ld.json.at(views, vi);
+  let views = rootArray(ld, "bufferViews");
+  let v = ld.json.at(views, vi);
   if v == NoNode { ldFailIdx(ld, "buffer view ", vi, " does not exist"); return false; }
-  imm b = ld.json.getInt(v, "buffer", -1i64);
+  let b = ld.json.getInt(v, "buffer", -1i64);
   if b < 0i64 or usize.from(b) >= ld.buffers.len() { ldFailIdx(ld, "buffer view ", vi, " names a missing buffer"); return false; }
   *buf = usize.from(b);
   *off = ld.json.getSize(v, "byteOffset", 0i64);
@@ -212,28 +212,28 @@ fn viewPlace(ld &mut Ld, vi usize, buf &mut usize, off &mut usize, len &mut usiz
 
 // The accessor's layout, checked against its buffer
 fn layoutOf(ld &mut Ld, ai usize) Lay {
-  imm accs = rootArray(ld, "accessors");
-  imm a = ld.json.at(accs, ai);
+  let accs = rootArray(ld, "accessors");
+  let a = ld.json.at(accs, ai);
   if a == NoNode { ldFailIdx(ld, "accessor ", ai, " does not exist"); return noLay(); }
-  mut l = noLay();
-  imm rawCount = ld.json.getInt(a, "count", 0i64);
+  var l = noLay();
+  let rawCount = ld.json.getInt(a, "count", 0i64);
   if rawCount < 0i64 or rawCount > 268435456i64 { ldFailIdx(ld, "accessor ", ai, " has an impossible count"); return noLay(); }
   l.count = usize.from(rawCount);
   l.ct = u32.from(ld.json.getInt(a, "componentType", 0i64));
   l.normalized = ld.json.getFlag(a, "normalized", false);
-  imm tname = ld.json.getStr(a, "type", "");
+  let tname = ld.json.getStr(a, "type", "");
   if not typeShape(tname.view(), &mut l.cols, &mut l.rows) { ldFailIdx(ld, "accessor ", ai, " has an unknown type"); return noLay(); }
-  imm cb = compBytes(l.ct);
+  let cb = compBytes(l.ct);
   if cb == 0usize { ldFailIdx(ld, "accessor ", ai, " has an unknown component type"); return noLay(); }
   l.colBytes = (l.rows * cb + 3usize) / 4usize * 4usize;
   if l.cols == 1usize { l.colBytes = l.rows * cb; }
-  imm elem = l.cols * l.colBytes;
-  imm vi = ld.json.getInt(a, "bufferView", -1i64);
+  let elem = l.cols * l.colBytes;
+  let vi = ld.json.getInt(a, "bufferView", -1i64);
   if vi >= 0i64 {
-    mut buf = 0usize;
-    mut off = 0usize;
-    mut len = 0usize;
-    mut stride = 0usize;
+    var buf = 0usize;
+    var off = 0usize;
+    var len = 0usize;
+    var stride = 0usize;
     if not viewPlace(ld, usize.from(vi), &mut buf, &mut off, &mut len, &mut stride) { return noLay(); }
     l.hasView = true;
     l.buf = buf;
@@ -258,23 +258,23 @@ fn le32(d &Array[u8], at usize) u32 {
 fn compAsFloat(d &Array[u8], at usize, ct u32, normalized bool) f32 {
   if ct == CtF32 { return le32(d, at) as f32; }
   if ct == CtU8 {
-    imm v = f32.from(u32.from(d[at]));
+    let v = f32.from(u32.from(d[at]));
     return if normalized {v / 255.;} else {v;};
   }
   if ct == CtI8 {
-    imm v = f32.from(i32.from(i8.from(d[at])));
+    let v = f32.from(i32.from(i8.from(d[at])));
     if not normalized { return v; }
-    imm n = v / 127.;
+    let n = v / 127.;
     return if n < -1. {-1.;} else {n;};
   }
   if ct == CtU16 {
-    imm v = f32.from(le16(d, at));
+    let v = f32.from(le16(d, at));
     return if normalized {v / 65535.;} else {v;};
   }
   if ct == CtI16 {
-    imm v = f32.from(i32.from(i16.from(le16(d, at))));
+    let v = f32.from(i32.from(i16.from(le16(d, at))));
     if not normalized { return v; }
-    imm n = v / 32767.;
+    let n = v / 32767.;
     return if n < -1. {-1.;} else {n;};
   }
   f32.from(le32(d, at));
@@ -285,21 +285,21 @@ fn compAsFloat(d &Array[u8], at usize, ct u32, normalized bool) f32 {
 // sparse substitution is applied. false if it fails (reported).
 fn readFloats(ld &mut Ld, ai usize, out &mut List[f32], per &mut usize) bool {
   out.clear();
-  imm l = layoutOf(ld, ai);
+  let l = layoutOf(ld, ai);
   if not l.ok { return false; }
-  imm n = l.cols * l.rows;
+  let n = l.cols * l.rows;
   *per = n;
-  imm cb = compBytes(l.ct);
+  let cb = compBytes(l.ct);
   if not l.hasView and l.count * n > 67108864usize { ldFailIdx(ld, "accessor ", ai, " has no data and is too large to make zeros for"); return false; }
   out.reserve(l.count * n);
   if l.hasView {
-    imm d = ld.buffers[l.buf].view();
-    mut e = 0usize;
+    let d = ld.buffers[l.buf].view();
+    var e = 0usize;
     while e < l.count {
-      imm base = l.start + e * l.stride;
-      mut c = 0usize;
+      let base = l.start + e * l.stride;
+      var c = 0usize;
       while c < l.cols {
-        mut r = 0usize;
+        var r = 0usize;
         while r < l.rows {
           out.push(compAsFloat(d, base + c * l.colBytes + r * cb, l.ct, l.normalized));
           r += 1usize;
@@ -309,7 +309,7 @@ fn readFloats(ld &mut Ld, ai usize, out &mut List[f32], per &mut usize) bool {
       e += 1usize;
     }
   } else {
-    mut i = 0usize;
+    var i = 0usize;
     while i < l.count * n { out.push(0.); i += 1usize; }
   }
   applySparseFloats(ld, ai, &l, n, out);
@@ -319,29 +319,29 @@ fn readFloats(ld &mut Ld, ai usize, out &mut List[f32], per &mut usize) bool {
 // The same for integer accessors (indices, joints), unnormalised
 fn readUints(ld &mut Ld, ai usize, out &mut List[u32], per &mut usize) bool {
   out.clear();
-  imm l = layoutOf(ld, ai);
+  let l = layoutOf(ld, ai);
   if not l.ok { return false; }
   if l.ct == CtF32 or l.ct == CtI8 or l.ct == CtI16 { ldFailIdx(ld, "accessor ", ai, " must hold unsigned integers"); return false; }
-  imm n = l.cols * l.rows;
+  let n = l.cols * l.rows;
   *per = n;
-  imm cb = compBytes(l.ct);
+  let cb = compBytes(l.ct);
   if not l.hasView and l.count * n > 67108864usize { ldFailIdx(ld, "accessor ", ai, " has no data and is too large to make zeros for"); return false; }
   out.reserve(l.count * n);
   if l.hasView {
-    imm d = ld.buffers[l.buf].view();
-    mut e = 0usize;
+    let d = ld.buffers[l.buf].view();
+    var e = 0usize;
     while e < l.count {
-      imm base = l.start + e * l.stride;
-      mut r = 0usize;
+      let base = l.start + e * l.stride;
+      var r = 0usize;
       while r < n {
-        imm at = base + r * cb;
+        let at = base + r * cb;
         out.push(if l.ct == CtU8 {u32.from(d[at]);} elif l.ct == CtU16 {le16(d, at);} else {le32(d, at);});
         r += 1usize;
       }
       e += 1usize;
     }
   } else {
-    mut i = 0usize;
+    var i = 0usize;
     while i < l.count * n { out.push(0u32); i += 1usize; }
   }
   // Sparse integer accessors are rare; applied through the float path's index list
@@ -361,11 +361,11 @@ struct Sparse {
 }
 
 fn sparseOf(ld &Ld, ai usize) Sparse {
-  imm a = ld.json.at(rootArray(ld, "accessors"), ai);
-  imm sp = ld.json.get(a, "sparse");
+  let a = ld.json.at(rootArray(ld, "accessors"), ai);
+  let sp = ld.json.get(a, "sparse");
   if sp == NoNode { return new Sparse(0usize, 0usize, 0usize, 0u32, 0usize, 0usize); }
-  imm si = ld.json.get(sp, "indices");
-  imm sv = ld.json.get(sp, "values");
+  let si = ld.json.get(sp, "indices");
+  let sv = ld.json.get(sp, "values");
   new Sparse(ld.json.getSize(sp, "count", 0i64), usize.from(ld.json.getInt(si, "bufferView", 0i64)),
     ld.json.getSize(si, "byteOffset", 0i64), u32.from(ld.json.getInt(si, "componentType", 0i64)),
     usize.from(ld.json.getInt(sv, "bufferView", 0i64)), ld.json.getSize(sv, "byteOffset", 0i64));
@@ -373,14 +373,14 @@ fn sparseOf(ld &Ld, ai usize) Sparse {
 
 // The index of sparse entry k
 fn sparseIndex(ld &mut Ld, s &Sparse, k usize) usize {
-  mut buf = 0usize;
-  mut off = 0usize;
-  mut len = 0usize;
-  mut stride = 0usize;
+  var buf = 0usize;
+  var off = 0usize;
+  var len = 0usize;
+  var stride = 0usize;
   if not viewPlace(ld, s.idxView, &mut buf, &mut off, &mut len, &mut stride) { return 0xFFFFFFFFusize; }
-  imm d = ld.buffers[buf].view();
-  imm cb = compBytes(s.idxType);
-  imm at = off + s.idxOff + k * cb;
+  let d = ld.buffers[buf].view();
+  let cb = compBytes(s.idxType);
+  let at = off + s.idxOff + k * cb;
   if cb == 0usize or at + cb > off + len { ldFail(ld, "a sparse accessor's indices run past their buffer view"); return 0xFFFFFFFFusize; }
   if s.idxType == CtU8 { return usize.from(d[at]); }
   if s.idxType == CtU16 { return usize.from(le16(d, at)); }
@@ -388,25 +388,25 @@ fn sparseIndex(ld &mut Ld, s &Sparse, k usize) usize {
 }
 
 fn applySparseFloats(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[f32]) {
-  imm s = sparseOf(ld, ai);
+  let s = sparseOf(ld, ai);
   if s.count == 0usize { return; }
-  mut buf = 0usize;
-  mut off = 0usize;
-  mut len = 0usize;
-  mut stride = 0usize;
+  var buf = 0usize;
+  var off = 0usize;
+  var len = 0usize;
+  var stride = 0usize;
   if not viewPlace(ld, s.valView, &mut buf, &mut off, &mut len, &mut stride) { return; }
-  imm cb = compBytes(l.ct);
-  imm elem = l.cols * l.colBytes;
+  let cb = compBytes(l.ct);
+  let elem = l.cols * l.colBytes;
   if s.valOff + s.count * elem > len { ldFail(ld, "a sparse accessor's values run past their buffer view"); return; }
-  mut k = 0usize;
+  var k = 0usize;
   while k < s.count and not ld.failed {
-    imm idx = sparseIndex(ld, &s, k);
+    let idx = sparseIndex(ld, &s, k);
     if ld.failed { return; }
     if idx >= l.count { ldFail(ld, "a sparse accessor names an element past its count"); return; }
-    imm d = ld.buffers[buf].view();
-    mut c = 0usize;
+    let d = ld.buffers[buf].view();
+    var c = 0usize;
     while c < l.cols {
-      mut r = 0usize;
+      var r = 0usize;
       while r < l.rows {
         out.set(idx * n + c * l.rows + r, compAsFloat(d, off + s.valOff + k * elem + c * l.colBytes + r * cb, l.ct, l.normalized));
         r += 1usize;
@@ -418,24 +418,24 @@ fn applySparseFloats(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[f32]) 
 }
 
 fn applySparseUints(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[u32]) {
-  imm s = sparseOf(ld, ai);
+  let s = sparseOf(ld, ai);
   if s.count == 0usize { return; }
-  mut buf = 0usize;
-  mut off = 0usize;
-  mut len = 0usize;
-  mut stride = 0usize;
+  var buf = 0usize;
+  var off = 0usize;
+  var len = 0usize;
+  var stride = 0usize;
   if not viewPlace(ld, s.valView, &mut buf, &mut off, &mut len, &mut stride) { return; }
-  imm cb = compBytes(l.ct);
+  let cb = compBytes(l.ct);
   if s.valOff + s.count * n * cb > len { ldFail(ld, "a sparse accessor's values run past their buffer view"); return; }
-  mut k = 0usize;
+  var k = 0usize;
   while k < s.count and not ld.failed {
-    imm idx = sparseIndex(ld, &s, k);
+    let idx = sparseIndex(ld, &s, k);
     if ld.failed { return; }
     if idx >= l.count { ldFail(ld, "a sparse accessor names an element past its count"); return; }
-    imm d = ld.buffers[buf].view();
-    mut r = 0usize;
+    let d = ld.buffers[buf].view();
+    var r = 0usize;
     while r < n {
-      imm at = off + s.valOff + (k * n + r) * cb;
+      let at = off + s.valOff + (k * n + r) * cb;
       out.set(idx * n + r, if l.ct == CtU8 {u32.from(d[at]);} elif l.ct == CtU16 {le16(d, at);} else {le32(d, at);});
       r += 1usize;
     }
@@ -446,7 +446,7 @@ fn applySparseUints(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[u32]) {
 // Say, clearly, what a compressed file would take
 fn refuseCompressed(ld &mut Ld, ext &str) {
   if ld.failed { return; }
-  mut m = String.from(ext);
+  var m = String.from(ext);
   m.append(" is not supported. ");
   if ext == "KHR_draco_mesh_compression" {
     m.append("Draco's decoder is Google's edgebreaker connectivity coder, its prediction schemes and its rANS entropy coder, about ten thousand lines of C++ with no small part to port; it would take its own lane in Cone, or a vendored copy of Google's decoder, which is a new C++ dependency for Jon to approve. Re-export the model without Draco (gltf-transform's 'decompress' command does it).");

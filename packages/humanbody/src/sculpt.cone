@@ -33,77 +33,77 @@ pub struct BodySurface {
   // vertex is skinned to it; both legs, but for a vertex skinned to one leg more than the other, which
   // leaves the other out (the thighs touch: an inner thigh must find its own thigh's surface)
   pub fn reach(self &, v usize) Vec4 {
-    imm al = self.weight(v, UPPER_ARM_L) + self.weight(v, FOREARM_L) + self.weight(v, HAND_L);
-    imm ar = self.weight(v, UPPER_ARM_R) + self.weight(v, FOREARM_R) + self.weight(v, HAND_R);
-    imm ll = self.weight(v, THIGH_L) + self.weight(v, SHIN_L) + self.weight(v, FOOT_L);
-    imm lr = self.weight(v, THIGH_R) + self.weight(v, SHIN_R) + self.weight(v, FOOT_R);
+    let al = self.weight(v, UPPER_ARM_L) + self.weight(v, FOREARM_L) + self.weight(v, HAND_L);
+    let ar = self.weight(v, UPPER_ARM_R) + self.weight(v, FOREARM_R) + self.weight(v, HAND_R);
+    let ll = self.weight(v, THIGH_L) + self.weight(v, SHIN_L) + self.weight(v, FOOT_L);
+    let lr = self.weight(v, THIGH_R) + self.weight(v, SHIN_R) + self.weight(v, FOOT_R);
     new Vec4(smoothstep(0., 0.10, al), smoothstep(0., 0.10, ar), 1. - smoothstep(0., 0.15, lr - ll), 1. - smoothstep(0., 0.15, ll - lr));
   }
 }
 
 fn weightName(b usize) String {
-  mut s = String.from("w");
+  var s = String.from("w");
   s.appendUInt(u64.from(b));
   s;
 }
 
 // The cage subdivided 'levels' times, its weights with it; not yet projected
 pub fn subdivideCage(cage &Cage, levels u32) BodySurface {
-  mut problems = List[String].empty();
-  mut pm = PolyMesh.fromPolygons(cage.positions.view(), cage.counts.view(), cage.indices.view(), &mut problems);
-  mut b = 0usize;
+  var problems = List[String].empty();
+  var pm = PolyMesh.fromPolygons(cage.positions.view(), cage.counts.view(), cage.indices.view(), &mut problems);
+  var b = 0usize;
   while b < HUMANOID_BONES {
-    imm ch = pm.addFloatChannel(VertexDomain, weightName(b).view(), 0.);
-    mut v = 0usize;
+    let ch = pm.addFloatChannel(VertexDomain, weightName(b).view(), 0.);
+    var v = 0usize;
     while v < cage.positions.len() {
       pm.setFloat(ch, u32.from(v), *cage.weights[v * HUMANOID_BONES + b]);
       v = v + 1usize;
     }
     b = b + 1usize;
   }
-  imm sub = subdivide(&pm, levels);
-  imm nv = sub.vertexCount();
-  mut out = new BodySurface(List[Vec3].empty(), List[u32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty(),
+  let sub = subdivide(&pm, levels);
+  let nv = sub.vertexCount();
+  var out = new BodySurface(List[Vec3].empty(), List[u32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty(),
     List[u32].empty(), problems);
-  mut v = 0usize;
+  var v = 0usize;
   while v < nv { out.positions.push(*sub.positions[v]); v = v + 1usize; }
-  mut chs = List[u32].empty();
+  var chs = List[u32].empty();
   b = 0usize;
   while b < HUMANOID_BONES { chs.push(sub.findFloatChannel(VertexDomain, weightName(b).view())); b = b + 1usize; }
   v = 0usize;
   while v < nv {
-    mut sum = 0.;
+    var sum = 0.;
     b = 0usize;
     while b < HUMANOID_BONES { sum = sum + maxf(sub.float(*chs[b], u32.from(v)), 0.); b = b + 1usize; }
     b = 0usize;
     while b < HUMANOID_BONES {
-      imm w = maxf(sub.float(*chs[b], u32.from(v)), 0.);
+      let w = maxf(sub.float(*chs[b], u32.from(v)), 0.);
       out.weights.push(if sum > 0. { w / sum; } else { 0.; });
       b = b + 1usize;
     }
     v = v + 1usize;
   }
-  mut f = 0usize;
+  var f = 0usize;
   while f < sub.faceCount() {
-    imm vs = sub.faceVertices(u32.from(f));
-    mut i = 0usize;
+    let vs = sub.faceVertices(u32.from(f));
+    var i = 0usize;
     while i < 4usize and i < vs.len() { out.quads.push(*vs[i]); i = i + 1usize; }
     f = f + 1usize;
   }
   // the neck's ring: the boundary, walked from the vertex the cage's seam starts at
-  imm start = *cage.seam[0usize];
-  mut h = sub.vertexHalfedge(start);
+  let start = *cage.seam[0usize];
+  var h = sub.vertexHalfedge(start);
   // find the boundary half-edge leaving it
-  imm outs = sub.vertexOutgoing(start);
-  mut i = 0usize;
+  let outs = sub.vertexOutgoing(start);
+  var i = 0usize;
   while i < outs.len() {
     if sub.isBoundaryHalfedge(*outs[i]) { h = *outs[i]; }
     i = i + 1usize;
   }
   out.seam.push(start);
-  mut guard = 0usize;
+  var guard = 0usize;
   while guard < 4096usize {
-    imm to = sub.toVertex(h);
+    let to = sub.toVertex(h);
     if to == start { guard = 4096usize; } else {
       out.seam.push(to);
       h = sub.next(h);
@@ -111,7 +111,7 @@ pub fn subdivideCage(cage &Cage, levels u32) BodySurface {
     }
   }
   // the neighbours along the edges
-  mut deg = List[u32].empty();
+  var deg = List[u32].empty();
   deg.resize(nv + 1usize, 0u32);
   v = 0usize;
   while v < nv {
@@ -122,8 +122,8 @@ pub fn subdivideCage(cage &Cage, levels u32) BodySurface {
   while v < nv { deg.set(v + 1usize, *deg[v + 1usize] + *deg[v]); v = v + 1usize; }
   v = 0usize;
   while v < nv {
-    imm ns = sub.vertexNeighbors(u32.from(v));
-    mut k = 0usize;
+    let ns = sub.vertexNeighbors(u32.from(v));
+    var k = 0usize;
     while k < ns.len() { out.nbr.push(*ns[k]); k = k + 1usize; }
     v = v + 1usize;
   }
@@ -136,21 +136,21 @@ pub fn subdivideCage(cage &Cage, levels u32) BodySurface {
 // animator's smooth brush on the weights, so where a joint's bones meet (the shoulder above all, where the trunk,
 // the clavicle and the arm share the cage's patch) no vertex turns differently from its neighbours and folds
 pub fn smoothWeights(s &mut BodySurface, passes i32) {
-  imm nv = s.positions.len();
-  imm nb = HUMANOID_BONES;
-  mut p = 0;
+  let nv = s.positions.len();
+  let nb = HUMANOID_BONES;
+  var p = 0;
   while p < passes {
-    mut next = List[f32].empty();
-    mut v = 0usize;
+    var next = List[f32].empty();
+    var v = 0usize;
     while v < nv {
-      imm lo = usize.from(*s.nbrStart[v]);
-      imm hi = usize.from(*s.nbrStart[v + 1usize]);
-      mut b = 0usize;
+      let lo = usize.from(*s.nbrStart[v]);
+      let hi = usize.from(*s.nbrStart[v + 1usize]);
+      var b = 0usize;
       while b < nb {
-        mut sum = 0.;
-        mut k = lo;
+        var sum = 0.;
+        var k = lo;
         while k < hi { sum = sum + *s.weights[usize.from(*s.nbr[k]) * nb + b]; k = k + 1usize; }
-        imm own = *s.weights[v * nb + b];
+        let own = *s.weights[v * nb + b];
         next.push(if hi > lo { own * 0.5 + 0.5 * sum / f32.from(hi - lo); } else { own; });
         b = b + 1usize;
       }
@@ -163,11 +163,11 @@ pub fn smoothWeights(s &mut BodySurface, passes i32) {
 
 // How far the surface is from the forms after projection: the mean and the largest distance, metres
 pub fn fitError(s &BodySurface, forms &Forms) Vec2 {
-  mut sum = 0.;
-  mut most = 0.;
-  mut v = 0usize;
+  var sum = 0.;
+  var most = 0.;
+  var v = 0usize;
   while v < s.positions.len() {
-    imm d = absf(forms.distanceIn(*s.positions[v], s.reach(v)));
+    let d = absf(forms.distanceIn(*s.positions[v], s.reach(v)));
     sum = sum + d;
     if d > most { most = d; }
     v = v + 1usize;
@@ -177,10 +177,10 @@ pub fn fitError(s &BodySurface, forms &Forms) Vec2 {
 
 // The surface's edges (each quad's four, shared ones twice) as line indices, for a wireframe
 pub fn wireIndices(s &BodySurface) List[u32] {
-  mut out = List[u32].empty();
-  mut q = 0usize;
+  var out = List[u32].empty();
+  var q = 0usize;
   while q + 3usize < s.quads.len() {
-    mut e = 0usize;
+    var e = 0usize;
     while e < 4usize {
       out.push(*s.quads[q + e]);
       out.push(*s.quads[q + (e + 1usize) % 4usize]);
@@ -193,16 +193,16 @@ pub fn wireIndices(s &BodySurface) List[u32] {
 
 // One vertex moved onto the forms by Newton's steps
 fn projectPoint(forms &Forms, p0 Vec3, reach Vec4, steps i32) Vec3 {
-  mut p = p0;
-  mut i = 0;
+  var p = p0;
+  var i = 0;
   while i < steps {
-    imm d = forms.distanceIn(p, reach);
+    let d = forms.distanceIn(p, reach);
     if absf(d) < 0.00005 { return p; }
-    imm g = forms.gradientIn(p, reach);
-    imm gg = g.dot(g);
+    let g = forms.gradientIn(p, reach);
+    let gg = g.dot(g);
     if gg < 0.000001 { return p; }
-    mut step = g * (d / gg);
-    imm len = step.length();
+    var step = g * (d / gg);
+    let len = step.length();
     if len > 0.015 { step = step * (0.015 / len); }
     p = p - step;
     i = i + 1;
@@ -212,28 +212,28 @@ fn projectPoint(forms &Forms, p0 Vec3, reach Vec4, steps i32) Vec3 {
 
 // The surface projected onto the forms and relaxed: 'rounds' rounds of relaxation
 pub fn projectSurface(s &mut BodySurface, forms &Forms, rounds i32) {
-  imm nv = s.positions.len();
-  mut masks = List[Vec4].empty();
-  mut v = 0usize;
+  let nv = s.positions.len();
+  var masks = List[Vec4].empty();
+  var v = 0usize;
   while v < nv { masks.push(s.reach(v)); v = v + 1usize; }
   v = 0usize;
   while v < nv { s.positions.set(v, projectPoint(forms, *s.positions[v], *masks[v], 10)); v = v + 1usize; }
-  mut r = 0;
+  var r = 0;
   while r < rounds {
-    mut next = List[Vec3].empty();
+    var next = List[Vec3].empty();
     v = 0usize;
     while v < nv {
-      imm p = *s.positions[v];
-      imm lo = usize.from(*s.nbrStart[v]);
-      imm hi = usize.from(*s.nbrStart[v + 1usize]);
-      mut avg = new Vec3(0., 0., 0.);
-      mut k = lo;
+      let p = *s.positions[v];
+      let lo = usize.from(*s.nbrStart[v]);
+      let hi = usize.from(*s.nbrStart[v + 1usize]);
+      var avg = new Vec3(0., 0., 0.);
+      var k = lo;
       while k < hi { avg = avg + *s.positions[usize.from(*s.nbr[k])]; k = k + 1usize; }
       if hi > lo {
         avg = avg * (1. / f32.from(hi - lo));
-        imm n = forms.gradientIn(p, *masks[v]).normalize();
-        imm lap = avg - p;
-        imm t = lap - n * n.dot(lap);
+        let n = forms.gradientIn(p, *masks[v]).normalize();
+        let lap = avg - p;
+        let t = lap - n * n.dot(lap);
         next.push(projectPoint(forms, p + t * 0.6, *masks[v], 3));
       } else {
         next.push(p);

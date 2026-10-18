@@ -36,7 +36,7 @@ struct Seen {
 }
 
 fn look(want &str) Seen {
-  imm me = thread.current();
+  let me = thread.current();
   new Seen(me.id(), osThreadId(), me.name() == want);
 }
 
@@ -45,61 +45,61 @@ fn lookWorker(x i64) Seen { look("worker"); }
 
 fn main() i32 {
   // Names
-  imm named = thread.startWith(new thread.Options(name: "worker"), 0i64, &lookWorker);
+  let named = thread.startWith(new thread.Options(name: "worker"), 0i64, &lookWorker);
   expectStr(named.name(), "worker", "the handle's name");
-  imm namedId = named.id();
-  imm namedRef = named.threadRef();
-  imm seen = named.join();
+  let namedId = named.id();
+  let namedRef = named.threadRef();
+  let seen = named.join();
   expectStr(namedRef.name(), "worker", "a ThreadRef from the handle, kept past the join");
   expectUInt(u64.from(namedRef.id()), u64.from(namedId), "the ThreadRef's id is the handle's");
   expect(seen.named, "the thread's own name, from current()");
   expectUInt(u64.from(seen.id), u64.from(seen.osId), "current().id() is the OS thread id");
   expectUInt(u64.from(namedId), u64.from(seen.id), "the handle's id is the thread's own");
 
-  imm plain = thread.start(0i64,&lookUnnamed);
+  let plain = thread.start(0i64,&lookUnnamed);
   expectStr(plain.name(), "", "an unnamed thread's name");
-  imm plainSeen = plain.join();
+  let plainSeen = plain.join();
   expect(plainSeen.named, "an unnamed thread's own name is empty");
 
-  imm main = thread.current();
+  let main = thread.current();
   expectStr(main.name(), "", "the main thread's name");
   expectUInt(u64.from(main.id()), u64.from(osThreadId()), "the main thread's id");
   expect(main.id() != seen.id, "a started thread's id is not main's");
   expect(plainSeen.id != seen.id, "two threads' ids differ");
 
   // A copy is the same thread
-  imm again = main.copy();
+  let again = main.copy();
   expectUInt(u64.from(again.id()), u64.from(main.id()), "a copy of a ThreadRef names the same thread");
 
   // A name is text: a String's view names a thread with no cast, and the name
   // is copied, so the String may die before the thread does
-  mut built = String.from("worker");
-  imm fromString = thread.startWith(new thread.Options(name: built.view()), 0i64, &lookWorker);
+  var built = String.from("worker");
+  let fromString = thread.startWith(new thread.Options(name: built.view()), 0i64, &lookWorker);
   built <- "-renamed";
   expectStr(fromString.name(), "worker", "a name taken from a String's view is copied");
   expect(fromString.join().named, "the thread sees the name it was given from a String");
 
   // A named thread with its own stack size
-  imm big = thread.startWith(new thread.Options(name: "worker", stackSize: 4194304usize), 0i64, &lookWorker);
+  let big = thread.startWith(new thread.Options(name: "worker", stackSize: 4194304usize), 0i64, &lookWorker);
   expect(big.join().named, "a thread given a stack size runs");
 
   // Cores
   expect(thread.parallelism() > 0u32, "parallelism is at least 1");
 
   // Sleep: never short, and far finer than a 15.6 ms clock tick
-  mut quickest = Duration.fromSeconds(1);
-  mut n = 0;
+  var quickest = Duration.fromSeconds(1);
+  var n = 0;
   while n < 5 {
-    imm before = Instant.now();
+    let before = Instant.now();
     thread.sleep(Duration.fromMillis(1));
-    imm took = before.elapsed();
+    let took = before.elapsed();
     if took < quickest { quickest = took; }
     n = n + 1;
   }
   expect(quickest >= Duration.fromMillis(1), "a 1 ms sleep takes at least 1 ms");
   expect(quickest < Duration.fromMillis(8), "the quickest 1 ms sleep takes under 8 ms");
 
-  imm before0 = Instant.now();
+  let before0 = Instant.now();
   thread.sleep(Duration.zero());
   thread.sleep(Duration.fromMillis(-5));
   thread.yieldNow();

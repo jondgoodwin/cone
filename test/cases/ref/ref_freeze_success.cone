@@ -28,10 +28,10 @@ fn show(label &str, n i64) {
 // A read-only borrow: the source may be read, and borrowed read-only again,
 // while it is still to be used
 fn readUnderShared() {
-  mut v = new Pt(1, 2);
-  imm r = &v;
+  var v = new Pt(1, 2);
+  let r = &v;
   show("source-read-under-shared", v.x);
-  imm s = &v;
+  let s = &v;
   show("two-shared-borrows", r.x + s.y);
   v.x = 5;
   show("changed-after-last-use", v.x);
@@ -39,8 +39,8 @@ fn readUnderShared() {
 
 // The borrow's last use comes before the change, in the middle of the block
 fn lastUseBeforeChange() {
-  mut p = new Pt(1, 2);
-  imm r = &mut p;
+  var p = new Pt(1, 2);
+  let r = &mut p;
   r.x = 10;
   show("written-through-borrow", r.x);
   p.x = 20;
@@ -50,9 +50,9 @@ fn lastUseBeforeChange() {
 // A reborrow through a reference: the reference is usable again after the
 // reborrow's last use
 fn reborrow() {
-  mut k = 1;
-  imm r = &mut k;
-  imm r2 = &mut *r;
+  var k = 1;
+  let r = &mut k;
+  let r2 = &mut *r;
   *r2 = 30;
   show("through-reborrow", *r2);
   *r = *r + 1;
@@ -62,14 +62,14 @@ fn reborrow() {
 
 // Borrows in both arms of an 'if', each dead by the join
 fn bothArms(c bool) {
-  mut p = new Pt(1, 2);
+  var p = new Pt(1, 2);
   if c {
-    imm r = &mut p;
+    let r = &mut p;
     r.x = 40;
     show("mut-borrow-in-then", r.x);
   }
   else {
-    imm s = &p;
+    let s = &p;
     show("shared-borrow-in-else", s.x);
   }
   p.y = 41;
@@ -78,19 +78,19 @@ fn bothArms(c bool) {
 
 // An 'if' value holds either borrow; both sources may still be read
 fn eitherBorrow(c bool) {
-  mut p = new Pt(1, 2);
-  mut q = new Pt(3, 4);
-  imm w = if c { &p; } else { &q; };
-  imm both = p.x + q.x;
+  var p = new Pt(1, 2);
+  var q = new Pt(3, 4);
+  let w = if c { &p; } else { &q; };
+  let both = p.x + q.x;
   show("either-borrow", w.x);
   show("sources-read-while-held", both);
 }
 
 // A borrow live around a loop's back edge, used only through itself
 fn loopThroughBorrow() {
-  mut p = new Pt(0, 0);
-  imm r = &mut p;
-  mut n = 0;
+  var p = new Pt(0, 0);
+  let r = &mut p;
+  var n = 0;
   while n < 3 {
     r.x = r.x + 1;
     n = n + 1;
@@ -101,11 +101,11 @@ fn loopThroughBorrow() {
 
 // A borrow made and dead within each iteration, before that iteration's change
 fn loopDeadBeforeChange() {
-  mut p = new Pt(1, 0);
-  mut n = 0;
+  var p = new Pt(1, 0);
+  var n = 0;
   while n < 3 {
-    imm e = &p;
-    imm doubled = e.x * 2;
+    let e = &p;
+    let doubled = e.x * 2;
     p.x = doubled;
     n = n + 1;
   }
@@ -114,8 +114,8 @@ fn loopDeadBeforeChange() {
 
 // A borrow of one field leaves the other fields free
 fn disjointFields() {
-  mut p = new Pt(1, 2);
-  imm fx = &mut p.x;
+  var p = new Pt(1, 2);
+  let fx = &mut p.x;
   p.y = 3;
   *fx = 4;
   show("through-field-borrow", *fx);
@@ -124,9 +124,9 @@ fn disjointFields() {
 
 // A holder reassigned before the conflict no longer holds what it did
 fn holderReassigned() {
-  mut a = 1;
-  mut b = 2;
-  mut r = &mut a;
+  var a = 1;
+  var b = 2;
+  var r = &mut a;
   *r = 5;
   r = &mut b;
   a = 7;
@@ -137,9 +137,9 @@ fn holderReassigned() {
 
 // A copy of a borrow is used in turn with the borrow it was copied from
 fn copiesInTurn() {
-  mut k = 1;
-  imm b = &mut k;
-  imm b2 = b;
+  var k = 1;
+  let b = &mut k;
+  let b2 = b;
   *b2 = 3;
   *b = *b + 1;
   show("through-copies", *b);
@@ -148,11 +148,11 @@ fn copiesInTurn() {
 
 // '&opaq' holds only the address: the source may be read and written
 fn opaqueBorrow() {
-  mut k = 1;
-  imm o = &opaq k;
+  var k = 1;
+  let o = &opaq k;
   k = 2;
-  imm again = &opaq k;
-  mut same = 0;
+  let again = &opaq k;
+  var same = 0;
   if o === again { same = 1; }
   show("opaq-source-written", k);
   show("opaq-same-place", same);
@@ -160,8 +160,8 @@ fn opaqueBorrow() {
 
 // A read-only borrow's source may be read in the condition it guards
 fn inCondition(c bool) {
-  mut k = 1;
-  imm r = &k;
+  var k = 1;
+  let r = &k;
   if c and *r > 0 {
     show("read-in-condition", k + *r);
   }
@@ -174,7 +174,7 @@ fn inCondition(c bool) {
 // A reborrow through a '&mut' parameter, then a write through the parameter
 // while the reborrow is still to be used: both are 'mut', shared by design
 fn reborrowParam(p &mut i64) {
-  imm q = &mut *p;
+  let q = &mut *p;
   *p = 2;
   *q = *q + 3;
   show("write-through-param-under-reborrow", *p);
@@ -184,9 +184,9 @@ fn reborrowParam(p &mut i64) {
 // through 'r' while the reborrow lives. The local 'k' itself stays frozen
 // until the reborrow's last use, and is read after it.
 fn reborrowLocalRef() {
-  mut k = 1;
-  imm r = &mut k;
-  imm r2 = &mut *r;
+  var k = 1;
+  let r = &mut k;
+  let r2 = &mut *r;
   *r = 2;
   *r2 = *r2 + 30;
   show("write-through-ref-under-reborrow", *r);
@@ -196,7 +196,7 @@ fn reborrowLocalRef() {
 // A field of a '&mut' parameter borrowed, then the parameter's fields read and
 // written while the borrow is still to be used
 fn fieldThroughParam(p &mut Pt) {
-  imm fx = &mut p.x;
+  let fx = &mut p.x;
   p.x = 7;
   p.y = *fx + 1;
   *fx = *fx + 10;
@@ -206,12 +206,12 @@ fn fieldThroughParam(p &mut Pt) {
 // A field borrowed through a 'Rc[mut, T]' owner, then changed through another
 // alias of the owner and through the owner itself, and the owner copied
 fn rcMutOwner() {
-  imm u = new Rc[mut, Pt](1, 2);
-  imm aliased = u;
-  imm b = &mut u.x;
+  let u = new Rc[mut, Pt](1, 2);
+  let aliased = u;
+  let b = &mut u.x;
   aliased.x = 5;
   u.y = *b + 1;
-  imm again = u;
+  let again = u;
   *b = *b + again.y;
   show("rc-mut-owner-under-borrow", u.x * 100 + u.y);
 }
@@ -230,11 +230,11 @@ fn main() i32 {
   copiesInTurn();
   opaqueBorrow();
   inCondition(true);
-  mut n = 1i64;
+  var n = 1i64;
   reborrowParam(&mut n);
   show("param-source-after", n);
   reborrowLocalRef();
-  mut fp = new Pt(1, 2);
+  var fp = new Pt(1, 2);
   fieldThroughParam(&mut fp);
   rcMutOwner();
   0i32;

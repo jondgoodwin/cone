@@ -31,7 +31,7 @@ pub struct PatternParse {
 
   // The pattern, moved out (what is left is an empty one)
   pub fn take(self &mut) Pattern {
-    mut out = Pattern.make("");
+    var out = Pattern.make("");
     out <=> pattern;
     out;
   }
@@ -46,13 +46,13 @@ fn blankByte(c u8) bool { c == ' ' or c == '\t' or c == '\r'; }
 fn digitByte(c u8) bool { c >= '0' and c <= '9'; }
 
 fn words(line &str) List[String] {
-  imm bytes &Array[u8] = line;
-  mut out = List[String].empty();
-  mut i = 0usize;
+  let bytes &Array[u8] = line;
+  var out = List[String].empty();
+  var i = 0usize;
   while i < bytes.len {
     while i < bytes.len and blankByte(bytes[i]) { i = i + 1usize; }
     if i < bytes.len and bytes[i] == '#' { return out; }
-    imm start = i;
+    let start = i;
     while i < bytes.len and !blankByte(bytes[i]) and bytes[i] != '#' { i = i + 1usize; }
     if i > start { out.push(String.fromBytes(&bytes[start..<i])); }
   }
@@ -61,28 +61,28 @@ fn words(line &str) List[String] {
 
 // A decimal number: an optional sign, digits, an optional '.' and digits, an optional 'e' and exponent
 pub fn parseNumber(s &str) Number {
-  imm t &Array[u8] = s;
-  mut i = 0usize;
-  mut neg = false;
+  let t &Array[u8] = s;
+  var i = 0usize;
+  var neg = false;
   if t.len > 0usize and (t[0usize] == '-' or t[0usize] == '+') { neg = t[0usize] == '-'; i = 1usize; }
-  mut digits = 0usize;
-  mut v f64 = 0.;
+  var digits = 0usize;
+  var v f64 = 0.;
   while i < t.len and digitByte(t[i]) { v = v * 10. + f64.from(t[i] - '0'); i = i + 1usize; digits = digits + 1usize; }
   if i < t.len and t[i] == '.' {
     i = i + 1usize;
-    mut scale f64 = 0.1;
+    var scale f64 = 0.1;
     while i < t.len and digitByte(t[i]) { v = v + scale * f64.from(t[i] - '0'); scale = scale * 0.1; i = i + 1usize; digits = digits + 1usize; }
   }
   if digits == 0usize { return new Number(false, 0.); }
   if i < t.len and (t[i] == 'e' or t[i] == 'E') {
     i = i + 1usize;
-    mut eneg = false;
+    var eneg = false;
     if i < t.len and (t[i] == '-' or t[i] == '+') { eneg = t[i] == '-'; i = i + 1usize; }
-    mut e = 0i32;
-    mut ed = 0usize;
+    var e = 0i32;
+    var ed = 0usize;
     while i < t.len and digitByte(t[i]) { e = e * 10i32 + i32.from(t[i] - '0'); i = i + 1usize; ed = ed + 1usize; }
     if ed == 0usize { return new Number(false, 0.); }
-    mut k = 0i32;
+    var k = 0i32;
     while k < e { if eneg { v = v * 0.1; } else { v = v * 10.; } k = k + 1i32; }
   }
   if i != t.len { return new Number(false, 0.); }
@@ -90,11 +90,11 @@ pub fn parseNumber(s &str) Number {
 }
 
 fn lower(s &str) String {
-  imm bytes &Array[u8] = s;
-  mut out = String.empty();
-  mut i = 0usize;
+  let bytes &Array[u8] = s;
+  var out = String.empty();
+  var i = 0usize;
   while i < bytes.len {
-    imm c = bytes[i];
+    let c = bytes[i];
     out.appendByte(if c >= 'A' and c <= 'Z' { c - 'A' + 'a'; } else { c; });
     i = i + 1usize;
   }
@@ -103,10 +103,10 @@ fn lower(s &str) String {
 
 // A bone given as a name from `names` (any case) or a number: its index, or -1
 fn boneNamed(names &List[String], word &str) i32 {
-  imm n = parseNumber(word);
+  let n = parseNumber(word);
   if n.ok { return i32.from(n.value); }
-  imm w = lower(word);
-  mut i = 0usize;
+  let w = lower(word);
+  var i = 0usize;
   while i < names.len() {
     if lower(names[i].view()).view() == w.view() { return i32.from(i); }
     i = i + 1usize;
@@ -150,9 +150,9 @@ fn edgeNumber(w &str) i32 {
 fn numbers(w &List[String], at usize, count usize, out &mut List[f32]) bool {
   out.clear();
   if at + count > w.len() { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < count {
-    imm n = parseNumber(w[at + i].view());
+    let n = parseNumber(w[at + i].view());
     if !n.ok { return false; }
     out.push(n.value);
     i = i + 1usize;
@@ -162,11 +162,11 @@ fn numbers(w &List[String], at usize, count usize, out &mut List[f32]) bool {
 
 // "panel.edge" read into a panel number and an edge number
 fn seamEnd(p &Pattern, word &str) (i32, i32) {
-  imm dot = word.find(".");
+  let dot = word.find(".");
   match dot {
-    case imm k Some {
-      imm pn = p.find(word.slice(0usize, k));
-      imm en = edgeNumber(word.sliceFrom(k + 1usize));
+    case let k Some {
+      let pn = p.find(word.slice(0usize, k));
+      let en = edgeNumber(word.sliceFrom(k + 1usize));
       (pn, en);
     }
     case is None { (-1i32, -1i32); }
@@ -174,30 +174,30 @@ fn seamEnd(p &Pattern, word &str) (i32, i32) {
 }
 
 pub fn parsePattern(text &str, names &List[String]) PatternParse {
-  mut pat = Pattern.make("garment");
-  imm all = String.from(text).lines();
-  mut cur = -1i32;
-  mut ln = 0usize;
-  mut nums = List[f32].empty();
+  var pat = Pattern.make("garment");
+  let all = String.from(text).lines();
+  var cur = -1i32;
+  var ln = 0usize;
+  var nums = List[f32].empty();
   while ln < all.len() {
-    imm w = words(all[ln].view());
+    let w = words(all[ln].view());
     ln = ln + 1usize;
     if w.len() == 0usize { continue; }
-    imm head = w[0usize].view();
+    let head = w[0usize].view();
     if head == "garment" {
       if w.len() < 2usize { return parseFailed(pat, "garment needs a name", ln); }
       pat.name = String.from(w[1usize].view());
       if w.len() >= 4usize and w[2usize].view() == "layer" {
-        imm n = parseNumber(w[3usize].view());
+        let n = parseNumber(w[3usize].view());
         if !n.ok { return parseFailed(pat, "layer needs a number", ln); }
         pat.layer = u32.from(n.value);
       }
     } elif head == "fabric" {
-      mut i = 1usize;
+      var i = 1usize;
       while i + 1usize < w.len() {
-        imm n = parseNumber(w[i + 1usize].view());
+        let n = parseNumber(w[i + 1usize].view());
         if !n.ok { return parseFailed(pat, "a fabric value is not a number", ln); }
-        imm k = w[i].view();
+        let k = w[i].view();
         if k == "density" { pat.density = n.value; }
         elif k == "stretch" { pat.stretch = n.value; }
         elif k == "shear" { pat.shear = n.value; }
@@ -210,21 +210,21 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
       }
     } elif head == "sees" {
       if w.len() < 3usize { return parseFailed(pat, "sees needs only or ignore, then bones", ln); }
-      imm which = w[1usize].view();
+      let which = w[1usize].view();
       if which != "only" and which != "ignore" { return parseFailed(pat, "sees takes only or ignore", ln); }
-      mut i = 2usize;
+      var i = 2usize;
       while i < w.len() {
-        imm b = boneNamed(names, w[i].view());
+        let b = boneNamed(names, w[i].view());
         if b < 0i32 { return parseFailed(pat, "sees names a bone that is not there", ln); }
         if which == "only" { pat.only.push(usize.from(b)); } else { pat.ignore.push(usize.from(b)); }
         i = i + 1usize;
       }
     } elif head == "panel" {
       if w.len() < 2usize { return parseFailed(pat, "panel needs a name", ln); }
-      mut p = newPanel(w[1usize].view(), 12u32, 12u32);
-      mut i = 2usize;
+      var p = newPanel(w[1usize].view(), 12u32, 12u32);
+      var i = 2usize;
       while i < w.len() {
-        imm k = w[i].view();
+        let k = w[i].view();
         if k == "grid" {
           if !numbers(&w, i + 1usize, 2usize, &mut nums) { return parseFailed(pat, "grid needs two numbers", ln); }
           p.nu = u32.from(*nums[0usize]);
@@ -232,15 +232,15 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
           i = i + 3usize;
         } elif k == "axis" {
           if i + 2usize >= w.len() { return parseFailed(pat, "axis needs two bones", ln); }
-          imm a = boneNamed(names, w[i + 1usize].view());
-          imm b = boneNamed(names, w[i + 2usize].view());
+          let a = boneNamed(names, w[i + 1usize].view());
+          let b = boneNamed(names, w[i + 2usize].view());
           if a < 0i32 or b < 0i32 { return parseFailed(pat, "axis names a bone that is not there", ln); }
           p.place.axisFrom = usize.from(a);
           p.place.axisTo = usize.from(b);
           i = i + 3usize;
         } elif k == "face" {
           if i + 1usize >= w.len() { return parseFailed(pat, "face needs a direction", ln); }
-          imm fw = faceWord(w[i + 1usize].view());
+          let fw = faceWord(w[i + 1usize].view());
           if fw >= 0i32 {
             p.place.face = faceVector(fw);
             i = i + 2usize;
@@ -251,7 +251,7 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
           }
         } else {
           if i + 1usize >= w.len() { return parseFailed(pat, "a panel setting needs a value", ln); }
-          imm n = parseNumber(w[i + 1usize].view());
+          let n = parseNumber(w[i + 1usize].view());
           if !n.ok { return parseFailed(pat, "a panel setting's value is not a number", ln); }
           if k == "shift" { p.place.shift = n.value; }
           elif k == "arc" { p.place.arc = radians(n.value); }
@@ -267,15 +267,15 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
     } elif edgeNumber(head) >= 0i32 {
       if cur < 0i32 { return parseFailed(pat, "an edge before any panel", ln); }
       if w.len() < 2usize { return parseFailed(pat, "an edge needs line, arc, quad, cubic or poly", ln); }
-      imm which = edgeNumber(head);
-      imm kind = w[1usize].view();
-      imm pi_ = usize.from(cur);
+      let which = edgeNumber(head);
+      let kind = w[1usize].view();
+      let pi_ = usize.from(cur);
       if kind == "poly" {
         if (w.len() - 2usize) % 2usize != 0usize or w.len() < 6usize { return parseFailed(pat, "poly needs pairs of numbers, at least two", ln); }
         if !numbers(&w, 2usize, w.len() - 2usize, &mut nums) { return parseFailed(pat, "poly has a word that is not a number", ln); }
-        mut j = 0usize;
+        var j = 0usize;
         while j + 1usize < nums.len() {
-          imm pt = new Vec2(*nums[j], *nums[j + 1usize]);
+          let pt = new Vec2(*nums[j], *nums[j + 1usize]);
           if which == 0i32 { pat.panels[pi_].top.push(pt); }
           elif which == 1i32 { pat.panels[pi_].bottom.push(pt); }
           elif which == 2i32 { pat.panels[pi_].left.push(pt); }
@@ -283,10 +283,10 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
           j = j + 2usize;
         }
       } else {
-        imm need = if kind == "line" { 5usize; } elif kind == "arc" { 6usize; } elif kind == "quad" { 7usize; } elif kind == "cubic" { 9usize; } else { 0usize; };
+        let need = if kind == "line" { 5usize; } elif kind == "arc" { 6usize; } elif kind == "quad" { 7usize; } elif kind == "cubic" { 9usize; } else { 0usize; };
         if need == 0usize { return parseFailed(pat, "an edge is line, arc, quad, cubic or poly", ln); }
         if !numbers(&w, 2usize, need, &mut nums) { return parseFailed(pat, "an edge has the wrong number of numbers", ln); }
-        imm n = u32.from(*nums[need - 1usize]);
+        let n = u32.from(*nums[need - 1usize]);
         if n == 0u32 { return parseFailed(pat, "an edge needs at least one segment", ln); }
         if which == 0i32 { drawEdge(&mut pat.panels[pi_].top, kind, &nums, n); }
         elif which == 1i32 { drawEdge(&mut pat.panels[pi_].bottom, kind, &nums, n); }
@@ -297,7 +297,7 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
       if cur < 0i32 { return parseFailed(pat, "loose before any panel", ln); }
       if (w.len() - 1usize) % 2usize != 0usize or w.len() < 3usize { return parseFailed(pat, "loose needs pairs: v looseness (looseu: u looseness)", ln); }
       if !numbers(&w, 1usize, w.len() - 1usize, &mut nums) { return parseFailed(pat, "loose has a word that is not a number", ln); }
-      mut j = 0usize;
+      var j = 0usize;
       while j + 1usize < nums.len() {
         if head == "loose" { pat.panels[usize.from(cur)].loose.push(new Vec2(*nums[j], *nums[j + 1usize])); }
         else { pat.panels[usize.from(cur)].looseU.push(new Vec2(*nums[j], *nums[j + 1usize])); }
@@ -305,8 +305,8 @@ pub fn parsePattern(text &str, names &List[String]) PatternParse {
       }
     } elif head == "seam" {
       if w.len() < 3usize { return parseFailed(pat, "seam needs two panel.edge ends", ln); }
-      imm a = seamEnd(&pat, w[1usize].view());
-      imm b = seamEnd(&pat, w[2usize].view());
+      let a = seamEnd(&pat, w[1usize].view());
+      let b = seamEnd(&pat, w[2usize].view());
       if a.0 < 0i32 or a.1 < 0i32 or b.0 < 0i32 or b.1 < 0i32 { return parseFailed(pat, "a seam end is panel.edge naming a panel and top, bottom, left or right", ln); }
       pat.stitch(usize.from(a.0), u32.from(a.1), usize.from(b.0), u32.from(b.1), w.len() >= 4usize and w[3usize].view() == "reverse");
     } else {

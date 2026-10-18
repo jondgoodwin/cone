@@ -233,11 +233,11 @@ pub struct ConnectionCore {
 
   // A new connection that begins now, with the session both ends know
   pub fn make(cfg NetConfig, session u64, now Instant) ConnectionCore {
-    mut sent = List[SentSlot].withCapacity(ringSize);
-    mut seen = List[u32].withCapacity(ringSize);
-    mut rel = List[RelSlot].withCapacity(ringSize);
-    mut recv = List[RelRecv].withCapacity(ringSize);
-    mut i = 0usize;
+    var sent = List[SentSlot].withCapacity(ringSize);
+    var seen = List[u32].withCapacity(ringSize);
+    var rel = List[RelSlot].withCapacity(ringSize);
+    var recv = List[RelRecv].withCapacity(ringSize);
+    var i = 0usize;
     while i < ringSize {
       sent.push(new SentSlot(0u16, false, false, 0i64, List[u16].empty()));
       seen.push(0u32);
@@ -245,7 +245,7 @@ pub struct ConnectionCore {
       recv.push(new RelRecv(0u16, false, List[u8].empty()));
       i = i + 1usize;
     }
-    imm t = now.nanos();
+    let t = now.nanos();
     new ConnectionCore(cfg, session, CoreState.Active, CloseReason.Local,
       0u16, sent, seen, 65535u16, false, 0u16, 0u16, false,
       rel, 0u16, 0u16, recv, 0u16,
@@ -276,9 +276,9 @@ pub struct ConnectionCore {
   // a message.
   pub fn sendReliable(self &mut, data &Array[u8]) bool {
     if state != CoreState.Active or data.len > self.maxReliable() {return false;}
-    imm waiting = usize.from(relNext - relOldest);
+    let waiting = usize.from(relNext - relOldest);
     if waiting >= reliableWindow {return false;}
-    imm s = &mut rel[usize.from(relNext) % ringSize];
+    let s = &mut rel[usize.from(relNext) % ringSize];
     s.id = relNext;
     s.used = true;
     s.acked = false;
@@ -298,13 +298,13 @@ pub struct ConnectionCore {
   // maxStreams() streams.
   pub fn sendLatest(self &mut, stream u16, data &Array[u8]) bool {
     if state != CoreState.Active or data.len > self.maxLatest() {return false;}
-    mut k = self.findOut(stream);
+    var k = self.findOut(stream);
     if k == notFound {
       if outs.len() >= maxStreams {return false;}
       outs.push(new StreamOut(stream, 1u32, 0u32, 0u16, false, List[u8].empty()));
       k = outs.len() - 1usize;
     }
-    imm s = &mut outs[k];
+    let s = &mut outs[k];
     s.data.clear();
     putBytes(&mut s.data, data);
     s.pending = true;
@@ -315,7 +315,7 @@ pub struct ConnectionCore {
   // some: its priority grows by 'weight' with every packet it waits through,
   // and the highest goes first. 1 for a stream not set.
   pub fn setStreamWeight(self &mut, stream u16, weight u32) {
-    mut k = self.findOut(stream);
+    var k = self.findOut(stream);
     if k == notFound {
       if outs.len() >= maxStreams {return;}
       outs.push(new StreamOut(stream, weight, 0u32, 0u16, false, List[u8].empty()));
@@ -325,7 +325,7 @@ pub struct ConnectionCore {
   }
 
   fn findOut(self &, stream u16) usize {
-    mut i = 0usize;
+    var i = 0usize;
     while i < outs.len() {
       if outs[i].key == stream {return i;}
       i = i + 1usize;
@@ -334,7 +334,7 @@ pub struct ConnectionCore {
   }
 
   fn findIn(self &, stream u16) usize {
-    mut i = 0usize;
+    var i = 0usize;
     while i < ins.len() {
       if ins[i].key == stream {return i;}
       i = i + 1usize;
@@ -367,7 +367,7 @@ pub struct ConnectionCore {
   pub fn isGood(self &) bool {good;}
 
   pub fn stats(self &) ConnectionStats {
-    mut s = st;
+    var s = st;
     s.rttMs = srtt / msNs;
     s.rttVarMs = rttvar / msNs;
     s.lossPermille = self.lossPermille();
@@ -379,7 +379,7 @@ pub struct ConnectionCore {
   // plus four times its variation (RFC 6298's timeout), not under the
   // configured minimum; 100 ms before there is a measurement
   fn resendDelay(self &) i64 {
-    mut d = 100i64 * msNs;
+    var d = 100i64 * msNs;
     if hasRtt {d = srtt + 4i64 * rttvar;}
     if d < cfg.resendMinMs * msNs {d = cfg.resendMinMs * msNs;}
     if d > 2i64 * secNs {d = 2i64 * secNs;}
@@ -387,7 +387,7 @@ pub struct ConnectionCore {
   }
 
   fn interval(self &) i64 {
-    mut rate = if good {cfg.goodRate;} else {cfg.badRate;};
+    var rate = if good {cfg.goodRate;} else {cfg.badRate;};
     if rate == 0u32 {rate = 1u32;}
     secNs / i64.from(rate);
   }
@@ -399,15 +399,15 @@ pub struct ConnectionCore {
   // Whether there is anything to put in a packet now
   fn hasWork(self &, t i64) bool {
     if ackDirty {return true;}
-    mut i = 0usize;
+    var i = 0usize;
     while i < outs.len() {
       if outs[i].pending {return true;}
       i = i + 1usize;
     }
-    imm delay = self.resendDelay();
-    mut id = relOldest;
+    let delay = self.resendDelay();
+    var id = relOldest;
     while id != relNext {
-      imm s = rel[usize.from(id) % ringSize];
+      let s = rel[usize.from(id) % ringSize];
       if s.used and not s.acked and (s.lastSent < 0i64 or t - s.lastSent >= delay) {return true;}
       id = id + 1u16;
     }
@@ -419,11 +419,11 @@ pub struct ConnectionCore {
   // gives up on the peer. After that call, ask again.
   pub fn nextDeadline(self &) Instant {
     if state != CoreState.Active {return Instant.fromNanos(lastSend);}
-    mut at = lastRecv + cfg.timeoutMs * msNs;
+    var at = lastRecv + cfg.timeoutMs * msNs;
     // When a packet could carry something
-    mut want = lastSend + cfg.keepAliveMs * msNs;
-    mut i = 0usize;
-    mut any = ackDirty;
+    var want = lastSend + cfg.keepAliveMs * msNs;
+    var i = 0usize;
+    var any = ackDirty;
     while i < outs.len() {
       if outs[i].pending {any = true;}
       i = i + 1usize;
@@ -431,12 +431,12 @@ pub struct ConnectionCore {
     if any {
       want = lastSend;
     } else {
-      imm delay = self.resendDelay();
-      mut id = relOldest;
+      let delay = self.resendDelay();
+      var id = relOldest;
       while id != relNext {
-        imm s = rel[usize.from(id) % ringSize];
+        let s = rel[usize.from(id) % ringSize];
         if s.used and not s.acked {
-          mut due = lastSend;
+          var due = lastSend;
           if s.lastSent >= 0i64 {due = s.lastSent + delay;}
           if due < want {want = due;}
         }
@@ -452,11 +452,11 @@ pub struct ConnectionCore {
   // or the disconnect copies) and to 'events' what happened. Call it when
   // nextDeadline says, after a packet arrives, and after sending.
   pub fn poll(self &mut, now Instant, out &mut List[List[u8]], events &mut List[CoreEvent]) {
-    imm t = now.nanos();
+    let t = now.nanos();
     if state == CoreState.Closed {return;}
     if state == CoreState.Closing {
       if not closeSent {
-        mut c = 0usize;
+        var c = 0usize;
         while c < disconnectCopies {
           out.push(self.disconnectPacket());
           c = c + 1usize;
@@ -491,7 +491,7 @@ pub struct ConnectionCore {
   // a second) for every ten seconds spent good
   fn updateMode(self &mut, t i64) {
     if not hasRtt {return;}
-    imm over = srtt > cfg.badRttMs * msNs;
+    let over = srtt > cfg.badRttMs * msNs;
     if good {
       if over {
         good = false;
@@ -527,7 +527,7 @@ pub struct ConnectionCore {
   // ------------------------------------------------------------------
 
   fn disconnectPacket(self &) List[u8] {
-    mut p = List[u8].withCapacity(13usize);
+    var p = List[u8].withCapacity(13usize);
     putU32(&mut p, protocolId);
     putU8(&mut p, kindDisconnect);
     putU64(&mut p, session);
@@ -536,10 +536,10 @@ pub struct ConnectionCore {
 
   // The bit i of the ack bitfield: whether packet (remoteSeq - 1 - i) arrived
   fn ackBits(self &) u32 {
-    mut bits = 0u32;
-    mut i = 0u32;
+    var bits = 0u32;
+    var i = 0u32;
     while i < 32u32 {
-      imm q = remoteSeq - 1u16 - u16.from(i);
+      let q = remoteSeq - 1u16 - u16.from(i);
       if seen[usize.from(q) % ringSize] == u32.from(q) + 1u32 {
         bits = bits | (1u32 << i);
       }
@@ -551,8 +551,8 @@ pub struct ConnectionCore {
   // One payload packet: reliable messages that are due, then the latest-wins
   // values in order of priority, as many as fit
   fn buildPacket(self &mut, t i64) List[u8] {
-    mut p = List[u8].withCapacity(cfg.maxPacket);
-    imm seq = nextSeq;
+    var p = List[u8].withCapacity(cfg.maxPacket);
+    let seq = nextSeq;
     nextSeq = nextSeq + 1u16;
     putU32(&mut p, protocolId);
     putU8(&mut p, kindPayload);
@@ -560,9 +560,9 @@ pub struct ConnectionCore {
     putU16(&mut p, seq);
     putU16(&mut p, remoteSeq);
     putU32(&mut p, self.ackBits());
-    imm relCountAt = p.len();
+    let relCountAt = p.len();
     putU8(&mut p, 0u8);
-    imm latCountAt = p.len();
+    let latCountAt = p.len();
     putU8(&mut p, 0u8);
 
     // The slot this packet is remembered in
@@ -570,7 +570,7 @@ pub struct ConnectionCore {
       // Nothing came back for a packet a whole ring ago: count it lost
       self.noteFate(true);
     }
-    imm slot = &mut sent[usize.from(seq) % ringSize];
+    let slot = &mut sent[usize.from(seq) % ringSize];
     slot.seq = seq;
     slot.used = true;
     slot.acked = false;
@@ -578,14 +578,14 @@ pub struct ConnectionCore {
     slot.msgs.clear();
 
     // Reliable messages that are due, oldest first, while they fit
-    mut budget = cfg.maxPacket - p.len();
-    mut nRel = 0u8;
-    imm delay = self.resendDelay();
-    mut id = relOldest;
+    var budget = cfg.maxPacket - p.len();
+    var nRel = 0u8;
+    let delay = self.resendDelay();
+    var id = relOldest;
     while id != relNext and nRel < 255u8 {
-      imm s = &mut rel[usize.from(id) % ringSize];
+      let s = &mut rel[usize.from(id) % ringSize];
       if s.used and not s.acked and (s.lastSent < 0i64 or t - s.lastSent >= delay) {
-        imm need = reliableOverhead + s.data.len();
+        let need = reliableOverhead + s.data.len();
         if need > budget {break;}
         putU16(&mut p, id);
         putU16(&mut p, u16.from(s.data.len()));
@@ -603,25 +603,25 @@ pub struct ConnectionCore {
 
     // Latest-wins values: every waiting stream gains priority; the highest
     // that fit go in, and the ones that do not keep what they gathered
-    mut i = 0usize;
+    var i = 0usize;
     while i < outs.len() {
-      imm s = &mut outs[i];
+      let s = &mut outs[i];
       if s.pending {s.acc = s.acc + s.weight;}
       i = i + 1usize;
     }
-    mut nLat = 0u8;
+    var nLat = 0u8;
     while nLat < 255u8 {
-      mut best = notFound;
+      var best = notFound;
       i = 0usize;
       while i < outs.len() {
-        imm s = outs[i];
+        let s = outs[i];
         if s.pending and latestOverhead + s.data.len() <= budget {
           if best == notFound or s.acc > outs[best].acc {best = i;}
         }
         i = i + 1usize;
       }
       if best == notFound {break;}
-      imm s = &mut outs[best];
+      let s = &mut outs[best];
       putU16(&mut p, s.key);
       putU16(&mut p, s.nextSeq);
       putU16(&mut p, u16.from(s.data.len()));
@@ -650,10 +650,10 @@ pub struct ConnectionCore {
   // its latest-wins values (given if newer than any delivered)
   pub fn receive(self &mut, data &Array[u8], now Instant, events &mut List[CoreEvent]) bool {
     if state != CoreState.Active {return false;}
-    mut c = PacketReader.start();
-    imm magic = c.rdU32(data);
-    imm kind = c.rdU8(data);
-    imm sess = c.rdU64(data);
+    var c = PacketReader.start();
+    let magic = c.rdU32(data);
+    let kind = c.rdU8(data);
+    let sess = c.rdU64(data);
     if not c.ok or magic != protocolId or sess != session or (kind != kindPayload and kind != kindDisconnect) {
       st.packetsInvalid = st.packetsInvalid + 1u64;
       return false;
@@ -669,27 +669,27 @@ pub struct ConnectionCore {
       events.push(CoreEvent.Closed(CloseReason.Remote));
       return true;
     }
-    mut pk = new Parsed(c.rdU16(data), c.rdU16(data), c.rdU32(data), List[RelRecv].empty(), List[LatestItem].empty());
-    imm nRel = c.rdU8(data);
-    imm nLat = c.rdU8(data);
-    mut i = 0u8;
+    var pk = new Parsed(c.rdU16(data), c.rdU16(data), c.rdU32(data), List[RelRecv].empty(), List[LatestItem].empty());
+    let nRel = c.rdU8(data);
+    let nLat = c.rdU8(data);
+    var i = 0u8;
     while i < nRel and c.ok {
-      imm id = c.rdU16(data);
-      imm lf = c.rdU16(data);
+      let id = c.rdU16(data);
+      let lf = c.rdU16(data);
       // The top two bits are reserved for fragmentation (not built): a
       // message that sets either is refused
       if (lf >> 14u16) != 0u16 {c.ok = false;}
-      imm body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
+      let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
       pk.rel.push(new RelRecv(id, true, body));
       i = i + 1u8;
     }
     i = 0u8;
     while i < nLat and c.ok {
-      imm stream = c.rdU16(data);
-      imm seq = c.rdU16(data);
-      imm lf = c.rdU16(data);
+      let stream = c.rdU16(data);
+      let seq = c.rdU16(data);
+      let lf = c.rdU16(data);
       if (lf >> 14u16) != 0u16 {c.ok = false;}
-      imm body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
+      let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
       pk.lat.push(new LatestItem(stream, seq, body));
       i = i + 1u8;
     }
@@ -699,9 +699,9 @@ pub struct ConnectionCore {
     }
 
     // It is ours
-    imm t = now.nanos();
+    let t = now.nanos();
     lastRecv = t;
-    imm slot = usize.from(pk.seq) % ringSize;
+    let slot = usize.from(pk.seq) % ringSize;
     if seen[slot] == u32.from(pk.seq) + 1u32 {
       st.packetsDuplicate = st.packetsDuplicate + 1u64;
       return true;
@@ -724,8 +724,8 @@ pub struct ConnectionCore {
     // Reliable messages: kept by id, given out in order
     while pk.rel.len() > 0usize {
       match pk.rel.pop() {
-        case imm m Some {
-          mut msg = m;
+        case let m Some {
+          var msg = m;
           self.takeReliable(msg.id, &mut msg.data);
           ackDirty = true;
         }
@@ -735,17 +735,17 @@ pub struct ConnectionCore {
     self.deliverReliable(events);
 
     // Latest-wins values: only a newer one than any delivered gets through
-    mut k = 0usize;
+    var k = 0usize;
     while k < pk.lat.len() {
-      imm item = &mut pk.lat[k];
-      mut j = self.findIn(item.stream);
+      let item = &mut pk.lat[k];
+      var j = self.findIn(item.stream);
       if j == notFound {
         ins.push(new StreamIn(item.stream, item.seq - 1u16));
         j = ins.len() - 1usize;
       }
       if seqNewer(item.seq, ins[j].seq) {
         ins[j].seq = item.seq;
-        mut d = List[u8].empty();
+        var d = List[u8].empty();
         d <=> item.data;
         events.push(CoreEvent.Latest(item.stream, d));
         st.latestDelivered = st.latestDelivered + 1u64;
@@ -759,9 +759,9 @@ pub struct ConnectionCore {
 
   // Keep a reliable message that arrived, if it is new and inside the window
   fn takeReliable(self &mut, id u16, data &mut List[u8]) {
-    imm ahead = usize.from(id - relDeliver);
+    let ahead = usize.from(id - relDeliver);
     if ahead >= reliableWindow {return;}
-    imm s = &mut recv[usize.from(id) % ringSize];
+    let s = &mut recv[usize.from(id) % ringSize];
     if s.used {return;}
     s.id = id;
     s.used = true;
@@ -771,9 +771,9 @@ pub struct ConnectionCore {
   // Give the application every reliable message that is next in order
   fn deliverReliable(self &mut, events &mut List[CoreEvent]) {
     while true {
-      imm s = &mut recv[usize.from(relDeliver) % ringSize];
+      let s = &mut recv[usize.from(relDeliver) % ringSize];
       if not s.used or s.id != relDeliver {return;}
-      mut d = List[u8].empty();
+      var d = List[u8].empty();
       d <=> s.data;
       s.used = false;
       events.push(CoreEvent.Reliable(d));
@@ -787,7 +787,7 @@ pub struct ConnectionCore {
   // messages they carried
   fn acknowledge(self &mut, ack u16, bits u32, t i64) {
     self.ackOne(ack, t);
-    mut i = 0u32;
+    var i = 0u32;
     while i < 32u32 {
       if ((bits >> i) & 1u32) != 0u32 {
         self.ackOne(ack - 1u16 - u16.from(i), t);
@@ -801,7 +801,7 @@ pub struct ConnectionCore {
     self.resolve();
     // Release the acknowledged messages at the front of the queue
     while relOldest != relNext {
-      imm s = &mut rel[usize.from(relOldest) % ringSize];
+      let s = &mut rel[usize.from(relOldest) % ringSize];
       if not s.acked {break;}
       s.used = false;
       s.data.clear();
@@ -810,17 +810,17 @@ pub struct ConnectionCore {
   }
 
   fn ackOne(self &mut, seq u16, t i64) {
-    imm slot = &mut sent[usize.from(seq) % ringSize];
+    let slot = &mut sent[usize.from(seq) % ringSize];
     if not slot.used or slot.seq != seq or slot.acked {return;}
     slot.acked = true;
-    imm sentAt = slot.sentAt;
-    mut k = 0usize;
+    let sentAt = slot.sentAt;
+    var k = 0usize;
     while k < slot.msgs.len() {
-      imm id = *slot.msgs[k];
+      let id = *slot.msgs[k];
       // The message is still queued (a later ack of an old packet may name
       // one already released and its slot reused)
       if usize.from(id - relOldest) < usize.from(relNext - relOldest) {
-        imm m = &mut rel[usize.from(id) % ringSize];
+        let m = &mut rel[usize.from(id) % ringSize];
         if m.used and m.id == id {m.acked = true;}
       }
       k = k + 1usize;
@@ -830,7 +830,7 @@ pub struct ConnectionCore {
 
   // RFC 6298's smoothing of round trip samples
   fn sampleRtt(self &mut, sample i64) {
-    mut s = sample;
+    var s = sample;
     if s < 0i64 {s = 0i64;}
     if not hasRtt {
       srtt = s;
@@ -838,7 +838,7 @@ pub struct ConnectionCore {
       hasRtt = true;
       return;
     }
-    mut diff = srtt - s;
+    var diff = srtt - s;
     if diff < 0i64 {diff = 0i64 - diff;}
     rttvar = (rttvar * 3i64 + diff) / 4i64;
     srtt = (srtt * 7i64 + s) / 8i64;
@@ -848,7 +848,7 @@ pub struct ConnectionCore {
   // the newest ack (more than the 33 an ack covers) that no ack can come
   fn resolve(self &mut) {
     while scan != nextSeq {
-      imm slot = sent[usize.from(scan) % ringSize];
+      let slot = sent[usize.from(scan) % ringSize];
       if slot.used and slot.seq == scan {
         if slot.acked {
           self.noteFate(false);
@@ -866,7 +866,7 @@ pub struct ConnectionCore {
 
   // One packet's fate into the loss measure (a moving average over about 64)
   fn noteFate(self &mut, lost bool) {
-    imm x = if lost {65536i64;} else {0i64;};
+    let x = if lost {65536i64;} else {0i64;};
     lossFx = lossFx + (x - lossFx) / 64i64;
   }
 }

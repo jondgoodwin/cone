@@ -78,7 +78,7 @@ struct Futures is RegionRef, ThreadSafe {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
   }
   fn dealiasRef(self &uni Futures) bool inline {
-    imm last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
+    let last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
     if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire);}
     last;
   }
@@ -90,11 +90,11 @@ struct Futures is RegionRef, ThreadSafe {
 
 // How many futures are allocated and not yet freed: for tests, and for
 // finding leaks. Futures are made and freed on any worker, so it is an atomic
-// held by an 'imm' global, set to 0 in the module's 'init' (actors.cone)
-imm futuresLive Atomic[usize];
+// held by a 'let' global, set to 0 in the module's 'init' (actors.cone)
+let futuresLive Atomic[usize];
 
 // The number given the next future's request, for 'owes': an atomic too
-imm futuresMade Atomic[u64];
+let futuresMade Atomic[u64];
 
 pub fn liveFutures() usize {
   futuresLive.loadOrdered(MemOrder.Acquire);
@@ -156,15 +156,15 @@ fn cellOffset[T]() usize {
 // A new future, Pending, owed by the actor whose Mailbox mb is: its one
 // count the consumer's reference this answers
 pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
-  imm off = cellOffset[T]();
-  imm voff = roundUp(mem.sizeof[FutureCell[T]](), mem.alignof[T]());
-  imm block = libc.malloc(off + voff + mem.sizeof[T]());
+  let off = cellOffset[T]();
+  let voff = roundUp(mem.sizeof[FutureCell[T]](), mem.alignof[T]());
+  let block = libc.malloc(off + voff + mem.sizeof[T]());
   if block as usize == 0usize {
     die("actors: out of memory for a future");
   }
   futuresLive.addOrdered(1usize, MemOrder.Relaxed);
   *(block as *usize) = 1usize;
-  imm c = (block + off) as *FutureCell[T];
+  let c = (block + off) as *FutureCell[T];
   (*c).state = futPending;
   (*c).waiters = null;
   (*c).value = block + off + voff;
@@ -177,7 +177,7 @@ pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
 // The producer's reference to future f, counted: the envelope its request
 // carries, into which the behaviour answering writes its value
 pub fn futureReply[T](f &Future[T]) Reply {
-  imm c = *(f as *Future[T] as **u8);
+  let c = *(f as *Future[T] as **u8);
   mem.atomicAdd[usize]((c - cellOffset[T]()) as *usize, 1usize, MemOrder.Relaxed);
   new Reply(cell: c, data: (*(c as *FutureCell[T])).value);
 }
@@ -185,8 +185,8 @@ pub fn futureReply[T](f &Future[T]) Reply {
 // One count of the future whose payload is at c let go: a reference remade
 // from the address, uncounted, and dropped
 fn futureRelease[T](c *u8) {
-  mut slot = c;
-  imm f = mem.readRaw[Futures[opaq, FutureCell[T]]](&mut slot as *(Futures[opaq, FutureCell[T]]));
+  var slot = c;
+  let f = mem.readRaw[Futures[opaq, FutureCell[T]]](&mut slot as *(Futures[opaq, FutureCell[T]]));
 }
 
 // The future whose payload is at c has its ending, s: Arrived, its value
@@ -197,20 +197,20 @@ fn futureRelease[T](c *u8) {
 // future's reference it held and its actor's count let go, its record left
 // parked for its actor's death to drop
 fn futureEnd(c *u8, s u32) {
-  imm cell = c as *FutureCell[u8];
-  imm release = (*cell).release;
+  let cell = c as *FutureCell[u8];
+  let release = (*cell).release;
   mem.atomicStore[u32](&(*cell).state as *u32, s, MemOrder.Release);
-  mut w = mem.atomicSwap[*Waiter](&(*cell).waiters as **Waiter, waitersClosed as *Waiter, MemOrder.AcqRel);
+  var w = mem.atomicSwap[*Waiter](&(*cell).waiters as **Waiter, waitersClosed as *Waiter, MemOrder.AcqRel);
   while w as usize != 0usize {
-    imm next = (*w).next;
-    imm to = (*w).to;
-    imm node = (*w).node;
+    let next = (*w).next;
+    let to = (*w).to;
+    let node = (*w).node;
     if s == futArrived {
       pushReply(to, node);
     } else {
       release(c);
       libc.free(node as *u8);
-      imm letgo = (*to).release;
+      let letgo = (*to).release;
       letgo(to);
     }
     w = next;
@@ -236,20 +236,20 @@ pub fn futureReady(fut *u8) bool {
 // future's reference has moved into the waiter, and the node is pushed when
 // the future has its ending
 pub fn futureRegister(fut *u8, rp Reply) bool {
-  imm c = cellAt(fut);
-  imm w = rp.data as *Waiter;
+  let c = cellAt(fut);
+  let w = rp.data as *Waiter;
   (*w).fut = *(fut as **u8);
   (*w).to = rp.to;
   (*w).node = rp.node;
-  imm wp = &(*c).waiters as **Waiter;
-  mut head = mem.atomicLoad[*Waiter](wp, MemOrder.Acquire);
+  let wp = &(*c).waiters as **Waiter;
+  var head = mem.atomicLoad[*Waiter](wp, MemOrder.Acquire);
   while head as usize != waitersClosed {
     (*w).next = head;
-    mut seen = head;
-    mut done = false;
+    var seen = head;
+    var done = false;
     seen, done = mem.atomicCompareSwap[*Waiter](wp, head, w, MemOrder.AcqRel, MemOrder.Acquire);
     if done {
-      mut r = rp;
+      var r = rp;
       r.to = null;
       r.node = null;
       return true;
@@ -263,8 +263,8 @@ pub fn futureRegister(fut *u8, rp Reply) bool {
 // the 'await' at file and line to read it out. A panic there if it never
 // arrived
 pub fn futureOpen(fut *u8, file &str, line u32) *u8 {
-  imm c = cellAt(fut);
-  imm s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire);
+  let c = cellAt(fut);
+  let s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire);
   if s == futArrived {
     return (*c).value;
   }
@@ -286,12 +286,12 @@ pub fn futureTaken(fut *u8) {
 
 // A panic at file and line, its message 'before', the request's number, 'after'
 fn dieOwed(before &str, id u64, after &str, file &str, line u32) Never {
-  imm buf = libc.malloc(before.len + after.len + 24usize);
-  mut n = putText(buf, 0usize, before);
-  mut digits Array[u8, 20] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+  let buf = libc.malloc(before.len + after.len + 24usize);
+  var n = putText(buf, 0usize, before);
+  var digits Array[u8, 20] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
     0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
-  mut k = 0usize;
-  mut v = id;
+  var k = 0usize;
+  var v = id;
   while true {
     digits[k] = u8.from(v % 10u64) + 48u8;
     k = k + 1usize;
@@ -308,7 +308,7 @@ fn dieOwed(before &str, id u64, after &str, file &str, line u32) Never {
 }
 
 fn putText(buf *u8, at usize, s &str) usize {
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len {
     *(buf + at + i) = s[i];
     i = i + 1usize;

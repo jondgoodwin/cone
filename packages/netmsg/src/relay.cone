@@ -48,20 +48,20 @@ actor Relay {
   // Bind the front socket (on loopback, a port of the system's choice), say
   // which, and start receiving and delivering. The first message
   async do open(self, up OneshotSender[Result[SocketAddr, IoError]]) {
-    mut tx = up;
-    mut made = await aio.bindUdp(SocketAddr.localhost(0u16));
+    var tx = up;
+    var made = await aio.bindUdp(SocketAddr.localhost(0u16));
     match &mut made {
-      case mut ok &mut Ok { front <=> *ok; }
+      case var ok &mut Ok { front <=> *ok; }
       else {}
     }
     if front.isNone() {
       tx.send(Error[SocketAddr, IoError](new IoError(1u32)));
       return;
     }
-    mut bound = SocketAddr.localhost(0u16);
-    imm la = await front.localAddr();
+    var bound = SocketAddr.localhost(0u16);
+    let la = await front.localAddr();
     match &la {
-      case imm a &Ok { bound = *a; }
+      case let a &Ok { bound = *a; }
       else {}
     }
     tx.send(Ok[SocketAddr, IoError](bound));
@@ -71,10 +71,10 @@ actor Relay {
 
   // Stop: end every receive and timer, close every socket, and say so
   async do stop(self, done OneshotSender[u32]) {
-    mut tx = done;
+    var tx = done;
     stopped = true;
-    imm c = group.cancel();
-    mut dead = UdpSocket.none();
+    let c = group.cancel();
+    var dead = UdpSocket.none();
     dead <=> front;
     legs = List[Leg].empty();
     tx.send(1u32);
@@ -82,38 +82,38 @@ actor Relay {
 
   // Datagrams from clients: each goes through its leg's link to the server
   async do receiveFront(self) {
-    mut failures = 0u32;
+    var failures = 0u32;
     while not stopped and failures <= relayMaxFailures {
-      imm r = await front.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
-      mut client = SocketAddr.localhost(0u16);
-      mut data = List[u8].empty();
-      mut got = false;
+      let r = await front.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      var client = SocketAddr.localhost(0u16);
+      var data = List[u8].empty();
+      var got = false;
       match &r {
-        case imm ok &Ok {
+        case let ok &Ok {
           client = ok.from;
           data = copyBytes(ok.buf.view());
           got = true;
           failures = 0u32;
         }
-        case imm e &Error {
+        case let e &Error {
           if aio.isCancelled(*e) {return;}
           if not aio.isTruncated(*e) {failures = failures + 1u32;}
         }
       }
       if got and not stopped {
-        imm key = client.text();
-        mut found = self.leg(key.view());
+        let key = client.text();
+        var found = self.leg(key.view());
         if found == legs.len() {
           // The client's first datagram: its socket to the server
-          mut made = await aio.bindUdp(SocketAddr.localhost(0u16));
+          var made = await aio.bindUdp(SocketAddr.localhost(0u16));
           if stopped {return;}
-          mut up = UdpSocket.none();
+          var up = UdpSocket.none();
           match &mut made {
-            case mut ok &mut Ok { up <=> *ok; }
+            case var ok &mut Ok { up <=> *ok; }
             else {}
           }
           if up.isNone() {return;}
-          imm n = u64.from(legs.len());
+          let n = u64.from(legs.len());
           legs.push(new Leg(client, key, up,
             LinkSim.make(toServer, seed + 2u64 * n), LinkSim.make(toClient, seed + 2u64 * n + 1u64)));
           selfactor.receiveLeg(legs.len() - 1usize);
@@ -127,18 +127,18 @@ actor Relay {
 
   // Datagrams from the server to leg n's client
   async do receiveLeg(self, n usize) {
-    mut failures = 0u32;
+    var failures = 0u32;
     while not stopped and n < legs.len() and failures <= relayMaxFailures {
-      imm r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      let r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
-        case imm ok &Ok {
+        case let ok &Ok {
           failures = 0u32;
           if not stopped and n < legs.len() {
             legs[n].toClient.send(Instant.now(), copyBytes(ok.buf.view()));
             self.deliver();
           }
         }
-        case imm e &Error {
+        case let e &Error {
           if aio.isCancelled(*e) {return;}
           if not aio.isTruncated(*e) {failures = failures + 1u32;}
         }
@@ -149,7 +149,7 @@ actor Relay {
   // Every millisecond: what the links hold back that is due goes out
   async do tick(self) {
     while not stopped {
-      imm r = await aio.sleepIn(Duration.fromMillis(1i64), IoLimits.within(group));
+      let r = await aio.sleepIn(Duration.fromMillis(1i64), IoLimits.within(group));
       self.deliver();
     }
   }
@@ -157,18 +157,18 @@ actor Relay {
   // One datagram out of leg n: to the server (upstream) or to the client
   async do out(self, n usize, upstream bool, data List[u8]) {
     if stopped or n >= legs.len() {return;}
-    mut b = pool.mustTake(max(data.len(), 1usize));
+    var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());
     if upstream {
-      imm r = await legs[n].up.sendTo(server, b);
+      let r = await legs[n].up.sendTo(server, b);
     } else {
-      imm r = await front.sendTo(legs[n].client, b);
+      let r = await front.sendTo(legs[n].client, b);
     }
   }
 
   // The leg of the client at 'key', or legs.len() if it has none
   fn leg(self &, key &str) usize {
-    mut k = 0usize;
+    var k = 0usize;
     while k < legs.len() {
       if legs[k].key == key {return k;}
       k = k + 1usize;
@@ -179,9 +179,9 @@ actor Relay {
   // What is due goes out
   fn deliver(self) {
     if stopped {return;}
-    imm now = Instant.now();
-    mut d = List[List[u8]].empty();
-    mut i = 0usize;
+    let now = Instant.now();
+    var d = List[List[u8]].empty();
+    var i = 0usize;
     while i < legs.len() {
       legs[i].toServer.deliver(now, &mut d);
       each p in d.drain() { selfactor.out(i, true, p); }
@@ -198,8 +198,8 @@ pub struct LossyRelay {
 
   // Stop the relay and wait for it
   pub fn stop(self &mut) {
-    mut tx OneshotSender[u32];
-    mut rx OneshotReceiver[u32];
+    var tx OneshotSender[u32];
+    var rx OneshotReceiver[u32];
     tx, rx = Oneshot[u32].make();
     relay.stop(tx);
     rx.recv();
@@ -211,15 +211,15 @@ pub struct LossyRelay {
 // losses repeatable. Clients connect to localhost at 'port'.
 pub fn startLossyRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) LossyRelay {
   requireAWorker();
-  imm relay = new Relay(server, toServer, toClient, seed);
-  mut tx OneshotSender[Result[SocketAddr, IoError]];
-  mut rx OneshotReceiver[Result[SocketAddr, IoError]];
+  let relay = new Relay(server, toServer, toClient, seed);
+  var tx OneshotSender[Result[SocketAddr, IoError]];
+  var rx OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   relay.open(tx);
   match rx.recv() {
-    case imm answer Some {
+    case let answer Some {
       match &answer {
-        case imm a &Ok { return new LossyRelay(a.port(), relay); }
+        case let a &Ok { return new LossyRelay(a.port(), relay); }
         else {}
       }
     }

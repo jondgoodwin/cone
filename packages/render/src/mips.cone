@@ -37,8 +37,8 @@ pub const MIP_CUTOUT = 3u32;     // sRGB colour with an alpha that cuts out: col
 
 // How many levels a texture of this size has: down to one texel
 pub fn mipLevelCount(width u32, height u32) u32 {
-  mut size = if width > height { width; } else { height; };
-  mut n = 1u32;
+  var size = if width > height { width; } else { height; };
+  var n = 1u32;
   while size > 1u32 {
     size = size >> 1u32;
     n = n + 1u32;
@@ -54,8 +54,8 @@ fn srgbDecode(c f32) f32 {
 
 // Table: the linear light of each of the 256 sRGB bytes
 fn srgbDecodeTable() List[f32] {
-  mut t = List[f32].withCapacity(256usize);
-  mut i = 0u32;
+  var t = List[f32].withCapacity(256usize);
+  var i = 0u32;
   while i < 256u32 {
     t.push(srgbDecode(f32.from(i) / 255.));
     i = i + 1u32;
@@ -66,8 +66,8 @@ fn srgbDecodeTable() List[f32] {
 // Table: the 255 linear values half-way between neighbouring sRGB bytes, so
 // the byte nearest a linear value is how many of them it passes
 fn srgbThresholds(decode &Array[f32]) List[f32] {
-  mut t = List[f32].withCapacity(255usize);
-  mut i = 0usize;
+  var t = List[f32].withCapacity(255usize);
+  var i = 0usize;
   while i < 255usize {
     t.push((decode[i] + decode[i + 1usize]) * 0.5);
     i = i + 1usize;
@@ -77,10 +77,10 @@ fn srgbThresholds(decode &Array[f32]) List[f32] {
 
 // The sRGB byte nearest the linear value 'v'
 fn srgbEncode(v f32, thresholds &Array[f32]) u8 {
-  mut lo = 0usize;
-  mut hi = 255usize;
+  var lo = 0usize;
+  var hi = 255usize;
   while lo < hi {
-    imm mid = (lo + hi) / 2usize;
+    let mid = (lo + hi) / 2usize;
     if v > thresholds[mid] { lo = mid + 1usize; } else { hi = mid; }
   }
   u8.from(lo);
@@ -96,23 +96,23 @@ fn unitByte(v f32) u8 { colorByte(v); }
 // is raised to the cut-off. The scale is read off a 256-bin histogram of the alpha
 // (the coverage is met to within a bin), and held to at most 8 times.
 fn cutoutCoverage(out &mut List[u8], start usize, level &List[f32], cutoff f32, coverage f32) {
-  imm texels = level.len() / 4usize;
-  mut bins = List[usize].withCapacity(256usize);
-  mut z = 0usize;
+  let texels = level.len() / 4usize;
+  var bins = List[usize].withCapacity(256usize);
+  var z = 0usize;
   while z < 256usize { bins.push(0usize); z = z + 1usize; }
-  mut t = 0usize;
+  var t = 0usize;
   while t < texels {
-    imm a = *level[t * 4usize + 3usize];
-    imm k = if a >= 1. { 255usize; } elif a <= 0. { 0usize; } else { usize.from(u32.from(a * 255.)); };
+    let a = *level[t * 4usize + 3usize];
+    let k = if a >= 1. { 255usize; } elif a <= 0. { 0usize; } else { usize.from(u32.from(a * 255.)); };
     bins.set(k, *bins[k] + 1usize);
     t = t + 1usize;
   }
   // from the top bin down, until 'coverage' of the texels are counted
-  imm want = coverage * f32.from(texels);
-  mut counted f32 = 0.;
-  mut before f32 = 0.;
-  mut k = 255usize;
-  mut found = false;
+  let want = coverage * f32.from(texels);
+  var counted f32 = 0.;
+  var before f32 = 0.;
+  var k = 255usize;
+  var found = false;
   while !found and k > 0usize {
     before = counted;
     counted = counted + f32.from(*bins[k]);
@@ -121,16 +121,16 @@ fn cutoutCoverage(out &mut List[u8], start usize, level &List[f32], cutoff f32, 
   // the bin where the count passes 'want' goes wholly in or wholly out, whichever lands nearer
   // (alpha is quantised at the small levels, and a bin can hold a good part of the texels): in,
   // the threshold is its lower edge; out, the next bin's
-  mut edge = k;
+  var edge = k;
   if found and want - before < counted - want and k < 255usize { edge = k + 1usize; }
-  imm threshold = f32.from(u32.from(edge)) / 255.;
+  let threshold = f32.from(u32.from(edge)) / 255.;
   if threshold <= 0.0001 { return; }
-  mut scale = cutoff / threshold;
+  var scale = cutoff / threshold;
   if scale > 8. { scale = 8.; }
   if scale < 0.5 { scale = 0.5; }
   t = 0usize;
   while t < texels {
-    imm a = *level[t * 4usize + 3usize] * scale;
+    let a = *level[t * 4usize + 3usize] * scale;
     out.set(start + t * 4usize + 3usize, unitByte(a));
     t = t + 1usize;
   }
@@ -147,26 +147,26 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
 // alpha scaled so that as many of its texels are at or above 'cutoff' as the
 // base level's are, its colour averaged weighted by alpha
 pub fn buildMipsCut(rgba &List[u8], width u32, height u32, kind u32, cutoff f32) List[u8] {
-  imm cutKind = kind == MIP_CUTOUT;
-  imm colourKind = kind == MIP_COLOUR or cutKind;
-  mut out = List[u8].withCapacity(usize.from(width) * usize.from(height) * 5usize + 64usize);
-  imm base = rgba.view();
-  mut c = 0usize;
+  let cutKind = kind == MIP_CUTOUT;
+  let colourKind = kind == MIP_COLOUR or cutKind;
+  var out = List[u8].withCapacity(usize.from(width) * usize.from(height) * 5usize + 64usize);
+  let base = rgba.view();
+  var c = 0usize;
   while c < base.len() {
     out.push(base[c]);
     c = c + 1usize;
   }
-  imm decode = srgbDecodeTable();
-  imm decodeV = decode.view();
-  imm thresholds = srgbThresholds(decodeV);
-  imm thresholdsV = thresholds.view();
+  let decode = srgbDecodeTable();
+  let decodeV = decode.view();
+  let thresholds = srgbThresholds(decodeV);
+  let thresholdsV = thresholds.view();
 
   // The base level in the floating-point form its kind averages in
-  mut prev = List[f32].withCapacity(base.len());
-  mut i = 0usize;
+  var prev = List[f32].withCapacity(base.len());
+  var i = 0usize;
   while i < base.len() {
-    imm channel = i % 4usize;
-    imm b = base[i];
+    let channel = i % 4usize;
+    let b = base[i];
     if channel == 3usize {
       prev.push(f32.from(b) / 255.);
     } elif colourKind {
@@ -179,10 +179,10 @@ pub fn buildMipsCut(rgba &List[u8], width u32, height u32, kind u32, cutoff f32)
     i = i + 1usize;
   }
   // A cut-out's coverage: the share of the base level's texels at or above the cut-off
-  mut coverage f32 = 0.;
+  var coverage f32 = 0.;
   if cutKind {
-    mut passing = 0usize;
-    mut t = 0usize;
+    var passing = 0usize;
+    var t = 0usize;
     while t < base.len() / 4usize {
       if f32.from(base[t * 4usize + 3usize]) / 255. >= cutoff { passing = passing + 1usize; }
       t = t + 1usize;
@@ -190,38 +190,38 @@ pub fn buildMipsCut(rgba &List[u8], width u32, height u32, kind u32, cutoff f32)
     coverage = f32.from(passing) / f32.from(base.len() / 4usize);
   }
 
-  mut pw = width;
-  mut ph = height;
+  var pw = width;
+  var ph = height;
   while pw > 1u32 or ph > 1u32 {
-    imm nw = if pw > 1u32 { pw >> 1u32; } else { 1u32; };
-    imm nh = if ph > 1u32 { ph >> 1u32; } else { 1u32; };
-    imm src = prev.view();
-    mut next = List[f32].withCapacity(usize.from(nw) * usize.from(nh) * 4usize);
-    imm levelStart = out.len();
-    mut y = 0u32;
+    let nw = if pw > 1u32 { pw >> 1u32; } else { 1u32; };
+    let nh = if ph > 1u32 { ph >> 1u32; } else { 1u32; };
+    let src = prev.view();
+    var next = List[f32].withCapacity(usize.from(nw) * usize.from(nh) * 4usize);
+    let levelStart = out.len();
+    var y = 0u32;
     while y < nh {
       // The rows above this one's footprint covers
-      imm y0 = y * ph / nh;
-      mut y1 = ((y + 1u32) * ph + nh - 1u32) / nh;
+      let y0 = y * ph / nh;
+      var y1 = ((y + 1u32) * ph + nh - 1u32) / nh;
       if y1 > ph { y1 = ph; }
-      mut x = 0u32;
+      var x = 0u32;
       while x < nw {
-        imm x0 = x * pw / nw;
-        mut x1 = ((x + 1u32) * pw + nw - 1u32) / nw;
+        let x0 = x * pw / nw;
+        var x1 = ((x + 1u32) * pw + nw - 1u32) / nw;
         if x1 > pw { x1 = pw; }
-        mut r = 0.;
-        mut g = 0.;
-        mut b = 0.;
-        mut a = 0.;
+        var r = 0.;
+        var g = 0.;
+        var b = 0.;
+        var a = 0.;
         // (a cut-out's colour weighted by alpha)
-        mut wr = 0.;
-        mut wg = 0.;
-        mut wb = 0.;
-        mut sy = y0;
+        var wr = 0.;
+        var wg = 0.;
+        var wb = 0.;
+        var sy = y0;
         while sy < y1 {
-          mut sx = x0;
+          var sx = x0;
           while sx < x1 {
-            imm at = (usize.from(sy) * usize.from(pw) + usize.from(sx)) * 4usize;
+            let at = (usize.from(sy) * usize.from(pw) + usize.from(sx)) * 4usize;
             r = r + src[at];
             g = g + src[at + 1usize];
             b = b + src[at + 2usize];
@@ -233,7 +233,7 @@ pub fn buildMipsCut(rgba &List[u8], width u32, height u32, kind u32, cutoff f32)
           }
           sy = sy + 1u32;
         }
-        imm inv = 1. / f32.from((y1 - y0) * (x1 - x0));
+        let inv = 1. / f32.from((y1 - y0) * (x1 - x0));
         if cutKind and a > 0.0001 {
           r = wr / a;
           g = wg / a;
@@ -247,7 +247,7 @@ pub fn buildMipsCut(rgba &List[u8], width u32, height u32, kind u32, cutoff f32)
         if kind == MIP_NORMAL {
           // The average of unit vectors is shorter than one; made unit again.
           // A cancelled one (no direction left) is flat.
-          imm len = libc.sqrtf(r * r + g * g + b * b);
+          let len = libc.sqrtf(r * r + g * g + b * b);
           if len > 0.0001 {
             r = r / len;
             g = g / len;

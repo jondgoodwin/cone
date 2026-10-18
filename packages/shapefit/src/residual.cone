@@ -8,8 +8,8 @@
 
 // The signed distance of each vertex from a fitted form
 pub fn residualToForm(m &PolyMesh, f &Form) List[f32] {
-  mut out = List[f32].withCapacity(m.vertexCount());
-  mut v = 0usize;
+  var out = List[f32].withCapacity(m.vertexCount());
+  var v = 0usize;
   while v < m.vertexCount() {
     out.push(f32.from(distanceTo(f.kind, &f.params, DVec3.from(*m.positions[v]))));
     v += 1usize;
@@ -20,8 +20,8 @@ pub fn residualToForm(m &PolyMesh, f &Form) List[f32] {
 // The signed distance of each vertex from the surface of another mesh, by its
 // nearest point (the sign from the other mesh's normals there)
 pub fn residualToSurface(m &PolyMesh, target &Surface) List[f32] {
-  mut out = List[f32].withCapacity(m.vertexCount());
-  mut v = 0usize;
+  var out = List[f32].withCapacity(m.vertexCount());
+  var v = 0usize;
   while v < m.vertexCount() {
     out.push(f32.from(target.signedDistance(DVec3.from(*m.positions[v]))));
     v += 1usize;
@@ -31,23 +31,23 @@ pub fn residualToSurface(m &PolyMesh, target &Surface) List[f32] {
 
 // The same, indexing the other mesh first
 pub fn residualToMesh(m &PolyMesh, target &PolyMesh) List[f32] {
-  imm s = Surface.of(target);
+  let s = Surface.of(target);
   residualToSurface(m, &s);
 }
 
 // Store a per-vertex field in the mesh as a vertex channel of that name
 pub fn storeField(m &mut PolyMesh, name &str, values &List[f32]) u32 {
-  imm ch = m.addFloatChannel(VertexDomain, name, 0.);
-  mut v = 0usize;
+  let ch = m.addFloatChannel(VertexDomain, name, 0.);
+  var v = 0usize;
   while v < values.len() { m.setFloat(ch, u32.from(v), *values[v]); v += 1usize; }
   ch;
 }
 
 // A per-vertex field read back from a vertex channel by name (all zero if there is none)
 pub fn loadField(m &PolyMesh, name &str) List[f32] {
-  mut out = List[f32].withCapacity(m.vertexCount());
-  imm ch = m.findFloatChannel(VertexDomain, name);
-  mut v = 0usize;
+  var out = List[f32].withCapacity(m.vertexCount());
+  let ch = m.findFloatChannel(VertexDomain, name);
+  var v = 0usize;
   while v < m.vertexCount() {
     out.push(if ch == NoIndex { 0.; } else { m.float(ch, u32.from(v)); });
     v += 1usize;
@@ -57,12 +57,12 @@ pub fn loadField(m &PolyMesh, name &str) List[f32] {
 
 // The mean of a vertex field over each face's corners
 pub fn faceValues(m &PolyMesh, vertexValues &List[f32]) List[f32] {
-  mut out = List[f32].withCapacity(m.faceCount());
-  mut f = 0usize;
+  var out = List[f32].withCapacity(m.faceCount());
+  var f = 0usize;
   while f < m.faceCount() {
-    imm vs = m.faceVertices(u32.from(f));
-    mut s = 0.;
-    mut k = 0usize;
+    let vs = m.faceVertices(u32.from(f));
+    var s = 0.;
+    var k = 0usize;
     while k < vs.len() { s = s + *vertexValues[usize.from(*vs[k])]; k += 1usize; }
     out.push(s / f32.from(vs.len()));
     f += 1usize;
@@ -75,22 +75,22 @@ pub fn faceValues(m &PolyMesh, vertexValues &List[f32]) List[f32] {
 // (a face set): each vertex takes the region of its lowest-numbered face. A
 // channel that is missing, or a vertex with no value, gives NoIndex (not in any region).
 pub fn vertexRegions(m &PolyMesh, domain u32, name &str) List[u32] {
-  mut out = List[u32].withCapacity(m.vertexCount());
-  imm ch = m.findFloatChannel(domain, name);
-  mut v = 0usize;
+  var out = List[u32].withCapacity(m.vertexCount());
+  let ch = m.findFloatChannel(domain, name);
+  var v = 0usize;
   while v < m.vertexCount() {
-    mut r = NoIndex;
+    var r = NoIndex;
     if ch != NoIndex {
       if domain == VertexDomain {
         r = u32.from(m.float(ch, u32.from(v)) + 0.5);
       } else {
-        mut best = NoIndex;
-        imm hs = m.vertexOutgoing(u32.from(v));
-        mut k = 0usize;
+        var best = NoIndex;
+        let hs = m.vertexOutgoing(u32.from(v));
+        var k = 0usize;
         while k < hs.len() {
-          imm f = m.face(*hs[k]);
+          let f = m.face(*hs[k]);
           if f != NoIndex and (best == NoIndex or f < best) { best = f; }
-          imm g = m.face(m.twin(*hs[k]));
+          let g = m.face(m.twin(*hs[k]));
           if g != NoIndex and (best == NoIndex or g < best) { best = g; }
           k += 1usize;
         }
@@ -105,8 +105,8 @@ pub fn vertexRegions(m &PolyMesh, domain u32, name &str) List[u32] {
 
 // The vertices within 'radius' of a centre as a region (1), the rest not in any (NoIndex)
 pub fn regionByBall(m &PolyMesh, centre Vec3, radius f32) List[u32] {
-  mut out = List[u32].withCapacity(m.vertexCount());
-  mut v = 0usize;
+  var out = List[u32].withCapacity(m.vertexCount());
+  var v = 0usize;
   while v < m.vertexCount() {
     out.push(if m.positions[v].distance(centre) <= radius { 1u32; } else { NoIndex; });
     v += 1usize;
@@ -130,34 +130,34 @@ pub struct RegionStat {
 // Statistics of a field per region: one entry per region number that occurs, in
 // order of region number. An element whose region is NoIndex is left out.
 pub fn regionStats(values &List[f32], regions &List[u32]) List[RegionStat] {
-  mut ids = List[u32].empty();
-  mut i = 0usize;
+  var ids = List[u32].empty();
+  var i = 0usize;
   while i < regions.len() {
-    imm r = *regions[i];
+    let r = *regions[i];
     if r != NoIndex {
-      mut seen = false;
-      mut k = 0usize;
+      var seen = false;
+      var k = 0usize;
       while k < ids.len() { if *ids[k] == r { seen = true; } k += 1usize; }
       if not seen { ids.push(r); }
     }
     i += 1usize;
   }
   ids.sortBy((a, b) => if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; });
-  mut out = List[RegionStat].empty();
-  mut g = 0usize;
+  var out = List[RegionStat].empty();
+  var g = 0usize;
   while g < ids.len() {
-    imm id = *ids[g];
-    mut n = 0usize;
-    mut sum = 0.d;
-    mut sumAbs = 0.d;
-    mut sumSq = 0.d;
-    mut lo = 1.0e30d;
-    mut hi = -1.0e30d;
-    mut absList = List[f32].empty();
+    let id = *ids[g];
+    var n = 0usize;
+    var sum = 0.d;
+    var sumAbs = 0.d;
+    var sumSq = 0.d;
+    var lo = 1.0e30d;
+    var hi = -1.0e30d;
+    var absList = List[f32].empty();
     i = 0usize;
     while i < regions.len() {
       if *regions[i] == id {
-        imm x = f64.from(*values[i]);
+        let x = f64.from(*values[i]);
         n += 1usize;
         sum = sum + x;
         sumAbs = sumAbs + absd(x);
@@ -169,9 +169,9 @@ pub fn regionStats(values &List[f32], regions &List[u32]) List[RegionStat] {
       i += 1usize;
     }
     absList.sortBy((a, b) => if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; });
-    imm nf = f64.from(n);
-    imm mean = sum / nf;
-    imm rank = usize.from(libc.ceil(0.95d * nf)) - 1usize;
+    let nf = f64.from(n);
+    let mean = sum / nf;
+    let rank = usize.from(libc.ceil(0.95d * nf)) - 1usize;
     out.push(new RegionStat(id, n, f32.from(mean), f32.from(sumAbs / nf), f32.from(sqrtd(sumSq / nf)),
       f32.from(sqrtd(maxd(0.d, sumSq / nf - mean * mean))), f32.from(lo), f32.from(hi),
       *absList[if rank < n { rank; } else { n - 1usize; }]));
@@ -183,6 +183,6 @@ pub fn regionStats(values &List[f32], regions &List[u32]) List[RegionStat] {
 // Statistics of a field per region, the regions read from a channel of the mesh
 // (see vertexRegions)
 pub fn regionStatsOf(m &PolyMesh, values &List[f32], domain u32, name &str) List[RegionStat] {
-  imm regions = vertexRegions(m, domain, name);
+  let regions = vertexRegions(m, domain, name);
   regionStats(values, &regions);
 }

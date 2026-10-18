@@ -37,36 +37,36 @@ pub struct FaceTargets {
 
   // Target t's vertices, positions and normals as lists, for 'MorphTargets.addSparse'
   pub fn indicesOf(self &, t usize) List[u32] {
-    mut out = List[u32].empty();
-    mut k = usize.from(*start[t]);
-    imm e = usize.from(*start[t + 1usize]);
+    var out = List[u32].empty();
+    var k = usize.from(*start[t]);
+    let e = usize.from(*start[t + 1usize]);
     while k < e { out.push(*vertex[k]); k = k + 1usize; }
     out;
   }
 
   pub fn positionsOf(self &, t usize) List[Vec3] {
-    mut out = List[Vec3].empty();
-    mut k = usize.from(*start[t]);
-    imm e = usize.from(*start[t + 1usize]);
+    var out = List[Vec3].empty();
+    var k = usize.from(*start[t]);
+    let e = usize.from(*start[t + 1usize]);
     while k < e { out.push(*dPos[k]); k = k + 1usize; }
     out;
   }
 
   pub fn normalsOf(self &, t usize) List[Vec3] {
-    mut out = List[Vec3].empty();
-    mut k = usize.from(*start[t]);
-    imm e = usize.from(*start[t + 1usize]);
+    var out = List[Vec3].empty();
+    var k = usize.from(*start[t]);
+    let e = usize.from(*start[t + 1usize]);
     while k < e { out.push(*dNor[k]); k = k + 1usize; }
     out;
   }
 
   // The displacement of vertex 'v' in target 't' (zero when the target does not move it)
   pub fn displacement(self &, t usize, v usize) Vec3 {
-    mut lo = usize.from(*start[t]);
-    mut hi = usize.from(*start[t + 1usize]);
+    var lo = usize.from(*start[t]);
+    var hi = usize.from(*start[t + 1usize]);
     while lo < hi {
-      imm mid = (lo + hi) / 2usize;
-      imm at = usize.from(*vertex[mid]);
+      let mid = (lo + hi) / 2usize;
+      let at = usize.from(*vertex[mid]);
       if at == v { return *dPos[mid]; }
       if at < v { lo = mid + 1usize; } else { hi = mid; }
     }
@@ -75,17 +75,17 @@ pub struct FaceTargets {
 
   // The CPU reference: the mesh's positions with the targets summed in at 'weights' (one a target)
   pub fn apply(self &, base &Mesh, weights &List[f32]) List[Vec3] {
-    mut out = List[Vec3].empty();
-    mut v = 0usize;
+    var out = List[Vec3].empty();
+    var v = 0usize;
     while v < base.positions.len() { out.push(*base.positions[v]); v = v + 1usize; }
-    mut t = 0usize;
+    var t = 0usize;
     while t < self.count() and t < weights.len() {
-      imm w = *weights[t];
+      let w = *weights[t];
       if w != 0. {
-        mut k = usize.from(*start[t]);
-        imm e = usize.from(*start[t + 1usize]);
+        var k = usize.from(*start[t]);
+        let e = usize.from(*start[t + 1usize]);
         while k < e {
-          imm at = usize.from(*vertex[k]);
+          let at = usize.from(*vertex[k]);
           out.set(at, *out[at] + *dPos[k] * w);
           k = k + 1usize;
         }
@@ -102,8 +102,8 @@ fn falloff(kind u32, d f32) f32 {falloffWeight(kind, d);}
 
 // The corner angle of a triangle at its first corner
 fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
-  imm u = (a - p).normalize();
-  imm w = (b - p).normalize();
+  let u = (a - p).normalize();
+  let w = (b - p).normalize();
   acos(clampf(u.dot(w), -1., 1.));
 }
 
@@ -119,19 +119,19 @@ struct Resolved {
 }
 
 fn resolve(spec &FaceSpec, r &Influence, ruleNo usize, out &mut Resolved) bool {
-  imm li = spec.index(r.landmark.view());
+  let li = spec.index(r.landmark.view());
   if li < 0i32 { return false; }
   out.centre = *spec.points[usize.from(li)];
   out.pivot = out.centre;
   if r.kind == INFL_TURN {
-    imm pi_ = spec.index(r.pivot.view());
+    let pi_ = spec.index(r.pivot.view());
     if pi_ < 0i32 { return false; }
     out.pivot = *spec.points[usize.from(pi_)];
   }
   out.hasGate = false;
   out.gatePoint = out.centre;
   if r.gate.len() > 0usize {
-    imm gi = spec.index(r.gate.view());
+    let gi = spec.index(r.gate.view());
     if gi < 0i32 { return false; }
     out.gatePoint = *spec.points[usize.from(gi)];
     out.hasGate = true;
@@ -146,84 +146,84 @@ fn resolve(spec &FaceSpec, r &Influence, ruleNo usize, out &mut Resolved) bool {
 
 // The displacement one rule gives the point 'p'
 fn ruleDisplacement(r &Influence, res &Resolved, spec &FaceSpec, p Vec3) Vec3 {
-  imm q = p - res.centre;
+  let q = p - res.centre;
   // The cheap rejections first: outside the ellipsoid's box
   if absf(q.x) >= res.radii.x or absf(q.y) >= res.radii.y or absf(q.z) >= res.radii.z {
     return new Vec3(0., 0., 0.);
   }
-  imm nx = q.x / res.radii.x;
-  imm ny = q.y / res.radii.y;
-  imm nz = q.z / res.radii.z;
-  imm d = (nx * nx + ny * ny + nz * nz).sqrt();
-  mut w = falloff(r.falloff, d);
+  let nx = q.x / res.radii.x;
+  let ny = q.y / res.radii.y;
+  let nz = q.z / res.radii.z;
+  let d = (nx * nx + ny * ny + nz * nz).sqrt();
+  var w = falloff(r.falloff, d);
   if w <= 0.0001 { return new Vec3(0., 0., 0.); }
   if res.hasGate {
-    imm soft = r.gateSoft * spec.scale;
-    imm side = (p - res.gatePoint).dot(r.gateNormal);
+    let soft = r.gateSoft * spec.scale;
+    let side = (p - res.gatePoint).dot(r.gateNormal);
     w = w * smoothstep(-soft, soft, side);
     if w <= 0.0001 { return new Vec3(0., 0., 0.); }
   }
   if r.kind == INFL_MOVE { return r.move * (spec.scale * w); }
-  imm q2 = Quat.angleAxis(res.angle * w, r.axis.normalize());
-  imm rotated = q2 * (p - res.pivot) + res.pivot;
+  let q2 = Quat.angleAxis(res.angle * w, r.axis.normalize());
+  let rotated = q2 * (p - res.pivot) + res.pivot;
   rotated - p;
 }
 
 // Build the targets of 'units' over 'mesh' (which needs normals), with 'spec'
 pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTargets {
-  imm n = mesh.positions.len();
-  mut out = new FaceTargets(n, List[i32].empty(), List[String].empty(), List[u32].empty(), List[u32].empty(),
+  let n = mesh.positions.len();
+  var out = new FaceTargets(n, List[i32].empty(), List[String].empty(), List[u32].empty(), List[u32].empty(),
     List[Vec3].empty(), List[Vec3].empty(), List[f32].empty());
   out.start.push(0u32);
 
   // Triangles around each vertex (compressed rows)
-  mut rowStart = List[u32].empty();
-  mut counts = List[u32].empty();
-  mut v = 0usize;
+  var rowStart = List[u32].empty();
+  var counts = List[u32].empty();
+  var v = 0usize;
   while v < n { counts.push(0u32); v = v + 1usize; }
-  imm nt = mesh.indices.len() / 3usize;
-  mut t = 0usize;
+  let nt = mesh.indices.len() / 3usize;
+  var t = 0usize;
   while t < 3usize * nt {
-    imm at = usize.from(*mesh.indices[t]);
+    let at = usize.from(*mesh.indices[t]);
     counts.set(at, *counts[at] + 1u32);
     t = t + 1usize;
   }
-  mut acc = 0u32;
+  var acc = 0u32;
   v = 0usize;
   while v < n { rowStart.push(acc); acc = acc + *counts[v]; v = v + 1usize; }
   rowStart.push(acc);
-  mut fill = List[u32].empty();
+  var fill = List[u32].empty();
   v = 0usize;
   while v < n { fill.push(0u32); v = v + 1usize; }
-  mut around = List[u32].empty();
+  var around = List[u32].empty();
   around.resize(usize.from(acc), 0u32);
   t = 0usize;
   while t < 3usize * nt {
-    imm at = usize.from(*mesh.indices[t]);
+    let at = usize.from(*mesh.indices[t]);
     around.set(usize.from(*rowStart[at] + *fill[at]), u32.from(t / 3usize));
     fill.set(at, *fill[at] + 1u32);
     t = t + 1usize;
   }
 
-  mut disp = List[Vec3].empty();
+  var disp = List[Vec3].empty();
   v = 0usize;
   while v < n { disp.push(new Vec3(0., 0., 0.)); v = v + 1usize; }
-  mut touched = List[u8].empty();
+  var touched = List[u8].empty();
   touched.resize(n, 0u8);
-  mut affected = List[u8].empty();
+  var affected = List[u8].empty();
   affected.resize(n, 0u8);
 
-  mut ui = 0usize;
+  var ui = 0usize;
   while ui < units.len() {
-    imm unit = units[ui];
+    let unit = units[ui];
     out.unitTarget.push(-1i32);
     if unit.sharesWith >= 0i32 { ui = ui + 1usize; continue; }
 
     // Resolve the unit's rules against the spec; a rule with a missing landmark is dropped
-    mut resolved = List[Resolved].empty();
-    mut k = 0usize;
+    var resolved = List[Resolved].empty();
+    var k = 0usize;
     while k < unit.influences.len() {
-      mut res = new Resolved(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false,
+      var res = new Resolved(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false,
         new Vec3(0., 0., 0.), 0., k);
       if resolve(spec, unit.influences[k], k, &mut res) { resolved.push(res); }
       k = k + 1usize;
@@ -231,15 +231,15 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
     if resolved.len() == 0usize { ui = ui + 1usize; continue; }
 
     // Sum the rules' displacements
-    mut touchedList = List[u32].empty();
+    var touchedList = List[u32].empty();
     k = 0usize;
     while k < resolved.len() {
-      imm res = *resolved[k];
-      imm rule = unit.influences[res.rule];
+      let res = *resolved[k];
+      let rule = unit.influences[res.rule];
       v = 0usize;
       while v < n {
-        imm p = *mesh.positions[v];
-        imm d = ruleDisplacement(rule, &res, spec, p);
+        let p = *mesh.positions[v];
+        let d = ruleDisplacement(rule, &res, spec, p);
         if d.x != 0. or d.y != 0. or d.z != 0. {
           disp.set(v, *disp[v] + d);
           if *touched[v] == 0u8 { touched.set(v, 1u8); touchedList.push(u32.from(v)); }
@@ -250,17 +250,17 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
     }
 
     // The vertices whose normal changes: the touched and every neighbour of a touched vertex
-    mut affectedList = List[u32].empty();
+    var affectedList = List[u32].empty();
     k = 0usize;
     while k < touchedList.len() {
-      imm tv = usize.from(*touchedList[k]);
-      mut a = usize.from(*rowStart[tv]);
-      imm ae = usize.from(*rowStart[tv + 1usize]);
+      let tv = usize.from(*touchedList[k]);
+      var a = usize.from(*rowStart[tv]);
+      let ae = usize.from(*rowStart[tv + 1usize]);
       while a < ae {
-        imm tri = usize.from(*around[a]);
-        mut c = 0usize;
+        let tri = usize.from(*around[a]);
+        var c = 0usize;
         while c < 3usize {
-          imm nb = usize.from(*mesh.indices[3usize * tri + c]);
+          let nb = usize.from(*mesh.indices[3usize * tri + c]);
           if *affected[nb] == 0u8 { affected.set(nb, 1u8); affectedList.push(u32.from(nb)); }
           c = c + 1usize;
         }
@@ -270,39 +270,39 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
     }
 
     // Each affected vertex: its normal from the displaced triangles around it
-    mut maxMove = 0.;
-    mut order = List[u32].empty();
+    var maxMove = 0.;
+    var order = List[u32].empty();
     order = sortedAscending(&affectedList);
     k = 0usize;
     while k < order.len() {
-      imm av = usize.from(*order[k]);
-      mut sum = new Vec3(0., 0., 0.);
-      mut a = usize.from(*rowStart[av]);
-      imm ae = usize.from(*rowStart[av + 1usize]);
+      let av = usize.from(*order[k]);
+      var sum = new Vec3(0., 0., 0.);
+      var a = usize.from(*rowStart[av]);
+      let ae = usize.from(*rowStart[av + 1usize]);
       while a < ae {
-        imm tri = usize.from(*around[a]);
+        let tri = usize.from(*around[a]);
         // The triangle's corners, displaced; which corner is 'av'
-        mut c = 0usize;
-        mut corner = 0usize;
+        var c = 0usize;
+        var corner = 0usize;
         while c < 3usize {
           if usize.from(*mesh.indices[3usize * tri + c]) == av { corner = c; }
           c = c + 1usize;
         }
-        imm i0 = usize.from(*mesh.indices[3usize * tri + corner]);
-        imm i1 = usize.from(*mesh.indices[3usize * tri + (corner + 1usize) % 3usize]);
-        imm i2 = usize.from(*mesh.indices[3usize * tri + (corner + 2usize) % 3usize]);
-        imm p0 = *mesh.positions[i0] + *disp[i0];
-        imm p1 = *mesh.positions[i1] + *disp[i1];
-        imm p2 = *mesh.positions[i2] + *disp[i2];
-        imm tn = (p1 - p0).cross(p2 - p0);
+        let i0 = usize.from(*mesh.indices[3usize * tri + corner]);
+        let i1 = usize.from(*mesh.indices[3usize * tri + (corner + 1usize) % 3usize]);
+        let i2 = usize.from(*mesh.indices[3usize * tri + (corner + 2usize) % 3usize]);
+        let p0 = *mesh.positions[i0] + *disp[i0];
+        let p1 = *mesh.positions[i1] + *disp[i1];
+        let p2 = *mesh.positions[i2] + *disp[i2];
+        let tn = (p1 - p0).cross(p2 - p0);
         if tn.lengthSquared() > 0.0000000000001 {
           sum = sum + tn.normalize() * cornerAngle(p0, p1, p2);
         }
         a = a + 1usize;
       }
-      imm newN = if sum.lengthSquared() > 0.0000000001 { sum.normalize(); } else { *mesh.normals[av]; };
-      imm dn = newN - *mesh.normals[av];
-      imm dp = *disp[av];
+      let newN = if sum.lengthSquared() > 0.0000000001 { sum.normalize(); } else { *mesh.normals[av]; };
+      let dn = newN - *mesh.normals[av];
+      let dp = *disp[av];
       if dp.lengthSquared() > 0.000000000001 or dn.lengthSquared() > 0.00000001 {
         out.vertex.push(u32.from(av));
         out.dPos.push(dp);
@@ -319,7 +319,7 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
     // Clear what this unit used
     k = 0usize;
     while k < touchedList.len() {
-      imm tv = usize.from(*touchedList[k]);
+      let tv = usize.from(*touchedList[k]);
       disp.set(tv, new Vec3(0., 0., 0.));
       touched.set(tv, 0u8);
       k = k + 1usize;
@@ -332,7 +332,7 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
   // The units that share a target
   ui = 0usize;
   while ui < units.len() {
-    imm a = units[ui].sharesWith;
+    let a = units[ui].sharesWith;
     if a >= 0i32 { out.unitTarget.set(ui, *out.unitTarget[usize.from(a)]); }
     ui = ui + 1usize;
   }
@@ -341,22 +341,22 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
 
 // A list sorted ascending (an insertion into runs would do; a merge sort keeps big faces quick)
 fn sortedAscending(list &List[u32]) List[u32] {
-  imm n = list.len();
-  mut a = List[u32].empty();
-  mut i = 0usize;
+  let n = list.len();
+  var a = List[u32].empty();
+  var i = 0usize;
   while i < n { a.push(*list[i]); i = i + 1usize; }
   if n < 2usize { return a; }
-  mut b = List[u32].empty();
+  var b = List[u32].empty();
   b.resize(n, 0u32);
-  mut width = 1usize;
+  var width = 1usize;
   while width < n {
-    mut lo = 0usize;
+    var lo = 0usize;
     while lo < n {
-      imm mid = if lo + width < n { lo + width; } else { n; };
-      imm hi = if lo + 2usize * width < n { lo + 2usize * width; } else { n; };
-      mut x = lo;
-      mut y = mid;
-      mut o = lo;
+      let mid = if lo + width < n { lo + width; } else { n; };
+      let hi = if lo + 2usize * width < n { lo + 2usize * width; } else { n; };
+      var x = lo;
+      var y = mid;
+      var o = lo;
       while x < mid and y < hi {
         if *a[x] <= *a[y] { b.set(o, *a[x]); x = x + 1usize; } else { b.set(o, *a[y]); y = y + 1usize; }
         o = o + 1usize;
@@ -365,7 +365,7 @@ fn sortedAscending(list &List[u32]) List[u32] {
       while y < hi { b.set(o, *a[y]); y = y + 1usize; o = o + 1usize; }
       lo = lo + 2usize * width;
     }
-    mut s = 0usize;
+    var s = 0usize;
     while s < n { a.set(s, *b[s]); s = s + 1usize; }
     width = width * 2usize;
   }

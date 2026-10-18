@@ -22,22 +22,22 @@ fn le32(s &String, at usize) usize {
 
 // The bytes of the named stream in zoo.bin
 fn zooStream(file &String, want &str) List[u8] {
-  mut at = 4usize;
-  mut r = 0usize;
+  var at = 4usize;
+  var r = 0usize;
   while r < le32(file, 0usize) {
-    imm nameLen = usize.from(file[at]);
-    imm name = file.sub(at + 1usize, at + 1usize + nameLen);
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
     at += 1usize + nameLen + 1usize;
-    imm streamLen = le32(file, at);
+    let streamLen = le32(file, at);
     at += 4usize;
     if name.view() == want {
-      mut out = List[u8].empty();
-      mut i = 0usize;
+      var out = List[u8].empty();
+      var i = 0usize;
       while i < streamLen { out.push(file[at + i]); i += 1usize; }
       return out;
     }
     at += streamLen;
-    imm wantLen = le32(file, at);
+    let wantLen = le32(file, at);
     at += 8usize + (if wantLen <= 4096usize {wantLen;} else {0usize;});
     r += 1usize;
   }
@@ -48,10 +48,10 @@ fn text(b &Array[u8]) String { String.fromBytes(b); }
 
 // Inflate a whole gzip stream with an Inflater, answering it (to ask its header)
 fn readAll(s &Array[u8], out &mut List[u8]) Inflater {
-  mut inf = Inflater.make(Format.Gzip);
+  var inf = Inflater.make(Format.Gzip);
   inf.feed(s);
   inf.finish();
-  mut st Status = Status.MoreOutput;
+  var st Status = Status.MoreOutput;
   while st == Status.MoreOutput { st = inf.pull(out, 65536usize); }
   expect(st == Status.Done, "the gzip stream ends Done");
   inf;
@@ -60,23 +60,23 @@ fn readAll(s &Array[u8], out &mut List[u8]) Inflater {
 fn same(a &Array[u8], b &Array[u8]) bool { a == b; }
 
 fn let_append(out &mut List[u8], piece &List[u8]) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < piece.len() { out.push(*piece[k]); k += 1usize; }
 }
 
 fn main() i32 {
-  mut file = String.empty();
+  var file = String.empty();
   match fs.readFile(&Path.from("../../../../tests/data/zoo.bin")) {
-    case mut ok Ok { file <=> ok; }
-    case imm e Error { expect(false, "the data file is there"); return done(); }
+    case var ok Ok { file <=> ok; }
+    case let e Error { expect(false, "the data file is there"); return done(); }
   }
 
   // ---------------- reading every header field ----------------
-  mut out = List[u8].empty();
-  imm all = zooStream(&file, "gzhdr-all");
+  var out = List[u8].empty();
+  let all = zooStream(&file, "gzhdr-all");
   expect(all.len() > 0usize, "gzhdr-all is in the file");
-  imm inf1 = readAll(all.view(), &mut out);
-  imm h1 = inf1.gzipHeader();
+  let inf1 = readAll(all.view(), &mut out);
+  let h1 = inf1.gzipHeader();
   expectUInt(u64.from(h1.mtime), 1700000000u64, "all: time");
   expectUInt(u64.from(h1.xfl), 2u64, "all: XFL");
   expectUInt(u64.from(h1.os), 3u64, "all: system");
@@ -84,34 +84,34 @@ fn main() i32 {
   expectStr(text(h1.name.view()).view(), "test.txt", "all: name");
   expectStr(text(h1.comment.view()).view(), "a comment", "all: comment");
   expectInt(i64.from(h1.extra.len()), 7i64, "all: extra field length");
-  imm extraWant Array[u8, 7] = [65u8, 66u8, 3u8, 0u8, 120u8, 121u8, 122u8];
+  let extraWant Array[u8, 7] = [65u8, 66u8, 3u8, 0u8, 120u8, 121u8, 122u8];
   expect(same(h1.extra.view(), &extraWant), "all: extra field bytes");
   expectInt(i64.from(out.len()), 3000i64, "all: 3000 bytes of data");
   expectInt(i64.from(inf1.memberCount()), 1i64, "all: one member");
 
   out = List[u8].empty();
-  imm nm = zooStream(&file, "gzhdr-name");
-  imm inf2 = readAll(nm.view(), &mut out);
+  let nm = zooStream(&file, "gzhdr-name");
+  let inf2 = readAll(nm.view(), &mut out);
   expectUInt(u64.from(inf2.gzipHeader().mtime), 1700000000u64, "name: time");
   expectStr(text(inf2.gzipHeader().name.view()).view(), "hello.txt", "name: name");
   expectInt(i64.from(inf2.gzipHeader().comment.len()), 0i64, "name: no comment");
   expect(not inf2.gzipHeader().text, "name: no text flag");
 
   out = List[u8].empty();
-  imm cm = zooStream(&file, "gzhdr-comment");
-  imm inf3 = readAll(cm.view(), &mut out);
+  let cm = zooStream(&file, "gzhdr-comment");
+  let inf3 = readAll(cm.view(), &mut out);
   expectStr(text(inf3.gzipHeader().comment.view()).view(), "only a comment", "comment: comment");
   expectInt(i64.from(inf3.gzipHeader().name.len()), 0i64, "comment: no name");
   expectUInt(u64.from(inf3.gzipHeader().os), 255u64, "comment: system 255");
 
   out = List[u8].empty();
-  imm ex = zooStream(&file, "gzhdr-extra");
-  imm inf4 = readAll(ex.view(), &mut out);
+  let ex = zooStream(&file, "gzhdr-extra");
+  let inf4 = readAll(ex.view(), &mut out);
   expectInt(i64.from(inf4.gzipHeader().extra.len()), 7i64, "extra: field length");
 
   out = List[u8].empty();
-  imm hc = zooStream(&file, "gzhdr-hcrc");
-  imm inf5 = readAll(hc.view(), &mut out);
+  let hc = zooStream(&file, "gzhdr-hcrc");
+  let inf5 = readAll(hc.view(), &mut out);
   expectUInt(u64.from(inf5.gzipHeader().mtime), 5u64, "hcrc: time");
   expectUInt(u64.from(inf5.gzipHeader().xfl), 4u64, "hcrc: XFL");
   expectUInt(u64.from(inf5.gzipHeader().os), 0u64, "hcrc: system 0");
@@ -119,34 +119,34 @@ fn main() i32 {
 
   // ---------------- several members ----------------
   out = List[u8].empty();
-  imm multi = zooStream(&file, "multi");
-  imm infm = readAll(multi.view(), &mut out);
+  let multi = zooStream(&file, "multi");
+  let infm = readAll(multi.view(), &mut out);
   expectInt(i64.from(infm.memberCount()), 4i64, "multi: four members");
   expectInt(i64.from(out.len()), 17i64 + 3000i64 + 4i64, "multi: their data joined");
   expectStr(text(&out.view()[0usize..<17usize]).view(), "hello hello hello", "multi: the first member's data");
   expectStr(text(&out.view()[3017usize..<3021usize]).view(), "tail", "multi: the last member's data");
   match gzipDecompress(multi.view(), 0usize) {
-    case imm ok Ok { expect(same(ok.view(), out.view()), "multi: the one-shot helper joins the members the same"); }
-    case imm e Error { expect(false, "multi: the one-shot helper joins the members the same"); }
+    case let ok Ok { expect(same(ok.view(), out.view()), "multi: the one-shot helper joins the members the same"); }
+    case let e Error { expect(false, "multi: the one-shot helper joins the members the same"); }
   }
   // with zero padding between and after
-  mut padded = List[u8].empty();
-  mut i = 0usize;
+  var padded = List[u8].empty();
+  var i = 0usize;
   while i < multi.len() { padded.push(*multi[i]); i += 1usize; }
   padded.push(0u8); padded.push(0u8);
   match gzipDecompress(padded.view(), 0usize) {
-    case imm ok Ok { expect(same(ok.view(), out.view()), "multi: zero padding at the end is ignored"); }
-    case imm e Error { expect(false, "multi: zero padding at the end is ignored"); }
+    case let ok Ok { expect(same(ok.view(), out.view()), "multi: zero padding at the end is ignored"); }
+    case let e Error { expect(false, "multi: zero padding at the end is ignored"); }
   }
   // the four members fed split in two at every offset (a split inside a header, a trailer, between members)
   {
-    mut badSplit = 0usize;
-    mut at = 0usize;
+    var badSplit = 0usize;
+    var at = 0usize;
     while at <= multi.len() {
-      mut sp = Inflater.make(Format.Gzip);
-      mut got = List[u8].empty();
-      mut piece = List[u8].empty();
-      mut st Status = Status.NeedInput;
+      var sp = Inflater.make(Format.Gzip);
+      var got = List[u8].empty();
+      var piece = List[u8].empty();
+      var st Status = Status.NeedInput;
       if at > 0usize {
         sp.feed(&multi.view()[0usize..<at]);
         st = Status.MoreOutput;
@@ -164,20 +164,20 @@ fn main() i32 {
 
   // one member at a time: Done after the first without 'finish', the rest taken
   {
-    mut one = Inflater.make(Format.Gzip);
+    var one = Inflater.make(Format.Gzip);
     one.setMultiMember(false);
     one.feed(multi.view());
-    mut got = List[u8].empty();
-    mut st Status = Status.MoreOutput;
+    var got = List[u8].empty();
+    var st Status = Status.MoreOutput;
     while st == Status.MoreOutput { st = one.pull(&mut got, 100usize); }
     expect(st == Status.Done, "single-member: Done after the first member, no 'finish' needed");
     expectStr(text(got.view()).view(), "hello hello hello", "single-member: the first member's data");
-    imm rest = one.takeRest();
+    let rest = one.takeRest();
     // the other three members, read the same way one after another
-    mut again = Inflater.make(Format.Gzip);
+    var again = Inflater.make(Format.Gzip);
     again.setMultiMember(false);
     again.feed(rest.view());
-    mut got2 = List[u8].empty();
+    var got2 = List[u8].empty();
     st = Status.MoreOutput;
     while st == Status.MoreOutput { st = again.pull(&mut got2, 100usize); }
     expect(st == Status.Done and got2.len() == 3000usize, "single-member: the second member is next in the rest");
@@ -185,7 +185,7 @@ fn main() i32 {
   }
 
   // ---------------- writing the header ----------------
-  mut hdr = GzipHeader.plain();
+  var hdr = GzipHeader.plain();
   hdr.mtime = 123456789u32;
   hdr.xfl = 0u8;
   hdr.os = 3u8;
@@ -194,15 +194,15 @@ fn main() i32 {
   hdr.name.push('a'); hdr.name.push('.'); hdr.name.push('t'); hdr.name.push('x'); hdr.name.push('t');
   hdr.comment.push('c');
   hdr.extra.push(1u8); hdr.extra.push(2u8); hdr.extra.push(3u8);
-  imm hello = "hello hello hello";
-  imm written = gzipCompressWith(hello, 2, &hdr);
+  let hello = "hello hello hello";
+  let written = gzipCompressWith(hello, 2, &hdr);
   // 1F 8B, deflate, flags text+extra+name+comment = 1+4+8+16, time 0x075BCD15 little-endian, XFL 0, system 3,
   // the extra field (length 3 little-endian, then its bytes), "a.txt" and 0, "c" and 0
-  imm want Array[u8, 30] = [0x1Fu8, 0x8Bu8, 8u8, 29u8, 0x15u8, 0xCDu8, 0x5Bu8, 0x07u8, 0u8, 3u8, 3u8, 0u8, 1u8, 2u8, 3u8,
+  let want Array[u8, 30] = [0x1Fu8, 0x8Bu8, 8u8, 29u8, 0x15u8, 0xCDu8, 0x5Bu8, 0x07u8, 0u8, 3u8, 3u8, 0u8, 1u8, 2u8, 3u8,
     97u8, 46u8, 116u8, 120u8, 116u8, 0u8, 99u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
   expect(same(&written.view()[0usize..<23usize], &want[0usize..<23usize]), "the written header's bytes");
   out = List[u8].empty();
-  imm back = readAll(written.view(), &mut out);
+  let back = readAll(written.view(), &mut out);
   expectStr(text(out.view()).view(), "hello hello hello", "the written member reads back");
   expectUInt(u64.from(back.gzipHeader().mtime), 123456789u64, "written and read: time");
   expectUInt(u64.from(back.gzipHeader().os), 3u64, "written and read: system");
@@ -211,46 +211,46 @@ fn main() i32 {
   expectStr(text(back.gzipHeader().comment.view()).view(), "c", "written and read: comment");
   expect(same(back.gzipHeader().extra.view(), &want[12usize..<15usize]) , "written and read: extra");
   // the trailer: CRC-32 of the data, then its length, both little-endian
-  imm wl = written.len();
-  imm crcv = crc32(hello);
+  let wl = written.len();
+  let crcv = crc32(hello);
   expect(*written[wl - 8usize] == u8.from(crcv & 255u32) and *written[wl - 5usize] == u8.from(crcv >> 24u32) and *written[wl - 4usize] == 17u8
     and *written[wl - 3usize] == 0u8, "the written trailer: CRC-32 and size");
 
   // a name with a zero byte is cut there; a plain header has no fields
-  mut cut = GzipHeader.plain();
+  var cut = GzipHeader.plain();
   cut.name.push('a'); cut.name.push(0u8); cut.name.push('b');
-  imm w2 = gzipCompressWith(hello, 1, &cut);
+  let w2 = gzipCompressWith(hello, 1, &cut);
   expect(*w2[3usize] == 8u8 and *w2[10usize] == 'a' and *w2[11usize] == 0u8, "a name is cut at a zero byte");
-  imm p0 = gzipCompress(hello, 0);
-  imm p1 = gzipCompress(hello, 1);
-  imm p2 = gzipCompress(hello, 2);
+  let p0 = gzipCompress(hello, 0);
+  let p1 = gzipCompress(hello, 1);
+  let p2 = gzipCompress(hello, 2);
   expect(*p0[3usize] == 0u8 and *p0[8usize] == 4u8 and *p0[9usize] == 255u8, "plain header, level 0: XFL 4, system 255");
   expect(*p1[8usize] == 4u8 and *p2[8usize] == 0u8, "plain header: XFL 4 at level 1, 0 at level 2");
   expect(*p2[4usize] == 0u8 and *p2[5usize] == 0u8 and *p2[6usize] == 0u8 and *p2[7usize] == 0u8, "plain header: no time");
 
   // the streaming deflater writes the same header
   {
-    mut def = Deflater.make(Format.Gzip, 2);
+    var def = Deflater.make(Format.Gzip, 2);
     def.setGzipHeader(&hdr);
     def.feed(hello);
     def.finish();
-    mut o = List[u8].empty();
+    var o = List[u8].empty();
     def.pull(&mut o, 1000000usize);
     expect(same(o.view(), written.view()), "the streaming Deflater writes the same member as the helper");
   }
 
   // two compressed members and some zeros: one stream of both
-  imm a1 = gzipCompress("first ", 2);
-  imm a2 = gzipCompress("second", 1);
-  mut both = List[u8].empty();
+  let a1 = gzipCompress("first ", 2);
+  let a2 = gzipCompress("second", 1);
+  var both = List[u8].empty();
   i = 0usize;
   while i < a1.len() { both.push(*a1[i]); i += 1usize; }
   i = 0usize;
   while i < a2.len() { both.push(*a2[i]); i += 1usize; }
   both.push(0u8);
   match gzipDecompress(both.view(), 0usize) {
-    case imm ok Ok { expectStr(text(ok.view()).view(), "first second", "two written members read as one"); }
-    case imm e Error { expect(false, "two written members read as one"); }
+    case let ok Ok { expectStr(text(ok.view()).view(), "first second", "two written members read as one"); }
+    case let e Error { expect(false, "two written members read as one"); }
   }
   done();
 }

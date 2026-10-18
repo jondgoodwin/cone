@@ -29,8 +29,8 @@ fn bodyLen(i u64) u64 {if i == 0u64 {bigSize;} else {1u64 + (i * 37u64) % 3000u6
 
 // The number at the end of a target, '/n/<i>'
 fn targetNumber(t &Array[u8]) u64 {
-  mut i = 0u64;
-  mut k = 3usize;
+  var i = 0u64;
+  var k = 3usize;
   while k < t.len {
     i = i * 10u64 + u64.from(t[k] - '0');
     k = k + 1usize;
@@ -55,35 +55,35 @@ struct ServerReport {
 }
 
 fn serve(a ServerArgs) ServerReport {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  mut listener = ListenerId.none();
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  var listener = ListenerId.none();
   match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(1u64)) {
-    case imm r Ok {listener = r;}
-    case imm e Error {}
+    case let r Ok {listener = r;}
+    case let e Error {}
   }
-  mut port = 0u16;
+  var port = 0u16;
   match drv.localAddr(&lp, listener) {
-    case imm r Ok {port = r.port();}
-    case imm e Error {}
+    case let r Ok {port = r.port();}
+    case let e Error {}
   }
   a.portTx.send(port);
-  mut rep = new ServerReport(0u64, 0u64, 0u64, 0u64);
-  mut events = List[Event].empty();
+  var rep = new ServerReport(0u64, 0u64, 0u64, 0u64);
+  var events = List[Event].empty();
   // Bodies being sent: a request and how far it has got
-  mut sending = List[ReqId].empty();
-  mut sentTo = List[u64].empty();
-  mut which = List[u64].empty();
+  var sending = List[ReqId].empty();
+  var sentTo = List[u64].empty();
+  var which = List[u64].empty();
   while rep.closed < a.closes {
     drv.poll(&mut lp, forever(), &mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.kind == EventKind.Request {
         rep.requests = rep.requests + 1u64;
-        imm i = targetNumber(e.request.target.view());
+        let i = targetNumber(e.request.target.view());
         drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(bodyLen(i)));
         sending.push(e.req);
         sentTo.push(0u64);
@@ -98,18 +98,18 @@ fn serve(a ServerArgs) ServerReport {
     }
     events.clear();
     // Bodies out, as the connections take them
-    mut j = 0usize;
+    var j = 0usize;
     while j < sending.len() {
-      imm req = *sending[j];
-      imm i = *which[j];
-      imm len = bodyLen(i);
-      mut off = *sentTo[j];
-      mut refused = false;
+      let req = *sending[j];
+      let i = *which[j];
+      let len = bodyLen(i);
+      var off = *sentTo[j];
+      var refused = false;
       while off < len and not refused {
-        imm n = if len - off < 16384u64 {len - off;} else {16384u64;};
-        mut b = pool.mustTake(usize.from(n));
-        imm room = b.whole();
-        mut q = 0u64;
+        let n = if len - off < 16384u64 {len - off;} else {16384u64;};
+        var b = pool.mustTake(usize.from(n));
+        let room = b.whole();
+        var q = 0u64;
         while q < n {
           room[usize.from(q)] = bodyByte(i, off + q);
           q = q + 1u64;
@@ -122,7 +122,7 @@ fn serve(a ServerArgs) ServerReport {
       }
       if off == len {
         drv.finish(req);
-        imm last = sending.len() - 1usize;
+        let last = sending.len() - 1usize;
         sending.swap(j, last);
         sentTo.swap(j, last);
         which.swap(j, last);
@@ -153,20 +153,20 @@ struct ChanReport {
 }
 
 fn consume(rx Receiver[Event]) ChanReport {
-  mut r = rx;
-  mut rep = new ChanReport(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-  mut seen = 0u64;
+  var r = rx;
+  var rep = new ChanReport(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  var seen = 0u64;
   while true {
-    mut got = false;
+    var got = false;
     match r.recv() {
-      case mut s Some {
+      case var s Some {
         got = true;
-        imm e = &mut s;
+        let e = &mut s;
         if rep.finals > 0u64 {rep.afterFinal = rep.afterFinal + 1u64;}
         if e.kind == EventKind.Response {rep.responses = rep.responses + 1u64;}
         elif e.kind == EventKind.Data {
-          imm v = e.buf.view();
-          mut k = 0usize;
+          let v = e.buf.view();
+          var k = 0usize;
           while k < v.len {
             if v[k] != bodyByte(0u64, rep.bytes + u64.from(k)) {rep.wrong = rep.wrong + 1u64;}
             k = k + 1usize;
@@ -194,30 +194,30 @@ fn consume(rx Receiver[Event]) ChanReport {
 // ---------------------------------------------------------------------------
 
 fn main() i32 {
-  mut portTx Sender[u16];
-  mut portRx Receiver[u16];
+  var portTx Sender[u16];
+  var portRx Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  imm server = thread.start(new ServerArgs(portTx, conns + 1u64), &serve);
-  mut port = 0u16;
+  let server = thread.start(new ServerArgs(portTx, conns + 1u64), &serve);
+  var port = 0u16;
   match portRx.recv() {
-    case imm p Some {port = p;}
+    case let p Some {port = p;}
     case is None[u16] {}
   }
   require(port != 0u16, "the server's port");
 
   // The channel's reader
-  mut evTx Sender[Event];
-  mut evRx Receiver[Event];
+  var evTx Sender[Event];
+  var evRx Receiver[Event];
   evTx, evRx = Channel[Event].bounded(1u64);
-  imm reader = thread.start(evRx, &consume);
+  let reader = thread.start(evRx, &consume);
 
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  mut cs = List[ConnId].empty();
-  mut next = List[u64].empty();       // each connection's requests made
-  mut have = List[u64].empty();       // body bytes of its request in flight
-  mut k = 0u64;
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  var cs = List[ConnId].empty();
+  var next = List[u64].empty();       // each connection's requests made
+  var have = List[u64].empty();       // body bytes of its request in flight
+  var k = 0u64;
   while k < conns {
     cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(k)));
     next.push(0u64);
@@ -225,25 +225,25 @@ fn main() i32 {
     k = k + 1u64;
   }
   // The big one, on a fourth connection, to the channel
-  imm bigConn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(99u64));
+  let bigConn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(99u64));
   drv.request(&mut lp, bigConn, RequestHead.get("/n/0", "127.0.0.1"), BodyLength.empty(), Sink.Chan(500u64, evTx));
 
-  mut wrong = 0u64;
-  mut dones = 0u64;
-  mut notDone = 0u64;
-  mut closed = 0u64;
-  mut events = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(30i64);
-  mut bigDone = false;
+  var wrong = 0u64;
+  var dones = 0u64;
+  var notDone = 0u64;
+  var closed = 0u64;
+  var events = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(30i64);
+  var bigDone = false;
   while (closed < conns + 1u64 or drv.held() > 0usize) and Instant.now() < giveUp {
     // Each free connection's next request
     k = 0u64;
     while k < conns {
-      imm c = *cs[usize.from(k)];
-      imm made = *next[usize.from(k)];
+      let c = *cs[usize.from(k)];
+      let made = *next[usize.from(k)];
       if drv.isIdle(c) and made < perConn {
-        imm i = 1u64 + k * perConn + made;
-        mut t = String.from("/n/");
+        let i = 1u64 + k * perConn + made;
+        var t = String.from("/n/");
         t.appendUInt(i);
         drv.request(&mut lp, c, RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty(), Sink.Here(1000u64 + i));
         next.set(usize.from(k), made + 1u64);
@@ -259,20 +259,20 @@ fn main() i32 {
       bigDone = true;
     }
     drv.poll(&mut lp, forever(), &mut events);
-    mut j = 0usize;
+    var j = 0usize;
     while j < events.len() {
-      imm e = &mut events[j];
+      let e = &mut events[j];
       j = j + 1usize;
       if e.kind == EventKind.Closed {
         closed = closed + 1u64;
         if not e.clean {wrong = wrong + 1u64;}
       } elif e.token >= 1000u64 {
-        imm i = e.token - 1000u64;
-        imm c = (i - 1u64) / perConn;
+        let i = e.token - 1000u64;
+        let c = (i - 1u64) / perConn;
         if e.kind == EventKind.Data {
-          imm v = e.buf.view();
-          imm off = *have[usize.from(c)];
-          mut q = 0usize;
+          let v = e.buf.view();
+          let off = *have[usize.from(c)];
+          var q = 0usize;
           while q < v.len {
             if v[q] != bodyByte(i, off + u64.from(q)) {wrong = wrong + 1u64;}
             q = q + 1usize;
@@ -289,8 +289,8 @@ fn main() i32 {
     }
     events.clear();
   }
-  imm big = reader.join();
-  imm rep = server.join();
+  let big = reader.join();
+  let rep = server.join();
   expectUInt(closed, conns + 1u64, "every connection closed, each once");
   expectUInt(wrong, 0u64, "every body byte right, every close clean");
   expectUInt(dones, conns * perConn, "every request Done");
@@ -306,7 +306,7 @@ fn main() i32 {
   expectUInt(big.finals, 1u64, "...one final answer");
   expectUInt(big.done, 1u64, "...Done");
   expectUInt(big.afterFinal, 0u64, "...and nothing after it");
-  imm s = drv.stats();
+  let s = drv.stats();
   expect(s.held > 0u64, "the channel filled: events were held");
   expectUInt(s.dropped, 0u64, "none dropped");
   expectUInt(u64.from(drv.live()), 0u64, "no connection left");

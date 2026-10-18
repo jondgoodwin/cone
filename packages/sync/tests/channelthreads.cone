@@ -31,7 +31,7 @@ struct Work {
 }
 
 fn produce(w Work) u64 {
-  mut k = 1u64;
+  var k = 1u64;
   while k <= perProducer {
     w.tx.send(w.id * 1000000u64 + k);
     k = k + 1u64;
@@ -50,16 +50,16 @@ struct Totals {
 }
 
 fn consume(rx Receiver[u64]) Totals {
-  mut t = new Totals(0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-  mut last = new Array[u64, 3] <- fill 0u64;
-  mut more = true;
-  mut r = rx;
+  var t = new Totals(0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  var last = new Array[u64, 3] <- fill 0u64;
+  var more = true;
+  var r = rx;
   while more {
     match r.recv() {
-      case imm s Some {
-        imm v = s;
-        imm p = v / 1000000u64;
-        imm k = v % 1000000u64;
+      case let s Some {
+        let v = s;
+        let p = v / 1000000u64;
+        let k = v % 1000000u64;
         if p > 2u64 or k != last[p] + 1u64 {
           t.disorder = t.disorder + 1u64;
         }
@@ -80,7 +80,7 @@ fn consume(rx Receiver[u64]) Totals {
 
 // Send 1 to 50, sleeping a millisecond before each
 fn trickle(tx Sender[u64]) u64 {
-  mut k = 1u64;
+  var k = 1u64;
   while k <= 50u64 {
     thread.sleep(Duration.fromMillis(1));
     tx.send(k);
@@ -91,12 +91,12 @@ fn trickle(tx Sender[u64]) u64 {
 
 // Take items until the channel closes: their sum
 fn sumAll(rx Receiver[u64]) u64 {
-  mut sum = 0u64;
-  mut more = true;
-  mut r = rx;
+  var sum = 0u64;
+  var more = true;
+  var r = rx;
   while more {
     match r.recv() {
-      case imm s Some {sum = sum + s;}
+      case let s Some {sum = sum + s;}
       case is None[u64] {more = false;}
     }
   }
@@ -104,15 +104,15 @@ fn sumAll(rx Receiver[u64]) u64 {
 }
 
 fn main() i32 {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm consumer = thread.start(rx, &consume);
-  imm p1 = thread.start(new Work(tx.clone(), 1u64), &produce);
-  imm p2 = thread.start(new Work(tx.clone(), 2u64), &produce);
-  imm p0 = thread.start(new Work(tx, 0u64), &produce);
-  imm sent = p0.join() + p1.join() + p2.join();
-  imm t = consumer.join();
+  let consumer = thread.start(rx, &consume);
+  let p1 = thread.start(new Work(tx.clone(), 1u64), &produce);
+  let p2 = thread.start(new Work(tx.clone(), 2u64), &produce);
+  let p0 = thread.start(new Work(tx, 0u64), &produce);
+  let sent = p0.join() + p1.join() + p2.join();
+  let t = consumer.join();
   expectUInt(sent, 30000u64, "the items the producers sent");
   expectUInt(t.items, 30000u64, "the items the consumer took");
   expectUInt(t.from0, 10000u64, "from producer 0");
@@ -121,11 +121,11 @@ fn main() i32 {
   expectUInt(t.sum, 30150015000u64, "their sum");
   expectUInt(t.disorder, 0u64, "each producer's items in the order it sent them");
 
-  mut tx2 Sender[u64];
-  mut rx2 Receiver[u64];
+  var tx2 Sender[u64];
+  var rx2 Receiver[u64];
   tx2, rx2 = Channel[u64].make();
-  imm slowConsumer = thread.start(rx2, &sumAll);
-  imm slow = thread.start(tx2, &trickle);
+  let slowConsumer = thread.start(rx2, &sumAll);
+  let slow = thread.start(tx2, &trickle);
   expectUInt(slow.join(), 50u64, "the slow producer's sends");
   // 1 + 2 + ... + 50
   expectUInt(slowConsumer.join(), 1275u64, "each woke the sleeping consumer");

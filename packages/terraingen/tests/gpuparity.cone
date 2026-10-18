@@ -22,11 +22,11 @@ import gpuwork;
 import terraingen use *;
 
 fn roughness(hf &Heightfield) f32 {
-  mut s = 0.;
-  mut n = 0.;
-  mut iz = 1usize;
+  var s = 0.;
+  var n = 0.;
+  var iz = 1usize;
   while iz + 1usize < hf.h {
-    mut ix = 1usize;
+    var ix = 1usize;
     while ix + 1usize < hf.w {
       s = s + libc.fabsf(hf.at(ix - 1usize, iz) + hf.at(ix + 1usize, iz) + hf.at(ix, iz - 1usize) + hf.at(ix, iz + 1usize) - 4. * hf.at(ix, iz));
       n = n + 1.;
@@ -38,36 +38,36 @@ fn roughness(hf &Heightfield) f32 {
 }
 
 fn total(hf &Heightfield, sed &List[f32]) f64 {
-  mut s = 0d;
-  mut i = 0usize;
+  var s = 0d;
+  var i = 0usize;
   while i < hf.data.len() { s = s + f64.from(*hf.data[i]) + f64.from(*sed[i]); i = i + 1usize; }
   s;
 }
 
 fn main() i32 {
-  mut instance = Instance.create("terraingen gpu parity");
+  var instance = Instance.create("terraingen gpu parity");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm report = (libc.getenv("GPUWORK_REPORT") as usize) != 0usize;
+  let report = (libc.getenv("GPUWORK_REPORT") as usize) != 0usize;
   if report { printStr("adapter: "); printStr(adapter.name.view()); printStr("\n"); }
 
   // 1. generate
-  imm spec = alpine(128usize, 128usize, 30., 11u32);
-  imm cpu = generate(&spec.shape, 128usize, 128usize, 30., 0., 0.);
-  imm gpuField = generateGpu(&mut device, &spec);
-  mut worst = 0.;
-  mut i = 0usize;
+  let spec = alpine(128usize, 128usize, 30., 11u32);
+  let cpu = generate(&spec.shape, 128usize, 128usize, 30., 0., 0.);
+  let gpuField = generateGpu(&mut device, &spec);
+  var worst = 0.;
+  var i = 0usize;
   while i < cpu.data.len() {
-    imm d = libc.fabsf(*cpu.data[i] - *gpuField.data[i]);
+    let d = libc.fabsf(*cpu.data[i] - *gpuField.data[i]);
     if d > worst { worst = d; }
     i = i + 1usize;
   }
@@ -76,14 +76,14 @@ fn main() i32 {
   expect(gpuField.maxHeight() > 500., "and is not an empty field");
 
   // 2, 3. erosion
-  imm plan = ErosionPlan.make(40u32, 10u32, 4u32);
-  mut a = cpu.tile(0, 0, 128usize, 128usize);
-  mut b = cpu.tile(0, 0, 128usize, 128usize);
-  imm ra = erodeCpu(&mut a, &spec.erosion, &plan);
-  imm rb = erodeGpu(&mut device, &mut b, &spec.erosion, &plan);
+  let plan = ErosionPlan.make(40u32, 10u32, 4u32);
+  var a = cpu.tile(0, 0, 128usize, 128usize);
+  var b = cpu.tile(0, 0, 128usize, 128usize);
+  let ra = erodeCpu(&mut a, &spec.erosion, &plan);
+  let rb = erodeGpu(&mut device, &mut b, &spec.erosion, &plan);
   require(rb.ok, "the GPU erosion ran");
-  mut meanDiff = 0.;
-  mut moved = 0.;
+  var meanDiff = 0.;
+  var moved = 0.;
   i = 0usize;
   while i < a.data.len() {
     meanDiff = meanDiff + libc.fabsf(*a.data[i] - *b.data[i]);
@@ -92,8 +92,8 @@ fn main() i32 {
   }
   meanDiff = meanDiff / f32.from(a.data.len());
   moved = moved / f32.from(a.data.len());
-  imm ta = total(&a, &ra.sediment);
-  imm tb = total(&b, &rb.sediment);
+  let ta = total(&a, &ra.sediment);
+  let tb = total(&b, &rb.sediment);
   if report {
     print <- "erosion: mean difference "; print <- meanDiff; print <- " m, mean moved "; print <- moved;
     print <- " m, roughness CPU "; print <- roughness(&a); print <- " GPU "; print <- roughness(&b);

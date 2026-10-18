@@ -1,10 +1,10 @@
 // A view held across a call that may reshape it, reached through a reference a caller lent, where a 'mut'
 // global of the type is in the program. A function that takes 'g &mut Ed' cannot tell that it was called
 // with '&mut gl', and a callee, even a read-only closure behind a '&<fn' or in an 'imm' owner, may write
-// 'gl' by its name. So a borrow of a type some 'mut' global reaches, reached through a reference, is
+// 'gl' by its name. So a borrow of a type some 'var' global reaches, reached through a reference, is
 // asked of the same calls as a borrow into the global by its name is (collection_flow_reshape_global): a
 // callee the compiler cannot read, or that reshapes the type through a global, is refused. A type no
-// 'mut' global reaches is not asked, nor a call that reshapes nothing (collection_reshape_global_success).
+// 'var' global reaches is not asked, nor a call that reshapes nothing (collection_reshape_global_success).
 //
 // Each function is a program that read freed memory when it was accepted: the closure writes 'gl' with
 // 'growFirst', which appends to the big String the view points into and moves its block.
@@ -18,12 +18,12 @@ struct Item { pub label String; }
 struct Ed {
   pub items List[Item];
   pub fn growFirst(self &mut, s &str) {
-    imm r = &mut items[0usize];
+    let r = &mut items[0usize];
     r.label.append(s);
   }
 }
 
-mut gl Ed;
+var gl Ed;
 fn @initpure init() { gl = new Ed(List[Item].empty()); }
 
 // A closure in an 'imm' owner, handed on with the view
@@ -31,24 +31,24 @@ struct Holder { pub f Uni[imm, fn(s &str)]; }
 fn useHolder(h &Holder, s &str) { h.f(s); }
 
 fn viaHolder(h &Holder, g &mut Ed) {
-  useHolder(h, g.items[0usize].label.view());                 //~ ErrorShapeReshape "a 'mut' global reaches"
+  useHolder(h, g.items[0usize].label.view());                 //~ ErrorShapeReshape "a 'var' global reaches"
 }
 
 // A '&<fn' handed on with the view
 fn useFn(f &<fn(s &str), s &str) { f(s); }
 
 fn viaFn(f &<fn(s &str), g &mut Ed) {
-  useFn(f, g.items[0usize].label.view());                     //~ ErrorShapeReshape "a 'mut' global reaches"
+  useFn(f, g.items[0usize].label.view());                     //~ ErrorShapeReshape "a 'var' global reaches"
 }
 
 // The callee called through a '&<fn': its body is not visible
 fn viaInvisible(f &<fn(s &str), g &mut Ed, call &<fn(f &<fn(s &str), s &str)) {
-  call(f, g.items[0usize].label.view());                      //~ ErrorShapeReshape "a 'mut' global reaches"
+  call(f, g.items[0usize].label.view());                      //~ ErrorShapeReshape "a 'var' global reaches"
 }
 
 // The view held in a name across a call that runs a closure
 fn held(h &Holder, g &mut Ed) usize {
-  imm v = g.items[0usize].label.view();
-  useHolder(h, "x");                                          //~ ErrorShapeReshape "a 'mut' global reaches"
+  let v = g.items[0usize].label.view();
+  useHolder(h, "x");                                          //~ ErrorShapeReshape "a 'var' global reaches"
   v.len;
 }

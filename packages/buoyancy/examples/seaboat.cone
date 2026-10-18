@@ -31,7 +31,7 @@ import oceanwaves use *;
 import buoyancy use *;
 
 fn cstrEquals(a *u8, b &str) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
     i = i + 1usize;
@@ -40,16 +40,16 @@ fn cstrEquals(a *u8, b &str) bool {
 }
 
 fn cstrToString(s *u8) String {
-  mut r = String.empty();
-  mut i = 0usize;
+  var r = String.empty();
+  var i = 0usize;
   while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
   r;
 }
 
 // A hull as a flat shaded mesh
 fn hullMesh(h &Hull) Mesh {
-  mut m = Mesh.empty();
-  mut i = 0usize;
+  var m = Mesh.empty();
+  var i = 0usize;
   while i < h.points.len() { m.positions.push(*h.points[i]); i = i + 1usize; }
   i = 0usize;
   while i < h.tris.len() { m.indices.push(*h.tris[i]); i = i + 1usize; }
@@ -58,8 +58,8 @@ fn hullMesh(h &Hull) Mesh {
 }
 
 fn main(argc i32, argv **u8) i32 {
-  mut prefix = String.empty();
-  mut a = 1;
+  var prefix = String.empty();
+  var a = 1;
   while a < argc {
     if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
       prefix = cstrToString(*(argv + usize.from(a + 1)));
@@ -67,31 +67,31 @@ fn main(argc i32, argv **u8) i32 {
     }
     a = a + 1;
   }
-  mut instance = Instance.create("buoyancy seaboat");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var instance = Instance.create("buoyancy seaboat");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
   print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
-  mut device = adapter.requestDevice();
-  imm W = 1280u32;
-  imm H = 720u32;
-  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut out = device.createTexture(&outDesc);
-  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
-  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
-  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
-  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
-  mut timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var device = adapter.requestDevice();
+  let W = 1280u32;
+  let H = 720u32;
+  let outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var out = device.createTexture(&outDesc);
+  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  var queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  var resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  var timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   if !renderer.isValid() or !post.isValid() or !queries.isValid() { print <- "renderer failed\n"; return 1i32; }
 
-  mut sky = Sky.dusk(radians(24.), radians(250.));
+  var sky = Sky.dusk(radians(24.), radians(250.));
   sky.sunColor = new Color(30., 27., 22., 1.);
   sky.zenith = new Color(0.14, 0.3, 0.72, 1.);
   sky.horizon = new Color(0.6, 0.72, 0.88, 1.);
@@ -99,90 +99,90 @@ fn main(argc i32, argv **u8) i32 {
   sky.ground = new Color(0.2, 0.25, 0.3, 1.);
   sky.cloudCover = 0.45;
   renderer.setSky(&mut device, &sky);
-  imm light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
+  let light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
   post.exposure = 0.9;
   post.bloom = 0.03;
-  imm look = OceanLook.temperate(&sky);
+  let look = OceanLook.temperate(&sky);
 
   // The sea: tiles chosen for the biggest sea of the run, a Beaufort 9 swell
-  imm forces = [1, 4, 7, 9];
-  mut ocean = Ocean.make(OceanSpec.withTile(SeaState.beaufort(9, 0.), 33u32, 800.));
+  let forces = [1, 4, 7, 9];
+  var ocean = Ocean.make(OceanSpec.withTile(SeaState.beaufort(9, 0.), 33u32, 800.));
   ocean.setSea(SeaState.beaufort(1, 0.));
-  mut sr = OceanRenderer.create(&mut renderer, &mut device, &ocean, look);
+  var sr = OceanRenderer.create(&mut renderer, &mut device, &ocean, look);
   if !sr.isValid() { print <- "ocean renderer failed\n"; return 1i32; }
 
   // The world: a boat facing -x (into waves that travel +x) and eight crates ahead of it
-  mut world = World.make();
-  imm facing = Quat.angleAxis(3.14159265, new Vec3(0., 1., 0.));
-  mut boat = Boat.create(&mut world, BoatSpec.dinghy(), new Vec3(14., 0.1, 0.), facing);
-  imm crateHull = Hull.box(new Vec3(0.45, 0.225, 0.3));
-  mut crates = List[Floater].empty();
-  mut c = 0;
+  var world = World.make();
+  let facing = Quat.angleAxis(3.14159265, new Vec3(0., 1., 0.));
+  var boat = Boat.create(&mut world, BoatSpec.dinghy(), new Vec3(14., 0.1, 0.), facing);
+  let crateHull = Hull.box(new Vec3(0.45, 0.225, 0.3));
+  var crates = List[Floater].empty();
+  var c = 0;
   while c < 8 {
-    imm cx = 6. + 4. * f32.from(c % 4);
-    imm cz = 7. + 5. * f32.from(c / 4);
+    let cx = 6. + 4. * f32.from(c % 4);
+    let cz = 7. + 5. * f32.from(c / 4);
     crates.push(Floater.create(&mut world, Hull.box(new Vec3(0.45, 0.225, 0.3)), new Vec3(cx, 0.1, cz), Quat.identity(), 0., 600.));
     c = c + 1;
   }
 
   // The meshes and materials
-  imm boatMeshData = hullMesh(&boat.floater.hull);
-  imm boatMesh = renderer.addMesh(&mut device, &boatMeshData);
-  imm crateMeshData = Mesh.cube(1.);
-  imm crateMesh = renderer.addMesh(&mut device, &crateMeshData);
-  mut hullMat = Material.plain(new Color(0.82, 0.84, 0.88, 1.));
+  let boatMeshData = hullMesh(&boat.floater.hull);
+  let boatMesh = renderer.addMesh(&mut device, &boatMeshData);
+  let crateMeshData = Mesh.cube(1.);
+  let crateMesh = renderer.addMesh(&mut device, &crateMeshData);
+  var hullMat = Material.plain(new Color(0.82, 0.84, 0.88, 1.));
   hullMat.specular = new Color(0.25, 0.25, 0.25, 1.);
   hullMat.shininess = 40.;
-  imm hullM = renderer.addMaterial(&mut device, &hullMat);
-  mut crateMat = Material.plain(new Color(0.42, 0.26, 0.12, 1.));
+  let hullM = renderer.addMaterial(&mut device, &hullMat);
+  var crateMat = Material.plain(new Color(0.42, 0.26, 0.12, 1.));
   crateMat.specular = new Color(0.05, 0.05, 0.05, 1.);
-  imm crateM = renderer.addMaterial(&mut device, &crateMat);
+  let crateM = renderer.addMaterial(&mut device, &crateMat);
 
-  imm props = WaterProps.sea();
-  imm dt = 1. / 60.;
-  mut t = 0d;
-  mut fi = 0usize;
+  let props = WaterProps.sea();
+  let dt = 1. / 60.;
+  var t = 0d;
+  var fi = 0usize;
   while fi < 4usize {
-    imm force = forces[fi];
+    let force = forces[fi];
     ocean.setSea(SeaState.beaufort(force, 0.));
     print <- "\n== Beaufort "; print <- i64.from(force); print <- ": wind "; print <- ocean.spec.sea.windSpeed; print <- " m/s, Hs "; print <- ocean.expectedSignificantHeight();
     print <- " m, peak wavelength "; print <- ocean.spec.sea.peakWavelength(); print <- " m ==\n";
-    mut msOcean = 0d;
-    mut msUpload = 0d;
-    mut msBodies = 0d;
-    mut msPhysics = 0d;
-    mut frames = 0;
-    mut rollMax = 0.;
-    mut pitchMax = 0.;
-    mut speed = 0.;
-    mut crateH = 0.;
-    imm steps = 1200;
-    mut s = 0;
+    var msOcean = 0d;
+    var msUpload = 0d;
+    var msBodies = 0d;
+    var msPhysics = 0d;
+    var frames = 0;
+    var rollMax = 0.;
+    var pitchMax = 0.;
+    var speed = 0.;
+    var crateH = 0.;
+    let steps = 1200;
+    var s = 0;
     while s < steps {
       t = t + f64.from(dt);
-      imm t0 = time.Instant.now();
+      let t0 = time.Instant.now();
       ocean.update(t);
-      imm t1 = time.Instant.now();
+      let t1 = time.Instant.now();
       boat.steer(0.3, 0.45);     // circling among the crates
       boat.apply(&mut world, (x, z) => ocean.heightAt(x, z), &props, dt);
-      mut k = 0usize;
+      var k = 0usize;
       while k < crates.len() {
         crates[k].apply(&mut world, (x, z) => ocean.heightAt(x, z), &props, dt);
         k = k + 1usize;
       }
-      imm t2 = time.Instant.now();
+      let t2 = time.Instant.now();
       world.step(dt);
-      imm t3 = time.Instant.now();
+      let t3 = time.Instant.now();
       msOcean = msOcean + (t1 - t0).secondsF64() * 1000d;
       msBodies = msBodies + (t2 - t1).secondsF64() * 1000d;
       msPhysics = msPhysics + (t3 - t2).secondsF64() * 1000d;
       frames = frames + 1;
-      imm q = world.rotationOf(boat.id());
-      imm up = q * new Vec3(0., 1., 0.);
-      imm fwd = q * new Vec3(1., 0., 0.);
-      imm side = q * new Vec3(0., 0., 1.);
-      imm roll = libc.fabsf(libc.asinf(fclamp(side.y, -1., 1.)));
-      imm pitch = libc.fabsf(libc.asinf(fclamp(fwd.y, -1., 1.)));
+      let q = world.rotationOf(boat.id());
+      let up = q * new Vec3(0., 1., 0.);
+      let fwd = q * new Vec3(1., 0., 0.);
+      let side = q * new Vec3(0., 0., 1.);
+      let roll = libc.fabsf(libc.asinf(fclamp(side.y, -1., 1.)));
+      let pitch = libc.fabsf(libc.asinf(fclamp(fwd.y, -1., 1.)));
       if s > 300 {
         if roll > rollMax { rollMax = roll; }
         if pitch > pitchMax { pitchMax = pitch; }
@@ -191,64 +191,64 @@ fn main(argc i32, argv **u8) i32 {
       s = s + 1;
     }
     // the crates' height above the water at the end
-    mut sumOff = 0.;
-    mut k = 0usize;
+    var sumOff = 0.;
+    var k = 0usize;
     while k < crates.len() {
-      imm p = world.centerOfMass(crates[k].body);
+      let p = world.centerOfMass(crates[k].body);
       sumOff = sumOff + (p.y - ocean.heightAt(p.x, p.z));
       k = k + 1usize;
     }
     crateH = sumOff / f32.from(crates.len());
     print <- "boat: speed "; print <- speed; print <- " m/s, largest roll "; print <- rollMax * 57.2958; print <- " deg, largest pitch ";
     print <- pitchMax * 57.2958; print <- " deg; crates' mean centre above the surface "; print <- crateH; print <- " m (equilibrium -0.04)\n";
-    imm n = f64.from(frames);
+    let n = f64.from(frames);
     print <- "CPU a frame: ocean update "; print <- msOcean / n; print <- " ms, buoyancy forces for 9 bodies "; print <- msBodies / n;
     print <- " ms, physics step "; print <- msPhysics / n; print <- " ms\n";
 
     // the frame: draw list, camera, GPU time, shot
     // the upload: the first after a pause is slow on some drivers (25 ms on the Intel), so the median of 31
-    mut ups = List[f64].empty();
-    mut u = 0;
+    var ups = List[f64].empty();
+    var u = 0;
     while u < 31 {
       sr.upload(&mut renderer, &mut device, &ocean);
       ups.push(sr.uploadSeconds * 1000d);
       u = u + 1;
     }
-    mut ui = 1usize;
+    var ui = 1usize;
     while ui < ups.len() {
-      mut uj = ui;
+      var uj = ui;
       while uj > 0usize and *ups[uj - 1usize] > *ups[uj] { ups.swap(uj - 1usize, uj); uj = uj - 1usize; }
       ui = ui + 1usize;
     }
     print <- "CPU: texture upload, median of 31: "; print <- *ups[ups.len() / 2usize]; print <- " ms (first "; print <- *ups[0usize]; print <- " fastest, "; print <- *ups[ups.len() - 1usize]; print <- " slowest)\n";
-    imm bp = world.positionOf(boat.id());
-    imm bq = world.rotationOf(boat.id());
-    mut list = DrawList.empty();
+    let bp = world.positionOf(boat.id());
+    let bq = world.rotationOf(boat.id());
+    var list = DrawList.empty();
     sr.addToList(&mut list, bp.x, bp.z);
     list.add(boatMesh, hullM, Mat4.fromTrs(bp, bq, new Vec3(1., 1., 1.)));
     k = 0usize;
     while k < crates.len() {
-      imm cp = world.positionOf(crates[k].body);
-      imm cq = world.rotationOf(crates[k].body);
+      let cp = world.positionOf(crates[k].body);
+      let cq = world.rotationOf(crates[k].body);
       list.add(crateMesh, crateM, Mat4.fromTrs(cp, cq, new Vec3(0.45, 0.225, 0.3)));
       k = k + 1usize;
     }
     // the camera looks at the middle of the boat and the crates, from the side the sun is on
-    mut mid = bp;
+    var mid = bp;
     k = 0usize;
     while k < crates.len() { mid = mid + world.positionOf(crates[k].body); k = k + 1usize; }
     mid = mid * (1. / f32.from(crates.len() + 1usize));
-    imm eye = mid + new Vec3(-17., 6.5 + ocean.heightAt(mid.x, mid.z) * 0.5, -13.);
-    mut camera = Camera.make();
+    let eye = mid + new Vec3(-17., 6.5 + ocean.heightAt(mid.x, mid.z) * 0.5, -13.);
+    var camera = Camera.make();
     camera.fov = radians(55.);
     camera.near = 0.3;
     camera.far = 30000.;
     camera.background = new Color(0.4, 0.55, 0.8, 1.);
     camera.lookAt(eye, mid + new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
-    mut samples = List[f64].empty();
-    mut f = 0u32;
+    var samples = List[f64].empty();
+    var f = 0u32;
     while f < 600u32 {     // 500 warm-up frames: the GPU's clock falls while the CPU runs the 20 s, and takes a moment to rise
-      mut encoder = device.createCommandEncoder();
+      var encoder = device.createCommandEncoder();
       encoder.writeTimestamp(&queries, 0u32);
       renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
       encoder.writeTimestamp(&queries, 1u32);
@@ -259,31 +259,31 @@ fn main(argc i32, argv **u8) i32 {
       device.endFrame();
       device.waitIdle();
       if f >= 500u32 {
-        imm ticks = timeBuf.mappedRange() as *u64;
+        let ticks = timeBuf.mappedRange() as *u64;
         samples.push(f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d);
       }
       f = f + 1u32;
     }
     // sorted, so the median and the extremes read off
-    mut si = 1usize;
+    var si = 1usize;
     while si < samples.len() {
-      mut sj = si;
+      var sj = si;
       while sj > 0usize and *samples[sj - 1usize] > *samples[sj] { samples.swap(sj - 1usize, sj); sj = sj - 1usize; }
       si = si + 1usize;
     }
     print <- "GPU: draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize]; print <- ", max ";
     print <- *samples[samples.len() - 1usize]; print <- ") over 100 frames, "; print <- u64.from(list.len()); print <- " draws\n";
     if prefix.len() > 0usize {
-      mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-      mut encoder = device.createCommandEncoder();
+      var shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      var encoder = device.createCommandEncoder();
       renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
       post.apply(&mut encoder, &out);
       encoder.copyTextureToBuffer(&out, &shot);
       device.queue.submit(encoder.finish());
       device.endFrame();
       device.waitIdle();
-      imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
-      mut name = prefix.copy();
+      let image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+      var name = prefix.copy();
       name <- "-beaufort"; name.appendInt(i64.from(force)); name <- ".bmp";
       image.save(&filepath.Path.from(name.view()));
       print <- "wrote "; printStr(name.view()); print <- "\n";

@@ -60,7 +60,7 @@ pub struct TerrainLook {
   pub debug u32;            // 0 the look; 1 the height; 2 the level; 3 the morph
 
   pub fn make() TerrainLook {
-    mut layers = List[TerrainLayer].empty();
+    var layers = List[TerrainLayer].empty();
     layers.push(TerrainLayer.base(new Color(0.12, 0.2, 0.07, 1.)));
     new TerrainLook(layers, new Color(0.5, 0.6, 0.75, 1.), 0.00002, 0.0004, 0.15, false, 0u32);
   }
@@ -127,25 +127,25 @@ pub struct Terrain {
   // holds 'cfg.cacheNodes' patches (rounded up to a square), each
   // patchSide x patchSide floats: 4096 patches of 37 x 37 are 22 MB.
   pub fn create(device &mut Device, renderer &mut Renderer, cfg TerrainConfig) Terrain {
-    imm textures = [TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT];
-    imm desc = new CustomPipeline(spirv: &TERRAIN_SPIRV, textures: &textures, paramBytes: PARAM_BYTES, streams: 1u32,
+    let textures = [TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT];
+    let desc = new CustomPipeline(spirv: &TERRAIN_SPIRV, textures: &textures, paramBytes: PARAM_BYTES, streams: 1u32,
       environment: false);
-    imm pipeline = renderer.addPipeline(device, &desc);
-    mut grid = buildGridMesh(cfg.nodeCells, cfg.skirt > 0.);
-    imm meshHandle = renderer.addMesh(device, &grid);
-    imm lod = LodLevels.build(&cfg, 1000.);
-    mut across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
+    let pipeline = renderer.addPipeline(device, &desc);
+    var grid = buildGridMesh(cfg.nodeCells, cfg.skirt > 0.);
+    let meshHandle = renderer.addMesh(device, &grid);
+    let lod = LodLevels.build(&cfg, 1000.);
+    var across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
     while across * across < cfg.cacheNodes { across = across + 1u32; }
-    imm texels = across * cfg.patchSide();
+    let texels = across * cfg.patchSide();
     // Written whole once with zeros, so that its layout holds contents; patches go in by region
-    mut zeros = List[f32].withCapacity(usize.from(texels) * usize.from(texels));
-    mut z = 0usize;
+    var zeros = List[f32].withCapacity(usize.from(texels) * usize.from(texels));
+    var z = 0usize;
     while z < usize.from(texels) * usize.from(texels) { zeros.push(0.); z = z + 1usize; }
-    imm atlas = renderer.addFieldTexture(device, texels, texels, zeros.view());
-    mut t = new Terrain(cfg, lod, TerrainLook.make(), List[DrawNode].empty(), emptyStats(), List[Patch].empty(),
+    let atlas = renderer.addFieldTexture(device, texels, texels, zeros.view());
+    var t = new Terrain(cfg, lod, TerrainLook.make(), List[DrawNode].empty(), emptyStats(), List[Patch].empty(),
       Dict[u64, usize].empty(), List[usize].empty(), pipeline, meshHandle, atlas, MaterialHandle.none(), across, 0u64, 1u64, 0u64, false);
-    imm maps = [atlas];
-    imm params = t.paramBlock();
+    let maps = [atlas];
+    let params = t.paramBlock();
     t.material = renderer.addCustomMaterial(device, pipeline, params.view(), &maps);
     t;
   }
@@ -154,8 +154,8 @@ pub struct Terrain {
   // answer 'displayedHeight', for tests and for tools that only need to know
   // what would be drawn
   pub fn createCpu(cfg TerrainConfig) Terrain {
-    imm lod = LodLevels.build(&cfg, 1000.);
-    mut across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
+    let lod = LodLevels.build(&cfg, 1000.);
+    var across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
     while across * across < cfg.cacheNodes { across = across + 1u32; }
     new Terrain(cfg, lod, TerrainLook.make(), List[DrawNode].empty(), emptyStats(), List[Patch].empty(),
       Dict[u64, usize].empty(), List[usize].empty(), PipelineHandle.none(), MeshHandle.none(), TextureHandle.none(),
@@ -187,22 +187,22 @@ pub struct Terrain {
 
   // The slot of the node's patch, built from 'source' if it is not held
   fn patchSlot(self &mut, level u32, ix i32, iz i32, source &<fn(x f32, z f32) f32) usize {
-    imm key = nodeKey(level, ix, iz);
-    mut found = -1i64;
+    let key = nodeKey(level, ix, iz);
+    var found = -1i64;
     match index.get(&key) {
-      case imm v Some { found = i64.from(*v); }
+      case let v Some { found = i64.from(*v); }
       else {}
     }
     if found >= 0i64 {
       patches[usize.from(found)].used = frame;
       return usize.from(found);
     }
-    imm side = cfg.patchSide();
+    let side = cfg.patchSide();
     // A slot of the atlas: a freed one, or the next; none if the cache is full of patches used this frame
-    mut slot = 0usize;
-    mut have = false;
+    var slot = 0usize;
+    var have = false;
     match freeSlots.pop() {
-      case imm s Some { slot = s; have = true; }
+      case let s Some { slot = s; have = true; }
       else {}
     }
     if !have and patches.len() < self.capacity() {
@@ -213,7 +213,7 @@ pub struct Terrain {
     if !have {
       self.evict(1u64, 0usize);
       match freeSlots.pop() {
-        case imm s Some { slot = s; have = true; }
+        case let s Some { slot = s; have = true; }
         else {}
       }
     }
@@ -221,9 +221,9 @@ pub struct Terrain {
       overflowed = true;
       return NO_SLOT;
     }
-    imm heights = buildHeights(&cfg, level, ix, iz, self.cellOf(level), source);
-    mut lo f32 = 0.;
-    mut hi f32 = 0.;
+    let heights = buildHeights(&cfg, level, ix, iz, self.cellOf(level), source);
+    var lo f32 = 0.;
+    var hi f32 = 0.;
     patchRange(&heights, side, cfg.nodeCells, &mut lo, &mut hi);
     patches.set(slot, new Patch(level, ix, iz, heights, lo, hi, false, frame));
     stats.builtPatches = stats.builtPatches + 1u32;
@@ -235,7 +235,7 @@ pub struct Terrain {
   // Free patches not wanted for at least 'age' frames, oldest first by age
   // bands, until no more than 'keep' are held (keep 0: all that are that old)
   fn evict(self &mut, age u64, keep usize) {
-    mut s = 0usize;
+    var s = 0usize;
     while s < patches.len() {
       if patches[s].heights.len() > 0usize and patches[s].used + age <= frame and index.len() > keep {
         self.dropSlot(s);
@@ -248,8 +248,8 @@ pub struct Terrain {
   // Keep the cache within its size, dropping the longest unused first
   fn trim(self &mut) {
     if index.len() <= usize.from(cfg.cacheNodes) { return; }
-    imm ages = [600u64, 240u64, 90u64, 30u64, 10u64, 3u64, 1u64];
-    mut a = 0usize;
+    let ages = [600u64, 240u64, 90u64, 30u64, 10u64, 3u64, 1u64];
+    var a = 0usize;
     while a < 7usize and index.len() > usize.from(cfg.cacheNodes) {
       self.evict(ages[a], usize.from(cfg.cacheNodes));
       a = a + 1usize;
@@ -257,7 +257,7 @@ pub struct Terrain {
   }
 
   fn dropSlot(self &mut, s usize) {
-    imm key = nodeKey(patches[s].level, patches[s].ix, patches[s].iz);
+    let key = nodeKey(patches[s].level, patches[s].ix, patches[s].iz);
     index.remove(&key);
     patches.set(s, emptyPatch());
     freeSlots.push(s);
@@ -266,9 +266,9 @@ pub struct Terrain {
   // Put a patch in the atlas if it is not there: its heights in the block of texels its slot names
   fn upload(self &mut, device &mut Device, renderer &mut Renderer, s usize) {
     if patches[s].onGpu { return; }
-    imm side = cfg.patchSide();
-    imm x = u32.from(s % usize.from(across)) * side;
-    imm y = u32.from(s / usize.from(across)) * side;
+    let side = cfg.patchSide();
+    let x = u32.from(s % usize.from(across)) * side;
+    let y = u32.from(s / usize.from(across)) * side;
     renderer.writeFieldRegion(device, atlas, x, y, side, side, patches[s].heights.view());
     patches[s].onGpu = true;
     patches[s].used = frame;
@@ -277,7 +277,7 @@ pub struct Terrain {
 
   // The material parameters (terrain.slang's Params), the same for every node
   fn paramBlock(self &) List[f32] {
-    mut p = List[f32].withCapacity(usize.from(PARAM_BYTES / 4u64));
+    var p = List[f32].withCapacity(usize.from(PARAM_BYTES / 4u64));
     p.push(f32.from(cfg.nodeCells));
     p.push(cfg.cell);
     p.push(f32.from(lod.count));
@@ -294,7 +294,7 @@ pub struct Terrain {
     p.push(f32.from(cfg.patchSide()));
     p.push(cfg.skirt);
     p.push(0.);
-    mut l = 0usize;
+    var l = 0usize;
     while l < MAX_LEVELS {
       if l < usize.from(lod.count) {
         p.push(*lod.cell[l]);
@@ -308,12 +308,12 @@ pub struct Terrain {
       p.push(0.);
       l = l + 1usize;
     }
-    mut part = 0usize;
+    var part = 0usize;
     while part < 3usize {
       l = 0usize;
       while l < 8usize {
         if l < look.layers.len() {
-          imm t = *look.layers[l];
+          let t = *look.layers[l];
           if part == 0usize {
             p.push(t.color.red); p.push(t.color.green); p.push(t.color.blue); p.push(t.noiseAmount);
           } elif part == 1usize {
@@ -338,18 +338,18 @@ pub struct Terrain {
   // and put what the GPU needs on it. Call once a frame before 'draw'.
   pub fn update(self &mut, device &mut Device, renderer &mut Renderer, camera &Camera, width u32, height u32,
       source &<fn(x f32, z f32) f32) {
-    imm t0 = Instant.now();
-    imm relook = self.walk(camera, width, height, source);
-    imm walked = t0.elapsed().secondsF64() * 1000d;
-    imm t1 = Instant.now();
+    let t0 = Instant.now();
+    let relook = self.walk(camera, width, height, source);
+    let walked = t0.elapsed().secondsF64() * 1000d;
+    let t1 = Instant.now();
     if relook { self.rewriteParams(device, renderer); }
-    mut n = 0usize;
+    var n = 0usize;
     while n < visible.len() {
       self.upload(device, renderer, (*visible[n]).slot);
       n = n + 1usize;
     }
-    imm uploaded = t1.elapsed().secondsF64() * 1000d;
-    imm t2 = Instant.now();
+    let uploaded = t1.elapsed().secondsF64() * 1000d;
+    let t2 = Instant.now();
     stats.walkMs = walked;
     stats.uploadMs = uploaded;
     stats.evictMs = t2.elapsed().secondsF64() * 1000d;
@@ -362,27 +362,27 @@ pub struct Terrain {
     frame = frame + 1u64;
     visible.clear();
     stats = emptyStats();
-    imm k = screenFactor(f32.from(height), camera.fov, cfg.pixelsPerCell);
-    mut relook = lastLook != builtLook;
+    let k = screenFactor(f32.from(height), camera.fov, cfg.pixelsPerCell);
+    var relook = lastLook != builtLook;
     if lod.count == 0u32 or libc.fabsf(k - lod.k) > 0.001 * k {
       lod = LodLevels.build(&cfg, k);
       relook = true;
     }
-    imm aspect = f32.from(width) / f32.from(height);
-    imm view = camera.viewMatrix();
-    imm vp = camera.projectionMatrix(aspect) * view;
-    imm frustum = Frustum.fromMatrix(vp);
-    imm eye = camera.position();
-    imm top = lod.top();
-    imm size = lod.sizeAt(top);
-    imm reach = lod.endAt(top);
-    imm x0 = i32.from(libc.floorf((eye.x - reach) / size));
-    imm x1 = i32.from(libc.floorf((eye.x + reach) / size));
-    imm z0 = i32.from(libc.floorf((eye.z - reach) / size));
-    imm z1 = i32.from(libc.floorf((eye.z + reach) / size));
-    mut iz = z0;
+    let aspect = f32.from(width) / f32.from(height);
+    let view = camera.viewMatrix();
+    let vp = camera.projectionMatrix(aspect) * view;
+    let frustum = Frustum.fromMatrix(vp);
+    let eye = camera.position();
+    let top = lod.top();
+    let size = lod.sizeAt(top);
+    let reach = lod.endAt(top);
+    let x0 = i32.from(libc.floorf((eye.x - reach) / size));
+    let x1 = i32.from(libc.floorf((eye.x + reach) / size));
+    let z0 = i32.from(libc.floorf((eye.z - reach) / size));
+    let z1 = i32.from(libc.floorf((eye.z + reach) / size));
+    var iz = z0;
     while iz <= z1 {
-      mut ix = x0;
+      var ix = x0;
       while ix <= x1 {
         self.visit(top, ix, iz, eye, &frustum, source);
         ix = ix + 1i32;
@@ -403,12 +403,12 @@ pub struct Terrain {
   // height, 'found' false. For tests and for tools that must agree with the
   // picture.
   pub fn displayedHeight(self &, eye Vec3, x f32, z f32, found &mut bool) f32 {
-    mut n = 0usize;
+    var n = 0usize;
     while n < visible.len() {
-      imm v = *visible[n];
-      imm s = lod.sizeAt(v.level);
-      imm x0 = f32.from(v.ix) * s;
-      imm z0 = f32.from(v.iz) * s;
+      let v = *visible[n];
+      let s = lod.sizeAt(v.level);
+      let x0 = f32.from(v.ix) * s;
+      let z0 = f32.from(v.iz) * s;
       if x >= x0 and x <= x0 + s and z >= z0 and z <= z0 + s {
         *found = true;
         return self.nodeSurface(v.slot, v.level, v.ix, v.iz, eye, x, z);
@@ -421,23 +421,23 @@ pub struct Terrain {
 
   // The drawn surface of one node at (x, z)
   fn nodeSurface(self &, slot usize, level u32, ix i32, iz i32, eye Vec3, x f32, z f32) f32 {
-    imm c = lod.cellAt(level);
-    imm nn = i32.from(cfg.nodeCells);
-    imm side = cfg.patchSide();
-    imm gx = x / c - f32.from(ix) * f32.from(cfg.nodeCells);
-    imm gz = z / c - f32.from(iz) * f32.from(cfg.nodeCells);
-    mut a = i32.from(libc.floorf(gx));
-    mut b = i32.from(libc.floorf(gz));
+    let c = lod.cellAt(level);
+    let nn = i32.from(cfg.nodeCells);
+    let side = cfg.patchSide();
+    let gx = x / c - f32.from(ix) * f32.from(cfg.nodeCells);
+    let gz = z / c - f32.from(iz) * f32.from(cfg.nodeCells);
+    var a = i32.from(libc.floorf(gx));
+    var b = i32.from(libc.floorf(gz));
     if a >= nn { a = nn - 1i32; }
     if b >= nn { b = nn - 1i32; }
     if a < 0i32 { a = 0i32; }
     if b < 0i32 { b = 0i32; }
-    imm u = gx - f32.from(a);
-    imm v = gz - f32.from(b);
-    imm h00 = self.vertexAt(slot, level, ix, iz, eye, a, b);
-    imm h10 = self.vertexAt(slot, level, ix, iz, eye, a + 1i32, b);
-    imm h01 = self.vertexAt(slot, level, ix, iz, eye, a, b + 1i32);
-    imm h11 = self.vertexAt(slot, level, ix, iz, eye, a + 1i32, b + 1i32);
+    let u = gx - f32.from(a);
+    let v = gz - f32.from(b);
+    let h00 = self.vertexAt(slot, level, ix, iz, eye, a, b);
+    let h10 = self.vertexAt(slot, level, ix, iz, eye, a + 1i32, b);
+    let h01 = self.vertexAt(slot, level, ix, iz, eye, a, b + 1i32);
+    let h11 = self.vertexAt(slot, level, ix, iz, eye, a + 1i32, b + 1i32);
     if diagonalRises(a, b) {
       if v >= u { h00 + (h11 - h01) * u + (h01 - h00) * v; } else { h00 + (h10 - h00) * u + (h11 - h10) * v; }
     } else {
@@ -447,16 +447,16 @@ pub struct Terrain {
 
   // Vertex (i, j) of a node as drawn: its height morphed by its distance to 'eye'
   pub fn vertexAt(self &, slot usize, level u32, ix i32, iz i32, eye Vec3, i i32, j i32) f32 {
-    imm c = lod.cellAt(level);
-    imm side = cfg.patchSide();
-    imm n = f64.from(cfg.nodeCells);
-    imm px = f32.from((f64.from(ix) * n + f64.from(i)) * f64.from(c));
-    imm pz = f32.from((f64.from(iz) * n + f64.from(j)) * f64.from(c));
-    imm fine = patchAt(&patches[slot].heights, side, i, j);
-    imm dx = eye.x - px;
-    imm dy = eye.y - fine;
-    imm dz = eye.z - pz;
-    imm d = (dx * dx + dy * dy + dz * dz).sqrt();
+    let c = lod.cellAt(level);
+    let side = cfg.patchSide();
+    let n = f64.from(cfg.nodeCells);
+    let px = f32.from((f64.from(ix) * n + f64.from(i)) * f64.from(c));
+    let pz = f32.from((f64.from(iz) * n + f64.from(j)) * f64.from(c));
+    let fine = patchAt(&patches[slot].heights, side, i, j);
+    let dx = eye.x - px;
+    let dy = eye.y - fine;
+    let dz = eye.z - pz;
+    let d = (dx * dx + dy * dy + dz * dz).sqrt();
     vertexHeight(&patches[slot].heights, side, i, j, lod.morphFactor(level, d));
   }
 
@@ -466,11 +466,11 @@ pub struct Terrain {
 
   // Leaf 'n''s vertex (i, j) as drawn for a camera at 'eye', and its surface at (x, z)
   pub fn leafVertex(self &, n usize, eye Vec3, i i32, j i32) f32 {
-    imm v = *visible[n];
+    let v = *visible[n];
     self.vertexAt(v.slot, v.level, v.ix, v.iz, eye, i, j);
   }
   pub fn leafSurface(self &, n usize, eye Vec3, x f32, z f32) f32 {
-    imm v = *visible[n];
+    let v = *visible[n];
     self.nodeSurface(v.slot, v.level, v.ix, v.iz, eye, x, z);
   }
 
@@ -479,36 +479,36 @@ pub struct Terrain {
   pub fn sizeOfLevel(self &, level u32) f32 { lod.sizeAt(level); }
 
   fn rewriteParams(self &mut, device &mut Device, renderer &mut Renderer) {
-    imm params = self.paramBlock();
+    let params = self.paramBlock();
     renderer.setCustomParams(device, material, params.view());
     builtLook = lastLook;
   }
 
   fn visit(self &mut, level u32, ix i32, iz i32, eye Vec3, frustum &Frustum, source &<fn(x f32, z f32) f32) {
     stats.visited = stats.visited + 1u32;
-    imm s = lod.sizeAt(level);
-    imm bx0 = f32.from(ix) * s;
-    imm bz0 = f32.from(iz) * s;
+    let s = lod.sizeAt(level);
+    let bx0 = f32.from(ix) * s;
+    let bz0 = f32.from(iz) * s;
     // First by the source's declared bounds: no heights are computed for a node out of view
-    imm coarse = new Aabb3(new Vec3(bx0, cfg.minHeight, bz0), new Vec3(bx0 + s, cfg.maxHeight, bz0 + s));
+    let coarse = new Aabb3(new Vec3(bx0, cfg.minHeight, bz0), new Vec3(bx0 + s, cfg.maxHeight, bz0 + s));
     if frustum.testAabb(coarse) == Outside { return; }
     if level == lod.top() {
-      imm dTop = boxDistance(eye.x, eye.y, eye.z, bx0, cfg.minHeight, bz0, bx0 + s, cfg.maxHeight, bz0 + s);
+      let dTop = boxDistance(eye.x, eye.y, eye.z, bx0, cfg.minHeight, bz0, bx0 + s, cfg.maxHeight, bz0 + s);
       if dTop >= lod.endAt(level) { return; }
     }
-    imm slot = self.patchSlot(level, ix, iz, source);
+    let slot = self.patchSlot(level, ix, iz, source);
     if slot == NO_SLOT { return; }
-    imm c = lod.cellAt(level);
-    imm pad = 0.7071 * cfg.maxSlope * c;
-    imm lo = patches[slot].lo - pad;
-    imm hi = patches[slot].hi + pad;
-    imm box = new Aabb3(new Vec3(bx0, lo, bz0), new Vec3(bx0 + s, hi, bz0 + s));
+    let c = lod.cellAt(level);
+    let pad = 0.7071 * cfg.maxSlope * c;
+    let lo = patches[slot].lo - pad;
+    let hi = patches[slot].hi + pad;
+    let box = new Aabb3(new Vec3(bx0, lo, bz0), new Vec3(bx0 + s, hi, bz0 + s));
     if frustum.testAabb(box) == Outside { return; }
-    imm d = boxDistance(eye.x, eye.y, eye.z, bx0, lo, bz0, bx0 + s, hi, bz0 + s);
+    let d = boxDistance(eye.x, eye.y, eye.z, bx0, lo, bz0, bx0 + s, hi, bz0 + s);
     if level == lod.top() and d >= lod.endAt(level) { return; }
     if level > 0u32 and d < lod.endAt(level - 1u32) {
-      imm cx = ix * 2i32;
-      imm cz = iz * 2i32;
+      let cx = ix * 2i32;
+      let cz = iz * 2i32;
       self.visit(level - 1u32, cx, cz, eye, frustum, source);
       self.visit(level - 1u32, cx + 1i32, cz, eye, frustum, source);
       self.visit(level - 1u32, cx, cz + 1i32, eye, frustum, source);
@@ -521,12 +521,12 @@ pub struct Terrain {
 
   // Add this frame's nodes to 'list'. Terrain casts no shadows of its own.
   pub fn draw(self &, list &mut DrawList) {
-    mut n = 0usize;
+    var n = 0usize;
     while n < visible.len() {
-      imm v = *visible[n];
-      imm s = lod.sizeAt(v.level);
-      imm c = lod.cellAt(v.level);
-      imm model = Mat4.fromTrs(new Vec3(f32.from(v.ix) * s, 0., f32.from(v.iz) * s), Quat.identity(), new Vec3(c, 1., c));
+      let v = *visible[n];
+      let s = lod.sizeAt(v.level);
+      let c = lod.cellAt(v.level);
+      let model = Mat4.fromTrs(new Vec3(f32.from(v.ix) * s, 0., f32.from(v.iz) * s), Quat.identity(), new Vec3(c, 1., c));
       list.addTinted(gridMesh, material, model, new Color(f32.from(v.ix), f32.from(v.iz), f32.from(v.level), f32.from(v.slot)));
       list.dontCastShadow();
       n = n + 1usize;
@@ -535,10 +535,10 @@ pub struct Terrain {
 
   // The node's lowest and highest sample, if its patch is in the cache (for tests)
   pub fn patchRangeOf(self &, level u32, ix i32, iz i32, lo &mut f32, hi &mut f32) bool {
-    imm key = nodeKey(level, ix, iz);
-    mut found = -1i64;
+    let key = nodeKey(level, ix, iz);
+    var found = -1i64;
     match index.get(&key) {
-      case imm v Some { found = i64.from(*v); }
+      case let v Some { found = i64.from(*v); }
       else {}
     }
     if found < 0i64 { return false; }
@@ -549,15 +549,15 @@ pub struct Terrain {
 
   // The node's heights, a copy (empty if its patch is not in the cache)
   pub fn heightsOf(self &, level u32, ix i32, iz i32) List[f32] {
-    imm key = nodeKey(level, ix, iz);
-    mut found = -1i64;
+    let key = nodeKey(level, ix, iz);
+    var found = -1i64;
     match index.get(&key) {
-      case imm v Some { found = i64.from(*v); }
+      case let v Some { found = i64.from(*v); }
       else {}
     }
     if found < 0i64 { return List[f32].empty(); }
-    mut out = List[f32].withCapacity(patches[usize.from(found)].heights.len());
-    mut n = 0usize;
+    var out = List[f32].withCapacity(patches[usize.from(found)].heights.len());
+    var n = 0usize;
     while n < patches[usize.from(found)].heights.len() {
       out.push(*patches[usize.from(found)].heights[n]);
       n = n + 1usize;
@@ -567,7 +567,7 @@ pub struct Terrain {
 
   // Give back the GPU's mesh, atlas and material, and forget every patch
   pub fn release(self &mut, device &mut Device, renderer &mut Renderer) {
-    mut s = 0usize;
+    var s = 0usize;
     while s < patches.len() {
       if patches[s].heights.len() > 0usize { self.dropSlot(s); }
       s = s + 1usize;
@@ -599,11 +599,11 @@ fn emptyPatch() Patch {
 // and from (a + 1, b) to (a, b + 1) when it is odd. Wound counterclockwise
 // seen from above (+y).
 pub fn buildGridMesh(cells u32, skirt bool) Mesh {
-  mut m = Mesh.empty();
-  imm n = cells;
-  mut j = 0u32;
+  var m = Mesh.empty();
+  let n = cells;
+  var j = 0u32;
   while j <= n {
-    mut i = 0u32;
+    var i = 0u32;
     while i <= n {
       m.positions.push(new Vec3(f32.from(i), 0., f32.from(j)));
       m.normals.push(new Vec3(0., 1., 0.));
@@ -612,15 +612,15 @@ pub fn buildGridMesh(cells u32, skirt bool) Mesh {
     }
     j = j + 1u32;
   }
-  imm stride = n + 1u32;
+  let stride = n + 1u32;
   j = 0u32;
   while j < n {
-    mut i = 0u32;
+    var i = 0u32;
     while i < n {
-      imm a = j * stride + i;           // (i, j)
-      imm b = a + 1u32;                 // (i + 1, j)
-      imm c = a + stride;               // (i, j + 1)
-      imm d = c + 1u32;                 // (i + 1, j + 1)
+      let a = j * stride + i;           // (i, j)
+      let b = a + 1u32;                 // (i + 1, j)
+      let c = a + stride;               // (i, j + 1)
+      let d = c + 1u32;                 // (i + 1, j + 1)
       if ((i + j) & 1u32) == 0u32 {
         // diagonal a-d
         m.indices.push(a); m.indices.push(c); m.indices.push(d);
@@ -640,27 +640,27 @@ pub fn buildGridMesh(cells u32, skirt bool) Mesh {
     // the hairline gaps rounding leaves where a finer node's edge vertices
     // meet a coarser node's edge (T-junctions), as skirts do in CDLOD and
     // clipmap terrain.
-    mut edge = 0u32;
+    var edge = 0u32;
     while edge < 4u32 {
-      mut t = 0u32;
+      var t = 0u32;
       while t < n {
         // The edge's vertices t and t + 1 on the grid, and the outward direction
-        imm ia = if edge == 0u32 { t; } elif edge == 1u32 { n * stride + t; } elif edge == 2u32 { t * stride; } else { t * stride + n; };
-        imm ib = if edge == 0u32 { t + 1u32; } elif edge == 1u32 { n * stride + t + 1u32; } elif edge == 2u32 { (t + 1u32) * stride; } else { (t + 1u32) * stride + n; };
-        imm outward = if edge == 0u32 { new Vec3(0., 0., -1.); } elif edge == 1u32 { new Vec3(0., 0., 1.); }
+        let ia = if edge == 0u32 { t; } elif edge == 1u32 { n * stride + t; } elif edge == 2u32 { t * stride; } else { t * stride + n; };
+        let ib = if edge == 0u32 { t + 1u32; } elif edge == 1u32 { n * stride + t + 1u32; } elif edge == 2u32 { (t + 1u32) * stride; } else { (t + 1u32) * stride + n; };
+        let outward = if edge == 0u32 { new Vec3(0., 0., -1.); } elif edge == 1u32 { new Vec3(0., 0., 1.); }
           elif edge == 2u32 { new Vec3(-1., 0., 0.); } else { new Vec3(1., 0., 0.); };
-        imm pa = *m.positions[usize.from(ia)];
-        imm pb = *m.positions[usize.from(ib)];
-        imm la = u32.from(m.positions.len());
+        let pa = *m.positions[usize.from(ia)];
+        let pb = *m.positions[usize.from(ib)];
+        let la = u32.from(m.positions.len());
         m.positions.push(new Vec3(pa.x, -1., pa.z));
         m.normals.push(new Vec3(0., 1., 0.));
         m.uvs.push(new Vec2(0., 0.));
         m.positions.push(new Vec3(pb.x, -1., pb.z));
         m.normals.push(new Vec3(0., 1., 0.));
         m.uvs.push(new Vec2(0., 0.));
-        imm lb = la + 1u32;
+        let lb = la + 1u32;
         // (ia, lb, la) and (ia, ib, lb): flipped if they face inward
-        imm nrm = (new Vec3(pb.x, -1., pb.z) - pa).cross(new Vec3(pa.x, -1., pa.z) - pa);
+        let nrm = (new Vec3(pb.x, -1., pb.z) - pa).cross(new Vec3(pa.x, -1., pa.z) - pa);
         if nrm.dot(outward) >= 0. {
           m.indices.push(ia); m.indices.push(lb); m.indices.push(la);
           m.indices.push(ia); m.indices.push(ib); m.indices.push(lb);

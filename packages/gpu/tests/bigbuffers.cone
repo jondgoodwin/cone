@@ -45,8 +45,8 @@ const CHUNK_WORDS = 16777216u64;        // words of one write
 
 // The word the pattern holds at word index 'k' of the buffer
 fn expected(k u64) u32 {
-  imm chunk = k / CHUNK_WORDS;
-  imm within = k % CHUNK_WORDS;
+  let chunk = k / CHUNK_WORDS;
+  let within = k % CHUNK_WORDS;
   if within == 0u64 { return u32.from(chunk); }
   if within == 1u64 { return 0xC0FFEEu32; }
   u32.from((within * 2654435761u64) % 4294967296u64);
@@ -56,20 +56,20 @@ fn word(p *u8, i usize) u32 { *((p + i * 4usize) as *u32); }
 
 // Dispatch probeMain over (big, probes -> out) once, 64 invocations, and copy the 64 words out to 'readback'
 fn probe(device &mut Device, shader &ShaderModule, big &BindGroupEntry, probes &Buffer, out &Buffer, readback &Buffer) *u8 {
-  imm layoutEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+  let layoutEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
     new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
     new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
-  mut groupLayout = device.createBindGroupLayout(&layoutEntries);
-  imm groupLayouts = [&groupLayout];
-  mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
-  imm desc = new ComputePipelineDescriptor(layout: &layout, module: shader, entryPoint: "probeMain");
-  mut pipeline = device.createComputePipeline(&desc);
-  imm groupEntries = [*big, BindGroupEntry.buffer(1u32, probes), BindGroupEntry.buffer(2u32, out)];
-  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  var groupLayout = device.createBindGroupLayout(&layoutEntries);
+  let groupLayouts = [&groupLayout];
+  var layout = device.createPipelineLayout(&groupLayouts, 0u32);
+  let desc = new ComputePipelineDescriptor(layout: &layout, module: shader, entryPoint: "probeMain");
+  var pipeline = device.createComputePipeline(&desc);
+  let groupEntries = [*big, BindGroupEntry.buffer(1u32, probes), BindGroupEntry.buffer(2u32, out)];
+  var group = device.createBindGroup(&groupLayout, &groupEntries);
   if !pipeline.isValid() or !group.isValid() { return null; }
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   {
-    mut pass = encoder.beginComputePass();
+    var pass = encoder.beginComputePass();
     pass.setPipeline(&pipeline);
     pass.setBindGroup(0u32, &group);
     pass.dispatchWorkgroups(1u32);
@@ -84,7 +84,7 @@ fn probe(device &mut Device, shader &ShaderModule, big &BindGroupEntry, probes &
 
 // spirv-begin bigbuffer.spv BIGBUFFER_SPIRV
 // Written by tools/shaders/shaders.py from bigbuffer.slang (sha256 6fc1cafa928daf0fa8193fbbaba9ae04beb3e527371ef10f29322246d8136452): do not edit.
-imm BIGBUFFER_SPIRV Array[u32, 252] = [
+let BIGBUFFER_SPIRV Array[u32, 252] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000001du32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -131,55 +131,55 @@ imm BIGBUFFER_SPIRV Array[u32, 252] = [
 // spirv-end
 
 fn main() i32 {
-  imm report = (libc.getenv("GPU_COMPUTE_REPORT") as usize) != 0usize;
-  imm maxTest = (libc.getenv("GPU_BIGBUFFERS_MAX") as usize) != 0usize;
-  mut instance = Instance.create("bigbuffers");
+  let report = (libc.getenv("GPU_COMPUTE_REPORT") as usize) != 0usize;
+  let maxTest = (libc.getenv("GPU_BIGBUFFERS_MAX") as usize) != 0usize;
+  var instance = Instance.create("bigbuffers");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
   require(adapter.isValid(), "an adapter");
-  imm has = adapter.computeCapabilities();
+  let has = adapter.computeCapabilities();
 
   // ---- 1. Over the allocation limit ----
   {
-    mut device = adapter.requestComputeDevice(&new ComputeRequest(largeBuffers: true));
+    var device = adapter.requestComputeDevice(&new ComputeRequest(largeBuffers: true));
     require(device.isValid(), "a compute device");
-    imm before = failures();
-    imm tooBig = device.createBuffer(has.maxMemoryAllocationSize + 1u64, BUFFER_USAGE_STORAGE);
+    let before = failures();
+    let tooBig = device.createBuffer(has.maxMemoryAllocationSize + 1u64, BUFFER_USAGE_STORAGE);
     expectBool(tooBig.isValid(), false, "a buffer one byte over maxMemoryAllocationSize is not made");
     expectUInt(u64.from(failures() - before), 1u64, "and fails once");
   }
 
   // ---- 2. A drawing device binds at most 128 MiB ----
   {
-    mut device = adapter.requestDevice();
+    var device = adapter.requestDevice();
     require(device.isValid(), "a drawing device");
-    imm layoutEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
-    mut groupLayout = device.createBindGroupLayout(&layoutEntries);
-    mut b = device.createBuffer(268435456u64, BUFFER_USAGE_STORAGE);
+    let layoutEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+    var groupLayout = device.createBindGroupLayout(&layoutEntries);
+    var b = device.createBuffer(268435456u64, BUFFER_USAGE_STORAGE);
     require(b.isValid(), "a 256 MiB buffer");
-    imm whole = [BindGroupEntry.buffer(0u32, &b)];
-    imm before = failures();
-    imm refused = device.createBindGroup(&groupLayout, &whole);
+    let whole = [BindGroupEntry.buffer(0u32, &b)];
+    let before = failures();
+    let refused = device.createBindGroup(&groupLayout, &whole);
     expectBool(refused.isValid(), false, "binding the whole of a 256 MiB buffer is refused by a drawing device");
     expectUInt(u64.from(failures() - before), 1u64, "with one failure");
-    imm part = [BindGroupEntry.bufferRange(0u32, &b, 0u64, 134217728u64)];
-    imm made = device.createBindGroup(&groupLayout, &part);
+    let part = [BindGroupEntry.bufferRange(0u32, &b, 0u64, 134217728u64)];
+    let made = device.createBindGroup(&groupLayout, &part);
     expectBool(made.isValid(), true, "binding 128 MiB of it is made");
   }
-  imm planned = failures();
+  let planned = failures();
 
   // ---- 3. A 2.5 GiB buffer ----
-  mut device = adapter.requestComputeDevice(&new ComputeRequest(largeBuffers: true));
+  var device = adapter.requestComputeDevice(&new ComputeRequest(largeBuffers: true));
   require(device.isValid(), "a compute device");
-  imm ran = has.maxBufferSize >= SIZE and has.maxMemoryAllocationSize >= SIZE and has.maxStorageBufferRange >= SIZE
+  let ran = has.maxBufferSize >= SIZE and has.maxMemoryAllocationSize >= SIZE and has.maxStorageBufferRange >= SIZE
     and has.largestDeviceLocalHeap >= SIZE + 2u64 * GIB;
-  mut made = true;
-  mut quiet = true;
-  mut badShader = 0u32;
-  mut badCopy = 0u32;
-  mut badRange = 0u32;
-  mut big = Buffer.none();
+  var made = true;
+  var quiet = true;
+  var badShader = 0u32;
+  var badCopy = 0u32;
+  var badRange = 0u32;
+  var big = Buffer.none();
   if ran {
     big = device.createBuffer(SIZE, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
     made = big.isValid();
@@ -188,20 +188,20 @@ fn main() i32 {
     expectUInt(device.maxStorageBufferBindingSize, has.maxStorageBufferRange, "bound whole: the device allows it");
 
     // The pattern in a 64 MiB block of the CPU's memory, uploaded 40 times
-    imm block = libc.malloc(usize.from(CHUNK)) as *u32;
-    mut w = 0usize;
+    let block = libc.malloc(usize.from(CHUNK)) as *u32;
+    var w = 0usize;
     while w < usize.from(CHUNK_WORDS) {
       *(block + w) = expected(u64.from(w));
       w = w + 1usize;
     }
-    imm start = Instant.now();
-    mut at = 0u64;
-    mut chunk = 0u64;
+    let start = Instant.now();
+    var at = 0u64;
+    var chunk = 0u64;
     while at < SIZE {
-      imm n = if SIZE - at > CHUNK { CHUNK; } else { SIZE - at; };
+      let n = if SIZE - at > CHUNK { CHUNK; } else { SIZE - at; };
       device.queue.writeBuffer(&big, at, block as *u8, n);
       // The chunk's first two words: its index, and a mark
-      imm tag Array[u32, 2] = [u32.from(chunk), 0xC0FFEEu32];
+      let tag Array[u32, 2] = [u32.from(chunk), 0xC0FFEEu32];
       device.queue.writeBuffer(&big, at, &tag as *u8, 8u64);
       at = at + n;
       chunk = chunk + 1u64;
@@ -210,38 +210,38 @@ fn main() i32 {
     device.waitIdle();
     libc.free(block as *u8);
     if report {
-      imm seconds = start.elapsed().secondsF64();
+      let seconds = start.elapsed().secondsF64();
       printStr("uploaded 2.5 GiB in "); printFloat(seconds); printStr(" s ("); printFloat(2.5d * 1024d / seconds); printStr(" MiB/s)\n");
     }
     quiet = failures() == planned;
 
     // Sixty-four words, spread: the ends, either side of byte 2^31, chunk boundaries, and others
-    imm words = SIZE / 4u64;
-    mut probes = new Array[u32, 64] <- fill 0u32;
-    imm fixed Array[u64, 20] = [0u64, 1u64, 2u64, 3u64, words - 1u64, words - 2u64, 536870910u64, 536870911u64, 536870912u64, 536870913u64,
+    let words = SIZE / 4u64;
+    var probes = new Array[u32, 64] <- fill 0u32;
+    let fixed Array[u64, 20] = [0u64, 1u64, 2u64, 3u64, words - 1u64, words - 2u64, 536870910u64, 536870911u64, 536870912u64, 536870913u64,
       CHUNK_WORDS - 1u64, CHUNK_WORDS, CHUNK_WORDS + 1u64, 20u64 * CHUNK_WORDS, 20u64 * CHUNK_WORDS + 1u64, 20u64 * CHUNK_WORDS + 777u64,
       39u64 * CHUNK_WORDS, 39u64 * CHUNK_WORDS + 2u64, 32u64 * CHUNK_WORDS - 1u64, 32u64 * CHUNK_WORDS];
-    mut i = 0usize;
+    var i = 0usize;
     while i < 20usize {
       probes[i] = u32.from(fixed[i]);
       i = i + 1usize;
     }
-    mut seed = 1014u64;
+    var seed = 1014u64;
     while i < 64usize {
       seed = (seed * 1103515245u64 + 12345u64) % 2147483648u64;
       probes[i] = u32.from(seed * 311u64 % words);
       i = i + 1usize;
     }
-    mut probeBuffer = device.createBuffer(256u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
-    mut out = device.createBuffer(256u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
-    mut readback = device.createBuffer(1024u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    var probeBuffer = device.createBuffer(256u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    var out = device.createBuffer(256u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+    var readback = device.createBuffer(1024u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     device.queue.writeBuffer(&probeBuffer, 0u64, &probes as *u8, 256u64);
-    mut shader = device.createShaderModule(&BIGBUFFER_SPIRV);
+    var shader = device.createShaderModule(&BIGBUFFER_SPIRV);
 
 
     // The whole buffer bound
-    imm whole = BindGroupEntry.buffer(0u32, &big);
-    mut r = probe(&mut device, &shader, &whole, &probeBuffer, &out, &readback);
+    let whole = BindGroupEntry.buffer(0u32, &big);
+    var r = probe(&mut device, &shader, &whole, &probeBuffer, &out, &readback);
     i = 0usize;
     while i < 64usize {
       // (a pipeline or bind group that was not made answers null: all 64 wrong)
@@ -251,7 +251,7 @@ fn main() i32 {
 
     // The same words copied out by the GPU
     {
-      mut encoder = device.createCommandEncoder();
+      var encoder = device.createCommandEncoder();
       i = 0usize;
       while i < 64usize {
         encoder.copyBufferToBuffer(&big, u64.from(probes[i]) * 4u64, &readback, 512u64 + u64.from(i) * 4u64, 4u64);
@@ -270,14 +270,14 @@ fn main() i32 {
 
     // A 64 KiB range from past byte 2^31, the probes relative to its start
     {
-      imm offset = 2147483648u64 + 4096u64;
+      let offset = 2147483648u64 + 4096u64;
       i = 0usize;
       while i < 64usize {
         probes[i] = u32.from(u64.from(i) * 257u64);
         i = i + 1usize;
       }
       device.queue.writeBuffer(&probeBuffer, 0u64, &probes as *u8, 256u64);
-      imm ranged = BindGroupEntry.bufferRange(0u32, &big, offset, 65536u64);
+      let ranged = BindGroupEntry.bufferRange(0u32, &big, offset, 65536u64);
       r = probe(&mut device, &shader, &ranged, &probeBuffer, &out, &readback);
       i = 0usize;
       while i < 64usize {
@@ -297,18 +297,18 @@ fn main() i32 {
 
   // ---- Optional: the largest buffer the GPU allows ----
   if maxTest and has.largestDeviceLocalHeap >= has.maxMemoryAllocationSize + GIB {
-    imm start = Instant.now();
-    mut huge = device.createBuffer(has.maxMemoryAllocationSize, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+    let start = Instant.now();
+    var huge = device.createBuffer(has.maxMemoryAllocationSize, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
     expectBool(huge.isValid(), true, "the largest buffer the GPU allows is made");
-    imm tag Array[u32, 2] = [0xABCDEFu32, 0x123456u32];
+    let tag Array[u32, 2] = [0xABCDEFu32, 0x123456u32];
     device.queue.writeBuffer(&huge, has.maxMemoryAllocationSize - 8u64, &tag as *u8, 8u64);
-    mut readback = device.createBuffer(64u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-    mut encoder = device.createCommandEncoder();
+    var readback = device.createBuffer(64u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    var encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(&huge, has.maxMemoryAllocationSize - 8u64, &readback, 0u64, 8u64);
     device.queue.submit(encoder.finish());
     device.endFrame();
     device.waitIdle();
-    imm r = readback.mappedRange();
+    let r = readback.mappedRange();
     expectUInt(u64.from(word(r, 0usize)), 0xABCDEFu64, "its last bytes are what was written");
     expectUInt(u64.from(word(r, 1usize)), 0x123456u64, "both words");
     if report {

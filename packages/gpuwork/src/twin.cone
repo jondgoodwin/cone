@@ -51,19 +51,19 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
     fail("runTwin: the kernel has no twin, or the buffers are not one for each binding");
     return false;
   }
-  imm size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
+  let size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
   if kernel.together and size > MAX_TOGETHER_INVOCATIONS {
     fail("runTwin: a kernel with barriers has a workgroup of more than 256 invocations, a thread each");
     return false;
   }
-  mut words = List[Words].empty();
-  mut b = 0usize;
+  var words = List[Words].empty();
+  var b = 0usize;
   while b < buffers.len() {
-    imm inner = &mut buffers[b];
-    imm v = inner.viewMut();
-    imm p = if v.len > 0usize { &mut v[0usize] as *u32; } else { null as *u32; };
-    imm slice = kernel.hasDirect and kernel.shapes[b] == SHAPE_SLICE;
-    imm elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]); } else { v.len; };
+    let inner = &mut buffers[b];
+    let v = inner.viewMut();
+    let p = if v.len > 0usize { &mut v[0usize] as *u32; } else { null as *u32; };
+    let slice = kernel.hasDirect and kernel.shapes[b] == SHAPE_SLICE;
+    let elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]); } else { v.len; };
     if kernel.hasDirect and !slice and v.len * 4usize < usize.from(kernel.needs[b]) {
       fail("runTwin: a buffer is smaller than the struct its direct twin reads from it");
       return false;
@@ -71,27 +71,27 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
     words.push(new Words(p, elems, v.len, slice));
     b = b + 1usize;
   }
-  imm view = words.view();
+  let view = words.view();
   if kernel.together {
     runTogether(kernel, view, x, y, z);
     return true;
   }
-  imm wx = kernel.workgroup[0usize];
-  imm wy = kernel.workgroup[1usize];
-  imm wz = kernel.workgroup[2usize];
-  mut gz = 0u32;
+  let wx = kernel.workgroup[0usize];
+  let wy = kernel.workgroup[1usize];
+  let wz = kernel.workgroup[2usize];
+  var gz = 0u32;
   while gz < z {
-    mut gy = 0u32;
+    var gy = 0u32;
     while gy < y {
-      mut gx = 0u32;
+      var gx = 0u32;
       while gx < x {
-        mut lz = 0u32;
+        var lz = 0u32;
         while lz < wz {
-          mut ly = 0u32;
+          var ly = 0u32;
           while ly < wy {
-            mut lx = 0u32;
+            var lx = 0u32;
             while lx < wx {
-              imm inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz],
+              let inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz],
                 lx + wx * (ly + wy * lz), [x, y, z]);
               kernel.twin(inv, view);
               lx = lx + 1u32;
@@ -132,8 +132,8 @@ struct Together {
 // and the futex's atomics order every write before it, workgroup and storage
 // memory alike, before every read after it)
 fn togetherWait(ctx *u8, kind u32) {
-  imm t = ctx as *Together;
-  imm gen = (*t).generation.load();
+  let t = ctx as *Together;
+  let gen = (*t).generation.load();
   if (*t).arrived.add(1u32) == (*t).size - 1u32 {
     (*t).arrived.store(0u32);
     (*t).generation.store(gen + 1u32);
@@ -158,28 +158,28 @@ struct Lane is Sendable {
 // at that barrier, so that no thread starts the next workgroup, and writes
 // its '@workgroup' globals, while another still reads this one's
 fn runLane(lane Lane) {
-  imm t = lane.together;
-  imm k = (*t).kernel;
-  imm ctx = t as *u8;
+  let t = lane.together;
+  let k = (*t).kernel;
+  let ctx = t as *u8;
   setBarrierHook(&togetherWait, ctx);
-  imm view = mem.sliceFromParts[Words]((*t).words, (*t).count);
-  imm wx = (*k).workgroup[0usize];
-  imm wy = (*k).workgroup[1usize];
-  imm wz = (*k).workgroup[2usize];
-  imm x = (*t).groups[0usize];
-  imm y = (*t).groups[1usize];
-  imm z = (*t).groups[2usize];
-  imm l = lane.index;
-  imm lx = l % wx;
-  imm ly = (l / wx) % wy;
-  imm lz = l / (wx * wy);
-  mut gz = 0u32;
+  let view = mem.sliceFromParts[Words]((*t).words, (*t).count);
+  let wx = (*k).workgroup[0usize];
+  let wy = (*k).workgroup[1usize];
+  let wz = (*k).workgroup[2usize];
+  let x = (*t).groups[0usize];
+  let y = (*t).groups[1usize];
+  let z = (*t).groups[2usize];
+  let l = lane.index;
+  let lx = l % wx;
+  let ly = (l / wx) % wy;
+  let lz = l / (wx * wy);
+  var gz = 0u32;
   while gz < z {
-    mut gy = 0u32;
+    var gy = 0u32;
     while gy < y {
-      mut gx = 0u32;
+      var gx = 0u32;
       while gx < x {
-        imm inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz], l,
+        let inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz], l,
           [x, y, z]);
         (*k).twin(inv, view);
         togetherWait(ctx, 0u32);
@@ -200,14 +200,14 @@ fn runLane(lane Lane) {
 // its own; and nothing resets it between workgroups, as nothing does on the
 // GPU, where workgroup memory starts undefined.
 fn runTogether(kernel &Kernel, view &Array[Words], x u32, y u32, z u32) {
-  imm size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
-  mut t = new Together(Atomic[u32].of(0u32), Atomic[u32].of(0u32), size, kernel as *Kernel,
+  let size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
+  var t = new Together(Atomic[u32].of(0u32), Atomic[u32].of(0u32), size, kernel as *Kernel,
     if view.len > 0usize { &view[0usize] as *Words; } else { null as *Words; }, view.len, [x, y, z]);
-  imm pt = &mut t as *Together;
+  let pt = &mut t as *Together;
   {
     // A handle dropped joins its thread: every one, at the block's end
-    mut lanes = List[thread.Thread[void]].empty();
-    mut l = 0u32;
+    var lanes = List[thread.Thread[void]].empty();
+    var l = 0u32;
     while l < size {
       lanes.push(thread.start(new Lane(pt, l), &runLane));
       l = l + 1u32;
@@ -236,39 +236,39 @@ pub struct Parity {
 // GPU (ending the device's frame): for tests and tools.
 pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32 = 1u32,
     z u32 = 1u32) Parity {
-  mut result = new Parity(false, 0u64, 0u64, 0u32, 0u64, 0u32, 0u32);
+  var result = new Parity(false, 0u64, 0u64, 0u32, 0u64, 0u32, 0u32);
   if !kernel.hasTwin or buffers.len() != usize.from(kernel.bindings) {
     fail("checkParity: the kernel has no twin, or the buffers are not one for each binding");
     return result;
   }
   // The GPU's run: its own Works, so that no one else's completions are taken
-  mut works = Works.make();
-  mut job = Job.make(device);
-  mut slots = List[u32].empty();
-  mut b = 0usize;
+  var works = Works.make();
+  var job = Job.make(device);
+  var slots = List[u32].empty();
+  var b = 0usize;
   while b < buffers.len() {
     slots.push(job.give(upload(device, buffers[b].view())));
     b = b + 1usize;
   }
   job.dispatch(device, kernel, slots.view(), x, y, z);
-  mut backs = List[u32].empty();
+  var backs = List[u32].empty();
   b = 0usize;
   while b < buffers.len() {
     backs.push(if kernel.accessOf(u32.from(b)) == READ_WRITE { job.readback(device, u32.from(b)); } else { 0u32; });
     b = b + 1usize;
   }
-  imm ticket = works.submit(device, job, Target.Here(0u64));
-  mut done = List[Completion].empty();
+  let ticket = works.submit(device, job, Target.Here(0u64));
+  var done = List[Completion].empty();
   works.waitFor(device, ticket, &mut done);
   if done.len() != 1usize or !done[0usize].ok { return result; }
 
   // The twin's run, over copies
-  mut cpu = List[List[u32]].empty();
+  var cpu = List[List[u32]].empty();
   b = 0usize;
   while b < buffers.len() {
-    imm src = buffers[b].view();
-    mut copy = List[u32].withCapacity(src.len);
-    mut i = 0usize;
+    let src = buffers[b].view();
+    var copy = List[u32].withCapacity(src.len);
+    var i = 0usize;
     while i < src.len {
       copy.push(src[i]);
       i = i + 1usize;
@@ -283,11 +283,11 @@ pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]],
   b = 0usize;
   while b < buffers.len() {
     if kernel.accessOf(u32.from(b)) == READ_WRITE {
-      imm gpuWords = done[0usize].words(*backs[b]);
-      imm cpuWords = cpu[b].view();
-      mut i = 0usize;
+      let gpuWords = done[0usize].words(*backs[b]);
+      let cpuWords = cpu[b].view();
+      var i = 0usize;
       while i < cpuWords.len {
-        imm g = if i < gpuWords.len() { *gpuWords[i]; } else { 0u32; };
+        let g = if i < gpuWords.len() { *gpuWords[i]; } else { 0u32; };
         if g != cpuWords[i] {
           if result.mismatched == 0u64 {
             result.firstBinding = u32.from(b);

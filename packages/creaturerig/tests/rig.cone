@@ -21,11 +21,11 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 }
 
 fn handSpec() RigSpec {
-  mut spec = RigSpec.make("hand made");
-  imm spine = spec.chain("spine", KIND_SPINE, "", 0i32);
+  var spec = RigSpec.make("hand made");
+  let spine = spec.chain("spine", KIND_SPINE, "", 0i32);
   spec.bone(spine, "root", new Vec3(0., 1., 0.), 0.2);
   spec.bone(spine, "front", new Vec3(0., 0., -1.), 0.2);
-  imm leg = spec.chain("leg.R", KIND_LEG, "spine", -1i32);
+  let leg = spec.chain("leg.R", KIND_LEG, "spine", -1i32);
   spec.bone(leg, "hip", new Vec3(0.5, -0.2, 0.), 0.1);
   spec.bone(leg, "knee", new Vec3(0., -0.8, 0.), 0.08);
   spec.mirror("leg.R", "leg.L", "spine", 1i32);
@@ -33,11 +33,11 @@ fn handSpec() RigSpec {
 }
 
 fn testBuilder() {
-  imm spec = handSpec();
+  let spec = handSpec();
   expectUInt(u64.from(spec.boneCount()), 6u64, "the spec has 6 bones");
-  mut built = buildRig(&spec);
+  var built = buildRig(&spec);
   expectBool(built.ok, true, "the hand-made spec builds");
-  imm rig = built.take();
+  let rig = built.take();
   expectUInt(u64.from(rig.boneCount()), 6u64, "the rig has 6 bones");
   expectUInt(u64.from(rig.chainCount()), 3u64, "and 3 chains");
   near(rig.restPosition(1usize).z, -1., 0.00001, "the second spine bone is 1 m forward");
@@ -62,24 +62,24 @@ fn testBuilder() {
   expectUInt(u64.from(rig.childCount(1usize)), 2u64, "the front spine bone has two children, the hips");
   expectUInt(u64.from(rig.childCount(3usize)), 0u64, "the knee is a tip");
   // The rest pose through bonepose's forward kinematics agrees with the rest positions
-  mut pose = rig.restPose();
-  mut models = List[Transform3].empty();
+  var pose = rig.restPose();
+  var models = List[Transform3].empty();
   rig.skeleton.modelTransforms(&pose, &mut models);
   near(models[3usize].translation.y, 0., 0.00001, "forward kinematics puts the knee on the ground too");
 }
 
 fn testText() {
-  imm text = "# the same rig as text\nrig hand made\nchain spine spine\n  bone root 0 1 0 0.2\n  bone front 0 0 -1 0.2   # a comment\nchain leg.R leg parent=spine@-1\n  bone hip 0.5 -0.2 0 0.1\n  bone knee 0 -0.8 0 0.08\nmirror leg.R leg.L parent=spine@1\n";
-  imm parsed = parseRig(text);
+  let text = "# the same rig as text\nrig hand made\nchain spine spine\n  bone root 0 1 0 0.2\n  bone front 0 0 -1 0.2   # a comment\nchain leg.R leg parent=spine@-1\n  bone hip 0.5 -0.2 0 0.1\n  bone knee 0 -0.8 0 0.08\nmirror leg.R leg.L parent=spine@1\n";
+  let parsed = parseRig(text);
   expectBool(parsed.ok, true, "the text parses");
-  mut built = buildRig(&parsed.spec);
+  var built = buildRig(&parsed.spec);
   expectBool(built.ok, true, "and builds");
-  imm a = built.take();
-  mut builtB = buildRig(&handSpec());
-  imm b = builtB.take();
+  let a = built.take();
+  var builtB = buildRig(&handSpec());
+  let b = builtB.take();
   expectUInt(u64.from(a.boneCount()), u64.from(b.boneCount()), "same bone count as the builder's");
-  mut same = true;
-  mut i = 0usize;
+  var same = true;
+  var i = 0usize;
   while i < a.boneCount() and i < b.boneCount() {
     if a.restPosition(i).distance(b.restPosition(i)) > 0.00001 { same = false; }
     if a.skeleton.parentOf(i) != b.skeleton.parentOf(i) { same = false; }
@@ -88,15 +88,15 @@ fn testText() {
   expectBool(same, true, "every bone of the text rig is where the builder's is, with the same parent");
   expectBool(a.boneNames[3usize].view() == "leg.R/knee", true, "names carry over");
 
-  imm bad = parseRig("chain spine spine\nbone root 0 1 zero 0.2\n");
+  let bad = parseRig("chain spine spine\nbone root 0 1 zero 0.2\n");
   expectBool(bad.ok, false, "a bone with a word for a number is refused");
   expectUInt(u64.from(bad.line), 2u64, "on line 2");
-  imm bad2 = parseRig("chain spine spine\nwiggle\n");
+  let bad2 = parseRig("chain spine spine\nwiggle\n");
   expectBool(bad2.ok, false, "an unknown line is refused");
   expectUInt(u64.from(bad2.line), 2u64, "on line 2 too");
-  imm bad3 = parseRig("bone root 0 1 0 0.2\n");
+  let bad3 = parseRig("bone root 0 1 0 0.2\n");
   expectBool(bad3.ok, false, "a bone before a chain is refused");
-  imm bad4 = parseRig("chain a spine\nbone b 0 0 0 1\nmirror nothing c\n");
+  let bad4 = parseRig("chain a spine\nbone b 0 0 0 1\nmirror nothing c\n");
   expectBool(bad4.ok, false, "mirroring a chain that is not there is refused");
 
   // Numbers
@@ -110,49 +110,49 @@ fn testText() {
 }
 
 fn testRefusals() {
-  imm empty = RigSpec.make("none");
+  let empty = RigSpec.make("none");
   expectBool(buildRig(&empty).ok, false, "a spec with no chains is refused");
 
-  mut noBones = RigSpec.make("x");
+  var noBones = RigSpec.make("x");
   noBones.chain("spine", KIND_SPINE, "", 0i32);
   expectBool(buildRig(&noBones).ok, false, "a chain with no bones is refused");
 
-  mut twoRoots = RigSpec.make("x");
-  imm a = twoRoots.chain("a", KIND_SPINE, "", 0i32);
+  var twoRoots = RigSpec.make("x");
+  let a = twoRoots.chain("a", KIND_SPINE, "", 0i32);
   twoRoots.bone(a, "a0", new Vec3(0., 1., 0.), 0.1);
-  imm b = twoRoots.chain("b", KIND_SPINE, "", 0i32);
+  let b = twoRoots.chain("b", KIND_SPINE, "", 0i32);
   twoRoots.bone(b, "b0", new Vec3(0., 1., 0.), 0.1);
-  imm r2 = buildRig(&twoRoots);
+  let r2 = buildRig(&twoRoots);
   expectBool(r2.ok, false, "a second root chain is refused");
 
-  mut orphan = RigSpec.make("x");
-  imm c = orphan.chain("leg", KIND_LEG, "spine", 0i32);
+  var orphan = RigSpec.make("x");
+  let c = orphan.chain("leg", KIND_LEG, "spine", 0i32);
   orphan.bone(c, "h", new Vec3(0., 1., 0.), 0.1);
   expectBool(buildRig(&orphan).ok, false, "a parent chain that is not listed first is refused");
 
-  mut badBone = RigSpec.make("x");
-  imm s = badBone.chain("spine", KIND_SPINE, "", 0i32);
+  var badBone = RigSpec.make("x");
+  let s = badBone.chain("spine", KIND_SPINE, "", 0i32);
   badBone.bone(s, "s0", new Vec3(0., 1., 0.), 0.1);
-  imm l = badBone.chain("leg", KIND_LEG, "spine", 5i32);
+  let l = badBone.chain("leg", KIND_LEG, "spine", 5i32);
   badBone.bone(l, "h", new Vec3(0., 0., 0.), 0.1);
   expectBool(buildRig(&badBone).ok, false, "a parent bone out of range is refused");
 
-  mut dup = RigSpec.make("x");
-  imm d1 = dup.chain("spine", KIND_SPINE, "", 0i32);
+  var dup = RigSpec.make("x");
+  let d1 = dup.chain("spine", KIND_SPINE, "", 0i32);
   dup.bone(d1, "s0", new Vec3(0., 1., 0.), 0.1);
-  imm d2 = dup.chain("spine", KIND_TAIL, "spine", 0i32);
+  let d2 = dup.chain("spine", KIND_TAIL, "spine", 0i32);
   dup.bone(d2, "t0", new Vec3(0., 0., 1.), 0.1);
   expectBool(buildRig(&dup).ok, false, "two chains with one name are refused");
 }
 
 fn soleHeights(rig &Rig) f32 {
   // The largest distance of any leg's last bone from the ground
-  mut worst f32 = 0.;
-  imm legs = rig.chainsOfKind(KIND_LEG);
-  mut i = 0usize;
+  var worst f32 = 0.;
+  let legs = rig.chainsOfKind(KIND_LEG);
+  var i = 0usize;
   while i < legs.len() {
-    imm tip = rig.chains[*legs[i]].last();
-    imm y = absf(rig.restPosition(tip).y);
+    let tip = rig.chains[*legs[i]].last();
+    let y = absf(rig.restPosition(tip).y);
     if y > worst { worst = y; }
     i = i + 1usize;
   }
@@ -160,26 +160,26 @@ fn soleHeights(rig &Rig) f32 {
 }
 
 fn testPlainBodies() {
-  mut quad = buildRig(&plainBody(&BodyParams.quadruped()));
+  var quad = buildRig(&plainBody(&BodyParams.quadruped()));
   expectBool(quad.ok, true, "the plain quadruped builds");
-  imm q = quad.take();
+  let q = quad.take();
   expectUInt(u64.from(q.boneCount()), 28u64, "28 bones: 3 spine, 16 leg, 3 neck, 2 head, 4 tail");
   expectUInt(u64.from(q.chainsOfKind(KIND_LEG).len()), 4u64, "four legs");
   expectUInt(u64.from(q.chainsOfKind(KIND_NECK).len()), 1u64, "one neck");
   expectUInt(u64.from(q.chainsOfKind(KIND_WING).len()), 0u64, "and no wings");
   near(soleHeights(&q), 0., 0.0002, "every foot's tip is on the ground at rest");
   // Parents come before children
-  mut ordered = true;
-  mut i = 0usize;
+  var ordered = true;
+  var i = 0usize;
   while i < q.boneCount() {
     if q.skeleton.parentOf(i) >= i32.from(i) { ordered = false; }
     i = i + 1usize;
   }
   expectBool(ordered, true, "a parent always comes before its child");
   // Left and right legs are mirror images
-  imm legs = q.chainsOfKind(KIND_LEG);
-  mut r = 0usize;
-  mut l = 0usize;
+  let legs = q.chainsOfKind(KIND_LEG);
+  var r = 0usize;
+  var l = 0usize;
   i = 0usize;
   while i < legs.len() {
     if q.chains[*legs[i]].side == SIDE_RIGHT { r = r + 1usize; }
@@ -190,21 +190,21 @@ fn testPlainBodies() {
   expectUInt(u64.from(l), 2u64, "two on the left");
 
   // Any number of legs, and wings
-  mut sixB = buildRig(&plainBody(&BodyParams.manyLegged(3u32, 0.2, 0.5)));
+  var sixB = buildRig(&plainBody(&BodyParams.manyLegged(3u32, 0.2, 0.5)));
   expectBool(sixB.ok, true, "six legs build");
-  imm six = sixB.take();
+  let six = sixB.take();
   expectUInt(u64.from(six.chainsOfKind(KIND_LEG).len()), 6u64, "six leg chains");
   near(soleHeights(&six), 0., 0.0002, "six feet on the ground");
-  mut eightB = buildRig(&plainBody(&BodyParams.manyLegged(4u32, 0.3, 0.8)));
-  imm eight = eightB.take();
+  var eightB = buildRig(&plainBody(&BodyParams.manyLegged(4u32, 0.3, 0.8)));
+  let eight = eightB.take();
   expectUInt(u64.from(eight.chainsOfKind(KIND_LEG).len()), 8u64, "eight leg chains");
-  mut bipedB = buildRig(&plainBody(&BodyParams.biped()));
-  imm biped = bipedB.take();
+  var bipedB = buildRig(&plainBody(&BodyParams.biped()));
+  let biped = bipedB.take();
   expectUInt(u64.from(biped.chainsOfKind(KIND_LEG).len()), 2u64, "two legs");
-  mut birdB = buildRig(&plainBody(&BodyParams.winged()));
-  imm bird = birdB.take();
+  var birdB = buildRig(&plainBody(&BodyParams.winged()));
+  let bird = birdB.take();
   expectUInt(u64.from(bird.chainsOfKind(KIND_WING).len()), 2u64, "two wings on the winged body");
-  imm wings = bird.chainsOfKind(KIND_WING);
+  let wings = bird.chainsOfKind(KIND_WING);
   expectInt(i64.from(bird.chains[*wings[0usize]].side), 1i64, "the first wing is the right one");
 }
 

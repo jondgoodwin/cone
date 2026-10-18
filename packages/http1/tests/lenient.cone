@@ -19,20 +19,20 @@ import http use *;
 import http1 use *;
 
 fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant, step usize) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < text.len {
-    mut b = pool.mustTake(4096usize);
-    imm end = if i + step < text.len {i + step;} else {text.len;};
-    imm n = b.append(&text[i ..< end]);
+    var b = pool.mustTake(4096usize);
+    let end = if i + step < text.len {i + step;} else {text.len;};
+    let n = b.append(&text[i ..< end]);
     c.handleInput(b, at);
     i = i + n;
   }
 }
 
 fn drain(c &mut Connection, at Instant) String {
-  mut s = String.empty();
+  var s = String.empty();
   while true {
-    imm b = c.pollTransmit(at);
+    let b = c.pollTransmit(at);
     if b.len() == 0usize {break;}
     s.appendBytes(b.view());
   }
@@ -40,7 +40,7 @@ fn drain(c &mut Connection, at Instant) String {
 }
 
 fn putFields(out &mut String, h &Headers) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < h.len() {
     out.append(" [");
     out.append(h.nameAt(i));
@@ -54,28 +54,28 @@ fn putFields(out &mut String, h &Headers) {
 // The events a connection gives until it stops, a line each, a body's
 // bytes joined
 fn events(c &mut Connection) String {
-  mut log = String.empty();
-  mut body = String.empty();
+  var log = String.empty();
+  var body = String.empty();
   while true {
     match c.pollEvent() {
-      case mut e Request {
+      case var e Request {
         log.append("request ");
         log.append(e.head.target.view());
         putFields(&mut log, &e.head.headers);
         log.append("\n");
       }
-      case mut e Response {
+      case var e Response {
         log.append("response ");
         log.appendUInt(u64.from(e.head.status));
         putFields(&mut log, &e.head.headers);
         log.append("\n");
       }
       case is Interim {log.append("interim\n");}
-      case mut d Data {
+      case var d Data {
         body.appendBytes(d.buf.view());
         c.release(d.buf.len());
       }
-      case mut e End {
+      case var e End {
         if body.len() > 0usize {
           log.append("body ");
           log.append(body.view());
@@ -86,7 +86,7 @@ fn events(c &mut Connection) String {
         putFields(&mut log, &e.trailers);
         log.append("\n");
       }
-      case mut f Failed {
+      case var f Failed {
         log.append("failed ");
         log.append(f.error.message().view());
         log.append("\n");
@@ -104,12 +104,12 @@ fn events(c &mut Connection) String {
 
 // A client that sent a GET and read response, fed 'step' bytes at a time
 fn clientReads(pool &Pool, response &Array[u8], step usize) String {
-  imm t = Instant.fromNanos(1000000000i64);
-  mut c = Connection.client(Config.make(), *pool, t);
+  let t = Instant.fromNanos(1000000000i64);
+  var c = Connection.client(Config.make(), *pool, t);
   c.sendRequest(RequestHead.get("/x", "h"), BodyLength.empty());
   drain(&mut c, t);
   feed(&mut c, pool, response, t, step);
-  mut log = events(&mut c);
+  var log = events(&mut c);
   if c.canSendRequest() {log.append("reusable\n");}
   log;
 }
@@ -122,11 +122,11 @@ fn accepts(pool &Pool, response &Array[u8], want &Array[u8], label &Array[u8]) {
 
 // A server reading request fails with why, and is to be closed
 fn serverRefuses(pool &Pool, request &Array[u8], why &str) {
-  imm t = Instant.fromNanos(1000000000i64);
-  mut c = Connection.server(Config.make(), *pool, t);
+  let t = Instant.fromNanos(1000000000i64);
+  var c = Connection.server(Config.make(), *pool, t);
   feed(&mut c, pool, request, t, 100000usize);
-  imm log = events(&mut c);
-  mut want = String.from(why);
+  let log = events(&mut c);
+  var want = String.from(why);
   want.append("closed\n");
   expect(log.endsWith(want.view()), why);
   if not log.endsWith(want.view()) {expectStr(log.view(), want.view(), "...was");}
@@ -183,7 +183,7 @@ fn stillRefused(pool &Pool) {
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
+    let pool = Pool.make();
     bareLf(&pool);
     obsFold(&pool);
     stillRefused(&pool);

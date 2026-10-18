@@ -152,7 +152,7 @@ resolution, and `allocateTypeCheck` refuses it (`ErrorPlusAlloc`, naming the
 other value, a type with no name of its own written `T`). With a type operand it
 is a `RefTag` or `VirtRefTag` type, which type check refuses
 (`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. A match
-pattern's root, `case imm c +Rc-mut Circle`, is refused at parse by
+pattern's root, `case let c +Rc-mut Circle`, is refused at parse by
 `castPatternMark` (`ErrorPatManaged`): a pattern names only the variant, and the
 matched value supplies the managed reference, its region and permission
 (`castPatternAdoptRef`, [cast](cast.md)).
@@ -300,9 +300,9 @@ whole-value `&[]` that dispatches to a method so the checks below are the ones a
 hand-written `&mut value` gets; auto-deref a suffixed borrow through a
 reference; extract lval, permission and scope with `iexpGetLvalInfo`; infer the
 value type; check the requested permission with `permMatches`, or accept `&uni`
-of a `mut` local (`borrowLocalLendsUni`: a variable that is no global, or a part
+of a `var` local (`borrowLocalLendsUni`: a variable that is no global, or a part
 of one held by value, with no reference that is not `uni` on the way,
-`iexpPathNonUniLink`; an `imm` local, a global and a place reached through a `&mut` stay
+`iexpPathNonUniLink`; a `let` local, a global and a place reached through a `&mut` stay
 refused with `ErrorBadPerm`), which the loan walk then freezes as an exclusive loan
 (`ref_unilocal`, `ref_flow_unilocal`, `ref_typecheck_unilocal`); build the result
 `RefNode` carrying `borrowRef` and the lval's scope.
@@ -672,7 +672,7 @@ though `owner` is a `&mut Person`, as is `target.push(x)` in a `self &` method o
 a struct holding `target &mut List`. `iexpReachWrites` asks whether every
 reference the place is reached through (a borrow, a slice, a virtual reference,
 an owner whose own permission cannot write) grants write, looking at the
-references' permissions and not at the slots holding them: an `imm` field, or a
+references' permissions and not at the slots holding them: a `let` field, or a
 variable, can hold a `&mut` that is written through. `iexpLvalInfo` takes the
 permission of a dereference, an index and a virtual reference's field from
 `iexpViewpointPerm`, which is the reference's own unless the place holding it
@@ -950,7 +950,7 @@ apart, so the second can be loosened without touching the first:
   leaves an unwritten permission `unknownType` where it used to write `uni`.
   `allocateValueCheck` asks it for the retired `+` spelling, and `borrowTypeCheck`
   for `&x`, falling back to the ordinary default where the place cannot be
-  borrowed as `imm` (a `mut` variable, a `ro` reference), so reborrowing
+  borrowed as `imm` (a `var` variable, a `ro` reference), so reborrowing
   something already held stays possible. An `imm` owner may be aliased, so
   `refAdoptInfections` leaves it a copy type: `Rc[str]` copies where `Rc[T]`
   moves. The autoborrow of a receiver (`fnCallBorrowReceiver`) tries `imm`

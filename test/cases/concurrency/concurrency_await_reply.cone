@@ -44,7 +44,7 @@ struct Tally {
   pub pages Atomic[u64];
 }
 
-imm tally Tally;
+let tally Tally;
 
 fn @initpure init() {
   tally = new Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
@@ -90,16 +90,16 @@ actor Fetcher {
       say("  fetch at once", url);
       return new Buf(0u64);
     }
-    imm conn = new Conn(url);
+    let conn = new Conn(url);
     say("  fetch", url);
-    imm buf = await net.read(conn.id);
+    let buf = await net.read(conn.id);
     say("  fetched", buf.n);
     buf;
   }
 
   pub async do tick(self, id u64) Tick {
-    imm q = new Quiet(id);
-    imm t = await net.count(id);
+    let q = new Quiet(id);
+    let t = await net.count(id);
     t;
   }
 }
@@ -110,28 +110,28 @@ actor Page {
 
   pub async do load(self, u u64) u64 {
     say("load", u);
-    imm b = await fetcher.fetch(u);
+    let b = await fetcher.fetch(u);
     body = b.n;
     say("  loaded", body);
     body;
   }
 
   pub async do two(self, u u64) u64 {
-    imm keep = new Conn(99u64);
-    imm a = await fetcher.fetch(u);
-    imm b = await fetcher.fetch(u + 1u64);
+    let keep = new Conn(99u64);
+    let a = await fetcher.fetch(u);
+    let b = await fetcher.fetch(u + 1u64);
     say("  two", a.n + b.n + keep.id);
     a.n + b.n;
   }
 
   pub async do relay(self, d Driver, n u64) u64 {
-    imm x = await d.double(n);
+    let x = await d.double(n);
     say("  relayed", x);
     x + 1u64;
   }
 
   pub async do burst(self, n u64) {
-    mut i = 0u64;
+    var i = 0u64;
     while i < n {
       selfactor.held(i);
       i = i + 1u64;
@@ -139,8 +139,8 @@ actor Page {
   }
 
   pub async do held(self, i u64) {
-    imm q = new Quiet(i);
-    imm t = await fetcher.tick(i);
+    let q = new Quiet(i);
+    let t = await fetcher.tick(i);
     tally.sum.add(t.n + q.n);
     tally.resumed.add(1u64);
   }
@@ -154,25 +154,25 @@ actor Driver {
   net Net;
 
   pub async do go(self) {
-    imm a = await page.load(7u64);
+    let a = await page.load(7u64);
     say("loaded", a);
-    imm z = await fetcher.fetch(0u64);
+    let z = await fetcher.fetch(0u64);
     say("at once", z.n);
-    imm t = await page.two(1u64);
+    let t = await page.two(1u64);
     say("two", t);
-    imm r = await page.relay(selfactor, 4u64);
+    let r = await page.relay(selfactor, 4u64);
     say("relay", r);
-    imm s = await selfactor.double(21u64);
+    let s = await selfactor.double(21u64);
     say("self", s);
-    mut total = 0u64;
-    mut i = 0u64;
+    var total = 0u64;
+    var i = 0u64;
     while i < 3u64 {
       total = total + await net.size(i);
       i = i + 1u64;
     }
     say("total", total);
     page.burst(20u64);
-    mut j = 0u64;
+    var j = 0u64;
     while j < 5u64 {
       fetcher.tick(100u64 + j);
       j = j + 1u64;
@@ -185,10 +185,10 @@ actor Driver {
 fn main() {
   initAll();
   {
-    imm net = new Net();
-    imm fetcher = new Fetcher(net);
-    imm page = new Page(fetcher, 0u64);
-    imm d = new Driver(page, fetcher, net);
+    let net = new Net();
+    let fetcher = new Fetcher(net);
+    let page = new Page(fetcher, 0u64);
+    let d = new Driver(page, fetcher, net);
     d.go();
   }
   finalAll();

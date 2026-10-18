@@ -38,15 +38,15 @@ fn nextRandom(state &mut u32) f32 {
 // 'count' targets over the mesh: each moves the vertices where 'every' divides
 // (v + t) (every = 1: all of them), by small random amounts
 fn makeTargets(m &Mesh, count usize, every usize) MorphTargets {
-  imm n = m.positions.len();
-  mut targets = MorphTargets.empty(n);
-  imm zero = new Vec3(0., 0., 0.);
-  mut state = 11u32;
-  mut t = 0usize;
+  let n = m.positions.len();
+  var targets = MorphTargets.empty(n);
+  let zero = new Vec3(0., 0., 0.);
+  var state = 11u32;
+  var t = 0usize;
   while t < count {
-    mut p = List[Vec3].empty();
-    mut nm = List[Vec3].empty();
-    mut v = 0usize;
+    var p = List[Vec3].empty();
+    var nm = List[Vec3].empty();
+    var v = 0usize;
     while v < n {
       if (v + t) % every == 0usize {
         p.push(new Vec3(nextRandom(&mut state) - 0.5, nextRandom(&mut state) - 0.5, nextRandom(&mut state) - 0.5) * 0.05);
@@ -65,15 +65,15 @@ fn makeTargets(m &Mesh, count usize, every usize) MorphTargets {
 
 // Weights for frame 'f': eight of the targets not zero, moving
 fn weightsFor(count usize, f u32, copy usize) List[f32] {
-  mut w = List[f32].empty();
-  mut t = 0usize;
+  var w = List[f32].empty();
+  var t = 0usize;
   while t < count {
     w.push(0.);
     t = t + 1usize;
   }
-  mut k = 0usize;
+  var k = 0usize;
   while k < 8usize {
-    imm target = (k * 8usize + 3usize + copy) % count;
+    let target = (k * 8usize + 3usize + copy) % count;
     w.set(target, 0.5 + 0.5 * sin(f32.from(f) * 0.07 * f32.from(k + 1usize) + f32.from(copy)));
     k = k + 1usize;
   }
@@ -82,16 +82,16 @@ fn weightsFor(count usize, f u32, copy usize) List[f32] {
 
 fn timeCopies(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, copies &List[MorphHandle],
     targetCount usize, queries &QuerySet, resolved &Buffer, readback &Buffer) f64 {
-  mut gpuTime = 0d;
-  mut counted = 0u32;
-  mut f = 0u32;
+  var gpuTime = 0d;
+  var counted = 0u32;
+  var f = 0u32;
   while f < FRAMES + WARM {
-    mut c = 0usize;
+    var c = 0usize;
     while c < copies.len() {
       morpher.setWeights(renderer, *copies[c], &weightsFor(targetCount, f, c));
       c = c + 1usize;
     }
-    mut encoder = device.createCommandEncoder();
+    var encoder = device.createCommandEncoder();
     encoder.writeTimestamp(queries, 0u32);
     morpher.update(device, &mut encoder, renderer);
     encoder.writeTimestamp(queries, 1u32);
@@ -101,7 +101,7 @@ fn timeCopies(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, 
     device.endFrame();
     device.waitIdle();
     if f >= WARM {
-      imm ticks = readback.mappedRange() as *u64;
+      let ticks = readback.mappedRange() as *u64;
       gpuTime = gpuTime + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
       counted = counted + 1u32;
     }
@@ -112,11 +112,11 @@ fn timeCopies(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, 
 
 fn runCase(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, m &Mesh, base MeshHandle, label &str,
     targetCount usize, every usize, copyCount usize, queries &QuerySet, resolved &Buffer, readback &Buffer) {
-  imm targets = makeTargets(m, targetCount, every);
-  imm set = morpher.addSet(device, &targets, m);
-  mut copies = List[MorphHandle].empty();
-  mut c = 0usize;
-  mut setup = device.createCommandEncoder();
+  let targets = makeTargets(m, targetCount, every);
+  let set = morpher.addSet(device, &targets, m);
+  var copies = List[MorphHandle].empty();
+  var c = 0usize;
+  var setup = device.createCommandEncoder();
   while c < copyCount {
     copies.push(morpher.addCopy(device, &mut setup, renderer, base, set, false));
     c = c + 1usize;
@@ -124,7 +124,7 @@ fn runCase(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, m &
   device.queue.submit(setup.finish());
   device.endFrame();
   device.waitIdle();
-  imm ms = timeCopies(device, renderer, morpher, &copies, targetCount, queries, resolved, readback);
+  let ms = timeCopies(device, renderer, morpher, &copies, targetCount, queries, resolved, readback);
   printStr("  "); printStr(label); printStr(": "); print <- targets.entryCount(); printStr(" entries, ");
   print <- copyCount; printStr(" cop"); printStr(if copyCount == 1usize { "y"; } else { "ies"; }); printStr(": ");
   printFloat(ms); printStr(" ms");
@@ -139,31 +139,31 @@ fn runCase(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, m &
 }
 
 fn main() i32 {
-  mut instance = Instance.create("morph bench");
+  var instance = Instance.create("morph bench");
   if !instance.isValid() { printStr("No Vulkan 1.3 instance\n"); return 1i32; }
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   if !adapter.isValid() { printStr("No GPU\n"); return 1i32; }
   printStr("Adapter: "); printStr(adapter.name.view()); printStr("\n");
-  mut device = adapter.requestDevice();
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
-  mut morpher = Morpher.create(&mut device);
-  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
-  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
-  mut readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var device = adapter.requestDevice();
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var morpher = Morpher.create(&mut device);
+  var queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  var resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  var readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   if !renderer.isValid() or !morpher.isValid() or !queries.isValid() {
     printStr("The renderer, the morpher or the timestamps could not be made\n");
     return 1i32;
   }
-  imm m = Mesh.sphere(1., 100);
+  let m = Mesh.sphere(1., 100);
   printStr("Mesh: "); print <- m.positions.len(); printStr(" vertices, "); print <- m.indices.len() / 3usize; printStr(" triangles; ");
   printStr("8 targets active, the weights changing every frame; 'Morpher.update' alone, GPU time\n");
-  imm base = renderer.addMesh(&mut device, &m);
+  let base = renderer.addMesh(&mut device, &m);
   runCase(&mut device, &mut renderer, &mut morpher, &m, base, "64 targets, sparse (1 in 7)", 64usize, 7usize, 1usize, &queries, &resolved, &readback);
   runCase(&mut device, &mut renderer, &mut morpher, &m, base, "64 targets, dense", 64usize, 1usize, 1usize, &queries, &resolved, &readback);
   runCase(&mut device, &mut renderer, &mut morpher, &m, base, " 8 targets, sparse (1 in 7)", 8usize, 7usize, 1usize, &queries, &resolved, &readback);

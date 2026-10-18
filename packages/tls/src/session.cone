@@ -77,23 +77,23 @@ pub struct Session is Move {
   err TlsError;
 
   fn blank(st Shared, server bool) Session {
-    imm s = &*st;
-    mut pins = List[u8].empty();
-    mut k = 0usize;
+    let s = &*st;
+    var pins = List[u8].empty();
+    var k = 0usize;
     while k < s.pins.len() {
       pins.push(*s.pins[k]);
       k = k + 1usize;
     }
-    imm kind = s.kind;
-    imm resume = s.resume;
-    imm lane = s.lane;
-    imm offline = s.offline;
-    imm ctx = s.ctx;
+    let kind = s.kind;
+    let resume = s.resume;
+    let lane = s.lane;
+    let offline = s.offline;
+    let ctx = s.ctx;
     ERR_clear_error();
-    imm ssl = SSL_new(ctx);
+    let ssl = SSL_new(ctx);
     if ssl as usize == 0usize {panic("tls: SSL_new failed: out of memory");}
-    imm r = BIO_new(BIO_s_mem());
-    imm w = BIO_new(BIO_s_mem());
+    let r = BIO_new(BIO_s_mem());
+    let w = BIO_new(BIO_s_mem());
     SSL_set_bio(ssl, r, w);
     new Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, state: st, isServer: server, kind: kind, pins: pins,
       resume: resume, lane: lane, offline: offline, host: String.empty(), phase: pHandshake,
@@ -104,17 +104,17 @@ pub struct Session is Move {
   }
 
   fn client(st Shared, serverName &str) Session {
-    mut s = Session.blank(st, false);
+    var s = Session.blank(st, false);
     s.host = String.from(serverName);
     SSL_set_connect_state(s.ssl);
-    mut name = String.from(serverName);
-    imm cname = name.cstr();
+    var name = String.from(serverName);
+    let cname = name.cstr();
     // SNI carries a DNS name, never an address (RFC 6066)
     if not isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i64, cname.ptr());}
     // The Roots verifier checks the name in OpenSSL; the others, themselves
     if s.kind == VerifyKind.Roots {SSL_set1_host(s.ssl, cname);}
     if s.resume {
-      imm cached = (&mut *s.state).takeCached(serverName);
+      let cached = (&mut *s.state).takeCached(serverName);
       if cached as usize != 0usize {
         SSL_set_session(s.ssl, cached);
         SSL_SESSION_free(cached);
@@ -128,7 +128,7 @@ pub struct Session is Move {
   }
 
   fn server(st Shared) Session {
-    mut s = Session.blank(st, true);
+    var s = Session.blank(st, true);
     SSL_set_accept_state(s.ssl);
     s;
   }
@@ -141,7 +141,7 @@ pub struct Session is Move {
   pub fn feed(self &mut, cipher &Array[u8]) usize {
     if cipher.len == 0usize or phase == pFailed {return cipher.len;}
     self.begin();
-    mut put = 0usize;
+    var put = 0usize;
     BIO_write_ex(rbio, &cipher[0usize] as *u8, cipher.len, &mut put);
     mayRead = true;
     self.advance();
@@ -165,7 +165,7 @@ pub struct Session is Move {
   // Copy bytes to go out into out: how many
   pub fn transmit(self &mut, out &mut Array[u8]) usize {
     if out.len == 0usize {return 0usize;}
-    mut got = 0usize;
+    var got = 0usize;
     if BIO_read_ex(wbio, &mut out[0usize] as *u8, out.len, &mut got) != 1i32 {return 0usize;}
     self.begin();
     got;
@@ -183,7 +183,7 @@ pub struct Session is Move {
   pub fn write(self &mut, plain &Array[u8]) usize {
     if phase != pOpen or sentClose or plain.len == 0usize {return 0usize;}
     ERR_clear_error();
-    mut put = 0usize;
+    var put = 0usize;
     if SSL_write_ex(ssl, &plain[0usize] as *u8, plain.len, &mut put) == 1i32 {return put;}
     self.failFromSsl(SSL_get_error(ssl, 0i32));
     0usize;
@@ -195,7 +195,7 @@ pub struct Session is Move {
   // Plaintext that came, into out: how many bytes; 0 when none is ready.
   // TLS 1.3's tickets, which come after the handshake, are taken in here
   pub fn read(self &mut, out &mut Array[u8]) usize {
-    imm got = self.readSome(out);
+    let got = self.readSome(out);
     self.harvest();
     got;
   }
@@ -203,9 +203,9 @@ pub struct Session is Move {
   fn readSome(self &mut, out &mut Array[u8]) usize {
     if phase != pOpen or gotClose or out.len == 0usize {return 0usize;}
     ERR_clear_error();
-    mut got = 0usize;
+    var got = 0usize;
     if SSL_read_ex(ssl, &mut out[0usize] as *u8, out.len, &mut got) == 1i32 {return got;}
-    imm e = SSL_get_error(ssl, 0i32);
+    let e = SSL_get_error(ssl, 0i32);
     if e == sslErrorWantRead or e == sslErrorWantWrite {
       mayRead = false;
       if eof and not gotClose and not endTold {
@@ -282,12 +282,12 @@ pub struct Session is Move {
 
   // What it negotiated
   pub fn info(self &) TlsInfo {
-    mut ap = null as *u8;
-    mut alen = 0u32;
+    var ap = null as *u8;
+    var alen = 0u32;
     SSL_get0_alpn_selected(ssl, &mut ap, &mut alen);
-    mut alpn = String.empty();
+    var alpn = String.empty();
     if alen > 0u32 {alpn.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
-    imm v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13;} else {TlsVersion.Tls12;};
+    let v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13;} else {TlsVersion.Tls12;};
     new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
       cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
       resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
@@ -302,7 +302,7 @@ pub struct Session is Move {
   fn advance(self &mut) {
     while phase == pHandshake {
       ERR_clear_error();
-      imm r = SSL_do_handshake(ssl);
+      let r = SSL_do_handshake(ssl);
       if r == 1i32 {
         phase = pOpen;
         wasOpen = true;
@@ -314,7 +314,7 @@ pub struct Session is Move {
         if SSL_session_reused(ssl) == 1i32 {nResumed.add(1u64);}
         return;
       }
-      imm e = SSL_get_error(ssl, r);
+      let e = SSL_get_error(ssl, r);
       if e == sslErrorWantRead or e == sslErrorWantWrite {return;}
       if e == sslErrorWantRetryVerify {
         if kind == VerifyKind.Pinned {
@@ -333,15 +333,15 @@ pub struct Session is Move {
 
   // Pinning: the end certificate's public key against the pins, now
   fn checkPins(self &mut) {
-    imm chain = SSL_get_peer_cert_chain(ssl);
-    mut hash = new Array[u8, 32] <- fill 0u8;
-    mut found = false;
+    let chain = SSL_get_peer_cert_chain(ssl);
+    var hash = new Array[u8, 32] <- fill 0u8;
+    var found = false;
     if chain as usize != 0usize and OPENSSL_sk_num(chain) > 0i32 {
       if spkiSha256(OPENSSL_sk_value(chain, 0i32), &mut hash) {
-        mut k = 0usize;
+        var k = 0usize;
         while k + 32usize <= pins.len() {
-          mut same = true;
-          mut j = 0usize;
+          var same = true;
+          var j = 0usize;
           while j < 32usize {
             if *pins[k + j] != hash[j] {same = false;}
             j = j + 1usize;
@@ -372,8 +372,8 @@ pub struct Session is Move {
 
   // OpenSSL said e: why, as a TlsError
   fn failFromSsl(self &mut, e i32) {
-    mut text = String.empty();
-    imm first = sslErrors(&mut text);
+    var text = String.empty();
+    let first = sslErrors(&mut text);
     if ownError {
       self.fail(err.kind, err.code, "");
       return;
@@ -383,7 +383,7 @@ pub struct Session is Move {
       return;
     }
     if e != sslErrorSsl {
-      mut d = String.from("OpenSSL said ");
+      var d = String.from("OpenSSL said ");
       d.appendInt(i64.from(e));
       if text.len() > 0usize {
         d.append(": ");
@@ -392,12 +392,12 @@ pub struct Session is Move {
       self.fail(TlsErrorKind.Backend, u32.from(e), d.view());
       return;
     }
-    imm reason = errReason(first);
+    let reason = errReason(first);
     if errLib(first) == errLibSsl and (first & errSystemFlag) == 0u32 {
       if reason == reasonCertificateVerifyFailed {
         // OpenSSL's own check, against the Roots verifier's bundle
-        imm vr = SSL_get_verify_result(ssl);
-        mut d = String.from(cText(X509_verify_cert_error_string(i64.from(vr))));
+        let vr = SSL_get_verify_result(ssl);
+        var d = String.from(cText(X509_verify_cert_error_string(i64.from(vr))));
         d.append(" (OpenSSL's verify result ");
         d.appendInt(i64.from(vr));
         d.append(")");
@@ -405,13 +405,13 @@ pub struct Session is Move {
         return;
       }
       if reason >= reasonAlertOffset and reason < reasonAlertOffset + 256u32 {
-        imm alert = reason - reasonAlertOffset;
-        mut d = String.from("the peer sent the fatal alert ");
+        let alert = reason - reasonAlertOffset;
+        var d = String.from("the peer sent the fatal alert ");
         d.append(cText(SSL_alert_desc_string_long(i32.from(alert))));
         d.append(" (");
         d.appendUInt(u64.from(alert));
         d.append(")");
-        mut k TlsErrorKind = TlsErrorKind.Alert;
+        var k TlsErrorKind = TlsErrorKind.Alert;
         if alert == 70u32 {k = TlsErrorKind.ProtocolVersion;}
         elif alert == 120u32 {k = TlsErrorKind.NoAlpnMatch;}
         self.fail(k, alert, d.view());
@@ -441,11 +441,11 @@ pub struct Session is Move {
   // chain the server sent and the name asked for, in a buffer from pool.
   // Its completion goes to verifyDone
   pub fn verifyOp(self &mut, pool &Pool) Op {
-    mut job = List[u8].empty();
+    var job = List[u8].empty();
     self.verifyJob(&mut job);
-    mut b = IoBuf.empty();
+    var b = IoBuf.empty();
     match pool.take(job.len()) {
-      case mut s Some {b <=> s;}
+      case var s Some {b <=> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() < job.len() {
@@ -465,7 +465,7 @@ pub struct Session is Move {
     } elif c.isDone() {
       self.verified(0x80004005u32);
     } else {
-      imm code = c.code;
+      let code = c.code;
       ownError = true;
       err = osError(code, "the OS's verifier could not be run");
       self.verified(if code == 0u32 {0x80004005u32;} else {code;});
@@ -476,9 +476,9 @@ pub struct Session is Move {
   // network. For a program with no loop
   pub fn verifyNow(self &mut) {
     if not verifyWanted {return;}
-    mut job = List[u8].empty();
+    var job = List[u8].empty();
     self.verifyJob(&mut job);
-    imm code = osVerify(job.view(), offline);
+    let code = osVerify(job.view(), offline);
     verifyTime = Instant.now() - verifyAt;
     self.verified(code);
   }
@@ -491,24 +491,24 @@ pub struct Session is Move {
     nVerifications.add(1u64);
     putU32(job, u32.from(host.len()));
     appendBytes(job, host.view());
-    imm chain = SSL_get_peer_cert_chain(ssl);
-    imm n = if chain as usize == 0usize {0i32;} else {OPENSSL_sk_num(chain);};
+    let chain = SSL_get_peer_cert_chain(ssl);
+    let n = if chain as usize == 0usize {0i32;} else {OPENSSL_sk_num(chain);};
     putU32(job, u32.from(n));
-    mut k = 0i32;
+    var k = 0i32;
     while k < n {
-      imm x = OPENSSL_sk_value(chain, k);
-      imm len = i2d_X509(x, null);
+      let x = OPENSSL_sk_value(chain, k);
+      let len = i2d_X509(x, null);
       if len <= 0i32 {
         putU32(job, 0u32);
       } else {
         putU32(job, u32.from(len));
-        imm at = job.len();
-        mut j = 0i32;
+        let at = job.len();
+        var j = 0i32;
         while j < len {
           job.push(0u8);
           j = j + 1i32;
         }
-        mut p = &mut (job.viewMut())[at] as *u8;
+        var p = &mut (job.viewMut())[at] as *u8;
         i2d_X509(x, &mut p as **u8);
       }
       k = k + 1i32;
@@ -538,10 +538,10 @@ pub struct Session is Move {
   // here, one statement for each, and no call into OpenSSL is under way
   fn harvest(self &mut) {
     if arrivals as usize == 0usize {return;}
-    imm n = *(arrivals as *usize);
-    mut k = 0usize;
+    let n = *(arrivals as *usize);
+    var k = 0usize;
     while k < n {
-      imm sess = (*arrivalAt(arrivals, k)) as *u8;
+      let sess = (*arrivalAt(arrivals, k)) as *u8;
       (&mut *state).putCached(host.view(), sess);
       k = k + 1usize;
     }
@@ -558,7 +558,7 @@ pub struct Session is Move {
       // A TLS 1.2 session goes back to the cache: the same one, which stays
       // (putCached keeps one copy), or one the server renewed by a new ticket
       if SSL_version(ssl) != tls13Version {
-        imm sess = SSL_get1_session(ssl);
+        let sess = SSL_get1_session(ssl);
         if sess as usize != 0usize {
           if SSL_SESSION_is_resumable(sess) == 1i32 {
             (&mut *state).putCached(host.view(), sess);
@@ -582,9 +582,9 @@ pub struct Session is Move {
 // DNS name
 fn isAddress(name &str) bool {
   if name.isEmpty() {return false;}
-  mut k = 0usize;
+  var k = 0usize;
   while k < name.len() {
-    imm c = name[k];
+    let c = name[k];
     if c == ':' {return true;}
     if not ((c >= '0' and c <= '9') or c == '.') {return false;}
     k = k + 1usize;
@@ -604,15 +604,15 @@ fn certKindOfVerifyResult(vr i32) TlsErrorKind {
 
 // The SHA-256 of a certificate's public key, its DER SubjectPublicKeyInfo
 fn spkiSha256(x *u8, out &mut Array[u8, 32]) bool {
-  imm pk = X509_get_X509_PUBKEY(x);
+  let pk = X509_get_X509_PUBKEY(x);
   if pk as usize == 0usize {return false;}
-  imm len = i2d_X509_PUBKEY(pk, null);
+  let len = i2d_X509_PUBKEY(pk, null);
   if len <= 0i32 {return false;}
-  imm der = libc.malloc(usize.from(len));
-  mut p = der;
+  let der = libc.malloc(usize.from(len));
+  var p = der;
   i2d_X509_PUBKEY(pk, &mut p as **u8);
-  mut size = 32u32;
-  imm ok = EVP_Digest(der, usize.from(len), out as *u8, &mut size as *u32, EVP_sha256(), null) == 1i32;
+  var size = 32u32;
+  let ok = EVP_Digest(der, usize.from(len), out as *u8, &mut size as *u32, EVP_sha256(), null) == 1i32;
   libc.free(der);
   ok;
 }
@@ -625,7 +625,7 @@ fn putU32(l &mut List[u8], v u32) {
 }
 
 fn appendBytes(l &mut List[u8], b &Array[u8]) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < b.len {
     l.push(b[k]);
     k = k + 1usize;

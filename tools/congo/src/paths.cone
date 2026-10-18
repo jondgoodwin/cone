@@ -14,18 +14,18 @@ fn native(p &Path) String { backslashed(p.view()); }
 
 // Text with every '/' written '\'
 fn backslashed(text &str) String {
-  mut s = String.from(text);
+  var s = String.from(text);
   s.replaceByte('/', '\\');
   s;
 }
 
 // Paths one after another, 'native', with sep between each two
 fn nativeList(list &List[Path], sep &str) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < list.len() {
     if i > 0usize { out <- sep; }
-    imm place = native(list[i]);
+    let place = native(list[i]);
     out <- place.view();
     i = i + 1usize;
   }
@@ -35,25 +35,25 @@ fn nativeList(list &List[Path], sep &str) String {
 // What a failure of the fs package says, its paths written as 'native' writes
 // them
 fn fsMessage(e &fs.FsError) String {
-  imm place = native(&e.path);
-  imm other = native(&e.other);
-  imm same = new fs.FsError(e.op.copy(), Path.from(place.view()), Path.from(other.view()), e.code);
+  let place = native(&e.path);
+  let other = native(&e.other);
+  let same = new fs.FsError(e.op.copy(), Path.from(place.view()), Path.from(other.view()), e.code);
   same.message();
 }
 
 // What a failure of the process package says, its working folder written as
 // 'native' writes a path
 fn processMessage(e &process.ProcessError) String {
-  imm place = native(&e.dir);
-  imm same = new process.ProcessError(e.op.copy(), e.program.copy(), Path.from(place.view()), e.code);
+  let place = native(&e.dir);
+  let same = new process.ProcessError(e.op.copy(), e.program.copy(), Path.from(place.view()), e.code);
   same.message();
 }
 
 // The absolute path, '..' read off (Path.resolve() without following links)
 fn resolved(p &Path) Path {
   match fs.absolute(p) {
-    case mut ok Ok {
-      mut abs Path = "";
+    case var ok Ok {
+      var abs Path = "";
       abs <=> ok;
       abs;
     }
@@ -63,7 +63,7 @@ fn resolved(p &Path) Path {
 
 // Two paths the same, as Windows compares them: ASCII case ignored
 fn samePath(a &Path, b &Path) bool {
-  imm s = String.from(a.view());
+  let s = String.from(a.view());
   s.equalsIgnoreAsciiCase(b.view());
 }
 
@@ -71,23 +71,23 @@ fn samePath(a &Path, b &Path) bool {
 // below it (Path.relative_to, case ignored as Windows ignores it), else as it is
 fn shown(p &Path) String {
   if not p.isAbsolute() { return native(p); }
-  mut here Path = "";
+  var here Path = "";
   match fs.currentDir() {
-    case mut ok Ok { here <=> ok; }
+    case var ok Ok { here <=> ok; }
     case is Error { return native(p); }
   }
-  imm hereParts = here.parts();
-  imm parts = p.parts();
+  let hereParts = here.parts();
+  let parts = p.parts();
   if hereParts.len() > parts.len() { return native(p); }
-  mut i = 0usize;
+  var i = 0usize;
   while i < hereParts.len() {
-    imm a = backslashed(hereParts[i].view());
-    imm b = backslashed(parts[i].view());
+    let a = backslashed(hereParts[i].view());
+    let b = backslashed(parts[i].view());
     if not a.equalsIgnoreAsciiCase(b.view()) { return native(p); }
     i = i + 1usize;
   }
   if i == parts.len() { return String.from("."); }
-  mut out = String.empty();
+  var out = String.empty();
   while i < parts.len() {
     if not out.isEmpty() { out.appendByte('\\'); }
     out <- parts[i].view();
@@ -102,8 +102,8 @@ fn envGet(name &str) Option[String] { env.get(name); }
 // A variable's value, or otherwise when it is not set
 fn envOr(name &str, otherwise &str) String {
   match env.get(name) {
-    case mut v Some {
-      mut s = String.empty();
+    case var v Some {
+      var s = String.empty();
       s <=> v;
       s;
     }
@@ -117,9 +117,9 @@ fn envHas(name &str) bool { env.get(name) is Some; }
 // USERPROFILE, else HOMEDRIVE and HOMEPATH
 fn expandUser(p &str) String {
   if p.len() == 0usize or p[0usize] != '~' { return String.from(p); }
-  mut i = 1usize;
+  var i = 1usize;
   while i < p.len() and not path.isSeparator(p[i]) { i = i + 1usize; }
-  mut home Path = "";
+  var home Path = "";
   if envHas("USERPROFILE") {
     home = Path.fromString(envOr("USERPROFILE", ""));
   }
@@ -127,22 +127,22 @@ fn expandUser(p &str) String {
     return String.from(p);
   }
   else {
-    imm drive = Path.fromString(envOr("HOMEDRIVE", ""));
-    imm hp = envOr("HOMEPATH", "");
+    let drive = Path.fromString(envOr("HOMEDRIVE", ""));
+    let hp = envOr("HOMEPATH", "");
     home = drive.join(hp.view());
   }
   if i != 1usize {
-    imm target = &p[1usize..<i];
-    imm hasUser = envHas("USERNAME");
-    imm current = envOr("USERNAME", "");
+    let target = &p[1usize..<i];
+    let hasUser = envHas("USERNAME");
+    let current = envOr("USERNAME", "");
     if not (hasUser and current.view() == target) {
-      imm base = String.from(home.name());
+      let base = String.from(home.name());
       if not (hasUser and current.view() == base.view()) { return String.from(p); }
-      imm up = home.parent();
+      let up = home.parent();
       home = up.join(target);
     }
   }
-  mut out = String.from(home.view());
+  var out = String.from(home.view());
   out.append(&p[i..]);
   out;
 }
@@ -151,7 +151,7 @@ fn isVarByte(b u8) bool { isNameByte(b) or b == '-'; }
 
 // The index of byte b in p at or after from, or the length of p
 fn findByte(p &str, b u8, from usize) usize {
-  mut i = from;
+  var i = from;
   while i < p.len() and p[i] != b { i = i + 1usize; }
   i;
 }
@@ -160,12 +160,12 @@ fn findByte(p &str, b u8, from usize) usize {
 // the variable's value, an unknown one left as written; '%%' and '$$' are one
 // '%' and one '$'; nothing inside single quotes is expanded
 fn expandVars(p &str) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < p.len() {
-    imm c = p[i];
+    let c = p[i];
     if c == '\'' {
-      imm q = findByte(p, '\'', i + 1usize);
+      let q = findByte(p, '\'', i + 1usize);
       if q == p.len() {
         out.append(&p[i..]);
         i = p.len();
@@ -181,15 +181,15 @@ fn expandVars(p &str) String {
         i = i + 2usize;
       }
       else {
-        imm q = findByte(p, '%', i + 1usize);
+        let q = findByte(p, '%', i + 1usize);
         if q == p.len() {
           out.append(&p[i..]);
           i = p.len();
         }
         else {
-          imm name = &p[i + 1usize..<q];
+          let name = &p[i + 1usize..<q];
           match envGet(name) {
-            case imm v Some { out <- v.view(); }
+            case let v Some { out <- v.view(); }
             case is None { out <- "%"; out.append(name); out <- "%"; }
           }
           i = q + 1usize;
@@ -202,26 +202,26 @@ fn expandVars(p &str) String {
         i = i + 2usize;
       }
       elif i + 1usize < p.len() and p[i + 1usize] == '{' {
-        imm q = findByte(p, '}', i + 2usize);
+        let q = findByte(p, '}', i + 2usize);
         if q == p.len() {
           out.append(&p[i..]);
           i = p.len();
         }
         else {
-          imm name = &p[i + 2usize..<q];
+          let name = &p[i + 2usize..<q];
           match envGet(name) {
-            case imm v Some { out <- v.view(); }
+            case let v Some { out <- v.view(); }
             case is None { out <- "${"; out.append(name); out <- "}"; }
           }
           i = q + 1usize;
         }
       }
       else {
-        mut q = i + 1usize;
+        var q = i + 1usize;
         while q < p.len() and isVarByte(p[q]) { q = q + 1usize; }
-        imm name = &p[i + 1usize..<q];
+        let name = &p[i + 1usize..<q];
         match envGet(name) {
-          case imm v Some { out <- v.view(); }
+          case let v Some { out <- v.view(); }
           case is None { out <- "$"; out.append(name); }
         }
         i = q;
@@ -243,30 +243,30 @@ fn expandVars(p &str) String {
 // when none.
 fn which(cmd &str, pathList &str) Path {
   if path.isSeparator(cmd[0usize]) or findByte(cmd, '\\', 0usize) < cmd.len() or findByte(cmd, '/', 0usize) < cmd.len() {
-    imm given = Path.from(cmd);
-    imm folder = given.parent();
+    let given = Path.from(cmd);
+    let folder = given.parent();
     return whichIn(cmd, folder.view(), given.name());
   }
   if pathList.len() == 0usize { return Path.from(""); }
-  mut folders = String.empty();
+  var folders = String.empty();
   if not envHas("NoDefaultCurrentDirectoryInExePath") { folders <- ".;"; }
   folders.append(pathList);
   whichIn(cmd, folders.view(), cmd);
 }
 
 fn whichIn(cmd &str, folderList &str, file &str) Path {
-  imm pathext = envOr("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC");
-  imm exts = pathext.split(';');
-  mut files = List[String].empty();
-  mut direct = false;
-  mut i = 0usize;
+  let pathext = envOr("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC");
+  let exts = pathext.split(';');
+  var files = List[String].empty();
+  var direct = false;
+  var i = 0usize;
   while i < exts.len() {
-    mut ext = exts[i].copy();
+    var ext = exts[i].copy();
     while ext.endsWith(".") { ext = ext.sub(0usize, ext.len() - 1usize); }
     if not ext.isEmpty() {
-      mut upper = String.from(file);
+      var upper = String.from(file);
       upper.upperAscii();
-      mut e = ext.copy();
+      var e = ext.copy();
       e.upperAscii();
       if upper.endsWith(e.view()) { direct = true; }
       files.push(cat(file, ext.view()));
@@ -274,7 +274,7 @@ fn whichIn(cmd &str, folderList &str, file &str) Path {
     i = i + 1usize;
   }
   if direct {
-    mut all = List[String].empty();
+    var all = List[String].empty();
     all.push(String.from(file));
     i = 0usize;
     while i < files.len() {
@@ -283,26 +283,26 @@ fn whichIn(cmd &str, folderList &str, file &str) Path {
     }
     files = all;
   }
-  imm folders = splitText(folderList, ';');
-  mut seen = List[String].empty();
+  let folders = splitText(folderList, ';');
+  var seen = List[String].empty();
   i = 0usize;
   while i < folders.len() {
-    imm dir = folders[i].view();
+    let dir = folders[i].view();
     // os.path.normcase: '/' as '\', lower case
-    mut norm = backslashed(dir);
+    var norm = backslashed(dir);
     norm.lowerAscii();
-    mut before = false;
-    mut s = 0usize;
+    var before = false;
+    var s = 0usize;
     while s < seen.len() {
       if seen[s].equals(norm.view()) { before = true; }
       s = s + 1usize;
     }
     if not before {
       seen.push(norm);
-      imm folder = Path.from(dir);
-      mut f = 0usize;
+      let folder = Path.from(dir);
+      var f = 0usize;
       while f < files.len() {
-        imm candidate = folder.join(files[f].view());
+        let candidate = folder.join(files[f].view());
         if fs.exists(&candidate) and not fs.isDir(&candidate) { return candidate; }
         f = f + 1usize;
       }

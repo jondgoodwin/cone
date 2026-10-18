@@ -26,13 +26,13 @@ extern Name *anonName;  // "_" - the absence of a name
 
 // Is this the name of a hidden variable a match or a bound 'if' keeps its matched value
 // in? '_' is the one of a match or an 'if' statement, each a block of its own. A
-// let-else, 'imm n Ok = r else {...};', stands in the block with other statements,
+// let-else, 'let n Ok = r else {...};', stands in the block with other statements,
 // which may be another let-else, so each of its hidden variables is named for itself,
 // "-held1" for a value it holds and "-arm2" for the place its binding takes from.
 int nameIsMatchHolder(Name *name);
 extern Name *tempName;    // "-_"
 // "-temp": the hidden local of a block that a temporary its borrow extends
-// becomes ('imm r = &make();', varDclExtend). No source can spell it.
+// becomes ('let r = &make();', varDclExtend). No source can spell it.
 extern Name *tempLocalName;
 // "-bound": the hidden local a pattern binding to a type-variant's contents
 // reads them from: the matched value under the variant's name, declared just

@@ -542,9 +542,9 @@ fn nullHeader() *Header {null;}
 // makes this sender the one to schedule the actor
 fn mailPush(h *Header, n *Link) bool {
   mem.atomicStore[*Link](&(*n).next as **Link, nullLink(), MemOrder.Relaxed);
-  imm prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel);
-  imm bits = prev as usize;
-  imm p = (bits & pointerBits) as *Link;
+  let prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel);
+  let bits = prev as usize;
+  let p = (bits & pointerBits) as *Link;
   mem.atomicStore[*Link](&(*p).next as **Link, n, MemOrder.Release);
   (bits & idleBit) != 0usize;
 }
@@ -553,8 +553,8 @@ fn mailPush(h *Header, n *Link) bool {
 // when there is none yet. The stub before it, whose message was taken, is
 // freed. Only the worker running the actor calls this.
 fn mailPop(h *Header) *Link {
-  imm t = (*h).tail;
-  imm next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire);
+  let t = (*h).tail;
+  let next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire);
   if next as usize != 0usize {
     (*h).tail = next;
     libc.free(t as *u8);
@@ -565,14 +565,14 @@ fn mailPop(h *Header) *Link {
 // Mark h's mailbox idle, if it is empty and no push is under way: whether it
 // was marked. A later push then finds the mark and schedules the actor.
 fn mailMarkIdle(h *Header) bool {
-  imm t = (*h).tail;
-  imm headp = &(*h).head as **Link;
-  imm hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed);
+  let t = (*h).tail;
+  let headp = &(*h).head as **Link;
+  let hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed);
   if hd as usize != t as usize {
     return false;
   }
-  mut seen = nullLink();
-  mut marked = false;
+  var seen = nullLink();
+  var marked = false;
   seen, marked = mem.atomicCompareSwap[*Link](headp, t, ((t as usize) | idleBit) as *Link,
     MemOrder.AcqRel, MemOrder.Relaxed);
   marked;
@@ -633,7 +633,7 @@ fn stateOf[S, M Sendable](h *Header) *S {
 }
 
 fn actorDied(h *Header) {
-  imm finalize = (*h).finalize;
+  let finalize = (*h).finalize;
   finalize(h);
   // The actor's region goes after its state, whose finals may read what they
   // reach in it: every object with a final is finalized, then the region freed
@@ -649,7 +649,7 @@ fn actorDied(h *Header) {
 // Finalize actor h's state: moved out of the block and dropped, so its own
 // 'final' runs, then its fields'
 fn finalizeState[S, M Sendable](h *Header) {
-  imm st = mem.readRaw[S](stateOf[S, M](h));
+  let st = mem.readRaw[S](stateOf[S, M](h));
 }
 
 // ---------------------------------------------------------------------------
@@ -678,20 +678,20 @@ fn finalizeState[S, M Sendable](h *Header) {
 // in it finalized.
 pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
   ensureRunning();
-  imm stub = libc.malloc(mem.sizeof[Link]()) as *Link;
-  imm room = libc.malloc(mem.sizeof[S]() + 1usize);
+  let stub = libc.malloc(mem.sizeof[Link]()) as *Link;
+  let room = libc.malloc(mem.sizeof[S]() + 1usize);
   if stub as usize == 0usize or room as usize == 0usize {
     die("actors: out of memory for an actor");
   }
   (*stub).next = nullLink();
-  mut f = dispatch;
-  imm h = new Header(stub, stub, nullHeader(),
+  var f = dispatch;
+  let h = new Header(stub, stub, nullHeader(),
     &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8));
-  imm b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
+  let b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
   libc.free(room);
   // The owner of the block, put away uncounted as its address, which is the
   // Header's: startActor remakes it
-  mut slot *u8 = null;
+  var slot *u8 = null;
   mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
   // The collector's knobs read once (gc.cone)
   readEnv();
@@ -704,12 +704,12 @@ pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
 // message was sent while the init ran: then the actor is queued, as a send
 // finding it idle queues it, to run them in the order sent.
 pub fn startActor[S, M Sendable](st *S) Arc[opaq, Mailbox[M]] {
-  imm h = headerOf[S, M](&*st);
+  let h = headerOf[S, M](&*st);
   if !mailMarkIdle(h) {
     holdArc[M](h);
     schedule(h);
   }
-  mut slot = h;
+  var slot = h;
   mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 
@@ -737,7 +737,7 @@ fn sendNow[M Sendable](h *Header, msg M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
-  imm n = libc.malloc(mem.sizeof[Node[M]]()) as *Node[M];
+  let n = libc.malloc(mem.sizeof[Node[M]]()) as *Node[M];
   if n as usize == 0usize {
     die("actors: out of memory for a message");
   }
@@ -758,15 +758,15 @@ pub fn sendable[T Sendable](v T) T {v;}
 // death, its message never finalized. Only the worker that took the actor
 // from a queue calls this.
 fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
-  mut slot = (*h).dispatch;
-  imm f = mem.readRaw[&fn(s &mut S, m *M)](&mut slot as *(&fn(s &mut S, m *M)));
-  imm st = stateOf[S, M](h);
-  imm rec = mem.typeRecord[S]();
+  var slot = (*h).dispatch;
+  let f = mem.readRaw[&fn(s &mut S, m *M)](&mut slot as *(&fn(s &mut S, m *M)));
+  let st = stateOf[S, M](h);
+  let rec = mem.typeRecord[S]();
   curActor = h as usize;
-  mut n = 0u32;
+  var n = 0u32;
   // A 'parallel each' this actor's behaviour left has finished: the rest of the
   // behaviour runs first, ahead of whatever the mailbox holds
-  imm ready = (*h).ready;
+  let ready = (*h).ready;
   if ready as usize != 0usize {
     (*h).ready = nullPar();
     runReady[S](st, ready);
@@ -775,7 +775,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
   // A behaviour that begins a 'parallel each' returns, and the actor then runs
   // nothing more until the loop has finished: runActor begins it
   while n < limit and (*h).par as usize == 0usize {
-    imm node = mailPop(h);
+    let node = mailPop(h);
     if node as usize == 0usize {
       curActor = 0usize;
       return n;
@@ -803,9 +803,9 @@ fn afterMessage(h *Header, st *u8, rec *TypeRecord) {
 // runs a second half (resume, resumeId): the seam's resume function, with the
 // record's id where the record is not empty, and no value
 fn runReady[S](st *S, p *ParPending) {
-  imm run = (*p).resume;
-  imm id = (*p).id;
-  imm hasId = (*p).hasId;
+  let run = (*p).resume;
+  let id = (*p).id;
+  let hasId = (*p).hasId;
   libc.free(p as *u8);
   if hasId {
     resumeId[S](&mut *st, run, id, null);
@@ -819,11 +819,11 @@ fn runReady[S](st *S, p *ParPending) {
 // the count is one more and nothing will drop either. It is Arc's own copy,
 // so the count is Arc's (a Relaxed add), whatever Arc's layout.
 fn holdArc[M Sendable](h *Header) {
-  mut slot = h;
-  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
-  imm held = o;
-  mut gone1 = h;
-  mut gone2 = h;
+  var slot = h;
+  let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
+  let held = o;
+  var gone1 = h;
+  var gone2 = h;
   mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone1 as *(Arc[opaq, Mailbox[M]]), o);
   mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone2 as *(Arc[opaq, Mailbox[M]]), held);
 }
@@ -832,8 +832,8 @@ fn holdArc[M Sendable](h *Header) {
 // Arc's own drop (a Release subtract; an Acquire load and the actor's
 // death, Mailbox's finalizer and the free, if it was the last).
 fn releaseHold[M Sendable](h *Header) {
-  mut slot = h;
-  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
+  var slot = h;
+  let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 
 // ---------------------------------------------------------------------------
@@ -870,7 +870,7 @@ pub struct Reply is Sendable {
   fn final(self &uni) {
     if to as usize != 0usize {
       libc.free(node as *u8);
-      imm release = (*to).release;
+      let release = (*to).release;
       release(to);
     }
     elif cell as usize != 0usize {
@@ -896,18 +896,18 @@ fn roundUp(n usize, a usize) usize {
 // The Header of the actor whose state is at st: where stateOf finds st,
 // taken back
 fn headerOf[S, M Sendable](st &S) *Header {
-  imm base = 4096usize as *Header;
-  imm off = (stateOf[S, M](base) as usize) - 4096usize;
+  let base = 4096usize as *Header;
+  let off = (stateOf[S, M](base) as usize) - 4096usize;
   ((st as *S as usize) - off) as *Header;
 }
 
 // The handle of the actor whose state is at st, its 'selfactor': another
 // owner of its Mailbox, counted, as copying a handle is
 pub fn selfOf[S, M Sendable](st &S) Arc[opaq, Mailbox[M]] {
-  mut slot = headerOf[S, M](st);
-  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
-  imm held = o;
-  mut gone = slot;
+  var slot = headerOf[S, M](st);
+  let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
+  let held = o;
+  var gone = slot;
   mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone as *(Arc[opaq, Mailbox[M]]), o);
   held;
 }
@@ -917,11 +917,11 @@ pub fn selfOf[S, M Sendable](st &S) Arc[opaq, Mailbox[M]] {
 // bytes aligned to 'align' after the message. The actor's own generated code
 // then writes its resume message into the node (replyPut)
 pub fn replyNode[S, M Sendable](st &S, size usize, align usize) Reply {
-  imm h = headerOf[S, M](st);
-  mut a = 8usize;
+  let h = headerOf[S, M](st);
+  var a = 8usize;
   if align > 8usize {a = align;}
-  imm off = roundUp(mem.sizeof[Node[M]](), a);
-  imm n = libc.malloc(off + size) as *u8;
+  let off = roundUp(mem.sizeof[Node[M]](), a);
+  let n = libc.malloc(off + size) as *u8;
   if n as usize == 0usize {
     die("actors: out of memory for a reply");
   }
@@ -942,17 +942,17 @@ pub fn replyPut[M Sendable](r &Reply, msg M) {
 // finds the actor idle, as a send's own would; otherwise it is let go
 // A future's reply has had its value written into the future, which arrives
 fn post(r &mut Reply) {
-  imm c = r.cell;
+  let c = r.cell;
   if c as usize != 0usize {
     r.cell = null;
     futureEnd(c, futArrived);
     return;
   }
-  imm h = r.to;
+  let h = r.to;
   if h as usize == 0usize {
     return;
   }
-  imm n = r.node;
+  let n = r.node;
   r.to = null;
   r.node = null;
   pushReply(h, n);
@@ -967,7 +967,7 @@ fn pushReply(h *Header, n *Link) {
   if mailPush(h, n) {
     schedule(h);
   } else {
-    imm release = (*h).release;
+    let release = (*h).release;
     release(h);
   }
 }
@@ -975,7 +975,7 @@ fn pushReply(h *Header, n *Link) {
 // A message that returns a value, and holds no 'await', answering its
 // request: the value goes back in the reply
 pub fn answerNow[R](rp Reply, v R) {
-  mut r = rp;
+  var r = rp;
   if !wanted(&r) {
     return;
   }
@@ -1034,11 +1034,11 @@ pub fn answered(slot &mut Answer) {
 // The dispatcher, after a message that returns a value and holds an 'await'
 // returned: its value is at r, unless a seam parked the message
 pub fn answerAt[R](slot &mut Answer, r *R) {
-  imm d = answerTo(slot);
+  let d = answerTo(slot);
   if d as usize == 0usize {
     return;
   }
-  imm v = mem.readRaw[R](r);
+  let v = mem.readRaw[R](r);
   if d as usize == 1usize {
     answered(slot);
     return;
@@ -1052,13 +1052,13 @@ pub fn answerAt[R](slot &mut Answer, r *R) {
 // record's id where the record is not empty, and where the returned value
 // is, in the node
 pub fn resume[S](st &mut S, run *u8, data *u8) {
-  mut f = run;
-  imm fp = mem.readRaw[&fn(s &mut S, data *u8)](&mut f as *(&fn(s &mut S, data *u8)));
+  var f = run;
+  let fp = mem.readRaw[&fn(s &mut S, data *u8)](&mut f as *(&fn(s &mut S, data *u8)));
   fp(st, data);
 }
 pub fn resumeId[S](st &mut S, run *u8, id u64, data *u8) {
-  mut f = run;
-  imm fp = mem.readRaw[&fn(s &mut S, id u64, data *u8)](&mut f as *(&fn(s &mut S, id u64, data *u8)));
+  var f = run;
+  let fp = mem.readRaw[&fn(s &mut S, id u64, data *u8)](&mut f as *(&fn(s &mut S, id u64, data *u8)));
   fp(st, id, data);
 }
 
@@ -1095,12 +1095,12 @@ pub struct Pending is GcTraceElements {
     if slots as usize == 0usize {
       return;
     }
-    mut i = 0usize;
+    var i = 0usize;
     while count != 0usize and i < cap {
-      imm v = *(slots + i);
+      let v = *(slots + i);
       if v & 1usize == 0usize {
-        imm block = v as *u8;
-        imm drop = (*recordType(block)).finalize;
+        let block = v as *u8;
+        let drop = (*recordType(block)).finalize;
         drop(block + recordHead);
         libc.free(block);
         count = count - 1usize;
@@ -1120,7 +1120,7 @@ pub struct PendingWalk is Iterator[&mut Erased] {
 
   pub fn next(self &mut) Option[&mut Erased] {
     while at < cap {
-      imm v = *(slots + at);
+      let v = *(slots + at);
       at = at + 1usize;
       if v & 1usize == 0usize {
         return Some[&mut Erased](v as &mut Erased);
@@ -1156,19 +1156,19 @@ fn noTrace(record *u8, mode u32) {}
 // comes exactly once too, and its envelope counts the actor the same way.
 pub fn parkReserve(p &mut Pending, size usize, drop *u8, trace *u8) u64 {
   if p.free == 0usize {
-    mut newcap = 8usize;
+    var newcap = 8usize;
     if p.cap != 0usize {newcap = p.cap * 2usize;}
-    imm grown = libc.malloc(mem.sizeof[usize]() * newcap) as *usize;
+    let grown = libc.malloc(mem.sizeof[usize]() * newcap) as *usize;
     if grown as usize == 0usize {
       die("actors: out of memory for the pending table");
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < p.cap {
       *(grown + i) = *(p.slots + i);
       i = i + 1usize;
     }
     while i < newcap {
-      mut next = 0usize;
+      var next = 0usize;
       if i + 1usize < newcap {next = i + 2usize;}
       *(grown + i) = next * 2usize + 1usize;
       i = i + 1usize;
@@ -1180,19 +1180,19 @@ pub fn parkReserve(p &mut Pending, size usize, drop *u8, trace *u8) u64 {
     p.slots = grown;
     p.cap = newcap;
   }
-  imm id = p.free - 1usize;
-  imm slot = p.slots + id;
+  let id = p.free - 1usize;
+  let slot = p.slots + id;
   p.free = *slot / 2usize;
-  imm block = libc.malloc(recordHead + size);
+  let block = libc.malloc(recordHead + size);
   if block as usize == 0usize {
     die("actors: out of memory for a continuation");
   }
-  mut d = drop;
-  imm dropfn = mem.readRaw[&fn(record *u8)](&mut d as *(&fn(record *u8)));
-  mut tracefn = &noTrace;
-  mut flags = 1u32;
+  var d = drop;
+  let dropfn = mem.readRaw[&fn(record *u8)](&mut d as *(&fn(record *u8)));
+  var tracefn = &noTrace;
+  var flags = 1u32;
   if trace as usize != 0usize {
-    mut t = trace;
+    var t = trace;
     tracefn = mem.readRaw[&fn(record *u8, mode u32)](&mut t as *(&fn(record *u8, mode u32)));
     flags = 3u32;
   }
@@ -1210,8 +1210,8 @@ pub fn parked(p &mut Pending, id u64) *u8 {
 
 // The reply for id arrived: where its record is, the slot freed
 pub fn unpark(p &mut Pending, id u64) *u8 {
-  imm slot = p.slots + usize.from(id);
-  imm block = *slot as *u8;
+  let slot = p.slots + usize.from(id);
+  let block = *slot as *u8;
   *slot = p.free * 2usize + 1usize;
   p.free = usize.from(id) + 1usize;
   p.count = p.count - 1usize;
@@ -1250,8 +1250,8 @@ pub struct Awaitable[R] is Move {
 // out here, called, and finalized when the call has returned. Every
 // Awaitable[R] is laid out alike, whatever its R
 pub fn startAwait(a *u8, rp Reply) {
-  mut aw = mem.readRaw[Awaitable[u8]](a as *Awaitable[u8]);
-  mut r = rp;
+  var aw = mem.readRaw[Awaitable[u8]](a as *Awaitable[u8]);
+  var r = rp;
   r.op = 1u8;
   opsStarted.addOrdered(1u64, MemOrder.SeqCst);
   aw.start(r);
@@ -1325,11 +1325,11 @@ struct Sched {
 // The running runtime, or 0: before the first actor, and once stopped. Every
 // send and reply reads it on whichever thread it runs, while the first actor
 // writes it (startWorkers) and the stop does (stopWorkers): an atomic held by an
-// 'imm' global, set to 0 in the module's 'init' (below)
-imm running Atomic[usize];
+// 'let' global, set to 0 in the module's 'init' (below)
+let running Atomic[usize];
 
 // The worker this thread is, or 0
-mut @threadlocal me usize = 0usize;
+var @threadlocal me usize = 0usize;
 
 fn workerAt(s *Sched, i u32) *Worker {
   (*s).workers + usize.from(i);
@@ -1351,7 +1351,7 @@ fn tally(p *u64, n u64) {
 // activation begun, and queue it: on this worker's own queue when a worker
 // sends, else on the inject queue
 fn schedule(h *Header) {
-  imm s = running.load() as *Sched;
+  let s = running.load() as *Sched;
   // Every caller has checked that the runtime runs (a send, a reply) or
   // started it (a new actor), so s is 0 here only if the stop finished
   // meanwhile on another thread: a thread that kept sending or making actors
@@ -1360,9 +1360,9 @@ fn schedule(h *Header) {
   if s as usize == 0usize {
     die("actors: an actor made runnable after the runtime stopped");
   }
-  imm w = me as *Worker;
+  let w = me as *Worker;
   if w as usize != 0usize and (*w).sched as usize == s as usize {
-    imm startedp = &(*w).started as *u64;
+    let startedp = &(*w).started as *u64;
     mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
     localPush(w, h);
   } else {
@@ -1375,11 +1375,11 @@ fn schedule(h *Header) {
 // Put h on w's own queue; half of it goes to the inject queue when it is
 // full. Wake a sleeping worker to steal when the queue held another already.
 fn localPush(w *Worker, h *Header) {
-  imm headp = &(*w).head as *u64;
-  imm tailp = &(*w).tail as *u64;
+  let headp = &(*w).head as *u64;
+  let tailp = &(*w).tail as *u64;
   while true {
-    imm t = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
-    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
+    let t = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
+    let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
     if t - hd < queueCap {
       mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed);
       mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
@@ -1397,21 +1397,21 @@ fn localPush(w *Worker, h *Header) {
 // w's queue is full: move half of it, and h, to the inject queue. False when
 // a stealer took from it meanwhile, and there is room again.
 fn overflow(w *Worker, h *Header, hd u64, t u64) bool {
-  imm n = (t - hd) / 2u64;
+  let n = (t - hd) / 2u64;
   // Claim them first, as a stealer would; then they are this thread's alone,
   // and only this thread, their queue's owner, writes their slots
-  mut seen = 0u64;
-  mut taken = false;
+  var seen = 0u64;
+  var taken = false;
   seen, taken = mem.atomicCompareSwap[u64](&(*w).head as *u64, hd, hd + n,
     MemOrder.AcqRel, MemOrder.Relaxed);
   if !taken {
     return false;
   }
-  imm first = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
-  mut last = first;
-  mut i = 1u64;
+  let first = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
+  var last = first;
+  var i = 1u64;
   while i < n {
-    imm next = mem.atomicLoad[*Header](ringAt(w, hd + i), MemOrder.Relaxed);
+    let next = mem.atomicLoad[*Header](ringAt(w, hd + i), MemOrder.Relaxed);
     (*last).link = next;
     last = next;
     i = i + 1u64;
@@ -1424,17 +1424,17 @@ fn overflow(w *Worker, h *Header, hd u64, t u64) bool {
 
 // Take the actor at the front of w's queue, by its owner or a stealer, or 0
 fn queuePop(w *Worker) *Header {
-  imm headp = &(*w).head as *u64;
-  imm tailp = &(*w).tail as *u64;
+  let headp = &(*w).head as *u64;
+  let tailp = &(*w).tail as *u64;
   while true {
-    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
-    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
+    let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
+    let t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
     if hd >= t {
       return nullHeader();
     }
-    imm h = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
-    mut seen = 0u64;
-    mut taken = false;
+    let h = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
+    var seen = 0u64;
+    var taken = false;
     seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + 1u64,
       MemOrder.AcqRel, MemOrder.Relaxed);
     if taken {
@@ -1447,29 +1447,29 @@ fn queuePop(w *Worker) *Header {
 // Steal half of v's queue into w's own, which is empty: one of them to run,
 // or 0
 fn stealFrom(w *Worker, v *Worker) *Header {
-  imm headp = &(*v).head as *u64;
-  imm tailp = &(*v).tail as *u64;
-  imm ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed);
+  let headp = &(*v).head as *u64;
+  let tailp = &(*v).tail as *u64;
+  let ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed);
   while true {
-    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
-    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
+    let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
+    let t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
     if hd >= t {
       return nullHeader();
     }
-    imm n = t - hd;
-    imm k = n - n / 2u64;
-    mut i = 0u64;
+    let n = t - hd;
+    let k = n - n / 2u64;
+    var i = 0u64;
     while i < k {
-      imm h = mem.atomicLoad[*Header](ringAt(v, hd + i), MemOrder.Relaxed);
+      let h = mem.atomicLoad[*Header](ringAt(v, hd + i), MemOrder.Relaxed);
       mem.atomicStore[*Header](ringAt(w, ot + i), h, MemOrder.Relaxed);
       i = i + 1u64;
     }
-    mut seen = 0u64;
-    mut taken = false;
+    var seen = 0u64;
+    var taken = false;
     seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + k,
       MemOrder.AcqRel, MemOrder.Relaxed);
     if taken {
-      imm run = mem.atomicLoad[*Header](ringAt(w, ot + k - 1u64), MemOrder.Relaxed);
+      let run = mem.atomicLoad[*Header](ringAt(w, ot + k - 1u64), MemOrder.Relaxed);
       if k > 1u64 {
         mem.atomicStore[u64](&(*w).tail as *u64, ot + k - 1u64, MemOrder.Release);
       }
@@ -1498,24 +1498,24 @@ fn injectPush(s *Sched, first *Header, last *Header, count u64) {
 // Take an actor from the inject queue, and move a few more onto w's own
 // queue: the one to run, or 0
 fn injectPop(s *Sched, w *Worker) *Header {
-  imm lenp = &(*s).injectLen as *u64;
+  let lenp = &(*s).injectLen as *u64;
   if mem.atomicLoad[u64](lenp, MemOrder.SeqCst) == 0u64 {
     return nullHeader();
   }
   (*s).lock.lock();
-  imm first = (*s).injectHead;
+  let first = (*s).injectHead;
   if first as usize == 0usize {
     (*s).lock.unlock();
     return nullHeader();
   }
   // Take the first, and up to a share of the rest for this worker's queue
-  imm len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed);
-  mut extra = len / u64.from((*s).nworkers);
+  let len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed);
+  var extra = len / u64.from((*s).nworkers);
   if extra > 32u64 {
     extra = 32u64;
   }
-  mut last = first;
-  mut k = 1u64;
+  var last = first;
+  var k = 1u64;
   while k <= extra and (*last).link as usize != 0usize {
     last = (*last).link;
     k = k + 1u64;
@@ -1528,9 +1528,9 @@ fn injectPop(s *Sched, w *Worker) *Header {
   mem.atomicSub[u64](lenp, k, MemOrder.SeqCst);
   (*s).lock.unlock();
   // The rest to this worker's own queue
-  mut next = (*first).link;
+  var next = (*first).link;
   while next as usize != 0usize {
-    imm after = (*next).link;
+    let after = (*next).link;
     (*next).link = nullHeader();
     localPush(w, next);
     next = after;
@@ -1554,7 +1554,7 @@ fn notify(s *Sched) {
 // A worker found work away from its own queue: it is no longer the one
 // looking, and if more work is waiting, another is woken to look
 fn foundAway(w *Worker) {
-  imm s = (*w).sched;
+  let s = (*w).sched;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if ld64(&(*s).injectLen as *u64) != 0u64 or ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
       or taskWork(s) {
@@ -1564,19 +1564,19 @@ fn foundAway(w *Worker) {
 
 // The next actor for w to run from its own queue or the inject queue, or 0
 fn findWork(w *Worker) *Header {
-  imm s = (*w).sched;
+  let s = (*w).sched;
   (*w).tick = (*w).tick + 1u32;
   if (*w).tick % injectEvery == 0u32 {
-    imm a = injectPop(s, w);
+    let a = injectPop(s, w);
     if a as usize != 0usize {
       return a;
     }
   }
-  imm mine = queuePop(w);
+  let mine = queuePop(w);
   if mine as usize != 0usize {
     return mine;
   }
-  imm fromInject = injectPop(s, w);
+  let fromInject = injectPop(s, w);
   if fromInject as usize != 0usize {
     foundAway(w);
     return fromInject;
@@ -1588,18 +1588,18 @@ fn findWork(w *Worker) *Header {
 // loop piece (stealTask) have come up empty: half of another worker's queue,
 // starting at one chosen at random. The actor to run, or 0.
 fn stealActor(w *Worker) *Header {
-  imm s = (*w).sched;
-  imm n = (*s).nworkers;
-  mut r = (*w).rng;
+  let s = (*w).sched;
+  let n = (*s).nworkers;
+  var r = (*w).rng;
   r = r ^ (r << 13u32);
   r = r ^ (r >> 17u32);
   r = r ^ (r << 5u32);
   (*w).rng = r;
-  mut i = 0u32;
+  var i = 0u32;
   while i < n {
-    imm v = workerAt(s, (r % n + i) % n);
+    let v = workerAt(s, (r % n + i) % n);
     if v as usize != w as usize {
-      imm got = stealFrom(w, v);
+      let got = stealFrom(w, v);
       if got as usize != 0usize {
         foundAway(w);
         return got;
@@ -1615,9 +1615,9 @@ fn anyWork(s *Sched) bool {
   if ld64(&(*s).injectLen as *u64) != 0u64 or taskWork(s) {
     return true;
   }
-  mut i = 0u32;
+  var i = 0u32;
   while i < (*s).nworkers {
-    imm v = workerAt(s, i);
+    let v = workerAt(s, i);
     if ld64(&(*v).tail as *u64) != ld64(&(*v).head as *u64) {
       return true;
     }
@@ -1629,10 +1629,10 @@ fn anyWork(s *Sched) bool {
 // Run actor h's batch, then queue it again, or mark it idle and let go of
 // the hold taken when it became runnable
 fn runActor(w *Worker, h *Header) {
-  imm s = (*w).sched;
-  imm run = (*h).run;
-  imm n = run(h, (*s).batch);
-  imm stat = (*w).stat;
+  let s = (*w).sched;
+  let run = (*h).run;
+  let n = run(h, (*s).batch);
+  let stat = (*w).stat;
   tally(&(*stat).messages as *u64, u64.from(n));
   tally(&(*stat).activations as *u64, 1u64);
   // The last behaviour began a 'parallel each' and has returned: the actor is
@@ -1643,9 +1643,9 @@ fn runActor(w *Worker, h *Header) {
     return;
   }
   if n < (*s).batch and mailMarkIdle(h) {
-    imm release = (*h).release;
+    let release = (*h).release;
     release(h);
-    imm endedp = &(*w).ended as *u64;
+    let endedp = &(*w).ended as *u64;
     mem.atomicStore[u64](endedp, mem.atomicLoad[u64](endedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
     return;
   }
@@ -1655,8 +1655,8 @@ fn runActor(w *Worker, h *Header) {
 // No work was found: spin a little, then sleep until woken. False once the
 // runtime is stopping.
 fn idle(w *Worker) bool {
-  imm s = (*w).sched;
-  mut spins = 0u32;
+  let s = (*w).sched;
+  var spins = 0u32;
   while spins < idleSpins {
     if anyWork(s) {
       return true;
@@ -1664,9 +1664,9 @@ fn idle(w *Worker) bool {
     yieldProcessor();
     spins = spins + 1u32;
   }
-  imm epochp = &(*s).epoch as *u32;
-  imm e = ld32(epochp);
-  imm asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst) + 1u32;
+  let epochp = &(*s).epoch as *u32;
+  let e = ld32(epochp);
+  let asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst) + 1u32;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if anyWork(s) {
     mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
@@ -1691,15 +1691,15 @@ struct WorkerArg is Sendable {
 }
 
 fn workerMain(arg WorkerArg) u32 {
-  imm w = arg.w;
+  let w = arg.w;
   me = w as usize;
-  imm s = (*w).sched;
+  let s = (*w).sched;
   while true {
     // The order (parallel.cone, WHERE TASKS WAIT): the loop pieces on top of this
     // worker's queue, then the pieces of a loop begun off the workers, then
     // its actors and the inject queue's, and only with all of those empty
     // another worker's pieces, and then another's actors
-    mut t = emptyTask();
+    var t = emptyTask();
     if dequePopNewest(tasksOf(w), &mut t as *Task) {
       runTask(s, t);
       continue;
@@ -1709,7 +1709,7 @@ fn workerMain(arg WorkerArg) u32 {
       runTask(s, t);
       continue;
     }
-    imm h = findWork(w);
+    let h = findWork(w);
     if h as usize != 0usize {
       runActor(w, h);
       continue;
@@ -1719,7 +1719,7 @@ fn workerMain(arg WorkerArg) u32 {
       runTask(s, t);
       continue;
     }
-    imm a = stealActor(w);
+    let a = stealActor(w);
     if a as usize != 0usize {
       runActor(w, a);
       continue;
@@ -1736,13 +1736,13 @@ fn workerMain(arg WorkerArg) u32 {
 // counts are read first, then the begun: each count only grows, so if the
 // sums agree they agreed at the moment between the two reads.
 fn quiescent(s *Sched) bool {
-  mut ended = 0u64;
-  mut i = 0u32;
+  var ended = 0u64;
+  var i = 0u32;
   while i < (*s).nworkers {
     ended = ended + ld64(&(*workerAt(s, i)).ended as *u64);
     i = i + 1u32;
   }
-  mut started = ld64(&(*s).extStarted as *u64);
+  var started = ld64(&(*s).extStarted as *u64);
   i = 0u32;
   while i < (*s).nworkers {
     started = started + ld64(&(*workerAt(s, i)).started as *u64);
@@ -1773,12 +1773,12 @@ pub struct Stats {
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
-// may be called on any thread, held by 'imm' globals and set in 'init' (below)
-imm chosenWorkers Atomic[u32];
-imm chosenBatch Atomic[u32];
+// may be called on any thread, held by 'let' globals and set in 'init' (below)
+let chosenWorkers Atomic[u32];
+let chosenBatch Atomic[u32];
 
 // Starts the workers once, however many threads start a first actor at once
-imm startOnce sync.Once;
+let startOnce sync.Once;
 
 // STATS. 'stats' may be called on any thread at any time, including while the
 // stop frees the Sched and the Workers, so it reads nothing in them. What it
@@ -1798,9 +1798,9 @@ struct StatSlot {
   pub gap Array[u8, 40];       // a slot is a cache line, so that no two workers' slots share one
 }
 
-imm statSlots Atomic[usize];   // the address of the first slot, or 0 before the workers have started
-imm statWorkers Atomic[u32];   // how many slots; 0 before the workers have started
-imm taskStealsTotal Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
+let statSlots Atomic[usize];   // the address of the first slot, or 0 before the workers have started
+let statWorkers Atomic[u32];   // how many slots; 0 before the workers have started
+let taskStealsTotal Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
   opsStarted = Atomic[u64].of(0u64);
@@ -1847,31 +1847,31 @@ fn ensureRunning() {
 
 // Start the workers as configure said, once
 fn startWorkers() {
-  imm chosenN = chosenWorkers.load();
-  imm n = if chosenN == 0u32 {thread.parallelism();} else {chosenN;};
-  imm s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
-  imm ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
-  imm ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
+  let chosenN = chosenWorkers.load();
+  let n = if chosenN == 0u32 {thread.parallelism();} else {chosenN;};
+  let s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
+  let ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
+  let ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
   // The stats slots, zeroed, a cache line each (the block is 16-aligned, so
   // one more line is allocated and the first slot is rounded up to a line).
   // Never freed: stats() reads them after the stop has freed the rest.
-  imm slotBytes = mem.sizeof[StatSlot]();
-  imm block = libc.calloc(usize.from(n) + 1usize, slotBytes) as usize;
+  let slotBytes = mem.sizeof[StatSlot]();
+  let block = libc.calloc(usize.from(n) + 1usize, slotBytes) as usize;
   if s as usize == 0usize or ws as usize == 0usize or ts as usize == 0usize or block == 0usize {
     die("actors: out of memory for the runtime");
   }
-  imm slots = (block + slotBytes - 1usize) / slotBytes * slotBytes;
+  let slots = (block + slotBytes - 1usize) / slotBytes * slotBytes;
   (*s).nworkers = n;
-  imm chosenB = chosenBatch.load();
+  let chosenB = chosenBatch.load();
   (*s).batch = if chosenB == 0u32 {1u32;} else {chosenB;};
   (*s).workers = ws;
   (*s).threads = ts;
   statSlots.store(slots);
   statWorkers.store(n);
   running.store(s as usize);
-  mut i = 0u32;
+  var i = 0u32;
   while i < n {
-    imm w = workerAt(s, i);
+    let w = workerAt(s, i);
     (*w).stat = (slots + usize.from(i) * slotBytes) as *StatSlot;
     (*w).sched = s;
     (*w).index = i;
@@ -1887,7 +1887,7 @@ fn startWorkers() {
 fn quiesce(s *Sched) {
   mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
   while true {
-    imm q = ld32(&(*s).quiet as *u32);
+    let q = ld32(&(*s).quiet as *u32);
     if quiescent(s) {
       break;
     }
@@ -1914,15 +1914,15 @@ pub fn waitQuiet() {
 // many are spent (answered, or dropped without an answer). Each only grows;
 // they are equal when none is outstanding. Not in the Sched, which the stop
 // frees: a reply may be spent while it is freed
-imm opsStarted Atomic[u64];
-imm opsEnded Atomic[u64];
+let opsStarted Atomic[u64];
+let opsEnded Atomic[u64];
 
 // An awaited operation's reply is spent, by its answer (after the answer's
 // push, so that the actor it woke is already counted as scheduled) or by its
 // drop: count it, and wake a thread waiting for idle to look again
 fn opSpent() {
   opsEnded.addOrdered(1u64, MemOrder.SeqCst);
-  imm s = running.load() as *Sched;
+  let s = running.load() as *Sched;
   if s as usize != 0usize {
     mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
     sync.futexWake(&(*s).quiet);
@@ -1935,8 +1935,8 @@ fn opSpent() {
 // count is read again after quiescent, for an operation an active actor
 // started and an answer then woke and ended, between the two looks
 fn idleNow(s *Sched) bool {
-  imm spent = opsEnded.loadOrdered(MemOrder.SeqCst);
-  imm started = opsStarted.loadOrdered(MemOrder.SeqCst);
+  let spent = opsEnded.loadOrdered(MemOrder.SeqCst);
+  let started = opsStarted.loadOrdered(MemOrder.SeqCst);
   started == spent and quiescent(s) and opsStarted.loadOrdered(MemOrder.SeqCst) == started;
 }
 
@@ -1955,10 +1955,10 @@ pub fn waitUntilIdle() {
   if me != 0usize {
     die("actors: waitUntilIdle called on one of the runtime's own workers, which would wait for itself");
   }
-  imm s = running.load() as *Sched;
+  let s = running.load() as *Sched;
   mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
   while true {
-    imm q = ld32(&(*s).quiet as *u32);
+    let q = ld32(&(*s).quiet as *u32);
     if idleNow(s) {
       break;
     }
@@ -1972,14 +1972,14 @@ fn stopWorkers() {
   if me != 0usize {
     die("actors: the runtime stopped from one of its own workers, which would wait for itself");
   }
-  imm s = running.load() as *Sched;
+  let s = running.load() as *Sched;
   quiesce(s);
   mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
   mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst);
   sync.futexWakeAll(&(*s).epoch);
-  mut i = 0u32;
+  var i = 0u32;
   while i < (*s).nworkers {
-    imm t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize.from(i));
+    let t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize.from(i));
     t.join();
     i = i + 1u32;
   }
@@ -1994,15 +1994,15 @@ fn stopWorkers() {
 // stats slots are read, never the Sched or a Worker (STATS, above), so a call
 // on any thread is safe while the stop frees them.
 pub fn stats() Stats {
-  imm n = statWorkers.load();
+  let n = statWorkers.load();
   if n == 0u32 {
     return new Stats(0u32, 0u64, 0u64, 0u64, 0u64);
   }
-  imm slots = statSlots.load();
-  mut st = new Stats(n, 0u64, 0u64, 0u64, taskStealsTotal.loadOrdered(MemOrder.Relaxed));
-  mut i = 0u32;
+  let slots = statSlots.load();
+  var st = new Stats(n, 0u64, 0u64, 0u64, taskStealsTotal.loadOrdered(MemOrder.Relaxed));
+  var i = 0u32;
   while i < n {
-    imm slot = (slots + usize.from(i) * mem.sizeof[StatSlot]()) as *StatSlot;
+    let slot = (slots + usize.from(i) * mem.sizeof[StatSlot]()) as *StatSlot;
     st.messages = st.messages + mem.atomicLoad[u64](&(*slot).messages as *u64, MemOrder.Relaxed);
     st.activations = st.activations + mem.atomicLoad[u64](&(*slot).activations as *u64, MemOrder.Relaxed);
     st.steals = st.steals + mem.atomicLoad[u64](&(*slot).steals as *u64, MemOrder.Relaxed);
@@ -2014,7 +2014,7 @@ pub fn stats() Stats {
 // The index of the worker running the caller, 0 up to the number of workers
 // less 1; noWorker on any other thread
 pub fn workerIndex() u32 {
-  imm w = me as *Worker;
+  let w = me as *Worker;
   if w as usize == 0usize {
     return noWorker;
   }

@@ -748,7 +748,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
                 INode *given = isExpNode(*nodesp) ? iexpGetTypeDcl(*nodesp) : NULL;
                 if ((ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) && given && given->tag == StructTag && ((StructNode*)given)->namesym == optionName)
                     errorMsgNode(*nodesp, ErrorUsingForm,
-                        "A case that only tests with a function's pattern, 'case using f()', needs a function giving a bool, and this one gives an Option. An Option is bound: 'case imm x using f()'.");
+                        "A case that only tests with a function's pattern, 'case using f()', needs a function giving a bool, and this one gives an Option. An Option is bound: 'case let x using f()'.");
                 else
                     errorMsgNode(*nodesp, ErrorInvType, "Conditional expression requires true/false value (possibly via implicit .isTrue).");
             }
@@ -828,7 +828,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     narrowRestore(ifNarrowAfter(armends, livearms, pathenv, !hasElse));
     narrowAnchorAfter((INode*)ifnode, pstate->scope, direct);
 
-    // 'imm n Ok = r else {...};' goes on to take the variant its test found, so its
+    // 'let n Ok = r else {...};' goes on to take the variant its test found, so its
     // 'else' must leave
     if ((ifnode->flags & FlagIfLetElse) && ifnode->condblk->used >= 2) {
         INode *elseblk = nodesGet(ifnode->condblk, ifnode->condblk->used - 1);

@@ -33,10 +33,10 @@ pub struct GroundMaps {
   // texels across. Height 0, flat, a little damp, in full sun, no path, water,
   // canopy or objects near.
   pub fn create(originX f32, originZ f32, size f32, res u32) GroundMaps {
-    imm n = usize.from(res) * usize.from(res);
-    mut data = List[f32].withCapacity(n * SIGNALS);
+    let n = usize.from(res) * usize.from(res);
+    var data = List[f32].withCapacity(n * SIGNALS);
     data.resize(n * SIGNALS, 0.);
-    mut m = new GroundMaps(originX, originZ, size, res, size / f32.from(res), data, List[u8].empty());
+    var m = new GroundMaps(originX, originZ, size, res, size / f32.from(res), data, List[u8].empty());
     m.fill(SIGNAL_MOISTURE, 0.3);
     m.fill(SIGNAL_EXPOSURE, 1.);
     m.fill(SIGNAL_PATH, FAR);
@@ -46,8 +46,8 @@ pub struct GroundMaps {
   }
 
   pub fn fill(self &mut, c usize, v f32) {
-    imm n = usize.from(res) * usize.from(res);
-    mut k = 0usize;
+    let n = usize.from(res) * usize.from(res);
+    var k = 0usize;
     while k < n {
       data.set(c * n + k, v);
       k = k + 1usize;
@@ -60,12 +60,12 @@ pub struct GroundMaps {
 
   // Channel 'c' of texel (i, j)
   pub fn at(self &, c usize, i u32, j u32) f32 {
-    imm n = usize.from(res) * usize.from(res);
+    let n = usize.from(res) * usize.from(res);
     *data[c * n + usize.from(j) * usize.from(res) + usize.from(i)];
   }
 
   pub fn set(self &mut, c usize, i u32, j u32, v f32) {
-    imm n = usize.from(res) * usize.from(res);
+    let n = usize.from(res) * usize.from(res);
     data.set(c * n + usize.from(j) * usize.from(res) + usize.from(i), v);
   }
 
@@ -78,22 +78,22 @@ pub struct GroundMaps {
   // Channel 'c' at the world point (x, z): bilinear, clamped at the edge.
   // cover.slang's 'mapSample' is this, operation for operation.
   pub fn sample(self &, c usize, x f32, z f32) f32 {
-    imm u = (x - originX) / texel - 0.5;
-    imm v = (z - originZ) / texel - 0.5;
-    imm fu = libc.floorf(u);
-    imm fv = libc.floorf(v);
-    imm tx = u - fu;
-    imm ty = v - fv;
-    imm i0 = self.clampIndex(i32.from(fu));
-    imm i1 = self.clampIndex(i32.from(fu) + 1i32);
-    imm j0 = self.clampIndex(i32.from(fv));
-    imm j1 = self.clampIndex(i32.from(fv) + 1i32);
-    imm a = self.at(c, i0, j0);
-    imm b = self.at(c, i1, j0);
-    imm cc = self.at(c, i0, j1);
-    imm d = self.at(c, i1, j1);
-    imm top = a + (b - a) * tx;
-    imm bottom = cc + (d - cc) * tx;
+    let u = (x - originX) / texel - 0.5;
+    let v = (z - originZ) / texel - 0.5;
+    let fu = libc.floorf(u);
+    let fv = libc.floorf(v);
+    let tx = u - fu;
+    let ty = v - fv;
+    let i0 = self.clampIndex(i32.from(fu));
+    let i1 = self.clampIndex(i32.from(fu) + 1i32);
+    let j0 = self.clampIndex(i32.from(fv));
+    let j1 = self.clampIndex(i32.from(fv) + 1i32);
+    let a = self.at(c, i0, j0);
+    let b = self.at(c, i1, j0);
+    let cc = self.at(c, i0, j1);
+    let d = self.at(c, i1, j1);
+    let top = a + (b - a) * tx;
+    let bottom = cc + (d - cc) * tx;
     top + (bottom - top) * ty;
   }
 
@@ -101,9 +101,9 @@ pub struct GroundMaps {
 
   // The ground's unit normal at (x, z), from the height a texel either side
   pub fn normalAt(self &, x f32, z f32) Vec3 {
-    imm dx = (self.sample(SIGNAL_HEIGHT, x + texel, z) - self.sample(SIGNAL_HEIGHT, x - texel, z)) / (2. * texel);
-    imm dz = (self.sample(SIGNAL_HEIGHT, x, z + texel) - self.sample(SIGNAL_HEIGHT, x, z - texel)) / (2. * texel);
-    imm inv = 1. / (dx * dx + 1. + dz * dz).sqrt();
+    let dx = (self.sample(SIGNAL_HEIGHT, x + texel, z) - self.sample(SIGNAL_HEIGHT, x - texel, z)) / (2. * texel);
+    let dz = (self.sample(SIGNAL_HEIGHT, x, z + texel) - self.sample(SIGNAL_HEIGHT, x, z - texel)) / (2. * texel);
+    let inv = 1. / (dx * dx + 1. + dz * dz).sqrt();
     new Vec3(0. - dx * inv, inv, 0. - dz * inv);
   }
 
@@ -118,11 +118,11 @@ pub struct GroundMaps {
   // The slope channel (degrees from flat) from the heights, by central
   // differences over one texel each side
   pub fn deriveSlope(self &mut) {
-    mut j = 0u32;
+    var j = 0u32;
     while j < res {
-      mut i = 0u32;
+      var i = 0u32;
       while i < res {
-        imm n = self.normalAt(self.worldX(i), self.worldZ(j));
+        let n = self.normalAt(self.worldX(i), self.worldZ(j));
         self.set(SIGNAL_SLOPE, i, j, degrees(acos(n.y)));
         i = i + 1u32;
       }
@@ -137,25 +137,25 @@ pub struct GroundMaps {
   // there) and capped at 1. Soft by one texel of blur. Later, 'shadeByCanopy'
   // dims it under trees.
   pub fn deriveExposure(self &mut, toSun Vec3, reach f32) {
-    imm n = usize.from(res) * usize.from(res);
-    mut raw = List[f32].withCapacity(n);
+    let n = usize.from(res) * usize.from(res);
+    var raw = List[f32].withCapacity(n);
     raw.resize(n, 0.);
-    imm horizontal = (toSun.x * toSun.x + toSun.z * toSun.z).sqrt();
-    imm flat = fmax(toSun.y, 0.05);
-    mut j = 0u32;
+    let horizontal = (toSun.x * toSun.x + toSun.z * toSun.z).sqrt();
+    let flat = fmax(toSun.y, 0.05);
+    var j = 0u32;
     while j < res {
-      mut i = 0u32;
+      var i = 0u32;
       while i < res {
-        imm x = self.worldX(i);
-        imm z = self.worldZ(j);
-        imm y = self.heightAt(x, z);
-        mut lit = 1f32;
+        let x = self.worldX(i);
+        let z = self.worldZ(j);
+        let y = self.heightAt(x, z);
+        var lit = 1f32;
         if horizontal > 0.0001 {
-          imm rise = toSun.y / horizontal;
-          mut s = 1f32;
+          let rise = toSun.y / horizontal;
+          var s = 1f32;
           while s * texel < reach {
-            imm px = x + toSun.x / horizontal * s * texel;
-            imm pz = z + toSun.z / horizontal * s * texel;
+            let px = x + toSun.x / horizontal * s * texel;
+            let pz = z + toSun.z / horizontal * s * texel;
             if self.heightAt(px, pz) > y + rise * s * texel + 0.02 {
               lit = 0.;
               s = reach / texel;
@@ -163,8 +163,8 @@ pub struct GroundMaps {
             s = s + 1.;
           }
         }
-        imm normal = self.normalAt(x, z);
-        imm facing = fclamp((normal.x * toSun.x + normal.y * toSun.y + normal.z * toSun.z) / flat, 0., 1.);
+        let normal = self.normalAt(x, z);
+        let facing = fclamp((normal.x * toSun.x + normal.y * toSun.y + normal.z * toSun.z) / flat, 0., 1.);
         raw.set(usize.from(j) * usize.from(res) + usize.from(i), lit * facing);
         i = i + 1u32;
       }
@@ -173,16 +173,16 @@ pub struct GroundMaps {
     // a one-texel blur, so the shadow's edge is not a staircase
     j = 0u32;
     while j < res {
-      mut i = 0u32;
+      var i = 0u32;
       while i < res {
-        mut sum = 0f32;
-        mut count = 0f32;
-        mut dj = -1i32;
+        var sum = 0f32;
+        var count = 0f32;
+        var dj = -1i32;
         while dj <= 1i32 {
-          mut di = -1i32;
+          var di = -1i32;
           while di <= 1i32 {
-            imm ii = i32.from(i) + di;
-            imm jj = i32.from(j) + dj;
+            let ii = i32.from(i) + di;
+            let jj = i32.from(j) + dj;
             if ii >= 0i32 and jj >= 0i32 and ii < i32.from(res) and jj < i32.from(res) {
               sum = sum + *raw[usize.from(u32.from(jj)) * usize.from(res) + usize.from(u32.from(ii))];
               count = count + 1.;
@@ -200,9 +200,9 @@ pub struct GroundMaps {
 
   // Dim exposure under the canopy: exposure x (1 - strength x canopy)
   pub fn shadeByCanopy(self &mut, strength f32) {
-    mut j = 0u32;
+    var j = 0u32;
     while j < res {
-      mut i = 0u32;
+      var i = 0u32;
       while i < res {
         self.set(SIGNAL_EXPOSURE, i, j, self.at(SIGNAL_EXPOSURE, i, j) * (1. - strength * self.at(SIGNAL_CANOPY, i, j)));
         i = i + 1u32;
@@ -215,12 +215,12 @@ pub struct GroundMaps {
   // to 1 at the water's edge as e^(-distance / reach), and a little drier on
   // slopes (water runs off): moisture x (1 - slopeLoss x slope / 45), at least 0
   pub fn deriveMoisture(self &mut, dry f32, reach f32, slopeLoss f32) {
-    mut j = 0u32;
+    var j = 0u32;
     while j < res {
-      mut i = 0u32;
+      var i = 0u32;
       while i < res {
-        imm w = self.at(SIGNAL_WATER, i, j);
-        mut m = dry + (1. - dry) * libc.expf(0. - w / reach);
+        let w = self.at(SIGNAL_WATER, i, j);
+        var m = dry + (1. - dry) * libc.expf(0. - w / reach);
         m = m * (1. - slopeLoss * fclamp(self.at(SIGNAL_SLOPE, i, j) / 45., 0., 1.));
         self.set(SIGNAL_MOISTURE, i, j, fclamp(m, 0., 1.));
         i = i + 1u32;
@@ -233,33 +233,33 @@ pub struct GroundMaps {
   // through 'points' (x, z) less 'halfWidth': a path or a stream of that
   // width. Exact (point to segment), for texels within FAR of it.
   pub fn addPolylineDistance(self &mut, c usize, points &List[Vec2], halfWidth f32) {
-    mut s = 0usize;
+    var s = 0usize;
     while s + 1usize < points.len() {
-      imm a = *points[s];
-      imm b = *points[s + 1usize];
+      let a = *points[s];
+      let b = *points[s + 1usize];
       self.addSegmentDistance(c, a, b, halfWidth);
       s = s + 1usize;
     }
   }
 
   fn addSegmentDistance(self &mut, c usize, a Vec2, b Vec2, halfWidth f32) {
-    imm lo = new Vec2(fmin(a.x, b.x) - FAR, fmin(a.y, b.y) - FAR);
-    imm hi = new Vec2(fmax(a.x, b.x) + FAR, fmax(a.y, b.y) + FAR);
-    imm i0 = self.clampIndex(i32.from(libc.floorf((lo.x - originX) / texel)));
-    imm i1 = self.clampIndex(i32.from(libc.floorf((hi.x - originX) / texel)) + 1i32);
-    imm j0 = self.clampIndex(i32.from(libc.floorf((lo.y - originZ) / texel)));
-    imm j1 = self.clampIndex(i32.from(libc.floorf((hi.y - originZ) / texel)) + 1i32);
-    imm ab = b - a;
-    imm len2 = fmax(ab.x * ab.x + ab.y * ab.y, 0.000001);
-    mut j = j0;
+    let lo = new Vec2(fmin(a.x, b.x) - FAR, fmin(a.y, b.y) - FAR);
+    let hi = new Vec2(fmax(a.x, b.x) + FAR, fmax(a.y, b.y) + FAR);
+    let i0 = self.clampIndex(i32.from(libc.floorf((lo.x - originX) / texel)));
+    let i1 = self.clampIndex(i32.from(libc.floorf((hi.x - originX) / texel)) + 1i32);
+    let j0 = self.clampIndex(i32.from(libc.floorf((lo.y - originZ) / texel)));
+    let j1 = self.clampIndex(i32.from(libc.floorf((hi.y - originZ) / texel)) + 1i32);
+    let ab = b - a;
+    let len2 = fmax(ab.x * ab.x + ab.y * ab.y, 0.000001);
+    var j = j0;
     while j <= j1 {
-      mut i = i0;
+      var i = i0;
       while i <= i1 {
-        imm p = new Vec2(self.worldX(i), self.worldZ(j));
-        imm t = fclamp(((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2, 0., 1.);
-        imm dx = p.x - (a.x + ab.x * t);
-        imm dz = p.y - (a.y + ab.y * t);
-        imm d = fmax((dx * dx + dz * dz).sqrt() - halfWidth, 0.);
+        let p = new Vec2(self.worldX(i), self.worldZ(j));
+        let t = fclamp(((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2, 0., 1.);
+        let dx = p.x - (a.x + ab.x * t);
+        let dz = p.y - (a.y + ab.y * t);
+        let d = fmax((dx * dx + dz * dz).sqrt() - halfWidth, 0.);
         if d < self.at(c, i, j) { self.set(c, i, j, fmin(d, FAR)); }
         i = i + 1u32;
       }
@@ -270,7 +270,7 @@ pub struct GroundMaps {
   // Lower the object-distance channel round a round object (a boulder, a
   // trunk) at (x, z) of 'radius'
   pub fn addObject(self &mut, x f32, z f32, radius f32) {
-    imm p = new Vec2(x, z);
+    let p = new Vec2(x, z);
     self.addSegmentDistance(SIGNAL_OBJECT, p, p, radius);
   }
 
@@ -278,20 +278,20 @@ pub struct GroundMaps {
   // whose density is 'density' (0 to 1) at the middle and falls to 0 at the
   // rim (a smoothstep), the largest of overlapping crowns kept
   pub fn addCrown(self &mut, x f32, z f32, radius f32, density f32) {
-    imm i0 = self.clampIndex(i32.from(libc.floorf((x - radius - originX) / texel)));
-    imm i1 = self.clampIndex(i32.from(libc.floorf((x + radius - originX) / texel)) + 1i32);
-    imm j0 = self.clampIndex(i32.from(libc.floorf((z - radius - originZ) / texel)));
-    imm j1 = self.clampIndex(i32.from(libc.floorf((z + radius - originZ) / texel)) + 1i32);
-    mut j = j0;
+    let i0 = self.clampIndex(i32.from(libc.floorf((x - radius - originX) / texel)));
+    let i1 = self.clampIndex(i32.from(libc.floorf((x + radius - originX) / texel)) + 1i32);
+    let j0 = self.clampIndex(i32.from(libc.floorf((z - radius - originZ) / texel)));
+    let j1 = self.clampIndex(i32.from(libc.floorf((z + radius - originZ) / texel)) + 1i32);
+    var j = j0;
     while j <= j1 {
-      mut i = i0;
+      var i = i0;
       while i <= i1 {
-        imm dx = self.worldX(i) - x;
-        imm dz = self.worldZ(j) - z;
-        imm r = (dx * dx + dz * dz).sqrt() / radius;
+        let dx = self.worldX(i) - x;
+        let dz = self.worldZ(j) - z;
+        let r = (dx * dx + dz * dz).sqrt() / radius;
         if r < 1. {
-          imm t = 1. - r;
-          imm v = density * t * t * (3. - 2. * t);
+          let t = 1. - r;
+          let v = density * t * t * (3. - 2. * t);
           if v > self.at(SIGNAL_CANOPY, i, j) { self.set(SIGNAL_CANOPY, i, j, v); }
         }
         i = i + 1u32;
@@ -305,26 +305,26 @@ pub struct GroundMaps {
   // The colour at (x, z) the far field holds: linear rgb
   pub fn farColorAt(self &, x f32, z f32) Vec3 {
     if farField.len() == 0usize { return new Vec3(0.2, 0.2, 0.2); }
-    imm u = (x - originX) / texel - 0.5;
-    imm v = (z - originZ) / texel - 0.5;
-    imm fu = libc.floorf(u);
-    imm fv = libc.floorf(v);
-    imm tx = u - fu;
-    imm ty = v - fv;
-    imm i0 = self.clampIndex(i32.from(fu));
-    imm i1 = self.clampIndex(i32.from(fu) + 1i32);
-    imm j0 = self.clampIndex(i32.from(fv));
-    imm j1 = self.clampIndex(i32.from(fv) + 1i32);
-    mut out = new Vec3(0., 0., 0.);
-    mut ch = 0usize;
+    let u = (x - originX) / texel - 0.5;
+    let v = (z - originZ) / texel - 0.5;
+    let fu = libc.floorf(u);
+    let fv = libc.floorf(v);
+    let tx = u - fu;
+    let ty = v - fv;
+    let i0 = self.clampIndex(i32.from(fu));
+    let i1 = self.clampIndex(i32.from(fu) + 1i32);
+    let j0 = self.clampIndex(i32.from(fv));
+    let j1 = self.clampIndex(i32.from(fv) + 1i32);
+    var out = new Vec3(0., 0., 0.);
+    var ch = 0usize;
     while ch < 3usize {
-      imm a = srgbToLinear(f32.from(*farField[(usize.from(j0) * usize.from(res) + usize.from(i0)) * 4usize + ch]) / 255.);
-      imm b = srgbToLinear(f32.from(*farField[(usize.from(j0) * usize.from(res) + usize.from(i1)) * 4usize + ch]) / 255.);
-      imm cc = srgbToLinear(f32.from(*farField[(usize.from(j1) * usize.from(res) + usize.from(i0)) * 4usize + ch]) / 255.);
-      imm d = srgbToLinear(f32.from(*farField[(usize.from(j1) * usize.from(res) + usize.from(i1)) * 4usize + ch]) / 255.);
-      imm top = a + (b - a) * tx;
-      imm bottom = cc + (d - cc) * tx;
-      imm v2 = top + (bottom - top) * ty;
+      let a = srgbToLinear(f32.from(*farField[(usize.from(j0) * usize.from(res) + usize.from(i0)) * 4usize + ch]) / 255.);
+      let b = srgbToLinear(f32.from(*farField[(usize.from(j0) * usize.from(res) + usize.from(i1)) * 4usize + ch]) / 255.);
+      let cc = srgbToLinear(f32.from(*farField[(usize.from(j1) * usize.from(res) + usize.from(i0)) * 4usize + ch]) / 255.);
+      let d = srgbToLinear(f32.from(*farField[(usize.from(j1) * usize.from(res) + usize.from(i1)) * 4usize + ch]) / 255.);
+      let top = a + (b - a) * tx;
+      let bottom = cc + (d - cc) * tx;
+      let v2 = top + (bottom - top) * ty;
       if ch == 0usize { out.x = v2; } elif ch == 1usize { out.y = v2; } else { out.z = v2; }
       ch = ch + 1usize;
     }

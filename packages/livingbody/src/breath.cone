@@ -79,8 +79,8 @@ pub struct Breathing {
   pub state BreathState;
 
   pub fn make(params ExertionParams, height f32, seed u32) Breathing {
-    mut rng = Rng.make(seed + 31u32);
-    imm ph = rng.unit();
+    var rng = Rng.make(seed + 31u32);
+    let ph = rng.unit();
     new Breathing(params, height / 1.75, 0., 0., ph, params.restRate, 1., 1., false, false, rng,
       new BreathState(ph, 0., 1., params.restRate, 0., 0., true, 0., 0., 0., 0., 0.));
   }
@@ -101,18 +101,18 @@ pub struct Breathing {
 
   // The depth for a drive
   pub fn depthFor(self &, d f32) f32 {
-    imm c = clampf(d, 0., 1.);
+    let c = clampf(d, 0., 1.);
     1. + (params.maxDepth - 1.) * (1. - (1. - c) * (1. - c));
   }
 
   // Advance 'dt' seconds with the body doing 'work'
   pub fn update(self &mut, dt f32, work f32) BreathState {
     // 1. exertion
-    imm over = if work > params.threshold { work - params.threshold; } else { 0.; };
-    imm repay = if work < params.threshold { 1.; } else { 0.25; };
+    let over = if work > params.threshold { work - params.threshold; } else { 0.; };
+    let repay = if work < params.threshold { 1.; } else { 0.25; };
     debt = clampf(debt + dt * (params.debtGain * over - params.debtRepay * debt * repay), 0., 1.5);
-    imm target = clampf(work + params.debtDrive * (if debt > 1. { 1.; } else { debt; }), 0., 1.);
-    imm tau = if target > drive { params.onsetTau; } else { params.recoverTau; };
+    let target = clampf(work + params.debtDrive * (if debt > 1. { 1.; } else { debt; }), 0., 1.);
+    let tau = if target > drive { params.onsetTau; } else { params.recoverTau; };
     drive = drive + (target - drive) * (1. - libc.expf(-dt / tau));
     // 2. the clock
     rate = self.rateFor(drive) * cycleRate;
@@ -127,18 +127,18 @@ pub struct Breathing {
       if sighing { cycleDepth = 2.2; }
     }
     // 3. the waveform
-    imm depth = self.depthFor(drive) * cycleDepth;
-    imm fill = lungFill(phase, drive, sighing);
-    imm ext = fill * depth;
-    imm chestShare = 0.45 + 0.35 * drive;
-    imm bellyShare = 0.55 - 0.20 * drive;
-    imm s = size;
-    imm chest = 0.008 * s * ext * chestShare / 0.5;
-    imm drawIn = 0.008 * s * drive * drive * (1. - fill);
-    imm belly = 0.011 * s * ext * bellyShare / 0.5 - drawIn;
-    imm shoulders = 0.012 * s * smoothstep(0.25, 0.9, drive) * fill;
-    imm winded = smoothstep(0.2, 0.8, drive);
-    imm inspiring = phase < inspirationEnd(drive);
+    let depth = self.depthFor(drive) * cycleDepth;
+    let fill = lungFill(phase, drive, sighing);
+    let ext = fill * depth;
+    let chestShare = 0.45 + 0.35 * drive;
+    let bellyShare = 0.55 - 0.20 * drive;
+    let s = size;
+    let chest = 0.008 * s * ext * chestShare / 0.5;
+    let drawIn = 0.008 * s * drive * drive * (1. - fill);
+    let belly = 0.011 * s * ext * bellyShare / 0.5 - drawIn;
+    let shoulders = 0.012 * s * smoothstep(0.25, 0.9, drive) * fill;
+    let winded = smoothstep(0.2, 0.8, drive);
+    let inspiring = phase < inspirationEnd(drive);
     state = new BreathState(phase, fill, depth, rate, drive, debt, inspiring, ext, chest, belly, shoulders, winded);
     state;
   }
@@ -149,20 +149,20 @@ fn inspirationEnd(drive f32) f32 { 0.40 + 0.10 * clampf(drive, 0., 1.); }
 
 // The lungs' fill at a phase of the cycle (0 to 1) for a drive (0 to 1): the inspiration, the expiration and the pause
 pub fn lungFill(phase f32, drive f32, sigh bool) f32 {
-  imm d = clampf(drive, 0., 1.);
-  imm tI = inspirationEnd(d);
-  mut pause = 0.10 * (1. - d) * (1. - d);
+  let d = clampf(drive, 0., 1.);
+  let tI = inspirationEnd(d);
+  var pause = 0.10 * (1. - d) * (1. - d);
   if sigh { pause = 0.22; }
-  imm tE = 1. - pause;
+  let tE = 1. - pause;
   if phase < tI {
-    imm u = phase / tI;
+    let u = phase / tI;
     return 0.5 - 0.5 * cos(pi * u);
   }
   if phase < tE {
-    imm s = (phase - tI) / (tE - tI);
+    let s = (phase - tI) / (tE - tI);
     // passive recoil at rest: an exponential, quick and then slow; active and nearly linear under load
-    imm k = 2.8 + (1.0 - 2.8) * d;
-    imm e0 = libc.expf(-k);
+    let k = 2.8 + (1.0 - 2.8) * d;
+    let e0 = libc.expf(-k);
     return (libc.expf(-k * s) - e0) / (1. - e0);
   }
   0.;
@@ -192,8 +192,8 @@ pub fn humanoidBreathBones() BreathBones {
 // The breath as bone deltas, added to 'delta' (an additive layer's pose): a turn about x leans an upright bone back
 // (the chest filling), and the clavicles lift with the shoulders
 pub fn applyBreathPose(s &BreathState, b &BreathBones, delta &mut Pose) {
-  imm ax = new Vec3(1., 0., 0.);
-  imm k = s.chest / 0.007;
+  let ax = new Vec3(1., 0., 0.);
+  let k = s.chest / 0.007;
   if b.spine >= 0i32 { deltaRotate(delta, usize.from(b.spine), Quat.angleAxis(radians(b.spineGain * k), ax)); }
   if b.chest >= 0i32 { deltaRotate(delta, usize.from(b.chest), Quat.angleAxis(radians(b.chestGain * k), ax)); }
   if b.neck >= 0i32 { deltaRotate(delta, usize.from(b.neck), Quat.angleAxis(radians(b.neckGain * k), ax)); }

@@ -40,47 +40,47 @@ fn nearV(got Vec3, want Vec3, within f32, label &Array[u8]) bool {
 fn rad(d f32) f32 { d * pi / 180.; }
 
 fn testSpec() {
-  imm r = standardHand(0.19, true);
-  imm l = standardHand(0.19, false);
+  let r = standardHand(0.19, true);
+  let l = standardHand(0.19, false);
   near(r.fingers[MIDDLE].base.y, -0.098, 0.00001, "middle knuckle");
-  imm tip = fingerPoints(&r, MIDDLE, &HandPose.zero()).joint[3];
+  let tip = fingerPoints(&r, MIDDLE, &HandPose.zero()).joint[3];
   near(tip.y, -0.192, 0.00001, "middle fingertip at rest");
-  imm tipL = fingerPoints(&l, MIDDLE, &HandPose.zero()).joint[3];
+  let tipL = fingerPoints(&l, MIDDLE, &HandPose.zero()).joint[3];
   near(tipL.y, tip.y, 0.00001, "the left hand's the same length");
   near(fingerPoints(&l, THUMB, &HandPose.zero()).joint[3].x, -fingerPoints(&r, THUMB, &HandPose.zero()).joint[3].x, 0.00001, "and the thumb mirrored in x");
   near(l.palmNormal.x, 1., 0.00001, "left palm faces +x");
   near(r.palmNormal.x, -1., 0.00001, "right palm faces -x");
   // Scaling
-  imm big = standardHand(0.209, true);
+  let big = standardHand(0.209, true);
   near(fingerPoints(&big, MIDDLE, &HandPose.zero()).joint[3].y, -0.192 * 1.1, 0.0001, "a hand 10% longer has fingers 10% longer");
 }
 
 fn testFk() {
-  imm r = standardHand(0.19, true);
-  mut p = HandPose.zero();
+  let r = standardHand(0.19, true);
+  var p = HandPose.zero();
   p.set(INDEX, FLEX0, rad(90.));
-  imm a = fingerPoints(&r, INDEX, &p);
+  let a = fingerPoints(&r, INDEX, &p);
   nearV(a.joint[1], new Vec3(-0.041, -0.095, -0.0285), 0.00002, "index at 90 degrees: the first segment points to the palm");
   p.set(INDEX, FLEX1, rad(90.));
-  imm b = fingerPoints(&r, INDEX, &p);
+  let b = fingerPoints(&r, INDEX, &p);
   nearV(b.joint[2], new Vec3(-0.041, -0.095 + 0.024, -0.0285), 0.00002, "and the second points back up");
   // Segment lengths are kept by any pose
-  mut worst = 0.;
-  mut rng = 7u32;
-  mut f = 0usize;
+  var worst = 0.;
+  var rng = 7u32;
+  var f = 0usize;
   while f < 5usize {
-    mut pose = HandPose.zero();
-    mut k = 0usize;
+    var pose = HandPose.zero();
+    var k = 0usize;
     while k < DOF {
       rng = rng * 1664525u32 + 1013904223u32;
       pose.set(f, k, (f32.from(rng >> 16u32) / 65536. - 0.5) * 1.2);
       k = k + 1usize;
     }
-    imm pts = fingerPoints(&r, f, &pose);
-    imm fs = r.fingers[f];
-    mut s = 0usize;
+    let pts = fingerPoints(&r, f, &pose);
+    let fs = r.fingers[f];
+    var s = 0usize;
     while s < 3usize {
-      imm d = pts.joint[s].distance(pts.joint[s + 1usize]) - fs.len[s];
+      let d = pts.joint[s].distance(pts.joint[s + 1usize]) - fs.len[s];
       if absf(d) > worst { worst = absf(d); }
       s = s + 1usize;
     }
@@ -90,25 +90,25 @@ fn testFk() {
 }
 
 fn testBonesAgree() {
-  imm r = standardHand(0.189, true);
-  mut skel = humanoid(1.75);
-  imm bones = attachHand(&mut skel, HAND_R, &r);
+  let r = standardHand(0.189, true);
+  var skel = humanoid(1.75);
+  let bones = attachHand(&mut skel, HAND_R, &r);
   expectUInt(u64.from(skel.boneCount()), 34u64, "19 bones and fifteen");
   expectUInt(u64.from(skel.socketCount()), 14u64, "nine sockets and five tips");
-  mut pose = skel.restPose();
-  mut hp = poseRelaxed();
+  var pose = skel.restPose();
+  var hp = poseRelaxed();
   hp.set(INDEX, SPREAD, 0.1);
   hp.set(THUMB, TWIST, 0.4);
   applyHandPose(&mut pose, &bones, &r, &hp);
-  mut models = List[Transform3].empty();
+  var models = List[Transform3].empty();
   skel.modelTransforms(&pose, &mut models);
-  imm hand = *models[HAND_R];
-  mut worst = 0.;
-  mut f = 0usize;
+  let hand = *models[HAND_R];
+  var worst = 0.;
+  var f = 0usize;
   while f < 5usize {
-    imm viaBones = skel.socketModel(&models, *bones.tip[f]).translation;
-    imm viaFk = hand.transformPoint(fingerPoints(&r, f, &hp).joint[3]);
-    imm d = viaBones.distance(viaFk);
+    let viaBones = skel.socketModel(&models, *bones.tip[f]).translation;
+    let viaFk = hand.transformPoint(fingerPoints(&r, f, &hp).joint[3]);
+    let d = viaBones.distance(viaFk);
     if d > worst { worst = d; }
     f = f + 1usize;
   }
@@ -125,55 +125,55 @@ fn testSurface() {
   near(primDistance(PRIM_PLANE, new Vec3(0., 0., 0.), new Vec3(1., 2., 3.)), 2., 0.00001, "plane");
   near(primDistance(PRIM_CAPSULE, new Vec3(0.5, 1., 0.), new Vec3(2., 3., 0.)), 2. * (2.).sqrt() - 0.5, 0.00001, "capsule beyond its end: distance to the end point less the radius");
   // A placed primitive
-  mut s = PropSurface.empty();
+  var s = PropSurface.empty();
   s.cylinder(new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), 0.1);
   near(s.distance(new Vec3(0.3, 0.5, 0.)), 0.2, 0.00001, "a cylinder from a to b");
   near(s.distance(new Vec3(0., 1.5, 0.)), 0.5, 0.00001, "its end");
-  imm moved = s.placed(new Transform3(new Vec3(1., 0., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
+  let moved = s.placed(new Transform3(new Vec3(1., 0., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
   near(moved.distance(new Vec3(1.3, 0.5, 0.)), 0.2, 0.00001, "placed by a transform");
   nearV(s.normal(new Vec3(0.3, 0.5, 0.)), new Vec3(1., 0., 0.), 0.001, "its normal");
 }
 
 fn testPlacement() {
-  imm r = standardHand(0.19, true);
-  imm a = new Vec3(0., 0., 0.);
-  imm b = new Vec3(0., 0.28, 0.);
-  imm w = cylinderGrip(&r, a, b, 0.0155, 0.3, 0., 1., new Vec3(1., 0., 0.));
+  let r = standardHand(0.19, true);
+  let a = new Vec3(0., 0., 0.);
+  let b = new Vec3(0., 0.28, 0.);
+  let w = cylinderGrip(&r, a, b, 0.0155, 0.3, 0., 1., new Vec3(1., 0., 0.));
   // The grip centre is on the handle's skin at u = 0.3, on the +x side
   nearV(w.transformPoint(r.gripCentre), new Vec3(0.0155, 0.084, 0.), 0.00002, "the grip centre is on the handle's skin");
   // The palm faces the handle
-  imm n = w.rotation * r.palmNormal;
+  let n = w.rotation * r.palmNormal;
   nearV(n, new Vec3(-1., 0., 0.), 0.00002, "the palm faces the axis");
   // The thumb points along the handle towards b
-  imm thumb = fingerPoints(&r, THUMB, &HandPose.zero());
-  imm td = w.rotation * (thumb.joint[3] - thumb.joint[0]).normalize();
+  let thumb = fingerPoints(&r, THUMB, &HandPose.zero());
+  let td = w.rotation * (thumb.joint[3] - thumb.joint[0]).normalize();
   expect(td.y > 0.3, "the thumb points up the handle");
-  imm w2 = cylinderGrip(&r, a, b, 0.0155, 0.3, 0., -1., new Vec3(1., 0., 0.));
-  imm td2 = w2.rotation * (thumb.joint[3] - thumb.joint[0]).normalize();
+  let w2 = cylinderGrip(&r, a, b, 0.0155, 0.3, 0., -1., new Vec3(1., 0., 0.));
+  let td2 = w2.rotation * (thumb.joint[3] - thumb.joint[0]).normalize();
   expect(td2.y < -0.3, "and down it when asked");
   // The fingers go across the handle (perpendicular to its axis)
-  imm fd = w.rotation * new Vec3(0., -1., 0.);
+  let fd = w.rotation * new Vec3(0., -1., 0.);
   near(fd.dot(new Vec3(0., 1., 0.)), 0., 0.00001, "the fingers point across the handle");
   // The left hand's thumb goes the same way for the same request
-  imm l = standardHand(0.19, false);
-  imm wl = cylinderGrip(&l, a, b, 0.0155, 0.3, 0., 1., new Vec3(1., 0., 0.));
-  imm thumbL = fingerPoints(&l, THUMB, &HandPose.zero());
-  imm tdl = wl.rotation * (thumbL.joint[3] - thumbL.joint[0]).normalize();
+  let l = standardHand(0.19, false);
+  let wl = cylinderGrip(&l, a, b, 0.0155, 0.3, 0., 1., new Vec3(1., 0., 0.));
+  let thumbL = fingerPoints(&l, THUMB, &HandPose.zero());
+  let tdl = wl.rotation * (thumbL.joint[3] - thumbL.joint[0]).normalize();
   expect(tdl.y > 0.3, "a left hand's thumb too");
   nearV(wl.transformPoint(l.gripCentre), new Vec3(0.0155, 0.084, 0.), 0.00002, "on the skin");
 }
 
 fn gripOn(r &HandSpec, radius f32) GripFit {
-  mut s = PropSurface.empty();
+  var s = PropSurface.empty();
   s.cylinder(new Vec3(0., 0., 0.), new Vec3(0., 0.3, 0.), radius);
-  imm shape = shapePower();
-  imm w = cylinderGrip(r, new Vec3(0., 0., 0.), new Vec3(0., 0.3, 0.), radius, 0.4, 0., 1., new Vec3(1., 0., 0.));
+  let shape = shapePower();
+  let w = cylinderGrip(r, new Vec3(0., 0., 0.), new Vec3(0., 0.3, 0.), radius, 0.4, 0., 1., new Vec3(1., 0., 0.));
   fitGrip(r, &shape, w, new Vec3(1., 0., 0.), &s, 0.0004, 0.05, false);
 }
 
 fn flexSum(p &HandPose) f32 {
-  mut t = 0.;
-  mut f = INDEX;
+  var t = 0.;
+  var f = INDEX;
   while f <= PINKY {
     t = t + p.get(f, FLEX0) + p.get(f, FLEX1) + p.get(f, FLEX2);
     f = f + 1usize;
@@ -182,23 +182,23 @@ fn flexSum(p &HandPose) f32 {
 }
 
 fn testGrips() {
-  imm r = standardHand(0.19, true);
-  imm radii = [0.012, 0.016, 0.025, 0.035];
-  mut last = 100.;
-  mut i = 0usize;
+  let r = standardHand(0.19, true);
+  let radii = [0.012, 0.016, 0.025, 0.035];
+  var last = 100.;
+  var i = 0usize;
   while i < 4usize {
-    imm fit = gripOn(&r, radii[i]);
+    let fit = gripOn(&r, radii[i]);
     expect(fit.result.deepest < 0.0004 + 0.000005, "no flesh deeper than the squash");
     expect(fit.result.fingersTouching >= 4usize, "at least four fingers touch");
-    imm sum = flexSum(&fit.result.pose);
+    let sum = flexSum(&fit.result.pose);
     expect(sum < last, "a thicker handle is gripped with less flexion");
     last = sum;
     i = i + 1usize;
   }
   // Every contact is within a millimetre, and the pressed ones at the squash
-  imm fit = gripOn(&r, 0.016);
-  mut c = 0usize;
-  mut allClose = true;
+  let fit = gripOn(&r, 0.016);
+  var c = 0usize;
+  var allClose = true;
   while c < fit.result.contacts.len() {
     if fit.result.contacts[c].gap > 0.001 { allClose = false; }
     c = c + 1usize;
@@ -209,29 +209,29 @@ fn testGrips() {
 
 fn testNoPassThrough() {
   // Fifty random handles and placements: the flesh never ends past the squash
-  imm r = standardHand(0.19, true);
-  mut rng = 99u32;
-  mut worst = 0.;
-  mut touching = 0usize;
-  mut trial = 0;
+  let r = standardHand(0.19, true);
+  var rng = 99u32;
+  var worst = 0.;
+  var touching = 0usize;
+  var trial = 0;
   while trial < 50 {
     rng = rng * 1664525u32 + 1013904223u32;
-    imm radius = 0.010 + 0.030 * f32.from(rng >> 16u32) / 65536.;
+    let radius = 0.010 + 0.030 * f32.from(rng >> 16u32) / 65536.;
     rng = rng * 1664525u32 + 1013904223u32;
-    imm yaw = 6.283 * f32.from(rng >> 16u32) / 65536.;
+    let yaw = 6.283 * f32.from(rng >> 16u32) / 65536.;
     rng = rng * 1664525u32 + 1013904223u32;
-    imm tilt = 1.2 * f32.from(rng >> 16u32) / 65536.;
+    let tilt = 1.2 * f32.from(rng >> 16u32) / 65536.;
     rng = rng * 1664525u32 + 1013904223u32;
-    imm roll = 6.283 * f32.from(rng >> 16u32) / 65536.;
-    imm axis = new Vec3(sin(tilt) * cos(yaw), cos(tilt), sin(tilt) * sin(yaw));
-    mut s = PropSurface.empty();
+    let roll = 6.283 * f32.from(rng >> 16u32) / 65536.;
+    let axis = new Vec3(sin(tilt) * cos(yaw), cos(tilt), sin(tilt) * sin(yaw));
+    var s = PropSurface.empty();
     s.cylinder(new Vec3(0., 0., 0.), axis * 0.3, radius);
     s.sphere(axis * 0.3, radius * 1.4);
-    imm shape = shapePower();
-    imm w = cylinderGrip(&r, new Vec3(0., 0., 0.), axis * 0.3, radius, 0.4, roll, 1., new Vec3(0., 0., 1.));
+    let shape = shapePower();
+    let w = cylinderGrip(&r, new Vec3(0., 0., 0.), axis * 0.3, radius, 0.4, roll, 1., new Vec3(0., 0., 1.));
     // Out along the roll's direction from the axis
-    imm out = (w.transformPoint(r.gripCentre) - axis * 0.12).normalize();
-    imm fit = fitGrip(&r, &shape, w, out, &s, 0.0004, 0.05, false);
+    let out = (w.transformPoint(r.gripCentre) - axis * 0.12).normalize();
+    let fit = fitGrip(&r, &shape, w, out, &s, 0.0004, 0.05, false);
     if fit.result.deepest > worst { worst = fit.result.deepest; }
     touching = touching + fit.result.fingersTouching;
     trial = trial + 1;
@@ -241,105 +241,105 @@ fn testNoPassThrough() {
 }
 
 fn testPinch() {
-  imm r = standardHand(0.19, true);
-  imm shape = shapePinch();
-  imm p = pinchTips(&r, &shape, 0.);
-  imm a = fingerPoints(&r, THUMB, &p).joint[3];
-  imm b = fingerPoints(&r, INDEX, &p).joint[3];
-  imm gap = a.distance(b) - r.fingers[THUMB].radius[2] - r.fingers[INDEX].radius[2];
+  let r = standardHand(0.19, true);
+  let shape = shapePinch();
+  let p = pinchTips(&r, &shape, 0.);
+  let a = fingerPoints(&r, THUMB, &p).joint[3];
+  let b = fingerPoints(&r, INDEX, &p).joint[3];
+  let gap = a.distance(b) - r.fingers[THUMB].radius[2] - r.fingers[INDEX].radius[2];
   near(gap, 0., 0.0003, "the tips' flesh meets");
-  imm p2 = pinchTips(&r, &shape, 0.01);
-  imm a2 = fingerPoints(&r, THUMB, &p2).joint[3];
-  imm b2 = fingerPoints(&r, INDEX, &p2).joint[3];
+  let p2 = pinchTips(&r, &shape, 0.01);
+  let a2 = fingerPoints(&r, THUMB, &p2).joint[3];
+  let b2 = fingerPoints(&r, INDEX, &p2).joint[3];
   near(a2.distance(b2) - r.fingers[THUMB].radius[2] - r.fingers[INDEX].radius[2], 0.01, 0.0003, "or is 10 mm apart when asked");
 }
 
 fn testMotions() {
-  imm r = standardHand(0.19, true);
-  imm m = kneadMotion(&r, 0.08, 0.03, 1.6);
-  imm a = m.sample(0.).flat();
-  imm b = m.sample(1.6).flat();
-  mut worst = 0.;
-  mut i = 0usize;
+  let r = standardHand(0.19, true);
+  let m = kneadMotion(&r, 0.08, 0.03, 1.6);
+  let a = m.sample(0.).flat();
+  let b = m.sample(1.6).flat();
+  var worst = 0.;
+  var i = 0usize;
   while i < KEY_FLOATS { if absf(*a[i] - *b[i]) > worst { worst = absf(*a[i] - *b[i]); } i = i + 1usize; }
   near(worst, 0., 0.0001, "a cycle is periodic");
   // At a key's time the sample is the key
-  imm k = m.keys[2];
-  imm at = m.sample(k.time).flat();
-  imm kf = k.key.flat();
+  let k = m.keys[2];
+  let at = m.sample(k.time).flat();
+  let kf = k.key.flat();
   worst = 0.;
   i = 0usize;
   while i < KEY_FLOATS { if absf(*at[i] - *kf[i]) > worst { worst = absf(*at[i] - *kf[i]); } i = i + 1usize; }
   near(worst, 0., 0.0001, "at a key's time, the key");
   // Continuity: the wrist moves less than a millimetre in a millisecond of a 1.6 s knead stroke of 8 cm
-  mut jump = 0.;
-  mut t = 0.;
+  var jump = 0.;
+  var t = 0.;
   while t < 1.6 {
-    imm p0 = m.sample(t).translation;
-    imm p1 = m.sample(t + 0.001).translation;
+    let p0 = m.sample(t).translation;
+    let p1 = m.sample(t + 0.001).translation;
     if p0.distance(p1) > jump { jump = p0.distance(p1); }
     t = t + 0.01;
   }
   expect(jump < 0.0005, "the wrist is continuous: under half a millimetre a millisecond");
   // A blend
-  mut blend = TaskBlend.make();
-  imm relaxed = poseRelaxed();
-  imm i0 = blend.add(holdMotion(&relaxed, 0.), 1.);
-  imm i1 = blend.add(kneadMotion(&r, 0.08, 0.03, 1.6), 1.);
+  var blend = TaskBlend.make();
+  let relaxed = poseRelaxed();
+  let i0 = blend.add(holdMotion(&relaxed, 0.), 1.);
+  let i1 = blend.add(kneadMotion(&r, 0.08, 0.03, 1.6), 1.);
   blend.clock = 0.4;
-  imm mean0 = blend.motions[i0].sample(0.4).flat();
-  imm mean1 = blend.motions[i1].sample(0.4).flat();
-  imm mix = blend.sample().flat();
+  let mean0 = blend.motions[i0].sample(0.4).flat();
+  let mean1 = blend.motions[i1].sample(0.4).flat();
+  let mix = blend.sample().flat();
   worst = 0.;
   i = 0usize;
-  while i < KEY_FLOATS { imm d = absf(*mix[i] - 0.5 * (*mean0[i] + *mean1[i])); if d > worst { worst = d; } i = i + 1usize; }
+  while i < KEY_FLOATS { let d = absf(*mix[i] - 0.5 * (*mean0[i] + *mean1[i])); if d > worst { worst = d; } i = i + 1usize; }
   near(worst, 0., 0.00001, "equal weights: the mean");
   // Easing: a weight 1 to 0 over 0.5 s is 0.01 after 0.5 s
   blend.setGoal(i1, 0., 0.5);
-  mut e = 0;
+  var e = 0;
   while e < 50 { blend.update(0.01); e = e + 1; }
   near(*blend.weight[i1], libc.expf(-4.6), 0.0005, "a weight eases to within 1% in the time asked");
 }
 
 fn testReach() {
-  imm r = standardHand(0.189, true);
-  mut skel = humanoid(1.75);
-  imm bones = attachHand(&mut skel, HAND_R, &r);
-  mut pose = skel.restPose();
-  mut models = List[Transform3].empty();
+  let r = standardHand(0.189, true);
+  var skel = humanoid(1.75);
+  let bones = attachHand(&mut skel, HAND_R, &r);
+  var pose = skel.restPose();
+  var models = List[Transform3].empty();
   skel.modelTransforms(&pose, &mut models);
-  imm target = new Transform3(new Vec3(0.27, 1.06, -0.30), Quat.angleAxis(0.7, new Vec3(0., 1., 0.)) * Quat.angleAxis(0.4, new Vec3(1., 0., 0.)), new Vec3(1., 1., 1.));
-  imm res = reachWrist(&skel, &mut pose, &mut models, true, target, elbowPole(true), 1.);
+  let target = new Transform3(new Vec3(0.27, 1.06, -0.30), Quat.angleAxis(0.7, new Vec3(0., 1., 0.)) * Quat.angleAxis(0.4, new Vec3(1., 0., 0.)), new Vec3(1., 1., 1.));
+  let res = reachWrist(&skel, &mut pose, &mut models, true, target, elbowPole(true), 1.);
   expectBool(res.reached, true, "the arm reaches");
   nearV((*models[HAND_R]).translation, target.translation, 0.002, "the wrist is where asked");
-  imm q = (*models[HAND_R]).rotation;
+  let q = (*models[HAND_R]).rotation;
   near(absf(q.dot(target.rotation)), 1., 0.0005, "and turned as asked");
   // Out of reach: nearest, and not reached
-  imm far = new Transform3(new Vec3(1.5, 1.06, -0.30), Quat.identity(), new Vec3(1., 1., 1.));
-  imm res2 = reachWrist(&skel, &mut pose, &mut models, true, far, elbowPole(true), 1.);
+  let far = new Transform3(new Vec3(1.5, 1.06, -0.30), Quat.identity(), new Vec3(1., 1., 1.));
+  let res2 = reachWrist(&skel, &mut pose, &mut models, true, far, elbowPole(true), 1.);
   expectBool(res2.reached, false, "a target out of reach is not reached");
 }
 
 fn testMesh() {
-  imm r = standardHand(0.189, true);
-  imm h = makeTestHand(&r);
-  imm n = h.mesh.positions.len();
+  let r = standardHand(0.189, true);
+  let h = makeTestHand(&r);
+  let n = h.mesh.positions.len();
   expect(n > 2000usize, "the hand has a couple of thousand vertices");
   expectUInt(u64.from(h.joints.len()), u64.from(4usize * n), "four joints a vertex");
   expectUInt(u64.from(h.weights.len()), u64.from(4usize * n), "and four weights");
-  mut worstSum = 0.;
-  mut maxJoint = 0u32;
-  mut v = 0usize;
+  var worstSum = 0.;
+  var maxJoint = 0u32;
+  var v = 0usize;
   while v < n {
-    imm s = *h.weights[4usize * v] + *h.weights[4usize * v + 1usize] + *h.weights[4usize * v + 2usize] + *h.weights[4usize * v + 3usize];
+    let s = *h.weights[4usize * v] + *h.weights[4usize * v + 1usize] + *h.weights[4usize * v + 2usize] + *h.weights[4usize * v + 3usize];
     if absf(s - 1.) > worstSum { worstSum = absf(s - 1.); }
-    mut k = 0usize;
+    var k = 0usize;
     while k < 4usize { if *h.joints[4usize * v + k] > maxJoint { maxJoint = *h.joints[4usize * v + k]; } k = k + 1usize; }
     v = v + 1usize;
   }
   near(worstSum, 0., 0.0001, "weights sum to 1");
   expectUInt(u64.from(maxJoint), 15u64, "joints 0 to 15");
-  imm hammerProp = hammer();
+  let hammerProp = hammer();
   expectUInt(u64.from(hammerProp.meshes.len()), u64.from(hammerProp.surface.prims.len()), "a mesh for each primitive of a prop");
   near(hammerProp.surface.distance(new Vec3(0.0155, 0.1, 0.)), 0., 0.00001, "the hammer's handle skin");
 }

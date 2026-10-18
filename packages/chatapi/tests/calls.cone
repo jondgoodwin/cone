@@ -38,43 +38,43 @@ fn theKey() &str {"sk-test-chatapi-0001";}
 // ---------------------------------------------------------------------------
 
 fn errorBody(message &str, kind &str, code &str) String {
-  mut inner = json.Json.newObject();
+  var inner = json.Json.newObject();
   inner.set("message", json.Json.fromText(message));
   inner.set("type", json.Json.fromText(kind));
   inner.set("param", json.Json.Null);
   inner.set("code", json.Json.fromText(code));
-  mut o = json.Json.newObject();
+  var o = json.Json.newObject();
   o.set("error", inner);
   textOf(&o);
 }
 
 fn textOf(j &json.Json) String {
   match j.toText() {
-    case mut t Ok {
-      mut s = String.empty();
+    case var t Ok {
+      var s = String.empty();
       s <=> t;
       s;
     }
-    case imm e Error {String.from("(unwritable)");}
+    case let e Error {String.from("(unwritable)");}
   }
 }
 
 // A chat completion with one choice
 fn completion(content json.Json, finish &str) String {
-  mut msg = json.Json.newObject();
+  var msg = json.Json.newObject();
   msg.set("role", json.Json.fromText("assistant"));
   msg.set("content", content);
-  mut choice = json.Json.newObject();
+  var choice = json.Json.newObject();
   choice.set("index", json.Json.fromI64(0i64));
   choice.set("message", msg);
   choice.set("finish_reason", json.Json.fromText(finish));
-  mut choices = json.Json.newArray();
+  var choices = json.Json.newArray();
   choices.push(choice);
-  mut usage = json.Json.newObject();
+  var usage = json.Json.newObject();
   usage.set("prompt_tokens", json.Json.fromI64(11i64));
   usage.set("completion_tokens", json.Json.fromI64(7i64));
   usage.set("total_tokens", json.Json.fromI64(18i64));
-  mut o = json.Json.newObject();
+  var o = json.Json.newObject();
   o.set("id", json.Json.fromText("chatcmpl-mock"));
   o.set("object", json.Json.fromText("chat.completion"));
   o.set("created", json.Json.fromI64(1700000000i64));
@@ -90,14 +90,14 @@ actor Handler {
   hits Sender[u64];
 
   fn answer(self, status u16, body &str) {
-    mut head = ResponseHead.make(status);
+    var head = ResponseHead.make(status);
     head.headers.add("Content-Type", "application/json");
     ex.respond(head, String.from(body));
   }
 
   pub async do run(self) {
     hits.send(1u64);
-    imm path = String.from(ex.request.path());
+    let path = String.from(ex.request.path());
     if path.view() != "/v1/chat/completions" {
       ex.text(404u16, "no such path");
       return;
@@ -106,27 +106,27 @@ actor Handler {
       ex.text(405u16, "POST only");
       return;
     }
-    imm auth = String.fromBytes(ex.request.header("authorization"));
-    mut want = String.from("Bearer ");
+    let auth = String.fromBytes(ex.request.header("authorization"));
+    var want = String.from("Bearer ");
     want.append(theKey());
     if auth.view() != want.view() {
       self.answer(401u16, errorBody("Incorrect API key provided.", "invalid_request_error", "invalid_api_key").view());
       return;
     }
-    mut doc json.Json = json.Json.Null;
+    var doc json.Json = json.Json.Null;
     match json.parse(ex.request.body.view()) {
-      case mut ok Ok {doc <=> ok;}
-      case imm e Error {
+      case var ok Ok {doc <=> ok;}
+      case let e Error {
         self.answer(400u16, errorBody("the body is not JSON", "invalid_request_error", "bad_body").view());
         return;
       }
     }
-    mut model = String.empty();
+    var model = String.empty();
     match doc.getText("model") {
-      case imm s Some {model = String.from(s);}
+      case let s Some {model = String.from(s);}
       case is None {}
     }
-    imm m = model.view();
+    let m = model.view();
     if m == "echo" {
       self.answer(200u16, completion(json.Json.fromText(ex.request.body.view()), "stop").view());
     } elif m == "nullcontent" {
@@ -134,7 +134,7 @@ actor Handler {
     } elif m == "ratelimit" {
       self.answer(429u16, errorBody("Rate limit reached", "rate_limit_error", "rate_limit_exceeded").view());
     } elif m == "html502" {
-      mut head = ResponseHead.make(502u16);
+      var head = ResponseHead.make(502u16);
       head.headers.add("Content-Type", "text/html");
       ex.respond(head, String.from("<html><body>Bad Gateway</body></html>"));
     } elif m == "garbage" {
@@ -160,21 +160,21 @@ actor Acceptor {
   held List[Silent];
 
   pub async do open(self, ports Sender[u16]) {
-    imm r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
-    mut res = r;
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
     match &mut res {
-      case mut ok &mut Ok {server <=> *ok;}
-      case imm e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case var ok &mut Ok {server <=> *ok;}
+      case let e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
 
   pub async do serve(self) {
     while true {
-      imm n = await server.next();
+      let n = await server.next();
       match n {
-        case mut ok Ok {self.route(ok);}
-        case imm e Error {break;}
+        case var ok Ok {self.route(ok);}
+        case let e Error {break;}
       }
     }
   }
@@ -189,7 +189,7 @@ actor Acceptor {
       held.push(new Silent(ex));
       return;
     }
-    imm h = new Handler(ex, hits.clone());
+    let h = new Handler(ex, hits.clone());
     h.run();
   }
 }
@@ -199,7 +199,7 @@ actor Acceptor {
 // ---------------------------------------------------------------------------
 
 fn baseUrl(port u16) String {
-  mut u = String.from("http://127.0.0.1:");
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append("/v1");
   u;
@@ -207,8 +207,8 @@ fn baseUrl(port u16) String {
 
 fn usageText(u &Option[Usage]) String {
   match u {
-    case imm x &Some {
-      mut s = String.empty();
+    case let x &Some {
+      var s = String.empty();
       s.appendUInt(x.promptTokens);
       s.append("/");
       s.appendUInt(x.completionTokens);
@@ -225,7 +225,7 @@ fn show(label &str, r &Result[ChatReply, ChatError]) {
   printStr(label);
   printStr(": ");
   match r {
-    case imm ok &Ok {
+    case let ok &Ok {
       printStr("ok id=");
       printStr(ok.id.view());
       printStr(" model=");
@@ -238,7 +238,7 @@ fn show(label &str, r &Result[ChatReply, ChatError]) {
       printStr(usageText(&ok.usage).view());
       printStr("\n");
     }
-    case imm e &Error {
+    case let e &Error {
       printStr("error ");
       if e.kind == ChatErrorKind.Transport {
         // The words after the stage are the system's own and differ between systems
@@ -256,13 +256,13 @@ fn show(label &str, r &Result[ChatReply, ChatError]) {
 
 fn contentOf(r &Result[ChatReply, ChatError]) String {
   match r {
-    case imm ok &Ok {ok.content.copy();}
-    case imm e &Error {String.from("(none)");}
+    case let ok &Ok {ok.content.copy();}
+    case let e &Error {String.from("(none)");}
   }
 }
 
 fn echoRequest(model &str, text &str) ChatRequest {
-  mut r = ChatRequest.make(model);
+  var r = ChatRequest.make(model);
   r.addSystem("You are a mock.");
   r.addUser(text);
   r.temperature = Some[f64](0.5d);
@@ -272,7 +272,7 @@ fn echoRequest(model &str, text &str) ChatRequest {
 }
 
 fn simple(model &str) ChatRequest {
-  mut r = ChatRequest.make(model);
+  var r = ChatRequest.make(model);
   r.addUser("hi");
   r;
 }
@@ -281,55 +281,55 @@ actor Prober {
   pub async do run(self, port u16, done OneshotSender[u64]) {
     env.set("CHATAPI_TEST_KEY", theKey());
     env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
-    imm chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
+    let chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
 
     // The echo: the body the server saw comes back as the reply's text
-    imm echo = await chat.complete(echoRequest("echo", "Say \"hi\""));
+    let echo = await chat.complete(echoRequest("echo", "Say \"hi\""));
     show("echo", &echo);
     printStr("  body: ");
     printStr(contentOf(&echo).view());
     printStr("\n");
 
     // A wrong key: 401 with the API's error object
-    imm wrong = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_WRONGKEY"));
-    imm rwrongkey = await wrong.complete(simple("echo"));
+    let wrong = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_WRONGKEY"));
+    let rwrongkey = await wrong.complete(simple("echo"));
     show("wrong key", &rwrongkey);
 
     // No key variable set; a request with no messages: neither is sent
-    imm nokey = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_UNSET"));
-    imm rnokey = await nokey.complete(simple("echo"));
+    let nokey = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_UNSET"));
+    let rnokey = await nokey.complete(simple("echo"));
     show("no key", &rnokey);
-    imm rnomessages = await chat.complete(ChatRequest.make("echo"));
+    let rnomessages = await chat.complete(ChatRequest.make("echo"));
     show("no messages", &rnomessages);
 
     // A server that answers with each kind of thing
-    imm rnullcontent = await chat.complete(simple("nullcontent"));
+    let rnullcontent = await chat.complete(simple("nullcontent"));
     show("null content", &rnullcontent);
-    imm rratelimit = await chat.complete(simple("ratelimit"));
+    let rratelimit = await chat.complete(simple("ratelimit"));
     show("rate limit", &rratelimit);
-    imm rhtml502 = await chat.complete(simple("html502"));
+    let rhtml502 = await chat.complete(simple("html502"));
     show("html 502", &rhtml502);
-    imm rgarbage = await chat.complete(simple("garbage"));
+    let rgarbage = await chat.complete(simple("garbage"));
     show("garbage", &rgarbage);
-    imm rnochoices = await chat.complete(simple("nochoices"));
+    let rnochoices = await chat.complete(simple("nochoices"));
     show("no choices", &rnochoices);
-    imm rerrorin200 = await chat.complete(simple("errorin200"));
+    let rerrorin200 = await chat.complete(simple("errorin200"));
     show("error in 200", &rerrorin200);
-    imm runknownmodel = await chat.complete(simple("nothing"));
+    let runknownmodel = await chat.complete(simple("nothing"));
     show("unknown model", &runknownmodel);
 
     // A deadline on a call the server never answers
-    imm lim = IoLimits.until(Instant.now() + Duration.fromMillis(400i64));
-    imm rdeadline = await chat.completeIn(simple("hang"), lim);
+    let lim = IoLimits.until(Instant.now() + Duration.fromMillis(400i64));
+    let rdeadline = await chat.completeIn(simple("hang"), lim);
     show("deadline", &rdeadline);
 
     // Three calls in flight at once through one Chat
-    imm f1 = chat.complete(echoRequest("echo", "one"));
-    imm f2 = chat.complete(echoRequest("echo", "two"));
-    imm f3 = chat.complete(echoRequest("echo", "three"));
-    imm r3 = await f3;
-    imm r1 = await f1;
-    imm r2 = await f2;
+    let f1 = chat.complete(echoRequest("echo", "one"));
+    let f2 = chat.complete(echoRequest("echo", "two"));
+    let f3 = chat.complete(echoRequest("echo", "three"));
+    let r3 = await f3;
+    let r1 = await f1;
+    let r2 = await f2;
     printStr("in flight: ");
     printStr(yes(contentOf(&r1).view().contains("\"one\"")));
     printStr(" ");
@@ -338,15 +338,15 @@ actor Prober {
     printStr(yes(contentOf(&r3).view().contains("\"three\"")));
     printStr("\n");
 
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 
   pub async do refused(self, port u16, done OneshotSender[u64]) {
-    imm chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
-    imm rrefused = await chat.complete(simple("echo"));
+    let chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
+    let rrefused = await chat.complete(simple("echo"));
     show("refused", &rrefused);
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
@@ -355,46 +355,46 @@ fn yes(b bool) &str {if b {"yes";} else {"NO";};}
 
 fn take[T](rx &mut Receiver[T], dflt T) T {
   match rx.recv() {
-    case imm v Some {v;}
+    case let v Some {v;}
     else {dflt;}
   }
 }
 
 fn main() i32 {
   initAll();
-  mut ptx Sender[u16];
-  mut prx Receiver[u16];
+  var ptx Sender[u16];
+  var prx Receiver[u16];
   ptx, prx = Channel[u16].make();
-  mut htx Sender[u64];
-  mut hrx Receiver[u64];
+  var htx Sender[u64];
+  var hrx Receiver[u64];
   htx, hrx = Channel[u64].make();
   {
-    imm acceptor = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
+    let acceptor = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     acceptor.open(ptx.clone());
-    imm port = take[u16](&mut prx, 0u16);
+    let port = take[u16](&mut prx, 0u16);
     acceptor.serve();
     {
-      mut tx OneshotSender[u64];
-      mut rx OneshotReceiver[u64];
+      var tx OneshotSender[u64];
+      var rx OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
-      imm p = new Prober();
+      let p = new Prober();
       p.run(port, tx);
       rx.recv();
     }
 
     // The same call, synchronously: httpclient with the request the package made
     env.set("CHATAPI_TEST_KEY", theKey());
-    imm ep = Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY");
-    imm req = echoRequest("echo", "sync");
-    mut hreq = httpclient.Request.get("");
+    let ep = Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY");
+    let req = echoRequest("echo", "sync");
+    var hreq = httpclient.Request.get("");
     match httpRequest(&ep, &req, false) {
-      case mut ok Ok {hreq <=> ok;}
-      case imm e Error {printStr("sync: the request was not built\n");}
+      case var ok Ok {hreq <=> ok;}
+      case let e Error {printStr("sync: the request was not built\n");}
     }
-    mut lp = Loop.mustMake();
-    mut hc = httpclient.Client.make(httpclient.Config.make(), Pool.make());
-    imm resp = hc.fetchWhole(&mut lp, hreq, 1048576usize);
-    imm syncReply = replyOfResponse(&resp);
+    var lp = Loop.mustMake();
+    var hc = httpclient.Client.make(httpclient.Config.make(), Pool.make());
+    let resp = hc.fetchWhole(&mut lp, hreq, 1048576usize);
+    let syncReply = replyOfResponse(&resp);
     show("sync", &syncReply);
     printStr("  body is the request: ");
     printStr(yes(contentOf(&syncReply).view().contains("\"sync\"")));
@@ -402,11 +402,11 @@ fn main() i32 {
 
     // The mock saw every request that was made, and none of the three that were not
     acceptor.stop();
-    mut seen = 0u64;
-    mut going = true;
+    var seen = 0u64;
+    var going = true;
     while going {
       match hrx.recvTimeout(Duration.fromMillis(100i64)) {
-        case imm n Some {seen = seen + n;}
+        case let n Some {seen = seen + n;}
         case is None[u64] {going = false;}
       }
     }
@@ -415,17 +415,17 @@ fn main() i32 {
     printStr("\n");
 
     // A server that is gone
-    mut ptx2 Sender[u16];
-    mut prx2 Receiver[u16];
+    var ptx2 Sender[u16];
+    var prx2 Receiver[u16];
     ptx2, prx2 = Channel[u16].make();
-    imm gone = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
+    let gone = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     gone.open(ptx2.clone());
-    imm deadPort = take[u16](&mut prx2, 0u16);
+    let deadPort = take[u16](&mut prx2, 0u16);
     gone.stop();
-    mut tx OneshotSender[u64];
-    mut rx OneshotReceiver[u64];
+    var tx OneshotSender[u64];
+    var rx OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    imm p2 = new Prober();
+    let p2 = new Prober();
     p2.refused(deadPort, tx);
     rx.recv();
   }

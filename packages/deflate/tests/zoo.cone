@@ -32,23 +32,23 @@ fn formatOf(code u8) Format {
 // Inflates 's' in pieces of 'chunk' input bytes, taking 'maxPull' output
 // bytes at a time. 0 when it ends Done, else which way it went wrong.
 fn run(inf &mut Inflater, s &Array[u8], chunk usize, maxPull usize, out &mut List[u8]) i32 {
-  mut pos = 0usize;
-  mut piece = List[u8].empty();
-  mut guard = 0usize;
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  var guard = 0usize;
   while true {
     guard += 1usize;
     if guard > 20000000usize { return 9; }
     if pos < s.len {
-      imm n = if s.len - pos < chunk {s.len - pos;} else {chunk;};
+      let n = if s.len - pos < chunk {s.len - pos;} else {chunk;};
       inf.feed(&s[pos..<pos + n]);
       pos += n;
       if pos == s.len { inf.finish(); }
     }
-    mut st Status = Status.MoreOutput;
+    var st Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
       st = inf.pull(&mut piece, maxPull);
-      mut k = 0usize;
+      var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
       if piece.len() > maxPull { return 8; }
     }
@@ -61,57 +61,57 @@ fn run(inf &mut Inflater, s &Array[u8], chunk usize, maxPull usize, out &mut Lis
 }
 
 fn main() i32 {
-  imm path = Path.from("../../../../tests/data/zoo.bin");
-  mut file = String.empty();
+  let path = Path.from("../../../../tests/data/zoo.bin");
+  var file = String.empty();
   match fs.readFile(&path) {
-    case mut ok Ok { file <=> ok; }
-    case imm e Error { expect(false, "the data file is there"); return done(); }
+    case var ok Ok { file <=> ok; }
+    case let e Error { expect(false, "the data file is there"); return done(); }
   }
-  imm count = le32(&file, 0usize);
+  let count = le32(&file, 0usize);
   expectInt(i64.from(count), 70i64, "streams in the file");
-  mut at = 4usize;
-  mut oneShotWrong = 0usize;
-  mut streamWrong = 0usize;
-  mut streamed = 0usize;
-  mut r = 0usize;
-  mut names = String.empty();
+  var at = 4usize;
+  var oneShotWrong = 0usize;
+  var streamWrong = 0usize;
+  var streamed = 0usize;
+  var r = 0usize;
+  var names = String.empty();
   while r < count {
-    imm nameLen = usize.from(file[at]);
-    imm name = file.sub(at + 1usize, at + 1usize + nameLen);
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
     at += 1usize + nameLen;
-    imm fmt = formatOf(file[at]);
-    imm streamLen = le32(&file, at + 1usize);
+    let fmt = formatOf(file[at]);
+    let streamLen = le32(&file, at + 1usize);
     at += 5usize;
-    imm stream = &file.view().bytes()[at..<at + streamLen];
+    let stream = &file.view().bytes()[at..<at + streamLen];
     at += streamLen;
-    imm wantLen = le32(&file, at);
-    imm wantCrc = u32.from(le32(&file, at + 4usize));
+    let wantLen = le32(&file, at);
+    let wantCrc = u32.from(le32(&file, at + 4usize));
     at += 8usize;
-    imm have = wantLen <= 4096usize;
-    imm wantBytes = &file.view().bytes()[at..<at + (if have {wantLen;} else {0usize;})];
+    let have = wantLen <= 4096usize;
+    let wantBytes = &file.view().bytes()[at..<at + (if have {wantLen;} else {0usize;})];
     if have { at += wantLen; }
 
     // One call
-    mut one = List[u8].empty();
-    mut oneOk = false;
+    var one = List[u8].empty();
+    var oneOk = false;
     match fmt {
       case is Raw {
-        mut used = 0usize;
+        var used = 0usize;
         match inflate(stream, 0usize, 0usize, &mut used) {
-          case mut ok Ok { one <=> ok; oneOk = used == streamLen; }
-          case imm e Error { oneOk = false; }
+          case var ok Ok { one <=> ok; oneOk = used == streamLen; }
+          case let e Error { oneOk = false; }
         }
       }
       case is Zlib {
         match zlibDecompress(stream, 0usize) {
-          case mut ok Ok { one <=> ok; oneOk = true; }
-          case imm e Error { oneOk = false; }
+          case var ok Ok { one <=> ok; oneOk = true; }
+          case let e Error { oneOk = false; }
         }
       }
       case is Gzip {
         match gzipDecompress(stream, 0usize) {
-          case mut ok Ok { one <=> ok; oneOk = true; }
-          case imm e Error { oneOk = false; }
+          case var ok Ok { one <=> ok; oneOk = true; }
+          case let e Error { oneOk = false; }
         }
       }
     }
@@ -122,20 +122,20 @@ fn main() i32 {
     }
 
     // The same stream through every chunking and every output piece size
-    mut c = 0usize;
+    var c = 0usize;
     while c < 4usize {
-      imm chunk = if c == 0usize {stream.len + 1usize;} elif c == 1usize {4096usize;} elif c == 2usize {997usize;} else {1usize;};
-      mut p = 0usize;
+      let chunk = if c == 0usize {stream.len + 1usize;} elif c == 1usize {4096usize;} elif c == 2usize {997usize;} else {1usize;};
+      var p = 0usize;
       while p < 3usize {
-        imm pull = if p == 0usize {65536usize;} elif p == 1usize {1000usize;} else {1usize;};
+        let pull = if p == 0usize {65536usize;} elif p == 1usize {1000usize;} else {1usize;};
         // The slowest combinations only for the small streams
         if (c == 3usize and stream.len > 700usize) or (p == 2usize and wantLen > 5000usize) {
           p += 1usize;
           continue;
         }
-        mut inf = Inflater.make(fmt);
-        mut out = List[u8].empty();
-        imm code = run(&mut inf, stream, chunk, pull, &mut out);
+        var inf = Inflater.make(fmt);
+        var out = List[u8].empty();
+        let code = run(&mut inf, stream, chunk, pull, &mut out);
         streamed += 1usize;
         if code != 0 or out.len() != wantLen or crc32(out.view()) != wantCrc or out.view() != one.view() {
           streamWrong += 1usize;

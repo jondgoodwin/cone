@@ -10,8 +10,8 @@ import time use Duration, Instant, Clock;
 import netmsg use *;
 
 fn filled(n usize, b u8) List[u8] {
-  mut d = List[u8].empty();
-  mut i = 0usize;
+  var d = List[u8].empty();
+  var i = 0usize;
   while i < n {
     d.push(b);
     i = i + 1usize;
@@ -30,13 +30,13 @@ struct Counts {
 fn absorb(evs &mut List[CoreEvent], c &mut Counts) {
   each e in evs.drain() {
     match e {
-      case imm r Reliable { c.reliable = c.reliable + 1u64; }
-      case imm l Latest {
+      case let r Reliable { c.reliable = c.reliable + 1u64; }
+      case let l Latest {
         if l.stream == 1u16 {c.s1 = c.s1 + 1u64;}
         elif l.stream == 2u16 {c.s2 = c.s2 + 1u64;}
         else {c.other = c.other + 1u64;}
       }
-      case imm c2 Closed {}
+      case let c2 Closed {}
     }
   }
 }
@@ -49,10 +49,10 @@ fn go(p &mut SimPair, clock &mut Clock, ms i64, got &mut Counts) {
 }
 
 fn main() i32 {
-  imm cfg = NetConfig.defaults();
-  mut clock = Clock.synth();
-  mut p = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
-  mut got = new Counts(0u64, 0u64, 0u64, 0u64);
+  let cfg = NetConfig.defaults();
+  var clock = Clock.synth();
+  var p = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 1u64, clock.now());
+  var got = new Counts(0u64, 0u64, 0u64, 0u64);
 
   // The largest message that fits one packet, and one byte more
   expectUInt(u64.from(p.a.maxReliable()), 1173u64, "1200 less 23 of header and 4 of the message's own");
@@ -82,9 +82,9 @@ fn main() i32 {
   // 2 is not starved
   p.a.setStreamWeight(1u16, 10u32);
   p.a.setStreamWeight(2u16, 1u32);
-  imm base1 = got.s1;
-  imm base2 = got.s2;
-  mut i = 0u32;
+  let base1 = got.s1;
+  let base2 = got.s2;
+  var i = 0u32;
   while i < 220u32 {
     p.a.sendLatest(1u16, filled(700usize, 1u8).view());
     p.a.sendLatest(2u16, filled(700usize, 2u8).view());
@@ -92,16 +92,16 @@ fn main() i32 {
     i = i + 1u32;
   }
   go(&mut p, &mut clock, 1i64, &mut got);
-  imm s1 = got.s1 - base1;
-  imm s2 = got.s2 - base2;
+  let s1 = got.s1 - base1;
+  let s2 = got.s2 - base2;
   expectUInt(s1 + s2, 220u64, "one value in every packet");
   expect(s1 >= 195u64 and s1 <= 205u64, "stream 1 about 10 in 11");
   expect(s2 >= 15u64 and s2 <= 25u64, "stream 2 about 1 in 11, never starved");
 
   // Streams are limited
-  mut q = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 2u64, clock.now());
-  mut ok = 0u32;
-  mut s = 0u16;
+  var q = SimPair.make(cfg, LinkConfig.perfect(), LinkConfig.perfect(), 2u64, clock.now());
+  var ok = 0u32;
+  var s = 0u16;
   while s < 70u16 {
     if q.a.sendLatest(100u16 + s, filled(1usize, 1u8).view()) {ok = ok + 1u32;}
     s = s + 1u16;
@@ -110,10 +110,10 @@ fn main() i32 {
 
   // The window of reliable messages: a peer that hears nothing leaves them
   // waiting, and the sender is refused at 1024
-  imm dead = LinkConfig.lossy(1000u32, 0i64, 0i64);
-  mut w = SimPair.make(cfg, dead, LinkConfig.perfect(), 3u64, clock.now());
-  mut queued = 0u32;
-  mut n = 0u32;
+  let dead = LinkConfig.lossy(1000u32, 0i64, 0i64);
+  var w = SimPair.make(cfg, dead, LinkConfig.perfect(), 3u64, clock.now());
+  var queued = 0u32;
+  var n = 0u32;
   while n < 1100u32 {
     if w.a.sendReliable(filled(10usize, 9u8).view()) {queued = queued + 1u32;}
     n = n + 1u32;
@@ -122,8 +122,8 @@ fn main() i32 {
   expectUInt(u64.from(w.a.reliablePending()), 1024u64, "pending says so");
   // The link recovers: every one arrives, and the window opens again
   w.ab.setConfig(LinkConfig.perfect());
-  mut recovered = new Counts(0u64, 0u64, 0u64, 0u64);
-  mut ms = 0i64;
+  var recovered = new Counts(0u64, 0u64, 0u64, 0u64);
+  var ms = 0i64;
   while ms < 20000i64 and recovered.reliable < 1024u64 {
     go(&mut w, &mut clock, 5i64, &mut recovered);
     ms = ms + 5i64;

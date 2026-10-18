@@ -47,10 +47,10 @@ const SIDE = 128usize;
 
 // A half float, from its two bytes at 'p'
 fn halfAt(p *u8) f32 {
-  imm h = u32.from(*p) | (u32.from(*(p + 1usize)) << 8u32);
-  imm sign = if (h & 0x8000u32) != 0u32 { -1.; } else { 1.; };
-  imm e = i32.from((h >> 10u32) & 0x1fu32);
-  imm m = f32.from(h & 0x3ffu32);
+  let h = u32.from(*p) | (u32.from(*(p + 1usize)) << 8u32);
+  let sign = if (h & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  let e = i32.from((h >> 10u32) & 0x1fu32);
+  let m = f32.from(h & 0x3ffu32);
   if e == 0i32 { return sign * m * 0.000000059604645; }
   sign * (1. + m / 1024.) * libc.powf(2., f32.from(e - 15i32));
 }
@@ -62,10 +62,10 @@ fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
 
 // The mean of the green channel over the 3 x 3 pixels about ('x', 'y')
 fn around(p *u8, x usize, y usize) f32 {
-  mut sum = 0.;
-  mut dy = 0usize;
+  var sum = 0.;
+  var dy = 0usize;
   while dy < 3usize {
-    mut dx = 0usize;
+    var dx = 0usize;
     while dx < 3usize {
       sum = sum + px(p, x + dx - 1usize, y + dy - 1usize, 1usize);
       dx = dx + 1usize;
@@ -79,7 +79,7 @@ fn around(p *u8, x usize, y usize) f32 {
 fn picture(view &mut RenderView, renderer &mut Renderer, device &mut Device, cam &Camera, light &Light, list &DrawList,
     readback &Buffer) {
   require(view.render(renderer, device, cam, light, list, 1u32), "the view drawn");
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   encoder.copyTextureToBuffer(view.texture(renderer), readback);
   device.queue.submit(encoder.finish());
   device.endFrame();
@@ -88,8 +88,8 @@ fn picture(view &mut RenderView, renderer &mut Renderer, device &mut Device, cam
 
 // The whole picture at 'p' as numbers, three to a pixel
 fn grab(p *u8) List[f32] {
-  mut out = List[f32].withCapacity(SIDE * SIDE * 3usize);
-  mut i = 0usize;
+  var out = List[f32].withCapacity(SIDE * SIDE * 3usize);
+  var i = 0usize;
   while i < SIDE * SIDE {
     out.push(px(p, i % SIDE, i / SIDE, 0usize));
     out.push(px(p, i % SIDE, i / SIDE, 1usize));
@@ -101,11 +101,11 @@ fn grab(p *u8) List[f32] {
 
 // The greatest difference between two pictures, and the greatest value in the first
 fn compare(a &List[f32], b &List[f32], peak &mut f32) f32 {
-  mut worst = 0.;
+  var worst = 0.;
   *peak = 0.;
-  mut i = 0usize;
+  var i = 0usize;
   while i < a.len() {
-    imm d = absf(*a[i] - *b[i]);
+    let d = absf(*a[i] - *b[i]);
     if d > worst { worst = d; }
     if *a[i] > *peak { *peak = *a[i]; }
     i = i + 1usize;
@@ -116,8 +116,8 @@ fn compare(a &List[f32], b &List[f32], peak &mut f32) f32 {
 // The wall of the first test: a cube thin across the plain camera's way (+x), 'distance' from its
 // eye at (-3, 0, 0), 'width' across
 fn wall(cube MeshHandle, material MaterialHandle, distance f32, width f32) DrawList {
-  mut list = DrawList.empty();
-  imm turned = Quat.angleAxis(radians(90.), new Vec3(0., 1., 0.));
+  var list = DrawList.empty();
+  let turned = Quat.angleAxis(radians(90.), new Vec3(0., 1., 0.));
   list.add(cube, material, Mat4.fromTrs(new Vec3(-3. + distance, 0., 0.), turned, new Vec3(width, width, 0.1)));
   list;
 }
@@ -129,60 +129,60 @@ fn recovered(fogged f32, bare f32, extinction f32) f32 {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("render view fog");
+  var instance = Instance.create("render view fog");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "the renderer");
-  mut view = RenderView.create(&mut renderer, &mut device, 128u32, 128u32);
+  var view = RenderView.create(&mut renderer, &mut device, 128u32, 128u32);
   require(view.isValid(), "a view");
-  mut readback = device.createBuffer(131072u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  imm p = readback.mappedRange();
-  imm cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
-  imm gray = renderer.addMaterial(&mut device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
-  imm pale = renderer.addMaterial(&mut device, &Material.plain(new Color(0.8, 0.7, 0.5, 1.)));
+  var readback = device.createBuffer(131072u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let p = readback.mappedRange();
+  let cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  let gray = renderer.addMaterial(&mut device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  let pale = renderer.addMaterial(&mut device, &Material.plain(new Color(0.8, 0.7, 0.5, 1.)));
 
   // The plain camera at the reflected eye, and the reflected one that sees what it sees
-  mut plain = Camera.make();
+  var plain = Camera.make();
   plain.lookAt(new Vec3(-3., 0., 0.), new Vec3(3., 0., 0.), new Vec3(0., 1., 0.));
-  mut seer = Camera.make();
+  var seer = Camera.make();
   seer.lookAt(new Vec3(1.5, 0., 2.598), new Vec3(-1.5, 0., -2.598), new Vec3(0., 1., 0.));
-  imm plane = mirrorPlane(new Vec3(0., 0., 0.), new Vec3(0.866, 0., 0.5), new Vec3(1.5, 0., 2.598));
-  imm reflected = seer.reflectedAbout(plane);
+  let plane = mirrorPlane(new Vec3(0., 0., 0.), new Vec3(0.866, 0., 0.5), new Vec3(1.5, 0., 2.598));
+  let reflected = seer.reflectedAbout(plane);
   // The eye of the reflected camera is the plain camera's
   expectFloat(f64.from(reflected.position().x), -3d, 0.01d, "the reflected camera's eye is the plain camera's (x)");
   expectFloat(f64.from(reflected.position().z), 0d, 0.01d, "the reflected camera's eye is the plain camera's (z)");
 
   // ---- 1. The distance the fog recovers ----
-  imm ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  let ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
   require(view.enableFog(&mut renderer, &mut device), "the view's fog made");
-  imm extinction = 0.1;
-  imm columns = [64usize, 38usize, 90usize];
-  imm depths = [6., 40.];
-  mut worstOfFive = 0.;
-  mut worstApart = 0.;
-  mut w = 0usize;
+  let extinction = 0.1;
+  let columns = [64usize, 38usize, 90usize];
+  let depths = [6., 40.];
+  var worstOfFive = 0.;
+  var worstApart = 0.;
+  var w = 0usize;
   while w < 2usize {
-    imm distance = depths[w];
-    imm wallList = wall(cube, gray, distance, if distance < 10. { 20.; } else { 60.; });
+    let distance = depths[w];
+    let wallList = wall(cube, gray, distance, if distance < 10. { 20.; } else { 60.; });
     // The unfogged pictures
     view.fog = new FogSettings(enabled: false);
     picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &wallList, &readback);
-    mut bareReflected = new Array[f32, 3] <- fill 0f;
-    mut c = 0usize;
+    var bareReflected = new Array[f32, 3] <- fill 0f;
+    var c = 0usize;
     while c < 3usize { bareReflected[c] = around(p, columns[c], 64usize); c = c + 1usize; }
     picture(&mut view, &mut renderer, &mut device, &plain, &ambientOnly, &wallList, &readback);
-    mut barePlain = new Array[f32, 3] <- fill 0f;
+    var barePlain = new Array[f32, 3] <- fill 0f;
     c = 0usize;
     while c < 3usize { barePlain[c] = around(p, columns[c], 64usize); c = c + 1usize; }
     // The fogged ones
@@ -190,7 +190,7 @@ fn main() i32 {
       maxDistance: 120.);
     view.cutFog();
     picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &wallList, &readback);
-    mut seenReflected = new Array[f32, 3] <- fill 0f;
+    var seenReflected = new Array[f32, 3] <- fill 0f;
     c = 0usize;
     while c < 3usize { seenReflected[c] = recovered(around(p, columns[c], 64usize), bareReflected[c], extinction); c = c + 1usize; }
     view.cutFog();
@@ -199,9 +199,9 @@ fn main() i32 {
     while c < 3usize {
       // (the table has the centre at 6 away only)
       if !(w == 1usize and c == 0usize) {
-        imm seenPlain = recovered(around(p, columns[c], 64usize), barePlain[c], extinction);
-        imm off = absf(seenReflected[c] / distance - 1.);
-        imm apart = absf(seenReflected[c] / seenPlain - 1.);
+        let seenPlain = recovered(around(p, columns[c], 64usize), barePlain[c], extinction);
+        let off = absf(seenReflected[c] / distance - 1.);
+        let apart = absf(seenReflected[c] / seenPlain - 1.);
         if off > worstOfFive { worstOfFive = off; }
         if apart > worstApart { worstApart = apart; }
         eprint <- "measured: wall "; eprint <- distance; eprint <- " away, pixel x "; eprint <- columns[c];
@@ -215,26 +215,26 @@ fn main() i32 {
   expect(worstApart < 0.03, "and the reflected camera's fog is the plain camera's, within 3%");
 
   // ---- 2. The picture of a scene with scattering ----
-  mut scene = DrawList.empty();
+  var scene = DrawList.empty();
   scene.add(cube, pale, Mat4.fromTrs(new Vec3(55., -1.6, 0.), Quat.identity(), new Vec3(100., 0.1, 100.)));
   scene.add(cube, gray, Mat4.fromTrs(new Vec3(7., -0.5, 1.), Quat.angleAxis(0.4, new Vec3(0., 1., 0.)), new Vec3(2., 2., 2.)));
   scene.add(cube, pale, Mat4.fromTrs(new Vec3(12., 0., -2.5), Quat.identity(), new Vec3(2.5, 3., 2.5)));
   scene.add(cube, gray, Mat4.fromTrs(new Vec3(22., 0.5, 3.), Quat.identity(), new Vec3(4., 4., 4.)));
-  imm sun = Light.directional(new Vec3(-0.5, -0.7, 0.5).normalize(), new Color(3., 3., 3., 1.), new Color(0.3, 0.35, 0.4, 1.));
+  let sun = Light.directional(new Vec3(-0.5, -0.7, 0.5).normalize(), new Color(3., 3., 3., 1.), new Color(0.3, 0.35, 0.4, 1.));
   view.fog = new FogSettings(enabled: false);
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
-  imm bare = grab(p);
+  let bare = grab(p);
   view.fog = new FogSettings(enabled: true, density: 0.03, heightDensity: 0.05, heightFalloff: 0.3, baseHeight: -1.5,
     anisotropy: 0.6, temporal: 1., maxDistance: 80.);
   view.cutFog();
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
-  imm fogPlain = grab(p);
+  let fogPlain = grab(p);
   view.cutFog();
   picture(&mut view, &mut renderer, &mut device, &reflected, &sun, &scene, &readback);
-  imm fogReflected = grab(p);
-  mut peak = 0.;
-  imm fogChange = compare(&bare, &fogPlain, &mut peak);
-  imm worst = compare(&fogPlain, &fogReflected, &mut peak);
+  let fogReflected = grab(p);
+  var peak = 0.;
+  let fogChange = compare(&bare, &fogPlain, &mut peak);
+  let worst = compare(&fogPlain, &fogReflected, &mut peak);
   eprint <- "measured: scene: the fog changes the picture by up to "; eprint <- fogChange; eprint <- " of a peak of "; eprint <- peak;
   eprint <- "; the reflected camera's fogged picture differs from the plain camera's by up to "; eprint <- worst; eprint <- "\n";
   expect(fogChange > 0.2 * peak, "the fog changes the picture a lot");
@@ -243,10 +243,10 @@ fn main() i32 {
   // ---- 3. Fog enabled but off ----
   view.fog = new FogSettings(enabled: false);
   picture(&mut view, &mut renderer, &mut device, &reflected, &sun, &scene, &readback);
-  imm off = grab(p);
-  mut unfogged = RenderView.create(&mut renderer, &mut device, 128u32, 128u32);
+  let off = grab(p);
+  var unfogged = RenderView.create(&mut renderer, &mut device, 128u32, 128u32);
   picture(&mut unfogged, &mut renderer, &mut device, &reflected, &sun, &scene, &readback);
-  imm without = grab(p);
+  let without = grab(p);
   expectFloat(f64.from(compare(&off, &without, &mut peak)), 0d, 0d, "a view with its fog off draws the picture of a view with none");
   unfogged.release(&mut renderer, &mut device);
 
@@ -255,26 +255,26 @@ fn main() i32 {
     anisotropy: 0.6, maxDistance: 80.);
   view.cutFog();
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
-  imm first = grab(p);
+  let first = grab(p);
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
-  imm second = grab(p);
-  imm drift = compare(&first, &second, &mut peak);
+  let second = grab(p);
+  let drift = compare(&first, &second, &mut peak);
   eprint <- "measured: history: the second picture differs from the first by up to "; eprint <- drift; eprint <- " of a peak of "; eprint <- peak; eprint <- "\n";
   expect(drift < 0.1 * peak, "a second picture blending in the first's volume stays near it");
 
   // ---- 5. Another grid ----
   // The low tier's cells and slices remake the volume (a stall, before the picture is recorded)
   // and the fog is still right, within 15% of the distance
-  imm nearWall = wall(cube, gray, 6., 20.);
+  let nearWall = wall(cube, gray, 6., 20.);
   view.fog = new FogSettings(enabled: false);
   picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &nearWall, &readback);
-  imm bareNear = around(p, 90usize, 64usize);
+  let bareNear = around(p, 90usize, 64usize);
   view.fog = FogSettings.low();
   view.fog.density = extinction;
   view.fog.albedo = new Color(0., 0., 0., 1.);
   view.fog.temporal = 1.;
   picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &nearWall, &readback);
-  imm lowSeen = recovered(around(p, 90usize, 64usize), bareNear, extinction);
+  let lowSeen = recovered(around(p, 90usize, 64usize), bareNear, extinction);
   eprint <- "measured: low tier: the wall 6 away shows "; eprint <- lowSeen; eprint <- "\n";
   expect(absf(lowSeen / 6. - 1.) < 0.15, "after the grid changes, the fog shows the wall at its true distance, within 15%");
 

@@ -58,7 +58,7 @@ pub struct Coupler {
 
   // The link of rigid body 'rigid', or none
   pub fn find(self &, rigid u32) Option[usize] {
-    mut k = 0usize;
+    var k = 0usize;
     while k < links.len() {
       if links[k].rigid == rigid { return Some[usize](k); }
       k = k + 1usize;
@@ -71,20 +71,20 @@ pub struct Coupler {
   // Coupling a body twice answers the first.
   pub fn couple(self &mut, soft &mut SoftBody, world &World, rigid u32, withShape bool) u32 {
     match find(rigid) {
-      case imm k Some { return links[k].index; }
+      case let k Some { return links[k].index; }
       case is None { }
     }
-    imm body = world.bodies[usize.from(rigid)];
-    imm index = soft.addBody(coupledOf(world, rigid));
-    mut link = new BodyLink(rigid, index, List[ShapePart].empty(), List[u32].empty());
+    let body = world.bodies[usize.from(rigid)];
+    let index = soft.addBody(coupledOf(world, rigid));
+    var link = new BodyLink(rigid, index, List[ShapePart].empty(), List[u32].empty());
     if withShape {
-      imm shape = world.shapes[usize.from(body.shape)];
+      let shape = world.shapes[usize.from(body.shape)];
       if shape.leaves.len() == 0usize {
         addShapePart(&mut link, soft, shape.prim.kind, Rigid.identity(), shape.prim.radius, shape.prim.half);
       } else {
-        mut k = 0usize;
+        var k = 0usize;
         while k < shape.leaves.len() {
-          imm leaf = shape.leaves[k];
+          let leaf = shape.leaves[k];
           addShapePart(&mut link, soft, leaf.prim.kind, leaf.xf, leaf.prim.radius, leaf.prim.half);
           k = k + 1usize;
         }
@@ -99,15 +99,15 @@ pub struct Coupler {
   // position 'at' now (coupling the body if it is not yet, without colliders). 'breakForce' (newtons,
   // negative: never) is the pull at which the particle lets go: a rope tears from its cleat.
   pub fn anchor(self &mut, soft &mut SoftBody, world &World, particle u32, rigid u32, at Vec3, breakForce f32) {
-    imm index = couple(soft, world, rigid, false);
+    let index = couple(soft, world, rigid, false);
     soft.attachBody(particle, index, at, breakForce);
   }
 
   // Bring every Coupled and collider up to the world as it is now, and clear the impulses
   pub fn refresh(self &mut, soft &mut SoftBody, world &World) {
-    mut k = 0usize;
+    var k = 0usize;
     while k < links.len() {
-      imm index = usize.from(links[k].index);
+      let index = usize.from(links[k].index);
       soft.bodies.set(index, coupledOf(world, links[k].rigid));
       moveBodyLinkColliders(links[k], soft, world);
       k = k + 1usize;
@@ -116,13 +116,13 @@ pub struct Coupler {
 
   // Give each rigid body the impulses the soft body gave its Coupled in the last substep
   pub fn apply(self &mut, soft &mut SoftBody, world &mut World) {
-    mut k = 0usize;
+    var k = 0usize;
     while k < links.len() {
-      imm index = usize.from(links[k].index);
-      imm c = *soft.bodies[index];
-      imm id = links[k].rigid;
+      let index = usize.from(links[k].index);
+      let c = *soft.bodies[index];
+      let id = links[k].rigid;
       if c.invMass > 0. and (c.impulse.lengthSquared() > 0. or c.angImpulse.lengthSquared() > 0.) {
-        imm i = usize.from(id);
+        let i = usize.from(id);
         world.wake(id);
         world.bodies[i].linVel = world.bodies[i].linVel + c.impulse * world.bodies[i].invMass;
         world.bodies[i].angVel = world.bodies[i].angVel
@@ -137,7 +137,7 @@ pub struct Coupler {
   // One step of 'dt' seconds of the soft body and the world together, in lockstep
   pub fn step(self &mut, soft &mut SoftBody, world &mut World, dt f32, wind Vec3) {
     soft.beginSteps(&mut workers, dt, wind);
-    imm h = soft.substepSeconds();
+    let h = soft.substepSeconds();
     while soft.substepsLeft() > 0u32 {
       refresh(soft, world);
       soft.nextSubstep(&mut workers);
@@ -150,9 +150,9 @@ pub struct Coupler {
 
 // The soft body's view of a rigid body now
 fn coupledOf(world &World, rigid u32) Coupled {
-  imm b = world.bodies[usize.from(rigid)];
-  imm dynamic = b.motion == MotionDynamic;
-  mut c = Coupled.make(b.pos, b.rot, if dynamic {b.invMass;} else {0.;},
+  let b = world.bodies[usize.from(rigid)];
+  let dynamic = b.motion == MotionDynamic;
+  var c = Coupled.make(b.pos, b.rot, if dynamic {b.invMass;} else {0.;},
     if dynamic {rotateInertia(b.rot, b.invInertiaLocal);} else {new Mat3([0., 0., 0., 0., 0., 0., 0., 0., 0.]);});
   c.linVel = b.linVel;
   c.angVel = b.angVel;
@@ -165,8 +165,8 @@ fn addShapePart(link &mut BodyLink, soft &mut SoftBody, kind i32, xf Rigid, radi
     link.colliders.push(NO_BODY);
     return;
   }
-  imm none = new Vec3(0., 0., 0.);
-  mut c = if kind == KSphere {Collider.sphere(none, radius);}
+  let none = new Vec3(0., 0., 0.);
+  var c = if kind == KSphere {Collider.sphere(none, radius);}
     elif kind == KBox {Collider.box(none, half, Quat.identity());}
     else {Collider.capsule(none, none, radius);};
   c.body = link.index;
@@ -176,14 +176,14 @@ fn addShapePart(link &mut BodyLink, soft &mut SoftBody, kind i32, xf Rigid, radi
 // Put the colliders of a link at its body's shapes: each prim's place in the shape, and the shape's in
 // the world (World.transformOf: the position of the shape's origin, not of the centre of mass)
 fn moveBodyLinkColliders(link &BodyLink, soft &mut SoftBody, world &World) {
-  imm shapeXf = world.transformOf(link.rigid);
-  mut k = 0usize;
+  let shapeXf = world.transformOf(link.rigid);
+  var k = 0usize;
   while k < link.parts.len() {
-    imm ci = *link.colliders[k];
+    let ci = *link.colliders[k];
     if ci != NO_BODY {
-      imm part = link.parts[k];
-      imm xf = shapeXf * part.xf;
-      imm at = usize.from(ci);
+      let part = link.parts[k];
+      let xf = shapeXf * part.xf;
+      let at = usize.from(ci);
       if part.kind == KSphere {
         soft.colliders[at].a = xf.pos;
       } elif part.kind == KBox {

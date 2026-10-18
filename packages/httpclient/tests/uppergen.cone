@@ -31,48 +31,48 @@ const tokOld = 100u64;
 const tokNew = 200u64;
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  imm t0 = Instant.now();
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  let t0 = Instant.now();
 
   // The old client asks for a fetch with a deadline, and dies with its timer
   // on the loop. It is never pumped, so it opens no connection
   {
-    mut old = Client.make(Config.make(), pool);
-    mut req = Request.get("http://127.0.0.1:1/old");
+    var old = Client.make(Config.make(), pool);
+    var req = Request.get("http://127.0.0.1:1/old");
     req.deadline = t0 + Duration.fromMillis(100i64);
-    imm id = old.send(&mut lp, req, Sink.Here(tokOld));
+    let id = old.send(&mut lp, req, Sink.Here(tokOld));
     require(old.isLive(id), "the old client's fetch waits");
   }
 
   // 1023 more drivers come and go: the next number is the old client's again
   {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 1023u32 {
-      imm other = httpconn.Driver.make(httpconn.Config.make(), pool);
+      let other = httpconn.Driver.make(httpconn.Config.make(), pool);
       i = i + 1u32;
     }
   }
-  mut nw = Client.make(Config.make(), pool);
-  mut req2 = Request.get("http://127.0.0.1:1/new");
+  var nw = Client.make(Config.make(), pool);
+  var req2 = Request.get("http://127.0.0.1:1/new");
   req2.deadline = t0 + Duration.fromMillis(400i64);
-  imm id2 = nw.send(&mut lp, req2, Sink.Here(tokNew));
+  let id2 = nw.send(&mut lp, req2, Sink.Here(tokNew));
   require(nw.isLive(id2), "the new client's fetch waits");
 
   // The loop's completions, each offered to the new client alone: the old
   // client's timer first (100 ms), then its own (400 ms)
-  mut offered = 0u64;
-  mut claimed = 0u64;
-  mut firstClaimed = false;
-  mut comps = List[Completion].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(3i64);
+  var offered = 0u64;
+  var claimed = 0u64;
+  var firstClaimed = false;
+  var comps = List[Completion].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(3i64);
   while offered < 2u64 and Instant.now() < giveUp {
     lp.poll(giveUp, &mut comps);
-    mut k = 0usize;
+    var k = 0usize;
     while k < comps.len() {
-      imm c = &mut comps[k];
+      let c = &mut comps[k];
       k = k + 1usize;
-      imm mine = nw.complete(&mut lp, c);
+      let mine = nw.complete(&mut lp, c);
       if offered == 0u64 {firstClaimed = mine;}
       offered = offered + 1u64;
       if mine {claimed = claimed + 1u64;}
@@ -83,13 +83,13 @@ fn main() i32 {
   expect(not firstClaimed, "the new client did not claim the dead client's timer");
   expectUInt(claimed, 1u64, "the new client claimed its own timer alone");
 
-  mut out = List[Event].empty();
+  var out = List[Event].empty();
   nw.pump(&mut lp, &mut out);
-  mut timedOut = 0u64;
-  mut other = 0u64;
-  mut k = 0usize;
+  var timedOut = 0u64;
+  var other = 0u64;
+  var k = 0usize;
   while k < out.len() {
-    imm e = &mut out[k];
+    let e = &mut out[k];
     k = k + 1usize;
     if e.token == tokNew and e.kind == EventKind.TimedOut {timedOut = timedOut + 1u64;}
     else {other = other + 1u64;}

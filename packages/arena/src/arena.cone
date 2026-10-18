@@ -188,7 +188,7 @@ pub struct ArenaGcTraceItems is Iterator[&mut Erased] {
 
   pub fn next(self &mut) Option[&mut Erased] {
     if node as usize == 0usize { return None; }
-    imm at = node;
+    let at = node;
     node = (*at).next;
     Some[&mut Erased]((at as usize + mem.sizeof[usize]()) as &mut Erased);
   }
@@ -225,8 +225,8 @@ struct ArenaCore is GcTraceElements {
   // the value in memory and goes onto the list before it, so it is finalized
   // after the value, as a value it was built from is.
   fn reserveFinal(self &mut, size usize, align usize) *u8 {
-    imm hdr = mem.sizeof[FinalNode]();
-    mut al = align;
+    let hdr = mem.sizeof[FinalNode]();
+    var al = align;
     if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
     self.bump(hdr, al, size) as *u8;
   }
@@ -235,7 +235,7 @@ struct ArenaCore is GcTraceElements {
   // now, is put on the list of values the arena finalizes, first: its death is
   // 'run', called with its address when the arena dies.
   fn linkFinal(self &mut, at *u8, run &fn(p *u8)) {
-    imm node = (at as usize - mem.sizeof[FinalNode]()) as *FinalNode;
+    let node = (at as usize - mem.sizeof[FinalNode]()) as *FinalNode;
     mem.writeRaw(node, new FinalNode(finals, run));
     finals = node;
     nfinals = nfinals + 1usize;
@@ -246,7 +246,7 @@ struct ArenaCore is GcTraceElements {
 
   // A new arena state: no block yet, the three region functions set
   fn make() *MemRegion {
-    imm core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
+    let core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
     if core as usize == 0usize { panic("arena: out of memory for an arena"); }
     mem.writeRaw(core, new ArenaCore(new MemRegion(&regionAlloc, &regionResize, &regionRelease),
       null, 0usize, 0usize, null, 0usize, 0usize, null, 0usize));
@@ -256,7 +256,7 @@ struct ArenaCore is GcTraceElements {
   // The value at 'p', whose type's record is 'rec', needs tracing: its node is
   // allocated here, and put first on the list
   fn noteTraced(self &mut, p *u8, rec *TypeRecord) {
-    imm node = self.place(mem.sizeof[GcTraceNode](), mem.alignof[GcTraceNode]()) as *GcTraceNode;
+    let node = self.place(mem.sizeof[GcTraceNode](), mem.alignof[GcTraceNode]()) as *GcTraceNode;
     mem.writeRaw(node, new GcTraceNode(traced, p, rec));
     traced = node;
     ntraced = ntraced + 1usize;
@@ -268,7 +268,7 @@ struct ArenaCore is GcTraceElements {
   // 'align' is then at least the header's and the header's size is a multiple
   // of its alignment, so the header is aligned too.
   fn bump(self &mut, hdr usize, align usize, size usize) usize {
-    mut at = roundUp(top + hdr, align);
+    var at = roundUp(top + hdr, align);
     if top == 0usize or at + size > limit {
       self.grow(hdr + size + align);
       at = roundUp(top + hdr, align);
@@ -280,8 +280,8 @@ struct ArenaCore is GcTraceElements {
   // A new block with room for at least 'need' bytes, made the one allocation
   // bumps through. What was left of the one before is not used again.
   fn grow(self &mut, need usize) {
-    imm room = blockRoom(need);
-    imm blk = newBlock(blocks, room);
+    let room = blockRoom(need);
+    let blk = newBlock(blocks, room);
     blocks = blk;
     nblocks = nblocks + 1usize;
     top = blk as usize + mem.sizeof[Block]();
@@ -298,7 +298,7 @@ struct ArenaCore is GcTraceElements {
   // every growth.
   fn resize(self &mut, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
     if block as usize == 0usize { return self.place(newBytes, align); }
-    imm at = block as usize;
+    let at = block as usize;
     if at + oldBytes == top and at + newBytes <= limit {
       top = at + newBytes;
       return block;
@@ -306,8 +306,8 @@ struct ArenaCore is GcTraceElements {
     if roundUp(top, align) + newBytes > limit {
       self.grow(doubled(newBytes + align));
     }
-    imm moved = self.place(newBytes, align);
-    mut n = oldBytes;
+    let moved = self.place(newBytes, align);
+    var n = oldBytes;
     if newBytes < oldBytes { n = newBytes; }
     libc.memcpy(moved, block, n);
     moved;
@@ -319,14 +319,14 @@ struct ArenaCore is GcTraceElements {
   // block freed. The blocks all stay until the last finalizer has run.
   fn teardown(self &mut) {
     while finals as usize != 0usize {
-      imm node = finals;
-      imm hdr = node as &FinalNode;
+      let node = finals;
+      let hdr = node as &FinalNode;
       finals = hdr.next;
-      imm run = hdr.run;
+      let run = hdr.run;
       run((node as usize + mem.sizeof[FinalNode]()) as *u8);
     }
     while blocks as usize != 0usize {
-      imm blk = blocks;
+      let blk = blocks;
       blocks = (blk as &Block).prev;
       RawBlocks.release(blk as *u8);
     }
@@ -365,8 +365,8 @@ pub struct Arena is NoLoanMut, GcTraceElements {
   // room for at least 'bytes' of values and their headers: a scratch whose
   // need is known then makes one allocation rather than several
   pub fn withRoom(bytes usize) Arena {
-    imm region = ArenaCore.make();
-    imm core = coreOf(region);
+    let region = ArenaCore.make();
+    let core = coreOf(region);
     core.grow(bytes);
     new Arena(region);
   }
@@ -387,8 +387,8 @@ pub struct Arena is NoLoanMut, GcTraceElements {
   // "A construction built where an inline function puts it".) The value is put on
   // the finalizer list after it is built, so the list's order is what it was.
   pub fn alloc[T](self &mut, value T) &mut T inline {
-    imm core = coreOf(region);
-    imm at = if mem.needsFinal[T]() {
+    let core = coreOf(region);
+    let at = if mem.needsFinal[T]() {
       core.reserveFinal(mem.sizeof[T](), mem.alignof[T]());
     }
     else {
@@ -417,7 +417,7 @@ pub struct Arena is NoLoanMut, GcTraceElements {
 
   // Its death: the values and blocks of its state, then the state
   fn final(self &uni) {
-    imm core = coreOf(region);
+    let core = coreOf(region);
     core.teardown();
     libc.free(region as *u8);
   }
@@ -436,13 +436,13 @@ pub struct DynArena['=a] is NoLoanMut {
   // An arena holding nothing, of a brand of its own: ''=a' is named by no
   // parameter, so each call mints a fresh one for its caller
   pub fn empty() DynArena['=a] {
-    imm a = Arena.empty();
+    let a = Arena.empty();
     new DynArena(a.region, a);
   }
 
   // The same, its first block allocated now with room for 'bytes' of values
   pub fn withRoom(bytes usize) DynArena['=a] {
-    imm a = Arena.withRoom(bytes);
+    let a = Arena.withRoom(bytes);
     new DynArena(a.region, a);
   }
 
@@ -486,7 +486,7 @@ fn newBlock(prev *Block, room usize) *Block {
   if room > (0usize - 1usize) - mem.sizeof[Block]() {
     panic("arena: a block that large cannot be counted in a usize");
   }
-  imm blk = RawBlocks.alloc(mem.sizeof[Block]() + room, 16usize) as *Block;
+  let blk = RawBlocks.alloc(mem.sizeof[Block]() + room, 16usize) as *Block;
   if blk as usize == 0usize { panic("arena: out of memory for a block"); }
   mem.writeRaw(blk, new Block(prev));
   blk;

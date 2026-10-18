@@ -64,7 +64,7 @@ const PIPE f32 = 2.0;              // the pipe model's exponent
 const BLEND f32 = 0.008;           // the fillets where strands fuse
 const CELL f32 = 0.015;            // the finest mesh's cells
 const LEVELS = 2usize;
-imm PINNED Array[u32, 2] = [0x7c1d558eu32, 0x0ac03532u32];
+let PINNED Array[u32, 2] = [0x7c1d558eu32, 0x0ac03532u32];
 const WIDTH = 1920u32;
 const HEIGHT = 1080u32;
 
@@ -79,27 +79,27 @@ fn riverHalf(z f32) f32 { 0.42 + 0.06 * z; }
 // ---- The strands ----
 
 fn plant(k i32) BranchGraph {
-  imm side = if k % 2 == 0 { 1.; } else { -1.; };
-  imm z = 0.3 - 4. * unit(k, 1u32);
-  imm root = v(riverX(z) + side * (riverHalf(z) + 0.15 + 1.3 * unit(k, 2u32)), -0.08, z);
+  let side = if k % 2 == 0 { 1.; } else { -1.; };
+  let z = 0.3 - 4. * unit(k, 1u32);
+  let root = v(riverX(z) + side * (riverHalf(z) + 0.15 + 1.3 * unit(k, 2u32)), -0.08, z);
   // Its cloud: kept with a chance falling with height, and over the river
   // only above 0.35, and rarely
-  imm salt = SEED + u32.from(k) * 7919u32;
-  imm box = new Aabb3(root + v(-1.7, 0., -1.5), root + v(1.7, 1.3, 1.5));
-  imm all = scatter(box, POINTS, salt);
-  mut cloud = List[Vec3].empty();
-  mut i = 0usize;
+  let salt = SEED + u32.from(k) * 7919u32;
+  let box = new Aabb3(root + v(-1.7, 0., -1.5), root + v(1.7, 1.3, 1.5));
+  let all = scatter(box, POINTS, salt);
+  var cloud = List[Vec3].empty();
+  var i = 0usize;
   while i < all.len() {
-    imm p = *all[i];
-    imm chance = noise.toUnit(noise.hash1(i32.from(u32.from(i)), salt + 1u32));
-    imm overRiver = libc.fabsf(p.x - riverX(p.z)) < riverHalf(p.z);
-    imm keep = if overRiver { p.y > 0.35 and chance < 0.12; } else { chance < libc.expf(0. - p.y / 0.4); };
+    let p = *all[i];
+    let chance = noise.toUnit(noise.hash1(i32.from(u32.from(i)), salt + 1u32));
+    let overRiver = libc.fabsf(p.x - riverX(p.z)) < riverHalf(p.z);
+    let keep = if overRiver { p.y > 0.35 and chance < 0.12; } else { chance < libc.expf(0. - p.y / 0.4); };
     if keep and p.z < 0.8 { cloud.push(p); }
     i = i + 1usize;
   }
-  mut g = BranchGraph.empty();
+  var g = BranchGraph.empty();
   g.addRoot(root);
-  mut growth = Growth.make(0.05, 0.6, 0.2);
+  var growth = Growth.make(0.05, 0.6, 0.2);
   growth.tropism = v(0., -0.05, 0.);
   growth.inertia = 0.8;
   growth.jitter = 0.3;
@@ -113,26 +113,26 @@ fn plant(k i32) BranchGraph {
 
 // Every plant's segments, as tapered capsules in one field
 fn strands() CapsuleSet {
-  mut c = CapsuleSet.make(BLEND, 0.17);
-  mut nodes = 0usize;
-  mut tips = 0usize;
-  mut k = 0;
+  var c = CapsuleSet.make(BLEND, 0.17);
+  var nodes = 0usize;
+  var tips = 0usize;
+  var k = 0;
   while k < PLANTS {
-    imm g = plant(k);
+    let g = plant(k);
     nodes = nodes + g.count();
     tips = tips + g.tipCount();
     // Each strand a chain, starting at its own radius at the fork it leaves,
     // which the smooth union then fills
-    imm s = g.strands();
-    mut j = 0usize;
+    let s = g.strands();
+    var j = 0usize;
     while j < s.count() {
-      mut at = usize.from(*s.starts[j]);
-      imm end = usize.from(*s.starts[j + 1usize]);
+      var at = usize.from(*s.starts[j]);
+      let end = usize.from(*s.starts[j + 1usize]);
       while at + 1usize < end {
-        imm p = usize.from(*s.nodes[at]);
-        imm q = usize.from(*s.nodes[at + 1usize]);
-        imm first = at == usize.from(*s.starts[j]);
-        imm ra = if first { *g.radius[q]; } else { *g.radius[p]; };
+        let p = usize.from(*s.nodes[at]);
+        let q = usize.from(*s.nodes[at + 1usize]);
+        let first = at == usize.from(*s.starts[j]);
+        let ra = if first { *g.radius[q]; } else { *g.radius[p]; };
         if first { c.add(*g.position[p], *g.position[q], ra, *g.radius[q]); }
         else { c.extend(*g.position[p], *g.position[q], ra, *g.radius[q]); }
         at = at + 1usize;
@@ -150,7 +150,7 @@ fn strands() CapsuleSet {
 // ---- Arguments ----
 
 fn cstrEquals(a *u8, b &Array[u8]) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.len {
     if *(a + i) != b[i] { return false; }
     i = i + 1usize;
@@ -159,7 +159,7 @@ fn cstrEquals(a *u8, b &Array[u8]) bool {
 }
 
 fn appendCstr(s &mut String, c *u8) {
-  mut i = 0usize;
+  var i = 0usize;
   while *(c + i) != 0u8 {
     s.appendByte(*(c + i));
     i = i + 1usize;
@@ -167,7 +167,7 @@ fn appendCstr(s &mut String, c *u8) {
 }
 
 fn named(prefix &String, suffix &str) String {
-  mut s = prefix.copy();
+  var s = prefix.copy();
   s <- suffix;
   s;
 }
@@ -175,12 +175,12 @@ fn named(prefix &String, suffix &str) String {
 // ---- The demo ----
 
 fn main(argc i32, argv **u8) i32 {
-  mut shots = String.empty();
+  var shots = String.empty();
   shots <- "vines";
-  mut objPrefix = String.empty();
-  mut a = 1;
+  var objPrefix = String.empty();
+  var a = 1;
   while a + 1 < argc {
-    imm arg = *(argv + usize.from(a));
+    let arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
     elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
     else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
@@ -188,30 +188,30 @@ fn main(argc i32, argv **u8) i32 {
   }
 
   // The strands, meshed at LEVELS levels
-  mut started = sdl.GetPerformanceCounter();
-  imm set = strands();
-  imm field = set.view();
+  var started = sdl.GetPerformanceCounter();
+  let set = strands();
+  let field = set.view();
   print <- "grown in "; print <- f64.from(sdl.GetPerformanceCounter() - started) / f64.from(sdl.GetPerformanceFrequency()); print <- " s\n";
-  imm box = field.bounds().expand(BLEND);
-  mut meshes = List[mesh.Mesh].empty();
-  mut ok = true;
-  mut cell = CELL;
-  mut level = 0usize;
+  let box = field.bounds().expand(BLEND);
+  var meshes = List[mesh.Mesh].empty();
+  var ok = true;
+  var cell = CELL;
+  var level = 0usize;
   while level < LEVELS {
     started = sdl.GetPerformanceCounter();
-    imm net = surfaceNet(&field, box, cell, 1u32, true);
-    imm m = net.toMesh();
-    imm h = mesh.meshHash(&m);
+    let net = surfaceNet(&field, box, cell, 1u32, true);
+    let m = net.toMesh();
+    let h = mesh.meshHash(&m);
     print <- "level "; print <- level; print <- ": cells of "; print <- cell; print <- ", ";
     print <- m.vertexCount(); print <- " vertices, "; print <- m.triangleCount(); print <- " triangles, ";
     print <- net.evaluations; print <- " distances, ";
     print <- f64.from(sdl.GetPerformanceCounter() - started) / f64.from(sdl.GetPerformanceFrequency()); print <- " s; hash ";
-    mut hex = String.empty();
+    var hex = String.empty();
     hex.appendHex(u64.from(h), 8usize);
     printStr(hex.view());
     if h == PINNED[level] { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; ok = false; }
     if objPrefix.len() > 0usize {
-      mut name = objPrefix.copy();
+      var name = objPrefix.copy();
       name <- "-lod";
       name.appendByte(u8.from('0') + u8.from(level));
       name <- ".obj";
@@ -223,24 +223,24 @@ fn main(argc i32, argv **u8) i32 {
   }
 
   // The GPU, no window
-  mut instance = Instance.create("vines");
-  mut none = Surface.none();
-  imm powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  var instance = Instance.create("vines");
+  var none = Surface.none();
+  let powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
   if (powerEnv as usize) != 0usize and libc.strcmp(cstr.fromPtr(powerEnv), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   if !instance.isValid() or !adapter.isValid() {
     print <- "No GPU can draw\n";
     return 1;
   }
   print <- "Adapter: "; printStr(adapter.name.view());
   if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
-  mut device = adapter.requestDevice();
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var device = adapter.requestDevice();
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
 
   // Night: an overcast sky, the moon low behind the mass, so every wet
   // edge is rimmed
-  mut sky = Sky.dusk(radians(20.), radians(168.));
+  var sky = Sky.dusk(radians(20.), radians(168.));
   sky.sunColor = new Color(9., 10., 13., 1.);
   sky.zenith = new Color(0.004, 0.005, 0.009, 1.);
   sky.horizon = new Color(0.028, 0.032, 0.045, 1.);
@@ -255,56 +255,56 @@ fn main(argc i32, argv **u8) i32 {
   sky.cloudStretch = 3.;
   sky.cloudSeed = 3u32;
   renderer.setSky(&mut device, &sky);
-  imm light = sky.sunLight(new Color(1.8, 1.9, 2.3, 1.), new Color(0.02, 0.02, 0.03, 1.));
+  let light = sky.sunLight(new Color(1.8, 1.9, 2.3, 1.), new Color(0.02, 0.02, 0.03, 1.));
 
   // The strands: wet black under a clear coat; the water black and glassy
-  mut wet = PbrMaterial.standard(new Color(0.006, 0.007, 0.010, 1.), 0., 0.35);
+  var wet = PbrMaterial.standard(new Color(0.006, 0.007, 0.010, 1.), 0., 0.35);
   wet.clearcoat = 1.;
   wet.clearcoatRoughness = 0.06;
-  imm strandM = renderer.addPbrMaterial(&mut device, &wet);
-  mut water = PbrMaterial.standard(new Color(0.002, 0.002, 0.003, 1.), 0., 0.6);
+  let strandM = renderer.addPbrMaterial(&mut device, &wet);
+  var water = PbrMaterial.standard(new Color(0.002, 0.002, 0.003, 1.), 0., 0.6);
   water.clearcoat = 1.;
   water.clearcoatRoughness = 0.03;
-  imm waterM = renderer.addPbrMaterial(&mut device, &water);
-  imm strandMesh = renderer.addMesh(&mut device, meshes[0usize]);
-  imm planeMesh = mesh.Mesh.plane(8, 1.);
-  imm plane = renderer.addMesh(&mut device, &planeMesh);
+  let waterM = renderer.addPbrMaterial(&mut device, &water);
+  let strandMesh = renderer.addMesh(&mut device, meshes[0usize]);
+  let planeMesh = mesh.Mesh.plane(8, 1.);
+  let plane = renderer.addMesh(&mut device, &planeMesh);
 
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(strandMesh, strandM, Mat4.identity());
   list.add(plane, waterM, Mat4.fromTrs(v(0., 0., -2.), Quat.identity(), v(40., 1., 40.)));
 
   // The shots: low over the water up the river, from the side, from above
-  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+  let targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut target = device.createTexture(&targetDesc);
-  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
-  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var target = device.createTexture(&targetDesc);
+  let depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  var readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   if !renderer.isValid() or !post.isValid() or !target.isValid() {
     print <- "The renderer could not be made\n";
     return 1;
   }
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(50.);
   camera.near = 0.05;
   camera.far = 200.;
-  imm names Array[&Array[u8], 3] = ["-hero.bmp", "-side.bmp", "-above.bmp"];
-  imm eyes Array[Vec3, 3] = [v(0.3, 0.6, 2.4), v(4.2, 1.4, -1.0), v(0.6, 4.2, 1.8)];
-  imm targets Array[Vec3, 3] = [v(0., 0.2, -2.), v(0., 0.25, -1.6), v(0., 0., -1.7)];
-  mut s = 0usize;
+  let names Array[&Array[u8], 3] = ["-hero.bmp", "-side.bmp", "-above.bmp"];
+  let eyes Array[Vec3, 3] = [v(0.3, 0.6, 2.4), v(4.2, 1.4, -1.0), v(0.6, 4.2, 1.8)];
+  let targets Array[Vec3, 3] = [v(0., 0.2, -2.), v(0., 0.25, -1.6), v(0., 0., -1.7)];
+  var s = 0usize;
   while s < 3usize {
     camera.lookAt(eyes[s], targets[s], v(0., 1., 0.));
-    mut encoder = device.createCommandEncoder();
+    var encoder = device.createCommandEncoder();
     renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
     post.apply(&mut encoder, &target);
     encoder.copyTextureToBuffer(&target, &readback);
     device.queue.submit(encoder.finish());
     device.endFrame();
     device.waitIdle();
-    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
-    imm name = named(&shots, names[s] as &str);
+    let shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    let name = named(&shots, names[s] as &str);
     if shot.save(&Path.from(name.view())) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
     else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
     s = s + 1usize;

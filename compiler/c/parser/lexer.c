@@ -184,6 +184,10 @@ void keywordInit() {
     keyAdd("false", falseToken);
     keyAdd("undef", UndefToken);
     keyAdd("using", UsingToken);
+    // The words a declaration begins with: 'let' never gives its name a new
+    // value, 'var' may. 'imm' and 'mut' are permissions, written on references
+    keyAdd("let", LetToken);
+    keyAdd("var", VarToken);
 
     // Words the language claims but has not implemented yet. Holding them now
     // costs one rename in a program written today; letting a program bind one

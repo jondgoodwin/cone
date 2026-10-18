@@ -38,14 +38,14 @@ const U = 5.9604644775390625e-8d;           // 2^-24
 const SILU_FLOOR = 1.0e-30d;
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
 
 fn zerosF(n usize) List[f32] {
-  mut l = List[f32].withCapacity(n);
-  mut i = 0usize;
+  var l = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n { l.push(0.0); i = i + 1usize; }
   l;
 }
@@ -56,8 +56,8 @@ struct Stats {
 }
 
 fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
-  imm ticket = works.submit(device, job, Target.Here(1u64));
-  mut got = List[Completion].empty();
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
   works.waitFor(device, ticket, &mut got);
   require(got.len() == 1usize, "the job's completion");
   expectBool(got[0usize].ok, true, "the job ran");
@@ -66,31 +66,31 @@ fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
 
 // SiLU (which = 0) or GELU (1) of x: the number of outputs outside the bound
 fn activation(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, x &Array[f32], which u32) u64 {
-  imm n = x.len;
-  mut want = zerosF(n);
+  let n = x.len;
+  var want = zerosF(n);
   if which == 0u32 { siluCpu(x, n, want.viewMut()); } else { geluCpu(x, n, want.viewMut()); }
-  mut job = Job.make(device);
-  imm xb = job.give(upload(device, floatWords(x).view()));
-  imm yb = job.give(zeroed(device, n));
+  var job = Job.make(device);
+  let xb = job.give(upload(device, floatWords(x).view()));
+  let yb = job.give(zeroed(device, n));
   if which == 0u32 { require(kernels.silu(&mut job, device, xb, yb, n), "the silu recorded"); }
   else { require(kernels.gelu(&mut job, device, xb, yb, n), "the gelu recorded"); }
-  imm back = job.readback(device, yb);
-  imm y = finish(device, works, job, back);
-  mut bad = 0u64;
-  mut i = 0usize;
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  var bad = 0u64;
+  var i = 0usize;
   while i < n {
-    imm xv = libc.fabs(f64.from(x[i]));
-    imm err = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
-    imm mag = libc.fabs(f64.from(*want[i]));
+    let xv = libc.fabs(f64.from(x[i]));
+    let err = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+    let mag = libc.fabs(f64.from(*want[i]));
     if which == 0u32 {
       if !(err <= (8.0d + 2.0d * xv) * U * mag + SILU_FLOOR) { bad = bad + 1u64; }
       if mag > 1.0e-30d {
-        imm units = err / (U * mag);
+        let units = err / (U * mag);
         if units > stats.silu { stats.silu = units; }
       }
     } else {
       if !(err <= (6.0d + 4.0d * xv) * U + 6.0d * U * mag) { bad = bad + 1u64; }
-      imm units = err / U;
+      let units = err / U;
       if units > stats.gelu { stats.gelu = units; }
     }
     i = i + 1usize;
@@ -100,20 +100,20 @@ fn activation(device &mut Device, kernels &Kernels, works &mut Works, stats &mut
 
 // a + b (which = 0) or a * b (1): how many outputs are not bit for bit the twin's
 fn binary(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, n usize, which u32) u64 {
-  imm a = syntheticFloats(rng, n, 8.0);
-  imm b = syntheticFloats(rng, n, 8.0);
-  mut want = zerosF(n);
+  let a = syntheticFloats(rng, n, 8.0);
+  let b = syntheticFloats(rng, n, 8.0);
+  var want = zerosF(n);
   if which == 0u32 { addCpu(a.view(), b.view(), n, want.viewMut()); } else { mulCpu(a.view(), b.view(), n, want.viewMut()); }
-  mut job = Job.make(device);
-  imm ab = job.give(upload(device, floatWords(a.view()).view()));
-  imm bb = job.give(upload(device, floatWords(b.view()).view()));
-  imm yb = job.give(zeroed(device, n));
+  var job = Job.make(device);
+  let ab = job.give(upload(device, floatWords(a.view()).view()));
+  let bb = job.give(upload(device, floatWords(b.view()).view()));
+  let yb = job.give(zeroed(device, n));
   if which == 0u32 { require(kernels.add(&mut job, device, ab, bb, yb, n), "the add recorded"); }
   else { require(kernels.mul(&mut job, device, ab, bb, yb, n), "the mul recorded"); }
-  imm back = job.readback(device, yb);
-  imm y = finish(device, works, job, back);
-  mut bad = 0u64;
-  mut i = 0usize;
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  var bad = 0u64;
+  var i = 0usize;
   while i < n {
     if (*y[i] as u32) != (*want[i] as u32) { bad = bad + 1u64; }
     i = i + 1usize;
@@ -124,22 +124,22 @@ fn binary(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, 
 // Append nTokens rows of kvDim to a cache of capacity (pos0 + nTokens + 3) rows, past rows holding a marker: how
 // many words are wrong
 fn append(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, nTokens usize, kvDim usize, pos0 usize) u64 {
-  imm src = syntheticFloats(rng, nTokens * kvDim, 2.0);
-  imm rows = pos0 + nTokens + 3usize;
-  mut cache = List[f32].withCapacity(rows * kvDim);
-  mut i = 0usize;
+  let src = syntheticFloats(rng, nTokens * kvDim, 2.0);
+  let rows = pos0 + nTokens + 3usize;
+  var cache = List[f32].withCapacity(rows * kvDim);
+  var i = 0usize;
   while i < rows * kvDim { cache.push(7.0); i = i + 1usize; }
-  mut want = List[f32].withCapacity(rows * kvDim);
+  var want = List[f32].withCapacity(rows * kvDim);
   i = 0usize;
   while i < rows * kvDim { want.push(*cache[i]); i = i + 1usize; }
   kvAppendCpu(src.view(), want.viewMut(), nTokens, kvDim, pos0);
-  mut job = Job.make(device);
-  imm sb = job.give(upload(device, floatWords(src.view()).view()));
-  imm cb = job.give(upload(device, floatWords(cache.view()).view()));
+  var job = Job.make(device);
+  let sb = job.give(upload(device, floatWords(src.view()).view()));
+  let cb = job.give(upload(device, floatWords(cache.view()).view()));
   require(kernels.kvAppend(&mut job, device, sb, cb, nTokens, kvDim, pos0), "the append recorded");
-  imm back = job.readback(device, cb);
-  imm y = finish(device, works, job, back);
-  mut bad = 0u64;
+  let back = job.readback(device, cb);
+  let y = finish(device, works, job, back);
+  var bad = 0u64;
   i = 0usize;
   while i < rows * kvDim {
     if (*y[i] as u32) != (*want[i] as u32) { bad = bad + 1u64; }
@@ -149,24 +149,24 @@ fn append(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, 
 }
 
 fn main() i32 {
-  mut instance = Instance.create("llmkernels elementwise");
+  var instance = Instance.create("llmkernels elementwise");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm kernels = Kernels.make(&device);
+  let kernels = Kernels.make(&device);
   require(kernels.isValid(), "the kernels");
-  mut works = Works.make();
-  mut stats = new Stats(0.0d, 0.0d);
-  mut rng = Rng.fromSeed(31337u64);
+  var works = Works.make();
+  var stats = new Stats(0.0d, 0.0d);
+  var rng = Rng.fromSeed(31337u64);
 
-  imm sizes = [1usize, 255usize, 256usize, 257usize, 10000usize];
-  mut s = 0usize;
+  let sizes = [1usize, 255usize, 256usize, 257usize, 10000usize];
+  var s = 0usize;
   while s < 5usize {
-    imm n = sizes[s];
-    imm x = syntheticFloats(&mut rng, n, 6.0);
+    let n = sizes[s];
+    let x = syntheticFloats(&mut rng, n, 6.0);
     expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, x.view(), 0u32), 0u64, "silu");
     expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, x.view(), 1u32), 0u64, "gelu");
     expectUInt(binary(&mut device, &kernels, &mut works, &mut rng, n, 0u32), 0u64, "add");
@@ -175,7 +175,7 @@ fn main() i32 {
   }
 
   // special inputs
-  imm special = [0.0, 1.0e-8, -1.0e-8, 1.0, -1.0, 6.0, -6.0, 20.0, -20.0, 88.0, -88.0, 100.0, -100.0, 1.0e10, -1.0e10, 0.5, -0.5, 3.0, -3.0];
+  let special = [0.0, 1.0e-8, -1.0e-8, 1.0, -1.0, 6.0, -6.0, 20.0, -20.0, 88.0, -88.0, 100.0, -100.0, 1.0e10, -1.0e10, 0.5, -0.5, 3.0, -3.0];
   expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, &special, 0u32), 0u64, "silu of special inputs");
   expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, &special, 1u32), 0u64, "gelu of special inputs");
 
@@ -186,26 +186,26 @@ fn main() i32 {
   expectUInt(append(&mut device, &kernels, &mut works, &mut rng, 2048usize, 4096usize, 7usize), 0u64, "append 2048 rows of 4096: 8388608 elements, past 65535 groups");
 
   // one past 65535 groups of 256
-  imm big = 65535usize * 256usize + 1usize;
+  let big = 65535usize * 256usize + 1usize;
   expectUInt(binary(&mut device, &kernels, &mut works, &mut rng, big, 0u32), 0u64, "add of 16776961 elements (the index folds)");
   {
-    imm x = syntheticFloats(&mut rng, big, 6.0);
+    let x = syntheticFloats(&mut rng, big, 6.0);
     expectUInt(activation(&mut device, &kernels, &mut works, &mut stats, x.view(), 0u32), 0u64, "silu of 16776961 elements");
   }
 
   // refusals
   {
-    mut job = Job.make(&mut device);
-    imm a = job.give(zeroed(&mut device, 64usize));
-    imm b = job.give(zeroed(&mut device, 64usize));
-    imm c = job.give(zeroed(&mut device, 64usize));
+    var job = Job.make(&mut device);
+    let a = job.give(zeroed(&mut device, 64usize));
+    let b = job.give(zeroed(&mut device, 64usize));
+    let c = job.give(zeroed(&mut device, 64usize));
     expectBool(kernels.silu(&mut job, &mut device, a, b, 0usize), false, "silu of nothing is refused");
     expectBool(kernels.add(&mut job, &mut device, a, b, c, 0usize), false, "add of nothing is refused");
     expectBool(kernels.kvAppend(&mut job, &mut device, a, b, 0usize, 8usize, 0usize), false, "an append of no tokens is refused");
     expectBool(kernels.kvAppend(&mut job, &mut device, a, b, 2usize, 0usize, 0usize), false, "an append of no width is refused");
     expectBool(kernels.add(&mut job, &mut device, a, b, c, 8usize), true, "a good add is recorded");
-    imm t = works.submit(&mut device, job, Target.Here(2u64));
-    mut got = List[Completion].empty();
+    let t = works.submit(&mut device, job, Target.Here(2u64));
+    var got = List[Completion].empty();
     works.waitFor(&mut device, t, &mut got);
     expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
   }

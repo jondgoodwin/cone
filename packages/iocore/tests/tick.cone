@@ -21,21 +21,21 @@ import iocore use *;
 import diag;
 
 fn main() i32 {
-  mut lp = Loop.mustMake();
-  mut out = List[Completion].empty();
+  var lp = Loop.mustMake();
+  var out = List[Completion].empty();
 
   // 1. The tick
-  imm start = Instant.now();
-  mut late = diag.Histogram.make();
-  mut early = 0u64;
-  mut k = 1i64;
+  let start = Instant.now();
+  var late = diag.Histogram.make();
+  var early = 0u64;
+  var k = 1i64;
   lp.after(start + Duration.fromMillis(1i64), Target.Here(1u64));
   while k <= 500i64 {
     lp.poll(forever(), &mut out);
-    mut j = 0usize;
+    var j = 0usize;
     while j < out.len() {
-      imm c = out[j];
-      imm due = start + Duration.fromMillis(i64.from(c.token));
+      let c = out[j];
+      let due = start + Duration.fromMillis(i64.from(c.token));
       if c.dequeued < due {early = early + 1u64;}
       late.record((c.dequeued - due).nanos());
       k = k + 1i64;
@@ -52,23 +52,23 @@ fn main() i32 {
   expect(lp.counters().timerExpiries > 0u64, "its expiries came to the port");
 
   // 2. Timeouts through the wheel
-  imm t0 = Instant.now();
-  mut i = 0i64;
+  let t0 = Instant.now();
+  var i = 0i64;
   while i < 200i64 {
     // 5 to 204 ms, armed out of order
-    imm ms = 5i64 + (i * 37i64) % 200i64;
+    let ms = 5i64 + (i * 37i64) % 200i64;
     lp.after(t0 + Duration.fromMillis(ms), Target.Here(u64.from(ms)));
     i = i + 1i64;
   }
-  mut got = 0u64;
-  mut lastDue = 0u64;
-  mut ordered = true;
-  mut earlyT = 0u64;
+  var got = 0u64;
+  var lastDue = 0u64;
+  var ordered = true;
+  var earlyT = 0u64;
   while got < 200u64 {
     lp.poll(forever(), &mut out);
-    mut j = 0usize;
+    var j = 0usize;
     while j < out.len() {
-      imm c = out[j];
+      let c = out[j];
       if c.token < lastDue {ordered = false;}
       lastDue = c.token;
       if c.dequeued < t0 + Duration.fromMillis(i64.from(c.token)) {earlyT = earlyT + 1u64;}
@@ -80,7 +80,7 @@ fn main() i32 {
   expectUInt(got, 200u64, "200 timeouts, each once");
   expect(ordered, "in deadline order");
   expectUInt(earlyT, 0u64, "none early");
-  imm c = lp.counters();
+  let c = lp.counters();
   expectUInt(c.delivered, c.submitted, "every timer answered");
   done();
 }

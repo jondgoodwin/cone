@@ -320,9 +320,9 @@ const parkNotified = 1u32;
 const parkParked = 0xFFFFFFFFu32;
 
 fn infoNew(name &str, refs u32, id u32) *Info {
-  imm size = mem.sizeof[Info]();
-  imm nameBytes &Array[u8] = name;
-  imm p = libc.malloc(size + nameBytes.len) as *Info;
+  let size = mem.sizeof[Info]();
+  let nameBytes &Array[u8] = name;
+  let p = libc.malloc(size + nameBytes.len) as *Info;
   if p as usize == 0usize {
     die("thread: out of memory");
   }
@@ -360,7 +360,7 @@ fn infoName(p *Info) &str {
 }
 
 // This thread's Info, or 0 before it has one
-mut @threadlocal me usize = 0usize;
+var @threadlocal me usize = 0usize;
 
 // This thread's Info, made the first time a thread 'start' did not begin asks
 // for it. The thread's own hold on it is never released, since nothing runs
@@ -409,7 +409,7 @@ struct PacketHead {
 // to name, so the packet carries the Cone function for this A and R and this
 // calls it.
 fn @c threadStart(p *u8) u32 {
-  imm run = (*(p as *PacketHead)).run;
+  let run = (*(p as *PacketHead)).run;
   run(p);
 }
 
@@ -423,10 +423,10 @@ fn packetRelease(pkt *u8) bool {
 // what f returns. If the handle was detached, nobody will read the result,
 // and the thread finalizes it and frees the block.
 fn entry[A, R](p *u8) u32 {
-  imm pk = p as *Packet[A, R];
+  let pk = p as *Packet[A, R];
   enter((*pk).info);
-  imm f = (*pk).f;
-  imm r = f(mem.readRaw[A](&(*pk).arg as *A));
+  let f = (*pk).f;
+  let r = f(mem.readRaw[A](&(*pk).arg as *A));
   mem.writeRaw[R](&(*pk).result as *R, r);
   leave();
   if (*pk).refs.subOrdered(1u32, MemOrder.AcqRel) == 1u32 {
@@ -443,7 +443,7 @@ fn enter(info *Info) {
 }
 
 fn leave() {
-  imm info = me as *Info;
+  let info = me as *Info;
   me = 0usize;
   infoRelease(info);
 }
@@ -465,23 +465,23 @@ fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
 // Each system's calls are a function of their own, called from the branch for
 // that system alone: on the other system it is not part of the program
 fn launchWindows(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
-  imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
-  mut id = 0u32;
-  imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+  let stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
+  var id = 0u32;
+  let handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
   (*info).id.storeOrdered(id, MemOrder.Relaxed);
   handle;
 }
 
 fn launchPosix(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
-  mut handle = 0usize;
-  mut result = 0i32;
+  var handle = 0usize;
+  var result = 0i32;
   if stackSize == 0usize {
     result = pthread_create(&mut handle as *usize, null, entry, pkt);
   }
   else {
-    mut attr = new PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    var attr = new PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     pthread_attr_init(&mut attr as *PthreadAttr);
-    imm size = if stackSize < minPosixStack {minPosixStack;} else {stackSize;};
+    let size = if stackSize < minPosixStack {minPosixStack;} else {stackSize;};
     result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
     if result == 0i32 {
       result = pthread_create(&mut handle as *usize, &mut attr as *PthreadAttr, entry, pkt);
@@ -514,17 +514,17 @@ pub fn start[A Sendable + 'static, R Sendable + 'static](arg A, f &fn(a A) R) Th
 
 // A new thread running f(arg), named and with the stack 'opts' says
 pub fn startWith[A Sendable + 'static, R Sendable + 'static](opts Options, arg A, f &fn(a A) R) Thread[R] {
-  imm pk = libc.malloc(mem.sizeof[Packet[A, R]]()) as *Packet[A, R];
+  let pk = libc.malloc(mem.sizeof[Packet[A, R]]()) as *Packet[A, R];
   if pk as usize == 0usize {
     die("thread: out of memory");
   }
-  imm info = infoNew(opts.name, 2u32, 0u32);
+  let info = infoNew(opts.name, 2u32, 0u32);
   (*pk).refs = Atomic[u32].of(2u32);
   (*pk).info = info;
   (*pk).run = &entry[A, R];
   (*pk).f = f;
   mem.writeRaw[A](&(*pk).arg as *A, arg);
-  imm handle = launch(&threadStart, pk as *u8, info, opts.stackSize);
+  let handle = launch(&threadStart, pk as *u8, info, opts.stackSize);
   if handle == 0usize {
     die("thread: the thread could not be started");
   }
@@ -548,18 +548,18 @@ pub struct Thread[R] {
   }
 
   // Wait for the thread to finish, and answer what its function returned
-  pub fn join(mut self) R {
+  pub fn join(var self) R {
     osJoin(handle);
     handle = 0usize;
     // The thread has ended, so the block is this handle's alone
-    imm r = mem.readRaw[R](result);
+    let r = mem.readRaw[R](result);
     libc.free(pkt);
     infoRelease(info);
     r;
   }
 
   // Let the thread run on alone; it finalizes its own result
-  pub fn detach(mut self) {
+  pub fn detach(var self) {
     osDetach(handle);
     handle = 0usize;
     if packetRelease(pkt) {
@@ -617,7 +617,7 @@ pub struct ThreadRef is Sendable {
 
 // The thread calling it
 pub fn current() ThreadRef {
-  imm info = mine();
+  let info = mine();
   infoHold(info);
   ThreadRef.of(info);
 }
@@ -628,7 +628,7 @@ pub fn current() ThreadRef {
 
 // How many logical processors the machine has, at least 1
 pub fn parallelism() u32 {
-  imm n = if isWindows() {GetActiveProcessorCount(allProcessorGroups);} else {u32.from(cone_processors());};
+  let n = if isWindows() {GetActiveProcessorCount(allProcessorGroups);} else {u32.from(cone_processors());};
   if n == 0u32 {1u32;} else {n;};
 }
 
@@ -644,16 +644,16 @@ pub fn sleep(d time.Duration) {
     if isWindows() {Sleep(0u32);} else {sched_yield();}
     return;
   }
-  imm ns = u64.from(d.nanos());
+  let ns = u64.from(d.nanos());
   if isWindows() {sleepWindows(ns);} else {sleepPosix(ns);}
 }
 
 fn sleepWindows(ns u64) {
-  mut slept = false;
-  imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+  var slept = false;
+  let timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
   if timer != 0usize {
     // Relative (negative), in 100 ns units, rounded up
-    mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
+    var due = 0i64 - i64.from((ns + 99u64) / 100u64);
     if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
       WaitForSingleObject(timer, infinite);
       slept = true;
@@ -667,8 +667,8 @@ fn sleepWindows(ns u64) {
 
 // POSIX's nanosleep, resumed for the time left when a signal ends it early
 fn sleepPosix(ns u64) {
-  mut request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
-  mut left = new Timespec(0i64, 0i64);
+  var request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
+  var left = new Timespec(0i64, 0i64);
   while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 and *libc.errno() == eintr {
     request = left;
   }
@@ -676,19 +676,19 @@ fn sleepPosix(ns u64) {
 
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
 fn msCeil(ns u64) u32 {
-  imm ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64;} else {0u64;});
+  let ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64;} else {0u64;});
   if ms >= u64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
 // Take this thread's parking token, sleeping until there is one
 pub fn park() {
-  imm info = mine();
+  let info = mine();
   // A token becomes none, and this returns; none becomes parked, and it sleeps
   if (*info).park.subOrdered(1u32, MemOrder.Acquire) == parkNotified {
     return;
   }
-  mut old = 0u32;
-  mut taken = false;
+  var old = 0u32;
+  var taken = false;
   while !taken {
     sync.futexWait(parkWord(info), parkParked);
     old, taken = (*info).park.compareSwapOrdered(parkNotified, parkEmpty,

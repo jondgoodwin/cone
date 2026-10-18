@@ -27,13 +27,13 @@ import geomath use *;
 import gpu use *;
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
 
 fn rayTracingOff() bool {
-  imm env = libc.getenv("GPU_RAY_TRACING");
+  let env = libc.getenv("GPU_RAY_TRACING");
   (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "off") == 0i32;
 }
 
@@ -43,10 +43,10 @@ fn real(p *u8, offset usize) f32 { *((p + offset) as *f32); }
 // Ray 'ray' of the results (5 words: hit, t, custom index, primitive, front face): a hit or a miss, at
 // 't', of instance 'custom', triangle 'primitive' (99: not checked)
 fn expectRay(r *u8, ray usize, hit u32, t f32, custom u32, primitive u32, label &str) {
-  imm base = ray * 20usize;
+  let base = ray * 20usize;
   expectUInt(u64.from(word(r, base)), u64.from(hit), label);
   if hit == 1u32 {
-    imm d = real(r, base + 4usize) - t;
+    let d = real(r, base + 4usize) - t;
     expect(d < 0.001 and d > -0.001, label);
     expectUInt(u64.from(word(r, base + 8usize)), u64.from(custom), label);
     if primitive != 99u32 { expectUInt(u64.from(word(r, base + 12usize)), u64.from(primitive), label); }
@@ -54,15 +54,15 @@ fn expectRay(r *u8, ray usize, hit u32, t f32, custom u32, primitive u32, label 
 }
 
 fn main() i32 {
-  mut instance = Instance.create("raytracing");
+  var instance = Instance.create("raytracing");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  imm report = (libc.getenv("GPU_RT_REPORT") as usize) != 0usize;
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  let report = (libc.getenv("GPU_RT_REPORT") as usize) != 0usize;
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  imm supported = adapter.supportsRayTracing();
-  imm off = rayTracingOff();
-  mut device = adapter.requestDeviceWith(!off);
+  let supported = adapter.supportsRayTracing();
+  let off = rayTracingOff();
+  var device = adapter.requestDeviceWith(!off);
   require(device.isValid(), "a device");
   if report {
     printStr("adapter: ");
@@ -74,17 +74,17 @@ fn main() i32 {
 
   if !device.rayTracing {
     // Refused, with nothing made
-    mut top = device.createTopLevel(4u32);
+    var top = device.createTopLevel(4u32);
     expectBool(top.isValid(), false, "a top level refused without ray tracing");
-    mut buffer = device.createBuffer(256u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+    var buffer = device.createBuffer(256u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
     expectBool(buffer.isValid(), false, "an acceleration-structure buffer refused without ray tracing");
-    mut bottom = device.createBottomLevel(&buffer, 4u32, &buffer, 6u32);
+    var bottom = device.createBottomLevel(&buffer, 4u32, &buffer, 6u32);
     expectBool(bottom.isValid(), false, "a bottom level refused without ray tracing");
     expectUInt(u64.from(failures()), 3u64, "three refusals, and no Vulkan call failed");
     expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
     // The checks of the ray-tracing half are skipped here, and counted as passed, so that the output this
     // test pins ('35 checks passed') is the same on every GPU
-    mut skipped = 0u32;
+    var skipped = 0u32;
     while skipped < 26u32 {
       expect(true, "a ray-tracing check, skipped: this device has no ray tracing");
       skipped = skipped + 1u32;
@@ -94,51 +94,51 @@ fn main() i32 {
   }
 
   // ---- The geometry: a quad of two triangles in the xy plane, half-size 1 ----
-  imm positions Array[f32, 12] = [-1., -1., 0., 1., -1., 0., 1., 1., 0., -1., 1., 0.];
-  imm indices Array[u32, 6] = [0u32, 1u32, 2u32, 0u32, 2u32, 3u32];
-  mut positionBuffer = device.createBuffer(48u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
-  mut indexBuffer = device.createBuffer(24u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+  let positions Array[f32, 12] = [-1., -1., 0., 1., -1., 0., 1., 1., 0., -1., 1., 0.];
+  let indices Array[u32, 6] = [0u32, 1u32, 2u32, 0u32, 2u32, 3u32];
+  var positionBuffer = device.createBuffer(48u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
+  var indexBuffer = device.createBuffer(24u64, BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
   require(positionBuffer.isValid() and indexBuffer.isValid(), "the input buffers");
   device.queue.writeBuffer(&positionBuffer, 0u64, &positions as *u8, 48u64);
   device.queue.writeBuffer(&indexBuffer, 0u64, &indices as *u8, 24u64);
-  mut bottom = device.createBottomLevel(&positionBuffer, 4u32, &indexBuffer, 6u32);
-  mut top = device.createTopLevel(4u32);
+  var bottom = device.createBottomLevel(&positionBuffer, 4u32, &indexBuffer, 6u32);
+  var top = device.createTopLevel(4u32);
   require(bottom.isValid() and top.isValid(), "the bottom and top levels");
 
   // Instance 0: the large quad at z = 5, custom index 7; instance 1: the small one at z = 3, custom index 9
-  imm large = new AccelerationStructureInstance(transform: [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 5.],
+  let large = new AccelerationStructureInstance(transform: [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 5.],
     indexAndMask: 7u32 | (0xFFu32 << 24u32), flags: INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, structure: bottom.address);
-  imm small = new AccelerationStructureInstance(transform: [0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1., 3.],
+  let small = new AccelerationStructureInstance(transform: [0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1., 3.],
     indexAndMask: 9u32 | (0xFFu32 << 24u32), flags: INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, structure: bottom.address);
   device.queue.writeBuffer(&top.instances, 0u64, &large as *u8, ACCELERATION_STRUCTURE_INSTANCE_BYTES);
   device.queue.writeBuffer(&top.instances, 64u64, &small as *u8, ACCELERATION_STRUCTURE_INSTANCE_BYTES);
 
   // ---- The shader, its layout and its bind group ----
-  mut results = device.createBuffer(160u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
-  mut readback = device.createBuffer(256u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  imm r = readback.mappedRange();
-  imm entries = [
+  var results = device.createBuffer(160u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+  var readback = device.createBuffer(256u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let r = readback.mappedRange();
+  let entries = [
     new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, kind: BINDING_KIND_ACCELERATION_STRUCTURE),
     new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
-  mut groupLayout = device.createBindGroupLayout(&entries);
-  imm groupLayouts = [&groupLayout];
-  mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
-  mut shader = device.createShaderModule(&RAYTRACING_SPIRV);
+  var groupLayout = device.createBindGroupLayout(&entries);
+  let groupLayouts = [&groupLayout];
+  var layout = device.createPipelineLayout(&groupLayouts, 0u32);
+  var shader = device.createShaderModule(&RAYTRACING_SPIRV);
   require(groupLayout.isValid() and layout.isValid() and shader.isValid(), "the layout and the shader");
-  imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "castMain");
-  mut pipeline = device.createComputePipeline(&desc);
+  let desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "castMain");
+  var pipeline = device.createComputePipeline(&desc);
   require(pipeline.isValid(), "the compute pipeline");
-  imm groupEntries = [BindGroupEntry.accelerationStructure(0u32, &top), BindGroupEntry.buffer(1u32, &results)];
-  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  let groupEntries = [BindGroupEntry.accelerationStructure(0u32, &top), BindGroupEntry.buffer(1u32, &results)];
+  var group = device.createBindGroup(&groupLayout, &groupEntries);
   require(group.isValid(), "the bind group");
   require(failures() == 0u32, "everything made");
 
   // ---- Build, cast, read back ----
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   encoder.buildAccelerationStructure(&bottom, 0u32);
   encoder.buildAccelerationStructure(&top, 2u32);
   {
-    mut pass = encoder.beginComputePass();
+    var pass = encoder.beginComputePass();
     pass.setPipeline(&pipeline);
     pass.setBindGroup(0u32, &group);
     pass.dispatchWorkgroups(1u32);
@@ -166,7 +166,7 @@ fn main() i32 {
 
 // spirv-begin raytracing.spv RAYTRACING_SPIRV
 // Written by tools/shaders/shaders.py from raytracing.slang (sha256 8d8ec36956f75032fadd1a5bd6f7e42d856e296aa671a46f387de7ede6ea9982): do not edit.
-imm RAYTRACING_SPIRV Array[u32, 1008] = [
+let RAYTRACING_SPIRV Array[u32, 1008] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000000e0u32, 0x00000000u32, 0x00020011u32,
   0x00001178u32, 0x00020011u32, 0x00000001u32, 0x0006000au32, 0x5f565053u32, 0x5f52484bu32,
   0x5f796172u32, 0x72657571u32, 0x00000079u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32,

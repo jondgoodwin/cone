@@ -23,10 +23,10 @@ import actors;
 import aio use Socket, IoLimits;
 
 fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
@@ -44,7 +44,7 @@ fn sayError(what &str, e IoError) {
 
 fn say[T](what &str, r Result[T, IoError]) {
   match r {
-    case imm e Error {sayError(what, e);}
+    case let e Error {sayError(what, e);}
     else {
       printStr(what);
       printStr(": done\n");
@@ -71,101 +71,101 @@ actor Prober {
   }
 
   pub async do run(self, done OneshotSender[u64]) {
-    imm l = await aio.listen(SocketAddr.localhost(0u16));
-    imm ls = socketOf(l);
-    imm a = await ls.localAddr();
-    mut port = 0u16;
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
     match a {
-      case imm addr Ok {port = addr.port();}
+      case let addr Ok {port = addr.port();}
       else {}
     }
-    imm c = await aio.connect(SocketAddr.localhost(port));
-    imm cli = socketOf(c);
-    imm ac = await ls.accept();
-    imm srv = socketOf(ac);
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let cli = socketOf(c);
+    let ac = await ls.accept();
+    let srv = socketOf(ac);
 
     // A group cancelled by a message, while the read is paused
-    imm g1 = CancelGroup.make();
-    imm r1 = srv.readIn(pool.mustTake(4096usize), IoLimits.within(g1));
+    let g1 = CancelGroup.make();
+    let r1 = srv.readIn(pool.mustTake(4096usize), IoLimits.within(g1));
     selfactor.stop(g1);
-    imm a1 = await r1;
+    let a1 = await r1;
     say[IoBuf]("cancel while paused", a1);
 
     // A group cancelled before the operation starts: answered at once
-    imm g2 = CancelGroup.make();
+    let g2 = CancelGroup.make();
     g2.cancel();
-    imm a2 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g2));
+    let a2 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g2));
     say[IoBuf]("cancelled before it starts", a2);
 
     // A deadline of its own, ahead
-    imm t3 = Instant.now();
-    imm a3 = await srv.readIn(pool.mustTake(4096usize), IoLimits.until(t3 + Duration.fromMillis(60i64)));
+    let t3 = Instant.now();
+    let a3 = await srv.readIn(pool.mustTake(4096usize), IoLimits.until(t3 + Duration.fromMillis(60i64)));
     say[IoBuf]("deadline ahead", a3);
     note("  and it had passed", waitedAtLeast(t3, 50i64));
 
     // A deadline already past: answered at once
-    imm a4 = await srv.readIn(pool.mustTake(4096usize), IoLimits.until(Instant.now()));
+    let a4 = await srv.readIn(pool.mustTake(4096usize), IoLimits.until(Instant.now()));
     say[IoBuf]("deadline past", a4);
 
     // A group made with a deadline
-    imm t5 = Instant.now();
-    imm g5 = CancelGroup.until(t5 + Duration.fromMillis(60i64));
-    imm a5 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g5));
+    let t5 = Instant.now();
+    let g5 = CancelGroup.until(t5 + Duration.fromMillis(60i64));
+    let a5 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g5));
     say[IoBuf]("group with a deadline", a5);
     note("  and it had passed", waitedAtLeast(t5, 50i64));
 
     // A child's deadline is the tighter of its own and its parent's, both ways
-    imm t6 = Instant.now();
-    imm p6 = CancelGroup.until(t6 + Duration.fromSeconds(30i64));
-    imm k6 = p6.childUntil(t6 + Duration.fromMillis(60i64));
-    imm a6 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(k6));
+    let t6 = Instant.now();
+    let p6 = CancelGroup.until(t6 + Duration.fromSeconds(30i64));
+    let k6 = p6.childUntil(t6 + Duration.fromMillis(60i64));
+    let a6 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(k6));
     say[IoBuf]("child's deadline the tighter", a6);
     note("  and it had passed", waitedAtLeast(t6, 50i64));
     note("  and the parent's 30 s did not", not waitedAtLeast(t6, 5000i64));
-    imm t7 = Instant.now();
-    imm p7 = CancelGroup.until(t7 + Duration.fromMillis(60i64));
-    imm k7 = p7.childUntil(t7 + Duration.fromSeconds(30i64));
-    imm a7 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(k7));
+    let t7 = Instant.now();
+    let p7 = CancelGroup.until(t7 + Duration.fromMillis(60i64));
+    let k7 = p7.childUntil(t7 + Duration.fromSeconds(30i64));
+    let a7 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(k7));
     say[IoBuf]("parent's deadline the tighter", a7);
     note("  and it had passed", waitedAtLeast(t7, 50i64));
     note("  and the child's 30 s did not", not waitedAtLeast(t7, 5000i64));
 
     // A parent's cancel reaches its child's operation
-    imm p8 = CancelGroup.make();
-    imm k8 = p8.child();
-    imm r8 = srv.readIn(pool.mustTake(4096usize), IoLimits.within(k8));
+    let p8 = CancelGroup.make();
+    let k8 = p8.child();
+    let r8 = srv.readIn(pool.mustTake(4096usize), IoLimits.within(k8));
     selfactor.stop(p8);
-    imm a8 = await r8;
+    let a8 = await r8;
     say[IoBuf]("parent cancelled", a8);
 
     // An accept with a deadline, and a connect whose deadline is past
-    imm t9 = Instant.now();
-    imm a9 = await ls.acceptIn(IoLimits.until(t9 + Duration.fromMillis(60i64)));
+    let t9 = Instant.now();
+    let a9 = await ls.acceptIn(IoLimits.until(t9 + Duration.fromMillis(60i64)));
     say[Socket]("accept with a deadline", a9);
     note("  and it had passed", waitedAtLeast(t9, 50i64));
-    imm a10 = await aio.connectIn(SocketAddr.localhost(port), IoLimits.until(Instant.now()));
+    let a10 = await aio.connectIn(SocketAddr.localhost(port), IoLimits.until(Instant.now()));
     say[Socket]("connect, deadline past", a10);
 
     // Finished before the cancel: done, and the cancel after it does nothing
-    imm g11 = CancelGroup.make();
-    mut hello = pool.mustTake(64usize);
+    let g11 = CancelGroup.make();
+    var hello = pool.mustTake(64usize);
     hello.append("hi");
-    imm w11 = await cli.write(hello);
-    imm a11 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g11));
+    let w11 = await cli.write(hello);
+    let a11 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g11));
     say[IoBuf]("finished before the cancel", a11);
     note("  cancel() found the group live", g11.cancel());
     note("  and its second cancel found it cancelled already", not g11.cancel());
 
     // A write that cannot finish: the peer never reads, so the kernel's
     // buffers fill, and a write ends at its deadline
-    mut sent = 0u32;
-    mut ended = false;
+    var sent = 0u32;
+    var ended = false;
     while not ended and sent < 4096u32 {
-      mut big = pool.mustTake(1048576usize);
+      var big = pool.mustTake(1048576usize);
       big.setLen(big.capacity());
-      imm w = await cli.writeIn(big, IoLimits.until(Instant.now() + Duration.fromMillis(100i64)));
+      let w = await cli.writeIn(big, IoLimits.until(Instant.now() + Duration.fromMillis(100i64)));
       match w {
-        case imm e Error {
+        case let e Error {
           ended = true;
           sayError("write with the peer not reading", e);
         }
@@ -175,21 +175,21 @@ actor Prober {
     note("  a write ended at its deadline", ended);
 
     // A failure is a failure: a read with no room
-    imm a12 = await srv.readIn(IoBuf.empty(), IoLimits.until(Instant.now() + Duration.fromSeconds(30i64)));
+    let a12 = await srv.readIn(IoBuf.empty(), IoLimits.until(Instant.now() + Duration.fromSeconds(30i64)));
     say[IoBuf]("read with no room", a12);
 
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
 
 fn main() {
   initAll();
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx OneshotSender[u64];
+  var rx OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    imm p = new Prober(Pool.make());
+    let p = new Prober(Pool.make());
     p.run(tx);
   }
   rx.recv();

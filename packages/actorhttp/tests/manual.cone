@@ -27,30 +27,30 @@ actor Weather {
   pub async do show(self, url String, done OneshotSender[u64]) {
     // The whole response, awaited: this actor handles its other messages
     // meanwhile. It is given ten seconds, and the answer says how it ended
-    imm r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(10i64)));
+    let r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(10i64)));
     match r {
-      case imm ok Ok {
+      case let ok Ok {
         say("status", u64.from(ok.status));
         printStr(ok.body.view());
         printStr("\n");
       }
-      case imm e Error {
+      case let e Error {
         if e.isTimedOut() {printStr("too slow\n");}
         elif e.isCancelled() {printStr("cancelled\n");}
         else {printStr(e.message().view()); printStr("\n");}
       }
     }
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
 // manual: end
 
 fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
@@ -61,42 +61,42 @@ actor Shop {
   pool Pool;
 
   pub async do serve(self, port OneshotSender[u16]) {
-    imm listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
-    mut p = 0u16;
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var p = 0u16;
     match await listener.localAddr() {
-      case imm a Ok {p = a.port();}
+      case let a Ok {p = a.port();}
       else {}
     }
-    mut tx = port;
+    var tx = port;
     tx.send(p);
-    imm conn = socketOf(await listener.accept());
-    imm request = await conn.read(pool.mustTake(4096usize));
-    mut response = pool.mustTake(256usize);
+    let conn = socketOf(await listener.accept());
+    let request = await conn.read(pool.mustTake(4096usize));
+    var response = pool.mustTake(256usize);
     response.append("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nsunny, 21 C");
-    imm sent = await conn.write(response);
+    let sent = await conn.write(response);
   }
 }
 
 fn main() {
   initAll();
-  mut ptx OneshotSender[u16];
-  mut prx OneshotReceiver[u16];
+  var ptx OneshotSender[u16];
+  var prx OneshotReceiver[u16];
   ptx, prx = Oneshot[u16].make();
-  imm shop = new Shop(Pool.make());
+  let shop = new Shop(Pool.make());
   shop.serve(ptx);
-  mut port = 0u16;
+  var port = 0u16;
   match prx.recv() {
-    case imm p Some {port = p;}
+    case let p Some {port = p;}
     case is None[u16] {}
   }
-  mut dtx OneshotSender[u64];
-  mut drx OneshotReceiver[u64];
+  var dtx OneshotSender[u64];
+  var drx OneshotReceiver[u64];
   dtx, drx = Oneshot[u64].make();
   {
-    mut url = String.from("http://127.0.0.1:");
+    var url = String.from("http://127.0.0.1:");
     url.appendUInt(u64.from(port));
     url.append("/today");
-    imm w = new Weather(Client.standard());
+    let w = new Weather(Client.standard());
     w.show(url, dtx);
   }
   drx.recv();

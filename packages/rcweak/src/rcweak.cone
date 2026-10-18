@@ -70,8 +70,8 @@
 mod rcweak;
 
 // How many blocks this region has allocated and not yet given back. Any thread
-// may make an 'Rcw', so the count is an atomic held by an 'imm' global
-imm blocks Atomic[usize];
+// may make an 'Rcw', so the count is an atomic held by a 'let' global
+let blocks Atomic[usize];
 
 fn @initpure init() {
   blocks = Atomic[usize].of(0usize);
@@ -89,7 +89,7 @@ pub struct Rcw is RegionRef {
   pub weak usize;     // weak references, plus one while any strong owner remains
 
   fn alloc(size usize) *u8 {
-    imm p = RawBlocks.alloc(size, 16usize);
+    let p = RawBlocks.alloc(size, 16usize);
     if p as usize != 0usize { blocks.add(1usize); }
     p;
   }
@@ -102,7 +102,7 @@ pub struct Rcw is RegionRef {
 
 // One weak count goes; the last frees the block
 fn dropWeak(h *Rcw) {
-  imm hr = h as &mut Rcw;
+  let hr = h as &mut Rcw;
   hr.weak = hr.weak - 1usize;
   if hr.weak == 0usize {
     blocks.sub(1usize);
@@ -125,9 +125,9 @@ pub struct Weak[T] {
   // so a shared 'Rcw[mut, T]' owner is copied and a unique 'Rcw' one moves in
   // and is given up.
   pub fn of(owner Rcw[mut, T]) Weak[T] {
-    imm at = owner as *T;
-    imm h = (at as usize - valueOffset[T]()) as *Rcw;
-    imm hr = h as &mut Rcw;
+    let at = owner as *T;
+    let h = (at as usize - valueOffset[T]()) as *Rcw;
+    let hr = h as &mut Rcw;
     hr.weak = hr.weak + 1usize;
     new Weak[T](h);
   }
@@ -158,7 +158,7 @@ pub struct Weak[T] {
 
   // A new strong owner of a live value: counted here, since a cast is not a copy
   fn owner(self &) Rcw[mut, T] {
-    imm hr = hdr as &mut Rcw;
+    let hr = hdr as &mut Rcw;
     hr.strong = hr.strong + 1usize;
     (hdr as usize + valueOffset[T]()) as Rcw[mut, T];
   }
@@ -166,7 +166,7 @@ pub struct Weak[T] {
   // Another weak reference to the same value
   pub fn clone(self &) Weak[T] {
     if hdr as usize != 0usize {
-      imm hr = hdr as &mut Rcw;
+      let hr = hdr as &mut Rcw;
       hr.weak = hr.weak + 1usize;
     }
     new Weak[T](hdr);
@@ -183,7 +183,7 @@ pub struct Weak[T] {
   // count the strong owners held, which their value's death gives back last.
   pub fn weakCount(self &) usize {
     if hdr as usize == 0usize { return 0usize; }
-    imm hr = hdr as &Rcw;
+    let hr = hdr as &Rcw;
     if hr.strong > 0usize { hr.weak - 1usize; } else { hr.weak; };
   }
 

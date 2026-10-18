@@ -39,12 +39,12 @@ fn channelsOf(ct u8) usize {
 
 // What the picture's pixel k should decode to, at the Raster's depth
 fn reference(ct u8, depth u8, samples &Array[u16], k usize, o &PngWrite, out &mut Array[u32]) {
-  imm ch = channelsOf(ct);
-  imm b = k * ch;
-  imm full = if depth == 16u8 {65535u32;} else {255u32;};
-  imm maxv = (1u32 << u32.from(depth)) - 1u32;
+  let ch = channelsOf(ct);
+  let b = k * ch;
+  let full = if depth == 16u8 {65535u32;} else {255u32;};
+  let maxv = (1u32 << u32.from(depth)) - 1u32;
   if ct == 3u8 {
-    imm i = usize.from(samples[b]);
+    let i = usize.from(samples[b]);
     out[0usize] = u32.from(*o.palette[i * 3usize]);
     out[1usize] = u32.from(*o.palette[i * 3usize + 1usize]);
     out[2usize] = u32.from(*o.palette[i * 3usize + 2usize]);
@@ -52,7 +52,7 @@ fn reference(ct u8, depth u8, samples &Array[u16], k usize, o &PngWrite, out &mu
     return;
   }
   if ct == 0u8 or ct == 4u8 {
-    imm g = u32.from(samples[b]) * full / maxv;
+    let g = u32.from(samples[b]) * full / maxv;
     out[0usize] = g;
     out[1usize] = g;
     out[2usize] = g;
@@ -70,27 +70,27 @@ fn reference(ct u8, depth u8, samples &Array[u16], k usize, o &PngWrite, out &mu
 
 // Make a picture, encode it, decode it, and count the pixels that differ
 fn trial(ct u8, depth u8, w i32, h i32, interlace bool, filter i32, key bool, seed u64) usize {
-  mut s = seed;
-  imm ch = channelsOf(ct);
-  imm n = usize.from(w) * usize.from(h);
-  imm maxv = (1u32 << u32.from(depth)) - 1u32;
-  mut o = PngWrite.make(ct, depth);
+  var s = seed;
+  let ch = channelsOf(ct);
+  let n = usize.from(w) * usize.from(h);
+  let maxv = (1u32 << u32.from(depth)) - 1u32;
+  var o = PngWrite.make(ct, depth);
   o.interlace = interlace;
   o.filter = filter;
   o.level = 2;
   if ct == 3u8 {
-    imm entries = usize.from(maxv) + 1usize;
-    mut i = 0usize;
+    let entries = usize.from(maxv) + 1usize;
+    var i = 0usize;
     while i < entries * 3usize { o.palette.push(u8.from(nextRand(&mut s) & 255u64)); i += 1usize; }
     i = 0usize;
     while i < entries / 2usize + 1usize { o.trns.push(u8.from(nextRand(&mut s) & 255u64)); i += 1usize; }
   }
-  mut samples = List[u16].empty();
-  mut i = 0usize;
+  var samples = List[u16].empty();
+  var i = 0usize;
   while i < n * ch {
-    imm limit = if ct == 3u8 {u64.from(maxv) + 1u64;} else {u64.from(maxv) + 1u64;};
+    let limit = if ct == 3u8 {u64.from(maxv) + 1u64;} else {u64.from(maxv) + 1u64;};
     // Smooth runs as well as noise, so the filters have something to predict
-    imm v = if (i / ch) % 3usize == 0usize {nextRand(&mut s) % limit;} else {u64.from(*samples[i - ch]);};
+    let v = if (i / ch) % 3usize == 0usize {nextRand(&mut s) % limit;} else {u64.from(*samples[i - ch]);};
     samples.push(u16.from(v));
     i += 1usize;
   }
@@ -99,61 +99,61 @@ fn trial(ct u8, depth u8, w i32, h i32, interlace bool, filter i32, key bool, se
     o.keyR = *samples[3usize * ch];
     if ct == 2u8 { o.keyG = *samples[3usize * ch + 1usize]; o.keyB = *samples[3usize * ch + 2usize]; }
   }
-  imm file = encodePngSamples(w, h, samples.view(), &o);
-  mut bad = 0usize;
+  let file = encodePngSamples(w, h, samples.view(), &o);
+  var bad = 0usize;
   match decodePng(file.view()) {
-    case imm ok Ok {
+    case let ok Ok {
       if ok.width != w or ok.height != h { return n; }
       if ok.depth != (if depth == 16u8 {16;} else {8;}) { return n; }
-      mut expected = List[u32].empty();
+      var expected = List[u32].empty();
       expected.resize(4usize, 0u32);
-      mut k = 0usize;
+      var k = 0usize;
       while k < n {
         reference(ct, depth, samples.view(), k, &o, expected.viewMut());
-        mut c = 0usize;
+        var c = 0usize;
         while c < 4usize {
-          imm got = if depth == 16u8 {u32.from(*ok.pixels16[k * 4usize + c]);} else {u32.from(*ok.pixels8[k * 4usize + c]);};
+          let got = if depth == 16u8 {u32.from(*ok.pixels16[k * 4usize + c]);} else {u32.from(*ok.pixels8[k * 4usize + c]);};
           if got != *expected[c] { bad += 1usize; break; }
           c += 1usize;
         }
         k += 1usize;
       }
     }
-    case imm e Error { return n; }
+    case let e Error { return n; }
   }
   bad;
 }
 
 fn refused(file &Array[u8], label &str) {
   match decodePng(file) {
-    case imm ok Ok { expect(false, label); }
-    case imm e Error { expect(e.reason.len() > 0usize, label); }
+    case let ok Ok { expect(false, label); }
+    case let e Error { expect(e.reason.len() > 0usize, label); }
   }
 }
 
 fn main() i32 {
-  imm cts Array[u8, 5] = [0u8, 2u8, 3u8, 4u8, 6u8];
-  mut combos = 0usize;
-  mut failedCombos = 0usize;
-  mut c = 0usize;
+  let cts Array[u8, 5] = [0u8, 2u8, 3u8, 4u8, 6u8];
+  var combos = 0usize;
+  var failedCombos = 0usize;
+  var c = 0usize;
   while c < 5usize {
-    imm ct = cts[c];
-    imm depths Array[u8, 5] = [1u8, 2u8, 4u8, 8u8, 16u8];
-    mut d = 0usize;
+    let ct = cts[c];
+    let depths Array[u8, 5] = [1u8, 2u8, 4u8, 8u8, 16u8];
+    var d = 0usize;
     while d < 5usize {
-      imm depth = depths[d];
-      imm valid = if ct == 0u8 {true;} elif ct == 3u8 {depth <= 8u8;} else {depth >= 8u8;};
+      let depth = depths[d];
+      let valid = if ct == 0u8 {true;} elif ct == 3u8 {depth <= 8u8;} else {depth >= 8u8;};
       if valid {
-        mut size = 0usize;
+        var size = 0usize;
         while size < 3usize {
-          imm w = if size == 0usize {1;} elif size == 1usize {13;} else {8;};
-          imm h = if size == 0usize {1;} elif size == 1usize {11;} else {8;};
-          mut il = 0usize;
+          let w = if size == 0usize {1;} elif size == 1usize {13;} else {8;};
+          let h = if size == 0usize {1;} elif size == 1usize {11;} else {8;};
+          var il = 0usize;
           while il < 2usize {
-            mut f = 0i32;
+            var f = 0i32;
             while f < 6i32 {
-              imm seed = u64.from(c * 1000usize + d * 100usize + size * 10usize + il) + u64.from(f) * 7919u64;
-              imm bad = trial(ct, depth, w, h, il == 1usize, f, (f % 2) == 1, seed);
+              let seed = u64.from(c * 1000usize + d * 100usize + size * 10usize + il) + u64.from(f) * 7919u64;
+              let bad = trial(ct, depth, w, h, il == 1usize, f, (f % 2) == 1, seed);
               combos += 1usize;
               if bad != 0usize {
                 failedCombos += 1usize;
@@ -176,21 +176,21 @@ fn main() i32 {
   expectInt(i64.from(failedCombos), 0i64, "round trips that differ");
 
   // Damage
-  mut o = PngWrite.make(6u8, 8u8);
-  mut samples = List[u16].empty();
-  mut i = 0usize;
+  var o = PngWrite.make(6u8, 8u8);
+  var samples = List[u16].empty();
+  var i = 0usize;
   while i < 16usize * 16usize * 4usize { samples.push(u16.from((i * 7usize) & 255usize)); i += 1usize; }
-  imm file = encodePngSamples(16, 16, samples.view(), &o);
-  mut f1 = List[u8].empty();
+  let file = encodePngSamples(16, 16, samples.view(), &o);
+  var f1 = List[u8].empty();
   i = 0usize;
   while i < file.len() { f1.push(*file[i]); i += 1usize; }
   f1.set(1usize, 0u8);
   refused(f1.view(), "a bad signature");
-  mut f2 = List[u8].empty();
+  var f2 = List[u8].empty();
   i = 0usize;
   while i < file.len() - 20usize { f2.push(*file[i]); i += 1usize; }
   refused(f2.view(), "a cut file");
-  mut f3 = List[u8].empty();
+  var f3 = List[u8].empty();
   i = 0usize;
   while i < file.len() { f3.push(*file[i]); i += 1usize; }
   f3.set(60usize, *f3[60usize] ^ 0x10u8);

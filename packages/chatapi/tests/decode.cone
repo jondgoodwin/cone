@@ -12,15 +12,15 @@ import chatapi use *;
 
 // JSON written with ' for the quote mark, so that the tests' texts need no escaped quotes
 fn jq(s &str) String {
-  mut t = String.from(s);
+  var t = String.from(s);
   t.replaceByte('\'', '"');
   t;
 }
 
 fn usageText(u &Option[Usage]) String {
   match u {
-    case imm x &Some {
-      mut s = String.empty();
+    case let x &Some {
+      var s = String.empty();
       s.appendUInt(x.promptTokens);
       s.append("/");
       s.appendUInt(x.completionTokens);
@@ -35,8 +35,8 @@ fn usageText(u &Option[Usage]) String {
 // The reply parsed from text, or "ERROR kind: message"
 fn replyLine(text &str) String {
   match parseReply(text) {
-    case imm r Ok {
-      mut s = String.empty();
+    case let r Ok {
+      var s = String.empty();
       s.append(r.id.view());
       s.append("|");
       s.append(r.model.view());
@@ -52,8 +52,8 @@ fn replyLine(text &str) String {
       s.append(usageText(&r.usage).view());
       s;
     }
-    case imm e Error {
-      mut s = String.from("ERROR ");
+    case let e Error {
+      var s = String.from("ERROR ");
       s.append(e.message().view());
       s;
     }
@@ -62,8 +62,8 @@ fn replyLine(text &str) String {
 
 fn chunkLine(text &str) String {
   match parseChunk(text) {
-    case imm d Ok {
-      mut s = String.empty();
+    case let d Ok {
+      var s = String.empty();
       s.append(d.id.view());
       s.append("|");
       s.append(d.model.view());
@@ -77,8 +77,8 @@ fn chunkLine(text &str) String {
       s.append(usageText(&d.usage).view());
       s;
     }
-    case imm e Error {
-      mut s = String.from("ERROR ");
+    case let e Error {
+      var s = String.from("ERROR ");
       s.append(e.message().view());
       s;
     }
@@ -86,8 +86,8 @@ fn chunkLine(text &str) String {
 }
 
 fn errorLine(status u16, body &str) String {
-  imm e = apiError(status, body);
-  mut s = e.message();
+  let e = apiError(status, body);
+  var s = e.message();
   s.append(" [type=");
   s.append(e.errorType.view());
   s.append(" code=");
@@ -100,7 +100,7 @@ fn errorLine(status u16, body &str) String {
 
 fn main() i32 {
   // A whole reply, as OpenAI writes it
-  imm full = jq("{'id':'chatcmpl-9','object':'chat.completion','created':1700000123,'model':'gpt-x-2024','choices':[{'index':0,'message':{'role':'assistant','content':'Hello \\'there\\'\\n\\u00E9'},'finish_reason':'stop'}],'usage':{'prompt_tokens':9,'completion_tokens':12,'total_tokens':21},'system_fingerprint':'fp_1'}");
+  let full = jq("{'id':'chatcmpl-9','object':'chat.completion','created':1700000123,'model':'gpt-x-2024','choices':[{'index':0,'message':{'role':'assistant','content':'Hello \\'there\\'\\n\\u00E9'},'finish_reason':'stop'}],'usage':{'prompt_tokens':9,'completion_tokens':12,'total_tokens':21},'system_fingerprint':'fp_1'}");
   expectStr(replyLine(full.view()).view(), "chatcmpl-9|gpt-x-2024|1700000123|assistant|Hello \"there\"\né|stop|9/12/21",
     "a whole reply");
 
@@ -125,7 +125,7 @@ fn main() i32 {
     "an error object in a 200 is an API error");
 
   // The API's errors
-  imm nested = jq("{'error':{'message':'Incorrect API key provided.','type':'invalid_request_error','param':null,'code':'invalid_api_key'}}");
+  let nested = jq("{'error':{'message':'Incorrect API key provided.','type':'invalid_request_error','param':null,'code':'invalid_api_key'}}");
   expectStr(errorLine(401u16, nested.view()).view(),
     "api: 401 invalid_api_key: Incorrect API key provided. [type=invalid_request_error code=invalid_api_key retryable=no]",
     "the API's error object");
@@ -140,13 +140,13 @@ fn main() i32 {
     "a body that is no error object: the status and the start of the body");
   expectStr(errorLine(404u16, "").view(), "api: 404: the server answered 404 with no error object [type= code= retryable=no]",
     "an empty body");
-  mut long = String.empty();
-  mut i = 0usize;
+  var long = String.empty();
+  var i = 0usize;
   while i < 300usize {
     long.appendByte('x');
     i = i + 1usize;
   }
-  imm cut = errorLine(503u16, long.view());
+  let cut = errorLine(503u16, long.view());
   expect(cut.len() < 260usize and cut.view().contains("xxxxxxxxxx..."), "a long body is cut");
 
   // The names and the one-line messages
@@ -184,21 +184,21 @@ fn main() i32 {
     "ERROR stream: context length exceeded", "an error object in a chunk is a stream error");
 
   // The whole reply from the chunks
-  mut reply = ChatReply.empty();
-  mut d1 = Delta.empty();
+  var reply = ChatReply.empty();
+  var d1 = Delta.empty();
   d1.id = String.from("c1");
   d1.model = String.from("m");
   d1.role = String.from("assistant");
   absorb(&mut reply, &d1);
-  mut d2 = Delta.empty();
+  var d2 = Delta.empty();
   d2.content = String.from("Hel");
   absorb(&mut reply, &d2);
-  mut d3 = Delta.empty();
+  var d3 = Delta.empty();
   d3.id = String.from("other");
   d3.content = String.from("lo");
   d3.finishReason = String.from("stop");
   absorb(&mut reply, &d3);
-  mut d4 = Delta.empty();
+  var d4 = Delta.empty();
   d4.usage = Some[Usage](new Usage(1u64, 2u64, 3u64));
   absorb(&mut reply, &d4);
   expectStr(reply.id.view(), "c1", "the first id is kept");

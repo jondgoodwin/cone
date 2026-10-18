@@ -605,8 +605,8 @@ reached by path. What reaching a member by path cannot do is below.
 ```
 pub mod trait Runner {
     pub fn step(n i64) i64;         // a requirement
-    pub mut scale i64;              // a requirement
-    pub mut offset = 100i64;        // a default
+    pub var scale i64;              // a requirement
+    pub var offset = 100i64;        // a default
     pub fn run(n i64) i64 {         // a default
         step(n) * scale + offset;
     }
@@ -728,8 +728,8 @@ stack[T];`, and instantiated where it is used, `stack[i64].push(3i64)`, as
 ```
 pub mod stack[T];
 
-pub mut count i64 = 0i64;
-pub mut top T = 0;
+pub var count i64 = 0i64;
+pub var top T = 0;
 
 pub fn push(x T) {
     top = x;
@@ -1190,7 +1190,7 @@ is the module's. What an importer must have the body of — an `inline` or
 generic function, a macro, a trait's methods, a generic type's — is written
 whole, and `extern` on it is `ErrorBadExtern`. **A global the package folds
 through is declared `extern` with the source's fold clause** [Jon 25 Sep],
-`pub extern mut config Config pub use *;`: the fold reads only the declared
+`pub extern var config Config pub use *;`: the fold reads only the declared
 type, so an importer reaches the folded names as the package does, each the
 package's one global (`module_build_fold_extern`; the refusals where the type
 is out of view, `module_build_fold_extern_nameres`).
@@ -1917,7 +1917,7 @@ dependencies first and the root last, before its own work, and every module's
 finalizer in exactly the reverse, the root first, after it.
 
 ```
-imm handler Handler;
+let handler Handler;
 
 fn @initpure init() {
     handler = new Handler(1);
@@ -1953,9 +1953,9 @@ not built.
 on each global the module declares without a value — an `extern` one excepted,
 its value being another object's, and a `@workgroup` one, whose value each
 workgroup's invocations write (`modGlobalUninit`) — so inside `init` such a global is exactly an
-uninitialized local. Its first assignment is allowed, an `imm` one's included,
+uninitialized local. Its first assignment is allowed, a `let` one's included,
 and carries `FlagFirstAssign`, so nothing is released from the zeroed storage; a
-second assignment of an `imm` one is `ErrorNoMut`; and a read before any
+second assignment of a `let` one is `ErrorNoMut`; and a read before any
 assignment is flow's own `ErrorMove`, "has not been initialized", which is the
 manual's rule that `init` read no uninitialized global of its module, for `init`
 itself. `modInitFlowEnd` then reports each global still unassigned as
@@ -1966,7 +1966,7 @@ arms set it — which is what the manual says: assigned "at some point" in `init
 assignment does not assign the global. A global without a value in a module that
 declares no `init` is `ErrorGlobalUninit` too, reported by `modLifecycle`;
 where the module's `init` is malformed, only that is reported. Assigning such a
-global in any other function does not count, and an `imm` one may not be
+global in any other function does not count, and a `let` one may not be
 assigned there at all.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
@@ -3004,7 +3004,7 @@ a reference names is a type, and that is what is built.
   the loop, and the fold passes do not retry it: a struct is resolved once.
   Measured: `alpha` imports `beta`, then re-exports `delta`'s `Inner`, and
   declares `struct Box { pub v Inner use get; }`; `beta` imports `alpha` and
-  writes `mut g alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
+  writes `var g alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
   reported, then `Inner` unknown in `Box`, and `get` failing to fold: three
   diagnostics where one is the cause. The global's type itself waits
   for a late name (`modFoldAwaits`); what that type's declaration names does not.

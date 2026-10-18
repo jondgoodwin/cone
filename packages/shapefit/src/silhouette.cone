@@ -24,8 +24,8 @@ pub struct View {
 
   // The view looking along 'forward', 'up' as high as it can be on the page
   pub fn look(forward Vec3, up Vec3) View {
-    imm f = unitd(DVec3.from(forward));
-    mut r = unitd(crossd(f, DVec3.from(up)));
+    let f = unitd(DVec3.from(forward));
+    var r = unitd(crossd(f, DVec3.from(up)));
     if r.lengthSquared() < 0.5d { r = perpendicularTo(f); }
     new View(r, crossd(r, f), f);
   }
@@ -37,7 +37,7 @@ pub struct View {
 // Front, back, left, right, top and bottom, for a model facing -z with y up (the
 // front view looks along +z at the face)
 pub fn standardViews() List[View] {
-  mut out = List[View].empty();
+  var out = List[View].empty();
   out.push(View.look(new Vec3(0., 0., 1.), new Vec3(0., 1., 0.)));
   out.push(View.look(new Vec3(0., 0., -1.), new Vec3(0., 1., 0.)));
   out.push(View.look(new Vec3(1., 0., 0.), new Vec3(0., 1., 0.)));
@@ -49,10 +49,10 @@ pub fn standardViews() List[View] {
 
 // n views from around the y axis, evenly, the first looking along +z
 pub fn turntableViews(n usize) List[View] {
-  mut out = List[View].empty();
-  mut i = 0usize;
+  var out = List[View].empty();
+  var i = 0usize;
   while i < n {
-    imm a = 2. * pi * f32.from(i) / f32.from(n);
+    let a = 2. * pi * f32.from(i) / f32.from(n);
     out.push(View.look(new Vec3(sin(a), 0., cos(a)), new Vec3(0., 1., 0.)));
     i += 1usize;
   }
@@ -72,13 +72,13 @@ pub struct Window {
 
 // A window that holds both meshes in the view, the longer side 'res' cells, with a margin
 pub fn windowFor(a &PolyMesh, b &PolyMesh, v &View, res usize) Window {
-  mut lox = 1.0e30d; mut loy = 1.0e30d; mut hix = -1.0e30d; mut hiy = -1.0e30d;
-  mut pass = 0;
+  var lox = 1.0e30d; var loy = 1.0e30d; var hix = -1.0e30d; var hiy = -1.0e30d;
+  var pass = 0;
   while pass < 2 {
-    imm m = if pass == 0 { a; } else { b; };
-    mut i = 0usize;
+    let m = if pass == 0 { a; } else { b; };
+    var i = 0usize;
     while i < m.positions.len() {
-      imm q = v.project(DVec3.from(*m.positions[i]));
+      let q = v.project(DVec3.from(*m.positions[i]));
       lox = mind(lox, q.x); hix = maxd(hix, q.x);
       loy = mind(loy, q.y); hiy = maxd(hiy, q.y);
       i += 1usize;
@@ -86,48 +86,48 @@ pub fn windowFor(a &PolyMesh, b &PolyMesh, v &View, res usize) Window {
     pass += 1;
   }
   if hix < lox { return new Window(0.d, 0.d, 1.d, 1usize, 1usize); }
-  imm ext = maxd(hix - lox, hiy - loy) * 1.04d + 1.0e-9d;
-  imm sc = f64.from(res) / ext;
-  imm cx = 0.5d * (lox + hix);
-  imm cy = 0.5d * (loy + hiy);
-  imm w = usize.from(libc.ceil((hix - lox) * 1.04d * sc)) + 2usize;
-  imm h = usize.from(libc.ceil((hiy - loy) * 1.04d * sc)) + 2usize;
+  let ext = maxd(hix - lox, hiy - loy) * 1.04d + 1.0e-9d;
+  let sc = f64.from(res) / ext;
+  let cx = 0.5d * (lox + hix);
+  let cy = 0.5d * (loy + hiy);
+  let w = usize.from(libc.ceil((hix - lox) * 1.04d * sc)) + 2usize;
+  let h = usize.from(libc.ceil((hiy - loy) * 1.04d * sc)) + 2usize;
   new Window(cx - 0.5d * f64.from(w) / sc, cy - 0.5d * f64.from(h) / sc, sc, w, h);
 }
 
 // The covered cells (1) and uncovered (0) of the mesh in the view, row by row from y = y0
 pub fn rasterize(m &PolyMesh, v &View, win &Window) List[u8] {
-  mut cells = List[u8].withCapacity(win.w * win.h);
-  mut i = 0usize;
+  var cells = List[u8].withCapacity(win.w * win.h);
+  var i = 0usize;
   while i < win.w * win.h { cells.push(0u8); i += 1usize; }
-  imm tris = fanTriangles(m);
-  mut px = List[DVec3].withCapacity(m.positions.len());
+  let tris = fanTriangles(m);
+  var px = List[DVec3].withCapacity(m.positions.len());
   i = 0usize;
   while i < m.positions.len() {
-    imm q = v.project(DVec3.from(*m.positions[i]));
+    let q = v.project(DVec3.from(*m.positions[i]));
     px.push(new DVec3((q.x - win.x0) * win.scale, (q.y - win.y0) * win.scale, 0.d));
     i += 1usize;
   }
   i = 0usize;
   while i < tris.len() / 3usize {
-    imm a = *px[usize.from(*tris[3usize * i])];
-    imm b = *px[usize.from(*tris[3usize * i + 1usize])];
-    imm c = *px[usize.from(*tris[3usize * i + 2usize])];
-    imm area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    let a = *px[usize.from(*tris[3usize * i])];
+    let b = *px[usize.from(*tris[3usize * i + 1usize])];
+    let c = *px[usize.from(*tris[3usize * i + 2usize])];
+    let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     if absd(area) > 1.0e-12d {
-      imm x0 = maxd(0.d, libc.floor(mind(a.x, mind(b.x, c.x)) - 0.5d));
-      imm x1 = mind(f64.from(win.w) - 1.d, libc.ceil(maxd(a.x, maxd(b.x, c.x)) - 0.5d));
-      imm y0 = maxd(0.d, libc.floor(mind(a.y, mind(b.y, c.y)) - 0.5d));
-      imm y1 = mind(f64.from(win.h) - 1.d, libc.ceil(maxd(a.y, maxd(b.y, c.y)) - 0.5d));
-      mut y = usize.from(y0);
+      let x0 = maxd(0.d, libc.floor(mind(a.x, mind(b.x, c.x)) - 0.5d));
+      let x1 = mind(f64.from(win.w) - 1.d, libc.ceil(maxd(a.x, maxd(b.x, c.x)) - 0.5d));
+      let y0 = maxd(0.d, libc.floor(mind(a.y, mind(b.y, c.y)) - 0.5d));
+      let y1 = mind(f64.from(win.h) - 1.d, libc.ceil(maxd(a.y, maxd(b.y, c.y)) - 0.5d));
+      var y = usize.from(y0);
       while f64.from(y) <= y1 {
-        mut x = usize.from(x0);
+        var x = usize.from(x0);
         while f64.from(x) <= x1 {
-          imm qx = f64.from(x) + 0.5d;
-          imm qy = f64.from(y) + 0.5d;
-          imm w0 = ((b.x - qx) * (c.y - qy) - (b.y - qy) * (c.x - qx)) / area;
-          imm w1 = ((c.x - qx) * (a.y - qy) - (c.y - qy) * (a.x - qx)) / area;
-          imm w2 = 1.d - w0 - w1;
+          let qx = f64.from(x) + 0.5d;
+          let qy = f64.from(y) + 0.5d;
+          let w0 = ((b.x - qx) * (c.y - qy) - (b.y - qy) * (c.x - qx)) / area;
+          let w1 = ((c.x - qx) * (a.y - qy) - (c.y - qy) * (a.x - qx)) / area;
+          let w2 = 1.d - w0 - w1;
           if w0 >= -1.0e-9d and w1 >= -1.0e-9d and w2 >= -1.0e-9d { cells.set(y * win.w + x, 1u8); }
           x += 1usize;
         }
@@ -140,20 +140,20 @@ pub fn rasterize(m &PolyMesh, v &View, win &Window) List[u8] {
 }
 
 pub fn coveredCells(cells &List[u8]) usize {
-  mut n = 0usize;
-  mut i = 0usize;
+  var n = 0usize;
+  var i = 0usize;
   while i < cells.len() { if *cells[i] != 0u8 { n += 1usize; } i += 1usize; }
   n;
 }
 
 // Area overlap of two coverages on one grid: cells in both over cells in either
 pub fn iou(a &List[u8], b &List[u8]) f32 {
-  mut both = 0usize;
-  mut either = 0usize;
-  mut i = 0usize;
+  var both = 0usize;
+  var either = 0usize;
+  var i = 0usize;
   while i < a.len() {
-    imm x = *a[i] != 0u8;
-    imm y = *b[i] != 0u8;
+    let x = *a[i] != 0u8;
+    let y = *b[i] != 0u8;
     if x and y { both += 1usize; }
     if x or y { either += 1usize; }
     i += 1usize;
@@ -167,20 +167,20 @@ fn filled(cells &List[u8], w usize, h usize, x i64, y i64) bool {
 
 // The outline of the covered cells as closed loops in the window's world units (see the top)
 pub fn traceOutline(cells &List[u8], win &Window) List[List[Vec2]] {
-  imm w = win.w;
-  imm h = win.h;
-  imm cw = w + 1usize;
-  mut out1 = List[u32].withCapacity(cw * (h + 1usize));
-  mut out2 = List[u32].withCapacity(cw * (h + 1usize));
-  mut i = 0usize;
+  let w = win.w;
+  let h = win.h;
+  let cw = w + 1usize;
+  var out1 = List[u32].withCapacity(cw * (h + 1usize));
+  var out2 = List[u32].withCapacity(cw * (h + 1usize));
+  var i = 0usize;
   while i < cw * (h + 1usize) { out1.push(NoIndex); out2.push(NoIndex); i += 1usize; }
-  mut y = 0usize;
+  var y = 0usize;
   while y < h {
-    mut x = 0usize;
+    var x = 0usize;
     while x < w {
       if *cells[y * w + x] != 0u8 {
-        imm xi = i64.from(x);
-        imm yi = i64.from(y);
+        let xi = i64.from(x);
+        let yi = i64.from(y);
         // interior on the left of each directed edge
         if not filled(cells, w, h, xi, yi - 1) { addEdge(&mut out1, &mut out2, y * cw + x, y * cw + x + 1usize); }
         if not filled(cells, w, h, xi + 1, yi) { addEdge(&mut out1, &mut out2, y * cw + x + 1usize, (y + 1usize) * cw + x + 1usize); }
@@ -191,32 +191,32 @@ pub fn traceOutline(cells &List[u8], win &Window) List[List[Vec2]] {
     }
     y += 1usize;
   }
-  mut loops = List[List[Vec2]].empty();
-  mut s = 0usize;
+  var loops = List[List[Vec2]].empty();
+  var s = 0usize;
   while s < cw * (h + 1usize) {
     while *out1[s] != NoIndex or *out2[s] != NoIndex {
-      mut corners = List[u32].empty();
-      mut cur = s;
-      mut going = true;
+      var corners = List[u32].empty();
+      var cur = s;
+      var going = true;
       while going {
         corners.push(u32.from(cur));
-        mut nx = *out1[cur];
+        var nx = *out1[cur];
         if nx != NoIndex { out1.set(cur, NoIndex); } else { nx = *out2[cur]; out2.set(cur, NoIndex); }
         cur = usize.from(nx);
         if cur == s { going = false; }
         if nx == NoIndex { going = false; }
       }
       // merge collinear runs
-      mut pts = List[Vec2].empty();
-      mut k = 0usize;
+      var pts = List[Vec2].empty();
+      var k = 0usize;
       while k < corners.len() {
-        imm pc = usize.from(*corners[(k + corners.len() - 1usize) % corners.len()]);
-        imm cc = usize.from(*corners[k]);
-        imm nc = usize.from(*corners[(k + 1usize) % corners.len()]);
-        imm d1x = i64.from(cc % cw) - i64.from(pc % cw);
-        imm d1y = i64.from(cc / cw) - i64.from(pc / cw);
-        imm d2x = i64.from(nc % cw) - i64.from(cc % cw);
-        imm d2y = i64.from(nc / cw) - i64.from(cc / cw);
+        let pc = usize.from(*corners[(k + corners.len() - 1usize) % corners.len()]);
+        let cc = usize.from(*corners[k]);
+        let nc = usize.from(*corners[(k + 1usize) % corners.len()]);
+        let d1x = i64.from(cc % cw) - i64.from(pc % cw);
+        let d1y = i64.from(cc / cw) - i64.from(pc / cw);
+        let d2x = i64.from(nc % cw) - i64.from(cc % cw);
+        let d2y = i64.from(nc / cw) - i64.from(cc / cw);
         if d1x != d2x or d1y != d2y {
           pts.push(new Vec2(f32.from(win.x0 + f64.from(cc % cw) / win.scale), f32.from(win.y0 + f64.from(cc / cw) / win.scale)));
         }
@@ -240,34 +240,34 @@ fn segDistance(p Vec2, a Vec2, b Vec2) f64 {
 
 // Douglas-Peucker on a closed loop: split at the vertex farthest from the first, then each half
 fn simplifyLoop(pts &List[Vec2], tol f64) List[Vec2] {
-  imm n = pts.len();
-  mut far = 0usize;
-  mut fd = -1.d;
-  mut i = 1usize;
+  let n = pts.len();
+  var far = 0usize;
+  var fd = -1.d;
+  var i = 1usize;
   while i < n {
-    imm d = f64.from(pts[i].distance(*pts[0usize]));
+    let d = f64.from(pts[i].distance(*pts[0usize]));
     if d > fd { fd = d; far = i; }
     i += 1usize;
   }
-  mut keep = List[bool].withCapacity(n);
+  var keep = List[bool].withCapacity(n);
   i = 0usize;
   while i < n { keep.push(false); i += 1usize; }
   keep.set(0usize, true);
   keep.set(far, true);
-  mut stack = List[usize].empty();
+  var stack = List[usize].empty();
   stack.push(0usize); stack.push(far);
   stack.push(far); stack.push(n);       // n stands for vertex 0 again
   while stack.len() > 0usize {
-    imm hi = *stack[stack.len() - 1usize];
-    imm lo = *stack[stack.len() - 2usize];
+    let hi = *stack[stack.len() - 1usize];
+    let lo = *stack[stack.len() - 2usize];
     stack.pop(); stack.pop();
-    imm a = *pts[lo];
-    imm b = *pts[hi % n];
-    mut worst = -1.d;
-    mut wi = lo;
-    mut k = lo + 1usize;
+    let a = *pts[lo];
+    let b = *pts[hi % n];
+    var worst = -1.d;
+    var wi = lo;
+    var k = lo + 1usize;
     while k < hi {
-      imm d = segDistance(*pts[k], a, b);
+      let d = segDistance(*pts[k], a, b);
       if d > worst { worst = d; wi = k; }
       k += 1usize;
     }
@@ -277,7 +277,7 @@ fn simplifyLoop(pts &List[Vec2], tol f64) List[Vec2] {
       stack.push(wi); stack.push(hi);
     }
   }
-  mut out = List[Vec2].empty();
+  var out = List[Vec2].empty();
   i = 0usize;
   while i < n { if *keep[i] { out.push(*pts[i]); } i += 1usize; }
   out;
@@ -285,14 +285,14 @@ fn simplifyLoop(pts &List[Vec2], tol f64) List[Vec2] {
 
 // The area enclosed by the loops (outer boundaries add, holes subtract)
 pub fn loopsArea(loops &List[List[Vec2]]) f32 {
-  mut a = 0.d;
-  mut i = 0usize;
+  var a = 0.d;
+  var i = 0usize;
   while i < loops.len() {
-    imm l = loops[i];
-    mut k = 0usize;
+    let l = loops[i];
+    var k = 0usize;
     while k < l.len() {
-      imm p = *l[k];
-      imm q = *l[(k + 1usize) % l.len()];
+      let p = *l[k];
+      let q = *l[(k + 1usize) % l.len()];
       a = a + f64.from(p.x) * f64.from(q.y) - f64.from(q.x) * f64.from(p.y);
       k += 1usize;
     }
@@ -303,25 +303,25 @@ pub fn loopsArea(loops &List[List[Vec2]]) f32 {
 
 // The greatest distance from a point of the outline 'a' to the outline 'b', sampled every 'step'
 fn directedHausdorff(a &List[List[Vec2]], b &List[List[Vec2]], step f64) f64 {
-  mut worst = 0.d;
-  mut i = 0usize;
+  var worst = 0.d;
+  var i = 0usize;
   while i < a.len() {
-    imm l = a[i];
-    mut k = 0usize;
+    let l = a[i];
+    var k = 0usize;
     while k < l.len() {
-      imm p = *l[k];
-      imm q = *l[(k + 1usize) % l.len()];
-      imm len = f64.from(p.distance(q));
-      imm n = usize.from(libc.ceil(len / step)) + 1usize;
-      mut s = 0usize;
+      let p = *l[k];
+      let q = *l[(k + 1usize) % l.len()];
+      let len = f64.from(p.distance(q));
+      let n = usize.from(libc.ceil(len / step)) + 1usize;
+      var s = 0usize;
       while s <= n {
-        imm t = f32.from(s) / f32.from(n);
-        imm pt = p.lerp(q, t);
-        mut best = 1.0e30d;
-        mut j = 0usize;
+        let t = f32.from(s) / f32.from(n);
+        let pt = p.lerp(q, t);
+        var best = 1.0e30d;
+        var j = 0usize;
         while j < b.len() {
-          imm m = b[j];
-          mut e = 0usize;
+          let m = b[j];
+          var e = 0usize;
           while e < m.len() {
             best = mind(best, segDistance(pt, *m[e], *m[(e + 1usize) % m.len()]));
             e += 1usize;
@@ -352,15 +352,15 @@ pub struct SilhouetteScore {
 
 // Compare two meshes (already in the same frame) from each view
 pub fn compareSilhouettes(a &PolyMesh, b &PolyMesh, views &List[View], res usize) List[SilhouetteScore] {
-  mut out = List[SilhouetteScore].empty();
-  mut i = 0usize;
+  var out = List[SilhouetteScore].empty();
+  var i = 0usize;
   while i < views.len() {
-    imm win = windowFor(a, b, views[i], res);
-    imm ca = rasterize(a, views[i], &win);
-    imm cb = rasterize(b, views[i], &win);
-    imm oa = traceOutline(&ca, &win);
-    imm ob = traceOutline(&cb, &win);
-    imm cell2 = win.cell() * win.cell();
+    let win = windowFor(a, b, views[i], res);
+    let ca = rasterize(a, views[i], &win);
+    let cb = rasterize(b, views[i], &win);
+    let oa = traceOutline(&ca, &win);
+    let ob = traceOutline(&cb, &win);
+    let cell2 = win.cell() * win.cell();
     out.push(new SilhouetteScore(iou(&ca, &cb), outlineHausdorff(&oa, &ob, f32.from(win.cell())),
       f32.from(f64.from(coveredCells(&ca)) * cell2), f32.from(f64.from(coveredCells(&cb)) * cell2)));
     i += 1usize;

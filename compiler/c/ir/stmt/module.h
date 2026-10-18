@@ -145,7 +145,7 @@ ModuleNode *modInitOf(FnDclNode *fnnode);
 
 // Around the data flow pass of a module's 'init': each global the module declares
 // without an initial value starts the pass unassigned, so 'init' may assign it
-// once -- an 'imm' one included -- and may not read it before it does. After the
+// once -- a 'let' one included -- and may not read it before it does. After the
 // pass, each one it never saw assigned is ErrorGlobalUninit, and every global
 // holds a value again for every other function. 'saved' carries their flags
 uint16_t *modInitFlowBegin(ModuleNode *mod);

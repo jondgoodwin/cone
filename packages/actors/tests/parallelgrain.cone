@@ -36,9 +36,9 @@ struct Tally {
 }
 
 fn bodyCount(data *u8, lo usize, hi usize) {
-  imm t = data as *Tally;
+  let t = data as *Tally;
   (*t).pieces.add(1u64);
-  mut i = lo;
+  var i = lo;
   while i < hi {
     *((*t).marks + i) = *((*t).marks + i) + 1u8;
     i = i + 1usize;
@@ -48,11 +48,11 @@ fn bodyCount(data *u8, lo usize, hi usize) {
 // Run actors.parallelEach over [0, n), check that every item was run once, and
 // answer the number of pieces it was cut into
 fn piecesOf(n usize, what &str) u64 {
-  imm marks = libc.calloc(n, 1usize) as *u8;
-  mut t = new Tally(marks, Atomic[u64].of(0u64));
+  let marks = libc.calloc(n, 1usize) as *u8;
+  var t = new Tally(marks, Atomic[u64].of(0u64));
   actors.parallelEach(0usize, n, &bodyCount, &mut t as *Tally as *u8);
-  mut once = true;
-  mut i = 0usize;
+  var once = true;
+  var i = 0usize;
   while i < n {
     if *(marks + i) != 1u8 {
       once = false;
@@ -67,8 +67,8 @@ fn piecesOf(n usize, what &str) u64 {
 // ---- 'parallel each' from main ----
 
 fn weigh(i u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+  var x = i + 1u64;
+  var k = 0u64;
   while k < (i * i) % 53u64 * 20u64 {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
@@ -77,8 +77,8 @@ fn weigh(i u64) u64 {
 }
 
 fn listLoopIsRight(n u64) bool {
-  mut l = new List[u64];
-  mut i = 0u64;
+  var l = new List[u64];
+  var i = 0u64;
   while i < n {
     l.push(i);
     i = i + 1u64;
@@ -86,7 +86,7 @@ fn listLoopIsRight(n u64) bool {
   parallel each v in l.mutItems() {
     *v = weigh(*v) + 1u64;
   }
-  mut right = u64.from(l.len) == n;
+  var right = u64.from(l.len) == n;
   i = 0u64;
   each v in l {
     if *v != weigh(i) + 1u64 {
@@ -100,8 +100,8 @@ fn listLoopIsRight(n u64) bool {
 // ---- 'parallel each' in an actor's behaviour ----
 
 fn bits(v u64) u64 {
-  mut n = 0u64;
-  mut x = v;
+  var n = 0u64;
+  var x = v;
   while x != 0u64 {
     n = n + (x & 1u64);
     x = x >> 1u64;
@@ -112,8 +112,8 @@ fn bits(v u64) u64 {
 // Costly enough that, with the floor gone, a worker looking for work would
 // steal a piece of 100 items long before the first worker had finished them
 fn cost(i u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+  var x = i + 1u64;
+  var k = 0u64;
   while k < 3000u64 {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
@@ -130,7 +130,7 @@ struct Outcome {
   pub bigWorkers Atomic[u64];      // workers that ran a pass of the bigger loop
 }
 
-imm outcome Outcome;
+let outcome Outcome;
 
 fn @initpure init() {
   outcome = new Outcome(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
@@ -142,8 +142,8 @@ actor Looper {
   ran Atomic[u64];       // bit i: worker i ran a pass
 
   fn init(self &new, n u64) {
-    mut l = new List[u64];
-    mut i = 0u64;
+    var l = new List[u64];
+    var i = 0u64;
     while i < n {
       l.push(i);
       i = i + 1u64;
@@ -157,7 +157,7 @@ actor Looper {
     parallel each v in vals.mutItems() {
       ran.bitOr(1u64 << u64.from(actors.workerIndex()));
       if big and *v == 0u64 {
-        mut waited = 0u64;
+        var waited = 0u64;
         while bits(ran.load()) < 2u64 and waited < 3000u64 {
           thread.sleep(time.Duration.fromMillis(1));
           waited = waited + 1u64;
@@ -165,15 +165,15 @@ actor Looper {
       }
       *v = cost(*v);
     }
-    mut wrong = 0u64;
-    mut i = 0u64;
+    var wrong = 0u64;
+    var i = 0u64;
     each v in vals {
       if *v != cost(i) {
         wrong = wrong + 1u64;
       }
       i = i + 1u64;
     }
-    imm used = bits(ran.load());
+    let used = bits(ran.load());
     if big {
       outcome.bigRuns.add(1u64);
       outcome.bigWrong.add(wrong);
@@ -191,12 +191,12 @@ actor Looper {
 
 actor Driver {
   pub async do go(self) {
-    imm a = new Looper(1u64);
-    imm b = new Looper(50u64);
-    imm c = new Looper(100u64);
-    imm d = new Looper(127u64);
-    imm e = new Looper(128u64);
-    imm f = new Looper(4000u64);
+    let a = new Looper(1u64);
+    let b = new Looper(50u64);
+    let c = new Looper(100u64);
+    let d = new Looper(127u64);
+    let e = new Looper(128u64);
+    let f = new Looper(4000u64);
     await a.run(false);
     await b.run(false);
     await c.run(false);
@@ -229,7 +229,7 @@ fn main() i32 {
 
   // In an actor's behaviour
   {
-    imm dr = new Driver();
+    let dr = new Driver();
     dr.go();
   }
   finalAll();

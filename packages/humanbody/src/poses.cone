@@ -31,9 +31,9 @@ pub struct Seat {
 
 // Where a sitter's feet stand, in the world: in front of the sit point by the thigh's length (the shins upright)
 pub fn seatFeet(seat &Seat, skel &Skeleton) Vec3 {
-  imm lt = skel.restOf(SHIN_L).translation.length();
-  imm fwd = new Vec3(0. - sin(seat.yaw), 0., 0. - cos(seat.yaw));
-  imm floor = seat.point.y - seat.height;
+  let lt = skel.restOf(SHIN_L).translation.length();
+  let fwd = new Vec3(0. - sin(seat.yaw), 0., 0. - cos(seat.yaw));
+  let floor = seat.point.y - seat.height;
   new Vec3(seat.point.x + fwd.x * lt * 0.92, floor, seat.point.z + fwd.z * lt * 0.92);
 }
 
@@ -53,7 +53,7 @@ fn armsAtEase(skel &Skeleton, pose &mut Pose, drop f32, bend f32) {
 
 // Standing at ease: the rest pose, the arms down beside the body
 pub fn standPose(skel &Skeleton) Pose {
-  mut pose = skel.restPose();
+  var pose = skel.restPose();
   armsAtEase(skel, &mut pose, 0.13, 0.12);
   pose;
 }
@@ -61,22 +61,22 @@ pub fn standPose(skel &Skeleton) Pose {
 // The sit's pose at 's' (0 standing in front of the seat, 1 seated), sitting down ('down' true) or standing up;
 // model space with its origin at the planted feet's ground point (seatFeet), facing the seat's way
 pub fn sitPose(skel &Skeleton, seat &Seat, s f32, down bool) Pose {
-  imm h = skel.restOf(PELVIS).translation.y / 0.530;      // the skeleton's height
-  imm lt = skel.restOf(SHIN_L).translation.length();
-  mut pose = standPose(skel);
+  let h = skel.restOf(PELVIS).translation.y / 0.530;      // the skeleton's height
+  let lt = skel.restOf(SHIN_L).translation.length();
+  var pose = standPose(skel);
   // the pelvis's path: from over the feet down and back to above the sit point
-  imm standY = skel.restOf(PELVIS).translation.y;
-  imm seatedY = seat.height + 0.085 * h / 1.75;
-  imm back = lt * 0.92;
+  let standY = skel.restOf(PELVIS).translation.y;
+  let seatedY = seat.height + 0.085 * h / 1.75;
+  let back = lt * 0.92;
   // the drop starts late sitting down (the lean first) and the rise late standing up (the lean first again)
-  imm tDown = if down { ease(clampf((s - 0.15) / 0.85, 0., 1.)); } else { ease(clampf(s / 0.85, 0., 1.)); };
-  imm tBack = if down { ease(clampf((s - 0.05) / 0.80, 0., 1.)); } else { ease(clampf((s - 0.15) / 0.85, 0., 1.)); };
-  imm py = standY + (seatedY - standY) * tDown;
-  imm pz = back * tBack;
+  let tDown = if down { ease(clampf((s - 0.15) / 0.85, 0., 1.)); } else { ease(clampf(s / 0.85, 0., 1.)); };
+  let tBack = if down { ease(clampf((s - 0.05) / 0.80, 0., 1.)); } else { ease(clampf((s - 0.15) / 0.85, 0., 1.)); };
+  let py = standY + (seatedY - standY) * tDown;
+  let pz = back * tBack;
   // the trunk's lean: forward most as the hips pass over the knees, upright seated
-  imm leanPeak = 0.70;
-  imm bell = libc.sinf(pi * clampf(if down { s; } else { s; }, 0., 1.));
-  imm lean = 0. - leanPeak * bell * bell + (0. - 0.04) * s;
+  let leanPeak = 0.70;
+  let bell = libc.sinf(pi * clampf(if down { s; } else { s; }, 0., 1.));
+  let lean = 0. - leanPeak * bell * bell + (0. - 0.04) * s;
   // the pelvis tips with the lean (most of it is at the hips), the spine and chest carry the rest
   pose.setTranslation(PELVIS, new Vec3(0., py, pz));
   pose.setRotation(PELVIS, turnX(lean * 0.55));
@@ -84,15 +84,15 @@ pub fn sitPose(skel &Skeleton, seat &Seat, s f32, down bool) Pose {
   pose.setRotation(CHEST, turnX(lean * 0.20));
   // the head stays level
   pose.setRotation(NECK, turnX(0. - lean * 0.45));
-  mut models = List[Transform3].empty();
+  var models = List[Transform3].empty();
   skel.modelTransforms(&pose, &mut models);
   // the legs reach the planted feet, knees forward
-  imm ankleY = 0.039 * h;
-  mut side = 0usize;
+  let ankleY = 0.039 * h;
+  var side = 0usize;
   while side < 2usize {
-    imm th = if side == 0usize { THIGH_L; } else { THIGH_R; };
-    imm hipX = (*models[th]).translation.x;
-    imm target = new Vec3(hipX * 1.15, ankleY, 0.);
+    let th = if side == 0usize { THIGH_L; } else { THIGH_R; };
+    let hipX = (*models[th]).translation.x;
+    let target = new Vec3(hipX * 1.15, ankleY, 0.);
     aimLimb(skel, &mut pose, &mut models, th, target, new Vec3(0., 0., -1.), 0.35);
     // the foot flat on the floor: undo the shin's turn on the foot
     skel.setModelRotation(&mut pose, &models, th + 4usize, Quat.identity());
@@ -100,17 +100,17 @@ pub fn sitPose(skel &Skeleton, seat &Seat, s f32, down bool) Pose {
     side = side + 1usize;
   }
   // the arms: hanging at ease standing, the hands to the thighs seated
-  imm onThigh = ease(clampf((s - 0.55) / 0.45, 0., 1.));
+  let onThigh = ease(clampf((s - 0.55) / 0.45, 0., 1.));
   side = 0usize;
   while side < 2usize {
-    imm ua = if side == 0usize { UPPER_ARM_L; } else { UPPER_ARM_R; };
-    imm th = if side == 0usize { THIGH_L; } else { THIGH_R; };
-    imm hand = (*models[ua + 4usize]).translation;
-    imm hip = (*models[th]).translation;
-    imm knee = (*models[th + 2usize]).translation;
-    imm rest = hip + (knee - hip) * 0.55 + new Vec3(0., 0.045 * h / 1.75, 0.);
-    imm target = hand + (rest - hand) * onThigh;
-    imm sideX = if side == 0usize { -1.; } else { 1.; };
+    let ua = if side == 0usize { UPPER_ARM_L; } else { UPPER_ARM_R; };
+    let th = if side == 0usize { THIGH_L; } else { THIGH_R; };
+    let hand = (*models[ua + 4usize]).translation;
+    let hip = (*models[th]).translation;
+    let knee = (*models[th + 2usize]).translation;
+    let rest = hip + (knee - hip) * 0.55 + new Vec3(0., 0.045 * h / 1.75, 0.);
+    let target = hand + (rest - hand) * onThigh;
+    let sideX = if side == 0usize { -1.; } else { 1.; };
     if onThigh > 0.001 {
       aimLimb(skel, &mut pose, &mut models, ua, target, new Vec3(sideX * 0.6, 0., 0.8), 0.6);
     }
@@ -121,16 +121,16 @@ pub fn sitPose(skel &Skeleton, seat &Seat, s f32, down bool) Pose {
 
 // The hail at 't' seconds since it began: the right arm up and waving (it settles in over the first half second)
 pub fn hailPose(skel &Skeleton, t f32) Pose {
-  imm h = skel.restOf(PELVIS).translation.y / 0.530;
-  mut pose = standPose(skel);
-  mut models = List[Transform3].empty();
+  let h = skel.restOf(PELVIS).translation.y / 0.530;
+  var pose = standPose(skel);
+  var models = List[Transform3].empty();
   skel.modelTransforms(&pose, &mut models);
-  imm up = ease(clampf(t / 0.5, 0., 1.));
-  imm sh = (*models[UPPER_ARM_R]).translation;
-  imm hand = (*models[HAND_R]).translation;
-  imm wave = libc.sinf(2. * pi * 1.6 * t) * up;
-  imm raised = sh + new Vec3(0.20 * h / 1.75 + 0.07 * wave * h / 1.75, 0.34 * h / 1.75, -0.10 * h / 1.75);
-  imm target = hand + (raised - hand) * up;
+  let up = ease(clampf(t / 0.5, 0., 1.));
+  let sh = (*models[UPPER_ARM_R]).translation;
+  let hand = (*models[HAND_R]).translation;
+  let wave = libc.sinf(2. * pi * 1.6 * t) * up;
+  let raised = sh + new Vec3(0.20 * h / 1.75 + 0.07 * wave * h / 1.75, 0.34 * h / 1.75, -0.10 * h / 1.75);
+  let target = hand + (raised - hand) * up;
   aimLimb(skel, &mut pose, &mut models, UPPER_ARM_R, target, new Vec3(0.7, -0.6, 0.4), 0.5);
   // the hand up, the palm forward
   pose.setRotation(HAND_R, turnX(-0.25 * up));

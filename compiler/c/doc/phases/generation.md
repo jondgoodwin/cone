@@ -109,7 +109,7 @@ nothing is generated returning `i32 0`. A panic ends the process through
 `abort`, and a call to C's `exit` leaves it, so neither reaches the final.
 [module](../nodes/module.md), "Init and final".
 
-**An `imm` global is an LLVM constant only where this object gives it its value
+**A `let` global is an LLVM constant only where this object gives it its value
 and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
 not `extern`, not thread-local, and its type has no drop function. A global
 without a value is assigned by its module's `init` at run time, an `extern`
@@ -126,7 +126,7 @@ or a shared library, relaxed by an ELF linker building an executable, and
 ignored on Windows, whose one access sequence goes through the TEB and
 `_tls_index`. Uses reach the global directly rather than through
 `llvm.threadlocal.address`, which LLVM reads as the current thread's copy. It
-is never a constant: the parser refuses one `imm`, and `genlGloVarIsConstant`
+is never a constant: the parser refuses a `let` one, and `genlGloVarIsConstant`
 excludes it besides.
 
 Both recurse into a type's method list, into a generic's
@@ -1379,7 +1379,7 @@ miscompile):
   of a borrow of it (`VarLendWritable`, set by `flowLendNote` as `borrowFlow`
   walks each borrow). So no `&mut` route to it is passed in the call or held
   anywhere: `viaMut(u, &mut u)` copies `u`;
-- an `imm` variable is then lent. One the program may assign is lent only
+- a `let` variable is then lent. One the program may assign is lent only
   when no other argument, nor the callee's expression, holds anything that
   could assign it (`genlLendQuiet`: names, literals, reads, borrows, casts,
   calls, and literals of them; an assignment, a swap, a block or an `if` is
@@ -1415,7 +1415,7 @@ it. Its parameter is `ptr noalias readonly captures(none) dereferenceable(N)`:
 nothing changes what it points at until the call returns, and nothing keeps
 it past. `genlParmVar` stores each parameter into its variable's slot, as
 always, and marks the store `GenlParmHomeMark` where the parameter is only
-read (`genlParmInPlace`: its binding is not `mut`, flow saw no borrow of it
+read (`genlParmInPlace`: its binding is not `var`, flow saw no borrow of it
 at all, nothing finalizes its type, it holds no traced reference, and the
 function is neither split nor C-named); the pass then makes the pointer the
 variable's slot (`genlAggParmInPlace`), and every read, and every lend of it
@@ -1440,7 +1440,7 @@ operation a call; i7-13700HX, best of 9, interleaved, at the `generic` /
 `Mat4 * Mat4` 6.9 / 5.9 ns against 18.8 / 8.9, `Mat4 * Vec4` 1.40 / 1.08
 against 6.8 / 3.9, `Mat4 * point` 1.66 / 1.50 against 3.2 / 3.4, and
 `Mat3 * Mat3` 4.4 / 4.2 against 6.8 / 6.2, every result the same bits; the
-shipped bench, its methods `inline`, is unchanged. The matrix, an `imm`
+shipped bench, its methods `inline`, is unchanged. The matrix, a `let`
 local, is lent; the bench's other operand, a `mut` slice's element, is
 copied, and a release build's optimizer forwards that copy itself where it
 proves nothing the call reaches can write the slice's memory. Measured 4
@@ -2328,7 +2328,7 @@ variables.
   refuses as unreachable rather than build a wrong record.
 - **A jump out of the middle of a statement finalizes its pending temporaries
   before the locals of the blocks it leaves**, whatever order they were made
-  in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
+  in: `f(mk(1).n, { let x = mk(2); if c { return; } 3; })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
 - **A function taking an aggregate passed as a pointer, or returning any
@@ -2363,7 +2363,7 @@ variables.
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
 | | `genlClaimSymbol`, `genlSymAgree`, `genlSymOwner` | one symbol, one global: which of two declarations spelling one symbol has it, or `ErrorCNameConflict` / `ErrorCNameDefTwice` |
-| | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
+| | `genlGloVarIsConstant` | whether a `let` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |

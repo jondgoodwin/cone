@@ -74,10 +74,10 @@ pub struct Completion {
   // Take the buffer in slot 'slot' out of it (Buffer.none() is left there,
   // and given for a slot it does not have)
   pub fn take(self &mut, slot u32) Buffer {
-    mut b = Buffer.none();
-    imm s = usize.from(slot);
+    var b = Buffer.none();
+    let s = usize.from(slot);
     if s < buffers.len() {
-      imm r = &mut buffers[s];
+      let r = &mut buffers[s];
       b <=> *r;
     }
     b;
@@ -137,12 +137,12 @@ struct WatchArgs {
 // on its own fence, counted done, and its iocore operation ended; until the
 // Works ends. Answers how many it saw.
 fn watch(args WatchArgs) u32 {
-  mut a = args;
-  mut seen = 0u32;
-  mut more = true;
+  var a = args;
+  var seen = 0u32;
+  var more = true;
   while more {
     match a.rx.recv() {
-      case mut m Some {
+      case var m Some {
         if m.stop {
           more = false;
         } else {
@@ -166,19 +166,19 @@ fn watch(args WatchArgs) u32 {
 // or in which a Cone kernel failed (its error words, read here before the
 // job is counted done, after which 'poll' may drop their buffer)
 fn settle(w &mut Watch, state Arc[imm, WatchState]) {
-  mut fence Option[Fence] = None;
+  var fence Option[Fence] = None;
   fence <=> w.fence;
-  mut to Target = Target.Here(0u64);
+  var to Target = Target.Here(0u64);
   to <=> w.to;
-  mut signalled = false;
+  var signalled = false;
   match &fence {
-    case imm f &Some[Fence] { signalled = (*f).waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
+    case let f &Some[Fence] { signalled = (*f).waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
     else {}
   }
   // Read before it is counted done: until then 'poll' keeps the buffers
-  mut kernelFailed = false;
+  var kernelFailed = false;
   if signalled and w.ran {
-    mut k = 0usize;
+    var k = 0usize;
     while k < w.errorWords.len() {
       if errorsAt(*w.errorWords[k]) { kernelFailed = true; }
       k = k + 1usize;
@@ -188,7 +188,7 @@ fn settle(w &mut Watch, state Arc[imm, WatchState]) {
   state.tick.add(1u32);
   sync.futexWakeAll(&state.tick);
   match &mut to {
-    case mut l &mut Loop {
+    case var l &mut Loop {
       if !w.ran {
         l.completer.fail(ERROR_JOB_REFUSED);
       } elif !signalled {
@@ -224,8 +224,8 @@ pub struct Works {
   sent u64;                        // Loop jobs handed to the watcher
 
   pub fn make() Works {
-    mut tx Sender[Watch];
-    mut rx Receiver[Watch];
+    var tx Sender[Watch];
+    var rx Receiver[Watch];
     tx, rx = Channel[Watch].make();
     new Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
       new Arc[imm, WatchState](new WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
@@ -250,36 +250,36 @@ pub struct Works {
   // whose iocore operation was answered already (its group cancelled, its
   // deadline past) is not run either.
   pub fn submit(self &mut, device &mut Device, job Job, to Target) Ticket {
-    mut j = job;
+    var j = job;
     lastId = lastId + 1u64;
-    imm ticket = new Ticket(lastId);
-    mut ok = !j.failed;
+    let ticket = new Ticket(lastId);
+    var ok = !j.failed;
     if ok and j.frame != device.frameNumber {
       fail("submit: the job was recorded in an earlier frame");
       ok = false;
     }
-    imm token = to.token;
-    mut isLoop = false;
-    mut answered = false;
+    let token = to.token;
+    var isLoop = false;
+    var answered = false;
     match &to {
-      case imm l &Loop {
+      case let l &Loop {
         isLoop = true;
         answered = !l.completer.isLive();
       }
       else {}
     }
-    mut seq = 0u64;
+    var seq = 0u64;
     if isLoop {
       if answered { ok = false; }
-      mut fence = device.createFence();
+      var fence = device.createFence();
       if ok { ok = device.queue.submitSignalling(j.encoder.finish(), &mut fence); }
       // Not run: the fence still waits for its frame's uploads so far
       if !ok { device.queue.signal(&mut fence); }
       seq = sent;
       sent = sent + 1u64;
       self.startWatcher();
-      mut errorWords = List[usize].empty();
-      mut k = 0usize;
+      var errorWords = List[usize].empty();
+      var k = 0usize;
       while k < j.checks.len() {
         errorWords.push(errorWordsAt(j.checks[k]));
         k = k + 1usize;
@@ -288,11 +288,11 @@ pub struct Works {
     } elif ok {
       ok = device.queue.submit(j.encoder.finish());
     }
-    mut buffers = List[Buffer].empty();
+    var buffers = List[Buffer].empty();
     buffers <=> j.buffers;
-    mut groups = List[BindGroup].empty();
+    var groups = List[BindGroup].empty();
     groups <=> j.groups;
-    mut checks = List[ErrorCheck].empty();
+    var checks = List[ErrorCheck].empty();
     checks <=> j.checks;
     jobs.push(new InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks));
     ticket;
@@ -302,11 +302,11 @@ pub struct Works {
   fn startWatcher(self &mut) {
     if started { return; }
     started = true;
-    mut spareTx Sender[Watch];
-    mut spareRx Receiver[Watch];
+    var spareTx Sender[Watch];
+    var spareRx Receiver[Watch];
     spareTx, spareRx = Channel[Watch].make();
     spareRx <=> rx;
-    imm t = thread.startWith[WatchArgs, u32](new thread.Options(name: "gpuwork watcher"),
+    let t = thread.startWith[WatchArgs, u32](new thread.Options(name: "gpuwork watcher"),
       new WatchArgs(spareRx, state), &watch);
     watcherId = t.id();
     watcher = Some[thread.Thread[u32]](t);
@@ -320,7 +320,7 @@ pub struct Works {
   // Wait until the watcher has seen the Loop job numbered 'seq'
   fn waitWatched(self &, seq u64) {
     while true {
-      imm t = state.tick.load();
+      let t = state.tick.load();
       if seq < state.watched.load() { return; }
       sync.futexWait(&state.tick, t);
     }
@@ -331,7 +331,7 @@ pub struct Works {
   // program with no swapchain, whose frames nothing else ends. (A program
   // that presents leaves this to 'present'; a Loop job needs no frame end.)
   pub fn flush(self &mut, device &mut Device) {
-    mut k = 0usize;
+    var k = 0usize;
     while k < jobs.len() {
       if !jobs[k].watched and jobs[k].frame == device.frameNumber {
         device.endFrame();
@@ -345,21 +345,21 @@ pub struct Works {
   // the order submitted, and answer how many. Never waits: for a frame loop,
   // once a frame (and when a Loop job's iocore answer wakes it).
   pub fn poll(self &mut, device &Device, out &mut List[Completion]) usize {
-    imm now = Instant.now();
-    mut n = 0usize;
-    mut k = 0usize;
+    let now = Instant.now();
+    var n = 0usize;
+    var k = 0usize;
     while k < jobs.len() {
       if self.isDone(device, k) {
-        imm e = &mut jobs[k];
-        mut buffers = List[Buffer].empty();
+        let e = &mut jobs[k];
+        var buffers = List[Buffer].empty();
         buffers <=> e.buffers;
-        mut groups = List[BindGroup].empty();
+        var groups = List[BindGroup].empty();
         groups <=> e.groups;
         retired.push(groups);
         // Its Cone kernels' error buffers, read now that the GPU is done
-        mut failures = List[KernelFailure].empty();
+        var failures = List[KernelFailure].empty();
         if e.ok {
-          mut c = 0usize;
+          var c = 0usize;
           while c < e.checks.len() {
             readFailure(e.checks[c], &mut failures);
             c = c + 1usize;
@@ -385,13 +385,13 @@ pub struct Works {
   // 'out' every Completion ready, its own among them, and answer how many.
   // For tools and tests; a frame loop polls.
   pub fn waitFor(self &mut, device &mut Device, ticket Ticket, out &mut List[Completion]) usize {
-    mut k = 0usize;
+    var k = 0usize;
     while k < jobs.len() {
       if jobs[k].ticket == ticket {
         if jobs[k].watched {
           self.waitWatched(jobs[k].seq);
         } else {
-          imm frame = jobs[k].frame;
+          let frame = jobs[k].frame;
           if frame == device.frameNumber { device.endFrame(); }
           device.waitFrame(frame);
         }
@@ -404,7 +404,7 @@ pub struct Works {
   // Wait until every job in flight is finished, and poll
   pub fn waitAll(self &mut, device &mut Device, out &mut List[Completion]) usize {
     self.flush(device);
-    mut k = 0usize;
+    var k = 0usize;
     while k < jobs.len() {
       if jobs[k].watched { self.waitWatched(jobs[k].seq); } else { device.waitFrame(jobs[k].frame); }
       k = k + 1usize;
@@ -414,8 +414,8 @@ pub struct Works {
 
   // Drop the jobs delivered, keeping the order of the rest
   fn compact(self &mut) {
-    mut to = 0usize;
-    mut k = 0usize;
+    var to = 0usize;
+    var k = 0usize;
     while k < jobs.len() {
       if jobs[k].live {
         if to != k { jobs.swap(to, k); }

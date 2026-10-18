@@ -22,7 +22,7 @@ fn consume(f Fin) { printStr("[consume]"); }
 fn show[S Iterator[i64]](s &mut S) {
   while true {
     match s.next() {
-      case imm v Some { printInt(v); printStr(" "); }
+      case let v Some { printInt(v); printStr(" "); }
       case is None { break; }
     }
   }
@@ -31,10 +31,10 @@ fn show[S Iterator[i64]](s &mut S) {
 
 // Walk 'count' values, no further, then let the generator die
 fn take[S Iterator[i64]](s &mut S, count i64) {
-  mut k = 0i64;
+  var k = 0i64;
   while k < count {
     match s.next() {
-      case imm v Some { printInt(v); printStr(" "); }
+      case let v Some { printInt(v); printStr(" "); }
       case is None { break; }
     }
     k = k + 1i64;
@@ -43,9 +43,9 @@ fn take[S Iterator[i64]](s &mut S, count i64) {
 
 // Two locals, declared at different seams
 fn items(base i64) yields i64 {
-  imm a = new Fin(base + 100i64);
+  let a = new Fin(base + 100i64);
   yield 1i64;
-  imm b = new Fin(base + 200i64);
+  let b = new Fin(base + 200i64);
   yield 2i64;
   yield 3i64;
   printStr("end of body ");
@@ -53,22 +53,22 @@ fn items(base i64) yields i64 {
 
 // A local moved on some paths only: its drop flag says whether it is still held
 fn flagged(n i64) yields i64 {
-  mut f = new Fin(1i64);
+  var f = new Fin(1i64);
   yield 1i64;
   if n > 0i64 { consume(f); }
   yield 2i64;
-  imm g = new Fin(2i64);
+  let g = new Fin(2i64);
   yield 3i64;
 }
 
 // A local of an arm and a local of a loop pass
 fn arms(n i64) yields i64 {
   if n > 0i64 {
-    imm a = new Fin(10i64);
+    let a = new Fin(10i64);
     yield 1i64;
   }
   else {
-    imm b = new Fin(20i64);
+    let b = new Fin(20i64);
     yield 2i64;
     yield 3i64;
   }
@@ -76,9 +76,9 @@ fn arms(n i64) yields i64 {
 }
 
 fn passes(n i64) yields i64 {
-  mut i = 0i64;
+  var i = 0i64;
   while i < n {
-    imm f = new Fin(i);
+    let f = new Fin(i);
     yield f.n * 10i64;
     i = i + 1i64;
   }
@@ -86,7 +86,7 @@ fn passes(n i64) yields i64 {
 
 // A parameter that is a value with a finalizer
 fn holds(f Fin, n i64) yields i64 {
-  mut i = 0i64;
+  var i = 0i64;
   while i < n {
     yield f.n + i;
     i = i + 1i64;
@@ -95,7 +95,7 @@ fn holds(f Fin, n i64) yields i64 {
 
 // Owned values yielded: each moves to whoever walks, who finalizes it
 fn owned(n i64) yields Fin {
-  mut i = 0i64;
+  var i = 0i64;
   while i < n {
     yield new Fin(i);
     i = i + 1i64;
@@ -111,16 +111,16 @@ fn joined(a i64, b i64) yields Fin {
 // A sub-generator at every level, each level's local alive: the deepest
 // finalizes first
 fn deep(n i64) yields i64 {
-  imm f = new Fin(n);
+  let f = new Fin(n);
   if n > 0i64 { yield each deep(n - 1i64); }
   yield n + 100i64;
 }
 
 fn walkOwned[S Iterator[Fin]](s &mut S, count i64) {
-  mut k = 0i64;
+  var k = 0i64;
   while k < count {
     match s.next() {
-      case imm v Some { printInt(v.n); printStr(";"); }
+      case let v Some { printInt(v.n); printStr(";"); }
       case is None { break; }
     }
     k = k + 1i64;
@@ -129,54 +129,54 @@ fn walkOwned[S Iterator[Fin]](s &mut S, count i64) {
 
 fn main() {
   printStr("run to the end: ");
-  { mut g = items(0i64); show(&mut g); }
+  { var g = items(0i64); show(&mut g); }
   printStr("left at the first seam: ");
-  { mut g = items(1000i64); take(&mut g, 1i64); }
+  { var g = items(1000i64); take(&mut g, 1i64); }
   printStr("\nleft at the third: ");
-  { mut g = items(2000i64); take(&mut g, 3i64); }
+  { var g = items(2000i64); take(&mut g, 3i64); }
   printStr("\nnever run: ");
-  { mut g = items(3000i64); }
+  { var g = items(3000i64); }
   printStr("\n");
 
   printStr("-- a local moved on one path\n");
-  { mut g = flagged(1i64); show(&mut g); }
-  { mut g = flagged(0i64); show(&mut g); }
-  { mut g = flagged(1i64); take(&mut g, 1i64); }
+  { var g = flagged(1i64); show(&mut g); }
+  { var g = flagged(0i64); show(&mut g); }
+  { var g = flagged(1i64); take(&mut g, 1i64); }
   printStr("\n");
-  { mut g = flagged(1i64); take(&mut g, 2i64); }
+  { var g = flagged(1i64); take(&mut g, 2i64); }
   printStr("\n");
-  { mut g = flagged(0i64); take(&mut g, 2i64); }
+  { var g = flagged(0i64); take(&mut g, 2i64); }
   printStr("\n");
 
   printStr("-- locals of arms and of passes\n");
-  { mut g = arms(1i64); show(&mut g); }
-  { mut g = arms(0i64); show(&mut g); }
-  { mut g = arms(1i64); take(&mut g, 1i64); }
+  { var g = arms(1i64); show(&mut g); }
+  { var g = arms(0i64); show(&mut g); }
+  { var g = arms(1i64); take(&mut g, 1i64); }
   printStr("\n");
-  { mut g = arms(0i64); take(&mut g, 2i64); }
+  { var g = arms(0i64); take(&mut g, 2i64); }
   printStr("\n");
-  { mut g = passes(3i64); show(&mut g); }
-  { mut g = passes(3i64); take(&mut g, 2i64); }
+  { var g = passes(3i64); show(&mut g); }
+  { var g = passes(3i64); take(&mut g, 2i64); }
   printStr("\n");
 
   printStr("-- a parameter\n");
-  { mut g = holds(new Fin(10i64), 2i64); show(&mut g); }
-  { mut g = holds(new Fin(20i64), 3i64); take(&mut g, 1i64); }
+  { var g = holds(new Fin(10i64), 2i64); show(&mut g); }
+  { var g = holds(new Fin(20i64), 3i64); take(&mut g, 1i64); }
   printStr("\n");
-  { mut g = holds(new Fin(30i64), 3i64); }
+  { var g = holds(new Fin(30i64), 3i64); }
   printStr("\n");
 
   printStr("-- values yielded\n");
-  { mut g = joined(2i64, 2i64); walkOwned(&mut g, 9i64); }
+  { var g = joined(2i64, 2i64); walkOwned(&mut g, 9i64); }
   printStr("\n");
-  { mut g = joined(3i64, 1i64); walkOwned(&mut g, 2i64); }
+  { var g = joined(3i64, 1i64); walkOwned(&mut g, 2i64); }
   printStr("\n");
-  { mut g = joined(1i64, 3i64); walkOwned(&mut g, 3i64); }
+  { var g = joined(1i64, 3i64); walkOwned(&mut g, 3i64); }
   printStr("\n");
 
   printStr("-- one level inside another\n");
-  { mut g = deep(3i64); show(&mut g); }
-  { mut g = deep(3i64); take(&mut g, 1i64); }
+  { var g = deep(3i64); show(&mut g); }
+  { var g = deep(3i64); take(&mut g, 1i64); }
   printStr("\n");
 
   printStr("-- 'each' leaving by 'break'\n");

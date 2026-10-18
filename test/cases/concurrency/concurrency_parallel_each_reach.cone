@@ -56,7 +56,7 @@ struct Safe is RegionRef, ThreadSafe {
 struct Mine is RegionRef, Traced {
   pub id i64;
   fn alloc(size usize) *u8 {
-    imm p = malloc(size);
+    let p = malloc(size);
     mem.writeRaw(p as *Mine, new Mine(1));
     p;
   }
@@ -65,13 +65,13 @@ struct Mine is RegionRef, Traced {
 
 // 3D Web's probe d1: a helper that copies an Rc it was lent
 fn grab(r &Rc[imm, u64]) u64 {
-  imm c = *r;
+  let c = *r;
   *c;
 }
 
 fn probe() {
-  imm shared = new Rc[imm, u64](7u64);
-  imm total = Atomic[u64].of(0u64);
+  let shared = new Rc[imm, u64](7u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(grab(&shared));                      //~ ErrorParReach "reaches 'shared'"
   }
@@ -79,7 +79,7 @@ fn probe() {
 
 // Read through, and lent, are reaching too
 fn reads(shared Rc[imm, u64]) {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*shared);                            //~ ErrorParReach "reaches 'shared'"
   }
@@ -87,8 +87,8 @@ fn reads(shared Rc[imm, u64]) {
 
 // A field beside the Rc, in a struct made here and in one lent
 fn fields(h &Holder) {
-  imm holder = new Holder(new Rc[imm, u64](3u64), 10u64);
-  imm total = Atomic[u64].of(0u64);
+  let holder = new Holder(new Rc[imm, u64](3u64), 10u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(holder.n);                           //~ ErrorParReach "reaches 'holder'"
     total.add(h.n);                                //~ ErrorParReach "reaches 'h'"
@@ -97,7 +97,7 @@ fn fields(h &Holder) {
 
 // An element of an array of them, and the pass's item when the items hold one
 fn elements(arr &Array[Rc[imm, u64], 2]) {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*arr[1usize]);                     //~ ErrorParReach "reaches 'arr'"
   }
@@ -109,9 +109,9 @@ fn elements(arr &Array[Rc[imm, u64], 2]) {
 // A region of the program's own: counted without atomics is refused; one declaring
 // ThreadSafe is allowed
 fn regions() {
-  imm counted = new Counted[imm, Leaf](5u64);
-  imm safe = new Safe[imm, Leaf](5u64);
-  imm total = Atomic[u64].of(0u64);
+  let counted = new Counted[imm, Leaf](5u64);
+  let safe = new Safe[imm, Leaf](5u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(counted.n);                          //~ ErrorParReach "reaches 'counted'"
   }
@@ -122,7 +122,7 @@ fn regions() {
 
 // Traced references: Gc, and a region of the program's own
 fn traced(g Gc[imm, u64], m Mine[imm, Leaf]) {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*g);                                 //~ ErrorParReach "reaches 'g'"
     total.add(m.n);                                //~ ErrorParReach "reaches 'm'"
@@ -131,21 +131,21 @@ fn traced(g Gc[imm, u64], m Mine[imm, Leaf]) {
 
 // The parallel builder keeps the rule in its header, filter and yield
 fn builders(xs &List[u64], shared Rc[imm, u64]) {
-  imm a = new List[u64] <- parallel each x in xs yield *shared;              //~ ErrorParReach "reaches 'shared'"
-  imm b = new List[u64] <- parallel each x in xs if *shared > 3u64 yield *x;  //~ ErrorParReach "reaches 'shared'"
+  let a = new List[u64] <- parallel each x in xs yield *shared;              //~ ErrorParReach "reaches 'shared'"
+  let b = new List[u64] <- parallel each x in xs if *shared > 3u64 yield *x;  //~ ErrorParReach "reaches 'shared'"
 }
 
 // Allowed: the contents borrowed before the loop, an Arc, an Atomic, a number, an
 // Rc the pass makes, a borrow of a list of numbers
 fn allowed(shared Rc[imm, u64], xs &List[u64]) {
-  imm sv = &*shared;
-  imm arc = new Arc[imm, u64](5u64);
-  imm count = Atomic[u64].of(0u64);
-  imm k = 4u64;
+  let sv = &*shared;
+  let arc = new Arc[imm, u64](5u64);
+  let count = Atomic[u64].of(0u64);
+  let k = 4u64;
   parallel each x in xs {
-    imm made = new Rc[imm, u64](*x);
-    imm again = made;
+    let made = new Rc[imm, u64](*x);
+    let again = made;
     count.add(*sv + *arc + k + *again);
   }
-  imm ys = new List[u64] <- parallel each x in xs yield *x + *sv;
+  let ys = new List[u64] <- parallel each x in xs yield *x + *sv;
 }

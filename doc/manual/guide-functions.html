@@ -24,12 +24,12 @@ import stdio use *;
 // calcpi takes the number of terms, an i32, and gives back an f64.
 // '= 10' is a default: a call may leave the number of terms off.
 fn calcpi(terms i32 = 10) f64 {
-  mut left = terms;
-  mut result = 0.5d;
-  mut seed = 1d;
-  mut top = 1d;
-  mut bot = 1d;
-  mut twos = 2d;
+  var left = terms;
+  var result = 0.5d;
+  var seed = 1d;
+  var top = 1d;
+  var bot = 1d;
+  var twos = 2d;
   while left &gt; 0 {
     top *= seed;
     bot *= seed + 1d;
@@ -73,10 +73,11 @@ with 20 terms: 3.14159
 		has a default, every parameter after it needs one too, and a call may leave off any run of them from the end:
 		for <span class="pre">fn span(start i32 = 0, len i32 = 10)</span>, <span class="pre">span()</span>,
 		<span class="pre">span(5)</span> and <span class="pre">span(5, 2)</span> all work.</p>
-	<p id="parmmut">A parameter cannot be changed inside the function unless it is declared
-		<span class="pre">mut</span>, which is why <span class="pre">calcpi</span> counts down a variable of its own,
-		<span class="pre">left</span>. A <span class="pre">mut</span> parameter is the function's own copy: in
-		<span class="pre">fn halve(mut n i32)</span>, changing <span class="pre">n</span> leaves the caller's variable as
+	<p id="parmmut">A parameter cannot be given a new value inside the function unless it is declared
+		<span class="pre">var</span>, which is why <span class="pre">calcpi</span> counts down a variable of its own,
+		<span class="pre">left</span>. A parameter with no word before it is a <span class="pre">let</span> one. A
+		<span class="pre">var</span> parameter is the function's own copy: in
+		<span class="pre">fn halve(var n i32)</span>, changing <span class="pre">n</span> leaves the caller's variable as
 		it was. A function can also give back several values at once, written as a list of types, which is a
 		<a href="guide-tuples.html#returning">tuple</a>.</p>
 	<p>A function may call itself. Euclid's greatest common divisor, the loop from the last page, becomes three lines:
@@ -113,8 +114,8 @@ fn average(total i32, count i32) Result[i32, &amp;str] {
 		inside. The match must cover both, so a failure cannot be overlooked by accident:</p>
 <pre>
 match average(30, 0) {
-  case imm avg Ok { print &lt;- "average: ", avg, "\n"; }
-  case imm why Error { print &lt;- "no average: ", why, "\n"; }   // this one runs
+  case let avg Ok { print &lt;- "average: ", avg, "\n"; }
+  case let why Error { print &lt;- "no average: ", why, "\n"; }   // this one runs
 }
 </pre>
 	<p>When only the failure matters, <span class="pre">is</span> asks which it is:
@@ -123,8 +124,8 @@ match average(30, 0) {
 <pre>
 fn doubledAverage(total i32, count i32) Result[i32, &amp;str] {
   match average(total, count) {
-    case imm avg Ok { Ok(avg * 2); }
-    case imm why Error { Error(why); }
+    case let avg Ok { Ok(avg * 2); }
+    case let why Error { Error(why); }
   }
 }
 </pre>
@@ -141,16 +142,16 @@ fn doubledAverage(total i32, count i32) Result[i32, &amp;str] {
 		other, so it is kept in a variable and called through it. In its simplest form it uses the variables around
 		it:</p>
 <pre>
-imm rate = 3;
-imm triple = fn(x i32) i32 { x * rate; };
+let rate = 3;
+let triple = fn(x i32) i32 { x * rate; };
 triple(14)        // 42
 </pre>
 	<p>What makes a closure more than a function is that it can carry state of its own. Its state goes in square
 		brackets after its parameters, and lives on from one call to the next. This one hands out the Fibonacci
 		numbers, one per call, each the sum of the two before:</p>
 <pre>
-mut nextFib = fn() [mut a = 0i64, mut b = 1i64] i64 {
-  imm now = a;
+var nextFib = fn() [var a = 0i64, var b = 1i64] i64 {
+  let now = a;
   a, b = b, a + b;      // both change at once
   now;
 };
@@ -165,14 +166,14 @@ each i in 1 .. 10 {
 		with the state in square brackets after the parameters, where a bracket cannot be taken for the return type. Each
 		state entry is a field of the closure, a name with an initial value whose type is the value's, and the entries
 		are separated by commas; a closure with no state leaves the list out, as <span class="pre">triple</span> does. An
-		entry is <span class="pre">imm</span> unless written <span class="pre">mut</span>, and
-		the variable that holds a closure that changes its state is <span class="pre">mut</span> too. An entry's initial
+		entry is <span class="pre">let</span> unless written <span class="pre">var</span>, and
+		the variable that holds a closure that changes its state is <span class="pre">var</span> too. An entry's initial
 		value is read in the code around the closure, not from the entries before it: in <span class="pre">[a = 1, b =
 		a]</span>, <span class="pre">b</span> starts from the <span class="pre">a</span> outside.</p>
 	<p id="own">An entry is how a closure gets a value of its own, by the ordinary rules for values:</p>
 <pre>
-imm ribs = 3;
-imm shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
+let ribs = 3;
+let shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
 shape(2)          // 2 * 3 + 11: 17
 </pre>
 	<p>An entry with no <span class="pre">=</span>, <span class="pre">[ribs]</span>, starts from the variable of that
@@ -180,13 +181,13 @@ shape(2)          // 2 * 3 + 11: 17
 		function. <span class="pre">[buf = xs]</span> moves a value in, and <span class="pre">xs</span> can no longer be
 		used. Listing a counted handle, an <span class="pre">Rc</span> or an <span class="pre">Arc</span>, gives the closure
 		a count of its own, and the handle's permission says whether the closure may change what it points at.
-		<span class="pre">[mut n = 0]</span> is new state, and <span class="pre">[r = &amp;p]</span> is a borrow written
+		<span class="pre">[var n = 0]</span> is new state, and <span class="pre">[r = &amp;p]</span> is a borrow written
 		out, which gives the closure the borrow's lifetime. Listing also tells the reader which values are the closure's
 		own. A closure with only its own state and copies can be kept after the code around it has finished, or handed to
 		an <a href="guide-actors.html">actor</a>; one that uses the variables around it cannot.</p>
 	<p id="capture">A closure that uses a variable around it, without listing it, borrows it: it reads it where it
 		stands, or changes it if the body does, and the compiler works out which from the body. Only a
-		<span class="pre">mut</span> variable can be changed that way; changing any other is the ordinary "no permission to
+		<span class="pre">var</span> variable can be changed that way; changing any other is the ordinary "no permission to
 		modify" error, reported inside the body. While the closure is still to be used, nothing else may change the
 		variable (nor read it, if the closure changes it), and once the closure's last use is past, it can. Borrowing is
 		the default because a copy made silently would duplicate state: a closure that added to its own copy of a total
@@ -208,7 +209,7 @@ shape(2)          // 2 * 3 + 11: 17
 // f is any closure, or function, that takes an i32 and gives one back
 fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
 
-imm off = 10;
+let off = 10;
 apply(x =&gt; x * 2, 21)                        // 42
 apply(fn(x i32) i32 { x + off; }, 1)         // 11
 apply(fn(x) { x + off; }, 1)                 // 11: the type comes from the signature
@@ -239,8 +240,8 @@ apply(fn(x) { x + off; }, 1)                 // 11: the type comes from the sign
 		<span class="pre">yield</span> hands out one value:</p>
 <pre>
 fn fibonacci(n i32) yields i64 {
-  mut a = 0i64;
-  mut b = 1i64;
+  var a = 0i64;
+  var b = 1i64;
   each i in 1 .. n {
     yield a;
     a, b = b, a + b;
@@ -262,7 +263,7 @@ each f in fibonacci(10) {
 		generator too, walking what its value holds:</p>
 <pre>
 fn count(n i32) yields i32 {
-  mut i = 0;
+  var i = 0;
   while i &lt; n { yield i; i += 1; }
 }
 
@@ -281,7 +282,7 @@ struct Span {
 }
 
 each v in joined(2, 3) { print &lt;- " ", v; }               //  0 1 99 0 1 2
-imm span = new Span(3, 10);
+let span = new Span(3, 10);
 each v in span.evens() { print &lt;- " ", v; }              //  4 6 8 10
 </pre>
 	<p>A <span class="pre">yield</span> is a statement of its own, never part of a larger expression. A generator is

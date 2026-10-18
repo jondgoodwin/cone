@@ -32,7 +32,7 @@ const many = 20u64;
 
 fn take(rx &mut Receiver[u64]) u64 {
   match rx.recv() {
-    case imm v Some {v;}
+    case let v Some {v;}
     else {999u64;}
   }
 }
@@ -40,7 +40,7 @@ fn take(rx &mut Receiver[u64]) u64 {
 // How a sleep ended: 1 done, 2 cancelled, 3 timed out, 4 failed
 fn ended(r Result[void, IoError]) u64 {
   match r {
-    case imm e Error {
+    case let e Error {
       if aio.isCancelled(e) {2u64;}
       elif aio.isTimedOut(e) {3u64;}
       else {4u64;}
@@ -50,7 +50,7 @@ fn ended(r Result[void, IoError]) u64 {
 }
 
 fn ms(since Instant) u64 {
-  imm n = since.elapsed().millis();
+  let n = since.elapsed().millis();
   if n < 0i64 {0u64;} else {u64.from(n);};
 }
 
@@ -63,63 +63,63 @@ actor Sleeper {
   out Sender[u64];
 
   pub async do cases(self, cancelled CancelGroup, live CancelGroup) {
-    imm hour = Duration.fromSeconds(3600i64);
-    imm fifty = Duration.fromMillis(50i64);
-    imm eighty = Duration.fromMillis(80i64);
+    let hour = Duration.fromSeconds(3600i64);
+    let fifty = Duration.fromMillis(50i64);
+    let eighty = Duration.fromMillis(80i64);
     {
-      imm t = Instant.now();
-      imm r = await aio.sleep(Duration.fromMillis(100i64));
+      let t = Instant.now();
+      let r = await aio.sleep(Duration.fromMillis(100i64));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepUntil(t + eighty);
+      let t = Instant.now();
+      let r = await aio.sleepUntil(t + eighty);
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepUntil(t - Duration.fromSeconds(5i64));
+      let t = Instant.now();
+      let r = await aio.sleepUntil(t - Duration.fromSeconds(5i64));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleep(Duration.zero());
+      let t = Instant.now();
+      let r = await aio.sleep(Duration.zero());
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepIn(hour, IoLimits.until(t + eighty));
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.until(t + eighty));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepIn(hour, IoLimits.within(CancelGroup.until(t + eighty)));
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(CancelGroup.until(t + eighty)));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepUntilIn(t + hour, new IoLimits(Some[CancelGroup](live), t + eighty));
+      let t = Instant.now();
+      let r = await aio.sleepUntilIn(t + hour, new IoLimits(Some[CancelGroup](live), t + eighty));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepIn(fifty, IoLimits.within(CancelGroup.until(t + hour)));
+      let t = Instant.now();
+      let r = await aio.sleepIn(fifty, IoLimits.within(CancelGroup.until(t + hour)));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepIn(fifty, IoLimits.until(t + hour));
+      let t = Instant.now();
+      let r = await aio.sleepIn(fifty, IoLimits.until(t + hour));
       report(&out, r, t);
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.sleepIn(hour, IoLimits.within(cancelled));
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(cancelled));
       report(&out, r, t);
     }
     {
       out.send(marker);
-      imm t = Instant.now();
-      imm r = await aio.sleepIn(hour, IoLimits.within(live));
+      let t = Instant.now();
+      let r = await aio.sleepIn(hour, IoLimits.within(live));
       report(&out, r, t);
     }
   }
@@ -127,14 +127,14 @@ actor Sleeper {
 
 actor Napper {
   pub async do nap(self, out Sender[u64]) {
-    imm r = await aio.sleep(Duration.fromMillis(200i64));
+    let r = await aio.sleep(Duration.fromMillis(200i64));
     out.send(ended(r));
   }
 }
 
 fn nth(l &List[u64], i usize) u64 {
   match l.get(i) {
-    case imm v Some {*v;}
+    case let v Some {*v;}
     else {999u64;}
   }
 }
@@ -143,26 +143,26 @@ fn nth(l &List[u64], i usize) u64 {
 // (an hour's sleep that ended at its time would be far outside)
 fn check(how &List[u64], took &List[u64], i usize, code u64, least u64, what &str) {
   expectUInt(nth(how, i), code, what);
-  imm t = nth(took, i);
+  let t = nth(took, i);
   expect(t >= least and t < 1000u64 + least, "...in time");
 }
 
 fn main() i32 {
   initAll();
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm cancelled = CancelGroup.make();
-  imm live = CancelGroup.make();
+  let cancelled = CancelGroup.make();
+  let live = CancelGroup.make();
   expect(cancelled.cancel(), "the group was live");
-  imm s = new Sleeper(tx.clone());
+  let s = new Sleeper(tx.clone());
   s.cases(cancelled, live);
   // 11 cases, the last announced by a marker; each reports (how, ms)
-  mut how = List[u64].empty();
-  mut took = List[u64].empty();
-  mut i = 0u64;
+  var how = List[u64].empty();
+  var took = List[u64].empty();
+  var i = 0u64;
   while i < 11u64 {
-    imm a = take(&mut rx);
+    let a = take(&mut rx);
     if a == marker {
       thread.sleep(Duration.fromMillis(50i64));
       expect(live.cancel(), "the group was live until main cancelled it");
@@ -174,22 +174,22 @@ fn main() i32 {
     i = i + 1u64;
   }
   // Twenty sleeping at once
-  imm began = Instant.now();
+  let began = Instant.now();
   {
-    mut k = 0u64;
+    var k = 0u64;
     while k < many {
-      imm n = new Napper();
+      let n = new Napper();
       n.nap(tx.clone());
       k = k + 1u64;
     }
   }
-  mut doneCount = 0u64;
-  mut k = 0u64;
+  var doneCount = 0u64;
+  var k = 0u64;
   while k < many {
     if take(&mut rx) == 1u64 {doneCount = doneCount + 1u64;}
     k = k + 1u64;
   }
-  imm together = ms(began);
+  let together = ms(began);
   finalAll();
 
   check(&how, &took, 0usize, 1u64, 95u64, "sleep(100 ms)");

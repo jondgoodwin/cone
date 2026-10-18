@@ -71,7 +71,7 @@ pub struct Synth {
 
   // Wind: 'intensity' 0 (a breath) to 1 (a gale)
   pub fn wind(rate f32, seed u32, intensity f32) Synth {
-    mut s = Synth.base(SYNTH_WIND, rate, seed);
+    var s = Synth.base(SYNTH_WIND, rate, seed);
     s.p0 = clampf(intensity, 0., 1.);
     s.lfo = OnePole.cutoff(0.25, rate);
     s.fa = Biquad.design(FILTER_BANDPASS, 400., 0.8, 0., rate);
@@ -81,7 +81,7 @@ pub struct Synth {
 
   // A brook: 'intensity' 0 (a trickle) to 1 (a rushing stream)
   pub fn water(rate f32, seed u32, intensity f32) Synth {
-    mut s = Synth.base(SYNTH_WATER, rate, seed);
+    var s = Synth.base(SYNTH_WATER, rate, seed);
     s.p0 = clampf(intensity, 0., 1.);
     s.fa = Biquad.design(FILTER_BANDPASS, 700., 0.6, 0., rate);
     s.fb = Biquad.design(FILTER_HIGHPASS, 3000., 0.7071, 0., rate);
@@ -92,7 +92,7 @@ pub struct Synth {
   // Fire: 'crackle' 0 to 1 the rate of the pops, 'roar' 0 to 1 the burner's
   // rush (a balloon burner is roar 1; a campfire roar 0.1)
   pub fn fire(rate f32, seed u32, crackle f32, roar f32) Synth {
-    mut s = Synth.base(SYNTH_FIRE, rate, seed);
+    var s = Synth.base(SYNTH_FIRE, rate, seed);
     s.p0 = clampf(crackle, 0., 1.);
     s.p1 = clampf(roar, 0., 1.);
     s.fa = Biquad.design(FILTER_LOWPASS, 160., 0.7071, 0., rate);
@@ -107,12 +107,12 @@ pub struct Synth {
   // One footstep on 'material' (MATERIAL_...), 'weight' 0 (light) to 1
   // (heavy); a different seed is a different step
   pub fn step(rate f32, seed u32, material u32, weight f32) Synth {
-    mut s = Synth.base(SYNTH_STEP, rate, seed);
+    var s = Synth.base(SYNTH_STEP, rate, seed);
     s.p0 = f32.from(material);
     s.p1 = clampf(weight, 0., 1.);
     // the material's resonances, a little different each step
     if material == MATERIAL_WOOD {
-      imm f1 = s.rng.range(140., 200.);
+      let f1 = s.rng.range(140., 200.);
       s.fa = Biquad.design(FILTER_BANDPASS, f1, 25., 0., rate);
       s.fb = Biquad.design(FILTER_BANDPASS, f1 * 2.4, 30., 0., rate);
       s.fc = Biquad.design(FILTER_BANDPASS, f1 * 4.3, 35., 0., rate);
@@ -131,7 +131,7 @@ pub struct Synth {
   // A bird's chirp: 'pitch' Hz (a small bird 5000, a thrush 2500), a
   // random number of syllables of 2 to 4
   pub fn bird(rate f32, seed u32, pitch f32) Synth {
-    mut s = Synth.base(SYNTH_BIRD, rate, seed);
+    var s = Synth.base(SYNTH_BIRD, rate, seed);
     s.p0 = pitch;
     s.p1 = f32.from(2u32 + (s.rng.nextU32() % 3u32));       // syllables
     s.s0 = 0.;                                               // phase
@@ -145,7 +145,7 @@ pub struct Synth {
   // and falls back, through three formant resonators (source-filter synthesis, Fant 1960; the vowel's formants after Peterson and
   // Barney 1952: F1 730, F2 1090, F3 2440 Hz), with a little breath noise. 0.35 s, ending by itself.
   pub fn voice(rate f32, seed u32, pitch f32) Synth {
-    mut s = Synth.base(SYNTH_VOICE, rate, seed);
+    var s = Synth.base(SYNTH_VOICE, rate, seed);
     s.p0 = pitch;
     s.s0 = 0.;                                               // the pulse train's phase
     s.s3 = s.rng.range(0.95, 1.05);                          // this voice's drift
@@ -158,8 +158,8 @@ pub struct Synth {
 
   // The next mono sample, 'rate' Hz
   pub fn next(self &mut) f32 {
-    imm dt = 1. / rate;
-    mut out = 0.;
+    let dt = 1. / rate;
+    var out = 0.;
     if kind == SYNTH_WIND { out = windNext(self); }
     elif kind == SYNTH_WATER { out = waterNext(self); }
     elif kind == SYNTH_FIRE { out = fireNext(self); }
@@ -173,7 +173,7 @@ pub struct Synth {
 
   // Fill 'out' with 'n' samples
   pub fn fill(self &mut, out &mut Array[f32], n usize) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < n { out[i] = self.next(); i = i + 1usize; }
   }
 }
@@ -184,49 +184,49 @@ pub struct Synth {
 // the loudness
 fn windNext(s &mut Synth) f32 {
   // the gust level: low-passed white noise, centred on 0.5, spread by 2.5
-  imm g = s.lfo.process(s.rng.signed()) * 2.5 + 0.5;
-  imm gust = clampf(g, 0., 1.);
+  let g = s.lfo.process(s.rng.signed()) * 2.5 + 0.5;
+  let gust = clampf(g, 0., 1.);
   if s.tick % 48u32 == 0u32 {
-    imm lvl = gust * s.p0;
+    let lvl = gust * s.p0;
     s.fa.retune(Biquad.design(FILTER_BANDPASS, 250. + 900. * lvl, 0.8, 0., s.rate));
     s.fb.retune(Biquad.design(FILTER_BANDPASS, 500. + 700. * gust, 9., 0., s.rate));
   }
-  imm x = s.pink.next();
-  imm body = s.fa.process(x);
-  imm howl = s.fb.process(x);
+  let x = s.pink.next();
+  let body = s.fa.process(x);
+  let howl = s.fb.process(x);
   (body * 1.6 + howl * 2.2 * s.p0) * (0.1 + 0.9 * gust) * (0.15 + 0.85 * s.p0);
 }
 
 // -------- water --------
 fn waterNext(s &mut Synth) f32 {
-  imm bed = s.fa.process(s.brown.next()) * 0.9 * (0.3 + 0.7 * s.p0);
-  imm hiss = s.fb.process(s.rng.signed()) * 0.05 * s.p0;
+  let bed = s.fa.process(s.brown.next()) * 0.9 * (0.3 + 0.7 * s.p0);
+  let hiss = s.fb.process(s.rng.signed()) * 0.05 * s.p0;
   // gurgle: a slow modulation of the bed
-  imm gurgle = 0.7 + 0.6 * s.lfo.process(s.rng.signed()) * 3.;
+  let gurgle = 0.7 + 0.6 * s.lfo.process(s.rng.signed()) * 3.;
   // bubbles: Poisson, mean rate 25 to 120 a second
-  imm rate = 25. + 95. * s.p0;
+  let rate = 25. + 95. * s.p0;
   if s.rng.unit() < rate / s.rate {
     // free slot: the quietest
-    mut slot = 0usize;
-    mut i = 1usize;
+    var slot = 0usize;
+    var i = 1usize;
     while i < BUBBLES {
       if s.bubAmp[i] < s.bubAmp[slot] { slot = i; }
       i = i + 1usize;
     }
     // frequency log-uniform 400 to 3000 Hz, small bubbles brighter and shorter
-    imm f0 = 400. * libc.powf(7.5, s.rng.unit());
+    let f0 = 400. * libc.powf(7.5, s.rng.unit());
     s.bubFreq[slot] = f0;
     s.bubPhase[slot] = 0.;
     s.bubAmp[slot] = s.rng.range(0.15, 0.5);
     s.bubDecay[slot] = 1. / (0.004 + 8. / f0);              // per second, a ring of 4 to 20 ms
   }
-  mut sum = 0.;
-  mut k = 0usize;
+  var sum = 0.;
+  var k = 0usize;
   while k < BUBBLES {
     if s.bubAmp[k] > 0.0005 {
       sum = sum + s.bubAmp[k] * (s.bubPhase[k] * TAU).sin();
       // a bubble's pitch climbs as it rises (Minnaert): 6 e-folds a second here
-      imm f = s.bubFreq[k];
+      let f = s.bubFreq[k];
       s.bubFreq[k] = f * (1. + 6. / s.rate);
       s.bubPhase[k] = s.bubPhase[k] + f / s.rate;
       if s.bubPhase[k] >= 1. { s.bubPhase[k] = s.bubPhase[k] - 1.; }
@@ -241,24 +241,24 @@ fn waterNext(s &mut Synth) f32 {
 
 // -------- fire --------
 fn fireNext(s &mut Synth) f32 {
-  imm flick = clampf(0.6 + s.lfo.process(s.rng.signed()) * 2.5, 0.2, 1.);
-  imm swell = clampf(0.7 + s.lfo2.process(s.rng.signed()) * 4., 0.3, 1.);
+  let flick = clampf(0.6 + s.lfo.process(s.rng.signed()) * 2.5, 0.2, 1.);
+  let swell = clampf(0.7 + s.lfo2.process(s.rng.signed()) * 4., 0.3, 1.);
   // rumble: brown noise, low-passed
-  imm rumble = s.fa.process(s.brown.next()) * 0.45 * (0.4 + 0.6 * flick);
+  let rumble = s.fa.process(s.brown.next()) * 0.45 * (0.4 + 0.6 * flick);
   // roar: pink noise in a mid band, the burner's rush
-  imm roar = s.fb.process(s.pink.next()) * 1.8 * s.p1 * swell;
+  let roar = s.fb.process(s.pink.next()) * 1.8 * s.p1 * swell;
   // hiss
-  imm hiss = s.fc.process(s.rng.signed()) * 0.08 * (0.3 + s.p1);
+  let hiss = s.fc.process(s.rng.signed()) * 0.08 * (0.3 + s.p1);
   // crackle: Poisson pops exciting a resonator that is retuned at each pop
-  imm popRate = 3. + 40. * s.p0;
-  mut pop = 0.;
+  let popRate = 3. + 40. * s.p0;
+  var pop = 0.;
   if s.rng.unit() < popRate / s.rate {
-    imm a = s.rng.unit();
-    imm amp = 0.15 + 1.4 * a * a * a;
+    let a = s.rng.unit();
+    let amp = 0.15 + 1.4 * a * a * a;
     s.fd.retune(Biquad.design(FILTER_BANDPASS, 600. * libc.powf(8., s.rng.unit()), s.rng.range(3., 9.), 0., s.rate));
     pop = amp * (s.rng.signed() + 1.2);
   }
-  imm crackle = s.fd.process(pop) * 3.;
+  let crackle = s.fd.process(pop) * 3.;
   rumble * (1. - 0.5 * s.p1) + roar + hiss + crackle;
 }
 
@@ -266,31 +266,31 @@ fn fireNext(s &mut Synth) f32 {
 // A noise burst and a thump excite the material's resonances. Grass has no
 // ringing: a soft band-passed rustle and a few tiny crunches.
 fn stepNext(s &mut Synth) f32 {
-  imm w = 0.4 + 0.6 * s.p1;
-  mut out = 0.;
-  imm thump = (TAU * (70. + 30. * (1. - s.p1)) * s.t).sin() * libc.expf(-s.t * 55.);
+  let w = 0.4 + 0.6 * s.p1;
+  var out = 0.;
+  let thump = (TAU * (70. + 30. * (1. - s.p1)) * s.t).sin() * libc.expf(-s.t * 55.);
   if s.p0 < 0.5 {
     // grass: rustle envelope with 15 ms attack and 90 ms decay
-    imm env = (1. - libc.expf(-s.t * 200.)) * libc.expf(-s.t * 12.);
-    imm rustle = s.fa.process(s.pink.next() * 2.) * env;
+    let env = (1. - libc.expf(-s.t * 200.)) * libc.expf(-s.t * 12.);
+    let rustle = s.fa.process(s.pink.next() * 2.) * env;
     // crunches: sparse highpassed clicks over the first 120 ms
-    mut click = 0.;
+    var click = 0.;
     if s.t < 0.12 and s.rng.unit() < 40. / s.rate { click = s.rng.signed(); }
-    imm crunch = s.fb.process(click * 3.) * 0.35;
+    let crunch = s.fb.process(click * 3.) * 0.35;
     out = (rustle * 0.8 + crunch + thump * 0.18) * w;
     if s.t > 0.35 { s.done = true; }
   } elif s.p0 < 1.5 {
     // wood: a 2 ms noise burst excites three modes; hollow boom of a board
-    mut ex = 0.;
+    var ex = 0.;
     if s.t < 0.002 { ex = s.rng.signed(); }
-    imm modes = s.fa.process(ex) * 1.4 + s.fb.process(ex) * 1.0 + s.fc.process(ex) * 0.6;
+    let modes = s.fa.process(ex) * 1.4 + s.fb.process(ex) * 1.0 + s.fc.process(ex) * 0.6;
     out = (modes * 14. + thump * 0.2) * w;
     if s.t > 0.4 { s.done = true; }
   } else {
     // stone: a 0.7 ms burst, bright short modes, a faint thump
-    mut ex = 0.;
+    var ex = 0.;
     if s.t < 0.0007 { ex = s.rng.signed(); }
-    imm modes = s.fa.process(ex) * 1.2 + s.fb.process(ex) * 1.0 + s.fc.process(ex) * 0.7;
+    let modes = s.fa.process(ex) * 1.2 + s.fb.process(ex) * 1.0 + s.fc.process(ex) * 0.7;
     out = (modes * 13. + thump * 0.05) * w;
     if s.t > 0.3 { s.done = true; }
   }
@@ -307,34 +307,34 @@ const VOICE_SECONDS f32 = 0.35;
 fn voiceNext(s &mut Synth) f32 {
   if s.t >= VOICE_SECONDS { s.done = true; return 0.; }
   // The pitch jumps up a fifth and falls back over the sound; a little vibrato
-  imm u = s.t / VOICE_SECONDS;
-  imm f = s.p0 * s.s3 * (1. + 0.5 * (1. - u) * (1. - u)) * (1. + 0.015 * (TAU * 6. * s.t).sin());
+  let u = s.t / VOICE_SECONDS;
+  let f = s.p0 * s.s3 * (1. + 0.5 * (1. - u) * (1. - u)) * (1. + 0.015 * (TAU * 6. * s.t).sin());
   s.s0 = s.s0 + f / s.rate;
   if s.s0 >= 1. { s.s0 = s.s0 - 1.; }
   // A glottal pulse: a sawtooth, richer in high harmonics early in the cycle
-  imm saw = 1. - 2. * s.s0;
-  imm src = saw * (0.6 + 0.4 * (1. - s.s0)) + 0.04 * s.rng.signed();
-  imm y = s.fa.process(src) * 1.0 + s.fb.process(src) * 0.7 + s.fc.process(src) * 0.35 + s.fd.process(s.rng.signed()) * 0.03;
+  let saw = 1. - 2. * s.s0;
+  let src = saw * (0.6 + 0.4 * (1. - s.s0)) + 0.04 * s.rng.signed();
+  let y = s.fa.process(src) * 1.0 + s.fb.process(src) * 0.7 + s.fc.process(src) * 0.35 + s.fd.process(s.rng.signed()) * 0.03;
   // Attack 15 ms, then a decay
-  imm att = clampf(s.t / 0.015, 0., 1.);
-  imm env = att * (1. - u) * (1. - u * 0.3);
+  let att = clampf(s.t / 0.015, 0., 1.);
+  let env = att * (1. - u) * (1. - u * 0.3);
   y * env * 1.6;
 }
 
 fn birdNext(s &mut Synth) f32 {
-  imm syl = s.s1 + s.s2;
-  imm n = s.t / syl;
-  imm idx = libc.floorf(n);
-  imm inSyl = (n - idx) * syl;
+  let syl = s.s1 + s.s2;
+  let n = s.t / syl;
+  let idx = libc.floorf(n);
+  let inSyl = (n - idx) * syl;
   if idx >= s.p1 { s.done = true; return 0.; }
   if inSyl > s.s1 { return 0.; }
-  imm u = inSyl / s.s1;
-  mut arc = u - 0.5;
+  let u = inSyl / s.s1;
+  var arc = u - 0.5;
   if (u32.from(idx) & 1u32) == 1u32 { arc = -arc; }
-  imm vib = 1. + 0.02 * (TAU * 28. * s.t).sin();
-  imm f = s.p0 * s.s3 * (1. + 0.5 * arc) * vib;
+  let vib = 1. + 0.02 * (TAU * 28. * s.t).sin();
+  let f = s.p0 * s.s3 * (1. + 0.5 * arc) * vib;
   s.s0 = s.s0 + f / s.rate;
   if s.s0 >= 1. { s.s0 = s.s0 - 1.; }
-  imm env = libc.sqrtf(clampf((TAU * 0.5 * u).sin(), 0., 1.));
+  let env = libc.sqrtf(clampf((TAU * 0.5 * u).sin(), 0., 1.));
   ((s.s0 * TAU).sin() + 0.2 * (s.s0 * TAU * 2.).sin()) * env * 0.5;
 }

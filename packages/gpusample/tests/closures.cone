@@ -42,16 +42,16 @@ fn dotOf(i u32) f32 { px(i) * px(i) + py(i) * py(i) + pz(i) * pz(i); }
 // The word each kernel writes for invocation i, worked out from the source
 // of src/closures.cone
 fn expected(name &str, i u32) f32 {
-  imm d = dotOf(i);
-  imm r = radiusOf(i);
+  let d = dotOf(i);
+  let r = radiusOf(i);
   if name == "closureLocal" or name == "closureBuffer" or name == "structCall" {
     // shadeWith: f(p) * 2 + 1, where f(p) = |p|^2 - r^2
     (d - r * r) * 2. + 1.;
   }
   else if name == "closureNested" {
     // shadeWith around pairWith: f(y) + f(y + 1) with f(x) = x * r + r + px, the point's y
-    imm a = (py(i) * r + r) + px(i);
-    imm b = ((py(i) + 1.) * r + r) + px(i);
+    let a = (py(i) * r + r) + px(i);
+    let b = ((py(i) + 1.) * r + r) + px(i);
     (a + b) * 2. + 1.;
   }
   else if name == "closureState" {
@@ -68,14 +68,14 @@ fn expected(name &str, i u32) f32 {
 // words on the GPU against the values worked out by hand
 fn check(device &mut Device, spirv &List[u32], name &str,
     f &fn(Invocation, &Array[f32], &Array[f32], &mut Array[f32])) {
-  mut kernel = Kernel.make(device, spirv.view(), name, &[READ, READ, READ_WRITE]);
+  var kernel = Kernel.make(device, spirv.view(), name, &[READ, READ, READ_WRITE]);
   require(kernel.isValid(), name);
   kernel.setTwin3(f);
 
-  mut pts = List[u32].empty();
-  mut radii = List[u32].empty();
-  mut out = List[u32].empty();
-  mut i = 0u32;
+  var pts = List[u32].empty();
+  var radii = List[u32].empty();
+  var out = List[u32].empty();
+  var i = 0u32;
   while i < COUNT {
     pts.push(bits(px(i)));
     pts.push(bits(py(i)));
@@ -86,11 +86,11 @@ fn check(device &mut Device, spirv &List[u32], name &str,
   }
 
   // The GPU against the CPU's instance of the same generic
-  mut buffers = List[List[u32]].empty();
+  var buffers = List[List[u32]].empty();
   buffers.push(pts);
   buffers.push(radii);
   buffers.push(out);
-  imm p = checkParity(device, &kernel, &buffers, (COUNT + 63u32) / 64u32);
+  let p = checkParity(device, &kernel, &buffers, (COUNT + 63u32) / 64u32);
   expectBool(p.ran, true, name);
   expectUInt(p.compared, u64.from(COUNT), name);
   if !expect(p.exact(), name) {
@@ -106,24 +106,24 @@ fn check(device &mut Device, spirv &List[u32], name &str,
   }
 
   // The GPU's words against the values worked out here
-  mut works = Works.make();
-  mut job = Job.make(device);
-  imm ptsSlot = job.give(upload(device, buffers[0usize].view()));
-  imm radiiSlot = job.give(upload(device, buffers[1usize].view()));
-  imm outSlot = job.give(zeroed(device, usize.from(COUNT)));
+  var works = Works.make();
+  var job = Job.make(device);
+  let ptsSlot = job.give(upload(device, buffers[0usize].view()));
+  let radiiSlot = job.give(upload(device, buffers[1usize].view()));
+  let outSlot = job.give(zeroed(device, usize.from(COUNT)));
   require(job.dispatch(device, &kernel, &[ptsSlot, radiiSlot, outSlot], (COUNT + 63u32) / 64u32), name);
-  imm outBack = job.readback(device, outSlot);
-  imm ticket = works.submit(device, job, Target.Here(0u64));
-  mut answers = List[Completion].empty();
+  let outBack = job.readback(device, outSlot);
+  let ticket = works.submit(device, job, Target.Here(0u64));
+  var answers = List[Completion].empty();
   works.waitFor(device, ticket, &mut answers);
   require(answers.len() == 1usize and answers[0usize].ok, name);
   expectUInt(u64.from(answers[0usize].failures.len()), 0u64, name);
-  imm w = answers[0usize].words(outBack);
+  let w = answers[0usize].words(outBack);
   expectUInt(u64.from(w.len()), u64.from(COUNT), name);
-  mut wrong = 0u64;
+  var wrong = 0u64;
   i = 0u32;
   while i < COUNT and usize.from(i) < w.len() {
-    imm want = expected(name, i);
+    let want = expected(name, i);
     if *w[usize.from(i)] != bits(want) {
       wrong = wrong + 1u64;
       if wrong == 1u64 {
@@ -138,14 +138,14 @@ fn check(device &mut Device, spirv &List[u32], name &str,
 }
 
 fn main() i32 {
-  mut instance = Instance.create("gpusample closures");
+  var instance = Instance.create("gpusample closures");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm spirv = readSpirv("gpusample.spv");
+  let spirv = readSpirv("gpusample.spv");
   require(spirv.len() > 5usize, "gpusample.spv beside the program");
 
   check(&mut device, &spirv, "closureLocal", &closureLocal);

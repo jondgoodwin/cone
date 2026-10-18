@@ -110,34 +110,34 @@ pub struct Post {
   // Post-processing into targets of 'outputFormat', its frame 'width' by
   // 'height'. Check 'isValid'.
   pub fn create(device &mut Device, outputFormat u32, width u32, height u32) Post {
-    mut shader = device.createShaderModule(&POST_SPIRV);
-    imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+    var shader = device.createShaderModule(&POST_SPIRV);
+    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_3D)];
-    mut layout = device.createBindGroupLayout(&entries);
-    imm layouts = [&layout];
-    mut pipelineLayout = device.createPipelineLayout(&layouts, POST_IMMEDIATE_BYTES);
-    mut downPipeline = postPipeline(device, &pipelineLayout, &shader, "downsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
-    mut upPipeline = postPipeline(device, &pipelineLayout, &shader, "upsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
-    mut toneMapPipeline = postPipeline(device, &pipelineLayout, &shader, "toneMapMain", outputFormat);
-    imm samplerDesc = new SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
+    var layout = device.createBindGroupLayout(&entries);
+    let layouts = [&layout];
+    var pipelineLayout = device.createPipelineLayout(&layouts, POST_IMMEDIATE_BYTES);
+    var downPipeline = postPipeline(device, &pipelineLayout, &shader, "downsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
+    var upPipeline = postPipeline(device, &pipelineLayout, &shader, "upsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
+    var toneMapPipeline = postPipeline(device, &pipelineLayout, &shader, "toneMapMain", outputFormat);
+    let samplerDesc = new SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
-    mut sampler = device.createSampler(&samplerDesc);
-    imm w = umax(width, 2u32);
-    imm h = umax(height, 2u32);
-    imm levels = bloomLevels(w, h);
-    mut hdr = frameTexture(device, w, h);
-    mut bloomDown = chainTexture(device, w, h, levels);
-    mut bloomUp = chainTexture(device, w, h, levels - 1u32);
-    mut exposureBuffer = device.createBuffer(16u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
-    imm one Array[f32, 4] = [1., 1., 1., 1.];
+    var sampler = device.createSampler(&samplerDesc);
+    let w = umax(width, 2u32);
+    let h = umax(height, 2u32);
+    let levels = bloomLevels(w, h);
+    var hdr = frameTexture(device, w, h);
+    var bloomDown = chainTexture(device, w, h, levels);
+    var bloomUp = chainTexture(device, w, h, levels - 1u32);
+    var exposureBuffer = device.createBuffer(16u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+    let one Array[f32, 4] = [1., 1., 1., 1.];
     device.queue.writeBuffer(&exposureBuffer, 0u64, &one as *u8, 16u64);
-    mut table = identityTable(device, 16u32);
-    mut post = new Post(outputFormat, w, h, hdr, bloomDown, bloomUp, levels, shader, layout, pipelineLayout, downPipeline,
+    var table = identityTable(device, 16u32);
+    var post = new Post(outputFormat, w, h, hdr, bloomDown, bloomUp, levels, shader, layout, pipelineLayout, downPipeline,
       upPipeline, toneMapPipeline, sampler, List[BindGroup].empty(), exposureBuffer, table, 16u32, 0u32, 0u32,
       PostFinish.off());
     post.makeGroups(device);
@@ -158,10 +158,10 @@ pub struct Post {
   // one. The GPU is waited for.
   pub fn setTable(self &mut, device &mut Device, size u32, rgba &Array[u8]) {
     if size < 2u32 or rgba.len < usize.from(size * size * size * 4u32) { return; }
-    mut flush = device.createCommandEncoder();
+    var flush = device.createCommandEncoder();
     device.queue.submit(flush.finish());
     device.waitIdle();
-    imm desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
+    let desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, depthOrArrayLayers: size, dimension: TEXTURE_DIMENSION_3D);
     table = device.createTexture(&desc);
     device.queue.writeTexture(&table, &rgba[0] as *u8, size * 4u32);
@@ -176,18 +176,18 @@ pub struct Post {
   // grading tables are most often saved in as pictures. Rows are as
   // 'Image' keeps them, bottom row first.
   pub fn setTableFromStrip(self &mut, device &mut Device, strip &Image) {
-    imm size = u32.from(strip.height);
+    let size = u32.from(strip.height);
     if size < 2u32 or u32.from(strip.width) != size * size { return; }
-    mut data = List[u8].withCapacity(usize.from(size * size * size * 4u32));
-    mut b = 0u32;
+    var data = List[u8].withCapacity(usize.from(size * size * size * 4u32));
+    var b = 0u32;
     while b < size {
-      mut g = 0u32;
+      var g = 0u32;
       while g < size {
-        mut r = 0u32;
+        var r = 0u32;
         while r < size {
           // Green runs down the image from the top, and the image's first row is the bottom's
-          imm x = b * size + r;
-          imm y = size - 1u32 - g;
+          let x = b * size + r;
+          let y = size - 1u32 - g;
           data.push(strip.at(i32.from(x), i32.from(y), 0));
           data.push(strip.at(i32.from(x), i32.from(y), 1));
           data.push(strip.at(i32.from(x), i32.from(y), 2));
@@ -198,15 +198,15 @@ pub struct Post {
       }
       b = b + 1u32;
     }
-    imm v = data.view();
+    let v = data.view();
     self.setTable(device, size, v);
   }
 
   // Make the frame and the chain again at 'width' by 'height', if that is
   // not their size (after the GPU is idle, as their finalizers wait)
   pub fn resize(self &mut, device &mut Device, width u32, height u32) {
-    imm w = umax(width, 2u32);
-    imm h = umax(height, 2u32);
+    let w = umax(width, 2u32);
+    let h = umax(height, 2u32);
     if w == self.width and h == self.height { return; }
     groups = List[BindGroup].empty();
     self.width = w;
@@ -223,33 +223,33 @@ pub struct Post {
   // level i and the level below), and the tone map (the frame and the top
   // of the chain up)
   fn makeGroups(self &mut, device &mut Device) {
-    imm frame = hdr.createView();
-    imm tableView = tableView3d(&table);
-    mut i = 0u32;
+    let frame = hdr.createView();
+    let tableView = tableView3d(&table);
+    var i = 0u32;
     while i < levels {
       if i == 0u32 {
         groups.push(pairGroup(device, &layout, &frame, &frame, &sampler, &exposureBuffer, &tableView));
       } else {
-        imm above = levelView(&bloomDown, i - 1u32);
+        let above = levelView(&bloomDown, i - 1u32);
         groups.push(pairGroup(device, &layout, &above, &above, &sampler, &exposureBuffer, &tableView));
       }
       i = i + 1u32;
     }
     // Up: from the second lowest level to the top
-    mut up = levels - 1u32;
+    var up = levels - 1u32;
     while up > 0u32 {
-      imm level = up - 1u32;
-      imm own = levelView(&bloomDown, level);
+      let level = up - 1u32;
+      let own = levelView(&bloomDown, level);
       if level + 2u32 == levels {
-        imm below = levelView(&bloomDown, level + 1u32);
+        let below = levelView(&bloomDown, level + 1u32);
         groups.push(pairGroup(device, &layout, &own, &below, &sampler, &exposureBuffer, &tableView));
       } else {
-        imm below = levelView(&bloomUp, level + 1u32);
+        let below = levelView(&bloomUp, level + 1u32);
         groups.push(pairGroup(device, &layout, &own, &below, &sampler, &exposureBuffer, &tableView));
       }
       up = up - 1u32;
     }
-    imm top = levelView(&bloomUp, 0u32);
+    let top = levelView(&bloomUp, 0u32);
     groups.push(pairGroup(device, &layout, &frame, &top, &sampler, &exposureBuffer, &tableView));
     revision = revision + 1u32;
   }
@@ -258,8 +258,8 @@ pub struct Post {
   // anti-aliasing resolve's, a depth of field's): the first level of the
   // bloom chain's, and the tone map's. 'applyFrom' takes them.
   pub fn sourceGroups(self &mut, device &mut Device, view &TextureView) PostSource {
-    imm tableView = tableView3d(&table);
-    imm top = levelView(&bloomUp, 0u32);
+    let tableView = tableView3d(&table);
+    let top = levelView(&bloomUp, 0u32);
     new PostSource(pairGroup(device, &layout, view, view, &sampler, &exposureBuffer, &tableView),
       pairGroup(device, &layout, view, &top, &sampler, &exposureBuffer, &tableView));
   }
@@ -277,45 +277,45 @@ pub struct Post {
 
   fn record(self &mut, encoder &mut CommandEncoder, target &Texture, firstGroup &BindGroup, toneGroup &BindGroup) {
     // The tone map reads its exposure from the buffer, or from the field
-    mut flags = 0u32;
+    var flags = 0u32;
     if finish.exposureFromBuffer { flags = flags | FINISH_EXPOSURE; }
     if finish.grade { flags = flags | FINISH_GRADE; }
     if finish.vignette > 0. { flags = flags | FINISH_VIGNETTE; }
     if finish.grain > 0. { flags = flags | FINISH_GRAIN; }
     // Down
-    mut i = 0u32;
+    var i = 0u32;
     while i < levels {
-      imm view = levelView(&bloomDown, i);
-      mut sw = width;
-      mut sh = height;
-      mut mode = 1u32;
+      let view = levelView(&bloomDown, i);
+      var sw = width;
+      var sh = height;
+      var mode = 1u32;
       if i > 0u32 {
         sw = levelSize(width / 2u32, i - 1u32);
         sh = levelSize(height / 2u32, i - 1u32);
         mode = 0u32;
       }
-      imm data = plainImmediates(1. / f32.from(sw), 1. / f32.from(sh), mode, bloom, exposure, toneMapper, 0.);
+      let data = plainImmediates(1. / f32.from(sw), 1. / f32.from(sh), mode, bloom, exposure, toneMapper, 0.);
       postPass(encoder, view, &downPipeline, if i == 0u32 { firstGroup; } else { groups[usize.from(i)]; }, &data);
       i = i + 1u32;
     }
     // Up
-    mut k = 0u32;
+    var k = 0u32;
     while k + 1u32 < levels {
-      imm level = levels - 2u32 - k;
-      imm view = levelView(&bloomUp, level);
-      imm data = plainImmediates(1. / f32.from(levelSize(width / 2u32, level + 1u32)),
+      let level = levels - 2u32 - k;
+      let view = levelView(&bloomUp, level);
+      let data = plainImmediates(1. / f32.from(levelSize(width / 2u32, level + 1u32)),
         1. / f32.from(levelSize(height / 2u32, level + 1u32)), 0u32, bloom, exposure, toneMapper, 0.);
       postPass(encoder, view, &upPipeline, groups[usize.from(levels + k)], &data);
       k = k + 1u32;
     }
     // The tone map: the top of the chain up is the sum of every level's
     // blur, so the mean is it over the levels; a share of that is mixed in
-    mut data = plainImmediates(1. / f32.from(width), 1. / f32.from(height), 0u32, bloom, exposure, toneMapper,
+    var data = plainImmediates(1. / f32.from(width), 1. / f32.from(height), 0u32, bloom, exposure, toneMapper,
       1. / f32.from(levels));
     data.flags = flags;
     data.lift = [finish.lift.x, finish.lift.y, finish.lift.z, finish.saturation];
     data.gamma = [finish.gamma.x, finish.gamma.y, finish.gamma.z, finish.tableStrength];
-    imm lutScale = f32.from(tableSize - 1u32) / f32.from(tableSize);
+    let lutScale = f32.from(tableSize - 1u32) / f32.from(tableSize);
     data.gain = [finish.gain.x, finish.gain.y, finish.gain.z, lutScale];
     data.vignette = [finish.vignette, finish.vignetteRadius, finish.vignetteSoftness, finish.grain];
     data.extra = [0.5 / f32.from(tableSize), f32.from(frameNumber & 0xFFFFu32), 0., 0.];
@@ -338,7 +338,7 @@ fn plainImmediates(texelX f32, texelY f32, mode u32, strength f32, exposure f32,
 
 // A 3-D view of the whole table
 fn tableView3d(table &Texture) TextureView {
-  imm desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_3D);
+  let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_3D);
   table.createViewWith(&desc);
 }
 
@@ -346,16 +346,16 @@ fn tableView3d(table &Texture) TextureView {
 // (r, g, b) / (size - 1), so that the table read at coordinate v x (size - 1)
 // / size + 0.5 / size answers v
 fn identityTable(device &mut Device, size u32) Texture {
-  imm desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
+  let desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, depthOrArrayLayers: size, dimension: TEXTURE_DIMENSION_3D);
-  mut texture = device.createTexture(&desc);
-  mut data = List[u8].withCapacity(usize.from(size * size * size * 4u32));
-  imm top = f32.from(size - 1u32);
-  mut b = 0u32;
+  var texture = device.createTexture(&desc);
+  var data = List[u8].withCapacity(usize.from(size * size * size * 4u32));
+  let top = f32.from(size - 1u32);
+  var b = 0u32;
   while b < size {
-    mut g = 0u32;
+    var g = 0u32;
     while g < size {
-      mut r = 0u32;
+      var r = 0u32;
       while r < size {
         data.push(u8.from(f32.from(r) / top * 255. + 0.5));
         data.push(u8.from(f32.from(g) / top * 255. + 0.5));
@@ -367,7 +367,7 @@ fn identityTable(device &mut Device, size u32) Texture {
     }
     b = b + 1u32;
   }
-  imm v = data.view();
+  let v = data.view();
   device.queue.writeTexture(&texture, &v[0] as *u8, size * 4u32);
   texture;
 }
@@ -375,8 +375,8 @@ fn identityTable(device &mut Device, size u32) Texture {
 // The levels of a bloom chain from half of 'width' by 'height': down to 4
 // pixels on the shorter side, at most BLOOM_LEVELS, at least 2
 fn bloomLevels(width u32, height u32) u32 {
-  mut side = umin(width, height) / 2u32;
-  mut levels = 1u32;
+  var side = umin(width, height) / 2u32;
+  var levels = 1u32;
   while levels < BLOOM_LEVELS and side >= 8u32 {
     side = side / 2u32;
     levels = levels + 1u32;
@@ -391,26 +391,26 @@ fn umin(a u32, b u32) u32 { if a < b { a; } else { b; } }
 fn levelSize(size u32, level u32) u32 { umax(size >> level, 1u32); }
 
 fn frameTexture(device &mut Device, width u32, height u32) Texture {
-  imm desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
+  let desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
   device.createTexture(&desc);
 }
 
 // A chain of 'levels' levels from half of 'width' by 'height'
 fn chainTexture(device &mut Device, width u32, height u32, levels u32) Texture {
-  imm desc = new TextureDescriptor(umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
+  let desc = new TextureDescriptor(umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, umax(levels, 1u32));
   device.createTexture(&desc);
 }
 
 fn levelView(texture &Texture, level u32) TextureView {
-  imm desc = new TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32);
+  let desc = new TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32);
   texture.createViewWith(&desc);
 }
 
 fn pairGroup(device &mut Device, layout &BindGroupLayout, first &TextureView, second &TextureView, sampler &Sampler,
     exposureBuffer &Buffer, table &TextureView) BindGroup {
-  imm entries = [BindGroupEntry.texture(0u32, first), BindGroupEntry.texture(1u32, second),
+  let entries = [BindGroupEntry.texture(0u32, first), BindGroupEntry.texture(1u32, second),
     BindGroupEntry.sampler(2u32, sampler), BindGroupEntry.buffer(3u32, exposureBuffer),
     BindGroupEntry.texture(4u32, table)];
   device.createBindGroup(layout, &entries);
@@ -418,8 +418,8 @@ fn pairGroup(device &mut Device, layout &BindGroupLayout, first &TextureView, se
 
 fn postPass(encoder &mut CommandEncoder, view TextureView, pipeline &RenderPipeline, group &BindGroup,
     data &PostImmediates) {
-  imm attachment = new RenderPassColorAttachment(view: view, clearValue: new Color(0., 0., 0., 1.));
-  mut pass = encoder.beginRenderPass(&attachment);
+  let attachment = new RenderPassColorAttachment(view: view, clearValue: new Color(0., 0., 0., 1.));
+  var pass = encoder.beginRenderPass(&attachment);
   pass.setPipeline(pipeline);
   pass.setBindGroup(0u32, group);
   pass.setImmediates(0u32, data as *u8, POST_IMMEDIATE_BYTES);
@@ -429,16 +429,16 @@ fn postPass(encoder &mut CommandEncoder, view TextureView, pipeline &RenderPipel
 
 fn postPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, entry &str, format u32)
     RenderPipeline {
-  imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  imm buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-  imm desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
+  let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+  let desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
     buffers: &buffers[..<0], fragmentModule: shader, fragmentEntryPoint: entry, colorFormat: format);
   device.createRenderPipeline(&desc);
 }
 
 // spirv-begin post.spv POST_SPIRV
 // Written by tools/shaders/shaders.py from post.slang (sha256 f48181691036f0909f4bdb80de44b5a9f77231d279e371d27999c74c0c93bed6): do not edit.
-imm POST_SPIRV Array[u32, 4924] = [
+let POST_SPIRV Array[u32, 4924] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000055bu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

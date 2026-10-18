@@ -193,7 +193,7 @@ may name a global declared below it — including one whose type comes from its 
 initial value, which is the case nothing else can serve.
 
 **Locals are not part of this.** They are hooked and unhooked during the walk, in
-source order, and `mut a = a` inside a function fails at name resolution because
+source order, and `var a = a` inside a function fails at name resolution because
 the name is not yet in scope.
 
 ### Layout before members
@@ -515,7 +515,7 @@ answer to give.
 ```cone
 const A = B
 const B = A       // error: A is defined in terms of itself
-mut a = a         // the same shape, for an inferred global
+var a = a         // the same shape, for an inferred global
 ```
 
 Detected without a new flag, since it is exactly "asked for a type, and the type

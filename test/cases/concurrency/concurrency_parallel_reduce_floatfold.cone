@@ -21,12 +21,12 @@ fn report(name &str, ok bool) {
 }
 
 fn bitsOf(x f64) u64 {
-  mut c = x;
+  var c = x;
   mem.readRaw[u64](&mut c as *f64 as *u64);
 }
 
 fn bitsOf32(x f32) u64 {
-  mut c = x;
+  var c = x;
   u64.from(mem.readRaw[u32](&mut c as *f32 as *u32));
 }
 
@@ -34,8 +34,8 @@ fn bitsOf32(x f32) u64 {
 // (the blocks n / 128 rounded up, at most 256), each folded from 0 front to
 // back, and joined by halving, the left total plus the right
 fn blockSquares(l &List[f64], lo usize, hi usize) f64 {
-  mut s = 0.0d;
-  mut k = lo;
+  var s = 0.0d;
+  var k = lo;
   while k < hi {
     s = s + l[k] * l[k];
     k = k + 1usize;
@@ -45,25 +45,25 @@ fn blockSquares(l &List[f64], lo usize, hi usize) f64 {
 
 fn treeSquares(l &List[f64], blk usize, b0 usize, b1 usize) f64 {
   if b1 - b0 == 1usize {
-    imm lo = b0 * blk;
-    imm end = lo + blk;
+    let lo = b0 * blk;
+    let end = lo + blk;
     return blockSquares(l, lo, if end < l.len() { end; } else { l.len(); });
   }
-  imm mid = b0 + (b1 - b0) / 2usize;
+  let mid = b0 + (b1 - b0) / 2usize;
   treeSquares(l, blk, b0, mid) + treeSquares(l, blk, mid, b1);
 }
 
 fn main() {
   actors.configure(new actors.Options(workers: 4u32));
-  mut h = new List[f64]();
-  mut k = 0usize;
+  var h = new List[f64]();
+  var k = 0usize;
   while k < 100000usize {
     h.push(1.0d / (f64.from(k) + 1.0d));
     k = k + 1usize;
   }
-  imm first = h.parallel().fold(0.0d, (acc, x) => acc + *x * *x, (a, b) => a + b);
-  mut same = true;
-  mut run = 0usize;
+  let first = h.parallel().fold(0.0d, (acc, x) => acc + *x * *x, (a, b) => a + b);
+  var same = true;
+  var run = 0usize;
   while run < 30usize {
     if bitsOf(h.parallel().fold(0.0d, (acc, x) => acc + *x * *x, (a, b) => a + b)) != bitsOf(first) {
       same = false;
@@ -72,33 +72,33 @@ fn main() {
   }
   report("f64 fold, 30 runs, the same bits", same);
   // 100,000 items: 782 blocks of 128 capped at 256, of 391 items; the last holds 295
-  imm tree = treeSquares(&h, 391usize, 0usize, 256usize);
+  let tree = treeSquares(&h, 391usize, 0usize, 256usize);
   report("f64 fold is the fixed tree's", bitsOf(first) == bitsOf(tree));
   printStr("f64 fold bits ");
   printUInt(bitsOf(first));
   printStr("\n");
 
-  mut g = new List[f32]();
+  var g = new List[f32]();
   k = 0usize;
   while k < 70001usize {
     g.push(1.0 / (f32.from(k) + 1.0));
     k = k + 1usize;
   }
-  imm r = g.parallel().fold(0.0, (acc, x) => acc + *x, (a, b) => a + b);
+  let r = g.parallel().fold(0.0, (acc, x) => acc + *x, (a, b) => a + b);
   printStr("f32 fold bits ");
   printUInt(bitsOf32(r));
   printStr("\n");
 
   // Mixed signs: large terms cancel, so the result depends on the order of addition
-  mut m = new List[f64]();
+  var m = new List[f64]();
   k = 0usize;
   while k < 50000usize {
-    imm v = 1.0d / (f64.from(k) + 1.0d);
+    let v = 1.0d / (f64.from(k) + 1.0d);
     m.push(if k % 2usize == 0usize { v * 1.0e8d; } else { -v * 1.0e8d + 1.0d / 3.0d; });
     k = k + 1usize;
   }
-  imm ms = m.parallel().sum();
-  mut stable = true;
+  let ms = m.parallel().sum();
+  var stable = true;
   run = 0usize;
   while run < 30usize {
     if bitsOf(m.parallel().sum()) != bitsOf(ms) {

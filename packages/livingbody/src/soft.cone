@@ -49,7 +49,7 @@ pub struct SoftRegion {
 
   // The region rises and falls with the breath: REGION_CHEST or REGION_BELLY, showing 'gain' of its travel
   pub fn breathing(self, kind u32, gain f32) SoftRegion {
-    mut r = self;
+    var r = self;
     r.breath = kind;
     r.breathGain = gain;
     r;
@@ -57,7 +57,7 @@ pub struct SoftRegion {
 
   // The region lags and rings: a spring of 'freq' Hz and damping ratio 'zeta', giving at most 'maxDisp' metres
   pub fn jiggling(self, freq f32, zeta f32, maxDisp f32, gain Vec3) SoftRegion {
-    mut r = self;
+    var r = self;
     r.jiggle = true;
     r.freq = freq;
     r.zeta = zeta;
@@ -83,15 +83,15 @@ pub struct RegionTargets {
 
 // The nearest hit of a ray on a mesh: the distance, or -1
 fn skinDistance(mesh &Mesh, origin Vec3, dir Vec3) f32 {
-  imm ray = new Ray3(origin, dir);
-  mut best f32 = -1.;
-  mut t = 0usize;
+  let ray = new Ray3(origin, dir);
+  var best f32 = -1.;
+  var t = 0usize;
   while t + 2usize < mesh.indices.len() {
-    imm a = *mesh.positions[usize.from(*mesh.indices[t])];
-    imm b = *mesh.positions[usize.from(*mesh.indices[t + 1usize])];
-    imm c = *mesh.positions[usize.from(*mesh.indices[t + 2usize])];
+    let a = *mesh.positions[usize.from(*mesh.indices[t])];
+    let b = *mesh.positions[usize.from(*mesh.indices[t + 1usize])];
+    let c = *mesh.positions[usize.from(*mesh.indices[t + 2usize])];
     match ray.intersectTriangle(a, b, c) {
-      case imm d Some { if best < 0. or d < best { best = d; } }
+      case let d Some { if best < 0. or d < best { best = d; } }
       case is None { }
     }
     t = t + 3usize;
@@ -102,29 +102,29 @@ fn skinDistance(mesh &Mesh, origin Vec3, dir Vec3) f32 {
 // Build the targets of a region table over 'mesh' (bind pose, with normals) for a skeleton whose bones are 'restModels'
 // at rest
 pub fn buildRegionTargets(mesh &Mesh, restModels &List[Transform3], regions &List[SoftRegion]) RegionTargets {
-  mut spec = FaceSpec.empty();
+  var spec = FaceSpec.empty();
   spec.scale = UNIT;
-  mut units = List[UnitDef].empty();
-  mut breathUnit = List[i32].empty();
-  mut axisUnit = List[i32].empty();
-  mut landmarks = List[Vec3].empty();
-  mut normals = List[Vec3].empty();
-  mut ri = 0usize;
+  var units = List[UnitDef].empty();
+  var breathUnit = List[i32].empty();
+  var axisUnit = List[i32].empty();
+  var landmarks = List[Vec3].empty();
+  var normals = List[Vec3].empty();
+  var ri = 0usize;
   while ri < regions.len() {
-    imm r = regions[ri];
-    imm m = *restModels[r.bone];
-    imm p0 = m.transformPoint(r.from);
-    imm d = (m.rotation * r.dir).normalize();
-    imm t = skinDistance(mesh, p0, d);
-    imm lm = if t >= 0. { p0 + d * t; } else { p0 + d * 0.1; };
+    let r = regions[ri];
+    let m = *restModels[r.bone];
+    let p0 = m.transformPoint(r.from);
+    let d = (m.rotation * r.dir).normalize();
+    let t = skinDistance(mesh, p0, d);
+    let lm = if t >= 0. { p0 + d * t; } else { p0 + d * 0.1; };
     landmarks.push(lm);
     normals.push(d);
-    mut label = String.from("r");
+    var label = String.from("r");
     label <- i64.from(ri);
     spec.add(label.view(), lm);
-    imm rad = r.radii * (1. / UNIT);
+    let rad = r.radii * (1. / UNIT);
     if r.breath != REGION_NONE {
-      mut u = UnitDef.morph(r.name.view(), 1000u32 + u32.from(ri) * 4u32, SIDE_BOTH);
+      var u = UnitDef.morph(r.name.view(), 1000u32 + u32.from(ri) * 4u32, SIDE_BOTH);
       u.add(Influence.moveNear(label.view(), d, rad));
       breathUnit.push(i32.from(units.len()));
       units.push(u);
@@ -132,10 +132,10 @@ pub fn buildRegionTargets(mesh &Mesh, restModels &List[Transform3], regions &Lis
       breathUnit.push(-1i32);
     }
     if r.jiggle {
-      mut k = 0u32;
+      var k = 0u32;
       while k < 3u32 {
-        imm axis = if k == 0u32 { new Vec3(1., 0., 0.); } elif k == 1u32 { new Vec3(0., 1., 0.); } else { new Vec3(0., 0., 1.); };
-        mut u = UnitDef.morph(r.name.view(), 1001u32 + u32.from(ri) * 4u32 + k, SIDE_BOTH);
+        let axis = if k == 0u32 { new Vec3(1., 0., 0.); } elif k == 1u32 { new Vec3(0., 1., 0.); } else { new Vec3(0., 0., 1.); };
+        var u = UnitDef.morph(r.name.view(), 1001u32 + u32.from(ri) * 4u32 + k, SIDE_BOTH);
         u.add(Influence.moveNear(label.view(), axis, rad));
         axisUnit.push(i32.from(units.len()));
         units.push(u);
@@ -146,16 +146,16 @@ pub fn buildRegionTargets(mesh &Mesh, restModels &List[Transform3], regions &Lis
     }
     ri = ri + 1usize;
   }
-  imm built = buildTargets(mesh, &spec, &units);
-  mut bt = List[i32].empty();
-  mut at = List[i32].empty();
+  let built = buildTargets(mesh, &spec, &units);
+  var bt = List[i32].empty();
+  var at = List[i32].empty();
   ri = 0usize;
   while ri < regions.len() {
-    imm bu = *breathUnit[ri];
+    let bu = *breathUnit[ri];
     bt.push(if bu >= 0i32 { *built.unitTarget[usize.from(bu)]; } else { -1i32; });
-    mut k = 0usize;
+    var k = 0usize;
     while k < 3usize {
-      imm au = *axisUnit[ri * 3usize + k];
+      let au = *axisUnit[ri * 3usize + k];
       at.push(if au >= 0i32 { *built.unitTarget[usize.from(au)]; } else { -1i32; });
       k = k + 1usize;
     }
@@ -183,16 +183,16 @@ pub struct Spring {
       return;
     }
     if dt <= 0.00001 { return; }
-    mut av = (a - anchor) * (1. / dt);
+    var av = (a - anchor) * (1. / dt);
     if av.length() > 14. { av = av.normalize() * 14.; }
-    imm w = 2. * pi * freq;
-    mut n = 1;
+    let w = 2. * pi * freq;
+    var n = 1;
     while n < 8 and dt / f32.from(n) > 0.006 { n = n + 1; }
-    imm h = dt / f32.from(n);
-    mut k = 0;
+    let h = dt / f32.from(n);
+    var k = 0;
     while k < n {
-      imm ak = anchor.lerp(a, f32.from(k) / f32.from(n));
-      imm acc = (ak - y) * (w * w) + (av - v) * (2. * zeta * w);
+      let ak = anchor.lerp(a, f32.from(k) / f32.from(n));
+      let acc = (ak - y) * (w * w) + (av - v) * (2. * zeta * w);
       v = v + acc * h;
       y = y + v * h;
       k = k + 1;
@@ -211,18 +211,18 @@ pub struct SoftRegions {
   pub weights List[f32];        // one a target: this frame's morph weights
 
   pub fn make(regions List[SoftRegion], tg RegionTargets, restModels &List[Transform3]) SoftRegions {
-    mut inBone = List[Vec3].empty();
-    mut rr = List[Quat].empty();
-    mut sp = List[Spring].empty();
-    mut i = 0usize;
+    var inBone = List[Vec3].empty();
+    var rr = List[Quat].empty();
+    var sp = List[Spring].empty();
+    var i = 0usize;
     while i < regions.len() {
-      imm b = regions[i].bone;
+      let b = regions[i].bone;
       inBone.push((*restModels[b]).inverse().transformPoint(*tg.landmarks[i]));
       rr.push((*restModels[b]).rotation);
       sp.push(new Spring(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, new Vec3(0., 0., 0.)));
       i = i + 1usize;
     }
-    mut w = List[f32].empty();
+    var w = List[f32].empty();
     w.resize(tg.count(), 0.);
     new SoftRegions(regions, tg, inBone, rr, sp, w);
   }
@@ -230,32 +230,32 @@ pub struct SoftRegions {
   // Advance 'dt' seconds with the skeleton posed ('models', in the model's space) and the model at 'world'. The morph
   // weights (one a target) are in 'weights' afterwards.
   pub fn update(self &mut, dt f32, world &Transform3, models &List[Transform3], breath &BreathState) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < regions.len() {
-      imm r = regions[i];
-      imm bone = world.rotation;
-      imm m = (*world) * (*models[r.bone]);
+      let r = regions[i];
+      let bone = world.rotation;
+      let m = (*world) * (*models[r.bone]);
       if r.jiggle {
-        imm a = m.transformPoint(*inBone[i]);
+        let a = m.transformPoint(*inBone[i]);
         springs[i].step(a, dt, r.freq, r.zeta);
-        mut off = springs[i].offset;
+        var off = springs[i].offset;
         if off.length() > r.maxDisp { off = off.normalize() * r.maxDisp; }
         off = off * r.gain;
         // undo the bone's turn since rest, so that the skinning, which turns it again, leaves it as it is in the world
-        imm b = *restRot[i] * (m.rotation.conjugate() * off);
-        mut k = 0usize;
+        let b = *restRot[i] * (m.rotation.conjugate() * off);
+        var k = 0usize;
         while k < 3usize {
-          imm t = *tg.axisTarget[i * 3usize + k];
+          let t = *tg.axisTarget[i * 3usize + k];
           if t >= 0i32 {
-            imm c = if k == 0usize { b.x; } elif k == 1usize { b.y; } else { b.z; };
+            let c = if k == 0usize { b.x; } elif k == 1usize { b.y; } else { b.z; };
             weights.set(usize.from(t), c / UNIT);
           }
           k = k + 1usize;
         }
       }
-      imm bt = *tg.breathTarget[i];
+      let bt = *tg.breathTarget[i];
       if bt >= 0i32 {
-        imm travel = if r.breath == REGION_CHEST { breath.chest; } else { breath.belly; };
+        let travel = if r.breath == REGION_CHEST { breath.chest; } else { breath.belly; };
         weights.set(usize.from(bt), travel * r.breathGain / UNIT);
       }
       i = i + 1usize;
@@ -264,8 +264,8 @@ pub struct SoftRegions {
 
   // The largest weight magnitude now, centimetres
   pub fn largest(self &) f32 {
-    mut m f32 = 0.;
-    mut i = 0usize;
+    var m f32 = 0.;
+    var i = 0usize;
     while i < weights.len() { m = fmaxf(m, absf(*weights[i])); i = i + 1usize; }
     m;
   }

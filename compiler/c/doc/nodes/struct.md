@@ -2217,7 +2217,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **A finalizer an enrichment adds runs only while the value is typed as the
   enrichment.** Where the base declares no `final`, the enrichment may declare one,
   and it is this type's drop and not the base's. A value that crosses to the base's
-  name by value is dropped as the base — so `imm p Plain = new PlainFin(1)`, or passing
+  name by value is dropped as the base — so `let p Plain = new PlainFin(1)`, or passing
   a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
   pinned: nothing refuses it and nothing decides it. A base's own `final` has no
   such gap, since every enrichment carries a copy.
@@ -2267,7 +2267,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
   one naming the enum is whole-enum above): each variant's clone has its own
   `Self` for the receiver, a parameter and the result, so
-  `setN(mut self, v i32) Self` is `setN(mut self A, v i32) A` in `A`.
+  `setN(var self, v i32) Self` is `setN(var self A, v i32) A` in `A`.
   The enum's own copy says `Self` = the enum, and nothing dispatches it (the call
   on an enum value is refused above), so the copy itself is no requirement:
   `structMakeVtable` gives it no slot. A variant that declares its OWN method of

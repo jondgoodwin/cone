@@ -24,16 +24,16 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 }
 
 fn attached() {
-  mut b = SoftBody.empty();
-  imm p0 = b.addParticle(new Vec3(1., 0., 0.), 1.);
-  imm p1 = b.addParticle(new Vec3(0., 2., 0.), 1.);
-  imm free = b.addParticle(new Vec3(5., 5., 5.), 1.);
+  var b = SoftBody.empty();
+  let p0 = b.addParticle(new Vec3(1., 0., 0.), 1.);
+  let p1 = b.addParticle(new Vec3(0., 2., 0.), 1.);
+  let free = b.addParticle(new Vec3(5., 5., 5.), 1.);
   b.attach(p0);
   b.attach(p1);
   b.gravity = new Vec3(0., 0., 0.);
   b.airDensity = 0.;
   // the frame turns a quarter turn about y and moves 3 m along x, in one step
-  imm turn = Quat.angleAxis(pi / 2., new Vec3(0., 1., 0.));
+  let turn = Quat.angleAxis(pi / 2., new Vec3(0., 1., 0.));
   b.moveAnchors(new Transform3(new Vec3(3., 0., 0.), turn, new Vec3(1., 1., 1.)));
   b.step(1. / 60., new Vec3(0., 0., 0.));
   // a quarter turn about y takes (1,0,0) to (0,0,-1) and leaves (0,2,0) alone
@@ -52,26 +52,26 @@ fn attached() {
 
 fn lantern() {
   // chain of 8 links of 0.1 m from (0, 3, 0) down, a 2 kg lantern on its end
-  mut pts = List[Vec3].empty();
-  mut i = 0;
+  var pts = List[Vec3].empty();
+  var i = 0;
   while i <= 8 {
     pts.push(new Vec3(0., 3. - 0.1 * f32.from(i), 0.));
     i = i + 1;
   }
-  mut c = chain(pts.view(), 0.2, 1e-7, 0.01);
+  var c = chain(pts.view(), 0.2, 1e-7, 0.01);
   c.mass.set(8usize, 2.);
   c.invMass.set(8usize, 0.5);
   c.substeps = 20u32;
   c.damping = 1.5;
   c.attach(0u32);
-  mut sway = 0.;
-  mut s = 0;
+  var sway = 0.;
+  var s = 0;
   while s < 600 {
     // the frame moves 1 m along x over steps 100..160, then stays
-    imm f = if s < 100 {0.;} elif s < 160 {f32.from(s - 100) / 60.;} else {1.;};
+    let f = if s < 100 {0.;} elif s < 160 {f32.from(s - 100) / 60.;} else {1.;};
     c.moveAnchors(new Transform3(new Vec3(f, 0., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
     c.step(1. / 60., new Vec3(0., 0., 0.));
-    imm lag = (*c.pos[0usize]).x - (*c.pos[8usize]).x;
+    let lag = (*c.pos[0usize]).x - (*c.pos[8usize]).x;
     if lag > sway { sway = lag; }
     s = s + 1;
   }
@@ -83,19 +83,19 @@ fn lantern() {
 }
 
 fn tethers() {
-  mut f = Fabric.light();
+  var f = Fabric.light();
   f.stretch = 0.1;
   f.shear = 0.1;
   f.bend = 1000.;
-  mut soft = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 16u32, 16u32, &f);
-  mut j = 0u32;
+  var soft = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 16u32, 16u32, &f);
+  var j = 0u32;
   while j <= 16u32 {
     soft.pin(j);
     j = j + 1u32;
   }
   soft.substeps = 4u32;
   soft.damping = 2.;
-  mut tied = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 16u32, 16u32, &f);
+  var tied = clothGrid(new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0., -1., 0.), 16u32, 16u32, &f);
   j = 0u32;
   while j <= 16u32 {
     tied.pin(j);
@@ -105,37 +105,37 @@ fn tethers() {
   tied.damping = 2.;
   addTethers(&mut tied, 1.02);
   expectInt(i64.from(tied.tethers.len()), 17i64 * 16i64, "a tether for every particle that is not a pin");
-  mut s = 0;
+  var s = 0;
   while s < 300 {
     soft.step(1. / 60., new Vec3(0., 0., 0.));
     tied.step(1. / 60., new Vec3(0., 0., 0.));
     s = s + 1;
   }
   // the bottom middle particle is 16 links, 1 m, below its pin
-  imm last = 16usize * 17usize + 8usize;
-  imm softReach = -(*soft.pos[last]).y;
-  imm tiedReach = -(*tied.pos[last]).y;
+  let last = 16usize * 17usize + 8usize;
+  let softReach = -(*soft.pos[last]).y;
+  let tiedReach = -(*tied.pos[last]).y;
   expectBool(softReach > 1.05, true, "without tethers a soft cloth hangs more than 5% longer than its rest");
   expectBool(tiedReach < 1.02 + 0.001, true, "with them it hangs no more than 2% longer");
   expectBool(tiedReach > 0.99, true, "and is not shortened");
   // the nearest tether of the bottom particle is to its own column's pin, 1 m of edges away
-  imm t = *tied.tethers[usize.from(0u32)];
+  let t = *tied.tethers[usize.from(0u32)];
   expectBool(t.maxLength > 0., true, "tether lengths are positive");
 }
 
 fn bridge() {
-  imm n = 20u32;
-  mut pts = List[Vec3].empty();
-  mut i = 0u32;
+  let n = 20u32;
+  var pts = List[Vec3].empty();
+  var i = 0u32;
   while i <= n {
     // laid out as the rope is: 6 m long, sagged in a V so that the rest lengths are 0.3 each
-    imm t = f32.from(i) / f32.from(n);
+    let t = f32.from(i) / f32.from(n);
     pts.push(new Vec3(5.5 * t, -1.2 * (1. - fabsf(2. * t - 1.)), 0.));
     i = i + 1u32;
   }
-  mut r = chain(pts.view(), 0.05, 1e-7, 0.01);
+  var r = chain(pts.view(), 0.05, 1e-7, 0.01);
   // rest lengths from the V are not 0.3: set them, 6 m in 20 links
-  mut k = 0usize;
+  var k = 0usize;
   while k < r.dist.len() {
     r.dist[k].rest = 0.3;
     k = k + 1usize;
@@ -147,14 +147,14 @@ fn bridge() {
   r.substeps = 30u32;
   r.iterations = 2u32;
   r.damping = 3.;
-  mut s = 0;
+  var s = 0;
   while s < 600 {
     r.step(1. / 60., new Vec3(0., 0., 0.));
     s = s + 1;
   }
   // the weightless rope has the load 1.199 m below the posts; the rope's own 1 kg lifts nothing
   // and adds a little sag (a few percent)
-  imm sag = -(*r.pos[10usize]).y;
+  let sag = -(*r.pos[10usize]).y;
   near(sag, 1.199, 0.06, "20 kg at mid-span sinks the bridge 1.199 m, within 5%");
   near((*r.pos[10usize]).x, 2.75, 0.01, "at the middle of the span");
   near(r.kineticEnergy(), 0., 0.01, "and rests");
@@ -168,14 +168,14 @@ fn fabsf(a f32) f32 {libc.fabsf(a);}
 // holds out, drooping about 0.3 m under its own weight (0.1 kg/m over 2 m), the rest of
 // the droop being the one Gauss-Seidel pass per substep's convergence.
 fn cantilever() {
-  mut pts = List[Vec3].empty();
-  mut i = 0;
+  var pts = List[Vec3].empty();
+  var i = 0;
   while i <= 20 {
     pts.push(new Vec3(0.1 * f32.from(i), 0., 0.));
     i = i + 1;
   }
-  mut limp = chain(pts.view(), 0.1, 1e-7, 0.01);
-  mut stiff = rope(pts.view(), 0.1, 1e-7, 1e-7, 0.01);
+  var limp = chain(pts.view(), 0.1, 1e-7, 0.01);
+  var stiff = rope(pts.view(), 0.1, 1e-7, 1e-7, 0.01);
   limp.pin(0u32);
   limp.pin(1u32);
   stiff.pin(0u32);
@@ -184,7 +184,7 @@ fn cantilever() {
   limp.damping = 2.;
   stiff.substeps = 20u32;
   stiff.damping = 2.;
-  mut s = 0;
+  var s = 0;
   while s < 600 {
     limp.step(1. / 60., new Vec3(0., 0., 0.));
     stiff.step(1. / 60., new Vec3(0., 0., 0.));

@@ -13,11 +13,11 @@ import json;
 
 // The tree text holds, or null, the failure counted
 fn parsed(text &str, label &str) json.Json {
-  mut doc json.Json = json.Json.Null;
+  var doc json.Json = json.Json.Null;
   match json.parse(text) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error {
-      imm m = e.message();
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
   }
@@ -26,12 +26,12 @@ fn parsed(text &str, label &str) json.Json {
 
 fn compact(j &json.Json) String {
   match j.toText() {
-    case mut t Ok {
-      mut s = String.empty();
+    case var t Ok {
+      var s = String.empty();
       s <=> t;
       s;
     }
-    case imm e Error { e.message(); }
+    case let e Error { e.message(); }
   }
 }
 
@@ -39,33 +39,33 @@ fn compact(j &json.Json) String {
 fn same(a &json.Json, b &json.Json) bool {
   match a {
     case is Null { b.isNull(); }
-    case imm x Bool { match b.asBool() { case imm y Some { *x == y; } case is None { false; } } }
-    case imm x Number {
-      match b.numberText() { case imm y Some { x.view() == y; } case is None { false; } }
+    case let x Bool { match b.asBool() { case let y Some { *x == y; } case is None { false; } } }
+    case let x Number {
+      match b.numberText() { case let y Some { x.view() == y; } case is None { false; } }
     }
-    case imm x Text { match b.asText() { case imm y Some { x.view() == y; } case is None { false; } } }
-    case imm x Array {
+    case let x Text { match b.asText() { case let y Some { x.view() == y; } case is None { false; } } }
+    case let x Array {
       if b.len() != x.len() or not b.isArray() { return false; }
-      mut i = 0usize;
+      var i = 0usize;
       while i < x.len() {
         match b.at(i) {
-          case imm y Some { if not same(x[i], y) { return false; } }
+          case let y Some { if not same(x[i], y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
       }
       true;
     }
-    case imm x Object {
+    case let x Object {
       if b.len() != x.len() or not b.isObject() { return false; }
-      mut i = 0usize;
+      var i = 0usize;
       while i < x.len() {
         match b.keyAt(i) {
-          case imm k Some { if k != x[i].key.view() { return false; } }
+          case let k Some { if k != x[i].key.view() { return false; } }
           case is None { return false; }
         }
         match b.valueAt(i) {
-          case imm y Some { if not same(&x[i].value, y) { return false; } }
+          case let y Some { if not same(&x[i].value, y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
@@ -77,38 +77,38 @@ fn same(a &json.Json, b &json.Json) bool {
 
 // Written compact and indented and read back, a tree is the same
 fn roundTrips(j &json.Json, label &str) {
-  imm c = compact(j);
-  imm again = parsed(c.view(), label);
+  let c = compact(j);
+  let again = parsed(c.view(), label);
   expect(same(j, &again), label);
   match j.toPretty(2usize) {
-    case imm p Ok {
-      imm back = parsed(p.view(), label);
+    case let p Ok {
+      let back = parsed(p.view(), label);
       expect(same(j, &back), label);
     }
-    case imm e Error { expect(false, label); }
+    case let e Error { expect(false, label); }
   }
 }
 
 fn text(j &json.Json, key &str) String {
   match j.getText(key) {
-    case imm s Some { String.from(s); }
+    case let s Some { String.from(s); }
     case is None { String.from("<none>"); }
   }
 }
 
 fn main() i32 {
   // Section 13, the first example
-  imm image = parsed("{\n  \"Image\": {\n      \"Width\":  800,\n      \"Height\": 600,\n      \"Title\":  \"View from 15th Floor\",\n      \"Thumbnail\": {\n          \"Url\":    \"http://www.example.com/image/481989943\",\n          \"Height\": 125,\n          \"Width\":  100\n      },\n      \"Animated\" : false,\n      \"IDs\": [116, 943, 234, 38793]\n    }\n}\n", "image");
+  let image = parsed("{\n  \"Image\": {\n      \"Width\":  800,\n      \"Height\": 600,\n      \"Title\":  \"View from 15th Floor\",\n      \"Thumbnail\": {\n          \"Url\":    \"http://www.example.com/image/481989943\",\n          \"Height\": 125,\n          \"Width\":  100\n      },\n      \"Animated\" : false,\n      \"IDs\": [116, 943, 234, 38793]\n    }\n}\n", "image");
   expect(image.isObject(), "image is an object");
   expectUInt(u64.from(image.len()), 1u64, "one member");
   match image.get("Image") {
-    case imm im Some {
+    case let im Some {
       expectInt(im.i64Or("Width", -1i64), 800i64, "width");
       expectInt(im.i64Or("Height", -1i64), 600i64, "height");
       expectStr(text(im, "Title").view(), "View from 15th Floor", "title");
       expectBool(im.boolOr("Animated", true), false, "animated");
       match im.get("Thumbnail") {
-        case imm th Some {
+        case let th Some {
           expectStr(text(th, "Url").view(), "http://www.example.com/image/481989943", "thumbnail url");
           expectInt(th.i64Or("Height", -1i64), 125i64, "thumbnail height");
           expectInt(th.i64Or("Width", -1i64), 100i64, "thumbnail width");
@@ -116,12 +116,12 @@ fn main() i32 {
         case is None { expect(false, "thumbnail"); }
       }
       match im.get("IDs") {
-        case imm ids Some {
+        case let ids Some {
           expectUInt(u64.from(ids.len()), 4u64, "four ids");
           match ids.at(3usize) {
-            case imm last Some {
+            case let last Some {
               match last.asI64() {
-                case imm n Ok { expectInt(n, 38793i64, "last id"); }
+                case let n Ok { expectInt(n, 38793i64, "last id"); }
                 case is Error { expect(false, "last id"); }
               }
             }
@@ -137,10 +137,10 @@ fn main() i32 {
   roundTrips(&image, "image round trip");
 
   // Section 13, the second: an array of two objects
-  imm places = parsed("[\n  {\n    \"precision\": \"zip\",\n    \"Latitude\":  37.7668,\n    \"Longitude\": -122.3959,\n    \"Address\":   \"\",\n    \"City\":      \"SAN FRANCISCO\",\n    \"State\":     \"CA\",\n    \"Zip\":       \"94107\",\n    \"Country\":   \"US\"\n  },\n  {\n    \"precision\": \"zip\",\n    \"Latitude\":  37.371991,\n    \"Longitude\": -122.026020,\n    \"Address\":   \"\",\n    \"City\":      \"SUNNYVALE\",\n    \"State\":     \"CA\",\n    \"Zip\":       \"94085\",\n    \"Country\":   \"US\"\n  }\n]\n", "places");
+  let places = parsed("[\n  {\n    \"precision\": \"zip\",\n    \"Latitude\":  37.7668,\n    \"Longitude\": -122.3959,\n    \"Address\":   \"\",\n    \"City\":      \"SAN FRANCISCO\",\n    \"State\":     \"CA\",\n    \"Zip\":       \"94107\",\n    \"Country\":   \"US\"\n  },\n  {\n    \"precision\": \"zip\",\n    \"Latitude\":  37.371991,\n    \"Longitude\": -122.026020,\n    \"Address\":   \"\",\n    \"City\":      \"SUNNYVALE\",\n    \"State\":     \"CA\",\n    \"Zip\":       \"94085\",\n    \"Country\":   \"US\"\n  }\n]\n", "places");
   expectUInt(u64.from(places.len()), 2u64, "two places");
   match places.at(0usize) {
-    case imm p Some {
+    case let p Some {
       expectStr(text(p, "City").view(), "SAN FRANCISCO", "first city");
       expectFloat(p.f64Or("Latitude", 0d), 37.7668d, 0.0000000001d, "first latitude");
       expectFloat(p.f64Or("Longitude", 0d), -122.3959d, 0.0000000001d, "first longitude");
@@ -150,12 +150,12 @@ fn main() i32 {
     case is None { expect(false, "first place"); }
   }
   match places.at(1usize) {
-    case imm p Some {
+    case let p Some {
       // The number's text is kept as written, the trailing zero too
       match p.get("Longitude") {
-        case imm n Some {
+        case let n Some {
           match n.numberText() {
-            case imm t Some { expectStr(t, "-122.026020", "longitude text as written"); }
+            case let t Some { expectStr(t, "-122.026020", "longitude text as written"); }
             case is None { expect(false, "longitude text"); }
           }
         }
@@ -169,19 +169,19 @@ fn main() i32 {
   roundTrips(&places, "places round trip");
 
   // Section 2: any value alone is a JSON text
-  imm hello = parsed("\"Hello world!\"", "string alone");
+  let hello = parsed("\"Hello world!\"", "string alone");
   match hello.asText() {
-    case imm s Some { expectStr(s, "Hello world!", "string alone"); }
+    case let s Some { expectStr(s, "Hello world!", "string alone"); }
     case is None { expect(false, "string alone is text"); }
   }
-  imm answer = parsed("42", "number alone");
+  let answer = parsed("42", "number alone");
   match answer.asI64() {
-    case imm n Ok { expectInt(n, 42i64, "number alone"); }
+    case let n Ok { expectInt(n, 42i64, "number alone"); }
     case is Error { expect(false, "number alone"); }
   }
-  imm yes = parsed("true", "true alone");
+  let yes = parsed("true", "true alone");
   match yes.asBool() {
-    case imm b Some { expectBool(b, true, "true alone"); }
+    case let b Some { expectBool(b, true, "true alone"); }
     case is None { expect(false, "true alone"); }
   }
   expect(parsed("false", "false").isBool(), "false is a bool");
@@ -193,14 +193,14 @@ fn main() i32 {
   expectStr(compact(&answer).view(), "42", "write a number alone");
 
   // Section 7: "\u005C" is a reverse solidus, "\uD834\uDD1E" the G clef U+1D11E
-  imm solidus = parsed("\"\\u005C\"", "solidus");
+  let solidus = parsed("\"\\u005C\"", "solidus");
   match solidus.asText() {
-    case imm s Some { expectStr(s, "\\", "\\u005C is a backslash"); }
+    case let s Some { expectStr(s, "\\", "\\u005C is a backslash"); }
     case is None { expect(false, "solidus"); }
   }
-  imm clef = parsed("\"\\uD834\\uDD1E\"", "clef");
+  let clef = parsed("\"\\uD834\\uDD1E\"", "clef");
   match clef.asText() {
-    case imm s Some {
+    case let s Some {
       // U+1D11E in UTF-8 is F0 9D 84 9E
       expectUInt(u64.from(s.len), 4u64, "clef is four bytes");
       expectUInt(u64.from(s[0usize]), 0xF0u64, "clef byte 0");
@@ -211,7 +211,7 @@ fn main() i32 {
     case is None { expect(false, "clef"); }
   }
   // The same character raw, in UTF-8, is the same tree
-  imm raw = parsed("\"\xF0\x9D\x84\x9E\"", "clef raw");
+  let raw = parsed("\"\xF0\x9D\x84\x9E\"", "clef raw");
   expect(same(&clef, &raw), "the clef escaped and raw read alike");
 
   // Section 6: the number grammar (see numbers.cone for the values)
@@ -219,13 +219,13 @@ fn main() i32 {
     "[0,-0,1,-1,1.5,-1.5,1e2,1E2,1e+2,1e-2,1.5e10,0.5E-10,123456789012345678901234567890]", "numbers are written as read");
 
   // Members keep their order, and all of a repeated name stay
-  imm dup = parsed("{\"b\":1,\"a\":2,\"b\":3}", "duplicate names");
+  let dup = parsed("{\"b\":1,\"a\":2,\"b\":3}", "duplicate names");
   expectUInt(u64.from(dup.len()), 3u64, "duplicates are kept");
   expectInt(dup.i64Or("b", -1i64), 1i64, "get answers the first of a name");
   expectStr(compact(&dup).view(), "{\"b\":1,\"a\":2,\"b\":3}", "duplicates written in order");
 
   // A byte-order mark in front is passed over
-  imm bom = parsed("\xEF\xBB\xBF[1]", "bom");
+  let bom = parsed("\xEF\xBB\xBF[1]", "bom");
   expect(bom.isArray(), "a leading byte-order mark is passed over");
 
   done();

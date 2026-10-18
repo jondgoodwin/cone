@@ -35,7 +35,7 @@ fn kindName(k &json.ErrorKind) &str {
 fn refuse(text &str, kind &str, line u32, col u32, phrase &str) {
   match json.parse(text) {
     case is Ok { expectStr("<parsed>", kind, text); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), kind, text);
       expectUInt(u64.from(e.line), u64.from(line), text);
       expectUInt(u64.from(e.column), u64.from(col), text);
@@ -47,8 +47,8 @@ fn refuse(text &str, kind &str, line u32, col u32, phrase &str) {
 fn accept(text &str) {
   match json.parse(text) {
     case is Ok { expect(true, text); }
-    case imm e Error {
-      imm m = e.message();
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<parsed>", text);
     }
   }
@@ -220,23 +220,23 @@ fn main() i32 {
   // -------- the message --------
   match json.parse("[1,\n 2 3]") {
     case is Ok { expect(false, "message"); }
-    case imm e Error {
-      imm m = e.message();
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "json: line 2, column 4: expected ',' or ']' after an array's element", "the message names line and column");
       expectUInt(u64.from(e.offset), 7u64, "the offset");
     }
   }
 
   // -------- a Reader that has failed fails the same way again --------
-  imm bad = "[1, ?]";
-  mut r = json.reader(bad);
-  mut steps = 0usize;
-  mut firstMessage = String.empty();
-  mut againMessage = String.empty();
+  let bad = "[1, ?]";
+  var r = json.reader(bad);
+  var steps = 0usize;
+  var firstMessage = String.empty();
+  var againMessage = String.empty();
   while true {
     match r.next() {
       case is Ok { steps = steps + 1usize; }
-      case imm e Error {
+      case let e Error {
         firstMessage = e.message();
         break;
       }
@@ -244,22 +244,22 @@ fn main() i32 {
   }
   match r.next() {
     case is Ok { expect(false, "a failed reader answers its failure again"); }
-    case imm e Error { againMessage = e.message(); }
+    case let e Error { againMessage = e.message(); }
   }
   expectUInt(u64.from(steps), 2u64, "two events before the failure");
   expectStr(againMessage.view(), firstMessage.view(), "the failure is answered again");
   expectUInt(u64.from(r.offset()), 4u64, "the reader's offset");
 
   // -------- options --------
-  imm dups = "{\"a\":1,\"b\":{\"c\":1,\"c\":2},\"a\":3}";
+  let dups = "{\"a\":1,\"b\":{\"c\":1,\"c\":2},\"a\":3}";
   match json.parse(dups) {
     case is Ok { expect(true, "duplicates are kept by default"); }
     case is Error { expect(false, "duplicates are kept by default"); }
   }
-  imm strict = new json.Options(512usize, true);
+  let strict = new json.Options(512usize, true);
   match json.parseWith(dups, &strict) {
     case is Ok { expect(false, "duplicate names refused"); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), "DuplicateKey", "duplicate kind");
       // The inner repeat comes first, at its name
       expectUInt(u64.from(e.column), 19u64, "duplicate column");
@@ -270,14 +270,14 @@ fn main() i32 {
     case is Ok { expect(true, "the same name at different depths is no duplicate"); }
     case is Error { expect(false, "the same name at different depths is no duplicate"); }
   }
-  imm shallow = new json.Options(2usize, false);
+  let shallow = new json.Options(2usize, false);
   match json.parseWith("[[1]]", &shallow) {
     case is Ok { expect(true, "depth 2 allowed at maxDepth 2"); }
     case is Error { expect(false, "depth 2 allowed at maxDepth 2"); }
   }
   match json.parseWith("[[[1]]]", &shallow) {
     case is Ok { expect(false, "depth 3 refused at maxDepth 2"); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), "TooDeep", "depth kind");
       expectUInt(u64.from(e.column), 3u64, "depth column");
     }

@@ -31,7 +31,7 @@ import path;
 import sculpt use *;
 
 fn write(pm &PolyMesh, name &str) bool {
-  imm tri = pm.triangulate(true);
+  let tri = pm.triangulate(true);
   printStr(name); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
   print <- " faces, "; print <- tri.triangleCount(); print <- " triangles\n";
   writeObj(&tri, &path.Path.from(name));
@@ -41,12 +41,12 @@ fn write(pm &PolyMesh, name &str) bool {
 // on the direction 'facing' (an angle in the section's plane), its points
 // running counterclockwise from one lip round to the other
 fn slitSection(r f32, facing f32) Profile {
-  imm gap = 12. * pi / 180.;
-  imm n = 16u32;
-  mut pts = List[Vec2].empty();
-  mut i = 0u32;
+  let gap = 12. * pi / 180.;
+  let n = 16u32;
+  var pts = List[Vec2].empty();
+  var i = 0u32;
   while i <= n {
-    imm a = facing + gap + (2. * pi - 2. * gap) * f32.from(i) / f32.from(n);
+    let a = facing + gap + (2. * pi - 2. * gap) * f32.from(i) / f32.from(n);
     pts.push(new Vec2(r * cos(a), r * sin(a)));
     i = i + 1u32;
   }
@@ -56,27 +56,27 @@ fn slitSection(r f32, facing f32) Profile {
 // A spar from a to b, its slit facing 'facing' in the section's plane, 24
 // pieces along it
 fn spar(a Vec3, b Vec3, r f32, facing f32) PolyMesh {
-  mut line = List[Vec3].empty();
-  mut i = 0u32;
+  var line = List[Vec3].empty();
+  var i = 0u32;
   while i <= 24u32 {
     line.push(a + (b - a) * (f32.from(i) / 24.));
     i = i + 1u32;
   }
-  imm path = Path.fromPoints(line.view(), false);
+  let path = Path.fromPoints(line.view(), false);
   // The thickness along it: 0 at both tips, 1 midway (4 u (1 - u), a parabola of height 1)
-  imm peak = 4.;
+  let peak = 4.;
   sweepScaled(&slitSection(r, facing), &path, 0., false, u => peak * u * (1. - u));
 }
 
 // The longest side of faces from 'first' on
 fn longestSide(m &PolyMesh, first u32) f32 {
-  mut most f32 = 0.;
-  mut f = first;
+  var most f32 = 0.;
+  var f = first;
   while usize.from(f) < m.faceCount() {
-    imm pts = m.facePositions(f);
-    mut i = 0usize;
+    let pts = m.facePositions(f);
+    var i = 0usize;
     while i < pts.len() {
-      imm d = (*pts[(i + 1usize) % pts.len()] - *pts[i]).length();
+      let d = (*pts[(i + 1usize) % pts.len()] - *pts[i]).length();
       if d > most { most = d; }
       i = i + 1usize;
     }
@@ -86,11 +86,11 @@ fn longestSide(m &PolyMesh, first u32) f32 {
 }
 
 fn volume(m &PolyMesh) f32 {
-  mut sum f32 = 0.;
-  mut f = 0usize;
+  var sum f32 = 0.;
+  var f = 0usize;
   while f < m.faceCount() {
-    imm pts = m.facePositions(u32.from(f));
-    mut i = 1usize;
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
     while i + 1usize < pts.len() {
       sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
       i = i + 1usize;
@@ -105,23 +105,23 @@ fn main() i32 {
   // turned with the trailing spar's splay), y on its binormal (+y), so the
   // slit faces +z at a half turn and -z at angle 0 (measured). The leading
   // spar along x, the trailing one shorter, behind it in +z and splayed.
-  mut parts = List[PolyMesh].empty();
+  var parts = List[PolyMesh].empty();
   parts.push(spar(new Vec3(0., 0., 0.), new Vec3(5., 0., 0.), 0.12, pi));
   parts.push(spar(new Vec3(0.4, 0., 1.6), new Vec3(4., 0., 3.), 0.08, 0.));
-  imm second = u32.from(parts[0usize].vertexCount());
-  mut problems = List[String].empty();
-  imm both = join(&parts, &mut problems);
-  imm firstBand = u32.from(both.faceCount());
+  let second = u32.from(parts[0usize].vertexCount());
+  var problems = List[String].empty();
+  let both = join(&parts, &mut problems);
+  let firstBand = u32.from(both.faceCount());
 
   // Each spar's slit is one boundary loop, named by its first vertex
-  imm loops Array[u32, 2] = [0u32, second];
-  imm bridged = bridgeLoops(&both, &loops, 0u32, 0.);
-  imm band = longestSide(&bridged, firstBand);
-  imm cage = weld(&bridged, 0.);
+  let loops Array[u32, 2] = [0u32, second];
+  let bridged = bridgeLoops(&both, &loops, 0u32, 0.);
+  let band = longestSide(&bridged, firstBand);
+  let cage = weld(&bridged, 0.);
 
-  imm faults = cage.validate();
-  mut open = 0u32;
-  mut e = 0u32;
+  let faults = cage.validate();
+  var open = 0u32;
+  var e = 0u32;
   while usize.from(e) < cage.edgeCount() {
     if cage.isBoundaryEdge(e) { open = open + 1u32; }
     e = e + 1u32;
@@ -131,8 +131,8 @@ fn main() i32 {
   print <- "cage: "; print <- faults.len(); print <- " faults, "; print <- open; print <- " open edges, volume ";
   print <- volume(&cage); print <- ", longest membrane side "; print <- band; print <- "\n";
 
-  imm levels = subdivisionLevels(&cage, 2u32);
-  mut ok = write(&cage, "membrane-cage.obj");
+  let levels = subdivisionLevels(&cage, 2u32);
+  var ok = write(&cage, "membrane-cage.obj");
   ok = ok and write(levels[2usize], "membrane-l2.obj");
   if ok and faults.len() == 0usize and open == 0u32 {0;} else {
     print <- "Not a valid closed solid, or could not write a file\n";

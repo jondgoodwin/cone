@@ -280,19 +280,19 @@ fn @initpure init() {
 // driver had in flight. One driver more than 'maxDrivers' alive at once in
 // the process is a panic.
 const maxDrivers = 1024u32;
-imm numberLock Mutex;
-imm numberBits *u64;
-imm numberNext Atomic[u32];
+let numberLock Mutex;
+let numberBits *u64;
+let numberNext Atomic[u32];
 
 fn takeNumber(file &Array[u8], line u32) u32 {
   numberLock.lock();
-  imm start = numberNext.load();
-  mut k = 0u32;
+  let start = numberNext.load();
+  var k = 0u32;
   while k < maxDrivers {
-    imm n = (start + k) % maxDrivers;
-    imm word = numberBits + usize.from(n / 64u32);
-    imm bit = 1u64 << u64.from(n % 64u32);
-    imm held = mem.readRaw[u64](word);
+    let n = (start + k) % maxDrivers;
+    let word = numberBits + usize.from(n / 64u32);
+    let bit = 1u64 << u64.from(n % 64u32);
+    let held = mem.readRaw[u64](word);
     if (held & bit) == 0u64 {
       mem.writeRaw[u64](word, held | bit);
       numberNext.store((n + 1u32) % maxDrivers);
@@ -309,8 +309,8 @@ fn takeNumber(file &Array[u8], line u32) u32 {
 // A dead driver's number, free to be taken again
 fn giveNumber(n u32) {
   numberLock.lock();
-  imm word = numberBits + usize.from(n / 64u32);
-  imm bit = 1u64 << u64.from(n % 64u32);
+  let word = numberBits + usize.from(n / 64u32);
+  let bit = 1u64 << u64.from(n % 64u32);
   mem.writeRaw[u64](word, (mem.readRaw[u64](word) | bit) ^ bit);
   numberLock.unlock();
 }
@@ -426,7 +426,7 @@ pub struct Failure {
   pub fn none() Failure {new Failure(Stage.Closed, 0u32, HttpError.empty(), false);}
 
   pub fn copy(self &) Failure {
-    mut e = HttpError.make(error.kind, error.status, error.detail.view());
+    var e = HttpError.make(error.kind, error.status, error.detail.view());
     e.noResponse = error.noResponse;
     new Failure(stage, code, e, unsent);
   }
@@ -434,7 +434,7 @@ pub struct Failure {
   // 'connect: timed out: no connection within connectTimeout'; with the
   // Windows error's number and text when there is one
   pub fn message(self &) String {
-    mut out = String.from(stageName(stage));
+    var out = String.from(stageName(stage));
     out.append(": ");
     out.append(error.message().view());
     if code != 0u32 {
@@ -474,11 +474,11 @@ pub enum Sink {
 // is swapped into a local to be matched: Cone narrows only a local's
 // variant, error 1034)
 fn copySink(s &mut Sink) Sink {
-  mut here Sink = Sink.Here(0u64);
+  var here Sink = Sink.Here(0u64);
   here <=> *s;
-  mut out Sink = Sink.Here(here.token);
+  var out Sink = Sink.Here(here.token);
   match &here {
-    case imm c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
+    case let c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
     else {}
   }
   *s <=> here;
@@ -487,9 +487,9 @@ fn copySink(s &mut Sink) Sink {
 
 // Whether a sink is a channel
 fn isChan(s &mut Sink) bool {
-  mut here Sink = Sink.Here(0u64);
+  var here Sink = Sink.Here(0u64);
   here <=> *s;
-  mut yes = false;
+  var yes = false;
   match &here {
     case is &Chan {yes = true;}
     else {}
@@ -677,9 +677,9 @@ pub struct Plain {
   pub fn describe(self &) String {String.from("plain");}
 
   fn front(q &mut Chain) IoBuf {
-    mut b = IoBuf.empty();
+    var b = IoBuf.empty();
     match q.popFront() {
-      case mut s Some {b <=> s;}
+      case var s Some {b <=> s;}
       case is None[IoBuf] {}
     }
     b;

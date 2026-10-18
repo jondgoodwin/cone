@@ -49,7 +49,7 @@ struct Seat {
 fn textOf(d &List[u8]) String {String.fromBytes(d.view());}
 
 fn bytesOf(s &str) List[u8] {
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   putBytes(&mut b, s);
   b;
 }
@@ -64,7 +64,7 @@ actor GameServer {
   ticks u32;
 
   fn init(self &new) {
-    mut b = List[Body].empty();
+    var b = List[Body].empty();
     b.push(new Body(1000, 1000, 120, 70));
     b.push(new Body(5000, 8000, -90, -40));
     b.push(new Body(9000, 3000, -60, 110));
@@ -74,39 +74,39 @@ actor GameServer {
   // Everything the connections tell it arrives here, whichever way they are made
   pub async do onNet(self, ev NetEvent) {
     match ev {
-      case imm j Joined {
+      case let j Joined {
         seats.push(new Seat(j.id, j.conn, String.from("?")));
-        mut s = String.from("server: client ");
+        var s = String.from("server: client ");
         s.appendUInt(u64.from(j.id));
         s.append(" joined\n");
         printStr(s.view());
       }
-      case imm l Left {
+      case let l Left {
         self.remove(l.id);
-        mut s = String.from("server: client ");
+        var s = String.from("server: client ");
         s.appendUInt(u64.from(l.id));
         s.append(" left\n");
         printStr(s.view());
       }
-      case imm m Message { self.heard(m.id, textOf(&m.data)); }
-      case imm u Update {}
-      case imm r Refused {}
+      case let m Message { self.heard(m.id, textOf(&m.data)); }
+      case let u Update {}
+      case let r Refused {}
     }
   }
 
   // One step of the world and a snapshot to everyone
   pub async do tick(self) {
     ticks = ticks + 1u32;
-    mut i = 0usize;
+    var i = 0usize;
     while i < bodies.len() {
-      imm b = &mut bodies[i];
+      let b = &mut bodies[i];
       b.x = b.x + b.vx;
       b.y = b.y + b.vy;
       if b.x < 0i32 or b.x > edge {b.vx = 0i32 - b.vx; b.x = b.x + b.vx;}
       if b.y < 0i32 or b.y > edge {b.vy = 0i32 - b.vy; b.y = b.y + b.vy;}
       i = i + 1usize;
     }
-    mut s = 0usize;
+    var s = 0usize;
     while s < seats.len() {
       seats[s].conn.sendLatest(1u16, self.snapshot());
       s = s + 1usize;
@@ -115,10 +115,10 @@ actor GameServer {
 
   // The toy snapshot: tick, then for each body its id and position
   fn snapshot(self &) List[u8] {
-    mut p = List[u8].empty();
+    var p = List[u8].empty();
     putU32(&mut p, ticks);
     putU8(&mut p, u8.from(bodies.len()));
-    mut i = 0usize;
+    var i = 0usize;
     while i < bodies.len() {
       putU8(&mut p, u8.from(i));
       putU32(&mut p, u32.from(bodies[i].x));
@@ -129,7 +129,7 @@ actor GameServer {
   }
 
   fn find(self &, id u32) usize {
-    mut i = 0usize;
+    var i = 0usize;
     while i < seats.len() {
       if seats[i].id == id {return i;}
       i = i + 1usize;
@@ -138,7 +138,7 @@ actor GameServer {
   }
 
   fn remove(self, id u32) {
-    imm k = self.find(id);
+    let k = self.find(id);
     if k < seats.len() {
       seats.swap(k, seats.len() - 1usize);
       seats.pop();
@@ -151,33 +151,33 @@ actor GameServer {
 
   // A reliable message from client 'id': hello NAME, input DX DY, or chat TEXT
   fn heard(self, id u32, text String) {
-    imm k = self.find(id);
+    let k = self.find(id);
     if k >= seats.len() {return;}
-    imm words = text.split(' ');
+    let words = text.split(' ');
     if words.len() == 0usize {return;}
-    imm verb = words[0usize].view();
+    let verb = words[0usize].view();
     if verb == "hello" and words.len() > 1usize {
       seats[k].name = String.from(words[1usize].view());
-      mut w = String.from("welcome ");
+      var w = String.from("welcome ");
       w.appendUInt(u64.from(id));
       self.tell(k, w.view());
-      mut j = String.from("news ");
+      var j = String.from("news ");
       j.append(words[1usize].view());
       j.append(" joined");
       self.everyone(j.view());
     } elif verb == "input" and words.len() == 3usize {
       // Client n steers body n - 1 (mod 3)
-      imm b = &mut bodies[usize.from(id - 1u32) % bodyCount];
+      let b = &mut bodies[usize.from(id - 1u32) % bodyCount];
       match parseInt(words[1usize].view()) {
-        case imm dx Some { b.vx = i32.from(dx); }
+        case let dx Some { b.vx = i32.from(dx); }
         case is None[i64] {}
       }
       match parseInt(words[2usize].view()) {
-        case imm dy Some { b.vy = i32.from(dy); }
+        case let dy Some { b.vy = i32.from(dy); }
         case is None[i64] {}
       }
     } elif verb == "chat" and text.len() > 5usize {
-      mut c = String.from("chat ");
+      var c = String.from("chat ");
       c.append(seats[k].name.view());
       c.append(": ");
       c.append(text.view().slice(5usize, text.len()));
@@ -186,7 +186,7 @@ actor GameServer {
   }
 
   fn everyone(self &, text &str) {
-    mut s = 0usize;
+    var s = 0usize;
     while s < seats.len() {
       self.tell(s, text);
       s = s + 1usize;
@@ -215,41 +215,41 @@ actor Player {
 
   pub async do onNet(self, ev NetEvent) {
     match ev {
-      case imm j Joined {
+      case let j Joined {
         conn = Some[Connection](j.conn);
         j.conn.sendReliable(bytesOf(self.hello().view()));
       }
-      case imm l Left {
-        mut s = String.from(name.view());
+      case let l Left {
+        var s = String.from(name.view());
         s.append(": the connection ended\n");
         printStr(s.view());
       }
-      case imm m Message {
-        imm text = textOf(&m.data);
+      case let m Message {
+        let text = textOf(&m.data);
         if text.view().startsWith("chat ") or text.view().startsWith("news ") {
           heardChat = heardChat + 1u32;
-          mut s = String.from(name.view());
+          var s = String.from(name.view());
           s.append(" hears: ");
           s.append(text.view());
           s.append("\n");
           printStr(s.view());
         }
       }
-      case imm u Update {
+      case let u Update {
         // The snapshot's tick and the first body's position
-        mut c = PacketReader.start();
+        var c = PacketReader.start();
         lastTick = c.rdU32(u.data.view());
         c.skip(u.data.view(), 2usize);
         lastX = i32.from(c.rdU32(u.data.view()));
         lastY = i32.from(c.rdU32(u.data.view()));
         snapshots = snapshots + 1u32;
       }
-      case imm r Refused {}
+      case let r Refused {}
     }
   }
 
   fn hello(self &) String {
-    mut h = String.from("hello ");
+    var h = String.from("hello ");
     h.append(name.view());
     h;
   }
@@ -257,8 +257,8 @@ actor Player {
   // Steer: send the input as a reliable message
   pub async do steer(self, dx i32, dy i32) {
     match &conn {
-      case imm c &Some[Connection] {
-        mut t = String.from("input ");
+      case let c &Some[Connection] {
+        var t = String.from("input ");
         t.appendInt(i64.from(dx));
         t.append(" ");
         t.appendInt(i64.from(dy));
@@ -270,8 +270,8 @@ actor Player {
 
   pub async do chat(self, text String) {
     match &conn {
-      case imm c &Some[Connection] {
-        mut t = String.from("chat ");
+      case let c &Some[Connection] {
+        var t = String.from("chat ");
         t.append(text.view());
         c.sendReliable(bytesOf(t.view()));
       }
@@ -281,7 +281,7 @@ actor Player {
 
   // Say what this player saw
   pub async do finish(self) {
-    mut s = String.from(name.view());
+    var s = String.from(name.view());
     s.append(" saw ");
     s.appendUInt(u64.from(snapshots));
     s.append(" snapshots, the last of tick ");
@@ -311,8 +311,8 @@ fn playerHandler(p Player) EventHandler {
 
 // The game for 'seconds': the server ticks at 30 Hz; the players steer and chat
 fn play(srv GameServer, a Player, b Player, seconds i64) {
-  imm steps = seconds * 30i64;
-  mut i = 0i64;
+  let steps = seconds * 30i64;
+  var i = 0i64;
   while i < steps {
     srv.tick();
     if i % 15i64 == 3i64 {a.steer(i32.from((i % 7i64) * 20i64 - 60i64), 40i32);}
@@ -326,10 +326,10 @@ fn play(srv GameServer, a Player, b Player, seconds i64) {
 }
 
 fn printReports(rx &mut Receiver[String], n usize) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < n {
     match rx.recvTimeout(Duration.fromSeconds(5i64)) {
-      case imm s Some { print <- s.view(), "\n"; }
+      case let s Some { print <- s.view(), "\n"; }
       case is None[String] {}
     }
     k = k + 1usize;
@@ -338,15 +338,15 @@ fn printReports(rx &mut Receiver[String], n usize) {
 
 fn inProcess() {
   print <- "== in-process: no sockets, the server and two players in one process ==\n";
-  mut tx Sender[String];
-  mut rx Receiver[String];
+  var tx Sender[String];
+  var rx Receiver[String];
   tx, rx = Channel[String].make();
   {
-    imm srv = new GameServer();
-    imm ann = new Player(String.from("Ann"), tx.clone());
-    imm bob = new Player(String.from("Bob"), tx.clone());
-    imm pairA = pairInProcess(serverHandler(srv), 1u32, playerHandler(ann), 1u32);
-    imm pairB = pairInProcess(serverHandler(srv), 2u32, playerHandler(bob), 1u32);
+    let srv = new GameServer();
+    let ann = new Player(String.from("Ann"), tx.clone());
+    let bob = new Player(String.from("Bob"), tx.clone());
+    let pairA = pairInProcess(serverHandler(srv), 1u32, playerHandler(ann), 1u32);
+    let pairB = pairInProcess(serverHandler(srv), 2u32, playerHandler(bob), 1u32);
     play(srv, ann, bob, 3i64);
     ann.finish();
     bob.finish();
@@ -359,19 +359,19 @@ fn inProcess() {
 
 fn overLoopback() {
   print <- "== loopback UDP, 20% loss each way, 25-35 ms delay, through a relay ==\n";
-  mut tx Sender[String];
-  mut rx Receiver[String];
+  var tx Sender[String];
+  var rx Receiver[String];
   tx, rx = Channel[String].make();
   {
-    imm srv = new GameServer();
-    imm cfg = NetConfig.defaults();
-    imm server = mustListen(SocketAddr.localhost(0u16), cfg, serverHandler(srv));
-    imm link = new LinkConfig(200u32, 25i64, 10i64, 20u32, 20u32, 30i64);
-    mut relay = startLossyRelay(SocketAddr.localhost(server.port), link, link, 3u64);
-    imm ann = new Player(String.from("Ann"), tx.clone());
-    imm bob = new Player(String.from("Bob"), tx.clone());
-    imm ca = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(ann));
-    imm cb = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(bob));
+    let srv = new GameServer();
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, serverHandler(srv));
+    let link = new LinkConfig(200u32, 25i64, 10i64, 20u32, 20u32, 30i64);
+    var relay = startLossyRelay(SocketAddr.localhost(server.port), link, link, 3u64);
+    let ann = new Player(String.from("Ann"), tx.clone());
+    let bob = new Player(String.from("Bob"), tx.clone());
+    let ca = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(ann));
+    let cb = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(bob));
     thread.sleep(Duration.fromMillis(600i64));
     play(srv, ann, bob, 4i64);
     ann.finish();
@@ -386,12 +386,12 @@ fn overLoopback() {
 
 // An IPv4 address a.b.c.d
 fn parseAddress(host &str, port u16) SocketAddr {
-  imm parts = String.from(host).split('.');
-  mut n = List[u8].empty();
-  mut i = 0usize;
+  let parts = String.from(host).split('.');
+  var n = List[u8].empty();
+  var i = 0usize;
   while i < parts.len() {
     match parseUInt(parts[i].view()) {
-      case imm v Some { n.push(u8.from(v)); }
+      case let v Some { n.push(u8.from(v)); }
       case is None[u64] {}
     }
     i = i + 1usize;
@@ -406,9 +406,9 @@ fn parseAddress(host &str, port u16) SocketAddr {
 fn serve(port u16) {
   print <- "== serving on UDP port ", u64.from(port), " for 60 seconds ==\n";
   {
-    imm srv = new GameServer();
-    imm server = mustListen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, port), NetConfig.defaults(), serverHandler(srv));
-    mut i = 0i64;
+    let srv = new GameServer();
+    let server = mustListen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, port), NetConfig.defaults(), serverHandler(srv));
+    var i = 0i64;
     while i < 60i64 * 30i64 {
       srv.tick();
       thread.sleep(Duration.fromMillis(33i64));
@@ -420,13 +420,13 @@ fn serve(port u16) {
 
 fn connectTo(host &str, port u16, name &str) {
   print <- "== ", name, " connecting to ", host, ":", u64.from(port), " ==\n";
-  mut tx Sender[String];
-  mut rx Receiver[String];
+  var tx Sender[String];
+  var rx Receiver[String];
   tx, rx = Channel[String].make();
   {
-    imm me = new Player(String.from(name), tx);
-    imm c = mustConnect(parseAddress(host, port), NetConfig.defaults(), playerHandler(me));
-    mut i = 0i64;
+    let me = new Player(String.from(name), tx);
+    let c = mustConnect(parseAddress(host, port), NetConfig.defaults(), playerHandler(me));
+    var i = 0i64;
     while i < 8i64 * 30i64 {
       if i % 15i64 == 3i64 {me.steer(25i32, i32.from((i % 9i64) * 10i64 - 40i64));}
       if i == 30i64 {me.chat(String.from("hello everyone"));}
@@ -440,15 +440,15 @@ fn connectTo(host &str, port u16, name &str) {
 }
 
 fn main() {
-  imm args = process.args();
+  let args = process.args();
   if args.len() >= 3usize and args[1usize].view() == "serve" {
     match parseUInt(args[2usize].view()) {
-      case imm p Some { serve(u16.from(p)); }
+      case let p Some { serve(u16.from(p)); }
       case is None[u64] { print <- "demo: serve PORT\n"; }
     }
   } elif args.len() >= 5usize and args[1usize].view() == "connect" {
     match parseUInt(args[3usize].view()) {
-      case imm p Some { connectTo(args[2usize].view(), u16.from(p), args[4usize].view()); }
+      case let p Some { connectTo(args[2usize].view(), u16.from(p), args[4usize].view()); }
       case is None[u64] { print <- "demo: connect HOST PORT NAME\n"; }
     }
   } elif args.len() >= 2usize and args[1usize].view() == "inprocess" {

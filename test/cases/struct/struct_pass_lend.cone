@@ -1,13 +1,13 @@
 // A struct of more than 16 bytes, holding more than two scalars, is passed to
 // a Cone function as a pointer. The caller lends its own storage only where
 // the permissions prove nothing else can change it until the call returns:
-// an 'imm' local or parameter, a local nothing borrows to write and no other
+// a 'let' local or parameter, a local nothing borrows to write and no other
 // argument assigns, a field or element of either. Anything else is copied
 // first, so every callee here sees the value its caller passed, whatever
 // the call does meanwhile: a write through a '&mut' route passed beside it,
 // a write to the global it came from, a write through the 'mut' slice beside
 // it, an assignment in a later argument, an owner a later argument consumes.
-// A callee assigning its own 'mut' parameter changes its copy alone; one only
+// A callee assigning its own 'var' parameter changes its copy alone; one only
 // reading it reads where its caller's storage is, and lends it on, recursing.
 // What a callee returns or stores of its parameter is a copy.
 
@@ -73,7 +73,7 @@ fn viaMut(v Big, q &mut Big) i64 {
   digits(v);
 }
 
-mut @threadlocal glob Big = new Big(1, 2, 3);
+var @threadlocal glob Big = new Big(1, 2, 3);
 
 fn writesGlobal(v Big) i64 {
   glob.a = 7;
@@ -88,7 +88,7 @@ fn writeThenRead(v Big, s &mut Array[Big]) i64 {
 }
 
 // Assigns its own copy
-fn bump(mut v Big) i64 {
+fn bump(var v Big) i64 {
   v.a = v.a + 100;
   digits(v);
 }
@@ -129,8 +129,8 @@ struct Adder is Counter {
 }
 
 fn m3sum(m M3) f32 {
-  mut s = 0.;
-  mut i = 0usize;
+  var s = 0.;
+  var i = 0usize;
   while i < 9usize {
     s = s + m.m[i] * f32.from(i + 1usize);
     i = i + 1usize;
@@ -146,12 +146,12 @@ fn m3made(k f32) f32 { m3sum(new M3([k, k, k, k, k, k, k, k, k])); }
 fn v4sum(v V4) f32 { v.x + v.y * 10. + v.z * 100. + v.w * 1000.; }
 
 fn main() {
-  // An 'imm' local, lent
-  imm x = new Big(1, 2, 3);
+  // A 'let' local, lent
+  let x = new Big(1, 2, 3);
   show("imm", sumImm(x));
 
   // A '&mut' route to the argument passed beside it: copied
-  mut u = new Big(1, 2, 3);
+  var u = new Big(1, 2, 3);
   show("route", viaMut(u, &mut u));
   show("route-after", digits(u));
 
@@ -160,14 +160,14 @@ fn main() {
   show("global-after", digits(glob));
 
   // An element of a 'mut' slice passed beside the slice: copied
-  mut arr = [new Big(1, 2, 3), new Big(4, 5, 6)];
+  var arr = [new Big(1, 2, 3), new Big(4, 5, 6)];
   {
-    imm s = &[]mut arr;
+    let s = &[]mut arr;
     show("slice", writeThenRead(s[1usize], s));
   }
   show("slice-after", digits(arr[1usize]));
 
-  // The callee assigns its 'mut' parameter: the caller's value stays
+  // The callee assigns its 'var' parameter: the caller's value stays
   show("bump", bump(x));
   show("bump-after", digits(x));
 
@@ -175,9 +175,9 @@ fn main() {
   show("depth", depth(x, 3));
 
   // A parameter returned, and stored: copies of the value passed
-  mut y = new Big(1, 2, 3);
-  imm r = same(y);
-  imm h = hold(y);
+  var y = new Big(1, 2, 3);
+  let r = same(y);
+  let h = hold(y);
   y.a = 50;
   show("returned", digits(r));
   show("stored", digits(h.kept));
@@ -186,34 +186,34 @@ fn main() {
   show("reassigned", digits(y));
 
   // An assignment in a later argument: copied before it
-  mut z = new Big(1, 2, 3);
+  var z = new Big(1, 2, 3);
   show("assigned-later", take(z, (z = new Big(7, 8, 9)).b));
   show("assigned-after", digits(z));
-  mut w = new Big(1, 2, 3);
+  var w = new Big(1, 2, 3);
   show("block-later", take(w, {w = new Big(4, 5, 6); 1;}));
   show("block-after", digits(w));
 
-  // A field and an element of 'imm' locals, lent
-  imm o = new Outer(1, new Big(4, 5, 6));
+  // A field and an element of 'let' locals, lent
+  let o = new Outer(1, new Big(4, 5, 6));
   show("field", fieldOf(o.inner));
-  imm pair = [new Big(1, 1, 1), new Big(2, 2, 2)];
+  let pair = [new Big(1, 1, 1), new Big(2, 2, 2)];
   show("element", elemOf(pair[1usize]));
 
   // Through an 'imm' reference whose owner a later argument consumes: copied
-  imm own = new Rc[imm, Big](new Big(1, 2, 3));
-  imm rr = &imm *own;
+  let own = new Rc[imm, Big](new Big(1, 2, 3));
+  let rr = &imm *own;
   show("consumed-later", take(*rr, consume(own)));
 
   // Through a '&fn', a vtable and a generic instance
-  imm viaFn &fn(v Big) i64 = &fn(v Big) i64 {v.a * 7;};
+  let viaFn &fn(v Big) i64 = &fn(v Big) i64 {v.a * 7;};
   show("fnref", viaFn(x));
-  imm ad = new Adder(1000);
-  imm cnt &<Counter = &ad;
+  let ad = new Adder(1000);
+  let cnt &<Counter = &ad;
   show("vtable", cnt.countOf(x));
   show("generic", digits(pick[Big](x, o.inner, false)));
 
   // Floats: a lent local, and a value made in registers, copied
-  imm mm = new M3([1., 2., 3., 4., 5., 6., 7., 8., 9.]);
+  let mm = new M3([1., 2., 3., 4., 5., 6., 7., 8., 9.]);
   showF("m3-lent", m3sum(mm));
   showF("m3-returned", m3sum(m3of(0.5)));
   showF("m3-made", m3made(0.25));

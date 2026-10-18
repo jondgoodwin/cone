@@ -14,12 +14,12 @@ import iobuf use *;
 import iocore use *;
 import diag;
 
-mut @threadlocal records = 0u64;
-mut @threadlocal timers = 0u64;
-mut @threadlocal cancelled = 0u64;
-mut @threadlocal bytes = 0u64;
-mut @threadlocal ordered = true;
-mut @threadlocal lastLoop = 0u64;
+var @threadlocal records = 0u64;
+var @threadlocal timers = 0u64;
+var @threadlocal cancelled = 0u64;
+var @threadlocal bytes = 0u64;
+var @threadlocal ordered = true;
+var @threadlocal lastLoop = 0u64;
 
 fn keep(r &diag.OpRecord) {
   records = records + 1u64;
@@ -31,7 +31,7 @@ fn keep(r &diag.OpRecord) {
 }
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n and Instant.now() < limit {
     lp.poll(limit, out);
   }
@@ -39,9 +39,9 @@ fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
 
     // No subscriber: nothing printed, nothing kept
     lp.after(Instant.now(), Target.Here(1u64));
@@ -51,14 +51,14 @@ fn main() i32 {
 
     lp.subscribe(&keep);
     lp.after(Instant.now() + Duration.fromMillis(1i64), Target.Here(2u64));
-    imm doomed = lp.after(Instant.now() + Duration.fromSeconds(5i64), Target.Here(3u64));
+    let doomed = lp.after(Instant.now() + Duration.fromSeconds(5i64), Target.Here(3u64));
     lp.cancel(doomed);
-    mut fh = Handle.none();
+    var fh = Handle.none();
     match lp.openFile("subscribe.tmp", Access.Create) {
-      case imm r Ok {fh = r;}
-      case imm e Error {}
+      case let r Ok {fh = r;}
+      case let e Error {}
     }
-    mut b = pool.mustTake(100usize);
+    var b = pool.mustTake(100usize);
     b.append("twelve bytes");
     lp.submit(Op.WriteAt(fh, 0u64, b), Target.Here(4u64));
     waitFor(&mut lp, &mut out, 3usize);

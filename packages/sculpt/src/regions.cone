@@ -18,21 +18,21 @@
 // selected. 'faces' may repeat a face; a number past the last face is
 // ignored.
 fn faceRegions(m &PolyMesh, faces &Array[u32], individual bool) List[u32] {
-  imm nf = m.fHalfedge.len();
-  mut region = List[u32].withCapacity(nf);
-  mut f = 0usize;
+  let nf = m.fHalfedge.len();
+  var region = List[u32].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     region.push(NoIndex);
     f = f + 1usize;
   }
-  mut i = 0usize;
+  var i = 0usize;
   while i < faces.len {
-    imm g = faces[i];
+    let g = faces[i];
     if usize.from(g) < nf { region.set(usize.from(g), g); }
     i = i + 1usize;
   }
   if individual { return region; }
-  mut parent = List[u32].withCapacity(nf);
+  var parent = List[u32].withCapacity(nf);
   f = 0usize;
   while f < nf {
     parent.push(u32.from(f));
@@ -41,10 +41,10 @@ fn faceRegions(m &PolyMesh, faces &Array[u32], individual bool) List[u32] {
   f = 0usize;
   while f < nf {
     if *region[f] != NoIndex {
-      imm hs = m.faceHalfedges(u32.from(f));
-      mut k = 0usize;
+      let hs = m.faceHalfedges(u32.from(f));
+      var k = 0usize;
       while k < hs.len() {
-        imm g = m.face(m.twin(*hs[k]));
+        let g = m.face(m.twin(*hs[k]));
         if g != NoIndex and *region[usize.from(g)] != NoIndex { joinSets(&mut parent, u32.from(f), g); }
         k = k + 1usize;
       }
@@ -62,7 +62,7 @@ fn faceRegions(m &PolyMesh, faces &Array[u32], individual bool) List[u32] {
 // Whether the face across half-edge h (of a selected face) is in the same
 // region as h's face: if not, h is on the rim
 fn acrossSame(m &PolyMesh, region &List[u32], h u32) bool {
-  imm g = m.face(m.twin(h));
+  let g = m.face(m.twin(h));
   g != NoIndex and *region[usize.from(g)] == *region[usize.from(m.face(h))];
 }
 
@@ -71,8 +71,8 @@ fn acrossSame(m &PolyMesh, region &List[u32], h u32) bool {
 // about the vertex through the region's faces; NoIndex when the vertex is
 // inside the region
 fn sectorIn(m &PolyMesh, region &List[u32], c u32) u32 {
-  mut h = c;
-  mut steps = 0usize;
+  var h = c;
+  var steps = 0usize;
   while acrossSame(m, region, h) {
     h = m.prev(m.twin(h));
     steps = steps + 1usize;
@@ -84,8 +84,8 @@ fn sectorIn(m &PolyMesh, region &List[u32], c u32) u32 {
 // The outgoing rim half-edge of the sector whose incoming one is h: the next
 // half-edge along h's rim loop
 fn sectorOut(m &PolyMesh, region &List[u32], h u32) u32 {
-  mut o = m.next(h);
-  mut steps = 0usize;
+  var o = m.next(h);
+  var steps = 0usize;
   while acrossSame(m, region, o) and steps <= m.hVertex.len() {
     o = m.next(m.twin(o));
     steps = steps + 1usize;
@@ -98,18 +98,18 @@ fn sectorOut(m &PolyMesh, region &List[u32], h u32) u32 {
 // Newell vectors), so a flat region's is its plane's, and a region whose
 // faces cancel (a whole closed surface) has none
 fn regionNormals(m &PolyMesh, region &List[u32]) List[Vec3] {
-  imm nf = m.fHalfedge.len();
-  mut acc = List[Vec3].withCapacity(nf);
-  mut f = 0usize;
+  let nf = m.fHalfedge.len();
+  var acc = List[Vec3].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     acc.push(new Vec3(0., 0., 0.));
     f = f + 1usize;
   }
   f = 0usize;
   while f < nf {
-    imm r = *region[f];
+    let r = *region[f];
     if r != NoIndex {
-      imm pts = m.facePositions(u32.from(f));
+      let pts = m.facePositions(u32.from(f));
       acc.set(usize.from(r), *acc[usize.from(r)] + newellVector(&pts));
     }
     f = f + 1usize;
@@ -124,12 +124,12 @@ fn regionNormals(m &PolyMesh, region &List[u32]) List[Vec3] {
 
 // A polygon's Newell vector: its normal at twice its area
 fn newellVector(pts &List[Vec3]) Vec3 {
-  mut sum = new Vec3(0., 0., 0.);
-  imm n = pts.len();
-  mut i = 0usize;
+  var sum = new Vec3(0., 0., 0.);
+  let n = pts.len();
+  var i = 0usize;
   while i < n {
-    imm a = *pts[i];
-    imm b = *pts[(i + 1usize) % n];
+    let a = *pts[i];
+    let b = *pts[(i + 1usize) % n];
     sum = sum + new Vec3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
     i = i + 1usize;
   }
@@ -141,24 +141,24 @@ fn newellVector(pts &List[Vec3]) Vec3 {
 // going through the selected faces in order, each from its first corner, and
 // the loops come in that order.
 fn rimLoops(m &PolyMesh, region &List[u32], loops &mut List[u32], starts &mut List[u32]) {
-  imm nh = m.hVertex.len();
-  mut visited = List[bool].withCapacity(nh);
-  mut h = 0usize;
+  let nh = m.hVertex.len();
+  var visited = List[bool].withCapacity(nh);
+  var h = 0usize;
   while h < nh {
     visited.push(false);
     h = h + 1usize;
   }
-  mut f = 0usize;
+  var f = 0usize;
   while f < m.fHalfedge.len() {
     if *region[f] != NoIndex {
-      imm hs = m.faceHalfedges(u32.from(f));
-      mut k = 0usize;
+      let hs = m.faceHalfedges(u32.from(f));
+      var k = 0usize;
       while k < hs.len() {
-        imm h0 = *hs[k];
+        let h0 = *hs[k];
         if !acrossSame(m, region, h0) and !*visited[usize.from(h0)] {
           starts.push(u32.from(loops.len()));
-          mut g = h0;
-          mut going = true;
+          var g = h0;
+          var going = true;
           while going {
             loops.push(g);
             visited.set(usize.from(g), true);
@@ -201,35 +201,35 @@ fn rimLoops(m &PolyMesh, region &List[u32], loops &mut List[u32], starts &mut Li
 // The quads are walls standing on the original surface, so a texture laid
 // round them reads the right way from outside.
 fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &List[Vec3], interpolate bool) PolyMesh {
-  imm nv = m.positions.len();
-  imm nf = m.fHalfedge.len();
-  imm nh = m.hVertex.len();
-  imm zero = new Vec3(0., 0., 0.);
-  mut pos = copyList(&m.positions);
-  mut vSrc = List[u32].withCapacity(nv);
-  mut v = 0usize;
+  let nv = m.positions.len();
+  let nf = m.fHalfedge.len();
+  let nh = m.hVertex.len();
+  let zero = new Vec3(0., 0., 0.);
+  var pos = copyList(&m.positions);
+  var vSrc = List[u32].withCapacity(nv);
+  var v = 0usize;
   while v < nv {
     vSrc.push(u32.from(v));
     v = v + 1usize;
   }
-  mut sector = List[u32].withCapacity(nh);   // per corner of a selected face: its sector's incoming rim half-edge
-  mut copyOf = List[u32].withCapacity(nh);   // per incoming rim half-edge: its sector's new vertex
-  mut h = 0usize;
+  var sector = List[u32].withCapacity(nh);   // per corner of a selected face: its sector's incoming rim half-edge
+  var copyOf = List[u32].withCapacity(nh);   // per incoming rim half-edge: its sector's new vertex
+  var h = 0usize;
   while h < nh {
     sector.push(NoIndex);
     copyOf.push(NoIndex);
     h = h + 1usize;
   }
-  mut f = 0usize;
+  var f = 0usize;
   while f < nf {
-    imm r = *region[f];
+    let r = *region[f];
     if r != NoIndex {
-      imm hs = m.faceHalfedges(u32.from(f));
-      mut k = 0usize;
+      let hs = m.faceHalfedges(u32.from(f));
+      var k = 0usize;
       while k < hs.len() {
-        imm c = *hs[k];
-        imm cv = usize.from(m.toVertex(c));
-        imm s = sectorIn(m, region, c);
+        let c = *hs[k];
+        let cv = usize.from(m.toVertex(c));
+        let s = sectorIn(m, region, c);
         sector.set(usize.from(c), s);
         if s == NoIndex {
           pos.set(cv, *m.positions[cv] + *shift[usize.from(r)]);
@@ -244,20 +244,20 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
     f = f + 1usize;
   }
 
-  mut counts = List[u32].empty();
-  mut idx = List[u32].empty();
-  mut cSrc = List[u32].empty();
-  mut eSrc = List[u32].empty();
-  mut fSrc = List[u32].empty();
-  mut moved = List[Vec3].empty();   // per corner given: how far its vertex moved across its face (rimShift)
+  var counts = List[u32].empty();
+  var idx = List[u32].empty();
+  var cSrc = List[u32].empty();
+  var eSrc = List[u32].empty();
+  var fSrc = List[u32].empty();
+  var moved = List[Vec3].empty();   // per corner given: how far its vertex moved across its face (rimShift)
   f = 0usize;
   while f < nf {
-    imm hs = m.faceHalfedges(u32.from(f));
+    let hs = m.faceHalfedges(u32.from(f));
     counts.push(u32.from(hs.len()));
-    mut k = 0usize;
+    var k = 0usize;
     while k < hs.len() {
-      imm c = *hs[k];
-      imm s = *sector[usize.from(c)];
+      let c = *hs[k];
+      let s = *sector[usize.from(c)];
       if s != NoIndex {
         idx.push(*copyOf[usize.from(s)]);
         moved.push(*rimShift[usize.from(s)]);
@@ -273,17 +273,17 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
     f = f + 1usize;
   }
 
-  mut loops = List[u32].empty();
-  mut starts = List[u32].empty();
+  var loops = List[u32].empty();
+  var starts = List[u32].empty();
   rimLoops(m, region, &mut loops, &mut starts);
-  mut l = 0usize;
+  var l = 0usize;
   while l + 1usize < starts.len() {
-    imm first = usize.from(*starts[l]);
-    imm end = usize.from(*starts[l + 1usize]);
-    mut j = first;
+    let first = usize.from(*starts[l]);
+    let end = usize.from(*starts[l + 1usize]);
+    var j = first;
     while j < end {
-      imm hj = *loops[j];
-      imm pa = *sector[usize.from(m.prev(hj))];
+      let hj = *loops[j];
+      let pa = *sector[usize.from(m.prev(hj))];
       counts.push(4u32);
       idx.push(m.fromVertex(hj));
       idx.push(m.toVertex(hj));
@@ -307,18 +307,18 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
     l = l + 1usize;
   }
 
-  mut out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  var out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
   // A face refused (none should be) would shift the faces after it: leave
   // the corner values as carried
   if out.fHalfedge.len() != counts.len() { return out; }
   if interpolate {
-    mut q = 0usize;
+    var q = 0usize;
     f = 0usize;
     while f < out.fHalfedge.len() {
-      imm hs = out.faceHalfedges(u32.from(f));
-      mut k = 0usize;
+      let hs = out.faceHalfedges(u32.from(f));
+      var k = 0usize;
       while k < hs.len() {
-        imm d = *moved[q];
+        let d = *moved[q];
         if d.lengthSquared() > 0. {
           carryCorner(m, &mut out, *cSrc[q], *hs[k], cornerWeights(m, *cSrc[q], d));
         }
@@ -328,7 +328,7 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
       f = f + 1usize;
     }
   } else {
-    imm wallU = loopU(m, &loops, &starts);
+    let wallU = loopU(m, &loops, &starts);
     stripUvs(&mut out, nf, &wallU, false);
   }
   out;
@@ -338,23 +338,23 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
 // at the loop's first vertex to 1 back at it: per half-edge a -> b, in loop
 // order, u at a and then u at b, the loop's last b being 1 (the seam)
 fn loopU(m &PolyMesh, loops &List[u32], starts &List[u32]) List[f32] {
-  mut out = List[f32].withCapacity(2usize * loops.len());
-  mut l = 0usize;
+  var out = List[f32].withCapacity(2usize * loops.len());
+  var l = 0usize;
   while l + 1usize < starts.len() {
-    imm first = usize.from(*starts[l]);
-    imm end = usize.from(*starts[l + 1usize]);
-    mut total f32 = 0.;
-    mut j = first;
+    let first = usize.from(*starts[l]);
+    let end = usize.from(*starts[l + 1usize]);
+    var total f32 = 0.;
+    var j = first;
     while j < end {
       total = total + sideLength(m, *loops[j]);
       j = j + 1usize;
     }
-    mut run f32 = 0.;
+    var run f32 = 0.;
     j = first;
     while j < end {
-      imm u0 = if total > 0. {run / total;} else {0.;};
+      let u0 = if total > 0. {run / total;} else {0.;};
       run = run + sideLength(m, *loops[j]);
-      imm u1 = if j + 1usize == end {1.;} elif total > 0. {run / total;} else {0.;};
+      let u1 = if j + 1usize == end {1.;} elif total > 0. {run / total;} else {0.;};
       out.push(u0);
       out.push(u1);
       j = j + 1usize;
@@ -376,13 +376,13 @@ fn sideLength(m &PolyMesh, h u32) f32 {
 // there), so either way the texture reads the right way round from the side
 // the quad faces. Nothing is done when the mesh has no "uv".
 fn stripUvs(out &mut PolyMesh, first usize, stripU &List[f32], reversed bool) {
-  imm uvCh = out.findVec2Channel(CornerDomain, "uv");
+  let uvCh = out.findVec2Channel(CornerDomain, "uv");
   if uvCh == NoIndex { return; }
-  mut w = 0usize;
+  var w = 0usize;
   while 2usize * w < stripU.len() {
-    imm hs = out.faceHalfedges(u32.from(first + w));
-    imm u0 = *stripU[2usize * w];
-    imm u1 = *stripU[2usize * w + 1usize];
+    let hs = out.faceHalfedges(u32.from(first + w));
+    let u0 = *stripU[2usize * w];
+    let u1 = *stripU[2usize * w + 1usize];
     if reversed {
       out.setVec2(uvCh, *hs[0usize], new Vec2(u1, 1.));
       out.setVec2(uvCh, *hs[1usize], new Vec2(u0, 1.));
@@ -405,16 +405,16 @@ fn stripUvs(out &mut PolyMesh, first usize, stripU &List[f32], reversed bool) {
 // weights are exact for any channel that is affine over a flat face, as a
 // planar uv map is. Sides with no angle between them give (0, 0).
 fn cornerWeights(m &PolyMesh, c u32, d Vec3) Vec2 {
-  imm p = *m.positions[usize.from(m.toVertex(c))];
-  imm e1 = *m.positions[usize.from(m.fromVertex(c))] - p;
-  imm e2 = *m.positions[usize.from(m.toVertex(m.next(c)))] - p;
-  imm a11 = e1.dot(e1);
-  imm a12 = e1.dot(e2);
-  imm a22 = e2.dot(e2);
-  imm det = a11 * a22 - a12 * a12;
+  let p = *m.positions[usize.from(m.toVertex(c))];
+  let e1 = *m.positions[usize.from(m.fromVertex(c))] - p;
+  let e2 = *m.positions[usize.from(m.toVertex(m.next(c)))] - p;
+  let a11 = e1.dot(e1);
+  let a12 = e1.dot(e2);
+  let a22 = e2.dot(e2);
+  let det = a11 * a22 - a12 * a12;
   if det <= 0.000001 * a11 * a22 { return new Vec2(0., 0.); }
-  imm b1 = d.dot(e1);
-  imm b2 = d.dot(e2);
+  let b1 = d.dot(e1);
+  let b2 = d.dot(e2);
   new Vec2((b1 * a22 - b2 * a12) / det, (a11 * b2 - a12 * b1) / det);
 }
 
@@ -422,15 +422,15 @@ fn cornerWeights(m &PolyMesh, c u32, d Vec3) Vec2 {
 // value(c) + w.x (value(prev c) - value(c)) + w.y (value(next c) - value(c)),
 // for every corner channel ('out''s channels are m's, in the same order)
 fn carryCorner(m &PolyMesh, out &mut PolyMesh, c u32, h u32, w Vec2) {
-  imm ci = usize.from(c);
-  imm pi = usize.from(m.prev(c));
-  imm ni = usize.from(m.next(c));
-  mut ch = 0usize;
+  let ci = usize.from(c);
+  let pi = usize.from(m.prev(c));
+  let ni = usize.from(m.next(c));
+  var ch = 0usize;
   while ch < m.floats.len() {
     if m.floats[ch].domain == CornerDomain {
-      imm a = *m.floats[ch].values[ci];
-      imm b = *m.floats[ch].values[pi];
-      imm n = *m.floats[ch].values[ni];
+      let a = *m.floats[ch].values[ci];
+      let b = *m.floats[ch].values[pi];
+      let n = *m.floats[ch].values[ni];
       out.setFloat(u32.from(ch), h, a + w.x * (b - a) + w.y * (n - a));
     }
     ch = ch + 1usize;
@@ -438,9 +438,9 @@ fn carryCorner(m &PolyMesh, out &mut PolyMesh, c u32, h u32, w Vec2) {
   ch = 0usize;
   while ch < m.vec2s.len() {
     if m.vec2s[ch].domain == CornerDomain {
-      imm a = *m.vec2s[ch].values[ci];
-      imm b = *m.vec2s[ch].values[pi];
-      imm n = *m.vec2s[ch].values[ni];
+      let a = *m.vec2s[ch].values[ci];
+      let b = *m.vec2s[ch].values[pi];
+      let n = *m.vec2s[ch].values[ni];
       out.setVec2(u32.from(ch), h, a + (b - a) * w.x + (n - a) * w.y);
     }
     ch = ch + 1usize;
@@ -448,9 +448,9 @@ fn carryCorner(m &PolyMesh, out &mut PolyMesh, c u32, h u32, w Vec2) {
   ch = 0usize;
   while ch < m.vec3s.len() {
     if m.vec3s[ch].domain == CornerDomain {
-      imm a = *m.vec3s[ch].values[ci];
-      imm b = *m.vec3s[ch].values[pi];
-      imm n = *m.vec3s[ch].values[ni];
+      let a = *m.vec3s[ch].values[ci];
+      let b = *m.vec3s[ch].values[pi];
+      let n = *m.vec3s[ch].values[ni];
       out.setVec3(u32.from(ch), h, a + (b - a) * w.x + (n - a) * w.y);
     }
     ch = ch + 1usize;

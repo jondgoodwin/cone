@@ -55,7 +55,7 @@ pub struct Shell {
   // The vertices posed under the skinning matrices into `posed` (CPU linear blend skinning, skinning.slang's sums)
   pub fn pose(self &mut, matrices &List[Mat4]) {
     posed.clear();
-    mut v = 0usize;
+    var v = 0usize;
     while v < mesh.positions.len() {
       posed.push(skin.skinPoint(v, matrices.view(), *mesh.positions[v]));
       v = v + 1usize;
@@ -65,23 +65,23 @@ pub struct Shell {
 
 // The shell `spec` describes, worn on `rig` over `beneath` metres of whatever is already on the body
 pub fn buildShell(spec &ShellSpec, rig &BodyRig, beneath f32) Shell {
-  imm body = &rig.mesh;
-  imm nv = body.positions.len();
+  let body = &rig.mesh;
+  let nv = body.positions.len();
   // 1. the region
-  mut remap = List[u32].empty();
-  mut picked = List[u32].empty();
-  mut v = 0usize;
+  var remap = List[u32].empty();
+  var picked = List[u32].empty();
+  var v = 0usize;
   while v < nv {
-    mut w = 0.;
-    mut k = 0usize;
+    var w = 0.;
+    var k = 0usize;
     while k < 4usize {
-      imm j = rig.skin.joint(v, k);
-      mut c = 0usize;
+      let j = rig.skin.joint(v, k);
+      var c = 0usize;
       while c < spec.bones.len() { if *spec.bones[c] == j { w = w + rig.skin.weight(v, k); } c = c + 1usize; }
       k = k + 1usize;
     }
-    mut keep = w >= spec.minWeight;
-    mut c = 0usize;
+    var keep = w >= spec.minWeight;
+    var c = 0usize;
     while keep and c < spec.cuts.len() {
       if (*body.positions[v] - spec.cuts[c].point).dot(spec.cuts[c].normal) < 0. { keep = false; }
       c = c + 1usize;
@@ -94,40 +94,40 @@ pub fn buildShell(spec &ShellSpec, rig &BodyRig, beneath f32) Shell {
     }
     v = v + 1usize;
   }
-  mut out = Shell.empty();
+  var out = Shell.empty();
   out.name = spec.name.copy();
   out.layer = spec.layer;
   out.thickness = spec.thickness;
   // 2. triangles whose three corners are in
-  mut t = 0usize;
+  var t = 0usize;
   while t + 2usize < body.indices.len() {
-    imm a = *remap[usize.from(*body.indices[t])];
-    imm b = *remap[usize.from(*body.indices[t + 1usize])];
-    imm c = *remap[usize.from(*body.indices[t + 2usize])];
+    let a = *remap[usize.from(*body.indices[t])];
+    let b = *remap[usize.from(*body.indices[t + 1usize])];
+    let c = *remap[usize.from(*body.indices[t + 2usize])];
     if a != 0xFFFFFFFFu32 and b != 0xFFFFFFFFu32 and c != 0xFFFFFFFFu32 {
       out.mesh.indices.push(a); out.mesh.indices.push(b); out.mesh.indices.push(c);
     }
     t = t + 3usize;
   }
   // 3. the offset: along the body's normals, smoothed over the surface's edges
-  imm n = picked.len();
-  mut disp = List[Vec3].empty();
-  imm dist = beneath + spec.ease;
-  mut i = 0usize;
+  let n = picked.len();
+  var disp = List[Vec3].empty();
+  let dist = beneath + spec.ease;
+  var i = 0usize;
   while i < n {
-    imm src = usize.from(*picked[i]);
+    let src = usize.from(*picked[i]);
     disp.push(*body.normals[src] * dist);
     i = i + 1usize;
   }
   // adjacency by triangle edges: a CSR list of neighbours
-  mut degree = List[u32].empty();
+  var degree = List[u32].empty();
   i = 0usize;
   while i <= n { degree.push(0u32); i = i + 1usize; }
   t = 0usize;
   while t + 2usize < out.mesh.indices.len() {
-    mut e = 0usize;
+    var e = 0usize;
     while e < 3usize {
-      imm a = usize.from(*out.mesh.indices[t + e]);
+      let a = usize.from(*out.mesh.indices[t + e]);
       degree.set(a + 1usize, *degree[a + 1usize] + 2u32);
       e = e + 1usize;
     }
@@ -135,19 +135,19 @@ pub fn buildShell(spec &ShellSpec, rig &BodyRig, beneath f32) Shell {
   }
   i = 0usize;
   while i < n { degree.set(i + 1usize, *degree[i + 1usize] + *degree[i]); i = i + 1usize; }
-  mut fill = List[u32].empty();
+  var fill = List[u32].empty();
   i = 0usize;
   while i < n { fill.push(*degree[i]); i = i + 1usize; }
-  mut nbr = List[u32].empty();
+  var nbr = List[u32].empty();
   i = 0usize;
   while i < usize.from(*degree[n]) { nbr.push(0u32); i = i + 1usize; }
   t = 0usize;
   while t + 2usize < out.mesh.indices.len() {
-    mut e = 0usize;
+    var e = 0usize;
     while e < 3usize {
-      imm a = usize.from(*out.mesh.indices[t + e]);
-      imm b = *out.mesh.indices[t + (e + 1usize) % 3usize];
-      imm c = *out.mesh.indices[t + (e + 2usize) % 3usize];
+      let a = usize.from(*out.mesh.indices[t + e]);
+      let b = *out.mesh.indices[t + (e + 1usize) % 3usize];
+      let c = *out.mesh.indices[t + (e + 2usize) % 3usize];
       nbr.set(usize.from(*fill[a]), b);
       nbr.set(usize.from(*fill[a]) + 1usize, c);
       fill.set(a, *fill[a] + 2u32);
@@ -155,16 +155,16 @@ pub fn buildShell(spec &ShellSpec, rig &BodyRig, beneath f32) Shell {
     }
     t = t + 3usize;
   }
-  mut pass = 0u32;
+  var pass = 0u32;
   while pass < spec.smooth {
-    mut next = List[Vec3].empty();
+    var next = List[Vec3].empty();
     i = 0usize;
     while i < n {
-      imm lo = usize.from(*degree[i]);
-      imm hi = usize.from(*degree[i + 1usize]);
+      let lo = usize.from(*degree[i]);
+      let hi = usize.from(*degree[i + 1usize]);
       if hi > lo {
-        mut sum = new Vec3(0., 0., 0.);
-        mut k = lo;
+        var sum = new Vec3(0., 0., 0.);
+        var k = lo;
         while k < hi { sum = sum + *disp[usize.from(*nbr[k])]; k = k + 1usize; }
         next.push((*disp[i] + sum * (1. / f32.from(hi - lo))) * 0.5);
       } else {
@@ -178,13 +178,13 @@ pub fn buildShell(spec &ShellSpec, rig &BodyRig, beneath f32) Shell {
   // 4. the vertices, uvs and skin
   i = 0usize;
   while i < n {
-    imm src = usize.from(*picked[i]);
+    let src = usize.from(*picked[i]);
     out.mesh.positions.push(*body.positions[src] + *disp[i]);
     out.mesh.uvs.push(*body.uvs[src]);
     out.source.push(*picked[i]);
-    mut j = [0u32, 0u32, 0u32, 0u32];
-    mut w = [0., 0., 0., 0.];
-    mut k = 0usize;
+    var j = [0u32, 0u32, 0u32, 0u32];
+    var w = [0., 0., 0., 0.];
+    var k = 0usize;
     while k < 4usize {
       j[k] = u32.from(rig.skin.joint(src, k));
       w[k] = rig.skin.weight(src, k);

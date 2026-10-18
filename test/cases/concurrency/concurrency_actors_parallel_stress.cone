@@ -21,15 +21,15 @@ struct Counts {
   pub loops Atomic[u64];
 }
 
-imm counts Counts;
+let counts Counts;
 
 fn @initpure init() {
   counts = new Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
@@ -50,7 +50,7 @@ struct Out is Sendable {
 
 // The items from 'base' on, which an inner loop fills
 fn bodyCell(out *u64, base usize, lo usize, hi usize) {
-  mut i = base + lo;
+  var i = base + lo;
   while i < base + hi {
     *(out + i) = mix(u64.from(i), work(u64.from(i)));
     i = i + 1usize;
@@ -64,7 +64,7 @@ fn bodyFill(out *u64, nest u64, lo usize, hi usize) {
     actors.parallelRange(0usize, hi - lo, 4usize, fn(a usize, b usize) [out, lo] { bodyCell(out, lo, a, b); });
     return;
   }
-  mut i = lo;
+  var i = lo;
   while i < hi {
     *(out + i) = mix(u64.from(i), work(u64.from(i)));
     i = i + 1usize;
@@ -72,7 +72,7 @@ fn bodyFill(out *u64, nest u64, lo usize, hi usize) {
 }
 
 fn correct(out *u64, n usize) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < n {
     if *(out + i) != mix(u64.from(i), work(u64.from(i))) {
       return false;
@@ -84,10 +84,10 @@ fn correct(out *u64, n usize) bool {
 
 // One blocking loop, checked
 fn oneLoop(iter u64, id u64) {
-  imm n = usize.from(1u64 + (iter * 37u64 + id * 101u64) % 3000u64);
-  imm grain = usize.from(1u64 + iter % 40u64);
-  imm out = libc.calloc(n, 8usize) as *u64;
-  imm nest = if iter % 5u64 == 0u64 {1u64;} else {0u64;};
+  let n = usize.from(1u64 + (iter * 37u64 + id * 101u64) % 3000u64);
+  let grain = usize.from(1u64 + iter % 40u64);
+  let out = libc.calloc(n, 8usize) as *u64;
+  let nest = if iter % 5u64 == 0u64 {1u64;} else {0u64;};
   actors.parallelRange(0usize, n, grain, fn(lo usize, hi usize) [out, nest] { bodyFill(out, nest, lo, hi); });
   if !correct(out, n) {
     counts.failures.add(1u64);
@@ -117,11 +117,11 @@ fn waitingDone(w *Waiting) {
 }
 
 fn oneScheduled(iter u64, id u64) {
-  imm n = usize.from(1u64 + (iter * 53u64 + id * 17u64) % 2000u64);
-  imm out = libc.calloc(n, 8usize) as *u64;
-  mut w = new Waiting(Atomic[u64].of(0u64), out, n);
-  imm o = new Out(out);
-  imm wr = new WaitingRef(&mut w as *Waiting);
+  let n = usize.from(1u64 + (iter * 53u64 + id * 17u64) % 2000u64);
+  let out = libc.calloc(n, 8usize) as *u64;
+  var w = new Waiting(Atomic[u64].of(0u64), out, n);
+  let o = new Out(out);
+  let wr = new WaitingRef(&mut w as *Waiting);
   actors.parallelRangeThen(0usize, n, usize.from(1u64 + iter % 17u64),
     fn(lo usize, hi usize) [o] { bodyFill(o.p, 0u64, lo, hi); },
     fn() [wr] { waitingDone(wr.p); });
@@ -136,7 +136,7 @@ struct Who is Sendable {
 }
 
 fn threadMain(who Who) u64 {
-  mut iter = 0u64;
+  var iter = 0u64;
   while iter < 100u64 {
     oneLoop(iter, who.id);
     if iter % 10u64 == 0u64 {
@@ -149,7 +149,7 @@ fn threadMain(who Who) u64 {
 
 actor Driver {
   pub async do go(self, id u64) {
-    mut iter = 0u64;
+    var iter = 0u64;
     while iter < 30u64 {
       oneLoop(iter, id);
       iter = iter + 1u64;
@@ -162,12 +162,12 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
   {
-    imm d = new Driver();
+    let d = new Driver();
     d.go(9u64);
-    imm t1 = thread.start(new Who(1u64), &threadMain);
-    imm t2 = thread.start(new Who(2u64), &threadMain);
-    imm t3 = thread.start(new Who(3u64), &threadMain);
-    imm t4 = thread.start(new Who(4u64), &threadMain);
+    let t1 = thread.start(new Who(1u64), &threadMain);
+    let t2 = thread.start(new Who(2u64), &threadMain);
+    let t3 = thread.start(new Who(3u64), &threadMain);
+    let t4 = thread.start(new Who(4u64), &threadMain);
     threadMain(new Who(0u64));
     t1.join();
     t2.join();

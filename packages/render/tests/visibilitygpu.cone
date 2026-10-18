@@ -67,7 +67,7 @@ fn px(p *u8, x usize, y usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)); 
 
 fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     camera &Camera, light &Light, list &DrawList) {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, color, depth, camera, light, list);
   encoder.copyTextureToBuffer(color, readback);
   device.queue.submit(encoder.finish());
@@ -76,8 +76,8 @@ fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &
 }
 
 fn snapshot(p *u8) List[u8] {
-  mut out = List[u8].withCapacity(BYTES);
-  mut i = 0usize;
+  var out = List[u8].withCapacity(BYTES);
+  var i = 0usize;
   while i < BYTES {
     out.push(*(p + i));
     i = i + 1usize;
@@ -87,11 +87,11 @@ fn snapshot(p *u8) List[u8] {
 
 // How many bytes of two pictures differ, and by how much at most
 fn differing(a &List[u8], b &List[u8], worst &mut f32) u32 {
-  mut n = 0u32;
+  var n = 0u32;
   *worst = 0.;
-  mut i = 0usize;
+  var i = 0usize;
   while i < BYTES {
-    imm d = absf(f32.from(*a[i]) - f32.from(*b[i]));
+    let d = absf(f32.from(*a[i]) - f32.from(*b[i]));
     if d > 0. { n = n + 1u32; }
     if d > *worst { *worst = d; }
     i = i + 1usize;
@@ -107,8 +107,8 @@ fn pictureOf(renderer &mut Renderer, device &mut Device, color &Texture, depth &
 }
 
 fn sun(elevation f32, azimuth f32, intensity f32, ambient f32) Light {
-  imm c = cos(elevation);
-  imm toSun = new Vec3(c * cos(azimuth), sin(elevation), c * sin(azimuth));
+  let c = cos(elevation);
+  let toSun = new Vec3(c * cos(azimuth), sin(elevation), c * sin(azimuth));
   Light.directional(new Vec3(0., 0., 0.) - toSun, Color.gray(intensity), Color.gray(ambient));
 }
 
@@ -123,17 +123,17 @@ struct Field {
 }
 
 fn makeField(renderer &mut Renderer, device &mut Device) Field {
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm ball = renderer.addMesh(device, &Mesh.sphere(1., 24));
-  imm slab = renderer.addMesh(device, &Mesh.plane(1, 1.));
-  mut lit = List[MaterialHandle].empty();
-  mut pbr = List[MaterialHandle].empty();
-  mut k = 0;
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let ball = renderer.addMesh(device, &Mesh.sphere(1., 24));
+  let slab = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  var lit = List[MaterialHandle].empty();
+  var pbr = List[MaterialHandle].empty();
+  var k = 0;
   while k < 3 {
-    imm c = new Color(0.9 - 0.3 * f32.from(k), 0.3 + 0.25 * f32.from(k), 0.4, 1.);
-    imm m = Material.plain(c);
+    let c = new Color(0.9 - 0.3 * f32.from(k), 0.3 + 0.25 * f32.from(k), 0.4, 1.);
+    let m = Material.plain(c);
     lit.push(renderer.addMaterial(device, &m));
-    imm pm = PbrMaterial.standard(c, 0.2 * f32.from(k), 0.6);
+    let pm = PbrMaterial.standard(c, 0.2 * f32.from(k), 0.6);
     pbr.push(renderer.addPbrMaterial(device, &pm));
     k = k + 1;
   }
@@ -147,15 +147,15 @@ struct Thing {
 }
 
 fn makeThings(field &Field, count i32) List[Thing] {
-  mut rng = new Rng(88172645463325252u64);
-  mut things = List[Thing].empty();
-  mut i = 0;
+  var rng = new Rng(88172645463325252u64);
+  var things = List[Thing].empty();
+  var i = 0;
   while i < count {
-    imm kind = i % 3;
-    imm mesh = if kind == 0 { field.cube; } elif kind == 1 { field.ball; } else { field.cube; };
-    imm p = new Vec3(rng.range(-30., 30.), rng.range(0.5, 3.), rng.range(-30., 8.));
-    imm s = rng.range(0.4, 1.6);
-    imm q = Quat.angleAxis(rng.range(0., 6.28), new Vec3(0., 1., 0.));
+    let kind = i % 3;
+    let mesh = if kind == 0 { field.cube; } elif kind == 1 { field.ball; } else { field.cube; };
+    let p = new Vec3(rng.range(-30., 30.), rng.range(0.5, 3.), rng.range(-30., 8.));
+    let s = rng.range(0.4, 1.6);
+    let q = Quat.angleAxis(rng.range(0., 6.28), new Vec3(0., 1., 0.));
     things.push(new Thing(mesh, u32.from(i % 3), Mat4.fromTrs(p, q, new Vec3(s, s * rng.range(0.6, 1.8), s))));
     i = i + 1;
   }
@@ -163,7 +163,7 @@ fn makeThings(field &Field, count i32) List[Thing] {
 }
 
 fn viewCamera() Camera {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(50.);
   camera.near = 0.3;
   camera.far = 120.;
@@ -173,12 +173,12 @@ fn viewCamera() Camera {
 }
 
 fn listOf(things &List[Thing], field &Field, pbr bool) DrawList {
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(field.slab, if pbr { *field.pbr[0usize]; } else { *field.lit[0usize]; },
     Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(100., 1., 100.)));
-  mut i = 0usize;
+  var i = 0usize;
   while i < things.len() {
-    imm t = things[i];
+    let t = things[i];
     list.add(t.mesh, if pbr { *field.pbr[usize.from(t.material)]; } else { *field.lit[usize.from(t.material)]; }, t.model);
     i = i + 1usize;
   }
@@ -186,12 +186,12 @@ fn listOf(things &List[Thing], field &Field, pbr bool) DrawList {
 }
 
 fn fillScene(renderer &mut Renderer, things &List[Thing], field &Field, pbr bool) List[SceneHandle] {
-  mut handles = List[SceneHandle].empty();
+  var handles = List[SceneHandle].empty();
   handles.push(renderer.addSceneItem(field.slab, if pbr { *field.pbr[0usize]; } else { *field.lit[0usize]; },
     Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(100., 1., 100.)), new Color(1., 1., 1., 1.)));
-  mut i = 0usize;
+  var i = 0usize;
   while i < things.len() {
-    imm t = things[i];
+    let t = things[i];
     handles.push(renderer.addSceneItem(t.mesh, if pbr { *field.pbr[usize.from(t.material)]; } else { *field.lit[usize.from(t.material)]; },
       t.model, new Color(1., 1., 1., 1.)));
     i = i + 1usize;
@@ -201,27 +201,27 @@ fn fillScene(renderer &mut Renderer, things &List[Thing], field &Field, pbr bool
 
 fn fieldChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, pbr bool,
     name &Array[u8]) {
-  imm field = makeField(renderer, device);
-  imm things = makeThings(&field, 160);
-  imm camera = viewCamera();
-  imm light = sun(radians(50.), radians(30.), 3., 0.2);
-  imm list = listOf(&things, &field, pbr);
-  imm empty = DrawList.empty();
-  imm want = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
-  imm wantInstances = renderer.instancesDrawn;
-  mut worst = 0.;
+  let field = makeField(renderer, device);
+  let things = makeThings(&field, 160);
+  let camera = viewCamera();
+  let light = sun(radians(50.), radians(30.), 3., 0.2);
+  let list = listOf(&things, &field, pbr);
+  let empty = DrawList.empty();
+  let want = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  let wantInstances = renderer.instancesDrawn;
+  var worst = 0.;
 
   // 1. Everything off
   renderer.vis.settings = VisibilitySettings.off();
-  imm handles = fillScene(renderer, &things, &field, pbr);
-  imm off = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let handles = fillScene(renderer, &things, &field, pbr);
+  let off = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
   expectUInt(u64.from(differing(&want, &off, &mut worst)), 0u64, name);
   expectUInt(u64.from(renderer.instancesDrawn), u64.from(wantInstances), "everything off draws all the instances");
 
   // 2. Culling on, nothing else (levels and ranges have nothing to do)
   renderer.vis.settings = new VisibilitySettings();
-  imm culled = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
-  imm n = differing(&want, &culled, &mut worst);
+  let culled = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let n = differing(&want, &culled, &mut worst);
   eprint <- "measured "; eprintStr(name as &str); eprint <- ": culling draws "; eprint <- u64.from(renderer.instancesDrawn);
   eprint <- " of "; eprint <- u64.from(wantInstances); eprint <- " instances, "; eprint <- u64.from(n); eprint <- " bytes differ\n";
   expectUInt(u64.from(n), 0u64, name);
@@ -229,29 +229,29 @@ fn fieldChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
   expectUInt(u64.from(renderer.vis.stats.items), 161u64, "the scene's items");
 
   // The scene beside a list: both draw
-  imm half = DrawList.empty();
-  mut mixed = DrawList.empty();
+  let half = DrawList.empty();
+  var mixed = DrawList.empty();
   mixed.add(field.cube, *field.lit[2usize], Mat4.fromTranslation(new Vec3(0., 1., 15.)));
-  imm withBoth = pictureOf(renderer, device, color, depth, readback, &camera, &light, &mixed);
+  let withBoth = pictureOf(renderer, device, color, depth, readback, &camera, &light, &mixed);
   expect(differing(&culled, &withBoth, &mut worst) > 100u32, "a list's item draws beside the scene's");
 
   // 4. A thing moved
-  imm k = 7usize;
-  mut moved = things;
-  imm old = *moved[k];
-  imm placed = Mat4.fromTrs(new Vec3(1., 1., 12.), Quat.identity(), new Vec3(1.5, 1.5, 1.5));
+  let k = 7usize;
+  var moved = things;
+  let old = *moved[k];
+  let placed = Mat4.fromTrs(new Vec3(1., 1., 12.), Quat.identity(), new Vec3(1.5, 1.5, 1.5));
   renderer.moveSceneItem(*handles[k + 1usize], placed);
   moved.set(k, new Thing(old.mesh, old.material, placed));
-  imm movedList = listOf(&moved, &field, pbr);
-  imm wantMoved = pictureOf(renderer, device, color, depth, readback, &camera, &light, &movedList);
+  let movedList = listOf(&moved, &field, pbr);
+  let wantMoved = pictureOf(renderer, device, color, depth, readback, &camera, &light, &movedList);
   // (the scene still holds the old place until the next draw: first the list's, then the scene's)
-  imm sceneMoved = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let sceneMoved = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
   expectUInt(u64.from(differing(&wantMoved, &sceneMoved, &mut worst)), 0u64, "a moved item draws where it was moved");
   expect(differing(&culled, &sceneMoved, &mut worst) > 50u32, "and the picture did change");
   renderer.moveSceneItem(*handles[k + 1usize], Mat4.fromTranslation(new Vec3(0., 1., 500.)));
-  imm gone = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let gone = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
   moved.set(k, new Thing(old.mesh, old.material, Mat4.fromTranslation(new Vec3(0., 1., 500.))));
-  imm wantGone = pictureOf(renderer, device, color, depth, readback, &camera, &light, &listOf(&moved, &field, pbr));
+  let wantGone = pictureOf(renderer, device, color, depth, readback, &camera, &light, &listOf(&moved, &field, pbr));
   expectUInt(u64.from(differing(&wantGone, &gone, &mut worst)), 0u64, "moved out of view: as if drawn there");
 
   // 5. Layers: put item 5 on layer 2, and draw with a mask of 1
@@ -263,52 +263,52 @@ fn fieldChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
 
 fn instancingChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     pbr bool, name &Array[u8]) {
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm c = new Color(0.8, 0.5, 0.2, 1.);
-  mut materials = List[MaterialHandle].empty();
-  mut i = 0;
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let c = new Color(0.8, 0.5, 0.2, 1.);
+  var materials = List[MaterialHandle].empty();
+  var i = 0;
   while i < 100 {
     if pbr {
-      imm pm = PbrMaterial.standard(c, 0.3, 0.5);
+      let pm = PbrMaterial.standard(c, 0.3, 0.5);
       materials.push(renderer.addPbrMaterial(device, &pm));
     } else {
-      imm m = Material.plain(c);
+      let m = Material.plain(c);
       materials.push(renderer.addMaterial(device, &m));
     }
     i = i + 1;
   }
-  mut together = DrawList.empty();
-  mut apart = DrawList.empty();
+  var together = DrawList.empty();
+  var apart = DrawList.empty();
   i = 0;
   while i < 100 {
-    imm p = new Vec3(f32.from(i % 10) * 1.6 - 7.2, f32.from(i / 10) * 1.2 - 5.4, f32.from((i * 7) % 5) * -0.8);
-    imm m = Mat4.fromTrs(p, Quat.angleAxis(f32.from(i) * 0.37, new Vec3(0.3, 1., 0.2).normalize()), new Vec3(0.55, 0.45, 0.5));
+    let p = new Vec3(f32.from(i % 10) * 1.6 - 7.2, f32.from(i / 10) * 1.2 - 5.4, f32.from((i * 7) % 5) * -0.8);
+    let m = Mat4.fromTrs(p, Quat.angleAxis(f32.from(i) * 0.37, new Vec3(0.3, 1., 0.2).normalize()), new Vec3(0.55, 0.45, 0.5));
     together.add(cube, *materials[0usize], m);
     apart.add(cube, *materials[usize.from(u32.from(i))], m);
     i = i + 1;
   }
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(45.);
   camera.lookAt(new Vec3(0., 0., 16.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0.05, 0.05, 0.1, 1.);
-  imm light = sun(radians(50.), radians(30.), 3., 0.2);
-  imm one = pictureOf(renderer, device, color, depth, readback, &camera, &light, &together);
+  let light = sun(radians(50.), radians(30.), 3., 0.2);
+  let one = pictureOf(renderer, device, color, depth, readback, &camera, &light, &together);
   expectUInt(u64.from(renderer.drawCalls), 1u64, name);
   expectUInt(u64.from(renderer.instancesDrawn), 100u64, "one batch of 100 instances");
-  imm many = pictureOf(renderer, device, color, depth, readback, &camera, &light, &apart);
+  let many = pictureOf(renderer, device, color, depth, readback, &camera, &light, &apart);
   expectUInt(u64.from(renderer.drawCalls), 100u64, "100 materials: 100 batches");
-  mut worst = 0.;
-  imm n = differing(&one, &many, &mut worst);
+  var worst = 0.;
+  let n = differing(&one, &many, &mut worst);
   expectUInt(u64.from(n), 0u64, name);
   // And as a scene: the same one batch, the same bytes
-  mut h = List[SceneHandle].empty();
+  var h = List[SceneHandle].empty();
   i = 0;
   while i < 100 {
     h.push(renderer.addSceneItem(cube, *materials[0usize], together.items[usize.from(u32.from(i))].model, new Color(1., 1., 1., 1.)));
     i = i + 1;
   }
-  imm empty = DrawList.empty();
-  imm viaScene = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let empty = DrawList.empty();
+  let viaScene = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
   expectUInt(u64.from(renderer.drawCalls), 1u64, "a scene's 100 are one draw too");
   expectUInt(u64.from(differing(&one, &viaScene, &mut worst)), 0u64, "and the same bytes");
   renderer.clearScene();
@@ -317,7 +317,7 @@ fn instancingChecks(renderer &mut Renderer, device &mut Device, color &Texture, 
 // ---- 6. Shadows from beside the view ----
 
 fn topDown() Camera {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
   camera.far = 100.;
@@ -331,51 +331,51 @@ fn dark() Light {
 }
 
 fn shadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
-  imm ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
-  imm lit = renderer.addMaterial(device, &m);
-  imm pm = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.);
-  imm pbr = renderer.addPbrMaterial(device, &pm);
-  imm camera = topDown();
-  imm empty = DrawList.empty();
-  mut worst = 0.;
-  mut pass = 0;
+  let ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
+  let lit = renderer.addMaterial(device, &m);
+  let pm = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 1.);
+  let pbr = renderer.addPbrMaterial(device, &pm);
+  let camera = topDown();
+  let empty = DrawList.empty();
+  var worst = 0.;
+  var pass = 0;
   while pass < 2 {
-    imm material = if pass == 0 { lit; } else { pbr; };
-    imm sunLight = sun(radians(45.), 0., 2.5132741, 0.1);
+    let material = if pass == 0 { lit; } else { pbr; };
+    let sunLight = sun(radians(45.), 0., 2.5132741, 0.1);
     // The ground and, beside the view at x = 7, a box 8 high: its top edge's shadow lands at x = 6 - 8 = -2
-    mut list = DrawList.empty();
+    var list = DrawList.empty();
     list.add(ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
     list.add(cube, material, Mat4.fromTrs(new Vec3(7., 4., 0.), Quat.identity(), new Vec3(1., 4., 1.)));
     // and some small things in view and out of it, to be batched
-    mut extra = 0;
+    var extra = 0;
     while extra < 12 {
       list.add(cube, material, Mat4.fromTrs(new Vec3(f32.from(extra) * 3. - 18., 0.5, f32.from(extra % 4) * 3. - 6.), Quat.identity(), new Vec3(0.4, 0.5, 0.4)));
       extra = extra + 1;
     }
-    imm tiers = [ShadowSettings.high(), ShadowSettings.low()];
-    mut tier = 0usize;
+    let tiers = [ShadowSettings.high(), ShadowSettings.low()];
+    var tier = 0usize;
     while tier < 2usize {
-      mut s = tiers[tier];
+      var s = tiers[tier];
       s.distance = 40.;
       renderer.setShadows(device, &s);
       renderer.clearScene();
-      imm wantReal = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &list);
-      mut i = 0usize;
+      let wantReal = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &list);
+      var i = 0usize;
       while i < list.items.len() {
-        imm it = list.items[i];
+        let it = list.items[i];
         renderer.addSceneItem(it.mesh, it.material, it.model, new Color(1., 1., 1., 1.));
         i = i + 1usize;
       }
       renderer.vis.settings = new VisibilitySettings();
-      imm got = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &empty);
+      let got = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &empty);
       expectUInt(u64.from(differing(&wantReal, &got, &mut worst)), 0u64, "a scene's shadows equal a list's, casters from beside the view");
       expectUInt(u64.from(renderer.vis.stats.casterSets), u64.from(renderer.shadow.cascades.count), "each cascade gathered its own casters");
       expect(renderer.vis.stats.casters > 0u32, "and found some");
       renderer.vis.settings.shadowCulling = false;
-      imm lost = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &empty);
-      imm n = differing(&wantReal, &lost, &mut worst);
+      let lost = pictureOf(renderer, device, color, depth, readback, &camera, &sunLight, &empty);
+      let n = differing(&wantReal, &lost, &mut worst);
       eprint <- "measured shadows from beside the view, casters from the view's own set: "; eprint <- u64.from(n); eprint <- " bytes differ\n";
       expect(n > 500u32, "casters taken from what the view sees lose a shadow from beside it");
       tier = tier + 1usize;
@@ -387,49 +387,49 @@ fn shadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, dept
 }
 
 fn localShadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, pointLight bool) {
-  imm ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
-  imm lit = renderer.addMaterial(device, &m);
-  imm camera = topDown();
-  imm empty = DrawList.empty();
+  let ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
+  let lit = renderer.addMaterial(device, &m);
+  let camera = topDown();
+  let empty = DrawList.empty();
   renderer.environmentStrength = 0.;
   renderer.lights.clear();
-  imm at = new Vec3(12., 12., 0.);
-  imm lamp = if pointLight {
+  let at = new Vec3(12., 12., 0.);
+  let lamp = if pointLight {
     renderer.lights.addPoint(at, Color.gray(1.), 3000., 40.);
   } else {
     renderer.lights.addSpot(at, new Vec3(-12., -12., 0.), Color.gray(1.), 3000., 40., radians(40.), radians(50.));
   };
   renderer.lights.setCastsShadow(lamp, true);
-  imm settings = LightShadowSettings.medium();
+  let settings = LightShadowSettings.medium();
   renderer.setLightShadows(device, &settings);
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(ground, lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   list.add(cube, lit, Mat4.fromTrs(new Vec3(7., 4., 0.), Quat.identity(), new Vec3(1., 4., 1.)));
-  mut i = 0usize;
+  var i = 0usize;
   while i < list.items.len() {
-    imm it = list.items[i];
+    let it = list.items[i];
     renderer.addSceneItem(it.mesh, it.material, it.model, new Color(1., 1., 1., 1.));
     i = i + 1usize;
   }
   renderer.vis.settings = VisibilitySettings.off();
-  imm light = dark();
-  imm want = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
-  imm viaOff = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
-  mut worst = 0.;
+  let light = dark();
+  let want = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  let viaOff = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  var worst = 0.;
   expectUInt(u64.from(differing(&want, &viaOff, &mut worst)), 0u64, "a light's shadows, the scene with everything off");
   expect(renderer.lights.isShadowed(lamp), "the light has a shadow view");
   renderer.vis.settings = new VisibilitySettings();
-  imm got = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let got = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
   expectUInt(u64.from(differing(&want, &got, &mut worst)), 0u64, "a light's shadows from a box beside the view, casters gathered by the face's volume");
   expect(renderer.vis.stats.casterSets >= 1u32, "the light's faces gathered their own casters");
   renderer.vis.settings.shadowCulling = false;
-  imm lost = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+  let lost = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
   expect(differing(&want, &lost, &mut worst) > 300u32, "from the view's own set the shadow is lost");
   renderer.clearScene();
   renderer.lights.clear();
-  imm off = LightShadowSettings.off();
+  let off = LightShadowSettings.off();
   renderer.setLightShadows(device, &off);
   renderer.environmentStrength = 1.;
 }
@@ -438,12 +438,12 @@ fn localShadowChecks(renderer &mut Renderer, device &mut Device, color &Texture,
 
 // A square 4 across in the plane z = 0 facing 'normal'
 fn quad(normal Vec3) Mesh {
-  mut m = Mesh.empty();
+  var m = Mesh.empty();
   m.positions.push(new Vec3(-2., -2., 0.));
   m.positions.push(new Vec3(2., -2., 0.));
   m.positions.push(new Vec3(2., 2., 0.));
   m.positions.push(new Vec3(-2., 2., 0.));
-  mut k = 0;
+  var k = 0;
   while k < 4 {
     m.normals.push(normal);
     m.uvs.push(new Vec2(0., 0.));
@@ -455,7 +455,7 @@ fn quad(normal Vec3) Mesh {
 }
 
 fn faceCamera(distance f32) Camera {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
   camera.far = 400.;
@@ -471,16 +471,16 @@ fn frontLight() Light {
 // Of the pixels that 'a' and 'b' draw differently: how many 'p' draws as 'a',
 // as 'b', and as neither
 fn classify(a &List[u8], b &List[u8], p &List[u8], ofA &mut u32, ofB &mut u32, neither &mut u32) u32 {
-  mut total = 0u32;
+  var total = 0u32;
   *ofA = 0u32;
   *ofB = 0u32;
   *neither = 0u32;
-  mut i = 0usize;
+  var i = 0usize;
   while i < BYTES {
-    mut differs = false;
-    mut matchA = true;
-    mut matchB = true;
-    mut c = 0usize;
+    var differs = false;
+    var matchA = true;
+    var matchB = true;
+    var c = 0usize;
     while c < 3usize {
       if *a[i + c] != *b[i + c] { differs = true; }
       if *p[i + c] != *a[i + c] { matchA = false; }
@@ -497,47 +497,47 @@ fn classify(a &List[u8], b &List[u8], p &List[u8], ofA &mut u32, ofB &mut u32, n
 }
 
 fn levelChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
-  imm meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
-  imm meshB = renderer.addMesh(device, &quad(new Vec3(0.6, 0., 0.8)));
-  imm m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
-  imm lit = renderer.addMaterial(device, &m);
-  imm light = frontLight();
-  imm empty = DrawList.empty();
-  imm model = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(1., 1., 1.));
+  let meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
+  let meshB = renderer.addMesh(device, &quad(new Vec3(0.6, 0., 0.8)));
+  let m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
+  let lit = renderer.addMaterial(device, &m);
+  let light = frontLight();
+  let empty = DrawList.empty();
+  let model = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(1., 1., 1.));
   // The two levels alone, at the far distance
-  mut la = DrawList.empty();
+  var la = DrawList.empty();
   la.add(meshA, lit, model);
-  mut lb = DrawList.empty();
+  var lb = DrawList.empty();
   lb.add(meshB, lit, model);
-  imm far = faceCamera(20.);
-  imm pictureA = pictureOf(renderer, device, color, depth, readback, &far, &light, &la);
-  imm pictureB = pictureOf(renderer, device, color, depth, readback, &far, &light, &lb);
+  let far = faceCamera(20.);
+  let pictureA = pictureOf(renderer, device, color, depth, readback, &far, &light, &la);
+  let pictureB = pictureOf(renderer, device, color, depth, readback, &far, &light, &lb);
 
   // The chain: A while at least 120 pixels, B under
-  mut chain = LodChain.empty(0.1);
+  var chain = LodChain.empty(0.1);
   chain.add(meshA, 120.);
   chain.add(meshB, 0.);
-  imm h = renderer.addSceneItem(meshA, lit, model, new Color(1., 1., 1., 1.));
+  let h = renderer.addSceneItem(meshA, lit, model, new Color(1., 1., 1., 1.));
   renderer.setSceneLod(h, &chain);
   renderer.vis.settings = new VisibilitySettings();
   renderer.vis.settings.fadeSeconds = 0.5;
   renderer.vis.settings.timeStep = 0.1;
   // Near: level 0 alone, first sight (the quad is 4 across: radius 2.83, at 10 away about 199 pixels)
-  imm near10 = faceCamera(10.);
+  let near10 = faceCamera(10.);
   drawFrame(renderer, device, color, depth, readback, &near10, &light, &empty);
   expectUInt(u64.from(renderer.instancesDrawn), 1u64, "near: one draw");
   // Far: a cross-fade
-  mut ofA = 0u32;
-  mut ofB = 0u32;
-  mut neither = 0u32;
-  mut worstShare = 0.;
-  mut k = 1;
+  var ofA = 0u32;
+  var ofB = 0u32;
+  var neither = 0u32;
+  var worstShare = 0.;
+  var k = 1;
   while k <= 5 {
-    imm picture = pictureOf(renderer, device, color, depth, readback, &far, &light, &empty);
-    imm total = classify(&pictureA, &pictureB, &picture, &mut ofA, &mut ofB, &mut neither);
-    imm t = f32.from(k) * 0.2;
-    imm shareA = f32.from(ofA) / f32.from(total);
-    imm shareB = f32.from(ofB) / f32.from(total);
+    let picture = pictureOf(renderer, device, color, depth, readback, &far, &light, &empty);
+    let total = classify(&pictureA, &pictureB, &picture, &mut ofA, &mut ofB, &mut neither);
+    let t = f32.from(k) * 0.2;
+    let shareA = f32.from(ofA) / f32.from(total);
+    let shareB = f32.from(ofB) / f32.from(total);
     eprint <- "measured cross-fade frame "; eprint <- u64.from(u32.from(k)); eprint <- ": of "; eprint <- u64.from(total);
     eprint <- " pixels the old level draws "; eprint <- shareA; eprint <- " (want "; eprint <- (1. - t);
     eprint <- "), the new "; eprint <- shareB; eprint <- " (want "; eprint <- t; eprint <- "), "; eprint <- u64.from(neither); eprint <- " neither\n";
@@ -551,45 +551,45 @@ fn levelChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
   // With cross-fade off, a switch is a pop
   renderer.vis.settings.crossFade = false;
   drawFrame(renderer, device, color, depth, readback, &near10, &light, &empty);
-  imm popped = pictureOf(renderer, device, color, depth, readback, &far, &light, &empty);
-  imm popTotal = classify(&pictureA, &pictureB, &popped, &mut ofA, &mut ofB, &mut neither);
+  let popped = pictureOf(renderer, device, color, depth, readback, &far, &light, &empty);
+  let popTotal = classify(&pictureA, &pictureB, &popped, &mut ofA, &mut ofB, &mut neither);
   expectUInt(u64.from(ofB), u64.from(popTotal), "cross-fade off: the new level alone at once");
   renderer.clearScene();
 }
 
 fn rangeChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
-  imm meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
-  imm m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
-  imm lit = renderer.addMaterial(device, &m);
-  imm light = frontLight();
-  imm empty = DrawList.empty();
-  imm model = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(5., 5., 5.));
-  imm h = renderer.addSceneItem(meshA, lit, model, new Color(1., 1., 1., 1.));
+  let meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
+  let m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
+  let lit = renderer.addMaterial(device, &m);
+  let light = frontLight();
+  let empty = DrawList.empty();
+  let model = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(5., 5., 5.));
+  let h = renderer.addSceneItem(meshA, lit, model, new Color(1., 1., 1., 1.));
   renderer.setSceneRange(h, 0., 100., 40.);
   renderer.vis.settings = new VisibilitySettings();
-  imm bg = DrawList.empty();
-  mut ofFull = 0u32;
-  mut ofBg = 0u32;
-  mut neither = 0u32;
-  mut worst = 0.;
-  mut dists = [50., 80., 90., 101.];
-  mut wants = [1., 0.5, 0.25, 0.];
-  mut k = 0usize;
+  let bg = DrawList.empty();
+  var ofFull = 0u32;
+  var ofBg = 0u32;
+  var neither = 0u32;
+  var worst = 0.;
+  var dists = [50., 80., 90., 101.];
+  var wants = [1., 0.5, 0.25, 0.];
+  var k = 0usize;
   while k < 4usize {
-    imm camera = faceCamera(dists[k]);
+    let camera = faceCamera(dists[k]);
     renderer.vis.settings.ranges = false;
-    imm full = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+    let full = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
     renderer.vis.settings.ranges = true;
-    imm got = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
+    let got = pictureOf(renderer, device, color, depth, readback, &camera, &light, &empty);
     // Against the picture with the quad and the picture of nothing (a blank)
-    mut blank = List[u8].empty();
-    mut i = 0usize;
+    var blank = List[u8].empty();
+    var i = 0usize;
     while i < BYTES {
       blank.push(if i % 4usize == 3usize { 255u8; } else { 0u8; });
       i = i + 1usize;
     }
-    imm total = classify(&full, &blank, &got, &mut ofFull, &mut ofBg, &mut neither);
-    imm share = f32.from(ofFull) / f32.from(total);
+    let total = classify(&full, &blank, &got, &mut ofFull, &mut ofBg, &mut neither);
+    let share = f32.from(ofFull) / f32.from(total);
     eprint <- "measured a range's fade at "; eprint <- dists[k]; eprint <- " away: "; eprint <- share; eprint <- " of "; eprint <- u64.from(total);
     eprint <- " pixels drawn (want "; eprint <- wants[k]; eprint <- "), "; eprint <- u64.from(neither); eprint <- " neither\n";
     expectUInt(u64.from(neither), 0u64, "a faded pixel is the quad's or the background's");
@@ -603,16 +603,16 @@ fn rangeChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
 // ---- 5. Layers ----
 
 fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm m = Material.plain(new Color(0.9, 0.5, 0.2, 1.));
-  imm lit = renderer.addMaterial(device, &m);
-  imm a = renderer.addSceneItem(cube, lit, Mat4.fromTranslation(new Vec3(-3., 0., 0.)), new Color(1., 1., 1., 1.));
-  imm b = renderer.addSceneItem(cube, lit, Mat4.fromTranslation(new Vec3(3., 0., 0.)), new Color(1., 1., 1., 1.));
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let m = Material.plain(new Color(0.9, 0.5, 0.2, 1.));
+  let lit = renderer.addMaterial(device, &m);
+  let a = renderer.addSceneItem(cube, lit, Mat4.fromTranslation(new Vec3(-3., 0., 0.)), new Color(1., 1., 1., 1.));
+  let b = renderer.addSceneItem(cube, lit, Mat4.fromTranslation(new Vec3(3., 0., 0.)), new Color(1., 1., 1., 1.));
   renderer.setSceneLayers(a, 2u32);
   renderer.vis.settings = new VisibilitySettings();
-  mut view = RenderView.create(renderer, device, 64u32, 64u32);
-  imm camera = faceCamera(14.);
-  imm light = frontLight();
+  var view = RenderView.create(renderer, device, 64u32, 64u32);
+  let camera = faceCamera(14.);
+  let light = frontLight();
   view.layerMask = 1u32;
   view.render(renderer, device, &camera, &light, &DrawList.empty(), 1u32);
   expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "a view on layer 1 draws the one item on layer 1");
@@ -629,7 +629,7 @@ fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
 // ---- 10. Occlusion by the depth pyramid ----
 
 fn boxesCamera(x f32, y f32) Camera {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(50.);
   camera.near = 0.5;
   camera.far = 200.;
@@ -640,39 +640,39 @@ fn boxesCamera(x f32, y f32) Camera {
 
 fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, readback &Buffer, pbr bool) {
   // A depth buffer the pyramid may sample
-  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+  let depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-  mut depth = device.createTexture(&depthDesc);
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm gray = new Color(0.7, 0.4, 0.2, 1.);
-  imm wallColor = new Color(0.3, 0.5, 0.7, 1.);
-  mut boxMaterial = MaterialHandle.none();
-  mut wallMaterial = MaterialHandle.none();
+  var depth = device.createTexture(&depthDesc);
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let gray = new Color(0.7, 0.4, 0.2, 1.);
+  let wallColor = new Color(0.3, 0.5, 0.7, 1.);
+  var boxMaterial = MaterialHandle.none();
+  var wallMaterial = MaterialHandle.none();
   if pbr {
-    imm a = PbrMaterial.standard(gray, 0., 0.6);
-    imm b = PbrMaterial.standard(wallColor, 0., 0.6);
+    let a = PbrMaterial.standard(gray, 0., 0.6);
+    let b = PbrMaterial.standard(wallColor, 0., 0.6);
     boxMaterial = renderer.addPbrMaterial(device, &a);
     wallMaterial = renderer.addPbrMaterial(device, &b);
   } else {
-    imm a = Material.plain(gray);
-    imm b = Material.plain(wallColor);
+    let a = Material.plain(gray);
+    let b = Material.plain(wallColor);
     boxMaterial = renderer.addMaterial(device, &a);
     wallMaterial = renderer.addMaterial(device, &b);
   }
-  imm light = sun(radians(50.), radians(30.), 3., 0.2);
-  imm empty = DrawList.empty();
+  let light = sun(radians(50.), radians(30.), 3., 0.2);
+  let empty = DrawList.empty();
   // The wall, 12 across and 12 high, at z = 0; behind it, 10 back, a box hidden by it (x = 0),
   // one that peeks round its edge (x from 8 to 10: the wall's edge is at 0.3 of the way
   // to the side and the box spans 0.267 to 0.333), one wholly beside it, and
   // a row of hidden ones; in front, one visible box
-  imm wall = renderer.addSceneItem(cube, wallMaterial, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(6., 6., 0.25)),
+  let wall = renderer.addSceneItem(cube, wallMaterial, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(6., 6., 0.25)),
     new Color(1., 1., 1., 1.));
   renderer.setSceneOccludable(wall, false);
-  imm hidden = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(0., 0., -10.)), new Color(1., 1., 1., 1.));
-  imm peeking = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(9., 0., -10.)), new Color(1., 1., 1., 1.));
-  imm beside = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(-14., 0., -10.)), new Color(1., 1., 1., 1.));
-  imm front = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(0., -2., 10.)), new Color(1., 1., 1., 1.));
-  mut row = 0;
+  let hidden = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(0., 0., -10.)), new Color(1., 1., 1., 1.));
+  let peeking = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(9., 0., -10.)), new Color(1., 1., 1., 1.));
+  let beside = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(-14., 0., -10.)), new Color(1., 1., 1., 1.));
+  let front = renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(0., -2., 10.)), new Color(1., 1., 1., 1.));
+  var row = 0;
   while row < 5 {
     renderer.addSceneItem(cube, boxMaterial, Mat4.fromTranslation(new Vec3(f32.from(row) * 2. - 4., f32.from(row % 2) * 2. - 1., -20.)),
       new Color(1., 1., 1., 1.));
@@ -680,24 +680,24 @@ fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, r
   }
   expectUInt(u64.from(renderer.vis.count()), 10u64, "ten items");
   if renderer.hiz.len() > 0usize { renderer.hiz[0usize].valid = false; }
-  mut worst = 0.;
-  imm cameraA = boxesCamera(0., 0.);
-  imm cameraB = boxesCamera(0., 30.);
+  var worst = 0.;
+  let cameraA = boxesCamera(0., 0.);
+  let cameraB = boxesCamera(0., 30.);
   renderer.vis.settings = new VisibilitySettings();
-  imm offA = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
-  imm offB = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
+  let offA = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  let offB = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
   expect(differing(&offA, &offB, &mut worst) > 1000u32, "(the two cameras see different pictures)");
   renderer.vis.settings.occlusion = true;
   renderer.vis.settings.occlusionStats = true;
 
   // Frame 1: no pyramid yet: everything passes the first test
-  imm on1 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  let on1 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
   renderer.hiz[0usize].readStats();
   expectUInt(u64.from(renderer.hiz[0usize].candidateCount), 9u64, "nine candidates: every box but the wall");
   expectUInt(u64.from(renderer.hiz[0usize].passed0), 9u64, "the first frame has no pyramid: all nine pass the first test");
   expectUInt(u64.from(differing(&offA, &on1, &mut worst)), 0u64, "and draw the picture occlusion off draws");
   // Frame 2: the pyramid of frame 1 hides the box behind the wall and the row
-  imm on2 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  let on2 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
   renderer.hiz[0usize].readStats();
   eprint <- "measured occlusion, second frame: "; eprint <- u64.from(renderer.hiz[0usize].passed0); eprint <- " pass the first test, ";
   eprint <- u64.from(renderer.hiz[0usize].passed1); eprint <- " the retest, of 9\n";
@@ -706,29 +706,29 @@ fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, r
   expect(renderer.hiz[0usize].passed0 >= 3u32, "the front, the peeking and the beside box pass the first test");
   expect(renderer.hiz[0usize].passed0 + renderer.hiz[0usize].passed1 >= 3u32, "none of the visible ones is lost");
   // A third frame, the same
-  imm on3 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  let on3 = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
   expectUInt(u64.from(differing(&offA, &on3, &mut worst)), 0u64, "a third frame draws the same");
 
   // The camera moves up over the wall: the box it hid is in view. The old
   // pyramid hides it in the first test; the retest after the new depth finds it
-  imm moved = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
+  let moved = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
   renderer.hiz[0usize].readStats();
   eprint <- "measured occlusion, camera moved: "; eprint <- u64.from(renderer.hiz[0usize].passed0); eprint <- " pass the first test, ";
   eprint <- u64.from(renderer.hiz[0usize].passed1); eprint <- " the retest\n";
   expectUInt(u64.from(differing(&offB, &moved, &mut worst)), 0u64, "false negatives are retested: the camera moved and the picture is the one occlusion off draws");
   expect(renderer.hiz[0usize].passed1 >= 1u32, "the box the old pyramid hid is drawn by the second draw");
   // And the next frame has the new pyramid
-  imm moved2 = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
+  let moved2 = pictureOf(renderer, device, color, &depth, readback, &cameraB, &light, &empty);
   expectUInt(u64.from(differing(&offB, &moved2, &mut worst)), 0u64, "and the one after");
 
   // A box moved behind the wall is culled; moved out again, it is back
   renderer.moveSceneItem(front, Mat4.fromTranslation(new Vec3(0., 0., -3.)));
   pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
-  imm hiddenFront = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  let hiddenFront = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
   renderer.hiz[0usize].readStats();
   expect(renderer.hiz[0usize].passed0 + renderer.hiz[0usize].passed1 <= 4u32, "a box moved behind the wall is culled too");
   renderer.vis.settings.occlusion = false;
-  imm hiddenOff = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
+  let hiddenOff = pictureOf(renderer, device, color, &depth, readback, &cameraA, &light, &empty);
   expectUInt(u64.from(differing(&hiddenOff, &hiddenFront, &mut worst)), 0u64, "and the picture is unchanged");
   renderer.clearScene();
 }
@@ -736,61 +736,61 @@ fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, r
 // ---- 11. Grouping by hash equals sorting ----
 
 fn groupingChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
-  imm cube = renderer.addMesh(device, &Mesh.cube(1.));
-  imm ball = renderer.addMesh(device, &Mesh.sphere(1., 8));
-  mut materials = List[MaterialHandle].empty();
-  mut k = 0;
+  let cube = renderer.addMesh(device, &Mesh.cube(1.));
+  let ball = renderer.addMesh(device, &Mesh.sphere(1., 8));
+  var materials = List[MaterialHandle].empty();
+  var k = 0;
   while k < 3 {
-    imm m = Material.plain(new Color(0.9 - 0.3 * f32.from(k), 0.3 + 0.25 * f32.from(k), 0.4, 1.));
+    let m = Material.plain(new Color(0.9 - 0.3 * f32.from(k), 0.3 + 0.25 * f32.from(k), 0.4, 1.));
     materials.push(renderer.addMaterial(device, &m));
     k = k + 1;
   }
   // 3,000 separate small things on a grid, 3 materials and 2 meshes
-  mut list = DrawList.empty();
-  mut i = 0;
+  var list = DrawList.empty();
+  var i = 0;
   while i < 3000 {
-    imm p = new Vec3(f32.from(i % 60) * 0.5 - 14.75, f32.from(i / 60) * 0.5 - 12.25, 0.);
+    let p = new Vec3(f32.from(i % 60) * 0.5 - 14.75, f32.from(i / 60) * 0.5 - 12.25, 0.);
     list.add(if i % 7 == 0 { ball; } else { cube; }, *materials[usize.from(u32.from(i % 3))],
       Mat4.fromTrs(p, Quat.identity(), new Vec3(0.18, 0.18, 0.18)));
     i = i + 1;
   }
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(50.);
   camera.lookAt(new Vec3(0., 0., 30.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0.05, 0.05, 0.1, 1.);
-  imm light = sun(radians(50.), radians(30.), 3., 0.2);
+  let light = sun(radians(50.), radians(30.), 3., 0.2);
   renderer.bucketMin = 1000000usize;
-  imm sorted = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
-  imm sortedDraws = renderer.drawCalls;
+  let sorted = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  let sortedDraws = renderer.drawCalls;
   renderer.bucketMin = 2048usize;
-  imm grouped = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
-  mut worst = 0.;
+  let grouped = pictureOf(renderer, device, color, depth, readback, &camera, &light, &list);
+  var worst = 0.;
   expectUInt(u64.from(differing(&sorted, &grouped, &mut worst)), 0u64, "3,000 items grouped by hash draw the picture sorting draws");
   expectUInt(u64.from(renderer.drawCalls), u64.from(sortedDraws), "in the same draws");
   expect(renderer.instancesDrawn == 3000u32 and sortedDraws == 6u32, "six batches of 3,000 instances");
 }
 
 fn main() i32 {
-  mut instance = Instance.create("render visibility");
+  var instance = Instance.create("render visibility");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
   eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
-  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
+  let targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&targetDesc);
-  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var color = device.createTexture(&targetDesc);
+  let depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
 
   fieldChecks(&mut renderer, &mut device, &color, &depth, &readback, false, "the scene with everything off equals the list (lit)");

@@ -45,14 +45,14 @@ actor Meter {
   reading u64;
 
   pub async do stale(self) {
-    imm r = &reading;
-    imm t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 50:16"
+    let r = &reading;
+    let t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 50:16"
     reading = *r + t;
   }
 
   pub async do fresh(self) {
-    imm t = await clock.now();
-    imm r = &reading;           // borrowed after the 'await'
+    let t = await clock.now();
+    let r = &reading;           // borrowed after the 'await'
     reading = *r + t;
   }
 // manual: end
@@ -63,7 +63,7 @@ actor Meter {
   }
 
   pub async do bound(self) {
-    imm c = compute();
+    let c = compute();
     reading = add(&c, await clock.now());          // c is borrowed after the 'await'
   }
 // manual: end
@@ -75,8 +75,8 @@ actor Tally {
   clock Clock;
 
   pub async do held(self) {
-    imm c = &mut *count;          // takes the lock
-    imm t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5"
+    let c = &mut *count;          // takes the lock
+    let t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5"
     c.n += t;
   }
 }
@@ -88,7 +88,7 @@ actor Reporter {
   last u64;
 
   pub async do report(self) {
-    imm t = await clock.now();    // the 'await', at the top of the behaviour
+    let t = await clock.now();    // the 'await', at the top of the behaviour
     last = self.format(t);        // the synchronous work, pushed down
   }
 
@@ -129,7 +129,7 @@ actor Waiter {
   }
 
   pub async do repeated(self) {
-    mut v = List[u64].empty();
+    var v = List[u64].empty();
     v <- 3 of await clock.now();  //~ ErrorUnbuiltAwait "it stands among the entries a '<-' appends"
   }
 }
@@ -148,9 +148,9 @@ actor Desk {
   printer Printer;
 
   pub async do twice(self) u64 {
-    imm r = printer.render(10u64);
-    imm report = await r;
-    imm again = await r;          //~ ErrorMove "This variable's value has been moved out"
+    let r = printer.render(10u64);
+    let report = await r;
+    let again = await r;          //~ ErrorMove "This variable's value has been moved out"
     report.lines;
   }
 }
@@ -162,7 +162,7 @@ actor Keeper {
 
   pub async do keep(self) {
     log.flush();                  // sent, and forgotten
-    imm f = log.flush();          //~ ErrorFutureVoid "flush returns nothing, so its call gives no future to keep"
+    let f = log.flush();          //~ ErrorFutureVoid "flush returns nothing, so its call gives no future to keep"
   }
 }
 // manual: end

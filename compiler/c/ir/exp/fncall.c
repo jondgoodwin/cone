@@ -1178,7 +1178,7 @@ void fnCallDemandCandidates(INode *binding) {
 
 static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 
-// A receiver held as a value -- 'v.push(x)' for a 'mut v List[i64]' -- reaches
+// A receiver held as a value -- 'v.push(x)' for a 'var v List[i64]' -- reaches
 // a method that declared 'self &' or 'self &mut' by being borrowed, as though
 // '(&v).len()' or '(&mut v).push(x)' had been written: "Cone will automatically
 // transform 'self' to a mutable borrowed reference" (doc/manual/
@@ -1345,7 +1345,7 @@ static INode *fnCallTagTest = NULL;
 // ('x == None', 'event == Lamp.Off'): the other operand is that variant or
 // is not, so the comparison asks the tag alone, whatever the other variants
 // carry, as 'x is &None' does of a borrow. The other operand is the enum or one of
-// its variants (a variable holding the first 'imm s = Size.Large; s == Size.Large'),
+// its variants (a variable holding the first 'let s = Size.Large; s == Size.Large'),
 // a value or a borrow of it. Two operands that both carry fields
 // are not asked this way (fnCallLowerEnumEq). Lowers the call to the test, left
 // for fnCallTypeCheck to put in its place, and answers 1; answers 0, touching
@@ -1824,7 +1824,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             && structIsTypeVariant((StructNode*)objdereftype)) {
             StructNode *variant = (StructNode*)objdereftype;
             errorMsgNode((INode*)callnode, ErrorNoMbr,
-                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case imm n %s', gives the %s.",
+                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case let n %s', gives the %s.",
                 &methsym->namestr, &variant->namesym->namestr, &variant->namesym->namestr,
                 &variant->namesym->namestr, itypeName(structTypeVariantField(variant)->vtype));
             return -1;
@@ -2741,7 +2741,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
         nodesGet(callnode->args, 0) = (INode *)opname;
     }
 
-    // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
+    // Let's try rewriting to: {let tmp = lval; *tmp = *tmp + expr}
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     inodeLexCopy((INode*)tmpvar, (INode*)callnode);
     NameUseNode *tmpname = newNameUseNode(tempName);

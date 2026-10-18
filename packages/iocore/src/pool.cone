@@ -61,7 +61,7 @@ struct JobBox {
 }
 
 fn newBox(work WorkFn, arg u64, w Waker, rec u32, gen u32, lane *LaneState) *JobBox {
-  imm b = libc.malloc(mem.sizeof[JobBox]()) as *JobBox;
+  let b = libc.malloc(mem.sizeof[JobBox]()) as *JobBox;
   if b as usize == 0usize {panic("iocore: out of memory for a blocking job");}
   mem.writeRaw[JobBox](b, new JobBox(work: work, arg: arg, buf: IoBuf.empty(),
     waker: Some[Waker](w), rec: rec, gen: gen, lane: lane, asked: Atomic[u32].of(0u32), state: boxQueued,
@@ -96,11 +96,11 @@ pub struct Lane {
 
   // Its counters, as they are now
   pub fn stats(self) LaneStats {
-    imm l = laneAt(id);
+    let l = laneAt(id);
     if l as usize == 0usize {return LaneStats.zero();}
-    imm s = l as &mut LaneState;
+    let s = l as &mut LaneState;
     s.lock.lock();
-    imm st = new LaneStats(s.queued, s.maxQueued, s.running, s.threads, s.maxThreads,
+    let st = new LaneStats(s.queued, s.maxQueued, s.running, s.threads, s.maxThreads,
       s.started, s.ran, s.cancelled, s.refused, s.waitNs, s.maxWaitNs);
     s.lock.unlock();
     st;
@@ -169,10 +169,10 @@ const maxLanes = 64u32;
 // the table is made, and the default lanes in it, in the module's 'init'
 // (iocore.cone); a lane added later is put in under laneLock, and entries are
 // read without the lock, so the count is an atomic and the table's address one,
-// both held by 'imm' globals
-imm laneLock Mutex;
-imm laneTable Atomic[*usize];
-imm laneCount Atomic[u32];
+// both held by 'let' globals
+let laneLock Mutex;
+let laneTable Atomic[*usize];
+let laneCount Atomic[u32];
 
 // The two lanes every process has (three on Linux), made by 'init' before any
 // thread can reach them. A lane keeps no thread until it has work, so this
@@ -198,16 +198,16 @@ pub fn addLane(cfg LaneConfig, file &Array[u8] = srcFile(), line u32 = srcLine()
     laneLock.unlock();
     panic("iocore: more than 64 lanes in the blocking pool", file, line);
   }
-  imm l = addLaneLocked(cfg);
+  let l = addLaneLocked(cfg);
   laneLock.unlock();
   l;
 }
 
 fn @initpure addLaneLocked(cfg LaneConfig) Lane {
-  imm p = libc.malloc(mem.sizeof[LaneState]()) as *LaneState;
+  let p = libc.malloc(mem.sizeof[LaneState]()) as *LaneState;
   if p as usize == 0usize {panic("iocore: out of memory for a lane");}
-  mut name = new Array[u8, 32] <- fill 0u8;
-  mut k = 0usize;
+  var name = new Array[u8, 32] <- fill 0u8;
+  var k = 0usize;
   while k < cfg.name.len() and k < 31usize {
     name[k] = cfg.name[k];
     k = k + 1usize;
@@ -221,12 +221,12 @@ fn @initpure addLaneLocked(cfg LaneConfig) Lane {
     idleFor: Duration.fromMillis(i64.from(cfg.idleMillis)),
     started: 0u64, ran: 0u64, cancelled: 0u64, refused: 0u64, waitNs: 0u64, maxWaitNs: 0u64,
     name: name, nameLen: k));
-  imm id = laneCount.load();
+  let id = laneCount.load();
   *(laneTable.load() + usize.from(id)) = p as usize;
   laneCount.store(id + 1u32);
   // The threads it keeps even when idle
-  imm s = p as &mut LaneState;
-  mut started = 0u32;
+  let s = p as &mut LaneState;
+  var started = 0u32;
   while started < s.minThreads and started < s.maxThreads {
     s.threads = s.threads + 1u32;
     s.started = s.started + 1u64;
@@ -249,8 +249,8 @@ struct WorkerArg is Sendable {
 }
 
 fn startWorker(l *LaneState) {
-  imm s = l as &mut LaneState;
-  imm t = thread.startWith(new thread.Options(name: &s.name[0usize ..< s.nameLen] as &str),
+  let s = l as &mut LaneState;
+  let t = thread.startWith(new thread.Options(name: &s.name[0usize ..< s.nameLen] as &str),
     new WorkerArg(l), &worker);
   t.detach();
 }
@@ -259,12 +259,12 @@ fn startWorker(l *LaneState) {
 // home; wait while there is none, and leave after the lane's idle time if
 // it has more threads than its least
 fn worker(a WorkerArg) {
-  imm s = a.lane as &mut LaneState;
+  let s = a.lane as &mut LaneState;
   s.lock.lock();
   while true {
     if s.head as usize == 0usize {
       s.idle = s.idle + 1u32;
-      imm signalled = s.ready.condWaitTimeout(&s.lock, s.idleFor);
+      let signalled = s.ready.condWaitTimeout(&s.lock, s.idleFor);
       s.idle = s.idle - 1u32;
       if s.head as usize == 0usize and not signalled and s.threads > s.minThreads {
         s.threads = s.threads - 1u32;
@@ -273,11 +273,11 @@ fn worker(a WorkerArg) {
       }
       continue;
     }
-    imm b = s.head;
+    let b = s.head;
     unlinkBox(s, b);
     (*b).state = boxRunning;
     s.running = s.running + 1u32;
-    imm waited = u64.from((*b).queuedAt.elapsed().nanos());
+    let waited = u64.from((*b).queuedAt.elapsed().nanos());
     s.waitNs = s.waitNs + waited;
     if waited > s.maxWaitNs {s.maxWaitNs = waited;}
     s.lock.unlock();
@@ -290,25 +290,25 @@ fn worker(a WorkerArg) {
 
 // Run a job and post it to its loop; drop it when its loop has gone
 fn runBox(b *JobBox) {
-  imm j = b as &mut JobBox;
-  imm o = if j.fd >= 0i32 {lxFileJob(j);} else {(j.work)(j.arg, &mut j.buf);};
+  let j = b as &mut JobBox;
+  let o = if j.fd >= 0i32 {lxFileJob(j);} else {(j.work)(j.arg, &mut j.buf);};
   settleBox(b, o);
 }
 
 // A box's outcome is known: post it to its loop, or drop it when its loop
 // has gone
 fn settleBox(b *JobBox, o Outcome) {
-  imm j = b as &mut JobBox;
+  let j = b as &mut JobBox;
   match o {
-    case imm d Done {j.status = diag.outcomeDone; j.n = d.n;}
-    case imm f Failed {j.status = diag.outcomeFailed; j.code = f.code;}
+    case let d Done {j.status = diag.outcomeDone; j.n = d.n;}
+    case let f Failed {j.status = diag.outcomeFailed; j.code = f.code;}
     case is Outcome.Cancelled {j.status = diag.outcomeCancelled;}
     case is Outcome.TimedOut {j.status = diag.outcomeTimedOut;}
   }
-  mut w Option[Waker] = None;
+  var w Option[Waker] = None;
   w <=> j.waker;
   match w {
-    case imm s Some {
+    case let s Some {
       if not s.postJob(b) {dropBox(b);}
     }
     else {dropBox(b);}
@@ -317,8 +317,8 @@ fn settleBox(b *JobBox, o Outcome) {
 
 // Take box b out of its lane's queue: its lock is held
 fn unlinkBox(s &mut LaneState, b *JobBox) {
-  imm prev = (*b).prev;
-  imm next = (*b).next;
+  let prev = (*b).prev;
+  let next = (*b).next;
   if prev as usize == 0usize {s.head = next;} else {(*prev).next = next;}
   if next as usize == 0usize {s.tail = prev;} else {(*next).prev = prev;}
   (*b).prev = null;
@@ -328,8 +328,8 @@ fn unlinkBox(s &mut LaneState, b *JobBox) {
 
 // Queue box b on its lane: false when the lane's queue is full (counted)
 fn enqueueBox(b *JobBox) bool {
-  imm l = (*b).lane;
-  imm s = l as &mut LaneState;
+  let l = (*b).lane;
+  let s = l as &mut LaneState;
   s.lock.lock();
   if s.queued >= s.bound {
     s.refused = s.refused + 1u64;
@@ -345,7 +345,7 @@ fn enqueueBox(b *JobBox) bool {
   if s.idle > 0u32 {s.ready.notifyOne();}
   // More queued than threads idle to take them: one more thread, while the
   // lane may have one
-  mut grow = false;
+  var grow = false;
   if s.queued > s.idle and s.threads < s.maxThreads {
     s.threads = s.threads + 1u32;
     s.started = s.started + 1u64;
@@ -360,9 +360,9 @@ fn enqueueBox(b *JobBox) bool {
 // when it was taken out (it will never run)
 fn removeBox(b *JobBox) bool {
   if (*b).lane as usize == 0usize {return false;}
-  imm s = (*b).lane as &mut LaneState;
+  let s = (*b).lane as &mut LaneState;
   s.lock.lock();
-  imm queued = (*b).state == boxQueued;
+  let queued = (*b).state == boxQueued;
   if queued {
     unlinkBox(s, b);
     (*b).state = boxRemoved;
@@ -381,7 +381,7 @@ fn removeBox(b *JobBox) bool {
 // 'addressesIn'; Failed with Winsock's error when there are none. buf is
 // cleared and holds the name while the work runs
 pub fn resolveOp(host &str, port u16, buf IoBuf) Op {
-  mut b = buf;
+  var b = buf;
   b.clear();
   b.append(host);
   Op.Call(Lane.dns(), &resolveWork, u64.from(port), b);
@@ -389,9 +389,9 @@ pub fn resolveOp(host &str, port u16, buf IoBuf) Op {
 
 // The addresses a resolveOp's buffer holds
 pub fn addressesIn(buf &IoBuf) List[SocketAddr] {
-  mut out = List[SocketAddr].empty();
-  imm n = buf.len() / mem.sizeof[SocketAddr]();
-  mut k = 0usize;
+  var out = List[SocketAddr].empty();
+  let n = buf.len() / mem.sizeof[SocketAddr]();
+  var k = 0usize;
   while k < n {
     out.push(*((buf.base() as *SocketAddr) + k));
     k = k + 1usize;
@@ -401,20 +401,20 @@ pub fn addressesIn(buf &IoBuf) List[SocketAddr] {
 
 fn resolveWork(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {
-    imm w = widen(buf.view());
+    let w = widen(buf.view());
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
-    mut hints = new AddrInfo(0i32, 0i32, sockStream, ipprotoTcp, 0usize, null, null, null);
-    mut res = null as *AddrInfo;
-    imm rc = GetAddrInfoW(w, null, &mut hints as *AddrInfo, &mut res);
+    var hints = new AddrInfo(0i32, 0i32, sockStream, ipprotoTcp, 0usize, null, null, null);
+    var res = null as *AddrInfo;
+    let rc = GetAddrInfoW(w, null, &mut hints as *AddrInfo, &mut res);
     libc.free(w as *u8);
     if rc != 0i32 {return Outcome.Failed(u32.from(rc));}
     buf.clear();
-    mut count = 0usize;
-    mut a = res;
-    imm recSize = mem.sizeof[SocketAddr]();
+    var count = 0usize;
+    var a = res;
+    let recSize = mem.sizeof[SocketAddr]();
     while a as usize != 0usize {
       if (*a).addrlen <= 28usize and buf.room() >= recSize {
-        mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
+        var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
         libc.memcpy(&mut s.raw as *u8, (*a).addr, (*a).addrlen);
         s.setPort(u16.from(arg));
         buf.append(mem.sliceFromParts(&mut s as *u8, recSize));
@@ -442,32 +442,32 @@ pub struct FileStat {
 // 'fileStatIn'; Failed with Windows' error (ERROR_FILE_NOT_FOUND...). buf
 // is cleared and holds the path while the work runs
 pub fn statOp(path &Path, lane Lane, buf IoBuf) Op {
-  mut b = buf;
+  var b = buf;
   b.clear();
-  imm text &Array[u8] = path.view();
+  let text &Array[u8] = path.view();
   b.append(text);
   Op.Call(lane, &statWork, 0u64, b);
 }
 
 // The metadata a statOp's buffer holds
 pub fn fileStatIn(buf &IoBuf) FileStat {
-  imm p = buf.base() as *u32;
+  let p = buf.base() as *u32;
   if buf.len() < 36usize {return new FileStat(0u64, 0u32, Timestamp.fromUnixNanos(0i64));}
   // WIN32_FILE_ATTRIBUTE_DATA: attributes, three FILETIMEs (the last
   // written the third), the size's high word and its low word
-  imm written = (u64.from(*(p + 6usize)) << 32u64) | u64.from(*(p + 5usize));
-  imm size = (u64.from(*(p + 7usize)) << 32u64) | u64.from(*(p + 8usize));
+  let written = (u64.from(*(p + 6usize)) << 32u64) | u64.from(*(p + 5usize));
+  let size = (u64.from(*(p + 7usize)) << 32u64) | u64.from(*(p + 8usize));
   // A FILETIME counts 100 ns from 1601; 11,644,473,600 s before 1970
-  imm unix100 = i64.from(written) - 116444736000000000i64;
+  let unix100 = i64.from(written) - 116444736000000000i64;
   new FileStat(size, *p, Timestamp.fromUnixNanos(unix100 * 100i64));
 }
 
 fn statWork(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {
-    imm w = widen(buf.view());
+    let w = widen(buf.view());
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
-    mut data = new Array[u32, 9] <- fill 0u32;
-    imm ok = GetFileAttributesExW(w, 0i32, &mut data as *u8);
+    var data = new Array[u32, 9] <- fill 0u32;
+    let ok = GetFileAttributesExW(w, 0i32, &mut data as *u8);
     libc.free(w as *u8);
     if ok == 0i32 {return Outcome.Failed(GetLastError());}
     buf.clear();
@@ -484,29 +484,29 @@ fn statWork(arg u64, buf &mut IoBuf) Outcome {
 // bytes; Done(0) past the end. buf is cleared and holds the path while the
 // work runs
 pub fn readFileOp(path &Path, at u64, lane Lane, buf IoBuf) Op {
-  mut b = buf;
+  var b = buf;
   b.clear();
-  imm text &Array[u8] = path.view();
+  let text &Array[u8] = path.view();
   b.append(text);
   Op.Call(lane, &readFileWork, at, b);
 }
 
 fn readFileWork(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {
-    imm w = widen(buf.view());
+    let w = widen(buf.view());
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
-    imm h = CreateFileW(w, genericRead, shareAll, null, openExisting, 0u32, 0usize);
+    let h = CreateFileW(w, genericRead, shareAll, null, openExisting, 0u32, 0usize);
     libc.free(w as *u8);
     if h == invalidHandle {return Outcome.Failed(GetLastError());}
     buf.clear();
-    imm room = buf.room();
-    imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+    let room = buf.room();
+    let want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
     // A handle opened without FILE_FLAG_OVERLAPPED reads at the OVERLAPPED's
     // offset and returns when the read is done
-    mut ov = new Overlapped(0usize, 0usize, u32.from(arg & 0xFFFFFFFFu64), u32.from(arg >> 32u64), 0usize);
-    mut got = 0u32;
-    imm ok = ReadFile(h, buf.base(), want, &mut got as *u32, &mut ov as *u8);
-    imm code = if ok == 0i32 {GetLastError();} else {0u32;};
+    var ov = new Overlapped(0usize, 0usize, u32.from(arg & 0xFFFFFFFFu64), u32.from(arg >> 32u64), 0usize);
+    var got = 0u32;
+    let ok = ReadFile(h, buf.base(), want, &mut got as *u32, &mut ov as *u8);
+    let code = if ok == 0i32 {GetLastError();} else {0u32;};
     CloseHandle(h);
     if ok == 0i32 and code != errorHandleEof {return Outcome.Failed(code);}
     buf.setLen(usize.from(got));

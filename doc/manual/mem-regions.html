@@ -45,14 +45,14 @@ fn leaf(v i32) Option[Uni[Node]] {
 
 // Borrows a node: it works whatever owns it
 fn sum(n &amp;Node) i32 {
-  mut total = n.value;
-  if imm l Some = &amp;n.left { total += sum(*l); }
-  if imm r Some = &amp;n.right { total += sum(*r); }
+  var total = n.value;
+  if let l Some = &amp;n.left { total += sum(*l); }
+  if let r Some = &amp;n.right { total += sum(*r); }
   total;
 }
 
 fn main() {
-  imm root = node(1, leaf(2), leaf(3));
+  let root = node(1, leaf(2), leaf(3));
   print &lt;- "sum: ", sum(root), "\n";
 }                          // root's owner goes: the whole tree is freed
 </pre>
@@ -63,7 +63,7 @@ free 1
 free 2
 free 3
 </pre>
-	<p><b>Try this:</b> give two parents the same child: <span class="pre">imm four = leaf(4);</span> and then
+	<p><b>Try this:</b> give two parents the same child: <span class="pre">let four = leaf(4);</span> and then
 		<span class="pre">node(1, four, four)</span>. A single owner moves, so the compiler refuses the second
 		<span class="pre">four</span>: <i>This variable's value has been moved out.</i> A child shared by two parents needs
 		a region that allows several owners, <a href="mem-rc.html">reference counting</a>, next.</p>
@@ -116,7 +116,7 @@ free 3
 	<p>Like every <a href="rec-methods.html#initializer">construction</a>, an allocation begins with
 		<span class="pre">new</span>. What follows is the type of owning reference wanted back:</p>
 <pre>
-imm node = new Rc[mut, Node](1);
+let node = new Rc[mut, Node](1);
 </pre>
 	<ul>
 		<li><b>The region ref</b> names the region that allocates the value and manages its life: here
@@ -147,21 +147,21 @@ imm node = new Rc[mut, Node](1);
 		exactly one value, converted to the value type as a variable's initial value is: a number literal takes on the value
 		type, and an enum's variant becomes its enum:</p>
 <pre>
-imm count = new Rc[u64](5);                            // the literal is a u64
-imm grid = new Rc[mut, Array[i32, 3]]([1, 2, 3]);
-imm pair = new Uni[(i32, f32)]((1, 2.0));
-imm maybe = new Uni[Option[i32]](Some(3));
-imm name = new Arc[imm, String](String.from("x"));     // a call's result
-imm list = new Rc[mut, List[Fin]](items);              // items is moved in
+let count = new Rc[u64](5);                            // the literal is a u64
+let grid = new Rc[mut, Array[i32, 3]]([1, 2, 3]);
+let pair = new Uni[(i32, f32)]((1, 2.0));
+let maybe = new Uni[Option[i32]](Some(3));
+let name = new Arc[imm, String](String.from("x"));     // a call's result
+let list = new Rc[mut, List[Fin]](items);              // items is moved in
 </pre>
 	<p>A struct's allocation is told apart by type: when exactly one argument is given and its type is the struct itself
 		(through an <a href="mod-namespaces.html">alias</a> as well), it is the finished value, moved in, and no initializer
 		runs; otherwise the arguments go to the struct's initializers, as for any construction. A reference to the struct, or
 		a value that would only convert to it, is not the struct itself:</p>
 <pre>
-imm s = new Seeded(4);                  // Seeded's init runs
-imm byInit = new Rc[Seeded](5);         // Seeded's init runs again, on 5
-imm moved = new Rc[Seeded](s);          // s is moved in; no init runs
+let s = new Seeded(4);                  // Seeded's init runs
+let byInit = new Rc[Seeded](5);         // Seeded's init runs again, on 5
+let moved = new Rc[Seeded](s);          // s is moved in; no init runs
 </pre>
 	<p>A value is constructed once: <span class="pre">new Point(p)</span>, where <span class="pre">p</span> is already a
 		Point, is refused (<i>Error 1227: This is already a value of Point, which needs no construction: use it as it is, or
@@ -172,8 +172,8 @@ imm moved = new Rc[Seeded](s);          // s is moved in; no init runs
 		the virtual one is wanted:</p>
 <pre>
 alias Node = Gc[mut, NodeValue];
-imm leaf = new Node(1);                             // a Gc[mut, NodeValue]
-imm shape Rc[mut, Shape] = new Rc[mut, Circle](5);  // Shape a trait, Circle a struct that is one
+let leaf = new Node(1);                             // a Gc[mut, NodeValue]
+let shape Rc[mut, Shape] = new Rc[mut, Circle](5);  // Shape a trait, Circle a struct that is one
 </pre>
 
 	<h3 id="contents">Allocating with contents</h3>
@@ -185,9 +185,9 @@ imm shape Rc[mut, Shape] = new Rc[mut, Circle](5);  // Shape a trait, Circle a s
 		allocation then takes nothing in parentheses. A collection's contents are appended through the new reference once
 		it is made, as they are appended to a value it constructs:</p>
 <pre>
-imm zeros = new Rc[mut, Array[i32, 1000, 1000]] &lt;- fill 0;
-imm grid = new Uni[Array[i32, 2, 3]] &lt;- 1, 2, 3, 4, 5, 6;
-imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
+let zeros = new Rc[mut, Array[i32, 1000, 1000]] &lt;- fill 0;
+let grid = new Uni[Array[i32, 2, 3]] &lt;- 1, 2, 3, 4, 5, 6;
+let names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 </pre>
 	<p>Today a single owner of a collection does not take contents this way: <span class="pre">new Uni[List[i32]](10)
 		&lt;- 1, 2, 3</span> is refused with a misleading <i>Error 1048: This variable's value has been moved out</i>. Allocate
@@ -211,10 +211,10 @@ imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 		the same pair, and <span class="pre">as</span> checks only that. <b>Not built yet:</b> checking that the bytes are
 		UTF-8, and that nothing still writes them while the text is used:</p>
 <pre>
-imm bytes &amp;Array[u8] = "hello";
-imm view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
-imm text = new Rc[str](view);                // a copy, in Rc's memory
-imm same = trynew Uni[str](view);             // an Option, None if memory ran out
+let bytes &amp;Array[u8] = "hello";
+let view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
+let text = new Rc[str](view);                // a copy, in Rc's memory
+let same = trynew Uni[str](view);             // an Option, None if memory ran out
 printStr(text);                              // lent as a borrow, which is the &amp;str printStr takes
 </pre>
 	<p><b>A string literal is a <span class="pre">&amp;imm str</span></b>: a borrow of its text, in read-only memory,
@@ -224,19 +224,19 @@ printStr(text);                              // lent as a borrow, which is the &
 		region, a literal (and only a literal) is copied into one without <span class="pre">new</span>; any other
 		<span class="pre">&amp;str</span> is copied with <span class="pre">new</span> as above:</p>
 <pre>
-imm name Uni[str] = "Padma";                  // new Uni[str]("Padma"), copied from read-only memory
+let name Uni[str] = "Padma";                  // new Uni[str]("Padma"), copied from read-only memory
 fn greet(who Rc[str]) {..}
 greet("Jayne");                              // the same copy, into an Rc
 </pre>
 	<p>A growable <span class="pre">String</span> is a literal's other destination: where one is wanted a literal is copied
-		into it (<span class="pre">imm s String = "core";</span>), by the static function <span class="pre">fromLiteral</span>
+		into it (<span class="pre">let s String = "core";</span>), by the static function <span class="pre">fromLiteral</span>
 		a type declares to say so. And <span class="pre">s.freeze()</span> moves a String's bytes into a
 		<span class="pre">Uni[str]</span> without copying them (<a href="guide-text.html#unique">Handing text on</a>).</p>
 	<p>Where a read-only borrow of such a type is wanted, <span class="pre">&amp;String</span> for one, the literal is
 		borrowed from a temporary made the same way: <span class="pre">&amp;String.fromLiteral("core")</span>, written out.
 		The temporary lasts to the end of the statement and is dropped there, like any temporary a borrow points at (a
 		function's parameter and an <span class="pre">init</span>'s, in <span class="pre">new File("x")</span>, are given
-		one alike); a local's initializer keeps it to the end of the block, as <span class="pre">imm r = &amp;make()</span>
+		one alike); a local's initializer keeps it to the end of the block, as <span class="pre">let r = &amp;make()</span>
 		does (<a href="mem-borrowing.html#temporary">Borrowing a temporary</a>). It is lent only to a borrow that cannot
 		write (<span class="pre">&amp;mut String</span> is refused, since what is written to the temporary is lost with it),
 		and only inside a function's body, where a statement ends it: a global, a constant, a field's default, a returned
@@ -247,7 +247,7 @@ greet("Jayne");                              // the same copy, into an Rc
 <pre>
 fn shout(s &amp;String) {..}
 shout("core");                               // a temporary String, lent to the call, dropped at the semicolon
-imm r &amp;String = "core";                      // the temporary lasts as long as the block
+let r &amp;String = "core";                      // the temporary lasts as long as the block
 </pre>
 	<h3 id="owned">Owning an array</h3>
 	<p>The other body with no fixed size is <span class="pre">Array[T]</span>, the array type without a size, whose
@@ -267,9 +267,9 @@ imm r &amp;String = "core";                      // the temporary lasts as long 
 		the parentheses, <span class="pre">new Rc[mut, Array[i32, 4]](new Array[i32, 4] &lt;- 1, 2, 3, 4)</span>, is refused
 		with a misleading <i>Error 1226</i>.
 <pre>
-imm grid = new Rc[mut, Array[i32, 4]] &lt;- fill 0i32;   // grid's type: Rc[mut, Array[i32, 4]]
-imm four = new Array[i32, 4] &lt;- 1, 2, 3, 4;
-imm made = new Rc[mut, Array[i32, 4]](four);          // four is moved in
+let grid = new Rc[mut, Array[i32, 4]] &lt;- fill 0i32;   // grid's type: Rc[mut, Array[i32, 4]]
+let four = new Array[i32, 4] &lt;- 1, 2, 3, 4;
+let made = new Rc[mut, Array[i32, 4]](four);          // four is moved in
 </pre></li>
 	<li><b>An owner of <span class="pre">Array[T]</span></b>, when the number of elements is chosen at run time and
 		never changes: <span class="pre">Uni[Array[T]]</span>, <span class="pre">Rc[Array[T]]</span>,
@@ -285,12 +285,12 @@ imm made = new Rc[mut, Array[i32, 4]](four);          // four is moved in
 		nothing changes. The owner's death finalizes each element, and a <span class="pre">Gc</span> object counts the bytes
 		its elements really take.
 <pre>
-fn sum(xs &amp;Array[i32]) i32 { mut t = 0; each x in xs { t += *x; } t; }
+fn sum(xs &amp;Array[i32]) i32 { var t = 0; each x in xs { t += *x; } t; }
 
-imm primes = new Array[i32, 4] &lt;- 2, 3, 5, 7;
-imm shared = new Rc[imm, Array[i32]](&amp;primes);   // a copy: a pointer and a count, 16 bytes
-imm total = sum(shared);                         // lent as the &amp;Array[i32] sum takes: 17
-imm middle = &amp;shared[1usize ..&lt; 3usize];         // a borrowed range of it
+let primes = new Array[i32, 4] &lt;- 2, 3, 5, 7;
+let shared = new Rc[imm, Array[i32]](&amp;primes);   // a copy: a pointer and a count, 16 bytes
+let total = sum(shared);                         // lent as the &amp;Array[i32] sum takes: 17
+let middle = &amp;shared[1usize ..&lt; 3usize];         // a borrowed range of it
 </pre></li>
 	<li><b>A collection</b>, when the length is chosen at run time and may grow or shrink, which is exactly what a
 		<span class="pre">List</span> is: a pointer to its elements, how many there are, and how many it has room for. A list
@@ -305,9 +305,9 @@ imm middle = &amp;shared[1usize ..&lt; 3usize];         // a borrowed range of i
 		The elements are not copied, move types included, and the owner's death finalizes each of them once. A list that holds
 		nothing makes a one-byte block, since the owner of an <span class="pre">Array[T]</span> always owns heap bytes:</p>
 <pre>
-mut list = List[i32].empty();
+var list = List[i32].empty();
 list.push(4);
-imm kept = list.freeze();                       // a Uni[Array[i32]] holding the list's elements, moved
+let kept = list.freeze();                       // a Uni[Array[i32]] holding the list's elements, moved
 </pre>
 	<p>An owner of a body is a counted owner or a single one by its region and permission, like any other: copies,
 		parameters and fields are counted (an owner of <span class="pre">str</span>, written with no permission, is
@@ -323,7 +323,7 @@ imm kept = list.freeze();                       // a Uni[Array[i32]] holding the
 <pre>
 alias Link = Rc[mut, Node];    // shared and mutable
 fn first(n Rc[Node]) i64 {..}  // no permission written: uni, the only owner
-mut list = List[Gc[imm, Leaf]].empty();
+var list = List[Gc[imm, Leaf]].empty();
 </pre>
 	<p>Left out, the permission is <span class="pre">uni</span>, which may become any other (but for a
 		<a href="#uni">single owner</a>, which takes no <span class="pre">mut</span>), so
@@ -356,8 +356,8 @@ enum @unsized Shape {
   pub struct Polygon { pub points Array[Point, 64]; }
 }
 
-imm someDot = Shape.Dot(1);
-imm shape &amp;Shape = &amp;someDot;     // a reference to a variant coerces to one to the enum
+let someDot = Shape.Dot(1);
+let shape &amp;Shape = &amp;someDot;     // a reference to a variant coerces to one to the enum
 </pre>
 	<p>Each variant then takes only what it needs, and the enum has no single size, so no value of it may be held, not in
 		a variable, a parameter or a field (<i>Error 1069: Variable s cannot be held by value: Shape is an '@unsized' enum, so
@@ -375,8 +375,8 @@ imm shape &amp;Shape = &amp;someDot;     // a reference to a variant coerces to 
 		it, more owning references to the same value are made by copying an existing one, by assignment or by passing it to
 		a function:</p>
 <pre>
-imm node = new Rc[imm, Node](4);
-imm node2 = node;            // node2 and node point at the same value
+let node = new Rc[imm, Node](4);
+let node2 = node;            // node2 and node point at the same value
 </pre>
 
 	<h2 id="expire">When a value is freed</h2>
@@ -406,15 +406,15 @@ imm node2 = node;            // node2 and node point at the same value
 			too: whether an allocation in such a region can fail is not settled.</li>
 	</ul>
 <pre>
-imm maybe = trynew Rc[mut, Node](1);    // an Option[Rc[mut, Node]]
+let maybe = trynew Rc[mut, Node](1);    // an Option[Rc[mut, Node]]
 match maybe {
-  case imm n Some[Rc[mut, Node]] { adopt(n); }
+  case let n Some[Rc[mut, Node]] { adopt(n); }
   else { fallBack(); }
 }
 
-imm names = trynew Rc[mut, List[i32]](10);   // not: trynew ... &lt;- 1, 2, 3
+let names = trynew Rc[mut, List[i32]](10);   // not: trynew ... &lt;- 1, 2, 3
 match names {
-  case imm s Some[Rc[mut, List[i32]]] { s &lt;- 1, 2, 3; }
+  case let s Some[Rc[mut, List[i32]]] { s &lt;- 1, 2, 3; }
   else { fallBack(); }
 }
 </pre>
@@ -471,8 +471,8 @@ fn keep(n Uni[mut, Node]) {..}   // Error 1507: Uni has one owner per value, whi
 		the value in place, where it was allocated, or the finished value is stored there, or an array's contents fill it,
 		each value evaluated then. Last, the owning reference goes where the expression puts it:</p>
 <pre>
-imm p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
-imm q = new Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
+let p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
+let q = new Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
 </pre>
 	<p id="inplace">A construction always fills its value in place, where the value goes, so no copy is made.
 		Declaring a variable with a construction hands the initializer the variable's own memory, and allocating one hands

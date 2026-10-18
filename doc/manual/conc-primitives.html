@@ -37,10 +37,10 @@ struct Stats {
   pub hits Atomic[u64];        // atomic because of its type
 }
 
-imm stats Stats;               // imm: never changed, but for its atomics
-imm lock Mutex;                // a plain lock, for the pair below
-imm sum Atomic[u64];
-imm sumSquares Atomic[u64];
+let stats Stats;               // let: never changed, but for its atomics
+let lock Mutex;                // a plain lock, for the pair below
+let sum Atomic[u64];
+let sumSquares Atomic[u64];
 
 fn @initpure init() {
   stats = new Stats(7u32, Atomic[u64].of(0u64));
@@ -50,7 +50,7 @@ fn @initpure init() {
 }
 
 fn work(id u64) u64 {
-  mut i = 0u64;
+  var i = 0u64;
   while i &lt; 100000u64 {
     stats.hits.add(1u64);      // one indivisible add, no lock
     i += 1u64;
@@ -64,10 +64,10 @@ fn work(id u64) u64 {
 }
 
 fn main() {
-  imm a = thread.start(1u64, &amp;work);
-  imm b = thread.start(2u64, &amp;work);
-  imm c = thread.start(3u64, &amp;work);
-  imm d = thread.start(4u64, &amp;work);
+  let a = thread.start(1u64, &amp;work);
+  let b = thread.start(2u64, &amp;work);
+  let c = thread.start(3u64, &amp;work);
+  let d = thread.start(4u64, &amp;work);
   a.join(); b.join(); c.join(); d.join();
   print &lt;- "hits: ", stats.hits.load(), "\n";
   print &lt;- "sum ", sum.load(), ", sum of squares ", sumSquares.load(), "\n";
@@ -99,8 +99,8 @@ Error 1186: Atomic requires T is Integer or T is bool or T is Pointer, and it is
 		<a href="conc-threads.html#channel">channels</a> and <a href="conc-locks.html">lock permissions</a> among them.
 		Underneath them are the raw atomic operations core declares in <span class="pre">mem</span>
 		(<a href="safe-intrinsics.html">Intrinsics</a>), which act through a raw pointer and so need trust.</p>
-	<p>In the program above, <span class="pre">stats</span> is declared <span class="pre">imm</span>, and yet its
-		<span class="pre">hits</span> changes: <b>an <span class="pre">imm</span> variable can never be changed, except inside
+	<p>In the program above, <span class="pre">stats</span> is declared <span class="pre">let</span>, and yet its
+		<span class="pre">hits</span> changes: <b>a <span class="pre">let</span> variable can never be changed, except inside
 		the atomic values it holds.</b> Its other fields read as they always did. An atomic value changes only through its own
 		operations:</p>
 	<ul>
@@ -139,11 +139,11 @@ struct Node {
   pub val u64;
 }
 
-imm head Atomic[*Node];         // set by init: Atomic[*Node].of(null)
+let head Atomic[*Node];         // set by init: Atomic[*Node].of(null)
 
 fn push(node *Node) {           // called from any number of threads at once
-  mut seen = head.load();
-  mut ok = false;
+  var seen = head.load();
+  var ok = false;
   while !ok {
     mem.writeRaw(node, new Node(seen, (node as &amp;Node).val));   // link to what was seen
     seen, ok = head.compareSwap(seen, node);                  // swing the head, or see anew
@@ -177,7 +177,7 @@ and f32 is none of them.
 	<li><b>It moves</b>, and is never copied (<a href="rec-moves.html#movecopy">Moves</a>): a copy would be a second value that no
 		atomic operation on the first could reach. Declaring <span class="pre">Copy</span> beside it is refused.</li>
 	<li><b>A value holding one is never read-only.</b> A global holding an atomic value anywhere inside it (in a field, a
-		field's field, an array) is placed in writable memory even when it is <span class="pre">imm</span>, and its reads are
+		field's field, an array) is placed in writable memory even when it is <span class="pre">let</span>, and its reads are
 		never assumed unchanged.</li>
 	<li><b>A <span class="pre">const</span> may not hold one</b>, however deep: each use of a <span class="pre">const</span>
 		is a fresh copy, which no other use would see change. Use a global.</li>

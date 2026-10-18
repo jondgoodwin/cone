@@ -10,16 +10,16 @@ not ported from the C++. `src/navmesh.cone` has the overview and the file map;
 ```cone
 import navmesh use *;
 
-mut input = NavInput.empty();
+var input = NavInput.empty();
 input.addHeightfield(0., 0., 2., 101, 101, heights.view(), AreaGround);   // ground
 input.addCircleObstacle(40., 60., 1.5, -10., 20., AreaNull);             // a pillar
-imm door = input.addBoxObstacle(12., 8., 0.2, 1., 0., 0., 2.2, AreaNull); // a shut door
+let door = input.addBoxObstacle(12., 8., 0.2, 1., 0., 0., 2.2, AreaNull); // a shut door
 
-imm params = NavParams.standard();     // cells 0.3 x 0.2 m; agent 0.4 m radius, 1.8 m tall, climbs 0.5 m, 45 degrees
-mut nav = buildNavMesh(&mut input, &params);
+let params = NavParams.standard();     // cells 0.3 x 0.2 m; agent 0.4 m radius, 1.8 m tall, climbs 0.5 m, 45 degrees
+var nav = buildNavMesh(&mut input, &params);
 
-imm filter = QueryFilter.standard();
-imm route = findRoute(&nav, start, goal, new Vec3(2., 4., 2.), &filter);   // the corners, start to end
+let filter = QueryFilter.standard();
+let route = findRoute(&nav, start, goal, new Vec3(2., 4., 2.), &filter);   // the corners, start to end
 
 input.setObstacleEnabled(door, false);     // the door opens
 rebuildDirty(&mut nav, &mut input);        // only the tiles it touches are rebuilt
@@ -28,8 +28,8 @@ rebuildDirty(&mut nav, &mut input);        // only the tiles it touches are rebu
 A grid:
 
 ```cone
-imm g = Grid.fromRows(&["S....", "####.", ".....", ".####", "....G"]);
-imm p = gridAStar(&g, 0, 0, 4, 4, true);   // or gridJps for the uniform case
+let g = Grid.fromRows(&["S....", "####.", ".....", ".####", "....G"]);
+let p = gridAStar(&g, 0, 0, 4, 4, true);   // or gridJps for the uniform case
 ```
 
 ## What was measured

@@ -48,25 +48,25 @@ struct GitOut {
 // The index registries the machine config lists, in order: the git URLs (or
 // folders) of repositories holding one TOML file per package
 fn registryIndexes() List[String] {
-  mut listed = List[String].empty();
-  imm config = configPath();
+  var listed = List[String].empty();
+  let config = configPath();
   if not fs.isFile(&config) { return listed; }
-  imm place = native(&config);
-  mut doc = new toml.Document();
+  let place = native(&config);
+  var doc = new toml.Document();
   match readToml(&config) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error {
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
       fail(cat(place.view(), ": cannot read the machine config: ", e.view()));
     }
   }
   if doc.has("registry") and doc["registry"].has("indexes") {
     match doc["registry"].getStrings("indexes") {
-      case mut l Some { listed <=> l; }
+      case var l Some { listed <=> l; }
       case is None {
         fail(cat(place.view(), ": [registry] indexes must be a list of git URLs"));
       }
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < listed.len() {
       if listed[i].isEmpty() {
         fail(cat(place.view(), ": [registry] indexes must be a list of git URLs"));
@@ -78,9 +78,9 @@ fn registryIndexes() List[String] {
 }
 
 fn newIndexRegistry(url &str) IndexRegistry {
-  imm home = congoHome();
-  imm registries = home.join("registry");
-  imm slug = urlSlug(url);
+  let home = congoHome();
+  let registries = home.join("registry");
+  let slug = urlSlug(url);
   new IndexRegistry(String.from(url), registries.join(slug.view()), false);
 }
 
@@ -91,19 +91,19 @@ fn isSlugByte(b u8) bool {
 // A folder name for a repository: its last name, and the first ten hex digits
 // of the SHA-1 of its URL as written, which both Congos compute
 fn urlSlug(url &str) String {
-  mut end = url.len();
+  var end = url.len();
   while end > 0usize and (url[end - 1usize] == '/' or url[end - 1usize] == '\\') { end = end - 1usize; }
-  mut start = end;
+  var start = end;
   while start > 0usize and url[start - 1usize] != '/' and url[start - 1usize] != '\\' and url[start - 1usize] != ':' {
     start = start - 1usize;
   }
-  mut last = String.from(&url[start..<end]);
+  var last = String.from(&url[start..<end]);
   if last.endsWith(".git") { last = last.sub(0usize, last.len() - 4usize); }
-  mut clean = String.empty();
-  mut pending = false;
-  mut i = 0usize;
+  var clean = String.empty();
+  var pending = false;
+  var i = 0usize;
   while i < last.len() {
-    imm b = last[i];
+    let b = last[i];
     if isSlugByte(b) {
       if pending { clean.appendByte('_'); pending = false; }
       clean.appendByte(b);
@@ -113,8 +113,8 @@ fn urlSlug(url &str) String {
   }
   if pending { clean.appendByte('_'); }
   if clean.isEmpty() { clean = String.from("repo"); }
-  imm digest = sha1Hex(url);
-  imm tenDigits = digest.sub(0usize, 10usize);
+  let digest = sha1Hex(url);
+  let tenDigits = digest.sub(0usize, 10usize);
   cat(clean.view(), "-", tenDigits.view());
 }
 
@@ -122,23 +122,23 @@ fn urlSlug(url &str) String {
 // no credentials for a URL, git fails and Congo says so. An Error is git not
 // found, or not startable
 fn git(args List[String], dir &Path) Result[GitOut, String] {
-  mut all = argList("git");
-  mut i = 0usize;
+  var all = argList("git");
+  var i = 0usize;
   while i < args.len() {
     all.push(args[i].copy());
     i = i + 1usize;
   }
-  mut changes = noChanges();
+  var changes = noChanges();
   changes.set("GIT_TERMINAL_PROMPT", "0");
   changes.set("LC_ALL", "C");
-  mut answer = new GitOut(0u32, String.empty(), String.empty());
-  mut failure = String.empty();
-  mut failed = false;
+  var answer = new GitOut(0u32, String.empty(), String.empty());
+  var failure = String.empty();
+  var failed = false;
   match process.run(all.view(), new process.Options(), dir) {
-    case imm ok Ok {
+    case let ok Ok {
       answer = new GitOut(ok.exitCode, utf8Text(ok.stdout.view()), utf8Text(ok.stderr.view()));
     }
-    case imm e Error {
+    case let e Error {
       failed = true;
       if e.notFound() {
         failure = String.from("git was not found on PATH; Congo uses it to fetch packages from a registry");
@@ -154,9 +154,9 @@ fn git(args List[String], dir &Path) Result[GitOut, String] {
 // git's output, trimmed, or what was being done and why git refused
 fn gitOk(args List[String], dir &Path, doing &str) Result[String, String] {
   match git(args, dir) {
-    case imm ok Ok {
+    case let ok Ok {
       if ok.code != 0u32 {
-        mut why = ok.err.trim();
+        var why = ok.err.trim();
         if why.isEmpty() { why = ok.out.trim(); }
         if why.isEmpty() {
           why = String.from("exit status ");
@@ -166,15 +166,15 @@ fn gitOk(args List[String], dir &Path, doing &str) Result[String, String] {
       }
       Ok[String, String](ok.out.trim());
     }
-    case imm e Error { Error[String, String](e.copy()); }
+    case let e Error { Error[String, String](e.copy()); }
   }
 }
 
 fn isHex40or64(s &str) bool {
   if s.len() != 40usize and s.len() != 64usize { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len() {
-    imm b = s[i];
+    let b = s[i];
     if not ((b >= '0' and b <= '9') or (b >= 'a' and b <= 'f')) { return false; }
     i = i + 1usize;
   }
@@ -184,10 +184,10 @@ fn isHex40or64(s &str) bool {
 fn isSeparatorByte(b u8) bool { b == '/' or b == '\\'; }
 
 fn tomlString(text &str) String {
-  mut out = String.from("\"");
-  mut i = 0usize;
+  var out = String.from("\"");
+  var i = 0usize;
   while i < text.len() {
-    imm b = text[i];
+    let b = text[i];
     if b == '\\' { out <- "\\\\"; }
     elif b == '"' { out <- "\\\""; }
     else { out.appendByte(b); }
@@ -200,12 +200,12 @@ fn tomlString(text &str) String {
 // The text of an index file, as 'congo publish' and tools/registry/make_index.py
 // both write it (LF line ends, on every system)
 fn indexEntryText(name &str, gitUrl &str, commit &str, path &str) String {
-  imm quotedName = tomlString(name);
-  imm quotedGit = tomlString(gitUrl);
-  imm quotedCommit = tomlString(commit);
-  mut text = cat("name = ", quotedName.view(), "\ngit = ", quotedGit.view(), "\ncommit = ", quotedCommit.view(), "\n");
+  let quotedName = tomlString(name);
+  let quotedGit = tomlString(gitUrl);
+  let quotedCommit = tomlString(commit);
+  var text = cat("name = ", quotedName.view(), "\ngit = ", quotedGit.view(), "\ncommit = ", quotedCommit.view(), "\n");
   if path.len() > 0usize {
-    imm quotedPath = tomlString(path);
+    let quotedPath = tomlString(path);
     text <- "path = ", quotedPath.view(), "\n";
   }
   text;
@@ -216,45 +216,45 @@ fn indexEntryText(name &str, gitUrl &str, commit &str, path &str) String {
 fn refreshIndex(idx &mut IndexRegistry) Result[void, String] {
   if idx.refreshed { return succeeded(); }
   idx.refreshed = true;
-  imm dotGit = idx.dir.join(".git");
+  let dotGit = idx.dir.join(".git");
   if fs.exists(&dotGit) {
     match git(argList("fetch", "--quiet", "--depth", "1", "origin"), &idx.dir) {
-      case imm ok Ok {
+      case let ok Ok {
         if ok.code != 0u32 {
-          imm why = ok.err.trim();
+          let why = ok.err.trim();
           warn(cat("warning: cannot update the registry ", idx.url.view(), ", so the copy fetched before is used: ", why.view()));
         }
         else {
           match git(argList("rev-parse", "--verify", "--quiet", "FETCH_HEAD"), &idx.dir) {
-            case imm have Ok {
+            case let have Ok {
               if have.code == 0u32 {
-                imm doing = cat("cannot update the registry ", idx.url.view());
+                let doing = cat("cannot update the registry ", idx.url.view());
                 match gitOk(argList("reset", "--quiet", "--hard", "FETCH_HEAD"), &idx.dir, doing.view()) {
                   case is Ok {}
-                  case imm e Error { return Error[void, String](e.copy()); }
+                  case let e Error { return Error[void, String](e.copy()); }
                 }
               }
             }
-            case imm e Error { return Error[void, String](e.copy()); }
+            case let e Error { return Error[void, String](e.copy()); }
           }
         }
       }
-      case imm e Error { return Error[void, String](e.copy()); }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     return succeeded();
   }
-  imm announce = cat("registry ", idx.url.view());
+  let announce = cat("registry ", idx.url.view());
   say("Updating", announce.view());
-  imm up = idx.dir.parent();
+  let up = idx.dir.parent();
   match fs.makeDirAll(&up) {
     case is Ok {}
-    case imm e Error { return Error[void, String](fsMessage(&e)); }
+    case let e Error { return Error[void, String](fsMessage(&e)); }
   }
-  imm doing = cat("cannot fetch the registry ", idx.url.view());
-  imm target = native(&idx.dir);
+  let doing = cat("cannot fetch the registry ", idx.url.view());
+  let target = native(&idx.dir);
   match gitOk(argList("clone", "--quiet", "--depth", "1", idx.url.view(), target.view()), &up, doing.view()) {
     case is Ok {}
-    case imm e Error { return Error[void, String](e.copy()); }
+    case let e Error { return Error[void, String](e.copy()); }
   }
   succeeded();
 }
@@ -264,53 +264,53 @@ fn refreshIndex(idx &mut IndexRegistry) Result[void, String] {
 fn indexEntry(idx &mut IndexRegistry, name &str, entry &mut IndexEntry) Result[bool, String] {
   match refreshIndex(idx) {
     case is Ok {}
-    case imm e Error { return Error[bool, String](e.copy()); }
+    case let e Error { return Error[bool, String](e.copy()); }
   }
-  imm fileName = cat(name, ".toml");
-  imm file = idx.dir.join(fileName.view());
+  let fileName = cat(name, ".toml");
+  let file = idx.dir.join(fileName.view());
   if not fs.isFile(&file) { return Ok[bool, String](false); }
-  imm ctx = cat(idx.url.view(), ": ", name, ".toml");
-  mut doc = new toml.Document();
+  let ctx = cat(idx.url.view(), ": ", name, ".toml");
+  var doc = new toml.Document();
   match readToml(&file) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error { return Error[bool, String](cat(ctx.view(), ": cannot read the entry: ", e.view())); }
+    case var ok Ok { doc <=> ok; }
+    case let e Error { return Error[bool, String](cat(ctx.view(), ": cannot read the entry: ", e.view())); }
   }
-  mut keys = doc.root.keys();
-  imm tables = doc.names();
-  mut i = 0usize;
+  var keys = doc.root.keys();
+  let tables = doc.names();
+  var i = 0usize;
   while i < tables.len() {
     keys.push(tables[i].copy());
     i = i + 1usize;
   }
   i = 0usize;
   while i < keys.len() {
-    imm parts = splitText(keys[i].view(), '.');
-    imm key = parts[0usize].view();
+    let parts = splitText(keys[i].view(), '.');
+    let key = parts[0usize].view();
     if key != "name" and key != "git" and key != "commit" and key != "path" {
       return Error[bool, String](cat(ctx.view(), ": '", key, "' is not an index key; the keys are name, git, commit, path"));
     }
     i = i + 1usize;
   }
-  mut found = emptyIndexEntry();
+  var found = emptyIndexEntry();
   match doc.root.getString("name") {
-    case mut v Some { found.name <=> v; }
+    case var v Some { found.name <=> v; }
     case is None {}
   }
   match doc.root.getString("git") {
-    case mut v Some { found.git <=> v; }
+    case var v Some { found.git <=> v; }
     case is None {}
   }
   match doc.root.getString("commit") {
-    case mut v Some { found.commit <=> v; }
+    case var v Some { found.commit <=> v; }
     case is None {}
   }
   if found.name.isEmpty() { return Error[bool, String](cat(ctx.view(), ": needs name, a string")); }
   if found.git.isEmpty() { return Error[bool, String](cat(ctx.view(), ": needs git, a string")); }
   if found.commit.isEmpty() { return Error[bool, String](cat(ctx.view(), ": needs commit, a string")); }
-  mut path = String.empty();
+  var path = String.empty();
   if doc.root.has("path") {
     match doc.root.getString("path") {
-      case mut v Some { path <=> v; }
+      case var v Some { path <=> v; }
       case is None { return Error[bool, String](cat(ctx.view(), ": path must be a string")); }
     }
   }
@@ -324,9 +324,9 @@ fn indexEntry(idx &mut IndexRegistry, name &str, entry &mut IndexEntry) Result[b
     return Error[bool, String](cat(ctx.view(), ": git must be a repository's URL or a folder, not an option or a transport helper"));
   }
   // The folder, as '/' names, with no '..' or '.', and not absolute
-  mut parts = List[String].empty();
-  mut part = String.empty();
-  mut bad = path.len() > 0usize and isSeparatorByte(path[0usize]);
+  var parts = List[String].empty();
+  var part = String.empty();
+  var bad = path.len() > 0usize and isSeparatorByte(path[0usize]);
   i = 0usize;
   while i <= path.len() {
     if i == path.len() or isSeparatorByte(path[i]) {
@@ -356,12 +356,12 @@ fn indexEntry(idx &mut IndexRegistry, name &str, entry &mut IndexEntry) Result[b
 // the first of them)
 fn removeGitTree(folder &Path) {
   if not fs.exists(folder) { return; }
-  imm place = native(folder);
-  mut args = argList("cmd", "/c", "rmdir", "/s", "/q");
+  let place = native(folder);
+  var args = argList("cmd", "/c", "rmdir", "/s", "/q");
   args.push(place.copy());
   match process.run(args.view()) {
     case is Ok {}
-    case imm e Error { fail(processMessage(&e)); }
+    case let e Error { fail(processMessage(&e)); }
   }
 }
 
@@ -369,70 +369,70 @@ fn removeGitTree(folder &Path) {
 // there if it is not already; the folder of the package in it. Packages of one
 // repository at one commit share the checkout.
 fn checkoutSource(entry &IndexEntry) Result[Path, String] {
-  imm slug = urlSlug(entry.git.view());
-  imm home = congoHome();
-  imm srcs = home.join("src");
-  imm repoDir = srcs.join(slug.view());
-  imm clone = repoDir.join(entry.commit.view());
-  imm package = if entry.path.isEmpty() {clone.copy();} else {clone.join(entry.path.view());};
-  imm dotGit = clone.join(".git");
+  let slug = urlSlug(entry.git.view());
+  let home = congoHome();
+  let srcs = home.join("src");
+  let repoDir = srcs.join(slug.view());
+  let clone = repoDir.join(entry.commit.view());
+  let package = if entry.path.isEmpty() {clone.copy();} else {clone.join(entry.path.view());};
+  let dotGit = clone.join(".git");
   if fs.exists(&dotGit) {
     match git(argList("rev-parse", "HEAD"), &clone) {
-      case imm ok Ok {
-        imm head = ok.out.trim();
+      case let ok Ok {
+        let head = ok.out.trim();
         if ok.code == 0u32 and head.equals(entry.commit.view()) { return Ok[Path, String](package.copy()); }
       }
-      case imm e Error { return Error[Path, String](e.copy()); }
+      case let e Error { return Error[Path, String](e.copy()); }
     }
   }
-  imm doing = cat("cannot fetch ", entry.name.view(), " from ", entry.git.view(), " at ", entry.commit.view());
-  imm shortHash = entry.commit.sub(0usize, 10usize);
-  imm announce = cat(entry.name.view(), " (", entry.git.view(), " at ", shortHash.view(), ")");
+  let doing = cat("cannot fetch ", entry.name.view(), " from ", entry.git.view(), " at ", entry.commit.view());
+  let shortHash = entry.commit.sub(0usize, 10usize);
+  let announce = cat(entry.name.view(), " (", entry.git.view(), " at ", shortHash.view(), ")");
   say("Downloading", announce.view());
-  imm partialName = cat(entry.commit.view(), ".partial");
-  imm partial = repoDir.join(partialName.view());
+  let partialName = cat(entry.commit.view(), ".partial");
+  let partial = repoDir.join(partialName.view());
   removeGitTree(&partial);
   removeGitTree(&clone);
   match fs.makeDirAll(&partial) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](fsMessage(&e)); }
+    case let e Error { return Error[Path, String](fsMessage(&e)); }
   }
   match gitOk(argList("init", "--quiet"), &partial, doing.view()) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   match gitOk(argList("remote", "add", "origin", entry.git.view()), &partial, doing.view()) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   // The commit alone where the server allows it (GitHub does), else everything
-  mut shallow = false;
+  var shallow = false;
   match git(argList("fetch", "--quiet", "--depth", "1", "origin", entry.commit.view()), &partial) {
-    case imm ok Ok { shallow = ok.code == 0u32; }
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let ok Ok { shallow = ok.code == 0u32; }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   if not shallow {
     match gitOk(argList("fetch", "--quiet", "origin"), &partial, doing.view()) {
       case is Ok {}
-      case imm e Error { return Error[Path, String](e.copy()); }
+      case let e Error { return Error[Path, String](e.copy()); }
     }
   }
-  imm checkoutDoing = cat(doing.view(), " (is the commit in that repository?)");
+  let checkoutDoing = cat(doing.view(), " (is the commit in that repository?)");
   match gitOk(argList("-c", "advice.detachedHead=false", "checkout", "--quiet", entry.commit.view()), &partial, checkoutDoing.view()) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   match gitOk(argList("rev-parse", "HEAD"), &partial, doing.view()) {
-    case imm ok Ok {
+    case let ok Ok {
       if not ok.equals(entry.commit.view()) {
         return Error[Path, String](cat(doing.view(), ": the checkout is not that commit"));
       }
     }
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   match fs.rename(&partial, &clone) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](fsMessage(&e)); }
+    case let e Error { return Error[Path, String](fsMessage(&e)); }
   }
   Ok[Path, String](package.copy());
 }
@@ -441,34 +441,34 @@ fn checkoutSource(entry &IndexEntry) Result[Path, String] {
 // added to the registry; false where no index has it
 fn fetchPackage(reg &mut Registry, name &str) Result[bool, String] {
   if reg.missedName(name) or not isConeName(name) { return Ok[bool, String](false); }
-  mut i = 0usize;
+  var i = 0usize;
   while i < reg.indexes.len() {
-    mut entry = emptyIndexEntry();
-    mut has = false;
+    var entry = emptyIndexEntry();
+    var has = false;
     match indexEntry(&mut reg.indexes[i], name, &mut entry) {
-      case imm ok Ok { has = ok; }
-      case imm e Error { return Error[bool, String](e.copy()); }
+      case let ok Ok { has = ok; }
+      case let e Error { return Error[bool, String](e.copy()); }
     }
     if has {
-      mut folder Path = "";
+      var folder Path = "";
       match checkoutSource(&entry) {
-        case mut ok Ok { folder <=> ok; }
-        case imm e Error { return Error[bool, String](e.copy()); }
+        case var ok Ok { folder <=> ok; }
+        case let e Error { return Error[bool, String](e.copy()); }
       }
-      imm manifest = folder.join("congo.toml");
-      imm ctx = cat(reg.indexes[i].url.view(), ": ", name, ".toml");
-      imm shortHash = entry.commit.sub(0usize, 10usize);
-      imm shownPath = if entry.path.isEmpty() {String.from(".");} else {entry.path.copy();};
+      let manifest = folder.join("congo.toml");
+      let ctx = cat(reg.indexes[i].url.view(), ": ", name, ".toml");
+      let shortHash = entry.commit.sub(0usize, 10usize);
+      let shownPath = if entry.path.isEmpty() {String.from(".");} else {entry.path.copy();};
       if not fs.isFile(&manifest) {
         return Error[bool, String](cat(ctx.view(), ": ", entry.git.view(), " at ", shortHash.view(), " has no congo.toml in '", shownPath.view(), "'"));
       }
-      mut pkg = emptyPackage();
+      var pkg = emptyPackage();
       match readManifest(&manifest) {
-        case mut ok Ok { pkg <=> ok; }
-        case imm e Error { return Error[bool, String](e.copy()); }
+        case var ok Ok { pkg <=> ok; }
+        case let e Error { return Error[bool, String](e.copy()); }
       }
       if not pkg.name.equals(name) {
-        mut wrong = cat(ctx.view(), ": the package at ", entry.git.view(), " '", shownPath.view(), "' is named '");
+        var wrong = cat(ctx.view(), ": the package at ", entry.git.view(), " '", shownPath.view(), "' is named '");
         wrong <- pkg.name.view(), "', not '", name, "'";
         return Error[bool, String](wrong);
       }
@@ -492,19 +492,19 @@ fn restore(reg &mut Registry, top usize) Result[void, String] {
   if not reg.has("core") {
     match fetchPackage(reg, "core") {
       case is Ok {}
-      case imm e Error { return Error[void, String](e.copy()); }
+      case let e Error { return Error[void, String](e.copy()); }
     }
   }
-  mut seen = List[String].empty();
+  var seen = List[String].empty();
   match restoreVisit(reg, top, &mut seen) {
     case is Ok {}
-    case imm e Error { return Error[void, String](e.copy()); }
+    case let e Error { return Error[void, String](e.copy()); }
   }
   match reg.find("core") {
-    case imm c Some {
+    case let c Some {
       match restoreVisit(reg, c, &mut seen) {
         case is Ok {}
-        case imm e Error { return Error[void, String](e.copy()); }
+        case let e Error { return Error[void, String](e.copy()); }
       }
     }
     case is None {}
@@ -513,43 +513,43 @@ fn restore(reg &mut Registry, top usize) Result[void, String] {
 }
 
 fn restoreVisit(reg &mut Registry, p usize, seen &mut List[String]) Result[void, String] {
-  imm name = reg.packages[p].name.copy();
-  mut done = false;
-  mut s = 0usize;
+  let name = reg.packages[p].name.copy();
+  var done = false;
+  var s = 0usize;
   while s < seen.len() {
     if seen[s].equals(name.view()) { done = true; }
     s = s + 1usize;
   }
   if done { return succeeded(); }
   seen.push(name.copy());
-  mut mods = List[Module].empty();
+  var mods = List[Module].empty();
   match scanPackage(reg.packages[p]) {
-    case mut ok Ok { mods <=> ok; }
-    case imm e Error { return Error[void, String](e.copy()); }
+    case var ok Ok { mods <=> ok; }
+    case let e Error { return Error[void, String](e.copy()); }
   }
-  imm order = walkOrder(&mods);
-  mut w = 0usize;
+  let order = walkOrder(&mods);
+  var w = 0usize;
   while w < order.len() {
-    imm m = *order[w];
-    imm imports = importsOf(mods[m]);
-    mut i = 0usize;
+    let m = *order[w];
+    let imports = importsOf(mods[m]);
+    var i = 0usize;
     while i < imports.len() {
-      imm imp = imports[i];
-      mut sister = 0usize;
+      let imp = imports[i];
+      var sister = 0usize;
       if imp.hasName and not sisterNamed(&mods, m, imp.name.view(), &mut sister) and not imp.name.equals("core") {
-        mut found = reg.has(imp.name.view());
+        var found = reg.has(imp.name.view());
         if not found {
           match fetchPackage(reg, imp.name.view()) {
-            case imm ok Ok { found = ok; }
-            case imm e Error { return Error[void, String](e.copy()); }
+            case let ok Ok { found = ok; }
+            case let e Error { return Error[void, String](e.copy()); }
           }
         }
         if found {
           match reg.find(imp.name.view()) {
-            case imm f Some {
+            case let f Some {
               match restoreVisit(reg, f, seen) {
                 case is Ok {}
-                case imm e Error { return Error[void, String](e.copy()); }
+                case let e Error { return Error[void, String](e.copy()); }
               }
             }
             case is None {}
@@ -568,34 +568,34 @@ fn restoreVisit(reg &mut Registry, p usize, seen &mut List[String]) Result[void,
 // Publishing moves the pin; it is for whoever can push to the index, which is
 // the credentials git has.
 fn cmdPublish(registryUrl &str, hasRegistry bool) i32 {
-  imm pkg = currentPackage();
-  imm name = pkg.name.copy();
-  mut urls = List[String].empty();
+  let pkg = currentPackage();
+  let name = pkg.name.copy();
+  var urls = List[String].empty();
   if hasRegistry { urls.push(String.from(registryUrl)); }
   else { urls = registryIndexes(); }
   if urls.len() == 0usize {
-    imm config = configPath();
-    imm place = native(&config);
+    let config = configPath();
+    let place = native(&config);
     fail(cat("no index registry to publish to: list one under [registry] as indexes = [\"<git URL>\"] in ", place.view(), ", or give --registry <URL>"));
   }
-  imm rootPlace = native(&pkg.root);
-  imm notRepo = cat(rootPlace.view(), " is not in a git repository, and a registry pins a git commit");
-  mut topText = String.empty();
+  let rootPlace = native(&pkg.root);
+  let notRepo = cat(rootPlace.view(), " is not in a git repository, and a registry pins a git commit");
+  var topText = String.empty();
   match gitOk(argList("rev-parse", "--show-toplevel"), &pkg.root, notRepo.view()) {
-    case mut ok Ok { topText <=> ok; }
-    case imm e Error { fail(e.copy()); }
+    case var ok Ok { topText <=> ok; }
+    case let e Error { fail(e.copy()); }
   }
-  imm topGiven = Path.from(topText.view());
-  imm top = resolved(&topGiven);
-  imm rootResolved = resolved(&pkg.root);
-  mut folder = String.empty();
-  imm topParts = top.parts();
-  imm rootParts = rootResolved.parts();
-  mut inside = rootParts.len() >= topParts.len();
-  mut p = 0usize;
+  let topGiven = Path.from(topText.view());
+  let top = resolved(&topGiven);
+  let rootResolved = resolved(&pkg.root);
+  var folder = String.empty();
+  let topParts = top.parts();
+  let rootParts = rootResolved.parts();
+  var inside = rootParts.len() >= topParts.len();
+  var p = 0usize;
   while inside and p < topParts.len() {
-    imm a = backslashed(topParts[p].view());
-    imm b = backslashed(rootParts[p].view());
+    let a = backslashed(topParts[p].view());
+    let b = backslashed(rootParts[p].view());
     if not a.equalsIgnoreAsciiCase(b.view()) { inside = false; }
     p = p + 1usize;
   }
@@ -608,77 +608,77 @@ fn cmdPublish(registryUrl &str, hasRegistry bool) i32 {
     }
   }
   match gitOk(argList("status", "--porcelain", "--", "."), &pkg.root, "cannot read the package's git status") {
-    case imm ok Ok {
+    case let ok Ok {
       if not ok.isEmpty() {
         fail(cat(name.view(), " has changes that are not committed; commit and push them, then publish"));
       }
     }
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  mut commit = String.empty();
+  var commit = String.empty();
   match gitOk(argList("rev-parse", "HEAD"), &pkg.root, "cannot read the package's commit") {
-    case mut ok Ok { commit <=> ok; }
-    case imm e Error { fail(e.copy()); }
+    case var ok Ok { commit <=> ok; }
+    case let e Error { fail(e.copy()); }
   }
-  imm shortHash = commit.sub(0usize, 10usize);
+  let shortHash = commit.sub(0usize, 10usize);
   match gitOk(argList("branch", "--remotes", "--contains", commit.view()), &pkg.root, "cannot tell whether the commit is pushed") {
-    case imm ok Ok {
+    case let ok Ok {
       if ok.isEmpty() {
         fail(cat("commit ", shortHash.view(), " of ", name.view(), " is on no remote branch: push it, so that others can fetch it, then publish"));
       }
     }
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  mut origin = String.empty();
+  var origin = String.empty();
   match git(argList("remote", "get-url", "origin"), &pkg.root) {
-    case imm ok Ok {
+    case let ok Ok {
       if ok.code != 0u32 {
         fail(cat("the repository of ", name.view(), " has no remote 'origin' to record as where its source is"));
       }
       origin = ok.out.trim();
     }
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  mut index = newIndexRegistry(urls[0usize].view());
+  var index = newIndexRegistry(urls[0usize].view());
   match refreshIndex(&mut index) {
     case is Ok {}
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  imm fileName = cat(name.view(), ".toml");
-  imm file = index.dir.join(fileName.view());
-  imm text = indexEntryText(name.view(), origin.view(), commit.view(), folder.view());
+  let fileName = cat(name.view(), ".toml");
+  let file = index.dir.join(fileName.view());
+  let text = indexEntryText(name.view(), origin.view(), commit.view(), folder.view());
   match fs.writeFile(&file, text.view()) {
     case is Ok {}
-    case imm e Error { fail(fsMessage(&e)); }
+    case let e Error { fail(fsMessage(&e)); }
   }
-  imm doing = cat("cannot publish ", name.view(), " to ", index.url.view());
+  let doing = cat("cannot publish ", name.view(), " to ", index.url.view());
   match gitOk(argList("add", fileName.view()), &index.dir, doing.view()) {
     case is Ok {}
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
   // git, not a byte compare, says whether the entry changed: a checkout may
   // have written the file with its own line ends
   match gitOk(argList("status", "--porcelain", "--", fileName.view()), &index.dir, doing.view()) {
-    case imm ok Ok {
+    case let ok Ok {
       if ok.isEmpty() {
-        imm told = cat(name.view(), " is already at ", shortHash.view(), " in ", index.url.view());
+        let told = cat(name.view(), " is already at ", shortHash.view(), " in ", index.url.view());
         say("Unchanged", told.view());
         return 0i32;
       }
     }
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  imm message = cat("Publish ", name.view(), " at ", shortHash.view());
+  let message = cat("Publish ", name.view(), " at ", shortHash.view());
   match gitOk(argList("commit", "--quiet", "-m", message.view()), &index.dir, doing.view()) {
     case is Ok {}
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  imm pushDoing = cat(doing.view(), " (if someone published meanwhile, publish again)");
+  let pushDoing = cat(doing.view(), " (if someone published meanwhile, publish again)");
   match gitOk(argList("push", "--quiet", "origin", "HEAD"), &index.dir, pushDoing.view()) {
     case is Ok {}
-    case imm e Error { fail(e.copy()); }
+    case let e Error { fail(e.copy()); }
   }
-  imm told = cat(name.view(), " at ", shortHash.view(), " to ", index.url.view());
+  let told = cat(name.view(), " at ", shortHash.view(), " to ", index.url.view());
   say("Published", told.view());
   0i32;
 }

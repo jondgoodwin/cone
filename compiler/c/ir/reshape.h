@@ -31,7 +31,7 @@
  *   reach any container (a closure that captured the list, a struct that holds it);
  * - or, handed nothing that reaches the type, it is a callee that reshapes one
  *   through a global;
- * - or the borrow points into a 'mut' global, or into anything reached from one (the
+ * - or the borrow points into a 'var' global, or into anything reached from one (the
  *   loan's 'globalview'), or is reached through a reference a caller lent where a 'mut'
  *   global reaches 'cont' (reshapeMutGlobalsReach; 'globalview' 2): a call whatever it is handed
  *   that is code the compiler cannot read (a virtual call, a function value, a Cone function
@@ -39,7 +39,7 @@
  *   inference (shapeTypeWritesGlobal, where a virtual call in a body counts as writing any
  *   global), for a function may write a global by its name and no summary is kept of which. The
  *   intrinsics, an init and a call through a virtual reference marked '+ ShapeKeeping' are
- *   exempt, an 'extern' C function is asked of what it is handed; an 'imm' global is no such
+ *   exempt, an 'extern' C function is asked of what it is handed; a 'let' global is no such
  *   borrow.
  *
  * 'clear', 'pop' and 'truncate' each write the length; 'set' of a String finalizes
@@ -135,8 +135,8 @@ enum ReshapeWhy {
     ReshapeBody,        // a callee handed a writable value that can reach it, whose body reshapes one
     ReshapeGlobal,      // a callee that reshapes one through a global, handed nothing that reaches it
     ReshapeStore,       // a store through another name (not a call): reshapeStoreHits
-    ReshapeGlobalView,  // a callee that may write a 'mut' global the borrow points into: code the compiler cannot read, or one that reshapes the type through a global
-    ReshapeGlobalMaybe  // the same, the borrow reached through a reference a caller lent that may be a 'mut' global (one reaches the type)
+    ReshapeGlobalView,  // a callee that may write a 'var' global the borrow points into: code the compiler cannot read, or one that reshapes the type through a global
+    ReshapeGlobalMaybe  // the same, the borrow reached through a reference a caller lent that may be a 'var' global (one reaches the type)
 };
 
 typedef struct {
@@ -153,7 +153,7 @@ typedef struct {
 // taken through that field (NULL otherwise): the borrow is then into that one value, and an
 // argument reaches it only by reaching the owner, or by a reference that points at a 'cont'
 // (which may be that very one); a 'cont' held as a field of any other struct is another value.
-// 'globalview' says the borrow points into a 'mut' global, or into anything reached from one: every
+// 'globalview' says the borrow points into a 'var' global, or into anything reached from one: every
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
 // 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of

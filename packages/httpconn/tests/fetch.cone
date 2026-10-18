@@ -53,23 +53,23 @@ fn answer(drv &mut Driver, req ReqId, target &Array[u8], method Method, echo &Ar
   if target == "/hello" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
     if method != Method.Head {
-      mut b = pool.mustTake(64usize);
+      var b = pool.mustTake(64usize);
       b.append(helloBody());
       drv.sendData(req, b);
       drv.finish(req);
     }
   } elif target == "/chunked" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.unsized());
-    mut a = pool.mustTake(64usize);
+    var a = pool.mustTake(64usize);
     a.append("one,");
     drv.sendData(req, a);
-    mut b = pool.mustTake(64usize);
+    var b = pool.mustTake(64usize);
     b.append("two,");
     drv.sendData(req, b);
-    mut c = pool.mustTake(64usize);
+    var c = pool.mustTake(64usize);
     c.append("three");
     drv.sendData(req, c);
-    mut t = Headers.empty();
+    var t = Headers.empty();
     t.add("X-Checksum", "abc123");
     drv.finishWith(req, t);
   } elif target == "/nocontent" {
@@ -77,7 +77,7 @@ fn answer(drv &mut Driver, req ReqId, target &Array[u8], method Method, echo &Ar
   } else {
     // /echo
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(echo.len)));
-    mut b = pool.mustTake(echo.len);
+    var b = pool.mustTake(echo.len);
     b.append(echo);
     drv.sendData(req, b);
     drv.finish(req);
@@ -85,35 +85,35 @@ fn answer(drv &mut Driver, req ReqId, target &Array[u8], method Method, echo &Ar
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  mut port = 0u16;
-  mut listener = ListenerId.none();
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  var port = 0u16;
+  var listener = ListenerId.none();
   match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
-    case imm r Ok {listener = r;}
-    case imm e Error {}
+    case let r Ok {listener = r;}
+    case let e Error {}
   }
   match drv.localAddr(&lp, listener) {
-    case imm a Ok {port = a.port();}
-    case imm e Error {}
+    case let a Ok {port = a.port();}
+    case let e Error {}
   }
   require(port != 0u16, "the server listens");
-  imm conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+  let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
 
-  mut cl = new Client(0u16, String.empty(), Headers.empty(), 0u64, 0u64, 0u64, 0u64, 0u64, false, 0u64);
-  mut sv = new Server(0u64, String.empty(), 0u64, 0u64, 0u64, 0u64, 0u64);
+  var cl = new Client(0u16, String.empty(), Headers.empty(), 0u64, 0u64, 0u64, 0u64, 0u64, false, 0u64);
+  var sv = new Server(0u64, String.empty(), 0u64, 0u64, 0u64, 0u64, 0u64);
   // What the server is reading, to answer on its End
-  mut svTarget = String.empty();
-  mut svMethod Method = Method.Get;
-  mut svReq = ReqId.none();
+  var svTarget = String.empty();
+  var svMethod Method = Method.Get;
+  var svReq = ReqId.none();
 
   // The client's requests, one after another
-  mut step = 0u32;
-  mut req = ReqId.none();
-  mut events = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  mut connected = false;
+  var step = 0u32;
+  var req = ReqId.none();
+  var events = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  var connected = false;
   while step < 6u32 and Instant.now() < giveUp {
     // The next request, once the one before has ended
     if req.isNone() and step < 5u32 {
@@ -134,9 +134,9 @@ fn main() i32 {
       }
     }
     drv.poll(&mut lp, forever(), &mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
         if e.kind == EventKind.Accepted {sv.accepted = sv.accepted + 1u64;}
@@ -177,7 +177,7 @@ fn main() i32 {
           cl.trailers = e.trailers.copy();
         } elif e.kind == EventKind.Writable {
           cl.writable = cl.writable + 1u64;
-          mut b = pool.mustTake(postBody().len);
+          var b = pool.mustTake(postBody().len);
           b.append(postBody());
           match drv.sendData(req, b) {
             case is None[IoBuf] {}
@@ -197,7 +197,7 @@ fn main() i32 {
             expectInt(i64.from(cl.status), 200i64, "GET /chunked: 200");
             expectStr(cl.body.view(), "one,two,three", "GET /chunked: its body");
             match cl.trailers.get("x-checksum") {
-              case imm v Some {expectStr(v, "abc123", "GET /chunked: its trailer");}
+              case let v Some {expectStr(v, "abc123", "GET /chunked: its trailer");}
               case is None[&Array[u8]] {expect(false, "GET /chunked: its trailer arrived");}
             }
           } elif step == 2u32 {
@@ -234,7 +234,7 @@ fn main() i32 {
   expectUInt(sv.failures, 0u64, "...none failed");
   expectUInt(sv.closed, 1u64, "the server's connection: one Closed");
   expectUInt(sv.clean, 1u64, "...clean");
-  imm s = drv.stats();
+  let s = drv.stats();
   expectUInt(s.connects, 1u64, "stats: one connect");
   expectUInt(s.connected, 1u64, "stats: connected once");
   expectUInt(s.accepted, 1u64, "stats: one accepted");

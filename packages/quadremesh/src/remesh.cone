@@ -32,7 +32,7 @@ pub struct RemeshOptions {
 
   // The path of source vertices (each a neighbour of the one before) as guides
   pub fn addGuidePath(self &mut, path &List[u32], closed bool) {
-    mut i = 0usize;
+    var i = 0usize;
     while i + 1usize < path.len() { guides.push(*path[i]); guides.push(*path[i + 1usize]); i = i + 1usize; }
     if closed and path.len() > 2usize { guides.push(*path[path.len() - 1usize]); guides.push(*path[0usize]); }
   }
@@ -62,16 +62,16 @@ pub struct Remesh {
 }
 
 fn constraints(w &Work, nrm &List[Vec3], cori &mut List[Vec3], ckind &mut List[u32], vfeat &mut List[u32]) {
-  imm n = w.pos.len();
-  mut cnt = List[u32].withCapacity(n);
-  mut nb = List[u32].withCapacity(n * 4usize);
-  mut i = 0usize;
+  let n = w.pos.len();
+  var cnt = List[u32].withCapacity(n);
+  var nb = List[u32].withCapacity(n * 4usize);
+  var i = 0usize;
   while i < n { cnt.push(0u32); vfeat.push(0u32); cori.push(zero3()); ckind.push(0u32); i = i + 1usize; }
   nb.resize(n * 4usize, NoVertex);
   i = 0usize;
   while i < w.fa.len() {
-    imm a = usize.from(*w.fa[i]);
-    imm b = usize.from(*w.fb[i]);
+    let a = usize.from(*w.fa[i]);
+    let b = usize.from(*w.fb[i]);
     vfeat.set(a, *vfeat[a] | *w.fk[i]);
     vfeat.set(b, *vfeat[b] | *w.fk[i]);
     if *cnt[a] < 4u32 { nb.set(a * 4usize + usize.from(*cnt[a]), u32.from(b)); }
@@ -82,18 +82,18 @@ fn constraints(w &Work, nrm &List[Vec3], cori &mut List[Vec3], ckind &mut List[u
   }
   i = 0usize;
   while i < n {
-    imm c = *cnt[i];
+    let c = *cnt[i];
     if c > 0u32 {
-      imm p = *w.pos[i];
-      imm nn = *nrm[i];
-      mut kind = 2u32;
-      mut dir = zero3();
+      let p = *w.pos[i];
+      let nn = *nrm[i];
+      var kind = 2u32;
+      var dir = zero3();
       if c == 1u32 {
         dir = toTangent(nn, *w.pos[usize.from(*nb[i * 4usize])] - p);
         kind = 1u32;
       } elif c == 2u32 {
-        imm u1 = unit(*w.pos[usize.from(*nb[i * 4usize])] - p);
-        imm u2 = unit(*w.pos[usize.from(*nb[i * 4usize + 1usize])] - p);
+        let u1 = unit(*w.pos[usize.from(*nb[i * 4usize])] - p);
+        let u2 = unit(*w.pos[usize.from(*nb[i * 4usize + 1usize])] - p);
         if u1.dot(-u2) > 0.64 {
           dir = toTangent(nn, u1 - u2);
           kind = 1u32;
@@ -109,13 +109,13 @@ fn constraints(w &Work, nrm &List[Vec3], cori &mut List[Vec3], ckind &mut List[u
 
 // The density-weighted area of the triangles
 fn weightedArea(w &Work) f32 {
-  mut sum = 0.;
-  mut t = 0usize;
+  var sum = 0.;
+  var t = 0usize;
   while t < w.idx.len() {
-    imm a = usize.from(*w.idx[t]);
-    imm b = usize.from(*w.idx[t + 1usize]);
-    imm c = usize.from(*w.idx[t + 2usize]);
-    imm ar = 0.5 * (*w.pos[b] - *w.pos[a]).cross(*w.pos[c] - *w.pos[a]).length();
+    let a = usize.from(*w.idx[t]);
+    let b = usize.from(*w.idx[t + 1usize]);
+    let c = usize.from(*w.idx[t + 2usize]);
+    let ar = 0.5 * (*w.pos[b] - *w.pos[a]).cross(*w.pos[c] - *w.pos[a]).length();
     sum = sum + ar * (*w.dens[a] + *w.dens[b] + *w.dens[c]) / 3.;
     t = t + 3usize;
   }
@@ -127,18 +127,18 @@ fn seconds(i Instant) f64 { i.elapsed().secondsF64(); }
 // The source remeshed as quads. See the top of the file for the method and the
 // options.
 pub fn quadRemesh(src &PolyMesh, opt &RemeshOptions) Remesh {
-  mut problems = List[String].empty();
-  imm t0 = Instant.now();
-  mut w = workFrom(src, opt.creaseAngle, opt.creaseChannel, &opt.guides, opt.density.view());
-  imm sym = opt.symmetryAxis >= 0i32;
-  imm axis = if sym { u32.from(opt.symmetryAxis); } else { 0u32; };
+  var problems = List[String].empty();
+  let t0 = Instant.now();
+  var w = workFrom(src, opt.creaseAngle, opt.creaseChannel, &opt.guides, opt.density.view());
+  let sym = opt.symmetryAxis >= 0i32;
+  let axis = if sym { u32.from(opt.symmetryAxis); } else { 0u32; };
   if sym { w = clipHalf(&w, axis, opt.symmetryOffset, true); }
   // The density relative to its mean, held to a sixteenfold range
-  mut dsum = 0.;
-  mut i = 0usize;
+  var dsum = 0.;
+  var i = 0usize;
   while i < w.dens.len() { dsum = dsum + *w.dens[i]; i = i + 1usize; }
-  imm dmean = if w.dens.len() > 0usize { dsum / f32.from(w.dens.len()); } else { 1.; };
-  mut dmax = 0.0625;
+  let dmean = if w.dens.len() > 0usize { dsum / f32.from(w.dens.len()); } else { 1.; };
+  var dmax = 0.0625;
   i = 0usize;
   while i < w.dens.len() {
     w.dens.set(i, clampf(*w.dens[i] / dmean, 0.0625, 16.));
@@ -146,42 +146,42 @@ pub fn quadRemesh(src &PolyMesh, opt &RemeshOptions) Remesh {
     i = i + 1usize;
   }
   // The lattice spacing: area over faces, with the density
-  imm wantFaces = if sym { f32.from(opt.faces) * 0.5; } else { f32.from(opt.faces); };
-  mut rho0 = opt.edgeLength;
+  let wantFaces = if sym { f32.from(opt.faces) * 0.5; } else { f32.from(opt.faces); };
+  var rho0 = opt.edgeLength;
   if rho0 <= 0. { rho0 = (weightedArea(&w) / maxf(wantFaces, 4.)).sqrt(); }
   splitLong(&mut w, 0.3 * rho0 / dmax.sqrt());
   markBoundary(&mut w);
-  imm lines = Lines.of(&w);
+  let lines = Lines.of(&w);
   // Level 0
-  mut nrm = List[Vec3].empty();
-  mut area = List[f32].empty();
+  var nrm = List[Vec3].empty();
+  var area = List[f32].empty();
   vertexData(&w, &mut nrm, &mut area);
-  mut cori = List[Vec3].empty();
-  mut ckind = List[u32].empty();
-  mut vfeat = List[u32].empty();
+  var cori = List[Vec3].empty();
+  var ckind = List[u32].empty();
+  var vfeat = List[u32].empty();
   constraints(&w, &nrm, &mut cori, &mut ckind, &mut vfeat);
-  mut rho = List[f32].withCapacity(w.pos.len());
+  var rho = List[f32].withCapacity(w.pos.len());
   i = 0usize;
   while i < w.pos.len() { rho.push(rho0 / (*w.dens[i]).sqrt()); i = i + 1usize; }
-  imm first = new Level(copyOf[Vec3](&w.pos), nrm, area, rho, meshGraph(&w), cori, ckind);
+  let first = new Level(copyOf[Vec3](&w.pos), nrm, area, rho, meshGraph(&w), cori, ckind);
   // The hierarchy
-  mut levels = List[Level].empty();
-  mut ups = List[List[u32]].empty();
+  var levels = List[Level].empty();
+  var ups = List[List[u32]].empty();
   levels.push(first);
   while true {
-    imm tp = levels.len() - 1usize;
+    let tp = levels.len() - 1usize;
     if levels[tp].count() <= 24usize { break; }
-    imm cr = coarsen(levels[tp], &mut ups);
+    let cr = coarsen(levels[tp], &mut ups);
     if f32.from(cr.count()) > 0.93 * f32.from(levels[tp].count()) { ups.pop(); break; }
     levels.push(cr);
   }
-  imm top = levels.len() - 1usize;
+  let top = levels.len() - 1usize;
   // The orientation field, kept at each level (coarsest first)
-  mut oriRev = List[List[Vec3]].empty();
-  mut ori = initOrientation(levels[top]);
+  var oriRev = List[List[Vec3]].empty();
+  var ori = initOrientation(levels[top]);
   smoothOrientation(levels[top], &mut ori, 10u32);
   oriRev.push(copyOf[Vec3](&ori));
-  mut k = top;
+  var k = top;
   while k > 0usize {
     k = k - 1usize;
     ori = upsampleOrientation(levels[k], ups[k], &ori);
@@ -189,35 +189,35 @@ pub fn quadRemesh(src &PolyMesh, opt &RemeshOptions) Remesh {
     oriRev.push(copyOf[Vec3](&ori));
   }
   // The position field, from the coarsest
-  mut q = initPosition(levels[top], oriRev[0usize]);
+  var q = initPosition(levels[top], oriRev[0usize]);
   smoothPosition(levels[top], oriRev[0usize], &mut q, 10u32);
   k = top;
   while k > 0usize {
     k = k - 1usize;
-    imm ok = oriRev[top - k];
+    let ok = oriRev[top - k];
     q = upsamplePosition(levels[k], ups[k], &q, ok);
     smoothPosition(levels[k], ok, &mut q, if k == 0usize { opt.positionIterations; } else { 8u32; });
   }
-  mut orientError = 0.;
-  mut latticeError = 0.;
+  var orientError = 0.;
+  var latticeError = 0.;
   fieldError(levels[0usize], oriRev[top], &q, &mut orientError, &mut latticeError);
-  imm fieldSeconds = seconds(t0);
-  imm t1 = Instant.now();
+  let fieldSeconds = seconds(t0);
+  let t1 = Instant.now();
   // The quads
-  imm qd = extract(levels[0usize], oriRev[top], &q, &vfeat, opt.tolerance, usize.from(opt.maxPolygon));
-  imm extractSeconds = seconds(t1);
-  imm t2 = Instant.now();
-  mut splits = 0usize;
-  mut qm = assemble(&qd, &mut splits);
-  imm extracted = qd.faceCount();
-  imm idx = SurfaceIndex.of(src);
-  imm off = opt.symmetryOffset;
-  mut filled = 0usize;
+  let qd = extract(levels[0usize], oriRev[top], &q, &vfeat, opt.tolerance, usize.from(opt.maxPolygon));
+  let extractSeconds = seconds(t1);
+  let t2 = Instant.now();
+  var splits = 0usize;
+  var qm = assemble(&qd, &mut splits);
+  let extracted = qd.faceCount();
+  let idx = SurfaceIndex.of(src);
+  let off = opt.symmetryOffset;
+  var filled = 0usize;
   if sym {
     // the vertices on the cut are held on the plane
     i = 0usize;
     while i < qm.pos.len() {
-      imm p = *qm.pos[i];
+      let p = *qm.pos[i];
       if (*qm.flag[i] & FeatBoundary) != 0u32 and absf(coord(p, axis) - off) < 0.4 * *qm.rho[i] {
         qm.flag.set(i, *qm.flag[i] | FlagOnPlane);
       }
@@ -227,26 +227,26 @@ pub fn quadRemesh(src &PolyMesh, opt &RemeshOptions) Remesh {
     filled = fillHoles(&mut qm, &idx, 10usize, &mut splits);
   }
   if !sym { pairTriangles(&mut qm); }
-  mut pm = toPoly(&qm, &mut problems);
+  var pm = toPoly(&qm, &mut problems);
   settle(&mut pm, &qm.flag, &idx, &lines, opt.relax, opt.symmetryAxis, off, opt.project);
   if sym {
     i = 0usize;
     while i < qm.pos.len() { qm.pos.set(i, *pm.positions[i]); i = i + 1usize; }
     qm = mirrorJoin(&qm, axis, off);
-    imm kept = qm.pos.len();
+    let kept = qm.pos.len();
     filled = fillHoles(&mut qm, &idx, 10usize, &mut splits);
     pairTriangles(&mut qm);
     pm = toPoly(&qm, &mut problems);
     // the vertices made for filled holes onto the surface; the others stay as
     // mirrored (a triangulated source is not quite symmetric, and would move
     // the two halves differently)
-    imm before = copyOf[Vec3](&pm.positions);
+    let before = copyOf[Vec3](&pm.positions);
     settle(&mut pm, &qm.flag, &idx, &lines, 0u32, -1i32, 0., opt.project);
     i = 0usize;
     while i < kept { pm.positions.set(i, *before[i]); i = i + 1usize; }
   }
   if opt.carry {
-    imm map = TransferMap.all(MapInterpolated);
+    let map = TransferMap.all(MapInterpolated);
     pm = dataTransfer(&pm, src, &map, &mut problems);
   }
   if opt.creaseAngle > 0. or opt.creaseChannel {
@@ -260,15 +260,15 @@ pub fn quadRemesh(src &PolyMesh, opt &RemeshOptions) Remesh {
 // Edges along a crease get 1 in the "crease" edge channel (so that subdivision
 // keeps them sharp): both ends on a crease or boundary line, the middle on it
 fn markCreases(pm &mut PolyMesh, flag &List[u32], lines &Lines, rho &List[f32]) {
-  mut ch = pm.findFloatChannel(EdgeDomain, "crease");
+  var ch = pm.findFloatChannel(EdgeDomain, "crease");
   if ch == NoIndex { ch = pm.addFloatChannel(EdgeDomain, "crease", 0.); }
-  mut e = 0usize;
+  var e = 0usize;
   while e < pm.edgeCount() {
-    imm a = usize.from(pm.fromVertex(u32.from(2usize * e)));
-    imm b = usize.from(pm.toVertex(u32.from(2usize * e)));
+    let a = usize.from(pm.fromVertex(u32.from(2usize * e)));
+    let b = usize.from(pm.toVertex(u32.from(2usize * e)));
     if a < flag.len() and b < flag.len() and (*flag[a] & FeatCrease) != 0u32 and (*flag[b] & FeatCrease) != 0u32 {
-      imm mid = (*pm.positions[a] + *pm.positions[b]) * 0.5;
-      imm c = lines.nearest(mid, FeatCrease);
+      let mid = (*pm.positions[a] + *pm.positions[b]) * 0.5;
+      let c = lines.nearest(mid, FeatCrease);
       if (c - mid).length() < 0.2 * *rho[a] { pm.setFloat(ch, u32.from(e), 1.); }
     }
     e = e + 1usize;

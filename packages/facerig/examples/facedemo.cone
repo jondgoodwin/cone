@@ -49,15 +49,15 @@ const TILE_W = 480;
 const TILE_H = 560;
 
 fn imageOf(p &Pixels) Image {
-  mut img = new Image(p.width, p.height, 4, List[u8].empty());
-  mut i = 0usize;
+  var img = new Image(p.width, p.height, 4, List[u8].empty());
+  var i = 0usize;
   while i < p.rgba.len() { img.pixels.push(*p.rgba[i]); i = i + 1usize; }
   img;
 }
 
 // The jaw's matrix for a frame: about the hinge, then the thrust
 fn jawMatrix(spec &FaceSpec, f &FaceFrame) Mat4 {
-  imm p = spec.jawPivot;
+  let p = spec.jawPivot;
   Mat4.fromTranslation(p + new Vec3(0., 0., -f.jawThrust)) * Mat4.fromQuat(f.jawRot) * Mat4.fromTranslation(-p);
 }
 
@@ -68,7 +68,7 @@ struct Sheet {
   tileH i32;
 
   fn make(tilesAcross i32, tilesDown i32, tileW i32, tileH i32) Sheet {
-    mut r = Raster.empty();
+    var r = Raster.empty();
     r.width = tilesAcross * tileW;
     r.height = tilesDown * tileH;
     r.depth = 8;
@@ -79,14 +79,14 @@ struct Sheet {
 
   // Copy a tile-sized readback (rows from the top) into tile 'n'
   fn put(self &mut, n i32, px *u8) {
-    imm tx = (n % tilesAcross) * tileW;
-    imm ty = (n / tilesAcross) * tileH;
-    mut y = 0;
+    let tx = (n % tilesAcross) * tileW;
+    let ty = (n / tilesAcross) * tileH;
+    var y = 0;
     while y < tileH {
-      mut x = 0;
+      var x = 0;
       while x < tileW {
-        imm s = usize.from((y * tileW + x) * 4);
-        imm d = usize.from(((ty + y) * raster.width + tx + x) * 4);
+        let s = usize.from((y * tileW + x) * 4);
+        let d = usize.from(((ty + y) * raster.width + tx + x) * 4);
         raster.pixels8.set(d, *(px + s));
         raster.pixels8.set(d + 1usize, *(px + s + 1usize));
         raster.pixels8.set(d + 2usize, *(px + s + 2usize));
@@ -97,18 +97,18 @@ struct Sheet {
   }
 
   fn save(self &, dir &String, name &str) {
-    imm png = encodePng(&raster, 2);
-    mut full = dir.copy();
+    let png = encodePng(&raster, 2);
+    var full = dir.copy();
     full.append("/");
     full.append(name);
-    imm op = Path.from(full.view());
+    let op = Path.from(full.view());
     fs.writeFile(&op, png.view());
     printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
   }
 }
 
 fn cstrEquals(a *u8, b &str) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
     i = i + 1usize;
@@ -117,15 +117,15 @@ fn cstrEquals(a *u8, b &str) bool {
 }
 
 fn argString(p *u8) String {
-  mut s = String.empty();
-  mut i = 0usize;
+  var s = String.empty();
+  var i = 0usize;
   while *(p + i) != 0u8 { s.appendByte(*(p + i)); i = i + 1usize; }
   s;
 }
 
 fn parseCount(s &String) i32 {
-  mut n = 0;
-  mut i = 0usize;
+  var n = 0;
+  var i = 0usize;
   while i < s.len() { n = n * 10 + i32.from(s[i] - '0'); i = i + 1usize; }
   n;
 }
@@ -147,24 +147,24 @@ struct Handles {
 
 // The head's placement for a frame: turned about the base of the neck
 fn headMatrix(f &FaceFrame) Mat4 {
-  imm c = new Vec3(0., -0.12, 0.02);
+  let c = new Vec3(0., -0.12, 0.02);
   Mat4.fromTranslation(c) * Mat4.fromQuat(f.head) * Mat4.fromTranslation(-c);
 }
 
 fn buildList(list &mut DrawList, h &Handles, head &TestHead, f &FaceFrame) {
   list.clear();
-  imm hm = headMatrix(f);
-  imm jaw = jawMatrix(&head.spec, f);
-  imm bones = [Mat4.identity(), jaw];
+  let hm = headMatrix(f);
+  let jaw = jawMatrix(&head.spec, f);
+  let bones = [Mat4.identity(), jaw];
   list.addSkinned(h.head, h.skin, hm, &bones);
-  imm cl = head.spec.point("eyeCenterL");
-  imm cr = head.spec.point("eyeCenterR");
+  let cl = head.spec.point("eyeCenterL");
+  let cr = head.spec.point("eyeCenterR");
   list.add(h.eye, h.eyeMat, hm * Mat4.fromTranslation(cl) * Mat4.fromQuat(f.eyeL));
   list.add(h.eye, h.eyeMat, hm * Mat4.fromTranslation(cr) * Mat4.fromQuat(f.eyeR));
   list.add(h.upper, h.teeth, hm);
   list.add(h.lower, h.teeth, hm * jaw);
-  imm root = head.tongueRoot;
-  imm lift = Mat4.fromTranslation(root) * Mat4.fromQuat(Quat.angleAxis(0.5 * f.tongue, new Vec3(1., 0., 0.))) * Mat4.fromTranslation(-root);
+  let root = head.tongueRoot;
+  let lift = Mat4.fromTranslation(root) * Mat4.fromQuat(Quat.angleAxis(0.5 * f.tongue, new Vec3(1., 0., 0.))) * Mat4.fromTranslation(-root);
   list.add(h.tongue, h.tongueMat, hm * jaw * lift);
   list.add(h.cavity, h.cavityMat, hm);
 }
@@ -173,7 +173,7 @@ fn drawFace(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, co
     f &FaceFrame, camera &Camera, sun &Light, color &Texture, depth &Texture, readback &Buffer, list &mut DrawList) {
   morpher.setWeights(renderer, copy, &f.weights);
   buildList(list, h, head, f);
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   morpher.update(device, &mut encoder, renderer);
   renderer.render(device, &mut encoder, color, depth, camera, sun, list);
   encoder.copyTextureToBuffer(color, readback);
@@ -184,7 +184,7 @@ fn drawFace(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, co
 
 // A rig stepped for 'frames' sixtieths of a second
 fn step(rig &mut FaceRig, frame &mut FaceFrame, frames i32) {
-  mut i = 0;
+  var i = 0;
   while i < frames { rig.update(1. / 60., frame); i = i + 1; }
 }
 
@@ -193,122 +193,122 @@ fn freshRig(head &TestHead, units &List[UnitDef], targets &FaceTargets) FaceRig 
 }
 
 fn lidClosure(units &List[UnitDef], f &FaceFrame) f32 {
-  imm i = findUnit(units, AU_BLINK, SIDE_RIGHT);
+  let i = findUnit(units, AU_BLINK, SIDE_RIGHT);
   *f.units[usize.from(i)];
 }
 
 fn main(argc i32, argv **u8) i32 {
-  mut outDir = String.from("face-shots");
-  mut quick = false;
-  mut costFrames = 120;
-  mut a = 1;
+  var outDir = String.from("face-shots");
+  var quick = false;
+  var costFrames = 120;
+  var a = 1;
   while a < argc {
-    imm arg = *(argv + usize.from(a));
+    let arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--out") and a + 1 < argc { outDir = argString(*(argv + usize.from(a + 1))); a += 1; }
     if cstrEquals(arg, "--quick") { quick = true; }
     if cstrEquals(arg, "--frames") and a + 1 < argc { costFrames = parseCount(&argString(*(argv + usize.from(a + 1)))); a += 1; }
     a += 1;
   }
-  mut ok = true;
+  var ok = true;
 
   // ---- the head, its targets and its rig ----
-  imm t0 = Instant.now();
-  imm head = if quick { makeTestHead(160usize, 224usize); } else { makeTestHead(400usize, 512usize); };
-  imm tHead = t0.elapsed().nanos();
-  imm units = standardUnits();
-  imm t1 = Instant.now();
-  imm targets = buildTargets(&head.mesh, &head.spec, &units);
-  imm tTargets = t1.elapsed().nanos();
+  let t0 = Instant.now();
+  let head = if quick { makeTestHead(160usize, 224usize); } else { makeTestHead(400usize, 512usize); };
+  let tHead = t0.elapsed().nanos();
+  let units = standardUnits();
+  let t1 = Instant.now();
+  let targets = buildTargets(&head.mesh, &head.spec, &units);
+  let tTargets = t1.elapsed().nanos();
   print <- "head: "; print <- head.mesh.positions.len(); print <- " vertices, "; print <- head.mesh.triangleCount(); print <- " triangles, built in ";
   print <- tHead / 1000000i64; print <- " ms (textures included)\n";
   print <- "targets: "; print <- targets.count(); print <- " morph targets, "; print <- targets.vertex.len(); print <- " entries, built in ";
   print <- tTargets / 1000000i64; print <- " ms\n";
 
   // ---- the GPU ----
-  mut instance = Instance.create("facerig facedemo");
+  var instance = Instance.create("facerig facedemo");
   if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1; }
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   if !device.isValid() { print <- "FAIL: no device\n"; return 1; }
   printStr("adapter: "); printStr(adapter.name.view()); printStr("\n");
 
-  imm colorFmt = TEXTURE_FORMAT_RGBA8_UNORM_SRGB;
-  imm tw = u32.from(TILE_W);
-  imm th = u32.from(TILE_H);
-  imm target = new TextureDescriptor(tw, th, colorFmt, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&target);
-  imm depthDesc = new TextureDescriptor(tw, th, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(u64.from(tw) * u64.from(th) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut renderer = Renderer.create(&mut device, colorFmt, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  let colorFmt = TEXTURE_FORMAT_RGBA8_UNORM_SRGB;
+  let tw = u32.from(TILE_W);
+  let th = u32.from(TILE_H);
+  let target = new TextureDescriptor(tw, th, colorFmt, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var color = device.createTexture(&target);
+  let depthDesc = new TextureDescriptor(tw, th, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(u64.from(tw) * u64.from(th) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var renderer = Renderer.create(&mut device, colorFmt, TEXTURE_FORMAT_DEPTH32_FLOAT);
   if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1; }
-  mut morpher = Morpher.create(&mut device);
+  var morpher = Morpher.create(&mut device);
   if !morpher.isValid() { print <- "FAIL: no morpher\n"; return 1; }
 
   // ---- the head's resources ----
-  mut skin = Skin.empty();
-  mut v = 0usize;
+  var skin = Skin.empty();
+  var v = 0usize;
   while v < head.mesh.positions.len() {
-    imm w = *head.jawWeight[v];
+    let w = *head.jawWeight[v];
     skin.push(0u32, 1u32, 0u32, 0u32, 1. - w, w, 0., 0.);
     v = v + 1usize;
   }
-  mut mt = MorphTargets.empty(head.mesh.positions.len());
-  imm noTan = List[Vec3].empty();
-  mut t = 0usize;
+  var mt = MorphTargets.empty(head.mesh.positions.len());
+  let noTan = List[Vec3].empty();
+  var t = 0usize;
   while t < targets.count() {
     mt.addSparse(&targets.indicesOf(t), &targets.positionsOf(t), &targets.normalsOf(t), &noTan);
     t = t + 1usize;
   }
-  imm set = morpher.addSet(&mut device, &mt, &head.mesh);
-  imm baseHead = renderer.addSkinnedMesh(&mut device, &head.mesh, &skin);
-  mut enc0 = device.createCommandEncoder();
-  imm copy = morpher.addCopy(&mut device, &mut enc0, &mut renderer, baseHead, set, false);
+  let set = morpher.addSet(&mut device, &mt, &head.mesh);
+  let baseHead = renderer.addSkinnedMesh(&mut device, &head.mesh, &skin);
+  var enc0 = device.createCommandEncoder();
+  let copy = morpher.addCopy(&mut device, &mut enc0, &mut renderer, baseHead, set, false);
   device.queue.submit(enc0.finish());
   device.endFrame();
   device.waitIdle();
   if copy.isNone() { print <- "FAIL: no morphed copy\n"; return 1; }
 
-  imm skinTex = renderer.addTexture(&mut device, &imageOf(&head.skinPixels));
-  imm eyeTex = renderer.addTexture(&mut device, &imageOf(&head.eyePixels));
-  mut skinMat = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.56);
+  let skinTex = renderer.addTexture(&mut device, &imageOf(&head.skinPixels));
+  let eyeTex = renderer.addTexture(&mut device, &imageOf(&head.eyePixels));
+  var skinMat = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.56);
   skinMat.texture = skinTex;
-  mut eyeMat = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.10);
+  var eyeMat = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.10);
   eyeMat.texture = eyeTex;
   eyeMat.clearcoat = 1.;
   eyeMat.clearcoatRoughness = 0.03;
-  imm teethMat = PbrMaterial.standard(new Color(0.86, 0.82, 0.72, 1.), 0., 0.35);
-  imm tongueMat = PbrMaterial.standard(new Color(0.62, 0.22, 0.26, 1.), 0., 0.45);
-  imm cavityMat = PbrMaterial.standard(new Color(0.20, 0.04, 0.05, 1.), 0., 0.9);
-  imm h = new Handles(morpher.mesh(copy), renderer.addMesh(&mut device, &head.eyeMesh), renderer.addMesh(&mut device, &head.teethUpper),
+  let teethMat = PbrMaterial.standard(new Color(0.86, 0.82, 0.72, 1.), 0., 0.35);
+  let tongueMat = PbrMaterial.standard(new Color(0.62, 0.22, 0.26, 1.), 0., 0.45);
+  let cavityMat = PbrMaterial.standard(new Color(0.20, 0.04, 0.05, 1.), 0., 0.9);
+  let h = new Handles(morpher.mesh(copy), renderer.addMesh(&mut device, &head.eyeMesh), renderer.addMesh(&mut device, &head.teethUpper),
     renderer.addMesh(&mut device, &head.teethLower), renderer.addMesh(&mut device, &head.tongue), renderer.addMesh(&mut device, &head.cavity),
     renderer.addPbrMaterial(&mut device, &skinMat), renderer.addPbrMaterial(&mut device, &eyeMat),
     renderer.addPbrMaterial(&mut device, &teethMat), renderer.addPbrMaterial(&mut device, &tongueMat),
     renderer.addPbrMaterial(&mut device, &cavityMat));
 
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.near = 0.05;
   camera.far = 5.;
   camera.background = new Color(0.07, 0.08, 0.10, 1.);
-  imm sun = Light.directional(new Vec3(-0.35, -0.40, 0.85), new Color(2.6, 2.45, 2.3, 1.), Color.gray(0.45));
-  mut list = DrawList.empty();
-  mut frame = FaceFrame.make(units.len(), targets.count());
-  imm px = readback.mappedRange();
+  let sun = Light.directional(new Vec3(-0.35, -0.40, 0.85), new Color(2.6, 2.45, 2.3, 1.), Color.gray(0.45));
+  var list = DrawList.empty();
+  var frame = FaceFrame.make(units.len(), targets.count());
+  let px = readback.mappedRange();
 
   // ---- the portrait ----
   camera.fov = radians(20.);
   camera.lookAt(new Vec3(0.02, 0.0, -0.80), new Vec3(0., -0.012, -0.08), new Vec3(0., 1., 0.));
-  mut rig = freshRig(&head, &units, &targets);
+  var rig = freshRig(&head, &units, &targets);
   rig.idleAmount = 0.;
   rig.blinking = false;
   step(&mut rig, &mut frame, 2);
-  mut sheet = Sheet.make(2, 1, TILE_W, TILE_H);
+  var sheet = Sheet.make(2, 1, TILE_W, TILE_H);
   drawFace(&mut device, &mut renderer, &mut morpher, copy, &h, &head, &frame, &camera, &sun, &color, &depth, &readback, &mut list);
   sheet.put(0, px);
   camera.lookAt(new Vec3(0.30, 0.02, -0.55), new Vec3(0., -0.005, -0.08), new Vec3(0., 1., 0.));
@@ -320,9 +320,9 @@ fn main(argc i32, argv **u8) i32 {
   camera.fov = radians(20.);
   camera.lookAt(new Vec3(0.0, 0.0, -0.80), new Vec3(0., -0.012, -0.08), new Vec3(0., 1., 0.));
   sheet = Sheet.make(3, 2, TILE_W, TILE_H);
-  imm gazeTargets = [new Vec3(0., 0.02, -2.), new Vec3(-0.9, 0.02, -1.5), new Vec3(0.9, 0.02, -1.5), new Vec3(0., 0.80, -1.8),
+  let gazeTargets = [new Vec3(0., 0.02, -2.), new Vec3(-0.9, 0.02, -1.5), new Vec3(0.9, 0.02, -1.5), new Vec3(0., 0.80, -1.8),
     new Vec3(0., -0.70, -1.8), new Vec3(0., 0.02, -0.33)];
-  mut g = 0usize;
+  var g = 0usize;
   while g < 6usize {
     rig = freshRig(&head, &units, &targets);
     rig.blinking = false;
@@ -340,16 +340,16 @@ fn main(argc i32, argv **u8) i32 {
   rig.idleAmount = 0.;
   rig.blinking = false;
   step(&mut rig, &mut frame, 30);
-  imm blinkTimes = [0, 3, 6, 8, 10, 14, 18, 24];
+  let blinkTimes = [0, 3, 6, 8, 10, 14, 18, 24];
   rig.blinker.start(1.);
   rig.blinking = true;
-  mut elapsed = 0;
-  mut minOpen = 1.;
-  mut maxClosed = 0.;
-  mut b = 0usize;
+  var elapsed = 0;
+  var minOpen = 1.;
+  var maxClosed = 0.;
+  var b = 0usize;
   while b < 8usize {
     while elapsed < blinkTimes[b] { rig.update(1. / 120., &mut frame); elapsed = elapsed + 1; }
-    imm lid = lidClosure(&units, &frame);
+    let lid = lidClosure(&units, &frame);
     if lid > maxClosed { maxClosed = lid; }
     drawFace(&mut device, &mut renderer, &mut morpher, copy, &h, &head, &frame, &camera, &sun, &color, &depth, &readback, &mut list);
     sheet.put(i32.from(b), px);
@@ -365,8 +365,8 @@ fn main(argc i32, argv **u8) i32 {
   rig = freshRig(&head, &units, &targets);
   rig.idleAmount = 0.;
   rig.blinking = false;
-  mut e = 0usize;
-  imm lidAmounts = [0., 0.4, 1.];
+  var e = 0usize;
+  let lidAmounts = [0., 0.4, 1.];
   while e < 3usize {
     rig.setUnit(AU_EYES_CLOSED, SIDE_BOTH, lidAmounts[e]);
     step(&mut rig, &mut frame, 20);
@@ -380,8 +380,8 @@ fn main(argc i32, argv **u8) i32 {
   camera.fov = radians(20.);
   camera.lookAt(new Vec3(0.0, 0.0, -0.80), new Vec3(0., -0.012, -0.08), new Vec3(0., 1., 0.));
   sheet = Sheet.make(4, 2, TILE_W, TILE_H);
-  imm order = [EXPR_HAPPINESS, EXPR_SADNESS, EXPR_SURPRISE, EXPR_FEAR, EXPR_ANGER, EXPR_DISGUST, EXPR_CONTEMPT, EXPR_PAIN];
-  mut x = 0usize;
+  let order = [EXPR_HAPPINESS, EXPR_SADNESS, EXPR_SURPRISE, EXPR_FEAR, EXPR_ANGER, EXPR_DISGUST, EXPR_CONTEMPT, EXPR_PAIN];
+  var x = 0usize;
   while x < 8usize {
     rig = freshRig(&head, &units, &targets);
     rig.blinking = false;
@@ -395,17 +395,17 @@ fn main(argc i32, argv **u8) i32 {
 
   // ---- speech ----
   sheet = Sheet.make(4, 2, TILE_W, TILE_H);
-  imm line = utteranceFromText("Hello, I am happy to see you.", 1.);
+  let line = utteranceFromText("Hello, I am happy to see you.", 1.);
   print <- "speech: "; print <- line.phonemes.len(); print <- " phonemes, "; print <- line.duration; print <- " s\n";
   rig = freshRig(&head, &units, &targets);
   rig.blinking = false;
   rig.say(&line);
-  imm shown = [1usize, 3usize, 4usize, 6usize, 9usize, 10usize, 12usize, 13usize];
-  mut clock = 0.;
-  mut maxJaw = 0.;
-  mut s = 0usize;
+  let shown = [1usize, 3usize, 4usize, 6usize, 9usize, 10usize, 12usize, 13usize];
+  var clock = 0.;
+  var maxJaw = 0.;
+  var s = 0usize;
   while s < 8usize {
-    imm at = *line.starts[shown[s]] + 0.045;
+    let at = *line.starts[shown[s]] + 0.045;
     while clock < at { rig.update(1. / 60., &mut frame); clock = clock + 1. / 60.; if frame.jawPitch > maxJaw { maxJaw = frame.jawPitch; } }
     printStr(line.phonemes[shown[s]].view()); print <- " at "; print <- at; print <- " s: jaw "; print <- frame.jawPitch; print <- " rad\n";
     drawFace(&mut device, &mut renderer, &mut morpher, copy, &h, &head, &frame, &camera, &sun, &color, &depth, &readback, &mut list);
@@ -420,18 +420,18 @@ fn main(argc i32, argv **u8) i32 {
   // ---- the cost ----
   rig = freshRig(&head, &units, &targets);
   rig.say(&line);
-  imm c0 = Instant.now();
-  mut n = 0;
+  let c0 = Instant.now();
+  var n = 0;
   while n < 600 { rig.update(1. / 60., &mut frame); n = n + 1; }
-  imm rigNs = c0.elapsed().nanos();
-  imm c1 = Instant.now();
+  let rigNs = c0.elapsed().nanos();
+  let c1 = Instant.now();
   n = 0;
   while n < costFrames {
     rig.update(1. / 60., &mut frame);
     drawFace(&mut device, &mut renderer, &mut morpher, copy, &h, &head, &frame, &camera, &sun, &color, &depth, &readback, &mut list);
     n = n + 1;
   }
-  imm frameNs = c1.elapsed().nanos();
+  let frameNs = c1.elapsed().nanos();
   printStr("cost: rig update "); print <- rigNs / 600i64 / 1000i64; printStr(" us; a rig update, morph pre-pass, skinned draw of "); print <- head.mesh.triangleCount();
   printStr(" triangles and the parts at "); print <- TILE_W; printStr("x"); print <- TILE_H; printStr(", waited on: "); print <- frameNs / i64.from(costFrames) / 1000i64; printStr(" us\n");
 

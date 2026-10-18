@@ -18,12 +18,12 @@ extern {
 
 fn describe(r Result[i64, json.NumberError]) String {
   match r {
-    case imm n Ok {
-      mut s = String.from("ok ");
+    case let n Ok {
+      var s = String.from("ok ");
       s.appendInt(n);
       s;
     }
-    case imm e Error {
+    case let e Error {
       match e {
         case is NotANumber { String.from("not a number"); }
         case is NotInteger { String.from("not an integer"); }
@@ -35,12 +35,12 @@ fn describe(r Result[i64, json.NumberError]) String {
 
 fn describeU(r Result[u64, json.NumberError]) String {
   match r {
-    case imm n Ok {
-      mut s = String.from("ok ");
+    case let n Ok {
+      var s = String.from("ok ");
       s.appendUInt(n);
       s;
     }
-    case imm e Error {
+    case let e Error {
       match e {
         case is NotANumber { String.from("not a number"); }
         case is NotInteger { String.from("not an integer"); }
@@ -51,19 +51,19 @@ fn describeU(r Result[u64, json.NumberError]) String {
 }
 
 fn int(text &str, want &str) {
-  imm got = describe(json.numberI64(text));
+  let got = describe(json.numberI64(text));
   expectStr(got.view(), want, text);
 }
 
 fn uint(text &str, want &str) {
-  imm got = describeU(json.numberU64(text));
+  let got = describeU(json.numberU64(text));
   expectStr(got.view(), want, text);
 }
 
 // The f64 the text reads as, its bits
 fn bitsOf(text &str) u64 {
   match json.numberF64(text) {
-    case imm x Ok { x as u64; }
+    case let x Ok { x as u64; }
     case is Error { 0xDEADBEEFDEADBEEFu64; }
   }
 }
@@ -75,7 +75,7 @@ fn float(text &str, want u64) {
 fn outOfRange(text &str) {
   match json.numberF64(text) {
     case is Ok { expect(false, text); }
-    case imm e Error {
+    case let e Error {
       match e {
         case is OutOfRange { expect(true, text); }
         else { expect(false, text); }
@@ -90,7 +90,7 @@ fn grammar(text &str, ok bool) {
 
 fn shortest(x f64, want &str) {
   match json.formatF64(x) {
-    case imm s Some { expectStr(s.view(), want, want); }
+    case let s Some { expectStr(s.view(), want, want); }
     case is None { expectStr("<none>", want, want); }
   }
 }
@@ -102,21 +102,21 @@ fn shortestBits(bits u64, want &str) {
 // A repeatable generator: splitmix64, its state passed in and out
 fn next(state &mut u64) u64 {
   *state = *state + 0x9E3779B97F4A7C15u64;
-  mut z = *state;
+  var z = *state;
   z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
   z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
   z ^ (z >> 31u64);
 }
 
 fn strtodBits(text &str) u64 {
-  imm s = String.from(text);
+  let s = String.from(text);
   strtod(s.cstr(), null) as u64;
 }
 
 // The text read by this package and by strtod must be the same f64
 fn agree(text &str, label &str) bool {
   match json.numberF64(text) {
-    case imm x Ok { return expectUInt(x as u64, strtodBits(text), label); }
+    case let x Ok { return expectUInt(x as u64, strtodBits(text), label); }
     case is Error { return expect(false, label); }
   }
   false;
@@ -245,8 +245,8 @@ fn main() i32 {
   outOfRange("1e309");
   outOfRange("-1e309");
   outOfRange("1e100000000000");
-  mut huge = String.from("1");
-  mut z = 0usize;
+  var huge = String.from("1");
+  var z = 0usize;
   while z < 309usize {
     huge.appendByte('0');
     z = z + 1usize;
@@ -271,35 +271,35 @@ fn main() i32 {
   float("12345678901234567890123456789012345678901234567890e-30", 12345678901234567890d as u64);
 
   // 400-digit numbers are kept whole
-  mut big = String.from("1");
+  var big = String.from("1");
   z = 0usize;
   while z < 399usize {
     big.appendByte('0');
     z = z + 1usize;
   }
   match json.parse(big.view()) {
-    case imm doc Ok {
+    case let doc Ok {
       match doc.numberText() {
-        case imm t Some { expectStr(t, big.view(), "a 400 digit number is kept as written"); }
+        case let t Some { expectStr(t, big.view(), "a 400 digit number is kept as written"); }
         case is None { expect(false, "400 digit number text"); }
       }
       match doc.toText() {
-        case imm t Ok { expectStr(t.view(), big.view(), "and written as it was"); }
-        case imm e Error { expect(false, "400 digit write"); }
+        case let t Ok { expectStr(t.view(), big.view(), "and written as it was"); }
+        case let e Error { expect(false, "400 digit write"); }
       }
       match doc.asI64() {
         case is Ok { expect(false, "400 digits is no i64"); }
-        case imm e Error { expect(true, "400 digits is no i64"); }
+        case let e Error { expect(true, "400 digits is no i64"); }
       }
       match doc.asF64() {
         case is Ok { expect(false, "400 digits is no f64"); }
-        case imm e Error { expect(true, "400 digits is no f64"); }
+        case let e Error { expect(true, "400 digits is no f64"); }
       }
     }
-    case imm e Error { expect(false, "400 digit parse"); }
+    case let e Error { expect(false, "400 digit parse"); }
   }
   // 1 followed by 300 zeros is an f64
-  mut big300 = String.from("1");
+  var big300 = String.from("1");
   z = 0usize;
   while z < 300usize {
     big300.appendByte('0');
@@ -308,7 +308,7 @@ fn main() i32 {
   float(big300.view(), 1e300d as u64);
   agree(big300.view(), "300 digits against strtod");
   // A long fraction: 1000 digits after the point, still the nearest f64
-  mut longFraction = String.from("0.");
+  var longFraction = String.from("0.");
   z = 0usize;
   while z < 1000usize {
     longFraction.appendByte(if z % 3usize == 0usize {'1';} else {'7';});
@@ -316,7 +316,7 @@ fn main() i32 {
   }
   agree(longFraction.view(), "a 1000 digit fraction against strtod");
   // A tie broken by a 1 after 700 zeros: strtod reads that far
-  mut longTie = String.from("9007199254740993.");
+  var longTie = String.from("9007199254740993.");
   z = 0usize;
   while z < 700usize {
     longTie.appendByte('0');
@@ -327,7 +327,7 @@ fn main() i32 {
   agree(longTie.view(), "a tie broken 700 digits out against strtod");
   // and after 900, past the 800 digits kept: the dropped digit still counts
   // (the C library of this machine reads at most 768 digits, so it is not asked)
-  mut longerTie = String.from("9007199254740993.");
+  var longerTie = String.from("9007199254740993.");
   z = 0usize;
   while z < 900usize {
     longerTie.appendByte('0');
@@ -376,17 +376,17 @@ fn main() i32 {
   shortestBits(0x7FF8000000000000u64, "<none>");
 
   // -------- thousands of numbers against strtod --------
-  mut state = 12345u64;
-  mut n = 0usize;
-  mut disagree = 0usize;
+  var state = 12345u64;
+  var n = 0usize;
+  var disagree = 0usize;
   while n < 3000usize {
     // Any 64 bits that make a finite f64: write it shortest, read it back, and
     // read the same text with strtod
-    mut bits = next(&mut state);
+    var bits = next(&mut state);
     if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 { bits = bits & 0x800FFFFFFFFFFFFFu64; }
-    imm x = bits as f64;
+    let x = bits as f64;
     match json.formatF64(x) {
-      case imm t Some {
+      case let t Some {
         if bitsOf(t.view()) != bits {
           disagree = disagree + 1usize;
           expectStr(t.view(), "<reads back as the same f64>", "round trip");
@@ -407,26 +407,26 @@ fn main() i32 {
   n = 0usize;
   disagree = 0usize;
   while n < 3000usize {
-    imm digits = 1usize + usize.from(next(&mut state) % 25u64);
-    mut s = String.empty();
-    mut k = 0usize;
+    let digits = 1usize + usize.from(next(&mut state) % 25u64);
+    var s = String.empty();
+    var k = 0usize;
     while k < digits {
-      imm d = u8.from(next(&mut state) % 10u64);
+      let d = u8.from(next(&mut state) % 10u64);
       // No leading zero
       s.appendByte('0' + if k == 0usize and d == 0u8 {1u8;} else {d;});
       k = k + 1usize;
     }
     if digits > 1usize and next(&mut state) % 2u64 == 0u64 {
-      imm at = 1usize + usize.from(next(&mut state) % u64.from(digits - 1usize));
+      let at = 1usize + usize.from(next(&mut state) % u64.from(digits - 1usize));
       s.insert(at, ".");
     }
-    imm e = i64.from(next(&mut state) % 641u64) - 330i64;
+    let e = i64.from(next(&mut state) % 641u64) - 330i64;
     if next(&mut state) % 4u64 != 0u64 {
       s.append("e");
       s.appendInt(e);
     }
     match json.numberF64(s.view()) {
-      case imm x Ok {
+      case let x Ok {
         if (x as u64) != strtodBits(s.view()) {
           disagree = disagree + 1usize;
           expectStr(s.view(), "<same as strtod>", "decimal against strtod");
@@ -434,7 +434,7 @@ fn main() i32 {
       }
       case is Error {
         // strtod makes infinity of what is too large
-        imm c = strtod(s.cstr(), null) as u64;
+        let c = strtod(s.cstr(), null) as u64;
         if ((c >> 52u64) & 0x7FFu64) != 0x7FFu64 {
           disagree = disagree + 1usize;
           expectStr(s.view(), "<in range>", "decimal refused though strtod finds it finite");

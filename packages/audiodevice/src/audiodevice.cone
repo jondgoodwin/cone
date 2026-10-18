@@ -50,13 +50,13 @@ struct Feed is Sendable {
 // The feeder thread: opens the stream, reports 0 (or a reason) through
 // 'status', renders and pushes until a quit command, and closes
 fn feeder(init Feed) i32 {
-  mut f = init;
+  var f = init;
   if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
     f.status.send(1i32);
     return 1i32;
   }
-  imm spec = new sdl.AudioSpec(sdl.AUDIO_F32, 2i32, i32.from(f.rate));
-  imm stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, null);
+  let spec = new sdl.AudioSpec(sdl.AUDIO_F32, 2i32, i32.from(f.rate));
+  let stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, null);
   if stream as usize == 0usize {
     sdl.QuitSubSystem(sdl.INIT_AUDIO);
     f.status.send(2i32);
@@ -64,15 +64,15 @@ fn feeder(init Feed) i32 {
   }
   sdl.ResumeAudioStreamDevice(stream);
   f.status.send(0i32);
-  mut buf = List[f32].withCapacity(BLOCK_FRAMES * 2usize);
-  mut i = 0usize;
+  var buf = List[f32].withCapacity(BLOCK_FRAMES * 2usize);
+  var i = 0usize;
   while i < BLOCK_FRAMES * 2usize { buf.push(0.); i = i + 1usize; }
-  imm blockBytes = i32.from(BLOCK_FRAMES * 8usize);
-  imm wantBytes = i32.from(f.rate / 1000u32 * f.aheadMs) * 8i32;
+  let blockBytes = i32.from(BLOCK_FRAMES * 8usize);
+  let wantBytes = i32.from(f.rate / 1000u32 * f.aheadMs) * 8i32;
   while !f.engine.quit {
     if sdl.GetAudioStreamQueued(stream) < wantBytes {
       f.engine.render(buf.viewMut(), BLOCK_FRAMES);
-      imm v = buf.view();
+      let v = buf.view();
       sdl.PutAudioStreamData(stream, (&v[0usize] as *u8), blockBytes);
     } else {
       thread.sleep(Duration.fromMillis(2));
@@ -97,18 +97,18 @@ pub struct Device {
   // it from a mixer of 'voices' voices, keeping 'aheadMs' of sound queued.
   // Answers the device and the game thread's Control, or why not.
   pub fn start(rate u32, voices u32, aheadMs u32) Result[Started, DeviceError] {
-    mut c Control;
-    mut rx Receiver[Cmd];
+    var c Control;
+    var rx Receiver[Cmd];
     c, rx = commandQueue(DEFAULT_QUEUE);
-    mut st OneshotSender[i32];
-    mut sr OneshotReceiver[i32];
+    var st OneshotSender[i32];
+    var sr OneshotReceiver[i32];
     st, sr = Oneshot[i32].make();
-    imm engine = Engine.make(f32.from(rate), usize.from(voices), rx);
-    imm worker = thread.start(new Feed(rate, voices, aheadMs, engine, st), &feeder);
-    imm got = sr.recv();
-    mut code = 3i32;
+    let engine = Engine.make(f32.from(rate), usize.from(voices), rx);
+    let worker = thread.start(new Feed(rate, voices, aheadMs, engine, st), &feeder);
+    let got = sr.recv();
+    var code = 3i32;
     match got {
-      case imm v Some { code = v; }
+      case let v Some { code = v; }
       case is None[i32] {}
     }
     if code != 0i32 {
@@ -121,16 +121,16 @@ pub struct Device {
   // Stop feeding, close the device and wait for the feeder to end. 'control'
   // must be the one `start` gave; its sounds may be dropped afterwards.
   pub fn stop(self &mut, control &mut Control) i32 {
-    mut sent = false;
+    var sent = false;
     while !sent {
       sent = control.quit();
       if !sent { thread.yieldNow(); }
     }
-    mut w Option[thread.Thread[i32]] = None[thread.Thread[i32]];
+    var w Option[thread.Thread[i32]] = None[thread.Thread[i32]];
     w <=> worker;
-    mut status = 0i32;
+    var status = 0i32;
     match w {
-      case mut t Some { status = t.join(); }
+      case var t Some { status = t.join(); }
       case is None[thread.Thread[i32]] {}
     }
     status;

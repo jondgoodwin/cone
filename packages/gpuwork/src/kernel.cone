@@ -65,12 +65,12 @@ pub struct Kernel {
   // given its error buffer, so at most MAX_CONE_KERNEL_BINDINGS. Check
   // 'isValid'.
   pub fn make(device &Device, spirv &Array[u32], entryPoint &str, access &Array[u32]) Kernel {
-    mut acc = new Array[u32, 8] <- fill 0u32;
-    mut ok = true;
-    mut fileIds = List[u32].empty();
-    mut fileNames = List[String].empty();
+    var acc = new Array[u32, 8] <- fill 0u32;
+    var ok = true;
+    var fileIds = List[u32].empty();
+    var fileNames = List[String].empty();
     coneFilesOf(spirv, &mut fileIds, &mut fileNames);
-    imm isCone = fileIds.len() > 0usize;
+    let isCone = fileIds.len() > 0usize;
     if access.len > usize.from(MAX_KERNEL_BINDINGS) {
       fail("Kernel.make: more than 8 bindings (WebGPU's storage buffers a stage)");
       ok = false;
@@ -78,10 +78,10 @@ pub struct Kernel {
       fail("Kernel.make: a Cone kernel binds at most 7 buffers (WebGPU's 8 storage buffers a stage, less its error buffer)");
       ok = false;
     }
-    mut entries = List[BindGroupLayoutEntry].empty();
-    mut i = 0usize;
+    var entries = List[BindGroupLayoutEntry].empty();
+    var i = 0usize;
     while ok and i < access.len {
-      imm a = access[i];
+      let a = access[i];
       if a != READ and a != READ_WRITE {
         fail("Kernel.make: a binding's access is neither READ nor READ_WRITE");
         ok = false;
@@ -97,21 +97,21 @@ pub struct Kernel {
       entries.push(new BindGroupLayoutEntry(binding: u32.from(access.len), visibility: SHADER_STAGE_COMPUTE,
         bufferType: BUFFER_BINDING_TYPE_STORAGE));
     }
-    imm size = workgroupOf(spirv, entryPoint);
+    let size = workgroupOf(spirv, entryPoint);
     if size[0usize] == 0u32 {
       fail("Kernel.make: the SPIR-V has no compute entry point of that name, with a fixed workgroup size");
       ok = false;
     }
-    mut shapes = new Array[u32, 8] <- fill SHAPE_UNKNOWN;
-    mut strides = new Array[u32, 8] <- fill 4u32;
+    var shapes = new Array[u32, 8] <- fill SHAPE_UNKNOWN;
+    var strides = new Array[u32, 8] <- fill 4u32;
     if ok { shapesOf(spirv, entryPoint, u32.from(access.len), &mut shapes, &mut strides); }
     // Refused: an empty module, which makes an invalid pipeline
-    mut shader = device.createShaderModule(if ok { spirv; } else { &spirv[0usize..<0usize]; });
-    mut groupLayout = device.createBindGroupLayout(entries.view());
-    imm groupLayouts = [&groupLayout];
-    mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
-    imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
-    mut pipeline = device.createComputePipeline(&desc);
+    var shader = device.createShaderModule(if ok { spirv; } else { &spirv[0usize..<0usize]; });
+    var groupLayout = device.createBindGroupLayout(entries.view());
+    let groupLayouts = [&groupLayout];
+    var layout = device.createPipelineLayout(&groupLayouts, 0u32);
+    let desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
+    var pipeline = device.createComputePipeline(&desc);
     new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, new Uni[imm, TwinFn](fn(inv Invocation, buffers &Array[Words]) {}), false, isCone,
       String.from(entryPoint), fileIds, fileNames, shapes, strides, false,
       new Array[u32, 8] <- fill 0u32, ok and hasBarriers(spirv, entryPoint));
@@ -189,7 +189,7 @@ pub struct Kernel {
   // slice's size (16 bytes) is not caught. A binding the entry point does not
   // use is taken as a slice if T is a slice's size, else as a struct.
   fn fits[T](self &mut, i usize) bool {
-    imm sliceSized = mem.sizeof[T]() == mem.sizeof[&Array[u32]]();
+    let sliceSized = mem.sizeof[T]() == mem.sizeof[&Array[u32]]();
     if shapes[i] == SHAPE_UNKNOWN {
       shapes[i] = if sliceSized { SHAPE_SLICE; } else { SHAPE_STRUCT; };
     }
@@ -212,7 +212,7 @@ pub struct Kernel {
 
   // The name of source file 'id' in a Cone kernel's module ("" if it has none)
   pub fn fileName(self &, id u32) String {
-    mut k = 0usize;
+    var k = 0usize;
     while k < fileIds.len() {
       if *fileIds[k] == id { return fileNames[k].copy(); }
       k = k + 1usize;
@@ -241,36 +241,36 @@ fn param[T](w &Words) T {
 // an empty module in turn. The file is a Path, which a string literal given
 // here becomes.
 pub fn readSpirv(file &Path) List[u32] {
-  mut full = file.copy();
+  var full = file.copy();
   if not file.isAbsolute() {
     match process.currentExe() {
-      case imm exe Ok {
-        imm folder = exe.parent();
+      case let exe Ok {
+        let folder = exe.parent();
         full = folder.join(file);
       }
       case is Error {}
     }
   }
-  mut words = List[u32].empty();
+  var words = List[u32].empty();
   match fs.readFile(&full) {
-    case imm ok Ok {
-      imm bytes = ok.view();
+    case let ok Ok {
+      let bytes = ok.view();
       if bytes.len == 0usize or bytes.len % 4usize != 0usize {
-        mut m = String.from("readSpirv: ");
+        var m = String.from("readSpirv: ");
         m <- full.view(), " is not a SPIR-V module, a whole number of 32-bit words";
         fail(m.view());
         return words;
       }
-      mut i = 0usize;
+      var i = 0usize;
       while i < bytes.len {
         words.push(u32.from(bytes[i]) | (u32.from(bytes[i + 1usize]) << 8u32)
           | (u32.from(bytes[i + 2usize]) << 16u32) | (u32.from(bytes[i + 3usize]) << 24u32));
         i = i + 4usize;
       }
     }
-    case imm e Error {
-      mut m = String.from("readSpirv: ");
-      imm why = e.message();
+    case let e Error {
+      var m = String.from("readSpirv: ");
+      let why = e.message();
       m <- why.view();
       fail(m.view());
     }
@@ -281,14 +281,14 @@ pub fn readSpirv(file &Path) List[u32] {
 // The workgroup size of compute entry point 'name' in 'spirv' (OpEntryPoint
 // GLCompute, then its OpExecutionMode LocalSize), or zeros if there is none
 fn workgroupOf(spirv &Array[u32], name &str) Array[u32, 3] {
-  mut size = new Array[u32, 3] <- fill 0u32;
-  imm id = entryIdOf(spirv, name);
-  mut i = 5usize;                  // past the header
+  var size = new Array[u32, 3] <- fill 0u32;
+  let id = entryIdOf(spirv, name);
+  var i = 5usize;                  // past the header
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
     if count == 0usize or i + count > spirv.len { return size; }
-    imm op = word & 0xFFFFu32;
+    let op = word & 0xFFFFu32;
     // OpExecutionMode (16) %id LocalSize (17) x y z
     if op == 16u32 and count >= 6usize and spirv[i + 1usize] == id and spirv[i + 2usize] == 17u32 {
       size[0usize] = spirv[i + 3usize];
@@ -302,10 +302,10 @@ fn workgroupOf(spirv &Array[u32], name &str) Array[u32, 3] {
 
 // The id of compute entry point 'name' (OpEntryPoint GLCompute), or all ones
 fn entryIdOf(spirv &Array[u32], name &str) u32 {
-  mut i = 5usize;
+  var i = 5usize;
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
     if count == 0usize or i + count > spirv.len { break; }
     // OpEntryPoint (15) GLCompute (5) %id "name" ...
     if (word & 0xFFFFu32) == 15u32 and count >= 4usize and spirv[i + 1usize] == 5u32
@@ -322,22 +322,22 @@ fn entryIdOf(spirv &Array[u32], name &str) u32 {
 // however deep. A Cone kernel's 'workgroupBarrier()' and 'storageBarrier()'
 // are each one, as a Slang or HLSL kernel's barriers are.
 fn hasBarriers(spirv &Array[u32], name &str) bool {
-  mut todo = List[u32].empty();
-  mut seen = List[u32].empty();
+  var todo = List[u32].empty();
+  var seen = List[u32].empty();
   todo.push(entryIdOf(spirv, name));
   while todo.len() > 0usize {
-    imm f = *todo[todo.len() - 1usize];
+    let f = *todo[todo.len() - 1usize];
     todo.pop();
     if indexOf(seen.view(), f) < seen.len() { continue; }
     seen.push(f);
     // OpFunction (54) %type %id ..., to its OpFunctionEnd (56)
-    mut inside = false;
-    mut i = 5usize;
+    var inside = false;
+    var i = 5usize;
     while i < spirv.len {
-      imm word = spirv[i];
-      imm count = usize.from(word >> 16u32);
+      let word = spirv[i];
+      let count = usize.from(word >> 16u32);
       if count == 0usize or i + count > spirv.len { break; }
-      imm op = word & 0xFFFFu32;
+      let op = word & 0xFFFFu32;
       if op == 54u32 and count >= 3usize and spirv[i + 2usize] == f { inside = true; }
       elif inside and op == 56u32 { break; }
       elif inside and op == 224u32 { return true; }
@@ -352,19 +352,19 @@ fn hasBarriers(spirv &Array[u32], name &str) bool {
 // The source files a module compiled from Cone names, each in an
 // OpSourceExtension "cone.file <id> <name>": appended to 'ids' and 'names'
 fn coneFilesOf(spirv &Array[u32], ids &mut List[u32], names &mut List[String]) {
-  mut i = 5usize;
+  var i = 5usize;
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
     if count == 0usize or i + count > spirv.len { return; }
     // OpSourceExtension (4) "text"
     if (word & 0xFFFFu32) == 4u32 and count >= 2usize {
-      imm text = stringAt(spirv, i + 1usize, i + count);
-      imm v = text.view();
-      imm prefix &Array[u8] = "cone.file ";
+      let text = stringAt(spirv, i + 1usize, i + count);
+      let v = text.view();
+      let prefix &Array[u8] = "cone.file ";
       if v.len > prefix.len and startsWith(v, prefix) {
-        mut k = prefix.len;
-        mut id = 0u32;
+        var k = prefix.len;
+        var id = 0u32;
         while k < v.len and v[k] >= '0' and v[k] <= '9' {
           id = id * 10u32 + u32.from(v[k] - '0');
           k = k + 1usize;
@@ -386,17 +386,17 @@ fn coneFilesOf(spirv &Array[u32], ids &mut List[u32], names &mut List[String]) {
 // of the module in every entry point's interface, so the function's body
 // says which are its own).
 fn shapesOf(spirv &Array[u32], name &str, n u32, shapes &mut Array[u32, 8], strides &mut Array[u32, 8]) {
-  imm entry = entryIdOf(spirv, name);
-  mut vars = List[u32].empty();       // storage buffer variables: id,
-  mut varTypes = List[u32].empty();   // pointer type,
-  mut varSets = List[u32].empty();    // descriptor set,
-  mut varBindings = List[u32].empty();   // binding,
-  mut varUsed = List[bool].empty();      // and whether the entry point uses it
+  let entry = entryIdOf(spirv, name);
+  var vars = List[u32].empty();       // storage buffer variables: id,
+  var varTypes = List[u32].empty();   // pointer type,
+  var varSets = List[u32].empty();    // descriptor set,
+  var varBindings = List[u32].empty();   // binding,
+  var varUsed = List[bool].empty();      // and whether the entry point uses it
   // Pass 1: the variables
-  mut i = 5usize;
+  var i = 5usize;
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
     if count == 0usize or i + count > spirv.len { return; }
     // OpVariable (59) %type %id StorageBuffer (12)
     if (word & 0xFFFFu32) == 59u32 and count >= 4usize and spirv[i + 3usize] == 12u32 {
@@ -409,22 +409,22 @@ fn shapesOf(spirv &Array[u32], name &str, n u32, shapes &mut Array[u32, 8], stri
     i = i + count;
   }
   // Pass 2: their decorations, and which the entry point's function uses
-  mut inEntry = false;
+  var inEntry = false;
   i = 5usize;
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
-    imm op = word & 0xFFFFu32;
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
+    let op = word & 0xFFFFu32;
     // OpDecorate (71) %id DescriptorSet (34) | Binding (33) n
     if op == 71u32 and count >= 4usize {
-      imm v = indexOf(vars.view(), spirv[i + 1usize]);
+      let v = indexOf(vars.view(), spirv[i + 1usize]);
       if v < vars.len() {
         if spirv[i + 2usize] == 34u32 {
-          imm r = &mut varSets[v];
+          let r = &mut varSets[v];
           *r = spirv[i + 3usize];
         }
         if spirv[i + 2usize] == 33u32 {
-          imm r = &mut varBindings[v];
+          let r = &mut varBindings[v];
           *r = spirv[i + 3usize];
         }
       }
@@ -433,11 +433,11 @@ fn shapesOf(spirv &Array[u32], name &str, n u32, shapes &mut Array[u32, 8], stri
     if op == 54u32 and count >= 3usize { inEntry = spirv[i + 2usize] == entry; }
     if op == 56u32 { inEntry = false; }
     if inEntry {
-      mut k = 1usize;
+      var k = 1usize;
       while k < count {
-        imm v = indexOf(vars.view(), spirv[i + k]);
+        let v = indexOf(vars.view(), spirv[i + k]);
         if v < vars.len() {
-          imm r = &mut varUsed[v];
+          let r = &mut varUsed[v];
           *r = true;
         }
         k = k + 1usize;
@@ -447,18 +447,18 @@ fn shapesOf(spirv &Array[u32], name &str, n u32, shapes &mut Array[u32, 8], stri
   }
   // Each binding's variable, its pointer's pointee, and that struct's first
   // member: a run-time array is a slice
-  mut b = 0u32;
+  var b = 0u32;
   while b < n and b < 8u32 {
-    mut v = 0usize;
-    mut found = vars.len();
+    var v = 0usize;
+    var found = vars.len();
     while v < vars.len() {
       if *varSets[v] == 0u32 and *varBindings[v] == b and *varUsed[v] and found == vars.len() { found = v; }
       v = v + 1usize;
     }
     if found < vars.len() {
-      imm block = pointeeOf(spirv, *varTypes[found]);
-      imm member = firstMemberOf(spirv, block);
-      imm stride = runtimeArrayStride(spirv, member);
+      let block = pointeeOf(spirv, *varTypes[found]);
+      let member = firstMemberOf(spirv, block);
+      let stride = runtimeArrayStride(spirv, member);
       if stride > 0u32 {
         shapes[usize.from(b)] = SHAPE_SLICE;
         strides[usize.from(b)] = stride;
@@ -472,13 +472,13 @@ fn shapesOf(spirv &Array[u32], name &str, n u32, shapes &mut Array[u32, 8], stri
 
 // The type an OpTypePointer (32) %id points at
 fn pointeeOf(spirv &Array[u32], id u32) u32 {
-  imm at = instructionOf(spirv, 32u32, id);
+  let at = instructionOf(spirv, 32u32, id);
   if at == 0usize or usize.from(spirv[at] >> 16u32) < 4usize { 0xFFFFFFFFu32; } else { spirv[at + 3usize]; };
 }
 
 // The type of an OpTypeStruct (30) %id's first member
 fn firstMemberOf(spirv &Array[u32], id u32) u32 {
-  imm at = instructionOf(spirv, 30u32, id);
+  let at = instructionOf(spirv, 30u32, id);
   if at == 0usize or usize.from(spirv[at] >> 16u32) < 3usize { 0xFFFFFFFFu32; } else { spirv[at + 2usize]; };
 }
 
@@ -486,10 +486,10 @@ fn firstMemberOf(spirv &Array[u32], id u32) u32 {
 // if %id is not one
 fn runtimeArrayStride(spirv &Array[u32], id u32) u32 {
   if instructionOf(spirv, 29u32, id) == 0usize { return 0u32; }
-  mut i = 5usize;
+  var i = 5usize;
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
     if count == 0usize or i + count > spirv.len { break; }
     // OpDecorate (71) %id ArrayStride (6) n
     if (word & 0xFFFFu32) == 71u32 and count >= 4usize and spirv[i + 1usize] == id and spirv[i + 2usize] == 6u32 {
@@ -503,10 +503,10 @@ fn runtimeArrayStride(spirv &Array[u32], id u32) u32 {
 // Where the instruction of opcode 'op' whose result (its first operand) is
 // 'id' starts, or 0
 fn instructionOf(spirv &Array[u32], op u32, id u32) usize {
-  mut i = 5usize;
+  var i = 5usize;
   while i < spirv.len {
-    imm word = spirv[i];
-    imm count = usize.from(word >> 16u32);
+    let word = spirv[i];
+    let count = usize.from(word >> 16u32);
     if count == 0usize or i + count > spirv.len { break; }
     if (word & 0xFFFFu32) == op and count >= 2usize and spirv[i + 1usize] == id { return i; }
     i = i + count;
@@ -516,7 +516,7 @@ fn instructionOf(spirv &Array[u32], op u32, id u32) usize {
 
 // Where 'id' is in 'ids', or its length
 fn indexOf(ids &Array[u32], id u32) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < ids.len {
     if ids[k] == id { return k; }
     k = k + 1usize;
@@ -526,7 +526,7 @@ fn indexOf(ids &Array[u32], id u32) usize {
 
 fn startsWith(s &Array[u8], prefix &Array[u8]) bool {
   if s.len < prefix.len { return false; }
-  mut k = 0usize;
+  var k = 0usize;
   while k < prefix.len {
     if s[k] != prefix[k] { return false; }
     k = k + 1usize;
@@ -537,10 +537,10 @@ fn startsWith(s &Array[u8], prefix &Array[u8]) bool {
 // The literal string in words 'from' to 'end' of 'spirv' (its bytes packed
 // four a word, the first in the low byte, ending in a zero)
 fn stringAt(spirv &Array[u32], from usize, end usize) String {
-  mut s = String.empty();
-  mut k = 0usize;
+  var s = String.empty();
+  var k = 0usize;
   while from + k / 4usize < end {
-    imm b = u8.from((spirv[from + k / 4usize] >> (u32.from(k % 4usize) * 8u32)) & 0xFFu32);
+    let b = u8.from((spirv[from + k / 4usize] >> (u32.from(k % 4usize) * 8u32)) & 0xFFu32);
     if b == 0u8 { return s; }
     s.appendByte(b);
     k = k + 1usize;
@@ -550,12 +550,12 @@ fn stringAt(spirv &Array[u32], from usize, end usize) String {
 
 // Whether the literal string in words 'from' to 'end' of 'spirv' is 'name'
 fn nameIs(spirv &Array[u32], from usize, end usize, text &str) bool {
-  imm name &Array[u8] = text;      // compared byte for byte with the module's own
-  mut k = 0usize;
+  let name &Array[u8] = text;      // compared byte for byte with the module's own
+  var k = 0usize;
   while true {
-    imm w = from + k / 4usize;
+    let w = from + k / 4usize;
     if w >= end { return false; }
-    imm b = u8.from((spirv[w] >> (u32.from(k % 4usize) * 8u32)) & 0xFFu32);
+    let b = u8.from((spirv[w] >> (u32.from(k % 4usize) * 8u32)) & 0xFFu32);
     if k == name.len { return b == 0u8; }
     if b != name[k] { return false; }
     k = k + 1usize;

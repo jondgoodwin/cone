@@ -864,7 +864,7 @@ static int pwIsOwnedLent(CastNode *cast);
 // Set while the receiver of a method returning a borrow, on a container that changes
 // shape, is walked: a reference a call returns, read through on the way to that
 // receiver ('ui.items[0].label.view()'), is held by a stand-in variable (pwStandIn), as the
-// name it would be given ('imm item = ui.items[0]; item.label.view()') would hold it
+// name it would be given ('let item = ui.items[0]; item.label.view()') would hold it
 static int pwStandInOn = 0;
 
 // A stand-in variable for the reference a call returned: it holds what the call carries, and
@@ -1171,8 +1171,8 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     return pathSetAdd(pwPlaceSlots(pl, held), id);
 }
 
-// An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
-// 'Uni[i32]'; or 'imm b &<mut App = v', 'v' a 'Uni[App]'): a borrow of what it
+// An owning reference coerced to a borrowed one ('let b &i32 = u', 'u' a
+// 'Uni[i32]'; or 'let b &<mut App = v', 'v' a 'Uni[App]'): a borrow of what it
 // owns, so 'u' may not be moved, replaced or ended while the borrow is used
 static int pwIsOwnedLent(CastNode *cast) {
     INode *to = iexpGetTypeDcl((INode *)cast);
@@ -1397,7 +1397,7 @@ static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t
 // besides what it held: as its own where the store may land in its own
 // storage, else far, since what is read back through it carries them. And so
 // does each holder where it may land past 'var' (pwStoreLands), so that after
-// 'imm r = &mut outer; *r = v' or 'stash(&mut outer, v)', using 'outer' uses
+// 'let r = &mut outer; *r = v' or 'stash(&mut outer, v)', using 'outer' uses
 // 'v''s loans.
 static void pwStoreInto(uint32_t var, int from, int to, PathSet *holds) {
     PathVar *pv = &pathVars[var];
@@ -2028,7 +2028,7 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     if (!marked) {
         loanFreezeShared(loan);
         loanFreezeWritable(loan);
-        // A place in a 'mut' global freezes against the same name, as above, and is also asked of
+        // A place in a 'var' global freezes against the same name, as above, and is also asked of
         // every call, which may write the global by its name (reshapeCall's 'globalview')
         if (loanPlaceInGlobal(pl))
             loanShapeMark(loan, container);
@@ -2606,7 +2606,7 @@ static void pwVarDcl(VarDclNode *var) {
     PathSet *holds = NULL;
     if (var->value) {
         // An operator changing a value in place through a borrow it keeps in a
-        // temporary writes it: 'x += 1' is '{imm tmp = &mut x; *tmp = *tmp + 1}',
+        // temporary writes it: 'x += 1' is '{let tmp = &mut x; *tmp = *tmp + 1}',
         // and 'v <- (a, b)' appends each element through one
         pathVars[index].initing = 1;
         if (var->namesym == tempName && var->value->tag == BorrowTag)
@@ -2658,7 +2658,7 @@ static void pwScopeEnd(uint32_t from) {
 
 // The same, as a block hands on 'value' to the holder it goes to: that value
 // is still being made, so a variable ending while it carries a loan of it is
-// reported at once ('imm h = { imm x = ..; new H(&x); }')
+// reported at once ('let h = { let x = ..; new H(&x); }')
 static void pwScopeEndHanding(uint32_t from, PathSet *value) {
     uint32_t mark = loanFlightMark();
     loanFlightPush(value, 0);
@@ -3495,7 +3495,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
         // A conversion moves nothing but an owner it carries; whatever borrow
-        // its value holds came from its operand ('case imm e Some' converts
+        // its value holds came from its operand ('case let e Some' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')

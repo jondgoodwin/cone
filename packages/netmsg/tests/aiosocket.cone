@@ -22,10 +22,10 @@ import aio use UdpSocket;
 import netmsg use *;
 
 fn udpOf(r Result[UdpSocket, IoError]) UdpSocket {
-  mut res = r;
-  mut s = UdpSocket.none();
+  var res = r;
+  var s = UdpSocket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
@@ -36,45 +36,45 @@ actor Blaster {
   pool Pool;
 
   pub async do blast(self, port u16, count u32, size usize, done OneshotSender[u32]) {
-    imm s = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
-    imm to = SocketAddr.localhost(port);
-    mut sent = 0u32;
+    let s = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let to = SocketAddr.localhost(port);
+    var sent = 0u32;
     while sent < count {
-      mut b = pool.mustTake(size);
-      imm w = b.whole();
-      mut j = 0usize;
+      var b = pool.mustTake(size);
+      let w = b.whole();
+      var j = 0usize;
       while j < size {
         w[j] = 7u8;
         j = j + 1usize;
       }
       b.setLen(size);
-      imm r = await s.sendTo(to, b);
+      let r = await s.sendTo(to, b);
       sent = sent + 1u32;
       // A pause every few datagrams, so that the server's socket (which the system
       // bounds to a few of these) is emptied and none is dropped on the way
       if sent % 4u32 == 0u32 {
-        imm z = await aio.sleep(Duration.fromMillis(1i64));
+        let z = await aio.sleep(Duration.fromMillis(1i64));
       }
     }
-    mut d = done;
+    var d = done;
     d.send(sent);
   }
 }
 
 fn bytes(s &str) List[u8] {
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   putBytes(&mut b, s);
   b;
 }
 
 // The next event of rx within 3 s: its text, "" if none came
 fn next(rx &mut Receiver[NetEvent], conn &mut List[Connection]) String {
-  mut s = String.empty();
+  var s = String.empty();
   match rx.recvTimeout(Duration.fromSeconds(3i64)) {
-    case imm e Some {
+    case let e Some {
       match e {
-        case imm j Joined { s.append("J"); conn.push(j.conn); }
-        case imm m Message { s.append("M:"); s.append(String.fromBytes(m.data.view()).view()); }
+        case let j Joined { s.append("J"); conn.push(j.conn); }
+        case let m Message { s.append("M:"); s.append(String.fromBytes(m.data.view()).view()); }
         else { s.append("other"); }
       }
     }
@@ -84,28 +84,28 @@ fn next(rx &mut Receiver[NetEvent], conn &mut List[Connection]) String {
 }
 
 fn flood() {
-  mut txS Sender[NetEvent];
-  mut rxS Receiver[NetEvent];
+  var txS Sender[NetEvent];
+  var rxS Receiver[NetEvent];
   txS, rxS = Channel[NetEvent].make();
-  mut txC Sender[NetEvent];
-  mut rxC Receiver[NetEvent];
+  var txC Sender[NetEvent];
+  var rxC Receiver[NetEvent];
   txC, rxC = Channel[NetEvent].make();
-  imm cfg = NetConfig.defaults();
-  imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
-  mut txB OneshotSender[u32];
-  mut rxB OneshotReceiver[u32];
+  let cfg = NetConfig.defaults();
+  let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+  var txB OneshotSender[u32];
+  var rxB OneshotReceiver[u32];
   txB, rxB = Oneshot[u32].make();
   {
-    imm blaster = new Blaster(Pool.make());
+    let blaster = new Blaster(Pool.make());
     blaster.blast(server.port, 1100u32, 9000usize, txB);
   }
   match rxB.recv() {
-    case imm n Some { expectUInt(u64.from(n), 1100u64, "1,100 oversized datagrams were sent"); }
+    case let n Some { expectUInt(u64.from(n), 1100u64, "1,100 oversized datagrams were sent"); }
     case is None[u32] { expect(false, "the blaster finished"); }
   }
-  imm client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
-  mut cs = List[Connection].empty();
-  mut cc = List[Connection].empty();
+  let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+  var cs = List[Connection].empty();
+  var cc = List[Connection].empty();
   expectStr(next(&mut rxS, &mut cs).view(), "J", "after the flood the server still takes a client");
   expectStr(next(&mut rxC, &mut cc).view(), "J", "and the client joins");
   require(cs.len() == 1usize and cc.len() == 1usize, "both have a connection");
@@ -117,28 +117,28 @@ fn flood() {
 
 // Whether an UDP socket can be bound at 'port' within 3 s
 fn canBind(port u16) bool {
-  mut tx OneshotSender[bool];
-  mut rx OneshotReceiver[bool];
+  var tx OneshotSender[bool];
+  var rx OneshotReceiver[bool];
   tx, rx = Oneshot[bool].make();
-  imm b = new Binder();
+  let b = new Binder();
   b.tryBind(port, tx);
   match rx.recvTimeout(Duration.fromSeconds(5i64)) {
-    case imm ok Some { ok; }
+    case let ok Some { ok; }
     case is None[bool] { false; }
   }
 }
 
 actor Binder {
   pub async do tryBind(self, port u16, done OneshotSender[bool]) {
-    mut tx = done;
-    mut ok = false;
-    imm until = Instant.now() + Duration.fromSeconds(3i64);
+    var tx = done;
+    var ok = false;
+    let until = Instant.now() + Duration.fromSeconds(3i64);
     while not ok and Instant.now() < until {
-      imm s = udpOf(await aio.bindUdp(SocketAddr.localhost(port)));
+      let s = udpOf(await aio.bindUdp(SocketAddr.localhost(port)));
       if not s.isNone() {
         ok = true;
       } else {
-        imm z = await aio.sleep(Duration.fromMillis(20i64));
+        let z = await aio.sleep(Duration.fromMillis(20i64));
       }
     }
     tx.send(ok);
@@ -147,22 +147,22 @@ actor Binder {
 
 // Whether listening at 'port' gives an error (the port is taken)
 fn bindRefused(port u16) bool {
-  mut tx Sender[NetEvent];
-  mut rx Receiver[NetEvent];
+  var tx Sender[NetEvent];
+  var rx Receiver[NetEvent];
   tx, rx = Channel[NetEvent].make();
-  imm r = listen(SocketAddr.localhost(port), NetConfig.defaults(), channelHandler(tx));
+  let r = listen(SocketAddr.localhost(port), NetConfig.defaults(), channelHandler(tx));
   match &r {
-    case imm e &Error { true; }
+    case let e &Error { true; }
     else { false; }
   }
 }
 
 fn released() {
-  mut txS Sender[NetEvent];
-  mut rxS Receiver[NetEvent];
+  var txS Sender[NetEvent];
+  var rxS Receiver[NetEvent];
   txS, rxS = Channel[NetEvent].make();
-  imm server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), channelHandler(txS));
-  imm port = server.port;
+  let server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), channelHandler(txS));
+  let port = server.port;
   expect(bindRefused(port), "while the server holds its port, listening on it again is refused with an error");
   server.endpoint.shutdown();
   server.endpoint.shutdown();
@@ -170,32 +170,32 @@ fn released() {
 }
 
 fn many() {
-  imm n = 12usize;
-  mut servers = List[BoundEndpoint].empty();
-  mut clients = List[BoundEndpoint].empty();
-  mut rxS = List[Receiver[NetEvent]].empty();
-  mut rxC = List[Receiver[NetEvent]].empty();
-  imm cfg = NetConfig.defaults();
-  mut i = 0usize;
+  let n = 12usize;
+  var servers = List[BoundEndpoint].empty();
+  var clients = List[BoundEndpoint].empty();
+  var rxS = List[Receiver[NetEvent]].empty();
+  var rxC = List[Receiver[NetEvent]].empty();
+  let cfg = NetConfig.defaults();
+  var i = 0usize;
   while i < n {
-    mut txS Sender[NetEvent];
-    mut rS Receiver[NetEvent];
+    var txS Sender[NetEvent];
+    var rS Receiver[NetEvent];
     txS, rS = Channel[NetEvent].make();
-    mut txC Sender[NetEvent];
-    mut rC Receiver[NetEvent];
+    var txC Sender[NetEvent];
+    var rC Receiver[NetEvent];
     txC, rC = Channel[NetEvent].make();
-    imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
-    imm client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
     servers.push(server);
     clients.push(client);
     rxS.push(rS);
     rxC.push(rC);
     i = i + 1usize;
   }
-  mut joined = 0usize;
+  var joined = 0usize;
   i = 0usize;
   while i < n {
-    mut dummy = List[Connection].empty();
+    var dummy = List[Connection].empty();
     if next(&mut rxS[i], &mut dummy).view() == "J" {joined = joined + 1usize;}
     if next(&mut rxC[i], &mut dummy).view() == "J" {joined = joined + 1usize;}
     i = i + 1usize;

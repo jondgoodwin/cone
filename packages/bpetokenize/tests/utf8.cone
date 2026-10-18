@@ -17,28 +17,28 @@ import collections use *;
 import bpetokenize;
 
 fn spellBytes(a u8, b u8) String {
-  mut v = List[u8].empty();
+  var v = List[u8].empty();
   v.push(a);
   v.push(b);
   bpetokenize.toByteLevel(v.view());
 }
 
 fn spellOne(a u8) String {
-  mut v = List[u8].empty();
+  var v = List[u8].empty();
   v.push(a);
   bpetokenize.toByteLevel(v.view());
 }
 
 fn pair(left &String, right &String) String {
-  mut s = left.copy();
+  var s = left.copy();
   s.append(" ");
   s.append(right.view());
   s;
 }
 
 fn show(ids &List[u32]) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < ids.len() {
     if i > 0usize { out.append(" "); }
     out.appendUInt(u64.from(ids.view()[i]));
@@ -48,40 +48,40 @@ fn show(ids &List[u32]) String {
 }
 
 fn ids(tok &bpetokenize.Tokenizer, text &Array[u8], want &str, label &str) {
-  imm got = tok.encode(text);
-  imm shown = show(&got);
+  let got = tok.encode(text);
+  let shown = show(&got);
   expectStr(shown.view(), want, label);
   match tok.decode(got.view()) {
-    case imm bytes Ok { expectStr(bytes.view(), text, label); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", label); }
+    case let bytes Ok { expectStr(bytes.view(), text, label); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", label); }
   }
 }
 
 fn bytes4(a u8, b u8, c u8, d u8) List[u8] {
-  mut v = List[u8].empty();
+  var v = List[u8].empty();
   v.push(a); v.push(b); v.push(c); v.push(d);
   v;
 }
 
 fn halfChecks(tok &bpetokenize.Tokenizer) {
   // F0 9F 98 then 'x': the emoji's first half merges, its third byte does not
-  imm part = bytes4(0xF0u8, 0x9Fu8, 0x98u8, 'x');
-  imm got = tok.encode(part.view());
-  imm shown = show(&got);
+  let part = bytes4(0xF0u8, 0x9Fu8, 0x98u8, 'x');
+  let got = tok.encode(part.view());
+  let shown = show(&got);
   expectStr(shown.view(), "257 152 120", "a cut-off emoji: the first half is a token");
   match tok.decode(got.view()) {
-    case imm bytes Ok { expectStr(bytes.view(), part.view(), "a cut-off emoji decodes back"); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "cut-off emoji"); }
+    case let bytes Ok { expectStr(bytes.view(), part.view(), "a cut-off emoji decodes back"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "cut-off emoji"); }
   }
   // a token that is half a character decodes to half a character
-  mut seq = List[u32].empty();
+  var seq = List[u32].empty();
   seq.push(257u32);
   match tok.decode(seq.view()) {
-    case imm bytes Ok {
+    case let bytes Ok {
       expectUInt(u64.from(bytes.len()), 2u64, "token 257 is two bytes");
       expectUInt(u64.from(bpetokenize.utf8Complete(bytes.view())), 0u64, "and no whole character yet");
     }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "half token"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "half token"); }
   }
 }
 
@@ -97,9 +97,9 @@ struct Lcg {
 }
 
 fn roundTrip(tok &bpetokenize.Tokenizer, bytes &Array[u8], label &str) bool {
-  imm got = tok.encode(bytes);
+  let got = tok.encode(bytes);
   match tok.decode(got.view()) {
-    case imm back Ok { return back.view() == bytes; }
+    case let back Ok { return back.view() == bytes; }
     case is Error { return false; }
   }
   false;
@@ -107,14 +107,14 @@ fn roundTrip(tok &bpetokenize.Tokenizer, bytes &Array[u8], label &str) bool {
 
 fn roundTrips(tok &bpetokenize.Tokenizer, name &str) {
   // text in many scripts
-  mut corpus = List[String].empty();
+  var corpus = List[String].empty();
   corpus.push(""); corpus.push(" "); corpus.push("\n"); corpus.push("Hello, world!");
   corpus.push("  indented\n\tcode();\r\n"); corpus.push("naïve café Zoë"); corpus.push("привет мир");
   corpus.push("日本語のテキスト 한국어"); corpus.push("emoji 😀😀 ok"); corpus.push("x²+y³ ½");
   corpus.push("a b　c"); corpus.push("'tis it's DON'T"); corpus.push("1234567890 12345");
   corpus.push("mixed é😀é 😀é"); corpus.push("\x01 control \x1F");
-  mut ok = true;
-  mut i = 0usize;
+  var ok = true;
+  var i = 0usize;
   while i < corpus.len() {
     if not roundTrip(tok, corpus.view()[i].view(), name) {
       ok = false;
@@ -124,15 +124,15 @@ fn roundTrips(tok &bpetokenize.Tokenizer, name &str) {
   }
   expect(ok, name);
   // random bytes, with the multi-byte lead and continuation bytes over-represented
-  mut rng = new Lcg(99u64);
-  mut agree = 0usize;
-  mut n = 0usize;
+  var rng = new Lcg(99u64);
+  var agree = 0usize;
+  var n = 0usize;
   while n < 300usize {
-    imm len = usize.from(rng.next() % 120u32);
-    mut data = List[u8].empty();
-    mut k = 0usize;
+    let len = usize.from(rng.next() % 120u32);
+    var data = List[u8].empty();
+    var k = 0usize;
     while k < len {
-      imm r = rng.next() % 8u32;
+      let r = rng.next() % 8u32;
       if r < 3u32 { data.push(u8.from(rng.next() % 128u32)); }
       elif r < 5u32 { data.push(u8.from(0x80u32 + rng.next() % 64u32)); }
       elif r < 6u32 { data.push(u8.from(0xC0u32 + rng.next() % 64u32)); }
@@ -146,84 +146,84 @@ fn roundTrips(tok &bpetokenize.Tokenizer, name &str) {
 }
 
 fn completeChecks() {
-  imm eacute = bytes4(0xC3u8, 0xA9u8, 0u8, 0u8);
+  let eacute = bytes4(0xC3u8, 0xA9u8, 0u8, 0u8);
   expectUInt(u64.from(bpetokenize.utf8Complete(&eacute.view()[0usize..<1usize])), 0u64, "C3 alone is not whole");
   expectUInt(u64.from(bpetokenize.utf8Complete(&eacute.view()[0usize..<2usize])), 2u64, "C3 A9 is whole");
-  imm euro = bytes4(0xE2u8, 0x82u8, 0xACu8, 'z');
+  let euro = bytes4(0xE2u8, 0x82u8, 0xACu8, 'z');
   expectUInt(u64.from(bpetokenize.utf8Complete(&euro.view()[0usize..<2usize])), 0u64, "E2 82 is not whole");
   expectUInt(u64.from(bpetokenize.utf8Complete(&euro.view()[0usize..<3usize])), 3u64, "E2 82 AC is whole");
   expectUInt(u64.from(bpetokenize.utf8Complete(&euro.view()[0usize..<4usize])), 4u64, "and with a letter after");
-  imm tail = bytes4('a', 'b', 0xE2u8, 0x82u8);
+  let tail = bytes4('a', 'b', 0xE2u8, 0x82u8);
   expectUInt(u64.from(bpetokenize.utf8Complete(tail.view())), 2u64, "ab then a cut-off character: 2");
-  imm emoji = bytes4(0xF0u8, 0x9Fu8, 0x98u8, 0x80u8);
+  let emoji = bytes4(0xF0u8, 0x9Fu8, 0x98u8, 0x80u8);
   expectUInt(u64.from(bpetokenize.utf8Complete(&emoji.view()[0usize..<3usize])), 0u64, "three of an emoji's four");
   expectUInt(u64.from(bpetokenize.utf8Complete(emoji.view())), 4u64, "all four");
-  imm junk = bytes4(0xFFu8, 0x80u8, 'a', 0x80u8);
+  let junk = bytes4(0xFFu8, 0x80u8, 'a', 0x80u8);
   expectUInt(u64.from(bpetokenize.utf8Complete(&junk.view()[0usize..<2usize])), 2u64, "bytes that are no UTF-8 count whole");
   expectUInt(u64.from(bpetokenize.utf8Complete(&junk.view()[0usize..<0usize])), 0u64, "nothing is nothing");
   expectUInt(u64.from(bpetokenize.utf8Complete("plain text")), 10u64, "ASCII is whole");
 }
 
 fn main() i32 {
-  mut tokens = List[String].empty();
-  mut b = 0u32;
+  var tokens = List[String].empty();
+  var b = 0u32;
   while b < 256u32 { tokens.push(spellOne(u8.from(b))); b = b + 1u32; }
-  imm eacute = spellBytes(0xC3u8, 0xA9u8);
+  let eacute = spellBytes(0xC3u8, 0xA9u8);
   tokens.push(eacute.copy());                                    // 256
-  imm up = spellBytes(0xF0u8, 0x9Fu8);
-  imm lo = spellBytes(0x98u8, 0x80u8);
+  let up = spellBytes(0xF0u8, 0x9Fu8);
+  let lo = spellBytes(0x98u8, 0x80u8);
   tokens.push(up.copy());                                        // 257
   tokens.push(lo.copy());                                        // 258
-  mut full = up.copy();
+  var full = up.copy();
   full.append(lo.view());
   tokens.push(full.copy());                                      // 259
-  mut twice = eacute.copy();
+  var twice = eacute.copy();
   twice.append(eacute.view());
   tokens.push(twice);                                            // 260
-  mut merges = List[String].empty();
+  var merges = List[String].empty();
   merges.push(pair(&spellOne(0xC3u8), &spellOne(0xA9u8)));
   merges.push(pair(&spellOne(0xF0u8), &spellOne(0x9Fu8)));
   merges.push(pair(&spellOne(0x98u8), &spellOne(0x80u8)));
   merges.push(pair(&up, &lo));
   merges.push(pair(&eacute, &eacute));
-  imm none = List[String].empty();
+  let none = List[String].empty();
 
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Gpt2) {
-    case imm tok Ok {
+    case let tok Ok {
       ids(&tok, "é", "256", "é is one token");
       ids(&tok, "😀", "259", "an emoji is four bytes, merged to one token");
       ids(&tok, "éé", "260", "éé is one word and one token");
       ids(&tok, "é😀", "256 259", "a letter then a symbol are two words");
       ids(&tok, "a😀b", "97 259 98", "words around an emoji");
       ids(&tok, "日本", "230 151 165 230 156 172", "characters with no merges are their bytes");
-      mut one = List[u8].empty();
+      var one = List[u8].empty();
       one.push(0xFFu8);
       ids(&tok, one.view(), "255", "a lone 0xFF");
-      mut lead = List[u8].empty();
+      var lead = List[u8].empty();
       lead.push(0xC3u8);
       ids(&tok, lead.view(), "195", "a lead byte with no second byte");
-      mut cont = List[u8].empty();
+      var cont = List[u8].empty();
       cont.push(0xA9u8);
       ids(&tok, cont.view(), "169", "a continuation byte alone");
-      mut cut = List[u8].empty();
+      var cut = List[u8].empty();
       cut.push(0xC3u8); cut.push('a');
       ids(&tok, cut.view(), "195 97", "a lead byte before a letter is not 'é'");
       halfChecks(&tok);
       roundTrips(&tok, "round trips, GPT-2 cut");
     }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Llama3) {
-    case imm tok Ok { roundTrips(&tok, "round trips, Llama 3 cut"); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let tok Ok { roundTrips(&tok, "round trips, Llama 3 cut"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Qwen2) {
-    case imm tok Ok { roundTrips(&tok, "round trips, Qwen 2 cut"); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let tok Ok { roundTrips(&tok, "round trips, Qwen 2 cut"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Whole) {
-    case imm tok Ok { roundTrips(&tok, "round trips, no cut"); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let tok Ok { roundTrips(&tok, "round trips, no cut"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   completeChecks();
   done();

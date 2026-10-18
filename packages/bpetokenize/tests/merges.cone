@@ -30,10 +30,10 @@ struct Spec {
 }
 
 fn byteTokens() List[String] {
-  mut tokens = List[String].empty();
-  mut b = 0u32;
+  var tokens = List[String].empty();
+  var b = 0u32;
   while b < 256u32 {
-    mut one = List[u8].empty();
+    var one = List[u8].empty();
     one.push(u8.from(b));
     tokens.push(bpetokenize.toByteLevel(one.view()));
     b = b + 1u32;
@@ -46,14 +46,14 @@ fn spell(plain &str) String { bpetokenize.toByteLevel(plain); }
 
 // A merge line from two plain texts
 fn rule(left &str, right &str) String {
-  mut s = spell(left);
+  var s = spell(left);
   s.append(" ");
   s.append(spell(right).view());
   s;
 }
 
 fn helloSpec() Spec {
-  mut tokens = byteTokens();
+  var tokens = byteTokens();
   tokens.push(spell("he"));
   tokens.push(spell("ll"));
   tokens.push(spell("hell"));
@@ -64,7 +64,7 @@ fn helloSpec() Spec {
   tokens.push(spell("ld"));
   tokens.push(spell(" world"));
   tokens.push(spell("aa"));
-  mut merges = List[String].empty();
+  var merges = List[String].empty();
   merges.push(rule("h", "e"));
   merges.push(rule("l", "l"));
   merges.push(rule("he", "ll"));
@@ -81,8 +81,8 @@ fn helloSpec() Spec {
 // -------- showing ids --------
 
 fn show(ids &List[u32]) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < ids.len() {
     if i > 0usize { out.append(" "); }
     out.appendUInt(u64.from(ids.view()[i]));
@@ -92,13 +92,13 @@ fn show(ids &List[u32]) String {
 }
 
 fn ids(tok &bpetokenize.Tokenizer, text &str, want &str) {
-  imm got = tok.encode(text);
-  imm shown = show(&got);
+  let got = tok.encode(text);
+  let shown = show(&got);
   expectStr(shown.view(), want, text);
   // and the ids decode to the text
   match tok.decode(got.view()) {
-    case imm bytes Ok { expectStr(bytes.view(), text, "decode back"); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", text); }
+    case let bytes Ok { expectStr(bytes.view(), text, "decode back"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", text); }
   }
 }
 
@@ -131,7 +131,7 @@ fn helloChecks(tok &bpetokenize.Tokenizer) {
   expectUInt(u64.from(tok.mergeCount()), 10u64, "merge rules");
   expectUInt(u64.from(tok.byteToken(97u8)), 97u64, "the token of a byte");
   match tok.tokenId(spell(" world").view()) {
-    case imm id Some { expectUInt(u64.from(id), 264u64, "tokenId of ' world'"); }
+    case let id Some { expectUInt(u64.from(id), 264u64, "tokenId of ' world'"); }
     case is None { expect(false, "tokenId of ' world'"); }
   }
   match tok.tokenId("nothing here") {
@@ -139,7 +139,7 @@ fn helloChecks(tok &bpetokenize.Tokenizer) {
     case is None { expect(true, "tokenId of a text not in the vocabulary"); }
   }
   match tok.tokenBytes(264u32) {
-    case imm bytes Some { expectStr(bytes, " world", "tokenBytes of 264"); }
+    case let bytes Some { expectStr(bytes, " world", "tokenBytes of 264"); }
     case is None { expect(false, "tokenBytes of 264"); }
   }
   match tok.tokenBytes(266u32) {
@@ -165,21 +165,21 @@ fn wholeChecks(tok &bpetokenize.Tokenizer) {
 // vocabularies never have a rule whose parts a later rule makes, so the two
 // agree on them, and this is the documented difference in a synthetic list.
 fn laterRuleChecks() {
-  mut tokens = byteTokens();
+  var tokens = byteTokens();
   tokens.push(spell("bc"));
   tokens.push(spell("bcb"));
-  mut merges = List[String].empty();
+  var merges = List[String].empty();
   merges.push(rule("bc", "b"));
   merges.push(rule("b", "c"));
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String].empty().view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case imm tok Ok {
+    case let tok Ok {
       ids(&tok, "bcbc", "257 99");
       ids(&tok, "bc", "256");
       ids(&tok, "bcb", "257");
       ids(&tok, "cbc", "99 256");
     }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "later rule vocabulary"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "later rule vocabulary"); }
   }
 }
 
@@ -187,16 +187,16 @@ fn laterRuleChecks() {
 
 // 'a' merges to 2, 4, 8, ... 1024 a's: a word of n a's ends as the binary digits of n
 fn doublingChecks() {
-  mut tokens = byteTokens();
-  mut merges = List[String].empty();
-  mut width = 1usize;
-  mut k = 0usize;
+  var tokens = byteTokens();
+  var merges = List[String].empty();
+  var width = 1usize;
+  var k = 0usize;
   while k < 10usize {
-    mut left = String.empty();
-    mut j = 0usize;
+    var left = String.empty();
+    var j = 0usize;
     while j < width { left.append("a"); j = j + 1usize; }
     merges.push(rule(left.view(), left.view()));
-    mut joined = String.from(left.view());
+    var joined = String.from(left.view());
     joined.append(left.view());
     tokens.push(spell(joined.view()));
     width = width * 2usize;
@@ -204,36 +204,36 @@ fn doublingChecks() {
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String].empty().view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case imm tok Ok {
+    case let tok Ok {
       // ids 256 + k is 2^(k+1) a's
       ids(&tok, "aaaa", "257");
-      mut text = String.empty();
-      mut i = 0usize;
+      var text = String.empty();
+      var i = 0usize;
       while i < 4096usize { text.append("a"); i = i + 1usize; }
-      imm four = tok.encode(text.view());
-      imm shown = show(&four);
+      let four = tok.encode(text.view());
+      let shown = show(&four);
       expectStr(shown.view(), "265 265 265 265", "4096 a's are four tokens of 1024");
       // 3000 = 2048 + 512 + 256 + 128 + 32 + 16 + 8, but the largest token is 1024:
       // 1024 + 1024 + 512 + 256 + 128 + 32 + 16 + 8
-      mut t3 = String.empty();
+      var t3 = String.empty();
       i = 0usize;
       while i < 3000usize { t3.append("a"); i = i + 1usize; }
-      imm three = tok.encode(t3.view());
-      imm shown3 = show(&three);
+      let three = tok.encode(t3.view());
+      let shown3 = show(&three);
       expectStr(shown3.view(), "265 265 264 263 262 260 259 258", "3000 a's");
       // a long word merges in step: 200000 a's
-      mut big = String.empty();
+      var big = String.empty();
       i = 0usize;
       while i < 200000usize { big.append("a"); i = i + 1usize; }
-      imm many = tok.encode(big.view());
+      let many = tok.encode(big.view());
       // 195 tokens of 1024 (199680 a's) and the 320 left: 256 + 64
       expectUInt(u64.from(many.len()), 197u64, "200000 a's: 195 + 2 tokens");
       match tok.decode(many.view()) {
-        case imm bytes Ok { expect(bytes.len() == 200000usize, "200000 a's decode to 200000 bytes"); }
-        case imm e Error { imm m = e.message(); expectStr(m.view(), "<decoded>", "big decode"); }
+        case let bytes Ok { expect(bytes.len() == 200000usize, "200000 a's decode to 200000 bytes"); }
+        case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "big decode"); }
       }
     }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "doubling vocabulary"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "doubling vocabulary"); }
   }
 }
 
@@ -254,19 +254,19 @@ struct Lcg {
 // Merge a word as the algorithm is stated: while some adjacent pair has a rule,
 // join the one with the lowest rank, the leftmost of equals
 fn plainMerge(word &Array[u8], ranks &Dict[u64, u64]) List[u32] {
-  mut sym = List[u32].empty();
-  mut i = 0usize;
+  var sym = List[u32].empty();
+  var i = 0usize;
   while i < word.len { sym.push(u32.from(word[i])); i = i + 1usize; }
   while true {
-    mut best = 0xFFFFFFFFu64;
-    mut at = 0usize;
-    mut found = false;
-    mut k = 0usize;
+    var best = 0xFFFFFFFFu64;
+    var at = 0usize;
+    var found = false;
+    var k = 0usize;
     while k + 1usize < sym.len() {
-      imm key = (u64.from(sym.view()[k]) << 32u64) | u64.from(sym.view()[k + 1usize]);
+      let key = (u64.from(sym.view()[k]) << 32u64) | u64.from(sym.view()[k + 1usize]);
       match ranks.getCopy(&key) {
-        case imm v Some {
-          imm rank = v >> 32u64;
+        case let v Some {
+          let rank = v >> 32u64;
           if rank < best { best = rank; at = k; found = true; }
         }
         case is None { }
@@ -274,11 +274,11 @@ fn plainMerge(word &Array[u8], ranks &Dict[u64, u64]) List[u32] {
       k = k + 1usize;
     }
     if not found { break; }
-    imm key = (u64.from(sym.view()[at]) << 32u64) | u64.from(sym.view()[at + 1usize]);
-    imm made = u32.from(ranks[&key] & 0xFFFFFFFFu64);
+    let key = (u64.from(sym.view()[at]) << 32u64) | u64.from(sym.view()[at + 1usize]);
+    let made = u32.from(ranks[&key] & 0xFFFFFFFFu64);
     sym.set(at, made);
     // remove at + 1
-    mut j = at + 1usize;
+    var j = at + 1usize;
     while j + 1usize < sym.len() { sym.set(j, sym.view()[j + 1usize]); j = j + 1usize; }
     sym.truncate(sym.len() - 1usize);
   }
@@ -286,45 +286,45 @@ fn plainMerge(word &Array[u8], ranks &Dict[u64, u64]) List[u32] {
 }
 
 fn randomChecks(seed u64, wordLetters u32, merges usize) {
-  mut rng = new Lcg(seed);
-  mut tokens = byteTokens();
+  var rng = new Lcg(seed);
+  var tokens = byteTokens();
   // each token's plain text, to name a new token and to keep texts distinct
-  mut texts = List[String].empty();
-  mut b = 0u32;
+  var texts = List[String].empty();
+  var b = 0u32;
   while b < 256u32 {
-    mut one = List[u8].empty();
+    var one = List[u8].empty();
     one.push(u8.from(b));
     texts.push(String.fromBytes(one.view()));
     b = b + 1u32;
   }
-  mut seen = Dict[String, u32].deterministic();
-  mut b2 = 0usize;
+  var seen = Dict[String, u32].deterministic();
+  var b2 = 0usize;
   while b2 < 256usize { seen.insert(texts.view()[b2].copy(), u32.from(b2)); b2 = b2 + 1usize; }
-  mut lines = List[String].empty();
-  mut ranks = Dict[u64, u64].deterministic();
-  mut tries = 0usize;
+  var lines = List[String].empty();
+  var ranks = Dict[u64, u64].deterministic();
+  var tries = 0usize;
   while lines.len() < merges and tries < merges * 40usize {
     tries = tries + 1usize;
     // parts: one of the letters a..(a+wordLetters) or a token made so far
-    mut l = 97u32 + rng.below(wordLetters);
-    mut r = 97u32 + rng.below(wordLetters);
+    var l = 97u32 + rng.below(wordLetters);
+    var r = 97u32 + rng.below(wordLetters);
     if texts.len() > 256usize and rng.below(4u32) != 0u32 {
       l = 256u32 + rng.below(u32.from(texts.len() - 256usize));
     }
     if texts.len() > 256usize and rng.below(4u32) != 0u32 {
       r = 256u32 + rng.below(u32.from(texts.len() - 256usize));
     }
-    mut joined = texts.view()[usize.from(l)].copy();
+    var joined = texts.view()[usize.from(l)].copy();
     joined.append(texts.view()[usize.from(r)].view());
     if seen.contains(joined.view()) { continue; }
-    imm key = (u64.from(l) << 32u64) | u64.from(r);
+    let key = (u64.from(l) << 32u64) | u64.from(r);
     if ranks.contains(&key) { continue; }
-    imm id = u32.from(texts.len());
-    imm rank = u64.from(lines.len());
+    let id = u32.from(texts.len());
+    let rank = u64.from(lines.len());
     ranks.insert(key, (rank << 32u64) | u64.from(id));
     seen.insert(joined.copy(), id);
     tokens.push(spell(joined.view()));
-    mut line = spell(texts.view()[usize.from(l)].view());
+    var line = spell(texts.view()[usize.from(l)].view());
     line.append(" ");
     line.append(spell(texts.view()[usize.from(r)].view()).view());
     lines.push(line);
@@ -333,53 +333,53 @@ fn randomChecks(seed u64, wordLetters u32, merges usize) {
   expect(lines.len() >= merges / 2usize, "enough random merges were made");
   match bpetokenize.Tokenizer.build(tokens.view(), lines.view(), List[String].empty().view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case imm tok Ok {
-      mut agree = 0usize;
-      mut n = 0usize;
+    case let tok Ok {
+      var agree = 0usize;
+      var n = 0usize;
       while n < 400usize {
-        imm len = 1u32 + rng.below(40u32);
-        mut word = List[u8].empty();
-        mut j = 0u32;
+        let len = 1u32 + rng.below(40u32);
+        var word = List[u8].empty();
+        var j = 0u32;
         while j < len { word.push(u8.from(97u32 + rng.below(wordLetters))); j = j + 1u32; }
-        imm want = plainMerge(word.view(), &ranks);
-        imm got = tok.encode(word.view());
-        imm a = show(&want);
-        imm c = show(&got);
+        let want = plainMerge(word.view(), &ranks);
+        let got = tok.encode(word.view());
+        let a = show(&want);
+        let c = show(&got);
         if a.view() == c.view() { agree = agree + 1usize; }
         else { expectStr(c.view(), a.view(), String.from(word.view() as &str).view()); }
         n = n + 1usize;
       }
       expectUInt(u64.from(agree), 400u64, "400 random words merge as the plain merger does");
     }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "random vocabulary"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "random vocabulary"); }
   }
 }
 
 fn main() i32 {
-  imm spec = helloSpec();
+  let spec = helloSpec();
   match bpetokenize.Tokenizer.build(spec.tokens.view(), spec.merges.view(), spec.special.view(),
                                     bpetokenize.PreTokenizer.Gpt2) {
-    case imm tok Ok { helloChecks(&tok); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary"); }
+    case let tok Ok { helloChecks(&tok); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(spec.tokens.view(), spec.merges.view(), spec.special.view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case imm tok Ok { wholeChecks(&tok); }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary, whole"); }
+    case let tok Ok { wholeChecks(&tok); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary, whole"); }
   }
   // the pairs form builds the same tokenizer
-  mut pairs = List[bpetokenize.MergePair].empty();
+  var pairs = List[bpetokenize.MergePair].empty();
   pairs.push(new bpetokenize.MergePair(spell("h"), spell("e")));
   pairs.push(new bpetokenize.MergePair(spell("l"), spell("l")));
   pairs.push(new bpetokenize.MergePair(spell("he"), spell("ll")));
   pairs.push(new bpetokenize.MergePair(spell("hell"), spell("o")));
   match bpetokenize.Tokenizer.buildPairs(spec.tokens.view(), pairs.view(), spec.special.view(),
                                          bpetokenize.PreTokenizer.Gpt2) {
-    case imm tok Ok {
+    case let tok Ok {
       ids(&tok, "hello", "259");
       expectUInt(u64.from(tok.mergeCount()), 4u64, "merge rules from pairs");
     }
-    case imm e Error { imm m = e.message(); expectStr(m.view(), "<built>", "pairs"); }
+    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "pairs"); }
   }
   laterRuleChecks();
   doublingChecks();

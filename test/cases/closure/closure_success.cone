@@ -32,8 +32,8 @@ fn showF(label &str, n f64) {
 
 // An anonymous function body resolves names in module scope, so a global and a
 // named function are both reachable from inside one
-imm bias = 100;
-mut @threadlocal sink = 0;
+let bias = 100;
+var @threadlocal sink = 0;
 
 fn triple(n i32) i32 {
   n * 3;
@@ -50,8 +50,8 @@ fn applyTo(v i32, f &fn(n i32) i32) i32 {
 // The staging file's summation, with 'each' replaced by 'while' so the only
 // subject here is the closure being called once per iteration
 fn sumOver(low i32, high i32, term &fn(n f32) f32) f32 {
-  mut sum = 0.;
-  mut i = low;
+  var sum = 0.;
+  var i = low;
   while i <= high {
     sum += term(f32.from(i));
     i++;
@@ -63,19 +63,19 @@ fn sumOver(low i32, high i32, term &fn(n f32) f32) f32 {
 
 fn bound() {
   // Bound to a variable, then called through it
-  imm square = &fn(x i32) i32 {x * x;};
+  let square = &fn(x i32) i32 {x * x;};
   show("bound-call", square(3));
 
   // Or dereferenced first, and the function it points at called
   show("dereferenced-call", (*square)(4));
 
   // The variable's type may be written out instead of inferred
-  imm cube &fn(x i32) i32 = &fn(x i32) i32 {x * x * x;};
+  let cube &fn(x i32) i32 = &fn(x i32) i32 {x * x * x;};
   show("declared-type-call", cube(3));
 
-  // A 'mut' binding accepts a different anonymous function later, and the call
+  // A 'var' binding accepts a different anonymous function later, and the call
   // goes to whichever one it currently holds
-  mut step = &fn(x i32) i32 {x + 1;};
+  var step = &fn(x i32) i32 {x + 1;};
   show("before-rebind", step(10));
   step = &fn(x i32) i32 {x + 100;};
   show("after-rebind", step(10));
@@ -83,28 +83,28 @@ fn bound() {
 
 fn signatures() {
   // No parameters
-  imm answer = &fn() i32 {42;};
+  let answer = &fn() i32 {42;};
   show("no-parameters", answer());
 
   // Several parameters, evaluated in the order written
-  imm blend = &fn(a i32, b i32, c i32) i32 {a * 100 + b * 10 + c;};
+  let blend = &fn(a i32, b i32, c i32) i32 {a * 100 + b * 10 + c;};
   show("three-parameters", blend(1, 2, 3));
 
   // A trailing default, so the call may omit it
-  imm advance = &fn(x i32, amt i32 = 5) i32 {x + amt;};
+  let advance = &fn(x i32, amt i32 = 5) i32 {x + amt;};
   show("default-omitted", advance(10));
   show("default-given", advance(10, 2));
 
   // No return type means void, so the call is a statement and the effect is
   // all there is to see
-  imm record = &fn(x i32) {sink = x;};
+  let record = &fn(x i32) {sink = x;};
   record(77);
   show("void-closure-effect", sink);
 
   // Several return values are a tuple, as for a named function
-  imm split = &fn(x i32) i32, i32 {x / 10, x % 10;};
-  mut tens i32;
-  mut ones i32;
+  let split = &fn(x i32) i32, i32 {x / 10, x % 10;};
+  var tens i32;
+  var ones i32;
   tens, ones = split(47);
   show("tuple-return-tens", tens);
   show("tuple-return-ones", ones);
@@ -112,15 +112,15 @@ fn signatures() {
 
 fn bodyScope() {
   // A module-scope global and a named function are both in scope in the body
-  imm offset = &fn(x i32) i32 {x + bias;};
+  let offset = &fn(x i32) i32 {x + bias;};
   show("body-reads-global", offset(5));
-  imm thrice = &fn(x i32) i32 {triple(x);};
+  let thrice = &fn(x i32) i32 {triple(x);};
   show("body-calls-function", thrice(5));
 
   // The body is an ordinary block: it may declare locals and use tier-0
   // control flow, and its value is its last statement
-  imm classify = &fn(x i32) i32 {
-    imm doubled = x * 2;
+  let classify = &fn(x i32) i32 {
+    let doubled = x * 2;
     if doubled > 10 {
       1;
     } else {
@@ -130,9 +130,9 @@ fn bodyScope() {
   show("body-if-high", classify(6));
   show("body-if-low", classify(2));
 
-  imm countDown = &fn(x i32) i32 {
-    mut n = x;
-    mut steps = 0;
+  let countDown = &fn(x i32) i32 {
+    var n = x;
+    var steps = 0;
     while n > 0 {
       n = n - 3;
       steps++;
@@ -147,7 +147,7 @@ fn passing() {
   show("inline-argument", applyTo(7, &fn(n i32) i32 {n * n;}));
 
   // Bound first, then passed: the same value crosses the call boundary
-  imm negate = &fn(n i32) i32 {0 - n;};
+  let negate = &fn(n i32) i32 {0 - n;};
   show("bound-argument", applyTo(7, negate));
 
   // Two different anonymous functions reach the same parameter, so the call
@@ -176,22 +176,22 @@ fn chosen(inferred &str, declared &str, renamed &str, number &str, high bool) {
   // Inferred: nothing states the type, so the branch types are compared to each
   // other. This is the case that failed until the comparison stopped resting on
   // the identity of the parameter declarations.
-  imm pick = if high {&fn(x i32) i32 {x * 10;};} else {&fn(x i32) i32 {x;};};
+  let pick = if high {&fn(x i32) i32 {x * 10;};} else {&fn(x i32) i32 {x;};};
   show(inferred, pick(6));
 
   // The same selection with the type written out, so inference and coercion are
   // shown to agree about it rather than only one of them accepting the code
-  imm picked &fn(x i32) i32 = if high {&fn(x i32) i32 {x * 10;};} else {&fn(x i32) i32 {x;};};
+  let picked &fn(x i32) i32 = if high {&fn(x i32) i32 {x * 10;};} else {&fn(x i32) i32 {x;};};
   show(declared, picked(6));
 
   // Parameter names are not part of a function type, so branches that differ
   // only in what they call their parameter are still one type
-  imm named = if high {&fn(x i32) i32 {x * 10;};} else {&fn(n i32) i32 {n;};};
+  let named = if high {&fn(x i32) i32 {x * 10;};} else {&fn(n i32) i32 {n;};};
   show(renamed, named(6));
 
   // The control: the same 'if' shape over plain numbers, which has always been
   // inferred, so a failure above is about function types and not about branches
-  imm factor = if high {10;} else {1;};
+  let factor = if high {10;} else {1;};
   show(number, factor * 6);
 }
 
@@ -202,8 +202,8 @@ fn chosen(inferred &str, declared &str, renamed &str, number &str, high bool) {
 // continuation line. 'lexical' owns statement inference; what this asks is only
 // that a signature gives back exactly what it took.
 fn signatureInParens() {
-  imm n = 4;
-  imm total = (applyTo(n, &fn(x i32) i32 {x * 2;})
+  let n = 4;
+  let total = (applyTo(n, &fn(x i32) i32 {x * 2;})
 - 1);
   show("closure-in-parens-spans-lines", total);
 }
@@ -225,7 +225,7 @@ fn makeStepMaker() &fn() &fn(x i32) i32 {
 
 fn returning() {
   // The returned value is bound and called through
-  imm step = makeStep();
+  let step = makeStep();
   show("returned-bound-call", step(41));
 
   // Or called straight off the call that returned it

@@ -31,59 +31,59 @@ const tokReq = 2u64;
 fn helloBody() &Array[u8] {"hello from the old driver";}
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
 
   // The old driver, alive from here to the end
-  mut srv = Driver.make(Config.make(), pool);
+  var srv = Driver.make(Config.make(), pool);
   {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 127u32 {
-      imm other = Driver.make(Config.make(), pool);
+      let other = Driver.make(Config.make(), pool);
       i = i + 1u32;
     }
   }
-  mut cli = Driver.make(Config.make(), pool);
+  var cli = Driver.make(Config.make(), pool);
 
-  mut port = 0u16;
+  var port = 0u16;
   match srv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
-    case imm r Ok {
+    case let r Ok {
       match srv.localAddr(&lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   require(port != 0u16, "the server listens on a port");
-  imm conn = cli.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
-  imm req = cli.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+  let conn = cli.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+  let req = cli.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
 
-  mut status = 0u16;
-  mut body = String.empty();
-  mut finals = 0u64;
-  mut finalDone = false;
-  mut served = 0u64;
-  mut svReq = ReqId.none();
-  mut misrouted = 0u64;
-  mut unclaimed = 0u64;
-  mut events = List[Event].empty();
-  mut comps = List[Completion].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(3i64);
+  var status = 0u16;
+  var body = String.empty();
+  var finals = 0u64;
+  var finalDone = false;
+  var served = 0u64;
+  var svReq = ReqId.none();
+  var misrouted = 0u64;
+  var unclaimed = 0u64;
+  var events = List[Event].empty();
+  var comps = List[Completion].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(3i64);
   while finals == 0u64 and Instant.now() < giveUp {
     srv.pump(&mut lp, &mut events);
     cli.pump(&mut lp, &mut events);
-    mut w = srv.wakeAt();
+    var w = srv.wakeAt();
     if cli.wakeAt() < w {w = cli.wakeAt();}
     if events.len() > 0usize {w = new Instant();}
     lp.poll(if w < giveUp {w;} else {giveUp;}, &mut comps);
-    mut k = 0usize;
+    var k = 0usize;
     while k < comps.len() {
-      imm c = &mut comps[k];
+      let c = &mut comps[k];
       k = k + 1usize;
       // Only the client's driver submits Connects: the server's driver
       // claiming one has taken another driver's operation
-      imm isConnect = c.kind == diag.kindConnect;
+      let isConnect = c.kind == diag.kindConnect;
       if srv.complete(&mut lp, c) {
         if isConnect {misrouted = misrouted + 1u64;}
       } elif not cli.complete(&mut lp, c) {
@@ -95,14 +95,14 @@ fn main() i32 {
     cli.pump(&mut lp, &mut events);
     k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
         if e.kind == EventKind.Request {
           svReq = e.req;
         } elif e.kind == EventKind.End {
           srv.respond(svReq, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
-          mut b = pool.mustTake(64usize);
+          var b = pool.mustTake(64usize);
           b.append(helloBody());
           srv.sendData(svReq, b);
           srv.finish(svReq);
@@ -144,21 +144,21 @@ fn main() i32 {
 // n drivers alive at once: how many (driver, token) pairs went wrong, a
 // token not owned by the driver that made it, or owned by another
 fn ownership(lp &mut Loop, pool Pool, n u32) u64 {
-  mut ds = List[Driver].empty();
-  mut i = 0u32;
+  var ds = List[Driver].empty();
+  var i = 0u32;
   while i < n {
     ds.push(Driver.make(Config.make(), pool));
     i = i + 1u32;
   }
-  mut wrong = 0u64;
-  mut a = 0usize;
+  var wrong = 0u64;
+  var a = 0usize;
   while a < ds.len() {
-    imm da = &mut ds[a];
-    imm t = da.upperToken(lp, 3u8, u64.from(a));
-    mut b = 0usize;
+    let da = &mut ds[a];
+    let t = da.upperToken(lp, 3u8, u64.from(a));
+    var b = 0usize;
     while b < ds.len() {
-      imm db = &mut ds[b];
-      imm owns = db.owns(t);
+      let db = &mut ds[b];
+      let owns = db.owns(t);
       if owns != (a == b) {wrong = wrong + 1u64;}
       b = b + 1usize;
     }

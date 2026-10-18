@@ -123,6 +123,17 @@ what to write.
 Circle`: a pattern names only the variant, and the matched value supplies the
 reference, its region and its permission (parse).
 
+`ErrorDclWord` is `imm` or `mut` where a declaration's word belongs (parse): a
+declaration starts with `let` or `var`, and the two are the permissions of a
+reference. One code for every position that takes the word -- a global, a field, a
+static, a parameter, `self`, a closure's parameter and its state entry, a local,
+the binding of an `if` or a `case` -- because the remedy is the same edit, and the
+message names the word that replaces the one written. The old word is read as that
+replacement, so the declaration parses and checks as it would have and nothing
+after it is reported twice. A permission that is neither (`ro`, `uni`, `opaq`,
+`mut1`) stays `ErrorInvType`, and `let` or `var` where a name belongs is
+`ErrorNoName` on a function and `ErrorNoIdent` on a variable.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to
@@ -244,7 +255,7 @@ declared without a value that no `init` of its module assigns — its module
 declares none, or its `init` never does; the remedy is to assign it there, or to
 give it a value. What `init` does wrong with such a global wears the code the
 same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
-second assignment of an `imm` one `ErrorNoMut`.
+second assignment of a `let` one `ErrorNoMut`.
 
 A generic module takes three codes, split where the remedy is.
 `ErrorGenModBare` is the generic named without type arguments where only an
@@ -274,12 +285,12 @@ declaration the module already has, or one a file may not make.
 
 A thread-local global takes four codes, one per rule, since each remedy is a
 different edit. `ErrorThreadLocalPlace` is `@threadlocal` anywhere but after a
-module global's permission — on a local, a function's or a type's static, a
+module global's `let` or `var` — on a local, a function's or a type's static, a
 parameter, a field, a module trait's global, after `fn` or a type's keyword, or
-before the permission — one code for every position, because the remedy is the
-same for each: drop it, or move it to a global at module scope, after `mut`.
-`ErrorThreadLocalImm` is one on an `imm` global, where a copy per thread of a
-value no thread changes buys nothing; the remedy is `mut`, or no attribute.
+before the `let` or `var` — one code for every position, because the remedy is the
+same for each: drop it, or move it to a global at module scope, after `var`.
+`ErrorThreadLocalImm` is one on a `let` global, where a copy per thread of a
+value no thread changes buys nothing; the remedy is `var`, or no attribute.
 `ErrorThreadLocalInit` is one with no initial value and not `extern`, which a
 module's `init` would assign on its own thread alone; the remedy is a literal
 value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
@@ -289,7 +300,7 @@ is not a literal wears `ErrorNotLit`, as on any global.
 A `@workgroup` global takes four codes on the same plan. `ErrorWorkgroupPlace`
 is `@workgroup` anywhere `@threadlocal` would be misplaced, and also beside
 `@threadlocal`, since a global has one storage; `ErrorWorkgroupImm` is one on
-an `imm` global, which nothing would ever write; `ErrorWorkgroupInit` is one
+a `let` global, which nothing would ever write; `ErrorWorkgroupInit` is one
 with an initial value, zero among them, since a workgroup's copy starts
 undefined; `ErrorWorkgroupData` is what it holds, held to a kernel's buffer's
 rule (32-bit numbers, their atomics, structs and fixed arrays of them) or a
@@ -452,7 +463,7 @@ member only one variant has, named on a name that was narrowed to it and has sin
 changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
 or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
 a loop, used in it, that a change later in the loop reaches by the back edge is
-`ErrorNarrowLoop`; and the `else` of `imm n Ok = r else {...};` that falls through to the binding
+`ErrorNarrowLoop`; and the `else` of `let n Ok = r else {...};` that falls through to the binding
 is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
 change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).

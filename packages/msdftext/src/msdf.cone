@@ -49,22 +49,22 @@ struct Selector {
   pseudo bool;                // resolve to the pseudo-distance (else the true distance)
 
   fn fresh(pseudo bool) Selector {
-    imm far = new SignedDist(-FAR, 1.0d);
+    let far = new SignedDist(-FAR, 1.0d);
     new Selector([far, far, far], [-1i32, -1i32, -1i32], [0.0d, 0.0d, 0.0d], pseudo);
   }
 
   fn reset(self &mut) {
-    imm far = new SignedDist(-FAR, 1.0d);
+    let far = new SignedDist(-FAR, 1.0d);
     d = [far, far, far];
     e = [-1i32, -1i32, -1i32];
     t = [0.0d, 0.0d, 0.0d];
   }
 
   fn addEdge(self &mut, shape &Shape, index usize, p Pt) {
-    imm edge = *shape.edges[index];
-    mut param = 0.0d;
-    imm sd = edge.signedDistance(p, &mut param);
-    mut ch = 0usize;
+    let edge = *shape.edges[index];
+    var param = 0.0d;
+    let sd = edge.signedDistance(p, &mut param);
+    var ch = 0usize;
     while ch < 3usize {
       if (edge.color & (1u32 << u32.from(ch))) != 0u32 and nearer(sd, d[ch]) {
         d[ch] = sd;
@@ -76,7 +76,7 @@ struct Selector {
   }
 
   fn merge(self &mut, o &Selector) {
-    mut ch = 0usize;
+    var ch = 0usize;
     while ch < 3usize {
       if nearer(o.d[ch], d[ch]) {
         d[ch] = o.d[ch];
@@ -90,10 +90,10 @@ struct Selector {
   // The channels' distances, with the pseudo-distance in place of the true
   // one where the nearest point is the end of an edge
   fn resolve(self &, shape &Shape, p Pt) Rgb {
-    mut out = new Array[f64, 3] <- fill 0.0d;
-    mut ch = 0usize;
+    var out = new Array[f64, 3] <- fill 0.0d;
+    var ch = 0usize;
     while ch < 3usize {
-      mut sd = d[ch];
+      var sd = d[ch];
       if pseudo and e[ch] >= 0i32 {
         sd = (*shape.edges[usize.from(u32.from(e[ch]))]).toPseudoDistance(sd, p, t[ch]);
       }
@@ -110,41 +110,41 @@ fn absf64(v f64) f64 { if v < 0.0d { return -v; } v; }
 // by msdfgen's OverlappingContourCombiner. 'sels' holds a selector a
 // contour.
 fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
-  mut shapeSel = Selector.fresh(pseudo);
-  mut innerSel = Selector.fresh(pseudo);
-  mut outerSel = Selector.fresh(pseudo);
-  imm nc = shape.contours.len();
-  mut ci = 0usize;
+  var shapeSel = Selector.fresh(pseudo);
+  var innerSel = Selector.fresh(pseudo);
+  var outerSel = Selector.fresh(pseudo);
+  let nc = shape.contours.len();
+  var ci = 0usize;
   while ci < nc {
-    imm c = *shape.contours[ci];
-    mut s = &mut sels[ci];
+    let c = *shape.contours[ci];
+    var s = &mut sels[ci];
     s.reset();
-    mut k = 0u32;
+    var k = 0u32;
     while k < c.count {
       s.addEdge(shape, usize.from(c.start + k), p);
       k = k + 1u32;
     }
-    imm cd = s.resolve(shape, p);
+    let cd = s.resolve(shape, p);
     shapeSel.merge(s);
     if c.winding > 0i32 and cd.median() >= 0.0d { innerSel.merge(s); }
     if c.winding < 0i32 and cd.median() <= 0.0d { outerSel.merge(s); }
     ci = ci + 1usize;
   }
-  imm shapeDistance = shapeSel.resolve(shape, p);
-  imm innerDistance = innerSel.resolve(shape, p);
-  imm outerDistance = outerSel.resolve(shape, p);
-  imm inner = innerDistance.median();
-  imm outer = outerDistance.median();
-  mut distance = new Rgb(-FAR, -FAR, -FAR);
-  mut winding = 0i32;
+  let shapeDistance = shapeSel.resolve(shape, p);
+  let innerDistance = innerSel.resolve(shape, p);
+  let outerDistance = outerSel.resolve(shape, p);
+  let inner = innerDistance.median();
+  let outer = outerDistance.median();
+  var distance = new Rgb(-FAR, -FAR, -FAR);
+  var winding = 0i32;
   if inner >= 0.0d and absf64(inner) <= absf64(outer) {
     distance = innerDistance;
     winding = 1i32;
     ci = 0usize;
     while ci < nc {
       if (*shape.contours[ci]).winding > 0i32 {
-        imm cd = sels[ci].resolve(shape, p);
-        imm cm = cd.median();
+        let cd = sels[ci].resolve(shape, p);
+        let cm = cd.median();
         if absf64(cm) < absf64(outer) and cm > distance.median() { distance = cd; }
       }
       ci = ci + 1usize;
@@ -155,8 +155,8 @@ fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
     ci = 0usize;
     while ci < nc {
       if (*shape.contours[ci]).winding < 0i32 {
-        imm cd = sels[ci].resolve(shape, p);
-        imm cm = cd.median();
+        let cd = sels[ci].resolve(shape, p);
+        let cm = cd.median();
         if absf64(cm) < absf64(inner) and cm < distance.median() { distance = cd; }
       }
       ci = ci + 1usize;
@@ -167,9 +167,9 @@ fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
   ci = 0usize;
   while ci < nc {
     if (*shape.contours[ci]).winding != winding {
-      imm cd = sels[ci].resolve(shape, p);
-      imm cm = cd.median();
-      imm dm = distance.median();
+      let cd = sels[ci].resolve(shape, p);
+      let cm = cd.median();
+      let dm = distance.median();
       if cm * dm >= 0.0d and absf64(cm) < absf64(dm) { distance = cd; }
     }
     ci = ci + 1usize;
@@ -189,10 +189,10 @@ pub struct Field {
   }
 
   pub fn median(self &, x u32, y u32) f32 {
-    imm i = usize.from((y * width + x) * 3u32);
-    imm r = *data[i];
-    imm g = *data[i + 1usize];
-    imm b = *data[i + 2usize];
+    let i = usize.from((y * width + x) * 3u32);
+    let r = *data[i];
+    let g = *data[i + 1usize];
+    let b = *data[i + 2usize];
     fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
   }
 }
@@ -226,16 +226,16 @@ pub struct Frame {
 pub fn generateMsdf(shape &Shape, frame &Frame) Field { generate(shape, frame, true); }
 
 fn generate(shape &Shape, frame &Frame, pseudo bool) Field {
-  mut data = List[f32].withCapacity(usize.from(frame.width * frame.height * 3u32));
-  mut sels = List[Selector].empty();
-  mut ci = 0usize;
+  var data = List[f32].withCapacity(usize.from(frame.width * frame.height * 3u32));
+  var sels = List[Selector].empty();
+  var ci = 0usize;
   while ci < shape.contours.len() { sels.push(Selector.fresh(pseudo)); ci = ci + 1usize; }
-  mut y = 0u32;
+  var y = 0u32;
   while y < frame.height {
-    mut x = 0u32;
+    var x = 0u32;
     while x < frame.width {
-      imm p = frame.pointOf(f64.from(x), f64.from(y));
-      imm d = distanceAt(shape, &mut sels, p, pseudo);
+      let p = frame.pointOf(f64.from(x), f64.from(y));
+      let d = distanceAt(shape, &mut sels, p, pseudo);
       data.push(f32.from(d.r / frame.range + 0.5d));
       data.push(f32.from(d.g / frame.range + 0.5d));
       data.push(f32.from(d.b / frame.range + 0.5d));
@@ -250,13 +250,13 @@ fn generate(shape &Shape, frame &Frame, pseudo bool) Field {
 // the nearest true distance, with msdfgen's contour combiner and no
 // pseudo-distance. The check the multi-channel field is compared with.
 pub fn generateSdf(shape &Shape, frame &Frame) Field {
-  mut white = Shape.empty();
+  var white = Shape.empty();
   white.contours = List[Contour].empty();
-  mut ci = 0usize;
+  var ci = 0usize;
   while ci < shape.contours.len() { white.contours.push(*shape.contours[ci]); ci = ci + 1usize; }
-  mut ei = 0usize;
+  var ei = 0usize;
   while ei < shape.edges.len() {
-    mut e = *shape.edges[ei];
+    var e = *shape.edges[ei];
     e.color = COLOR_WHITE;
     white.edges.push(e);
     ei = ei + 1usize;
@@ -272,22 +272,22 @@ pub fn generateSdf(shape &Shape, frame &Frame) Field {
 // then not cross the 1/2 line where the medians do not (and cross it only
 // once where they do).
 fn clashes(f &Field, ax u32, ay u32, qx u32, qy u32) bool {
-  imm ia = usize.from((ay * f.width + ax) * 3u32);
-  imm ib = usize.from((qy * f.width + qx) * 3u32);
-  imm ma = f.median(ax, ay);
-  imm mb = f.median(qx, qy);
-  imm sideA = ma > 0.5;
-  imm sideB = mb > 0.5;
-  mut crossings = 0u32;
-  mut prev = sideA;
-  mut s = 1u32;
+  let ia = usize.from((ay * f.width + ax) * 3u32);
+  let ib = usize.from((qy * f.width + qx) * 3u32);
+  let ma = f.median(ax, ay);
+  let mb = f.median(qx, qy);
+  let sideA = ma > 0.5;
+  let sideB = mb > 0.5;
+  var crossings = 0u32;
+  var prev = sideA;
+  var s = 1u32;
   while s < 16u32 {
-    imm t = f32.from(s) / 16.0;
-    imm r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
-    imm g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
-    imm b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
-    imm m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
-    imm side = m > 0.5;
+    let t = f32.from(s) / 16.0;
+    let r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
+    let g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
+    let b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
+    let m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
+    let side = m > 0.5;
     if side != prev { crossings = crossings + 1u32; }
     prev = side;
     s = s + 1u32;
@@ -302,21 +302,21 @@ fn clashes(f &Field, ax u32, ay u32, qx u32, qy u32) bool {
 // crosses 1/2 between them, at a place where that channel is the median of
 // the interpolated three (else it is not the outline that crosses there).
 fn edgeBetween(f &Field, ax u32, ay u32, qx u32, qy u32) u32 {
-  imm ia = usize.from((ay * f.width + ax) * 3u32);
-  imm ib = usize.from((qy * f.width + qx) * 3u32);
-  mut mask = 0u32;
-  mut c = 0usize;
+  let ia = usize.from((ay * f.width + ax) * 3u32);
+  let ib = usize.from((qy * f.width + qx) * 3u32);
+  var mask = 0u32;
+  var c = 0usize;
   while c < 3usize {
-    imm va = *f.data[ia + c];
-    imm vb = *f.data[ib + c];
+    let va = *f.data[ia + c];
+    let vb = *f.data[ib + c];
     if va != vb {
-      imm t = (va - 0.5) / (va - vb);
+      let t = (va - 0.5) / (va - vb);
       if t > 0.0 and t < 1.0 {
-        imm r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
-        imm g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
-        imm b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
-        imm m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
-        imm at = if c == 0usize { r; } elif c == 1usize { g; } else { b; };
+        let r = *f.data[ia] + (*f.data[ib] - *f.data[ia]) * t;
+        let g = *f.data[ia + 1usize] + (*f.data[ib + 1usize] - *f.data[ia + 1usize]) * t;
+        let b = *f.data[ia + 2usize] + (*f.data[ib + 2usize] - *f.data[ia + 2usize]) * t;
+        let m = fmaxf(fminf(r, g), fminf(fmaxf(r, g), b));
+        let at = if c == 0usize { r; } elif c == 1usize { g; } else { b; };
         if m == at { mask = mask | (1u32 << u32.from(c)); }
       }
     }
@@ -328,8 +328,8 @@ fn edgeBetween(f &Field, ax u32, ay u32, qx u32, qy u32) u32 {
 // Whether replacing a texel by its median would change a channel in 'mask'
 // (so it must be kept: it carries the edge)
 fn holdsEdge(f &Field, x u32, y u32, mask u32) bool {
-  imm i = usize.from((y * f.width + x) * 3u32);
-  imm m = f.median(x, y);
+  let i = usize.from((y * f.width + x) * 3u32);
+  let m = f.median(x, y);
   ((mask & 1u32) != 0u32 and *f.data[i] != m) or ((mask & 2u32) != 0u32 and *f.data[i + 1usize] != m)
     or ((mask & 4u32) != 0u32 and *f.data[i + 2usize] != m);
 }
@@ -343,27 +343,27 @@ fn holdsEdge(f &Field, x u32, y u32, mask u32) bool {
 // around each corner where two edges that share fewer than two channels meet.
 // Returns how many texels were replaced.
 pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
-  imm w = f.width;
-  imm h = f.height;
-  mut protect = List[bool].withCapacity(usize.from(w * h));
-  mut i = 0usize;
+  let w = f.width;
+  let h = f.height;
+  var protect = List[bool].withCapacity(usize.from(w * h));
+  var i = 0usize;
   while i < usize.from(w * h) { protect.push(false); i = i + 1usize; }
   // Texels either side of the outline
-  mut y = 0u32;
+  var y = 0u32;
   while y < h {
-    mut x = 0u32;
+    var x = 0u32;
     while x < w {
-      mut k = 0u32;
+      var k = 0u32;
       while k < 4u32 {
         // right, below, below-right, below-left
-        mut nx = i32.from(x);
-        mut ny = i32.from(y);
+        var nx = i32.from(x);
+        var ny = i32.from(y);
         if k == 0u32 { nx = nx + 1i32; }
         elif k == 1u32 { ny = ny + 1i32; }
         elif k == 2u32 { nx = nx + 1i32; ny = ny + 1i32; }
         else { nx = nx - 1i32; ny = ny + 1i32; }
         if nx >= 0i32 and ny >= 0i32 and nx < i32.from(w) and ny < i32.from(h) {
-          imm mask = edgeBetween(f, x, y, u32.from(nx), u32.from(ny));
+          let mask = edgeBetween(f, x, y, u32.from(nx), u32.from(ny));
           // Only where the outline passes between them: the medians are on different sides of 1/2
           if mask != 0u32 and (f.median(x, y) > 0.5) != (f.median(u32.from(nx), u32.from(ny)) > 0.5) {
             if holdsEdge(f, x, y, mask) { protect.set(usize.from(y * w + x), true); }
@@ -377,24 +377,24 @@ pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
     y = y + 1u32;
   }
   // Corners where the colours change
-  mut ci = 0usize;
+  var ci = 0usize;
   while ci < shape.contours.len() {
-    imm c = *shape.contours[ci];
-    mut k = 0u32;
+    let c = *shape.contours[ci];
+    var k = 0u32;
     while k < c.count {
-      imm e0 = *shape.edges[usize.from(c.start + k)];
-      imm e1 = *shape.edges[usize.from(c.start + (k + 1u32) % c.count)];
-      imm common = e0.color & e1.color;
+      let e0 = *shape.edges[usize.from(c.start + k)];
+      let e1 = *shape.edges[usize.from(c.start + (k + 1u32) % c.count)];
+      let common = e0.color & e1.color;
       if (common & (common - 1u32)) == 0u32 {
-        imm tp = frame.toTexel(e0.c);
-        imm fx = i32.from(libc.floor(tp.x));
-        imm fy = i32.from(libc.floor(tp.y));
-        mut dy = 0i32;
+        let tp = frame.toTexel(e0.c);
+        let fx = i32.from(libc.floor(tp.x));
+        let fy = i32.from(libc.floor(tp.y));
+        var dy = 0i32;
         while dy < 2i32 {
-          mut dx = 0i32;
+          var dx = 0i32;
           while dx < 2i32 {
-            imm px = fx + dx;
-            imm py = fy + dy;
+            let px = fx + dx;
+            let py = fy + dy;
             if px >= 0i32 and py >= 0i32 and px < i32.from(w) and py < i32.from(h) {
               protect.set(usize.from(u32.from(py) * w + u32.from(px)), true);
             }
@@ -408,24 +408,24 @@ pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
     ci = ci + 1usize;
   }
   // Pairs whose interpolation clashes
-  mut flag = List[bool].withCapacity(usize.from(w * h));
+  var flag = List[bool].withCapacity(usize.from(w * h));
   i = 0usize;
   while i < usize.from(w * h) { flag.push(false); i = i + 1usize; }
   y = 0u32;
   while y < h {
-    mut x = 0u32;
+    var x = 0u32;
     while x < w {
-      mut k = 0u32;
+      var k = 0u32;
       while k < 4u32 {
-        mut nx = i32.from(x);
-        mut ny = i32.from(y);
+        var nx = i32.from(x);
+        var ny = i32.from(y);
         if k == 0u32 { nx = nx + 1i32; }
         elif k == 1u32 { ny = ny + 1i32; }
         elif k == 2u32 { nx = nx + 1i32; ny = ny + 1i32; }
         else { nx = nx - 1i32; ny = ny + 1i32; }
         if nx >= 0i32 and ny >= 0i32 and nx < i32.from(w) and ny < i32.from(h) {
-          imm a = usize.from(y * w + x);
-          imm b = usize.from(u32.from(ny) * w + u32.from(nx));
+          let a = usize.from(y * w + x);
+          let b = usize.from(u32.from(ny) * w + u32.from(nx));
           if (!*protect[a] or !*protect[b]) and clashes(f, x, y, u32.from(nx), u32.from(ny)) {
             if !*protect[a] { flag.set(a, true); }
             if !*protect[b] { flag.set(b, true); }
@@ -437,14 +437,14 @@ pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
     }
     y = y + 1u32;
   }
-  mut fixed = 0u32;
+  var fixed = 0u32;
   y = 0u32;
   while y < h {
-    mut x = 0u32;
+    var x = 0u32;
     while x < w {
       if *flag[usize.from(y * w + x)] {
-        imm m = f.median(x, y);
-        imm at = usize.from((y * w + x) * 3u32);
+        let m = f.median(x, y);
+        let at = usize.from((y * w + x) * 3u32);
         f.data.set(at, m);
         f.data.set(at + 1usize, m);
         f.data.set(at + 2usize, m);

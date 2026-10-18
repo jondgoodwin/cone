@@ -94,25 +94,25 @@ fn server(pool Pool) Srv {
 }
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
-    case imm r Ok {
+    case let r Ok {
       match sv.drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
 
 fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array[u8], body &Array[u8]) {
-  mut h = ResponseHead.make(status);
+  var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize and not head {
-    mut b = sv.pool.mustTake(body.len);
+    var b = sv.pool.mustTake(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -121,21 +121,21 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
 
 fn number(s &str) u64 {
   match collections.parseUInt(s) {
-    case imm v Some {v;}
+    case let v Some {v;}
     case is None[u64] {0u64;}
   }
 }
 
 // Stream j's next pieces, as many as the connection takes now
 fn pumpStream(sv &mut Srv, j usize) {
-  imm req = *sv.streams[j];
+  let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
-    imm at = *sv.sent[j];
-    imm left = *sv.totals[j] - at;
-    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
-    mut b = sv.pool.mustTake(n);
-    imm s = b.spare();
-    mut i = 0usize;
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    var b = sv.pool.mustTake(n);
+    let s = b.spare();
+    var i = 0usize;
     while i < n {
       s[i] = u8.from((at + u64.from(i)) % 251u64);
       i = i + 1usize;
@@ -151,7 +151,7 @@ fn pumpStream(sv &mut Srv, j usize) {
 }
 
 fn dropStream(sv &mut Srv, j usize) {
-  imm last = sv.streams.len() - 1usize;
+  let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
   sv.totals.swap(j, last);
@@ -161,7 +161,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 fn findStream(sv &Srv, req httpconn.ReqId) usize {
-  mut j = 0usize;
+  var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
     j = j + 1usize;
@@ -171,16 +171,16 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
 
 // The answer to request k, read whole
 fn answer(sv &mut Srv, lp &mut Loop, k usize) {
-  imm req = *sv.reqs[k];
-  imm full = sv.targets[k].copy();
-  imm t = full.view();
-  mut q = 0usize;
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].copy();
+  let t = full.view();
+  var q = 0usize;
   while q < t.len and t[q] != '?' {q = q + 1usize;}
-  imm path = &t[0usize ..< q];
-  imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head;
+  let path = &t[0usize ..< q];
+  let query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
+  let head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]));
+    var b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, "", b.view());
@@ -196,18 +196,18 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
       reply(sv, req, head, 200u16, "", "second");
     }
   } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
-    imm n = number(&path[10usize ..]);
+    let n = number(&path[10usize ..]);
     if n == 0u64 {
       reply(sv, req, head, 200u16, "", "landed");
     } else {
-      mut loc = String.from("/redirect/");
+      var loc = String.from("/redirect/");
       loc.appendUInt(n - 1u64);
       reply(sv, req, head, 302u16, loc.view(), "moved");
     }
   } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
     reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
   } elif path == "/headers" {
-    mut b = String.from("auth=");
+    var b = String.from("auth=");
     b.append(sv.auths[k].view());
     b.append(";cookie=");
     b.append(sv.cookies[k].view());
@@ -217,7 +217,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
     reply(sv, req, head, 200u16, "", b.view());
   } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
-    imm n = number(&path[5usize ..]);
+    let n = number(&path[5usize ..]);
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
     sv.streams.push(req);
     sv.sent.push(0u64);
@@ -225,7 +225,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } elif path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    mut b = sv.pool.mustTake(65536usize);
+    var b = sv.pool.mustTake(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } elif path == "/hang" {
@@ -237,7 +237,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
 }
 
 fn findReq(sv &Srv, req httpconn.ReqId) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
     k = k + 1usize;
@@ -246,7 +246,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
 }
 
 fn forget(sv &mut Srv, k usize) {
-  imm last = sv.reqs.len() - 1usize;
+  let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.conns.swap(k, last);
   sv.methods.swap(k, last);
@@ -265,13 +265,13 @@ fn forget(sv &mut Srv, k usize) {
 
 fn fieldOr(h &Headers, name &str) String {
   match h.get(name) {
-    case imm v Some {String.fromBytes(v);}
+    case let v Some {String.fromBytes(v);}
     case is None[&Array[u8]] {String.from("-");}
   }
 }
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
-  imm kind = e.kind;
+  let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
@@ -289,19 +289,19 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } elif kind == httpconn.EventKind.Data {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
   } elif kind == httpconn.EventKind.End {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
   } elif kind == httpconn.EventKind.Writable {
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {forget(sv, k);}
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {dropStream(sv, j);}
   }
 }
@@ -309,20 +309,20 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
   sv.drv.pump(lp, &mut sevs);
-  mut limit = until;
-  imm a = cl.wakeAt();
+  var limit = until;
+  let a = cl.wakeAt();
   if a < limit {limit = a;}
-  imm b = sv.drv.wakeAt();
+  let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
-  mut comps = List[Completion].empty();
+  var comps = List[Completion].empty();
   lp.poll(limit, &mut comps);
-  mut k = 0usize;
+  var k = 0usize;
   while k < comps.len() {
-    imm c = &mut comps[k];
+    let c = &mut comps[k];
     if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
     k = k + 1usize;
   }
@@ -339,12 +339,12 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
 // The server's every connection reset, and its buffers home
 fn stopServer(sv &mut Srv, lp &mut Loop) {
   sv.drv.abortAll(lp);
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   sv.drv.pump(lp, &mut sevs);
 }
 
 fn url(port u16, path &str) String {
-  mut u = String.from("http://127.0.0.1:");
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u;
@@ -372,7 +372,7 @@ fn seen() Seen {
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
-  imm n = eventName(e.kind);
+  let n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
@@ -393,14 +393,14 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
-  mut out = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  imm before = s.finals;
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let before = s.finals;
   while s.finals == before and Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.id == id {note(cl, s, e);}
       k = k + 1usize;
     }
@@ -411,21 +411,21 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
-  mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here(1u64));
+  var s = seen();
+  let id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
 
 // Drive for a while
 fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
-  mut out = List[Event].empty();
-  imm until = Instant.now() + d;
+  var out = List[Event].empty();
+  let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &mut out, until);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
@@ -452,8 +452,8 @@ struct Tier {
 }
 
 fn tier() Tier {
-  mut gs = List[CancelGroup].empty();
-  mut r = 0u32;
+  var gs = List[CancelGroup].empty();
+  var r = 0u32;
   while r < regions {
     gs.push(CancelGroup.make());
     r = r + 1u32;
@@ -476,15 +476,15 @@ fn intentOf(t u32) Intent {
 fn errorOf(t u32) i64 {i64.from((t * 37u32) % 163u32);}
 
 fn tileUrl(port u16, t u32) String {
-  mut p = String.from("/order/t");
+  var p = String.from("/order/t");
   p.appendUInt(u64.from(t));
   url(port, p.view());
 }
 
 // Ask for tile t, of region r
 fn want(tr &mut Tier, cl &mut Client, lp &mut Loop, port u16, t u32, intent Intent, score i64, frameEnd Instant) {
-  imm r = t % regions;
-  mut req = Request.get(tileUrl(port, t).view());
+  let r = t % regions;
+  var req = Request.get(tileUrl(port, t).view());
   req.intent = intent;
   req.score = score;
   req.group = Some[CancelGroup](*tr.groups[usize.from(r)]);
@@ -502,13 +502,13 @@ fn want(tr &mut Tier, cl &mut Client, lp &mut Loop, port u16, t u32, intent Inte
 
 // The frame's arrival phase: what came, within the budget
 fn arrivals(tr &mut Tier, cl &mut Client, sv &mut Srv, lp &mut Loop, budget Duration) {
-  mut out = List[Event].empty();
+  var out = List[Event].empty();
   step(cl, sv, lp, &mut out, Instant.now() + budget);
-  mut k = 0usize;
+  var k = 0usize;
   while k < out.len() {
-    imm e = &mut out[k];
+    let e = &mut out[k];
     k = k + 1usize;
-    imm t = usize.from(e.token);
+    let t = usize.from(e.token);
     if *tr.finals[t] > 0u32 {
       tr.after.set(t, *tr.after[t] + 1u32);
       continue;
@@ -527,8 +527,8 @@ fn arrivals(tr &mut Tier, cl &mut Client, sv &mut Srv, lp &mut Loop, budget Dura
 
 // Whether tile a goes before tile b, by the rules
 fn first(tr &Tier, a usize, b usize) bool {
-  imm ra = intentRank(*tr.intents[a]);
-  imm rb = intentRank(*tr.intents[b]);
+  let ra = intentRank(*tr.intents[a]);
+  let rb = intentRank(*tr.intents[b]);
   if ra != rb {return ra < rb;}
   if *tr.scores[a] != *tr.scores[b] {return *tr.scores[a] > *tr.scores[b];}
   a < b;
@@ -540,11 +540,11 @@ fn intentRank(i Intent) u32 {
 
 // The tiles the origin should see, in order: those not cancelled, sorted
 fn expected(tr &Tier, skip &List[u32]) String {
-  mut left = List[usize].empty();
-  mut t = 0usize;
+  var left = List[usize].empty();
+  var t = 0usize;
   while t < tr.ids.len() {
-    mut skipped = false;
-    mut j = 0usize;
+    var skipped = false;
+    var j = 0usize;
     while j < skip.len() {
       if usize.from(*skip[j]) == t {skipped = true;}
       j = j + 1usize;
@@ -552,10 +552,10 @@ fn expected(tr &Tier, skip &List[u32]) String {
     if not skipped {left.push(t);}
     t = t + 1usize;
   }
-  mut out = String.empty();
+  var out = String.empty();
   while left.len() > 0usize {
-    mut best = 0usize;
-    mut j = 1usize;
+    var best = 0usize;
+    var j = 1usize;
     while j < left.len() {
       if first(tr, *left[j], *left[best]) {best = j;}
       j = j + 1usize;
@@ -563,7 +563,7 @@ fn expected(tr &Tier, skip &List[u32]) String {
     if out.len() > 0usize {out.append(" ");}
     out.append("t");
     out.appendUInt(u64.from(*left[best]));
-    imm last = left.len() - 1usize;
+    let last = left.len() - 1usize;
     left.swap(best, last);
     left.pop();
   }
@@ -571,11 +571,11 @@ fn expected(tr &Tier, skip &List[u32]) String {
 }
 
 fn orderSince(sv &Srv, from usize) String {
-  mut out = String.empty();
-  mut k = from;
+  var out = String.empty();
+  var k = from;
   while k < sv.order.len() {
-    imm t = sv.order[k].view();
-    mut s = t.len;
+    let t = sv.order[k].view();
+    var s = t.len;
     while s > 0usize and t[s - 1usize] != '/' {s = s - 1usize;}
     if out.len() > 0usize {out.append(" ");}
     out.append(&t[s ..]);
@@ -587,15 +587,15 @@ fn orderSince(sv &Srv, from usize) String {
 // One run of the tier over a client with 'conns' connections to the
 // origin: what it checked
 fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder bool) {
-  mut cfg = Config.make();
+  var cfg = Config.make();
   cfg.maxPerOrigin = conns;
-  mut cl = Client.make(cfg, pool);
-  mut tr = tier();
-  imm from = sv.order.len();
-  imm frameEnd = Instant.now() + Duration.fromSeconds(5i64);
+  var cl = Client.make(cfg, pool);
+  var tr = tier();
+  let from = sv.order.len();
+  let frameEnd = Instant.now() + Duration.fromSeconds(5i64);
 
   // The frame's wants
-  mut t = 0u32;
+  var t = 0u32;
   while t < tiles {
     want(&mut tr, &mut cl, lp, port, t, intentOf(t), errorOf(t), frameEnd);
     t = t + 1u32;
@@ -604,13 +604,13 @@ fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder boo
   // its group; five Prefetch tiles come into view; tiles 12 and 13 are
   // superseded by finer levels, asked for as tiles 160 and 161
   expect(tr.groups[3usize].cancel(), "region 3's group cancelled");
-  mut skip = List[u32].empty();
+  var skip = List[u32].empty();
   t = 0u32;
   while t < tiles {
     if t % regions == 3u32 {skip.push(t);}
     t = t + 1u32;
   }
-  mut moved = 0u32;
+  var moved = 0u32;
   t = 60u32;
   while moved < 5u32 {
     if t % regions != 3u32 {
@@ -629,49 +629,49 @@ fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder boo
   want(&mut tr, &mut cl, lp, port, tiles + 1u32, Intent.Visible, errorOf(13u32) + 1i64, frameEnd);
 
   // The frames, each draining what arrived within 2 ms
-  imm giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
   while cl.live() > 0u32 and Instant.now() < giveUp {
     arrivals(&mut tr, &mut cl, sv, lp, Duration.fromMillis(2i64));
   }
   arrivals(&mut tr, &mut cl, sv, lp, Duration.fromMillis(2i64));
 
   // Every tile exactly one final answer, nothing after it
-  mut once = 0u32;
-  mut after = 0u32;
-  mut done = 0u32;
-  mut cancelled = 0u32;
-  mut rightBodies = 0u32;
-  mut k = 0usize;
+  var once = 0u32;
+  var after = 0u32;
+  var done = 0u32;
+  var cancelled = 0u32;
+  var rightBodies = 0u32;
+  var k = 0usize;
   while k < tr.ids.len() {
     if *tr.finals[k] == 1u32 {once = once + 1u32;}
     after = after + *tr.after[k];
     if *tr.kinds[k] == EventKind.Done {
       done = done + 1u32;
-      mut b = String.from("t");
+      var b = String.from("t");
       b.appendUInt(u64.from(k));
       if tr.bodies[k].view() == b.view() {rightBodies = rightBodies + 1u32;}
     }
     if *tr.kinds[k] == EventKind.Cancelled {cancelled = cancelled + 1u32;}
     k = k + 1usize;
   }
-  imm n = u32.from(tr.ids.len());
+  let n = u32.from(tr.ids.len());
   expectUInt(u64.from(once), u64.from(n), "every tile: exactly one final answer");
   expectUInt(u64.from(after), 0u64, "...nothing after it");
   expectUInt(u64.from(cancelled), u64.from(tiles / regions + 2u32), "the stale region's and the superseded: Cancelled");
   expectUInt(u64.from(done), u64.from(n - cancelled), "the rest Done");
   expectUInt(u64.from(rightBodies), u64.from(done), "...each with its own tile");
-  imm seen = orderSince(sv, from);
+  let seen = orderSince(sv, from);
   if exactOrder {
     expectStr(seen.view(), expected(&tr, &skip).view(), "one connection: the origin sees the tiles in the rules' order");
   } else {
     // Urgent tiles all handed a connection before any Background one
-    mut lastUrgent = new Instant();
-    mut firstBackground = new Instant();
-    mut haveBg = false;
+    var lastUrgent = new Instant();
+    var firstBackground = new Instant();
+    var haveBg = false;
     k = 0usize;
     while k < tr.ids.len() {
       if *tr.kinds[k] == EventKind.Done {
-        imm d = *tr.dispatched[k];
+        let d = *tr.dispatched[k];
         if *tr.intents[k] == Intent.Urgent and d > lastUrgent {lastUrgent = d;}
         if *tr.intents[k] == Intent.Background and (not haveBg or d < firstBackground) {
           firstBackground = d;
@@ -683,7 +683,7 @@ fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder boo
     expect(haveBg and lastUrgent < firstBackground, "six connections: every Urgent tile sent before any Background one");
     expectUInt(u64.from(sv.order.len() - from), u64.from(done), "...the origin saw only the tiles Done: the cancelled never sent");
   }
-  imm s = cl.stats();
+  let s = cl.stats();
   expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "stats: every fetch answered once");
   expect(s.queuedMax >= tiles - 10u32, "stats: they waited in the client, not on connections");
   cl.abortAll(lp);
@@ -691,10 +691,10 @@ fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder boo
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut sv = server(pool);
-  imm port = listen(&mut sv, &mut lp);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var sv = server(pool);
+  let port = listen(&mut sv, &mut lp);
   require(port != 0u16, "the mock origin listens");
   run(pool, &mut lp, &mut sv, port, 1u32, true);
   run(pool, &mut lp, &mut sv, port, 6u32, false);

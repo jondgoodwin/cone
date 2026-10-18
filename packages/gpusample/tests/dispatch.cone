@@ -33,8 +33,8 @@ fn value(w u32) f32 { w as f32; }
 
 // The normals, as words: none of them zero, in every direction
 fn normalWords() List[u32] {
-  mut words = List[u32].withCapacity(3usize * usize.from(COUNT));
-  mut i = 0u32;
+  var words = List[u32].withCapacity(3usize * usize.from(COUNT));
+  var i = 0u32;
   while i < COUNT {
     words.push(bits(f32.from(i % 17u32) - 7.5));
     words.push(bits(f32.from(i % 13u32) - 5.5));
@@ -46,8 +46,8 @@ fn normalWords() List[u32] {
 
 // 'count' zero words
 fn zeros(count usize) List[u32] {
-  mut l = List[u32].withCapacity(count);
-  mut i = 0usize;
+  var l = List[u32].withCapacity(count);
+  var i = 0usize;
   while i < count {
     l.push(0u32);
     i = i + 1usize;
@@ -58,20 +58,20 @@ fn zeros(count usize) List[u32] {
 // The kernel's twin, as gpuwork calls it: the bindings as words, handed to
 // gpusample's 'shade', the very function the GPU's kernel is made from
 fn shadeTwin(inv Invocation, buffers &Array[Words]) {
-  imm n = buffers[1usize].f32s();
-  imm normals = mem.sliceFromParts[Vec3](&n[0usize] as *f32 as *Vec3, n.len / 3usize);
+  let n = buffers[1usize].f32s();
+  let normals = mem.sliceFromParts[Vec3](&n[0usize] as *f32 as *Vec3, n.len / 3usize);
   shade(inv, buffers[0usize].value[Light](), normals, buffers[2usize].f32sMut());
 }
 
 fn main() i32 {
-  mut instance = Instance.create("gpusample dispatch");
+  var instance = Instance.create("gpusample dispatch");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm report = (libc.getenv("GPUWORK_REPORT") as usize) != 0usize;
+  let report = (libc.getenv("GPUWORK_REPORT") as usize) != 0usize;
   if report {
     printStr("adapter: ");
     printStr(adapter.name.view());
@@ -81,41 +81,41 @@ fn main() i32 {
   // The kernel, from the module Congo copied beside this program. Its
   // bindings: the light, the normals and what it writes; its error buffer,
   // bound after them, is gpuwork's own
-  imm spirv = readSpirv("gpusample.spv");
+  let spirv = readSpirv("gpusample.spv");
   require(spirv.len() > 5usize, "gpusample.spv beside the program");
   // The same module named by a Path in a variable, which the read leaves as it was
-  imm spvPath = Path.from("gpusample.spv");
-  imm again = readSpirv(&spvPath);
+  let spvPath = Path.from("gpusample.spv");
+  let again = readSpirv(&spvPath);
   expectUInt(u64.from(again.len()), u64.from(spirv.len()), "a Path variable reads the same module");
   expectStr(spvPath.view(), "gpusample.spv", "and is unchanged by the read");
-  mut kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
+  var kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
   require(kernel.isValid(), "the shade kernel");
   expectUInt(u64.from(kernel.workgroup[0usize]), 64u64, "its workgroup, 64, read from the SPIR-V");
   kernel.setTwin(&shadeTwin);
 
-  imm light = new Light(Quat.angleAxis(0.7, new Vec3(0., 0., 1.)), new Vec3(0.3, 0.5, 0.8).normalize(), 0.9, 0.1);
-  imm groups = (COUNT + 63u32) / 64u32;
+  let light = new Light(Quat.angleAxis(0.7, new Vec3(0., 0., 1.)), new Vec3(0.3, 0.5, 0.8).normalize(), 0.9, 0.1);
+  let groups = (COUNT + 63u32) / 64u32;
 
   // On the GPU
-  mut works = Works.make();
-  mut job = Job.make(&mut device);
-  imm lightSlot = job.give(uploadValue(&mut device, &light));
-  imm normals = normalWords();
-  imm normalSlot = job.give(upload(&mut device, normals.view()));
-  imm outSlot = job.give(zeroed(&mut device, usize.from(COUNT)));
+  var works = Works.make();
+  var job = Job.make(&mut device);
+  let lightSlot = job.give(uploadValue(&mut device, &light));
+  let normals = normalWords();
+  let normalSlot = job.give(upload(&mut device, normals.view()));
+  let outSlot = job.give(zeroed(&mut device, usize.from(COUNT)));
   require(job.dispatch(&mut device, &kernel, &[lightSlot, normalSlot, outSlot], groups), "the dispatch");
-  imm outBack = job.readback(&mut device, outSlot);
-  imm ticket = works.submit(&mut device, job, Target.Here(0u64));
-  mut answers = List[Completion].empty();
+  let outBack = job.readback(&mut device, outSlot);
+  let ticket = works.submit(&mut device, job, Target.Here(0u64));
+  var answers = List[Completion].empty();
   works.waitFor(&mut device, ticket, &mut answers);
   require(answers.len() == 1usize and answers[0usize].ok, "the GPU ran the job");
-  imm gpuOut = answers[0usize].words(outBack);
+  let gpuOut = answers[0usize].words(outBack);
   expectUInt(u64.from(gpuOut.len()), u64.from(COUNT), "a value for each normal from the GPU");
   expectUInt(u64.from(answers[0usize].failures.len()), 0u64, "no invocation failed a check");
 
   // On the CPU: the twin over the same buffers
-  mut cpu = List[List[u32]].empty();
-  mut lightWords = List[u32].empty();
+  var cpu = List[List[u32]].empty();
+  var lightWords = List[u32].empty();
   lightWords.push(bits(light.turn.x));
   lightWords.push(bits(light.turn.y));
   lightWords.push(bits(light.turn.z));
@@ -131,15 +131,15 @@ fn main() i32 {
   require(runTwin(&kernel, &mut cpu, groups), "the twin ran");
 
   // Every value, within 1e-5
-  mut far = 0u64;
-  mut unwritten = 0u64;
-  mut largest = 0.f32;
-  mut i = 0usize;
+  var far = 0u64;
+  var unwritten = 0u64;
+  var largest = 0.f32;
+  var i = 0usize;
   while i < usize.from(COUNT) and i < gpuOut.len() {
-    imm g = value(*gpuOut[i]);
-    imm c = value(*cpu[2usize][i]);
+    let g = value(*gpuOut[i]);
+    let c = value(*cpu[2usize][i]);
     if c < 0.09 { unwritten = unwritten + 1u64; }
-    mut d = g - c;
+    var d = g - c;
     if d < 0. { d = -d; }
     if d > largest { largest = d; }
     if not (d <= 0.00001) { far = far + 1u64; }

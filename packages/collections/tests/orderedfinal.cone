@@ -26,16 +26,16 @@ fn wasHeld[T](old Option[T]) bool {
   }
 }
 
-mut @threadlocal keySerial = 0u64;
-mut @threadlocal valSerial = 0u64;
-mut @threadlocal keyDeaths = 0i64;
-mut @threadlocal keyMask = 0u64;
-mut @threadlocal keyTwice = 0i64;
-mut @threadlocal lastKey = 0u64;
-mut @threadlocal keyBackwards = 0i64;
-mut @threadlocal valDeaths = 0i64;
-mut @threadlocal valMask = 0u64;
-mut @threadlocal valTwice = 0i64;
+var @threadlocal keySerial = 0u64;
+var @threadlocal valSerial = 0u64;
+var @threadlocal keyDeaths = 0i64;
+var @threadlocal keyMask = 0u64;
+var @threadlocal keyTwice = 0i64;
+var @threadlocal lastKey = 0u64;
+var @threadlocal keyBackwards = 0i64;
+var @threadlocal valDeaths = 0i64;
+var @threadlocal valMask = 0u64;
+var @threadlocal valTwice = 0i64;
 
 fn reset() {
   keySerial = 0u64;
@@ -59,7 +59,7 @@ struct Key is Hash {
   fn final(self &uni) {
     if tag != 0u64 {
       keyDeaths = keyDeaths + 1i64;
-      imm bit = 1u64 << tag;
+      let bit = 1u64 << tag;
       if (keyMask & bit) != 0u64 { keyTwice = keyTwice + 1i64; }
       keyMask = keyMask | bit;
       if tag < lastKey { keyBackwards = keyBackwards + 1i64; }
@@ -73,7 +73,7 @@ struct Val {
   fn final(self &uni) {
     if tag != 0u64 {
       valDeaths = valDeaths + 1i64;
-      imm bit = 1u64 << tag;
+      let bit = 1u64 << tag;
       if (valMask & bit) != 0u64 { valTwice = valTwice + 1i64; }
       valMask = valMask | bit;
     }
@@ -107,12 +107,12 @@ fn isNone(o Option[Val]) bool {
 
 // The ids of the keys held, in order, as "1 2 3"
 fn ids(d &OrderedDict[Key, Val]) String {
-  mut out = String.empty();
-  mut c = d.keys();
-  mut first = true;
+  var out = String.empty();
+  var c = d.keys();
+  var first = true;
   while true {
     match c.next() {
-      case imm k Some {
+      case let k Some {
         if not first { out.append(" "); }
         first = false;
         out.appendUInt(k.id);
@@ -126,7 +126,7 @@ fn ids(d &OrderedDict[Key, Val]) String {
 // A replacing insert finalizes the old key and the old value, and the new pair
 // is the one held, in the old pair's place
 fn overwrite() {
-  mut d = OrderedDict[Key, Val].empty();
+  var d = OrderedDict[Key, Val].empty();
   expectBool(wasHeld(d.insert(key(1u64), val())), false, "a new key");
   counts(0, 0, "nothing dies on a new key");
   expectBool(wasHeld(d.insert(key(2u64), val())), false, "another key");
@@ -134,9 +134,9 @@ fn overwrite() {
   counts(1, 1, "the old key and the old value died");
   expectStr(ids(&d).view(), "1 2", "the replacement stands where the old pair did");
   expectUInt(u64.from(d.len()), 2, "two held");
-  mut c = d.entries();
+  var c = d.entries();
   match c.next() {
-    case imm e Some {
+    case let e Some {
       expectUInt(e.key.tag, 3, "the first entry is the new key, made third");
       expectUInt(e.value.tag, 3, "with the new value, made third");
     }
@@ -147,12 +147,12 @@ fn overwrite() {
 // remove finalizes the key at once and hands the value back, and the pairs that
 // shift down are not finalized
 fn removed() {
-  mut d = OrderedDict[Key, Val].empty();
+  var d = OrderedDict[Key, Val].empty();
   d.insert(key(1u64), val());
   d.insert(key(2u64), val());
   d.insert(key(3u64), val());
   match d.remove(&probe(1u64)) {
-    case imm v Some {
+    case let v Some {
       counts(1, 0, "the key died on remove; the value is in hand");
       expectUInt(v.tag, 1, "it is the value of key 1 (made first)");
     }
@@ -169,12 +169,12 @@ fn removed() {
 }
 
 fn swapRemoved() {
-  mut d = OrderedDict[Key, Val].empty();
+  var d = OrderedDict[Key, Val].empty();
   d.insert(key(1u64), val());
   d.insert(key(2u64), val());
   d.insert(key(3u64), val());
   match d.swapRemove(&probe(1u64)) {
-    case imm v Some {
+    case let v Some {
       counts(1, 0, "the key died on swapRemove; the value is in hand");
       expectUInt(v.tag, 1, "it is the value of key 1");
     }
@@ -187,8 +187,8 @@ fn swapRemoved() {
 }
 
 fn cleared() {
-  mut d = OrderedDict[Key, Val].empty();
-  mut i = 1u64;
+  var d = OrderedDict[Key, Val].empty();
+  var i = 1u64;
   while i <= 20u64 {
     d.insert(key(i), val());
     i = i + 1u64;
@@ -205,8 +205,8 @@ fn cleared() {
 }
 
 fn dies(n u64) {
-  mut d = OrderedDict[Key, Val].empty();
-  mut i = 1u64;
+  var d = OrderedDict[Key, Val].empty();
+  var i = 1u64;
   while i <= n {
     d.insert(key(i), val());
     i = i + 1u64;
@@ -219,8 +219,8 @@ fn dies(n u64) {
 // more go in, over the removed buckets or by rebuilding the index. Whichever,
 // the 12 died on remove and nothing else died until the end.
 fn churn() {
-  mut d = OrderedDict[Key, Val].empty();
-  mut i = 1u64;
+  var d = OrderedDict[Key, Val].empty();
+  var i = 1u64;
   while i <= 14u64 {
     d.insert(key(i), val());
     i = i + 1u64;
@@ -248,8 +248,8 @@ fn churn() {
 // later goes in, over removed buckets, and an index rebuilt at its own size
 // when they are most of what fills it
 fn rolling() {
-  mut d = OrderedDict[Key, Val].empty();
-  mut i = 1u64;
+  var d = OrderedDict[Key, Val].empty();
+  var i = 1u64;
   while i <= 60u64 {
     d.insert(key(i), val());
     if i > 8u64 {
@@ -264,7 +264,7 @@ fn rolling() {
 }
 
 fn getOrInsert() {
-  mut d = OrderedDict[Key, Val].empty();
+  var d = OrderedDict[Key, Val].empty();
   d.getOrInsert(key(1u64), val());
   counts(0, 0, "a missing key is inserted, the pair kept");
   d.getOrInsert(key(1u64), val());
@@ -278,10 +278,10 @@ fn getOrInsert() {
 // its binding ends, once; an insert whose answer is ignored kills it at the end
 // of the statement. Serials: keys 1, 2, 3 and values 1, 2, 3 in the order made.
 fn returnsOld() {
-  mut d = OrderedDict[Key, Val].empty();
+  var d = OrderedDict[Key, Val].empty();
   d.insert(key(1u64), val());
   match d.insert(key(1u64), val()) {
-    case imm old Some {
+    case let old Some {
       counts(1, 0, "the old key died inside insert; the old value is still alive");
       expectUInt(old.tag, 1, "the value that comes back is the first one");
     }

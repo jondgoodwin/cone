@@ -48,7 +48,7 @@ const SIZE = 96u32;
 
 // The discrete GPU, or the integrated one if GPU_POWER_PREFERENCE is low-power
 fn powerPreference() u32 {
-  imm e = libc.getenv("GPU_POWER_PREFERENCE");
+  let e = libc.getenv("GPU_POWER_PREFERENCE");
   if (e as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(e), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   }
@@ -56,22 +56,22 @@ fn powerPreference() u32 {
 }
 
 fn halfToFloat(h u16) f32 {
-  imm bits = u32.from(h);
-  imm exponent = (bits >> 10u32) & 31u32;
-  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  let bits = u32.from(h);
+  let exponent = (bits >> 10u32) & 31u32;
+  let sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
   if exponent == 0u32 { return 0.; }
-  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  let f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
   sign * (f as f32);
 }
 
 fn radiance(p *u8, x u32, y u32, c usize) f64 {
-  imm h = p as *u16;
+  let h = p as *u16;
   f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(SIZE) + usize.from(x)) * 4usize + c)));
 }
 
 fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     camera &Camera, light &Light, list &DrawList) {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, color, depth, camera, light, list);
   encoder.copyTextureToBuffer(color, readback);
   device.queue.submit(encoder.finish());
@@ -80,7 +80,7 @@ fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Te
 }
 
 fn within(got f64, want f64, relative f64, absolute f64) bool {
-  imm d = if got < want { want - got; } else { got - want; };
+  let d = if got < want { want - got; } else { got - want; };
   d <= absolute + relative * (if want < 0d { -want; } else { want; });
 }
 
@@ -90,7 +90,7 @@ fn glowing(r f32, g f32, b f32) PbrMaterial {
 
 // The first column of row 48 at or after 'from' where channel 'c' passes 0.5
 fn edgeColumn(p *u8, c usize, from u32) i64 {
-  mut x = from;
+  var x = from;
   while x < SIZE {
     if radiance(p, x, 48u32, c) > 0.5d { return i64.from(x); }
     x = x + 1u32;
@@ -101,10 +101,10 @@ fn edgeColumn(p *u8, c usize, from u32) i64 {
 // Where channel 'c' of row 48 crosses 'level' going up between columns 50 and 76, in continuous column
 // coordinates (pixel x's centre is x + 0.5), by linear interpolation between the two pixels
 fn edgeCrossing(p *u8, c usize, level f64) f64 {
-  mut x = 51u32;
+  var x = 51u32;
   while x < 76u32 {
-    imm v0 = radiance(p, x - 1u32, 48u32, c);
-    imm v1 = radiance(p, x, 48u32, c);
+    let v0 = radiance(p, x - 1u32, 48u32, c);
+    let v1 = radiance(p, x, 48u32, c);
     if v1 > level and v0 <= level { return f64.from(x) - 0.5d + (level - v0) / (v1 - v0); }
     x = x + 1u32;
   }
@@ -118,18 +118,18 @@ fn tanHalf() f64 { libc.tan(0.5235987755982988d); }
 // 'ior' (found by bisection): the projection of the point the refracted ray leaves the volume at is the
 // edge's. The camera is at z = 1, the pane at z = 0, the background at z = -1.
 fn edgeThroughPane(edge f64, ior f64, thickness f64) f64 {
-  imm edgeNdc = edge / (2d * tanHalf());
-  mut lo = 0d;
-  mut hi = 0.9d;
-  mut i = 0;
+  let edgeNdc = edge / (2d * tanHalf());
+  var lo = 0d;
+  var hi = 0.9d;
+  var i = 0;
   while i < 60 {
-    imm px = 0.5d * (lo + hi);
-    imm sinI = px / libc.sqrt(1d + px * px);
-    imm sinT = sinI / ior;
-    imm cosT = libc.sqrt(1d - sinT * sinT);
-    imm ex = px + thickness * sinT;
-    imm ez = -thickness * cosT;
-    imm ndc = ex / ((1d - ez) * tanHalf());
+    let px = 0.5d * (lo + hi);
+    let sinI = px / libc.sqrt(1d + px * px);
+    let sinT = sinI / ior;
+    let cosT = libc.sqrt(1d - sinT * sinT);
+    let ex = px + thickness * sinT;
+    let ez = -thickness * cosT;
+    let ndc = ex / ((1d - ez) * tanHalf());
     if ndc < edgeNdc { lo = px; } else { hi = px; }
     i = i + 1;
   }
@@ -140,72 +140,72 @@ fn edgeThroughPane(edge f64, ior f64, thickness f64) f64 {
 fn columnOf(px f64) f64 { px / tanHalf() * 48d + 48d; }
 
 fn main() i32 {
-  mut instance = Instance.create("materialglass");
+  var instance = Instance.create("materialglass");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, powerPreference());
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, powerPreference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
+  let target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&target);
-  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT,
+  var color = device.createTexture(&target);
+  let depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-  mut depth = device.createTexture(&depthDesc);
+  var depth = device.createTexture(&depthDesc);
   // The same target that cannot be sampled
-  imm bareDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut bare = device.createTexture(&bareDesc);
-  imm bareDepthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut bareDepth = device.createTexture(&bareDepthDesc);
-  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  imm p = readback.mappedRange();
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  let bareDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var bare = device.createTexture(&bareDesc);
+  let bareDepthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var bareDepth = device.createTexture(&bareDepthDesc);
+  var readback = device.createBuffer(u64.from(SIZE * SIZE * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let p = readback.mappedRange();
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
   renderer.environmentStrength = 0.;
   renderer.drawSky = false;
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(60.);
   camera.lookAt(new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0., 1.);
-  imm dark = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.), Color.gray(0.));
+  let dark = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.), Color.gray(0.));
 
-  imm plane = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
+  let plane = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
   // A square of half-size 'sx' by 'sy' facing +z at 'x', 'y', 'z'
-  imm face = Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.));
-  imm redM = renderer.addPbrMaterial(&mut device, &glowing(1., 0., 0.));
-  imm greenM = renderer.addPbrMaterial(&mut device, &glowing(0., 1., 0.));
-  imm whiteM = renderer.addPbrMaterial(&mut device, &glowing(1., 1., 1.));
-  imm blackM = renderer.addPbrMaterial(&mut device, &glowing(0., 0., 0.));
+  let face = Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.));
+  let redM = renderer.addPbrMaterial(&mut device, &glowing(1., 0., 0.));
+  let greenM = renderer.addPbrMaterial(&mut device, &glowing(0., 1., 0.));
+  let whiteM = renderer.addPbrMaterial(&mut device, &glowing(1., 1., 1.));
+  let blackM = renderer.addPbrMaterial(&mut device, &glowing(0., 0., 0.));
 
   // The background: the left of x = 0.3 'left', the right 'right'; each a plane of the width to the edge of the view
-  mut backdrop = DrawList.empty();
+  var backdrop = DrawList.empty();
   backdrop.add(plane, redM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
   backdrop.add(plane, greenM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
-  mut bw = DrawList.empty();
+  var bw = DrawList.empty();
   bw.add(plane, blackM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
   bw.add(plane, whiteM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
-  mut field = DrawList.empty();
+  var field = DrawList.empty();
   field.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
-  imm pane = Mat4.fromTrs(new Vec3(0., 0., 0.), face, new Vec3(0.9, 1., 0.9));
+  let pane = Mat4.fromTrs(new Vec3(0., 0., 0.), face, new Vec3(0.9, 1., 0.9));
 
   // ---- 1. Refraction ----
   {
     // The edge without glass
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &backdrop);
-    imm bare60 = edgeColumn(p, 1usize, 0u32);
+    let bare60 = edgeColumn(p, 1usize, 0u32);
     expect(bare60 >= 59i64 and bare60 <= 61i64, "without glass the edge is at column 60.5");
-    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.5, Color.gray(1.), 1., 0.);
+    var glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.5, Color.gray(1.), 1., 0.);
     glass.reflections = 0.;
-    imm gm = renderer.addPbrMaterial(&mut device, &glass);
-    mut scene = DrawList.empty();
+    let gm = renderer.addPbrMaterial(&mut device, &glass);
+    var scene = DrawList.empty();
     scene.add(plane, redM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
     scene.add(plane, greenM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
     scene.add(plane, gm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
-    imm through = edgeColumn(p, 1usize, 0u32);
-    imm want = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
+    let through = edgeColumn(p, 1usize, 0u32);
+    let want = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
     expect(f64.from(through) > f64.from(bare60) + 0.5d, "the glass moved the edge");
     expect(through >= 0i64 and f64.from(through) >= want - 1d and f64.from(through) <= want + 1d,
       "the edge shows through the pane where the refracted ray puts it (the glTF volume's model)");
@@ -215,33 +215,33 @@ fn main() i32 {
 
   // ---- 2. Absorption ----
   {
-    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.2, new Color(0.5, 0.25, 1., 1.), 0.2, 0.);
+    var glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.2, new Color(0.5, 0.25, 1., 1.), 0.2, 0.);
     glass.reflections = 0.;
-    imm gm = renderer.addPbrMaterial(&mut device, &glass);
-    mut scene = DrawList.empty();
+    let gm = renderer.addPbrMaterial(&mut device, &glass);
+    var scene = DrawList.empty();
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
     scene.add(plane, gm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
-    imm r = radiance(p, 48u32, 48u32, 0usize);
-    imm g = radiance(p, 48u32, 48u32, 1usize);
-    imm b = radiance(p, 48u32, 48u32, 2usize);
+    let r = radiance(p, 48u32, 48u32, 0usize);
+    let g = radiance(p, 48u32, 48u32, 1usize);
+    let b = radiance(p, 48u32, 48u32, 2usize);
     expectFloat(r / b, 0.5d, 0.01d, "absorption: red is half of blue (the attenuation colour at its distance)");
     expectFloat(g / b, 0.25d, 0.005d, "and green a quarter");
     expect(b > 0.93d and b < 0.99d, "the blue is 1 less the Fresnel reflectance");
     // A tint
-    mut tinted = glass;
+    var tinted = glass;
     tinted.baseColor = new Color(1., 0.5, 0.5, 1.);
     tinted.attenuationColor = Color.gray(1.);
-    imm tm = renderer.addPbrMaterial(&mut device, &tinted);
+    let tm = renderer.addPbrMaterial(&mut device, &tinted);
     scene.clear();
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
     scene.add(plane, tm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
     expectFloat(radiance(p, 48u32, 48u32, 1usize) / radiance(p, 48u32, 48u32, 0usize), 0.5d, 0.01d, "a tint multiplies the light that passes");
     // Half transmissive
-    mut half = glass;
+    var half = glass;
     half.glass = 0.5;
-    imm hm = renderer.addPbrMaterial(&mut device, &half);
+    let hm = renderer.addPbrMaterial(&mut device, &half);
     scene.clear();
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
     scene.add(plane, hm, pane);
@@ -253,21 +253,21 @@ fn main() i32 {
   // ---- 3. Dispersion ----
   {
     // The indices 1.5 -/+ 0.25: (ior - 1) x 0.025 x dispersion with dispersion 20
-    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.5, Color.gray(1.), 1., 20.);
+    var glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.5, Color.gray(1.), 1., 20.);
     glass.reflections = 0.;
-    imm gm = renderer.addPbrMaterial(&mut device, &glass);
-    mut scene = DrawList.empty();
+    let gm = renderer.addPbrMaterial(&mut device, &glass);
+    var scene = DrawList.empty();
     scene.add(plane, blackM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
     scene.add(plane, gm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
     // The white behind reads 0.96 through the pane (1 less the Fresnel reflectance): the edge is where it crosses half of that
-    imm er = edgeCrossing(p, 0usize, 0.48d);
-    imm eg = edgeCrossing(p, 1usize, 0.48d);
-    imm eb = edgeCrossing(p, 2usize, 0.48d);
-    imm wantR = columnOf(edgeThroughPane(0.3d, 1.25d, 0.5d));
-    imm wantG = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
-    imm wantB = columnOf(edgeThroughPane(0.3d, 1.75d, 0.5d));
+    let er = edgeCrossing(p, 0usize, 0.48d);
+    let eg = edgeCrossing(p, 1usize, 0.48d);
+    let eb = edgeCrossing(p, 2usize, 0.48d);
+    let wantR = columnOf(edgeThroughPane(0.3d, 1.25d, 0.5d));
+    let wantG = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
+    let wantB = columnOf(edgeThroughPane(0.3d, 1.75d, 0.5d));
     // (the picture behind is a grid of pixels, so an edge in it is known to within half a pixel: the
     // positions are checked to a column, the spacings, which that does not touch, to 0.3)
     expect(er >= wantR - 1d and er <= wantR + 1d, "dispersion: the red edge is where index 1.25 puts it");
@@ -283,24 +283,24 @@ fn main() i32 {
 
   // ---- 4. Rough glass ----
   {
-    mut smooth = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.05, Color.gray(1.), 1., 0.);
+    var smooth = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.05, Color.gray(1.), 1., 0.);
     smooth.reflections = 0.;
-    mut rough = smooth.frosted(0.6);
-    imm sm = renderer.addPbrMaterial(&mut device, &smooth);
-    imm rm = renderer.addPbrMaterial(&mut device, &rough);
-    mut widths Array[i64, 2] = [0i64, 0i64];
-    mut k = 0usize;
+    var rough = smooth.frosted(0.6);
+    let sm = renderer.addPbrMaterial(&mut device, &smooth);
+    let rm = renderer.addPbrMaterial(&mut device, &rough);
+    var widths Array[i64, 2] = [0i64, 0i64];
+    var k = 0usize;
     while k < 2usize {
-      mut scene = DrawList.empty();
+      var scene = DrawList.empty();
       scene.add(plane, blackM, Mat4.fromTrs(new Vec3(-1.35, 0., -1.), face, new Vec3(1.65, 1., 3.)));
       scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(1.65, 0., -1.), face, new Vec3(1.35, 1., 3.)));
       scene.add(plane, if k == 0usize { sm; } else { rm; }, pane);
       drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
-      mut n = 0i64;
+      var n = 0i64;
       // the columns round the edge (the pane's own rim is elsewhere); the white reads 0.96
-      mut x = 50u32;
+      var x = 50u32;
       while x < 76u32 {
-        imm v = radiance(p, x, 48u32, 1usize);
+        let v = radiance(p, x, 48u32, 1usize);
         if v > 0.1d and v < 0.86d { n = n + 1i64; }
         x = x + 1u32;
       }
@@ -314,22 +314,22 @@ fn main() i32 {
 
   // ---- 5. Capture ----
   {
-    mut glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.2, Color.gray(1.), 1., 0.);
+    var glass = PbrMaterial.glassOf(Color.gray(1.), 1.5, 0.2, Color.gray(1.), 1., 0.);
     glass.reflections = 0.;
-    imm gm = renderer.addPbrMaterial(&mut device, &glass);
-    mut scene = DrawList.empty();
+    let gm = renderer.addPbrMaterial(&mut device, &glass);
+    var scene = DrawList.empty();
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
     scene.add(plane, gm, pane);
-    imm before = renderer.ext[0usize].captures;
+    let before = renderer.ext[0usize].captures;
     // A target that cannot be sampled: drawn, no capture; the glass sees the environment (black)
-    mut encoder = device.createCommandEncoder();
+    var encoder = device.createCommandEncoder();
     renderer.render(&mut device, &mut encoder, &bare, &bareDepth, &camera, &dark, &scene);
     encoder.copyTextureToBuffer(&bare, &readback);
     device.queue.submit(encoder.finish());
     device.endFrame();
     device.waitIdle();
     expectUInt(u64.from(renderer.ext[0usize].captures), u64.from(before), "a target that cannot be sampled makes no capture");
-    imm seen = radiance(p, 48u32, 48u32, 1usize);
+    let seen = radiance(p, 48u32, 48u32, 1usize);
     expect(seen < 0.2d, "and the glass shows the environment alone, black, not the white behind");
     // No glass, no reflecting mesh: no capture
     scene.clear();

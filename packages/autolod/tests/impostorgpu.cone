@@ -38,11 +38,11 @@ const MAX_DIFF = 10.;
 const MAX_DIFF_BLEND = 22.;
 
 fn subject() Mesh {
-  mut m = Mesh.sphere(1., 28);
-  mut cube = Mesh.cube(0.9);
+  var m = Mesh.sphere(1., 28);
+  var cube = Mesh.cube(0.9);
   cube.transform(Mat4.fromTranslation(new Vec3(0.75, 0.1, 0.2)));
   m.append(&cube);
-  mut post = Mesh.cube(0.2);
+  var post = Mesh.cube(0.2);
   post.transform(Mat4.fromTrs(new Vec3(-0.1, 1.15, -0.2), Quat.identity(), new Vec3(1., 2.2, 1.)));
   m.append(&post);
   m.transform(Mat4.fromTranslation(new Vec3(0., 1.4, 0.)));
@@ -56,7 +56,7 @@ struct Rig {
 }
 
 fn shoot(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, light &Light, list &DrawList) Image {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, &rig.color, &rig.depth, camera, light, list);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
   device.queue.submit(encoder.finish());
@@ -78,19 +78,19 @@ struct Compare {
 }
 
 fn compare(a &Image, b &Image) Compare {
-  mut both = 0i32;
-  mut either = 0i32;
-  mut sum = 0.;
-  mut y = 0;
+  var both = 0i32;
+  var either = 0i32;
+  var sum = 0.;
+  var y = 0;
   while y < i32.from(SIZE) {
-    mut x = 0;
+    var x = 0;
     while x < i32.from(SIZE) {
-      imm ca = covered(a, x, y);
-      imm cb = covered(b, x, y);
+      let ca = covered(a, x, y);
+      let cb = covered(b, x, y);
       if ca or cb { either = either + 1; }
       if ca and cb {
         both = both + 1;
-        mut c = 0;
+        var c = 0;
         while c < 3 {
           sum = sum + f32.from(iabs(i32.from(a.at(x, y, c)) - i32.from(b.at(x, y, c))));
           c = c + 1;
@@ -104,10 +104,10 @@ fn compare(a &Image, b &Image) Compare {
 }
 
 fn save(name &str, img &Image) {
-  imm folder = libc.getenv("AUTOLOD_SHOTS");
+  let folder = libc.getenv("AUTOLOD_SHOTS");
   if (folder as usize) == 0usize { return; }
-  mut path = String.empty();
-  mut k = 0usize;
+  var path = String.empty();
+  var k = 0usize;
   while *(folder + k) != 0u8 {
     path.appendByte(*(folder + k));
     k = k + 1usize;
@@ -119,60 +119,60 @@ fn save(name &str, img &Image) {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("autolod impostor");
+  var instance = Instance.create("autolod impostor");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  imm rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
+  let target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
     device.createBuffer(u64.from(SIZE) * u64.from(SIZE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST));
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
 
   // the subject, textured
-  imm image = Image.checker(64, 64, 8, 8, new Color(0.9, 0.5, 0.2, 1.), new Color(0.2, 0.5, 0.9, 1.));
-  imm tex = renderer.addTexture(&mut device, &image);
-  imm material = Material.textured(new Color(1., 1., 1., 1.), tex);
-  imm subjectMesh = subject();
-  imm mesh = renderer.addMesh(&mut device, &subjectMesh);
-  imm matHandle = renderer.addMaterial(&mut device, &material);
+  let image = Image.checker(64, 64, 8, 8, new Color(0.9, 0.5, 0.2, 1.), new Color(0.2, 0.5, 0.9, 1.));
+  let tex = renderer.addTexture(&mut device, &image);
+  let material = Material.textured(new Color(1., 1., 1., 1.), tex);
+  let subjectMesh = subject();
+  let mesh = renderer.addMesh(&mut device, &subjectMesh);
+  let matHandle = renderer.addMaterial(&mut device, &material);
 
   // the impostor
-  mut baker = ImpostorBaker.create(&mut device, 128u32);
+  var baker = ImpostorBaker.create(&mut device, 128u32);
   require(baker.isValid(), "a baker");
-  mut parts = List[BakePart].empty();
+  var parts = List[BakePart].empty();
   parts.push(new BakePart(subject(), material, image));
-  mut box = subjectMesh.bounds();
-  imm center = box.center();
-  mut r2 = 0.;
-  mut i = 0usize;
+  var box = subjectMesh.bounds();
+  let center = box.center();
+  var r2 = 0.;
+  var i = 0usize;
   while i < subjectMesh.positions.len() {
-    imm d = (*subjectMesh.positions[i]).distanceSquared(center);
+    let d = (*subjectMesh.positions[i]).distanceSquared(center);
     if d > r2 { r2 = d; }
     i = i + 1usize;
   }
-  imm radius = r2.sqrt();
-  imm settings = new ImpostorSettings();
+  let radius = r2.sqrt();
+  let settings = new ImpostorSettings();
   // The baker's materials hold the texture handle of the main renderer: the bake takes the image and makes its own
-  imm atlas = baker.bake(&mut device, &parts, center, radius, &settings);
+  let atlas = baker.bake(&mut device, &parts, center, radius, &settings);
   expectUInt(u64.from(atlas.albedo.width), 1024u64, "the atlas is 8 x 128 across");
   expectUInt(u64.from(atlas.albedo.height), 1024u64, "and as high");
   expectFloat(f64.from(atlas.radius), f64.from(radius * 1.0625), 0.0001d, "the frames are framed at the padded radius");
   // The frame looking down from above (the hemisphere's middle, cell (3.5, 3.5)) has no cell of its own in an even
   // grid: check the cell nearest, (3, 3), has some covered texels and its corner texel none
-  mut covered3 = 0u32;
-  mut y = 0;
+  var covered3 = 0u32;
+  var y = 0;
   while y < 128 {
-    mut x = 0;
+    var x = 0;
     while x < 128 {
       if atlas.albedo.at(3 * 128 + x, 3 * 128 + y, 3) > 0u8 { covered3 = covered3 + 1u32; }
       x = x + 1;
@@ -182,19 +182,19 @@ fn main() i32 {
   expect(covered3 > 2000u32 and covered3 < 12000u32, "a cell has the subject's silhouette in it, not the whole square");
   expectUInt(u64.from(atlas.albedo.at(3 * 128 + 1, 3 * 128 + 1, 3)), 0u64, "its corner texel is empty");
 
-  mut pipe = makeImpostorPipeline(&mut renderer, &mut device);
+  var pipe = makeImpostorPipeline(&mut renderer, &mut device);
   require(pipe.isValid(&renderer), "the impostor pipeline");
-  imm impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
+  let impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
   require(!impostor.material.isNone(), "the impostor material");
 
-  imm light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
-  mut worst = 0.;
-  mut caseNumber = 0;
+  let light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
+  var worst = 0.;
+  var caseNumber = 0;
   while caseNumber < 5 {
-    mut dir = new Vec3(0., 1., 0.);
-    mut model = Mat4.identity();
-    mut name = String.from("case");
-    mut limit = MAX_DIFF_BLEND;
+    var dir = new Vec3(0., 1., 0.);
+    var model = Mat4.identity();
+    var name = String.from("case");
+    var limit = MAX_DIFF_BLEND;
     if caseNumber == 0 { dir = frameDirection(3u32, 4u32, 8u32, true); limit = MAX_DIFF; name <- "0-frame"; }
     if caseNumber == 1 { dir = new Vec3(0.4, 0.6, 0.7).normalize(); name <- "1-between"; }
     if caseNumber == 2 { dir = new Vec3(0.9, 0.06, 0.4).normalize(); name <- "2-horizon"; }
@@ -204,31 +204,31 @@ fn main() i32 {
       model = Mat4.fromTrs(new Vec3(0.5, 0., -0.3), Quat.angleAxis(radians(40.), new Vec3(0., 1., 0.)), new Vec3(1.7, 1.7, 1.7));
       name <- "4-turned";
     }
-    imm world = model * center;
-    imm worldRadius = radius * (if caseNumber == 4 { 1.7; } else { 1.; });
+    let world = model * center;
+    let worldRadius = radius * (if caseNumber == 4 { 1.7; } else { 1.; });
     // The camera: a direction in the OBJECT's space (case 4: carried to the world by the turn)
-    imm worldDir = if caseNumber == 4 { model.transformVector(dir).normalize(); } else { dir; };
-    mut camera = Camera.make();
+    let worldDir = if caseNumber == 4 { model.transformVector(dir).normalize(); } else { dir; };
+    var camera = Camera.make();
     camera.fov = radians(30.);
     camera.near = 0.5;
     camera.far = 200.;
     camera.background = new Color(0.2, 0.4, 0.6, 1.);
     camera.lookAt(world + worldDir * (worldRadius * 5.), world, new Vec3(0., 1., 0.));
-    mut refList = DrawList.empty();
+    var refList = DrawList.empty();
     refList.add(mesh, matHandle, model);
-    mut impList = DrawList.empty();
+    var impList = DrawList.empty();
     impList.add(impostor.card, impostor.material, model);
-    imm a = shoot(&mut device, &mut renderer, &rig, &camera, &light, &refList);
-    imm b = shoot(&mut device, &mut renderer, &rig, &camera, &light, &impList);
-    imm c = compare(&a, &b);
+    let a = shoot(&mut device, &mut renderer, &rig, &camera, &light, &refList);
+    let b = shoot(&mut device, &mut renderer, &rig, &camera, &light, &impList);
+    let c = compare(&a, &b);
     save(name.view(), &a);
-    mut named = name.copy();
+    var named = name.copy();
     named <- "-impostor";
     save(named.view(), &b);
-    mut label = String.from("silhouette overlap, ");
+    var label = String.from("silhouette overlap, ");
     label <- name.view();
     expect(c.iou >= MIN_IOU, label.view());
-    mut label2 = String.from("colour difference, ");
+    var label2 = String.from("colour difference, ");
     label2 <- name.view();
     expect(c.diff <= limit, label2.view());
     if c.diff > worst { worst = c.diff; }

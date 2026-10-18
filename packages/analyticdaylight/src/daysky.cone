@@ -59,12 +59,12 @@ pub struct DaySky {
 
   // The sky at solar hour 'hour' under 'config'
   pub fn at(config &DayConfig, hour f32) DaySky {
-    imm decl = solarDeclination(config.dayOfYear);
-    imm sun = sunDirectionAt(config.latitude, decl, hour);
-    imm moon = moonDirectionFor(sun);
-    imm e = elevationOf(sun);
-    imm eDeg = e * (180. / pi);
-    imm pre = PreethamSky.make(config.turbidity, sun);
+    let decl = solarDeclination(config.dayOfYear);
+    let sun = sunDirectionAt(config.latitude, decl, hour);
+    let moon = moonDirectionFor(sun);
+    let e = elevationOf(sun);
+    let eDeg = e * (180. / pi);
+    let pre = PreethamSky.make(config.turbidity, sun);
     // The twilight patch's unit: Preetham's zenith luminance at the sun's
     // last good height, then falling as exp(0.65 per degree) once the sun is
     // below 1 degree: about 1150 nits at the horizon, 23 at -6, 2.4 at -9.5,
@@ -72,8 +72,8 @@ pub struct DaySky {
     // as a mid-grey the scripted exposure (an EV falling from 12 to -1 over
     // the same 18 degrees) would show; real twilight falls about a hundredfold
     // in 6 degrees, 0.77 per degree)
-    imm below = if eDeg < 1. { eDeg - 1.; } else { 0.; };
-    imm scale = pre.zenithY * libc.expf(0.65 * below);
+    let below = if eDeg < 1. { eDeg - 1.; } else { 0.; };
+    let scale = pre.zenithY * libc.expf(0.65 * below);
     new DaySky(hour, sun, moon, e, pre, config.turbidity, config.moonLit, config.moonLux,
       smoothstepf(6., 1., eDeg), scale, libc.expf(0. - maxf(0., 0. - eDeg) / 7.),
       smoothstepf(0.5, -3., eDeg) * (1. - smoothstepf(-3., -10., eDeg)),
@@ -85,7 +85,7 @@ pub struct DaySky {
   // twilight patch's blend, and the night's floor, nits, linear RGB. No
   // stars, sun or moon in it: they are drawn over it.
   pub fn radiance(self &, dir Vec3) Vec3 {
-    mut c = new Vec3(0., 0., 0.);
+    var c = new Vec3(0., 0., 0.);
     if twilightMix < 1. { c = preetham.radiance(dir, sunDir) * (1. - twilightMix); }
     if twilightMix > 0. { c = c + self.twilight(dir) * twilightMix; }
     c + nightSky();
@@ -96,16 +96,16 @@ pub struct DaySky {
   // azimuth, the pink band opposite once the sun is below the horizon; all
   // times the patch's unit (own: the palette is by eye)
   pub fn twilight(self &, dir Vec3) Vec3 {
-    imm h = clampf(dir.y, 0., 1.);
-    imm hl = (dir.x * dir.x + dir.z * dir.z).sqrt();
-    imm sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
-    mut az = 0.;
+    let h = clampf(dir.y, 0., 1.);
+    let hl = (dir.x * dir.x + dir.z * dir.z).sqrt();
+    let sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
+    var az = 0.;
     if hl > 0.0001 and sl > 0.0001 { az = (dir.x * sunDir.x + dir.z * sunDir.z) / (hl * sl); }
-    imm side = pow3(maxf(az, 0.));
-    imm base = twZenith() + (twHorizon() - twZenith()) * libc.expf(-5. * h);
-    imm glow = twGlow() * (side * libc.expf(-7. * h) * glowWeight);
-    imm elDeg = asin(h) * (180. / pi);
-    imm band = libc.expf(0. - ((elDeg - 8.) / 5.) * ((elDeg - 8.) / 5.)) * (1. - side) * venusWeight * 0.5;
+    let side = pow3(maxf(az, 0.));
+    let base = twZenith() + (twHorizon() - twZenith()) * libc.expf(-5. * h);
+    let glow = twGlow() * (side * libc.expf(-7. * h) * glowWeight);
+    let elDeg = asin(h) * (180. / pi);
+    let band = libc.expf(0. - ((elDeg - 8.) / 5.) * ((elDeg - 8.) / 5.)) * (1. - side) * venusWeight * 0.5;
     (base + glow + twVenus() * band) * twilightScale;
   }
 
@@ -121,10 +121,10 @@ pub struct DaySky {
   // 128 000 lux white (own: 1361 W/m2 at about 94 lm/W, both from memory).
   // The sun's last degree is faded out (own), so the light goes with it.
   pub fn sunIrradiance(self &) Vec3 {
-    imm vis = smoothstepf(-1., 1., sunElevation * (180. / pi));
+    let vis = smoothstepf(-1., 1., sunElevation * (180. / pi));
     if vis <= 0. { return new Vec3(0., 0., 0.); }
-    imm m = airMass(sunDir.y);
-    imm t = transmittance(turbidity, m, 1.);
+    let m = airMass(sunDir.y);
+    let t = transmittance(turbidity, m, 1.);
     new Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis);
   }
 
@@ -134,12 +134,12 @@ pub struct DaySky {
   // the horizon, so the clouds go red and then dark after the ground does
   // (own, by eye)
   pub fn cloudIrradiance(self &) Vec3 {
-    imm eDeg = sunElevation * (180. / pi);
-    imm vis = smoothstepf(-6., -0.5, eDeg);
+    let eDeg = sunElevation * (180. / pi);
+    let vis = smoothstepf(-6., -0.5, eDeg);
     if vis <= 0. { return new Vec3(0., 0., 0.); }
-    imm held = if eDeg < 0.5 { 0.5 * (pi / 180.); } else { sunElevation; };
-    imm m = airMass(sin(held));
-    imm t = transmittance(turbidity, m, 0.4);
+    let held = if eDeg < 0.5 { 0.5 * (pi / 180.); } else { sunElevation; };
+    let m = airMass(sin(held));
+    let t = transmittance(turbidity, m, 0.4);
     new Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis);
   }
 
@@ -147,8 +147,8 @@ pub struct DaySky {
   // (a half moon gives far less than half the light), cool in colour, and
   // coming in as the sun goes below 2 degrees and full by -7 (own)
   pub fn moonIrradiance(self &) Vec3 {
-    imm w = smoothstepf(-2., -7., sunElevation * (180. / pi));
-    imm lux = moonLux * moonLit * moonLit * w;
+    let w = smoothstepf(-2., -7., sunElevation * (180. / pi));
+    let lux = moonLux * moonLit * moonLit * w;
     new Vec3(lux * moonColor().x, lux * moonColor().y, lux * moonColor().z);
   }
 
@@ -160,35 +160,35 @@ pub struct DaySky {
   // throws back (own: 6 per cent of the sun's horizontal irradiance over
   // pi, warm) and a night floor so the dark is never black (own)
   pub fn ambient(self &) Vec3 {
-    imm sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
-    imm ax = if sl > 0.0001 { sunDir.x / sl; } else { 0.; };
-    imm az = if sl > 0.0001 { sunDir.z / sl; } else { 1.; };
-    mut sum = self.radiance(new Vec3(0., 1., 0.)) * 0.25;
-    mut k = 0;
+    let sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
+    let ax = if sl > 0.0001 { sunDir.x / sl; } else { 0.; };
+    let az = if sl > 0.0001 { sunDir.z / sl; } else { 1.; };
+    var sum = self.radiance(new Vec3(0., 1., 0.)) * 0.25;
+    var k = 0;
     while k < 4 {
       // Round the compass from the sun's azimuth, a quarter turn at a time
-      imm a = f32.from(k) * (pi / 2.);
-      imm cx = ax * cos(a) - az * sin(a);
-      imm cz = ax * sin(a) + az * cos(a);
-      imm c45 = (0.5).sqrt();
+      let a = f32.from(k) * (pi / 2.);
+      let cx = ax * cos(a) - az * sin(a);
+      let cz = ax * sin(a) + az * cos(a);
+      let c45 = (0.5).sqrt();
       sum = sum + self.radiance(new Vec3(cx * c45, c45, cz * c45)) * 0.125;
-      imm s75 = sin(75. * (pi / 180.));
-      imm c75 = cos(75. * (pi / 180.));
+      let s75 = sin(75. * (pi / 180.));
+      let c75 = cos(75. * (pi / 180.));
       sum = sum + self.radiance(new Vec3(cx * s75, c75, cz * s75)) * 0.0625;
       k = k + 1;
     }
-    imm sun = self.sunIrradiance();
-    imm horizontal = lumaOf(sun) * maxf(sunDir.y, 0.);
-    imm bounce = horizontal * 0.06 / pi;
+    let sun = self.sunIrradiance();
+    let horizontal = lumaOf(sun) * maxf(sunDir.y, 0.);
+    let bounce = horizontal * 0.06 / pi;
     new Vec3(sum.x + bounce * 1.0 + nightAmbient().x, sum.y + bounce * 0.85 + nightAmbient().y,
       sum.z + bounce * 0.65 + nightAmbient().z);
   }
 
   // The scene's light: the sun while its light is the greater, else the moon
   pub fn lighting(self &) DayLighting {
-    imm sun = self.sunIrradiance();
-    imm moon = self.moonIrradiance();
-    imm bySun = lumaOf(sun) >= lumaOf(moon);
+    let sun = self.sunIrradiance();
+    let moon = self.moonIrradiance();
+    let bySun = lumaOf(sun) >= lumaOf(moon);
     new DayLighting(if bySun { sunDir; } else { moonDir; }, if bySun { sun; } else { moon; }, sun, moon, self.ambient());
   }
 
@@ -199,7 +199,7 @@ pub struct DaySky {
   // the sun disc's radiance and radius; the night floor and the stars' share;
   // the celestial pole and the sky's turn; the moon disc's radiance and radius
   pub fn pack(self &, out &mut List[f32]) {
-    imm sun = self.sunIrradiance();
+    let sun = self.sunIrradiance();
     // The sun's disc: its irradiance times 30, nits (own: the real disc is
     // thirty million times its irradiance in nits (the sun's solid angle is
     // 6.8e-5 sr) and would overflow a half-float frame at any exposure that
@@ -250,7 +250,7 @@ fn clampf(v f32, lo f32, hi f32) f32 {
 
 // 0 at 'a', 1 at 'b' (either way round), the cubic smoothstep between
 fn smoothstepf(a f32, b f32, x f32) f32 {
-  imm t = clampf((x - a) / (b - a), 0., 1.);
+  let t = clampf((x - a) / (b - a), 0., 1.);
   t * t * (3. - 2. * t);
 }
 
@@ -263,9 +263,9 @@ pub fn lumaOf(c Vec3) f32 { 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z; }
 // (A.1 (S)): its angle from the zenith held at 90 degrees, where the formula
 // is 36.6
 pub fn airMass(sinEl f32) f32 {
-  imm cosT = clampUnit(sinEl);
-  imm thetaDeg = (acos(cosT)) * (180. / pi);
-  imm td = if thetaDeg > 90. { 90.; } else { thetaDeg; };
+  let cosT = clampUnit(sinEl);
+  let thetaDeg = (acos(cosT)) * (180. / pi);
+  let td = if thetaDeg > 90. { 90.; } else { thetaDeg; };
   1. / (cosT_of(td) + 0.15 * libc.powf(93.885 - td, -1.253));
 }
 
@@ -275,7 +275,7 @@ fn cosT_of(deg f32) f32 { cos(deg * (pi / 180.)); }
 // blue (650, 550 and 450 nm), with the optical depths scaled by 'share'
 // (A.1 (S): Rayleigh, Angstrom's aerosol with alpha 1.3, and ozone)
 pub fn transmittance(t f32, m f32, share f32) Vec3 {
-  imm beta = 0.04608 * t - 0.04586;
+  let beta = 0.04608 * t - 0.04586;
   new Vec3(libc.expf(0. - m * share * opticalDepth(0.65, beta, 6.7)),
     libc.expf(0. - m * share * opticalDepth(0.55, beta, 8.5)),
     libc.expf(0. - m * share * opticalDepth(0.45, beta, 0.3)));

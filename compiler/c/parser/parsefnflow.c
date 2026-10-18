@@ -212,10 +212,10 @@ INode *parseReturn(ParseState *parse) {
 
 // ---- A pattern a function runs: 'using' [match: topic 8a] ----
 //
-// 'case imm rest using prefix("GET ")' binds what the function gives back, 'case using isOdd()'
+// 'case let rest using prefix("GET ")' binds what the function gives back, 'case using isOdd()'
 // tests with it. The function is an ordinary one whose first argument is the matched value, so
 // the call is written without it and the parser puts it in. A binding is de-sugared as
-// 'imm rest Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
+// 'let rest Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
 // variable; a test is the call itself, a condition like any other.
 
 // After 'using': the call of the pattern, 'prefix("GET ")', 're.find()'. NULL when it is no call.
@@ -247,13 +247,10 @@ static int parseUsingSeen = 0;
 
 // Parses a variable bound to a pattern match on a value
 // (it looks like, and is returned as, a variable declaration). Where 'usingp' is given,
-// the pattern may be a function's, 'imm rest using prefix("GET ")': the call is left in
+// the pattern may be a function's, 'let rest using prefix("GET ")': the call is left in
 // *usingp (NULL when it was no call) and the variable takes the Some of its Option.
 VarDclNode *parseBindVarDcl(ParseState *parse, FnCallNode **usingp) {
-    INode *perm = parsePerm();
-    INode *permdcl = perm==unknownType? unknownType : itypeGetTypeDcl(perm);
-    if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
-        errorMsgNode(perm, ErrorInvType, "Permission not valid for pattern match binding");
+    INode *perm = parseDclWord();
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
@@ -368,13 +365,13 @@ static void parseUsingHold(MatchSubject *subject, VarDclNode *holder) {
 // type, after '=', so it is read here and made the subject; the block that 'wrapper'
 // is declares the hidden variable that holds it when it is not a place.
 //
-// A pattern a function runs, 'imm rest using prefix("GET ")' (parseUsingCall), is bound
-// as 'imm rest Some = prefix(matchee, "GET ")' is, the call being the value matched. In
+// A pattern a function runs, 'let rest using prefix("GET ")' (parseUsingCall), is bound
+// as 'let rest Some = prefix(matchee, "GET ")' is, the call being the value matched. In
 // a bound 'if' that is all it takes. In a match the call must run once, when its case is
 // reached and not before, so the case is nested the way an 'elif' that binds is: the
 // match's chain goes on in an 'else' block that holds the call's result in a variable
 // and tests it,
-//   { match-arms... else { { imm -held = prefix(matchee, "GET "); if -held is Some { imm rest = [Some]-held; ... } elif ... } } }
+//   { match-arms... else { { let -held = prefix(matchee, "GET "); if -held is Some { let rest = [Some]-held; ... } elif ... } } }
 // and *nextp is the 'if' the cases after it are added to.
 static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *subject, BlockNode *wrapper, IfNode **nextp) {
     // We will desugar a variable declaration into using a pattern match and re-cast.
@@ -457,7 +454,7 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     // A match's case may end in an 'if' guard, which may name the variable. The
     // variable is declared in the arm, which the guard is not in, so the guard is
     // a block that binds it again, to the same conversion of the same value:
-    //   'case imm x T if g {...}'  ->  'is T and {imm x = [T]v; g}' then '{imm x = [T]v; ...}'
+    //   'case let x T if g {...}'  ->  'is T and {let x = [T]v; g}' then '{let x = [T]v; ...}'
     // Being an 'and', the condition is not an 'is', so exhaustiveness does not
     // count the arm, which is right: the guard may fail. The guard reads the
     // binding before the arm is chosen, so it takes nothing from a place the arms
@@ -490,8 +487,8 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     nodesAdd(&ifnode->condblk, (INode*)blknode);
 }
 
-// De-sugar a binding that outlives an early exit, 'imm n Ok = r else {...};' [let-else].
-// The variable is the pattern binding of 'if imm n Ok = r', declared where it stands
+// De-sugar a binding that outlives an early exit, 'let n Ok = r else {...};' [let-else].
+// The variable is the pattern binding of 'if let n Ok = r', declared where it stands
 // in its block, and the 'else' is what runs when the pattern does not match: it must
 // leave, since the binding that follows takes the variant the test found. So it is
 // the test, an 'if' with nothing to run when it holds and the 'else' when it does not
@@ -502,7 +499,7 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
     lexNextToken();
     INode *permdcl = varnode->perm == unknownType ? unknownType : itypeGetTypeDcl(varnode->perm);
     if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
-        errorMsgNode(varnode->perm, ErrorInvType, "Permission not valid for pattern match binding");
+        errorMsgNode(varnode->perm, ErrorInvType, "A pattern match binding is declared with 'let' or 'var'");
     if (varnode->vtype == unknownType || varnode->value == NULL) {
         errorMsgNode((INode*)varnode, ErrorInvType, varnode->value == NULL
             ? "Expected '=' followed by the value to match against, before 'else'"
@@ -569,7 +566,7 @@ INode *parseIf(ParseState *parse) {
     // - 'if' is wrapped in a block, where we first capture the value in a variable
     // - The conditional turns into an 'is' check
     // - The first statement in the block actually binds the var to the re-cast value
-    if (lexIsToken(PermToken)) {
+    if (lexIsDclStart()) {
         BlockNode *blknode = newBlockNode();
         nodesAdd(&blknode->stmts, (INode*)ifnode);
         retnode = (INode*)blknode; // return block instead of 'if'!
@@ -605,7 +602,7 @@ INode *parseIf(ParseState *parse) {
         // - 'if' is wrapped in a block, where we first capture the value in a variable
         // - The conditional turns into an 'is' check
         // - The first statement in the block actually binds the var to the re-cast value
-        if (lexIsToken(PermToken)) {
+        if (lexIsDclStart()) {
             BlockNode *blknode = newBlockNode();
             nodesAdd(&ifnode->condblk, elseCond);
             nodesAdd(&ifnode->condblk, (INode*)blknode);
@@ -722,11 +719,11 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
 // and read as the 'is' test it would be.
 static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
     INode *cond;
-    if (subject->column && lexIsToken(PermToken)) {
+    if (subject->column && lexIsDclStart()) {
         FnCallNode *usingcall = NULL;
         VarDclNode *var = parseBindVarDcl(parse, &usingcall);
         errorMsgNode((INode*)var, ErrorMatchColumn,
-            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'imm x Some = a'");
+            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'let x Some = a'");
         CastNode *isnode = newIsNode(parseMatchUse(subject), var->vtype);
         castPatternMark(var->vtype);
         cond = (INode *)isnode;
@@ -793,7 +790,7 @@ INode *parseMatch(ParseState *parse) {
         if (lexIsToken(CaseToken)) {
             lexNextToken(); // consume the 'case' token
             // Handle bound variable pattern
-            if (ncols == 1 && lexIsToken(PermToken)) {
+            if (ncols == 1 && lexIsDclStart()) {
                 parseBoundMatch(parse, cur, &subjects[0], NULL, &cur);
                 continue;
             }
@@ -1284,8 +1281,8 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
     }
 
     // Assemble logic for a range (with optional step), e.g. 'each x in a .. b by s':
-    // { imm first = a; mut counter = first; mut n = 0;
-    //   while counter <= b { imm x = counter; ... ; { n += 1; counter += s } } }
+    // { let first = a; var counter = first; var n = 0;
+    //   while counter <= b { let x = counter; ... ; { n += 1; counter += s } } }
     // The loop's variable is a new one on every pass, which the body cannot
     // change: counting by hand is a 'while'. The counter is the loop's own, a
     // variable no name reaches, its uses bound here. The first value and the count
@@ -1370,7 +1367,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             // range wider than half its type, and whether the step adds or
             // subtracts is not known until it has been evaluated -- but the wrap
             // is plain afterwards: the loop variable moved against the range's
-            // direction. So the step is '{ imm prev = x; x += s; if x < prev
+            // direction. So the step is '{ let prev = x; x += s; if x < prev
             // {break} }', with '>' for a range counting down. The statements stay one
             // statement, because the trailing statement is what a 'continue'
             // carries a copy of, and 'prev' is a phantom variable the copy
@@ -1560,7 +1557,7 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         // literal as a global's is, and the block does not release it.
         case StaticToken: {
             uint16_t staticflag = parseStatic();
-            if (!lexIsToken(PermToken) && !lexIsToken(IdentToken)) {
+            if (!lexIsDclStart() && !lexIsToken(IdentToken)) {
                 parseBadStatic(staticflag);
                 break;
             }
@@ -1655,17 +1652,19 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             parseBehaviourWords("a function's body");
             break;
 
-        // A local variable declaration, if it begins with a permission
+        // A local variable declaration, if it begins with 'let' or 'var'
         case PermToken:
+        case LetToken:
+        case VarToken:
         {
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
-            // 'imm n Ok = r else {...};' binds a variant or leaves
+            // 'let n Ok = r else {...};' binds a variant or leaves
             if (lexIsToken(ElseToken))
                 parseLetElse(parse, blk, var);
             else {
                 if (parse->usingdcl)
                     errorMsgNode((INode*)var, ErrorUsingForm,
-                        "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'imm rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if imm rest using prefix(\"GET \") = line {...}'.");
+                        "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'let rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if let rest using prefix(\"GET \") = line {...}'.");
                 nodesAdd(&blk->stmts, (INode*)var);
             }
             parseEndOfStatement();
@@ -2314,9 +2313,12 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // the declaration parses as written instead of cascading from a missing
     // name. The function is left unnamed, which keeps it out of every namespace:
     // bound, it would also clash with the built-in permission
-    if (lexIsToken(IdentToken) || lexIsToken(PermToken)) {
+    if (lexIsToken(IdentToken) || lexIsToken(PermToken) || lexIsToken(LetToken) || lexIsToken(VarToken)) {
         if (lexIsToken(PermToken))
             errorMsgLex(ErrorNoName, "'%s' is a permission, so it cannot name a function. Rename it.",
+                &lex->val.ident->namestr);
+        else if (lexIsToken(LetToken) || lexIsToken(VarToken))
+            errorMsgLex(ErrorNoName, "'%s' begins a declaration, so it cannot name a function. Rename it.",
                 &lex->val.ident->namestr);
         else {
             if (!(mayflags&ParseMayName))

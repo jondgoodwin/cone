@@ -35,8 +35,8 @@ const runs = 4u64;
 const summers = 2u64;
 
 fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
@@ -59,7 +59,7 @@ struct Results {
   pub spread Atomic[u64];      // loops run on more than one thread
 }
 
-imm results Results;
+let results Results;
 
 fn @initpure init() {
   results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
@@ -68,8 +68,8 @@ fn @initpure init() {
 }
 
 fn bits(v u64) u64 {
-  mut n = 0u64;
-  mut x = v;
+  var n = 0u64;
+  var x = v;
   while x != 0u64 {
     n = n + (x & 1u64);
     x = x >> 1u64;
@@ -89,20 +89,20 @@ struct Pass {
 }
 
 fn bodyFill(p *Pass, lo usize, hi usize) {
-  imm w = actors.workerIndex();
+  let w = actors.workerIndex();
   (*p).ran.bitOr(1u64 << u64.from(w));
   if (*p).poked.swap(1u64) == 0u64 {
     (*p).sentAt.store((*p).done.load());
     (*p).who.poke();
     // With other pieces to be run, hold this one until a second thread has
     // run a piece, or three seconds pass
-    mut waited = 0u64;
+    var waited = 0u64;
     while u64.from(hi - lo) < (*p).whole and bits((*p).ran.load()) < 2u64 and waited < 3000u64 {
       thread.sleep(time.Duration.fromMillis(1));
       waited = waited + 1u64;
     }
   }
-  mut i = lo;
+  var i = lo;
   while i < hi {
     *((*p).cells + i) = mix(u64.from(i), unevenWork(u64.from(i)));
     i = i + 1usize;
@@ -120,14 +120,14 @@ actor Summer {
       results.overlaps.add(1u64);
     }
     phase = 1u64;
-    imm cells = libc.calloc(usize.from(n), 8usize) as *u64;
-    mut p = new Pass(cells, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    let cells = libc.calloc(usize.from(n), 8usize) as *u64;
+    var p = new Pass(cells, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
       Atomic[u64].of(0u64), n, selfactor);
-    imm pp = &mut p as *Pass;
+    let pp = &mut p as *Pass;
     actors.parallelRange(0usize, usize.from(n), 8usize, fn(lo usize, hi usize) [pp] { bodyFill(pp, lo, hi); });
     // the loop has finished: all items ran, and their results are here
-    mut ok = p.done.load() == n;
-    mut i = 0u64;
+    var ok = p.done.load() == n;
+    var i = 0u64;
     while i < n {
       if *(cells + usize.from(i)) != mix(i, unevenWork(i)) {
         ok = false;
@@ -174,8 +174,8 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
   {
-    imm a = new Summer();
-    imm b = new Summer();
+    let a = new Summer();
+    let b = new Summer();
     a.run(3000u64);
     b.run(3000u64);
     a.run(500u64);
@@ -191,7 +191,7 @@ fn main() {
   while results.handled.load() < summers * (runs + runs + 1u64) {
     thread.sleep(time.Duration.fromMillis(1));
   }
-  imm total = summers * runs;
+  let total = summers * runs;
   printStr("behaviours handled "); printUInt(results.handled.load()); printStr("\n");
   printStr("no behaviour began inside another's loop: "); printStr(if results.overlaps.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
   printStr("loop results as the plain loop's: "); printStr(if results.resultsWrong.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");

@@ -45,13 +45,13 @@ pub const AdjVertex = 1u32;   // faces next to each other share a vertex
 
 // Each face's set number (1 for a mesh with no "face_set" channel)
 pub fn faceSetIds(m &PolyMesh) List[u32] {
-  imm nf = m.fHalfedge.len();
-  imm ch = m.findFloatChannel(FaceDomain, "face_set");
-  mut out = List[u32].withCapacity(nf);
-  mut f = 0usize;
+  let nf = m.fHalfedge.len();
+  let ch = m.findFloatChannel(FaceDomain, "face_set");
+  var out = List[u32].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     if ch != NoIndex {
-      imm x = m.float(ch, u32.from(f));
+      let x = m.float(ch, u32.from(f));
       out.push(if x >= 0. {u32.from(x + 0.5);} else {0u32;});
     } else {
       out.push(1u32);
@@ -63,9 +63,9 @@ pub fn faceSetIds(m &PolyMesh) List[u32] {
 
 // A copy of the mesh with the face sets 'ids'
 pub fn withFaceSetIds(m &PolyMesh, ids &List[u32]) PolyMesh {
-  mut out = withPositions(m, copyList[Vec3](&m.positions));
-  imm ch = out.addFloatChannel(FaceDomain, "face_set", 1.);
-  mut f = 0usize;
+  var out = withPositions(m, copyList[Vec3](&m.positions));
+  let ch = out.addFloatChannel(FaceDomain, "face_set", 1.);
+  var f = 0usize;
   while f < ids.len() and f < out.fHalfedge.len() {
     out.setFloat(ch, u32.from(f), f32.from(*ids[f]));
     f = f + 1usize;
@@ -75,9 +75,9 @@ pub fn withFaceSetIds(m &PolyMesh, ids &List[u32]) PolyMesh {
 
 // The faces of set 'id', ascending
 pub fn faceSetFaces(m &PolyMesh, id u32) List[u32] {
-  imm ids = faceSetIds(m);
-  mut out = List[u32].empty();
-  mut f = 0usize;
+  let ids = faceSetIds(m);
+  var out = List[u32].empty();
+  var f = 0usize;
   while f < ids.len() {
     if *ids[f] == id { out.push(u32.from(f)); }
     f = f + 1usize;
@@ -89,19 +89,19 @@ pub fn faceSetFaces(m &PolyMesh, id u32) List[u32] {
 // by a vertex and an edge may appear more than once)
 fn neighbourFaces(m &PolyMesh, f u32, adj u32, out &mut List[u32]) {
   out.clear();
-  imm hs = m.faceHalfedges(f);
-  mut i = 0usize;
+  let hs = m.faceHalfedges(f);
+  var i = 0usize;
   while i < hs.len() {
     if adj == AdjVertex {
-      imm around = m.vertexOutgoing(m.toVertex(*hs[i]));
-      mut k = 0usize;
+      let around = m.vertexOutgoing(m.toVertex(*hs[i]));
+      var k = 0usize;
       while k < around.len() {
-        imm g = m.face(*around[k]);
+        let g = m.face(*around[k]);
         if g != NoIndex and g != f { out.push(g); }
         k = k + 1usize;
       }
     } else {
-      imm g = m.face(m.twin(*hs[i]));
+      let g = m.face(m.twin(*hs[i]));
       if g != NoIndex { out.push(g); }
     }
     i = i + 1usize;
@@ -113,37 +113,37 @@ fn neighbourFaces(m &PolyMesh, f u32, adj u32, out &mut List[u32]) {
 // Faces joined across shared edges, unless a barrier edge or (with useAngle)
 // an angle between normals above maxAngle cuts the join: sets numbered from 1
 fn faceComponents(m &PolyMesh, barrier &str, useAngle bool, maxAngle f32) List[u32] {
-  imm nf = m.fHalfedge.len();
-  imm bch = if barrier.len() > 0usize {m.findFloatChannel(EdgeDomain, barrier);} else {NoIndex;};
-  imm cosMax = cos(maxAngle);
-  mut normals = List[Vec3].withCapacity(nf);
-  mut f = 0usize;
+  let nf = m.fHalfedge.len();
+  let bch = if barrier.len() > 0usize {m.findFloatChannel(EdgeDomain, barrier);} else {NoIndex;};
+  let cosMax = cos(maxAngle);
+  var normals = List[Vec3].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     if useAngle { normals.push(m.faceNormal(u32.from(f))); } else { normals.push(new Vec3(0., 0., 0.)); }
     f = f + 1usize;
   }
-  mut ids = List[u32].withCapacity(nf);
+  var ids = List[u32].withCapacity(nf);
   f = 0usize;
   while f < nf {
     ids.push(0u32);
     f = f + 1usize;
   }
-  mut next = 1u32;
-  mut stack = List[u32].empty();
+  var next = 1u32;
+  var stack = List[u32].empty();
   f = 0usize;
   while f < nf {
     if *ids[f] == 0u32 {
       ids.set(f, next);
       stack.push(u32.from(f));
       while stack.len() > 0usize {
-        imm cur = *stack[stack.len() - 1usize];
+        let cur = *stack[stack.len() - 1usize];
         stack.truncate(stack.len() - 1usize);
-        imm hs = m.faceHalfedges(cur);
-        mut i = 0usize;
+        let hs = m.faceHalfedges(cur);
+        var i = 0usize;
         while i < hs.len() {
-          imm h = *hs[i];
-          imm blocked = bch != NoIndex and m.float(bch, m.edge(h)) > 0.;
-          imm g = m.face(m.twin(h));
+          let h = *hs[i];
+          let blocked = bch != NoIndex and m.float(bch, m.edge(h)) > 0.;
+          let g = m.face(m.twin(h));
           if !blocked and g != NoIndex and *ids[usize.from(g)] == 0u32 {
             if !useAngle or normals[usize.from(cur)].dot(*normals[usize.from(g)]) >= cosMax {
               ids.set(usize.from(g), next);
@@ -163,34 +163,34 @@ fn faceComponents(m &PolyMesh, barrier &str, useAngle bool, maxAngle f32) List[u
 // The connected pieces as sets; 'barrier' names an edge channel whose edges
 // above 0 cut the join ("" for none)
 pub fn faceSetsFromRegions(m &PolyMesh, barrier &str) PolyMesh {
-  imm ids = faceComponents(m, barrier, false, 0.);
+  let ids = faceComponents(m, barrier, false, 0.);
   withFaceSetIds(m, &ids);
 }
 
 // The pieces joined where the angle between neighbouring faces' normals is at
 // most 'maxAngle' radians
 pub fn faceSetsByAngle(m &PolyMesh, maxAngle f32, barrier &str) PolyMesh {
-  imm ids = faceComponents(m, barrier, true, maxAngle);
+  let ids = faceComponents(m, barrier, true, maxAngle);
   withFaceSetIds(m, &ids);
 }
 
 // Each face by where the mean of vertex channel 'channel' over its corners
 // falls among ascending 'cuts'. A mesh without the channel is unchanged.
 pub fn faceSetsByChannel(m &PolyMesh, channel &str, cuts &List[f32]) PolyMesh {
-  imm ch = m.findFloatChannel(VertexDomain, channel);
+  let ch = m.findFloatChannel(VertexDomain, channel);
   if ch == NoIndex { return withPositions(m, copyList[Vec3](&m.positions)); }
-  mut ids = List[u32].withCapacity(m.fHalfedge.len());
-  mut f = 0usize;
+  var ids = List[u32].withCapacity(m.fHalfedge.len());
+  var f = 0usize;
   while f < m.fHalfedge.len() {
-    imm vs = m.faceVertices(u32.from(f));
-    mut sum = 0.;
-    mut i = 0usize;
+    let vs = m.faceVertices(u32.from(f));
+    var sum = 0.;
+    var i = 0usize;
     while i < vs.len() {
       sum = sum + m.float(ch, *vs[i]);
       i = i + 1usize;
     }
-    imm mean = sum / f32.from(vs.len());
-    mut id = 1u32;
+    let mean = sum / f32.from(vs.len());
+    var id = 1u32;
     i = 0usize;
     while i < cuts.len() {
       if mean >= *cuts[i] { id = u32.from(i) + 2u32; }
@@ -204,8 +204,8 @@ pub fn faceSetsByChannel(m &PolyMesh, channel &str, cuts &List[f32]) PolyMesh {
 
 // The listed faces moved to set 'id'
 pub fn faceSetAssign(m &PolyMesh, faces &List[u32], id u32) PolyMesh {
-  mut ids = faceSetIds(m);
-  mut i = 0usize;
+  var ids = faceSetIds(m);
+  var i = 0usize;
   while i < faces.len() {
     if usize.from(*faces[i]) < ids.len() { ids.set(usize.from(*faces[i]), id); }
     i = i + 1usize;
@@ -217,18 +217,18 @@ pub fn faceSetAssign(m &PolyMesh, faces &List[u32], id u32) PolyMesh {
 // (the vertex channel "mask"): all of a face's corners with 'strict', any
 // without
 pub fn faceSetFromMask(m &PolyMesh, id u32, threshold f32, strict bool) PolyMesh {
-  imm vals = maskValues(m);
-  mut ids = faceSetIds(m);
-  mut f = 0usize;
+  let vals = maskValues(m);
+  var ids = faceSetIds(m);
+  var f = 0usize;
   while f < ids.len() {
-    imm vs = m.faceVertices(u32.from(f));
-    mut count = 0usize;
-    mut i = 0usize;
+    let vs = m.faceVertices(u32.from(f));
+    var count = 0usize;
+    var i = 0usize;
     while i < vs.len() {
       if *vals[usize.from(*vs[i])] >= threshold { count = count + 1usize; }
       i = i + 1usize;
     }
-    imm take = if strict {count == vs.len();} else {count > 0usize;};
+    let take = if strict {count == vs.len();} else {count > 0usize;};
     if take { ids.set(f, id); }
     f = f + 1usize;
   }
@@ -239,16 +239,16 @@ pub fn faceSetFromMask(m &PolyMesh, id u32, threshold f32, strict bool) PolyMesh
 
 // Set 'id' grown 'iterations' times: every face next to it joins it
 pub fn faceSetGrow(m &PolyMesh, id u32, iterations u32, adj u32) PolyMesh {
-  mut ids = faceSetIds(m);
-  mut near = List[u32].empty();
-  mut it = 0u32;
+  var ids = faceSetIds(m);
+  var near = List[u32].empty();
+  var it = 0u32;
   while it < iterations {
-    mut next = copyList[u32](&ids);
-    mut f = 0usize;
+    var next = copyList[u32](&ids);
+    var f = 0usize;
     while f < ids.len() {
       if *ids[f] != id {
         neighbourFaces(m, u32.from(f), adj, &mut near);
-        mut k = 0usize;
+        var k = 0usize;
         while k < near.len() {
           if *ids[usize.from(*near[k])] == id { next.set(f, id); }
           k = k + 1usize;
@@ -265,19 +265,19 @@ pub fn faceSetGrow(m &PolyMesh, id u32, iterations u32, adj u32) PolyMesh {
 // Set 'id' shrunk 'iterations' times: every face of it next to a face of
 // another set goes to the lowest-numbered such set
 pub fn faceSetShrink(m &PolyMesh, id u32, iterations u32, adj u32) PolyMesh {
-  mut ids = faceSetIds(m);
-  mut near = List[u32].empty();
-  mut it = 0u32;
+  var ids = faceSetIds(m);
+  var near = List[u32].empty();
+  var it = 0u32;
   while it < iterations {
-    mut next = copyList[u32](&ids);
-    mut f = 0usize;
+    var next = copyList[u32](&ids);
+    var f = 0usize;
     while f < ids.len() {
       if *ids[f] == id {
         neighbourFaces(m, u32.from(f), adj, &mut near);
-        mut lowest = NoIndex;
-        mut k = 0usize;
+        var lowest = NoIndex;
+        var k = 0usize;
         while k < near.len() {
-          imm other = *ids[usize.from(*near[k])];
+          let other = *ids[usize.from(*near[k])];
           if other != id and other < lowest { lowest = other; }
           k = k + 1usize;
         }
@@ -293,13 +293,13 @@ pub fn faceSetShrink(m &PolyMesh, id u32, iterations u32, adj u32) PolyMesh {
 
 // The sets numbered 1 up, in the order of their lowest face
 pub fn faceSetRenumber(m &PolyMesh) PolyMesh {
-  imm ids = faceSetIds(m);
-  mut seen = List[u32].empty();      // old ids in order of first face
-  mut out = List[u32].withCapacity(ids.len());
-  mut f = 0usize;
+  let ids = faceSetIds(m);
+  var seen = List[u32].empty();      // old ids in order of first face
+  var out = List[u32].withCapacity(ids.len());
+  var f = 0usize;
   while f < ids.len() {
-    mut at = NoIndex;
-    mut k = 0usize;
+    var at = NoIndex;
+    var k = 0usize;
     while k < seen.len() {
       if *seen[k] == *ids[f] { at = u32.from(k); }
       k = k + 1usize;
@@ -319,23 +319,23 @@ pub fn faceSetRenumber(m &PolyMesh) PolyMesh {
 // Mask the vertices of set 'id': those on any face of it, or, with 'strict',
 // on faces of it only
 pub fn maskByFaceSet(m &PolyMesh, id u32, strict bool, how u32) PolyMesh {
-  imm ids = faceSetIds(m);
-  mut vals = List[f32].withCapacity(m.positions.len());
-  mut v = 0usize;
+  let ids = faceSetIds(m);
+  var vals = List[f32].withCapacity(m.positions.len());
+  var v = 0usize;
   while v < m.positions.len() {
-    imm hs = m.vertexOutgoing(u32.from(v));
-    mut inSet = 0usize;
-    mut faces = 0usize;
-    mut k = 0usize;
+    let hs = m.vertexOutgoing(u32.from(v));
+    var inSet = 0usize;
+    var faces = 0usize;
+    var k = 0usize;
     while k < hs.len() {
-      imm f = m.face(*hs[k]);
+      let f = m.face(*hs[k]);
       if f != NoIndex {
         faces = faces + 1usize;
         if *ids[usize.from(f)] == id { inSet = inSet + 1usize; }
       }
       k = k + 1usize;
     }
-    imm inside = if strict {faces > 0usize and inSet == faces;} else {inSet > 0usize;};
+    let inside = if strict {faces > 0usize and inSet == faces;} else {inSet > 0usize;};
     vals.push(if inside {1.;} else {0.;});
     v = v + 1usize;
   }

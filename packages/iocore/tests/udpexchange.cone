@@ -51,7 +51,7 @@ struct ClientArgs {
 
 // Datagram i's length: a spread of sizes, one empty
 fn dgLen(i u64) usize {
-  imm k = i % 8u64;
+  let k = i % 8u64;
   if k == 0u64 {1usize;}
   elif k == 1u64 {17usize;}
   elif k == 2u64 {100usize;}
@@ -70,7 +70,7 @@ fn changed(b u8) u8 {u8.from((u64.from(b) + 1u64) % 256u64);}
 const notFound = 0xFFFFFFFFusize;
 
 fn find(out &List[Completion], tok u64) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < out.len() {
     if out[k].token == tok {return k;}
     k = k + 1usize;
@@ -80,8 +80,8 @@ fn find(out &List[Completion], tok u64) usize {
 
 // Poll until the answer with token tok is in out (or 5 s pass): its index
 fn await1(lp &mut Loop, out &mut List[Completion], tok u64) usize {
-  imm until = Instant.now() + Duration.fromSeconds(5i64);
-  mut k = find(out, tok);
+  let until = Instant.now() + Duration.fromSeconds(5i64);
+  var k = find(out, tok);
   while k == notFound and Instant.now() < until {
     lp.poll(until, out);
     k = find(out, tok);
@@ -90,38 +90,38 @@ fn await1(lp &mut Loop, out &mut List[Completion], tok u64) usize {
 }
 
 fn portOf(lp &Loop, h Handle) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match lp.localAddr(h) {
-    case imm a Ok {port = a.port();}
-    case imm e Error {}
+    case let a Ok {port = a.port();}
+    case let e Error {}
   }
   port;
 }
 
 // Echo each datagram, changed, to the address it came from, until all are done
 fn serve(a ServerArgs) Report {
-  mut lp = Loop.mustMake();
-  imm sock = lp.mustBindUdp(SocketAddr.localhost(0u16));
-  mut rep = new Report(0u64, 0u64, 0u64, portOf(&lp, sock), 0u16, diag.Counters.zero());
+  var lp = Loop.mustMake();
+  let sock = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  var rep = new Report(0u64, 0u64, 0u64, portOf(&lp, sock), 0u16, diag.Counters.zero());
   a.portTx.send(rep.ownPort);
-  imm total = rounds + burst;
-  mut out = List[Completion].empty();
+  let total = rounds + burst;
+  var out = List[Completion].empty();
   lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(1u64));
-  mut received = 0u64;
-  mut answered = 0u64;
-  imm limit = Instant.now() + Duration.fromSeconds(15i64);
+  var received = 0u64;
+  var answered = 0u64;
+  let limit = Instant.now() + Duration.fromSeconds(15i64);
   while answered < total and Instant.now() < limit {
     lp.poll(limit, &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm c = &mut out[k];
+      let c = &mut out[k];
       if not c.isDone() {rep.notDone = rep.notDone + 1u64;}
       if c.token == 1u64 {
         if c.isDone() {
           // Datagram 'received' arrives: its length, its bytes, its sender
-          mut good = c.n == dgLen(received);
-          imm v = c.buf.view();
-          mut j = 0usize;
+          var good = c.n == dgLen(received);
+          let v = c.buf.view();
+          var j = 0usize;
           while good and j < v.len {
             if v[j] != byteOf(received, j) {good = false;}
             j = j + 1usize;
@@ -132,10 +132,10 @@ fn serve(a ServerArgs) Report {
           rep.count = rep.count + 1u64;
           received = received + 1u64;
           // The answer: the same bytes, each one more, to where it came from
-          mut b = IoBuf.empty();
+          var b = IoBuf.empty();
           b <=> c.buf;
-          imm blen = b.len();
-          imm w = b.whole();
+          let blen = b.len();
+          let w = b.whole();
           j = 0usize;
           while j < blen {
             w[j] = changed(w[j]);
@@ -161,10 +161,10 @@ fn serve(a ServerArgs) Report {
 
 // The datagram i, from sock to port, as a SendTo submitted under token tok
 fn sendDg(lp &mut Loop, pool &Pool, sock Handle, port u16, i u64, tok u64) {
-  mut b = pool.mustTake(2048usize);
-  imm n = dgLen(i);
-  imm w = b.whole();
-  mut j = 0usize;
+  var b = pool.mustTake(2048usize);
+  let n = dgLen(i);
+  let w = b.whole();
+  var j = 0usize;
   while j < n {
     w[j] = byteOf(i, j);
     j = j + 1usize;
@@ -176,8 +176,8 @@ fn sendDg(lp &mut Loop, pool &Pool, sock Handle, port u16, i u64, tok u64) {
 // Whether answer c is datagram i's, changed, from the server's port
 fn isReply(c &Completion, i u64, port u16) bool {
   if not c.isDone() or c.n != dgLen(i) or c.peer.port() != port {return false;}
-  imm v = c.buf.view();
-  mut j = 0usize;
+  let v = c.buf.view();
+  var j = 0usize;
   while j < v.len {
     if v[j] != changed(byteOf(i, j)) {return false;}
     j = j + 1usize;
@@ -186,23 +186,23 @@ fn isReply(c &Completion, i u64, port u16) bool {
 }
 
 fn client(a ClientArgs) Report {
-  mut lp = Loop.mustMake();
-  imm sock = lp.mustBindUdp(SocketAddr.localhost(0u16));
-  mut rep = new Report(0u64, 0u64, 0u64, portOf(&lp, sock), a.port, diag.Counters.zero());
-  mut out = List[Completion].empty();
+  var lp = Loop.mustMake();
+  let sock = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  var rep = new Report(0u64, 0u64, 0u64, portOf(&lp, sock), a.port, diag.Counters.zero());
+  var out = List[Completion].empty();
 
   // 1. One at a time
-  mut i = 0u64;
+  var i = 0u64;
   while i < rounds {
     lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(200u64));
     sendDg(&mut lp, &a.pool, sock, a.port, i, 100u64);
-    imm ks = await1(&mut lp, &mut out, 100u64);
-    imm kr = await1(&mut lp, &mut out, 200u64);
+    let ks = await1(&mut lp, &mut out, 100u64);
+    let kr = await1(&mut lp, &mut out, 200u64);
     if ks == notFound or kr == notFound {
       rep.wrong = rep.wrong + 1u64;
     } else {
       if not out[ks].isDone() {rep.notDone = rep.notDone + 1u64;}
-      imm cr = &mut out[kr];
+      let cr = &mut out[kr];
       if not isReply(cr, i, a.port) {rep.wrong = rep.wrong + 1u64;}
       rep.count = rep.count + 1u64;
     }
@@ -211,14 +211,14 @@ fn client(a ClientArgs) Report {
   }
 
   // 2. A burst, then its answers in order
-  mut k = 0u64;
+  var k = 0u64;
   while k < burst {
     sendDg(&mut lp, &a.pool, sock, a.port, rounds + k, 300u64 + k);
     k = k + 1u64;
   }
   k = 0u64;
   while k < burst {
-    imm ks = await1(&mut lp, &mut out, 300u64 + k);
+    let ks = await1(&mut lp, &mut out, 300u64 + k);
     if ks == notFound or not out[ks].isDone() {rep.notDone = rep.notDone + 1u64;}
     k = k + 1u64;
   }
@@ -226,11 +226,11 @@ fn client(a ClientArgs) Report {
   k = 0u64;
   while k < burst {
     lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(400u64));
-    imm kr = await1(&mut lp, &mut out, 400u64);
+    let kr = await1(&mut lp, &mut out, 400u64);
     if kr == notFound {
       rep.wrong = rep.wrong + 1u64;
     } else {
-      imm cr = &mut out[kr];
+      let cr = &mut out[kr];
       if not isReply(cr, rounds + k, a.port) {rep.wrong = rep.wrong + 1u64;}
     }
     rep.count = rep.count + 1u64;
@@ -242,22 +242,22 @@ fn client(a ClientArgs) Report {
 }
 
 fn main() i32 {
-  imm total = rounds + burst;
+  let total = rounds + burst;
   {
-    imm pool = Pool.make();
-    mut portTx Sender[u16];
-    mut portRx Receiver[u16];
+    let pool = Pool.make();
+    var portTx Sender[u16];
+    var portRx Receiver[u16];
     portTx, portRx = Channel[u16].make();
-    imm server = thread.start(new ServerArgs(pool, portTx), &serve);
-    mut port = 0u16;
+    let server = thread.start(new ServerArgs(pool, portTx), &serve);
+    var port = 0u16;
     match portRx.recv() {
-      case imm p Some {port = p;}
+      case let p Some {port = p;}
       case is None[u16] {}
     }
     require(port != 0u16, "the server is bound");
-    imm cl = thread.start(new ClientArgs(pool, port), &client);
-    imm c = cl.join();
-    imm s = server.join();
+    let cl = thread.start(new ClientArgs(pool, port), &client);
+    let c = cl.join();
+    let s = server.join();
 
     expectUInt(c.count, total, "every datagram came back");
     expectUInt(c.wrong, 0u64, "each changed, at its own length, from the server's port, in order");
@@ -270,7 +270,7 @@ fn main() i32 {
     expectUInt(c.counters.inFlight + s.counters.inFlight, 0u64, "nothing in flight on either");
     expectUInt(c.counters.submitted, 2u64 * total, "the client: a send and a receive per datagram");
     expectUInt(s.counters.submitted, 2u64 * total, "the server: a receive and a send per datagram");
-    imm st = pool.stats();
+    let st = pool.stats();
     expectUInt(st.lent, 0u64, "every buffer back in the pool");
     expectUInt(st.refused, 0u64, "no take refused");
   }

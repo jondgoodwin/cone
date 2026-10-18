@@ -47,37 +47,37 @@ struct Run {
 // Run `seconds` straight along -z at `speed` (or by `profile` when speed < 0: 0 to 10 m/s over the first
 // half and back to 0 over the second) over `ground`, collecting what the checks need from the second half
 fn run(rig &Rig, speed f32, seconds f32, ground &<fn(x f32, z f32) f32, forceGait i32) Run {
-  mut loco = Locomotion.make(rig);
+  var loco = Locomotion.make(rig);
   if forceGait >= 0i32 { loco.force(forceGait); }
-  imm dt = 1. / 60.;
-  imm frames = i32.from(seconds / dt);
-  mut r = new Run(9usize, 0usize, 0., String.empty(), 0., String.empty(), 0., 0., 0., 0u32);
-  mut z f32 = 0.;
-  mut prev = List[Vec3].empty();
-  mut lastZ = 0.;
-  mut haveLast = false;
-  mut lastName = String.from(loco.gaitName());
-  mut f = 0;
+  let dt = 1. / 60.;
+  let frames = i32.from(seconds / dt);
+  var r = new Run(9usize, 0usize, 0., String.empty(), 0., String.empty(), 0., 0., 0., 0u32);
+  var z f32 = 0.;
+  var prev = List[Vec3].empty();
+  var lastZ = 0.;
+  var haveLast = false;
+  var lastName = String.from(loco.gaitName());
+  var f = 0;
   while f < frames {
-    imm t = f32.from(f) * dt;
-    mut v = speed;
+    let t = f32.from(f) * dt;
+    var v = speed;
     if speed < 0. {
       v = if t < seconds * 0.5 { 10. * t / (seconds * 0.5); } else { 10. * (seconds - t) / (seconds * 0.5); };
     }
     z = z - v * dt;
     loco.update(rig, dt, 0., z, 0., ground);
-    imm nm = String.from(loco.gaitName());
+    let nm = String.from(loco.gaitName());
     if nm.view() != lastName.view() { r.gaits <- nm.view(); r.gaits <- ","; lastName = nm.copy(); }
     if f > frames / 2 or speed < 0. {
       if loco.plantErrorMax > r.plant { r.plant = loco.plantErrorMax; }
       if f > frames / 2 and speed >= 0. {
-        imm d = loco.feetDown();
+        let d = loco.feetDown();
         if d < r.minDown { r.minDown = d; }
         if d > r.maxDown { r.maxDown = d; }
         if loco.pitch > r.pitch { r.pitch = loco.pitch; }
         if absf(loco.roll) > absf(r.roll) { r.roll = loco.roll; }
       }
-      mut i = 0usize;
+      var i = 0usize;
       while i < loco.legCount() {
         if loco.states[i].touchdown and speed >= 0. and f > frames / 2 {
           r.order <- i64.from(i);
@@ -88,15 +88,15 @@ fn run(rig &Rig, speed f32, seconds f32, ground &<fn(x f32, z f32) f32, forceGai
           }
         }
         if prev.len() == loco.legCount() {
-          imm sp = loco.states[i].foot.distance(*prev[i]) / dt;
-          imm limit = 3.5 * v + 8.;
+          let sp = loco.states[i].foot.distance(*prev[i]) / dt;
+          let limit = 3.5 * v + 8.;
           if sp > limit and f > 120 { if sp - limit > r.maxFoot { r.maxFoot = sp - limit; } }
         }
         i = i + 1usize;
       }
     }
     prev.clear();
-    mut j = 0usize;
+    var j = 0usize;
     while j < loco.legCount() { prev.push(loco.states[j].foot); j = j + 1usize; }
     f = f + 1;
   }
@@ -108,26 +108,26 @@ fn run(rig &Rig, speed f32, seconds f32, ground &<fn(x f32, z f32) f32, forceGai
 }
 
 fn quadRig() Rig {
-  mut b = buildRig(&plainBody(&BodyParams.quadruped()));
+  var b = buildRig(&plainBody(&BodyParams.quadruped()));
   b.take();
 }
 
 // Does the touchdown string 's' contain a repeating cycle `pattern` (the legs by number) starting at some rotation?
 fn repeats(s &str, pattern &str) bool {
-  mut doubled = String.from(pattern);
+  var doubled = String.from(pattern);
   doubled <- pattern;
-  mut cycles = 0;
-  mut n = 0usize;
+  var cycles = 0;
+  var n = 0usize;
   // Find each rotation of the pattern at the start of s
   while n < pattern.len() {
-    imm rot = doubled.sub(n, n + pattern.len());
-    imm text = String.from(s);
-    imm whole = (text.len() / pattern.len()) * pattern.len();
-    mut ok = whole >= pattern.len() * 3usize;
-    mut k = 0usize;
+    let rot = doubled.sub(n, n + pattern.len());
+    let text = String.from(s);
+    let whole = (text.len() / pattern.len()) * pattern.len();
+    var ok = whole >= pattern.len() * 3usize;
+    var k = 0usize;
     while ok and k < whole {
-      imm a = text.view().slice(k, k + 1usize);
-      imm b = rot.view().slice(k % pattern.len(), k % pattern.len() + 1usize);
+      let a = text.view().slice(k, k + 1usize);
+      let b = rot.view().slice(k % pattern.len(), k % pattern.len() + 1usize);
       if a != b { ok = false; }
       k = k + 1usize;
     }
@@ -138,19 +138,19 @@ fn repeats(s &str, pattern &str) bool {
 }
 
 fn main() i32 {
-  imm rig = quadRig();
+  let rig = quadRig();
   // Legs: 0 right hind, 1 left hind, 2 right fore, 3 left fore (the rig lists each pair right then left, rear pair first)
-  imm walk = run(&rig, 1.2, 14., &flat, -1i32);
+  let walk = run(&rig, 1.2, 14., &flat, -1i32);
   print_ok();
   expectBool(walk.gaits.view() == "", true, "1.2 m/s is a walk, with no change of gait");
   expectUInt(u64.from(walk.minDown), 2u64, "walk: at least 2 feet down");
   expectUInt(u64.from(walk.maxDown), 3u64, "at most 3");
   near(walk.plant, 0., 0.0005, "planted feet do not move (within half a millimetre)");
   expectBool(repeats(walk.order.view(), "0213"), true, "touchdowns repeat RH, RF, LH, LF: hind then fore on each side, the lateral sequence");
-  imm trot = run(&rig, 2.6, 14., &flat, -1i32);
+  let trot = run(&rig, 2.6, 14., &flat, -1i32);
   expectBool(trot.minDown == 0usize and trot.maxDown == 2usize, true, "trot: 0 to 2 feet down (a suspension)");
   near(trot.plant, 0., 0.0005, "trot: planted feet do not move");
-  imm gallop = run(&rig, 9.0, 14., &flat, -1i32);
+  let gallop = run(&rig, 9.0, 14., &flat, -1i32);
   expectBool(gallop.minDown == 0usize and gallop.maxDown <= 2usize, true, "gallop: never more than 2 feet down, and a suspension");
   near(gallop.plant, 0., 0.0005, "gallop: planted feet do not move");
   expectBool(repeats(gallop.order.view(), "2103") or repeats(gallop.order.view(), "1032"), true, "gallop touchdowns: hind, hind, fore, fore (LH RH LF RF)");
@@ -158,54 +158,54 @@ fn main() i32 {
   expectBool(absf(walk.strideSeen - 0.8556) < 0.05 * 0.8556 + 0.2, true, "the walk's stride is about the model's stride");
 
   // Changing gait: up and down
-  imm ramp = run(&rig, -1., 40., &flat, -1i32);
+  let ramp = run(&rig, -1., 40., &flat, -1i32);
   expectBool(ramp.gaits.view() == "trot,canter,gallop,canter,trot,walk,", true, "up through trot, canter, gallop, and down again through all of them");
   near(ramp.plant, 0., 0.0005, "planted feet do not move through the transitions");
   expectBool(ramp.maxFoot < 0.01, true, "no foot moves faster than 3.5 x the body speed + 8 m/s through the changes (measured: a quick catch-up step at low speed passes 3.5 x + 4 by 3 m/s; a jump would be tens)");
 
   // Ground
-  imm bump = run(&rig, 1.5, 14., &bumpy, -1i32);
+  let bump = run(&rig, 1.5, 14., &bumpy, -1i32);
   near(bump.plant, 0., 0.003, "bumps: planted feet are on their anchors within 3 mm");
   expectBool(bump.maxDown >= 3usize, true, "bumps: feet find the ground");
-  imm rise = run(&rig, 1.0, 14., &uphill, -1i32);
+  let rise = run(&rig, 1.0, 14., &uphill, -1i32);
   near(rise.pitch, atan2(0.3, 1.) * 0.85, 0.02, "uphill 0.3: the body pitches by atan(0.3) x 0.85");
-  imm slope = run(&rig, 1.0, 14., &across, -1i32);
+  let slope = run(&rig, 1.0, 14., &across, -1i32);
   near(slope.roll, atan2(0.2, 1.) * 0.85, 0.02, "cross slope 0.2: the body rolls by atan(0.2) x 0.85");
 
   // Stopping, and turning on the spot
-  mut loco = Locomotion.make(&rig);
-  mut z f32 = 0.;
-  mut k = 0;
+  var loco = Locomotion.make(&rig);
+  var z f32 = 0.;
+  var k = 0;
   while k < 600 { z = z - 3. / 60.; loco.update(&rig, 1. / 60., 0., z, 0., &flat); k = k + 1; }
   k = 0;
   while k < 180 { loco.update(&rig, 1. / 60., 0., z, 0., &flat); k = k + 1; }
   expectUInt(u64.from(loco.feetDown()), 4u64, "stopped for 3 s: all four feet down");
   expectBool(loco.moving, false, "and not moving");
-  imm before = loco.models[0usize].translation;
-  imm c0 = loco.cycle;
+  let before = loco.models[0usize].translation;
+  let c0 = loco.cycle;
   loco.update(&rig, 1. / 60., 0., z, 0., &flat);
   near(loco.models[0usize].translation.distance(before), 0., 0.00001, "the pose is still");
   near(loco.cycle, c0, 0.0000001, "and the cycle is frozen");
-  mut yaw f32 = 0.;
+  var yaw f32 = 0.;
   k = 0;
   while k < 240 { yaw = yaw + 1.2 / 60.; loco.update(&rig, 1. / 60., 0., z, yaw, &flat); k = k + 1; }
   expectBool(loco.states[0usize].touchdowns > 3u32, true, "turned on the spot at 1.2 rad/s it steps");
   near(loco.plantErrorMax, 0., 0.003, "and its planted feet do not move");
 
   // Any number of legs
-  mut sb = buildRig(&plainBody(&BodyParams.manyLegged(3u32, 0.25, 0.6)));
-  imm six = sb.take();
-  imm sr = run(&six, 0.8, 14., &flat, -1i32);
+  var sb = buildRig(&plainBody(&BodyParams.manyLegged(3u32, 0.25, 0.6)));
+  let six = sb.take();
+  let sr = run(&six, 0.8, 14., &flat, -1i32);
   expectBool(sr.minDown >= 3usize, true, "six legs: at least 3 down");
   near(sr.plant, 0., 0.0005, "six legs: planted feet do not move");
-  mut eb = buildRig(&plainBody(&BodyParams.manyLegged(4u32, 0.3, 0.9)));
-  imm eight = eb.take();
-  imm er = run(&eight, 0.8, 14., &flat, -1i32);
+  var eb = buildRig(&plainBody(&BodyParams.manyLegged(4u32, 0.3, 0.9)));
+  let eight = eb.take();
+  let er = run(&eight, 0.8, 14., &flat, -1i32);
   expectBool(er.minDown >= 4usize, true, "eight legs: at least 4 down");
   near(er.plant, 0., 0.0005, "eight legs: planted feet do not move");
-  mut bb = buildRig(&plainBody(&BodyParams.biped()));
-  imm two = bb.take();
-  imm tr2 = run(&two, 0.9, 14., &flat, -1i32);
+  var bb = buildRig(&plainBody(&BodyParams.biped()));
+  let two = bb.take();
+  let tr2 = run(&two, 0.9, 14., &flat, -1i32);
   expectBool(tr2.minDown >= 1usize, true, "two legs: a foot down at a walk");
   near(tr2.plant, 0., 0.0005, "two legs: planted feet do not move");
   done();

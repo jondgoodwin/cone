@@ -302,8 +302,8 @@ an importer needs to see it, with a banner saying it is generated:
   body) — is written whole;
 - a private name that such a body reaches is declared too;
 - a global whose members the package folds into its namespace
-  (`pub mut config Config = ... pub use *;`) is declared `extern` with the same
-  clause (`pub extern mut config Config pub use *;`), so an importer reaches
+  (`pub var config Config = ... pub use *;`) is declared `extern` with the same
+  clause (`pub extern var config Config pub use *;`), so an importer reaches
   the folded names as the package does;
 - what the root reaches in one of the package's submodules — a type a public
   function names, what an `inline` body calls, what a `pub use` re-exports — is
@@ -584,8 +584,8 @@ so a program that imports `gpusample` needs nothing more. `gpuwork`'s
 run from:
 
 ```
-imm spirv = readSpirv("gpusample.spv");
-mut kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
+let spirv = readSpirv("gpusample.spv");
+var kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
 ```
 
 A kernel binds its buffers in the order of its parameters, and its error
@@ -800,7 +800,7 @@ import testing use *;
 import geomath use *;
 
 fn main() i32 {
-  imm q = Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.));
+  let q = Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.));
   requireFloat(q.dot(q), 1., 0.00001d, "a unit quaternion");
   expectFloat(q.rotate(new Vec3(1., 0., 0.)).y, 1., 0.00001d, "x turns to y");
   expectInt(new IRect(10, 20, 640, 480).w, 640, "width");

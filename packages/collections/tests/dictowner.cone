@@ -17,14 +17,14 @@ import collections use *;
 
 fn expectRef(got Option[&i64], want i64, label &Array[u8]) {
   match got {
-    case imm s Some {expectInt(*s, want, label);}
+    case let s Some {expectInt(*s, want, label);}
     case is None {expect(false, label);}
   }
 }
 
 fn expectOpt(got Option[i64], want i64, label &Array[u8]) {
   match got {
-    case imm s Some {expectInt(s, want, label);}
+    case let s Some {expectInt(s, want, label);}
     case is None {expect(false, label);}
   }
 }
@@ -39,13 +39,13 @@ fn expectNone(got Option[i64], label &Array[u8]) {
 // What a key of any Hash type feeds a Hasher seeded with 7: a generic bounded
 // by Hash, so the bound is asked of the type
 fn hashed[K](k &K) u64 where K is Hash {
-  mut h = Hasher.withSeed(7u64);
+  var h = Hasher.withSeed(7u64);
   (*k).hash(&mut h);
   h.finish();
 }
 
 fn textHash(s &str) u64 {
-  mut h = Hasher.withSeed(7u64);
+  var h = Hasher.withSeed(7u64);
   s.hash(&mut h);
   h.finish();
 }
@@ -53,15 +53,15 @@ fn textHash(s &str) u64 {
 // A cursor's next key is this text
 fn isKey(got Option[&Uni[str]], want &str, label &Array[u8]) {
   match got {
-    case imm k Some {expect(want == k, label);}
+    case let k Some {expect(want == k, label);}
     case is None {expect(false, label);}
   }
 }
 
 fn hashing() {
-  imm so Uni[str] = "core";
-  imm rc Rc[str] = "core";
-  imm text = String.from("core");
+  let so Uni[str] = "core";
+  let rc Rc[str] = "core";
+  let text = String.from("core");
   expectUInt(hashed(&so), textHash("core"), "a Uni[str] is Hash and feeds what the text does");
   expectUInt(hashed(&rc), textHash("core"), "so does an Rc[str]");
   expectUInt(hashed(&text), textHash("core"), "and a String");
@@ -69,11 +69,11 @@ fn hashing() {
 }
 
 fn dict() {
-  mut d = Dict[Uni[str], i64].empty();
+  var d = Dict[Uni[str], i64].empty();
   // A literal is copied into the owner it is wanted as
   expectNone(d.insert("core", 1), "a new key: None");
   d.insert("stdio", 2);
-  imm owner Uni[str] = "libc";
+  let owner Uni[str] = "libc";
   d.insert(owner, 3);
   d.insert("héllo", 4);
   expectUInt(u64.from(d.len()), 4, "four keys");
@@ -81,13 +81,13 @@ fn dict() {
   expectRef(d.get("core"), 1, "get, by a literal");
   expectRef(d.get("héllo"), 4, "get, by a literal with a two-byte character");
   expectRef(d.get("libc"), 3, "get, by a literal, a key inserted as an owner");
-  imm text = String.from("stdio");
+  let text = String.from("stdio");
   expectRef(d.get(text.view()), 2, "get, by a String's view");
-  imm line = "-- stdio --";
+  let line = "-- stdio --";
   expectRef(d.get(line.slice(3usize, 8usize)), 2, "get, by a slice of text");
-  imm so Uni[str] = "libc";
+  let so Uni[str] = "libc";
   expectRef(d.get(so), 3, "get, by a Uni[str]");
-  imm rc Rc[str] = "core";
+  let rc Rc[str] = "core";
   expectRef(d.get(rc), 1, "get, by an Rc[str]");
   expectRef(d.get(&so), 3, "get, by a reference to the key's own kind");
   expect(d.contains("stdio"), "contains");
@@ -97,7 +97,7 @@ fn dict() {
 
   expectOpt(d.getCopy("core"), 1, "getCopy");
   match d.getMut("core") {
-    case mut v Some {*v = 10;}
+    case var v Some {*v = 10;}
     case is None {expect(false, "getMut finds core");}
   }
   expectInt(*d["core"], 10, "changed through getMut, read through d[literal]");
@@ -117,13 +117,13 @@ fn dict() {
 }
 
 fn shared() {
-  mut d = Dict[Rc[str], i64].empty();
+  var d = Dict[Rc[str], i64].empty();
   d.insert("a", 5);
-  imm key Rc[str] = "b";
+  let key Rc[str] = "b";
   d.insert(key, 6);
   expectRef(d.get("a"), 5, "an Rc[str] key, found by a literal");
   expectRef(d.get("b"), 6, "an Rc[str] key inserted as an owner");
-  imm so Uni[str] = "b";
+  let so Uni[str] = "b";
   expectRef(d.get(so), 6, "found by a Uni[str]");
   expect(not d.contains("c"), "not another");
   expectOpt(d.remove("a"), 5, "remove, by a literal");
@@ -131,37 +131,37 @@ fn shared() {
 }
 
 fn ordered() {
-  mut d = OrderedDict[Uni[str], i64].empty();
+  var d = OrderedDict[Uni[str], i64].empty();
   d.insert("z", 1);
   d.insert("y", 2);
   d.insert("x", 3);
   expectRef(d.get("y"), 2, "get, by a literal");
   expect(d.contains("x"), "contains, by a literal");
   expect(not d.contains("w"), "not another");
-  mut c = d.keys();
+  var c = d.keys();
   isKey(c.next(), "z", "first in the order of insertion");
   isKey(c.next(), "y", "second");
   isKey(c.next(), "x", "third");
   expectOpt(d.remove("y"), 2, "remove, by a literal");
-  mut c2 = d.keys();
+  var c2 = d.keys();
   isKey(c2.next(), "z", "the others keep their order: z");
   isKey(c2.next(), "x", "then x");
   d.insert("w", 4);
   expectOpt(d.swapRemove("z"), 1, "swapRemove, by a literal");
-  mut c3 = d.keys();
+  var c3 = d.keys();
   isKey(c3.next(), "w", "w took z's place");
   isKey(c3.next(), "x", "then x");
 }
 
 fn set() {
-  mut s = Set[Uni[str]].empty();
+  var s = Set[Uni[str]].empty();
   expect(s.insert("core"), "a new element");
   s.insert("stdio");
   expect(not s.insert("core"), "a repeat adds nothing");
   expectUInt(u64.from(s.len()), 2, "two elements");
   expect(s.contains("core"), "contains, by a literal");
   expect(not s.contains("cor"), "not a prefix");
-  imm so Uni[str] = "stdio";
+  let so Uni[str] = "stdio";
   expect(s.contains(so), "contains, by a Uni[str]");
   expect(s.remove("stdio"), "removed, by a literal");
   expect(not s.remove("stdio"), "removed once");

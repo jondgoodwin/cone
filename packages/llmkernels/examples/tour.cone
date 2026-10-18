@@ -16,42 +16,42 @@ import llmreference use *;
 import llmkernels use *;
 
 fn main() i32 {
-  mut instance = Instance.create("llmkernels tour");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
-  mut device = adapter.requestDevice();
+  var instance = Instance.create("llmkernels tour");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var device = adapter.requestDevice();
   if !device.isValid() {
     printStr("no device\n");
     return 1i32;
   }
-  imm kernels = Kernels.make(&device);                          // the pipelines, made once
-  mut works = Works.make();
+  let kernels = Kernels.make(&device);                          // the pipelines, made once
+  var works = Works.make();
 
   // a 64 x 256 Q4_K matrix (random blocks, seeded) and an input vector
-  mut rng = random.Rng.fromSeed(1u64);
+  var rng = random.Rng.fromSeed(1u64);
   match syntheticMatrix(&mut rng, QTYPE_Q4_K, 64usize, 256usize) {
-    case imm m Some {
-      imm x = syntheticFloats(&mut rng, 256usize, 1.0);
-      mut job = Job.make(&mut device);
-      imm w = job.give(upload(&mut device, m.words().view()));     // the weights' bytes, as words
-      imm xb = job.give(upload(&mut device, floatWords(x.view()).view()));
-      imm yb = job.give(zeroed(&mut device, 64usize));
+    case let m Some {
+      let x = syntheticFloats(&mut rng, 256usize, 1.0);
+      var job = Job.make(&mut device);
+      let w = job.give(upload(&mut device, m.words().view()));     // the weights' bytes, as words
+      let xb = job.give(upload(&mut device, floatWords(x.view()).view()));
+      let yb = job.give(zeroed(&mut device, 64usize));
       kernels.matvec(&mut job, &mut device, w, xb, yb, QTYPE_Q4_K, 64usize, 256usize);
-      imm back = job.readback(&mut device, yb);
-      imm ticket = works.submit(&mut device, job, Target.Here(1u64));
-      mut done = List[Completion].empty();
+      let back = job.readback(&mut device, yb);
+      let ticket = works.submit(&mut device, job, Target.Here(1u64));
+      var done = List[Completion].empty();
       works.waitFor(&mut device, ticket, &mut done);
-      imm y = wordFloats(done[0usize].words(back).view());         // 64 f32s
+      let y = wordFloats(done[0usize].words(back).view());         // 64 f32s
 
       // the CPU's answer
-      mut want = List[f32].withCapacity(64usize);
-      mut i = 0usize;
+      var want = List[f32].withCapacity(64usize);
+      var i = 0usize;
       while i < 64usize { want.push(0.0); i = i + 1usize; }
       matvecCpu(&m, x.view(), want.viewMut());
-      mut worst = 0.0d;
+      var worst = 0.0d;
       i = 0usize;
       while i < 64usize {
-        imm e = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+        let e = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
         if e > worst { worst = e; }
         i = i + 1usize;
       }

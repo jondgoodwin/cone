@@ -24,10 +24,10 @@ import iocore use CancelGroup;
 import actors;
 import aio use IoLimits;
 
-imm rang Atomic[u64];
-imm chained Atomic[u64];
-imm relayed Atomic[u64];
-imm cancelled Atomic[u64];
+let rang Atomic[u64];
+let chained Atomic[u64];
+let relayed Atomic[u64];
+let cancelled Atomic[u64];
 
 fn @initpure init() {
   rang = Atomic[u64].of(0u64);
@@ -37,31 +37,31 @@ fn @initpure init() {
 }
 
 fn ms(since Instant) u64 {
-  imm n = since.elapsed().millis();
+  let n = since.elapsed().millis();
   if n < 0i64 {0u64;} else {u64.from(n);};
 }
 
 actor Timer {
   pub async do ring(self, millis i64) {
-    imm r = await aio.sleep(Duration.fromMillis(millis));
+    let r = await aio.sleep(Duration.fromMillis(millis));
     rang.add(1u64);
   }
 }
 
 actor Chained {
   pub async do run(self) {
-    imm a = await aio.sleep(Duration.fromMillis(60i64));
+    let a = await aio.sleep(Duration.fromMillis(60i64));
     chained.add(1u64);
-    imm b = await aio.sleep(Duration.fromMillis(60i64));
+    let b = await aio.sleep(Duration.fromMillis(60i64));
     chained.add(1u64);
-    imm c = await aio.sleep(Duration.fromMillis(60i64));
+    let c = await aio.sleep(Duration.fromMillis(60i64));
     chained.add(1u64);
   }
 }
 
 actor Second {
   pub async do late(self) {
-    imm r = await aio.sleep(Duration.fromMillis(80i64));
+    let r = await aio.sleep(Duration.fromMillis(80i64));
     relayed.add(1u64);
   }
 }
@@ -70,14 +70,14 @@ actor First {
   second Second;
 
   pub async do early(self) {
-    imm r = await aio.sleep(Duration.fromMillis(80i64));
+    let r = await aio.sleep(Duration.fromMillis(80i64));
     second.late();
   }
 }
 
 actor Waiter {
   pub async do hold(self, g CancelGroup) {
-    imm r = await aio.sleepIn(Duration.fromSeconds(3600i64), IoLimits.within(g));
+    let r = await aio.sleepIn(Duration.fromSeconds(3600i64), IoLimits.within(g));
     cancelled.add(1u64);
   }
 }
@@ -85,25 +85,25 @@ actor Waiter {
 fn main() i32 {
   initAll();
   {
-    imm t = new Timer();
-    imm began = Instant.now();
+    let t = new Timer();
+    let began = Instant.now();
     t.ring(200i64);
     actors.waitUntilIdle();
     expectUInt(rang.load(), 1u64, "the actor awaiting a timer had recorded when the wait returned");
     expect(ms(began) >= 190u64, "...and the wait lasted as long as the timer");
   }
 
-  imm began = Instant.now();
+  let began = Instant.now();
   actors.waitUntilIdle();
   expect(ms(began) < 100u64, "nothing outstanding: the wait returns at once");
 
   {
-    imm t1 = new Timer();
-    imm t2 = new Timer();
-    imm t3 = new Timer();
-    imm ch = new Chained();
-    imm second = new Second();
-    imm first = new First(second);
+    let t1 = new Timer();
+    let t2 = new Timer();
+    let t3 = new Timer();
+    let ch = new Chained();
+    let second = new Second();
+    let first = new First(second);
     t1.ring(50i64);
     t2.ring(120i64);
     t3.ring(30i64);
@@ -116,10 +116,10 @@ fn main() i32 {
   expectUInt(relayed.load(), 1u64, "the second actor's timer, started by a message after the first timer, ran");
 
   {
-    imm g = CancelGroup.make();
-    imm w = new Waiter();
+    let g = CancelGroup.make();
+    let w = new Waiter();
     w.hold(g);
-    imm cut = new Cutter(g);
+    let cut = new Cutter(g);
     cut.later();
     actors.waitUntilIdle();
   }
@@ -132,7 +132,7 @@ actor Cutter {
   group CancelGroup;
 
   pub async do later(self) {
-    imm r = await aio.sleep(Duration.fromMillis(100i64));
-    imm was = group.cancel();
+    let r = await aio.sleep(Duration.fromMillis(100i64));
+    let was = group.cancel();
   }
 }

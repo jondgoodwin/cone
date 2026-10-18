@@ -28,7 +28,7 @@ pub fn resetEvents(rig &mut Ragdoll, w &World) {
   rig.settled = false;
   rig.episodeOn = false;
   rig.quiet = 0;
-  mut k = 0usize;
+  var k = 0usize;
   while k < rig.links.len() {
     rig.prevLin.set(k, w.linearVelocity(rig.links[k].body));
     k = k + 1usize;
@@ -40,16 +40,16 @@ pub fn resetPeak(rig &mut Ragdoll) { rig.peak = 0.; rig.landing = 0.; }
 
 // The largest impact speed of the last step, m/s (0 if none)
 pub fn lastImpactSpeed(rig &Ragdoll) f32 {
-  mut m = 0.;
-  mut k = 0usize;
+  var m = 0.;
+  var k = 0usize;
   while k < rig.impacts.len() { m = maxf(m, rig.impacts[k].speed); k = k + 1usize; }
   m;
 }
 
 // The ragdoll's velocity (mass weighted)
 pub fn comVelocity(rig &Ragdoll, w &World) Vec3 {
-  mut p = zero3();
-  mut k = 0usize;
+  var p = zero3();
+  var k = 0usize;
   while k < rig.links.len() {
     p = p + w.linearVelocity(rig.links[k].body) * rig.links[k].mass;
     k = k + 1usize;
@@ -59,7 +59,7 @@ pub fn comVelocity(rig &Ragdoll, w &World) Vec3 {
 
 // Note the velocities before a World step
 pub fn beginStep(rig &mut Ragdoll, w &World) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < rig.links.len() {
     rig.prevLin.set(k, w.linearVelocity(rig.links[k].body));
     k = k + 1usize;
@@ -71,18 +71,18 @@ pub fn beginStep(rig &mut Ragdoll, w &World) {
 pub fn endStep(rig &mut Ragdoll, w &World, events &List[Event], dt f32) {
   rig.steps = rig.steps + 1u32;
   // the change in the ragdoll's velocity that is not gravity's
-  mut before = zero3();
-  mut k = 0usize;
+  var before = zero3();
+  var k = 0usize;
   while k < rig.links.len() {
     before = before + (*rig.prevLin[k]) * rig.links[k].mass;
     k = k + 1usize;
   }
   before = before * (1. / rig.totalMass);
-  imm after = comVelocity(rig, w);
-  imm dv = after - before;
-  imm dvLen = dv.length();
+  let after = comVelocity(rig, w);
+  let dv = after - before;
+  let dvLen = dv.length();
   // a step of impact: the velocity changed by more than free fall or a firm support would change it
-  imm active = dvLen > 0.3 and (dv - w.gravity * dt).length() > 0.3;
+  let active = dvLen > 0.3 and (dv - w.gravity * dt).length() > 0.3;
   if active {
     if not rig.episodeOn { rig.episodeOn = true; rig.episode = before; }
     rig.episodeEnd = after;
@@ -97,16 +97,16 @@ pub fn endStep(rig &mut Ragdoll, w &World, events &List[Event], dt f32) {
   }
   if dvLen > 0.5 and active {
     // where: the deepest new contact with something outside
-    mut bone = 0usize;
-    mut point = zero3();
-    mut normal = new Vec3(0., 1., 0.);
-    mut deepest = -1.;
-    mut e = 0usize;
+    var bone = 0usize;
+    var point = zero3();
+    var normal = new Vec3(0., 1., 0.);
+    var deepest = -1.;
+    var e = 0usize;
     while e < events.len() {
-      imm ev = events[e];
+      let ev = events[e];
       if ev.kind == EvContactAdded {
-        imm la = rig.linkOfBody(ev.a);
-        imm lb = rig.linkOfBody(ev.b);
+        let la = rig.linkOfBody(ev.a);
+        let lb = rig.linkOfBody(ev.b);
         if (la >= 0i32) != (lb >= 0i32) and ev.depth > deepest {
           deepest = ev.depth;
           bone = rig.links[if la >= 0i32 { usize.from(la); } else { usize.from(lb); }].bone;
@@ -119,11 +119,11 @@ pub fn endStep(rig &mut Ragdoll, w &World, events &List[Event], dt f32) {
     rig.impacts.push(new Impact(0usize, bone, dvLen, dvLen * rig.totalMass, point, normal));
   }
   // still?
-  mut fastest = 0.;
-  mut allAsleep = true;
+  var fastest = 0.;
+  var allAsleep = true;
   k = 0usize;
   while k < rig.links.len() {
-    imm id = rig.links[k].body;
+    let id = rig.links[k].body;
     if not w.isAsleep(id) {
       allAsleep = false;
       fastest = maxf(fastest, w.linearVelocity(id).length() + 0.5 * w.angularVelocity(id).length() * rig.links[k].radius);
@@ -149,14 +149,14 @@ pub fn prepareStep(rig &mut Ragdoll, w &mut World, dt f32) {
 pub fn stepRagdoll(rig &mut Ragdoll, w &mut World, dt f32) {
   prepareStep(rig, w, dt);
   w.step(dt);
-  imm ev = w.takeEvents();
+  let ev = w.takeEvents();
   endStep(rig, w, &ev, dt);
 }
 
 // A frame's time in fixed steps (the World's own fixedDt and accumulator, Fiedler's way); the steps taken
 pub fn advanceRagdoll(rig &mut Ragdoll, w &mut World, frameDt f32) i32 {
   w.accumulator = w.accumulator + minf(frameDt, 0.25);
-  mut n = 0;
+  var n = 0;
   while w.accumulator >= w.fixedDt {
     stepRagdoll(rig, w, w.fixedDt);
     w.accumulator = w.accumulator - w.fixedDt;

@@ -25,13 +25,13 @@ fn kindName(k &binarytext.DecodeErrorKind) &str {
 fn isRefusal(res Result[List[u8], binarytext.DecodeError], kind &str, offset usize, byte u8, label &str) {
   match res {
     case is Ok { expectStr("<decoded>", kind, label); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), kind, label);
       expectUInt(u64.from(e.offset), u64.from(offset), label);
       expectUInt(u64.from(e.byte), u64.from(byte), label);
-      imm m = e.message();
+      let m = e.message();
       expect(m.view().startsWith("binarytext: "), label);
-      mut at = String.from(" at offset ");
+      var at = String.from(" at offset ");
       at.appendUInt(u64.from(offset));
       expect(m.view().endsWith(at.view()), label);
     }
@@ -40,9 +40,9 @@ fn isRefusal(res Result[List[u8], binarytext.DecodeError], kind &str, offset usi
 
 fn isBytes(res Result[List[u8], binarytext.DecodeError], want &str, label &str) {
   match res {
-    case imm bytes Ok { expectStr(bytes.view(), want, label); }
-    case imm e Error {
-      imm m = e.message();
+    case let bytes Ok { expectStr(bytes.view(), want, label); }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<decoded>", label);
     }
   }
@@ -51,12 +51,12 @@ fn isBytes(res Result[List[u8], binarytext.DecodeError], want &str, label &str) 
 // The bytes, shown as lower-case hex (for bytes past 0x7F)
 fn isHex(res Result[List[u8], binarytext.DecodeError], wantHex &str, label &str) {
   match res {
-    case imm bytes Ok {
-      imm h = binarytext.encodeHex(bytes.view());
+    case let bytes Ok {
+      let h = binarytext.encodeHex(bytes.view());
       expectStr(h.view(), wantHex, label);
     }
-    case imm e Error {
-      imm m = e.message();
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<decoded>", label);
     }
   }
@@ -86,7 +86,7 @@ fn main() i32 {
   isRefusal(std("Zm9v[m9v"), "BadCharacter", 4usize, '[', "'[' is just above 'Z'");
   isRefusal(std("Zm9v`m9v"), "BadCharacter", 4usize, '`', "'`' is just below 'a'");
   isRefusal(std("Zm9v{m9v"), "BadCharacter", 4usize, '{', "'{' is just above 'z'");
-  mut nul = List[u8].empty();
+  var nul = List[u8].empty();
   nul.push('Z'); nul.push(0u8); nul.push('9'); nul.push('v');
   isRefusal(binarytext.decodeBase64(nul.view()), "BadCharacter", 1usize, 0u8, "a NUL byte inside the text");
 
@@ -105,11 +105,11 @@ fn main() i32 {
   isRefusal(std("Zg=A"), "BadPadding", 3usize, 'A', "a digit where the second '=' is owed");
   isRefusal(std("Zm8=A"), "BadPadding", 4usize, 'A', "a digit after the padding");
   isRefusal(std("Zg=\n="), "BadPadding", 3usize, '\n', "a line break inside the padding");
-  imm unp = binarytext.Base64Format.standardUnpadded();
+  let unp = binarytext.Base64Format.standardUnpadded();
   isRefusal(fmtd(&unp, "Zg=="), "BadPadding", 2usize, '=', "padding in an unpadded format");
   isRefusal(fmtd(&unp, "Zg="), "BadPadding", 2usize, '=', "one '=' in an unpadded format");
   isRefusal(fmtd(&unp, "Zm9v="), "BadPadding", 4usize, '=', "'=' after a whole group, unpadded format");
-  imm urlUnp =binarytext.Base64Format.urlSafeUnpadded();
+  let urlUnp =binarytext.Base64Format.urlSafeUnpadded();
   isRefusal(fmtd(&urlUnp, "-_8="), "BadPadding", 3usize, '=', "padding in an unpadded URL-safe format");
 
   // -------- length --------
@@ -131,7 +131,7 @@ fn main() i32 {
   isBytes(std("Zg=="), "f", "unused 4 bits zero");
 
   // -------- the opt-ins --------
-  imm ws = binarytext.Base64Format.standard().acceptingWhitespace();
+  let ws = binarytext.Base64Format.standard().acceptingWhitespace();
   isBytes(fmtd(&ws, "Zm9v\r\nYmFy\r\n"), "foobar", "whitespace skipped at line ends");
   isBytes(fmtd(&ws, " Z m\t9 v "), "foo", "whitespace skipped anywhere");
   isBytes(fmtd(&ws, "Zg = ="), "f", "whitespace skipped inside the padding");
@@ -141,7 +141,7 @@ fn main() i32 {
   isRefusal(fmtd(&ws, "Zm 9v\x0b"), "BadCharacter", 5usize, 0x0Bu8, "a vertical tab is not whitespace here");
   isRefusal(fmtd(&ws, "Zg =\n"), "BadPadding", 5usize, 0u8, "whitespace does not make up the padding");
   isRefusal(fmtd(&ws, "Zg= =\n=Zg=="), "BadPadding", 6usize, '=', "unchanged padding rules");
-  imm any = binarytext.Base64Format.standard().acceptingAnyPadding();
+  let any = binarytext.Base64Format.standard().acceptingAnyPadding();
   isBytes(fmtd(&any, "Zg"), "f", "padding optional: absent");
   isBytes(fmtd(&any, "Zg=="), "f", "padding optional: present");
   isBytes(fmtd(&any, "Zm8"), "fo", "padding optional, 3 digits: absent");
@@ -151,15 +151,15 @@ fn main() i32 {
   isRefusal(fmtd(&any, "Zm8=="), "BadPadding", 4usize, '=', "padding optional, too much");
   isRefusal(fmtd(&any, "Z"), "BadLength", 1usize, 0u8, "padding optional, one digit");
   isRefusal(fmtd(&any, "Zh"), "NonCanonical", 1usize, 'h', "padding optional keeps the trailing-bits check");
-  imm anyUrl = binarytext.Base64Format.urlSafeUnpadded().acceptingAnyPadding();
+  let anyUrl = binarytext.Base64Format.urlSafeUnpadded().acceptingAnyPadding();
   isHex(fmtd(&anyUrl, "-_8"), "fbff", "URL-safe, any padding: absent");
   isHex(fmtd(&anyUrl, "-_8="), "fbff", "URL-safe, any padding: present");
-  imm bits = binarytext.Base64Format.standard().acceptingTrailingBits();
+  let bits = binarytext.Base64Format.standard().acceptingTrailingBits();
   isBytes(fmtd(&bits, "QR=="), "A", "trailing bits accepted: 'QR==' is 'A'");
   isBytes(fmtd(&bits, "QQ=="), "A", "trailing bits accepted: 'QQ=='");
   isBytes(fmtd(&bits, "Zm9="), "fo", "trailing bits accepted: 2 bits");
   isRefusal(fmtd(&bits, "Zg="), "BadPadding", 3usize, 0u8, "trailing bits accepted keeps the padding rules");
-  imm everything = binarytext.Base64Format.urlSafeUnpadded().acceptingWhitespace().acceptingAnyPadding().acceptingTrailingBits();
+  let everything = binarytext.Base64Format.urlSafeUnpadded().acceptingWhitespace().acceptingAnyPadding().acceptingTrailingBits();
   isBytes(fmtd(&everything, "QR\n=="), "A", "all three opt-ins");
 
   // -------- hex --------
@@ -185,13 +185,13 @@ fn main() i32 {
   isBytes(binarytext.decodeHex(""), "", "empty hex");
 
   // -------- a streaming decoder reports the offset in the whole stream --------
-  imm fmt = binarytext.Base64Format.standard();
-  mut dec = binarytext.Base64Decoder.forFormat(&fmt);
-  mut out = List[u8].empty();
+  let fmt = binarytext.Base64Format.standard();
+  var dec = binarytext.Base64Decoder.forFormat(&fmt);
+  var out = List[u8].empty();
   match dec.update("Zm9vYm", &mut out) { case is Ok { expect(true, "first chunk"); } case is Error { expect(false, "first chunk"); } }
   match dec.update("F!", &mut out) {
     case is Ok { expect(false, "a bad byte in the second chunk was accepted"); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), "BadCharacter", "second chunk");
       expectUInt(u64.from(e.offset), 7u64, "offset 7 of the stream, 1 of the chunk");
       expectUInt(u64.from(e.byte), 33u64, "the byte");
@@ -201,14 +201,14 @@ fn main() i32 {
   // Once failed, it stays failed
   match dec.update("Zm9v", &mut out) {
     case is Ok { expect(false, "a failed decoder went on"); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), "BadCharacter", "same fault again");
       expectUInt(u64.from(e.offset), 7u64, "same offset again");
     }
   }
   match dec.finish(&mut out) {
     case is Ok { expect(false, "a failed decoder finished"); }
-    case imm e Error { expectUInt(u64.from(e.offset), 7u64, "finish repeats the fault"); }
+    case let e Error { expectUInt(u64.from(e.offset), 7u64, "finish repeats the fault"); }
   }
   expectStr(out.view(), "foo", "nothing more was written");
   // reset forgets it
@@ -224,19 +224,19 @@ fn main() i32 {
   match dec.update("Zg=", &mut out) { case is Ok { expect(true, "padding begins"); } case is Error { expect(false, "padding begins"); } }
   match dec.update("=Z", &mut out) {
     case is Ok { expect(false, "a digit after the padding was accepted"); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), "BadPadding", "after the padding, across chunks");
       expectUInt(u64.from(e.offset), 4u64, "offset 4");
     }
   }
   // A hex decoder, the same
-  mut hd = binarytext.HexDecoder.strict();
+  var hd = binarytext.HexDecoder.strict();
   out.clear();
   match hd.update("ab", &mut out) { case is Ok { expect(true, "hex first chunk"); } case is Error { expect(false, "hex first chunk"); } }
   match hd.update("c", &mut out) { case is Ok { expect(true, "hex half pair"); } case is Error { expect(false, "hex half pair"); } }
   match hd.finish(&mut out) {
     case is Ok { expect(false, "a half pair at the end was accepted"); }
-    case imm e Error {
+    case let e Error {
       expectStr(kindName(&e.kind), "BadLength", "hex end");
       expectUInt(u64.from(e.offset), 3u64, "hex end offset");
     }
@@ -246,23 +246,23 @@ fn main() i32 {
   match hd.update("ab", &mut out) { case is Ok { } case is Error { expect(false, "hex after reset"); } }
   match hd.update("c-", &mut out) {
     case is Ok { expect(false, "hex bad byte accepted"); }
-    case imm e Error {
+    case let e Error {
       expectUInt(u64.from(e.offset), 3u64, "hex offset across chunks");
       expectUInt(u64.from(e.byte), 45u64, "hex byte");
     }
   }
 
   // -------- one-shot decoding into a List leaves it as it was on a fault --------
-  mut acc = List[u8].empty();
+  var acc = List[u8].empty();
   acc.push(1u8); acc.push(2u8); acc.push(3u8);
   match binarytext.decodeBase64Into("Zm9vYmFy", &fmt, &mut acc) {
-    case imm k Ok { expectUInt(u64.from(k), 6u64, "appended 6 bytes"); }
+    case let k Ok { expectUInt(u64.from(k), 6u64, "appended 6 bytes"); }
     case is Error { expect(false, "decode into"); }
   }
   expectUInt(u64.from(acc.len()), 9u64, "after the append");
   match binarytext.decodeBase64Into("Zm9vYmF!", &fmt, &mut acc) {
     case is Ok { expect(false, "decode into a bad text"); }
-    case imm e Error { expectUInt(u64.from(e.offset), 7u64, "fault offset"); }
+    case let e Error { expectUInt(u64.from(e.offset), 7u64, "fault offset"); }
   }
   expectUInt(u64.from(acc.len()), 9u64, "a fault leaves the list as it was");
   match binarytext.decodeBase64Into("Zm9vYg", &fmt, &mut acc) {
@@ -276,7 +276,7 @@ fn main() i32 {
   }
   expectUInt(u64.from(acc.len()), 9u64, "a hex fault leaves the list as it was");
   match binarytext.decodeHexInto("6162", &mut acc) {
-    case imm k Ok { expectUInt(u64.from(k), 2u64, "hex appended 2 bytes"); }
+    case let k Ok { expectUInt(u64.from(k), 2u64, "hex appended 2 bytes"); }
     case is Error { expect(false, "hex into"); }
   }
   expectUInt(u64.from(acc.len()), 11u64, "after the hex append");

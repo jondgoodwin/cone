@@ -58,8 +58,8 @@ pub struct Garment {
 
   // How many particles are tight enough to be skinned outright
   pub fn tightCount(self &) usize {
-    mut n = 0usize;
-    mut i = 0usize;
+    var n = 0usize;
+    var i = 0usize;
     while i < loose.len() { if *loose[i] <= TIGHT { n = n + 1usize; } i = i + 1usize; }
     n;
   }
@@ -83,7 +83,7 @@ fn failed(why &str) Draped {
 }
 
 fn edgeIndex(base usize, nu u32, nv u32, edge u32, k u32) usize {
-  imm cols = usize.from(nu) + 1usize;
+  let cols = usize.from(nu) + 1usize;
   if edge == EDGE_TOP { return base + usize.from(k); }
   if edge == EDGE_BOTTOM { return base + usize.from(nv) * cols + usize.from(k); }
   if edge == EDGE_LEFT { return base + usize.from(k) * cols; }
@@ -95,9 +95,9 @@ fn edgeCount(nu u32, nv u32, edge u32) u32 {
 }
 
 fn findRoot(parent &mut List[u32], i usize) usize {
-  mut x = i;
+  var x = i;
   while usize.from(*parent[x]) != x {
-    imm p = usize.from(*parent[x]);
+    let p = usize.from(*parent[x]);
     parent.set(x, *parent[p]);
     x = usize.from(*parent[x]);
   }
@@ -108,24 +108,24 @@ fn findRoot(parent &mut List[u32], i usize) usize {
 // origin is already clear of the body
 fn marchOut(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, origin Vec3, dir Vec3, gap f32) f32 {
   if clearOf(rig, seen, below, inflate, origin, gap) { return -1.; }
-  mut t = 0.;
-  mut lastIn = 0.;
-  mut steps = 0;
+  var t = 0.;
+  var lastIn = 0.;
+  var steps = 0;
   while steps < 140 {
-    imm p = origin + dir * t;
+    let p = origin + dir * t;
     if clearOf(rig, seen, below, inflate, p, gap) {
       // between lastIn and t: bisect
-      mut lo = lastIn;
-      mut hi = t;
-      mut k = 0;
+      var lo = lastIn;
+      var hi = t;
+      var k = 0;
       while k < 10 {
-        imm mid = (lo + hi) * 0.5;
+        let mid = (lo + hi) * 0.5;
         if clearOf(rig, seen, below, inflate, origin + dir * mid, gap) { hi = mid; } else { lo = mid; }
         k = k + 1;
       }
       return hi;
     }
-    imm d = rig.distanceSeen(&rig.restModels, inflate, seen, p);
+    let d = rig.distanceSeen(&rig.restModels, inflate, seen, p);
     lastIn = t;
     t = t + (if d < gap { fmaxf(gap - d, 0.004) * 0.9; } else { 0.008; });
     steps = steps + 1;
@@ -137,7 +137,7 @@ fn marchOut(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, or
 fn clearOf(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, p Vec3, gap f32) bool {
   if rig.distanceSeen(&rig.restModels, inflate, seen, p) < gap { return false; }
   if below.nx == 0u32 { return true; }
-  imm q = below.pushOut(p);
+  let q = below.pushOut(p);
   q.x == p.x and q.y == p.y and q.z == p.z;
 }
 
@@ -150,16 +150,16 @@ fn pairKey(a u32, b u32) u64 {
 // sees: a sleeve takes the arm's weights, a bodice the trunk's, so a particle ringing the shoulder is not bound to the
 // chest because a chest vertex happens to be nearer), its four joints and weights
 fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], weights &mut List[f32]) {
-  mut bd = [1e30, 1e30, 1e30];
-  mut bi = [0usize, 0usize, 0usize];
-  mut v = 0usize;
+  var bd = [1e30, 1e30, 1e30];
+  var bi = [0usize, 0usize, 0usize];
+  var v = 0usize;
   while v < rig.mesh.positions.len() {
     // only a vertex mostly on the seen bones
-    mut onSeen = 0.;
-    mut kk = 0usize;
+    var onSeen = 0.;
+    var kk = 0usize;
     while kk < 4usize { if *seen[rig.skin.joint(v, kk)] { onSeen = onSeen + rig.skin.weight(v, kk); } kk = kk + 1usize; }
     if onSeen < 0.5 { v = v + 1usize; continue; }
-    imm d = (*rig.mesh.positions[v] - p).lengthSquared();
+    let d = (*rig.mesh.positions[v] - p).lengthSquared();
     if d < bd[2] {
       if d < bd[1] {
         bd[2] = bd[1]; bi[2] = bi[1];
@@ -170,23 +170,23 @@ fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], w
     }
     v = v + 1usize;
   }
-  mut jn = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
-  mut jw = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.];
-  mut used = 0usize;
-  mut n = 0usize;
+  var jn = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+  var jw = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.];
+  var used = 0usize;
+  var n = 0usize;
   // The nearest vertex's weights alone (n < 1). Averaging three smooths the weights, and a garment particle then moves
   // a little differently from the shell worn under it (which takes exactly the body vertex's weights), so that where
   // the joints bend far the two drift together and apart by centimetres: layers go through each other. The nearest
   // vertex gives the particle the blend its neighbour on the body has: an offset that moves as the skin does.
   while n < 1usize {
-    imm k = 1. / (bd[n] + 1e-5);
-    mut c = 0usize;
+    let k = 1. / (bd[n] + 1e-5);
+    var c = 0usize;
     while c < 4usize {
-      imm j = u32.from(rig.skin.joint(bi[n], c));
-      imm w = rig.skin.weight(bi[n], c) * k;
+      let j = u32.from(rig.skin.joint(bi[n], c));
+      let w = rig.skin.weight(bi[n], c) * k;
       if w > 0. {
-        mut at = used;
-        mut s = 0usize;
+        var at = used;
+        var s = 0usize;
         while s < used { if jn[s] == j { at = s; } s = s + 1usize; }
         if at == used { jn[used] = j; jw[used] = 0.; used = used + 1usize; }
         jw[at] = jw[at] + w;
@@ -196,14 +196,14 @@ fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], w
     n = n + 1usize;
   }
   // the four heaviest
-  mut total = 0.;
-  mut picked = 0usize;
-  mut outJ = [0u32, 0u32, 0u32, 0u32];
-  mut outW = [0., 0., 0., 0.];
+  var total = 0.;
+  var picked = 0usize;
+  var outJ = [0u32, 0u32, 0u32, 0u32];
+  var outW = [0., 0., 0., 0.];
   while picked < 4usize {
-    mut best = -1.;
-    mut bs = 0usize;
-    mut s = 0usize;
+    var best = -1.;
+    var bs = 0usize;
+    var s = 0usize;
     while s < used {
       if jw[s] > best { best = jw[s]; bs = s; }
       s = s + 1usize;
@@ -215,7 +215,7 @@ fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], w
     jw[bs] = -1.;
     picked = picked + 1usize;
   }
-  mut q = 0usize;
+  var q = 0usize;
   while q < 4usize {
     joints.push(outJ[q]);
     weights.push(if total > 0. { outW[q] / total; } elif q == 0usize { 1.; } else { 0.; });
@@ -226,8 +226,8 @@ fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], w
 // Gravity-drape a soft body whose tight particles are pinned, for `frames` steps of 1/60 s; the layer push after each
 // substep. The fastest particle at the end.
 pub fn settle(soft &mut SoftBody, workers &mut Workers, below &LayerSurface, frames u32) f32 {
-  imm dt = 1. / 60.;
-  mut f = 0u32;
+  let dt = 1. / 60.;
+  var f = 0u32;
   while f < frames {
     soft.beginSteps(workers, dt, new Vec3(0., 0., 0.));
     while soft.substepsLeft() > 0u32 {
@@ -237,8 +237,8 @@ pub fn settle(soft &mut SoftBody, workers &mut Workers, below &LayerSurface, fra
     soft.endSteps();
     f = f + 1u32;
   }
-  mut fastest = 0.;
-  mut i = 0usize;
+  var fastest = 0.;
+  var i = 0usize;
   while i < soft.vel.len() {
     fastest = fmaxf(fastest, (*soft.vel[i]).length());
     i = i + 1usize;
@@ -249,9 +249,9 @@ pub fn settle(soft &mut SoftBody, workers &mut Workers, below &LayerSurface, fra
 // Drop the stretch constraints between two pinned particles and the bends over four: a pin does not move, so the
 // constraint never does anything, and the colour batches are the shorter for it
 pub fn pruneRigid(soft &mut SoftBody) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < soft.dist.len() {
-    imm c = *soft.dist[k];
+    let c = *soft.dist[k];
     if *soft.invMass[usize.from(c.a)] == 0. and *soft.invMass[usize.from(c.b)] == 0. {
       soft.dist.swap(k, soft.dist.len() - 1usize);
       soft.dist.truncate(soft.dist.len() - 1usize);
@@ -261,7 +261,7 @@ pub fn pruneRigid(soft &mut SoftBody) {
   }
   k = 0usize;
   while k < soft.bend.len() {
-    imm c = *soft.bend[k];
+    let c = *soft.bend[k];
     if *soft.invMass[usize.from(c.a)] == 0. and *soft.invMass[usize.from(c.b)] == 0.
         and *soft.invMass[usize.from(c.c)] == 0. and *soft.invMass[usize.from(c.d)] == 0. {
       soft.bend.swap(k, soft.bend.len() - 1usize);
@@ -279,19 +279,19 @@ pub fn pruneRigid(soft &mut SoftBody) {
 // a substep clears the deepest penetration in a few substeps and cannot flip a particle across a fold.
 pub fn pushOutOfSurface(surface &LayerSurface, soft &mut SoftBody, maxMove f32) {
   if surface.nx == 0u32 { return; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < soft.pos.len() {
     if *soft.invMass[i] > 0. {
-      imm p = *soft.pos[i];
-      imm full = surface.pushOut(p);
+      let p = *soft.pos[i];
+      let full = surface.pushOut(p);
       if full.x != p.x or full.y != p.y or full.z != p.z {
-        imm delta = full - p;
-        imm len = delta.length();
-        imm q = if len > maxMove { p + delta * (maxMove / len); } else { full; };
+        let delta = full - p;
+        let len = delta.length();
+        let q = if len > maxMove { p + delta * (maxMove / len); } else { full; };
         soft.pos.set(i, q);
-        imm n = delta * (1. / len);
-        imm v = *soft.vel[i];
-        imm inward = v.dot(n);
+        let n = delta * (1. / len);
+        let v = *soft.vel[i];
+        let inward = v.dot(n);
         if inward < 0. { soft.vel.set(i, v - n * inward); }
       }
     }
@@ -303,47 +303,47 @@ pub fn pushOutOfSurface(surface &LayerSurface, soft &mut SoftBody, maxMove f32) 
 // layer) with the body's proxies grown by `inflate` (the thickness beneath). `threads` is how many threads the drape
 // simulation may use.
 pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, threads u32) Draped {
-  imm np = pattern.panels.len();
+  let np = pattern.panels.len();
   if np == 0usize { return failed("the pattern has no panels"); }
-  imm seen = rig.seenBones(&pattern.only, &pattern.ignore);
+  let seen = rig.seenBones(&pattern.only, &pattern.ignore);
   // 1. the flat grids, concatenated
-  mut flat = List[Vec2].empty();
-  mut base = List[usize].empty();
-  mut ok = true;
-  mut why = String.empty();
-  mut p = 0usize;
+  var flat = List[Vec2].empty();
+  var base = List[usize].empty();
+  var ok = true;
+  var why = String.empty();
+  var p = 0usize;
   while p < np {
-    imm g = flatGrid(pattern.panels[p]);
+    let g = flatGrid(pattern.panels[p]);
     if !g.ok { ok = false; why = g.why.copy(); break; }
     base.push(flat.len());
-    mut i = 0usize;
+    var i = 0usize;
     while i < g.pts.len() { flat.push(*g.pts[i]); i = i + 1usize; }
     p = p + 1usize;
   }
   if !ok { return failed(why.view()); }
-  imm nVert = flat.len();
+  let nVert = flat.len();
 
   // the atlas: the panels' flat boxes packed left to right in shelves
-  mut offsets = List[Vec2].empty();
-  mut boxMin = List[Vec2].empty();
-  mut atlasW = 0.4;
-  mut shelfX = 0.02;
-  mut shelfY = 0.02;
-  mut shelfH = 0.;
+  var offsets = List[Vec2].empty();
+  var boxMin = List[Vec2].empty();
+  var atlasW = 0.4;
+  var shelfX = 0.02;
+  var shelfY = 0.02;
+  var shelfH = 0.;
   p = 0usize;
   while p < np {
-    mut lo = *flat[*base[p]];
-    mut hi = lo;
-    imm cnt = (usize.from(pattern.panels[p].nu) + 1usize) * (usize.from(pattern.panels[p].nv) + 1usize);
-    mut i = 0usize;
+    var lo = *flat[*base[p]];
+    var hi = lo;
+    let cnt = (usize.from(pattern.panels[p].nu) + 1usize) * (usize.from(pattern.panels[p].nv) + 1usize);
+    var i = 0usize;
     while i < cnt {
       lo = lo.min(*flat[*base[p] + i]);
       hi = hi.max(*flat[*base[p] + i]);
       i = i + 1usize;
     }
     boxMin.push(lo);
-    imm w = hi.x - lo.x;
-    imm h = hi.y - lo.y;
+    let w = hi.x - lo.x;
+    let h = hi.y - lo.y;
     if shelfX + w > 2.4 and shelfX > 0.02 { shelfX = 0.02; shelfY = shelfY + shelfH + 0.02; shelfH = 0.; }
     offsets.push(new Vec2(shelfX, shelfY));
     shelfX = shelfX + w + 0.02;
@@ -351,26 +351,26 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
     atlasW = fmaxf(atlasW, shelfX);
     p = p + 1usize;
   }
-  imm atlasH = shelfY + shelfH + 0.02;
+  let atlasH = shelfY + shelfH + 0.02;
 
   // 2. union the stitched vertices
-  mut parent = List[u32].empty();
-  mut i0 = 0usize;
+  var parent = List[u32].empty();
+  var i0 = 0usize;
   while i0 < nVert { parent.push(u32.from(i0)); i0 = i0 + 1usize; }
-  mut s = 0usize;
+  var s = 0usize;
   while s < pattern.seams.len() {
-    imm sm = *pattern.seams[s];
+    let sm = *pattern.seams[s];
     if sm.panelA >= np or sm.panelB >= np { return failed("a seam names a panel that does not exist"); }
-    imm na = edgeCount(pattern.panels[sm.panelA].nu, pattern.panels[sm.panelA].nv, sm.edgeA);
-    imm nb = edgeCount(pattern.panels[sm.panelB].nu, pattern.panels[sm.panelB].nv, sm.edgeB);
+    let na = edgeCount(pattern.panels[sm.panelA].nu, pattern.panels[sm.panelA].nv, sm.edgeA);
+    let nb = edgeCount(pattern.panels[sm.panelB].nu, pattern.panels[sm.panelB].nv, sm.edgeB);
     if na != nb { return failed("a seam joins two edges with different numbers of vertices"); }
-    mut k = 0u32;
+    var k = 0u32;
     while k < na {
-      imm va = edgeIndex(*base[sm.panelA], pattern.panels[sm.panelA].nu, pattern.panels[sm.panelA].nv, sm.edgeA, k);
-      imm kb = if sm.reverse { na - 1u32 - k; } else { k; };
-      imm vb = edgeIndex(*base[sm.panelB], pattern.panels[sm.panelB].nu, pattern.panels[sm.panelB].nv, sm.edgeB, kb);
-      imm ra = findRoot(&mut parent, va);
-      imm rb = findRoot(&mut parent, vb);
+      let va = edgeIndex(*base[sm.panelA], pattern.panels[sm.panelA].nu, pattern.panels[sm.panelA].nv, sm.edgeA, k);
+      let kb = if sm.reverse { na - 1u32 - k; } else { k; };
+      let vb = edgeIndex(*base[sm.panelB], pattern.panels[sm.panelB].nu, pattern.panels[sm.panelB].nv, sm.edgeB, kb);
+      let ra = findRoot(&mut parent, va);
+      let rb = findRoot(&mut parent, vb);
       if ra != rb { parent.set(rb, u32.from(ra)); }
       k = k + 1u32;
     }
@@ -378,76 +378,76 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
   }
 
   // 3. each vertex's place on the body, and its looseness
-  mut start = List[Vec3].empty();
-  mut loosev = List[f32].empty();
-  mut reachv = List[f32].empty();
-  mut panelOfV = List[u32].empty();
+  var start = List[Vec3].empty();
+  var loosev = List[f32].empty();
+  var reachv = List[f32].empty();
+  var panelOfV = List[u32].empty();
   i0 = 0usize;
   while i0 < nVert { start.push(new Vec3(0., 0., 0.)); loosev.push(0.); reachv.push(0.); panelOfV.push(0u32); i0 = i0 + 1usize; }
   p = 0usize;
   while p < np {
-    imm nu = usize.from(pattern.panels[p].nu);
-    imm nv = usize.from(pattern.panels[p].nv);
-    imm cols = nu + 1usize;
-    imm pl = pattern.panels[p].place;
-    imm a = (*rig.restModels[pl.axisFrom]).translation;
-    imm b = (*rig.restModels[pl.axisTo]).translation;
-    imm axisDown = (b - a).normalize();
-    imm up = -axisDown;
-    imm f = (pl.face - axisDown * pl.face.dot(axisDown)).normalize();
-    imm r = up.cross(f);
+    let nu = usize.from(pattern.panels[p].nu);
+    let nv = usize.from(pattern.panels[p].nv);
+    let cols = nu + 1usize;
+    let pl = pattern.panels[p].place;
+    let a = (*rig.restModels[pl.axisFrom]).translation;
+    let b = (*rig.restModels[pl.axisTo]).translation;
+    let axisDown = (b - a).normalize();
+    let up = -axisDown;
+    let f = (pl.face - axisDown * pl.face.dot(axisDown)).normalize();
+    let r = up.cross(f);
     // the panel's length down the axis: the mean of its left and right edges
-    imm lMean = (edgeLength(&pattern.panels[p].left) + edgeLength(&pattern.panels[p].right)) * 0.5;
-    mut prev = List[f32].empty();
-    mut jj = 0usize;
+    let lMean = (edgeLength(&pattern.panels[p].left) + edgeLength(&pattern.panels[p].right)) * 0.5;
+    var prev = List[f32].empty();
+    var jj = 0usize;
     while jj <= nv {
-      imm v = f32.from(jj) / f32.from(nv);
-      imm sAxis = pl.shift + v * lMean;
-      imm c = a + axisDown * sAxis;
-      imm loo = looseAt(&pattern.panels[p].loose, v);
+      let v = f32.from(jj) / f32.from(nv);
+      let sAxis = pl.shift + v * lMean;
+      let c = a + axisDown * sAxis;
+      let loo = looseAt(&pattern.panels[p].loose, v);
       // the flat width of this row
-      mut width = 0.;
-      mut ii = 1usize;
+      var width = 0.;
+      var ii = 1usize;
       while ii <= nu {
         width = width + (*flat[*base[p] + jj * cols + ii]).distance(*flat[*base[p] + jj * cols + ii - 1usize]);
         ii = ii + 1usize;
       }
-      mut now = List[f32].empty();
+      var now = List[f32].empty();
       // the columns' angles round the axis. Where the axis is in the body the ring is measured (96 samples of its
       // radius) and the columns are placed so that the ring's length between two of them is the same share of the ring as
       // the flat row's: the cloth is wrapped by arc length, not by angle, so an elliptical chest does not strain the
       // cells at its ends. Otherwise (below the crotch) the ring is a flared circle and the angles are even.
-      mut thetas = List[f32].empty();
-      imm axisIn = !clearOf(rig, &seen, below, inflate, c, pl.gap);
+      var thetas = List[f32].empty();
+      let axisIn = !clearOf(rig, &seen, below, inflate, c, pl.gap);
       if axisIn {
-        imm m = 96usize;
-        mut ringTheta = List[f32].empty();
-        mut ringCum = List[f32].empty();
-        mut lastP = new Vec3(0., 0., 0.);
-        mut cum = 0.;
-        mut k = 0usize;
+        let m = 96usize;
+        var ringTheta = List[f32].empty();
+        var ringCum = List[f32].empty();
+        var lastP = new Vec3(0., 0., 0.);
+        var cum = 0.;
+        var k = 0usize;
         while k <= m {
-          imm th = (f32.from(k) / f32.from(m) - 0.5) * pl.arc;
-          imm dr = f * cos(th) + r * sin(th);
-          mut rd = fmaxf(marchOut(rig, &seen, below, inflate, c, dr, pl.gap), pl.minRadius);
+          let th = (f32.from(k) / f32.from(m) - 0.5) * pl.arc;
+          let dr = f * cos(th) + r * sin(th);
+          var rd = fmaxf(marchOut(rig, &seen, below, inflate, c, dr, pl.gap), pl.minRadius);
           if loo > TIGHT { rd = fmaxf(rd, width / pl.arc); }
-          imm pt = c + dr * rd;
+          let pt = c + dr * rd;
           if k > 0usize { cum = cum + pt.distance(lastP); }
           ringTheta.push(th);
           ringCum.push(cum);
           lastP = pt;
           k = k + 1usize;
         }
-        mut flatCum = 0.;
-        mut kk = 0usize;
+        var flatCum = 0.;
+        var kk = 0usize;
         ii = 0usize;
         while ii <= nu {
           if ii > 0usize { flatCum = flatCum + (*flat[*base[p] + jj * cols + ii]).distance(*flat[*base[p] + jj * cols + ii - 1usize]); }
-          imm target = if width > 1e-9 { flatCum / width * cum; } else { 0.; };
+          let target = if width > 1e-9 { flatCum / width * cum; } else { 0.; };
           while kk + 1usize < m and *ringCum[kk + 1usize] < target { kk = kk + 1usize; }
-          imm c0 = *ringCum[kk];
-          imm c1 = *ringCum[kk + 1usize];
-          imm tt = if c1 > c0 + 1e-9 { fclampf((target - c0) / (c1 - c0), 0., 1.); } else { 0.; };
+          let c0 = *ringCum[kk];
+          let c1 = *ringCum[kk + 1usize];
+          let tt = if c1 > c0 + 1e-9 { fclampf((target - c0) / (c1 - c0), 0., 1.); } else { 0.; };
           thetas.push(*ringTheta[kk] + (*ringTheta[kk + 1usize] - *ringTheta[kk]) * tt);
           ii = ii + 1usize;
         }
@@ -460,16 +460,16 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
       }
       ii = 0usize;
       while ii <= nu {
-        imm theta = *thetas[ii];
-        imm dir = f * cos(theta) + r * sin(theta);
+        let theta = *thetas[ii];
+        let dir = f * cos(theta) + r * sin(theta);
         // this vertex's looseness: the larger of the panel's across (u) and down (v)
-        imm lv = if pattern.panels[p].looseU.len() > 0usize {
+        let lv = if pattern.panels[p].looseU.len() > 0usize {
           fmaxf(loo, looseAt(&pattern.panels[p].looseU, f32.from(ii) / f32.from(nu)));
         } else {
           loo;
         };
-        imm exitT = marchOut(rig, &seen, below, inflate, c, dir, pl.gap);
-        mut rad = 0.;
+        let exitT = marchOut(rig, &seen, below, inflate, c, dir, pl.gap);
+        var rad = 0.;
         if exitT >= 0. {
           rad = exitT;
         } elif prev.len() > 0usize {
@@ -480,7 +480,7 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
         rad = fmaxf(rad, pl.minRadius);
         if lv > TIGHT { rad = fmaxf(rad, width / pl.arc); }
         now.push(rad);
-        imm vi = *base[p] + jj * cols + ii;
+        let vi = *base[p] + jj * cols + ii;
         start.set(vi, c + dir * rad);
         loosev.set(vi, lv);
         reachv.set(vi, pattern.panels[p].reach);
@@ -494,15 +494,15 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
   }
 
   // average the stitched vertices' places; the tightest looseness wins
-  mut sum = List[Vec3].empty();
-  mut cnt = List[u32].empty();
-  mut rootLoose = List[f32].empty();
-  mut rootReach = List[f32].empty();
+  var sum = List[Vec3].empty();
+  var cnt = List[u32].empty();
+  var rootLoose = List[f32].empty();
+  var rootReach = List[f32].empty();
   i0 = 0usize;
   while i0 < nVert { sum.push(new Vec3(0., 0., 0.)); cnt.push(0u32); rootLoose.push(10.); rootReach.push(0.); i0 = i0 + 1usize; }
   i0 = 0usize;
   while i0 < nVert {
-    imm rt = findRoot(&mut parent, i0);
+    let rt = findRoot(&mut parent, i0);
     sum.set(rt, *sum[rt] + *start[i0]);
     cnt.set(rt, *cnt[rt] + 1u32);
     if *loosev[i0] < *rootLoose[rt] { rootLoose.set(rt, *loosev[i0]); rootReach.set(rt, *reachv[i0]); }
@@ -510,9 +510,9 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
   }
 
   // 4. the mesh: places, uvs, triangles wound outward
-  mut mesh = Mesh.empty();
+  var mesh = Mesh.empty();
   // which edges of which panels are sewn to something; the others are free (a hem, a cuff, an opening)
-  mut seamed = List[bool].empty();
+  var seamed = List[bool].empty();
   i0 = 0usize;
   while i0 < np * 4usize { seamed.push(false); i0 = i0 + 1usize; }
   i0 = 0usize;
@@ -521,30 +521,30 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
     seamed.set(pattern.seams[i0].panelB * 4usize + usize.from(pattern.seams[i0].edgeB), true);
     i0 = i0 + 1usize;
   }
-  mut attrs = List[Vec4].empty();
+  var attrs = List[Vec4].empty();
   i0 = 0usize;
   while i0 < nVert {
-    imm rt = findRoot(&mut parent, i0);
+    let rt = findRoot(&mut parent, i0);
     mesh.positions.push(*sum[rt] * (1. / f32.from(*cnt[rt])));
-    imm pi_ = usize.from(*panelOfV[i0]);
-    imm onSheet = *flat[i0] - *boxMin[pi_] + *offsets[pi_];
+    let pi_ = usize.from(*panelOfV[i0]);
+    let onSheet = *flat[i0] - *boxMin[pi_] + *offsets[pi_];
     mesh.uvs.push(new Vec2(onSheet.x / atlasW, onSheet.y / atlasH));
     // the metres to each edge of its panel
-    imm pcols = usize.from(pattern.panels[pi_].nu) + 1usize;
-    imm inPanel = i0 - *base[pi_];
-    imm gi = inPanel % pcols;
-    imm gj = inPanel / pcols;
-    imm pu = f32.from(gi) / f32.from(pattern.panels[pi_].nu);
-    imm pv = f32.from(gj) / f32.from(pattern.panels[pi_].nv);
-    imm pw = (edgeLength(&pattern.panels[pi_].top) + edgeLength(&pattern.panels[pi_].bottom)) * 0.5;
-    imm ph = (edgeLength(&pattern.panels[pi_].left) + edgeLength(&pattern.panels[pi_].right)) * 0.5;
-    imm dTop = pv * ph;
-    imm dBottom = (1. - pv) * ph;
-    imm dLeft = pu * pw;
-    imm dRight = (1. - pu) * pw;
-    mut hem = 99.;
-    mut free = 99.;
-    mut seamD = 99.;
+    let pcols = usize.from(pattern.panels[pi_].nu) + 1usize;
+    let inPanel = i0 - *base[pi_];
+    let gi = inPanel % pcols;
+    let gj = inPanel / pcols;
+    let pu = f32.from(gi) / f32.from(pattern.panels[pi_].nu);
+    let pv = f32.from(gj) / f32.from(pattern.panels[pi_].nv);
+    let pw = (edgeLength(&pattern.panels[pi_].top) + edgeLength(&pattern.panels[pi_].bottom)) * 0.5;
+    let ph = (edgeLength(&pattern.panels[pi_].left) + edgeLength(&pattern.panels[pi_].right)) * 0.5;
+    let dTop = pv * ph;
+    let dBottom = (1. - pv) * ph;
+    let dLeft = pu * pw;
+    let dRight = (1. - pu) * pw;
+    var hem = 99.;
+    var free = 99.;
+    var seamD = 99.;
     if *seamed[pi_ * 4usize + usize.from(EDGE_TOP)] { seamD = fminf(seamD, dTop); } else { free = fminf(free, dTop); }
     if *seamed[pi_ * 4usize + usize.from(EDGE_BOTTOM)] { seamD = fminf(seamD, dBottom); } else { free = fminf(free, dBottom); hem = dBottom; }
     if *seamed[pi_ * 4usize + usize.from(EDGE_LEFT)] { seamD = fminf(seamD, dLeft); } else { free = fminf(free, dLeft); }
@@ -554,29 +554,29 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
   }
   p = 0usize;
   while p < np {
-    imm nu = usize.from(pattern.panels[p].nu);
-    imm nv = usize.from(pattern.panels[p].nv);
-    imm cols = nu + 1usize;
-    imm pl = pattern.panels[p].place;
+    let nu = usize.from(pattern.panels[p].nu);
+    let nv = usize.from(pattern.panels[p].nv);
+    let cols = nu + 1usize;
+    let pl = pattern.panels[p].place;
     // which way is outward at the middle of the panel
-    imm mid = *base[p] + (nv / 2usize) * cols + nu / 2usize;
-    imm a0 = *mesh.positions[mid];
-    imm a1 = *mesh.positions[mid + 1usize];
-    imm a2 = *mesh.positions[mid + cols];
-    imm n3 = (a1 - a0).cross(a2 - a0);
-    imm ax0 = (*rig.restModels[pl.axisFrom]).translation;
-    imm ax1 = (*rig.restModels[pl.axisTo]).translation;
-    imm axd = (ax1 - ax0).normalize();
-    imm radial = (a0 - ax0) - axd * (a0 - ax0).dot(axd);
-    imm flip = n3.dot(radial) < 0.;
-    mut j = 0usize;
+    let mid = *base[p] + (nv / 2usize) * cols + nu / 2usize;
+    let a0 = *mesh.positions[mid];
+    let a1 = *mesh.positions[mid + 1usize];
+    let a2 = *mesh.positions[mid + cols];
+    let n3 = (a1 - a0).cross(a2 - a0);
+    let ax0 = (*rig.restModels[pl.axisFrom]).translation;
+    let ax1 = (*rig.restModels[pl.axisTo]).translation;
+    let axd = (ax1 - ax0).normalize();
+    let radial = (a0 - ax0) - axd * (a0 - ax0).dot(axd);
+    let flip = n3.dot(radial) < 0.;
+    var j = 0usize;
     while j < nv {
-      mut i = 0usize;
+      var i = 0usize;
       while i < nu {
-        imm va = u32.from(*base[p] + j * cols + i);
-        imm vb = va + 1u32;
-        imm vc = va + u32.from(cols);
-        imm vd = vc + 1u32;
+        let va = u32.from(*base[p] + j * cols + i);
+        let vb = va + 1u32;
+        let vc = va + u32.from(cols);
+        let vd = vc + 1u32;
         // (va, vb, vc) has the normal n3 (a0 a1 a2 above); when n3 points inward the other winding is outward
         if !flip {
           mesh.indices.push(va); mesh.indices.push(vb); mesh.indices.push(vc);
@@ -591,56 +591,56 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
     }
     p = p + 1usize;
   }
-  mut fabric = Fabric.light();
+  var fabric = Fabric.light();
   fabric.density = pattern.density;
   fabric.stretch = pattern.stretch;
   fabric.shear = pattern.shear;
   fabric.bend = pattern.bend;
   fabric.thickness = pattern.thickness;
-  mut soft = fromMesh(&mesh, &fabric, 1e-6, 1.);
+  var soft = fromMesh(&mesh, &fabric, 1e-6, 1.);
 
   // 5. sew: the rest lengths are the pattern's flat lengths
-  mut lenSum = Dict[u64, f32].deterministic();
-  mut lenCnt = Dict[u64, f32].deterministic();
-  mut t = 0usize;
+  var lenSum = Dict[u64, f32].deterministic();
+  var lenCnt = Dict[u64, f32].deterministic();
+  var t = 0usize;
   while t + 2usize < mesh.indices.len() {
-    mut e = 0usize;
+    var e = 0usize;
     while e < 3usize {
-      imm va = usize.from(*mesh.indices[t + e]);
-      imm vb = usize.from(*mesh.indices[t + (e + 1usize) % 3usize]);
-      imm key = pairKey(*soft.vertexMap[va], *soft.vertexMap[vb]);
-      imm l = (*flat[va]).distance(*flat[vb]);
-      mut s0 = 0.;
-      mut c0 = 0.;
-      match lenSum.getCopy(&key) { case imm x Some { s0 = x; } case is None { } }
-      match lenCnt.getCopy(&key) { case imm x Some { c0 = x; } case is None { } }
+      let va = usize.from(*mesh.indices[t + e]);
+      let vb = usize.from(*mesh.indices[t + (e + 1usize) % 3usize]);
+      let key = pairKey(*soft.vertexMap[va], *soft.vertexMap[vb]);
+      let l = (*flat[va]).distance(*flat[vb]);
+      var s0 = 0.;
+      var c0 = 0.;
+      match lenSum.getCopy(&key) { case let x Some { s0 = x; } case is None { } }
+      match lenCnt.getCopy(&key) { case let x Some { c0 = x; } case is None { } }
       lenSum.insert(key, s0 + l);
       lenCnt.insert(key, c0 + 1.);
       e = e + 1usize;
     }
     t = t + 3usize;
   }
-  mut k = 0usize;
+  var k = 0usize;
   while k < soft.dist.len() {
-    imm key = pairKey(soft.dist[k].a, soft.dist[k].b);
-    mut s0 = 0.;
-    mut c0 = 0.;
-    match lenSum.getCopy(&key) { case imm x Some { s0 = x; } case is None { } }
-    match lenCnt.getCopy(&key) { case imm x Some { c0 = x; } case is None { } }
+    let key = pairKey(soft.dist[k].a, soft.dist[k].b);
+    var s0 = 0.;
+    var c0 = 0.;
+    match lenSum.getCopy(&key) { case let x Some { s0 = x; } case is None { } }
+    match lenCnt.getCopy(&key) { case let x Some { c0 = x; } case is None { } }
     if c0 > 0. { soft.dist[k].rest = s0 / c0; }
     k = k + 1usize;
   }
   soft.useCurvatureBending();
 
   // per particle: looseness and reach from its vertices (any of them: all of a particle's are the same root)
-  mut looseP = List[f32].empty();
-  mut reachP = List[f32].empty();
-  mut ip = 0usize;
+  var looseP = List[f32].empty();
+  var reachP = List[f32].empty();
+  var ip = 0usize;
   while ip < soft.pos.len() { looseP.push(1.); reachP.push(0.); ip = ip + 1usize; }
   i0 = 0usize;
   while i0 < nVert {
-    imm rt = findRoot(&mut parent, i0);
-    imm pid = usize.from(*soft.vertexMap[i0]);
+    let rt = findRoot(&mut parent, i0);
+    let pid = usize.from(*soft.vertexMap[i0]);
     looseP.set(pid, *rootLoose[rt]);
     reachP.set(pid, *rootReach[rt]);
     i0 = i0 + 1usize;
@@ -661,21 +661,21 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
     ip = ip + 1usize;
   }
   rig.collidersSeen(&rig.restModels, inflate, &seen, &mut soft.colliders);
-  mut workers = if threads > 1u32 { Workers.make(threads); } else { Workers.none(); };
-  imm frames = 150u32;
-  imm fastest = settle(&mut soft, &mut workers, below, frames);
+  var workers = if threads > 1u32 { Workers.make(threads); } else { Workers.none(); };
+  let frames = 150u32;
+  let fastest = settle(&mut soft, &mut workers, below, frames);
   workers.stop();
 
   // measure: the longest edge against its rest; particles left inside a proxy
-  mut worst = 0.;
+  var worst = 0.;
   k = 0usize;
   while k < soft.dist.len() {
-    imm c = *soft.dist[k];
-    imm l = (*soft.pos[usize.from(c.a)]).distance(*soft.pos[usize.from(c.b)]);
+    let c = *soft.dist[k];
+    let l = (*soft.pos[usize.from(c.a)]).distance(*soft.pos[usize.from(c.b)]);
     if c.rest > 1e-6 { worst = fmaxf(worst, l / c.rest - 1.); }
     k = k + 1usize;
   }
-  mut inside = 0u32;
+  var inside = 0u32;
   ip = 0usize;
   while ip < soft.pos.len() {
     if rig.distanceSeen(&rig.restModels, inflate, &seen, *soft.pos[ip]) < 0. { inside = inside + 1u32; }
@@ -683,9 +683,9 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
   }
 
   // 7. settle to rest and bind: velocities zeroed, skin weights from the body
-  mut bind = List[Vec3].empty();
-  mut joints = List[u32].empty();
-  mut weights = List[f32].empty();
+  var bind = List[Vec3].empty();
+  var joints = List[u32].empty();
+  var weights = List[f32].empty();
   ip = 0usize;
   while ip < soft.pos.len() {
     soft.vel.set(ip, new Vec3(0., 0., 0.));
@@ -695,7 +695,7 @@ pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, t
     transferSkin(rig, &seen, *soft.pos[ip], &mut joints, &mut weights);
     ip = ip + 1usize;
   }
-  mut g = Garment.empty();
+  var g = Garment.empty();
   g.name = pattern.name.copy();
   g.layer = pattern.layer;
   g.thickness = pattern.thickness;

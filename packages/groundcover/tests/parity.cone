@@ -36,13 +36,13 @@ import render use *;
 import groundcover use *;
 
 fn hilly() GroundMaps {
-  mut m = GroundMaps.create(0., 0., 100., 100u32);
-  mut j = 0u32;
+  var m = GroundMaps.create(0., 0., 100., 100u32);
+  var j = 0u32;
   while j < 100u32 {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 100u32 {
-      imm x = m.worldX(i);
-      imm z = m.worldZ(j);
+      let x = m.worldX(i);
+      let z = m.worldZ(j);
       m.set(SIGNAL_HEIGHT, i, j, 3. * sin(x / 17.) + 2. * cos(z / 13.) + 0.04 * x);
       m.set(SIGNAL_MOISTURE, i, j, 0.5 + 0.5 * sin(x / 23. + z / 31.));
       i = i + 1u32;
@@ -51,12 +51,12 @@ fn hilly() GroundMaps {
   }
   m.deriveSlope();
   m.deriveExposure(new Vec3(0.5, 0.6, 0.3).normalize(), 40.);
-  mut path = List[Vec2].empty();
+  var path = List[Vec2].empty();
   path.push(new Vec2(5., 10.));
   path.push(new Vec2(40., 55.));
   path.push(new Vec2(95., 70.));
   m.addPolylineDistance(SIGNAL_PATH, &path, 0.8);
-  mut stream = List[Vec2].empty();
+  var stream = List[Vec2].empty();
   stream.push(new Vec2(0., 80.));
   stream.push(new Vec2(50., 85.));
   stream.push(new Vec2(100., 75.));
@@ -69,14 +69,14 @@ fn hilly() GroundMaps {
 }
 
 fn worldTypes() List[CoverType] {
-  mut types = List[CoverType].empty();
-  mut shrub = CoverType.meshKind("shrub");
+  var types = List[CoverType].empty();
+  var shrub = CoverType.meshKind("shrub");
   shrub.density = 0.01;
   shrub.cellFactor = 1.;
   shrub.slope = Window.atMost(25., 5.);
   shrub.maxInstances = 4000u32;
   types.push(shrub);
-  mut grass = CoverType.grass("grass");
+  var grass = CoverType.grass("grass");
   grass.density = 3.;
   grass.rings = 2u32;
   grass.ringEnd = [20., 60., 60.];
@@ -91,7 +91,7 @@ fn worldTypes() List[CoverType] {
   grass.maxInstances = 8000u32;
   grass.avoid(0u32, NEAR, 2.5, 1.);
   types.push(grass);
-  mut flowers = CoverType.flowerKind("flowers");
+  var flowers = CoverType.flowerKind("flowers");
   flowers.density = 0.4;
   flowers.perCluster = 6u32;
   flowers.clusterRadius = 0.8;
@@ -101,7 +101,7 @@ fn worldTypes() List[CoverType] {
   flowers.maxInstances = 4000u32;
   flowers.avoid(1u32, SHARE, 0., 0.3);
   types.push(flowers);
-  mut moss = CoverType.patchKind("moss");
+  var moss = CoverType.patchKind("moss");
   moss.density = 0.3;
   moss.canopy = Window.atLeast(0.3, 0.2);
   moss.range = 40.;
@@ -116,26 +116,26 @@ fn near(got f32, want f32, scale f32) bool {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("groundcover parity");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var instance = Instance.create("groundcover parity");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  imm report = (libc.getenv("GROUNDCOVER_PARITY_REPORT") as usize) != 0usize;
-  mut adapter = instance.requestAdapter(&none, preference);
+  let report = (libc.getenv("GROUNDCOVER_PARITY_REPORT") as usize) != 0usize;
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  imm maps = hilly();
-  mut cover = CoverRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  let maps = hilly();
+  var cover = CoverRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(cover.isValid(), "the renderer");
-  imm box = mesh.Mesh.cube(1.);
-  imm boxIndex = cover.addMesh(&box);
+  let box = mesh.Mesh.cube(1.);
+  let boxIndex = cover.addMesh(&box);
   expectInt(i64.from(boxIndex), 0i64, "the first mesh is 0");
-  mut typesWithMesh = worldTypes();
+  var typesWithMesh = worldTypes();
   typesWithMesh[0usize].meshes = [boxIndex, boxIndex, boxIndex];
   require(cover.build(&mut device, &typesWithMesh, &maps), "build");
   if report {
@@ -144,16 +144,16 @@ fn main() i32 {
     printStr("\nbatch  cpu  gpu  matched  worst\n");
   }
 
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.lookAt(new Vec3(50., 30., 50.), new Vec3(60., 0., 60.), new Vec3(0., 1., 0.));
-  imm light = Light.directional(new Vec3(-0.4, -1., -0.3), Color.gray(3.), Color.gray(0.3));
-  imm e = new CoverEnvironment(light: light, cull: false);
+  let light = Light.directional(new Vec3(-0.4, -1., -0.3), Color.gray(3.), Color.gray(0.3));
+  let e = new CoverEnvironment(light: light, cull: false);
   cover.writeFrame(&mut device, &camera, 1.5, &e);
-  imm batches = cover.batchCount;
-  mut instRead = device.createBuffer(cover.instances.size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut argRead = device.createBuffer(u64.from(batches) * 32u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let batches = cover.batchCount;
+  var instRead = device.createBuffer(cover.instances.size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var argRead = device.createBuffer(u64.from(batches) * 32u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   {
-    mut encoder = device.createCommandEncoder();
+    var encoder = device.createCommandEncoder();
     cover.place(&mut encoder, 50., 50.);
     encoder.copyBufferToBuffer(&cover.instances, 0u64, &instRead, 0u64, cover.instances.size);
     encoder.copyBufferToBuffer(&cover.args, 0u64, &argRead, 0u64, u64.from(batches) * 32u64);
@@ -161,46 +161,46 @@ fn main() i32 {
     device.endFrame();
     device.waitIdle();
   }
-  imm words = argRead.mappedRange() as *u32;
-  imm floats = instRead.mappedRange() as *f32;
-  mut b = 0u32;
-  mut base = 0usize;
-  mut t = 0usize;
+  let words = argRead.mappedRange() as *u32;
+  let floats = instRead.mappedRange() as *f32;
+  var b = 0u32;
+  var base = 0usize;
+  var t = 0usize;
   while t < typesWithMesh.len() {
-    mut ring = 0u32;
+    var ring = 0u32;
     while ring < typesWithMesh[t].rings {
-      mut cpu = List[Placed].empty();
+      var cpu = List[Placed].empty();
       placeRing(&typesWithMesh, t, ring, &maps, 50., 50., &mut cpu);
-      imm raw = usize.from(*(words + (usize.from(b) * 8usize + 5usize)));
-      imm cap = usize.from(typesWithMesh[t].maxInstances);
-      imm have = if raw < cap { raw; } else { cap; };
-      mut matched = 0usize;
-      mut worst = 0f32;
-      mut i = 0usize;
+      let raw = usize.from(*(words + (usize.from(b) * 8usize + 5usize)));
+      let cap = usize.from(typesWithMesh[t].maxInstances);
+      let have = if raw < cap { raw; } else { cap; };
+      var matched = 0usize;
+      var worst = 0f32;
+      var i = 0usize;
       while i < cpu.len() {
-        imm c = cpu[i];
-        mut found = false;
-        mut g = 0usize;
+        let c = cpu[i];
+        var found = false;
+        var g = 0usize;
         while g < have and !found {
-          imm at = (base + g) * 12usize;
+          let at = (base + g) * 12usize;
           if (*(floats + (at + 8usize)) as u32) == c.seed {
             found = true;
-            imm gx = *(floats + at);
-            imm gy = *(floats + (at + 1usize));
-            imm gz = *(floats + (at + 2usize));
-            imm gh = *(floats + (at + 3usize));
-            imm gyaw = *(floats + (at + 4usize));
-            imm gw = *(floats + (at + 5usize));
-            imm glean = *(floats + (at + 6usize));
-            imm gtint = *(floats + (at + 7usize));
-            imm gnx = *(floats + (at + 9usize));
-            imm gnz = *(floats + (at + 10usize));
-            imm gexp = *(floats + (at + 11usize));
-            imm ok = near(gx, c.x, c.x) and near(gy, c.y, c.y) and near(gz, c.z, c.z) and near(gh, c.height, c.height)
+            let gx = *(floats + at);
+            let gy = *(floats + (at + 1usize));
+            let gz = *(floats + (at + 2usize));
+            let gh = *(floats + (at + 3usize));
+            let gyaw = *(floats + (at + 4usize));
+            let gw = *(floats + (at + 5usize));
+            let glean = *(floats + (at + 6usize));
+            let gtint = *(floats + (at + 7usize));
+            let gnx = *(floats + (at + 9usize));
+            let gnz = *(floats + (at + 10usize));
+            let gexp = *(floats + (at + 11usize));
+            let ok = near(gx, c.x, c.x) and near(gy, c.y, c.y) and near(gz, c.z, c.z) and near(gh, c.height, c.height)
               and near(gyaw, c.yaw, 6.3) and near(gw, c.width, c.width) and near(glean, c.lean, 1.) and near(gtint, c.tint, 1.)
               and near(gnx, c.nx, 1.) and near(gnz, c.nz, 1.) and near(gexp, c.exposure, 1.);
             if ok { matched = matched + 1usize; }
-            imm d = libc.fabsf(gx - c.x);
+            let d = libc.fabsf(gx - c.x);
             if d > worst { worst = d; }
           }
           g = g + 1usize;
@@ -212,7 +212,7 @@ fn main() i32 {
         printStr("  "); printUInt(u64.from(matched)); printStr("  "); printFloat(f64.from(worst)); printStr("\n");
       }
       expect(cpu.len() > 30usize, "the batch has instances to compare");
-      imm slack = 1usize + cpu.len() / 500usize;
+      let slack = 1usize + cpu.len() / 500usize;
       expect(raw + slack >= cpu.len() and raw <= cpu.len() + slack, "the counts agree to 0.2%");
       expect(matched + slack >= cpu.len(), "every CPU instance has its GPU twin, to 0.2%");
       base = base + cap;

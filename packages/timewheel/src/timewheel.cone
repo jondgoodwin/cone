@@ -216,7 +216,7 @@ fn lowestBit(x u64) u64 {
 // two differ, and the top level for anything a whole span or more away.
 // masked is never 0, so its highest set bit is 63 less its leading zeros
 fn levelFor(elapsed u64, when u64) u64 {
-  mut masked = (elapsed ^ when) | slotMask;
+  var masked = (elapsed ^ when) | slotMask;
   if masked >= span { masked = span - 1u64; }
   u64.from(63u32 - masked.leadingZeros()) / slotBits;
 }
@@ -249,10 +249,10 @@ pub struct Expiry {
 // Whether a goes strictly before b: deadline order, ties in the order armed
 // (no two timers have the same seq, so this is a total order)
 fn goesBefore(a *Expiry, b *Expiry) bool {
-  imm x = a as &Expiry;
-  imm y = b as &Expiry;
-  imm xn = x.deadline.nanos();
-  imm yn = y.deadline.nanos();
+  let x = a as &Expiry;
+  let y = b as &Expiry;
+  let xn = x.deadline.nanos();
+  let yn = y.deadline.nanos();
   xn < yn or (xn == yn and x.seq < y.seq);
 }
 
@@ -261,17 +261,17 @@ fn goesBefore(a *Expiry, b *Expiry) bool {
 // order) costs one pass; a few are sorted by insertion; more by merging runs
 // of 16, each sorted by insertion, back and forth between the blocks
 fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
-  mut i = 1usize;
+  var i = 1usize;
   while i < n and !goesBefore(p + i, p + (i - 1usize)) { i = i + 1usize; }
   if i >= n { return; }
   // Insertion sort of each run of 16
-  mut lo = 0usize;
+  var lo = 0usize;
   while lo < n {
-    imm hi = if lo + 16usize < n {lo + 16usize;} else {n;};
-    mut j = lo + 1usize;
+    let hi = if lo + 16usize < n {lo + 16usize;} else {n;};
+    var j = lo + 1usize;
     while j < hi {
-      imm held = *(p + j);
-      mut k = j;
+      let held = *(p + j);
+      var k = j;
       while k > lo and goesBefore(&held as *Expiry, p + (k - 1usize)) {
         *(p + k) = *(p + (k - 1usize));
         k = k - 1usize;
@@ -282,17 +282,17 @@ fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
     lo = hi;
   }
   // Merge runs of width, doubling, between the two blocks
-  mut from = p;
-  mut to = spare;
-  mut width = 16usize;
+  var from = p;
+  var to = spare;
+  var width = 16usize;
   while width < n {
     lo = 0usize;
     while lo < n {
-      imm mid = if lo + width < n {lo + width;} else {n;};
-      imm hi = if mid + width < n {mid + width;} else {n;};
-      mut a = lo;
-      mut b = mid;
-      mut k = lo;
+      let mid = if lo + width < n {lo + width;} else {n;};
+      let hi = if mid + width < n {mid + width;} else {n;};
+      var a = lo;
+      var b = mid;
+      var k = lo;
       while a < mid and b < hi {
         if goesBefore(from + b, from + a) { *(to + k) = *(from + b); b = b + 1usize; }
         else { *(to + k) = *(from + a); a = a + 1usize; }
@@ -302,13 +302,13 @@ fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
       while b < hi { *(to + k) = *(from + b); b = b + 1usize; k = k + 1usize; }
       lo = hi;
     }
-    imm was = from;
+    let was = from;
     from = to;
     to = was;
     width = width * 2usize;
   }
   if from != p {
-    mut c = 0usize;
+    var c = 0usize;
     while c < n { *(p + c) = *(from + c); c = c + 1usize; }
   }
 }
@@ -411,7 +411,7 @@ pub struct Wheel is Sendable {
   // close together fire in one wake. Whole ticks; less than two is none
   pub fn setSlop(self &mut, lane u32, d Duration) {
     assert(lane < lanes, "a lane is below timewheel.lanes");
-    imm t = d.nanos() / tickNanos;
+    let t = d.nanos() / tickNanos;
     slop[usize.from(lane)] = if t < 0i64 {0u64;} else {u64.from(t);};
   }
   pub fn slopOf(self &, lane u32) Duration {
@@ -432,14 +432,14 @@ pub struct Wheel is Sendable {
   // the lane's slop
   pub fn insertIn(self &mut, lane u32, at Instant, token u64) TimerId {
     assert(lane < lanes, "a lane is below timewheel.lanes");
-    imm ns = at.nanos();
+    let ns = at.nanos();
     if ns - nowNs < tickNanos { return self.insertPrecise(at, token); }
     // The tick at or after 'at', then the lane's grid at or after that
-    imm t = ns - origin;
-    mut fire = u64.from((t + tickNanos - 1i64) / tickNanos);
-    imm g = slop[usize.from(lane)];
+    let t = ns - origin;
+    var fire = u64.from((t + tickNanos - 1i64) / tickNanos);
+    let g = slop[usize.from(lane)];
     if g > 1u64 { fire = ((fire + g - 1u64) / g) * g; }
-    imm i = self.alloc(ns, token);
+    let i = self.alloc(ns, token);
     ((ents + usize.from(i)) as &mut Entry).fire = fire;
     self.place(i);
     armed = armed + 1u64;
@@ -449,7 +449,7 @@ pub struct Wheel is Sendable {
   // Arm a timer that fires on time, however far off: it goes in the precise
   // set, which the loop drives by the high-resolution timer
   pub fn insertPrecise(self &mut, at Instant, token u64) TimerId {
-    imm i = self.alloc(at.nanos(), token);
+    let i = self.alloc(at.nanos(), token);
     self.heapPush(i);
     armed = armed + 1u64;
     armedPrecise = armedPrecise + 1u64;
@@ -460,8 +460,8 @@ pub struct Wheel is Sendable {
   // nothing done, if it has fired or been cancelled already
   pub fn cancel(self &mut, id TimerId) bool {
     if !self.isPending(id) { return false; }
-    imm i = id.index;
-    imm p = (ents + usize.from(i)) as &mut Entry;
+    let i = id.index;
+    let p = (ents + usize.from(i)) as &mut Entry;
     if p.state == stWheel { self.unlink(i); } else { self.heapRemove(p.pos); }
     self.release(i);
     cancelled = cancelled + 1u64;
@@ -471,7 +471,7 @@ pub struct Wheel is Sendable {
   // Whether a timer is armed and has neither fired nor been cancelled
   pub fn isPending(self &, id TimerId) bool {
     if id.index >= high { return false; }
-    imm p = (ents + usize.from(id.index)) as &Entry;
+    let p = (ents + usize.from(id.index)) as &Entry;
     p.gen == id.gen and p.state != stFree;
   }
 
@@ -487,12 +487,12 @@ pub struct Wheel is Sendable {
   // The wheel's is never later than the timer it is for; it may be earlier,
   // a tick where a far timer moves down a level and nothing fires
   pub fn nextExpiry(self &) Option[Instant] {
-    imm d = self.wheelNext();
+    let d = self.wheelNext();
     if heapLen == 0u32 {
       if d == noTick { return None; }
       return Some[Instant](self.tickInstant(d));
     }
-    imm p = ((ents + usize.from(*(heap))) as &Entry).at;
+    let p = ((ents + usize.from(*(heap))) as &Entry).at;
     if d != noTick and self.tickInstant(d).nanos() < p {
       return Some[Instant](self.tickInstant(d));
     }
@@ -508,7 +508,7 @@ pub struct Wheel is Sendable {
 
   // The next tick the wheel needs, None when it holds nothing
   pub fn nextTimeout(self &) Option[Instant] {
-    imm d = self.wheelNext();
+    let d = self.wheelNext();
     if d == noTick { return None; }
     Some[Instant](self.tickInstant(d));
   }
@@ -522,22 +522,22 @@ pub struct Wheel is Sendable {
   // given is taken as that one: time does not go back
   pub fn expired(self &mut, now Instant, out &mut List[Expiry]) usize {
     if now.nanos() > nowNs { nowNs = now.nanos(); }
-    imm nowTick = u64.from((nowNs - origin) / tickNanos);
+    let nowTick = u64.from((nowNs - origin) / tickNanos);
     // The precise set: everything at or before now
     while heapLen > 0u32 {
-      imm top = *(heap);
-      imm p = (ents + usize.from(top)) as &Entry;
+      let top = *(heap);
+      let p = (ents + usize.from(top)) as &Entry;
       if p.at > nowNs { break; }
       self.heapRemove(0u32);
       self.deliver(top);
     }
     // The wheel: each slot due, in order, until the next is after now
     while live > heapLen {
-      mut lvl = 0u64;
-      mut best = noTick;
-      mut bestLvl = 0u64;
+      var lvl = 0u64;
+      var best = noTick;
+      var bestLvl = 0u64;
       while lvl < u64.from(levels) {
-        imm d = self.levelNext(lvl);
+        let d = self.levelNext(lvl);
         if d < best { best = d; bestLvl = lvl; }
         lvl = lvl + 1u64;
       }
@@ -545,11 +545,11 @@ pub struct Wheel is Sendable {
       self.process(bestLvl, best);
     }
     if nowTick > elapsed { elapsed = nowTick; }
-    imm n = usize.from(batchLen);
+    let n = usize.from(batchLen);
     if n == 0usize { return 0usize; }
     sortExpiries(batch, spare, n);
     out.reserve(n);
-    mut k = 0usize;
+    var k = 0usize;
     while k < n {
       out.push(*(batch + k));
       k = k + 1usize;
@@ -572,7 +572,7 @@ pub struct Wheel is Sendable {
 
   // A fresh entry, out of the free list or the block's end
   fn alloc(self &mut, at i64, token u64) u32 {
-    mut i = free;
+    var i = free;
     if i != noEntry {
       free = ((ents + usize.from(i)) as &Entry).next;
     }
@@ -582,7 +582,7 @@ pub struct Wheel is Sendable {
       high = high + 1u32;
       mem.writeRaw(ents + usize.from(i), new Entry(0i64, 0u64, 0u64, 0u64, noEntry, noEntry, 1u32, stFree, 0u32));
     }
-    imm p = (ents + usize.from(i)) as &mut Entry;
+    let p = (ents + usize.from(i)) as &mut Entry;
     p.at = at;
     p.token = token;
     p.seq = seq;
@@ -596,7 +596,7 @@ pub struct Wheel is Sendable {
   // An entry back on the free list, its generation moved on so that no id
   // of the timer it held names it again
   fn release(self &mut, i u32) {
-    imm p = (ents + usize.from(i)) as &mut Entry;
+    let p = (ents + usize.from(i)) as &mut Entry;
     p.gen = if p.gen == 4294967295u32 {1u32;} else {p.gen + 1u32;};
     p.state = stFree;
     p.next = free;
@@ -605,8 +605,8 @@ pub struct Wheel is Sendable {
   }
 
   fn grow(self &mut) {
-    imm want = if cap == 0u32 {64u32;} else {cap * 2u32;};
-    imm fresh = libc.realloc(ents as *u8, usize.from(want) * mem.sizeof[Entry]());
+    let want = if cap == 0u32 {64u32;} else {cap * 2u32;};
+    let fresh = libc.realloc(ents as *u8, usize.from(want) * mem.sizeof[Entry]());
     if fresh as usize == 0usize { panic("timewheel: out of memory"); }
     ents = fresh as *Entry;
     cap = want;
@@ -614,11 +614,11 @@ pub struct Wheel is Sendable {
 
   // Put entry i, whose fire tick is after elapsed, in its slot
   fn place(self &mut, i u32) {
-    imm p = (ents + usize.from(i)) as &mut Entry;
-    imm lvl = levelFor(elapsed, p.fire);
-    imm slot = (p.fire >> (slotBits * lvl)) & slotMask;
-    imm k = usize.from(lvl * 64u64 + slot);
-    imm h = heads[k];
+    let p = (ents + usize.from(i)) as &mut Entry;
+    let lvl = levelFor(elapsed, p.fire);
+    let slot = (p.fire >> (slotBits * lvl)) & slotMask;
+    let k = usize.from(lvl * 64u64 + slot);
+    let h = heads[k];
     p.state = stWheel;
     p.pos = u32.from(k);
     p.prev = noEntry;
@@ -630,15 +630,15 @@ pub struct Wheel is Sendable {
 
   // Take entry i out of its slot's list
   fn unlink(self &mut, i u32) {
-    imm p = (ents + usize.from(i)) as &Entry;
-    imm k = usize.from(p.pos);
+    let p = (ents + usize.from(i)) as &Entry;
+    let k = usize.from(p.pos);
     if p.prev != noEntry {
       ((ents + usize.from(p.prev)) as &mut Entry).next = p.next;
     }
     else {
       heads[k] = p.next;
       if p.next == noEntry {
-        imm lvl = k / 64usize;
+        let lvl = k / 64usize;
         occ[lvl] = occ[lvl] & ~(1u64 << u64.from(k % 64usize));
       }
     }
@@ -649,16 +649,16 @@ pub struct Wheel is Sendable {
 
   // The tick of a level's next occupied slot, or noTick if it is empty
   fn levelNext(self &, lvl u64) u64 {
-    imm bits = occ[usize.from(lvl)];
+    let bits = occ[usize.from(lvl)];
     if bits == 0u64 { return noTick; }
-    imm shift = slotBits * lvl;
-    imm nowSlot = (elapsed >> shift) & slotMask;
-    imm slotRange = 1u64 << shift;
-    imm levelRange = slotRange << slotBits;
-    imm levelStart = elapsed & ~(levelRange - 1u64);
+    let shift = slotBits * lvl;
+    let nowSlot = (elapsed >> shift) & slotMask;
+    let slotRange = 1u64 << shift;
+    let levelRange = slotRange << slotBits;
+    let levelStart = elapsed & ~(levelRange - 1u64);
     // The slots after now's, in this turn of the level: none after the last
     // slot, where the shift is by 64
-    imm ahead = bits >> (nowSlot + 1u64);
+    let ahead = bits >> (nowSlot + 1u64);
     if ahead != 0u64 {
       return levelStart + (nowSlot + 1u64 + lowestBit(ahead)) * slotRange;
     }
@@ -670,10 +670,10 @@ pub struct Wheel is Sendable {
 
   // The next tick the wheel needs, or noTick
   fn wheelNext(self &) u64 {
-    mut best = noTick;
-    mut lvl = 0u64;
+    var best = noTick;
+    var lvl = 0u64;
     while lvl < u64.from(levels) {
-      imm d = self.levelNext(lvl);
+      let d = self.levelNext(lvl);
       if d < best { best = d; }
       lvl = lvl + 1u64;
     }
@@ -683,15 +683,15 @@ pub struct Wheel is Sendable {
   // The wheel reaches tick d, a slot's start at level lvl: each of the
   // slot's timers due by d fires, and the rest move down a level
   fn process(self &mut, lvl u64, d u64) {
-    imm slot = (d >> (slotBits * lvl)) & slotMask;
-    imm k = usize.from(lvl * 64u64 + slot);
-    mut i = heads[k];
+    let slot = (d >> (slotBits * lvl)) & slotMask;
+    let k = usize.from(lvl * 64u64 + slot);
+    var i = heads[k];
     heads[k] = noEntry;
     occ[usize.from(lvl)] = occ[usize.from(lvl)] & ~(1u64 << slot);
     elapsed = d;
     while i != noEntry {
-      imm p = (ents + usize.from(i)) as &Entry;
-      imm nx = p.next;
+      let p = (ents + usize.from(i)) as &Entry;
+      let nx = p.next;
       if p.fire <= d {
         self.deliver(i);
       }
@@ -705,12 +705,12 @@ pub struct Wheel is Sendable {
 
   // Entry i fires: into the batch, and back to the free list
   fn deliver(self &mut, i u32) {
-    imm p = (ents + usize.from(i)) as &Entry;
+    let p = (ents + usize.from(i)) as &Entry;
     if batchLen == batchCap {
-      imm want = if batchCap == 0u32 {64u32;} else {batchCap * 2u32;};
-      imm size = usize.from(want) * mem.sizeof[Expiry]();
-      imm b = libc.realloc(batch as *u8, size);
-      imm s = libc.realloc(spare as *u8, size);
+      let want = if batchCap == 0u32 {64u32;} else {batchCap * 2u32;};
+      let size = usize.from(want) * mem.sizeof[Expiry]();
+      let b = libc.realloc(batch as *u8, size);
+      let s = libc.realloc(spare as *u8, size);
       if b as usize == 0usize or s as usize == 0usize { panic("timewheel: out of memory"); }
       batch = b as *Expiry;
       spare = s as *Expiry;
@@ -724,21 +724,21 @@ pub struct Wheel is Sendable {
   // ----- The precise set: a binary heap of entries, by deadline then seq -----
 
   fn before(self &, a u32, b u32) bool {
-    imm pa = (ents + usize.from(a)) as &Entry;
-    imm pb = (ents + usize.from(b)) as &Entry;
+    let pa = (ents + usize.from(a)) as &Entry;
+    let pb = (ents + usize.from(b)) as &Entry;
     pa.at < pb.at or (pa.at == pb.at and pa.seq < pb.seq);
   }
 
   fn heapSet(self &mut, pos u32, i u32) {
     *(heap + usize.from(pos)) = i;
-    imm p = (ents + usize.from(i)) as &mut Entry;
+    let p = (ents + usize.from(i)) as &mut Entry;
     p.pos = pos;
   }
 
   fn heapPush(self &mut, i u32) {
     if heapLen == heapCap {
-      imm want = if heapCap == 0u32 {16u32;} else {heapCap * 2u32;};
-      imm fresh = libc.realloc(heap as *u8, usize.from(want) * 4usize);
+      let want = if heapCap == 0u32 {16u32;} else {heapCap * 2u32;};
+      let fresh = libc.realloc(heap as *u8, usize.from(want) * 4usize);
       if fresh as usize == 0usize { panic("timewheel: out of memory"); }
       heap = fresh as *u32;
       heapCap = want;
@@ -753,18 +753,18 @@ pub struct Wheel is Sendable {
   fn heapRemove(self &mut, pos u32) {
     heapLen = heapLen - 1u32;
     if pos == heapLen { return; }
-    imm last = *(heap + usize.from(heapLen));
+    let last = *(heap + usize.from(heapLen));
     self.heapSet(pos, last);
     self.siftDown(pos);
     self.siftUp(pos);
   }
 
   fn siftUp(self &mut, from u32) {
-    mut pos = from;
-    imm i = *(heap + usize.from(pos));
+    var pos = from;
+    let i = *(heap + usize.from(pos));
     while pos > 0u32 {
-      imm parent = (pos - 1u32) / 2u32;
-      imm pi = *(heap + usize.from(parent));
+      let parent = (pos - 1u32) / 2u32;
+      let pi = *(heap + usize.from(parent));
       if !self.before(i, pi) { break; }
       self.heapSet(pos, pi);
       pos = parent;
@@ -773,15 +773,15 @@ pub struct Wheel is Sendable {
   }
 
   fn siftDown(self &mut, from u32) {
-    mut pos = from;
-    imm i = *(heap + usize.from(pos));
+    var pos = from;
+    let i = *(heap + usize.from(pos));
     while true {
-      imm l = pos * 2u32 + 1u32;
+      let l = pos * 2u32 + 1u32;
       if l >= heapLen { break; }
-      mut c = l;
-      imm r = l + 1u32;
+      var c = l;
+      let r = l + 1u32;
       if r < heapLen and self.before(*(heap + usize.from(r)), *(heap + usize.from(l))) { c = r; }
-      imm ci = *(heap + usize.from(c));
+      let ci = *(heap + usize.from(c));
       if !self.before(ci, i) { break; }
       self.heapSet(pos, ci);
       pos = c;

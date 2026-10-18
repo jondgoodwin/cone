@@ -32,11 +32,11 @@ struct Rig2 {
 // A floating ragdoll with the right thigh turned 'flex' about x (forward positive) and 'abd' about z (out positive),
 // the left thigh by (lflex, labd)
 fn hips(skel &Skeleton, spec &RigSpec, flex f32, abd f32, limits bool) Rig2 {
-  mut w = World.make();
+  var w = World.make();
   w.gravity = new Vec3(0., 0., 0.);
   w.settings.sleepEnabled = false;   // a swing coming back at 0.2 rad/s is under the sleep speed, and a sleeping body is not moved
-  mut rig = Ragdoll.make(&mut w, skel, spec, Rigid.at(new Vec3(0., 3., 0.)), 1u32);
-  mut p = skel.restPose();
+  var rig = Ragdoll.make(&mut w, skel, spec, Rigid.at(new Vec3(0., 3., 0.)), 1u32);
+  var p = skel.restPose();
   p.setRotation(THIGH_R, Quat.angleAxis(flex, new Vec3(1., 0., 0.)) * Quat.angleAxis(abd, new Vec3(0., 0., 1.)));
   rig.poseToBodies(&mut w, skel, &p, Rigid.at(new Vec3(0., 3., 0.)));
   rig.blend = 0.;
@@ -45,61 +45,61 @@ fn hips(skel &Skeleton, spec &RigSpec, flex f32, abd f32, limits bool) Rig2 {
 }
 
 fn settle(r &mut Rig2) {
-  mut i = 0;
+  var i = 0;
   while i < 300 { stepRagdoll(&mut r.rig, &mut r.w, 1. / 60.); i = i + 1; }
 }
 
 fn thighMeasure(r &Rig2) f32 { swingMeasure(&r.rig, &r.w, usize.from(r.rig.linkOfBone(THIGH_R))); }
 
 fn thighAngle(r &Rig2) f32 {
-  imm k = usize.from(r.rig.linkOfBone(THIGH_R));
-  mut uv = new Vec2(0., 0.);
-  mut tip = new Vec3(0., 0., 0.);
-  mut axis = new Vec3(0., 0., 0.);
+  let k = usize.from(r.rig.linkOfBone(THIGH_R));
+  var uv = new Vec2(0., 0.);
+  var tip = new Vec3(0., 0., 0.);
+  var axis = new Vec3(0., 0., 0.);
   swingOf(&r.rig, &r.w, k, &mut uv, &mut tip, &mut axis);
   uv.x;
 }
 
 fn main() i32 {
-  imm skel = humanoid(1.75);
-  imm spec = humanoidSpec(&skel, 1.75, 70.);
+  let skel = humanoid(1.75);
+  let spec = humanoidSpec(&skel, 1.75, 70.);
 
   // ---- extension
-  mut a = hips(&skel, &spec, -0.9, 0., true);
+  var a = hips(&skel, &spec, -0.9, 0., true);
   near(thighMeasure(&a), 6.6, 0.1, "before: the thigh is 0.9 back of 0.35, measure 6.6");
   settle(&mut a);
   expectBool(thighMeasure(&a) < 1.15, true, "with the pass the extension is back inside the ellipse");
   expectBool(thighAngle(&a) < -0.2, true, "and not pushed through to the other side of the range");
-  mut a0 = hips(&skel, &spec, -0.9, 0., false);
+  var a0 = hips(&skel, &spec, -0.9, 0., false);
   settle(&mut a0);
   expectBool(thighMeasure(&a0) > 5., true, "without the pass it stays out (the solver's cone is 2.1 round)");
 
   // ---- abduction
-  mut b = hips(&skel, &spec, 0., 1.1, true);
+  var b = hips(&skel, &spec, 0., 1.1, true);
   settle(&mut b);
   expectBool(thighMeasure(&b) < 1.15, true, "an abduction of 1.1 (range 0.8) is pulled back inside");
-  mut b0 = hips(&skel, &spec, 0., 1.1, false);
+  var b0 = hips(&skel, &spec, 0., 1.1, false);
   settle(&mut b0);
   expectBool(thighMeasure(&b0) > 1.6, true, "and stays 1.1 without the pass");
 
   // ---- flexion within range is left alone
-  mut c = hips(&skel, &spec, 1.9, 0., true);
+  var c = hips(&skel, &spec, 1.9, 0., true);
   settle(&mut c);
   near(thighAngle(&c), 1.9, 0.03, "a flexion of 1.9 (range 2.1) is left where it is");
   expectBool(thighMeasure(&c) < 1., true, "inside the range");
 
   // ---- mixed
-  mut d = hips(&skel, &spec, -0.3, 0.75, true);
+  var d = hips(&skel, &spec, -0.3, 0.75, true);
   expectBool(thighMeasure(&d) > 1.3, true, "a hip 0.3 back and 0.75 out is over the ellipse (about 1.6)");
   settle(&mut d);
   expectBool(thighMeasure(&d) < 1.1, true, "and is brought to its edge");
-  mut e = hips(&skel, &spec, -0.2, 0.5, true);
-  imm before = thighAngle(&e);
+  var e = hips(&skel, &spec, -0.2, 0.5, true);
+  let before = thighAngle(&e);
   settle(&mut e);
   near(thighAngle(&e), before, 0.02, "a hip 0.2 back and 0.5 out (0.72) inside the ellipse is untouched");
 
   // ---- the other joints are not disturbed
-  imm leftK = usize.from(a.rig.linkOfBone(THIGH_L));
+  let leftK = usize.from(a.rig.linkOfBone(THIGH_L));
   expectBool(swingMeasure(&a.rig, &a.w, leftK) < 0.5, true, "the left thigh, never moved, stays well inside its range");
   done();
 }

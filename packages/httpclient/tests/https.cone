@@ -74,25 +74,25 @@ fn server(pool Pool) Srv {
 }
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
-    case imm r Ok {
+    case let r Ok {
       match sv.drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
 
 fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array[u8], body &Array[u8]) {
-  mut h = ResponseHead.make(status);
+  var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize and not head {
-    mut b = sv.pool.mustTake(body.len);
+    var b = sv.pool.mustTake(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -101,21 +101,21 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
 
 fn number(s &str) u64 {
   match collections.parseUInt(s) {
-    case imm v Some {v;}
+    case let v Some {v;}
     case is None[u64] {0u64;}
   }
 }
 
 // Stream j's next pieces, as many as the connection takes now
 fn pumpStream(sv &mut Srv, j usize) {
-  imm req = *sv.streams[j];
+  let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
-    imm at = *sv.sent[j];
-    imm left = *sv.totals[j] - at;
-    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
-    mut b = sv.pool.mustTake(n);
-    imm s = b.spare();
-    mut i = 0usize;
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    var b = sv.pool.mustTake(n);
+    let s = b.spare();
+    var i = 0usize;
     while i < n {
       s[i] = u8.from((at + u64.from(i)) % 251u64);
       i = i + 1usize;
@@ -131,7 +131,7 @@ fn pumpStream(sv &mut Srv, j usize) {
 }
 
 fn dropStream(sv &mut Srv, j usize) {
-  imm last = sv.streams.len() - 1usize;
+  let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
   sv.totals.swap(j, last);
@@ -141,7 +141,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 fn findStream(sv &Srv, req httpconn.ReqId) usize {
-  mut j = 0usize;
+  var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
     j = j + 1usize;
@@ -151,16 +151,16 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
 
 // The answer to request k, read whole
 fn answer(sv &mut Srv, lp &mut Loop, k usize) {
-  imm req = *sv.reqs[k];
-  imm full = sv.targets[k].copy();
-  imm t = full.view();
-  mut q = 0usize;
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].copy();
+  let t = full.view();
+  var q = 0usize;
   while q < t.len and t[q] != '?' {q = q + 1usize;}
-  imm path = &t[0usize ..< q];
-  imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head;
+  let path = &t[0usize ..< q];
+  let query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
+  let head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]));
+    var b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, "", b.view());
@@ -176,18 +176,18 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
       reply(sv, req, head, 200u16, "", "second");
     }
   } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
-    imm n = number(&path[10usize ..]);
+    let n = number(&path[10usize ..]);
     if n == 0u64 {
       reply(sv, req, head, 200u16, "", "landed");
     } else {
-      mut loc = String.from("/redirect/");
+      var loc = String.from("/redirect/");
       loc.appendUInt(n - 1u64);
       reply(sv, req, head, 302u16, loc.view(), "moved");
     }
   } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
     reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
   } elif path == "/headers" {
-    mut b = String.from("auth=");
+    var b = String.from("auth=");
     b.append(sv.auths[k].view());
     b.append(";cookie=");
     b.append(sv.cookies[k].view());
@@ -197,7 +197,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
     reply(sv, req, head, 200u16, "", b.view());
   } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
-    imm n = number(&path[5usize ..]);
+    let n = number(&path[5usize ..]);
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
     sv.streams.push(req);
     sv.sent.push(0u64);
@@ -205,7 +205,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } elif path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    mut b = sv.pool.mustTake(65536usize);
+    var b = sv.pool.mustTake(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } elif path == "/hang" {
@@ -217,7 +217,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
 }
 
 fn findReq(sv &Srv, req httpconn.ReqId) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
     k = k + 1usize;
@@ -226,7 +226,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
 }
 
 fn forget(sv &mut Srv, k usize) {
-  imm last = sv.reqs.len() - 1usize;
+  let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.conns.swap(k, last);
   sv.methods.swap(k, last);
@@ -245,13 +245,13 @@ fn forget(sv &mut Srv, k usize) {
 
 fn fieldOr(h &Headers, name &str) String {
   match h.get(name) {
-    case imm v Some {String.fromBytes(v);}
+    case let v Some {String.fromBytes(v);}
     case is None[&Array[u8]] {String.from("-");}
   }
 }
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
-  imm kind = e.kind;
+  let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
@@ -269,19 +269,19 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } elif kind == httpconn.EventKind.Data {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
   } elif kind == httpconn.EventKind.End {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
   } elif kind == httpconn.EventKind.Writable {
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {forget(sv, k);}
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {dropStream(sv, j);}
   }
 }
@@ -289,20 +289,20 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
   sv.drv.pump(lp, &mut sevs);
-  mut limit = until;
-  imm a = cl.wakeAt();
+  var limit = until;
+  let a = cl.wakeAt();
   if a < limit {limit = a;}
-  imm b = sv.drv.wakeAt();
+  let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
-  mut comps = List[Completion].empty();
+  var comps = List[Completion].empty();
   lp.poll(limit, &mut comps);
-  mut k = 0usize;
+  var k = 0usize;
   while k < comps.len() {
-    imm c = &mut comps[k];
+    let c = &mut comps[k];
     if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
     k = k + 1usize;
   }
@@ -319,12 +319,12 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
 // The server's every connection reset, and its buffers home
 fn stopServer(sv &mut Srv, lp &mut Loop) {
   sv.drv.abortAll(lp);
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   sv.drv.pump(lp, &mut sevs);
 }
 
 fn url(port u16, path &str) String {
-  mut u = String.from("http://127.0.0.1:");
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u;
@@ -352,7 +352,7 @@ fn seen() Seen {
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
-  imm n = eventName(e.kind);
+  let n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
@@ -373,14 +373,14 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
-  mut out = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  imm before = s.finals;
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let before = s.finals;
   while s.finals == before and Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.id == id {note(cl, s, e);}
       k = k + 1usize;
     }
@@ -391,21 +391,21 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
-  mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here(1u64));
+  var s = seen();
+  let id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
 
 // Drive for a while
 fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
-  mut out = List[Event].empty();
-  imm until = Instant.now() + d;
+  var out = List[Event].empty();
+  let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &mut out, until);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
@@ -415,17 +415,17 @@ fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
 
 // The tls package's test certificates
 fn certs(name &str) Path {
-  mut p = String.from("../../../../../tls/tests/certs/");
+  var p = String.from("../../../../../tls/tests/certs/");
   p.append(name);
   Path.fromString(p);
 }
 
 fn readText(name &str) String {
-  mut out = String.empty();
-  imm file = certs(name);
+  var out = String.empty();
+  let file = certs(name);
   match fs.readFile(&file) {
-    case mut r Ok {out <=> r;}
-    case imm e Error {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out;
 }
@@ -439,35 +439,35 @@ struct TlsMaker {
 }
 
 fn tlsServer(cert &str, key &str) tls.Server {
-  imm certFile = certs(cert);
-  imm keyFile = certs(key);
+  let certFile = certs(cert);
+  let keyFile = certs(key);
   match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
-    case imm r Ok {
-      imm s = r;
+    case let r Ok {
+      let s = r;
       return s;
     }
-    case imm e Error {}
+    case let e Error {}
   }
   panic("no TLS server: run the test from its build folder");
 }
 
 fn listenTls(sv &mut Srv, lp &mut Loop, s tls.Server) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match sv.drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(s, sv.pool)),
       httpconn.Sink.Here(tokSrv)) {
-    case imm r Ok {
+    case let r Ok {
       match sv.drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
 
 fn secure(port u16, path &str) String {
-  mut u = String.from("https://127.0.0.1:");
+  var u = String.from("https://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u;
@@ -476,20 +476,20 @@ fn secure(port u16, path &str) String {
 // n GETs of /hello asked for at once, driven to their final answers: how
 // many were Done
 fn atOnce(cl &mut Client, sv &mut Srv, lp &mut Loop, port u16, n u32) u32 {
-  mut k = 0u32;
+  var k = 0u32;
   while k < n {
     cl.get(lp, secure(port, "/hello").view(), Sink.Here(2u64));
     k = k + 1u32;
   }
-  mut out = List[Event].empty();
-  mut dones = 0u32;
-  mut finals = 0u32;
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  var out = List[Event].empty();
+  var dones = 0u32;
+  var finals = 0u32;
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while finals < n and Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
-    mut j = 0usize;
+    var j = 0usize;
     while j < out.len() {
-      imm e = &mut out[j];
+      let e = &mut out[j];
       if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       if e.isTerminal() {
         finals = finals + 1u32;
@@ -503,32 +503,32 @@ fn atOnce(cl &mut Client, sv &mut Srv, lp &mut Loop, port u16, n u32) u32 {
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut sv = server(pool);
-  imm good = listenTls(&mut sv, &mut lp, tlsServer("server.pem", "server.key"));
-  imm untrusted = listenTls(&mut sv, &mut lp, tlsServer("untrusted.pem", "untrusted.key"));
-  imm plain = listen(&mut sv, &mut lp);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var sv = server(pool);
+  let good = listenTls(&mut sv, &mut lp, tlsServer("server.pem", "server.key"));
+  let untrusted = listenTls(&mut sv, &mut lp, tlsServer("untrusted.pem", "untrusted.key"));
+  let plain = listen(&mut sv, &mut lp);
   require(good != 0u16 and untrusted != 0u16 and plain != 0u16, "three servers listen");
-  mut cfg = Config.make();
+  var cfg = Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.maxPerOrigin = 3u32;
-  mut cl = Client.make(cfg, pool);
+  var cl = Client.make(cfg, pool);
 
   // Five GETs one after another: one TLS connection, one handshake each side
-  imm t0 = tls.stats();
-  mut k = 0u32;
-  mut oks = 0u32;
+  let t0 = tls.stats();
+  var k = 0u32;
+  var oks = 0u32;
   while k < 5u32 {
-    imm s = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(secure(good, "/hello").view()));
+    let s = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(secure(good, "/hello").view()));
     if s.last == EventKind.Done and s.status == 200u16 and s.body.view() == "hello" {oks = oks + 1u32;}
     if k > 0u32 and not s.timing.reused {oks = 0u32;}
     k = k + 1u32;
   }
   expectUInt(u64.from(oks), 5u64, "five HTTPS GETs, each Done, the later four on the kept connection");
   expectUInt(sv.accepted, 1u64, "...one connection");
-  imm t1 = tls.stats();
+  let t1 = tls.stats();
   expectUInt(t1.handshakes - t0.handshakes, 2u64, "...one handshake, on each side");
 
   // Two at once, the kept connection pooled: it takes one, and a new
@@ -536,7 +536,7 @@ fn main() i32 {
   // after its handshake, while it is still open
   expectUInt(u64.from(atOnce(&mut cl, &mut sv, &mut lp, good, 2u32)), 2u64, "two at once beside the kept connection: Done");
   expectUInt(sv.accepted, 2u64, "...one more connection");
-  imm t1a = tls.stats();
+  let t1a = tls.stats();
   expectUInt(t1a.handshakes - t1.handshakes, 2u64, "...one more handshake, on each side");
   expectUInt(t1a.resumed - t1.resumed, 2u64, "...resumed, on each side, the kept connection still open");
 
@@ -544,40 +544,40 @@ fn main() i32 {
   expectUInt(u64.from(cl.closeIdle(&mut lp)), 2u64, "closeIdle: the two idle connections");
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));
   expectUInt(u64.from(cl.stats().openNow), 0u64, "...closed");
-  imm t1b = tls.stats();
+  let t1b = tls.stats();
 
   // Three at once: three new connections, two resuming from the two
   // tickets cached (the first connection's second, the second's one), the
   // third finding none left (each is used once)
   expectUInt(u64.from(atOnce(&mut cl, &mut sv, &mut lp, good, 3u32)), 3u64, "three at once: Done");
   expectUInt(sv.accepted, 5u64, "...three more connections");
-  imm t2 = tls.stats();
+  let t2 = tls.stats();
   expectUInt(t2.handshakes - t1b.handshakes, 6u64, "...three handshakes, on each side");
   expectUInt(t2.resumed - t1b.resumed, 4u64, "...two of them resuming, on each side");
-  mut out = List[Event].empty();
+  var out = List[Event].empty();
 
   // An http origin beside it
-  imm p = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(plain, "/hello").view()));
+  let p = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(plain, "/hello").view()));
   expect(p.last == EventKind.Done and p.body.view() == "hello", "http beside https: Done");
   expectUInt(u64.from(cl.stats().origins), 2u64, "two origins pooled");
 
   // A certificate the client does not trust: Failed at Stage.Tls, and the
   // one waiting for the same origin too; neither retried
-  mut cfg1 = Config.make();
+  var cfg1 = Config.make();
   cfg1.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg1.tlsConfig.offline = true;
   cfg1.maxPerOrigin = 1u32;
-  mut c1 = Client.make(cfg1, pool);
-  imm a = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
-  imm b = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
-  mut sa = seen();
-  mut sb = seen();
-  imm giveUp2 = Instant.now() + Duration.fromSeconds(10i64);
+  var c1 = Client.make(cfg1, pool);
+  let a = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
+  let b = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
+  var sa = seen();
+  var sb = seen();
+  let giveUp2 = Instant.now() + Duration.fromSeconds(10i64);
   while (sa.finals == 0u64 or sb.finals == 0u64) and Instant.now() < giveUp2 {
     step(&mut c1, &mut sv, &mut lp, &mut out, giveUp2);
-    mut j = 0usize;
+    var j = 0usize;
     while j < out.len() {
-      imm e = &mut out[j];
+      let e = &mut out[j];
       if e.id == a {note(&mut c1, &mut sa, e);}
       if e.id == b {note(&mut c1, &mut sb, e);}
       j = j + 1usize;
@@ -591,7 +591,7 @@ fn main() i32 {
   expectUInt(c1.stats().connects, 1u64, "...one connection tried");
   c1.abortAll(&mut lp);
 
-  imm s = cl.stats();
+  let s = cl.stats();
   expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "every fetch has had its one final answer");
   cl.abortAll(&mut lp);
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));

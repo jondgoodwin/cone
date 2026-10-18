@@ -10,7 +10,7 @@ import testing use *;
 import iobuf use *;
 
 fn piece(pool &Pool, text &Array[u8]) IoBuf {
-  mut b = pool.mustTake(text.len);
+  var b = pool.mustTake(text.len);
   b.append(text);
   b;
 }
@@ -20,9 +20,9 @@ fn pushed(o Option[IoBuf]) bool {
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
+  let pool = Pool.make();
   {
-    mut c = Chain.make(65536usize);
+    var c = Chain.make(65536usize);
     expect(c.isEmpty(), "a new chain is empty");
     expect(c.find("\r\n") is None[usize], "nothing to find in an empty chain");
     // The request "GET /a HTTP/1.1\r\nHost: x\r\n\r\nhello", split so that
@@ -39,25 +39,25 @@ fn main() i32 {
 
     // Delimiters across boundaries
     match c.find("\r\n\r\n") {
-      case imm at Some {expectUInt(u64.from(at), 24u64, "the head ends at 24");}
+      case let at Some {expectUInt(u64.from(at), 24u64, "the head ends at 24");}
       case is None[usize] {expect(false, "the head's end found");}
     }
     match c.find("\r\n") {
-      case imm at Some {expectUInt(u64.from(at), 15u64, "the request line ends at 15");}
+      case let at Some {expectUInt(u64.from(at), 15u64, "the request line ends at 15");}
       case is None[usize] {expect(false, "the first line end found");}
     }
     match c.find("\r\n", 16usize) {
-      case imm at Some {expectUInt(u64.from(at), 24u64, "the next line end, across a boundary");}
+      case let at Some {expectUInt(u64.from(at), 24u64, "the next line end, across a boundary");}
       case is None[usize] {expect(false, "the second line end found");}
     }
     match c.find("HTTP/1.1") {
-      case imm at Some {expectUInt(u64.from(at), 7u64, "a token split across segments");}
+      case let at Some {expectUInt(u64.from(at), 7u64, "a token split across segments");}
       case is None[usize] {expect(false, "the version found");}
     }
     expect(c.find("\r\n\r\n\r") is None[usize], "a pattern not there");
     expect(c.find("lo!") is None[usize], "a pattern running past the end");
     match c.findByte(' ', 4usize) {
-      case imm at Some {expectUInt(u64.from(at), 6u64, "the second space");}
+      case let at Some {expectUInt(u64.from(at), 6u64, "the second space");}
       case is None[usize] {expect(false, "the second space found");}
     }
     expect(c.matchesAt(0usize, "GET "), "matchesAt the start");
@@ -71,14 +71,14 @@ fn main() i32 {
 
     // Contiguous when within a segment, None across a boundary
     match c.contiguous(9usize, 6usize) {
-      case imm s Some {expectStr(s, "TP/1.1", "contiguous within a segment");}
+      case let s Some {expectStr(s, "TP/1.1", "contiguous within a segment");}
       case is None[&Array[u8]] {expect(false, "contiguous within a segment");}
     }
     expect(c.contiguous(7usize, 8usize) is None[&Array[u8]], "None across a boundary");
 
     // Copy the head out and consume it: three segments wholly consumed die
-    mut head = new Array[u8, 64] <- fill 0u8;
-    imm n = c.copyOut(0usize, &mut head[0usize ..< 28usize]);
+    var head = new Array[u8, 64] <- fill 0u8;
+    let n = c.copyOut(0usize, &mut head[0usize ..< 28usize]);
     expectUInt(u64.from(n), 28u64, "the head and its blank line copied out");
     expectStr(&head[0usize ..< 28usize], "GET /a HTTP/1.1\r\nHost: x\r\n\r\n", "the head");
     c.advance(28usize);
@@ -88,13 +88,13 @@ fn main() i32 {
     expect(c.matchesAt(0usize, "hello"), "the body starts at offset 0");
 
     // Take 2 bytes; then pop the rest a segment at a time
-    mut two = new Array[u8, 2] <- fill 0u8;
+    var two = new Array[u8, 2] <- fill 0u8;
     expectUInt(u64.from(c.take(&mut two[0usize ..< 2usize])), 2u64, "took 2");
     expectStr(&two[0usize ..< 2usize], "he", "the two taken");
     expectUInt(u64.from(c.firstLen()), 1u64, "the first segment's unconsumed bytes, what popFront hands over");
-    mut first = IoBuf.empty();
+    var first = IoBuf.empty();
     match c.popFront() {
-      case mut s Some {first <=> s;}
+      case var s Some {first <=> s;}
       case is None[IoBuf] {expect(false, "a segment popped");}
     }
     expectStr(first.view(), "l", "the popped segment holds only its unconsumed byte, at its start");
@@ -104,11 +104,11 @@ fn main() i32 {
 
   // The bound: a push that would pass it is refused, its buffer handed back
   {
-    mut c = Chain.make(10usize);
+    var c = Chain.make(10usize);
     expect(pushed(c.push(piece(&pool, "0123456"))), "7 bytes in");
-    mut back = IoBuf.empty();
+    var back = IoBuf.empty();
     match c.push(piece(&pool, "789ab")) {
-      case mut s Some {back <=> s;}
+      case var s Some {back <=> s;}
       case is None[IoBuf] {expect(false, "refused past the bound");}
     }
     expectStr(back.view(), "789ab", "the refused buffer handed back whole");
@@ -120,9 +120,9 @@ fn main() i32 {
 
   // Many small segments: the ring grows, and wraps
   {
-    mut c = Chain.make(1000000usize);
-    mut i = 0u32;
-    mut sum = 0u64;
+    var c = Chain.make(1000000usize);
+    var i = 0u32;
+    var sum = 0u64;
     while i < 100u32 {
       c.push(piece(&pool, "ab"));
       if i % 3u32 == 0u32 {
@@ -136,7 +136,7 @@ fn main() i32 {
     expectUInt(u64.from(c.segments()), 83u64, "83 segments: 17 wholly consumed");
     expect(c.find("bb") is None[usize], "never two b's together");
     match c.find("ba") {
-      case imm at Some {expectUInt(u64.from(at), 1u64, "an a first, after an even number consumed");}
+      case let at Some {expectUInt(u64.from(at), 1u64, "an a first, after an even number consumed");}
       case is None[usize] {expect(false, "ba found");}
     }
   }

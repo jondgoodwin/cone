@@ -27,10 +27,10 @@ const CELL = 48u32;
 
 // An IEEE half as a float
 fn halfToFloat(h u16) f32 {
-  imm bits = u32.from(h);
-  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
-  imm exp = i32.from((bits >> 10u32) & 31u32);
-  imm mant = f32.from(bits & 1023u32);
+  let bits = u32.from(h);
+  let sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  let exp = i32.from((bits >> 10u32) & 31u32);
+  let mant = f32.from(bits & 1023u32);
   if exp == 0 { return sign * mant * 5.9604645e-8; }
   if exp == 31 { return sign * 65504.; }
   sign * (1. + mant / 1024.) * libc.powf(2., f32.from(exp - 15));
@@ -45,21 +45,21 @@ struct Frame {
 }
 
 fn frameStats(p *u16, frame u32) Frame {
-  imm side = GRID * CELL;
-  imm fx = (frame % GRID) * CELL;
-  imm fy = (frame / GRID) * CELL;
-  mut s = new Frame(0., 0., 0., 0., 0.);
-  mut over = 0u32;
-  mut y = 0u32;
+  let side = GRID * CELL;
+  let fx = (frame % GRID) * CELL;
+  let fy = (frame / GRID) * CELL;
+  var s = new Frame(0., 0., 0., 0., 0.);
+  var over = 0u32;
+  var y = 0u32;
   while y < CELL {
-    mut x = 0u32;
+    var x = 0u32;
     while x < CELL {
-      imm at = ((fy + y) * side + fx + x) * 4u32;
-      imm r = halfToFloat(*(p + usize.from(at)));
-      imm g = halfToFloat(*(p + usize.from(at + 1u32)));
-      imm b = halfToFloat(*(p + usize.from(at + 2u32)));
-      imm a = halfToFloat(*(p + usize.from(at + 3u32)));
-      imm light = (r + g + b) / 3.;
+      let at = ((fy + y) * side + fx + x) * 4u32;
+      let r = halfToFloat(*(p + usize.from(at)));
+      let g = halfToFloat(*(p + usize.from(at + 1u32)));
+      let b = halfToFloat(*(p + usize.from(at + 2u32)));
+      let a = halfToFloat(*(p + usize.from(at + 3u32)));
+      let light = (r + g + b) / 3.;
       if light > s.maxLight { s.maxLight = light; }
       if a > 0.2 { over = over + 1u32; }
       if x == CELL / 2u32 and y == CELL / 2u32 { s.centreAlpha = a; s.centreLight = light; }
@@ -75,20 +75,20 @@ fn frameStats(p *u16, frame u32) Frame {
 }
 
 fn bakeAndRead(device &mut Device, desc &FlipbookDesc) List[Frame] {
-  mut system = FlipbookSystem.create(device, TEXTURE_FORMAT_RGBA16_FLOAT);
+  var system = FlipbookSystem.create(device, TEXTURE_FORMAT_RGBA16_FLOAT);
   require(system.isValid(), "a flipbook system");
-  imm id = system.addFlipbook(device, desc);
+  let id = system.addFlipbook(device, desc);
   expectUInt(u64.from(id), 0u64, "the first flipbook is number 0");
-  imm side = GRID * CELL;
-  mut readback = device.createBuffer(u64.from(side) * u64.from(side) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut encoder = device.createCommandEncoder();
+  let side = GRID * CELL;
+  var readback = device.createBuffer(u64.from(side) * u64.from(side) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var encoder = device.createCommandEncoder();
   encoder.copyTextureToBuffer(system.atlasTexture(0usize), &readback);
   device.queue.submit(encoder.finish());
   device.endFrame();
   device.waitIdle();
-  imm p = readback.mappedRange() as *u16;
-  mut frames = List[Frame].empty();
-  mut f = 0u32;
+  let p = readback.mappedRange() as *u16;
+  var frames = List[Frame].empty();
+  var f = 0u32;
   while f < GRID * GRID {
     frames.push(frameStats(p, f));
     f = f + 1u32;
@@ -97,26 +97,26 @@ fn bakeAndRead(device &mut Device, desc &FlipbookDesc) List[Frame] {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("effectsfx flipbook");
+  var instance = Instance.create("effectsfx flipbook");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  mut desc = FlipbookDesc.make();
+  var desc = FlipbookDesc.make();
   desc.cell = CELL;
-  imm frames = bakeAndRead(&mut device, &desc);
-  imm early = frames[8usize];
-  imm middle = frames[32usize];
-  imm late = frames[52usize];
-  imm last = frames[63usize];
+  let frames = bakeAndRead(&mut device, &desc);
+  let early = frames[8usize];
+  let middle = frames[32usize];
+  let late = frames[52usize];
+  let last = frames[63usize];
   expect(early.maxLight > 1., "an early frame has a hot, bright centre (over 1: beyond white, for the bloom)");
   expect(early.coverage < 0.4, "and is mostly empty");
   expect(middle.coverage > early.coverage, "the fireball has grown by the middle");
@@ -124,18 +124,18 @@ fn main() i32 {
   expect(late.coverage > early.coverage, "yet cover more than the early frame");
   expect(late.centreAlpha > 0.3, "and are opaque in the middle");
   expect(last.coverage < 0.01, "the last frame is empty");
-  mut f = 0usize;
-  mut edges = 0f32;
+  var f = 0usize;
+  var edges = 0f32;
   while f < frames.len() {
     if frames[f].edge > edges { edges = frames[f].edge; }
     f = f + 1usize;
   }
   expect(edges < 0.02, "no frame touches its border: no square shows");
 
-  mut hot = FlipbookDesc.make();
+  var hot = FlipbookDesc.make();
   hot.cell = CELL;
   hot.brightness = desc.brightness * 2.;
-  imm hotter = bakeAndRead(&mut device, &hot);
+  let hotter = bakeAndRead(&mut device, &hot);
   expect(hotter[8usize].maxLight > early.maxLight * 1.5, "twice the brightness bakes a brighter early frame");
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");

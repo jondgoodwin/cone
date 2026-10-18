@@ -41,14 +41,14 @@ struct Counting {
 }
 
 fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes);
 }
 
 fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).resizes = (*c).resizes + 1usize;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes);
@@ -56,7 +56,7 @@ fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align us
 
 fn countRelease(r *MemRegion, block *u8, bytes usize) {
   if block as usize == 0usize { return; }
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
   (*c).live = (*c).live - isize.from(bytes);
   libc.free(block);
@@ -70,24 +70,24 @@ fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
 
 // What the region was asked, against what is wanted
 fn tally(c &Counting, allocs u64, resizes u64, releases u64, live i64, label &Array[u8]) {
-  imm ok = u64.from(c.allocs) == allocs and u64.from(c.resizes) == resizes
+  let ok = u64.from(c.allocs) == allocs and u64.from(c.resizes) == resizes
     and u64.from(c.releases) == releases and i64.from(c.live) == live;
   expect(ok, label);
 }
 
 fn expectRef(got Option[&i64], want i64, label &Array[u8]) {
   match got {
-    case imm s Some {expectInt(*s, want, label);}
+    case let s Some {expectInt(*s, want, label);}
     case is None {expect(false, label);}
   }
 }
 
 fn listGrows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut l = new List[i64](regionOf(&mut c));
+    var l = new List[i64](regionOf(&mut c));
     tally(&c, 0, 0, 0, 0, "an empty list in a region asks it for nothing");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 100i64 { l.push(i); i = i + 1i64; }
     tally(&c, 0, 6, 0, 1024, "a hundred values: six resizes, the last block 128 values of 8 bytes");
     expectUInt(u64.from(l.len()), 100, "all hundred are there");
@@ -98,11 +98,11 @@ fn listGrows() {
 }
 
 fn listCapacity() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut l = new List[i64](50usize, regionOf(&mut c));
+    var l = new List[i64](50usize, regionOf(&mut c));
     tally(&c, 1, 0, 0, 400, "a starting size allocates it at once");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 50i64 { l.push(i); i = i + 1i64; }
     tally(&c, 1, 0, 0, 400, "fifty values fit");
     l.push(50i64);
@@ -112,10 +112,10 @@ fn listCapacity() {
 }
 
 fn dequeGrows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut d = new Deque[i64](regionOf(&mut c));
-    mut i = 0i64;
+    var d = new Deque[i64](regionOf(&mut c));
+    var i = 0i64;
     while i < 100i64 { d.push(i); i = i + 1i64; }
     tally(&c, 6, 0, 5, 1024, "a deque allocates each larger block and releases the one before");
     expectInt(*d[0usize], 0, "the first survived the moves");
@@ -123,21 +123,21 @@ fn dequeGrows() {
   }
   tally(&c, 6, 0, 6, 0, "its death gave the last back");
   {
-    imm d = new Deque[i64](20usize, regionOf(&mut c));
+    let d = new Deque[i64](20usize, regionOf(&mut c));
     tally(&c, 7, 0, 6, 160, "a deque with a starting size allocates it");
   }
   tally(&c, 7, 0, 7, 0, "and gives it back");
 }
 
 fn dictGrows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut d = new Dict[i64, i64](regionOf(&mut c));
+    var d = new Dict[i64, i64](regionOf(&mut c));
     tally(&c, 0, 0, 0, 0, "an empty dict in a region asks it for nothing");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 100i64 { d.insert(i, i * 2i64); i = i + 1i64; }
     tally(&c, 5, 0, 4, 2184, "a hundred entries: tables of 8, 16, 32, 64 and 128 buckets");
-    imm k = 99i64;
+    let k = 99i64;
     expectRef(d.get(&k), 198, "the last entry survived the moves");
     expectUInt(u64.from(d.len()), 100, "all hundred are there");
   }
@@ -145,12 +145,12 @@ fn dictGrows() {
 }
 
 fn dictCapacity() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut d = new Dict[i64, i64](100usize, regionOf(&mut c));
+    var d = new Dict[i64, i64](100usize, regionOf(&mut c));
     tally(&c, 1, 0, 0, 2184, "room for a hundred is one table of 128 buckets");
     expect(d.capacity() >= 100usize, "with room for a hundred entries");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 100i64 { d.insert(i, i); i = i + 1i64; }
     tally(&c, 1, 0, 0, 2184, "and a hundred entries need no growing");
   }
@@ -158,24 +158,24 @@ fn dictCapacity() {
 }
 
 fn orderedGrows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut d = new OrderedDict[i64, i64](regionOf(&mut c));
-    mut i = 0i64;
+    var d = new OrderedDict[i64, i64](regionOf(&mut c));
+    var i = 0i64;
     while i < 100i64 { d.insert(i, i * 2i64); i = i + 1i64; }
     tally(&c, 5, 5, 4, 3336, "five indexes allocated, four released, the dense block resized five times");
-    imm k = 99i64;
+    let k = 99i64;
     expectRef(d.get(&k), 198, "the last entry survived the moves");
   }
   tally(&c, 5, 5, 6, 0, "its death gave back both blocks");
 }
 
 fn orderedCapacity() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut d = new OrderedDict[i64, i64](100usize, regionOf(&mut c));
+    var d = new OrderedDict[i64, i64](100usize, regionOf(&mut c));
     tally(&c, 1, 1, 0, 3336, "room for a hundred is an index of 128 buckets and its dense entries");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 100i64 { d.insert(i, i); i = i + 1i64; }
     tally(&c, 1, 1, 0, 3336, "and a hundred entries need no growing");
   }
@@ -183,19 +183,19 @@ fn orderedCapacity() {
 }
 
 fn setGrows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut s = new Set[i64](regionOf(&mut c));
-    mut i = 0i64;
+    var s = new Set[i64](regionOf(&mut c));
+    var i = 0i64;
     while i < 100i64 { s.insert(i); i = i + 1i64; }
     tally(&c, 5, 0, 4, 1160, "a set grows its dictionary's table through the region");
     expect(s.contains(&i) == false and s.len() == 100usize, "a hundred elements, and 100 is not one");
   }
   tally(&c, 5, 0, 5, 0, "its death gave the table back");
   {
-    mut s = new Set[i64](100usize, regionOf(&mut c));
+    var s = new Set[i64](100usize, regionOf(&mut c));
     tally(&c, 6, 0, 5, 1160, "a set with a starting size allocates its table");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 100i64 { s.insert(i); i = i + 1i64; }
     tally(&c, 6, 0, 5, 1160, "and a hundred elements need no growing");
   }
@@ -203,11 +203,11 @@ fn setGrows() {
 }
 
 fn stringGrows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut s = new String(100usize, regionOf(&mut c));
+    var s = new String(100usize, regionOf(&mut c));
     tally(&c, 1, 0, 0, 101, "a string with room for a hundred bytes holds a hundred and the NUL");
-    mut i = 0usize;
+    var i = 0usize;
     while i < 100usize { s.appendByte('a'); i = i + 1usize; }
     tally(&c, 1, 0, 0, 101, "a hundred bytes fit");
     s.appendByte('b');
@@ -220,9 +220,9 @@ fn stringGrows() {
 // 'padStart' builds the longer text in the string's own region, and the old
 // block goes back to it
 fn stringPads() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut s = new String(regionOf(&mut c));
+    var s = new String(regionOf(&mut c));
     s.append("7");
     tally(&c, 0, 1, 0, 4, "a first byte makes a block of four");
     s.padStart(10usize, '0');
@@ -235,22 +235,22 @@ fn stringPads() {
 // A Uni frees its block with the C library, so freezing a list that lives in a
 // region moves the values into a heap block and gives the region's back
 fn freezes() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut l = new List[i64](regionOf(&mut c));
+    var l = new List[i64](regionOf(&mut c));
     l.push(1i64);
     l.push(2i64);
     l.push(3i64);
     tally(&c, 0, 1, 0, 32, "three values: a block of four");
-    imm owner = l.freeze();
+    let owner = l.freeze();
     tally(&c, 0, 1, 1, 0, "freezing gave the region's block back");
     expectUInt(u64.from(owner.len), 3, "the owner holds three");
     expectInt(owner[2usize], 3, "and the last is 3");
   }
   {
-    mut s = new String(regionOf(&mut c));
+    var s = new String(regionOf(&mut c));
     s.append("abc");
-    imm owner = s.freeze();
+    let owner = s.freeze();
     tally(&c, 0, 2, 2, 0, "a frozen string gave its block back too");
     expectUInt(u64.from(owner.len), 3, "three bytes");
     expect(owner.startsWith("abc"), "the text is abc");

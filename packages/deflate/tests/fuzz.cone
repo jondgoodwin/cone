@@ -19,13 +19,13 @@ import collections use *;
 import deflate use *;
 
 fn words(n usize) List[u8] {
-  imm w Array[&str, 6] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon ", "zeta "];
-  mut d = List[u8].empty();
-  mut s = 5u64;
+  let w Array[&str, 6] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon ", "zeta "];
+  var d = List[u8].empty();
+  var s = 5u64;
   while d.len() < n {
     s = s * 6364136223846793005u64 + 1442695040888963407u64;
-    imm piece = w[usize.from((s >> 40u64) % 6u64)];
-    mut i = 0usize;
+    let piece = w[usize.from((s >> 40u64) % 6u64)];
+    var i = 0usize;
     while i < piece.len { d.push(piece[i]); i += 1usize; }
   }
   d.truncate(n);
@@ -34,10 +34,10 @@ fn words(n usize) List[u8] {
 
 // 0 Done, 1 Failed, 100 stuck, 101 a Failed that did not stay failed
 fn run(fmt Format, s &Array[u8], split usize) i32 {
-  mut inf = Inflater.make(fmt);
+  var inf = Inflater.make(fmt);
   inf.setLimit(100000u64);
-  mut piece = List[u8].empty();
-  mut st Status = Status.NeedInput;
+  var piece = List[u8].empty();
+  var st Status = Status.NeedInput;
   if split > 0usize {
     inf.feed(&s[0usize..<split]);
     st = Status.MoreOutput;
@@ -57,24 +57,24 @@ fn run(fmt Format, s &Array[u8], split usize) i32 {
 }
 
 fn copyOf(a &Array[u8]) List[u8] {
-  mut out = List[u8].empty();
-  mut i = 0usize;
+  var out = List[u8].empty();
+  var i = 0usize;
   while i < a.len { out.push(a[i]); i += 1usize; }
   out;
 }
 
 // Flip every bit; count the answers that were not a refusal
 fn flipAll(fmt Format, good &Array[u8]) usize {
-  mut notRefused = 0usize;
-  mut bad = 0usize;
-  mut t = copyOf(good);
-  mut i = 0usize;
+  var notRefused = 0usize;
+  var bad = 0usize;
+  var t = copyOf(good);
+  var i = 0usize;
   while i < good.len {
-    mut b = 0u8;
+    var b = 0u8;
     while b < 8u8 {
       t.set(i, good[i] ^ (1u8 << b));
-      imm a = run(fmt, t.view(), 0usize);
-      imm c = run(fmt, t.view(), t.len() / 2usize);
+      let a = run(fmt, t.view(), 0usize);
+      let c = run(fmt, t.view(), t.len() / 2usize);
       if a >= 100 or c >= 100 or a != c { bad += 1usize; }
       if a == 0 { notRefused += 1usize; }
       b += 1u8;
@@ -87,31 +87,31 @@ fn flipAll(fmt Format, good &Array[u8]) usize {
 }
 
 fn main() i32 {
-  imm text = words(600usize);
-  imm raw = rawDeflate(text.view(), 2);
-  imm zl = zlibCompress(text.view(), 2);
-  imm gz = gzipCompress(text.view(), 2);
+  let text = words(600usize);
+  let raw = rawDeflate(text.view(), 2);
+  let zl = zlibCompress(text.view(), 2);
+  let gz = gzipCompress(text.view(), 2);
 
   // Bit flips. Raw has no checksum, so many flips still inflate to something.
-  imm rawOk = flipAll(Format.Raw, raw.view());
+  let rawOk = flipAll(Format.Raw, raw.view());
   expect(rawOk < raw.len() * 8usize, "raw: some flipped bits are refused");
   // zlib: only the padding bits at the end of the data and the FLEVEL bits are invisible
-  imm zlOk = flipAll(Format.Zlib, zl.view());
+  let zlOk = flipAll(Format.Zlib, zl.view());
   expect(zlOk <= 20usize, "zlib: a flipped bit is refused but for the padding and FLEVEL bits");
   // gzip: the time, XFL and system bytes (6 bytes) and the padding
-  imm gzOk = flipAll(Format.Gzip, gz.view());
+  let gzOk = flipAll(Format.Gzip, gz.view());
   expect(gzOk <= 60usize, "gzip: a flipped bit is refused but for the header's time, XFL, system and the padding");
 
   // Prefixes
-  mut stuck = 0usize;
-  mut f = 0;
+  var stuck = 0usize;
+  var f = 0;
   while f < 3 {
-    imm fmt = if f == 0 {Format.Raw;} elif f == 1 {Format.Zlib;} else {Format.Gzip;};
-    imm s = if f == 0 {raw.view();} elif f == 1 {zl.view();} else {gz.view();};
-    mut n = 0usize;
+    let fmt = if f == 0 {Format.Raw;} elif f == 1 {Format.Zlib;} else {Format.Gzip;};
+    let s = if f == 0 {raw.view();} elif f == 1 {zl.view();} else {gz.view();};
+    var n = 0usize;
     while n < s.len {
-      imm a = run(fmt, &s[0usize..<n], n);
-      imm c = run(fmt, &s[0usize..<n], n / 3usize);
+      let a = run(fmt, &s[0usize..<n], n);
+      let c = run(fmt, &s[0usize..<n], n / 3usize);
       if a != 1 or c != 1 { stuck += 1usize; }
       n += 1usize;
     }
@@ -120,13 +120,13 @@ fn main() i32 {
   expectInt(i64.from(stuck), 0i64, "every strict prefix is refused, split or not");
 
   // Pseudo-random bytes
-  mut seed = 99u64;
-  mut odd = 0usize;
-  mut round = 0usize;
+  var seed = 99u64;
+  var odd = 0usize;
+  var round = 0usize;
   while round < 300usize {
-    mut len = 1usize + (round * 7usize) % 400usize;
-    mut g = List[u8].empty();
-    mut k = 0usize;
+    var len = 1usize + (round * 7usize) % 400usize;
+    var g = List[u8].empty();
+    var k = 0usize;
     while k < len {
       seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
       g.push(u8.from((seed >> 40u64) & 255u64));
@@ -139,9 +139,9 @@ fn main() i32 {
       g.set(2usize, 8u8);
       g.set(3usize, 0u8);
     }
-    imm hdrFmt = if round % 4usize == 1usize {Format.Zlib;} elif round % 4usize == 3usize {Format.Gzip;} else {Format.Raw;};
-    imm a = run(hdrFmt, g.view(), 0usize);
-    imm c = run(hdrFmt, g.view(), len / 2usize);
+    let hdrFmt = if round % 4usize == 1usize {Format.Zlib;} elif round % 4usize == 3usize {Format.Gzip;} else {Format.Raw;};
+    let a = run(hdrFmt, g.view(), 0usize);
+    let c = run(hdrFmt, g.view(), len / 2usize);
     if a >= 100 or c >= 100 or a != c { odd += 1usize; }
     round += 1usize;
   }

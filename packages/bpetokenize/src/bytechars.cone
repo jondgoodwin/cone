@@ -13,7 +13,7 @@
 
 // The code point that stands for byte b
 fn byteCodePoint(b u8) u32 {
-  imm n = u32.from(b);
+  let n = u32.from(b);
   if n >= 33u32 and n <= 126u32 { return n; }
   if n >= 161u32 and n <= 172u32 { return n; }
   if n >= 174u32 { return n; }
@@ -29,7 +29,7 @@ fn codePointByte(cp u32) i32 {
   if cp >= 161u32 and cp <= 172u32 { return i32.from(cp); }
   if cp >= 174u32 and cp <= 255u32 { return i32.from(cp); }
   if cp < 256u32 or cp > 323u32 { return -1i32; }
-  imm n = cp - 256u32;
+  let n = cp - 256u32;
   if n <= 32u32 { return i32.from(n); }
   if n <= 66u32 { return i32.from(127u32 + (n - 33u32)); }
   173i32;
@@ -63,19 +63,19 @@ fn appendCodePoint(out &mut List[u8], cp u32) {
 // bytes there are not one: no overlong form, no surrogate, nothing beyond
 // U+10FFFF, no cut-off character
 fn utf8Length(t &Array[u8], pos usize) usize {
-  imm b = t[pos];
+  let b = t[pos];
   if b < 0x80u8 { return 1usize; }
-  mut more = 0usize;
-  mut cp = 0u32;
-  mut least = 0u32;
+  var more = 0usize;
+  var cp = 0u32;
+  var least = 0u32;
   if b >= 0xC2u8 and b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
   elif b >= 0xE0u8 and b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
   elif b >= 0xF0u8 and b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
   else { return 0usize; }
   if pos + more >= t.len { return 0usize; }
-  mut k = 1usize;
+  var k = 1usize;
   while k <= more {
-    imm c = t[pos + k];
+    let c = t[pos + k];
     if (c & 0xC0u8) != 0x80u8 { return 0usize; }
     cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
     k = k + 1usize;
@@ -86,10 +86,10 @@ fn utf8Length(t &Array[u8], pos usize) usize {
 
 // The code point of the well-formed character at pos that takes len bytes
 fn utf8Decode(t &Array[u8], pos usize, len usize) u32 {
-  imm b = u32.from(t[pos]);
+  let b = u32.from(t[pos]);
   if len == 1usize { return b; }
-  mut cp = if len == 2usize { b & 0x1Fu32; } elif len == 3usize { b & 0x0Fu32; } else { b & 0x07u32; };
-  mut k = 1usize;
+  var cp = if len == 2usize { b & 0x1Fu32; } elif len == 3usize { b & 0x0Fu32; } else { b & 0x07u32; };
+  var k = 1usize;
   while k < len {
     cp = (cp << 6u32) | (u32.from(t[pos + k]) & 0x3Fu32);
     k = k + 1usize;
@@ -102,8 +102,8 @@ fn utf8Decode(t &Array[u8], pos usize, len usize) u32 {
 // The text a vocabulary spells bytes with: each byte as the character the table
 // gives it. 'toByteLevel("hi there")' is "hiĠthere"
 pub fn toByteLevel(bytes &Array[u8]) String {
-  mut out = List[u8].withCapacity(bytes.len * 2usize);
-  mut i = 0usize;
+  var out = List[u8].withCapacity(bytes.len * 2usize);
+  var i = 0usize;
   while i < bytes.len {
     appendCodePoint(&mut out, byteCodePoint(bytes[i]));
     i = i + 1usize;
@@ -116,20 +116,20 @@ pub fn toByteLevel(bytes &Array[u8]) String {
 // byte-level vocabulary never spells a byte with) is copied through as its own
 // UTF-8, and so is a byte that is not UTF-8 at all, so no text is refused.
 pub fn fromByteLevel(text &Array[u8]) List[u8] {
-  mut out = List[u8].withCapacity(text.len);
-  mut i = 0usize;
+  var out = List[u8].withCapacity(text.len);
+  var i = 0usize;
   while i < text.len {
-    imm len = utf8Length(text, i);
+    let len = utf8Length(text, i);
     if len == 0usize {
       out.push(text[i]);
       i = i + 1usize;
     }
     else {
-      imm cp = utf8Decode(text, i, len);
-      imm b = codePointByte(cp);
+      let cp = utf8Decode(text, i, len);
+      let b = codePointByte(cp);
       if b >= 0i32 { out.push(u8.from(b)); }
       else {
-        mut k = 0usize;
+        var k = 0usize;
         while k < len { out.push(text[i + k]); k = k + 1usize; }
       }
       i = i + len;

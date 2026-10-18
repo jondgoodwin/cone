@@ -36,10 +36,10 @@ fn cov(p *u8, x u32, y u32) f64 {
 }
 
 fn sumArea(p *u8) f64 {
-  mut s = 0.0d;
-  mut y = 0u32;
+  var s = 0.0d;
+  var y = 0u32;
   while y < H {
-    mut x = 0u32;
+    var x = 0u32;
     while x < W { s = s + cov(p, x, y); x = x + 1u32; }
     y = y + 1u32;
   }
@@ -47,24 +47,24 @@ fn sumArea(p *u8) f64 {
 }
 
 fn shot(p *u8, name &str) {
-  imm env = libc.getenv("VECTOR2D_SHOTS");
+  let env = libc.getenv("VECTOR2D_SHOTS");
   if (env as usize) == 0usize { return; }
-  mut file = String.fromCStr(cstr.fromPtr(env));
+  var file = String.fromCStr(cstr.fromPtr(env));
   file.append(name);
-  imm rowBytes = W * 3u32;
-  imm pad = (4u32 - rowBytes % 4u32) % 4u32;
-  imm size = 54u32 + (rowBytes + pad) * H;
-  mut b = List[u8].withCapacity(usize.from(size));
+  let rowBytes = W * 3u32;
+  let pad = (4u32 - rowBytes % 4u32) % 4u32;
+  let size = 54u32 + (rowBytes + pad) * H;
+  var b = List[u8].withCapacity(usize.from(size));
   b.push('B');
   b.push('M');
-  mut words = new Array[u32, 13] <- fill 0u32;
+  var words = new Array[u32, 13] <- fill 0u32;
   words[0] = size;
   words[2] = 54u32;
   words[3] = 40u32;
   words[4] = W;
   words[5] = H;
   words[6] = 0x00180001u32;
-  mut w = 0usize;
+  var w = 0usize;
   while w < 13usize {
     b.push(u8.from(words[w] & 255u32));
     b.push(u8.from((words[w] >> 8u32) & 255u32));
@@ -72,21 +72,21 @@ fn shot(p *u8, name &str) {
     b.push(u8.from((words[w] >> 24u32) & 255u32));
     w = w + 1usize;
   }
-  mut y = H;
+  var y = H;
   while y > 0u32 {
     y = y - 1u32;
-    mut x = 0u32;
+    var x = 0u32;
     while x < W {
-      imm at = p + usize.from((y * W + x) * 4u32);
+      let at = p + usize.from((y * W + x) * 4u32);
       b.push(*(at + 2usize));
       b.push(*(at + 1usize));
       b.push(*at);
       x = x + 1u32;
     }
-    mut q = 0u32;
+    var q = 0u32;
     while q < pad { b.push(0u8); q = q + 1u32; }
   }
-  imm out = Path.fromLiteral(file.view());
+  let out = Path.fromLiteral(file.view());
   fs.writeFile(&out, b.view());
 }
 
@@ -100,13 +100,13 @@ struct Rig {
 }
 
 fn render(rig &mut Rig, canvas &Canvas, font &Font, name &str) *u8 {
-  mut encoder = rig.device.createCommandEncoder();
+  var encoder = rig.device.createCommandEncoder();
   rig.renderer.render(&mut rig.device, &mut encoder, &rig.target, canvas, font, &mut rig.atlas, true, new Color(0., 0., 0., 1.));
   encoder.copyTextureToBuffer(&rig.target, &rig.readback);
   rig.device.queue.submit(encoder.finish());
   rig.device.endFrame();
   rig.device.waitIdle();
-  imm p = rig.readback.mappedRange();
+  let p = rig.readback.mappedRange();
   shot(p, name);
   p;
 }
@@ -114,30 +114,30 @@ fn render(rig &mut Rig, canvas &Canvas, font &Font, name &str) *u8 {
 fn white() Paint { Paint.solid(new Color(1., 1., 1., 1.)); }
 
 fn run(font &Font) {
-  mut instance = Instance.create("vector2d test");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var instance = Instance.create("vector2d test");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   if !device.isValid() { print <- "no usable GPU\n"; return; }
-  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut target = device.createTexture(&targetDesc);
-  mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut atlas = Atlas.create(AtlasConfig.standard());
-  mut renderer = VectorRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM);
+  let targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var target = device.createTexture(&targetDesc);
+  var readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var atlas = Atlas.create(AtlasConfig.standard());
+  var renderer = VectorRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM);
   require(renderer.isValid(), "the renderer's pipelines are valid");
-  mut rig = new Rig(target, readback, renderer, atlas, device);
+  var rig = new Rig(target, readback, renderer, atlas, device);
 
   // 1. Edge coverage
-  mut c = Canvas.make(f32.from(W), f32.from(H));
-  mut p = VectorPath.make();
+  var c = Canvas.make(f32.from(W), f32.from(H));
+  var p = VectorPath.make();
   p.rect(10.5, 10.25, 50., 30.5);
   c.fill(&p, &white());
-  imm px = render(&mut rig, &c, font, "rect.bmp");
+  let px = render(&mut rig, &c, font, "rect.bmp");
   expectFloat(cov(px, 10u32, 20u32), 0.5d, 0.04d, "left edge pixel is half covered");
   // A fill's corner pixel gets the larger of its two edges' coverage (0.75 x 0.5 would be 0.375): between the two
   expect(cov(px, 10u32, 10u32) > 0.36d and cov(px, 10u32, 10u32) < 0.55d, "corner pixel is between the product (0.375) and the larger edge (0.5)");
@@ -149,39 +149,39 @@ fn run(font &Font) {
 
   // 2. Circle
   c.clear();
-  mut q = VectorPath.make();
+  var q = VectorPath.make();
   q.circle(200., 150., 40.);
   c.fill(&q, &white());
-  imm pc = render(&mut rig, &c, font, "circle.bmp");
+  let pc = render(&mut rig, &c, font, "circle.bmp");
   expectFloat(sumArea(pc), 3.14159265d * 1600.0d, 50.27d, "circle area within 1%");
 
   // 3. Diagonal line
   c.clear();
-  mut st = StrokeStyle.make(3.);
+  var st = StrokeStyle.make(3.);
   c.line(50., 50., 120.71, 120.71, &white(), &st);
-  imm pl = render(&mut rig, &c, font, "diagonal.bmp");
+  let pl = render(&mut rig, &c, font, "diagonal.bmp");
   expectFloat(sumArea(pl), 300.0d, 6.0d, "diagonal 100 x 3 line, area within 2%");
 
   // 4. Blending
   c.clear();
   c.fillRect(20., 20., 100., 100., new Color(0.4, 0.4, 0.4, 1.));
   c.fillRect(60., 60., 100., 100., new Color(1., 1., 1., 0.5));
-  imm pb = render(&mut rig, &c, font, "blend.bmp");
+  let pb = render(&mut rig, &c, font, "blend.bmp");
   expectFloat(cov(pb, 90u32, 90u32), 0.7d, 0.02d, "50% white over 0.4 grey");
   expectFloat(cov(pb, 40u32, 40u32), 0.4d, 0.01d, "grey alone");
   expectFloat(cov(pb, 140u32, 140u32), 0.5d, 0.02d, "50% white over black");
 
   // 5. Ring, dashes, arrow
   c.clear();
-  mut ring = VectorPath.make();
+  var ring = VectorPath.make();
   ring.circle(100., 100., 60.);
   c.stroke(&ring, &white(), &StrokeStyle.make(6.));
-  mut dashed = VectorPath.make();
+  var dashed = VectorPath.make();
   dashed.moveTo(200., 50.);
   dashed.cubicTo(250., 50., 300., 150., 350., 150.);
   c.strokeArrows(&dashed, &white(), &StrokeStyle.dashed(3., 12., 6.), &ArrowStyle.none(), &ArrowStyle.make(ARROW_TRIANGLE, 18., 12.));
-  imm pr = render(&mut rig, &c, font, "ring.bmp");
-  imm ink = sumArea(pr);
+  let pr = render(&mut rig, &c, font, "ring.bmp");
+  let ink = sumArea(pr);
   // ring: 2 pi 60 x 6 = 2262; the dashed curve ~ 170 long, two thirds on, 3 wide ~ 340 plus the head ~108
   expect(ink > 2262.0d + 300.0d and ink < 2262.0d + 700.0d, "ring, dashed curve and head put ink down");
   expectFloat(cov(pr, 100u32, 40u32), 1.0d, 0.02d, "ring's top (y = 40, 6 wide) is solid");
@@ -191,14 +191,14 @@ fn run(font &Font) {
   c.clear();
   c.fillRect(0., 0., 400., 300., new Color(0., 0., 0., 1.));
   c.text("Diagram", 200., 150., 0.5, 0.5, 32., new Color(1., 1., 1., 1.));
-  imm pt = render(&mut rig, &c, font, "text.bmp");
-  mut inside = 0.0d;
-  mut outside = 0.0d;
-  mut y = 0u32;
+  let pt = render(&mut rig, &c, font, "text.bmp");
+  var inside = 0.0d;
+  var outside = 0.0d;
+  var y = 0u32;
   while y < H {
-    mut x = 0u32;
+    var x = 0u32;
     while x < W {
-      imm v = cov(pt, x, y);
+      let v = cov(pt, x, y);
       if x >= 90u32 and x < 310u32 and y >= 120u32 and y < 180u32 { inside = inside + v; } else { outside = outside + v; }
       x = x + 1u32;
     }
@@ -209,30 +209,30 @@ fn run(font &Font) {
 
   // 7. Many triangles
   c.clear();
-  mut k = 0u32;
+  var k = 0u32;
   while k < 4000u32 {
-    imm a = f32.from(k) * 0.00157;
+    let a = f32.from(k) * 0.00157;
     c.line(200., 150., 200. + 140. * cos(a), 150. + 140. * sin(a), &white(), &StrokeStyle.make(1.));
     k = k + 1u32;
   }
-  imm pm = render(&mut rig, &c, font, "fan.bmp");
+  let pm = render(&mut rig, &c, font, "fan.bmp");
   print <- "a fan of 4000 lines is ", u64.from(rig.renderer.triangles), " triangles\n";
   expect(rig.renderer.triangles > 30000u32, "tens of thousands of triangles drawn");
   expect(sumArea(pm) > 1000.0d, "the fan puts ink down");
 }
 
 fn main() i32 {
-  mut fontFile = Path.fromLiteral("C:/Windows/Fonts/arial.ttf");
+  var fontFile = Path.fromLiteral("C:/Windows/Fonts/arial.ttf");
   match fs.readFile(&fontFile) {
-    case imm bytes Ok {
+    case let bytes Ok {
       match Font.load(bytes.view()) {
-        case imm f Ok { run(&f); }
+        case let f Ok { run(&f); }
         case is Error { print <- "bad font\n"; return 1; }
       }
     }
     case is Error {
       match Font.load(&DEMO_FONT) {
-        case imm f Ok { run(&f); }
+        case let f Ok { run(&f); }
         case is Error { return 1; }
       }
     }

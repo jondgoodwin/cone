@@ -27,7 +27,7 @@ pub struct BranchGraph {
   // A new node at p, the child of 'parent' (NoParent for a root, otherwise
   // a node already in the graph), grown in step 'birth'; its number
   pub fn add(self &mut, p Vec3, parent u32, birth u32) u32 {
-    imm n = u32.from(self.position.len());
+    let n = u32.from(self.position.len());
     self.position.push(p);
     self.parent.push(parent);
     self.birth.push(birth);
@@ -37,16 +37,16 @@ pub struct BranchGraph {
 
   // How many children each node has (a tip none, a fork two or more)
   pub fn childCounts(self &) List[u32] {
-    imm n = self.position.len();
-    mut c = List[u32].withCapacity(n);
-    mut i = 0usize;
+    let n = self.position.len();
+    var c = List[u32].withCapacity(n);
+    var i = 0usize;
     while i < n {
       c.push(0u32);
       i = i + 1usize;
     }
     i = 0usize;
     while i < n {
-      imm p = *self.parent[i];
+      let p = *self.parent[i];
       if p != NoParent { c.set(usize.from(p), *c[usize.from(p)] + 1u32); }
       i = i + 1usize;
     }
@@ -61,17 +61,17 @@ pub struct BranchGraph {
   // strand are always a segment, and every segment is in exactly one
   // strand. Strands come in the order of their first new node
   pub fn strands(self &) Strands {
-    imm n = self.position.len();
-    imm main = mainChildren(self);
-    mut nodes = List[u32].empty();
-    mut starts = List[u32].empty();
-    mut i = 0usize;
+    let n = self.position.len();
+    let main = mainChildren(self);
+    var nodes = List[u32].empty();
+    var starts = List[u32].empty();
+    var i = 0usize;
     while i < n {
-      imm p = *self.parent[i];
+      let p = *self.parent[i];
       if p == NoParent or *main[usize.from(p)] != u32.from(i) {
         starts.push(u32.from(nodes.len()));
         if p != NoParent { nodes.push(p); }
-        mut at = u32.from(i);
+        var at = u32.from(i);
         while at != NoParent {
           nodes.push(at);
           at = *main[usize.from(at)];
@@ -85,9 +85,9 @@ pub struct BranchGraph {
 
   // How many tips (nodes with no children) the graph has
   pub fn tipCount(self &) usize {
-    imm c = self.childCounts();
-    mut t = 0usize;
-    mut i = 0usize;
+    let c = self.childCounts();
+    var t = 0usize;
+    var i = 0usize;
     while i < c.len() {
       if *c[i] == 0u32 { t = t + 1usize; }
       i = i + 1usize;
@@ -113,12 +113,12 @@ pub struct Strands {
 // has that child's radius: the taper happens at the forks. The exponent's
 // powers go through libc's powf
 pub fn pipeRadii(graph &mut BranchGraph, tip f32, exponent f32) {
-  imm n = graph.position.len();
+  let n = graph.position.len();
   if n == 0usize { return; }
-  imm tipPower = libc.powf(tip, exponent);
-  imm inverse = 1. / exponent;
-  mut sum = List[f32].withCapacity(n);
-  mut i = 0usize;
+  let tipPower = libc.powf(tip, exponent);
+  let inverse = 1. / exponent;
+  var sum = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n {
     sum.push(0.);
     i = i + 1usize;
@@ -127,10 +127,10 @@ pub fn pipeRadii(graph &mut BranchGraph, tip f32, exponent f32) {
   i = n;
   while i > 0usize {
     i = i - 1usize;
-    imm s = *sum[i];
-    imm power = if s > 0. { s; } else { tipPower; };
+    let s = *sum[i];
+    let power = if s > 0. { s; } else { tipPower; };
     graph.radius.set(i, if s > 0. { libc.powf(s, inverse); } else { tip; });
-    imm p = *graph.parent[i];
+    let p = *graph.parent[i];
     if p != NoParent { sum.set(usize.from(p), *sum[usize.from(p)] + power); }
   }
 }
@@ -139,10 +139,10 @@ pub fn pipeRadii(graph &mut BranchGraph, tip f32, exponent f32) {
 // most nodes (itself and all beneath it), of equal ones the first;
 // NoParent for a tip
 fn mainChildren(graph &BranchGraph) List[u32] {
-  imm n = graph.position.len();
-  mut main = List[u32].withCapacity(n);
-  mut size = List[u32].withCapacity(n);
-  mut i = 0usize;
+  let n = graph.position.len();
+  var main = List[u32].withCapacity(n);
+  var size = List[u32].withCapacity(n);
+  var i = 0usize;
   while i < n {
     main.push(NoParent);
     size.push(1u32);
@@ -152,14 +152,14 @@ fn mainChildren(graph &BranchGraph) List[u32] {
   i = n;
   while i > 0usize {
     i = i - 1usize;
-    imm p = *graph.parent[i];
+    let p = *graph.parent[i];
     if p != NoParent { size.set(usize.from(p), *size[usize.from(p)] + *size[i]); }
   }
   i = 0usize;
   while i < n {
-    imm p = *graph.parent[i];
+    let p = *graph.parent[i];
     if p != NoParent {
-      imm m = *main[usize.from(p)];
+      let m = *main[usize.from(p)];
       if m == NoParent or *size[i] > *size[usize.from(m)] { main.set(usize.from(p), u32.from(i)); }
     }
     i = i + 1usize;
@@ -177,30 +177,30 @@ fn mainChildren(graph &BranchGraph) List[u32] {
 // removed. Space colonization grows a twig to each stray attractor near a
 // strand; this takes them off
 pub fn pruneTwigs(graph &mut BranchGraph, length f32) usize {
-  imm n = graph.position.len();
-  imm counts = graph.childCounts();
-  imm main = mainChildren(graph);
-  mut keep = List[bool].withCapacity(n);
-  mut i = 0usize;
+  let n = graph.position.len();
+  let counts = graph.childCounts();
+  let main = mainChildren(graph);
+  var keep = List[bool].withCapacity(n);
+  var i = 0usize;
   while i < n {
     keep.push(true);
     i = i + 1usize;
   }
-  mut removed = 0usize;
-  mut t = 0usize;
+  var removed = 0usize;
+  var t = 0usize;
   while t < n {
     if *counts[t] == 0u32 {
       // Up from the tip to the fork
-      mut along f32 = 0.;
-      mut at = t;
-      mut fork = NoParent;
+      var along f32 = 0.;
+      var at = t;
+      var fork = NoParent;
       while *graph.parent[at] != NoParent and fork == NoParent {
-        imm p = usize.from(*graph.parent[at]);
+        let p = usize.from(*graph.parent[at]);
         along = along + (*graph.position[at] - *graph.position[p]).length();
         if *counts[p] >= 2u32 { fork = u32.from(p); } else { at = p; }
       }
       if fork != NoParent and along < length and *main[usize.from(fork)] != u32.from(at) {
-        mut x = t;
+        var x = t;
         while x != at {
           keep.set(x, false);
           x = usize.from(*graph.parent[x]);
@@ -214,13 +214,13 @@ pub fn pruneTwigs(graph &mut BranchGraph, length f32) usize {
   }
   if removed == 0usize { return 0usize; }
   // The nodes kept, renumbered in order
-  mut number = List[u32].withCapacity(n);
-  mut kept = BranchGraph.empty();
+  var number = List[u32].withCapacity(n);
+  var kept = BranchGraph.empty();
   i = 0usize;
   while i < n {
     if *keep[i] {
       number.push(u32.from(kept.position.len()));
-      imm p = *graph.parent[i];
+      let p = *graph.parent[i];
       kept.add(*graph.position[i], if p == NoParent { NoParent; } else { *number[usize.from(p)]; }, *graph.birth[i]);
       kept.radius.set(kept.position.len() - 1usize, *graph.radius[i]);
     } else {
@@ -238,30 +238,30 @@ pub fn pruneTwigs(graph &mut BranchGraph, length f32) usize {
 // smoothing, every node moved from the positions before the round). Roots,
 // tips and forks stay where they are, so the branching keeps its shape
 pub fn smoothBranches(graph &mut BranchGraph, rounds u32, amount f32) {
-  imm n = graph.position.len();
-  imm counts = graph.childCounts();
+  let n = graph.position.len();
+  let counts = graph.childCounts();
   // Each node's one child, where it has exactly one
-  mut child = List[u32].withCapacity(n);
-  mut i = 0usize;
+  var child = List[u32].withCapacity(n);
+  var i = 0usize;
   while i < n {
     child.push(NoParent);
     i = i + 1usize;
   }
   i = 0usize;
   while i < n {
-    imm p = *graph.parent[i];
+    let p = *graph.parent[i];
     if p != NoParent { child.set(usize.from(p), u32.from(i)); }
     i = i + 1usize;
   }
-  mut r = 0u32;
+  var r = 0u32;
   while r < rounds {
-    mut moved = List[Vec3].withCapacity(n);
+    var moved = List[Vec3].withCapacity(n);
     i = 0usize;
     while i < n {
-      imm at = *graph.position[i];
-      imm p = *graph.parent[i];
+      let at = *graph.position[i];
+      let p = *graph.parent[i];
       if p != NoParent and *counts[i] == 1u32 {
-        imm mid = (*graph.position[usize.from(p)] + *graph.position[usize.from(*child[i])]) * 0.5;
+        let mid = (*graph.position[usize.from(p)] + *graph.position[usize.from(*child[i])]) * 0.5;
         moved.push(at.lerp(mid, amount));
       } else {
         moved.push(at);

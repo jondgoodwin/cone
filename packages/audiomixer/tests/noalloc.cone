@@ -14,9 +14,9 @@ import geomath use *;
 import sync use Receiver;
 import audiomixer use *;
 
-imm allocs Atomic[u64];
-imm realAlloc &fn(r *MemRegion, bytes usize, align usize) *u8;
-imm realResize &fn(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8;
+let allocs Atomic[u64];
+let realAlloc &fn(r *MemRegion, bytes usize, align usize) *u8;
+let realResize &fn(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8;
 
 fn @initpure init() {
   allocs = Atomic[u64].of(0u64);
@@ -26,56 +26,56 @@ fn @initpure init() {
 
 fn countingAlloc(r *MemRegion, bytes usize, align usize) *u8 {
   allocs.add(1u64);
-  imm f = realAlloc;
+  let f = realAlloc;
   f(r, bytes, align);
 }
 
 fn countingResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
   allocs.add(1u64);
-  imm f = realResize;
+  let f = realResize;
   f(r, block, oldBytes, newBytes, align);
 }
 
 fn sine(freq f32, seconds f32) Sound {
-  mut s = List[f32].empty();
-  mut o = Osc.make(WAVE_SINE);
-  imm n = usize.from(seconds * 48000.);
-  mut i = 0usize;
+  var s = List[f32].empty();
+  var o = Osc.make(WAVE_SINE);
+  let n = usize.from(seconds * 48000.);
+  var i = 0usize;
   while i < n { s.push(o.next(freq, 48000.)); i = i + 1usize; }
   new Sound(48000u32, 1u32, s);
 }
 
 fn main() i32 {
   initAll();
-  mut c Control;
-  mut rx Receiver[Cmd];
+  var c Control;
+  var rx Receiver[Cmd];
   c, rx = commandQueue(256u64);
-  mut e = Engine.make(48000., 32usize, rx);
-  imm tone = c.addSound(sine(330., 1.));
-  imm blip = c.addSound(sine(1000., 0.05));
-  mut out = List[f32].empty();
-  mut i = 0usize;
+  var e = Engine.make(48000., 32usize, rx);
+  let tone = c.addSound(sine(330., 1.));
+  let blip = c.addSound(sine(1000., 0.05));
+  var out = List[f32].empty();
+  var i = 0usize;
   while i < 960usize { out.push(0.); i = i + 1usize; }
   e.render(out.viewMut(), 480usize);
 
   // count from here
-  imm heap = heapRegion();
+  let heap = heapRegion();
   heap.allocFn = &countingAlloc;
   heap.resizeFn = &countingResize;
-  imm before = allocs.load();
+  let before = allocs.load();
 
-  mut block = 0;
-  mut lis = Listener.make();
+  var block = 0;
+  var lis = Listener.make();
   while block < 600 {
     // the game thread, every few blocks: new voices (more than 32, so voices are stolen),
     // moves, occlusion, stops, listener, bus gains
     if block % 3 == 0 {
-      imm id = c.play(blip, BUS_EFFECTS, 0.1, 1.1, 0.3, false, i32.from(block % 5));
+      let id = c.play(blip, BUS_EFFECTS, 0.1, 1.1, 0.3, false, i32.from(block % 5));
       c.setPosition(id, new Vec3(f32.from(block % 20), 0., -5.), new Vec3(2., 0., 0.));
       c.setOcclusion(id, 0.3);
     }
     if block % 7 == 0 {
-      imm id = c.playSynth(SYNTH_STEP, u32.from(block), BUS_EFFECTS, 0.3, f32.from(block % 3), 0.7, 1i32);
+      let id = c.playSynth(SYNTH_STEP, u32.from(block), BUS_EFFECTS, 0.3, f32.from(block % 3), 0.7, 1i32);
       c.stop(id, 0.05);
     }
     if block % 50 == 0 {
@@ -94,7 +94,7 @@ fn main() i32 {
     e.render(out.viewMut(), 480usize);
     block = block + 1;
   }
-  imm after = allocs.load();
+  let after = allocs.load();
   heap.allocFn = realAlloc;
   heap.resizeFn = realResize;
   expect(e.mixer.stolen > 0u32, "voices were stolen during the run");
@@ -103,7 +103,7 @@ fn main() i32 {
   // the counter works: a list push allocates
   heap.allocFn = &countingAlloc;
   heap.resizeFn = &countingResize;
-  mut probe = List[f32].empty();
+  var probe = List[f32].empty();
   probe.push(1.);
   probe.push(2.);
   heap.allocFn = realAlloc;

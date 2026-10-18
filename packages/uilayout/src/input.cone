@@ -133,13 +133,13 @@ pub struct InputState {
 
 fn hitNode(ui &Ui, id usize, x f32, y f32) usize {
   if !ui.nodes[id].visible {return NIL;}
-  imm gx = ui.nodes[id].gx;
-  imm gy = ui.nodes[id].gy;
-  imm inside = x >= gx and x < gx + ui.nodes[id].w and y >= gy and y < gy + ui.nodes[id].h;
+  let gx = ui.nodes[id].gx;
+  let gy = ui.nodes[id].gy;
+  let inside = x >= gx and x < gx + ui.nodes[id].w and y >= gy and y < gy + ui.nodes[id].h;
   if ui.nodes[id].clip and !inside {return NIL;}
-  mut c = ui.nodes[id].last;
+  var c = ui.nodes[id].last;
   while c != NIL {
-    imm r = hitNode(ui, c, x, y);
+    let r = hitNode(ui, c, x, y);
     if r != NIL {return r;}
     c = ui.nodes[c].prev;
   }
@@ -150,7 +150,7 @@ fn hitNode(ui &Ui, id usize, x f32, y f32) usize {
 // The node that takes a pointer at (x, y), or 0 when it is over nothing of the Ui
 pub fn hitTest(ui &Ui, x f32, y f32) usize {
   // the overlay (a popup menu, a tooltip, a drag preview) is above everything, a modal included
-  imm o = hitNode(ui, ui.overlay, x, y);
+  let o = hitNode(ui, ui.overlay, x, y);
   if o != NIL {return o;}
   if ui.input.modal != NIL and ui.alive(ui.input.modal) {
     return hitNode(ui, ui.input.modal, x, y);
@@ -161,14 +161,14 @@ pub fn hitTest(ui &Ui, x f32, y f32) usize {
 // ---- the chain from the root to a node ----
 
 fn pathTo(ui &Ui, id usize) List[usize] {
-  mut up = List[usize].empty();
-  mut n = id;
+  var up = List[usize].empty();
+  var n = id;
   while n != NIL {
     up.push(n);
     n = ui.nodes[n].parent;
   }
-  mut path = List[usize].empty();
-  mut i = up.len();
+  var path = List[usize].empty();
+  var i = up.len();
   while i > 0usize {
     i = i - 1usize;
     path.push(*up[i]);
@@ -180,11 +180,11 @@ fn pathTo(ui &Ui, id usize) List[usize] {
 
 // Runs the listeners of 'node' for this event and phase. Returns the flags they asked for
 fn runListeners(ui &mut Ui, node usize, ev &Ev, phase u32) u32 {
-  mut flags = 0u32;
-  mut i = 0usize;
+  var flags = 0u32;
+  var i = 0usize;
   while i < ui.input.listeners.len() {
-    imm l = ui.input.listeners[i];
-    imm lp = if phase == PH_CAPTURE {LP_CAPTURE;} else {LP_BUBBLE;};
+    let l = ui.input.listeners[i];
+    let lp = if phase == PH_CAPTURE {LP_CAPTURE;} else {LP_BUBBLE;};
     if l.node == node and l.kind == ev.kind and l.phase == lp {
       flags = flags | l.flags;
       if ui.input.tracing {ui.input.trace.push(new TraceEntry(node, phase, ev.kind));}
@@ -198,8 +198,8 @@ fn runListeners(ui &mut Ui, node usize, ev &Ev, phase u32) u32 {
 // Delivers one event to one node: listeners, then (not in capture) the widget's own logic.
 // Returns whether the event is now handled
 fn deliver(ui &mut Ui, node usize, ev &Ev, phase u32) bool {
-  imm flags = runListeners(ui, node, ev, phase);
-  mut handled = (flags & LF_CONSUME) != 0u32;
+  let flags = runListeners(ui, node, ev, phase);
+  var handled = (flags & LF_CONSUME) != 0u32;
   if !handled and phase != PH_CAPTURE and ui.alive(node) {
     handled = builtin(ui, node, ev, phase);
   }
@@ -209,9 +209,9 @@ fn deliver(ui &mut Ui, node usize, ev &Ev, phase u32) bool {
 // Sends an event along the path to its target: capture, target, bubble. True if handled
 pub fn dispatch(ui &mut Ui, ev &Ev) bool {
   if !ui.alive(ev.target) {return false;}
-  imm path = pathTo(ui, ev.target);
-  imm n = path.len();
-  mut i = 0usize;
+  let path = pathTo(ui, ev.target);
+  let n = path.len();
+  var i = 0usize;
   while i + 1usize < n {
     if deliver(ui, *path[i], ev, PH_CAPTURE) {return true;}
     i = i + 1usize;
@@ -229,7 +229,7 @@ pub fn dispatch(ui &mut Ui, ev &Ev) bool {
 // An event to one node only (enter, leave, focus): listeners and the widget
 pub fn dispatchDirect(ui &mut Ui, node usize, ev &Ev) {
   if !ui.alive(node) {return;}
-  imm flags = runListeners(ui, node, ev, PH_TARGET);
+  let flags = runListeners(ui, node, ev, PH_TARGET);
   if (flags & LF_CONSUME) == 0u32 {builtin(ui, node, ev, PH_TARGET);}
 }
 
@@ -249,20 +249,20 @@ fn send(ui &mut Ui, ev Ev) bool {dispatch(ui, &ev);}
 
 fn updateHover(ui &mut Ui, hit usize) {
   ui.input.hover = hit;
-  imm newChain = pathTo(ui, hit);        // root first; empty for a miss
-  mut oldChain = List[usize].empty();
-  mut q = 0usize;
+  let newChain = pathTo(ui, hit);        // root first; empty for a miss
+  var oldChain = List[usize].empty();
+  var q = 0usize;
   while q < ui.input.hoverChain.len() {
     oldChain.push(*ui.input.hoverChain[q]);
     q = q + 1usize;
   }
   // leave, deepest first
-  mut i = oldChain.len();
+  var i = oldChain.len();
   while i > 0usize {
     i = i - 1usize;
-    imm o = *oldChain[i];
-    mut keep = false;
-    mut j = 0usize;
+    let o = *oldChain[i];
+    var keep = false;
+    var j = 0usize;
     while j < newChain.len() {
       if *newChain[j] == o {keep = true;}
       j = j + 1usize;
@@ -275,9 +275,9 @@ fn updateHover(ui &mut Ui, hit usize) {
   // enter, outermost first
   i = 0usize;
   while i < newChain.len() {
-    imm nn = *newChain[i];
-    mut had = false;
-    mut j = 0usize;
+    let nn = *newChain[i];
+    var had = false;
+    var j = 0usize;
     while j < oldChain.len() {
       if *oldChain[j] == nn {had = true;}
       j = j + 1usize;
@@ -294,8 +294,8 @@ fn updateHover(ui &mut Ui, hit usize) {
 // ---- the pointer ----
 
 pub fn pointerMove(ui &mut Ui, x f32, y f32) {
-  imm dx = x - ui.input.px;
-  imm dy = y - ui.input.py;
+  let dx = x - ui.input.px;
+  let dy = y - ui.input.py;
   ui.input.px = x;
   ui.input.py = y;
   ui.input.cursor = CURSOR_ARROW;
@@ -303,10 +303,10 @@ pub fn pointerMove(ui &mut Ui, x f32, y f32) {
     updateHover(ui, hitTest(ui, x, y));
     return;
   }
-  imm hit = hitTest(ui, x, y);
+  let hit = hitTest(ui, x, y);
   updateHover(ui, hit);
   tooltipMoved(ui, hit);
-  mut target = hit;
+  var target = hit;
   if ui.input.capture != NIL and ui.alive(ui.input.capture) {target = ui.input.capture;}
   if target != NIL {
     dispatch(ui, &new Ev(kind: EK_MOVE, target: target, x: x, y: y, dx: dx, dy: dy, button: ui.input.buttons, mods: ui.input.mods));
@@ -315,10 +315,10 @@ pub fn pointerMove(ui &mut Ui, x f32, y f32) {
 }
 
 pub fn pointerDown(ui &mut Ui, button u32) bool {
-  imm x = ui.input.px;
-  imm y = ui.input.py;
+  let x = ui.input.px;
+  let y = ui.input.py;
   ui.input.buttons = ui.input.buttons | button;
-  imm hit = hitTest(ui, x, y);
+  let hit = hitTest(ui, x, y);
   updateHover(ui, hit);
   tooltipHide(ui);
   if hit == NIL {
@@ -333,12 +333,12 @@ pub fn pointerDown(ui &mut Ui, button u32) bool {
   ui.input.downX = x;
   ui.input.downY = y;
   // focus goes to the nearest focusable node at or above the hit
-  mut f = hit;
+  var f = hit;
   while f != NIL and !(ui.nodes[f].focusable and ui.nodes[f].enabled) {f = ui.nodes[f].parent;}
   // (a press on a disabled control leaves the focus where it is)
   if f != ui.input.focus and (ui.nodes[hit].state & ST_DISABLED) == 0u32 {ui.setFocus(f);}
   // pressed state up the chain
-  mut n = hit;
+  var n = hit;
   while n != NIL {
     ui.setState(n, ST_PRESSED, true);
     n = ui.nodes[n].parent;
@@ -349,8 +349,8 @@ pub fn pointerDown(ui &mut Ui, button u32) bool {
 }
 
 pub fn pointerUp(ui &mut Ui, button u32) {
-  imm x = ui.input.px;
-  imm y = ui.input.py;
+  let x = ui.input.px;
+  let y = ui.input.py;
   ui.input.buttons = ui.input.buttons & (button ^ 4294967295u32);
   if dragRelease(ui, x, y, button) {
     clearPressed(ui);
@@ -358,10 +358,10 @@ pub fn pointerUp(ui &mut Ui, button u32) {
     updateHover(ui, hitTest(ui, x, y));
     return;
   }
-  imm hit = hitTest(ui, x, y);
-  mut target = hit;
+  let hit = hitTest(ui, x, y);
+  var target = hit;
   if ui.input.capture != NIL and ui.alive(ui.input.capture) {target = ui.input.capture;}
-  imm pressed = ui.input.pressed;
+  let pressed = ui.input.pressed;
   if target != NIL {
     dispatch(ui, &new Ev(kind: EK_UP, target: target, x: x, y: y, button: button, mods: ui.input.mods));
   }
@@ -369,8 +369,8 @@ pub fn pointerUp(ui &mut Ui, button u32) {
   ui.input.win.mode = 0u32;
   // a click is a press and a release over the same node (or one inside it)
   if pressed != NIL and hit != NIL and button == ui.input.pressButton and ui.alive(pressed) {
-    mut common = NIL;
-    mut a = pressed;
+    var common = NIL;
+    var a = pressed;
     while a != NIL {
       if ui.isWithin(hit, a) {
         common = a;
@@ -379,7 +379,7 @@ pub fn pointerUp(ui &mut Ui, button u32) {
       a = ui.nodes[a].parent;
     }
     if common != NIL {
-      imm near = absf(x - ui.input.clickX) < 5. and absf(y - ui.input.clickY) < 5.;
+      let near = absf(x - ui.input.clickX) < 5. and absf(y - ui.input.clickY) < 5.;
       if ui.time - ui.input.clickTime < 0.4 and near and ui.input.clickNode == common {
         ui.input.clickCount = ui.input.clickCount + 1u32;
       }
@@ -400,7 +400,7 @@ pub fn pointerUp(ui &mut Ui, button u32) {
 }
 
 fn clearPressed(ui &mut Ui) {
-  mut n = ui.input.pressed;
+  var n = ui.input.pressed;
   while n != NIL {
     ui.setState(n, ST_PRESSED, false);
     n = ui.nodes[n].parent;
@@ -409,7 +409,7 @@ fn clearPressed(ui &mut Ui) {
 }
 
 pub fn wheel(ui &mut Ui, dx f32, dy f32) bool {
-  imm hit = hitTest(ui, ui.input.px, ui.input.py);
+  let hit = hitTest(ui, ui.input.px, ui.input.py);
   if hit == NIL {return false;}
   dispatch(ui, &new Ev(kind: EK_WHEEL, target: hit, x: ui.input.px, y: ui.input.py, dx: dx, dy: dy, mods: ui.input.mods));
 }
@@ -418,7 +418,7 @@ pub fn wheel(ui &mut Ui, dx f32, dy f32) bool {
 
 pub fn keyDown(ui &mut Ui, code u32, mods u32) bool {
   ui.input.mods = mods;
-  mut consumed = false;
+  var consumed = false;
   if ui.input.focus != NIL and ui.alive(ui.input.focus) {
     consumed = dispatch(ui, &new Ev(kind: EK_KEY_DOWN, target: ui.input.focus, code: code, mods: mods));
   }
@@ -456,7 +456,7 @@ pub fn textInput(ui &mut Ui, codepoint u32) bool {
 pub fn focusSet(ui &mut Ui, id usize) {
   if id == ui.input.focus {return;}
   if id != NIL and !(ui.alive(id) and ui.nodes[id].focusable and ui.nodes[id].enabled and ui.nodes[id].visible) {return;}
-  imm old = ui.input.focus;
+  let old = ui.input.focus;
   ui.input.focus = id;
   if old != NIL and ui.alive(old) {
     ui.setState(old, ST_FOCUSED, false);
@@ -473,7 +473,7 @@ pub fn focusSet(ui &mut Ui, id usize) {
 fn collectFocusable(ui &Ui, id usize, out &mut List[usize]) {
   if !ui.nodes[id].visible {return;}
   if ui.nodes[id].focusable and ui.nodes[id].enabled and ui.nodes[id].tabIndex >= 0i32 {out.push(id);}
-  mut c = ui.nodes[id].first;
+  var c = ui.nodes[id].first;
   while c != NIL {
     collectFocusable(ui, c, out);
     c = ui.nodes[c].next;
@@ -483,23 +483,23 @@ fn collectFocusable(ui &Ui, id usize, out &mut List[usize]) {
 // The nodes Tab visits, in order: those with a positive tabIndex first (ascending), then
 // the rest in tree order (root layer, then the overlay), limited to the modal if one is set
 pub fn tabOrder(ui &Ui) List[usize] {
-  mut all = List[usize].empty();
+  var all = List[usize].empty();
   if ui.input.modal != NIL and ui.alive(ui.input.modal) {collectFocusable(ui, ui.input.modal, &mut all);}
   else {
     collectFocusable(ui, ui.root, &mut all);
     collectFocusable(ui, ui.overlay, &mut all);
   }
-  mut pos = List[usize].empty();
-  mut rest = List[usize].empty();
-  mut i = 0usize;
+  var pos = List[usize].empty();
+  var rest = List[usize].empty();
+  var i = 0usize;
   while i < all.len() {
-    imm n = *all[i];
+    let n = *all[i];
     if ui.nodes[n].tabIndex > 0i32 {
       // insertion by tabIndex, stable
-      mut at = pos.len();
+      var at = pos.len();
       while at > 0usize and ui.nodes[*pos[at - 1usize]].tabIndex > ui.nodes[n].tabIndex {at = at - 1usize;}
-      mut tmp = List[usize].empty();
-      mut k = 0usize;
+      var tmp = List[usize].empty();
+      var k = 0usize;
       while k < pos.len() {
         if k == at {tmp.push(n);}
         tmp.push(*pos[k]);
@@ -511,7 +511,7 @@ pub fn tabOrder(ui &Ui) List[usize] {
     else {rest.push(n);}
     i = i + 1usize;
   }
-  mut k = 0usize;
+  var k = 0usize;
   while k < rest.len() {
     pos.push(*rest[k]);
     k = k + 1usize;
@@ -521,15 +521,15 @@ pub fn tabOrder(ui &Ui) List[usize] {
 
 // Moves the focus to the next (or previous) node in Tab order, wrapping round
 pub fn focusNext(ui &mut Ui, forward bool) bool {
-  imm order = tabOrder(ui);
+  let order = tabOrder(ui);
   if order.len() == 0usize {return false;}
-  mut at = order.len();                    // none focused: the first or last
-  mut i = 0usize;
+  var at = order.len();                    // none focused: the first or last
+  var i = 0usize;
   while i < order.len() {
     if *order[i] == ui.input.focus {at = i;}
     i = i + 1usize;
   }
-  mut next = 0usize;
+  var next = 0usize;
   if at == order.len() {
     next = if forward {0usize;} else {order.len() - 1usize;};
   }
@@ -549,8 +549,8 @@ pub fn listen(ui &mut Ui, node usize, kind u32, phase u32, tag u32, flags u32) {
 }
 
 pub fn unlisten(ui &mut Ui, node usize) {
-  mut keep = List[Listener].empty();
-  mut i = 0usize;
+  var keep = List[Listener].empty();
+  var i = 0usize;
   while i < ui.input.listeners.len() {
     if ui.input.listeners[i].node != node {keep.push(*ui.input.listeners[i]);}
     i = i + 1usize;
@@ -564,7 +564,7 @@ pub fn update(ui &mut Ui, dt f32) {
   ui.time = ui.time + dt;
   tooltipUpdate(ui, dt);
   hotbarUpdate(ui, dt);
-  mut i = 0usize;
+  var i = 0usize;
   while i < ui.fields.len() {
     ui.fields[i].blink = ui.fields[i].blink + dt;
     i = i + 1usize;

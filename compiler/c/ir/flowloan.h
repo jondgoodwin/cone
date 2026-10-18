@@ -292,8 +292,8 @@ void loanReachAdd(LoanReach *r, PathSet *set);
 
 int loanShapeLocal(uint32_t loan);
 int loanPlaceInGlobal(Place *pl);
-// A marked loan into a 'mut' global, or into something reached from one (1), or reached through a
-// reference a caller lent where a 'mut' global reaches its type (2): every call is asked whether it may
+// A marked loan into a 'var' global, or into something reached from one (1), or reached through a
+// reference a caller lent where a 'var' global reaches its type (2): every call is asked whether it may
 // write it (reshapeCall's 'globalview')
 int loanShapeGlobalView(uint32_t loan);
 int loanShapeReaches(uint32_t loan, const LoanReach *r);

@@ -1,4 +1,4 @@
-// A view held in a 'mut' global across a call into code the compiler cannot follow. Such a call may write the
+// A view held in a 'var' global across a call into code the compiler cannot follow. Such a call may write the
 // global by its name, so it is refused (error 1339) as one that reshapes would be:
 //   - a call through a function value, a '&fn' held anywhere (a parameter, a struct's field, a 'mut'
 //     global, a local), or through a function called with one;
@@ -24,16 +24,16 @@ struct Item { pub label String; }
 struct Ed {
   pub items List[Item];
   pub fn growFirst(self &mut, s &str) {
-    imm r = &mut items[0usize];
+    let r = &mut items[0usize];
     r.label.append(s);
   }
 }
 
-mut gl Ed;
-mut title String;
+var gl Ed;
+var title String;
 fn grower(s &str) { gl.growFirst(s); }
 fn quiet(s &str) { }
-mut hook &fn(s &str);
+var hook &fn(s &str);
 
 fn @initpure init() {
   gl = new Ed(List[Item].empty());
@@ -45,7 +45,7 @@ fn @initpure init() {
 fn callIt(f &fn(s &str), s &str) { f(s); }
 
 fn viaParam() {
-  callIt(&grower, gl.items[0usize].label.view());               //~ ErrorShapeReshape "points into a 'mut' global"
+  callIt(&grower, gl.items[0usize].label.view());               //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // The function value held in a struct's field
@@ -53,20 +53,20 @@ struct H { pub f &fn(s &str); }
 fn useIt(h &H, s &str) { h.f(s); }
 
 fn viaField(h &H) {
-  useIt(h, gl.items[0usize].label.view());                      //~ ErrorShapeReshape "points into a 'mut' global"
+  useIt(h, gl.items[0usize].label.view());                      //~ ErrorShapeReshape "points into a 'var' global"
 }
 
-// ... held in a 'mut' global
+// ... held in a 'var' global
 fn useHook(s &str) { hook(s); }
 
 fn viaGlobalPtr() {
-  useHook(gl.items[0usize].label.view());                       //~ ErrorShapeReshape "points into a 'mut' global"
+  useHook(gl.items[0usize].label.view());                       //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // ... a local, called here
 fn viaLocal() {
-  imm f = &grower;
-  f(gl.items[0usize].label.view());                             //~ ErrorShapeReshape "points into a 'mut' global"
+  let f = &grower;
+  f(gl.items[0usize].label.view());                             //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // A C function handed a callback that C calls back (qsort's comparator). The compiler cannot tell what the
@@ -77,14 +77,14 @@ fn @c loud(a *u8, b *u8) i32 { gl.growFirst("zz"); 0i32; }
 fn @c silent(a *u8, b *u8) i32 { 0i32; }
 
 fn viaCLoud(buf *u8) usize {
-  imm v = gl.items[0usize].label.view();
-  qsort(buf, 2usize, 1usize, &loud);                            //~ ErrorShapeReshape "points into a 'mut' global"
+  let v = gl.items[0usize].label.view();
+  qsort(buf, 2usize, 1usize, &loud);                            //~ ErrorShapeReshape "points into a 'var' global"
   v.len;
 }
 
 fn viaCQuiet(buf *u8) usize {
-  imm v = gl.items[0usize].label.view();
-  qsort(buf, 2usize, 1usize, &silent);                          //~ ErrorShapeReshape "points into a 'mut' global"
+  let v = gl.items[0usize].label.view();
+  qsort(buf, 2usize, 1usize, &silent);                          //~ ErrorShapeReshape "points into a 'var' global"
   v.len;
 }
 
@@ -93,8 +93,8 @@ struct Cb { pub f &fn(s &str); pub n i64; }
 extern fn @c takesCb(cb *Cb);
 
 fn viaStruct(cb *Cb) usize {
-  imm v = gl.items[0usize].label.view();
-  takesCb(cb);                                                  //~ ErrorShapeReshape "points into a 'mut' global"
+  let v = gl.items[0usize].label.view();
+  takesCb(cb);                                                  //~ ErrorShapeReshape "points into a 'var' global"
   v.len;
 }
 
@@ -104,8 +104,8 @@ struct Sink { pub f &<mut fn(s &str); }
 extern fn @c takesSink(sink &Sink);
 
 fn viaSink(sink &Sink) usize {
-  imm v = gl.items[0usize].label.view();
-  takesSink(sink);                                              //~ ErrorShapeReshape "points into a 'mut' global"
+  let v = gl.items[0usize].label.view();
+  takesSink(sink);                                              //~ ErrorShapeReshape "points into a 'var' global"
   v.len;
 }
 
@@ -113,13 +113,13 @@ struct Owner { pub f Uni[fn(s &str)]; }
 extern fn @c takesOwner(o &Owner);
 
 fn viaOwner(o &Owner) usize {
-  imm v = gl.items[0usize].label.view();
-  takesOwner(o);                                                //~ ErrorShapeReshape "points into a 'mut' global"
+  let v = gl.items[0usize].label.view();
+  takesOwner(o);                                                //~ ErrorShapeReshape "points into a 'var' global"
   v.len;
 }
 
-// The allocator's own call: a String made from a view of a 'mut' global's String
+// The allocator's own call: a String made from a view of a 'var' global's String
 fn viaAllocator() usize {
-  imm c = String.from(title.view());                            //~ ErrorShapeReshape "points into a 'mut' global"
+  let c = String.from(title.view());                            //~ ErrorShapeReshape "points into a 'var' global"
   c.view().len;
 }

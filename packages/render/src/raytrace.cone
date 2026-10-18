@@ -77,7 +77,7 @@ pub struct RtScene {
 
   // The structure and buffers for a device with ray tracing. Check 'isValid'.
   pub fn create(device &mut Device) RtScene {
-    mut s = RtScene.none();
+    var s = RtScene.none();
     if !device.rayTracing { return s; }
     s.tlas = device.createTopLevel(RT_MAX_INSTANCES);
     s.records = device.createBuffer(u64.from(RT_MAX_INSTANCES) * RT_RECORD_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
@@ -89,8 +89,8 @@ pub struct RtScene {
   // The place of mesh 'h' in 'meshes' if it has a usable structure for 'version', made (and built into 'encoder')
   // if not; -1 if it cannot be made
   fn meshFor(self &mut, device &mut Device, encoder &mut CommandEncoder, h MeshHandle, m &GpuMesh, version u32) i32 {
-    mut i = 0usize;
-    mut found = false;
+    var i = 0usize;
+    var found = false;
     while i < meshes.len() and !found {
       if meshes[i].mesh == h.slot {
         if meshes[i].version == version {
@@ -102,11 +102,11 @@ pub struct RtScene {
         i = i + 1usize;
       }
     }
-    mut entry = new RtMesh(h.slot, version, AccelerationStructure.none(), 0u32, 0u32, false);
-    imm tracesIt = (m.positions.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32
+    var entry = new RtMesh(h.slot, version, AccelerationStructure.none(), 0u32, 0u32, false);
+    let tracesIt = (m.positions.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32
       and (m.indices.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32;
     if tracesIt and normalUsed + m.vertexCount <= RT_NORMAL_CAPACITY and indexUsed + m.indexCount <= RT_INDEX_CAPACITY {
-      mut blas = device.createBottomLevel(&m.positions, m.vertexCount, &m.indices, m.indexCount);
+      var blas = device.createBottomLevel(&m.positions, m.vertexCount, &m.indices, m.indexCount);
       if blas.isValid() {
         encoder.buildAccelerationStructure(&blas, 0u32);
         device.queue.releaseBuffer(&mut blas.scratch);
@@ -146,20 +146,20 @@ pub struct RtScene {
     instanceList.clear();
     recordList.clear();
     skipped = 0u32;
-    mut k = 0usize;
+    var k = 0usize;
     while k < mainEnd {
-      imm item = items[k];
+      let item = items[k];
       k = k + 1usize;
       if !meshPool.alive(item.mesh.slot) or !materialPool.alive(item.material.slot) { continue; }
-      imm slot = meshPool[item.mesh.slot];
-      imm m = slot.current();
-      imm mslot = materialPool[item.material.slot];
+      let slot = meshPool[item.mesh.slot];
+      let m = slot.current();
+      let mslot = materialPool[item.material.slot];
       if !m.isValid() or m.isSkinned() or m.topology != PRIMITIVE_TOPOLOGY_TRIANGLE_LIST or item.bones != NO_BONES
           or item.fade != 0. {
         skipped = skipped + 1u32;
         continue;
       }
-      imm mask = rtMaskOf(mslot);
+      let mask = rtMaskOf(mslot);
       if mask == 0u32 {
         skipped = skipped + 1u32;
         continue;
@@ -168,23 +168,23 @@ pub struct RtScene {
         skipped = skipped + 1u32;
         continue;
       }
-      imm at = self.meshFor(device, encoder, item.mesh, m, slot.version);
+      let at = self.meshFor(device, encoder, item.mesh, m, slot.version);
       if at < 0i32 {
         skipped = skipped + 1u32;
         continue;
       }
-      imm entry = meshes[usize.from(u32.from(at))];
-      mut tr = new Array[f32, 12] <- fill 0f;
-      mut row = 0usize;
+      let entry = meshes[usize.from(u32.from(at))];
+      var tr = new Array[f32, 12] <- fill 0f;
+      var row = 0usize;
       while row < 3usize {
-        mut col = 0usize;
+        var col = 0usize;
         while col < 4usize {
           tr[row * 4usize + col] = item.model.m[col * 4usize + row];
           col = col + 1usize;
         }
         row = row + 1usize;
       }
-      imm id = u32.from(recordList.len());
+      let id = u32.from(recordList.len());
       instanceList.push(new AccelerationStructureInstance(tr, id | (mask << 24u32),
         INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, entry.blas.address));
       recordList.push(rtRecordOf(mslot, item.tint, entry.normalBase, entry.indexBase));
@@ -204,7 +204,7 @@ pub struct RtScene {
 // cannot be given it
 fn rtMaskOf(m &MaterialSlot) u32 {
   if m.kind == MATERIAL_PBR {
-    imm p = m.pbr;
+    let p = m.pbr;
     if p.alphaMode == ALPHA_BLEND {
       if p.glass > 0. { return 2u32; }
       return 0u32;
@@ -217,13 +217,13 @@ fn rtMaskOf(m &MaterialSlot) u32 {
 
 // The record of the material 'm' on a copy tinted 'tint'
 fn rtRecordOf(m &MaterialSlot, tint Color, normalBase u32, indexBase u32) RtRecord {
-  mut r = new RtRecord([0f, 0f, 0f, 0f], [0f, 0f, 0f, 0f], [1f, 1f, 1f, 1f], [0f, 0f, 0f, 0f], [0f, 0f, 0f, 0f],
+  var r = new RtRecord([0f, 0f, 0f, 0f], [0f, 0f, 0f, 0f], [1f, 1f, 1f, 1f], [0f, 0f, 0f, 0f], [0f, 0f, 0f, 0f],
     [0f, 0f, 0f, 0f], [normalBase, indexBase, 0u32, 0u32]);
   if m.kind == MATERIAL_PBR {
-    imm p = m.pbr;
+    let p = m.pbr;
     r.a = [p.baseColor.red * tint.red, p.baseColor.green * tint.green, p.baseColor.blue * tint.blue, p.metallic];
-    mut kind = RT_KIND_OPAQUE;
-    mut share = 1f;
+    var kind = RT_KIND_OPAQUE;
+    var share = 1f;
     if p.alphaMode == ALPHA_BLEND and p.glass > 0. {
       kind = RT_KIND_SOLID;
       // A film on a slab thinner than a millimetre is a soap film: one thin sheet at each face
@@ -234,10 +234,10 @@ fn rtRecordOf(m &MaterialSlot, tint Color, normalBase u32, indexBase u32) RtReco
     r.c = [p.attenuationColor.red, p.attenuationColor.green, p.attenuationColor.blue, p.attenuationDistance];
     r.d = [p.filmMin, p.filmMax, p.filmIor, if p.film { 1f; } else { 0f; }];
     r.e = [p.filmScale, p.filmDrift, p.filmWarp, f32.from(p.filmSeed)];
-    imm glow = p.emissiveStrength;
+    let glow = p.emissiveStrength;
     r.f = [p.emissive.red * glow * tint.red, p.emissive.green * glow * tint.green, p.emissive.blue * glow * tint.blue, p.dispersion];
   } else {
-    imm p = m.params;
+    let p = m.params;
     r.a = [p.baseColor.red * tint.red, p.baseColor.green * tint.green, p.baseColor.blue * tint.blue, 0f];
     r.b = [0.6, 1.5, RT_KIND_OPAQUE, 1f];
     r.f = [p.emissive.red * tint.red, p.emissive.green * tint.green, p.emissive.blue * tint.blue, 0f];
@@ -247,7 +247,7 @@ fn rtRecordOf(m &MaterialSlot, tint Color, normalBase u32, indexBase u32) RtReco
 
 // spirv-begin pbrxrt.spv PBRXRT_SPIRV
 // Written by tools/shaders/shaders.py from pbrxrt.slang (sha256 856dcfbde1647a0d20cc1f7e65bff746396bd86d64242c6a4dc07794dbc2f27d): do not edit.
-imm PBRXRT_SPIRV Array[u32, 96155] = [
+let PBRXRT_SPIRV Array[u32, 96155] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000062cbu32, 0x00000000u32, 0x00020011u32,
   0x00001178u32, 0x00020011u32, 0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32,
   0x726f7473u32, 0x5f656761u32, 0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32,

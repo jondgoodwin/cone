@@ -24,9 +24,9 @@ import collections use *;
 import deflate use *;
 
 fn data(kind i32, n usize) List[u8] {
-  mut d = List[u8].withCapacity(n);
-  mut s = 12345u64;
-  mut i = 0usize;
+  var d = List[u8].withCapacity(n);
+  var s = 12345u64;
+  var i = 0usize;
   while i < n {
     s = s * 6364136223846793005u64 + 1442695040888963407u64;
     if kind == 0 { d.push(u8.from((s >> 40u64) & 255u64)); }
@@ -42,24 +42,24 @@ fn data(kind i32, n usize) List[u8] {
 // Compress with a Deflater fed in pieces of 'chunk' bytes, the output taken
 // 'maxPull' bytes at a time. false if it did not end Done.
 fn compress(fmt Format, level i32, d &Array[u8], chunk usize, maxPull usize, out &mut List[u8]) bool {
-  mut def = Deflater.make(fmt, level);
-  mut pos = 0usize;
-  mut piece = List[u8].empty();
-  mut rounds = 0usize;
+  var def = Deflater.make(fmt, level);
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  var rounds = 0usize;
   while rounds < 100000000usize {
     rounds += 1usize;
     if pos < d.len {
-      imm n = if d.len - pos < chunk {d.len - pos;} else {chunk;};
+      let n = if d.len - pos < chunk {d.len - pos;} else {chunk;};
       def.feed(&d[pos..<pos + n]);
       pos += n;
     }
     if pos >= d.len { def.finish(); }
-    mut st Status = Status.MoreOutput;
+    var st Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
       st = def.pull(&mut piece, maxPull);
       if piece.len() > maxPull { return false; }
-      mut k = 0usize;
+      var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
     }
     if st == Status.Done { return true; }
@@ -69,23 +69,23 @@ fn compress(fmt Format, level i32, d &Array[u8], chunk usize, maxPull usize, out
 
 // Inflate with an Inflater fed 997 bytes at a time
 fn decompress(fmt Format, s &Array[u8], out &mut List[u8]) bool {
-  mut inf = Inflater.make(fmt);
-  mut pos = 0usize;
-  mut piece = List[u8].empty();
-  mut rounds = 0usize;
+  var inf = Inflater.make(fmt);
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  var rounds = 0usize;
   while rounds < 100000000usize {
     rounds += 1usize;
     if pos < s.len {
-      imm n = if s.len - pos < 997usize {s.len - pos;} else {997usize;};
+      let n = if s.len - pos < 997usize {s.len - pos;} else {997usize;};
       inf.feed(&s[pos..<pos + n]);
       pos += n;
     }
     if pos >= s.len { inf.finish(); }
-    mut st Status = Status.MoreOutput;
+    var st Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
       st = inf.pull(&mut piece, 4096usize);
-      mut k = 0usize;
+      var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
     }
     if st == Status.Done { return true; }
@@ -101,43 +101,43 @@ fn formatName(f Format) &str {
 }
 
 fn main() i32 {
-  imm sizes Array[usize, 11] = [0usize, 1usize, 2usize, 3usize, 257usize, 258usize, 259usize, 65535usize, 65536usize, 65537usize, 100000usize];
-  mut badRound = 0usize;
-  mut badChunk = 0usize;
-  mut badOneShot = 0usize;
-  mut badBound = 0usize;
-  mut runs = 0usize;
-  mut trace = String.empty();
-  mut kind = 0;
+  let sizes Array[usize, 11] = [0usize, 1usize, 2usize, 3usize, 257usize, 258usize, 259usize, 65535usize, 65536usize, 65537usize, 100000usize];
+  var badRound = 0usize;
+  var badChunk = 0usize;
+  var badOneShot = 0usize;
+  var badBound = 0usize;
+  var runs = 0usize;
+  var trace = String.empty();
+  var kind = 0;
   while kind < 5 {
-    mut si = 0usize;
+    var si = 0usize;
     while si < 11usize {
-      imm n = sizes[si];
-      imm d = data(kind, n);
-      mut lv = 0;
+      let n = sizes[si];
+      let d = data(kind, n);
+      var lv = 0;
       while lv < 3 {
-        mut f = 0;
+        var f = 0;
         while f < 3 {
-          imm fmt = if f == 0 {Format.Raw;} elif f == 1 {Format.Zlib;} else {Format.Gzip;};
+          let fmt = if f == 0 {Format.Raw;} elif f == 1 {Format.Zlib;} else {Format.Gzip;};
           // The reference cutting: all input at once, all output at once
-          mut reference = List[u8].empty();
-          imm refOk = compress(fmt, lv, d.view(), n + 1usize, 1000000usize, &mut reference);
+          var reference = List[u8].empty();
+          let refOk = compress(fmt, lv, d.view(), n + 1usize, 1000000usize, &mut reference);
           runs += 1usize;
           // It reads back to the data
-          mut back = List[u8].empty();
+          var back = List[u8].empty();
           if not refOk or not decompress(fmt, reference.view(), &mut back) or back.view() != d.view() {
             badRound += 1usize;
             trace.append(formatName(fmt)); trace.append(" kind"); trace.appendInt(i64.from(kind));
             trace.append(" n"); trace.appendInt(i64.from(n)); trace.append(" level"); trace.appendInt(i64.from(lv)); trace.append(" ");
           }
           // Every other cutting writes the very same bytes
-          imm cuts = if n <= 1000usize {5usize;} else {3usize;};
-          mut c = 0usize;
+          let cuts = if n <= 1000usize {5usize;} else {3usize;};
+          var c = 0usize;
           while c < cuts {
-            imm chunk = if c == 0usize {4096usize;} elif c == 1usize {333usize;} elif c == 2usize {70001usize;} elif c == 3usize {1usize;} else {7usize;};
-            imm pull = if c == 0usize {1usize + (n % 5usize);} elif c == 1usize {64usize;} elif c == 2usize {65536usize;} elif c == 3usize {1usize;} else {100usize;};
+            let chunk = if c == 0usize {4096usize;} elif c == 1usize {333usize;} elif c == 2usize {70001usize;} elif c == 3usize {1usize;} else {7usize;};
+            let pull = if c == 0usize {1usize + (n % 5usize);} elif c == 1usize {64usize;} elif c == 2usize {65536usize;} elif c == 3usize {1usize;} else {100usize;};
             if (pull == 1usize or chunk == 1usize) and n > 1000usize { c += 1usize; continue; }
-            mut other = List[u8].empty();
+            var other = List[u8].empty();
             if not compress(fmt, lv, d.view(), chunk, pull, &mut other) or other.view() != reference.view() {
               badChunk += 1usize;
               trace.append("cut "); trace.append(formatName(fmt)); trace.append(" kind"); trace.appendInt(i64.from(kind));
@@ -147,18 +147,18 @@ fn main() i32 {
             c += 1usize;
           }
           // The one-shot helper: the same bytes unless it stored the input instead
-          mut shot = List[u8].empty();
+          var shot = List[u8].empty();
           if fmt == Format.Raw { shot = rawDeflate(d.view(), lv); }
           elif fmt == Format.Zlib { shot = zlibCompress(d.view(), lv); }
           else { shot = gzipCompress(d.view(), lv); }
           if shot.view() != reference.view() {
             // allowed only when it chose stored blocks: not larger than the data plus 5 bytes a block and the framing
-            imm framing = if fmt == Format.Raw {0usize;} elif fmt == Format.Zlib {6usize;} else {18usize;};
+            let framing = if fmt == Format.Raw {0usize;} elif fmt == Format.Zlib {6usize;} else {18usize;};
             if lv == 0 or shot.len() > n + 5usize * (n / 65535usize + 1usize) + framing or shot.len() > reference.len() { badOneShot += 1usize; }
           }
           // A stored stream is no more than 5 bytes a 64 KiB block over the data (plus framing)
           if lv == 0 {
-            imm framing = if fmt == Format.Raw {0usize;} elif fmt == Format.Zlib {6usize;} else {18usize;};
+            let framing = if fmt == Format.Raw {0usize;} elif fmt == Format.Zlib {6usize;} else {18usize;};
             if reference.len() != n + 5usize * (if n == 0usize {1usize;} else {(n + 65534usize) / 65535usize;}) + framing { badBound += 1usize; }
           }
           f += 1;
@@ -177,26 +177,26 @@ fn main() i32 {
   expectInt(i64.from(runs), 495i64, "combinations run");
 
   // The one-shot helpers' fallback: random data is stored, whatever the level
-  imm rnd = data(0, 70000usize);
-  imm r2 = zlibCompress(rnd.view(), 2);
+  let rnd = data(0, 70000usize);
+  let r2 = zlibCompress(rnd.view(), 2);
   expectInt(i64.from(r2.len()), 70000i64 + 10i64 + 6i64, "random data is stored by the one-shot helper: 2 blocks, 5 bytes each, 6 for zlib");
   // while the streaming deflater codes it (a little bigger, never the stored size's double)
-  mut streamed = List[u8].empty();
+  var streamed = List[u8].empty();
   compress(Format.Zlib, 2, rnd.view(), 5000usize, 4096usize, &mut streamed);
   expect(streamed.len() > 70000usize and streamed.len() < 71500usize, "random data through the streaming deflater grows by under 2%");
 
   // Ratio sanity: dynamic Huffman beats the fixed code on six letters, and long runs are tiny
-  imm letters = data(3, 100000usize);
+  let letters = data(3, 100000usize);
   expect(zlibCompress(letters.view(), 2).len() < zlibCompress(letters.view(), 1).len(), "dynamic Huffman beats fixed on six letters");
   expect(zlibCompress(letters.view(), 1).len() < 60000usize, "six letters take under 5 bits each at level 1");
-  imm runs2 = data(1, 100000usize);
+  let runs2 = data(1, 100000usize);
   expect(zlibCompress(runs2.view(), 2).len() < 3500usize, "long runs are tiny");
-  imm far = data(4, 70000usize);
+  let far = data(4, 70000usize);
   expect(zlibCompress(far.view(), 2).len() < 33500usize, "the repeat at distance 32768 is found");
 
   // Golden check values: CRC-32 of the streams below, each of which Python's
   // zlib and gzip modules inflated back to the data
-  imm w = data(2, 20000usize);
+  let w = data(2, 20000usize);
   expectUInt(u64.from(crc32(zlibCompress(w.view(), 1).view())), 0xae030130u64, "golden: kind 2, 20000 bytes, zlib level 1");
   expectUInt(u64.from(crc32(zlibCompress(w.view(), 2).view())), 0x691f0d83u64, "golden: kind 2, 20000 bytes, zlib level 2");
   expectUInt(u64.from(crc32(gzipCompress(letters.view(), 2).view())), 0x3af1f885u64, "golden: kind 3, 100000 bytes, gzip level 2");

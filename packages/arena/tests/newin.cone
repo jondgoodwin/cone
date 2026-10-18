@@ -33,7 +33,7 @@ import arena use *;
 import collections use *;
 import libc;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10i64 + d; }
 
 struct Fin {
@@ -56,21 +56,21 @@ struct Counting {
 }
 
 fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes);
 }
 
 fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes);
 }
 
 fn countRelease(r *MemRegion, block *u8, bytes usize) {
   if block as usize == 0usize { return; }
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
   (*c).live = (*c).live - isize.from(bytes);
   libc.free(block);
@@ -83,7 +83,7 @@ fn newCounting() Counting {
 fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
 
 fn tally(c &Counting, allocs u64, releases u64, live i64, label &Array[u8]) {
-  imm ok = u64.from(c.allocs) == allocs and u64.from(c.releases) == releases and i64.from(c.live) == live;
+  let ok = u64.from(c.allocs) == allocs and u64.from(c.releases) == releases and i64.from(c.live) == live;
   expect(ok, label);
 }
 
@@ -100,14 +100,14 @@ struct Mesh is CarriesRegion {
 
 // A value in an arena
 fn plain() {
-  mut a = Arena.empty();
-  imm p = new a[Pt](1, 2);
+  var a = Arena.empty();
+  let p = new a[Pt](1, 2);
   expectInt(p.sum(), 3, "new a[Pt](1, 2) is a Pt in the arena");
   p.x = 10;
   expectInt(p.sum(), 12, "and is changed through the reference it answers");
-  imm q = new a[mut, Pt](3, 4);
+  let q = new a[mut, Pt](3, 4);
   expectInt(q.sum(), 7, "the permission may be written, 'mut'");
-  imm r = a.alloc(new Pt(5, 6));
+  let r = a.alloc(new Pt(5, 6));
   expectInt(r.sum(), 11, "and it is what a.alloc(new Pt(5, 6)) gives");
   expectUInt(u64.from(a.finalizers()), 0, "a Pt needs no finalizer header");
   expectUInt(u64.from(a.blockCount()), 1, "and the three share a block");
@@ -124,20 +124,20 @@ fn fill(m &mut Mesh) {
 }
 
 fn inplace() {
-  mut a = Arena.withRoom(4000usize);
-  imm m = new a[Mesh](8usize);
+  var a = Arena.withRoom(4000usize);
+  let m = new a[Mesh](8usize);
   fill(m);
-  imm mat = (m as *Mesh) as usize;
-  imm pat = (m.pts[0usize] as *f32) as usize;
-  imm iat = (m.ids[0usize] as *u32) as usize;
+  let mat = (m as *Mesh) as usize;
+  let pat = (m.pts[0usize] as *f32) as usize;
+  let iat = (m.ids[0usize] as *u32) as usize;
   expect(mat < pat and pat < iat, "a Mesh made in an arena lies before the blocks its init allocated there");
   expectUInt(u64.from(a.blockCount()), 1, "in the one block");
-  mut d = DynArena.withRoom(4000usize);
-  imm k = new d[Mesh](8usize);
+  var d = DynArena.withRoom(4000usize);
+  let k = new d[Mesh](8usize);
   fill(&mut d[k]);
-  imm dmat = (d[k] as *Mesh) as usize;
-  imm dpat = (d[k].pts[0usize] as *f32) as usize;
-  imm diat = (d[k].ids[0usize] as *u32) as usize;
+  let dmat = (d[k] as *Mesh) as usize;
+  let dpat = (d[k].pts[0usize] as *f32) as usize;
+  let diat = (d[k].ids[0usize] as *u32) as usize;
   expect(dmat < dpat and dpat < diat, "and so does one made in a dynamic arena");
   expectUInt(u64.from(d.blockCount()), 1, "in its one block");
 }
@@ -152,8 +152,8 @@ struct Wrap {
 fn argsFirst() {
   log = 0;
   {
-    mut a = Arena.empty();
-    imm w = new a[Wrap]((new a[Fin](1)).n + 1);
+    var a = Arena.empty();
+    let w = new a[Wrap]((new a[Fin](1)).n + 1);
     expectInt(w.v, 2, "the construction made for an argument is made before the value, and is read");
     expectUInt(u64.from(a.finalizers()), 2, "both have a header");
   }
@@ -162,23 +162,23 @@ fn argsFirst() {
 
 // A value with a 'final' dies with the arena, newest first
 fn dies() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   new a[Fin](1);
   new a[Fin](2);
-  imm k = new a[Fin](3);
+  let k = new a[Fin](3);
   expectUInt(u64.from(a.finalizers()), 3, "each Fin gets a header");
   expectInt(k.n, 3, "and is read through the reference");
 }
 
 // A list in an arena, its block from the region it is handed
 fn listInArena() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut a = Arena.empty();
-    imm l = new a[List[i64]](50usize, regionOf(&mut c));
+    var a = Arena.empty();
+    let l = new a[List[i64]](50usize, regionOf(&mut c));
     tally(&c, 1, 0, 400, "the list's block, 50 slots, comes from the region");
     expectUInt(u64.from(a.finalizers()), 1, "the list in the arena has a finalizer header");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 50i64 { l.push(i); i = i + 1i64; }
     expectInt(*l[49usize], 49, "fifty values fit and are read back");
     tally(&c, 1, 0, 400, "without a second block");
@@ -188,26 +188,26 @@ fn listInArena() {
 
 // A struct that holds lists passes the region on to them
 fn composition() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    imm m = new Mesh(50usize, regionOf(&mut c));
+    let m = new Mesh(50usize, regionOf(&mut c));
     tally(&c, 2, 0, 400, "a Mesh's two lists come from the region it was handed");
     expect(m.region as usize == regionOf(&mut c) as usize, "and it keeps the region");
   }
   tally(&c, 2, 2, 0, "both were given back when it died");
   {
-    mut a = Arena.empty();
-    imm m = new a[Mesh](50usize, regionOf(&mut c));
+    var a = Arena.empty();
+    let m = new a[Mesh](50usize, regionOf(&mut c));
     tally(&c, 4, 2, 400, "a Mesh in an arena draws its lists from the region it was handed");
     m.pts.push(1.5f32);
     m.ids.push(7u32);
     expectUInt(u64.from(m.pts.len()), 1, "and is changed through the reference");
   }
   tally(&c, 4, 4, 0, "the arena's death gave both lists' blocks back");
-  mut b = Arena.empty();
-  imm n = new b[Mesh](5usize);
+  var b = Arena.empty();
+  let n = new b[Mesh](5usize);
   expect(n.region as usize == b.region as usize, "a Mesh made in an arena with no region is handed the arena's");
-  imm o = new Mesh(5usize);
+  let o = new Mesh(5usize);
   expect(o.region as usize == heapRegion() as usize, "and out of one");
 }
 
@@ -220,8 +220,8 @@ struct Node['=a] {
 // n nodes allocated into the arena it is lent, each holding the key of the one
 // before it; the last made comes back
 fn chain(ar &mut DynArena['=a], n i64) Option[&'=a mut Node['=a]] {
-  mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
-  mut i = 0i64;
+  var head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
+  var i = 0i64;
   while i < n {
     head = Some(new ar[Node](i, head));
     i = i + 1;
@@ -230,11 +230,11 @@ fn chain(ar &mut DynArena['=a], n i64) Option[&'=a mut Node['=a]] {
 }
 
 fn total(ar &DynArena['=a], first Option[&'=a mut Node['=a]]) i64 {
-  mut sum = 0i64;
-  mut at = first;
+  var sum = 0i64;
+  var at = first;
   while {
     match at {
-      case imm s Some[&'=a mut Node['=a]] {
+      case let s Some[&'=a mut Node['=a]] {
         sum = sum + ar[s].val;
         at = ar[s].next;
       }
@@ -245,14 +245,14 @@ fn total(ar &DynArena['=a], first Option[&'=a mut Node['=a]]) i64 {
 }
 
 fn keys() {
-  mut d = DynArena.empty();
-  imm k = new d[Pt](3, 4);
+  var d = DynArena.empty();
+  let k = new d[Pt](3, 4);
   expectInt(d[k].sum(), 7, "new d[Pt](3, 4) answers a key, read through the arena");
   d[k].x = 30;
   expectInt(d[k].x, 30, "and written through it");
-  imm j = new d[mut, Pt](5, 6);
+  let j = new d[mut, Pt](5, 6);
   expectInt(d[j].y, 6, "the permission may be written here too");
-  imm first = chain(&mut d, 4);
+  let first = chain(&mut d, 4);
   expectInt(total(&d, first), 6, "a chain of four nodes built with new ar[Node](i, head) sums 3 + 2 + 1 + 0");
 }
 

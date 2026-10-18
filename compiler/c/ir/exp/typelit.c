@@ -960,7 +960,7 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     // them inferred from the values its fields are given, as its literal did:
     // the arguments are checked first, with no expectation, and the instance
     // they infer replaces the name. What they leave unsaid is read off the type
-    // the construction is wanted as ('imm b Box[i64] = new Box(5)')
+    // the construction is wanted as ('let b Box[i64] = new Box(5)')
     if (!argschecked && isNameUseNode(node->objfn) && nameUseNames(node->objfn, StructTag)
         && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL) {
         for (nodesFor(node->args, cnt, argsp))

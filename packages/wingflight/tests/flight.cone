@@ -24,16 +24,16 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 fn flat(x f32, z f32) f32 { 0.; }
 
 fn plainWing() WingParams {
-  mut spec = plainBody(&BodyParams.winged());
+  var spec = plainBody(&BodyParams.winged());
   plainFeathers(&mut spec);
-  mut b = buildRig(&spec);
-  imm rig = b.take();
-  imm wings = findWings(&rig);
+  var b = buildRig(&spec);
+  let rig = b.take();
+  let wings = findWings(&rig);
   estimateWing(&rig, &wings, 1.0);
 }
 
 fn airborne(p WingParams, y f32, speed f32) Flier {
-  mut f = Flier.make(p, new Vec3(0., y, 0.), 0., 0.4, new Vec3(0., 0.4, 0.));
+  var f = Flier.make(p, new Vec3(0., y, 0.), 0., 0.4, new Vec3(0., 0.4, 0.));
   f.onGround = false;
   f.vel = new Vec3(0., 0., -speed);
   f.motion.fold = 0.;
@@ -42,40 +42,40 @@ fn airborne(p WingParams, y f32, speed f32) Flier {
 }
 
 fn main() i32 {
-  imm p = plainWing();
+  let p = plainWing();
   expectBool(p.span > 1.3 and p.span < 1.6 and p.area > 0.25 and p.area < 0.4, true, "a span near 1.45 m and an area near 0.3 m^2");
   // The theory for these numbers, as worked above
-  imm ar = p.aspectRatio();
-  imm cl = 2. * pi / (1. + 2. / ar) * (0.08 + p.incidence);
-  imm cdTotal = p.cd0 + cl * cl / (pi * p.oswald * ar) + p.bodyDragArea / p.area;
-  imm lift = cl * cos(p.glideDihedral);
-  imm gammaTheory = atan2(cdTotal, lift);
-  imm vTheory = (2. * 9.81 / (RHO * p.area * lift * cos(gammaTheory))).sqrt();
+  let ar = p.aspectRatio();
+  let cl = 2. * pi / (1. + 2. / ar) * (0.08 + p.incidence);
+  let cdTotal = p.cd0 + cl * cl / (pi * p.oswald * ar) + p.bodyDragArea / p.area;
+  let lift = cl * cos(p.glideDihedral);
+  let gammaTheory = atan2(cdTotal, lift);
+  let vTheory = (2. * 9.81 / (RHO * p.area * lift * cos(gammaTheory))).sqrt();
 
   // The glide: no flapping, a fixed angle of attack, bank 0
-  mut g = airborne(p.copy(), 300., 12.);
+  var g = airborne(p.copy(), 300., 12.);
   g.alpha = 0.08;
-  imm goal = Goal.make(new Vec3(0., 300., -4000.), 11., true);
+  let goal = Goal.make(new Vec3(0., 300., -4000.), 11., true);
   g.mode = MODE_GLIDE;
-  mut k = 0;
+  var k = 0;
   while k < 60 * 40 {
     g.step(1. / 60., new Commands(0., 0.08, 0., 0., 0.), &goal, &flat);
     k = k + 1;
   }
   near(g.speed(), vTheory, 0.05 * vTheory, "the glide settles at the speed lift = weight gives (within 5%)");
-  imm gamma = degrees(asin(-g.vel.y / g.speed()));
+  let gamma = degrees(asin(-g.vel.y / g.speed()));
   near(gamma, degrees(gammaTheory), 0.6, "on the glide angle D/L gives (within 0.6 degree)");
 
   // A level turn: hold the height with the autopilot, bank by a goal to the right, compare the turn with g tan(phi) / V
-  mut t = airborne(p.copy(), 100., 11.);
-  mut tg = Goal.make(new Vec3(1000., 100., 0.), 11., true);
+  var t = airborne(p.copy(), 100., 11.);
+  var tg = Goal.make(new Vec3(1000., 100., 0.), 11., true);
   tg.maxBank = 0.45;
   t.mode = MODE_CRUISE;
-  mut yawA f32 = 0.;
-  mut bankSum f32 = 0.;
-  mut speedSum f32 = 0.;
-  mut yawB f32 = 0.;
-  mut n = 0.;
+  var yawA f32 = 0.;
+  var bankSum f32 = 0.;
+  var speedSum f32 = 0.;
+  var yawB f32 = 0.;
+  var n = 0.;
   k = 0;
   while k < 60 * 4 {
     t.update(1. / 60., &tg, &flat);
@@ -84,24 +84,24 @@ fn main() i32 {
     if k >= 60 * 2 and k < 60 * 3 { bankSum = bankSum + t.bank; speedSum = speedSum + t.speed(); n = n + 1.; }
     k = k + 1;
   }
-  imm rate = absf(yawB - yawA) / 1.;
-  imm expected = 9.81 * tan(bankSum / n) / (speedSum / n);
+  let rate = absf(yawB - yawA) / 1.;
+  let expected = 9.81 * tan(bankSum / n) / (speedSum / n);
   eprint <- "turn: "; eprint <- rate; eprint <- " rad/s against g tan(bank)/V = "; eprint <- expected; eprint <- " at bank "; eprint <- bankSum / n; eprint <- "\n";
   near(rate, absf(expected), 0.12 * absf(expected), "the turn rate is g tan(bank) / V within 12%");
   expectBool(bankSum / n > 0.3, true, "banked to the right (positive)");
   expectBool(absf(t.pos.y - 100.) < 3., true, "and held within 3 m of its height");
 
   // Takeoff, climb, landing
-  mut f = Flier.make(p.copy(), new Vec3(0., 0., 0.), 0., 0.4, new Vec3(0., 0.4, 0.));
-  mut fg = Goal.make(new Vec3(0., 14., -400.), 11.5, true);
-  mut reached = false;
-  mut tAir = 0.;
-  mut maxY f32 = 0.;
-  mut stage = 0;
-  mut lastVy f32 = 0.;
-  mut lastAirY f32 = 0.;
-  mut landed = false;
-  mut tLand = 0.;
+  var f = Flier.make(p.copy(), new Vec3(0., 0., 0.), 0., 0.4, new Vec3(0., 0.4, 0.));
+  var fg = Goal.make(new Vec3(0., 14., -400.), 11.5, true);
+  var reached = false;
+  var tAir = 0.;
+  var maxY f32 = 0.;
+  var stage = 0;
+  var lastVy f32 = 0.;
+  var lastAirY f32 = 0.;
+  var landed = false;
+  var tLand = 0.;
   k = 0;
   while k < 60 * 100 and !landed {
     f.update(1. / 60., &fg, &flat);

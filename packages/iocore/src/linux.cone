@@ -225,19 +225,19 @@ fn certificateWords(code u32) &str {
 // The C library's words for an error number (Windows' for a certificate
 // error), 'Error N' where it has none
 fn lxSystemText(code u32) String {
-  mut out = String.empty();
-  imm words = certificateWords(code);
+  var out = String.empty();
+  let words = certificateWords(code);
   if words.len() > 0usize {
     out.append(words);
     return out;
   }
-  imm e = codeErrno(code);
+  let e = codeErrno(code);
   if e == 0i32 {
     out.append("Error ");
     out.appendUInt(u64.from(code));
     return out;
   }
-  imm text = libc.strerror(e);
+  let text = libc.strerror(e);
   out.appendBytes(mem.sliceFromParts(text.ptr(), text.len()));
   out;
 }
@@ -254,7 +254,7 @@ fn gaiCode(rc i32) u32 {
 // A NUL-terminated copy of a path's bytes, in a block from libc's malloc the
 // caller frees; null when there is no room
 fn cstrCopy(s &Array[u8]) *u8 {
-  imm p = libc.malloc(s.len + 1usize);
+  let p = libc.malloc(s.len + 1usize);
   if p as usize == 0usize {return null;}
   libc.memcpy(p, s as *u8, s.len);
   *(p + s.len) = 0u8;
@@ -272,7 +272,7 @@ fn fdOf(raw usize) i32 {i32.from(raw);}
 // reading and writing both, and for the peer's close; a socket
 fn lxWatch(epfd usize, fd usize, entry u32, gen u32) u32 {
   if isWindows() {return errorInvalidParameter;}
-  mut ev = new EpollEvent(epollIn | epollOut | epollRdHup | epollEt, entry, gen);
+  var ev = new EpollEvent(epollIn | epollOut | epollRdHup | epollEt, entry, gen);
   if epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) != 0i32 {return errnoCode(lastErrno());}
   0u32;
 }
@@ -280,7 +280,7 @@ fn lxWatch(epfd usize, fd usize, entry u32, gen u32) u32 {
 // A level-triggered watch on a descriptor of the loop's own
 fn lxWatchOwn(epfd usize, fd usize, datum u32) bool {
   if isWindows() {return false;}
-  mut ev = new EpollEvent(epollIn, datum, 0u32);
+  var ev = new EpollEvent(epollIn, datum, 0u32);
   epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) == 0i32;
 }
 
@@ -289,23 +289,23 @@ fn lxWatchOwn(epfd usize, fd usize, datum u32) bool {
 // number that stopped them and zeros. (Each is closed by whoever fails here.)
 fn lxOpen() u32, usize, usize, usize {
   if isWindows() {return errorInvalidParameter, 0usize, 0usize, 0usize;}
-  imm ep = epoll_create1(epollCloexec);
+  let ep = epoll_create1(epollCloexec);
   if ep < 0i32 {return errnoCode(lastErrno()), 0usize, 0usize, 0usize;}
-  imm ev = eventfd(0u32, nonBlock | epollCloexec);
+  let ev = eventfd(0u32, nonBlock | epollCloexec);
   if ev < 0i32 {
-    imm code = errnoCode(lastErrno());
+    let code = errnoCode(lastErrno());
     sysClose(ep);
     return code, 0usize, 0usize, 0usize;
   }
-  imm tm = timerfd_create(clockMonotonic, nonBlock | epollCloexec);
+  let tm = timerfd_create(clockMonotonic, nonBlock | epollCloexec);
   if tm < 0i32 {
-    imm code = errnoCode(lastErrno());
+    let code = errnoCode(lastErrno());
     sysClose(ev);
     sysClose(ep);
     return code, 0usize, 0usize, 0usize;
   }
   if not lxWatchOwn(usize.from(ep), usize.from(ev), datumWake) or not lxWatchOwn(usize.from(ep), usize.from(tm), datumTimer) {
-    imm code = errnoCode(lastErrno());
+    let code = errnoCode(lastErrno());
     sysClose(tm);
     sysClose(ev);
     sysClose(ep);
@@ -330,8 +330,8 @@ fn socketKind(k u32) bool {
 
 // Record i waits at the end of the queue of its handle's entry, for its side
 fn waitPush(lp &mut Loop, i u32, side u32) {
-  imm r = lp.recAt(i) as &mut Rec;
-  imm e = &mut lp.handles[usize.from(r.sock.index)];
+  let r = lp.recAt(i) as &mut Rec;
+  let e = &mut lp.handles[usize.from(r.sock.index)];
   r.side = side;
   r.waitNext = noEntry;
   if side == sideRecv {
@@ -347,11 +347,11 @@ fn waitPush(lp &mut Loop, i u32, side u32) {
 
 // Record i leaves the queue it waits in, if it waits in one
 fn waitUnlink(lp &mut Loop, i u32) {
-  imm r = lp.recAt(i) as &mut Rec;
+  let r = lp.recAt(i) as &mut Rec;
   if r.side == sideNone {return;}
-  imm e = &mut lp.handles[usize.from(r.sock.index)];
-  imm prev = r.waitPrev;
-  imm next = r.waitNext;
+  let e = &mut lp.handles[usize.from(r.sock.index)];
+  let prev = r.waitPrev;
+  let next = r.waitNext;
   if r.side == sideRecv {
     if prev == noEntry {e.recvHead = next;} else {(lp.recAt(prev) as &mut Rec).waitNext = next;}
     if next == noEntry {e.recvTail = prev;} else {(lp.recAt(next) as &mut Rec).waitPrev = prev;}
@@ -374,8 +374,8 @@ const triedWait = 1u32;       // it would block: it stays where it is
 // The bytes a send is sending: the owned buffer's, or the shared ones'
 fn sendData(r &mut Rec) *u8, usize {
   match r.bytes {
-    case imm b Some {
-      imm v = b.view();
+    case let b Some {
+      let v = b.view();
       return v as *u8, v.len;
     }
     else {}
@@ -388,8 +388,8 @@ fn sendData(r &mut Rec) *u8, usize {
 // (the descriptor is then closed)
 fn lxAdopt(lp &mut Loop, fd usize, kind u32, family u16) u32, Handle {
   if isWindows() {return errorInvalidParameter, Handle.none();}
-  imm h = lp.register(fd, kind, family);
-  imm code = lxWatch(lp.portHandle, fd, h.index, h.gen);
+  let h = lp.register(fd, kind, family);
+  let code = lxWatch(lp.portHandle, fd, h.index, h.gen);
   if code != 0u32 {
     lp.close(h);
     return code, Handle.none();
@@ -401,17 +401,17 @@ fn lxAdopt(lp &mut Loop, fd usize, kind u32, family u16) u32, Handle {
 // just been made and is about to be put in one
 fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
   if isWindows() {return triedDone;}
-  imm r = lp.recAt(i) as &mut Rec;
-  imm ei = lp.handleIndex(r.sock);
+  let r = lp.recAt(i) as &mut Rec;
+  let ei = lp.handleIndex(r.sock);
   if ei == noEntry {
     waitUnlink(lp, i);
     lp.decide(i, diag.outcomeFailed, 0usize, errorInvalidHandle);
     return triedDone;
   }
-  imm fd = fdOf(lp.handles[usize.from(ei)].raw);
-  imm k = r.kind;
+  let fd = fdOf(lp.handles[usize.from(ei)].raw);
+  let k = r.kind;
   if k == diag.kindRecv {
-    mut n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);
+    var n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);
     while n < 0i64 and lastErrno() == eintr {n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);}
     if n >= 0i64 {
       r.dequeued = at;
@@ -420,7 +420,7 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
       lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
       return triedDone;
     }
-    imm e = lastErrno();
+    let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
     waitUnlink(lp, i);
@@ -429,8 +429,8 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
   }
   if k == diag.kindRecvReady {
     // Data to read, or the end of the stream, without taking either
-    mut probe = 0u8;
-    mut n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);
+    var probe = 0u8;
+    var n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);
     while n < 0i64 and lastErrno() == eintr {n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);}
     if n >= 0i64 {
       r.dequeued = at;
@@ -438,7 +438,7 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
       lp.decide(i, diag.outcomeDone, 0usize, 0u32);
       return triedDone;
     }
-    imm e = lastErrno();
+    let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
     waitUnlink(lp, i);
@@ -446,16 +446,16 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
     return triedDone;
   }
   if k == diag.kindSend {
-    mut data = null as *u8;
-    mut len = 0usize;
+    var data = null as *u8;
+    var len = 0usize;
     data, len = sendData(r);
-    mut failed = 0i32;
+    var failed = 0i32;
     while r.done < len and failed == 0i32 {
-      imm n = sysSend(fd, data + r.done, len - r.done, msgNoSignal);
+      let n = sysSend(fd, data + r.done, len - r.done, msgNoSignal);
       if n >= 0i64 {
         r.done = r.done + usize.from(n);
       } else {
-        imm e = lastErrno();
+        let e = lastErrno();
         if e != eintr {failed = e;}
       }
     }
@@ -472,9 +472,9 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
   if k == diag.kindRecvFrom {
     // One datagram. MSG_TRUNC makes the answer its whole length, so a cut one
     // is told from one that fitted exactly
-    imm room = r.buf.room();
+    let room = r.buf.room();
     r.peer.size = 28i32;
-    mut n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
+    var n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
     while n < 0i64 and lastErrno() == eintr {
       r.peer.size = 28i32;
       n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
@@ -492,7 +492,7 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
       }
       return triedDone;
     }
-    imm e = lastErrno();
+    let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
     waitUnlink(lp, i);
@@ -501,8 +501,8 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
   }
   if k == diag.kindSendTo {
     // One datagram, whole or not at all
-    imm len = r.buf.len();
-    mut n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
+    let len = r.buf.len();
+    var n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
     while n < 0i64 and lastErrno() == eintr {
       n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
     }
@@ -517,18 +517,18 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
     return triedDone;
   }
   if k == diag.kindAccept {
-    mut s = sysAccept4(fd, null, null, nonBlock | epollCloexec);
+    var s = sysAccept4(fd, null, null, nonBlock | epollCloexec);
     while s < 0i32 and (lastErrno() == eintr or lastErrno() == econnaborted) {
       s = sysAccept4(fd, null, null, nonBlock | epollCloexec);
     }
     if s >= 0i32 {
       r.dequeued = at;
       waitUnlink(lp, i);
-      imm sock = usize.from(s);
+      let sock = usize.from(s);
       // noDelay first, as the Windows side does for the sockets it adopts
       noDelay(sock);
-      mut code = 0u32;
-      mut h = Handle.none();
+      var code = 0u32;
+      var h = Handle.none();
       code, h = lxAdopt(lp, sock, hSocket, lp.handles[usize.from(ei)].family);
       if code != 0u32 {
         lp.decide(i, diag.outcomeFailed, 0usize, code);
@@ -538,7 +538,7 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
       }
       return triedDone;
     }
-    imm e = lastErrno();
+    let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
     waitUnlink(lp, i);
@@ -547,14 +547,14 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
   }
   if k == diag.kindConnect {
     // Writable, or failed: SO_ERROR says which. Not yet connected is no answer
-    mut err = 0i32;
-    mut len = 4u32;
+    var err = 0i32;
+    var len = 4u32;
     if sysGetsockopt(fd, solSocketLx, soError, &mut err as *u8, &mut len as *u32) != 0i32 {
       err = lastErrno();
     }
     if err == 0i32 {
-      mut a = new Array[u8, 28] <- fill 0u8;
-      mut alen = 28i32;
+      var a = new Array[u8, 28] <- fill 0u8;
+      var alen = 28i32;
       if getpeername(usize.from(fd), &mut a as *u8, &mut alen) != 0i32 {
         if lastErrno() == enotconn {return triedWait;}
         err = lastErrno();
@@ -581,7 +581,7 @@ fn lxTry(lp &mut Loop, i u32, at Instant) u32 {
 fn lxRun(lp &mut Loop, ei u32, side u32, at Instant) {
   if isWindows() {return;}
   while true {
-    imm head = if side == sideRecv {lp.handles[usize.from(ei)].recvHead;} else {lp.handles[usize.from(ei)].sendHead;};
+    let head = if side == sideRecv {lp.handles[usize.from(ei)].recvHead;} else {lp.handles[usize.from(ei)].sendHead;};
     if head == noEntry {break;}
     if lxTry(lp, head, at) == triedWait {break;}
   }
@@ -591,11 +591,11 @@ fn lxRun(lp &mut Loop, ei u32, side u32, at Instant) {
 fn lxEvent(lp &mut Loop, ei u32, gen u32, events u32, at Instant) {
   if isWindows() {return;}
   if usize.from(ei) >= lp.handles.len() {return;}
-  imm e = lp.handles[usize.from(ei)];
+  let e = lp.handles[usize.from(ei)];
   if e.gen != gen or e.kind == hFree {return;}
   if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {lxRun(lp, ei, sideRecv, at);}
   // The operations may have closed it (a failed connect does): look again
-  imm again = lp.handles[usize.from(ei)];
+  let again = lp.handles[usize.from(ei)];
   if again.gen != gen or again.kind == hFree {return;}
   if (events & (epollOut | epollErr | epollHup)) != 0u32 {lxRun(lp, ei, sideSend, at);}
 }
@@ -604,8 +604,8 @@ fn lxEvent(lp &mut Loop, ei u32, gen u32, events u32, at Instant) {
 // its handle's queue if it would block
 fn lxQueue(lp &mut Loop, i u32, side u32) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = lp.recAt(i) as &mut Rec;
-  imm ei = lp.handleIndex(r.sock);
+  let r = lp.recAt(i) as &mut Rec;
+  let ei = lp.handleIndex(r.sock);
   if ei == noEntry {return errorInvalidHandle;}
   r.done = 0usize;
   waitPush(lp, i, side);
@@ -616,7 +616,7 @@ fn lxQueue(lp &mut Loop, i u32, side u32) u32 {
 // A Recv or a RecvReady
 fn lxStartRecv(lp &mut Loop, p *Rec, ready bool) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
+  let r = p as &mut Rec;
   if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
   if not ready and r.buf.room() == 0usize {return errorInsufficientBuffer;}
   lxQueue(lp, r.index, sideRecv);
@@ -625,7 +625,7 @@ fn lxStartRecv(lp &mut Loop, p *Rec, ready bool) u32 {
 // A Send or a SendBytes
 fn lxStartSend(lp &mut Loop, p *Rec) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
+  let r = p as &mut Rec;
   if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
   lxQueue(lp, r.index, sideSend);
 }
@@ -633,7 +633,7 @@ fn lxStartSend(lp &mut Loop, p *Rec) u32 {
 // A RecvFrom
 fn lxStartRecvFrom(lp &mut Loop, p *Rec) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
+  let r = p as &mut Rec;
   if lp.rawOf(r.sock, hDatagram) == invalidHandle {return errorInvalidHandle;}
   if r.buf.room() == 0usize {return errorInsufficientBuffer;}
   lxQueue(lp, r.index, sideRecv);
@@ -642,14 +642,14 @@ fn lxStartRecvFrom(lp &mut Loop, p *Rec) u32 {
 // A SendTo
 fn lxStartSendTo(lp &mut Loop, p *Rec) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
+  let r = p as &mut Rec;
   if lp.rawOf(r.sock, hDatagram) == invalidHandle {return errorInvalidHandle;}
   lxQueue(lp, r.index, sideSend);
 }
 
 fn lxStartAccept(lp &mut Loop, p *Rec) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
+  let r = p as &mut Rec;
   if lp.rawOf(r.sock, hListener) == invalidHandle {return errorInvalidHandle;}
   lxQueue(lp, r.index, sideRecv);
 }
@@ -660,12 +660,12 @@ fn lxStartAccept(lp &mut Loop, p *Rec) u32 {
 // answer if it connects
 fn lxStartConnect(lp &mut Loop, p *Rec, addr SocketAddr) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
-  imm s = tcpSocket(addr.family());
+  let r = p as &mut Rec;
+  let s = tcpSocket(addr.family());
   if s == invalidHandle {return wsaError();}
-  mut a = addr;
-  imm rc = sysConnect(fdOf(s), &mut a as *u8, u32.from(a.size));
-  mut e = 0i32;
+  var a = addr;
+  let rc = sysConnect(fdOf(s), &mut a as *u8, u32.from(a.size));
+  var e = 0i32;
   if rc != 0i32 {
     e = lastErrno();
     if e != inprogress {
@@ -673,8 +673,8 @@ fn lxStartConnect(lp &mut Loop, p *Rec, addr SocketAddr) u32 {
       return errnoCode(e);
     }
   }
-  mut code = 0u32;
-  mut h = Handle.none();
+  var code = 0u32;
+  var h = Handle.none();
   code, h = lxAdopt(lp, s, hSocket, addr.family());
   if code != 0u32 {return code;}
   r.sock = h;
@@ -694,7 +694,7 @@ fn lxStartConnect(lp &mut Loop, p *Rec, addr SocketAddr) u32 {
 // socket
 fn lxCancel(lp &mut Loop, i u32, outcome u32) {
   if isWindows() {return;}
-  imm r = lp.recAt(i) as &mut Rec;
+  let r = lp.recAt(i) as &mut Rec;
   waitUnlink(lp, i);
   if r.kind == diag.kindConnect {lp.close(r.sock);}
   r.dequeued = Instant.now();
@@ -710,7 +710,7 @@ fn lxCancel(lp &mut Loop, i u32, outcome u32) {
 // next wait (lxSettleCancels), so that asking again says it is still to answer
 fn lxAskCancel(lp &mut Loop, i u32) {
   if isWindows() {return;}
-  imm r = lp.recAt(i) as &mut Rec;
+  let r = lp.recAt(i) as &mut Rec;
   if r.side != sideNone and r.waitPrev == noEntry {
     if lxTry(lp, i, Instant.now()) == triedDone {return;}
   }
@@ -724,12 +724,12 @@ fn lxAskCancel(lp &mut Loop, i u32) {
 // and its record reused, is not mistaken for another
 fn lxSettleCancels(lp &mut Loop) {
   if isWindows() {return;}
-  mut k = 0usize;
+  var k = 0usize;
   while k < lp.cancels.len() {
-    imm token = *lp.cancels[k];
+    let token = *lp.cancels[k];
     k = k + 1usize;
-    imm i = u32.from(token & 0xFFFFFFFFu64);
-    imm r = lp.recAt(i) as &mut Rec;
+    let i = u32.from(token & 0xFFFFFFFFu64);
+    let r = lp.recAt(i) as &mut Rec;
     if r.gen != u32.from(token >> 32u64) or r.state != stFlight {continue;}
     lxCancel(lp, i, if r.asked == askedDeadline {diag.outcomeTimedOut;} else {diag.outcomeCancelled;});
   }
@@ -742,9 +742,9 @@ fn lxSettleCancels(lp &mut Loop) {
 fn lxCancelFiles(lp &mut Loop, h Handle) {
   if isWindows() {return;}
   if lp.handles[usize.from(h.index)].kind != hFile {return;}
-  mut i = 0u32;
+  var i = 0u32;
   while i < lp.recCount {
-    imm r = lp.recAt(i) as &mut Rec;
+    let r = lp.recAt(i) as &mut Rec;
     if r.state == stFlight and r.asked == askedNone and (r.kind == diag.kindReadAt or r.kind == diag.kindWriteAt)
         and r.sock == h {
       lp.askCancel(i, askedCancel);
@@ -757,13 +757,13 @@ fn lxCancelFiles(lp &mut Loop, h Handle) {
 fn lxCancelAll(lp &mut Loop, ei u32) {
   if isWindows() {return;}
   while true {
-    imm head = lp.handles[usize.from(ei)].recvHead;
+    let head = lp.handles[usize.from(ei)].recvHead;
     if head == noEntry {break;}
     waitUnlink(lp, head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
   }
   while true {
-    imm head = lp.handles[usize.from(ei)].sendHead;
+    let head = lp.handles[usize.from(ei)].sendHead;
     if head == noEntry {break;}
     waitUnlink(lp, head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
@@ -780,15 +780,15 @@ fn lxCancelAll(lp &mut Loop, ei u32) {
 fn lxArm(lp &mut Loop, wakeAt Instant, now Instant) u32 {
   if isWindows() {return 0u32;}
   if wakeAt >= forever() {return infinite;}
-  imm left = (wakeAt - now).nanos();
+  let left = (wakeAt - now).nanos();
   if not lp.associated or lp.armedFor != wakeAt {
-    imm ns = if left < 1i64 {1i64;} else {left;};
-    mut spec = new ItimerSpec(0i64, 0i64, ns / 1000000000i64, ns % 1000000000i64);
+    let ns = if left < 1i64 {1i64;} else {left;};
+    var spec = new ItimerSpec(0i64, 0i64, ns / 1000000000i64, ns % 1000000000i64);
     timerfd_settime(fdOf(lp.timer), 0i32, &mut spec as *ItimerSpec, null);
     lp.armedFor = wakeAt;
     lp.associated = true;
   }
-  imm ms = (left + 999999i64) / 1000000i64 + 1i64;
+  let ms = (left + 999999i64) / 1000000i64 + 1i64;
   if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
@@ -796,20 +796,20 @@ fn lxArm(lp &mut Loop, wakeAt Instant, now Instant) u32 {
 // queue emptied, each packet handled. How many answers went to out
 fn lxDrain(lp &mut Loop, at Instant, out &mut List[Completion]) usize {
   if isWindows() {return 0usize;}
-  mut counter = 0u64;
+  var counter = 0u64;
   sysRead(fdOf(lp.port.handle), &mut counter as *u8, 8usize);
   // Cleared before the queue is taken: a poster after this writes again, and
   // one before it has its packet in the queue taken below
   lp.port.pending.store(0u32);
-  imm st = lp.port.lists();
+  let st = lp.port.lists();
   st.lock.lock();
-  mut node = st.head;
+  var node = st.head;
   st.head = null;
   st.tail = null;
   st.lock.unlock();
-  mut n = 0usize;
+  var n = 0usize;
   while node as usize != 0usize {
-    imm next = (*node).next;
+    let next = (*node).next;
     n = n + lp.handlePacket((*node).key, (*node).ov, at, out);
     libc.free(node as *u8);
     node = next;
@@ -821,28 +821,28 @@ fn lxDrain(lp &mut Loop, at Instant, out &mut List[Completion]) usize {
 // answers posted by other loops went to out
 fn lxDequeue(lp &mut Loop, ms u32, out &mut List[Completion]) usize {
   if isWindows() {return 0usize;}
-  imm timeout = if ms == infinite {0i32 - 1i32;} elif ms > 0x7FFFFFFFu32 {0x7FFFFFFFi32;} else {i32.from(ms);};
-  imm got = epoll_wait(fdOf(lp.portHandle), lp.events, i32.from(batch), timeout);
+  let timeout = if ms == infinite {0i32 - 1i32;} elif ms > 0x7FFFFFFFu32 {0x7FFFFFFFi32;} else {i32.from(ms);};
+  let got = epoll_wait(fdOf(lp.portHandle), lp.events, i32.from(batch), timeout);
   if ms != 0u32 {lp.stats.waits = lp.stats.waits + 1u64;}
   if got <= 0i32 {
     if ms != 0u32 and ms != infinite {lp.stats.waitTimeouts = lp.stats.waitTimeouts + 1u64;}
     lxSettleCancels(lp);
     return 0usize;
   }
-  imm at = Instant.now();
+  let at = Instant.now();
   lp.stats.dequeued = lp.stats.dequeued + u64.from(got);
   if u64.from(got) > lp.stats.largestBatch {lp.stats.largestBatch = u64.from(got);}
-  mut n = 0usize;
-  mut k = 0usize;
+  var n = 0usize;
+  var k = 0usize;
   while k < usize.from(got) {
-    imm ev = lp.events + k;
-    imm entry = (*ev).lo;
-    imm gen = (*ev).hi;
+    let ev = lp.events + k;
+    let entry = (*ev).lo;
+    let gen = (*ev).hi;
     if gen == 0u32 {
       if entry == datumWake {
         n = n + lxDrain(lp, at, out);
       } elif entry == datumTimer {
-        mut expirations = 0u64;
+        var expirations = 0u64;
         sysRead(fdOf(lp.timer), &mut expirations as *u8, 8usize);
         lp.associated = false;
         lp.stats.timerExpiries = lp.stats.timerExpiries + 1u64;
@@ -865,15 +865,15 @@ fn lxDequeue(lp &mut Loop, ms u32, out &mut List[Completion]) usize {
 // descriptor
 fn lxStartFile(lp &mut Loop, p *Rec, write bool) u32 {
   if isWindows() {return errorInvalidParameter;}
-  imm r = p as &mut Rec;
-  imm raw = lp.rawOf(r.sock, hFile);
+  let r = p as &mut Rec;
+  let raw = lp.rawOf(r.sock, hFile);
   if raw == invalidHandle {return errorInvalidHandle;}
   if not write and r.buf.room() == 0usize {return errorInsufficientBuffer;}
-  imm l = laneAt(filesLane);
+  let l = laneAt(filesLane);
   if l as usize == 0usize {return errorInvalidParameter;}
-  imm dup = sysFcntl(fdOf(raw), fDupfdCloexec, 0i32);
+  let dup = sysFcntl(fdOf(raw), fDupfdCloexec, 0i32);
   if dup < 0i32 {return errnoCode(lastErrno());}
-  imm b = newBox(&noWork, r.at, new Waker(lp.port), r.index, r.gen, l);
+  let b = newBox(&noWork, r.at, new Waker(lp.port), r.index, r.gen, l);
   (b as &mut JobBox).buf <=> r.buf;
   (*b).fd = dup;
   (*b).write = write;
@@ -891,23 +891,23 @@ fn lxStartFile(lp &mut Loop, p *Rec, write bool) u32 {
 fn lxFileJob(j &mut JobBox) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
   if j.write {
-    imm len = j.buf.len();
-    mut done = 0usize;
-    mut failed = 0i32;
+    let len = j.buf.len();
+    var done = 0usize;
+    var failed = 0i32;
     while done < len and failed == 0i32 {
-      imm n = sysPwrite(j.fd, j.buf.base() + done, len - done, i64.from(j.arg + u64.from(done)));
+      let n = sysPwrite(j.fd, j.buf.base() + done, len - done, i64.from(j.arg + u64.from(done)));
       if n >= 0i64 {
         done = done + usize.from(n);
       } else {
-        imm e = lastErrno();
+        let e = lastErrno();
         if e != eintr {failed = e;}
       }
     }
     if failed != 0i32 {return Outcome.Failed(errnoCode(failed));}
     return Outcome.Done(len);
   }
-  imm room = j.buf.room();
-  mut n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
+  let room = j.buf.room();
+  var n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
   while n < 0i64 and lastErrno() == eintr {
     n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
   }
@@ -922,20 +922,20 @@ fn lxFileJob(j &mut JobBox) Outcome {
 
 fn lxResolve(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  imm name = cstrCopy(buf.view());
+  let name = cstrCopy(buf.view());
   if name as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
-  mut hints = new AddrInfoLx(0i32, 0i32, sockStreamLx, 6i32, 0u32, 0u32, null, null, null);
-  mut res = null as *AddrInfoLx;
-  imm rc = sysGetaddrinfo(name, null, &mut hints as *AddrInfoLx, &mut res);
+  var hints = new AddrInfoLx(0i32, 0i32, sockStreamLx, 6i32, 0u32, 0u32, null, null, null);
+  var res = null as *AddrInfoLx;
+  let rc = sysGetaddrinfo(name, null, &mut hints as *AddrInfoLx, &mut res);
   libc.free(name);
   if rc != 0i32 {return Outcome.Failed(gaiCode(rc));}
   buf.clear();
-  mut count = 0usize;
-  mut a = res;
-  imm recSize = mem.sizeof[SocketAddr]();
+  var count = 0usize;
+  var a = res;
+  let recSize = mem.sizeof[SocketAddr]();
   while a as usize != 0usize {
     if (*a).addrlen <= 28u32 and buf.room() >= recSize {
-      mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
+      var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
       libc.memcpy(&mut s.raw as *u8, (*a).addr, usize.from((*a).addrlen));
       s.setPort(u16.from(arg));
       buf.append(mem.sliceFromParts(&mut s as *u8, recSize));
@@ -954,27 +954,27 @@ fn lxStat(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
   // The path as a C string: a String keeps its zero after its bytes (cstr, the
   // type the posix package declares 'stat' with too: one C name, one signature)
-  mut name = String.empty();
+  var name = String.empty();
   name.appendBytes(buf.view());
-  mut k = 0usize;
+  var k = 0usize;
   while k < buf.len() {
     if buf.view()[k] == 0u8 {return Outcome.Failed(errorInvalidParameter);}
     k = k + 1usize;
   }
   // struct stat on x86-64 is 144 bytes: st_mode at 24, st_size at 48 and
   // st_mtim at 88
-  mut st = new Array[u64, 18] <- fill 0u64;
-  imm rc = sysStat(name.cstr(), &mut st as *u8);
+  var st = new Array[u64, 18] <- fill 0u64;
+  let rc = sysStat(name.cstr(), &mut st as *u8);
   if rc != 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
-  imm mode = u32.from(st[3usize] & 0xFFFFFFFFu64);
-  imm size = st[6usize];
-  imm sec = i64.from(st[11usize]);
-  imm nsec = i64.from(st[12usize]);
-  mut attributes = if (mode & sIfmt) == sIfdir {0x10u32;} else {0x80u32;};
+  let mode = u32.from(st[3usize] & 0xFFFFFFFFu64);
+  let size = st[6usize];
+  let sec = i64.from(st[11usize]);
+  let nsec = i64.from(st[12usize]);
+  var attributes = if (mode & sIfmt) == sIfdir {0x10u32;} else {0x80u32;};
   if (mode & 0x92u32) == 0u32 {attributes = attributes | 1u32;}
   // A FILETIME counts 100 ns from 1601
-  imm filetime = u64.from(sec * 10000000i64 + nsec / 100i64 + 116444736000000000i64);
-  mut data = new Array[u32, 9] <- fill 0u32;
+  let filetime = u64.from(sec * 10000000i64 + nsec / 100i64 + 116444736000000000i64);
+  var data = new Array[u32, 9] <- fill 0u32;
   data[0usize] = attributes;
   data[5usize] = u32.from(filetime & 0xFFFFFFFFu64);
   data[6usize] = u32.from(filetime >> 32u64);
@@ -988,19 +988,19 @@ fn lxStat(arg u64, buf &mut IoBuf) Outcome {
 // A file opened, read from 'arg' as far as the buffer's room goes, and closed
 fn lxReadFile(arg u64, buf &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  imm path = cstrCopy(buf.view());
+  let path = cstrCopy(buf.view());
   if path as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
-  imm fd = sysOpen(path, oRdonly | epollCloexec, 0u32);
+  let fd = sysOpen(path, oRdonly | epollCloexec, 0u32);
   libc.free(path);
   if fd < 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
   buf.clear();
-  imm room = buf.room();
-  mut got = 0usize;
-  mut failed = 0u32;
+  let room = buf.room();
+  var got = 0usize;
+  var failed = 0u32;
   while got < room {
-    imm n = sysPread(fd, buf.base() + got, room - got, i64.from(arg + u64.from(got)));
+    let n = sysPread(fd, buf.base() + got, room - got, i64.from(arg + u64.from(got)));
     if n < 0i64 {
-      imm e = lastErrno();
+      let e = lastErrno();
       if e == eintr {continue;}
       failed = errnoCode(e);
       break;

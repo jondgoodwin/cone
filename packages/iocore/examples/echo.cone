@@ -50,24 +50,24 @@ struct ServerReport {
 }
 
 fn serve(a ServerArgs) ServerReport {
-  mut lp = Loop.mustMake();
-  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-  mut port = 0u16;
+  var lp = Loop.mustMake();
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
   match lp.localAddr(listener) {
-    case imm r Ok {port = r.port();}
-    case imm e Error {}
+    case let r Ok {port = r.port();}
+    case let e Error {}
   }
   a.portTx.send(port);
   lp.submit(Op.Accept(listener), Target.Here(0u64));
-  mut out = List[Completion].empty();
-  mut conn = Handle.none();
-  mut rep = new ServerReport(Histogram.make(), Histogram.make(), Counters.zero());
-  mut open = true;
+  var out = List[Completion].empty();
+  var conn = Handle.none();
+  var rep = new ServerReport(Histogram.make(), Histogram.make(), Counters.zero());
+  var open = true;
   while open {
     lp.poll(forever(), &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm c = &mut out[k];
+      let c = &mut out[k];
       if c.token == 0u64 {
         conn = c.handle;
         if a.zeroByte {lp.submit(Op.RecvReady(conn), Target.Here(3u64));}
@@ -81,7 +81,7 @@ fn serve(a ServerArgs) ServerReport {
         if c.count() == 0usize {
           open = false;
         } else {
-          mut b = IoBuf.empty();
+          var b = IoBuf.empty();
           b <=> c.buf;
           lp.submit(Op.Send(conn, b), Target.Here(2u64));
         }
@@ -89,7 +89,7 @@ fn serve(a ServerArgs) ServerReport {
         if a.zeroByte {
           lp.submit(Op.RecvReady(conn), Target.Here(3u64));
         } else {
-          mut b = IoBuf.empty();
+          var b = IoBuf.empty();
           b <=> c.buf;
           b.clear();
           lp.submit(Op.Recv(conn, b), Target.Here(1u64));
@@ -126,8 +126,8 @@ struct ClientReport {
 }
 
 fn fillMsg(b &mut IoBuf, i u64) {
-  imm room = b.whole();
-  mut j = 0usize;
+  let room = b.whole();
+  var j = 0usize;
   while j < msgSize {
     room[j] = u8.from((i * 31u64 + u64.from(j)) % 256u64);
     j = j + 1usize;
@@ -136,18 +136,18 @@ fn fillMsg(b &mut IoBuf, i u64) {
 }
 
 fn client(a ClientArgs) ClientReport {
-  mut lp = Loop.mustMake();
-  mut rep = new ClientReport(Histogram.make(), Histogram.make(), Histogram.make(), Histogram.make(),
+  var lp = Loop.mustMake();
+  var rep = new ClientReport(Histogram.make(), Histogram.make(), Histogram.make(), Histogram.make(),
     Histogram.make(), Histogram.make(), Histogram.make(), Duration.zero(), Duration.zero(), 0u64, 0u64, Counters.zero());
-  mut out = List[Completion].empty();
-  mut fh = Handle.none();
-  mut nextRead = 0u64;
-  mut readsOut = 0u64;
-  imm t0 = Instant.now();
+  var out = List[Completion].empty();
+  var fh = Handle.none();
+  var nextRead = 0u64;
+  var readsOut = 0u64;
+  let t0 = Instant.now();
   if a.withFile {
     match lp.openFile("echo.tmp", Access.Read) {
-      case imm r Ok {fh = r;}
-      case imm e Error {}
+      case let r Ok {fh = r;}
+      case let e Error {}
     }
     while nextRead < depth {
       lp.submit(Op.ReadAt(fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))), Target.Here(100u64 + nextRead));
@@ -156,22 +156,22 @@ fn client(a ClientArgs) ClientReport {
     readsOut = depth;
   }
   lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(0u64));
-  mut conn = Handle.none();
-  mut sent = 0u64;
-  mut echoed = 0u64;
-  mut msgStart = Instant.now();
+  var conn = Handle.none();
+  var sent = 0u64;
+  var echoed = 0u64;
+  var msgStart = Instant.now();
   while echoed < a.messages or readsOut > 0u64 {
     lp.poll(forever(), &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm c = &mut out[k];
+      let c = &mut out[k];
       if c.token >= 100u64 {
         readsOut = readsOut - 1u64;
         rep.fileKernel.record((c.dequeued - c.submitted).nanos());
         rep.fileDelivery.record((c.delivered - c.dequeued).nanos());
         rep.fileBytes = rep.fileBytes + u64.from(c.count());
         if nextRead * chunk < fileSize {
-          mut b = IoBuf.empty();
+          var b = IoBuf.empty();
           b <=> c.buf;
           b.clear();
           lp.submit(Op.ReadAt(fh, nextRead * chunk, b), Target.Here(100u64 + nextRead));
@@ -182,7 +182,7 @@ fn client(a ClientArgs) ClientReport {
         }
       } elif c.token == 0u64 {
         conn = c.handle;
-        mut b = a.pool.mustTake(msgSize);
+        var b = a.pool.mustTake(msgSize);
         fillMsg(&mut b, 0u64);
         msgStart = Instant.now();
         lp.submit(Op.Send(conn, b), Target.Here(1u64));
@@ -190,14 +190,14 @@ fn client(a ClientArgs) ClientReport {
       } elif c.token == 1u64 {
         rep.sendKernel.record((c.dequeued - c.submitted).nanos());
         rep.sendDelivery.record((c.delivered - c.dequeued).nanos());
-        mut b = IoBuf.empty();
+        var b = IoBuf.empty();
         b <=> c.buf;
         b.clear();
         lp.submit(Op.Recv(conn, b), Target.Here(2u64));
       } else {
         rep.recvKernel.record((c.dequeued - c.submitted).nanos());
         rep.recvDelivery.record((c.delivered - c.dequeued).nanos());
-        mut b = IoBuf.empty();
+        var b = IoBuf.empty();
         b <=> c.buf;
         if c.count() == 0usize {
           rep.wrong = rep.wrong + 1u64;
@@ -226,20 +226,20 @@ fn client(a ClientArgs) ClientReport {
 }
 
 fn writeFile(pool &Pool) {
-  mut lp = Loop.mustMake();
-  mut fh = Handle.none();
+  var lp = Loop.mustMake();
+  var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Create) {
-    case imm r Ok {fh = r;}
-    case imm e Error {return;}
+    case let r Ok {fh = r;}
+    case let e Error {return;}
   }
-  mut out = List[Completion].empty();
-  mut at = 0u64;
-  mut pending = 0u64;
+  var out = List[Completion].empty();
+  var at = 0u64;
+  var pending = 0u64;
   while at < fileSize or pending > 0u64 {
     while pending < 8u64 and at < fileSize {
-      mut b = pool.mustTake(usize.from(chunk));
-      imm room = b.whole();
-      mut j = 0usize;
+      var b = pool.mustTake(usize.from(chunk));
+      let room = b.whole();
+      var j = 0usize;
       while j < room.len {
         room[j] = u8.from((at + u64.from(j)) % 253u64);
         j = j + 1usize;
@@ -260,18 +260,18 @@ fn line(name &str, h &Histogram) {
 }
 
 fn exchange(pool &Pool, messages u64, withFile bool, zeroByte bool) ClientReport, ServerReport {
-  mut portTx Sender[u16];
-  mut portRx Receiver[u16];
+  var portTx Sender[u16];
+  var portRx Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  imm server = thread.start(new ServerArgs(*pool, portTx, zeroByte), &serve);
-  mut port = 0u16;
+  let server = thread.start(new ServerArgs(*pool, portTx, zeroByte), &serve);
+  var port = 0u16;
   match portRx.recv() {
-    case imm p Some {port = p;}
+    case let p Some {port = p;}
     case is None[u16] {}
   }
-  imm cl = thread.start(new ClientArgs(*pool, port, messages, withFile), &client);
-  imm c = cl.join();
-  imm s = server.join();
+  let cl = thread.start(new ClientArgs(*pool, port, messages, withFile), &client);
+  let c = cl.join();
+  let s = server.join();
   c, s;
 }
 
@@ -282,14 +282,14 @@ struct ServiceArgs {
 }
 
 fn service(a ServiceArgs) Counters {
-  mut lp = Loop.mustMake();
-  mut out = List[Completion].empty();
-  mut fh = Handle.none();
+  var lp = Loop.mustMake();
+  var out = List[Completion].empty();
+  var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Read) {
-    case imm r Ok {fh = r;}
-    case imm e Error {return lp.counters();}
+    case let r Ok {fh = r;}
+    case let e Error {return lp.counters();}
   }
-  mut at = 0u64;
+  var at = 0u64;
   while at < fileSize {
     lp.submit(Op.ReadAt(fh, at, a.pool.mustTake(65536usize)), Target.Post(at, a.to));
     while lp.inFlight() > 0u64 {lp.poll(forever(), &mut out);}
@@ -313,12 +313,12 @@ fn printCounters(name &str, c &Counters) {
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
+  let pool = Pool.make();
   writeFile(&pool);
 
   // 1. Echo and the file through one poll
-  mut c ClientReport;
-  mut s ServerReport;
+  var c ClientReport;
+  var s ServerReport;
   c, s = exchange(&pool, 100000u64, true, false);
   printStr("1. 100,000 echoes of 64 bytes, two threads, a 64 MiB file read through the client's poll\n");
   printStr("  ");
@@ -344,11 +344,11 @@ fn main() i32 {
   if c.wrong != 0u64 {printStr("  MESSAGES WRONG\n");}
 
   // 2. Zero-byte receives against direct ones
-  mut d ClientReport;
-  mut ds ServerReport;
+  var d ClientReport;
+  var ds ServerReport;
   d, ds = exchange(&pool, 20000u64, false, false);
-  mut z ClientReport;
-  mut zs ServerReport;
+  var z ClientReport;
+  var zs ServerReport;
   z, zs = exchange(&pool, 20000u64, false, true);
   printStr("2. 20,000 echoes: the server's receive direct, then by RecvReady + Recv (no buffer pinned while idle)\n");
   line("round trip, direct    ", &d.rtt);
@@ -360,17 +360,17 @@ fn main() i32 {
   printStr(" ms\n");
 
   // 3. Posted to an idle loop
-  mut m = Loop.mustMake();
-  imm svc = thread.start(new ServiceArgs(pool, m.waker()), &service);
-  mut out = List[Completion].empty();
-  mut kernel = Histogram.make();
-  mut hop = Histogram.make();
-  mut got = 0u64;
+  var m = Loop.mustMake();
+  let svc = thread.start(new ServiceArgs(pool, m.waker()), &service);
+  var out = List[Completion].empty();
+  var kernel = Histogram.make();
+  var hop = Histogram.make();
+  var got = 0u64;
   while got < fileSize / 65536u64 {
     m.poll(forever(), &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm cc = out[k];
+      let cc = out[k];
       kernel.record((cc.dequeued - cc.submitted).nanos());
       hop.record((cc.delivered - cc.dequeued).nanos());
       got = got + 1u64;
@@ -378,7 +378,7 @@ fn main() i32 {
     }
     out.clear();
   }
-  imm sc = svc.join();
+  let sc = svc.join();
   printStr("3. 1,024 reads of 64 KiB on a service thread, each answer posted to main's idle loop\n");
   line("readAt kernel          ", &kernel);
   line("delivery (thread hop)  ", &hop);

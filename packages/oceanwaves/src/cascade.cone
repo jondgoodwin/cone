@@ -69,8 +69,8 @@ pub struct Cascade {
 
   // The tile's waves for 'sea', each wave's random amplitude from 'seed'
   pub fn make(spec CascadeSpec, sea &SeaState, seed u32) Cascade {
-    imm n = spec.n;
-    mut c = new Cascade(spec, Fft.make(n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
+    let n = spec.n;
+    var c = new Cascade(spec, Fft.make(n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
       zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
       zeros(n), zeros(n), 0d);
     c.synthesise(sea, seed);
@@ -80,33 +80,33 @@ pub struct Cascade {
   // The initial amplitudes and frequencies again, for a new sea state (the same seed: the same random
   // numbers, so the sea changes character without changing which wave is where)
   pub fn synthesise(self &mut, sea &SeaState, seed u32) {
-    imm n = spec.n;
-    imm dk = 6.28318530718 / spec.length;
-    mut vsum = 0d;
-    mut iz = 0usize;
+    let n = spec.n;
+    let dk = 6.28318530718 / spec.length;
+    var vsum = 0d;
+    var iz = 0usize;
     while iz < n {
-      imm mz = if iz < n / 2usize { f32.from(iz); } else { f32.from(iz) - f32.from(n); };
-      mut ix = 0usize;
+      let mz = if iz < n / 2usize { f32.from(iz); } else { f32.from(iz) - f32.from(n); };
+      var ix = 0usize;
       while ix < n {
-        imm mx = if ix < n / 2usize { f32.from(ix); } else { f32.from(ix) - f32.from(n); };
-        imm kx = mx * dk;
-        imm kz = mz * dk;
-        imm k = (kx * kx + kz * kz).sqrt();
-        imm i = iz * n + ix;
+        let mx = if ix < n / 2usize { f32.from(ix); } else { f32.from(ix) - f32.from(n); };
+        let kx = mx * dk;
+        let kz = mz * dk;
+        let k = (kx * kx + kz * kz).sqrt();
+        let i = iz * n + ix;
         h0re.set(i, 0.);
         h0im.set(i, 0.);
         omega.set(i, 0.);
         if k > 0.0001 and k >= spec.kMin and k < spec.kMax {
-          imm w = angularFrequency(k, sea.depth);
-          imm theta = libc.atan2f(kz, kx);
-          imm variance = sea.density(w) * sea.direction(w, theta) * groupVelocity(k, sea.depth) / k * dk * dk;
+          let w = angularFrequency(k, sea.depth);
+          let theta = libc.atan2f(kz, kx);
+          let variance = sea.density(w) * sea.direction(w, theta) * groupVelocity(k, sea.depth) / k * dk * dk;
           vsum = vsum + f64.from(variance);
           // two independent standard normals from the wave's hashed index (Box-Muller)
-          imm h = noise.pcg3d(new noise.UVec3(u32.from(ix) ^ (seed * 0x9E3779B1u32), u32.from(iz), seed));
-          imm u1 = (f32.from(h.x >> 8u32) + 0.5) * 0.000000059604644775390625;
-          imm u2 = f32.from(h.y >> 8u32) * 0.000000059604644775390625;
-          imm r = (-2. * libc.logf(u1)).sqrt();
-          imm amp = variance.sqrt() * 0.5;
+          let h = noise.pcg3d(new noise.UVec3(u32.from(ix) ^ (seed * 0x9E3779B1u32), u32.from(iz), seed));
+          let u1 = (f32.from(h.x >> 8u32) + 0.5) * 0.000000059604644775390625;
+          let u2 = f32.from(h.y >> 8u32) * 0.000000059604644775390625;
+          let r = (-2. * libc.logf(u1)).sqrt();
+          let amp = variance.sqrt() * 0.5;
           h0re.set(i, r * libc.cosf(6.28318530718 * u2) * amp);
           h0im.set(i, r * libc.sinf(6.28318530718 * u2) * amp);
           omega.set(i, w);
@@ -125,14 +125,14 @@ pub struct Cascade {
   // Replace every wave with the one wave A cos(k . x - w t + phase), k = 2 pi (mx, mz) / L, w the
   // dispersion relation's at depth 'depth' (for checking the FFT's conventions against the closed form)
   pub fn setSingleWave(self &mut, mx i32, mz i32, amplitude f32, phase f32, depth f32) {
-    imm n = spec.n;
-    mut i = 0usize;
+    let n = spec.n;
+    var i = 0usize;
     while i < n * n { h0re.set(i, 0.); h0im.set(i, 0.); omega.set(i, 0.); i = i + 1usize; }
-    imm ix = wrapIndex(mx, n);
-    imm iz = wrapIndex(mz, n);
-    imm dk = 6.28318530718 / spec.length;
-    imm k = (f32.from(mx * mx + mz * mz)).sqrt() * dk;
-    imm w = angularFrequency(k, depth);
+    let ix = wrapIndex(mx, n);
+    let iz = wrapIndex(mz, n);
+    let dk = 6.28318530718 / spec.length;
+    let k = (f32.from(mx * mx + mz * mz)).sqrt() * dk;
+    let w = angularFrequency(k, depth);
     h0re.set(iz * n + ix, 0.5 * amplitude * libc.cosf(phase));
     h0im.set(iz * n + ix, 0.5 * amplitude * libc.sinf(phase));
     omega.set(iz * n + ix, w);
@@ -142,52 +142,52 @@ pub struct Cascade {
 
   // Fill the scratch lists with the spectrum of the 'pack'th pair of fields at time t
   fn fillPack(self &mut, pack i32, t f64) {
-    imm n = spec.n;
+    let n = spec.n;
     {
-      imm rr = sr.viewMut();
-      imm ii = si.viewMut();
-      mut iz = 0usize;
+      let rr = sr.viewMut();
+      let ii = si.viewMut();
+      var iz = 0usize;
       while iz < n {
-        imm mz = if iz < n / 2usize { f32.from(iz); } else { f32.from(iz) - f32.from(n); };
-        mut ix = 0usize;
+        let mz = if iz < n / 2usize { f32.from(iz); } else { f32.from(iz) - f32.from(n); };
+        var ix = 0usize;
         while ix < n {
-          imm mx = if ix < n / 2usize { f32.from(ix); } else { f32.from(ix) - f32.from(n); };
-          imm i = iz * n + ix;
-          imm j = ((n - iz) % n) * n + ((n - ix) % n);
-          imm w = *omega[i];
-          mut hr f32 = 0.;
-          mut hi f32 = 0.;
-          mut kxk f32 = 0.;
-          mut kzk f32 = 0.;
-          mut k f32 = 0.;
+          let mx = if ix < n / 2usize { f32.from(ix); } else { f32.from(ix) - f32.from(n); };
+          let i = iz * n + ix;
+          let j = ((n - iz) % n) * n + ((n - ix) % n);
+          let w = *omega[i];
+          var hr f32 = 0.;
+          var hi f32 = 0.;
+          var kxk f32 = 0.;
+          var kzk f32 = 0.;
+          var k f32 = 0.;
           if w > 0. {
             // wave (ix, iz) at time t: the phase wraps at a whole number of turns to keep f32 accurate
-            imm ph = f32.from(libc.fmod(f64.from(w) * t, 6.283185307179586d));
-            imm c = libc.cosf(ph);
-            imm s = libc.sinf(ph);
-            imm ar = *h0re[i];
-            imm ai = *h0im[i];
-            imm br = *h0re[j];
-            imm bi = *h0im[j];
+            let ph = f32.from(libc.fmod(f64.from(w) * t, 6.283185307179586d));
+            let c = libc.cosf(ph);
+            let s = libc.sinf(ph);
+            let ar = *h0re[i];
+            let ai = *h0im[i];
+            let br = *h0re[j];
+            let bi = *h0im[j];
             // h0(k) exp(-i w t) + conj(h0(-k)) exp(+i w t): the wave of vector k travels toward +k
             // (Tessendorf writes the opposite signs, which sends it the other way)
             hr = ar * c + ai * s + br * c + bi * s;
             hi = ai * c - ar * s + br * s - bi * c;
-            imm dk = 6.28318530718 / spec.length;
-            imm kx = mx * dk;
-            imm kz = mz * dk;
+            let dk = 6.28318530718 / spec.length;
+            let kx = mx * dk;
+            let kz = mz * dk;
             k = (kx * kx + kz * kz).sqrt();
             kxk = kx;
             kzk = kz;
           }
           // the two fields of this pack, as complex spectra (re, im) each
-          mut ar f32 = 0.;
-          mut ai f32 = 0.;
-          mut br f32 = 0.;
-          mut bi f32 = 0.;
+          var ar f32 = 0.;
+          var ai f32 = 0.;
+          var br f32 = 0.;
+          var bi f32 = 0.;
           if k > 0. {
-            imm ux = kxk / k;
-            imm uz = kzk / k;
+            let ux = kxk / k;
+            let uz = kzk / k;
             if pack == 0 {
               ar = hr; ai = hi;                              // height
               br = -hi * ux; bi = hr * ux;                   // Dx = +i ux H
@@ -223,14 +223,14 @@ pub struct Cascade {
   // The surface's fields at time t (four inverse FFTs), and the Jacobian this cascade's own displacement
   // has at 'lambda'; the foam is not touched
   pub fn updateFields(self &mut, t f64, lambda f32) {
-    imm n = spec.n;
-    mut pack = 0;
+    let n = spec.n;
+    var pack = 0;
     while pack < 4 {
       self.fillPack(pack, t);
       fft.inverse2(&mut sr, &mut si, &mut row, &mut rowI);
-      imm r2 = sr.view();
-      imm i2 = si.view();
-      mut q = 0usize;
+      let r2 = sr.view();
+      let i2 = si.view();
+      var q = 0usize;
       while q < n * n {
         if pack == 0 { height.set(q, r2[q]); dispX.set(q, i2[q]); }
         elif pack == 1 { dispZ.set(q, r2[q]); slopeX.set(q, i2[q]); }
@@ -240,11 +240,11 @@ pub struct Cascade {
       }
       pack = pack + 1;
     }
-    mut f = 0usize;
+    var f = 0usize;
     while f < n * n {
-      imm a = 1. + lambda * *dxx[f];
-      imm b = 1. + lambda * *dzz[f];
-      imm c = lambda * *dxz[f];
+      let a = 1. + lambda * *dxx[f];
+      let b = 1. + lambda * *dzz[f];
+      let c = lambda * *dxz[f];
       jacobian.set(f, a * b - c * c);
       f = f + 1usize;
     }
@@ -253,10 +253,10 @@ pub struct Cascade {
   // Foam from this cascade's own Jacobian: made where it is under 'foamThreshold' (0 to 1 at 'foamGain' a
   // unit below it), faded by exp(-dt / foamDecay) where it is not
   pub fn updateFoam(self &mut, foamThreshold f32, foamGain f32, foamDecay f32, dt f32) {
-    mut f = 0usize;
+    var f = 0usize;
     while f < spec.n * spec.n {
-      imm gen = fclampf((foamThreshold - *jacobian[f]) * foamGain, 0., 1.);
-      imm faded = *foam[f] * libc.expf(0. - dt / foamDecay);
+      let gen = fclampf((foamThreshold - *jacobian[f]) * foamGain, 0., 1.);
+      let faded = *foam[f] * libc.expf(0. - dt / foamDecay);
       foam.set(f, if gen > faded { gen; } else { faded; });
       f = f + 1usize;
     }
@@ -264,33 +264,33 @@ pub struct Cascade {
 
   // The values at tile coordinates (u, v) in samples (not wrapped), bilinear with wrap-around
   fn sampleAt(self &, field &List[f32], u f32, v f32) f32 {
-    imm n = spec.n;
-    imm fu = libc.floorf(u);
-    imm fv = libc.floorf(v);
-    imm tu = u - fu;
-    imm tv = v - fv;
-    imm i0 = wrapIndex(i32.from(fu), n);
-    imm i1 = wrapIndex(i32.from(fu) + 1, n);
-    imm j0 = wrapIndex(i32.from(fv), n);
-    imm j1 = wrapIndex(i32.from(fv) + 1, n);
-    imm a = *field[j0 * n + i0];
-    imm b = *field[j0 * n + i1];
-    imm c = *field[j1 * n + i0];
-    imm d = *field[j1 * n + i1];
-    imm top = a + (b - a) * tu;
-    imm bottom = c + (d - c) * tu;
+    let n = spec.n;
+    let fu = libc.floorf(u);
+    let fv = libc.floorf(v);
+    let tu = u - fu;
+    let tv = v - fv;
+    let i0 = wrapIndex(i32.from(fu), n);
+    let i1 = wrapIndex(i32.from(fu) + 1, n);
+    let j0 = wrapIndex(i32.from(fv), n);
+    let j1 = wrapIndex(i32.from(fv) + 1, n);
+    let a = *field[j0 * n + i0];
+    let b = *field[j0 * n + i1];
+    let c = *field[j1 * n + i0];
+    let d = *field[j1 * n + i1];
+    let top = a + (b - a) * tu;
+    let bottom = c + (d - c) * tu;
     top + (bottom - top) * tv;
   }
 
   // 'field' at the rest position (x, z) metres (the tile repeats every L)
   pub fn at(self &, field &List[f32], x f32, z f32) f32 {
-    imm s = f32.from(spec.n) / spec.length;
+    let s = f32.from(spec.n) / spec.length;
     self.sampleAt(field, x * s, z * s);
   }
 }
 
 fn zeros(n usize) List[f32] {
-  mut l = List[f32].withCapacity(n);
+  var l = List[f32].withCapacity(n);
   l.resize(n, 0.);
   l;
 }
@@ -298,8 +298,8 @@ fn zeros(n usize) List[f32] {
 fn fclampf(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
 
 fn wrapIndex(i i32, n usize) usize {
-  imm m = i32.from(n);
-  mut r = i % m;
+  let m = i32.from(n);
+  var r = i % m;
   if r < 0 { r = r + m; }
   usize.from(r);
 }

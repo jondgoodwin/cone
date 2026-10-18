@@ -19,22 +19,22 @@ fn sharesAcrossThreads(n &imm i32) { }
 // A mutable reference may not be borrowed from an immutable variable, which is
 // the rule that keeps 'imm' meaning what it says
 fn mutFromImm() {
-  imm settled = 3;
-  imm r = &mut settled;   //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+  let settled = 3;
+  let r = &mut settled;   //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
 }
 
 // Nor an immutable reference from a mutable variable: 'imm' promises no other
 // reference can change the value, and the variable itself still can
 fn immFromMut() {
-  mut changing = 3;
-  imm r = &imm changing;  //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+  var changing = 3;
+  let r = &imm changing;  //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
 }
 
 // An operator-assignment borrows a mutable reference to its lval before it
 // calls the operator method, so it fails the same rule -- reported by the
 // auto-borrow path, with its own wording
 fn autoBorrowFromImm() {
-  imm settled = 3;
+  let settled = 3;
   settled += 1;           //~ ErrorBadPerm:3 "Cannot borrow a mutable reference to `settled`, which is not mutable"
 }
 
@@ -43,17 +43,17 @@ fn autoBorrowFromImm() {
 // '*reads = *reads + 1' instead, and it is the write through a reading
 // reference that is refused
 fn opAssignThroughReadingRef() {
-  mut n = 3;
-  imm reads = &n;
+  var n = 3;
+  let reads = &n;
   reads += 1;             //~ ErrorNoMut:9 "You do not have permission to modify lval"
 }
 
 // 'opaq' is the widest permission to borrow and the narrowest to hold, so it
 // coerces to nothing
 fn opaqToRo() {
-  mut n = 3;
-  imm hidden = &opaq n;
-  imm readable &i32 = hidden;  //~ ErrorInvType:23 "Initialization value's type does not match variable's declared type"
+  var n = 3;
+  let hidden = &opaq n;
+  let readable &i32 = hidden;  //~ ErrorInvType:23 "Initialization value's type does not match variable's declared type"
 }
 
 // Through a 'mut' reference, which may be one of several, neither an 'imm'
@@ -62,22 +62,22 @@ fn opaqToRo() {
 // through a shared path is still to be used, never meets them from such a path
 // today; ref_flow_freeze holds the refusals it does make there.
 fn immThroughMut(p &mut i32) {
-  imm r = &imm *p;        //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+  let r = &imm *p;        //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
 }
 
 fn uniThroughMut(p &mut i32) {
-  imm r = &uni *p;        //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+  let r = &uni *p;        //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
 }
 
 // A reading reference does not become a writing one at a call
 fn roArgToMutParm() {
-  mut n = 3;
+  var n = 3;
   writes(&n);             //~ ErrorInvType:10 "Expression's type does not match declared parameter"
 }
 
 // ... and a 'mut' reference does not become an 'imm' one. Coercion runs only
 // towards 'ro' and 'opaq', never towards a stronger promise.
 fn mutArgToImmParm() {
-  mut n = 3;
+  var n = 3;
   sharesAcrossThreads(&mut n);  //~ ErrorInvType:23 "Expression's type does not match declared parameter"
 }

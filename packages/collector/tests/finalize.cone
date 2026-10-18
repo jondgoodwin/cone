@@ -25,7 +25,7 @@ mod finalize;
 import testing use *;
 import collector;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10 + d; }
 
 fn settle() {
@@ -47,10 +47,10 @@ alias Leaf = Gc[mut, LeafValue];
 
 // -- One object: finalized once, freed a cycle later
 fn dropFin() {
-  imm f = new Gc[mut, Fin](1);
+  let f = new Gc[mut, Fin](1);
 }
 fn once() {
-  imm before = Gc.finalized();
+  let before = Gc.finalized();
   dropFin();
   Gc.collect();
   expectInt(log, 1, "finalized by the first collection finding it unreachable");
@@ -73,7 +73,7 @@ struct BigValue {
 }
 alias Big = Gc[mut, BigValue];
 fn dropBig() {
-  imm b = new Big(1, new Fin(2), new Uni[Fin](3), new Rc[mut, Fin](4));
+  let b = new Big(1, new Fin(2), new Uni[Fin](3), new Rc[mut, Fin](4));
 }
 fn ruledOrder() {
   dropBig();
@@ -89,10 +89,10 @@ struct HoldsRcValue {
 }
 alias HoldsRc = Gc[mut, HoldsRcValue];
 fn dropHolder(k Rc[mut, Fin]) {
-  imm h = new HoldsRc(1, k);
+  let h = new HoldsRc(1, k);
 }
 fn rcShared() {
-  imm keep = new Rc[mut, Fin](4);
+  let keep = new Rc[mut, Fin](4);
   dropHolder(keep);
   settle();
   expectInt(log, 1, "the holder dies; keep still owns the Rc value");
@@ -100,9 +100,9 @@ fn rcShared() {
 
 // -- Several objects found unreachable together: newest first
 fn dropThree() {
-  imm a = new Gc[mut, Fin](1);
-  imm b = new Gc[mut, Fin](2);
-  imm c = new Gc[mut, Fin](3);
+  let a = new Gc[mut, Fin](1);
+  let b = new Gc[mut, Fin](2);
+  let c = new Gc[mut, Fin](3);
 }
 fn newestFirst() {
   dropThree();
@@ -112,7 +112,7 @@ fn newestFirst() {
 
 // -- A final reads its children. Kid's final spoils its value after noting
 // it, so what Parent's final sees says whether Kid's ran first.
-mut @threadlocal seen = 0i64;
+var @threadlocal seen = 0i64;
 struct KidValue {
   pub n i64;
   fn final(self &uni) { note(n); n = 9; }
@@ -126,11 +126,11 @@ struct ParentValue {
 alias Parent = Gc[mut, ParentValue];
 // Kid 2 is made first, as the Parent's value, so the Parent is newer
 fn dropFamily() {
-  imm p = new Parent(1, new Kid(2));
+  let p = new Parent(1, new Kid(2));
 }
 // Kid 4, Parent 3, then Kid 5, which replaces Kid 4 as the Parent's kid
 fn dropFamilyNewKid() {
-  imm p = new Parent(3, new Kid(4));
+  let p = new Parent(3, new Kid(4));
   p.kid = new Kid(5);
 }
 fn childrenReadable() {
@@ -156,24 +156,24 @@ fn makeHolder() Holder {
   new Holder(1, Some[Gc[mut, Fin]](new Gc[mut, Fin](2)));
 }
 fn kept() {
-  imm h = makeHolder();
+  let h = makeHolder();
   settle();
   expectInt(log, 0, "the holder and the fin it holds are both alive");
   expectUInt(live(), 2, "both there");
 }
 
 // -- A final that allocates, and one that asks for a collection
-mut @threadlocal made = 0i64;
+var @threadlocal made = 0i64;
 struct MakerValue {
   pub n i64;
   fn final(self &uni) {
-    imm l = new Leaf(n);
+    let l = new Leaf(n);
     made = l.n;
   }
 }
 alias Maker = Gc[mut, MakerValue];
 fn dropMaker() {
-  imm m = new Maker(7);
+  let m = new Maker(7);
 }
 struct CollectsValue {
   pub n i64;
@@ -181,11 +181,11 @@ struct CollectsValue {
 }
 alias Collects = Gc[mut, CollectsValue];
 fn dropCollects() {
-  imm c = new Collects(8);
+  let c = new Collects(8);
 }
 fn reentry() {
   dropMaker();
-  imm c0 = Gc.collections();
+  let c0 = Gc.collections();
   Gc.collect();
   expectInt(made, 7, "a final may allocate");
   expectUInt(u64.from(Gc.collections() - c0), 1, "and its allocation starts no collection");
@@ -193,7 +193,7 @@ fn reentry() {
   settle();
   expectUInt(live(), 0, "both freed later");
   dropCollects();
-  imm c1 = Gc.collections();
+  let c1 = Gc.collections();
   Gc.collect();
   expectInt(log, 8, "a final asking for a collection");
   expectUInt(u64.from(Gc.collections() - c1), 1, "gets none");

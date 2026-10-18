@@ -5,7 +5,7 @@
 // read by the shape inference) is refused, and so is one the compiler cannot read (a virtual call, a
 // closure, a Cone function whose body is not here; collection_flow_reshape_global_opaque holds the calls
 // through function values and to C). Only the intrinsics, an init, and a call through a
-// virtual reference marked '+ ShapeKeeping' are let through unasked. An 'imm' global cannot change, so a
+// virtual reference marked '+ ShapeKeeping' are let through unasked. A 'let' global cannot change, so a
 // borrow into it is untouched. collection_reshape_global_success holds what is accepted.
 //
 // Each function is a program that read freed memory when it was accepted: 'growFirst' appends to the big
@@ -20,24 +20,24 @@ struct Item { pub label String; }
 struct Ed {
   pub items List[Item];
   pub fn growFirst(self &mut, s &str) {
-    imm r = &mut items[0usize];
+    let r = &mut items[0usize];
     r.label.append(s);
   }
 }
 
-mut gl Ed;
+var gl Ed;
 fn @initpure init() { gl = new Ed(List[Item].empty()); }
 
 // The direct form: a visible function that writes the global by its name
 fn grow(s &str) { gl.growFirst(s); }
 
 fn direct() {
-  grow(gl.items[0usize].label.view());                        //~ ErrorShapeReshape "points into a 'mut' global"
+  grow(gl.items[0usize].label.view());                        //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // The same view held in a name, and a call made while it is held
 fn held() usize {
-  imm v = gl.items[0usize].label.view();
+  let v = gl.items[0usize].label.view();
   grow("more");                                               //~ ErrorShapeReshape "through a global"
   v.len;
 }
@@ -47,11 +47,11 @@ fn held() usize {
 struct Holder { pub f Uni[imm, fn(s &str)]; }
 
 fn viaHolder(h &Holder) {
-  h.f(gl.items[0usize].label.view());                         //~ ErrorShapeReshape "points into a 'mut' global"
+  h.f(gl.items[0usize].label.view());                         //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 fn viaFn(f &<fn(s &str)) {
-  f(gl.items[0usize].label.view());                           //~ ErrorShapeReshape "points into a 'mut' global"
+  f(gl.items[0usize].label.view());                           //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // The view passed on through a helper that calls the closure: the helper's body runs code the compiler

@@ -18,7 +18,7 @@ pub fn shadeWith[F fn(p Vec3) f32](f &F, p Vec3) f32 { f(p) * 2. + 1.; }
 
 // The same, for a closure whose state changes between calls: it is lent '&mut'
 pub fn shadeTwice[F fn(p Vec3) f32](f &mut F, p Vec3) f32 {
-  imm first = f(p);
+  let first = f(p);
   first + f(p);
 }
 
@@ -33,16 +33,16 @@ pub struct Ball {
 
 // A closure over a local, a value taken from a buffer: it borrows 'radius'
 pub fn @compute(64) closureLocal(inv Invocation, pts &Array[f32], radii &Array[f32], out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0usize]);
+  let i = usize.from(inv.globalId[0usize]);
   if i < out.len and 3usize * i + 2usize < pts.len and i < radii.len {
-    imm radius = radii[i];
+    let radius = radii[i];
     out[i] = shadeWith(p => p.dot(p) - radius * radius, pointAt(pts, i));
   }
 }
 
 // A closure over a buffer's slice and an index: it borrows memory the GPU has
 pub fn @compute(64) closureBuffer(inv Invocation, pts &Array[f32], radii &Array[f32], out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0usize]);
+  let i = usize.from(inv.globalId[0usize]);
   if i < out.len and 3usize * i + 2usize < pts.len and i < radii.len {
     out[i] = shadeWith(fn(p Vec3) f32 { p.dot(p) - radii[i] * radii[i]; }, pointAt(pts, i));
   }
@@ -51,9 +51,9 @@ pub fn @compute(64) closureBuffer(inv Invocation, pts &Array[f32], radii &Array[
 // A closure with state of its own, listed: a field copied in, and one that
 // changes with each call (so the second call sees the first's)
 pub fn @compute(64) closureState(inv Invocation, pts &Array[f32], radii &Array[f32], out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0usize]);
+  let i = usize.from(inv.globalId[0usize]);
   if i < out.len and 3usize * i + 2usize < pts.len and i < radii.len {
-    out[i] = shadeTwice(fn(p Vec3) [r = radii[i], mut calls = 0.] f32 {
+    out[i] = shadeTwice(fn(p Vec3) [r = radii[i], var calls = 0.] f32 {
       calls = calls + 1.;
       p.dot(p) * calls - r * r;
     }, pointAt(pts, i));
@@ -62,10 +62,10 @@ pub fn @compute(64) closureState(inv Invocation, pts &Array[f32], radii &Array[f
 
 // A closure changing a variable of the kernel: '&mut' borrow of a local
 pub fn @compute(64) closureMutLocal(inv Invocation, pts &Array[f32], radii &Array[f32], out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0usize]);
+  let i = usize.from(inv.globalId[0usize]);
   if i < out.len and 3usize * i + 2usize < pts.len and i < radii.len {
-    mut seen = 0.;
-    imm both = shadeTwice(p => { seen = seen + p.x; p.dot(p) - radii[i]; }, pointAt(pts, i));
+    var seen = 0.;
+    let both = shadeTwice(p => { seen = seen + p.x; p.dot(p) - radii[i]; }, pointAt(pts, i));
     out[i] = both + seen;
   }
 }
@@ -75,9 +75,9 @@ pub fn @compute(64) closureMutLocal(inv Invocation, pts &Array[f32], radii &Arra
 pub fn pairWith[F fn(x f32) f32](f &F, x f32) f32 { f(x) + f(x + 1.); }
 
 pub fn @compute(64) closureNested(inv Invocation, pts &Array[f32], radii &Array[f32], out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0usize]);
+  let i = usize.from(inv.globalId[0usize]);
   if i < out.len and 3usize * i + 2usize < pts.len and i < radii.len {
-    imm k = radii[i];
+    let k = radii[i];
     out[i] = shadeWith(fn(p Vec3) f32 {
       pairWith(x => x * radii[i] + k + p.x, p.y);
     }, new Vec3(pts[3usize * i], pts[3usize * i + 1usize], 2.));
@@ -86,9 +86,9 @@ pub fn @compute(64) closureNested(inv Invocation, pts &Array[f32], radii &Array[
 
 // A hand-written struct with '()' through the very same generic
 pub fn @compute(64) structCall(inv Invocation, pts &Array[f32], radii &Array[f32], out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0usize]);
+  let i = usize.from(inv.globalId[0usize]);
   if i < out.len and 3usize * i + 2usize < pts.len and i < radii.len {
-    imm ball = new Ball(radii[i]);
+    let ball = new Ball(radii[i]);
     out[i] = shadeWith(&ball, pointAt(pts, i));
   }
 }

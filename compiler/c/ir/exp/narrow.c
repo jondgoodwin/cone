@@ -776,7 +776,7 @@ static void narrowStaleError(FnCallNode *node, VarDclNode *var, Name *member, St
     else
         snprintf(how, sizeof(how), "it was changed at %s", at);
     errorMsgNode(node->objfn, ErrorNarrowStale,
-        "`%s` is not known to be %s here, and `%s` is a member of %s: %s. Test it again with 'is', or bind it with 'if imm x %s = %s'.",
+        "`%s` is not known to be %s here, and `%s` is a member of %s: %s. Test it again with 'is', or bind it with 'if let x %s = %s'.",
         &var->namesym->namestr, &was->namesym->namestr, &member->namestr, &was->namesym->namestr, how,
         &was->namesym->namestr, &var->namesym->namestr);
     node->vtype = errorType;

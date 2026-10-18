@@ -74,12 +74,12 @@ pub struct TextLayout {
 
 // Decode UTF-8 into code points; a bad sequence becomes U+FFFD
 pub fn decodeUtf8(s &Array[u8]) List[u32] {
-  mut out = List[u32].empty();
-  mut i = 0usize;
+  var out = List[u32].empty();
+  var i = 0usize;
   while i < s.len {
-    imm b = u32.from(s[i]);
-    mut cp = 0xFFFDu32;
-    mut n = 1usize;
+    let b = u32.from(s[i]);
+    var cp = 0xFFFDu32;
+    var n = 1usize;
     if b < 0x80u32 { cp = b; }
     elif b >= 0xC2u32 and b < 0xE0u32 and i + 1usize < s.len and (u32.from(s[i + 1usize]) & 0xC0u32) == 0x80u32 {
       cp = ((b & 0x1Fu32) << 6u32) | (u32.from(s[i + 1usize]) & 0x3Fu32);
@@ -112,28 +112,28 @@ struct Item {
 
 // Lay out 'text' in 'font' with the glyph fields made in 'atlas' as needed
 pub fn layoutText(font &Font, atlas &mut Atlas, text &Array[u8], opts &LayoutOptions) TextLayout {
-  imm upem = f32.from(font.unitsPerEm);
-  imm k = opts.size / upem;
-  imm cps = decodeUtf8(text);
-  mut items = List[Item].empty();
-  mut i = 0usize;
-  mut prev = 0u32;
-  mut havePrev = false;
+  let upem = f32.from(font.unitsPerEm);
+  let k = opts.size / upem;
+  let cps = decodeUtf8(text);
+  var items = List[Item].empty();
+  var i = 0usize;
+  var prev = 0u32;
+  var havePrev = false;
   while i < cps.len() {
-    imm cp = *cps[i];
+    let cp = *cps[i];
     if cp == 10u32 {
       items.push(new Item(cp, 0u32, 0.0, 0.0, false, true));
       havePrev = false;
     } elif cp == 13u32 {
       // ignored
     } elif cp == 9u32 {
-      imm g = font.glyphOf(32u32);
+      let g = font.glyphOf(32u32);
       items.push(new Item(cp, g, f32.from(font.advance(g)) * 4.0 * k, 0.0, true, false));
       prev = g;
       havePrev = true;
     } elif cp >= 32u32 {
-      imm g = font.glyphOf(cp);
-      mut kern = 0.0;
+      let g = font.glyphOf(cp);
+      var kern = 0.0;
       if opts.kerning and havePrev { kern = f32.from(font.kerning(prev, g)) * k; }
       items.push(new Item(cp, g, f32.from(font.advance(g)) * k, kern, cp == 32u32 or cp == 0xA0u32 or cp == 0x3000u32, false));
       prev = g;
@@ -142,16 +142,16 @@ pub fn layoutText(font &Font, atlas &mut Atlas, text &Array[u8], opts &LayoutOpt
     i = i + 1usize;
   }
   // Break into lines: ranges of items
-  mut starts = List[usize].empty();
-  mut ends = List[usize].empty();           // exclusive; trailing spaces are in the line
-  imm limit = opts.maxWidth;
-  mut lineStart = 0usize;
-  mut width = 0.0;                          // up to the last non-space item
-  mut pen = 0.0;
-  mut lastBreak = 0usize;                   // the item after the last space (0: none)
+  var starts = List[usize].empty();
+  var ends = List[usize].empty();           // exclusive; trailing spaces are in the line
+  let limit = opts.maxWidth;
+  var lineStart = 0usize;
+  var width = 0.0;                          // up to the last non-space item
+  var pen = 0.0;
+  var lastBreak = 0usize;                   // the item after the last space (0: none)
   i = 0usize;
   while i < items.len() {
-    imm it = *items[i];
+    let it = *items[i];
     if it.newline {
       starts.push(lineStart);
       ends.push(i);
@@ -160,11 +160,11 @@ pub fn layoutText(font &Font, atlas &mut Atlas, text &Array[u8], opts &LayoutOpt
       lastBreak = 0usize;
       i = i + 1usize;
     } else {
-      imm gap = if i == lineStart { 0.0; } else { it.kern; };
-      imm next = pen + gap + it.adv;
+      let gap = if i == lineStart { 0.0; } else { it.kern; };
+      let next = pen + gap + it.adv;
       if limit > 0.0 and !it.space and next > limit and i > lineStart {
         // Too wide: break after the last space if there is one on this line, else here
-        mut cut = i;
+        var cut = i;
         if lastBreak > lineStart { cut = lastBreak; }
         starts.push(lineStart);
         ends.push(cut);
@@ -184,23 +184,23 @@ pub fn layoutText(font &Font, atlas &mut Atlas, text &Array[u8], opts &LayoutOpt
     ends.push(items.len());
   }
   // Place each line
-  imm ascent = f32.from(font.ascent) * k;
-  imm descent = f32.from(font.descent) * k;
-  imm lineAdvance = f32.from(font.ascent - font.descent + font.lineGap) * k * opts.lineHeight;
-  mut glyphs = List[PlacedGlyph].empty();
-  mut quads = List[GlyphQuad].empty();
-  mut lines = List[LineInfo].empty();
-  mut lineWidths = List[f32].empty();
-  mut widest = 0.0;
+  let ascent = f32.from(font.ascent) * k;
+  let descent = f32.from(font.descent) * k;
+  let lineAdvance = f32.from(font.ascent - font.descent + font.lineGap) * k * opts.lineHeight;
+  var glyphs = List[PlacedGlyph].empty();
+  var quads = List[GlyphQuad].empty();
+  var lines = List[LineInfo].empty();
+  var lineWidths = List[f32].empty();
+  var widest = 0.0;
   // First pass: widths
-  mut li = 0usize;
+  var li = 0usize;
   while li < starts.len() {
-    mut p = 0.0;
-    mut inkEnd = 0.0;
-    mut j = *starts[li];
+    var p = 0.0;
+    var inkEnd = 0.0;
+    var j = *starts[li];
     while j < *ends[li] {
-      imm it = *items[j];
-      imm gap = if j == *starts[li] { 0.0; } else { it.kern; };
+      let it = *items[j];
+      let gap = if j == *starts[li] { 0.0; } else { it.kern; };
       p = p + gap + it.adv;
       if !it.space { inkEnd = p; }
       j = j + 1usize;
@@ -209,25 +209,25 @@ pub fn layoutText(font &Font, atlas &mut Atlas, text &Array[u8], opts &LayoutOpt
     if inkEnd > widest { widest = inkEnd; }
     li = li + 1usize;
   }
-  imm blockWidth = if limit > 0.0 { limit; } else { widest; };
+  let blockWidth = if limit > 0.0 { limit; } else { widest; };
   li = 0usize;
   while li < starts.len() {
-    imm baseline = ascent + f32.from(li) * lineAdvance;
-    imm lw = *lineWidths[li];
-    mut x0 = 0.0;
+    let baseline = ascent + f32.from(li) * lineAdvance;
+    let lw = *lineWidths[li];
+    var x0 = 0.0;
     if opts.align == ALIGN_CENTER { x0 = (blockWidth - lw) * 0.5; }
     elif opts.align == ALIGN_RIGHT { x0 = blockWidth - lw; }
-    imm firstGlyph = glyphs.len();
-    mut p = x0;
-    mut j = *starts[li];
+    let firstGlyph = glyphs.len();
+    var p = x0;
+    var j = *starts[li];
     while j < *ends[li] {
-      imm it = *items[j];
+      let it = *items[j];
       if j > *starts[li] { p = p + it.kern; }
-      mut quad = -1i32;
+      var quad = -1i32;
       if !it.space {
-        imm e = atlas.ensure(font, it.glyph);
+        let e = atlas.ensure(font, it.glyph);
         if e >= 0i32 {
-          imm en = atlas.entry(e);
+          let en = atlas.entry(e);
           if !en.empty {
             quads.push(new GlyphQuad(p + en.left * opts.size, baseline - en.top * opts.size, p + en.right * opts.size,
               baseline - en.bottom * opts.size, en.u0, en.v0, en.u1, en.v1));
@@ -242,6 +242,6 @@ pub fn layoutText(font &Font, atlas &mut Atlas, text &Array[u8], opts &LayoutOpt
     lines.push(new LineInfo(baseline, x0, lw, u32.from(firstGlyph), u32.from(glyphs.len() - firstGlyph)));
     li = li + 1usize;
   }
-  imm height = ascent - descent + f32.from(starts.len() - 1usize) * lineAdvance;
+  let height = ascent - descent + f32.from(starts.len() - 1usize) * lineAdvance;
   new TextLayout(glyphs, quads, lines, blockWidth, height, lineAdvance, opts.size);
 }

@@ -24,16 +24,16 @@ fn reasonText(r CloseReason) &str {
 }
 
 fn describe(e &NetEvent) String {
-  mut s = String.empty();
+  var s = String.empty();
   match e {
-    case imm j &Joined { s.append("J"); s.appendUInt(u64.from(j.id)); }
-    case imm l &Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
-    case imm r &Refused { s.append("R"); s.appendUInt(u64.from(r.id)); }
-    case imm m &Message {
+    case let j &Joined { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case let l &Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+    case let r &Refused { s.append("R"); s.appendUInt(u64.from(r.id)); }
+    case let m &Message {
       s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
       s.append(String.fromBytes(m.data.view()).view());
     }
-    case imm u &Update {
+    case let u &Update {
       s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
       s.append(":"); s.append(String.fromBytes(u.data.view()).view());
     }
@@ -42,13 +42,13 @@ fn describe(e &NetEvent) String {
 }
 
 fn bytes(s &str) List[u8] {
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   putBytes(&mut b, s);
   b;
 }
 
 fn has(xs &List[String], t &str) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < xs.len() {
     if xs[i].view() == t {return true;}
     i = i + 1usize;
@@ -60,26 +60,26 @@ fn has(xs &List[String], t &str) bool {
 // readable by an actor, with 'await'
 actor Prober {
   pub async do ask(self, c Connection, out Sender[ConnectionStats]) {
-    imm s = await c.stats();
+    let s = await c.stats();
     out.send(s);
   }
 }
 
 fn numbered(n u64) List[u8] {
-  mut s = String.empty();
+  var s = String.empty();
   s.appendUInt(n);
   bytes(s.view());
 }
 
 // Take events until 'n' have come or 5 s pass; Joined's connection is kept
 fn take(rx &mut Receiver[NetEvent], n usize, texts &mut List[String], conn &mut List[Connection]) {
-  imm until = Instant.now() + Duration.fromSeconds(5i64);
+  let until = Instant.now() + Duration.fromSeconds(5i64);
   while texts.len() < n and Instant.now() < until {
     match rx.recvTimeout(Duration.fromMillis(200i64)) {
-      case imm e Some {
+      case let e Some {
         texts.push(describe(&e));
         match e {
-          case imm j Joined { conn.push(j.conn); }
+          case let j Joined { conn.push(j.conn); }
           else {}
         }
       }
@@ -89,22 +89,22 @@ fn take(rx &mut Receiver[NetEvent], n usize, texts &mut List[String], conn &mut 
 }
 
 fn main() i32 {
-  mut txS Sender[NetEvent];
-  mut rxS Receiver[NetEvent];
+  var txS Sender[NetEvent];
+  var rxS Receiver[NetEvent];
   txS, rxS = Channel[NetEvent].make();
-  mut txC Sender[NetEvent];
-  mut rxC Receiver[NetEvent];
+  var txC Sender[NetEvent];
+  var rxC Receiver[NetEvent];
   txC, rxC = Channel[NetEvent].make();
   {
-    imm cfg = NetConfig.defaults();
-    imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let cfg = NetConfig.defaults();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
     expect(server.port != 0u16, "the server has a port");
-    imm client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
 
-    mut hs = List[String].empty();
-    mut hc = List[String].empty();
-    mut cs = List[Connection].empty();
-    mut cc = List[Connection].empty();
+    var hs = List[String].empty();
+    var hc = List[String].empty();
+    var cs = List[Connection].empty();
+    var cc = List[Connection].empty();
     take(&mut rxS, 1usize, &mut hs, &mut cs);
     take(&mut rxC, 1usize, &mut hc, &mut cc);
     expectStr(hs[0usize].view(), "J1", "the server has a client");
@@ -112,7 +112,7 @@ fn main() i32 {
     require(cs.len() == 1usize and cc.len() == 1usize, "both have a connection to send through");
 
     // Reliable messages and values, both ways
-    mut i = 0u64;
+    var i = 0u64;
     while i < 50u64 {
       cc[0usize].sendReliable(numbered(i));
       cs[0usize].sendReliable(numbered(1000u64 + i));
@@ -124,13 +124,13 @@ fn main() i32 {
     take(&mut rxC, 52usize, &mut hc, &mut cc);
     expectUInt(u64.from(hs.len()), 52u64, "the server heard 50 messages and a value");
     expectUInt(u64.from(hc.len()), 52u64, "so did the client");
-    mut inOrder = true;
-    mut n = 0u64;
+    var inOrder = true;
+    var n = 0u64;
     i = 0u64;
     while i < 51u64 {
-      imm t = hs[usize.from(1u64 + i)].view();
+      let t = hs[usize.from(1u64 + i)].view();
       if t.startsWith("M1:") {
-        mut want = String.from("M1:");
+        var want = String.from("M1:");
         want.appendUInt(n);
         if t != want.view() {inOrder = false;}
         n = n + 1u64;
@@ -143,13 +143,13 @@ fn main() i32 {
     expect(has(&hc, "U1:6:snap"), "and the client's");
 
     // An actor asks the client's connection how it is doing
-    mut txP Sender[ConnectionStats];
-    mut rxP Receiver[ConnectionStats];
+    var txP Sender[ConnectionStats];
+    var rxP Receiver[ConnectionStats];
     txP, rxP = Channel[ConnectionStats].make();
-    imm prober = new Prober();
+    let prober = new Prober();
     prober.ask(*cc[0usize], txP);
     match rxP.recvTimeout(Duration.fromSeconds(5i64)) {
-      case imm st Some {
+      case let st Some {
         expect(st.packetsReceived > 0u64, "the stats say packets arrived");
         expect(st.packetsSent > 0u64, "and were sent");
         expect(st.rttMs >= 0i64 and st.rttMs < 500i64, "the round trip is measured, and short on loopback");

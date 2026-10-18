@@ -32,20 +32,20 @@ fn line(label &str, n usize) {
 }
 
 // The newest object 'Kept' allocated, as an address; 0 for none
-mut @threadlocal keptHead = 0usize;
+var @threadlocal keptHead = 0usize;
 
 struct Kept is RegionRef {
   pub next usize;      // the object allocated before this one
   pub ty *TypeRecord;  // what 'alloc' was handed
 
   fn alloc(size usize, ty *TypeRecord) *u8 {
-    imm rec = ty as &TypeRecord;
+    let rec = ty as &TypeRecord;
     printStr("kept alloc "); printInt(i64.from(size));
     printStr(": value "); printInt(i64.from(rec.size));
     printStr(", align "); printInt(i64.from(rec.align));
     printStr(", flags "); printInt(i64.from(rec.flags));
     printStr("\n");
-    imm p = malloc(size);
+    let p = malloc(size);
     mem.writeRaw(p as *Kept, new Kept(keptHead, ty));
     keptHead = p as usize;
     p;
@@ -58,12 +58,12 @@ struct Kept is RegionRef {
 // {region, permission, value} layout, whose permission takes no room).
 fn sweep() {
   while keptHead != 0usize {
-    imm hdr = keptHead as &Kept;
+    let hdr = keptHead as &Kept;
     keptHead = hdr.next;
-    imm rec = hdr.ty as &TypeRecord;
-    imm align = rec.align;
-    imm at = (hdr as usize + mem.sizeof[Kept]() + align - 1usize) & (0usize - align);
-    imm fin = rec.finalize;
+    let rec = hdr.ty as &TypeRecord;
+    let align = rec.align;
+    let at = (hdr as usize + mem.sizeof[Kept]() + align - 1usize) & (0usize - align);
+    let fin = rec.finalize;
     fin(at as *u8);
     libc.free(hdr as *u8);
   }
@@ -93,19 +93,19 @@ struct Wide {
 
 fn main() {
   printStr("-- allocate\n");
-  imm a = new Kept[mut, Fin](1i32);
-  imm b = new Kept[mut, Plain](2, 3u8);
-  imm c = new Kept[mut, Holder](4i32, new Uni[Fin](5i32));
-  imm d = new Kept[mut, i32](6);
-  imm e = new Kept[mut, Wide]([7u64, 8u64, 9u64, 10u64]);
+  let a = new Kept[mut, Fin](1i32);
+  let b = new Kept[mut, Plain](2, 3u8);
+  let c = new Kept[mut, Holder](4i32, new Uni[Fin](5i32));
+  let d = new Kept[mut, i32](6);
+  let e = new Kept[mut, Wide]([7u64, 8u64, 9u64, 10u64]);
   line("read back ", usize.from(a.v) + usize.from(b.b) + usize.from(c.inner.v) + usize.from(*d) + usize.from(e.a[3]));
   // The same record in this object as 'mem.typeRecord' gives
   if (keptHead as &Kept).ty == mem.typeRecord[Wide]() { printStr("same record\n"); }
 
   printStr("-- Rc and Uni, unchanged\n");
   {
-    imm r = new Rc[mut, Fin](11i32);
-    imm s = new Uni[Fin](12i32);
+    let r = new Rc[mut, Fin](11i32);
+    let s = new Uni[Fin](12i32);
   }
 
   printStr("-- sweep\n");

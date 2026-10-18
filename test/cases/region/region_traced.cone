@@ -36,8 +36,8 @@ fn line(label &str, n i64) {
 }
 
 // Each object's id, from 1, and the newest object, as an address
-mut @threadlocal nextId = 1i64;
-mut @threadlocal trHead = 0usize;
+var @threadlocal nextId = 1i64;
+var @threadlocal trHead = 0usize;
 
 struct Tr is RegionRef, Traced {
   pub id i64;
@@ -45,7 +45,7 @@ struct Tr is RegionRef, Traced {
   pub ty *TypeRecord;
 
   fn alloc(size usize, ty *TypeRecord) *u8 {
-    imm p = malloc(size);
+    let p = malloc(size);
     mem.writeRaw(p as *Tr, new Tr(nextId, trHead, ty));
     nextId = nextId + 1;
     trHead = p as usize;
@@ -63,7 +63,7 @@ struct Tr is RegionRef, Traced {
 struct Tr0 is RegionRef, Traced {
   pub id i64;
   fn alloc(size usize) *u8 {
-    imm p = malloc(size);
+    let p = malloc(size);
     mem.writeRaw(p as *Tr0, new Tr0(nextId + 100));
     nextId = nextId + 1;
     p;
@@ -76,14 +76,14 @@ struct Tr0 is RegionRef, Traced {
 // Every object 'Tr' holds, newest first: its record's trace, on the value
 // after its header, with mode 9
 fn traceAll() {
-  mut at = trHead;
+  var at = trHead;
   while at != 0usize {
-    imm hdr = at as &Tr;
-    imm rec = hdr.ty as &TypeRecord;
-    imm align = rec.align;
-    imm val = (at + mem.sizeof[Tr]() + align - 1usize) & (0usize - align);
+    let hdr = at as &Tr;
+    let rec = hdr.ty as &TypeRecord;
+    let align = rec.align;
+    let val = (at + mem.sizeof[Tr]() + align - 1usize) & (0usize - align);
     printStr("object "); printInt(hdr.id); printStr(" flags "); printInt(i64.from(rec.flags)); printStr(":");
-    imm tracefn = rec.trace;
+    let tracefn = rec.trace;
     tracefn(val as *u8, 9u32);
     printStr("\n");
     at = hdr.next;
@@ -163,41 +163,41 @@ fn main() {
   holds[Mixed]("Mixed");
 
   printStr("-- trace, in line\n");
-  mut l1 = new Tr[mut, Leaf](1i32);
-  mut l2 = new Tr[imm, Leaf](2i32);
-  mut pr = new Pair(l1, l2);
+  var l1 = new Tr[mut, Leaf](1i32);
+  var l2 = new Tr[imm, Leaf](2i32);
+  var pr = new Pair(l1, l2);
   traceLocal[Pair]("Pair", &mut pr, 5u32);
-  mut ou = new Outer(3i32, new Pair(new Tr[mut, Leaf](3i32), l2), (7i64, new Tr[mut, Leaf](4i32)), 1.5);
+  var ou = new Outer(3i32, new Pair(new Tr[mut, Leaf](3i32), l2), (7i64, new Tr[mut, Leaf](4i32)), 1.5);
   traceLocal[Outer]("Outer", &mut ou, 6u32);
-  mut rw = new Row([l1, new Tr[mut, Leaf](5i32), l1], [pr, new Pair(l1, new Tr[imm, Leaf](6i32))]);
+  var rw = new Row([l1, new Tr[mut, Leaf](5i32), l1], [pr, new Pair(l1, new Tr[imm, Leaf](6i32))]);
   traceLocal[Row]("Row", &mut rw, 7u32);
-  mut m1 Maybe = Maybe.Has(l1, 3);
+  var m1 Maybe = Maybe.Has(l1, 3);
   traceLocal[Maybe]("Maybe.Has", &mut m1, 1u32);
-  mut m2 Maybe = Maybe.Not(4);
+  var m2 Maybe = Maybe.Not(4);
   traceLocal[Maybe]("Maybe.Not", &mut m2, 1u32);
-  mut m3 Maybe = Maybe.Two(l2, new Tr0[mut, Leaf](7i32));
+  var m3 Maybe = Maybe.Two(l2, new Tr0[mut, Leaf](7i32));
   traceLocal[Maybe]("Maybe.Two", &mut m3, 2u32);
-  mut o1 Option[Tr[mut, Leaf]] = Some[Tr[mut, Leaf]](new Tr[mut, Leaf](8i32));
+  var o1 Option[Tr[mut, Leaf]] = Some[Tr[mut, Leaf]](new Tr[mut, Leaf](8i32));
   traceLocal[Option[Tr[mut, Leaf]]]("Some", &mut o1, 3u32);
-  mut o2 Option[Tr[mut, Leaf]] = None;
+  var o2 Option[Tr[mut, Leaf]] = None;
   traceLocal[Option[Tr[mut, Leaf]]]("None", &mut o2, 3u32);
-  mut bx = new Box[Tr[mut, Leaf]](l1);
+  var bx = new Box[Tr[mut, Leaf]](l1);
   traceLocal[Box[Tr[mut, Leaf]]]("Box", &mut bx, 4u32);
-  mut n = 5i32;
+  var n = 5i32;
   traceLocal[i32]("i32", &mut n, 4u32);
 
   printStr("-- trace, through each object's record\n");
   // A traced allocation makes its value before it calls 'alloc', so Leaf 9
   // is object 9 and the Pair holding it object 10
 
-  imm pp = new Tr[mut, Pair](new Tr[mut, Leaf](9i32), l2);
-  imm mx = new Tr[mut, Mixed](l1, new Rc[mut, Fin](10i32), new Uni[Fin](11i32));
+  let pp = new Tr[mut, Pair](new Tr[mut, Leaf](9i32), l2);
+  let mx = new Tr[mut, Mixed](l1, new Rc[mut, Fin](10i32), new Uni[Fin](11i32));
   line("read back ", i64.from(pp.left.n) + i64.from(mx.g.n) + i64.from(mx.r.v) + i64.from(mx.s.v));
   traceAll();
 
   printStr("-- the record's finalizer releases what Mixed owns\n");
-  imm mxrec = mem.typeRecord[Mixed]() as &TypeRecord;
-  imm fin = mxrec.finalize;
+  let mxrec = mem.typeRecord[Mixed]() as &TypeRecord;
+  let fin = mxrec.finalize;
   fin(&*mx as *u8);
   printStr("done\n");
 }

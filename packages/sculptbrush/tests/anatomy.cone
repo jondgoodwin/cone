@@ -19,67 +19,67 @@ import skinmesh use *;
 import sculptbrush use *;
 
 fn bar(r f32) PolyMesh {
-  mut g = SkinGraph.empty();
-  imm a = g.addNode(new Vec3(0., 0., 0.), r, r);
+  var g = SkinGraph.empty();
+  let a = g.addNode(new Vec3(0., 0., 0.), r, r);
   g.setRoot(a);
-  imm b = g.grow(a, new Vec3(0., 1., 0.), r, r);
+  let b = g.grow(a, new Vec3(0., 1., 0.), r, r);
   g.grow(b, new Vec3(0., 2., 0.), r, r);
-  imm s = skinStandard(&g);
-  imm f = subdivideSkin(&s, 2u32);
+  let s = skinStandard(&g);
+  let f = subdivideSkin(&s, 2u32);
   smooth(&f.mesh, 0., 0u32);
 }
 
 fn lateral(p Vec3) f32 { (p.x * p.x + p.z * p.z).sqrt(); }
 
 fn main() i32 {
-  imm thin = bar(0.1);
-  imm thick = bar(0.2);
-  imm h1 = anatomyHit(&thin, 0., 0.5, 0.3);
+  let thin = bar(0.1);
+  let thick = bar(0.2);
+  let h1 = anatomyHit(&thin, 0., 0.5, 0.3);
   expect(h1.exact, "anatomy: a place on the limb is found on a face");
   expectFloat(f64.from(h1.point.y), 1., 0.08d, "anatomy: along 0.5 of a bar 2 long is at about y = 1");
   expect(lateral(h1.point) > 0.07 and lateral(h1.point) < 0.14, "anatomy: on the surface, about the radius from the axis");
-  imm h2 = anatomyHit(&thick, 0., 0.5, 0.3);
+  let h2 = anatomyHit(&thick, 0., 0.5, 0.3);
   expectFloat(f64.from(h2.point.y), f64.from(h1.point.y), 0.001d, "anatomy: the same height on a thicker bar");
   expectFloat(f64.from(lateral(h2.point) / lateral(h1.point)), 2., 0.05d, "anatomy: twice the distance from the axis on a bar twice as thick");
   // Moving along moves along
-  imm hA = anatomyPoint(&thin, 0., 0.25, 0.3);
-  imm hB = anatomyPoint(&thin, 0., 0.75, 0.3);
+  let hA = anatomyPoint(&thin, 0., 0.25, 0.3);
+  let hB = anatomyPoint(&thin, 0., 0.75, 0.3);
   expect(hB.y - hA.y > 0.8 and hB.y - hA.y < 1.2, "anatomy: along 0.25 to 0.75 is half the bar's length");
   // A different side
-  imm hC = anatomyPoint(&thin, 0., 0.5, 0.45);
+  let hC = anatomyPoint(&thin, 0., 0.5, 0.45);
   expect((hC - h1.point).length() > 0.03, "anatomy: another 'around' is another place");
   // A place no face encloses still gets a point on the limb
-  imm hZ = anatomyHit(&thin, 0., 0.5, 5.0);
+  let hZ = anatomyHit(&thin, 0., 0.5, 5.0);
   expect(lateral(hZ.point) > 0.05 and lateral(hZ.point) < 0.15, "anatomy: a place off the numbers' range gives the nearest vertex, on the surface");
   // A limb that is not there: the origin
-  imm none = anatomyHit(&thin, 7., 0.5, 0.3);
+  let none = anatomyHit(&thin, 7., 0.5, 0.3);
   expect(!none.exact and none.face == NoIndex, "anatomy: no such limb is not exact");
   // A stroke in anatomy coordinates: a run along the side lands on the surface and a stroke made from it works
-  imm places = alongPlaces(0., 0.2, 0.8, 0.3, 6u32);
-  imm path = anatomyPath(&thin, &places);
+  let places = alongPlaces(0., 0.2, 0.8, 0.3, 6u32);
+  let path = anatomyPath(&thin, &places);
   expectInt(i64.from(path.len()), 7i64, "anatomy: n + 1 points along a run");
-  mut onSurface = true;
-  mut i = 0usize;
+  var onSurface = true;
+  var i = 0usize;
   while i < path.len() {
-    imm l = lateral(*path[i]);
+    let l = lateral(*path[i]);
     if l < 0.07 or l > 0.14 { onSurface = false; }
     i = i + 1usize;
   }
   expect(onSurface, "anatomy: every point of the run is on the surface");
-  imm st = Stroke.make(Brush.of(BrushInflate), anatomyPath(&thin, &places), 0.1, 1.);
-  imm q = sculptStroke(&thin, &st);
-  mut moved = 0;
-  mut v = 0usize;
+  let st = Stroke.make(Brush.of(BrushInflate), anatomyPath(&thin, &places), 0.1, 1.);
+  let q = sculptStroke(&thin, &st);
+  var moved = 0;
+  var v = 0usize;
   while v < thin.positions.len() {
     if (*q.positions[v] - *thin.positions[v]).lengthSquared() > 0. { moved = moved + 1; }
     v = v + 1usize;
   }
   expect(moved > 10, "anatomy: the stroke from the run changes the mesh");
   // The same recipe on the thick bar acts at the same relative place
-  imm path2 = anatomyPath(&thick, &places);
+  let path2 = anatomyPath(&thick, &places);
   expectFloat(f64.from((*path2[3usize]).y), f64.from((*path[3usize]).y), 0.001d, "anatomy: the run is at the same heights on the thicker bar");
   // aroundPlaces
-  imm ring = aroundPlaces(0., 0.5, 0.1, 0.4, 3u32);
+  let ring = aroundPlaces(0., 0.5, 0.1, 0.4, 3u32);
   expectInt(i64.from(ring.len()), 4i64, "anatomy: a run round is n + 1 places");
   expectFloat(f64.from((*ring[3usize]).z), 0.4, 0.00001d, "anatomy: ending at the last 'around'");
   done();

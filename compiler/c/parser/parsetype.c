@@ -28,36 +28,62 @@ INode *parsePerm() {
     return unknownType;
 }
 
-// Parse the permission a declaration carries, defaulting to 'defperm' when the
+// Parse the word a declaration begins with, 'let' or 'var', and return the
+// permission it stands for: 'let' is 'imm' and 'var' is 'mut'. Unknown when the
 // source writes none.
 //
 // A declaration names one storage location that only it owns, so the aliasing
 // distinctions the reference permissions draw have nothing to say about it --
 // MayAlias is read only off a reference type's permission, and MayAliasWrite is
-// read nowhere. What is left to choose is whether the value may change, and
-// 'mut' and 'imm' are the two that say it.
+// read nowhere. What is left to choose is whether the name may be given a new
+// value, and 'let' and 'var' are the two that say it.
 //
-// The defaults differ, and deliberately: a variable defaults to 'imm', so
-// mutation is opted into, while a field defaults to 'mut', which per
+// 'imm' and 'mut' are the permissions of a reference, never the word of a
+// declaration. One written here is reported with the word to write instead, and
+// read as that word so that the rest of the declaration parses and checks as it
+// was meant. Any other permission declares nothing and is reported as such.
+INode *parseDclWord() {
+    if (lexIsToken(LetToken) || lexIsToken(VarToken)) {
+        INode *perm = newPermUseNode(lexIsToken(LetToken) ? immPerm : mutPerm);
+        lexNextToken();
+        return perm;
+    }
+    if (!lexIsToken(PermToken))
+        return unknownType;
+    INode *perm = parsePerm();
+    INode *permdcl = itypeGetTypeDcl(perm);
+    if (permdcl == (INode*)immPerm || permdcl == (INode*)mutPerm)
+        errorMsgNode(perm, ErrorDclWord,
+            "A declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value); 'imm' and 'mut' are permissions, written on references. Write '%s' here.",
+            permdcl == (INode*)immPerm ? "let" : "var");
+    else
+        errorMsgNode(perm, ErrorInvType,
+            "A declaration starts with 'let' or 'var'; '%s' is a permission, written on references",
+            &inodeGetName(permdcl)->namestr);
+    return perm;
+}
+
+// Parse the word a declaration carries, defaulting to 'defperm' when the source
+// writes none.
+//
+// The defaults differ, and deliberately: a variable defaults to 'let', so
+// mutation is opted into, while a field defaults to 'var', which per
 // doc/manual/guide-structs.html means the container's permission governs.
 //
 // workitems/permissions.md records what is not settled here, including that a
 // global needs a third answer this vocabulary cannot give.
 INode *parseDclPerm(PermNode *defperm) {
-    INode *perm = parsePerm();
+    INode *perm = parseDclWord();
     if (perm->tag == UnknownTag)
         perm = (INode*)defperm;
-    INode *permdcl = itypeGetTypeDcl(perm);
-    if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
-        errorMsgNode(perm, ErrorInvType, "A declaration's permission must be 'mut' or 'imm'");
     return perm;
 }
 
 // '@threadlocal' and '@workgroup' are written after a module global's
-// permission. With '@threadlocal' every thread has its own copy of the global,
+// let or var. With '@threadlocal' every thread has its own copy of the global,
 // each starting from its initial value; with '@workgroup', on a GPU, every
 // workgroup has its own, which its invocations share. Each is read wherever a
-// declaration's permission is, so that written on a local, a static, a
+// declaration's let or var is, so that written on a local, a static, a
 // parameter, a field or a module trait's global it is refused by its own
 // diagnostic, and the declaration after it still parses. A global has one
 // kind of storage, so the two together are refused.
@@ -67,7 +93,7 @@ uint16_t parseStorageAttr(int allowed) {
         if (lexIsToken(ThreadLocalToken)) {
             if (!allowed)
                 errorMsgLex(ErrorThreadLocalPlace,
-                    "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'mut @threadlocal name'.");
+                    "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'var @threadlocal name'.");
             else if (facts & DclWorkgroup)
                 errorMsgLex(ErrorWorkgroupPlace,
                     "A global is '@threadlocal' or '@workgroup', not both: one is a copy for each thread, the other a copy for each workgroup of a GPU's invocations.");
@@ -76,7 +102,7 @@ uint16_t parseStorageAttr(int allowed) {
         else {
             if (!allowed)
                 errorMsgLex(ErrorWorkgroupPlace,
-                    "Only a global declared at module scope may be '@workgroup', which gives it one copy for each workgroup of a GPU's invocations: 'mut @workgroup name'.");
+                    "Only a global declared at module scope may be '@workgroup', which gives it one copy for each workgroup of a GPU's invocations: 'var @workgroup name'.");
             else if (facts & DclThreadLocal)
                 errorMsgLex(ErrorWorkgroupPlace,
                     "A global is '@threadlocal' or '@workgroup', not both: one is a copy for each thread, the other a copy for each workgroup of a GPU's invocations.");
@@ -95,8 +121,13 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     INode *perm = parseDclPerm(defperm);
     uint16_t storage = parseStorageAttr(flags & ParseMayThreadLocal);
 
-    // Obtain variable's name
-    if (!lexIsToken(IdentToken)) {
+    // Obtain variable's name. 'let' and 'var' begin a declaration, so neither can
+    // name one; the word is reported and read as the name, so that the rest of
+    // the declaration parses as written instead of cascading.
+    if (lexIsToken(LetToken) || lexIsToken(VarToken))
+        errorMsgLex(ErrorNoIdent, "'%s' begins a declaration, so it cannot name a variable. Rename it.",
+            &lex->val.ident->namestr);
+    else if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
         parse->bodyp = parse->bodyendp = parse->nameendp = NULL;
         parse->typed = 0;
@@ -110,20 +141,20 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         // A copy per thread of a value no thread can change is one copy
         if (itypeGetTypeDcl(perm) == (INode*)immPerm)
             errorMsgNode((INode*)varnode, ErrorThreadLocalImm,
-                "A thread-local global is a copy per thread so that each thread may change its own. An 'imm' global never changes, so every copy would be the same: declare it 'mut', or drop '@threadlocal'.");
+                "A thread-local global is a copy per thread so that each thread may change its own. A 'let' global never changes, so every copy would be the same: declare it 'var', or drop '@threadlocal'.");
     }
     if (storage & DclWorkgroup) {
         varnode->dclinfo.facts |= DclWorkgroup;
         // Nothing writes a value into a workgroup's copy but its invocations
         if (itypeGetTypeDcl(perm) == (INode*)immPerm)
             errorMsgNode((INode*)varnode, ErrorWorkgroupImm,
-                "A '@workgroup' global is a copy for each workgroup, there for its invocations to write and read: declare it 'mut'. An 'imm' one would never hold a value.");
+                "A '@workgroup' global is a copy for each workgroup, there for its invocations to write and read: declare it 'var'. A 'let' one would never hold a value.");
     }
     char *nameendp = lex->prevend;
 
     // Get value type, if provided
     char *typep = lex->tokp;
-    // A local may be bound by a pattern a function runs, 'imm rest using prefix("GET ") = line': the
+    // A local may be bound by a pattern a function runs, 'let rest using prefix("GET ") = line': the
     // call stands where the type does, and becomes the value once the matched value after '=' is known
     FnCallNode *usingcall = NULL;
     parse->usingdcl = 0;
@@ -160,7 +191,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     if (usingcall) {
         if (varnode->value == NULL)
             errorMsgNode((INode*)usingcall, ErrorUsingForm,
-                "A binding by 'using' names the value to match after the call: 'imm rest using prefix(\"GET \") = line else {...};'.");
+                "A binding by 'using' names the value to match after the call: 'let rest using prefix(\"GET \") = line else {...};'.");
         else {
             parseUsingMatchee(usingcall, varnode->value);
             varnode->value = (INode*)usingcall;
@@ -1051,7 +1082,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             uint16_t pubflag = parsePub();
             char *mkw = lex->tokp;
             uint16_t staticflag = parseStatic();
-            if (staticflag && (lexIsToken(PermToken) || lexIsToken(IdentToken))) {
+            if (staticflag && (lexIsDclStart() || lexIsToken(IdentToken))) {
                 // One copy shared by every value of the type: a variable in the
                 // type's namespace, reached as Type.name from outside and by its
                 // bare name from the type's own functions and methods. It is not
@@ -1194,8 +1225,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     parseFoldClause(parse, FoldRecover);
                 parseEndOfStatement();
             }
-            else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                int hadperm = lexIsToken(PermToken);
+            else if (lexIsDclStart() || lexIsToken(IdentToken)) {
+                int hadperm = lexIsDclStart();
                 INode *perm = parseDclPerm(mutPerm);
                 parseStorageAttr(0);
                 if (!lexIsToken(IdentToken)) {
@@ -1523,9 +1554,9 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     if (lexIsToken(LParenToken)) {
         lexNextToken();
         parse->inlist = 1;
-        while (lexIsToken(PermToken) || lexIsToken(IdentToken) || (reftype && parseIsTypeStart())) {
+        while (lexIsDclStart() || lexIsToken(IdentToken) || (reftype && parseIsTypeStart())) {
             VarDclNode *parm;
-            if (reftype && !lexIsToken(PermToken) && (!lexIsToken(IdentToken) || lexIdentOpensType())) {
+            if (reftype && !lexIsDclStart() && (!lexIsToken(IdentToken) || lexIdentOpensType())) {
                 // An unnamed parameter: its type alone
                 parm = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
                 parm->vtype = parseType(parse);

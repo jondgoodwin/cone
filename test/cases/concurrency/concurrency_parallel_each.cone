@@ -17,7 +17,7 @@
 //     times the others
 //   - 'continue' skips the rest of a pass; a pass's own locals, and a loop with
 //     its own 'break' inside the body, are the pass's
-//   - outside variables read in the body: a parameter, a 'mut' variable no pass
+//   - outside variables read in the body: a parameter, a 'var' variable no pass
 //     writes, a field through a reference, a global
 //   - a parallel each inside a parallel each's body
 //   - 'parallel' as a name: a variable, a function and a field are all usable,
@@ -36,8 +36,8 @@ import actors;
 // ---- a plain loop's function: the reference every case compares to ----
 
 fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
@@ -57,7 +57,7 @@ fn report(name &str, ok bool) {
 // ---- number ranges ----
 
 fn plainRange(n usize) u64 {
-  mut total = 0u64;
+  var total = 0u64;
   each i in 0usize ..< n {
     total = total + weigh(u64.from(i));
   }
@@ -65,7 +65,7 @@ fn plainRange(n usize) u64 {
 }
 
 fn parRange(n usize) u64 {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< n {
     total.add(weigh(u64.from(i)));
   }
@@ -73,7 +73,7 @@ fn parRange(n usize) u64 {
 }
 
 fn plainInclusive(lo usize, hi usize) u64 {
-  mut total = 0u64;
+  var total = 0u64;
   each i in lo .. hi {
     total = total + weigh(u64.from(i));
   }
@@ -81,7 +81,7 @@ fn plainInclusive(lo usize, hi usize) u64 {
 }
 
 fn parInclusive(lo usize, hi usize) u64 {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in lo .. hi {
     total.add(weigh(u64.from(i)));
   }
@@ -90,7 +90,7 @@ fn parInclusive(lo usize, hi usize) u64 {
 
 // How many passes a parallel range makes
 fn parCount(lo usize, hi usize, inclusive bool) u64 {
-  imm n = Atomic[u64].of(0u64);
+  let n = Atomic[u64].of(0u64);
   if inclusive {
     parallel each i in lo .. hi {
       n.add(1u64);
@@ -105,11 +105,11 @@ fn parCount(lo usize, hi usize, inclusive bool) u64 {
 
 fn signedRange() bool {
   // -20 .. 29, 50 numbers: the sum of 3 * i - 7, which is negative for some
-  imm par = Atomic[i64].of(0i64);
+  let par = Atomic[i64].of(0i64);
   parallel each i in -20i64 ..< 30i64 {
     par.add(i * 3i64 - 7i64);
   }
-  mut plain = 0i64;
+  var plain = 0i64;
   each i in -20i64 ..< 30i64 {
     plain = plain + (i * 3i64 - 7i64);
   }
@@ -118,7 +118,7 @@ fn signedRange() bool {
 
 fn defaultTypedRange() bool {
   // The untyped literals take i32, as an ordinary range's do
-  imm par = Atomic[i64].of(0i64);
+  let par = Atomic[i64].of(0i64);
   parallel each i in 1 .. 100 {
     par.add(i64.from(i));
   }
@@ -127,8 +127,8 @@ fn defaultTypedRange() bool {
 
 fn rangeToTheMaximum() bool {
   // 250 ..= 255 is six numbers, the last the type's maximum: no wrapping past it
-  imm count = Atomic[u64].of(0u64);
-  imm sum = Atomic[u64].of(0u64);
+  let count = Atomic[u64].of(0u64);
+  let sum = Atomic[u64].of(0u64);
   parallel each i in 250u8 .. 255u8 {
     count.add(1u64);
     sum.add(u64.from(i));
@@ -139,7 +139,7 @@ fn rangeToTheMaximum() bool {
 // ---- arrays, slices, lists ----
 
 fn plainSlice(s &Array[u64]) u64 {
-  mut total = 0u64;
+  var total = 0u64;
   each x in s {
     total = total + weigh(*x);
   }
@@ -147,7 +147,7 @@ fn plainSlice(s &Array[u64]) u64 {
 }
 
 fn parSlice(s &Array[u64]) u64 {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each x in s {
     total.add(weigh(*x));
   }
@@ -155,7 +155,7 @@ fn parSlice(s &Array[u64]) u64 {
 }
 
 fn parArrayRef(a &Array[u64, 8]) u64 {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each x in a {
     total.add(*x * 3u64);
   }
@@ -168,12 +168,12 @@ struct Pt {
 }
 
 fn arrays() {
-  imm a = [3u64, 4u64, 5u64, 6u64, 7u64, 8u64, 9u64, 10u64];
-  mut plain = 0u64;
+  let a = [3u64, 4u64, 5u64, 6u64, 7u64, 8u64, 9u64, 10u64];
+  var plain = 0u64;
   each x in a {
     plain = plain + weigh(*x);
   }
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each x in a {
     total.add(weigh(*x));
   }
@@ -184,7 +184,7 @@ fn arrays() {
   report("an empty part of an array", parSlice(&a[3usize..<3usize]) == 0u64);
 
   // A literal array is held for the loop
-  imm lit = Atomic[u64].of(0u64);
+  let lit = Atomic[u64].of(0u64);
   parallel each x in [100u64, 200u64, 300u64] {
     lit.add(*x);
   }
@@ -192,13 +192,13 @@ fn arrays() {
 }
 
 fn lists() {
-  mut l = new List[u64];
-  mut k = 0u64;
+  var l = new List[u64];
+  var k = 0u64;
   while k < 5000u64 {
     l.push(k * 7u64 % 1013u64);
     k = k + 1u64;
   }
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each x in l {
     total.add(weigh(*x));
   }
@@ -207,18 +207,18 @@ fn lists() {
   l.push(1u64);                      // and still ours to change
   report("and can be changed after the loop", l.len == 5001usize);
 
-  mut pts = new List[Pt];
+  var pts = new List[Pt];
   pts.push(new Pt(1u64, 2u64));
   pts.push(new Pt(10u64, 20u64));
   pts.push(new Pt(100u64, 200u64));
-  imm fields = Atomic[u64].of(0u64);
+  let fields = Atomic[u64].of(0u64);
   parallel each p in pts {
     fields.add(p.x * 1000u64 + p.y);
   }
   report("a list of structs, read through the borrow", fields.load() == 1002u64 + 10020u64 + 100200u64);
 
-  imm none = new List[u64];
-  imm passes = Atomic[u64].of(0u64);
+  let none = new List[u64];
+  let passes = Atomic[u64].of(0u64);
   parallel each x in none {
     passes.add(1u64);
   }
@@ -233,7 +233,7 @@ struct Plan {
 }
 
 fn scaled(plan &Plan, n usize) u64 {
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< n {
     total.add(u64.from(i) * plan.scale + plan.bias);       // a field through a reference
   }
@@ -243,13 +243,13 @@ fn scaled(plan &Plan, n usize) u64 {
 const offset = 1000u64;
 
 fn outsideVariables(base u64) bool {
-  mut step = 3u64;                                  // changed before the loop, read in it
+  var step = 3u64;                                  // changed before the loop, read in it
   step = step + 1u64;
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 200usize {
-    total.add(u64.from(i) * step + base + offset);  // a parameter, a mut variable, a constant
+    total.add(u64.from(i) * step + base + offset);  // a parameter, a var variable, a constant
   }
-  mut plain = 0u64;
+  var plain = 0u64;
   each i in 0usize ..< 200usize {
     plain = plain + u64.from(i) * step + base + offset;
   }
@@ -258,14 +258,14 @@ fn outsideVariables(base u64) bool {
 
 fn controlInBody() bool {
   // 'continue' skips the rest of a pass: only the even numbers are added
-  imm evens = Atomic[u64].of(0u64);
+  let evens = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     if i % 2usize == 1usize {
       continue;
     }
     evens.add(u64.from(i));
   }
-  mut plain = 0u64;
+  var plain = 0u64;
   each i in 0usize ..< 1000usize {
     if i % 2usize == 0usize {
       plain = plain + u64.from(i);
@@ -273,10 +273,10 @@ fn controlInBody() bool {
   }
 
   // The pass's own locals, its own loops, and a 'break' that leaves them
-  imm found = Atomic[u64].of(0u64);
+  let found = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 300usize {
-    mut j = 0usize;
-    mut first = 0usize;
+    var j = 0usize;
+    var first = 0usize;
     while j < 50usize {
       if (i + j) % 7usize == 0usize {
         first = j;
@@ -284,8 +284,8 @@ fn controlInBody() bool {
       }
       j = j + 1usize;
     }
-    imm row = [1u64, 2u64, 3u64];
-    mut sum = 0u64;
+    let row = [1u64, 2u64, 3u64];
+    var sum = 0u64;
     each r in row {
       if *r == 2u64 {
         continue;
@@ -294,10 +294,10 @@ fn controlInBody() bool {
     }
     found.add(u64.from(first) + sum);
   }
-  mut plainfound = 0u64;
+  var plainfound = 0u64;
   each i in 0usize ..< 300usize {
-    mut j = 0usize;
-    mut first = 0usize;
+    var j = 0usize;
+    var first = 0usize;
     while j < 50usize {
       if (i + j) % 7usize == 0usize {
         first = j;
@@ -312,13 +312,13 @@ fn controlInBody() bool {
 
 fn nested() bool {
   // 40 rows of 30 cells, each cell (r, c) worth weigh(r * 100 + c)
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each r in 0usize ..< 40usize {
     parallel each c in 0usize ..< 30usize {
       total.add(weigh(u64.from(r) * 100u64 + u64.from(c)));      // r is the outer pass's
     }
   }
-  mut plain = 0u64;
+  var plain = 0u64;
   each r in 0usize ..< 40usize {
     each c in 0usize ..< 30usize {
       plain = plain + weigh(u64.from(r) * 100u64 + u64.from(c));
@@ -338,26 +338,26 @@ struct Gauge {
 fn parallel(n u64) u64 { n + 1u64; }
 
 fn parallelAsName() bool {
-  mut parallel = 5u64;
+  var parallel = 5u64;
   parallel = parallel + 1u64;          // a statement that begins with it
   parallel += 1u64;
-  imm g = new Gauge(parallel);
-  imm total = Atomic[u64].of(0u64);
+  let g = new Gauge(parallel);
+  let total = Atomic[u64].of(0u64);
   each parallel in [1u64, 2u64, 3u64] {              // the loop's own variable
     total.add(*parallel);
   }
   parallel each x in [10u64, 20u64] {                // and a loop, with the word before it
     total.add(*x);
   }
-  imm viaFn = concurrency_parallel_each.parallel(41u64);
+  let viaFn = concurrency_parallel_each.parallel(41u64);
   parallel == 7u64 and g.read() == 7u64 and total.load() == 36u64 and viaFn == 42u64;
 }
 
 // ---- spread: which threads ran the passes ----
 
 fn bits(v u64) u64 {
-  mut n = 0u64;
-  mut x = v;
+  var n = 0u64;
+  var x = v;
   while x != 0u64 {
     n = n + (x & 1u64);
     x = x >> 1u64;
@@ -366,14 +366,14 @@ fn bits(v u64) u64 {
 }
 
 fn spread() {
-  imm ran = Atomic[u64].of(0u64);          // bit i: worker i ran a pass; bit 63: a thread that is no worker
-  imm items = Atomic[u64].of(0u64);
+  let ran = Atomic[u64].of(0u64);          // bit i: worker i ran a pass; bit 63: a thread that is no worker
+  let items = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 400usize {
-    imm w = actors.workerIndex();
-    imm bit = if w == actors.noWorker {1u64 << 63u64;} else {1u64 << u64.from(w);};
+    let w = actors.workerIndex();
+    let bit = if w == actors.noWorker {1u64 << 63u64;} else {1u64 << u64.from(w);};
     ran.bitOr(bit);
     // Hold this pass until a second thread has run one, or three seconds pass
-    mut waited = 0u64;
+    var waited = 0u64;
     while bits(ran.load()) < 2u64 and waited < 3000u64 {
       thread.sleep(time.Duration.fromMillis(1));
       waited = waited + 1u64;

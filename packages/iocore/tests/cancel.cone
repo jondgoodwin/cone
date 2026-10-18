@@ -30,7 +30,7 @@ import iocore use *;
 import diag;
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n and Instant.now() < limit {
     lp.poll(limit, out);
   }
@@ -38,23 +38,23 @@ fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
 
     // A connected pair on this loop
-    imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-    mut port = 0u16;
+    let listener = lp.mustListen(SocketAddr.localhost(0u16));
+    var port = 0u16;
     match lp.localAddr(listener) {
-      case imm a Ok {port = a.port();}
-      case imm e Error {}
+      case let a Ok {port = a.port();}
+      case let e Error {}
     }
     lp.submit(Op.Accept(listener), Target.Here(1u64));
     lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(2u64));
     waitFor(&mut lp, &mut out, 2usize);
-    mut a = Handle.none();
-    mut b = Handle.none();
-    mut k = 0usize;
+    var a = Handle.none();
+    var b = Handle.none();
+    var k = 0usize;
     while k < out.len() {
       if out[k].token == 1u64 {a = out[k].handle;} else {b = out[k].handle;}
       k = k + 1usize;
@@ -63,7 +63,7 @@ fn main() i32 {
     require(lp.isOpen(a) and lp.isOpen(b), "a connected pair");
 
     // 1. Cancelled
-    imm r1 = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(10u64));
+    let r1 = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(10u64));
     lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "a silent socket: nothing yet");
     expect(lp.cancel(r1), "cancel taken");
@@ -77,7 +77,7 @@ fn main() i32 {
     out.clear();
 
     // 2. A deadline
-    imm t0 = Instant.now();
+    let t0 = Instant.now();
     lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(20u64), t0 + Duration.fromMillis(30i64));
     waitFor(&mut lp, &mut out, 1usize);
     requireUInt(u64.from(out.len()), 1u64, "one answer");
@@ -87,7 +87,7 @@ fn main() i32 {
     out.clear();
     // In time: Done, and the deadline dies with it
     lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(21u64), Instant.now() + Duration.fromMillis(30i64));
-    mut one = pool.mustTake(1usize);
+    var one = pool.mustTake(1usize);
     one.append("x");
     lp.submit(Op.Send(b, one), Target.Here(22u64));
     waitFor(&mut lp, &mut out, 2usize);
@@ -101,15 +101,15 @@ fn main() i32 {
     expectUInt(u64.from(out.len()), 0u64, "and nothing fires at the old deadline");
 
     // 4. The race
-    mut done = 0u64;
-    mut doneBytes = 0u64;
-    mut cancelled = 0u64;
-    mut drained = 0u64;
-    mut answers = 0u64;
-    mut round = 0u32;
+    var done = 0u64;
+    var doneBytes = 0u64;
+    var cancelled = 0u64;
+    var drained = 0u64;
+    var answers = 0u64;
+    var round = 0u32;
     while round < 2000u32 {
-      imm r = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(40u64));
-      mut x = pool.mustTake(1usize);
+      let r = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(40u64));
+      var x = pool.mustTake(1usize);
       x.append("y");
       if round % 2u32 == 0u32 {
         lp.cancel(r);
@@ -119,7 +119,7 @@ fn main() i32 {
         lp.cancel(r);
       }
       waitFor(&mut lp, &mut out, 2usize);
-      mut wasCancelled = false;
+      var wasCancelled = false;
       k = 0usize;
       while k < out.len() {
         if out[k].token == 40u64 {
@@ -162,16 +162,16 @@ fn main() i32 {
     out.clear();
 
     // 5. Accept cancelled; a connection refused
-    imm acc = lp.submit(Op.Accept(listener), Target.Here(50u64));
+    let acc = lp.submit(Op.Accept(listener), Target.Here(50u64));
     lp.cancel(acc);
     waitFor(&mut lp, &mut out, 1usize);
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "an Accept cancelled");
     out.clear();
-    imm spare = lp.mustListen(SocketAddr.localhost(0u16));
-    mut deadPort = 0u16;
+    let spare = lp.mustListen(SocketAddr.localhost(0u16));
+    var deadPort = 0u16;
     match lp.localAddr(spare) {
-      case imm sa Ok {deadPort = sa.port();}
-      case imm e Error {}
+      case let sa Ok {deadPort = sa.port();}
+      case let e Error {}
     }
     lp.close(spare);
     lp.submit(Op.Connect(SocketAddr.localhost(deadPort)), Target.Here(51u64));
@@ -180,7 +180,7 @@ fn main() i32 {
     expectUInt(u64.from(out[0usize].code), u64.from(errorConnectionRefused), "...ERROR_CONNECTION_REFUSED");
     out.clear();
 
-    imm c = lp.counters();
+    let c = lp.counters();
     expectUInt(c.delivered, c.submitted, "every operation answered once");
     expectUInt(c.inFlight, 0u64, "nothing in flight");
     expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");

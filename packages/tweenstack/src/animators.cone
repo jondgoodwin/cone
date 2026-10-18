@@ -107,18 +107,18 @@ pub struct Animators {
   // ---- fields ----
 
   fn fieldIx(self &, target u32, prop u32) i64 {
-    imm key = keyOf(target, prop);
+    let key = keyOf(target, prop);
     match self.index.getCopy(&key) {
-      case imm s Some { i64.from(s); }
+      case let s Some { i64.from(s); }
       case is None[usize] { -1i64; }
     }
   }
 
   fn ensureField(self &mut, target u32, prop u32, kind u32) usize {
-    imm i = self.fieldIx(target, prop);
+    let i = self.fieldIx(target, prop);
     if i >= 0i64 { return usize.from(i); }
     self.fields.push(new Field(target, prop, kind, false, Value.rest(TK_F32), Value.rest(TK_F32), 0u32, 0u32));
-    imm k = self.fields.len() - 1usize;
+    let k = self.fields.len() - 1usize;
     self.index.insert(keyOf(target, prop), k);
     k;
   }
@@ -127,7 +127,7 @@ pub struct Animators {
   // this is its first value). A field an animator owns is overwritten by it
   // at the next evaluate.
   pub fn set(self &mut, target u32, prop u32, v Value) {
-    imm i = self.ensureField(target, prop, v.kind);
+    let i = self.ensureField(target, prop, v.kind);
     self.fields[i].kind = v.kind;
     self.fields[i].hasCur = true;
     self.fields[i].cur = v;
@@ -141,12 +141,12 @@ pub struct Animators {
 
   // Forget a target's fields (a thing that is gone); animators that owned them are stopped
   pub fn forgetTarget(self &mut, target u32) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < self.fields.len() {
       if self.fields[i].target == target {
         self.fields[i].hasCur = false;
-        imm o = self.fields[i].owner;
-        imm n = self.fields[i].newest;
+        let o = self.fields[i].owner;
+        let n = self.fields[i].newest;
         self.fields[i].owner = 0u32;
         self.fields[i].newest = 0u32;
         if o != 0u32 { self.dropIfUnheld(o); }
@@ -157,16 +157,16 @@ pub struct Animators {
   }
 
   pub fn hasValue(self &, target u32, prop u32) bool {
-    imm i = self.fieldIx(target, prop);
+    let i = self.fieldIx(target, prop);
     if i < 0i64 { return false; }
     self.fields[usize.from(i)].hasCur;
   }
 
   // The field's value as of the last evaluate (or set)
   pub fn value(self &, target u32, prop u32, fallback Value) Value {
-    imm i = self.fieldIx(target, prop);
+    let i = self.fieldIx(target, prop);
     if i < 0i64 { return fallback; }
-    imm f = self.fields[usize.from(i)];
+    let f = self.fields[usize.from(i)];
     if f.hasCur { f.cur; } else { fallback; };
   }
 
@@ -188,7 +188,7 @@ pub struct Animators {
 
   // The handle of the animator writing the field, or 0
   pub fn ownerOf(self &, target u32, prop u32) u32 {
-    imm i = self.fieldIx(target, prop);
+    let i = self.fieldIx(target, prop);
     if i < 0i64 { return 0u32; }
     self.fields[usize.from(i)].owner;
   }
@@ -196,7 +196,7 @@ pub struct Animators {
   // How fast the field's value was changing between the last two
   // evaluations (per second; zero for a quaternion)
   pub fn velocity(self &, target u32, prop u32) Value {
-    imm i = self.fieldIx(target, prop);
+    let i = self.fieldIx(target, prop);
     if i < 0i64 { return Value.rest(TK_F32); }
     self.fields[usize.from(i)].vel;
   }
@@ -204,12 +204,12 @@ pub struct Animators {
   // Write every field that has a value into a keyframetracks Sample (so
   // code that reads a Player's Sample can read these)
   pub fn writeSample(self &, out &mut Sample) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < self.fields.len() {
-      imm f = self.fields[i];
+      let f = self.fields[i];
       if f.hasCur {
-        mut v = List[f32].empty();
-        mut c = 0usize;
+        var v = List[f32].empty();
+        var c = 0usize;
         while c < kindComps(f.kind) { v.push(f.cur.get(c)); c = c + 1usize; }
         out.put(f.target, f.prop, f.kind, &v);
       }
@@ -221,7 +221,7 @@ pub struct Animators {
 
   // A live animator: waiting, running, or ended and not yet removed
   fn findRun(self &, h u32) i64 {
-    mut i = 0usize;
+    var i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].id == h and self.runs[i].status != ST_REMOVED and self.runs[i].status != ST_RETIRED {
         return i64.from(i);
@@ -233,7 +233,7 @@ pub struct Animators {
 
   // The same, an ended one that is kept included
   fn findRunAny(self &, h u32) i64 {
-    mut i = 0usize;
+    var i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].id == h and self.runs[i].status != ST_REMOVED { return i64.from(i); }
       i = i + 1usize;
@@ -250,35 +250,35 @@ pub struct Animators {
   // moment on.
   pub fn startAt(self &mut, a &Anim, at f64) u32 {
     if a.xgroup != 0u32 { self.stopGroup(a.xgroup); }
-    imm id = self.nextId;
+    let id = self.nextId;
     self.nextId = self.nextId + 1u32;
-    mut r = Running.make(id, a, at, ST_WAITING);
+    var r = Running.make(id, a, at, ST_WAITING);
     // a stepped animator (a chase) cannot be replayed from a moment it was not
     // stepped through: it starts no earlier than now
-    imm pure = nodePure(&r, &r.root, 0usize);
-    imm when = if at < self.now and !pure { self.now; } else { at; };
+    let pure = nodePure(&r, &r.root, 0usize);
+    let when = if at < self.now and !pure { self.now; } else { at; };
     r.startAt = when;
-    imm running = when <= self.now;
+    let running = when <= self.now;
     if running {
       r.status = ST_RUNNING;
       r.clock = self.now - when;
       r.prevClock = r.clock;
     }
     self.runs.push(r);
-    imm ri = self.runs.len() - 1usize;
+    let ri = self.runs.len() - 1usize;
     // this call is now the newest on each field it writes
-    mut prevs = List[u32].empty();
-    mut owners = List[u32].empty();
-    mut k = 0usize;
+    var prevs = List[u32].empty();
+    var owners = List[u32].empty();
+    var k = 0usize;
     while k < self.runs[ri].keys.len() {
-      imm key = *self.runs[ri].keys[k];
-      imm fi = self.ensureField(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64), NO_KIND);
-      imm p = self.fields[fi].newest;
+      let key = *self.runs[ri].keys[k];
+      let fi = self.ensureField(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64), NO_KIND);
+      let p = self.fields[fi].newest;
       if p != 0u32 and p != id { prevs.push(p); }
       self.fields[fi].newest = id;
       if !running {
         // a waiting animator still ends the earlier writer's turn at once
-        imm o = self.fields[fi].owner;
+        let o = self.fields[fi].owner;
         if o != 0u32 { owners.push(o); }
         self.fields[fi].owner = 0u32;
       }
@@ -302,24 +302,24 @@ pub struct Animators {
   // former owner that holds nothing now is stopped
   fn claim(self &mut, ri usize) {
     self.runs[ri].claimed = true;
-    imm id = self.runs[ri].id;
-    imm capture = !self.runs[ri].beforeSet;
+    let id = self.runs[ri].id;
+    let capture = !self.runs[ri].beforeSet;
     if capture {
       self.runs[ri].befores.clear();
       self.runs[ri].befHas.clear();
     }
-    mut olds = List[u32].empty();
-    mut k = 0usize;
+    var olds = List[u32].empty();
+    var k = 0usize;
     while k < self.runs[ri].keys.len() {
-      imm key = *self.runs[ri].keys[k];
-      imm target = u32.from(key / 4294967296u64);
-      imm prop = u32.from(key % 4294967296u64);
-      imm fi = self.ensureField(target, prop, NO_KIND);
-      mut bv = Value.rest(TK_F32);
-      mut bh = false;
+      let key = *self.runs[ri].keys[k];
+      let target = u32.from(key / 4294967296u64);
+      let prop = u32.from(key % 4294967296u64);
+      let fi = self.ensureField(target, prop, NO_KIND);
+      var bv = Value.rest(TK_F32);
+      var bh = false;
       if self.fields[fi].newest == id {
         if capture { bh = self.freshValue(target, prop, &mut bv); }
-        imm o = self.fields[fi].owner;
+        let o = self.fields[fi].owner;
         if o != 0u32 and o != id { olds.push(o); }
         self.fields[fi].owner = id;
       }
@@ -339,12 +339,12 @@ pub struct Animators {
 
   // The animator is the writer of, or the latest start on, some field
   fn holds(self &, ri usize) bool {
-    mut k = 0usize;
+    var k = 0usize;
     while k < self.runs[ri].keys.len() {
-      imm key = *self.runs[ri].keys[k];
-      imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
+      let key = *self.runs[ri].keys[k];
+      let fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
       if fi >= 0i64 {
-        imm f = self.fields[usize.from(fi)];
+        let f = self.fields[usize.from(fi)];
         if f.owner == self.runs[ri].id or f.newest == self.runs[ri].id { return true; }
       }
       k = k + 1usize;
@@ -355,13 +355,13 @@ pub struct Animators {
   // An animator every field of which a later start has taken is superseded:
   // a live one ends (END_SUPERSEDED), an ended one is simply dropped
   fn dropIfUnheld(self &mut, h u32) {
-    imm i = self.findRunAny(h);
+    let i = self.findRunAny(h);
     if i < 0i64 { return; }
-    imm k = usize.from(i);
+    let k = usize.from(i);
     if self.holds(k) { return; }
-    imm st = self.runs[k].status;
+    let st = self.runs[k].status;
     if st != ST_DONE and st != ST_RETIRED {
-      mut e = newEvent(EV_ENDED, h);
+      var e = newEvent(EV_ENDED, h);
       e.reason = END_SUPERSEDED;
       self.events.push(e);
     }
@@ -371,15 +371,15 @@ pub struct Animators {
   // Time ran back to before the animator started: it is waiting again, and
   // the fields it had taken hold what they held before
   fn revert(self &mut, ri usize) {
-    imm id = self.runs[ri].id;
-    mut k = 0usize;
+    let id = self.runs[ri].id;
+    var k = 0usize;
     while k < self.runs[ri].keys.len() {
-      imm key = *self.runs[ri].keys[k];
-      imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
+      let key = *self.runs[ri].keys[k];
+      let fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
       if fi >= 0i64 {
-        imm f = usize.from(fi);
+        let f = usize.from(fi);
         if self.fields[f].newest == id and k < self.runs[ri].befHas.len() and *self.runs[ri].befHas[k] {
-          imm v = *self.runs[ri].befores[k];
+          let v = *self.runs[ri].befores[k];
           self.fields[f].cur = v;
           self.fields[f].kind = v.kind;
           self.fields[f].hasCur = true;
@@ -388,7 +388,7 @@ pub struct Animators {
       }
       k = k + 1usize;
     }
-    mut j = 0usize;
+    var j = 0usize;
     while j < self.runs[ri].state.len() { self.runs[ri].state.set(j, 0.); j = j + 1usize; }
     self.runs[ri].status = ST_WAITING;
     self.runs[ri].claimed = false;
@@ -399,22 +399,22 @@ pub struct Animators {
 
   // The animator leaves: the fields it owned have no owner (they keep their values)
   fn release(self &mut, ri usize) {
-    imm id = self.runs[ri].id;
-    mut k = 0usize;
+    let id = self.runs[ri].id;
+    var k = 0usize;
     while k < self.runs[ri].keys.len() {
-      imm key = *self.runs[ri].keys[k];
-      imm fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
+      let key = *self.runs[ri].keys[k];
+      let fi = self.fieldIx(u32.from(key / 4294967296u64), u32.from(key % 4294967296u64));
       if fi >= 0i64 and self.fields[usize.from(fi)].owner == id { self.fields[usize.from(fi)].owner = 0u32; }
       k = k + 1usize;
     }
   }
 
   fn stopGroup(self &mut, g u32) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].root.xgroup == g and self.runs[i].status != ST_REMOVED {
         if self.runs[i].status != ST_DONE and self.runs[i].status != ST_RETIRED {
-          mut e = newEvent(EV_ENDED, self.runs[i].id);
+          var e = newEvent(EV_ENDED, self.runs[i].id);
           e.reason = END_SUPERSEDED;
           self.events.push(e);
         }
@@ -427,11 +427,11 @@ pub struct Animators {
 
   // Take it out now: it stops writing, and its fields keep what they have
   pub fn stop(self &mut, h u32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
-    imm k = usize.from(i);
+    let k = usize.from(i);
     if self.runs[k].status != ST_DONE {
-      mut e = newEvent(EV_ENDED, h);
+      var e = newEvent(EV_ENDED, h);
       e.reason = END_STOPPED;
       self.events.push(e);
     }
@@ -441,14 +441,14 @@ pub struct Animators {
   }
 
   pub fn pause(self &mut, h u32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
     self.runs[usize.from(i)].paused = true;
     true;
   }
 
   pub fn resume(self &mut, h u32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
     self.runs[usize.from(i)].paused = false;
     true;
@@ -456,7 +456,7 @@ pub struct Animators {
 
   // The rate its clock runs at (1 normal, 0.5 half speed; negative runs it backward)
   pub fn setRate(self &mut, h u32, r f32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
     self.runs[usize.from(i)].rate = r;
     true;
@@ -465,10 +465,10 @@ pub struct Animators {
   // Put its clock at t seconds from its start, raising no events. An animator
   // that has ended but not yet been removed runs again if moved to before its end
   pub fn seek(self &mut, h u32, t f64) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
-    imm k = usize.from(i);
-    imm c = if t < 0. { 0.0f64; } else { t; };
+    let k = usize.from(i);
+    let c = if t < 0. { 0.0f64; } else { t; };
     self.runs[k].clock = c;
     self.runs[k].prevClock = c;
     if self.runs[k].status == ST_DONE and !nodeFinished(self.runs[k], &self.runs[k].root,0usize, c) {
@@ -479,18 +479,18 @@ pub struct Animators {
 
   // Put its clock at t, raising the markers crossed on the way
   pub fn scrub(self &mut, h u32, t f64) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
-    imm k = usize.from(i);
-    imm c = if t < 0. { 0.0f64; } else { t; };
-    mut evs = List[AnimEvent].empty();
+    let k = usize.from(i);
+    let c = if t < 0. { 0.0f64; } else { t; };
+    var evs = List[AnimEvent].empty();
     advanceNode(&mut self.runs[k], &self.runs[k].root,0usize, self.runs[k].clock, c, false, true, &mut evs);
     self.runs[k].clock = c;
     self.runs[k].prevClock = c;
     if self.runs[k].status == ST_DONE and !nodeFinished(self.runs[k], &self.runs[k].root,0usize, c) {
       self.runs[k].status = ST_RUNNING;
     }
-    mut j = 0usize;
+    var j = 0usize;
     while j < evs.len() { self.events.push(*evs[j]); j = j + 1usize; }
     true;
   }
@@ -498,10 +498,10 @@ pub struct Animators {
   // Jump to its end: it ends now and writes its end value at the next
   // evaluate. Not for an animator that has no end
   pub fn complete(self &mut, h u32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
-    imm k = usize.from(i);
-    imm end = self.runs[k].root.lifeSpan();
+    let k = usize.from(i);
+    let end = self.runs[k].root.lifeSpan();
     if isForever(end) { return false; }
     if self.runs[k].status == ST_DONE { return true; }
     if self.runs[k].status == ST_WAITING {
@@ -513,7 +513,7 @@ pub struct Animators {
     self.runs[k].doneAt = self.now;
     self.runs[k].doneClock = end;
     self.runs[k].status = ST_DONE;
-    mut e = newEvent(EV_ENDED, h);
+    var e = newEvent(EV_ENDED, h);
     e.reason = END_FINISHED;
     self.events.push(e);
     true;
@@ -524,10 +524,10 @@ pub struct Animators {
   // spring that had settled but is not yet removed wakes. False if the
   // animator is gone.
   pub fn setGoal(self &mut, h u32, slot u32, v Value) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
-    imm k = usize.from(i);
-    imm s = usize.from(slot);
+    let k = usize.from(i);
+    let s = usize.from(slot);
     while self.runs[k].goals.len() <= s {
       self.runs[k].goals.push(Value.rest(TK_F32));
       self.runs[k].goalSeq.push(0u32);
@@ -547,7 +547,7 @@ pub struct Animators {
 
   // It has been started and has not ended
   pub fn isRunning(self &, h u32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
     self.runs[usize.from(i)].status == ST_RUNNING;
   }
@@ -555,23 +555,23 @@ pub struct Animators {
   // Its output is a function of its start moment and parameters alone (see
   // the header). False for a handle that is gone
   pub fn isPure(self &, h u32) bool {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return false; }
-    imm k = usize.from(i);
+    let k = usize.from(i);
     nodePure(self.runs[k], &self.runs[k].root,0usize);
   }
 
   // Seconds of its own time since it started
   pub fn time(self &, h u32) f64 {
-    imm i = self.findRun(h);
+    let i = self.findRun(h);
     if i < 0i64 { return 0.0f64; }
     self.runs[usize.from(i)].clock;
   }
 
   // How many animators are in the registry
   pub fn count(self &) usize {
-    mut n = 0usize;
-    mut i = 0usize;
+    var n = 0usize;
+    var i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].status != ST_REMOVED and self.runs[i].status != ST_RETIRED { n = n + 1usize; }
       i = i + 1usize;
@@ -581,8 +581,8 @@ pub struct Animators {
 
   // The events since the last call, in order
   pub fn takeEvents(self &mut) List[AnimEvent] {
-    mut out = List[AnimEvent].empty();
-    mut i = 0usize;
+    var out = List[AnimEvent].empty();
+    var i = 0usize;
     while i < self.events.len() { out.push(*self.events[i]); i = i + 1usize; }
     self.events.clear();
     out;
@@ -601,10 +601,10 @@ pub struct Animators {
   // their fields and capture what they start from, stepped parts step, and
   // markers, repeats and ends are raised. Writes no field.
   pub fn step(self &mut, now f64) {
-    imm prev = self.now;
-    imm t = now;
-    mut evs = List[AnimEvent].empty();
-    mut i = 0usize;
+    let prev = self.now;
+    let t = now;
+    var evs = List[AnimEvent].empty();
+    var i = 0usize;
     while i < self.runs.len() {
       if t < prev { self.rewind(i, prev, t); } else { advanceClock(&mut self.runs[i], prev, t, &mut evs); }
       i = i + 1usize;
@@ -625,7 +625,7 @@ pub struct Animators {
       stepRun(&mut self.runs[i], t, &mut evs);
       i = i + 1usize;
     }
-    mut j = 0usize;
+    var j = 0usize;
     while j < evs.len() { self.events.push(*evs[j]); j = j + 1usize; }
     self.compact();
   }
@@ -638,11 +638,11 @@ pub struct Animators {
   // STEPPED animator (a chase, a retargeted spring) does not run backward: its
   // clock holds, and it goes on from where it is when time next moves forward.
   fn rewind(self &mut, i usize, prev f64, t f64) {
-    imm st = self.runs[i].status;
+    let st = self.runs[i].status;
     if st == ST_WAITING or st == ST_REMOVED { return; }
     self.runs[i].prevClock = self.runs[i].clock;
     if !nodePure(self.runs[i], &self.runs[i].root, 0usize) { return; }
-    mut c = self.runs[i].clock;
+    var c = self.runs[i].clock;
     if st == ST_RUNNING {
       if self.runs[i].paused { return; }
       c = c + (t - prev) * f64.from(self.runs[i].rate);
@@ -655,7 +655,7 @@ pub struct Animators {
     }
     if c < 0. {
       // before its start: waiting again, to start at the world time its clock was 0
-      imm rt = f64.from(self.runs[i].rate);
+      let rt = f64.from(self.runs[i].rate);
       self.runs[i].startAt = if rt > 0.000001f64 { t - c / rt; } else { t; };
       self.revert(i);
       return;
@@ -665,14 +665,14 @@ pub struct Animators {
   }
 
   fn compact(self &mut) {
-    mut any = false;
-    mut i = 0usize;
+    var any = false;
+    var i = 0usize;
     while i < self.runs.len() {
       if self.runs[i].status == ST_REMOVED { any = true; }
       i = i + 1usize;
     }
     if !any { return; }
-    mut old = List[Running].empty();
+    var old = List[Running].empty();
     old <=> self.runs;
     each r in old.drain() {
       if r.status != ST_REMOVED { self.runs.push(r); }
@@ -681,17 +681,17 @@ pub struct Animators {
 
   // Capture what a node that has just begun needs from the field it animates
   fn initPass(self &mut, ri usize) {
-    mut pend = List[Pend].empty();
+    var pend = List[Pend].empty();
     findPending(self.runs[ri], &self.runs[ri].root,0usize, self.runs[ri].clock, &mut pend);
-    mut k = 0usize;
+    var k = 0usize;
     while k < pend.len() {
-      imm p = *pend[k];
-      mut cur = Value.rest(p.vkind);
-      mut vel = Value.rest(p.vkind);
-      mut has = false;
+      let p = *pend[k];
+      var cur = Value.rest(p.vkind);
+      var vel = Value.rest(p.vkind);
+      var has = false;
       if !p.hasFrom {
         has = self.freshValue(p.target, p.prop, &mut cur);
-        imm fi = self.fieldIx(p.target, p.prop);
+        let fi = self.fieldIx(p.target, p.prop);
         if fi >= 0i64 { vel = self.fields[usize.from(fi)].vel; }
       }
       applyPending(&mut self.runs[ri], &p, has, cur, vel);
@@ -701,19 +701,19 @@ pub struct Animators {
 
   // What the field has if its owner wrote it at this instant
   fn freshValue(self &, target u32, prop u32, out &mut Value) bool {
-    imm fi = self.fieldIx(target, prop);
-    mut has = false;
-    mut v = Value.rest(TK_F32);
+    let fi = self.fieldIx(target, prop);
+    var has = false;
+    var v = Value.rest(TK_F32);
     if fi < 0i64 { *out = v; return false; }
-    imm f = self.fields[usize.from(fi)];
+    let f = self.fields[usize.from(fi)];
     if f.hasCur { has = true; v = f.cur; }
     if f.owner != 0u32 {
-      imm ri = self.findRun(f.owner);
+      let ri = self.findRun(f.owner);
       if ri >= 0i64 {
-        imm r = self.runs[usize.from(ri)];
+        let r = self.runs[usize.from(ri)];
         if r.status == ST_RUNNING or r.status == ST_DONE {
-          mut em = List[Emit].empty();
-          imm fl = new Filter(true, target, prop);
+          var em = List[Emit].empty();
+          let fl = new Filter(true, target, prop);
           collectRun(r, r.status == ST_DONE, &fl, &mut em);
           if em.len() > 0usize { has = true; v = (*em[em.len() - 1usize]).value; }
         }
@@ -726,27 +726,27 @@ pub struct Animators {
   // Every animator writes the fields it owns; those that have ended write
   // their end value and leave
   pub fn evaluate(self &mut) {
-    imm dt = self.now - self.evalTime;
+    let dt = self.now - self.evalTime;
     self.evalTime = self.now;
-    mut oldHas = List[bool].empty();
-    mut oldCur = List[Value].empty();
-    mut i = 0usize;
+    var oldHas = List[bool].empty();
+    var oldCur = List[Value].empty();
+    var i = 0usize;
     while i < self.fields.len() {
       oldHas.push(self.fields[i].hasCur);
       oldCur.push(self.fields[i].cur);
       i = i + 1usize;
     }
-    imm off = new Filter(false, 0u32, 0u32);
+    let off = new Filter(false, 0u32, 0u32);
     i = 0usize;
     while i < self.runs.len() {
-      imm st = self.runs[i].status;
+      let st = self.runs[i].status;
       if st == ST_RUNNING or st == ST_DONE {
-        mut em = List[Emit].empty();
+        var em = List[Emit].empty();
         collectRun(self.runs[i], st == ST_DONE, &off, &mut em);
-        mut k = 0usize;
+        var k = 0usize;
         while k < em.len() {
-          imm e = *em[k];
-          imm fi = self.fieldIx(e.target, e.prop);
+          let e = *em[k];
+          let fi = self.fieldIx(e.target, e.prop);
           if fi >= 0i64 and self.fields[usize.from(fi)].owner == self.runs[i].id {
             self.fields[usize.from(fi)].kind = e.value.kind;
             self.fields[usize.from(fi)].hasCur = true;
@@ -758,14 +758,14 @@ pub struct Animators {
       i = i + 1usize;
     }
     if dt > 0. {
-      imm inv = 1. / f32.from(dt);
+      let inv = 1. / f32.from(dt);
       i = 0usize;
       while i < self.fields.len() {
-        mut vel = Value.rest(self.fields[i].kind);
+        var vel = Value.rest(self.fields[i].kind);
         if i < oldHas.len() and *oldHas[i] and self.fields[i].hasCur and (*oldCur[i]).kind == self.fields[i].cur.kind
             and self.fields[i].kind != TK_QUAT {
-          imm a = self.fields[i].cur;
-          imm b = *oldCur[i];
+          let a = self.fields[i].cur;
+          let b = *oldCur[i];
           vel = new Value(a.kind, (a.x - b.x) * inv, (a.y - b.y) * inv, (a.z - b.z) * inv, (a.w - b.w) * inv);
         }
         self.fields[i].vel = vel;
@@ -814,17 +814,17 @@ fn advanceClock(r &mut Running, prev f64, now f64, evs &mut List[AnimEvent]) {
   } elif r.status == ST_DONE {
     return;
   }
-  imm begin = if prev > r.startAt { prev; } else { r.startAt; };
-  imm len = now - begin;
+  let begin = if prev > r.startAt { prev; } else { r.startAt; };
+  let len = now - begin;
   if r.paused or len <= 0. { return; }
-  imm nc = r.clock + len * f64.from(r.rate);
+  let nc = r.clock + len * f64.from(r.rate);
   r.clock = if nc < 0. { 0.0f64; } else { nc; };
 }
 
 fn stepRun(r &mut Running, now f64, evs &mut List[AnimEvent]) {
   if r.status != ST_RUNNING { return; }
-  imm a = r.prevClock;
-  imm b = r.clock;
+  let a = r.prevClock;
+  let b = r.clock;
   if b != a {
     advanceNode(r, &r.root,0usize, a, b, b > a, true, evs);
     if b > a { repeatsCrossed(&r.root,a, b, evs, r.id); }
@@ -833,7 +833,7 @@ fn stepRun(r &mut Running, now f64, evs &mut List[AnimEvent]) {
     r.status = ST_DONE;
     r.doneAt = now;
     r.doneClock = r.clock;
-    mut e = newEvent(EV_ENDED, r.id);
+    var e = newEvent(EV_ENDED, r.id);
     e.reason = END_FINISHED;
     evs.push(e);
   }

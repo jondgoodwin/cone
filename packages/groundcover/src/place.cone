@@ -57,18 +57,18 @@ fn fade(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.); }
 
 // Value noise on a lattice, quintic-faded, 0 to 1
 pub fn valueNoise(x f32, z f32, seed u32) f32 {
-  imm fx = libc.floorf(x);
-  imm fz = libc.floorf(z);
-  imm ix = i32.from(fx);
-  imm iz = i32.from(fz);
-  imm u = fade(x - fx);
-  imm v = fade(z - fz);
-  imm a = toUnit(cellHash(ix, iz, seed, 0u32).x);
-  imm b = toUnit(cellHash(ix + 1i32, iz, seed, 0u32).x);
-  imm c = toUnit(cellHash(ix, iz + 1i32, seed, 0u32).x);
-  imm d = toUnit(cellHash(ix + 1i32, iz + 1i32, seed, 0u32).x);
-  imm top = a + (b - a) * u;
-  imm bottom = c + (d - c) * u;
+  let fx = libc.floorf(x);
+  let fz = libc.floorf(z);
+  let ix = i32.from(fx);
+  let iz = i32.from(fz);
+  let u = fade(x - fx);
+  let v = fade(z - fz);
+  let a = toUnit(cellHash(ix, iz, seed, 0u32).x);
+  let b = toUnit(cellHash(ix + 1i32, iz, seed, 0u32).x);
+  let c = toUnit(cellHash(ix, iz + 1i32, seed, 0u32).x);
+  let d = toUnit(cellHash(ix + 1i32, iz + 1i32, seed, 0u32).x);
+  let top = a + (b - a) * u;
+  let bottom = c + (d - c) * u;
   top + (bottom - top) * v;
 }
 
@@ -79,7 +79,7 @@ pub fn fbm2(x f32, z f32, seed u32) f32 {
 
 pub fn smoothstep(e0 f32, e1 f32, x f32) f32 {
   if e1 <= e0 { if x >= e0 { return 1.; } return 0.; }
-  imm t = fclamp((x - e0) / (e1 - e0), 0., 1.);
+  let t = fclamp((x - e0) / (e1 - e0), 0., 1.);
   t * t * (3. - 2. * t);
 }
 
@@ -97,21 +97,21 @@ pub fn typeSeed(t &CoverType, index usize) u32 { pcg(t.seed + 977u32 * u32.from(
 // The patch noise of 't' at (x, z), 0 to 1 (1 where the type has no gate)
 pub fn patchAt(t &CoverType, index usize, x f32, z f32) f32 {
   if t.patchScale <= 0. { return 1.; }
-  imm n = fbm2(x / t.patchScale, z / t.patchScale, typeSeed(t, index) + 4242u32);
+  let n = fbm2(x / t.patchScale, z / t.patchScale, typeSeed(t, index) + 4242u32);
   smoothstep(t.patchThreshold - t.patchSoftness, t.patchThreshold + t.patchSoftness, n);
 }
 
 // The score of 't' from its windows and its gate alone, no interactions
 pub fn baseScore(t &CoverType, index usize, signals &Array[f32, 8], x f32, z f32) f32 {
-  mut s = 1f32;
-  mut k = 0usize;
+  var s = 1f32;
+  var k = 0usize;
   while k < SIGNALS {
     s = s * windowValue(&t.windowOf(k), signals[k]);
     if s <= 0. { return 0.; }
     k = k + 1usize;
   }
   if t.patchScale > 0. {
-    imm p = patchAt(t, index, x, z);
+    let p = patchAt(t, index, x, z);
     s = s * (t.patchFloor + (1. - t.patchFloor) * p);
   }
   s;
@@ -120,17 +120,17 @@ pub fn baseScore(t &CoverType, index usize, signals &Array[f32, 8], x f32, z f32
 // Which types' scores a type's SHARE interactions need, transitively, as a
 // bit mask (bit i: type i), the type itself included
 pub fn needMask(types &List[CoverType], index usize) u32 {
-  mut mask = 1u32 << u32.from(index);
-  mut changed = true;
+  var mask = 1u32 << u32.from(index);
+  var changed = true;
   while changed {
     changed = false;
-    mut i = 0usize;
+    var i = 0usize;
     while i < types.len() {
       if ((mask >> u32.from(i)) & 1u32) == 1u32 {
-        imm t = types[i];
-        mut k = 0usize;
+        let t = types[i];
+        var k = 0usize;
         while k < t.interactions.len() {
-          imm ia = t.interactions[k];
+          let ia = t.interactions[k];
           if ia.kind == SHARE and ((mask >> ia.other) & 1u32) == 0u32 {
             mask = mask | (1u32 << ia.other);
             changed = true;
@@ -152,8 +152,8 @@ pub fn latticeRing(t &CoverType, ring u32) u32 { if t.kind == KIND_MESH { 0u32; 
 
 // The ring k lattice cell of a type
 pub fn ringCell(t &CoverType, ring u32) f32 {
-  mut c = t.cellSize();
-  mut k = 0u32;
+  var c = t.cellSize();
+  var k = 0u32;
   while k < latticeRing(t, ring) {
     c = c * t.ringStep;
     k = k + 1u32;
@@ -171,26 +171,26 @@ fn centreOf(t &CoverType, index usize, ring u32, cx i32, cz i32, cell f32, h &mu
 // the way at (x, z): 1 at an instance, falling to 0 at 'radius', the largest
 // of the neighbouring cells' clusters (their centres)
 pub fn nearOccupancy(types &List[CoverType], other usize, maps &GroundMaps, x f32, z f32, radius f32) f32 {
-  imm src = types[other];
-  imm cell = ringCell(src, 0u32);
-  imm reach = i32.from(libc.ceilf(radius / cell));
-  imm cx = i32.from(libc.floorf(x / cell));
-  imm cz = i32.from(libc.floorf(z / cell));
-  mut best = 0f32;
-  mut dz = 0i32 - reach;
+  let src = types[other];
+  let cell = ringCell(src, 0u32);
+  let reach = i32.from(libc.ceilf(radius / cell));
+  let cx = i32.from(libc.floorf(x / cell));
+  let cz = i32.from(libc.floorf(z / cell));
+  var best = 0f32;
+  var dz = 0i32 - reach;
   while dz <= reach {
-    mut dx = 0i32 - reach;
+    var dx = 0i32 - reach;
     while dx <= reach {
-      mut h = new UVec4(0u32, 0u32, 0u32, 0u32);
-      imm c = centreOf(src, other, 0u32, cx + dx, cz + dz, cell, &mut h);
-      imm ex = c.x - x;
-      imm ez = c.y - z;
-      imm d = (ex * ex + ez * ez).sqrt();
+      var h = new UVec4(0u32, 0u32, 0u32, 0u32);
+      let c = centreOf(src, other, 0u32, cx + dx, cz + dz, cell, &mut h);
+      let ex = c.x - x;
+      let ez = c.y - z;
+      let d = (ex * ex + ez * ez).sqrt();
       if d < radius {
-        imm sig = maps.signalsAt(c.x, c.y);
-        imm score = baseScore(src, other, &sig, c.x, c.y);
+        let sig = maps.signalsAt(c.x, c.y);
+        let score = baseScore(src, other, &sig, c.x, c.y);
         if toUnit(h.z) < fmin(1., score * src.cellFactor * src.cellFactor) {
-          imm occ = 1. - d / radius;
+          let occ = 1. - d / radius;
           if occ > best { best = occ; }
         }
       }
@@ -206,15 +206,15 @@ pub fn nearOccupancy(types &List[CoverType], other usize, maps &GroundMaps, x f3
 // full scores of the earlier types it needs (needMask), filled in as it goes.
 pub fn fullScore(types &List[CoverType], index usize, maps &GroundMaps, signals &Array[f32, 8], x f32, z f32,
     scores &mut Array[f32, 12]) f32 {
-  imm mask = needMask(types, index);
-  mut i = 0usize;
+  let mask = needMask(types, index);
+  var i = 0usize;
   while i <= index {
     if ((mask >> u32.from(i)) & 1u32) == 1u32 {
-      imm t = types[i];
-      mut s = baseScore(t, i, signals, x, z);
-      mut k = 0usize;
+      let t = types[i];
+      var s = baseScore(t, i, signals, x, z);
+      var k = 0usize;
       while k < t.interactions.len() and s > 0. {
-        imm ia = t.interactions[k];
+        let ia = t.interactions[k];
         if ia.kind == SHARE {
           s = s * (1. - ia.strength * scores[usize.from(ia.other)]);
         } else {
@@ -248,14 +248,14 @@ pub fn edgeHalf(t &CoverType, k u32) f32 {
 // The share of ring k's instances kept at horizontal distance d from the
 // camera: a rise across the previous ring's edge and a fall across its own
 pub fn ringKeep(t &CoverType, k u32, d f32) f32 {
-  mut keep = 1f32;
+  var keep = 1f32;
   if k > 0u32 {
-    imm c = edgeCentre(t, k - 1u32);
-    imm h = edgeHalf(t, k - 1u32);
+    let c = edgeCentre(t, k - 1u32);
+    let h = edgeHalf(t, k - 1u32);
     keep = keep * smoothstep(c - h, c + h, d);
   }
-  imm c2 = edgeCentre(t, k);
-  imm h2 = edgeHalf(t, k);
+  let c2 = edgeCentre(t, k);
+  let h2 = edgeHalf(t, k);
   keep * (1. - smoothstep(c2 - h2, c2 + h2, d));
 }
 
@@ -272,53 +272,53 @@ pub fn ringSpan(t &CoverType, k u32, near &mut f32, far &mut f32) {
 // at (camX, camZ) onto 'out'. 'scores' is scratch.
 pub fn placeCell(types &List[CoverType], index usize, ring u32, maps &GroundMaps, cx i32, cz i32, camX f32, camZ f32,
     out &mut List[Placed]) {
-  imm t = types[index];
-  imm cell = ringCell(t, ring);
-  mut h0 = new UVec4(0u32, 0u32, 0u32, 0u32);
-  imm centre = centreOf(t, index, ring, cx, cz, cell, &mut h0);
-  mut scores = new Array[f32, 12] <- fill 0f;
-  imm sigC = maps.signalsAt(centre.x, centre.y);
-  imm scoreC = fullScore(types, index, maps, &sigC, centre.x, centre.y, &mut scores);
+  let t = types[index];
+  let cell = ringCell(t, ring);
+  var h0 = new UVec4(0u32, 0u32, 0u32, 0u32);
+  let centre = centreOf(t, index, ring, cx, cz, cell, &mut h0);
+  var scores = new Array[f32, 12] <- fill 0f;
+  let sigC = maps.signalsAt(centre.x, centre.y);
+  let scoreC = fullScore(types, index, maps, &sigC, centre.x, centre.y, &mut scores);
   if scoreC <= 0. { return; }
   if toUnit(h0.z) >= fmin(1., scoreC * t.cellFactor * t.cellFactor) { return; }
-  imm seedT = typeSeed(t, index);
-  imm sigma = t.clusterRadius * 0.5;
-  mut j = 0u32;
+  let seedT = typeSeed(t, index);
+  let sigma = t.clusterRadius * 0.5;
+  var j = 0u32;
   while j < t.perCluster {
-    imm hj = cellHash(cx, cz, seedT ^ (0x68E31DA4u32 * (j + 1u32)), 512u32 + latticeRing(t, ring));
-    mut px = centre.x;
-    mut pz = centre.y;
+    let hj = cellHash(cx, cz, seedT ^ (0x68E31DA4u32 * (j + 1u32)), 512u32 + latticeRing(t, ring));
+    var px = centre.x;
+    var pz = centre.y;
     if t.clusterRadius > 0. {
-      mut r = sigma * (0. - 2. * libc.logf(fmax(toUnit(hj.x), 0.0001))).sqrt();
+      var r = sigma * (0. - 2. * libc.logf(fmax(toUnit(hj.x), 0.0001))).sqrt();
       if r > t.clusterRadius { r = t.clusterRadius; }
-      imm ang = TAU * toUnit(hj.y);
+      let ang = TAU * toUnit(hj.y);
       px = px + r * cos(ang);
       pz = pz + r * sin(ang);
     }
-    mut sigP = sigC;
-    mut keepRule = true;
+    var sigP = sigC;
+    var keepRule = true;
     if t.clusterRadius > 0. and t.perCluster > 1u32 {
       sigP = maps.signalsAt(px, pz);
-      imm sP = fullScore(types, index, maps, &sigP, px, pz, &mut scores);
+      let sP = fullScore(types, index, maps, &sigP, px, pz, &mut scores);
       if toUnit(hj.z) >= fmin(1., sP / scoreC) { keepRule = false; }
     }
     if keepRule {
-      imm dx = px - camX;
-      imm dz = pz - camZ;
-      imm d = (dx * dx + dz * dz).sqrt();
+      let dx = px - camX;
+      let dz = pz - camZ;
+      let d = (dx * dx + dz * dz).sqrt();
       if toUnit(hj.w) < ringKeep(t, ring, d) {
-        imm hk = cellHash(cx, cz, seedT ^ (0x1B873593u32 * (j + 1u32)), 768u32 + latticeRing(t, ring));
-        imm patch = patchAt(t, index, px, pz);
-        mut widthScale = 1f32;
-        mut q = 0u32;
+        let hk = cellHash(cx, cz, seedT ^ (0x1B873593u32 * (j + 1u32)), 768u32 + latticeRing(t, ring));
+        let patch = patchAt(t, index, px, pz);
+        var widthScale = 1f32;
+        var q = 0u32;
         while q < latticeRing(t, ring) {
           widthScale = widthScale * t.ringStep;
           q = q + 1u32;
         }
-        imm height = (t.sizeMin + (t.sizeMax - t.sizeMin) * toUnit(hk.x)) * (1. + t.sizeNoise * (patch * 2. - 1.));
-        imm width = (t.widthMin + (t.widthMax - t.widthMin) * toUnit(hk.y)) * widthScale;
-        imm n = maps.normalAt(px, pz);
-        imm tint = fbm2(px * 0.07, pz * 0.07, seedT + 999u32);
+        let height = (t.sizeMin + (t.sizeMax - t.sizeMin) * toUnit(hk.x)) * (1. + t.sizeNoise * (patch * 2. - 1.));
+        let width = (t.widthMin + (t.widthMax - t.widthMin) * toUnit(hk.y)) * widthScale;
+        let n = maps.normalAt(px, pz);
+        let tint = fbm2(px * 0.07, pz * 0.07, seedT + 999u32);
         out.push(new Placed(px, maps.heightAt(px, pz), pz, height, TAU * toUnit(hk.z), width, t.lean * toUnit(hk.w),
           tint, hj.z, n.x, n.z, sigP[SIGNAL_EXPOSURE]));
       }
@@ -338,18 +338,18 @@ pub struct CellSquare {
 }
 
 pub fn ringHalf(t &CoverType, ring u32) f32 {
-  imm cell = ringCell(t, ring);
-  mut near = 0f32;
-  mut far = 0f32;
+  let cell = ringCell(t, ring);
+  var near = 0f32;
+  var far = 0f32;
   ringSpan(t, ring, &mut near, &mut far);
   far + t.clusterRadius + cell * 1.5;
 }
 
 // The square of cells of size 'cell' reaching 'half' metres every way from (camX, camZ)
 pub fn squareOf(cell f32, half f32, camX f32, camZ f32) CellSquare {
-  imm x0 = i32.from(libc.floorf((camX - half) / cell));
-  imm z0 = i32.from(libc.floorf((camZ - half) / cell));
-  imm x1 = i32.from(libc.floorf((camX + half) / cell));
+  let x0 = i32.from(libc.floorf((camX - half) / cell));
+  let z0 = i32.from(libc.floorf((camZ - half) / cell));
+  let x1 = i32.from(libc.floorf((camX + half) / cell));
   new CellSquare(x0, z0, u32.from(x1 - x0 + 1i32));
 }
 
@@ -360,10 +360,10 @@ pub fn ringSquare(t &CoverType, ring u32, camX f32, camZ f32) CellSquare {
 // All the instances of type 'index' in 'ring' for a camera at (camX, camZ), in row order
 pub fn placeRing(types &List[CoverType], index usize, ring u32, maps &GroundMaps, camX f32, camZ f32,
     out &mut List[Placed]) {
-  imm sq = ringSquare(types[index], ring, camX, camZ);
-  mut dz = 0u32;
+  let sq = ringSquare(types[index], ring, camX, camZ);
+  var dz = 0u32;
   while dz < sq.across {
-    mut dx = 0u32;
+    var dx = 0u32;
     while dx < sq.across {
       placeCell(types, index, ring, maps, sq.x0 + i32.from(dx), sq.z0 + i32.from(dz), camX, camZ, out);
       dx = dx + 1u32;
@@ -380,38 +380,38 @@ pub fn placeRing(types &List[CoverType], index usize, ring u32, maps &GroundMaps
 // edge), then each type in order laying its colour over it by its coverage,
 // its score times its 'farWeight'.
 pub fn bakeFarField(types &List[CoverType], maps &mut GroundMaps, ground Color, pathColor Color, pathSoft f32) {
-  imm n = usize.from(maps.res) * usize.from(maps.res) * 4usize;
+  let n = usize.from(maps.res) * usize.from(maps.res) * 4usize;
   maps.farField.clear();
   maps.farField.reserve(n);
-  mut scores = new Array[f32, 12] <- fill 0f;
-  mut j = 0u32;
+  var scores = new Array[f32, 12] <- fill 0f;
+  var j = 0u32;
   while j < maps.res {
-    mut i = 0u32;
+    var i = 0u32;
     while i < maps.res {
-      imm x = maps.worldX(i);
-      imm z = maps.worldZ(j);
-      imm sig = maps.signalsAt(x, z);
-      imm onPath = 1. - smoothstep(0., pathSoft, sig[SIGNAL_PATH]);
+      let x = maps.worldX(i);
+      let z = maps.worldZ(j);
+      let sig = maps.signalsAt(x, z);
+      let onPath = 1. - smoothstep(0., pathSoft, sig[SIGNAL_PATH]);
       // the ground darkens under the canopy (a loam rather than open earth)
-      imm dim = 1. - 0.55 * sig[SIGNAL_CANOPY];
-      mut r = (ground.red + (pathColor.red - ground.red) * onPath) * dim;
-      mut g = (ground.green + (pathColor.green - ground.green) * onPath) * dim;
-      mut b = (ground.blue + (pathColor.blue - ground.blue) * onPath) * dim;
-      mut k = 0usize;
+      let dim = 1. - 0.55 * sig[SIGNAL_CANOPY];
+      var r = (ground.red + (pathColor.red - ground.red) * onPath) * dim;
+      var g = (ground.green + (pathColor.green - ground.green) * onPath) * dim;
+      var b = (ground.blue + (pathColor.blue - ground.blue) * onPath) * dim;
+      var k = 0usize;
       while k < types.len() {
-        imm t = types[k];
+        let t = types[k];
         if t.farWeight > 0. {
-          imm score = fullScore(types, k, maps, &sig, x, z, &mut scores);
-          imm cover = fclamp(score * t.farWeight, 0., 1.);
+          let score = fullScore(types, k, maps, &sig, x, z, &mut scores);
+          let cover = fclamp(score * t.farWeight, 0., 1.);
           if cover > 0. {
-            imm tint = fbm2(x * 0.07, z * 0.07, typeSeed(t, k) + 999u32);
-            imm dry = t.dryAmount * smoothstep(0.55, 0.8, tint);
-            imm cr = (t.baseColor.red * 0.4 + t.tipColor.red * 0.6) * 0.85;
-            imm cg = (t.baseColor.green * 0.4 + t.tipColor.green * 0.6) * 0.85;
-            imm cb = (t.baseColor.blue * 0.4 + t.tipColor.blue * 0.6) * 0.85;
-            imm dr = cr + (t.dryColor.red - cr) * dry;
-            imm dg = cg + (t.dryColor.green - cg) * dry;
-            imm db = cb + (t.dryColor.blue - cb) * dry;
+            let tint = fbm2(x * 0.07, z * 0.07, typeSeed(t, k) + 999u32);
+            let dry = t.dryAmount * smoothstep(0.55, 0.8, tint);
+            let cr = (t.baseColor.red * 0.4 + t.tipColor.red * 0.6) * 0.85;
+            let cg = (t.baseColor.green * 0.4 + t.tipColor.green * 0.6) * 0.85;
+            let cb = (t.baseColor.blue * 0.4 + t.tipColor.blue * 0.6) * 0.85;
+            let dr = cr + (t.dryColor.red - cr) * dry;
+            let dg = cg + (t.dryColor.green - cg) * dry;
+            let db = cb + (t.dryColor.blue - cb) * dry;
             r = r + (dr - r) * cover;
             g = g + (dg - g) * cover;
             b = b + (db - b) * cover;

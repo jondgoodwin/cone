@@ -4,14 +4,14 @@
 // Text put together from up to nine pieces
 fn cat(a &str, b &str = "", c &str = "", d &str = "", e &str = "", f &str = "",
     g &str = "", h &str = "", i &str = "") String {
-  mut s = String.from(a);
+  var s = String.from(a);
   s.append(b); s.append(c); s.append(d); s.append(e); s.append(f); s.append(g); s.append(h); s.append(i);
   s;
 }
 
 // One progress line, Cargo's shape: a right-aligned verb, then what
 fn say(verb &str, rest &str) {
-  mut v = String.from(verb);
+  var v = String.from(verb);
   v.padStart(12usize);
   printStr(v.view());
   printStr(" ");
@@ -66,10 +66,10 @@ fn appendUtf8(s &mut String, cp u32) {
 // Text with every line end made '\n', as Python's universal newlines make
 // '\r\n' and a lone '\r'
 fn newlines(text &str) String {
-  mut out = String.withCapacity(text.len());
-  mut i = 0usize;
+  var out = String.withCapacity(text.len());
+  var i = 0usize;
   while i < text.len() {
-    imm b = text[i];
+    let b = text[i];
     if b == '\r' {
       out.appendByte('\n');
       if i + 1usize < text.len() and text[i + 1usize] == '\n' { i = i + 1usize; }
@@ -85,13 +85,13 @@ fn newlines(text &str) String {
 // least 1): the maximal subpart, which Python's decoder replaces with one
 // U+FFFD
 fn utf8At(b &Array[u8], i usize, ok &mut bool) usize {
-  imm b0 = b[i];
+  let b0 = b[i];
   *ok = true;
   if b0 < 0x80u8 { return 1usize; }
   *ok = false;
-  mut need = 0usize;
-  mut lo = 0x80u8;
-  mut hi = 0xBFu8;
+  var need = 0usize;
+  var lo = 0x80u8;
+  var hi = 0xBFu8;
   if b0 >= 0xC2u8 and b0 <= 0xDFu8 { need = 1usize; }
   elif b0 == 0xE0u8 { need = 2usize; lo = 0xA0u8; }
   elif b0 == 0xEDu8 { need = 2usize; hi = 0x9Fu8; }
@@ -100,10 +100,10 @@ fn utf8At(b &Array[u8], i usize, ok &mut bool) usize {
   elif b0 == 0xF4u8 { need = 3usize; hi = 0x8Fu8; }
   elif b0 >= 0xF1u8 and b0 <= 0xF3u8 { need = 3usize; }
   else { return 1usize; }
-  mut k = 1usize;
+  var k = 1usize;
   while k <= need {
     if i + k >= b.len { return k; }
-    imm c = b[i + k];
+    let c = b[i + k];
     if k == 1usize {
       if c < lo or c > hi { return 1usize; }
     }
@@ -117,11 +117,11 @@ fn utf8At(b &Array[u8], i usize, ok &mut bool) usize {
 // Bytes read as UTF-8, as Python's decode('utf-8', 'replace') reads them:
 // each piece that is not well formed one U+FFFD
 fn utf8Decode(bytes &Array[u8]) String {
-  mut out = String.withCapacity(bytes.len);
-  mut i = 0usize;
+  var out = String.withCapacity(bytes.len);
+  var i = 0usize;
   while i < bytes.len {
-    mut ok = true;
-    imm n = utf8At(bytes, i, &mut ok);
+    var ok = true;
+    let n = utf8At(bytes, i, &mut ok);
     if ok { out.appendBytes(&bytes[i..<i + n]); }
     else { appendUtf8(&mut out, 0xFFFDu32); }
     i = i + n;
@@ -132,7 +132,7 @@ fn utf8Decode(bytes &Array[u8]) String {
 // What conec, or vswhere with -utf8, printed: UTF-8, and every line end
 // made '\n'
 fn utf8Text(bytes &Array[u8]) String {
-  imm text = utf8Decode(bytes);
+  let text = utf8Decode(bytes);
   newlines(text.view());
 }
 
@@ -157,7 +157,7 @@ const utf8Page = 65001u32;
 // set, as SetErrorMode's documentation advises; process.run never passes
 // CREATE_DEFAULT_ERROR_MODE, which would undo this.
 fn hardErrorsToStatus() {
-  imm before = SetErrorMode(0u32);
+  let before = SetErrorMode(0u32);
   SetErrorMode(before | 0x8001u32);       // | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
 }
 
@@ -167,8 +167,8 @@ fn hardErrorsToStatus() {
 // person learns of it
 fn dllNote(code u32, exe &Path) String {
   if code == 0xC0000135u32 {
-    imm full = resolved(exe);
-    imm place = native(&full);
+    let full = resolved(exe);
+    let place = native(&full);
     return cat(place.view(), " could not start: a DLL it needs was not found (0xC0000135)");
   }
   String.empty();
@@ -176,11 +176,11 @@ fn dllNote(code u32, exe &Path) String {
 
 // n UTF-16 units from p, as UTF-8; a lone surrogate becomes U+FFFD
 fn fromUtf16(p *u16, n i32) String {
-  mut out = String.empty();
+  var out = String.empty();
   if n <= 0i32 { return out; }
-  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
+  let size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
   if size <= 0i32 { return out; }
-  imm buf = libc.malloc(usize.from(size));
+  let buf = libc.malloc(usize.from(size));
   WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, null, null);
   out.appendBytes(mem.sliceFromParts(buf, usize.from(size)));
   libc.free(buf);
@@ -193,16 +193,16 @@ fn fromUtf16(p *u16, n i32) String {
 // is the OEM one. congo.py reads it the same way, through Windows' own
 // conversion; every line end made '\n'
 fn consoleText(bytes &Array[u8]) String {
-  mut page = GetConsoleOutputCP();
+  var page = GetConsoleOutputCP();
   if page == 0u32 { page = GetOEMCP(); }
   if page == utf8Page { return utf8Text(bytes); }
   if bytes.len == 0usize or bytes.len > 0x3FFFFFFFusize { return String.empty(); }
-  imm len = i32.from(bytes.len);
-  imm n = MultiByteToWideChar(page, 0u32, bytes as *u8, len, null, 0i32);
+  let len = i32.from(bytes.len);
+  let n = MultiByteToWideChar(page, 0u32, bytes as *u8, len, null, 0i32);
   if n <= 0i32 { return String.empty(); }
-  imm wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+  let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
   MultiByteToWideChar(page, 0u32, bytes as *u8, len, wide, n);
-  imm text = fromUtf16(wide, n);
+  let text = fromUtf16(wide, n);
   libc.free(wide as *u8);
   newlines(text.view());
 }
@@ -211,10 +211,10 @@ fn consoleText(bytes &Array[u8]) String {
 // decode('utf-16-le', 'replace'): an odd byte left at the end is U+FFFD;
 // every line end made '\n'
 fn utf16Text(bytes &Array[u8]) String {
-  imm units = bytes.len / 2usize;
-  mut text = String.empty();
+  let units = bytes.len / 2usize;
+  var text = String.empty();
   if units > 0usize and units <= 0x3FFFFFFFusize {
-    imm wide = libc.malloc(units * 2usize);
+    let wide = libc.malloc(units * 2usize);
     libc.memcpy(wide, bytes as *u8, units * 2usize);
     text = fromUtf16(wide as *u16, i32.from(units));
     libc.free(wide);
@@ -227,11 +227,11 @@ fn utf16Text(bytes &Array[u8]) String {
 // '\r\n', and the vertical tab, form feed and file, group and record
 // separators; no line for an end after the last
 fn splitLines(text &str) List[String] {
-  mut out = List[String].empty();
-  mut start = 0usize;
-  mut i = 0usize;
+  var out = List[String].empty();
+  var start = 0usize;
+  var i = 0usize;
   while i < text.len() {
-    imm b = text[i];
+    let b = text[i];
     if b == '\n' or b == '\r' or b == 0x0Bu8 or b == 0x0Cu8 or b == 0x1Cu8 or b == 0x1Du8 or b == 0x1Eu8 {
       out.push(String.from(&text[start..<i]));
       if b == '\r' and i + 1usize < text.len() and text[i + 1usize] == '\n' { i = i + 1usize; }
@@ -245,12 +245,12 @@ fn splitLines(text &str) List[String] {
 
 // The pieces of a text between each sep
 fn splitText(s &str, sep u8) List[String] {
-  imm t = String.from(s);
+  let t = String.from(s);
   t.split(sep);
 }
 
 fn isBlank(s &str) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len() {
     if not (isSpace(s[i]) or s[i] == 0x0Bu8 or s[i] == 0x0Cu8) { return false; }
     i = i + 1usize;
@@ -267,8 +267,8 @@ struct EnvChanges {
 
   // Set name to value, remembering what it was the first time
   pub fn set(self &mut, name &str, value &str) {
-    mut seen = false;
-    mut i = 0usize;
+    var seen = false;
+    var i = 0usize;
     while i < names.len() {
       if names[i].equalsIgnoreAsciiCase(name) { seen = true; }
       i = i + 1usize;
@@ -276,8 +276,8 @@ struct EnvChanges {
     if not seen {
       names.push(String.from(name));
       match env.get(name) {
-        case mut v Some {
-          mut old = String.empty();
+        case var v Some {
+          var old = String.empty();
           old <=> v;
           had.push(true);
           values.push(old);
@@ -293,7 +293,7 @@ struct EnvChanges {
 
   // Put back what was there before, last change first
   pub fn restore(self &mut) {
-    mut i = names.len();
+    var i = names.len();
     while i > 0usize {
       i = i - 1usize;
       if *had[i] { env.set(names[i].view(), values[i].view()); }

@@ -178,8 +178,8 @@ holding the `f32` value widened, rather than wrapping it in a conversion node.
 The value is exactly what the conversion generated, so no position's value
 moves; what moves is that the result is still a literal, which the global,
 static, parameter-default and typed-constant rules ask for ([vardcl](vardcl.md)),
-so `imm g f64 = 0.5` is accepted as it is in a function body. It is still the
-`f32` value: `imm g f64 = 0.1` holds `0.100000001490116…`, as a local, an
+so `let g f64 = 0.5` is accepted as it is in a function body. It is still the
+`f32` value: `let g f64 = 0.1` holds `0.100000001490116…`, as a local, an
 argument, a return value and a field do. `typemgmt_success` pins the positions
 that require a literal, with values exact in `f32`, and pins that a global and a
 local given the same literal agree.
@@ -198,7 +198,7 @@ widening holds every value of the narrower type, so nothing is range checked at
 the wider one. The one value not yet checked is an untyped integer's `i32`
 default, which generation checks (below): a constant whose value does not fit it
 is not folded, so its use keeps the conversion and generation still refuses it
-at the constant. Only widening folds: `const K = 300` then `imm b u8 = K` is a
+at the constant. Only widening folds: `const K = 300` then `let b u8 = K` is a
 type mismatch, as `i32` does not coerce to `u8`. `typemgmt_success` pins a
 global, a static, a parameter default and a typed constant initialized from a
 widened constant, with the edge values above.
@@ -227,7 +227,7 @@ alike, after everything that could have typed it has run.
 **A literal must fit the type it is given.** `litCheckRange` refuses an integer
 literal whose value its integer type cannot hold (`ErrorLitRange`) rather than
 materializing it at that width, which silently dropped every bit above it:
-`300u8` and `mut n u8 = 300` stored `44`. It runs where the type is decided —
+`300u8` and `var n u8 = 300` stored `44`. It runs where the type is decided —
 `litTypeCheck` for a literal whose suffix gave it one, `litAdoptNumberType` for
 one taking the type it is wanted as — and at generation for the `i32` default.
 It measures the magnitude written, recovered through `FlagLitNeg`: a signed
@@ -476,19 +476,19 @@ slice and leave an untyped number literal at its default type.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
-what makes `imm g i32 = K` legal. It accepts a borrow (`BorrowTag` or
+what makes `let g i32 = K` legal. It accepts a borrow (`BorrowTag` or
 `ArrayBorrowTag`) of a string literal too: the text is a constant global, so a
 reference to it, or a slice of it (its address and its length), is known before
 anything runs. The literal itself, which is that address and length, is a literal
-too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `imm g &Array[u8] = "text"`
+too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `let g &Array[u8] = "text"`
 and a struct literal holding one as a field are literal initializers;
 generation's `genlExpr` builds the `{ptr, usize}` with instructions the builder
 folds to a constant aggregate. It accepts a borrow of
 an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
-terms, so `imm g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
-constant holding either (`borrowIsConstLit`), so `imm g = &K` is one too. It accepts a value
+terms, so `let g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
+constant holding either (`borrowIsConstLit`), so `let g = &K` is one too. It accepts a value
 tuple whose values all satisfy it (`vtupleIsLiteral`), so
-`mut g (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
+`var g (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
 it by `insertvalue` of constants, which the builder folds to a constant struct,
 as it does a struct literal of constants.
 
@@ -735,10 +735,10 @@ The count leaves the byte out. A `String` keeps its own (collections), and
 
 **So does a global byte array initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the
-terminating zero after the text, uncounted — `mut g Array[u8, 5] = "hello"` is an
+terminating zero after the text, uncounted — `var g Array[u8, 5] = "hello"` is an
 `Array[u8, 5]` stored in a `[6 x i8]`, and a `static` in a function body the
 same (`genlGloVarHasNul` asks that the literal has been taken as an array). A
-global given a literal as it is, `imm g = "hello"`, holds the `&imm str`, the
+global given a literal as it is, `let g = "hello"`, holds the `&imm str`, the
 `{ptr, usize}` of the literal's own global, and is refused on a GPU target
 as any global holding a reference is. `genlGloVarName` creates the longer
 global and keeps in `llvmvar` its address recast to a pointer to the

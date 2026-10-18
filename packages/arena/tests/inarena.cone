@@ -42,21 +42,21 @@ struct Counting {
 }
 
 fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes);
 }
 
 fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes);
 }
 
 fn countRelease(r *MemRegion, block *u8, bytes usize) {
   if block as usize == 0usize { return; }
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
   (*c).live = (*c).live - isize.from(bytes);
   libc.free(block);
@@ -69,7 +69,7 @@ fn newCounting() Counting {
 fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
 
 fn tally(c &Counting, allocs u64, releases u64, live i64, label &Array[u8]) {
-  imm ok = u64.from(c.allocs) == allocs and u64.from(c.releases) == releases and i64.from(c.live) == live;
+  let ok = u64.from(c.allocs) == allocs and u64.from(c.releases) == releases and i64.from(c.live) == live;
   expect(ok, label);
 }
 
@@ -91,14 +91,14 @@ fn at(l &List[i32]) usize { (l[0usize] as *i32) as usize; }
 // value arrives, after the list's own words, so it is the last thing allocated
 // and every growth is in place
 fn lone() {
-  mut a = Arena.empty();
-  imm l = new a[List[i32]]();
+  var a = Arena.empty();
+  let l = new a[List[i32]]();
   expectUInt(u64.from(a.finalizers()), 1, "the list in the arena has a finalizer header");
   expectUInt(u64.from(l.capacity()), 0, "an empty list has no block");
   l.push(0);
-  mut moves = 0u64;
-  mut last = at(l);
-  mut i = 1;
+  var moves = 0u64;
+  var last = at(l);
+  var i = 1;
   while i < 200 {
     l.push(i);
     if at(l) != last { moves = moves + 1u64; last = at(l); }
@@ -115,12 +115,12 @@ fn lone() {
 // stays, so its words are placed first and its block of 16 is allocated after
 // them. The block is the last thing allocated, and every growth is in place
 fn sized() {
-  mut a = Arena.empty();
-  imm l = new a[List[i32]](16usize);
+  var a = Arena.empty();
+  let l = new a[List[i32]](16usize);
   expectUInt(u64.from(l.capacity()), 16, "the starting size is a block of 16");
-  mut i = 0;
+  var i = 0;
   while i < 16 { l.push(i); i = i + 1; }
-  imm start = at(l);
+  let start = at(l);
   while i < 200 { l.push(i); i = i + 1; }
   expect(at(l) == start, "the block grew in place at each of its four doublings, the list's words coming before it");
   expectInt(*l[0usize], 0, "the first value is as pushed");
@@ -143,15 +143,15 @@ fn sized() {
 // need. So the arena has 6 blocks and the list moved 5 times (it moved 9 times,
 // through 10 blocks, when a block was sized to the request)
 fn grows() {
-  mut a = Arena.empty();
-  imm l = new a[List[i64]]();
+  var a = Arena.empty();
+  let l = new a[List[i64]]();
   l.push(0i64);
-  mut last = (l[0usize] as *i64) as usize;
-  mut moves = 0u64;
-  mut i = 1i64;
+  var last = (l[0usize] as *i64) as usize;
+  var moves = 0u64;
+  var i = 1i64;
   while i < 100000i64 {
     l.push(i);
-    imm now = (l[0usize] as *i64) as usize;
+    let now = (l[0usize] as *i64) as usize;
     if now != last { moves = moves + 1u64; last = now; }
     i = i + 1i64;
   }
@@ -164,14 +164,14 @@ fn grows() {
 
 // Two lists pushed in turn: each growth finds the other's block last
 fn interleaved() {
-  mut a = Arena.empty();
-  imm x = new a[List[i32]]();
-  imm y = new a[List[i32]]();
-  mut xmoves = 0u64;
-  mut ymoves = 0u64;
-  mut xat = 0usize;
-  mut yat = 0usize;
-  mut i = 0;
+  var a = Arena.empty();
+  let x = new a[List[i32]]();
+  let y = new a[List[i32]]();
+  var xmoves = 0u64;
+  var ymoves = 0u64;
+  var xat = 0usize;
+  var yat = 0usize;
+  var i = 0;
   while i < 200 {
     x.push(i);
     y.push(1000 + i);
@@ -195,13 +195,13 @@ fn interleaved() {
 
 // A list of strings from another region: the arena's death gives them back
 fn strings() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut a = Arena.empty();
-    imm l = new a[List[String]]();
-    mut i = 0;
+    var a = Arena.empty();
+    let l = new a[List[String]]();
+    var i = 0;
     while i < 10 {
-      mut s = new String(8usize, regionOf(&mut c));
+      var s = new String(8usize, regionOf(&mut c));
       s.append("ab");
       l.push(s);
       i = i + 1;
@@ -215,16 +215,16 @@ fn strings() {
 // A struct declaring CarriesRegion made in an arena, naming no region, draws
 // its lists from the arena; one that names a region keeps that one
 fn composition() {
-  mut a = Arena.empty();
-  imm m = new a[Mesh](8usize);
+  var a = Arena.empty();
+  let m = new a[Mesh](8usize);
   expect(m.region as usize == a.region as usize, "a Mesh made in an arena is handed the arena's region");
   m.pts.push(1.5f32);
   m.ids.push(7u32);
   expectUInt(u64.from(m.pts.len()), 1, "and its lists work");
-  mut c = newCounting();
-  imm n = new a[Mesh](8usize, regionOf(&mut c));
+  var c = newCounting();
+  let n = new a[Mesh](8usize, regionOf(&mut c));
   expect(n.region as usize == regionOf(&mut c) as usize, "one that names a region keeps it");
-  imm o = new Mesh(8usize);
+  let o = new Mesh(8usize);
   expect(o.region as usize == heapRegion() as usize, "and one made outside an arena is the heap's");
 }
 
@@ -236,17 +236,17 @@ struct Holder['=a] {
 }
 
 fn make() Holder['=a] {
-  mut d = DynArena.empty();
-  imm l = new d[List[i32]]();
+  var d = DynArena.empty();
+  let l = new d[List[i32]]();
   d[l].push(1);
   new Holder(d, l);
 }
 
 fn moved() {
-  mut h = make();
-  imm k = h.list;
-  imm region = h.ar.region;
-  mut i = 2;
+  var h = make();
+  let k = h.list;
+  let region = h.ar.region;
+  var i = 2;
   while i < 300 { h.ar[k].push(i); i = i + 1; }
   expectUInt(u64.from(h.ar[k].len()), 299, "a list in an arena that was returned grew after the move");
   expectInt(*h.ar[k][298usize], 299, "with its values");
@@ -255,9 +255,9 @@ fn moved() {
 
 // A DynArena is a region too
 fn dynamic() {
-  mut d = DynArena.empty();
-  imm k = new d[List[i32]](4usize);
-  mut i = 0;
+  var d = DynArena.empty();
+  let k = new d[List[i32]](4usize);
+  var i = 0;
   while i < 50 { d[k].push(i); i = i + 1; }
   expectUInt(u64.from(d[k].len()), 50, "a list in a dynamic arena, reached by its key");
   expectInt(*d[k][49usize], 49, "grows");

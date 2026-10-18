@@ -10,7 +10,7 @@
 //   - a '&mut' parameter, one reached through a struct it points to, a '&mut' slice as
 //     the source itself, a sync method's '&mut self' (an actor's too), an Rc, a global
 //   - a local that holds a '&mut' borrow
-//   - a writable cursor held in a variable whose origin the loop cannot follow: a 'mut'
+//   - a writable cursor held in a variable whose origin the loop cannot follow: a 'var'
 //     one, a parameter, a field, and one built from a '&mut' parameter first
 //
 // concurrency_parallel_root holds what it accepts.
@@ -101,12 +101,12 @@ fn lift(a &List[Item], b &uni List[Item]) {
 }
 
 fn twoNames() {
-  mut l = new List[Item];
+  var l = new List[Item];
   lift(&l, &uni l);                                                  //~ ErrorFrozen
 }
 
 // A global
-mut shared List[Item];
+var shared List[Item];
 
 fn @initpure init() { shared = List[Item].empty(); }
 
@@ -118,17 +118,17 @@ fn viaGlobal() {
 
 // A local that holds a '&mut' borrow is a name for what it borrows
 fn viaLocalBorrow() {
-  mut l = new List[Item];
-  imm r = &mut l;
+  var l = new List[Item];
+  let r = &mut l;
   parallel each x in r.mutItems() {                                  //~ ErrorParRoot "reached through a '&mut' reference (r)"
     x.n = x.n + 1;
   }
 }
 
-// A writable cursor held in a variable: the loop follows an 'imm' one to the call that
+// A writable cursor held in a variable: the loop follows a 'let' one to the call that
 // made it, and that call is judged as if written in the header
 fn cursorFromParameter(b &mut List[Item]) {
-  imm c = b.mutArrays[2usize]().mutItems();
+  let c = b.mutArrays[2usize]().mutItems();
   parallel each x in c {                                             //~ ErrorParRoot "reached through a '&mut' reference (b)"
     x[0usize].n = 1;
   }
@@ -136,8 +136,8 @@ fn cursorFromParameter(b &mut List[Item]) {
 
 // ... one it cannot follow is refused where it is named
 fn cursorMut() {
-  mut l = new List[Item];
-  mut c = l.mutItems();
+  var l = new List[Item];
+  var c = l.mutItems();
   parallel each x in c {                                             //~ ErrorParRoot "a cursor held in 'c'"
     x.n = 1;
   }

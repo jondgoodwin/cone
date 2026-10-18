@@ -61,7 +61,7 @@ pub struct Fractal {
 // A plain refinement: roughness 'h' (held to at least 1/64), a displacement
 // 'amplitude', a base width of 0.4, and no tail, cascade or heterogeneity
 pub fn fractal(seed u32, levels i32, h f32, amplitude f32) Fractal {
-  imm hh = if h < 0.015625 {0.015625;} else {h;};
+  let hh = if h < 0.015625 {0.015625;} else {h;};
   new Fractal(seed, levels, libc.powf(2., -hh), amplitude, 0.4, 1., 0, 0., 0., 1.);
 }
 
@@ -89,34 +89,34 @@ fn fractalSplit(f &Fractal, edge u32, level i32, index u32, a Vec2, b Vec2, p Ve
     out.push(new FractalPoint(u64.from(edge) * (1u64 << u64.from(f.levels)) + u64.from(index), a));
     return;
   }
-  imm h = noise.pcg4d(new noise.UVec4(edge, index, u32.from(level), f.seed));
-  imm w = 1. + f.intermittency * noise.toSigned(h.z);
-  mut amp = f.amplitude * carry * w;
+  let h = noise.pcg4d(new noise.UVec4(edge, index, u32.from(level), f.seed));
+  let w = 1. + f.intermittency * noise.toSigned(h.z);
+  var amp = f.amplitude * carry * w;
   if f.heteroStrength != 0. {
-    imm mid = (a + b) * 0.5;
-    imm g = noise.gradient2(mid * f.heteroScale, noise.hash1(-1, f.seed)).value;
-    imm k = 1. + f.heteroStrength * g;
+    let mid = (a + b) * 0.5;
+    let g = noise.gradient2(mid * f.heteroScale, noise.hash1(-1, f.seed)).value;
+    let k = 1. + f.heteroStrength * g;
     amp = if k > 0. {amp * k;} else {0.;};
   }
-  imm d = amp * noise.heavySigned(h.x, h.y, f.tail, f.tailCap);
-  imm t = clampF(0.5 + 0.5 * d, 0.05, 0.95);
-  imm m = q.lerp(p, t);
-  imm s = f.shrink;
+  let d = amp * noise.heavySigned(h.x, h.y, f.tail, f.tailCap);
+  let t = clampF(0.5 + 0.5 * d, 0.05, 0.95);
+  let m = q.lerp(p, t);
+  let s = f.shrink;
   fractalSplit(f, edge, level + 1, index * 2u32, a, m, a.lerp(p, s), a.lerp(q, s), carry * w, cull, window, out);
   fractalSplit(f, edge, level + 1, index * 2u32 + 1u32, m, b, b.lerp(p, s), b.lerp(q, s), carry * w, cull, window, out);
 }
 
 fn fractalEdges(base &Profile, f &Fractal, cull bool, window Aabb2) List[FractalPoint] {
-  imm n = base.points.len();
-  mut out = List[FractalPoint].empty();
+  let n = base.points.len();
+  var out = List[FractalPoint].empty();
   if n < 2usize { return out; }
-  imm edges = if base.closed {n;} else {n - 1usize;};
-  mut e = 0usize;
+  let edges = if base.closed {n;} else {n - 1usize;};
+  var e = 0usize;
   while e < edges {
-    imm a = *base.points[e];
-    imm b = *base.points[(e + 1usize) % n];
-    imm mid = (a + b) * 0.5;
-    imm side = (b - a).perp() * f.width;
+    let a = *base.points[e];
+    let b = *base.points[(e + 1usize) % n];
+    let mid = (a + b) * 0.5;
+    let side = (b - a).perp() * f.width;
     fractalSplit(f, u32.from(e), 0, 0u32, a, b, mid + side, mid - side, 1., cull, window, &mut out);
     e = e + 1usize;
   }
@@ -127,15 +127,15 @@ fn fractalEdges(base &Profile, f &Fractal, cull bool, window Aabb2) List[Fractal
 // open base keeps its last point too). A base of fewer than 2 points comes
 // back as it is.
 pub fn fractalRefine(base &Profile, f &Fractal) Profile {
-  imm window = Aabb2.empty();
-  imm pts = fractalEdges(base, f, false, window);
-  mut out = List[Vec2].withCapacity(pts.len() + 1usize);
-  mut i = 0usize;
+  let window = Aabb2.empty();
+  let pts = fractalEdges(base, f, false, window);
+  var out = List[Vec2].withCapacity(pts.len() + 1usize);
+  var i = 0usize;
   while i < pts.len() {
     out.push(pts[i].point);
     i = i + 1usize;
   }
-  imm n = base.points.len();
+  let n = base.points.len();
   if n < 2usize { return Profile.fromPoints(base.points.view(), base.closed); }
   if !base.closed { out.push(*base.points[n - 1usize]); }
   new Profile(out, base.closed);

@@ -42,9 +42,9 @@ pub struct Mesh {
   // The unit normal of triangle t, by the right-hand rule on its corners;
   // (0, 0, 0) when it has no area
   pub fn triangleNormal(self &, t usize) Vec3 {
-    imm a = *positions[usize.from(*indices[3usize * t])];
-    imm b = *positions[usize.from(*indices[3usize * t + 1usize])];
-    imm c = *positions[usize.from(*indices[3usize * t + 2usize])];
+    let a = *positions[usize.from(*indices[3usize * t])];
+    let b = *positions[usize.from(*indices[3usize * t + 1usize])];
+    let c = *positions[usize.from(*indices[3usize * t + 2usize])];
     unitOrZero((b - a).cross(c - a));
   }
 
@@ -54,22 +54,22 @@ pub struct Mesh {
   // triangle). Uvs, colors and tangents are carried to the split vertices;
   // the groups still cover the same triangles.
   pub fn computeFlatNormals(self &mut) {
-    imm nt = indices.len() / 3usize;
-    imm hasUv = uvs.len() > 0usize;
-    imm hasColor = colors.len() > 0usize;
-    imm hasTangent = tangents.len() > 0usize;
-    mut np = List[Vec3].withCapacity(3usize * nt);
-    mut nn = List[Vec3].withCapacity(3usize * nt);
-    mut nu = List[Vec2].empty();
-    mut nc = List[Color].empty();
-    mut ng = List[Vec4].empty();
-    mut ni = List[u32].withCapacity(3usize * nt);
-    mut t = 0usize;
+    let nt = indices.len() / 3usize;
+    let hasUv = uvs.len() > 0usize;
+    let hasColor = colors.len() > 0usize;
+    let hasTangent = tangents.len() > 0usize;
+    var np = List[Vec3].withCapacity(3usize * nt);
+    var nn = List[Vec3].withCapacity(3usize * nt);
+    var nu = List[Vec2].empty();
+    var nc = List[Color].empty();
+    var ng = List[Vec4].empty();
+    var ni = List[u32].withCapacity(3usize * nt);
+    var t = 0usize;
     while t < nt {
-      imm normal = self.triangleNormal(t);
-      mut k = 0usize;
+      let normal = self.triangleNormal(t);
+      var k = 0usize;
       while k < 3usize {
-        imm v = usize.from(*indices[3usize * t + k]);
+        let v = usize.from(*indices[3usize * t + k]);
         np.push(*positions[v]);
         nn.push(normal);
         if hasUv { nu.push(*uvs[v]); }
@@ -96,30 +96,30 @@ pub struct Mesh {
   // merged: two vertices at one place (a uv seam) keep their own normals,
   // each from its own triangles. A vertex no triangle uses gets (0, 0, 0).
   pub fn computeSmoothNormals(self &mut) {
-    imm n = positions.len();
-    mut acc = List[Vec3].withCapacity(n);
-    mut v = 0usize;
+    let n = positions.len();
+    var acc = List[Vec3].withCapacity(n);
+    var v = 0usize;
     while v < n {
       acc.push(new Vec3(0., 0., 0.));
       v = v + 1usize;
     }
-    imm nt = indices.len() / 3usize;
-    mut t = 0usize;
+    let nt = indices.len() / 3usize;
+    var t = 0usize;
     while t < nt {
-      imm normal = self.triangleNormal(t);
-      mut k = 0usize;
+      let normal = self.triangleNormal(t);
+      var k = 0usize;
       while k < 3usize {
-        imm i0 = usize.from(*indices[3usize * t + k]);
-        imm i1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
-        imm i2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
-        imm p = *positions[i0];
-        imm w = cornerAngle(p, *positions[i1], *positions[i2]);
+        let i0 = usize.from(*indices[3usize * t + k]);
+        let i1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
+        let i2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
+        let p = *positions[i0];
+        let w = cornerAngle(p, *positions[i1], *positions[i2]);
         acc.set(i0, *acc[i0] + normal * w);
         k = k + 1usize;
       }
       t = t + 1usize;
     }
-    mut out = List[Vec3].withCapacity(n);
+    var out = List[Vec3].withCapacity(n);
     v = 0usize;
     while v < n {
       out.push(unitOrZero(*acc[v]));
@@ -141,43 +141,43 @@ pub struct Mesh {
   // triangles give no direction (a pole, a degenerate uv) gets any direction
   // perpendicular to its normal.
   pub fn computeTangents(self &mut) {
-    imm n = positions.len();
+    let n = positions.len();
     tangents.clear();
     if normals.len() != n or uvs.len() != n or n == 0usize { return; }
-    mut tan = List[Vec3].withCapacity(n);
-    mut bit = List[Vec3].withCapacity(n);
-    mut v = 0usize;
+    var tan = List[Vec3].withCapacity(n);
+    var bit = List[Vec3].withCapacity(n);
+    var v = 0usize;
     while v < n {
       tan.push(new Vec3(0., 0., 0.));
       bit.push(new Vec3(0., 0., 0.));
       v = v + 1usize;
     }
-    imm nt = indices.len() / 3usize;
-    mut t = 0usize;
+    let nt = indices.len() / 3usize;
+    var t = 0usize;
     while t < nt {
-      imm i0 = usize.from(*indices[3usize * t]);
-      imm i1 = usize.from(*indices[3usize * t + 1usize]);
-      imm i2 = usize.from(*indices[3usize * t + 2usize]);
-      imm e1 = *positions[i1] - *positions[i0];
-      imm e2 = *positions[i2] - *positions[i0];
-      imm uv0 = *uvs[i0];
-      imm uv1 = *uvs[i1];
-      imm uv2 = *uvs[i2];
-      imm du1 = uv1.x - uv0.x;
-      imm dv1 = uv1.y - uv0.y;
-      imm du2 = uv2.x - uv0.x;
-      imm dv2 = uv2.y - uv0.y;
-      imm det = du1 * dv2 - du2 * dv1;
+      let i0 = usize.from(*indices[3usize * t]);
+      let i1 = usize.from(*indices[3usize * t + 1usize]);
+      let i2 = usize.from(*indices[3usize * t + 2usize]);
+      let e1 = *positions[i1] - *positions[i0];
+      let e2 = *positions[i2] - *positions[i0];
+      let uv0 = *uvs[i0];
+      let uv1 = *uvs[i1];
+      let uv2 = *uvs[i2];
+      let du1 = uv1.x - uv0.x;
+      let dv1 = uv1.y - uv0.y;
+      let du2 = uv2.x - uv0.x;
+      let dv2 = uv2.y - uv0.y;
+      let det = du1 * dv2 - du2 * dv1;
       if det > 1e-12 or det < -1e-12 {
-        imm r = 1. / det;
-        imm tu = (e1 * dv2 - e2 * dv1) * r;
-        imm tv = (e2 * du1 - e1 * du2) * r;
-        mut k = 0usize;
+        let r = 1. / det;
+        let tu = (e1 * dv2 - e2 * dv1) * r;
+        let tv = (e2 * du1 - e1 * du2) * r;
+        var k = 0usize;
         while k < 3usize {
-          imm c0 = usize.from(*indices[3usize * t + k]);
-          imm c1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
-          imm c2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
-          imm w = cornerAngle(*positions[c0], *positions[c1], *positions[c2]);
+          let c0 = usize.from(*indices[3usize * t + k]);
+          let c1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
+          let c2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
+          let w = cornerAngle(*positions[c0], *positions[c1], *positions[c2]);
           tan.set(c0, *tan[c0] + tu * w);
           bit.set(c0, *bit[c0] + tv * w);
           k = k + 1usize;
@@ -187,15 +187,15 @@ pub struct Mesh {
     }
     v = 0usize;
     while v < n {
-      imm nv = *normals[v];
-      mut tv = *tan[v] - nv * nv.dot(*tan[v]);
+      let nv = *normals[v];
+      var tv = *tan[v] - nv * nv.dot(*tan[v]);
       if tv.length() <= 1e-9 {
         // Any direction across the normal
-        imm other = if nv.y > 0.99 or nv.y < -0.99 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
+        let other = if nv.y > 0.99 or nv.y < -0.99 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
         tv = other - nv * nv.dot(other);
       }
       tv = unitOrZero(tv);
-      imm w = if nv.cross(tv).dot(*bit[v]) < 0. { -1.; } else { 1.; };
+      let w = if nv.cross(tv).dot(*bit[v]) < 0. { -1.; } else { 1.; };
       tangents.push(new Vec4(tv.x, tv.y, tv.z, w));
       v = v + 1usize;
     }
@@ -207,15 +207,15 @@ pub struct Mesh {
   // tangents (1, 0, 0, 1). When either has groups, both get them, the one
   // without becoming a single group in slot 0.
   pub fn append(self &mut, o &Mesh) {
-    imm n0 = positions.len();
-    imm n1 = o.positions.len();
-    imm base = u32.from(n0);
-    imm istart = u32.from(indices.len());
+    let n0 = positions.len();
+    let n1 = o.positions.len();
+    let base = u32.from(n0);
+    let istart = u32.from(indices.len());
     appendStream[Vec3](&mut normals, n0, &o.normals, n1, new Vec3(0., 0., 0.));
     appendStream[Vec2](&mut uvs, n0, &o.uvs, n1, new Vec2(0., 0.));
     appendStream[Color](&mut colors, n0, &o.colors, n1, new Color(1., 1., 1., 1.));
     appendStream[Vec4](&mut tangents, n0, &o.tangents, n1, new Vec4(1., 0., 0., 1.));
-    mut i = 0usize;
+    var i = 0usize;
     while i < n1 {
       positions.push(*o.positions[i]);
       i = i + 1usize;
@@ -229,9 +229,9 @@ pub struct Mesh {
           groups.push(new Group(istart, u32.from(o.indices.len()), 0u32));
         }
       } else {
-        mut g = 0usize;
+        var g = 0usize;
         while g < o.groups.len() {
-          imm og = *o.groups[g];
+          let og = *o.groups[g];
           groups.push(new Group(og.start + istart, og.count, og.material));
           g = g + 1usize;
         }
@@ -251,8 +251,8 @@ pub struct Mesh {
   // every triangle inside out, so each triangle's winding is reversed too,
   // as glTF does.
   pub fn transform(self &mut, m Mat4) {
-    imm nm = Mat3.normalMatrix(m);
-    mut i = 0usize;
+    let nm = Mat3.normalMatrix(m);
+    var i = 0usize;
     while i < positions.len() {
       positions.set(i, m * *positions[i]);
       i = i + 1usize;
@@ -264,12 +264,12 @@ pub struct Mesh {
     }
     i = 0usize;
     while i < tangents.len() {
-      imm t = *tangents[i];
+      let t = *tangents[i];
       tangents.set(i, unitOrZero(m.transformVector(t.xyz())).extend(t.w));
       i = i + 1usize;
     }
     if m.determinant() < 0. {
-      mut t = 0usize;
+      var t = 0usize;
       while t + 2usize < indices.len() {
         indices.swap(t + 1usize, t + 2usize);
         t = t + 3usize;
@@ -290,10 +290,10 @@ pub struct Mesh {
   // segments gives an empty mesh. (Pegasus3D's sphere, with its joining of
   // the circles and its vertex count corrected.)
   pub fn sphere(radius f32, nsegments i32) Mesh {
-    mut s = Mesh.empty();
-    imm n = nsegments;
+    var s = Mesh.empty();
+    let n = nsegments;
     if n <= 2 { return s; }
-    imm nverts = (n + 1) * (n - 1) + 2;
+    let nverts = (n + 1) * (n - 1) + 2;
     s.positions.reserve(usize.from(nverts));
     s.normals.reserve(usize.from(nverts));
     s.uvs.reserve(usize.from(nverts));
@@ -306,16 +306,16 @@ pub struct Mesh {
 
     // Each circle of latitude, top to bottom, and each vertex around it:
     // circle i's vertex j is vertex (i - 1)(n + 1) + j + 1
-    imm stride = n + 1;
-    mut i = 1;
+    let stride = n + 1;
+    var i = 1;
     while i < n {
-      imm mang = pi * f32.from(i) / f32.from(n);
-      mut j = 0;
+      let mang = pi * f32.from(i) / f32.from(n);
+      var j = 0;
       while j < n {
-        imm nang = 2. * pi * f32.from(j) / f32.from(n);
-        imm x = -cos(nang) * sin(mang);
-        imm y = cos(mang);
-        imm z = sin(nang) * sin(mang);
+        let nang = 2. * pi * f32.from(j) / f32.from(n);
+        let x = -cos(nang) * sin(mang);
+        let y = cos(mang);
+        let z = sin(nang) * sin(mang);
         s.normals.push(new Vec3(x, y, z));
         s.positions.push(new Vec3(x * radius, y * radius, z * radius));
         s.uvs.push(new Vec2(f32.from(j) / f32.from(n), f32.from(n - i) / f32.from(n)));
@@ -326,10 +326,10 @@ pub struct Mesh {
           s.indices.push(u32.from(j + 1));
           s.indices.push(u32.from(j + 2));
         } else {
-          imm v0 = (i - 2) * stride + j + 1;
-          imm v1 = (i - 2) * stride + j + 2;
-          imm v2 = (i - 1) * stride + j + 2;
-          imm v3 = (i - 1) * stride + j + 1;
+          let v0 = (i - 2) * stride + j + 1;
+          let v1 = (i - 2) * stride + j + 2;
+          let v2 = (i - 1) * stride + j + 2;
+          let v3 = (i - 1) * stride + j + 1;
           s.indices.push(u32.from(v0));
           s.indices.push(u32.from(v3));
           s.indices.push(u32.from(v2));
@@ -340,8 +340,8 @@ pub struct Mesh {
         j = j + 1;
       }
       // The circle's first vertex again, at u = 1
-      imm x = -sin(mang);
-      imm y = cos(mang);
+      let x = -sin(mang);
+      let y = cos(mang);
       s.normals.push(new Vec3(x, y, 0.));
       s.positions.push(new Vec3(x * radius, y * radius, 0.));
       s.uvs.push(new Vec2(1., f32.from(n - i) / f32.from(n)));
@@ -354,8 +354,8 @@ pub struct Mesh {
     s.uvs.push(new Vec2(0., 0.));
 
     // The bottom circle joined to it
-    imm pole = (n - 1) * stride + 1;
-    mut j = 0;
+    let pole = (n - 1) * stride + 1;
+    var j = 0;
     while j < n {
       s.indices.push(u32.from((n - 2) * stride + j + 1));
       s.indices.push(u32.from(pole));
@@ -371,31 +371,31 @@ pub struct Mesh {
   // and 'uvrepeat' is how many times the texture repeats across it. Fewer than
   // 1 segment gives an empty mesh.
   pub fn plane(nsegments i32, uvrepeat f32) Mesh {
-    mut s = Mesh.empty();
-    imm n = nsegments;
+    var s = Mesh.empty();
+    let n = nsegments;
     if n < 1 { return s; }
-    imm nverts = (n + 1) * (n + 1);
+    let nverts = (n + 1) * (n + 1);
     s.positions.reserve(usize.from(nverts));
     s.normals.reserve(usize.from(nverts));
     s.uvs.reserve(usize.from(nverts));
     s.indices.reserve(usize.from(6 * n * n));
 
-    mut segz = 0;
+    var segz = 0;
     while segz <= n {
-      mut segx = 0;
+      var segx = 0;
       while segx <= n {
-        imm x = 2. * f32.from(segx) / f32.from(n) - 1.;
-        imm z = 2. * f32.from(segz) / f32.from(n) - 1.;
+        let x = 2. * f32.from(segx) / f32.from(n) - 1.;
+        let z = 2. * f32.from(segz) / f32.from(n) - 1.;
         s.positions.push(new Vec3(x, 0., z));
         s.normals.push(new Vec3(0., 1., 0.));
         s.uvs.push(new Vec2(uvrepeat * f32.from(segx) / f32.from(n), uvrepeat * (1. - f32.from(segz) / f32.from(n))));
 
         // Two triangles per square
         if segx > 0 and segz > 0 {
-          imm v0 = (segz - 1) * (n + 1) + segx - 1;
-          imm v1 = (segz - 1) * (n + 1) + segx;
-          imm v2 = segz * (n + 1) + segx;
-          imm v3 = segz * (n + 1) + segx - 1;
+          let v0 = (segz - 1) * (n + 1) + segx - 1;
+          let v1 = (segz - 1) * (n + 1) + segx;
+          let v2 = segz * (n + 1) + segx;
+          let v3 = segz * (n + 1) + segx - 1;
           s.indices.push(u32.from(v0));
           s.indices.push(u32.from(v3));
           s.indices.push(u32.from(v2));
@@ -417,24 +417,24 @@ pub struct Mesh {
   // (1, 1) at its upper right, seen from outside (the top seen with -z up,
   // the bottom with +z up).
   pub fn cube(size f32) Mesh {
-    mut s = Mesh.empty();
+    var s = Mesh.empty();
     s.positions.reserve(24usize);
     s.normals.reserve(24usize);
     s.uvs.reserve(24usize);
-    mut v = 0usize;
+    var v = 0usize;
     while v < 24usize {
-      imm f = 3usize * (v / 4usize);
-      imm p = new Vec3(cubePositions[3usize * v], cubePositions[3usize * v + 1usize],
+      let f = 3usize * (v / 4usize);
+      let p = new Vec3(cubePositions[3usize * v], cubePositions[3usize * v + 1usize],
         cubePositions[3usize * v + 2usize]);
-      imm right = new Vec3(cubeRights[f], cubeRights[f + 1usize], cubeRights[f + 2usize]);
-      imm up = new Vec3(cubeUps[f], cubeUps[f + 1usize], cubeUps[f + 2usize]);
+      let right = new Vec3(cubeRights[f], cubeRights[f + 1usize], cubeRights[f + 2usize]);
+      let up = new Vec3(cubeUps[f], cubeUps[f + 1usize], cubeUps[f + 2usize]);
       s.positions.push(p * size);
       s.normals.push(right.cross(up));
       s.uvs.push(new Vec2((p.dot(right) + 1.) * 0.5, (p.dot(up) + 1.) * 0.5));
       v = v + 1usize;
     }
     s.indices.reserve(36usize);
-    mut i = 0usize;
+    var i = 0usize;
     while i < 36usize {
       s.indices.push(cubeIndices[i]);
       i = i + 1usize;
@@ -445,7 +445,7 @@ pub struct Mesh {
 
 // Pegasus3D's cube: the four corners of each face (top, bottom, back, front,
 // left, right)
-imm cubePositions Array[f32, 72] = [
+let cubePositions Array[f32, 72] = [
   -1f, 1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  -1f, 1f, 1f,
   -1f, -1f, -1f,  1f, -1f, -1f,  1f, -1f, 1f,  -1f, -1f, 1f,
   -1f, 1f, -1f,  1f, 1f, -1f,  1f, -1f, -1f,  -1f, -1f, -1f,
@@ -455,20 +455,20 @@ imm cubePositions Array[f32, 72] = [
 // Two triangles for each face, counterclockwise seen from outside.
 // (Pegasus3D's ran (0, 1, 2), (0, 2, 3) on every face, which is clockwise on
 // the top, front and left ones.)
-imm cubeIndices Array[u32, 36] = [0u32, 2u32, 1u32, 0u32, 3u32, 2u32, 4u32, 5u32, 6u32, 4u32, 6u32, 7u32,
+let cubeIndices Array[u32, 36] = [0u32, 2u32, 1u32, 0u32, 3u32, 2u32, 4u32, 5u32, 6u32, 4u32, 6u32, 7u32,
   8u32, 9u32, 10u32, 8u32, 10u32, 11u32, 12u32, 14u32, 13u32, 12u32, 15u32, 14u32,
   16u32, 18u32, 17u32, 16u32, 19u32, 18u32, 20u32, 21u32, 22u32, 20u32, 22u32, 23u32];
 // Each face's directions across and up it, seen from outside: their cross
 // product is its outward normal
-imm cubeRights Array[f32, 18] = [1f, 0f, 0f,  1f, 0f, 0f,  -1f, 0f, 0f,  1f, 0f, 0f,  0f, 0f, 1f,  0f, 0f, -1f];
-imm cubeUps Array[f32, 18] = [0f, 0f, -1f,  0f, 0f, 1f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f];
+let cubeRights Array[f32, 18] = [1f, 0f, 0f,  1f, 0f, 0f,  -1f, 0f, 0f,  1f, 0f, 0f,  0f, 0f, 1f,  0f, 0f, -1f];
+let cubeUps Array[f32, 18] = [0f, 0f, -1f,  0f, 0f, 1f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f];
 
 // Extend 'dst', which holds data for 'n0' vertices or none, by 'src''s data
 // for 'n1' more, filling for whichever lacks it; nothing when both lack it
 fn appendStream[T](dst &mut List[T], n0 usize, src &List[T], n1 usize, fill T) {
   if dst.len() == 0usize and src.len() == 0usize { return; }
   while dst.len() < n0 { dst.push(fill); }
-  mut i = 0usize;
+  var i = 0usize;
   while i < n1 {
     if i < src.len() { dst.push(*src[i]); } else { dst.push(fill); }
     i = i + 1usize;
@@ -477,18 +477,18 @@ fn appendStream[T](dst &mut List[T], n0 usize, src &List[T], n1 usize, fill T) {
 
 // The vector made unit length, or (0, 0, 0) if it has none
 fn unitOrZero(v Vec3) Vec3 {
-  imm len = v.length();
+  let len = v.length();
   if len > 0. { v * (1. / len); } else { new Vec3(0., 0., 0.); };
 }
 
 // The angle at corner p of the triangle p, a, b, in radians; 0 when an edge
 // has no length
 fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
-  imm e1 = a - p;
-  imm e2 = b - p;
-  imm l = e1.length() * e2.length();
+  let e1 = a - p;
+  let e2 = b - p;
+  let l = e1.length() * e2.length();
   if l <= 0. { return 0.; }
-  mut c = e1.dot(e2) / l;
+  var c = e1.dot(e2) / l;
   if c > 1. { c = 1.; }
   if c < -1. { c = -1.; }
   acos(c);
@@ -498,14 +498,14 @@ fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
 // (unnormalized): exact for a flat polygon, convex or not, and the best-fit
 // plane's normal for one that is not quite flat
 fn newellNormal(pts &List[Vec3]) Vec3 {
-  mut nx f32 = 0.;
-  mut ny f32 = 0.;
-  mut nz f32 = 0.;
-  imm n = pts.len();
-  mut i = 0usize;
+  var nx f32 = 0.;
+  var ny f32 = 0.;
+  var nz f32 = 0.;
+  let n = pts.len();
+  var i = 0usize;
   while i < n {
-    imm a = *pts[i];
-    imm b = *pts[(i + 1usize) % n];
+    let a = *pts[i];
+    let b = *pts[(i + 1usize) % n];
     nx = nx + (a.y - b.y) * (a.z + b.z);
     ny = ny + (a.z - b.z) * (a.x + b.x);
     nz = nz + (a.x - b.x) * (a.y + b.y);

@@ -1,0 +1,108 @@
+// 'let' and 'var' begin a declaration: 'let' a name that is never given a new value,
+// 'var' one that may be. They are the same two choices 'imm' and 'mut' were, spelled
+// for the name rather than for a reference; the permissions on references
+// ('&imm', '&mut', 'Rc[mut, T]') are unchanged and appear below beside them.
+//
+// Every position is here: a global, a thread-local global, a field, a static, a
+// parameter, a by-value 'self', a closure's parameter and state entry, a local, and
+// the bindings of 'if' and 'case'. A field or parameter written with its default word
+// ('var' on a field, 'let' on a parameter) means what writing none means, which is
+// pinned by comparing the two spellings side by side.
+//
+// Each printed value was checked by hand against the source.
+
+mod lexical_let_var;
+
+import stdio use *;
+
+let K i32 = 10;                       // a global that never changes
+var counter i32 = 1;                  // a global that may
+var @threadlocal depth i32 = 0;       // one per thread, so it may change
+
+struct Acc {
+  let id i32;                         // fixed once the struct is made
+  var total i32;                      // the field's default, written out
+  count i32;                          // the same, left out
+  static var made i32 = 0;            // shared by every Acc, may change
+  static let LIMIT i32 = 5;           // shared, never changes
+
+  pub fn add(self &mut, amt i32) {     // a '&mut' receiver: a permission, unchanged
+    total += amt;
+    count += 1;
+    made += 1;
+  }
+}
+
+enum E {
+  pub n i32;
+  pub fn setN(var self, v i32) Self { n = v; self; }   // a by-value receiver that may be changed
+  pub struct A {
+    pub a i32;
+  }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A parameter is 'let' unless written 'var'; written 'let' it says what none says.
+fn params(let p i32, q i32, var r i32) i32 {
+  r += p + q;
+  r;
+}
+
+fn locals() {
+  let x = 3;
+  var y = 4;
+  y += x;
+  let z i32;              // given its value later, once
+  z = y * 2;
+  show("locals", i64.from(z));
+}
+
+fn bindings(o Option[i32], e &Option[i32]) i32 {
+  var total = 0;
+  if let a Some[i32] = o {
+    total += a;
+  }
+  match o {
+    case var b Some[i32] { b += 1; total += b; }
+    else { total += 100; }
+  }
+  total;
+}
+
+fn main() i32 {
+  counter += K;
+  show("globals", i64.from(counter));
+  depth += 1;
+  show("threadlocal", i64.from(depth));
+
+  var acc = new Acc(7, 0, 0);
+  acc.add(5);
+  acc.add(6);
+  show("id", i64.from(acc.id));
+  show("total", i64.from(acc.total));
+  show("count", i64.from(acc.count));
+  show("made", i64.from(Acc.made));
+  show("limit", i64.from(Acc.LIMIT));
+
+  show("params", i64.from(params(1, 2, 3)));
+  locals();
+
+  let o = Some(8);
+  show("bindings", i64.from(bindings(o, &o)));
+  show("none", i64.from(bindings(None, &o)));
+
+  var inc = fn (let step i32) [var n = 0] i32 { n += step; n; };
+  inc(2);
+  show("closure", i64.from(inc(3)));
+
+  let e = E.A(0, 5).setN(9);
+  show("enum n", i64.from(e.n));
+  show("enum a", i64.from(e.a));
+  0;
+}

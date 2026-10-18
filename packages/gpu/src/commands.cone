@@ -11,10 +11,10 @@ fn transition(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, aspect 
 // The same, of the levels and layers 'range' names
 fn transitionRange(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, range vulkan.ImageSubresourceRange, oldLayout u32,
     newLayout u32, srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
-  imm barrier = new vulkan.ImageMemoryBarrier2(srcStageMask: srcStage, srcAccessMask: srcAccess,
+  let barrier = new vulkan.ImageMemoryBarrier2(srcStageMask: srcStage, srcAccessMask: srcAccess,
     dstStageMask: dstStage, dstAccessMask: dstAccess, oldLayout: oldLayout, newLayout: newLayout, image: image,
     subresourceRange: range);
-  imm dep = new vulkan.DependencyInfo(pMemoryBarriers: null,
+  let dep = new vulkan.DependencyInfo(pMemoryBarriers: null,
     pBufferMemoryBarriers: null, imageMemoryBarrierCount: 1u32,
     pImageMemoryBarriers: &barrier as *vulkan.ImageMemoryBarrier2);
   fns.cmdPipelineBarrier2(cmd, &dep);
@@ -39,8 +39,8 @@ fn restLayout(kind u32) u32 {
 // Move a new texture of 'kind' from 'undefined' to the layout it rests in,
 // every level and layer of it
 fn firstLayout(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
-  mut aspect = vulkan.IMAGE_ASPECT_COLOR_BIT;
-  mut stages = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  var aspect = vulkan.IMAGE_ASPECT_COLOR_BIT;
+  var stages = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   if kind == KIND_DEPTH {
     aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
     stages = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -52,7 +52,7 @@ fn firstLayout(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, kind u
   if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED or kind == KIND_STORAGE {
     stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   }
-  imm all = new vulkan.ImageSubresourceRange(aspectMask: aspect, levelCount: vulkan.REMAINING_MIP_LEVELS,
+  let all = new vulkan.ImageSubresourceRange(aspectMask: aspect, levelCount: vulkan.REMAINING_MIP_LEVELS,
     layerCount: vulkan.REMAINING_ARRAY_LAYERS);
   transitionRange(fns, cmd, image, all, vulkan.IMAGE_LAYOUT_UNDEFINED, restLayout(kind),
     vulkan.PIPELINE_STAGE_2_NONE, vulkan.ACCESS_2_NONE, stages, vulkan.ACCESS_2_NONE);
@@ -77,7 +77,7 @@ pub struct CommandEncoder {
   // Begin drawing into one color attachment, cleared or kept as 'attachment'
   // says
   pub fn beginRenderPass(self &mut, attachment &RenderPassColorAttachment) RenderPass {
-    imm none = new RenderPassDepthStencilAttachment(new TextureView(new TextureBackend(new vulkan.Image(0u64),
+    let none = new RenderPassDepthStencilAttachment(new TextureView(new TextureBackend(new vulkan.Image(0u64),
       new vulkan.ImageView(0u64), KIND_NONE, false, 0usize as vulkan.Device, backend.fns, new vulkan.DeviceMemory(0u64)),
       0u32, 0u32, TEXTURE_FORMAT_UNDEFINED));
     beginPass(&backend.fns, backend.cmd, attachment, false, &none);
@@ -165,17 +165,17 @@ pub struct CommandEncoder {
   // each row to 256 bytes; this does not.
   pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
     if isNull(backend.cmd) { return; }
-    imm image = texture.backend.image;
-    imm rest = restLayout(texture.backend.kind);
-    imm depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
+    let image = texture.backend.image;
+    let rest = restLayout(texture.backend.kind);
+    let depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
     if u64.from(texture.width) * u64.from(texture.height) * u64.from(depth) * u64.from(bytesPerTexel(texture.format)) > buffer.size {
       fail("copyTextureToBuffer: the buffer is smaller than the texture");
       return;
     }
     // What wrote it (a render pass) before the copy reads it; presentation's
     // hand-off is the acquire semaphore's
-    mut srcStage = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    var srcStage = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    var srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     if texture.backend.kind == KIND_SURFACE {
       srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
       srcAccess = vulkan.ACCESS_2_NONE;
@@ -189,7 +189,7 @@ pub struct CommandEncoder {
     }
     transition(&backend.fns, backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, rest, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
       srcStage, srcAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
-    imm region = new vulkan.BufferImageCopy(imageSubresource: new vulkan.ImageSubresourceLayers(),
+    let region = new vulkan.BufferImageCopy(imageSubresource: new vulkan.ImageSubresourceLayers(),
       imageOffset: new vulkan.Offset3D(0i32, 0i32, 0i32), imageExtent: new vulkan.Extent3D(texture.width, texture.height, depth));
     backend.fns.cmdCopyImageToBuffer(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.backend.buffer,
       1u32, &region as *vulkan.BufferImageCopy);
@@ -198,10 +198,10 @@ pub struct CommandEncoder {
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_NONE,
       vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
     // What was copied, visible to the CPU once the frame is done
-    imm bb = new vulkan.BufferMemoryBarrier2(srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+    let bb = new vulkan.BufferMemoryBarrier2(srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
       srcAccessMask: vulkan.ACCESS_2_TRANSFER_WRITE_BIT, dstStageMask: vulkan.PIPELINE_STAGE_2_HOST_BIT,
       dstAccessMask: vulkan.ACCESS_2_HOST_READ_BIT, buffer: buffer.backend.buffer);
-    imm dep = new vulkan.DependencyInfo(pMemoryBarriers: null,
+    let dep = new vulkan.DependencyInfo(pMemoryBarriers: null,
       bufferMemoryBarrierCount: 1u32, pBufferMemoryBarriers: &bb as *vulkan.BufferMemoryBarrier2,
       pImageMemoryBarriers: null);
     backend.fns.cmdPipelineBarrier2(backend.cmd, &dep);
@@ -217,7 +217,7 @@ pub struct CommandEncoder {
     // After what earlier commands did with either buffer
     memoryBarrier(&backend.fns, backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT | vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    imm region = new vulkan.BufferCopy(sourceOffset, destinationOffset, size);
+    let region = new vulkan.BufferCopy(sourceOffset, destinationOffset, size);
     backend.fns.cmdCopyBuffer(backend.cmd, source.backend.buffer, destination.backend.buffer, 1u32,
       &region as *vulkan.BufferCopy);
     // What was copied, visible to the CPU and to what the GPU does next
@@ -229,7 +229,7 @@ pub struct CommandEncoder {
   // The commands recorded, for the queue to submit. The encoder records
   // nothing more.
   pub fn finish(self &mut) CommandBuffer {
-    imm cmd = backend.cmd;
+    let cmd = backend.cmd;
     backend.cmd = nullCommandBuffer();
     if !isNull(cmd) { check(backend.fns.endCommandBuffer(cmd), "vkEndCommandBuffer"); }
     new CommandBuffer(new CommandBufferBackend(cmd));
@@ -246,9 +246,9 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
     return new RenderPass(new PassBackend(cmd, *fns, new vulkan.Image(0u64), 0u32, false, new vulkan.PipelineLayout(0u64),
       new vulkan.ImageSubresourceRange()));
   }
-  imm view = color.view;
-  imm kind = view.backend.kind;
-  imm clear = color.loadOp == LOAD_OP_CLEAR;
+  let view = color.view;
+  let kind = view.backend.kind;
+  let clear = color.loadOp == LOAD_OP_CLEAR;
   if view.backend.mipCount != 1u32 or view.backend.layerCount != 1u32 {
     fail("beginRenderPass: a pass draws into a view of one level and one layer");
   }
@@ -259,39 +259,39 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
   // attachment layout; one also sampled rests in the shader-read layout,
   // what wrote it made visible at the end of that pass, and what sampled it
   // done first. Only the level and layer the view names move.
-  mut oldLayout = restLayout(kind);
+  var oldLayout = restLayout(kind);
   if clear { oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED; }
-  mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  var srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   if kind == KIND_SURFACE or kind == KIND_RENDER_SAMPLED { srcAccess = vulkan.ACCESS_2_NONE; }
-  mut dstAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  var dstAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   if !clear { dstAccess = dstAccess | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
   transitionRange(fns, cmd, view.backend.image, viewRange(&view.backend), oldLayout,
     vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, srcAccess,
     vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccess);
-  mut loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  var loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
   if clear { loadOp = vulkan.ATTACHMENT_LOAD_OP_CLEAR; }
-  mut storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
+  var storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
   if color.storeOp == STORE_OP_DISCARD { storeOp = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
-  imm c = color.clearValue;
-  imm colorInfo = new vulkan.RenderingAttachmentInfo(imageView: view.backend.view,
+  let c = color.clearValue;
+  let colorInfo = new vulkan.RenderingAttachmentInfo(imageView: view.backend.view,
     resolveImageView: new vulkan.ImageView(0u64), loadOp: loadOp, storeOp: storeOp,
     clearValue: vulkan.clearColor(c.red, c.green, c.blue, c.alpha));
 
   // The depth attachment: after earlier passes' depth tests and writes
-  mut depthLoad = vulkan.ATTACHMENT_LOAD_OP_LOAD;
-  mut depthStore = vulkan.ATTACHMENT_STORE_OP_STORE;
-  mut depthClear = new vulkan.ClearValue(new Array[u32, 4] <- fill 0u32);
-  mut depthSampled = false;
+  var depthLoad = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  var depthStore = vulkan.ATTACHMENT_STORE_OP_STORE;
+  var depthClear = new vulkan.ClearValue(new Array[u32, 4] <- fill 0u32);
+  var depthSampled = false;
   if hasDepth {
-    imm depthClears = depth.depthLoadOp == LOAD_OP_CLEAR;
+    let depthClears = depth.depthLoadOp == LOAD_OP_CLEAR;
     // A depth texture also sampled (TEXTURE_USAGE_TEXTURE_BINDING) rests in
     // the read-only layout: it moves to the attachment layout for the pass
     // (the earlier samplers done first) and back at 'end'
     depthSampled = depth.view.backend.kind == KIND_DEPTH_SAMPLED;
-    mut depthOld = vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    var depthOld = vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     if depthSampled { depthOld = vulkan.IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; }
-    mut depthAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    var depthAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     if depthClears {
       depthOld = vulkan.IMAGE_LAYOUT_UNDEFINED;
       depthLoad = vulkan.ATTACHMENT_LOAD_OP_CLEAR;
@@ -299,29 +299,29 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
       depthAccess = depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
     }
     if depth.depthStoreOp == STORE_OP_DISCARD { depthStore = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
-    imm tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    imm depthSrcStage = if depthSampled { vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; } else { tests; };
-    imm depthSrcAccess = if depthSampled { vulkan.ACCESS_2_NONE; } else { vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT; };
+    let tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    let depthSrcStage = if depthSampled { vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; } else { tests; };
+    let depthSrcAccess = if depthSampled { vulkan.ACCESS_2_NONE; } else { vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT; };
     transition(fns, cmd, depth.view.backend.image, vulkan.IMAGE_ASPECT_DEPTH_BIT, depthOld,
       vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, depthSrcStage, depthSrcAccess,
       tests, depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
     *(&mut depthClear as *f32) = depth.depthClearValue;
   }
-  imm depthInfo = new vulkan.RenderingAttachmentInfo(imageView: depth.view.backend.view,
+  let depthInfo = new vulkan.RenderingAttachmentInfo(imageView: depth.view.backend.view,
     imageLayout: vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, resolveImageView: new vulkan.ImageView(0u64),
     loadOp: depthLoad, storeOp: depthStore, clearValue: depthClear);
-  mut depthPointer *vulkan.RenderingAttachmentInfo = null;
+  var depthPointer *vulkan.RenderingAttachmentInfo = null;
   if hasDepth { depthPointer = &depthInfo as *vulkan.RenderingAttachmentInfo; }
 
-  imm ri = new vulkan.RenderingInfo(
+  let ri = new vulkan.RenderingInfo(
     renderArea: new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height)),
     colorAttachmentCount: 1u32, pColorAttachments: &colorInfo as *vulkan.RenderingAttachmentInfo,
     pDepthAttachment: depthPointer, pStencilAttachment: null);
   fns.cmdBeginRendering(cmd, &ri);
   setViewportFlipped(fns, cmd, 0., 0., f32.from(view.width), f32.from(view.height), 0., 1.);
-  imm scissor = new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height));
+  let scissor = new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height));
   fns.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
-  mut backend = new PassBackend(cmd, *fns, view.backend.image, kind, true, new vulkan.PipelineLayout(0u64), viewRange(&view.backend));
+  var backend = new PassBackend(cmd, *fns, view.backend.image, kind, true, new vulkan.PipelineLayout(0u64), viewRange(&view.backend));
   if hasDepth and depthSampled {
     backend.depthImage = depth.view.backend.image;
     backend.depthSampled = true;
@@ -341,44 +341,44 @@ fn beginDepthOnly(fns &DevFns, cmd vulkan.CommandBuffer, depth &RenderPassDepthS
     return new RenderPass(new PassBackend(cmd, *fns, new vulkan.Image(0u64), 0u32, false, new vulkan.PipelineLayout(0u64),
       new vulkan.ImageSubresourceRange()));
   }
-  imm view = depth.view;
-  imm kind = view.backend.kind;
+  let view = depth.view;
+  let kind = view.backend.kind;
   if view.backend.mipCount != 1u32 or view.backend.layerCount != 1u32 {
     fail("beginDepthPass: a pass draws into a view of one level and one layer");
   }
-  imm range = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_DEPTH_BIT, baseMipLevel: view.backend.baseMip,
+  let range = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_DEPTH_BIT, baseMipLevel: view.backend.baseMip,
     levelCount: 1u32, baseArrayLayer: view.backend.baseLayer, layerCount: 1u32);
-  imm clears = depth.depthLoadOp == LOAD_OP_CLEAR;
-  imm tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-  mut oldLayout = restLayout(kind);
-  mut srcStage = tests;
-  mut srcAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  let clears = depth.depthLoadOp == LOAD_OP_CLEAR;
+  let tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  var oldLayout = restLayout(kind);
+  var srcStage = tests;
+  var srcAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   if kind == KIND_DEPTH_SAMPLED {
     // What sampled it is done first; reads need no cache flush
     srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     srcAccess = vulkan.ACCESS_2_NONE;
   }
   if clears { oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED; }
-  mut dstAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  var dstAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   if !clears { dstAccess = dstAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT; }
   transitionRange(fns, cmd, view.backend.image, range, oldLayout, vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
     srcStage, srcAccess, tests, dstAccess);
-  mut depthClear = new vulkan.ClearValue(new Array[u32, 4] <- fill 0u32);
+  var depthClear = new vulkan.ClearValue(new Array[u32, 4] <- fill 0u32);
   *(&mut depthClear as *f32) = depth.depthClearValue;
-  mut loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  var loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
   if clears { loadOp = vulkan.ATTACHMENT_LOAD_OP_CLEAR; }
-  mut storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
+  var storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
   if depth.depthStoreOp == STORE_OP_DISCARD { storeOp = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
-  imm depthInfo = new vulkan.RenderingAttachmentInfo(imageView: view.backend.view,
+  let depthInfo = new vulkan.RenderingAttachmentInfo(imageView: view.backend.view,
     imageLayout: vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, resolveImageView: new vulkan.ImageView(0u64),
     loadOp: loadOp, storeOp: storeOp, clearValue: depthClear);
-  imm ri = new vulkan.RenderingInfo(
+  let ri = new vulkan.RenderingInfo(
     renderArea: new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height)),
     colorAttachmentCount: 0u32, pColorAttachments: null,
     pDepthAttachment: &depthInfo as *vulkan.RenderingAttachmentInfo, pStencilAttachment: null);
   fns.cmdBeginRendering(cmd, &ri);
   setViewportFlipped(fns, cmd, 0., 0., f32.from(view.width), f32.from(view.height), 0., 1.);
-  imm scissor = new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height));
+  let scissor = new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height));
   fns.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
   new RenderPass(new PassBackend(cmd, *fns, view.backend.image, kind, true, new vulkan.PipelineLayout(0u64), range));
 }
@@ -386,7 +386,7 @@ fn beginDepthOnly(fns &DevFns, cmd vulkan.CommandBuffer, depth &RenderPassDepthS
 // The viewport from ('x', 'y'), 'w' by 'h', with y down from the top of the
 // attachment, flipped so that clip space's y is up, as WebGPU's is
 fn setViewportFlipped(fns &DevFns, cmd vulkan.CommandBuffer, x f32, y f32, w f32, h f32, minDepth f32, maxDepth f32) {
-  imm vp = new vulkan.Viewport(x, y + h, w, 0. - h, minDepth, maxDepth);
+  let vp = new vulkan.Viewport(x, y + h, w, 0. - h, minDepth, maxDepth);
   fns.cmdSetViewport(cmd, 0u32, 1u32, &vp as *vulkan.Viewport);
 }
 
@@ -443,7 +443,7 @@ pub struct RenderPass {
       fail("setBindGroup before setPipeline");
       return;
     }
-    mut set = group.backend.set;
+    var set = group.backend.set;
     backend.fns.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_GRAPHICS, backend.layout, index, 1u32,
       &mut set as *vulkan.DescriptorSet, 0u32, null);
   }
@@ -451,8 +451,8 @@ pub struct RenderPass {
   // Read vertex buffer 'slot' of the pipeline from 'buffer', from 'offset'
   pub fn setVertexBuffer(self &mut, slot u32, buffer &Buffer, offset u64) {
     if isNull(backend.cmd) { return; }
-    mut b = buffer.backend.buffer;
-    mut o = offset;
+    var b = buffer.backend.buffer;
+    var o = offset;
     backend.fns.cmdBindVertexBuffers(backend.cmd, slot, 1u32, &mut b as *vulkan.Buffer, &mut o as *u64);
   }
 
@@ -460,7 +460,7 @@ pub struct RenderPass {
   // from 'offset'
   pub fn setIndexBuffer(self &mut, buffer &Buffer, format u32, offset u64) {
     if isNull(backend.cmd) { return; }
-    mut type = vulkan.INDEX_TYPE_UINT32;
+    var type = vulkan.INDEX_TYPE_UINT32;
     if format == INDEX_FORMAT_UINT16 { type = vulkan.INDEX_TYPE_UINT16; }
     backend.fns.cmdBindIndexBuffer(backend.cmd, buffer.backend.buffer, offset, type);
   }
@@ -488,7 +488,7 @@ pub struct RenderPass {
   // pixels ('y' down from the top)
   pub fn setScissorRect(self &mut, x u32, y u32, width u32, height u32) {
     if isNull(backend.cmd) { return; }
-    imm r = new vulkan.Rect2D(new vulkan.Offset2D(i32.from(x), i32.from(y)), new vulkan.Extent2D(width, height));
+    let r = new vulkan.Rect2D(new vulkan.Offset2D(i32.from(x), i32.from(y)), new vulkan.Extent2D(width, height));
     backend.fns.cmdSetScissor(backend.cmd, 0u32, 1u32, &r as *vulkan.Rect2D);
   }
 

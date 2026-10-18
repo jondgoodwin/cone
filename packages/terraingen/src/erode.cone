@@ -26,7 +26,7 @@ pub struct ErosionResult {
 }
 
 fn zeros(n usize) List[f32] {
-  mut l = List[f32].withCapacity(n);
+  var l = List[f32].withCapacity(n);
   l.resize(n, 0.);
   l;
 }
@@ -37,47 +37,47 @@ fn inv(x u32, z u32) Invocation {
 
 // Erode 'hf' on the CPU; the heights are replaced. The cell size in 'p' is the field's.
 pub fn erodeCpu(hf &mut Heightfield, p &ErosionParams, plan &ErosionPlan) ErosionResult {
-  imm t0 = time.Instant.now();
-  imm sp = *p;
-  imm n = hf.data.len();
-  mut water = zeros(n);
-  mut fl = zeros(n * 4usize);
-  mut vel = zeros(n * 2usize);
-  mut tl = zeros(n);
-  mut sed = zeros(n);
-  mut sed2 = zeros(n);
-  mut other = zeros(n);
-  mut i = 0u32;
-  mut thermalDone = 0u32;
+  let t0 = time.Instant.now();
+  let sp = *p;
+  let n = hf.data.len();
+  var water = zeros(n);
+  var fl = zeros(n * 4usize);
+  var vel = zeros(n * 2usize);
+  var tl = zeros(n);
+  var sed = zeros(n);
+  var sed2 = zeros(n);
+  var other = zeros(n);
+  var i = 0u32;
+  var thermalDone = 0u32;
   while i < plan.hydraulic {
     // five dispatches
-    mut z = 0u32;
+    var z = 0u32;
     while z < sp.h {
-      mut x = 0u32;
+      var x = 0u32;
       while x < sp.w { flux(inv(x, z), sp, hf.data.view(), water.view(), fl.viewMut()); x = x + 1u32; }
       z = z + 1u32;
     }
     z = 0u32;
     while z < sp.h {
-      mut x = 0u32;
+      var x = 0u32;
       while x < sp.w { waterStep(inv(x, z), sp, fl.view(), water.viewMut(), vel.viewMut()); x = x + 1u32; }
       z = z + 1u32;
     }
     z = 0u32;
     while z < sp.h {
-      mut x = 0u32;
+      var x = 0u32;
       while x < sp.w { tilt(inv(x, z), sp, hf.data.view(), tl.viewMut()); x = x + 1u32; }
       z = z + 1u32;
     }
     z = 0u32;
     while z < sp.h {
-      mut x = 0u32;
+      var x = 0u32;
       while x < sp.w { erode(inv(x, z), sp, hf.data.viewMut(), water.view(), vel.view(), tl.view(), sed.viewMut()); x = x + 1u32; }
       z = z + 1u32;
     }
     z = 0u32;
     while z < sp.h {
-      mut x = 0u32;
+      var x = 0u32;
       while x < sp.w { advect(inv(x, z), sp, vel.view(), sed.view(), sed2.viewMut()); x = x + 1u32; }
       z = z + 1u32;
     }
@@ -97,9 +97,9 @@ pub fn erodeCpu(hf &mut Heightfield, p &ErosionParams, plan &ErosionPlan) Erosio
 
 // One talus iteration on the CPU: heights in 'hf', 'other' as the second buffer
 fn thermalCpu(hf &mut Heightfield, sp &ErosionParams, other &mut List[f32]) {
-  mut z = 0u32;
+  var z = 0u32;
   while z < sp.h {
-    mut x = 0u32;
+    var x = 0u32;
     while x < sp.w { thermal(inv(x, z), *sp, hf.data.view(), other.viewMut()); x = x + 1u32; }
     z = z + 1u32;
   }
@@ -109,8 +109,8 @@ fn thermalCpu(hf &mut Heightfield, sp &ErosionParams, other &mut List[f32]) {
 // ---- GPU ----
 
 fn wordsOfFloats(v &Array[f32]) List[u32] {
-  mut w = List[u32].withCapacity(v.len);
-  mut i = 0usize;
+  var w = List[u32].withCapacity(v.len);
+  var i = 0usize;
   while i < v.len {
     w.push(v[i] as u32);
     i = i + 1usize;
@@ -119,8 +119,8 @@ fn wordsOfFloats(v &Array[f32]) List[u32] {
 }
 
 fn floatsOfWords(w &List[u32], n usize) List[f32] {
-  mut l = List[f32].withCapacity(n);
-  mut i = 0usize;
+  var l = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n {
     l.push(*w[i] as f32);
     i = i + 1usize;
@@ -131,69 +131,69 @@ fn floatsOfWords(w &List[u32], n usize) List[f32] {
 // Erode 'hf' on the GPU, the whole plan in one job. False if the GPU or the kernels were not there
 // or a dispatch failed; 'hf' is then unchanged.
 pub fn erodeGpu(device &mut gpu.Device, hf &mut Heightfield, p &ErosionParams, plan &ErosionPlan) ErosionResult {
-  imm t0 = time.Instant.now();
-  imm spirv = gpuwork.readSpirv("terraingen.spv");
-  imm none = new ErosionResult(false, List[f32].empty(), List[f32].empty(), 0.);
+  let t0 = time.Instant.now();
+  let spirv = gpuwork.readSpirv("terraingen.spv");
+  let none = new ErosionResult(false, List[f32].empty(), List[f32].empty(), 0.);
   if spirv.len() < 6usize { return none; }
-  imm R = gpuwork.READ;
-  imm W = gpuwork.READ_WRITE;
-  mut kFlux = gpuwork.Kernel.make(device, spirv.view(), "flux", &[R, R, R, W]);
-  mut kWater = gpuwork.Kernel.make(device, spirv.view(), "waterStep", &[R, R, W, W]);
-  mut kTilt = gpuwork.Kernel.make(device, spirv.view(), "tilt", &[R, R, W]);
-  mut kErode = gpuwork.Kernel.make(device, spirv.view(), "erode", &[R, W, R, R, R, W]);
-  mut kAdvect = gpuwork.Kernel.make(device, spirv.view(), "advect", &[R, R, R, W]);
-  mut kThermal = gpuwork.Kernel.make(device, spirv.view(), "thermal", &[R, R, W]);
+  let R = gpuwork.READ;
+  let W = gpuwork.READ_WRITE;
+  var kFlux = gpuwork.Kernel.make(device, spirv.view(), "flux", &[R, R, R, W]);
+  var kWater = gpuwork.Kernel.make(device, spirv.view(), "waterStep", &[R, R, W, W]);
+  var kTilt = gpuwork.Kernel.make(device, spirv.view(), "tilt", &[R, R, W]);
+  var kErode = gpuwork.Kernel.make(device, spirv.view(), "erode", &[R, W, R, R, R, W]);
+  var kAdvect = gpuwork.Kernel.make(device, spirv.view(), "advect", &[R, R, R, W]);
+  var kThermal = gpuwork.Kernel.make(device, spirv.view(), "thermal", &[R, R, W]);
   if !(kFlux.isValid() and kWater.isValid() and kTilt.isValid() and kErode.isValid() and kAdvect.isValid()
       and kThermal.isValid()) { return none; }
 
-  imm sp = *p;
-  imm n = hf.data.len();
-  mut job = gpuwork.Job.make(device);
-  imm sParams = job.give(gpuwork.uploadValue(device, &sp));
-  mut terrainA = job.give(gpuwork.upload(device, wordsOfFloats(hf.data.view()).view()));
-  mut terrainB = job.give(gpuwork.zeroed(device, n));
-  imm sWater = job.give(gpuwork.zeroed(device, n));
-  imm sFlux = job.give(gpuwork.zeroed(device, n * 4usize));
-  imm sVel = job.give(gpuwork.zeroed(device, n * 2usize));
-  imm sTilt = job.give(gpuwork.zeroed(device, n));
-  mut sedA = job.give(gpuwork.zeroed(device, n));
-  mut sedB = job.give(gpuwork.zeroed(device, n));
-  imm gx = (sp.w + 7u32) / 8u32;
-  imm gz = (sp.h + 7u32) / 8u32;
-  mut okAll = true;
-  mut i = 0u32;
-  mut thermalDone = 0u32;
+  let sp = *p;
+  let n = hf.data.len();
+  var job = gpuwork.Job.make(device);
+  let sParams = job.give(gpuwork.uploadValue(device, &sp));
+  var terrainA = job.give(gpuwork.upload(device, wordsOfFloats(hf.data.view()).view()));
+  var terrainB = job.give(gpuwork.zeroed(device, n));
+  let sWater = job.give(gpuwork.zeroed(device, n));
+  let sFlux = job.give(gpuwork.zeroed(device, n * 4usize));
+  let sVel = job.give(gpuwork.zeroed(device, n * 2usize));
+  let sTilt = job.give(gpuwork.zeroed(device, n));
+  var sedA = job.give(gpuwork.zeroed(device, n));
+  var sedB = job.give(gpuwork.zeroed(device, n));
+  let gx = (sp.w + 7u32) / 8u32;
+  let gz = (sp.h + 7u32) / 8u32;
+  var okAll = true;
+  var i = 0u32;
+  var thermalDone = 0u32;
   while i < plan.hydraulic {
     okAll = job.dispatch(device, &kFlux, &[sParams, terrainA, sWater, sFlux], gx, gz) and okAll;
     okAll = job.dispatch(device, &kWater, &[sParams, sFlux, sWater, sVel], gx, gz) and okAll;
     okAll = job.dispatch(device, &kTilt, &[sParams, terrainA, sTilt], gx, gz) and okAll;
     okAll = job.dispatch(device, &kErode, &[sParams, terrainA, sWater, sVel, sTilt, sedA], gx, gz) and okAll;
     okAll = job.dispatch(device, &kAdvect, &[sParams, sVel, sedA, sedB], gx, gz) and okAll;
-    imm t = sedA; sedA = sedB; sedB = t;
+    let t = sedA; sedA = sedB; sedB = t;
     i = i + 1u32;
     if plan.thermalEvery > 0u32 and i % plan.thermalEvery == 0u32 and thermalDone < plan.thermal {
       okAll = job.dispatch(device, &kThermal, &[sParams, terrainA, terrainB], gx, gz) and okAll;
-      imm t2 = terrainA; terrainA = terrainB; terrainB = t2;
+      let t2 = terrainA; terrainA = terrainB; terrainB = t2;
       thermalDone = thermalDone + 1u32;
     }
   }
   while thermalDone < plan.thermal {
     okAll = job.dispatch(device, &kThermal, &[sParams, terrainA, terrainB], gx, gz) and okAll;
-    imm t2 = terrainA; terrainA = terrainB; terrainB = t2;
+    let t2 = terrainA; terrainA = terrainB; terrainB = t2;
     thermalDone = thermalDone + 1u32;
   }
   if !okAll { return none; }
-  imm rT = job.readback(device, terrainA);
-  imm rS = job.readback(device, sedA);
-  imm rW = job.readback(device, sWater);
-  mut works = gpuwork.Works.make();
-  imm ticket = works.submit(device, job, gpuwork.Target.Here(0u64));
-  mut answers = List[gpuwork.Completion].empty();
+  let rT = job.readback(device, terrainA);
+  let rS = job.readback(device, sedA);
+  let rW = job.readback(device, sWater);
+  var works = gpuwork.Works.make();
+  let ticket = works.submit(device, job, gpuwork.Target.Here(0u64));
+  var answers = List[gpuwork.Completion].empty();
   works.waitFor(device, ticket, &mut answers);
   if answers.len() != 1usize or !answers[0usize].ok { return none; }
-  imm t = answers[0usize].words(rT);
-  imm s = answers[0usize].words(rS);
-  imm w = answers[0usize].words(rW);
+  let t = answers[0usize].words(rT);
+  let s = answers[0usize].words(rS);
+  let w = answers[0usize].words(rW);
   hf.data = floatsOfWords(&t, n);
   new ErosionResult(true, floatsOfWords(&s, n), floatsOfWords(&w, n), t0.elapsed().secondsF64());
 }

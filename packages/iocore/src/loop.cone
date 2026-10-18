@@ -191,10 +191,10 @@ pub struct Loop {
 
   // A new loop for the calling thread, or the reason there is none
   pub fn make() Result[Loop, IoError] {
-    mut port = 0usize;
-    mut wake = 0usize;
-    mut tick = 0usize;
-    mut code = 0u32;
+    var port = 0usize;
+    var wake = 0usize;
+    var tick = 0usize;
+    var code = 0u32;
     code, port, wake, tick = openPort();
     if code != 0u32 {return Error[Loop, IoError](new IoError(code));}
     Ok[Loop, IoError](Loop.assemble(port, wake, tick));
@@ -204,10 +204,10 @@ pub struct Loop {
   // does not unwrap make's Result: Cone moves no value out of a matched
   // variant's field, and a Loop has no empty value to swap in)
   pub fn mustMake(file &Array[u8] = srcFile(), line u32 = srcLine()) Loop {
-    mut port = 0usize;
-    mut wake = 0usize;
-    mut tick = 0usize;
-    mut code = 0u32;
+    var port = 0usize;
+    var wake = 0usize;
+    var tick = 0usize;
+    var code = 0u32;
     code, port, wake, tick = openPort();
     if code != 0u32 {panic("iocore: Loop.make failed: no completion port", file, line);}
     Loop.assemble(port, wake, tick);
@@ -216,10 +216,10 @@ pub struct Loop {
   // The loop around a new port (Linux: the epoll instance, and the eventfd
   // and timerfd it watches)
   fn assemble(port usize, wake usize, tick usize) Loop {
-    mut timer = tick;
-    mut packet = 0usize;
-    mut entries = null as *OverlappedEntry;
-    mut events = null as *EpollEvent;
+    var timer = tick;
+    var packet = 0usize;
+    var entries = null as *OverlappedEntry;
+    var events = null as *EpollEvent;
     if isWindows() {
       // The high-resolution timer (Windows 10 1803 on); an ordinary one, as
       // fine as the system's tick, before it
@@ -234,7 +234,7 @@ pub struct Loop {
     } else {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
-    imm shared = new Arc[imm, Port](new Port(if isWindows() {port;} else {wake;}, Atomic[bool].of(false),
+    let shared = new Arc[imm, Port](new Port(if isWindows() {port;} else {wake;}, Atomic[bool].of(false),
       Atomic[u32].of(0u32), Mutex.make(), null, null));
     new Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
@@ -295,32 +295,32 @@ pub struct Loop {
   // A TCP socket listening at addr, for Accept; addr's port 0 has the OS
   // choose one, which localAddr tells
   pub fn listen(self &mut, addr SocketAddr, backlog i32 = 128i32) Result[Handle, IoError] {
-    imm s = tcpSocket(addr.family());
+    let s = tcpSocket(addr.family());
     if s == invalidHandle {return Error[Handle, IoError](new IoError(wsaError()));}
-    mut a = addr;
+    var a = addr;
     // Winsock's listen, named through the module: Loop's own 'listen' is
     // the bare name here
     if not isWindows() {
       // A restarted server may bind its port again while old connections linger
-      mut one = 1i32;
+      var one = 1i32;
       setsockopt(s, solSocketLx, soReuseAddr, &mut one as *u8, 4i32);
     }
     if bind(s, &mut a as *u8, a.size) != 0i32 or iocore.listen(s, backlog) != 0i32 {
-      imm code = wsaError();
+      let code = wsaError();
       closeRaw(hSocket, s);
       return Error[Handle, IoError](new IoError(code));
     }
     if isWindows() {
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-        imm code = GetLastError();
+        let code = GetLastError();
         closesocket(s);
         return Error[Handle, IoError](new IoError(code));
       }
       return Ok[Handle, IoError](self.register(s, hListener, addr.family()));
     }
     // Linux: epoll is told of it once it is a handle
-    mut code = 0u32;
-    mut h = Handle.none();
+    var code = 0u32;
+    var h = Handle.none();
     code, h = lxAdopt(self, s, hListener, addr.family());
     if code != 0u32 {return Error[Handle, IoError](new IoError(code));}
     Ok[Handle, IoError](h);
@@ -331,29 +331,29 @@ pub struct Loop {
   // datagram it sends names its destination, and every one it receives
   // names its sender
   pub fn bindUdp(self &mut, addr SocketAddr) Result[Handle, IoError] {
-    imm s = udpSocket(addr.family());
+    let s = udpSocket(addr.family());
     if s == invalidHandle {return Error[Handle, IoError](new IoError(wsaError()));}
-    mut a = addr;
+    var a = addr;
     if bind(s, &mut a as *u8, a.size) != 0i32 {
-      imm code = wsaError();
+      let code = wsaError();
       closeRaw(hDatagram, s);
       return Error[Handle, IoError](new IoError(code));
     }
     if isWindows() {
       // An ICMP "port unreachable" for a datagram sent earlier must not make
       // a later receive on this socket fail (Winsock's default)
-      mut off = 0i32;
-      mut got = 0u32;
+      var off = 0i32;
+      var got = 0u32;
       WSAIoctl(s, sioUdpConnReset, &mut off as *u8, 4u32, null, 0u32, &mut got, null, null);
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-        imm code = GetLastError();
+        let code = GetLastError();
         closesocket(s);
         return Error[Handle, IoError](new IoError(code));
       }
       return Ok[Handle, IoError](self.register(s, hDatagram, addr.family()));
     }
-    mut code = 0u32;
-    mut h = Handle.none();
+    var code = 0u32;
+    var h = Handle.none();
     code, h = lxAdopt(self, s, hDatagram, addr.family());
     if code != 0u32 {return Error[Handle, IoError](new IoError(code));}
     Ok[Handle, IoError](h);
@@ -362,26 +362,26 @@ pub struct Loop {
   // A bound UDP socket; a panic, at the caller's line, if there can be none
   pub fn mustBindUdp(self &mut, addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) Handle {
     match self.bindUdp(addr) {
-      case imm r Ok {r;}
-      case imm e Error {panic("iocore: bindUdp failed", file, line);}
+      case let r Ok {r;}
+      case let e Error {panic("iocore: bindUdp failed", file, line);}
     }
   }
 
   // A listening socket; a panic, at the caller's line, if there can be none
   pub fn mustListen(self &mut, addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) Handle {
     match self.listen(addr) {
-      case imm r Ok {r;}
-      case imm e Error {panic("iocore: listen failed", file, line);}
+      case let r Ok {r;}
+      case let e Error {panic("iocore: listen failed", file, line);}
     }
   }
 
   // The address a socket is bound to
   pub fn localAddr(self &, h Handle) Result[SocketAddr, IoError] {
-    imm i = self.handleIndex(h);
+    let i = self.handleIndex(h);
     if i == noEntry {return Error[SocketAddr, IoError](new IoError(errorInvalidHandle));}
-    imm e = handles[usize.from(i)];
-    mut a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
-    mut len = 28i32;
+    let e = handles[usize.from(i)];
+    var a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    var len = 28i32;
     if getsockname(e.raw, &mut a as *u8, &mut len) != 0i32 {
       return Error[SocketAddr, IoError](new IoError(wsaError()));
     }
@@ -391,10 +391,10 @@ pub struct Loop {
 
   // The address of a connected socket's peer
   pub fn peerAddr(self &, h Handle) Result[SocketAddr, IoError] {
-    imm raw = self.rawOf(h, hSocket);
+    let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Error[SocketAddr, IoError](new IoError(errorInvalidHandle));}
-    mut a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
-    mut len = 28i32;
+    var a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    var len = 28i32;
     if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
       return Error[SocketAddr, IoError](new IoError(wsaError()));
     }
@@ -404,37 +404,37 @@ pub struct Loop {
 
   // A file, for ReadAt and WriteAt
   pub fn openFile(self &mut, path &Path, access Access) Result[Handle, IoError] {
-    imm text &Array[u8] = path.view();
+    let text &Array[u8] = path.view();
     if isWindows() {
-      imm w = widen(text);
+      let w = widen(text);
       if w as usize == 0usize {return Error[Handle, IoError](new IoError(errorNoUnicodeTranslation));}
-      mut want = genericRead;
-      mut how = openExisting;
+      var want = genericRead;
+      var how = openExisting;
       match access {
         case is Access.Read {}
         case is Access.Create {want = genericRead | genericWrite; how = createAlways;}
         case is Access.Update {want = genericRead | genericWrite; how = openAlways;}
       }
-      imm h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
+      let h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
       libc.free(w as *u8);
       if h == invalidHandle {return Error[Handle, IoError](new IoError(GetLastError()));}
       if CreateIoCompletionPort(h, portHandle, keyIo, 0u32) == 0usize {
-        imm code = GetLastError();
+        let code = GetLastError();
         CloseHandle(h);
         return Error[Handle, IoError](new IoError(code));
       }
       Ok[Handle, IoError](self.register(h, hFile, 0u16));
     } else {
       // Not epoll's: a file is read and written by the pool's threads
-      imm p = cstrCopy(text);
+      let p = cstrCopy(text);
       if p as usize == 0usize {return Error[Handle, IoError](new IoError(errorNotEnoughMemory));}
-      mut flags = oRdonly;
+      var flags = oRdonly;
       match access {
         case is Access.Read {}
         case is Access.Create {flags = oRdwr | oCreat | oTrunc;}
         case is Access.Update {flags = oRdwr | oCreat;}
       }
-      imm fd = sysOpen(p, flags | epollCloexec, 438u32);      // 0666, less the umask
+      let fd = sysOpen(p, flags | epollCloexec, 438u32);      // 0666, less the umask
       libc.free(p);
       if fd < 0i32 {return Error[Handle, IoError](new IoError(errnoCode(lastErrno())));}
       Ok[Handle, IoError](self.register(usize.from(fd), hFile, 0u16));
@@ -448,13 +448,13 @@ pub struct Loop {
   // still answers), and h names nothing from now on. False if it named
   // nothing already
   pub fn close(self &mut, h Handle) bool {
-    imm i = self.handleIndex(h);
+    let i = self.handleIndex(h);
     if i == noEntry {return false;}
     // Linux: what waits on it is answered Cancelled now (a job already
     // queued on a file is cancelled by the pool's own record)
     lxCancelAll(self, i);
     lxCancelFiles(self, h);
-    imm e = &mut handles[usize.from(i)];
+    let e = &mut handles[usize.from(i)];
     if isWindows() {CancelIoEx(e.raw, null);}
     closeRaw(e.kind, e.raw);
     e.kind = hFree;
@@ -470,7 +470,7 @@ pub struct Loop {
   // side can still receive. 0, or Winsock's error; a send submitted after
   // it fails. ERROR_INVALID_HANDLE when h is no connected socket
   pub fn shutdown(self &mut, h Handle) u32 {
-    imm raw = self.rawOf(h, hSocket);
+    let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return errorInvalidHandle;}
     if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
     0u32;
@@ -481,11 +481,11 @@ pub struct Loop {
   // 'close' otherwise: everything in flight on it is cancelled, and h names
   // nothing from now on. False if it named no socket
   pub fn reset(self &mut, h Handle) bool {
-    imm i = self.handleIndex(h);
+    let i = self.handleIndex(h);
     if i == noEntry {return false;}
     if handles[usize.from(i)].kind != hSocket {return false;}
     lxCancelAll(self, i);
-    imm e = &mut handles[usize.from(i)];
+    let e = &mut handles[usize.from(i)];
     if isWindows() {CancelIoEx(e.raw, null);}
     resetSocket(e.raw);
     e.kind = hFree;
@@ -501,8 +501,8 @@ pub struct Loop {
       handles.push(new HEntry(0usize, 1u32, hFree, 0u16, noEntry, noEntry, noEntry, noEntry, noEntry));
       freeHandle = u32.from(handles.len() - 1usize);
     }
-    imm i = freeHandle;
-    imm e = &mut handles[usize.from(i)];
+    let i = freeHandle;
+    let e = &mut handles[usize.from(i)];
     freeHandle = e.nextFree;
     e.raw = raw;
     e.kind = kind;
@@ -518,16 +518,16 @@ pub struct Loop {
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self &, h Handle) u32 {
     if h.index == noEntry or usize.from(h.index) >= handles.len() {return noEntry;}
-    imm e = handles[usize.from(h.index)];
+    let e = handles[usize.from(h.index)];
     if e.gen != h.gen or e.kind == hFree {return noEntry;}
     h.index;
   }
 
   // The OS handle h names, if it is of kind; invalidHandle if not
   fn rawOf(self &, h Handle, kind u32) usize {
-    imm i = self.handleIndex(h);
+    let i = self.handleIndex(h);
     if i == noEntry {return invalidHandle;}
-    imm e = handles[usize.from(i)];
+    let e = handles[usize.from(i)];
     if e.kind != kind {return invalidHandle;}
     e.raw;
   }
@@ -543,12 +543,12 @@ pub struct Loop {
   // A free record, in flight, its submission stamped
   fn allocRec(self &mut) u32 {
     if freeRec == noEntry {
-      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Rec]()) as *Rec;
+      let block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Rec]()) as *Rec;
       if block as usize == 0usize {panic("iocore: out of memory for the in-flight table");}
-      imm base = recCount;
-      mut j = 0u32;
+      let base = recCount;
+      var j = 0u32;
       while j < recsPerBlock {
-        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        let next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
         mem.writeRaw[Rec](block + usize.from(j), blankRec(base + j, next));
         j = j + 1u32;
       }
@@ -556,8 +556,8 @@ pub struct Loop {
       recCount = recCount + recsPerBlock;
       freeRec = base;
     }
-    imm i = freeRec;
-    imm r = self.recAt(i) as &mut Rec;
+    let i = freeRec;
+    let r = self.recAt(i) as &mut Rec;
     freeRec = r.nextFree;
     r.state = stFlight;
     r.asked = askedNone;
@@ -577,7 +577,7 @@ pub struct Loop {
 
   // The wheel's token for a record: its generation above its index
   fn tokenOf(self &, i u32) u64 {
-    imm r = self.recAt(i) as &Rec;
+    let r = self.recAt(i) as &Rec;
     (u64.from(r.gen) << 32u64) | u64.from(i);
   }
 
@@ -586,7 +586,7 @@ pub struct Loop {
   // yet delivered -- a prompt TimedOut the kernel has now answered after
   // all -- takes the kernel's outcome instead, its buffer back with it
   fn decide(self &mut, i u32, status u32, n usize, code u32) {
-    imm r = self.recAt(i) as &mut Rec;
+    let r = self.recAt(i) as &mut Rec;
     r.status = status;
     r.n = n;
     r.code = code;
@@ -617,11 +617,11 @@ pub struct Loop {
   // Build record i's answer, free the record (or leave it abandoned to the
   // kernel), and send the answer where its target says: how many went to out
   fn deliver(self &mut, i u32, out &mut List[Completion], at Instant) usize {
-    imm r = self.recAt(i) as &mut Rec;
+    let r = self.recAt(i) as &mut Rec;
     // A record abandoned to the kernel keeps its buffer, and its bytes, for
     // the kernel; a job's buffer is in its box, which comes back by itself
-    imm keep = r.abandon and not boxed(r.kind);
-    mut b = IoBuf.empty();
+    let keep = r.abandon and not boxed(r.kind);
+    var b = IoBuf.empty();
     if not keep {
       b <=> r.buf;
       r.bytes = None;
@@ -630,20 +630,20 @@ pub struct Loop {
     // The address the answer names: a datagram's sender or destination, a
     // connection's; none (an address of size 0) for the rest, and for a
     // receive that took no datagram (a truncated one did)
-    mut peer = new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32);
+    var peer = new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32);
     if r.peer.size > 0i32
         and (r.kind != diag.kindRecvFrom or r.status == diag.outcomeDone or r.code == errorMsgSize) {
       peer = r.peer;
     }
-    mut t Target = Target.Here(0u64);
+    var t Target = Target.Here(0u64);
     t <=> r.target;
-    mut g Option[CancelGroup] = None;
+    var g Option[CancelGroup] = None;
     g <=> r.group;
     match g {
       case is None[CancelGroup] {}
       else {grouped = grouped - 1u32;}
     }
-    imm c = new Completion(loopId, new OpId(i, r.gen), r.token, r.kind, r.status, r.n, r.code,
+    let c = new Completion(loopId, new OpId(i, r.gen), r.token, r.kind, r.status, r.n, r.code,
       b, r.newHandle, peer, r.submitted, r.dequeued, at);
     stats.count(r.status);
     // Its id names nothing from now on
@@ -658,7 +658,7 @@ pub struct Loop {
   }
 
   fn freeRecord(self &mut, i u32) {
-    imm r = self.recAt(i) as &mut Rec;
+    let r = self.recAt(i) as &mut Rec;
     r.state = stFree;
     r.abandon = false;
     r.nextFree = freeRec;
@@ -669,7 +669,7 @@ pub struct Loop {
   // posted to another loop is recorded there)
   fn note(self &, c &Completion) {
     if subscribed {
-      imm rec = c.record();
+      let rec = c.record();
       (sub)(&rec);
     }
   }
@@ -677,35 +677,35 @@ pub struct Loop {
   // Send answer c where t says: to out (Here: 1) or elsewhere (0)
   fn send(self &mut, c Completion, t Target, out &mut List[Completion]) usize {
     // A channel's send may find it full: the answer is held, and tried again
-    mut back = blankCompletion();
-    mut hold = false;
-    mut n = 0usize;
-    mut to = t;
+    var back = blankCompletion();
+    var hold = false;
+    var n = 0usize;
+    var to = t;
     match &mut to {
-      case imm p &mut Post {
+      case let p &mut Post {
         if p.waker.post(c) {
           stats.postsSent = stats.postsSent + 1u64;
         } else {
           stats.postsDropped = stats.postsDropped + 1u64;
         }
       }
-      case imm ch &mut Chan {
+      case let ch &mut Chan {
         self.note(&c);
         hold = self.tryChan(&ch.tx, c, &mut back);
       }
-      case mut o &mut Once {
+      case var o &mut Once {
         self.note(&c);
         match o.tx.send(c) {
           case is None[Completion] {stats.handedOff = stats.handedOff + 1u64;}
           else {stats.handedDropped = stats.handedDropped + 1u64;}
         }
       }
-      case imm s &mut Status {
+      case let s &mut Status {
         self.note(&c);
         s.board.put(s.slot, c);
         stats.handedOff = stats.handedOff + 1u64;
       }
-      case mut h &mut Hook {
+      case var h &mut Hook {
         self.note(&c);
         h.sink.give(c);
         stats.handedOff = stats.handedOff + 1u64;
@@ -728,9 +728,9 @@ pub struct Loop {
   // receiver has gone (c dropped, its buffer home); true when the channel
   // is full, c handed back in 'back'
   fn tryChan(self &mut, tx &Sender[Completion], c Completion, back &mut Completion) bool {
-    mut full = false;
+    var full = false;
     match tx.trySend(c) {
-      case mut s Some {
+      case var s Some {
         if tx.isClosed() {
           stats.handedDropped = stats.handedDropped + 1u64;
         } else {
@@ -747,30 +747,30 @@ pub struct Loop {
   // whose receiver has gone, are done with
   fn retryHeld(self &mut) {
     if heldC.len() == 0usize {return;}
-    mut k = 0usize;
+    var k = 0usize;
     while k < heldC.len() {
-      mut c = blankCompletion();
-      imm slot = &mut heldC[k];
+      var c = blankCompletion();
+      let slot = &mut heldC[k];
       c <=> *slot;
-      mut back = blankCompletion();
-      mut still = false;
+      var back = blankCompletion();
+      var still = false;
       // Out of the list into a local, to be narrowed to its variant
-      mut to Target = Target.Here(0u64);
-      imm tslot = &mut heldT[k];
+      var to Target = Target.Here(0u64);
+      let tslot = &mut heldT[k];
       to <=> *tslot;
       match &mut to {
-        case imm ch &mut Chan {still = self.tryChan(&ch.tx, c, &mut back);}
+        case let ch &mut Chan {still = self.tryChan(&ch.tx, c, &mut back);}
         else {}
       }
       if still {
-        imm again = &mut heldC[k];
+        let again = &mut heldC[k];
         back <=> *again;
-        imm tagain = &mut heldT[k];
+        let tagain = &mut heldT[k];
         to <=> *tagain;
         k = k + 1usize;
       } else {
         // Done with: the last goes into its place
-        imm last = heldC.len() - 1usize;
+        let last = heldC.len() - 1usize;
         heldC.swap(k, last);
         heldT.swap(k, last);
         heldC.pop();
@@ -782,11 +782,11 @@ pub struct Loop {
   // Deliver every decided answer: how many went to out
   fn flush(self &mut, out &mut List[Completion]) usize {
     if decided.len() == 0usize {return 0usize;}
-    imm at = Instant.now();
-    mut n = 0usize;
-    mut k = 0usize;
+    let at = Instant.now();
+    var n = 0usize;
+    var k = 0usize;
     while k < decided.len() {
-      imm i = *decided[k];
+      let i = *decided[k];
       n = n + self.deliver(i, out, at);
       k = k + 1usize;
     }
@@ -849,19 +849,19 @@ pub struct Loop {
 
   fn startExternal(self &mut, to Target, buf IoBuf, deadline Instant, group Option[CancelGroup],
       file &Array[u8], line u32) Completer {
-    imm token = to.token;
-    mut t = self.claim(to, file, line);
-    imm i = self.allocRec();
-    imm r = self.recAt(i) as &mut Rec;
+    let token = to.token;
+    var t = self.claim(to, file, line);
+    let i = self.allocRec();
+    let r = self.recAt(i) as &mut Rec;
     r.token = token;
     r.target <=> t;
     r.kind = diag.kindExternal;
-    mut b = buf;
+    var b = buf;
     r.buf <=> b;
-    imm gen = r.gen;
-    mut dl = deadline;
+    let gen = r.gen;
+    var dl = deadline;
     match group {
-      case imm s Some {if s.deadline() < dl {dl = s.deadline();}}
+      case let s Some {if s.deadline() < dl {dl = s.deadline();}}
       else {}
     }
     if self.join(i, group) {
@@ -874,7 +874,7 @@ pub struct Loop {
       self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
       return new Completer(null, new OpId(i, gen), new Waker(port));
     }
-    imm box = newBox(&noWork, 0u64, new Waker(port), i, gen, null);
+    let box = newBox(&noWork, 0u64, new Waker(port), i, gen, null);
     (box as &mut JobBox).buf <=> r.buf;
     (*box).state = boxRunning;
     r.job = box;
@@ -888,7 +888,7 @@ pub struct Loop {
   // passes through
   fn claim(self &mut, to Target, file &Array[u8], line u32) Target {
     match &to {
-      case imm s &Status {
+      case let s &Status {
         if not s.board.arm(s.slot) {
           panic("iocore: a status slot given an operation while it holds one, or out of range", file, line);
         }
@@ -901,14 +901,14 @@ pub struct Loop {
   // The group's part of a submit: the record joins it, and the loop is told
   // when it is cancelled. True when it is cancelled already
   fn join(self &mut, i u32, group Option[CancelGroup]) bool {
-    imm r = self.recAt(i) as &mut Rec;
-    mut g = group;
+    let r = self.recAt(i) as &mut Rec;
+    var g = group;
     r.group <=> g;
-    mut cancelled = false;
+    var cancelled = false;
     match r.group {
-      case imm s Some {
+      case let s Some {
         grouped = grouped + 1u32;
-        imm w = new Waker(port);
+        let w = new Waker(port);
         s.register(loopId, &w);
         // After the registration: a cancel since is either seen here or
         // posted to this loop
@@ -921,19 +921,19 @@ pub struct Loop {
 
   fn startTimer(self &mut, at Instant, to Target, group Option[CancelGroup],
       file &Array[u8], line u32) OpId {
-    imm token = to.token;
-    mut t = self.claim(to, file, line);
-    imm i = self.allocRec();
-    imm r = self.recAt(i) as &mut Rec;
+    let token = to.token;
+    var t = self.claim(to, file, line);
+    let i = self.allocRec();
+    let r = self.recAt(i) as &mut Rec;
     r.kind = diag.kindTimer;
     r.token = token;
     r.target <=> t;
-    imm gen = r.gen;
+    let gen = r.gen;
     // A timer due after its group's deadline answers TimedOut at the
     // deadline instead; one due at or before it answers Done at its time
-    mut dl = forever();
+    var dl = forever();
     match group {
-      case imm s Some {dl = s.deadline();}
+      case let s Some {dl = s.deadline();}
       else {}
     }
     if self.join(i, group) {
@@ -955,11 +955,11 @@ pub struct Loop {
 
   fn start(self &mut, op Op, to Target, deadline Instant, group Option[CancelGroup],
       file &Array[u8], line u32) OpId {
-    imm token = to.token;
-    mut t = self.claim(to, file, line);
-    imm i = self.allocRec();
-    imm p = self.recAt(i);
-    imm r = p as &mut Rec;
+    let token = to.token;
+    var t = self.claim(to, file, line);
+    let i = self.allocRec();
+    let p = self.recAt(i);
+    let r = p as &mut Rec;
     r.token = token;
     r.target <=> t;
     r.ov.internal = 0usize;
@@ -969,69 +969,69 @@ pub struct Loop {
     r.ov.hEvent = 0usize;
     // What it is, and what it owns, into the record
     match op {
-      case imm o Connect {
+      case let o Connect {
         r.kind = diag.kindConnect;
         r.peer = o.addr;
       }
-      case imm o Accept {
+      case let o Accept {
         r.kind = diag.kindAccept;
         r.sock = o.listener;
       }
-      case mut o Recv {
+      case var o Recv {
         r.kind = diag.kindRecv;
         r.buf <=> o.buf;
         r.sock = o.sock;
       }
-      case imm o RecvReady {
+      case let o RecvReady {
         r.kind = diag.kindRecvReady;
         r.sock = o.sock;
       }
-      case mut o Send {
+      case var o Send {
         r.kind = diag.kindSend;
         r.buf <=> o.buf;
         r.sock = o.sock;
       }
-      case imm o SendBytes {
+      case let o SendBytes {
         r.kind = diag.kindSend;
         r.bytes = Some[Bytes](o.bytes);
         r.sock = o.sock;
       }
-      case mut o ReadAt {
+      case var o ReadAt {
         r.kind = diag.kindReadAt;
         r.buf <=> o.buf;
         r.sock = o.file;
         r.at = o.at;
       }
-      case mut o WriteAt {
+      case var o WriteAt {
         r.kind = diag.kindWriteAt;
         r.buf <=> o.buf;
         r.sock = o.file;
         r.at = o.at;
       }
-      case mut o Call {
+      case var o Call {
         r.kind = diag.kindCall;
         r.buf <=> o.buf;
         r.lane = o.lane;
         r.work = o.work;
         r.at = o.arg;
       }
-      case mut o RecvFrom {
+      case var o RecvFrom {
         r.kind = diag.kindRecvFrom;
         r.buf <=> o.buf;
         r.sock = o.sock;
       }
-      case mut o SendTo {
+      case var o SendTo {
         r.kind = diag.kindSendTo;
         r.buf <=> o.buf;
         r.sock = o.sock;
         r.peer = o.addr;
       }
     }
-    imm gen = r.gen;
+    let gen = r.gen;
     // Its deadline: the tighter of its own and its group's
-    mut dl = deadline;
+    var dl = deadline;
     match group {
-      case imm s Some {if s.deadline() < dl {dl = s.deadline();}}
+      case let s Some {if s.deadline() < dl {dl = s.deadline();}}
       else {}
     }
     // Cancelled is a state: an operation in a cancelled group, or whose
@@ -1046,7 +1046,7 @@ pub struct Loop {
       self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
       return new OpId(i, gen);
     }
-    imm code = self.launch(p);
+    let code = self.launch(p);
     if code == errorHandleEof {
       self.decide(i, diag.outcomeDone, 0usize, 0u32);
     } elif code != 0u32 {
@@ -1067,16 +1067,16 @@ pub struct Loop {
   // (its completion will come to the port); or the error that stopped it
   // before it was taken
   fn launch(self &mut, p *Rec) u32 {
-    imm r = p as &mut Rec;
-    imm k = r.kind;
+    let r = p as &mut Rec;
+    let k = r.kind;
     if k == diag.kindConnect {return self.startConnect(p, r.peer);}
     if k == diag.kindAccept {return self.startAccept(p, r.sock);}
     if k == diag.kindRecv {return self.startRecv(p, r.sock, false);}
     if k == diag.kindRecvReady {return self.startRecv(p, r.sock, true);}
     if k == diag.kindSend {
       match r.bytes {
-        case imm b Some {
-          imm v = b.view();
+        case let b Some {
+          let v = b.view();
           return self.startSend(p, r.sock, v as *u8, v.len);
         }
         else {}
@@ -1095,30 +1095,30 @@ pub struct Loop {
   // before the kernel took it
 
   fn startConnect(self &mut, p *Rec, addr SocketAddr) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
       if connectExAddr == 0usize {return errorInvalidParameter;}
-      imm s = tcpSocket(addr.family());
+      let s = tcpSocket(addr.family());
       if s == invalidHandle {return wsaError();}
-      mut here = addr.wildcard();
+      var here = addr.wildcard();
       if bind(s, &mut here as *u8, here.size) != 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         closesocket(s);
         return code;
       }
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-        imm code = GetLastError();
+        let code = GetLastError();
         closesocket(s);
         return code;
       }
       r.newSock = s;
       r.handle = s;
       r.family = addr.family();
-      mut a = addr;
+      var a = addr;
       libc.memcpy(&mut r.addr as *u8, &mut a as *u8, 28usize);
-      imm connectEx = connectExAddr as *u8 as ConnectExFn;
+      let connectEx = connectExAddr as *u8 as ConnectExFn;
       if connectEx(s, &mut r.addr as *u8, a.size, null, 0u32, null, p as *u8) == 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         if code != errorIoPending {
           closesocket(s);
           r.newSock = invalidHandle;
@@ -1132,21 +1132,21 @@ pub struct Loop {
   }
 
   fn startAccept(self &mut, p *Rec, listener Handle) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
       if acceptExAddr == 0usize {return errorInvalidParameter;}
-      imm li = self.handleIndex(listener);
+      let li = self.handleIndex(listener);
       if li == noEntry {return errorInvalidHandle;}
-      imm e = handles[usize.from(li)];
+      let e = handles[usize.from(li)];
       if e.kind != hListener {return errorInvalidHandle;}
-      imm s = tcpSocket(e.family);
+      let s = tcpSocket(e.family);
       if s == invalidHandle {return wsaError();}
       r.newSock = s;
       r.handle = e.raw;
       r.family = e.family;
-      imm acceptEx = acceptExAddr as *u8 as AcceptExFn;
+      let acceptEx = acceptExAddr as *u8 as AcceptExFn;
       if acceptEx(e.raw, s, &mut r.addr as *u8, 0u32, acceptAddrLen, acceptAddrLen, null, p as *u8) == 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         if code != errorIoPending {
           closesocket(s);
           r.newSock = invalidHandle;
@@ -1160,23 +1160,23 @@ pub struct Loop {
   }
 
   fn startRecv(self &mut, p *Rec, sock Handle, ready bool) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
-      imm raw = self.rawOf(sock, hSocket);
+      let raw = self.rawOf(sock, hSocket);
       if raw == invalidHandle {return errorInvalidHandle;}
       r.handle = raw;
       if ready {
         r.wsa.len = 0u32;
         r.wsa.buf = null;
       } else {
-        imm room = r.buf.room();
+        let room = r.buf.room();
         if room == 0usize {return errorInsufficientBuffer;}
         r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
         r.wsa.buf = r.buf.base() + r.buf.len();
       }
       r.flags = 0u32;
       if WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, p as *u8, null) != 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         if code != errorIoPending {return code;}
       }
       0u32;
@@ -1186,16 +1186,16 @@ pub struct Loop {
   }
 
   fn startSend(self &mut, p *Rec, sock Handle, data *u8, len usize) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
-      imm raw = self.rawOf(sock, hSocket);
+      let raw = self.rawOf(sock, hSocket);
       if raw == invalidHandle {return errorInvalidHandle;}
       if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
       r.handle = raw;
       r.wsa.len = u32.from(len);
       r.wsa.buf = data;
       if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         if code != errorIoPending {return code;}
       }
       0u32;
@@ -1206,11 +1206,11 @@ pub struct Loop {
 
   // One datagram into the buffer's room, the sender into the record's 'peer'
   fn startRecvFrom(self &mut, p *Rec, sock Handle) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
-      imm raw = self.rawOf(sock, hDatagram);
+      let raw = self.rawOf(sock, hDatagram);
       if raw == invalidHandle {return errorInvalidHandle;}
-      imm room = r.buf.room();
+      let room = r.buf.room();
       if room == 0usize {return errorInsufficientBuffer;}
       r.handle = raw;
       r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
@@ -1219,7 +1219,7 @@ pub struct Loop {
       r.peer.size = 28i32;
       if WSARecvFrom(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, &mut r.peer as *u8,
           &mut r.peer.size, p as *u8, null) != 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         if code != errorIoPending {return code;}
       }
       0u32;
@@ -1230,9 +1230,9 @@ pub struct Loop {
 
   // The buffer as one datagram to the address in the record's 'peer'
   fn startSendTo(self &mut, p *Rec, sock Handle) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
-      imm raw = self.rawOf(sock, hDatagram);
+      let raw = self.rawOf(sock, hDatagram);
       if raw == invalidHandle {return errorInvalidHandle;}
       if r.buf.len() > 0xFFFFFFFFusize {return errorInvalidParameter;}
       r.handle = raw;
@@ -1240,7 +1240,7 @@ pub struct Loop {
       r.wsa.buf = r.buf.base();
       if WSASendTo(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, &mut r.peer as *u8, r.peer.size,
           p as *u8, null) != 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         if code != errorIoPending {return code;}
       }
       0u32;
@@ -1250,26 +1250,26 @@ pub struct Loop {
   }
 
   fn startFile(self &mut, p *Rec, file Handle, at u64, write bool) u32 {
-    imm r = p as &mut Rec;
+    let r = p as &mut Rec;
     if isWindows() {
-      imm raw = self.rawOf(file, hFile);
+      let raw = self.rawOf(file, hFile);
       if raw == invalidHandle {return errorInvalidHandle;}
       r.handle = raw;
       r.ov.offset = u32.from(at & 0xFFFFFFFFu64);
       r.ov.offsetHigh = u32.from(at >> 32u64);
-      mut ok = 0i32;
+      var ok = 0i32;
       if write {
-        imm len = r.buf.len();
+        let len = r.buf.len();
         if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
         ok = WriteFile(raw, r.buf.base(), u32.from(len), null, p as *u8);
       } else {
-        imm room = r.buf.room();
+        let room = r.buf.room();
         if room == 0usize {return errorInsufficientBuffer;}
-        imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+        let want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
         ok = ReadFile(raw, r.buf.base() + r.buf.len(), want, null, p as *u8);
       }
       if ok == 0i32 {
-        imm code = GetLastError();
+        let code = GetLastError();
         if code != errorIoPending {return code;}
       }
       0u32;
@@ -1281,10 +1281,10 @@ pub struct Loop {
   // A job for the blocking pool: boxed with a waker of this loop, its
   // buffer moved into the box, and queued on its lane
   fn startCall(self &mut, p *Rec) u32 {
-    imm r = p as &mut Rec;
-    imm l = laneAt(r.lane.id);
+    let r = p as &mut Rec;
+    let l = laneAt(r.lane.id);
     if l as usize == 0usize {return errorInvalidParameter;}
-    imm b = newBox(r.work, r.at, new Waker(port), r.index, r.gen, l);
+    let b = newBox(r.work, r.at, new Waker(port), r.index, r.gen, l);
     (b as &mut JobBox).buf <=> r.buf;
     if not enqueueBox(b) {
       r.buf <=> (b as &mut JobBox).buf;
@@ -1305,7 +1305,7 @@ pub struct Loop {
   // an id that names nothing
   pub fn cancel(self &mut, id OpId) bool {
     if id.isNone() or id.index >= recCount {return false;}
-    imm r = self.recAt(id.index) as &mut Rec;
+    let r = self.recAt(id.index) as &mut Rec;
     if r.gen != id.gen or r.state != stFlight {return false;}
     if r.asked == askedNone {
       stats.cancelsAsked = stats.cancelsAsked + 1u64;
@@ -1318,9 +1318,9 @@ pub struct Loop {
   // decided at once (a job with its buffer back); the kernel is asked
   // (CancelIoEx); a running job answers when it returns
   fn askCancel(self &mut, i u32, why u32) {
-    imm p = self.recAt(i);
-    imm r = p as &mut Rec;
-    imm outcome = if why == askedDeadline {diag.outcomeTimedOut;} else {diag.outcomeCancelled;};
+    let p = self.recAt(i);
+    let r = p as &mut Rec;
+    let outcome = if why == askedDeadline {diag.outcomeTimedOut;} else {diag.outcomeCancelled;};
     if r.kind == diag.kindTimer {
       self.decide(i, outcome, 0usize, 0u32);
       return;
@@ -1352,13 +1352,13 @@ pub struct Loop {
   fn sweepGroups(self &mut) {
     groupsDirty = false;
     if grouped == 0u32 {return;}
-    mut i = 0u32;
+    var i = 0u32;
     while i < recCount {
-      imm r = self.recAt(i) as &mut Rec;
+      let r = self.recAt(i) as &mut Rec;
       if r.state == stFlight and r.asked == askedNone {
-        mut hit = false;
+        var hit = false;
         match r.group {
-          case imm s Some {hit = s.isCancelled();}
+          case let s Some {hit = s.isCancelled();}
           else {}
         }
         if hit {
@@ -1378,7 +1378,7 @@ pub struct Loop {
   // (Windows only: Linux's operations are tried by linux.cone, not completed)
   fn complete(self &mut, p *Rec, bytes u32, at Instant) {
     if isWindows() {
-      imm r = p as &mut Rec;
+      let r = p as &mut Rec;
       kernelHeld = kernelHeld - 1u32;
       if r.state == stAbandoned {
         // Its answer went long ago: the buffer goes home, the record is free
@@ -1386,7 +1386,7 @@ pub struct Loop {
           closesocket(r.newSock);
           r.newSock = invalidHandle;
         }
-        mut b = IoBuf.empty();
+        var b = IoBuf.empty();
         b <=> r.buf;
         r.bytes = None;
         stats.lateReturns = stats.lateReturns + 1u64;
@@ -1394,8 +1394,8 @@ pub struct Loop {
         return;
       }
       r.dequeued = at;
-      imm status = r.ov.internal & 0xFFFFFFFFusize;
-      imm n = usize.from(bytes);
+      let status = r.ov.internal & 0xFFFFFFFFusize;
+      let n = usize.from(bytes);
       if status == statusBufferOverflow and r.kind == diag.kindRecvFrom {
         // The datagram was longer than the buffer's room: the room is filled,
         // the rest of it is lost, and the answer says so (WSAEMSGSIZE)
@@ -1408,7 +1408,7 @@ pub struct Loop {
           r.buf.setLen(r.buf.len() + n);
         }
         if r.kind == diag.kindAccept or r.kind == diag.kindConnect {
-          imm code = self.adopt(p);
+          let code = self.adopt(p);
           if code != 0u32 {
             self.decide(r.index, diag.outcomeFailed, 0usize, code);
             return;
@@ -1442,13 +1442,13 @@ pub struct Loop {
   // outcome; a job answered already (a prompt TimedOut) is dropped, its
   // buffer going home
   fn completeJob(self &mut, b *JobBox, at Instant) {
-    imm j = b as &mut JobBox;
-    imm i = j.rec;
+    let j = b as &mut JobBox;
+    let i = j.rec;
     if i >= recCount {
       dropBox(b);
       return;
     }
-    imm r = self.recAt(i) as &mut Rec;
+    let r = self.recAt(i) as &mut Rec;
     if r.gen != j.gen or r.job != b or (r.state != stFlight and r.state != stDecided) {
       stats.lateReturns = stats.lateReturns + 1u64;
       dropBox(b);
@@ -1457,7 +1457,7 @@ pub struct Loop {
     r.job = null;
     r.dequeued = at;
     r.buf <=> j.buf;
-    mut status = j.status;
+    var status = j.status;
     if status == diag.outcomeCancelled and r.asked == askedDeadline {
       status = diag.outcomeTimedOut;
     }
@@ -1470,15 +1470,15 @@ pub struct Loop {
   // (Windows only: Linux adopts a socket where it makes or accepts it)
   fn adopt(self &mut, p *Rec) u32 {
     if isWindows() {
-      imm r = p as &mut Rec;
-      imm s = r.newSock;
+      let r = p as &mut Rec;
+      let s = r.newSock;
       r.newSock = invalidHandle;
-      mut rc = 0i32;
+      var rc = 0i32;
       if r.kind == diag.kindAccept {
-        mut listener = r.handle;
+        var listener = r.handle;
         rc = setsockopt(s, solSocket, soUpdateAcceptContext, &mut listener as *u8, 8i32);
         if rc == 0i32 and CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
-          imm code = GetLastError();
+          let code = GetLastError();
           closesocket(s);
           return code;
         }
@@ -1486,7 +1486,7 @@ pub struct Loop {
         rc = setsockopt(s, solSocket, soUpdateConnectContext, null, 0i32);
       }
       if rc != 0i32 {
-        imm code = wsaError();
+        let code = wsaError();
         closesocket(s);
         return code;
       }
@@ -1505,14 +1505,14 @@ pub struct Loop {
   fn fireTimers(self &mut, now Instant) {
     if wheel.isEmpty() {return;}
     wheel.expired(now, &mut expiries);
-    mut k = 0usize;
+    var k = 0usize;
     while k < expiries.len() {
-      imm token = expiries[k].token;
-      imm i = u32.from(token & 0xFFFFFFFFu64);
-      imm gen = u32.from(token >> 32u64);
+      let token = expiries[k].token;
+      let i = u32.from(token & 0xFFFFFFFFu64);
+      let gen = u32.from(token >> 32u64);
       k = k + 1usize;
       if i >= recCount {continue;}
-      imm r = self.recAt(i) as &mut Rec;
+      let r = self.recAt(i) as &mut Rec;
       if r.gen != gen or r.state != stFlight {continue;}
       r.timer = TimerId.none();
       if r.kind == diag.kindTimer {
@@ -1546,28 +1546,28 @@ pub struct Loop {
   pub fn poll(self &mut, until Instant, out &mut List[Completion]) usize {
     stats.polls = stats.polls + 1u64;
     woken = false;
-    imm elsewhere = stats.postsSent + stats.postsDropped + stats.handedOff + stats.handedDropped;
-    mut n = 0usize;
+    let elsewhere = stats.postsSent + stats.postsDropped + stats.handedOff + stats.handedDropped;
+    var n = 0usize;
     while true {
       self.retryHeld();
-      imm now = Instant.now();
+      let now = Instant.now();
       // How long the kernel may keep us: not at all when answers are ready
       // or a timer is due
-      mut ms = 0u32;
+      var ms = 0u32;
       if decided.len() == 0usize and cancels.len() == 0usize and now < until {
-        mut wakeAt = until;
+        var wakeAt = until;
         match wheel.nextExpiry() {
-          case imm s Some {if s < wakeAt {wakeAt = s;}}
+          case let s Some {if s < wakeAt {wakeAt = s;}}
           case is None[Instant] {}
         }
         if heldC.len() > 0usize {
-          imm retry = now + Duration.fromNanos(heldRetryNs);
+          let retry = now + Duration.fromNanos(heldRetryNs);
           if retry < wakeAt {wakeAt = retry;}
         }
         if wakeAt > now {ms = self.armFor(wakeAt, now);}
       }
       n = n + self.dequeue(ms, out);
-      imm after = Instant.now();
+      let after = Instant.now();
       self.fireTimers(after);
       n = n + self.flush(out);
       if n > 0usize or woken or after >= until {return n;}
@@ -1587,21 +1587,21 @@ pub struct Loop {
   fn armFor(self &mut, wakeAt Instant, now Instant) u32 {
     if wakeAt >= forever() {return infinite;}
     if isWindows() {
-      imm left = (wakeAt - now).nanos();
+      let left = (wakeAt - now).nanos();
       if packet != 0usize and (not associated or armedFor != wakeAt) {
         // Relative, in 100 ns units: negative
-        mut due = 0i64 - (left + 99i64) / 100i64;
+        var due = 0i64 - (left + 99i64) / 100i64;
         SetWaitableTimer(timer, &due, 0i32, null, null, 0i32);
         armedFor = wakeAt;
         if not associated {
-          mut already = 0u8;
+          var already = 0u8;
           if NtAssociateWaitCompletionPacket(packet, portHandle, timer, keyTimer as *u8, null,
               0i32, 0usize, &mut already as *u8) == 0i32 {
             associated = true;
           }
         }
       }
-      imm ms = (left + 999999i64) / 1000000i64 + 1i64;
+      let ms = (left + 999999i64) / 1000000i64 + 1i64;
       if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
     } else {
       lxArm(self, wakeAt, now);
@@ -1612,21 +1612,21 @@ pub struct Loop {
   // how many answers posted by other loops went to out
   fn dequeue(self &mut, ms u32, out &mut List[Completion]) usize {
     if isWindows() {
-      mut got = 0u32;
-      imm ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
+      var got = 0u32;
+      let ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
       if ms != 0u32 {stats.waits = stats.waits + 1u64;}
       if ok == 0i32 or got == 0u32 {
         if ms != 0u32 and ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}
         return 0usize;
       }
-      imm at = Instant.now();
+      let at = Instant.now();
       stats.dequeued = stats.dequeued + u64.from(got);
       if u64.from(got) > stats.largestBatch {stats.largestBatch = u64.from(got);}
-      mut n = 0usize;
-      mut k = 0usize;
+      var n = 0usize;
+      var k = 0usize;
       while k < usize.from(got) {
-        imm e = entries + k;
-        imm key = (*e).key;
+        let e = entries + k;
+        let key = (*e).key;
         if key == keyIo {
           self.complete((*e).ov as *Rec, (*e).bytes, at);
         } elif key == keyTimer {
@@ -1648,26 +1648,26 @@ pub struct Loop {
   // a job come home, a wake, a cancel, a cancelled group, an answer for this
   // loop. How many answers went to out
   fn handlePacket(self &mut, key usize, ov *u8, at Instant, out &mut List[Completion]) usize {
-    mut n = 0usize;
+    var n = 0usize;
     if key == keyJob {
       self.completeJob(ov as *JobBox, at);
     } elif key == keyWake {
       woken = true;
       stats.wakes = stats.wakes + 1u64;
     } elif key == keyCancel {
-      imm number = u64.from(ov as usize);
+      let number = u64.from(ov as usize);
       stats.remoteCancels = stats.remoteCancels + 1u64;
       self.cancel(new OpId(u32.from(number & 0xFFFFFFFFu64), u32.from(number >> 32u64)));
     } elif key == keyGroup {
       groupsDirty = true;
     } elif key == keyPost {
-      imm block = ov as *Completion;
-      mut c = mem.readRaw[Completion](block);
+      let block = ov as *Completion;
+      var c = mem.readRaw[Completion](block);
       libc.free(block as *u8);
       c.delivered = at;
       stats.postsReceived = stats.postsReceived + 1u64;
       if subscribed {
-        imm rec = c.record();
+        let rec = c.record();
         (sub)(&rec);
       }
       out.push(c);
@@ -1685,7 +1685,7 @@ pub struct Loop {
     // Every handle's operations cancelled, all before any is closed (a
     // socket closed first would end its peer's receive as the end of the
     // stream, not as the cancel it is), then every handle closed
-    mut h = 0usize;
+    var h = 0usize;
     while h < handles.len() {
       if handles[h].kind != hFree {
         if isWindows() {CancelIoEx(handles[h].raw, null);} else {lxCancelAll(self, u32.from(h));}
@@ -1694,7 +1694,7 @@ pub struct Loop {
     }
     h = 0usize;
     while h < handles.len() {
-      imm e = &mut handles[h];
+      let e = &mut handles[h];
       if e.kind != hFree {
         closeRaw(e.kind, e.raw);
         e.kind = hFree;
@@ -1704,10 +1704,10 @@ pub struct Loop {
     // Connections still being made hold sockets of their own; timers answer
     // Cancelled; jobs still queued are taken out, and those running are left
     // to their threads, which find this loop gone and drop them
-    mut i = 0u32;
+    var i = 0u32;
     while i < recCount {
-      imm p = self.recAt(i);
-      imm r = p as &mut Rec;
+      let p = self.recAt(i);
+      let r = p as &mut Rec;
       if r.state == stFlight or r.state == stAbandoned {
         if r.kind == diag.kindTimer {
           self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
@@ -1732,7 +1732,7 @@ pub struct Loop {
     // Wait until the kernel has given back every record, and deliver what
     // was owed to other loops and threads; what was owed here dies, buffers
     // going home
-    mut scratch = List[Completion].empty();
+    var scratch = List[Completion].empty();
     self.flush(&mut scratch);
     scratch.clear();
     while kernelHeld > 0u32 {
@@ -1758,10 +1758,10 @@ pub struct Loop {
       sysClose(fdOf(portHandle));
     }
     // The table's blocks, every record's empty values with them
-    mut b = 0usize;
+    var b = 0usize;
     while b < blocks.len() {
-      imm block = *blocks[b];
-      mut j = 0u32;
+      let block = *blocks[b];
+      var j = 0u32;
       while j < recsPerBlock {
         mem.finalize[Rec](block + usize.from(j));
         j = j + 1u32;

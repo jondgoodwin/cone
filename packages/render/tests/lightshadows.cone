@@ -54,10 +54,10 @@ fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
 fn px(p *u8, x usize, y usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)); }
 
 fn crossRow(p *u8, y usize, from usize, to usize, mid f32, falling bool) f32 {
-  mut x = from;
+  var x = from;
   while x < to {
-    imm a = px(p, x, y);
-    imm b = px(p, x + 1usize, y);
+    let a = px(p, x, y);
+    let b = px(p, x + 1usize, y);
     if (falling and a > mid and b <= mid) or (!falling and a < mid and b >= mid) {
       return f32.from(x) + 0.5 + (a - mid) / (a - b);
     }
@@ -67,10 +67,10 @@ fn crossRow(p *u8, y usize, from usize, to usize, mid f32, falling bool) f32 {
 }
 
 fn crossColumn(p *u8, x usize, from usize, to usize, mid f32, falling bool) f32 {
-  mut y = from;
+  var y = from;
   while y < to {
-    imm a = px(p, x, y);
-    imm b = px(p, x, y + 1usize);
+    let a = px(p, x, y);
+    let b = px(p, x, y + 1usize);
     if (falling and a > mid and b <= mid) or (!falling and a < mid and b >= mid) {
       return f32.from(y) + 0.5 + (a - mid) / (a - b);
     }
@@ -85,7 +85,7 @@ fn worldZ(v f32) f32 { (v - 128.) / 128. * HALF_VIEW; }
 
 fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     camera &Camera, light &Light, list &DrawList) {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, color, depth, camera, light, list);
   encoder.copyTextureToBuffer(color, readback);
   device.queue.submit(encoder.finish());
@@ -94,7 +94,7 @@ fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &
 }
 
 fn topDown() Camera {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
   camera.far = 100.;
@@ -119,19 +119,19 @@ struct Scene {
 }
 
 fn makeScene(renderer &mut Renderer, device &mut Device) Scene {
-  mut plane = Mesh.plane(1, 1.);
-  imm ground = renderer.addMesh(device, &plane);
-  imm cube = Mesh.cube(1.);
-  imm box = renderer.addMesh(device, &cube);
-  imm litM = Material.plain(new Color(0.8, 0.8, 0.8, 1.));
-  imm lit = renderer.addMaterial(device, &litM);
-  imm pbrM = PbrMaterial.standard(new Color(0.8, 0.8, 0.8, 1.), 0., 1.);
-  imm pbr = renderer.addPbrMaterial(device, &pbrM);
+  var plane = Mesh.plane(1, 1.);
+  let ground = renderer.addMesh(device, &plane);
+  let cube = Mesh.cube(1.);
+  let box = renderer.addMesh(device, &cube);
+  let litM = Material.plain(new Color(0.8, 0.8, 0.8, 1.));
+  let lit = renderer.addMaterial(device, &litM);
+  let pbrM = PbrMaterial.standard(new Color(0.8, 0.8, 0.8, 1.), 0., 1.);
+  let pbr = renderer.addPbrMaterial(device, &pbrM);
   new Scene(ground, box, lit, pbr);
 }
 
 fn boxList(scene &Scene, material MaterialHandle, withBox bool) DrawList {
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(scene.ground, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   if withBox { list.add(scene.box, material, Mat4.fromTranslation(new Vec3(0., 1., 0.))); }
   list;
@@ -140,43 +140,43 @@ fn boxList(scene &Scene, material MaterialHandle, withBox bool) DrawList {
 // 1 and 2. The shadow's far edge and sides under one light
 fn edges(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     scene &Scene, material MaterialHandle, point bool, label &Array[u8]) {
-  imm p = readback.mappedRange();
+  let p = readback.mappedRange();
   renderer.environmentStrength = 0.;
   renderer.lights.clear();
-  imm at = new Vec3(2.2, 4., 0.);
-  imm h = if point {
+  let at = new Vec3(2.2, 4., 0.);
+  let h = if point {
     renderer.lights.addPoint(at, Color.gray(1.), 120., 20.);
   } else {
     renderer.lights.addSpot(at, new Vec3(-4.2, -4., 0.), Color.gray(1.), 120., 20., radians(40.), radians(50.));
   };
   renderer.lights.setCastsShadow(h, true);
-  imm settings = LightShadowSettings.medium();
+  let settings = LightShadowSettings.medium();
   renderer.setLightShadows(device, &settings);
-  imm camera = topDown();
-  imm light = dark();
-  imm list = boxList(scene, material, true);
+  let camera = topDown();
+  let light = dark();
+  let list = boxList(scene, material, true);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expect(renderer.lights.isShadowed(h), label);
   // Lit beyond the far edge and dark in the shadow: the middle level between
-  imm lit = px(p, usize.from(u32.from(columnOf(-4.9))), 128usize);
-  imm shadowed = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  let lit = px(p, usize.from(u32.from(columnOf(-4.9))), 128usize);
+  let shadowed = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
   expect(lit > shadowed + 40., label);
-  imm mid = (lit + shadowed) * 0.5;
-  imm far = crossRow(p, 128usize, usize.from(u32.from(columnOf(-4.9))), usize.from(u32.from(columnOf(-3.0))), mid, true);
+  let mid = (lit + shadowed) * 0.5;
+  let far = crossRow(p, 128usize, usize.from(u32.from(columnOf(-4.9))), usize.from(u32.from(columnOf(-3.0))), mid, true);
   expect(far > 0., label);
   eprint <- "measured "; eprintStr(label as &str); eprint <- ": the far edge at x = "; eprint <- worldX(far); eprint <- " (want -4.2)\n";
   expectNear(worldX(far), -4.2, 0.08, label);
   // The sides, at the columns for x = -1.5, -2, -3 and -3.8: where the lit level returns going out from z = 0
-  mut xs = [-1.5, -2., -3., -3.8];
-  mut k = 0usize;
+  var xs = [-1.5, -2., -3., -3.8];
+  var k = 0usize;
   while k < 4usize {
-    imm x = xs[k];
-    imm col = usize.from(u32.from(columnOf(x)));
-    imm edge = 2.;
-    imm side = crossColumn(p, col, 128usize, 250usize, mid, false);
-    imm other = crossColumn(p, col, 128usize, 6usize, mid, false);
+    let x = xs[k];
+    let col = usize.from(u32.from(columnOf(x)));
+    let edge = 2.;
+    let side = crossColumn(p, col, 128usize, 250usize, mid, false);
+    let other = crossColumn(p, col, 128usize, 6usize, mid, false);
     expect(side > 0., label);
-    imm sideZ = worldZ(side);
+    let sideZ = worldZ(side);
     eprint <- "measured "; eprintStr(label as &str); eprint <- ": at x = "; eprint <- x; eprint <- " the side at z = "; eprint <- sideZ;
     eprint <- " (want "; eprint <- edge; eprint <- ")\n";
     expectNear(sideZ, edge, 0.08, label);
@@ -187,35 +187,35 @@ fn edges(renderer &mut Renderer, device &mut Device, color &Texture, depth &Text
 // 3. A lit ground with the shadows on equals the same with them off
 fn noAcne(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     scene &Scene, material MaterialHandle, at Vec3, point bool, label &Array[u8]) {
-  imm p = readback.mappedRange();
+  let p = readback.mappedRange();
   renderer.environmentStrength = 0.;
   renderer.lights.clear();
-  imm h = if point {
+  let h = if point {
     renderer.lights.addPoint(at, Color.gray(1.), 30., 30.);
   } else {
     renderer.lights.addSpot(at, new Vec3(0., 0., 0.) - at, Color.gray(1.), 30., 30., radians(55.), radians(70.));
   };
   renderer.lights.setCastsShadow(h, true);
-  imm camera = topDown();
-  imm light = dark();
-  imm list = boxList(scene, material, false);
-  imm off = LightShadowSettings.off();
+  let camera = topDown();
+  let light = dark();
+  let list = boxList(scene, material, false);
+  let off = LightShadowSettings.off();
   renderer.setLightShadows(device, &off);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
-  mut unshadowed = List[u8].empty();
-  mut i = 0usize;
+  var unshadowed = List[u8].empty();
+  var i = 0usize;
   while i < 262144usize {
     unshadowed.push(*(p + i));
     i = i + 1usize;
   }
-  imm on = LightShadowSettings.medium();
+  let on = LightShadowSettings.medium();
   renderer.setLightShadows(device, &on);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expect(renderer.lights.isShadowed(h), label);
-  mut worst = 0.;
+  var worst = 0.;
   i = 0usize;
   while i < 262144usize {
-    imm d = absf(f32.from(*unshadowed[i]) - f32.from(*(p + i)));
+    let d = absf(f32.from(*unshadowed[i]) - f32.from(*(p + i)));
     if d > worst { worst = d; }
     i = i + 1usize;
   }
@@ -226,40 +226,40 @@ fn noAcne(renderer &mut Renderer, device &mut Device, color &Texture, depth &Tex
 // 4. What casts nothing
 fn castsNothing(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     scene &Scene) {
-  imm p = readback.mappedRange();
+  let p = readback.mappedRange();
   renderer.environmentStrength = 0.;
   renderer.lights.clear();
-  imm at = new Vec3(2.2, 4., 0.);
-  imm h = renderer.lights.addPoint(at, Color.gray(1.), 30., 20.);
-  imm settings = LightShadowSettings.medium();
+  let at = new Vec3(2.2, 4., 0.);
+  let h = renderer.lights.addPoint(at, Color.gray(1.), 30., 20.);
+  let settings = LightShadowSettings.medium();
   renderer.setLightShadows(device, &settings);
-  imm camera = topDown();
-  imm light = dark();
-  imm list = boxList(scene, scene.lit, true);
+  let camera = topDown();
+  let light = dark();
+  let list = boxList(scene, scene.lit, true);
   // Not marked: no shadow, the picture is the one without the box's shadow
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expect(!renderer.lights.isShadowed(h), "a light not marked has no views");
-  imm inShadow = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
-  imm beyond = px(p, usize.from(u32.from(columnOf(-4.9))), 128usize);
+  let inShadow = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  let beyond = px(p, usize.from(u32.from(columnOf(-4.9))), 128usize);
   expect(absf(inShadow - beyond) < 20., "and casts no shadow of the box");
   // Marked, but the box is marked 'dontCastShadow': a view is made, nothing is in it
   renderer.lights.setCastsShadow(h, true);
-  mut quiet = DrawList.empty();
+  var quiet = DrawList.empty();
   quiet.add(scene.ground, scene.lit, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   quiet.dontCastShadow();
   quiet.add(scene.box, scene.lit, Mat4.fromTranslation(new Vec3(0., 1., 0.)));
   quiet.dontCastShadow();
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &quiet);
   expect(renderer.lights.isShadowed(h), "a marked light is given views");
-  imm inShadow2 = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
-  imm beyond2 = px(p, usize.from(u32.from(columnOf(-4.9))), 128usize);
+  let inShadow2 = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  let beyond2 = px(p, usize.from(u32.from(columnOf(-4.9))), 128usize);
   expect(absf(inShadow2 - beyond2) < 20., "but a box that does not cast casts none");
   // Marked and casting: the shadow is there; switched off again it is gone
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   eprint <- "measured a casting box: in the shadow "; eprint <- px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
   eprint <- ", beyond it "; eprint <- px(p, usize.from(u32.from(columnOf(-4.9))), 128usize); eprint <- "\n";
   expect(px(p, usize.from(u32.from(columnOf(-3.0))), 128usize) < px(p, usize.from(u32.from(columnOf(-4.9))), 128usize) - 10., "a casting box shades");
-  imm off = LightShadowSettings.off();
+  let off = LightShadowSettings.off();
   renderer.setLightShadows(device, &off);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expect(!renderer.lights.isShadowed(h), "shadows off: no views");
@@ -273,23 +273,23 @@ fn budget(renderer &mut Renderer, device &mut Device, color &Texture, depth &Tex
   // Ranks (range^2 / (1 + the squared distance from the camera at (0, 12, 0))):
   // C 400 / 170 = 2.35 (at (-5, 3, 0): 25 + 81 + 1 = 107: 3.74),
   // A 64 / 82 = 0.78, B 64 / 182 = 0.35, the spot S 25 / 101 = 0.25
-  imm a = renderer.lights.addPoint(new Vec3(0., 3., 0.), Color.gray(1.), 5., 8.);
-  imm b = renderer.lights.addPoint(new Vec3(10., 3., 0.), Color.gray(1.), 5., 8.);
-  imm c = renderer.lights.addPoint(new Vec3(-5., 3., 0.), Color.gray(1.), 5., 20.);
-  imm s = renderer.lights.addSpot(new Vec3(0., 2., 1.), new Vec3(0., -1., 0.), Color.gray(1.), 5., 5., radians(30.), radians(40.));
+  let a = renderer.lights.addPoint(new Vec3(0., 3., 0.), Color.gray(1.), 5., 8.);
+  let b = renderer.lights.addPoint(new Vec3(10., 3., 0.), Color.gray(1.), 5., 8.);
+  let c = renderer.lights.addPoint(new Vec3(-5., 3., 0.), Color.gray(1.), 5., 20.);
+  let s = renderer.lights.addSpot(new Vec3(0., 2., 1.), new Vec3(0., -1., 0.), Color.gray(1.), 5., 5., radians(30.), radians(40.));
   renderer.lights.setCastsShadow(a, true);
   renderer.lights.setCastsShadow(b, true);
   renderer.lights.setCastsShadow(c, true);
   renderer.lights.setCastsShadow(s, true);
-  imm camera = topDown();
-  mut low = LightShadowSettings.medium();
+  let camera = topDown();
+  var low = LightShadowSettings.medium();
   low.maxViews = 12u32;
   renderer.setLightShadows(device, &low);
   renderer.lights.prepare(device, &camera, 1., 256u32, 256u32);
   expect(renderer.lights.isShadowed(c) and renderer.lights.isShadowed(a), "12 layers: the two best point lights");
   expect(!renderer.lights.isShadowed(b) and !renderer.lights.isShadowed(s), "and no more");
   expectUInt(u64.from(renderer.lights.shadows.viewsUsed), 12u64, "twelve layers used");
-  mut all = LightShadowSettings.medium();
+  var all = LightShadowSettings.medium();
   all.maxViews = 24u32;
   renderer.setLightShadows(device, &all);
   renderer.lights.prepare(device, &camera, 1., 256u32, 256u32);
@@ -297,15 +297,15 @@ fn budget(renderer &mut Renderer, device &mut Device, color &Texture, depth &Tex
     and renderer.lights.isShadowed(s), "24 layers: all four");
   expectUInt(u64.from(renderer.lights.shadows.viewsUsed), 19u64, "three point lights and a spot: 19 layers");
   // A scene drawn with all four casting draws without a validation message
-  mut list = boxList(scene, scene.lit, true);
-  mut encoderFrame = 0u32;
-  imm light = dark();
+  var list = boxList(scene, scene.lit, true);
+  var encoderFrame = 0u32;
+  let light = dark();
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
   expectUInt(u64.from(renderer.lights.shadows.passes), 19u64, "19 passes");
   // The fade: with 12 layers C and A are shadowed, the best left without views is B (the camera is 14 up:
   // A 64 / 122 = 0.525, B 64 / 222 = 0.288); a shadow shows in full at 1 + fade times that, and not at all
   // level with it: with a fade of 2, C in full and A by (0.525 / 0.288 - 1) / 2 = 0.41
-  mut faded = LightShadowSettings.medium();
+  var faded = LightShadowSettings.medium();
   faded.maxViews = 12u32;
   faded.fade = 2.;
   renderer.setLightShadows(device, &faded);
@@ -322,33 +322,33 @@ fn budget(renderer &mut Renderer, device &mut Device, color &Texture, depth &Tex
 // 6. The fade on the picture: a box's shadow under a light that has a rival close behind it in rank shows by the
 // share the fade gives, not in full
 fn fadeShows(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, scene &Scene) {
-  imm p = readback.mappedRange();
+  let p = readback.mappedRange();
   renderer.environmentStrength = 0.;
   renderer.lights.clear();
-  imm h = renderer.lights.addPoint(new Vec3(2.2, 4., 0.), Color.gray(1.), 100., 20.);
+  let h = renderer.lights.addPoint(new Vec3(2.2, 4., 0.), Color.gray(1.), 100., 20.);
   // the rival: next in rank (400 / 137 against 400 / 106 here), unshadowed for want of layers, giving no light
-  imm g = renderer.lights.addPoint(new Vec3(-6., 4., 0.), Color.gray(1.), 0.0001, 20.);
+  let g = renderer.lights.addPoint(new Vec3(-6., 4., 0.), Color.gray(1.), 0.0001, 20.);
   renderer.lights.setCastsShadow(h, true);
   renderer.lights.setCastsShadow(g, true);
-  mut settings = LightShadowSettings.medium();
+  var settings = LightShadowSettings.medium();
   settings.maxViews = 6u32;
-  imm camera = topDown();
-  imm light = dark();
-  imm list = boxList(scene, scene.lit, true);
+  let camera = topDown();
+  let light = dark();
+  let list = boxList(scene, scene.lit, true);
   // The picture with no shadows, with them in full, and with them faded
-  imm off = LightShadowSettings.off();
+  let off = LightShadowSettings.off();
   renderer.setLightShadows(device, &off);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
-  imm lit = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  let lit = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
   renderer.setLightShadows(device, &settings);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
-  imm shaded = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  let shaded = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
   expect(renderer.lights.isShadowed(h) and !renderer.lights.isShadowed(g), "the rival has no views");
   settings.fade = 2.;
   renderer.setLightShadows(device, &settings);
   drawFrame(renderer, device, color, depth, readback, &camera, &light, &list);
-  imm share = renderer.lights.shadowShare(h);
-  imm shaded2 = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
+  let share = renderer.lights.shadowShare(h);
+  let shaded2 = px(p, usize.from(u32.from(columnOf(-3.0))), 128usize);
   eprint <- "measured the fade: share "; eprint <- share; eprint <- ", the pixel in the box's shadow "; eprint <- lit;
   eprint <- " unshadowed, "; eprint <- shaded; eprint <- " in full, "; eprint <- shaded2; eprint <- " faded\n";
   expect(share > 0.05 and share < 0.5, "the light's shadow is partly faded");
@@ -358,28 +358,28 @@ fn fadeShows(renderer &mut Renderer, device &mut Device, color &Texture, depth &
 }
 
 fn main() i32 {
-  mut instance = Instance.create("render light shadows");
+  var instance = Instance.create("render light shadows");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
   eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
-  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
+  let targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&targetDesc);
-  imm depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var color = device.createTexture(&targetDesc);
+  let depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(262144u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
-  imm scene = makeScene(&mut renderer, &mut device);
+  let scene = makeScene(&mut renderer, &mut device);
 
   edges(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.lit, false, "spot light shadow, lit");
   edges(&mut renderer, &mut device, &color, &depth, &readback, &scene, scene.pbr, false, "spot light shadow, physically based");

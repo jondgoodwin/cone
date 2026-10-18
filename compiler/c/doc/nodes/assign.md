@@ -57,7 +57,7 @@ target's content *before* the store rather than after.
 
 Operator-assignment (`+=`) is **not** this node. `parseOpEq` builds an
 `FnCallNode` with `FlagOpAssgn`; `fnCallOpAssgn` and `fnCallOpEqMethod` lower it
-to the base operator's method, `{imm tmp = &mut x; *tmp = *tmp + e}`. An `e`
+to the base operator's method, `{let tmp = &mut x; *tmp = *tmp + e}`. An `e`
 holding an `await` is made first, into a local of the rewrite, so that the
 place is borrowed, read and written after the seam
 ([Flow](../phases/flow.md), "A seam"). `<=>` is a `SwapNode`, its own thing.
@@ -101,7 +101,7 @@ ordinary recursion.
 **One lval of a tuple type takes a value tuple whole.** `p = 5, 6` (the
 parentheses in `p = (5, 6)` change nothing) gives a `(i64, i64)` variable both
 values, each coerced to its element's type by `vtupleCoerce`, exactly as its
-declaration's `mut p (i64, i64) = 5, 6` does. The parser builds the same nodes
+declaration's `var p (i64, i64) = 5, 6` does. The parser builds the same nodes
 as for `x = 7, 8`, so only the lval's resolved type tells the two apart:
 `assignOneTakesTuple` asks it, and flow (`assignFlow`, `pwAssign`) and
 generation ask the same function rather than the rval's tag, so all three agree
@@ -156,7 +156,7 @@ Per target:
    computing the effective permission — through derefs, indexes and field
    accesses, taking the reference's permission where one is crossed. Without
    `MayWrite`, `ErrorNoMut`. The exception is a variable that holds nothing yet,
-   which is how an `imm` local gets initialized once.
+   which is how a `let` local gets initialized once.
 3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved` and
    `VarHollow` (`flowVarSetFlags`), and note a tracked variable stored over
    deeper than it was declared, which sends the function's drops to the path

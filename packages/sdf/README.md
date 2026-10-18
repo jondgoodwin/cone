@@ -8,15 +8,15 @@ functions, in the same order of operations, for shaders in `src/sdf.slang`.
 import sdf use *;
 
 fn scene(p Vec3) f32 {
-  imm body = roundBox(p, new Vec3(1., 0.5, 0.5), 0.1);
-  imm hole = cylinder(rotate(p, turn), 1., 0.3);
+  let body = roundBox(p, new Vec3(1., 0.5, 0.5), 0.1);
+  let hole = cylinder(rotate(p, turn), 1., 0.3);
   smoothSubtract(body, hole, 0.05);
 }
 
-imm horn = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);   // length, base radius, taper, curl, ribs, rib depth
-imm fine = horn.fluted(40, 0.018, 0.8);                  // flutes, their depth, their twist
-imm d = horn.distance(p);
-imm n = normal(&horn, p, 0.001);
+let horn = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);   // length, base radius, taper, curl, ribs, rib depth
+let fine = horn.fluted(40, 0.018, 0.8);                  // flutes, their depth, their twist
+let d = horn.distance(p);
+let n = normal(&horn, p, 0.001);
 ```
 
 ```slang

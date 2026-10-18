@@ -28,12 +28,12 @@ pub fn mirror(m &PolyMesh, origin Vec3, normal Vec3, merge f32) PolyMesh {
 // or from another part of the image.
 pub fn mirrorWith(m &PolyMesh, origin Vec3, normal Vec3, merge f32, mirrorU bool, mirrorV bool,
     uvOffset Vec2) PolyMesh {
-  imm nrm = unit(normal);
-  imm nv = m.positions.len();
-  imm nf = m.fHalfedge.len();
-  mut pos = List[Vec3].withCapacity(2usize * nv);
-  mut vSrc = List[u32].withCapacity(2usize * nv);
-  mut v = 0usize;
+  let nrm = unit(normal);
+  let nv = m.positions.len();
+  let nf = m.fHalfedge.len();
+  var pos = List[Vec3].withCapacity(2usize * nv);
+  var vSrc = List[u32].withCapacity(2usize * nv);
+  var v = 0usize;
   while v < nv {
     pos.push(*m.positions[v]);
     vSrc.push(u32.from(v));
@@ -41,31 +41,31 @@ pub fn mirrorWith(m &PolyMesh, origin Vec3, normal Vec3, merge f32, mirrorU bool
   }
   v = 0usize;
   while v < nv {
-    imm p = *m.positions[v];
+    let p = *m.positions[v];
     pos.push(p - nrm * (2. * (p - origin).dot(nrm)));
     vSrc.push(u32.from(v));
     v = v + 1usize;
   }
-  mut counts = List[u32].empty();
-  mut idx = List[u32].empty();
-  mut cSrc = List[u32].empty();
-  mut eSrc = List[u32].empty();
-  mut fSrc = List[u32].empty();
+  var counts = List[u32].empty();
+  var idx = List[u32].empty();
+  var cSrc = List[u32].empty();
+  var eSrc = List[u32].empty();
+  var fSrc = List[u32].empty();
   addCopy(m, 0usize, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
   addReversed(m, nv, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
-  mut f = 0usize;
-  mut both = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  var f = 0usize;
+  var both = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
 
-  imm uvCh = both.findVec2Channel(CornerDomain, "uv");
+  let uvCh = both.findVec2Channel(CornerDomain, "uv");
   if uvCh != NoIndex and (mirrorU or mirrorV or uvOffset.x != 0. or uvOffset.y != 0.) {
     f = nf;
     while f < both.fHalfedge.len() {
-      imm hs = both.faceHalfedges(u32.from(f));
-      mut k = 0usize;
+      let hs = both.faceHalfedges(u32.from(f));
+      var k = 0usize;
       while k < hs.len() {
-        imm uv = both.vec2(uvCh, *hs[k]);
-        imm u = if mirrorU {1. - uv.x;} else {uv.x;};
-        imm w = if mirrorV {1. - uv.y;} else {uv.y;};
+        let uv = both.vec2(uvCh, *hs[k]);
+        let u = if mirrorU {1. - uv.x;} else {uv.x;};
+        let w = if mirrorV {1. - uv.y;} else {uv.y;};
         both.setVec2(uvCh, *hs[k], new Vec2(u + uvOffset.x, w + uvOffset.y));
         k = k + 1usize;
       }
@@ -75,7 +75,7 @@ pub fn mirrorWith(m &PolyMesh, origin Vec3, normal Vec3, merge f32, mirrorU bool
   if merge < 0. { return both; }
 
   // Each vertex near the plane: onto it, its copy merged into it
-  mut rep = List[u32].withCapacity(2usize * nv);
+  var rep = List[u32].withCapacity(2usize * nv);
   v = 0usize;
   while v < 2usize * nv {
     rep.push(u32.from(v));
@@ -83,8 +83,8 @@ pub fn mirrorWith(m &PolyMesh, origin Vec3, normal Vec3, merge f32, mirrorU bool
   }
   v = 0usize;
   while v < nv {
-    imm p = *m.positions[v];
-    imm d = (p - origin).dot(nrm);
+    let p = *m.positions[v];
+    let d = (p - origin).dot(nrm);
     if 2. * absf(d) <= merge {
       rep.set(nv + v, u32.from(v));
       both.positions.set(v, p - nrm * d);
@@ -101,13 +101,13 @@ pub fn mirrorWith(m &PolyMesh, origin Vec3, normal Vec3, merge f32, mirrorU bool
 // copies within 'merge' of each other are merged, as Blender's Merge option
 // does (see 'arrayRadial' for how).
 pub fn arrayLinear(m &PolyMesh, count u32, offset Vec3, merge f32) PolyMesh {
-  imm n = usize.from(count);
-  imm nv = m.positions.len();
-  mut pos = List[Vec3].withCapacity(n * nv);
-  mut k = 0usize;
+  let n = usize.from(count);
+  let nv = m.positions.len();
+  var pos = List[Vec3].withCapacity(n * nv);
+  var k = 0usize;
   while k < n {
-    imm shift = offset * f32.from(k);
-    mut v = 0usize;
+    let shift = offset * f32.from(k);
+    var v = 0usize;
     while v < nv {
       pos.push(*m.positions[v] + shift);
       v = v + 1usize;
@@ -133,18 +133,18 @@ pub fn arrayLinear(m &PolyMesh, count u32, offset Vec3, merge f32) PolyMesh {
 // copy's (see 'weld'). Vertices of one copy are never merged with each other
 // or with a copy further off.
 pub fn arrayRadial(m &PolyMesh, count u32, axis Vec3, angle f32, origin Vec3, merge f32) PolyMesh {
-  imm n = usize.from(count);
-  imm a = unit(axis);
-  imm full = absf(angle) >= 2. * pi - 0.0001;
-  imm steps = if full {f32.from(n);} elif n > 1usize {f32.from(n - 1usize);} else {1.;};
-  imm nv = m.positions.len();
-  mut pos = List[Vec3].withCapacity(n * nv);
-  mut k = 0usize;
+  let n = usize.from(count);
+  let a = unit(axis);
+  let full = absf(angle) >= 2. * pi - 0.0001;
+  let steps = if full {f32.from(n);} elif n > 1usize {f32.from(n - 1usize);} else {1.;};
+  let nv = m.positions.len();
+  var pos = List[Vec3].withCapacity(n * nv);
+  var k = 0usize;
   while k < n {
-    imm q = Quat.angleAxis(angle * f32.from(k) / steps, a);
-    mut v = 0usize;
+    let q = Quat.angleAxis(angle * f32.from(k) / steps, a);
+    var v = 0usize;
     while v < nv {
-      imm p = *m.positions[v];
+      let p = *m.positions[v];
       if k == 0usize { pos.push(p); } else { pos.push(origin + q * (p - origin)); }
       v = v + 1usize;
     }
@@ -164,25 +164,25 @@ pub fn arrayRadial(m &PolyMesh, count u32, axis Vec3, angle f32, origin Vec3, me
 // last is stitched to the first. Numbering and merging are as
 // 'arrayRadial''s.
 pub fn arrayAlongPath(m &PolyMesh, path &Path, count u32, merge f32) PolyMesh {
-  imm n = usize.from(count);
-  imm frames = path.frames();
-  imm dist = path.distances();
-  imm total = path.length();
-  imm steps = if path.closed {f32.from(n);} elif n > 1usize {f32.from(n - 1usize);} else {1.;};
-  imm nv = m.positions.len();
-  mut pos = List[Vec3].withCapacity(n * nv);
-  mut k = 0usize;
+  let n = usize.from(count);
+  let frames = path.frames();
+  let dist = path.distances();
+  let total = path.length();
+  let steps = if path.closed {f32.from(n);} elif n > 1usize {f32.from(n - 1usize);} else {1.;};
+  let nv = m.positions.len();
+  var pos = List[Vec3].withCapacity(n * nv);
+  var k = 0usize;
   while k < n {
-    mut v = 0usize;
+    var v = 0usize;
     if frames.len() == 0usize {
       while v < nv {
         pos.push(*m.positions[v]);
         v = v + 1usize;
       }
     } else {
-      imm fr = frameAtDistance(path, &frames, &dist, total, total * f32.from(k) / steps);
+      let fr = frameAtDistance(path, &frames, &dist, total, total * f32.from(k) / steps);
       while v < nv {
-        imm p = *m.positions[v];
+        let p = *m.positions[v];
         pos.push(fr.origin + fr.normal * p.x + fr.binormal * p.y + fr.tangent * p.z);
         v = v + 1usize;
       }
@@ -195,17 +195,17 @@ pub fn arrayAlongPath(m &PolyMesh, path &Path, count u32, merge f32) PolyMesh {
 // The copies of m at the positions 'pos' (copy k's vertex v at k V + v),
 // concatenated, with neighbouring copies merged when 'merge' is 0 or more
 fn arrayOf(m &PolyMesh, pos &List[Vec3], count usize, merge f32, wrap bool) PolyMesh {
-  imm nv = m.positions.len();
-  mut vSrc = List[u32].withCapacity(count * nv);
-  mut copyOf = List[u32].withCapacity(count * nv);
-  mut counts = List[u32].empty();
-  mut idx = List[u32].empty();
-  mut cSrc = List[u32].empty();
-  mut eSrc = List[u32].empty();
-  mut fSrc = List[u32].empty();
-  mut k = 0usize;
+  let nv = m.positions.len();
+  var vSrc = List[u32].withCapacity(count * nv);
+  var copyOf = List[u32].withCapacity(count * nv);
+  var counts = List[u32].empty();
+  var idx = List[u32].empty();
+  var cSrc = List[u32].empty();
+  var eSrc = List[u32].empty();
+  var fSrc = List[u32].empty();
+  var k = 0usize;
   while k < count {
-    mut v = 0usize;
+    var v = 0usize;
     while v < nv {
       vSrc.push(u32.from(v));
       copyOf.push(u32.from(k));
@@ -214,9 +214,9 @@ fn arrayOf(m &PolyMesh, pos &List[Vec3], count usize, merge f32, wrap bool) Poly
     addCopy(m, k * nv, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
     k = k + 1usize;
   }
-  imm joined = assemble(m, pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  let joined = assemble(m, pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
   if merge < 0. or count < 2usize { return joined; }
-  imm rep = clusters(&joined.positions, merge, &copyOf, u32.from(count), wrap);
+  let rep = clusters(&joined.positions, merge, &copyOf, u32.from(count), wrap);
   collapse(&joined, &rep);
 }
 
@@ -224,13 +224,13 @@ fn arrayOf(m &PolyMesh, pos &List[Vec3], count usize, merge f32, wrap bool) Poly
 // flat face lists 'assemble' takes
 fn addCopy(m &PolyMesh, base usize, counts &mut List[u32], idx &mut List[u32], cSrc &mut List[u32],
     eSrc &mut List[u32], fSrc &mut List[u32]) {
-  mut f = 0usize;
+  var f = 0usize;
   while f < m.fHalfedge.len() {
-    imm hs = m.faceHalfedges(u32.from(f));
+    let hs = m.faceHalfedges(u32.from(f));
     counts.push(u32.from(hs.len()));
-    mut i = 0usize;
+    var i = 0usize;
     while i < hs.len() {
-      imm h = *hs[i];
+      let h = *hs[i];
       idx.push(u32.from(base) + *m.hVertex[usize.from(h)]);
       cSrc.push(h);
       eSrc.push(h / 2u32);
@@ -247,15 +247,15 @@ fn addCopy(m &PolyMesh, base usize, counts &mut List[u32], idx &mut List[u32], c
 // runs along the face's side out of it
 fn addReversed(m &PolyMesh, base usize, counts &mut List[u32], idx &mut List[u32], cSrc &mut List[u32],
     eSrc &mut List[u32], fSrc &mut List[u32]) {
-  mut f = 0usize;
+  var f = 0usize;
   while f < m.fHalfedge.len() {
-    imm hs = m.faceHalfedges(u32.from(f));
-    imm n = hs.len();
+    let hs = m.faceHalfedges(u32.from(f));
+    let n = hs.len();
     counts.push(u32.from(n));
-    mut j = 0usize;
+    var j = 0usize;
     while j < n {
-      imm i = (n - j) % n;
-      imm h = *hs[i];
+      let i = (n - j) % n;
+      let h = *hs[i];
       idx.push(u32.from(base) + *m.hVertex[usize.from(h)]);
       cSrc.push(h);
       eSrc.push(*hs[(i + 1usize) % n] / 2u32);

@@ -24,7 +24,7 @@ pub struct Similarity {
   pub trans DVec3;
 
   pub fn identity() Similarity {
-    mut r = zeros(9usize);
+    var r = zeros(9usize);
     r.set(0usize, 1.d); r.set(4usize, 1.d); r.set(8usize, 1.d);
     new Similarity(1.d, r, new DVec3(0.d, 0.d, 0.d));
   }
@@ -44,19 +44,19 @@ pub struct Similarity {
 
   // The rotation's angle in degrees
   pub fn angleDegrees(self &) f64 {
-    imm c = maxd(-1.d, mind(1.d, (*rot[0] + *rot[4] + *rot[8] - 1.d) * 0.5d));
+    let c = maxd(-1.d, mind(1.d, (*rot[0] + *rot[4] + *rot[8] - 1.d) * 0.5d));
     libc.acos(c) * 180.d / 3.14159265358979d;
   }
 
   // The map that does this one and then 'then'
   pub fn followedBy(self &, then &Similarity) Similarity {
-    mut r = zeros(9usize);
-    mut i = 0usize;
+    var r = zeros(9usize);
+    var i = 0usize;
     while i < 3usize {
-      mut j = 0usize;
+      var j = 0usize;
       while j < 3usize {
-        mut s = 0.d;
-        mut k = 0usize;
+        var s = 0.d;
+        var k = 0usize;
         while k < 3usize { s = s + *then.rot[i * 3usize + k] * *rot[k * 3usize + j]; k += 1usize; }
         r.set(i * 3usize + j, s);
         j += 1usize;
@@ -69,7 +69,7 @@ pub struct Similarity {
 
 // Every vertex of the mesh moved by the map
 pub fn applySimilarity(m &mut PolyMesh, s &Similarity) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < m.positions.len() {
     m.positions.set(i, s.apply(*m.positions[i]));
     i += 1usize;
@@ -78,15 +78,15 @@ pub fn applySimilarity(m &mut PolyMesh, s &Similarity) {
 
 // The points moved by the map
 pub fn transformPoints(pts &Array[Vec3], s &Similarity) List[Vec3] {
-  mut out = List[Vec3].withCapacity(pts.len);
-  mut i = 0usize;
+  var out = List[Vec3].withCapacity(pts.len);
+  var i = 0usize;
   while i < pts.len { out.push(s.apply(pts[i])); i += 1usize; }
   out;
 }
 
 // The rotation matrix (row-major) of the unit quaternion (w, x, y, z)
 fn quatMatrix(w f64, x f64, y f64, z f64) List[f64] {
-  mut r = zeros(9usize);
+  var r = zeros(9usize);
   r.set(0usize, 1.d - 2.d * (y * y + z * z)); r.set(1usize, 2.d * (x * y - w * z)); r.set(2usize, 2.d * (x * z + w * y));
   r.set(3usize, 2.d * (x * y + w * z)); r.set(4usize, 1.d - 2.d * (x * x + z * z)); r.set(5usize, 2.d * (y * z - w * x));
   r.set(6usize, 2.d * (x * z - w * y)); r.set(7usize, 2.d * (y * z + w * x)); r.set(8usize, 1.d - 2.d * (x * x + y * y));
@@ -99,13 +99,13 @@ fn quatMatrix(w f64, x f64, y f64, z f64) List[f64] {
 // Fewer than three pairs give the identity (and for one or two, the translation
 // or rotation that is determined).
 pub fn alignPoints(src &Array[Vec3], dst &Array[Vec3], w &Array[f32], withScale bool) Similarity {
-  imm n = if src.len < dst.len { src.len; } else { dst.len; };
-  mut tw = 0.d;
-  mut cs = new DVec3(0.d, 0.d, 0.d);
-  mut cd = new DVec3(0.d, 0.d, 0.d);
-  mut i = 0usize;
+  let n = if src.len < dst.len { src.len; } else { dst.len; };
+  var tw = 0.d;
+  var cs = new DVec3(0.d, 0.d, 0.d);
+  var cd = new DVec3(0.d, 0.d, 0.d);
+  var i = 0usize;
   while i < n {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     tw = tw + wi;
     cs = cs + DVec3.from(src[i]) * wi;
     cd = cd + DVec3.from(dst[i]) * wi;
@@ -114,63 +114,63 @@ pub fn alignPoints(src &Array[Vec3], dst &Array[Vec3], w &Array[f32], withScale 
   if tw <= 0.d { return Similarity.identity(); }
   cs = cs * (1.d / tw);
   cd = cd * (1.d / tw);
-  mut sxx = 0.d; mut sxy = 0.d; mut sxz = 0.d;
-  mut syx = 0.d; mut syy = 0.d; mut syz = 0.d;
-  mut szx = 0.d; mut szy = 0.d; mut szz = 0.d;
-  mut var = 0.d;
+  var sxx = 0.d; var sxy = 0.d; var sxz = 0.d;
+  var syx = 0.d; var syy = 0.d; var syz = 0.d;
+  var szx = 0.d; var szy = 0.d; var szz = 0.d;
+  var variance = 0.d;
   i = 0usize;
   while i < n {
-    imm wi = wt(w, i);
-    imm a = DVec3.from(src[i]) - cs;
-    imm b = DVec3.from(dst[i]) - cd;
+    let wi = wt(w, i);
+    let a = DVec3.from(src[i]) - cs;
+    let b = DVec3.from(dst[i]) - cd;
     sxx = sxx + wi * a.x * b.x; sxy = sxy + wi * a.x * b.y; sxz = sxz + wi * a.x * b.z;
     syx = syx + wi * a.y * b.x; syy = syy + wi * a.y * b.y; syz = syz + wi * a.y * b.z;
     szx = szx + wi * a.z * b.x; szy = szy + wi * a.z * b.y; szz = szz + wi * a.z * b.z;
-    var = var + wi * a.lengthSquared();
+    variance = variance + wi * a.lengthSquared();
     i += 1usize;
   }
-  mut nm = zeros(16usize);
+  var nm = zeros(16usize);
   nm.set(0usize, sxx + syy + szz);   nm.set(1usize, syz - szy);        nm.set(2usize, szx - sxz);        nm.set(3usize, sxy - syx);
   nm.set(4usize, syz - szy);         nm.set(5usize, sxx - syy - szz);  nm.set(6usize, sxy + syx);        nm.set(7usize, szx + sxz);
   nm.set(8usize, szx - sxz);         nm.set(9usize, sxy + syx);        nm.set(10usize, -sxx + syy - szz); nm.set(11usize, syz + szy);
   nm.set(12usize, sxy - syx);        nm.set(13usize, szx + sxz);       nm.set(14usize, syz + szy);       nm.set(15usize, -sxx - syy + szz);
-  mut vals = List[f64].empty();
-  mut vecs = List[f64].empty();
+  var vals = List[f64].empty();
+  var vecs = List[f64].empty();
   jacobiEigen(&mut nm, 4usize, &mut vals, &mut vecs);
   // The eigenvector of the greatest eigenvalue (column 3), ordered (w, x, y, z)
-  imm qw = *vecs[3usize];
-  imm qx = *vecs[4usize + 3usize];
-  imm qy = *vecs[8usize + 3usize];
-  imm qz = *vecs[12usize + 3usize];
-  imm rot = quatMatrix(qw, qx, qy, qz);
-  mut s = 1.d;
-  if withScale and var > 0.d {
-    mut num = 0.d;
+  let qw = *vecs[3usize];
+  let qx = *vecs[4usize + 3usize];
+  let qy = *vecs[8usize + 3usize];
+  let qz = *vecs[12usize + 3usize];
+  let rot = quatMatrix(qw, qx, qy, qz);
+  var s = 1.d;
+  if withScale and variance > 0.d {
+    var num = 0.d;
     i = 0usize;
     while i < n {
-      imm wi = wt(w, i);
-      imm a = DVec3.from(src[i]) - cs;
-      imm b = DVec3.from(dst[i]) - cd;
-      imm ra = new DVec3(*rot[0] * a.x + *rot[1] * a.y + *rot[2] * a.z, *rot[3] * a.x + *rot[4] * a.y + *rot[5] * a.z,
+      let wi = wt(w, i);
+      let a = DVec3.from(src[i]) - cs;
+      let b = DVec3.from(dst[i]) - cd;
+      let ra = new DVec3(*rot[0] * a.x + *rot[1] * a.y + *rot[2] * a.z, *rot[3] * a.x + *rot[4] * a.y + *rot[5] * a.z,
         *rot[6] * a.x + *rot[7] * a.y + *rot[8] * a.z);
       num = num + wi * b.dot(ra);
       i += 1usize;
     }
-    s = num / var;
+    s = num / variance;
   }
-  imm rc = new DVec3(*rot[0] * cs.x + *rot[1] * cs.y + *rot[2] * cs.z, *rot[3] * cs.x + *rot[4] * cs.y + *rot[5] * cs.z,
+  let rc = new DVec3(*rot[0] * cs.x + *rot[1] * cs.y + *rot[2] * cs.z, *rot[3] * cs.x + *rot[4] * cs.y + *rot[5] * cs.z,
     *rot[6] * cs.x + *rot[7] * cs.y + *rot[8] * cs.z);
   new Similarity(s, rot, cd - rc * s);
 }
 
 // The root-mean-square distance between paired points (src moved by the map, against dst)
 pub fn pairRms(src &Array[Vec3], dst &Array[Vec3], w &Array[f32], s &Similarity) f64 {
-  imm n = if src.len < dst.len { src.len; } else { dst.len; };
-  mut sum = 0.d;
-  mut tw = 0.d;
-  mut i = 0usize;
+  let n = if src.len < dst.len { src.len; } else { dst.len; };
+  var sum = 0.d;
+  var tw = 0.d;
+  var i = 0usize;
   while i < n {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     sum = sum + wi * (s.applyD(DVec3.from(src[i])) - DVec3.from(dst[i])).lengthSquared();
     tw = tw + wi;
     i += 1usize;
@@ -192,40 +192,40 @@ pub struct IcpResult {
 // the source points (empty for all 1). Stops early when the rms stops changing.
 pub fn icp(src &Array[Vec3], target &Surface, start &Similarity, rounds u32, keep f32, maxDist f32, withScale bool,
     w &Array[f32]) IcpResult {
-  imm n = src.len;
-  mut map = start.followedBy(&Similarity.identity());
-  mut history = List[f32].empty();
-  mut last = 1.0e30d;
-  mut done = 0u32;
-  mut rms = 0.d;
-  mut pass = 0u32;
-  mut dst = List[Vec3].withCapacity(n);
-  mut dists = zeros(n);
+  let n = src.len;
+  var map = start.followedBy(&Similarity.identity());
+  var history = List[f32].empty();
+  var last = 1.0e30d;
+  var done = 0u32;
+  var rms = 0.d;
+  var pass = 0u32;
+  var dst = List[Vec3].withCapacity(n);
+  var dists = zeros(n);
   while pass < rounds and n > 0usize {
     dst.clear();
-    mut i = 0usize;
+    var i = 0usize;
     while i < n {
-      mut t = NoIndex;
-      mut bw = new DVec3(0.d, 0.d, 0.d);
-      imm d2 = target.nearest(map.applyD(DVec3.from(src[i])), &mut t, &mut bw);
+      var t = NoIndex;
+      var bw = new DVec3(0.d, 0.d, 0.d);
+      let d2 = target.nearest(map.applyD(DVec3.from(src[i])), &mut t, &mut bw);
       dists.set(i, d2);
       dst.push(if t == NoIndex { src[i]; } else { target.pointAt(t, bw).toVec3(); });
       i += 1usize;
     }
     // Which pairs to keep: the nearest fraction among those with weight
-    mut live = List[f32].empty();
+    var live = List[f32].empty();
     i = 0usize;
     while i < n { if wt(w, i) > 0.d { live.push(f32.from(*dists[i])); } i += 1usize; }
     live.sortBy((a, b) => if *a < *b { -1i32; } elif *a > *b { 1i32; } else { 0i32; });
-    mut limit = 1.0e30d;
+    var limit = 1.0e30d;
     if live.len() > 0usize and keep < 1. {
-      mut rank = usize.from(libc.ceil(f64.from(keep) * f64.from(live.len()))) ;
+      var rank = usize.from(libc.ceil(f64.from(keep) * f64.from(live.len()))) ;
       if rank > 0usize { rank -= 1usize; }
       if rank >= live.len() { rank = live.len() - 1usize; }
       limit = f64.from(*live[rank]);
     }
     if maxDist > 0. { limit = mind(limit, f64.from(maxDist) * f64.from(maxDist)); }
-    mut kw = List[f32].withCapacity(n);
+    var kw = List[f32].withCapacity(n);
     i = 0usize;
     while i < n {
       kw.push(if *dists[i] <= limit { f32.from(wt(w, i)); } else { 0.; });

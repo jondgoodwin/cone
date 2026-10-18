@@ -38,11 +38,11 @@ fn putBe32(out &mut List[u8], v u32) {
 // One chunk: length, the four letters, data, CRC of letters and data
 fn putChunk(out &mut List[u8], crc &Crc32, tag u32, body &Array[u8]) {
   putBe32(out, u32.from(body.len));
-  imm at = out.len();
+  let at = out.len();
   putBe32(out, tag);
-  mut i = 0usize;
+  var i = 0usize;
   while i < body.len { out.push(body[i]); i += 1usize; }
-  imm c = crc.update(0u32, out.view(), at, out.len());
+  let c = crc.update(0u32, out.view(), at, out.len());
   putBe32(out, c);
 }
 
@@ -50,13 +50,13 @@ fn putChunk(out &mut List[u8], crc &Crc32, tag u32, body &Array[u8]) {
 fn filterRow(ft u8, cur &Array[u8], prev &Array[u8], hasPrev bool, len usize, bpp usize, dst &mut List[u8]) {
   dst.clear();
   dst.push(ft);
-  mut i = 0usize;
+  var i = 0usize;
   while i < len {
-    imm a = if i >= bpp {i32.from(cur[i - bpp]);} else {0i32;};
-    imm b = if hasPrev {i32.from(prev[i]);} else {0i32;};
-    imm c = if i >= bpp and hasPrev {i32.from(prev[i - bpp]);} else {0i32;};
-    imm x = i32.from(cur[i]);
-    mut p = 0i32;
+    let a = if i >= bpp {i32.from(cur[i - bpp]);} else {0i32;};
+    let b = if hasPrev {i32.from(prev[i]);} else {0i32;};
+    let c = if i >= bpp and hasPrev {i32.from(prev[i - bpp]);} else {0i32;};
+    let x = i32.from(cur[i]);
+    var p = 0i32;
     if ft == 0u8 { p = 0i32; }
     elif ft == 1u8 { p = a; }
     elif ft == 2u8 { p = b; }
@@ -70,22 +70,22 @@ fn filterRow(ft u8, cur &Array[u8], prev &Array[u8], hasPrev bool, len usize, bp
 // Pack one scanline of 'n' pixels from samples[at ...] into bytes
 fn packRow(samples &Array[u16], at usize, n usize, channels usize, depth u8, out &mut List[u8]) {
   out.clear();
-  imm count = n * channels;
+  let count = n * channels;
   if depth == 8u8 {
-    mut i = 0usize;
+    var i = 0usize;
     while i < count { out.push(u8.from(samples[at + i] & 255u16)); i += 1usize; }
   } elif depth == 16u8 {
-    mut i = 0usize;
+    var i = 0usize;
     while i < count {
       out.push(u8.from(samples[at + i] >> 8u16));
       out.push(u8.from(samples[at + i] & 255u16));
       i += 1usize;
     }
   } else {
-    imm d = u32.from(depth);
-    mut cur = 0u32;
-    mut bits = 0u32;
-    mut i = 0usize;
+    let d = u32.from(depth);
+    var cur = 0u32;
+    var bits = 0u32;
+    var i = 0usize;
     while i < count {
       cur = (cur << d) | u32.from(samples[at + i]);
       bits += d;
@@ -101,12 +101,12 @@ fn packRow(samples &Array[u16], at usize, n usize, channels usize, depth u8, out
 // palette index; grey, alpha; red, green, blue, alpha) as numbers below
 // 2^depth. Returns the file's bytes.
 pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite) List[u8] {
-  imm crc = Crc32.make();
-  mut out = List[u8].empty();
-  imm sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
-  mut s = 0usize;
+  let crc = Crc32.make();
+  var out = List[u8].empty();
+  let sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
+  var s = 0usize;
   while s < 8usize { out.push(sig[s]); s += 1usize; }
-  mut ihdr = List[u8].empty();
+  var ihdr = List[u8].empty();
   putBe32(&mut ihdr, u32.from(width));
   putBe32(&mut ihdr, u32.from(height));
   ihdr.push(o.depth);
@@ -116,12 +116,12 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
   ihdr.push(if o.interlace {1u8;} else {0u8;});
   putChunk(&mut out, &crc, 0x49484452u32, ihdr.view());
   if o.srgb {
-    mut b = List[u8].empty();
+    var b = List[u8].empty();
     b.push(0u8);
     putChunk(&mut out, &crc, 0x73524742u32, b.view());
   }
   if o.gamma > 0u32 {
-    mut b = List[u8].empty();
+    var b = List[u8].empty();
     putBe32(&mut b, o.gamma);
     putChunk(&mut out, &crc, 0x67414D41u32, b.view());
   }
@@ -129,12 +129,12 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
   if o.colorType == 3u8 and o.trns.len() > 0usize {
     putChunk(&mut out, &crc, 0x74524E53u32, o.trns.view());
   } elif o.hasKey and o.colorType == 0u8 {
-    mut b = List[u8].empty();
+    var b = List[u8].empty();
     b.push(u8.from(o.keyR >> 8u16));
     b.push(u8.from(o.keyR & 255u16));
     putChunk(&mut out, &crc, 0x74524E53u32, b.view());
   } elif o.hasKey and o.colorType == 2u8 {
-    mut b = List[u8].empty();
+    var b = List[u8].empty();
     b.push(u8.from(o.keyR >> 8u16));
     b.push(u8.from(o.keyR & 255u16));
     b.push(u8.from(o.keyG >> 8u16));
@@ -144,37 +144,37 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
     putChunk(&mut out, &crc, 0x74524E53u32, b.view());
   }
 
-  imm channels = pngChannels(o.colorType);
-  imm bitsPerPixel = channels * usize.from(o.depth);
-  imm bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
-  imm w = usize.from(width);
-  imm h = usize.from(height);
+  let channels = pngChannels(o.colorType);
+  let bitsPerPixel = channels * usize.from(o.depth);
+  let bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
+  let w = usize.from(width);
+  let h = usize.from(height);
 
-  mut filtered = List[u8].empty();
-  mut cur = List[u8].empty();
-  mut prev = List[u8].empty();
-  mut trial = List[u8].empty();
-  mut best = List[u8].empty();
-  imm passes = if o.interlace {7usize;} else {1usize;};
-  mut p = 0usize;
+  var filtered = List[u8].empty();
+  var cur = List[u8].empty();
+  var prev = List[u8].empty();
+  var trial = List[u8].empty();
+  var best = List[u8].empty();
+  let passes = if o.interlace {7usize;} else {1usize;};
+  var p = 0usize;
   while p < passes {
-    imm x0 = if o.interlace {usize.from(adamX0[p]);} else {0usize;};
-    imm y0 = if o.interlace {usize.from(adamY0[p]);} else {0usize;};
-    imm dx = if o.interlace {usize.from(adamDx[p]);} else {1usize;};
-    imm dy = if o.interlace {usize.from(adamDy[p]);} else {1usize;};
-    imm pw = if w > x0 {(w - x0 + dx - 1usize) / dx;} else {0usize;};
-    imm ph = if h > y0 {(h - y0 + dy - 1usize) / dy;} else {0usize;};
+    let x0 = if o.interlace {usize.from(adamX0[p]);} else {0usize;};
+    let y0 = if o.interlace {usize.from(adamY0[p]);} else {0usize;};
+    let dx = if o.interlace {usize.from(adamDx[p]);} else {1usize;};
+    let dy = if o.interlace {usize.from(adamDy[p]);} else {1usize;};
+    let pw = if w > x0 {(w - x0 + dx - 1usize) / dx;} else {0usize;};
+    let ph = if h > y0 {(h - y0 + dy - 1usize) / dy;} else {0usize;};
     if pw > 0usize and ph > 0usize {
-      mut hasPrev = false;
-      mut y = 0usize;
+      var hasPrev = false;
+      var y = 0usize;
       while y < ph {
         // Gather this pass row's samples into a row buffer
-        mut rowSamples = List[u16].empty();
-        mut x = 0usize;
+        var rowSamples = List[u16].empty();
+        var x = 0usize;
         while x < pw {
-          imm px = x0 + x * dx;
-          imm py = y0 + y * dy;
-          mut c = 0usize;
+          let px = x0 + x * dx;
+          let py = y0 + y * dy;
+          var c = 0usize;
           while c < channels {
             rowSamples.push(samples[(py * w + px) * channels + c]);
             c += 1usize;
@@ -185,14 +185,14 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
         if o.filter >= 0 and o.filter <= 4 {
           filterRow(u8.from(o.filter), cur.view(), prev.view(), hasPrev, cur.len(), bpp, &mut best);
         } else {
-          mut bestSum = 0xFFFFFFFFFFFFFFFFu64;
-          mut ft = 0u8;
+          var bestSum = 0xFFFFFFFFFFFFFFFFu64;
+          var ft = 0u8;
           while ft < 5u8 {
             filterRow(ft, cur.view(), prev.view(), hasPrev, cur.len(), bpp, &mut trial);
-            mut sum = 0u64;
-            mut i = 1usize;
+            var sum = 0u64;
+            var i = 1usize;
             while i < trial.len() {
-              imm v = i32.from(*trial[i]);
+              let v = i32.from(*trial[i]);
               sum += u64.from(if v < 128i32 {v;} else {256i32 - v;});
               i += 1usize;
             }
@@ -205,7 +205,7 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
             ft += 1u8;
           }
         }
-        mut i = 0usize;
+        var i = 0usize;
         while i < best.len() { filtered.push(*best[i]); i += 1usize; }
         prev.clear();
         i = 0usize;
@@ -216,7 +216,7 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
     }
     p += 1usize;
   }
-  imm z = zlibCompress(filtered.view(), o.level);
+  let z = zlibCompress(filtered.view(), o.level);
   putChunk(&mut out, &crc, 0x49444154u32, z.view());
   putChunk(&mut out, &crc, 0x49454E44u32, List[u8].empty().view());
   out;
@@ -226,15 +226,15 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
 // 'hasAlpha' is false and every alpha is full. An sRGB chunk if the raster's
 // colour space is sRGB.
 pub fn encodePng(r &Raster, level i32) List[u8] {
-  imm n = usize.from(r.width) * usize.from(r.height);
-  imm rgba = r.hasAlpha;
-  mut o = PngWrite.make(if rgba {6u8;} else {2u8;}, if r.depth == 16 {16u8;} else {8u8;});
+  let n = usize.from(r.width) * usize.from(r.height);
+  let rgba = r.hasAlpha;
+  var o = PngWrite.make(if rgba {6u8;} else {2u8;}, if r.depth == 16 {16u8;} else {8u8;});
   o.level = level;
   o.srgb = r.colorSpace == ColorSpace.Srgb;
-  mut samples = List[u16].withCapacity(n * 4usize);
-  mut i = 0usize;
+  var samples = List[u16].withCapacity(n * 4usize);
+  var i = 0usize;
   while i < n {
-    mut c = 0usize;
+    var c = 0usize;
     while c < (if rgba {4usize;} else {3usize;}) {
       samples.push(if r.depth == 16 {*r.pixels16[i * 4usize + c];} else {u16.from(*r.pixels8[i * 4usize + c]);});
       c += 1usize;

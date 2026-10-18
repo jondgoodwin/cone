@@ -36,8 +36,8 @@ pub struct PatternField {
   // (the texels are one buffer, so that a pass writes all of a texel's values
   // through the one item it is given)
   pub fn empty(size i32, tileMetres f32, relief f32) PatternField {
-    imm n = usize.from(size * size);
-    mut texels = List[PatternTexel].withCapacity(n);
+    let n = usize.from(size * size);
+    var texels = List[PatternTexel].withCapacity(n);
     texels.resize(n, new PatternTexel(0., new Color(0., 0., 0., 1.), 0., 0.));
     new PatternField(size, tileMetres, relief, texels);
   }
@@ -48,7 +48,7 @@ pub struct PatternField {
 // pattern's parameters, such as (u, v) => brickTexel(p, u, v); the static bound
 // compiles one copy of the loop per pattern, so the call inlines.
 pub fn fillTexels[F fn(u f32, v f32) PatternTexel](field &uni PatternField, f &F) {
-  imm size = field.size;
+  let size = field.size;
   fillGrid(&uni field.texels, usize.from(size), (x, y) => f(texelCentre(x, size), texelCentre(y, size)));
 }
 
@@ -70,15 +70,15 @@ pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
 // height. The wear and grime masks of the TextureSet are all zero: these
 // patterns carry their weathering in their colour.
 pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32) TextureSet {
-  imm size = f.size;
-  imm depth = f.relief / f.tileMetres;
-  mut baseColor = TexelMap.withCapacity(size, size, 3);
-  mut orm = TexelMap.withCapacity(size, size, 3);
-  mut normal = TexelMap.withCapacity(size, size, 3);
-  mut heightMap = TexelMap.withCapacity(size, size, 1);
-  mut wearMask = TexelMap.withCapacity(size, size, 1);
-  mut grimeMask = TexelMap.withCapacity(size, size, 1);
-  imm cells = usize.from(size * size);
+  let size = f.size;
+  let depth = f.relief / f.tileMetres;
+  var baseColor = TexelMap.withCapacity(size, size, 3);
+  var orm = TexelMap.withCapacity(size, size, 3);
+  var normal = TexelMap.withCapacity(size, size, 3);
+  var heightMap = TexelMap.withCapacity(size, size, 1);
+  var wearMask = TexelMap.withCapacity(size, size, 1);
+  var grimeMask = TexelMap.withCapacity(size, size, 1);
+  let cells = usize.from(size * size);
   baseColor.pixels.resize(cells * 3usize, 0u8);
   orm.pixels.resize(cells * 3usize, 0u8);
   normal.pixels.resize(cells * 3usize, 0u8);
@@ -88,31 +88,31 @@ pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32)
   // A pass for each map, each a row to a pass over that map's own buffer
   // (wear and grime stay zero). The height field first, since the normal and
   // the occlusion read it round each texel.
-  imm width = usize.from(size);
-  imm texels = f.texels.view();
-  mut height = ScalarMap.zeros(size);
+  let width = usize.from(size);
+  let texels = f.texels.view();
+  var height = ScalarMap.zeros(size);
   parallel each i, h in height.values.mutItems().indexed() {
     *h = texels[i].height;
   }
-  imm field = &height;
+  let field = &height;
   // Base colour, ORM and normal in one pass, a row of each to a pass (zipped
   // cursors over three buffers), since all three read the finished height
   // field and the texels
   parallel each y, colourRow, ormRow, normalRow in baseColor.pixels.mutChunks(width * 3usize).zip(orm.pixels.mutChunks(width * 3usize)).zip(normal.pixels.mutChunks(width * 3usize)).indexed() {
     each x in 0usize ..< width {
-      imm t = texels[usize.from(y) * width + x];
-      imm c = t.colour;
+      let t = texels[usize.from(y) * width + x];
+      let c = t.colour;
       colourRow[x * 3usize] = unitByte(srgbEncode(c.red));
       colourRow[x * 3usize + 1usize] = unitByte(srgbEncode(c.green));
       colourRow[x * 3usize + 2usize] = unitByte(srgbEncode(c.blue));
-      mut ao = 1.;
+      var ao = 1.;
       if occlusionSteps > 0 {
         ao = occlusionTexel(field, i32.from(x), i32.from(y), occlusionRadius, occlusionSteps, depth);
       }
       ao = ao * t.cavity;
       ormRow[x * 3usize] = unitByte(ao);
       ormRow[x * 3usize + 1usize] = unitByte(t.rough);
-      imm n = normalTexel(field, i32.from(x), i32.from(y), depth);
+      let n = normalTexel(field, i32.from(x), i32.from(y), depth);
       normalRow[x * 3usize] = unitByte(n.x * 0.5 + 0.5);
       normalRow[x * 3usize + 1usize] = unitByte(n.y * 0.5 + 0.5);
       normalRow[x * 3usize + 2usize] = unitByte(n.z * 0.5 + 0.5);
@@ -138,7 +138,7 @@ pub fn minF(a f32, b f32) f32 { if a < b { a; } else { b; }; }
 // 'n' whole features of about 'size' metres across a tile 'tileMetres'
 // wide: at least 'least'
 pub fn wholeCount(tileMetres f32, size f32, least i32) i32 {
-  imm n = i32.from(libc.floorf(tileMetres / size + 0.5));
+  let n = i32.from(libc.floorf(tileMetres / size + 0.5));
   if n < least { least; } else { n; };
 }
 
@@ -161,7 +161,7 @@ pub fn unitHash(a i32, b i32, seed u32) f32 { toUnit(hash2(a, b, seed).x); }
 
 // Three independent ones
 pub fn unitHash3(a i32, b i32, seed u32) Vec3 {
-  imm h = hash2(a, b, seed);
+  let h = hash2(a, b, seed);
   new Vec3(toUnit(h.x), toUnit(h.y), toUnit(h.z));
 }
 
@@ -171,34 +171,34 @@ fn quintic(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.); }
 // 'px' cells across the tile and 'py' up it (they need not be equal, so
 // the grain of wood is long one way), wrapping exactly there
 pub fn valueNoise(u f32, v f32, px i32, py i32, seed u32) f32 {
-  imm fx = u * f32.from(px);
-  imm fy = v * f32.from(py);
-  imm gx = libc.floorf(fx);
-  imm gy = libc.floorf(fy);
-  imm tx = quintic(fx - gx);
-  imm ty = quintic(fy - gy);
-  imm x0 = posMod(i32.from(gx), px);
-  imm y0 = posMod(i32.from(gy), py);
-  imm x1 = posMod(x0 + 1, px);
-  imm y1 = posMod(y0 + 1, py);
-  imm a = toSigned(hash2(x0, y0, seed).x);
-  imm b = toSigned(hash2(x1, y0, seed).x);
-  imm c = toSigned(hash2(x0, y1, seed).x);
-  imm d = toSigned(hash2(x1, y1, seed).x);
-  imm bottom = a + (b - a) * tx;
-  imm top = c + (d - c) * tx;
+  let fx = u * f32.from(px);
+  let fy = v * f32.from(py);
+  let gx = libc.floorf(fx);
+  let gy = libc.floorf(fy);
+  let tx = quintic(fx - gx);
+  let ty = quintic(fy - gy);
+  let x0 = posMod(i32.from(gx), px);
+  let y0 = posMod(i32.from(gy), py);
+  let x1 = posMod(x0 + 1, px);
+  let y1 = posMod(y0 + 1, py);
+  let a = toSigned(hash2(x0, y0, seed).x);
+  let b = toSigned(hash2(x1, y0, seed).x);
+  let c = toSigned(hash2(x0, y1, seed).x);
+  let d = toSigned(hash2(x1, y1, seed).x);
+  let bottom = a + (b - a) * tx;
+  let top = c + (d - c) * tx;
   bottom + (top - bottom) * ty;
 }
 
 // 'octaves' of valueNoise, each twice the lattice of the last and 'gain'
 // times its amplitude, normalized to [-1, 1]
 pub fn fbmNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f32 {
-  mut sum f32 = 0.;
-  mut total f32 = 0.;
-  mut amp f32 = 1.;
-  mut cx = px;
-  mut cy = py;
-  mut i = 0;
+  var sum f32 = 0.;
+  var total f32 = 0.;
+  var amp f32 = 1.;
+  var cx = px;
+  var cy = py;
+  var i = 0;
   while i < octaves {
     sum = sum + amp * valueNoise(u, v, cx, cy, hash1(i, seed));
     total = total + amp;
@@ -213,14 +213,14 @@ pub fn fbmNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f
 // Ridged fbm in [0, 1]: creases where the noise crosses zero, sharp-edged
 // ridges between (1 - |n|, squared), normalized
 pub fn ridgedNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f32 {
-  mut sum f32 = 0.;
-  mut total f32 = 0.;
-  mut amp f32 = 1.;
-  mut cx = px;
-  mut cy = py;
-  mut i = 0;
+  var sum f32 = 0.;
+  var total f32 = 0.;
+  var amp f32 = 1.;
+  var cx = px;
+  var cy = py;
+  var i = 0;
   while i < octaves {
-    imm n = 1. - libc.fabsf(valueNoise(u, v, cx, cy, hash1(i, seed)));
+    let n = 1. - libc.fabsf(valueNoise(u, v, cx, cy, hash1(i, seed)));
     sum = sum + amp * n * n;
     total = total + amp;
     amp = amp * gain;
@@ -246,7 +246,7 @@ pub struct Cell {
 // The feature point of the grid cell (i, j), in grid cells, kept inside the
 // cell's middle: offset up to +-0.4 x 'jitter' from its centre
 fn featurePoint(i i32, j i32, n i32, jitter f32, seed u32) Vec2 {
-  imm h = hash2(posMod(i, n), posMod(j, n), seed);
+  let h = hash2(posMod(i, n), posMod(j, n), seed);
   new Vec2(f32.from(i) + 0.5 + (toUnit(h.x) - 0.5) * 0.8 * jitter, f32.from(j) + 0.5 + (toUnit(h.y) - 0.5) * 0.8 * jitter);
 }
 
@@ -255,48 +255,48 @@ fn featurePoint(i i32, j i32, n i32, jitter f32, seed u32) Vec2 {
 // wrapping: the pattern repeats every 1. The edge distance is that to the
 // perpendicular bisector with the nearest neighbouring point.
 pub fn voronoi(u f32, v f32, n i32, jitter f32, seed u32) Cell {
-  imm px = u * f32.from(n);
-  imm py = v * f32.from(n);
-  imm ci = i32.from(libc.floorf(px));
-  imm cj = i32.from(libc.floorf(py));
-  mut best f32 = 1000.;
-  mut bi = ci;
-  mut bj = cj;
-  mut bp = new Vec2(0., 0.);
-  mut dj = -1;
+  let px = u * f32.from(n);
+  let py = v * f32.from(n);
+  let ci = i32.from(libc.floorf(px));
+  let cj = i32.from(libc.floorf(py));
+  var best f32 = 1000.;
+  var bi = ci;
+  var bj = cj;
+  var bp = new Vec2(0., 0.);
+  var dj = -1;
   while dj <= 1 {
-    mut di = -1;
+    var di = -1;
     while di <= 1 {
-      imm p = featurePoint(ci + di, cj + dj, n, jitter, seed);
-      imm ex = p.x - px;
-      imm ey = p.y - py;
-      imm d2 = ex * ex + ey * ey;
+      let p = featurePoint(ci + di, cj + dj, n, jitter, seed);
+      let ex = p.x - px;
+      let ey = p.y - py;
+      let d2 = ex * ex + ey * ey;
       if d2 < best { best = d2; bi = ci + di; bj = cj + dj; bp = p; }
       di = di + 1;
     }
     dj = dj + 1;
   }
   // the edge: the nearest perpendicular bisector among the cells round the winner
-  mut edge f32 = 1000.;
+  var edge f32 = 1000.;
   dj = -2;
   while dj <= 2 {
-    mut di = -2;
+    var di = -2;
     while di <= 2 {
       if !(di == 0 and dj == 0) {
-        imm p = featurePoint(bi + di, bj + dj, n, jitter, seed);
-        imm mx = (p.x + bp.x) * 0.5;
-        imm my = (p.y + bp.y) * 0.5;
-        imm nx = p.x - bp.x;
-        imm ny = p.y - bp.y;
-        imm len = libc.sqrtf(nx * nx + ny * ny);
+        let p = featurePoint(bi + di, bj + dj, n, jitter, seed);
+        let mx = (p.x + bp.x) * 0.5;
+        let my = (p.y + bp.y) * 0.5;
+        let nx = p.x - bp.x;
+        let ny = p.y - bp.y;
+        let len = libc.sqrtf(nx * nx + ny * ny);
         // distance from the point to the bisector, along the line between the features
-        imm d = ((mx - px) * nx + (my - py) * ny) / len;
+        let d = ((mx - px) * nx + (my - py) * ny) / len;
         if d < edge { edge = d; }
       }
       di = di + 1;
     }
     dj = dj + 1;
   }
-  imm id = posMod(bj, n) * n + posMod(bi, n);
+  let id = posMod(bj, n) * n + posMod(bi, n);
   new Cell(id, hash2(posMod(bi, n), posMod(bj, n), seed + 7919u32).z, px - bp.x, py - bp.y, libc.sqrtf(best), edge);
 }

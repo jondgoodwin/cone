@@ -24,18 +24,18 @@ import tls;
 // A file of the certificates' folder, tests/certs: congo test runs a test
 // in build/<mode>/tests/<name>/, four folders below the package's
 fn certs(name &str) Path {
-  mut p = String.from("../../../../tests/certs/");
+  var p = String.from("../../../../tests/certs/");
   p.append(name);
   Path.fromString(p);
 }
 
 fn client() tls.Client {
-  mut cfg = tls.ClientConfig.make();
+  var cfg = tls.ClientConfig.make();
   cfg.verify = tls.Verifier.platform();
   cfg.offline = true;
   match tls.Client.make(cfg) {
-    case mut r Ok {return r;}
-    case imm e Error {
+    case var r Ok {return r;}
+    case let e Error {
       printStr(e.message().view());
       printStr("\n");
     }
@@ -44,12 +44,12 @@ fn client() tls.Client {
 }
 
 fn server(cert &str, key &str) tls.Server {
-  imm certFile = certs(cert);
-  imm keyFile = certs(key);
-  imm cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  let certFile = certs(cert);
+  let keyFile = certs(key);
+  let cfg = tls.ServerConfig.make(&certFile, &keyFile);
   match tls.Server.make(cfg) {
-    case mut r Ok {return r;}
-    case imm e Error {
+    case var r Ok {return r;}
+    case let e Error {
       printStr(e.message().view());
       printStr("\n");
     }
@@ -60,18 +60,18 @@ fn server(cert &str, key &str) tls.Server {
 // Move what each side has to send to the other until neither has any; the
 // platform verifier, when asked for, is run here
 fn pump(c &mut tls.Session, s &mut tls.Session) {
-  mut buf = new Array[u8, 20000] <- fill 0u8;
-  mut moved = true;
+  var buf = new Array[u8, 20000] <- fill 0u8;
+  var moved = true;
   while moved {
     moved = false;
     if c.wantsVerify() {c.verifyNow();}
     while c.pending() > 0usize {
-      imm n = c.transmit(&mut buf[0usize ..< 20000usize]);
+      let n = c.transmit(&mut buf[0usize ..< 20000usize]);
       s.feed(&buf[0usize ..< n]);
       moved = true;
     }
     while s.pending() > 0usize {
-      imm n = s.transmit(&mut buf[0usize ..< 20000usize]);
+      let n = s.transmit(&mut buf[0usize ..< 20000usize]);
       c.feed(&buf[0usize ..< n]);
       moved = true;
     }
@@ -120,13 +120,13 @@ fn main() i32 {
   }
   // The system's roots are the test root, for this process: set before the
   // verifier first reads them
-  imm ca = certs("ca.pem");
+  let ca = certs("ca.pem");
   env.set("SSL_CERT_FILE", ca.view());
 
-  imm good = server("server.pem", "server.key");
-  imm cl = client();
-  mut c = cl.session("localhost");
-  mut s = good.session();
+  let good = server("server.pem", "server.key");
+  let cl = client();
+  var c = cl.session("localhost");
+  var s = good.session();
   accepted("localhost", &mut c, &mut s);
   c = cl.session("127.0.0.1");
   s = good.session();
@@ -139,12 +139,12 @@ fn main() i32 {
   s = good.session();
   refused("wrong address", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch, 0x800B010Fu64);
 
-  imm expired = server("expired.pem", "expired.key");
+  let expired = server("expired.pem", "expired.key");
   c = cl.session("localhost");
   s = expired.session();
   refused("expired", &mut c, &mut s, tls.TlsErrorKind.CertExpired, 0x800B0101u64);
 
-  imm other = server("untrusted.pem", "untrusted.key");
+  let other = server("untrusted.pem", "untrusted.key");
   c = cl.session("localhost");
   s = other.session();
   refused("another root", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted, 0x800B0109u64);

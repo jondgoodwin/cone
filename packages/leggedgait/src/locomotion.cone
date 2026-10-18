@@ -118,29 +118,29 @@ pub struct Locomotion {
 
   // A locomotion for the rig's legs, with the standard gaits for that many legs
   pub fn make(rig &Rig) Locomotion {
-    imm legs = findLegs(rig);
-    imm set = standardGaits(&legs);
+    let legs = findLegs(rig);
+    let set = standardGaits(&legs);
     Locomotion.withGaits(rig, legs, set);
   }
 
   pub fn withGaits(rig &Rig, legs LegSet, set GaitSet) Locomotion {
-    mut states = List[LegState].empty();
-    imm z = new Vec3(0., 0., 0.);
-    mut i = 0usize;
+    var states = List[LegState].empty();
+    let z = new Vec3(0., 0., 0.);
+    var i = 0usize;
     while i < legs.count() {
       states.push(new LegState(false, 0., 0., z, z, z, z, 0., 0., 0., true, false, false, 0u32, 0., false, 0., 0.));
       i = i + 1usize;
     }
     // The reference leg: the rearmost one, on the left where there is a choice
-    mut ref = 0usize;
+    var ref = 0usize;
     i = 0usize;
     while i < legs.count() {
-      imm l = legs.legs[i];
-      imm r = legs.legs[ref];
+      let l = legs.legs[i];
+      let r = legs.legs[ref];
       if l.rank > r.rank or (l.rank == r.rank and l.side < r.side) { ref = i; }
       i = i + 1usize;
     }
-    mut amps = List[f32].empty();
+    var amps = List[f32].empty();
     i = 0usize;
     while i < set.motions.len() { amps.push(0.); i = i + 1usize; }
     new Locomotion(legs, set, states, rig.restPose(), List[Transform3].empty(), Transform3.identity(), 0usize, -1i32, 0., 0., 0., false, false,
@@ -160,8 +160,8 @@ pub struct Locomotion {
 
   // How many feet are on the ground now
   pub fn feetDown(self &) usize {
-    mut n = 0usize;
-    mut i = 0usize;
+    var n = 0usize;
+    var i = 0usize;
     while i < states.len() { if !states[i].swinging { n = n + 1usize; } i = i + 1usize; }
     n;
   }
@@ -169,18 +169,18 @@ pub struct Locomotion {
   // Advance by 'dt' seconds with the creature at ground position (x, z) facing 'yaw' (radians, 0 faces -z, positive
   // turns left) over 'ground'. The result is in 'pose', 'models' and 'world'.
   pub fn update(self &mut, rig &Rig, dt f32, x f32, z f32, yaw f32, ground &<fn(x f32, z f32) f32) {
-    imm n = legs.count();
+    let n = legs.count();
     if n == 0usize { return; }
-    imm g = set.gravity;
-    imm h = legs.hipHeight;
+    let g = set.gravity;
+    let h = legs.hipHeight;
     // ---- 1. speed
     if !started {
       prevX = x; prevZ = z; prevYaw = yaw;
     }
-    mut dyaw = yaw - prevYaw;
+    var dyaw = yaw - prevYaw;
     dyaw = dyaw - 2. * pi * libc.floorf(dyaw / (2. * pi) + 0.5);
     if dt > 0.00001 and started {
-      imm k = 1. - libc.expf(-dt / 0.08);
+      let k = 1. - libc.expf(-dt / 0.08);
       velX = velX + ((x - prevX) / dt - velX) * k;
       velZ = velZ + ((z - prevZ) / dt - velZ) * k;
       yawRate = yawRate + (dyaw / dt - yawRate) * k;
@@ -188,27 +188,27 @@ pub struct Locomotion {
     speed = (velX * velX + velZ * velZ).sqrt();
     prevX = x; prevZ = z; prevYaw = yaw;
     // The farthest foot's radius from the body centre, for turning on the spot
-    mut radius f32 = 0.;
-    mut i = 0usize;
+    var radius f32 = 0.;
+    var i = 0usize;
     while i < n {
-      imm d = new Vec2(legs.legs[i].tipRest.x - legs.centre.x, legs.legs[i].tipRest.z - legs.centre.z).length();
+      let d = new Vec2(legs.legs[i].tipRest.x - legs.centre.x, legs.legs[i].tipRest.z - legs.centre.z).length();
       if d > radius { radius = d; }
       i = i + 1usize;
     }
-    imm veff = fmaxf3(speed, 0.5 * absf(yawRate) * radius);
+    let veff = fmaxf3(speed, 0.5 * absf(yawRate) * radius);
     if moving { if veff < set.stopSpeed { moving = false; } }
     else { if veff > set.startSpeed { moving = true; } }
     froude = veff * veff / (g * h);
 
     // ---- 2. gait, eased
     if forced >= 0i32 { gaitIndex = usize.from(forced); } else { gaitIndex = set.pick(gaitIndex, froude); }
-    imm tg = set.gaits[gaitIndex];
-    imm ease = if !started { 1.; } else { 1. - libc.expf(-dt / set.transition); };
+    let tg = set.gaits[gaitIndex];
+    let ease = if !started { 1.; } else { 1. - libc.expf(-dt / set.transition); };
     i = 0usize;
     while i < n {
-      imm d = *tg.offsets[i] - states[i].offset;
-      imm w = d - libc.floorf(d + 0.5);
-      mut so = *states[i];
+      let d = *tg.offsets[i] - states[i].offset;
+      let w = d - libc.floorf(d + 0.5);
+      var so = *states[i];
       so.offset = so.offset + w * ease;
       states.set(i, so);
       i = i + 1usize;
@@ -225,29 +225,29 @@ pub struct Locomotion {
     }
 
     // ---- 3. stride and the cycle
-    mut minSlack = 1.0e9;
+    var minSlack = 1.0e9;
     i = 0usize;
     while i < n { if legs.legs[i].slack < minSlack { minSlack = legs.legs[i].slack; } i = i + 1usize; }
-    imm fr = fmaxf3(froude, 0.0001);
-    mut rel = 2.3 * libc.powf(fr, 0.3);
+    let fr = fmaxf3(froude, 0.0001);
+    var rel = 2.3 * libc.powf(fr, 0.3);
     if rel < 1.0 { rel = 1.0; }
-    mut stride = strideScale * h * rel;
-    imm cap = maxExcursion * 2. * minSlack / fmaxf3(duty, 0.2);
+    var stride = strideScale * h * rel;
+    let cap = maxExcursion * 2. * minSlack / fmaxf3(duty, 0.2);
     if stride > cap { stride = cap; }
     strideLength = stride;
     if moving and started and dt > 0. { cycle = cycle + veff * dt / stride; }
 
     // ---- the body's frame this frame, before the body has found its height (the feet need only x, z and the heading)
-    imm cs = cos(yaw);
-    imm sn = sin(yaw);
+    let cs = cos(yaw);
+    let sn = sin(yaw);
     // ---- 4. phase and feet
-    imm period = stride / fmaxf3(veff, 0.0001);
+    let period = stride / fmaxf3(veff, 0.0001);
     i = 0usize;
     while i < n {
-      imm lg = legs.legs[i];
-      imm lcl = new Vec2(lg.tipRest.x, lg.tipRest.z);
-      imm neutral = new Vec3(x + lcl.x * cs + lcl.y * sn, 0., z - lcl.x * sn + lcl.y * cs);
-      mut st = *states[i];
+      let lg = legs.legs[i];
+      let lcl = new Vec2(lg.tipRest.x, lg.tipRest.z);
+      let neutral = new Vec3(x + lcl.x * cs + lcl.y * sn, 0., z - lcl.x * sn + lcl.y * cs);
+      var st = *states[i];
       st.touchdown = false;
       st.liftoff = false;
       st.phase = frac(cycle - st.offset);
@@ -271,7 +271,7 @@ pub struct Locomotion {
             st.u0 = clampf((st.phase - duty) / (1. - duty), 0., 0.8);
             st.u = st.u0;
           } else {
-            imm off = new Vec2(st.foot.x - neutral.x, st.foot.z - neutral.z).length();
+            let off = new Vec2(st.foot.x - neutral.x, st.foot.z - neutral.z).length();
             if off > 0.97 * lg.slack {
               st.swinging = true;
               st.timed = true;
@@ -290,7 +290,7 @@ pub struct Locomotion {
             st.timed = true;
             st.tdur = set.swingTime;
           }
-          mut landed = false;
+          var landed = false;
           if st.timed {
             st.u = st.u + dt / (if moving { st.tdur; } else { set.swingTime; });
             if st.u >= 1. { landed = true; }
@@ -311,44 +311,44 @@ pub struct Locomotion {
         // Where the foot will land: the neutral place carried to where the hip will be at touchdown, plus the
         // stance excursion that puts the foot (0.5 - s) of the stance ahead of it, s the share of stance gone
         // by then (0 for a step that lands where stance begins)
-        imm tau = if !moving { 0.; } elif st.timed { (1. - st.u) * st.tdur; } else { (1. - st.u) * (1. - duty) * period; };
-        imm sLand = if st.timed { clampf((st.phase + tau / period) / duty, 0., 1.); } else { 0.; };
-        imm yawTd = yaw + yawRate * tau;
-        imm cT = cos(yawTd);
-        imm sT = sin(yawTd);
-        imm rx = lcl.x * cT + lcl.y * sT;
-        imm rz = -lcl.x * sT + lcl.y * cT;
-        mut lx = x + velX * tau + rx;
-        mut lz = z + velZ * tau + rz;
+        let tau = if !moving { 0.; } elif st.timed { (1. - st.u) * st.tdur; } else { (1. - st.u) * (1. - duty) * period; };
+        let sLand = if st.timed { clampf((st.phase + tau / period) / duty, 0., 1.); } else { 0.; };
+        let yawTd = yaw + yawRate * tau;
+        let cT = cos(yawTd);
+        let sT = sin(yawTd);
+        let rx = lcl.x * cT + lcl.y * sT;
+        let rz = -lcl.x * sT + lcl.y * cT;
+        var lx = x + velX * tau + rx;
+        var lz = z + velZ * tau + rz;
         if moving {
           // the neutral point's velocity: the body's plus the turn's
-          imm vx = velX + yawRate * rz;
-          imm vz = velZ - yawRate * rx;
-          mut hx = vx * duty * period * (0.5 - sLand);
-          mut hz = vz * duty * period * (0.5 - sLand);
-          imm hl = (hx * hx + hz * hz).sqrt();
-          imm hmax = maxExcursion * lg.slack;
+          let vx = velX + yawRate * rz;
+          let vz = velZ - yawRate * rx;
+          var hx = vx * duty * period * (0.5 - sLand);
+          var hz = vz * duty * period * (0.5 - sLand);
+          let hl = (hx * hx + hz * hz).sqrt();
+          let hmax = maxExcursion * lg.slack;
           if hl > hmax { hx = hx * hmax / hl; hz = hz * hmax / hl; }
           lx = lx + hx;
           lz = lz + hz;
         }
         st.land = new Vec3(lx, ground(lx, lz), lz);
         // The foot's place along the swing
-        imm uu = clampf((st.u - st.u0) / (1. - st.u0), 0., 1.);
-        imm e = uu * uu * (3. - 2. * uu);
-        imm px = st.lift.x + (st.land.x - st.lift.x) * e;
-        imm pz = st.lift.z + (st.land.z - st.lift.z) * e;
-        imm base = st.lift.y + (st.land.y - st.lift.y) * e;
-        imm arch = stepHeight * lg.reach * sin(pi * uu);
-        imm gnd = ground(px, pz);
+        let uu = clampf((st.u - st.u0) / (1. - st.u0), 0., 1.);
+        let e = uu * uu * (3. - 2. * uu);
+        let px = st.lift.x + (st.land.x - st.lift.x) * e;
+        let pz = st.lift.z + (st.land.z - st.lift.z) * e;
+        let base = st.lift.y + (st.land.y - st.lift.y) * e;
+        let arch = stepHeight * lg.reach * sin(pi * uu);
+        let gnd = ground(px, pz);
         st.foot = new Vec3(px, fmaxf3(base + arch, gnd + 0.004), pz);
         // Folded in swing, a forward-pointing foot toe up, a hanging one back
-        imm sign = if lg.footForward > 0.3 { 1.; } else { -1.; };
+        let sign = if lg.footForward > 0.3 { 1.; } else { -1.; };
         st.pitch = sign * swingFlex * sin(pi * uu);
       } else {
         st.foot = st.anchor;
         // The end of stance: a forward-pointing foot rolls onto its toe
-        imm sp = if st.phase < duty { st.phase / duty; } else { 1.; };
+        let sp = if st.phase < duty { st.phase / duty; } else { 1.; };
         st.pitch = if lg.footForward > 0.3 { -pushOff * smoothstep(0.7, 1.0, sp); } else { 0.; };
       }
       states.set(i, st);
@@ -356,47 +356,47 @@ pub struct Locomotion {
     }
 
     // ---- 5. the body follows the feet
-    mut cxs f32 = 0.;
-    mut czs f32 = 0.;
-    mut gsum f32 = 0.;
+    var cxs f32 = 0.;
+    var czs f32 = 0.;
+    var gsum f32 = 0.;
     i = 0usize;
     // The feet in the body's own axes: across (right), and back
-    mut lxs = List[f32].empty();
-    mut lzs = List[f32].empty();
-    mut gs = List[f32].empty();
-    imm cen = new Vec2(x + legs.centre.x * cs + legs.centre.z * sn, z - legs.centre.x * sn + legs.centre.z * cs);
+    var lxs = List[f32].empty();
+    var lzs = List[f32].empty();
+    var gs = List[f32].empty();
+    let cen = new Vec2(x + legs.centre.x * cs + legs.centre.z * sn, z - legs.centre.x * sn + legs.centre.z * cs);
     while i < n {
-      imm f = states[i].foot;
-      imm dx = f.x - cen.x;
-      imm dz = f.y * 0. + (f.z - cen.y);
+      let f = states[i].foot;
+      let dx = f.x - cen.x;
+      let dz = f.y * 0. + (f.z - cen.y);
       lxs.push(dx * cs - dz * sn);
       lzs.push(dx * sn + dz * cs);
-      imm gh = if states[i].swinging { ground(f.x, f.z); } else { states[i].anchor.y; };
+      let gh = if states[i].swinging { ground(f.x, f.z); } else { states[i].anchor.y; };
       gs.push(gh);
       cxs = cxs + *lxs[i]; czs = czs + *lzs[i]; gsum = gsum + gh;
       i = i + 1usize;
     }
-    imm meanG = gsum / f32.from(n);
-    imm mx = cxs / f32.from(n);
-    imm mz = czs / f32.from(n);
-    mut sxx f32 = 0.; mut sxg f32 = 0.; mut szz f32 = 0.; mut szg f32 = 0.;
+    let meanG = gsum / f32.from(n);
+    let mx = cxs / f32.from(n);
+    let mz = czs / f32.from(n);
+    var sxx f32 = 0.; var sxg f32 = 0.; var szz f32 = 0.; var szg f32 = 0.;
     i = 0usize;
     while i < n {
-      imm ex = *lxs[i] - mx;
-      imm ez = *lzs[i] - mz;
-      imm eg = *gs[i] - meanG;
+      let ex = *lxs[i] - mx;
+      let ez = *lzs[i] - mz;
+      let eg = *gs[i] - meanG;
       sxx = sxx + ex * ex; sxg = sxg + ex * eg;
       szz = szz + ez * ez; szg = szg + ez * eg;
       i = i + 1usize;
     }
-    imm slopeAcross = if sxx > 0.0001 { sxg / sxx; } else { 0.; };
-    imm slopeBack = if szz > 0.0001 { szg / szz; } else { 0.; };
-    imm pitchT = clampf(atan(-slopeBack) * pitchGain, -maxTilt, maxTilt);
-    imm rollT = clampf(atan(slopeAcross) * rollGain, -maxTilt, maxTilt);
+    let slopeAcross = if sxx > 0.0001 { sxg / sxx; } else { 0.; };
+    let slopeBack = if szz > 0.0001 { szg / szz; } else { 0.; };
+    let pitchT = clampf(atan(-slopeBack) * pitchGain, -maxTilt, maxTilt);
+    let rollT = clampf(atan(slopeAcross) * rollGain, -maxTilt, maxTilt);
     if !started {
       bodyY = meanG; pitch = pitchT; roll = rollT;
     } else {
-      mut r1 = damp(bodyY, bodyYVel, meanG, bodyOmega, dt);
+      var r1 = damp(bodyY, bodyYVel, meanG, bodyOmega, dt);
       bodyY = r1.x; bodyYVel = r1.y;
       r1 = damp(pitch, pitchVel, pitchT, bodyOmega, dt);
       pitch = r1.x; pitchVel = r1.y;
@@ -409,14 +409,14 @@ pub struct Locomotion {
     // ---- 6 and 7. the pose; the body is built again if a leg runs out of reach
     self.buildPose(rig, ground, true);
     // The legs' needs: if any stance leg is stretched past 0.97 of its reach, lower the body by the worst excess
-    imm excess = self.worstExcess(rig, ground);
+    let excess = self.worstExcess(rig, ground);
     if excess > 0. {
       drop = drop + excess;
       self.buildPose(rig, ground, true);
     } else if drop > 0. {
       // Let it rise again, slowly, as far as the legs now allow
       drop = fmaxf3(drop - 0.5 * dt, 0.);
-      imm again = self.worstExcess(rig, ground);
+      let again = self.worstExcess(rig, ground);
       if again > 0. { drop = drop + again; }
       self.buildPose(rig, ground, true);
     }
@@ -425,39 +425,39 @@ pub struct Locomotion {
 
   // The rig's pose with the body placed and moved; with 'bodyOnly', the legs are left at rest
   fn buildPose(self &mut, rig &Rig, ground &<fn(x f32, z f32) f32, bodyOnly bool) {
-    imm skel = &rig.skeleton;
+    let skel = &rig.skeleton;
     pose = skel.restPose();
-    imm root = rig.chains[0usize].first();
-    imm restRoot = rig.restPosition(root);
-    imm q = Quat.angleAxis(pitch, new Vec3(1., 0., 0.)) * Quat.angleAxis(roll, new Vec3(0., 0., 1.));
-    imm pivot = legs.centre;
+    let root = rig.chains[0usize].first();
+    let restRoot = rig.restPosition(root);
+    let q = Quat.angleAxis(pitch, new Vec3(1., 0., 0.)) * Quat.angleAxis(roll, new Vec3(0., 0., 1.));
+    let pivot = legs.centre;
     // The bounce is the reference leg's phase, twice and once
-    imm pRef = frac(cycle - states[refLeg].offset);
-    imm meanReach = legs.hipHeight;
-    imm bobY = meanReach * (bounce1 * cos(2. * pi * (pRef + set.bounce1Phase)) + bounce2 * cos(2. * pi * (2. * pRef + set.bounce2Phase)));
-    imm pos = pivot + q * (restRoot - pivot) + new Vec3(0., bobY - drop, 0.);
+    let pRef = frac(cycle - states[refLeg].offset);
+    let meanReach = legs.hipHeight;
+    let bobY = meanReach * (bounce1 * cos(2. * pi * (pRef + set.bounce1Phase)) + bounce2 * cos(2. * pi * (2. * pRef + set.bounce2Phase)));
+    let pos = pivot + q * (restRoot - pivot) + new Vec3(0., bobY - drop, 0.);
     pose.locals.set(root, new Transform3(pos, q, new Vec3(1., 1., 1.)));
     // Chain motions
-    mut m = 0usize;
+    var m = 0usize;
     while m < set.motions.len() {
-      imm mo = set.motions[m];
-      imm amp = *amps[m];
+      let mo = set.motions[m];
+      let amp = *amps[m];
       if absf(amp) > 0.00001 and mo.kind != KIND_LEG {
-        imm axis = if mo.axis == AXIS_PITCH { new Vec3(1., 0., 0.); } elif mo.axis == AXIS_YAW { new Vec3(0., 1., 0.); } else { new Vec3(0., 0., 1.); };
-        mut c = 0usize;
+        let axis = if mo.axis == AXIS_PITCH { new Vec3(1., 0., 0.); } elif mo.axis == AXIS_YAW { new Vec3(0., 1., 0.); } else { new Vec3(0., 0., 1.); };
+        var c = 0usize;
         while c < rig.chains.len() {
           if rig.chains[c].kind == mo.kind {
-            imm skip = if rig.chains[c].parentChain < 0i32 { 1usize; } else { 0usize; };
-            imm count = rig.chains[c].bones.len() - skip;
+            let skip = if rig.chains[c].parentChain < 0i32 { 1usize; } else { 0usize; };
+            let count = rig.chains[c].bones.len() - skip;
             if rig.chains[c].bones.len() > skip {
-              mut total f32 = 0.;
-              mut j = 0usize;
+              var total f32 = 0.;
+              var j = 0usize;
               while j < count { total = total + 1. + mo.taper * f32.from(j); j = j + 1usize; }
               j = 0usize;
               while j < count {
-                imm w = (1. + mo.taper * f32.from(j)) / total;
-                imm ang = amp * w * sin(2. * pi * (mo.harmonic * pRef + mo.phase - mo.lag * f32.from(j)));
-                imm bone = *rig.chains[c].bones[j + skip];
+                let w = (1. + mo.taper * f32.from(j)) / total;
+                let ang = amp * w * sin(2. * pi * (mo.harmonic * pRef + mo.phase - mo.lag * f32.from(j)));
+                let bone = *rig.chains[c].bones[j + skip];
                 pose.setRotation(bone, Quat.angleAxis(ang, axis) * pose.rotation(bone));
                 j = j + 1usize;
               }
@@ -471,50 +471,50 @@ pub struct Locomotion {
     skel.modelTransforms(&pose, &mut models);
     if bodyOnly { return; }
     // The legs
-    imm inv = world.inverse();
-    imm up = new Vec3(0., 1., 0.);
-    imm rootRot = q;
+    let inv = world.inverse();
+    let up = new Vec3(0., 1., 0.);
+    let rootRot = q;
     plantErrorMax = 0.;
     missMax = 0.;
     reachedAll = true;
-    mut i = 0usize;
+    var i = 0usize;
     while i < legs.count() {
-      imm lg = legs.legs[i];
-      mut st = *states[i];
+      let lg = legs.legs[i];
+      var st = *states[i];
       // The sole, in the model's frame; the ground's normal there
-      imm sole = inv.transformPoint(st.foot);
-      imm s = 0.08;
-      imm dgdx = (ground(st.foot.x + s, st.foot.z) - ground(st.foot.x - s, st.foot.z)) / (2. * s);
-      imm dgdz = (ground(st.foot.x, st.foot.z + s) - ground(st.foot.x, st.foot.z - s)) / (2. * s);
-      mut normal = new Vec3(-dgdx, 1., -dgdz).normalize();
+      let sole = inv.transformPoint(st.foot);
+      let s = 0.08;
+      let dgdx = (ground(st.foot.x + s, st.foot.z) - ground(st.foot.x - s, st.foot.z)) / (2. * s);
+      let dgdz = (ground(st.foot.x, st.foot.z + s) - ground(st.foot.x, st.foot.z - s)) / (2. * s);
+      var normal = new Vec3(-dgdx, 1., -dgdz).normalize();
       if acos(clampf(normal.y, -1., 1.)) > 0.6 {
-        imm horiz = new Vec3(normal.x, 0., normal.z).normalize();
+        let horiz = new Vec3(normal.x, 0., normal.z).normalize();
         normal = (horiz * sin(0.6) + new Vec3(0., cos(0.6), 0.)).normalize();
       }
-      imm normalM = inv.rotation * normal;
+      let normalM = inv.rotation * normal;
       // A foot well above the ground is tilted less
-      imm clearance = st.foot.y - ground(st.foot.x, st.foot.z);
-      imm tiltW = 1. - smoothstep(0.02, 0.15, clearance);
-      imm tilt = Quat.identity().slerp(Quat.fromVectors(up, normalM), tiltW);
-      imm footRot = tilt * Quat.angleAxis(st.pitch, new Vec3(1., 0., 0.));
-      mut ankle = sole - footRot * lg.footVec;
+      let clearance = st.foot.y - ground(st.foot.x, st.foot.z);
+      let tiltW = 1. - smoothstep(0.02, 0.15, clearance);
+      let tilt = Quat.identity().slerp(Quat.fromVectors(up, normalM), tiltW);
+      let footRot = tilt * Quat.angleAxis(st.pitch, new Vec3(1., 0., 0.));
+      var ankle = sole - footRot * lg.footVec;
       // A foot in the air that the leg cannot reach is brought in along the line to the hip (a foot on the ground is
       // not: it is held, and the body is lowered to it instead)
       if st.swinging {
-        imm hipNow = (*models[lg.hip]).translation;
-        imm toAnkle = ankle - hipNow;
-        imm len = toAnkle.length();
+        let hipNow = (*models[lg.hip]).translation;
+        let toAnkle = ankle - hipNow;
+        let len = toAnkle.length();
         if len > 0.985 * lg.reach { ankle = hipNow + toAnkle * (0.985 * lg.reach / len); }
       }
-      imm pole = rootRot * lg.pole;
-      imm sol = aimLimbRange(skel, &mut pose, &mut models, lg.hip, ankle, pole, minInterior, maxInterior);
+      let pole = rootRot * lg.pole;
+      let sol = aimLimbRange(skel, &mut pose, &mut models, lg.hip, ankle, pole, minInterior, maxInterior);
       if lg.hasFoot() {
         skel.setModelRotation(&mut pose, &models, lg.ankle, footRot);
         skel.recompose(&pose, &mut models, lg.ankle);
       }
       st.reached = sol.reached;
       if !sol.reached { reachedAll = false; }
-      imm fk = world.transformPoint((*models[lg.tip]).translation);
+      let fk = world.transformPoint((*models[lg.tip]).translation);
       st.miss = fk.distance(st.foot);
       if st.miss > missMax { missMax = st.miss; }
       if !st.swinging {
@@ -530,19 +530,19 @@ pub struct Locomotion {
 
   // How far the worst stance leg is stretched past 0.97 of its reach (0 if none is): hip to ankle target
   fn worstExcess(self &, rig &Rig, ground &<fn(x f32, z f32) f32) f32 {
-    imm inv = world.inverse();
-    mut worst f32 = 0.;
-    mut i = 0usize;
+    let inv = world.inverse();
+    var worst f32 = 0.;
+    var i = 0usize;
     while i < legs.count() {
-      imm lg = legs.legs[i];
-      imm st = states[i];
+      let lg = legs.legs[i];
+      let st = states[i];
       if !st.swinging {
-        imm sole = inv.transformPoint(st.foot);
-        imm hip = (*models[lg.hip]).translation;
+        let sole = inv.transformPoint(st.foot);
+        let hip = (*models[lg.hip]).translation;
         // The ankle is the sole less the foot's vector, the foot flat: the vector as at rest, close enough for a reach test
-        imm ankle = sole - lg.footVec;
-        imm d = ankle.distance(hip);
-        imm ex = d - 0.97 * lg.reach;
+        let ankle = sole - lg.footVec;
+        let d = ankle.distance(hip);
+        let ex = d - 0.97 * lg.reach;
         if ex > worst { worst = ex; }
       }
       i = i + 1usize;
@@ -558,9 +558,9 @@ fn atan(x f32) f32 { atan2(x, 1.); }
 // A critically damped spring's step: the value and velocity after 'dt' seconds going to 'target' with natural
 // frequency 'omega' (Unity's SmoothDamp, from Game Programming Gems 4 chapter 1.10): returned as (value, velocity)
 fn damp(cur f32, vel f32, target f32, omega f32, dt f32) Vec2 {
-  imm x = omega * dt;
-  imm e = 1. / (1. + x + 0.48 * x * x + 0.235 * x * x * x);
-  imm change = cur - target;
-  imm temp = (vel + omega * change) * dt;
+  let x = omega * dt;
+  let e = 1. / (1. + x + 0.48 * x * x + 0.235 * x * x * x);
+  let change = cur - target;
+  let temp = (vel + omega * change) * dt;
   new Vec2(target + (change + temp) * e, (vel - omega * temp) * e);
 }

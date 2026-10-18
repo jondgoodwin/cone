@@ -30,25 +30,25 @@ import time use Duration, Timestamp;
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &str) Path {
-  mut variable cstr = "TMPDIR";
+  var variable cstr = "TMPDIR";
   if isWindows() { variable = "TEMP"; }
-  imm temp = libc.getenv(variable);
+  let temp = libc.getenv(variable);
   require(temp != null or not isWindows(), "TEMP is set");
-  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
-  mut root = Path.from("");
+  let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
+  var root = Path.from("");
   match fs.absolute(&tempPath) {
-    case imm t Ok { root = t.join(name); }
+    case let t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
-  imm up = root.parent();
-  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  let up = root.parent();
+  let safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
   require(safe, "the test's folder is under TEMP");
   root;
 }
 
 // A message with the test's folder shown as '<root>'
 fn shown(root &Path, message &String) String {
-  mut out = message.copy();
+  var out = message.copy();
   out.replace(root.view(), "<root>" as &str);
   out;
 }
@@ -56,33 +56,33 @@ fn shown(root &Path, message &String) String {
 // The message of a Result that must have failed, or "<succeeded>"
 fn messageOf[T](root &Path, r Result[T, fs.FsError]) String {
   match r {
-    case imm e Error { imm m = e.message(); shown(root, &m); }
+    case let e Error { let m = e.message(); shown(root, &m); }
     case is Ok { String.from("<succeeded>"); }
   }
 }
 
 fn ok[T](r Result[T, fs.FsError], label &Array[u8]) bool {
-  imm m = messageOf("", r);
+  let m = messageOf("", r);
   expectStr(m.view(), "<succeeded>", label);
 }
 
 fn failsWith[T](root &Path, r Result[T, fs.FsError], want &Array[u8], label &Array[u8]) bool {
-  imm m = messageOf(root, r);
+  let m = messageOf(root, r);
   expectStr(m.view(), want, label);
 }
 
 // What a file holds, or "<error>"
 fn contents(p &Path) String {
   match fs.readFile(p) {
-    case mut got Ok { mut s = String.empty(); s <=> got; s; }
+    case var got Ok { var s = String.empty(); s <=> got; s; }
     case is Error { String.from("<error>"); }
   }
 }
 
 fn roundTrip(root &Path, name &str, data &Array[u8], label &Array[u8]) {
-  imm p = root.join(name);
+  let p = root.join(name);
   ok(fs.writeFile(&p, data), label);
-  imm back = contents(&p);
+  let back = contents(&p);
   expectUInt(u64.from(back.len()), u64.from(data.len), label);
   expect(back.view() == data, label);
 }
@@ -92,52 +92,52 @@ fn wholeFiles(root &Path) {
   roundTrip(root, "text.txt", "one\ntwo\r\nthree", "text file");
 
   // Every byte value, 0 to 255, twice
-  mut bytes = String.empty();
-  mut i = 0u32;
+  var bytes = String.empty();
+  var i = 0u32;
   while i < 512u32 { bytes.appendByte(u8.from(i & 255u32)); i = i + 1u32; }
   roundTrip(root, "bytes.bin", bytes.view(), "every byte value, NULs included");
 
   // Ten megabytes, no two neighbouring blocks of 64 KB alike
-  mut large = String.withCapacity(10485760usize);
-  mut n = 0u32;
+  var large = String.withCapacity(10485760usize);
+  var n = 0u32;
   while n < 10485760u32 {
     large.appendByte(u8.from((n * 7u32 + n / 65536u32) & 255u32));
     n = n + 1u32;
   }
   roundTrip(root, "large.bin", large.view(), "ten megabytes");
-  imm largePath = root.join("large.bin");
+  let largePath = root.join("large.bin");
   match fs.stat(&largePath) {
-    case imm s Ok { expectInt(s.size, 10485760, "stat size of ten megabytes"); }
+    case let s Ok { expectInt(s.size, 10485760, "stat size of ten megabytes"); }
     case is Error { expect(false, "stat of ten megabytes"); }
   }
 
   // Writing again replaces
-  imm p = root.join("text.txt");
+  let p = root.join("text.txt");
   ok(fs.writeFile(&p, "short"), "rewrite");
-  imm back = contents(&p);
+  let back = contents(&p);
   expectStr(back.view(), "short", "rewrite replaces");
 
   // Appending: makes the file, then adds to its end
-  imm log = root.join("log.txt");
+  let log = root.join("log.txt");
   ok(fs.appendFile(&log, "first\n"), "append makes the file");
   ok(fs.appendFile(&log, "second\n"), "append adds");
   ok(fs.appendFile(&log, ""), "append nothing");
-  imm logged = contents(&log);
+  let logged = contents(&log);
   expectStr(logged.view(), "first\nsecond\n", "appended");
 
   // UTF-8 names
   roundTrip(root, "café 日本.txt", "é日本", "UTF-8 name");
-  imm wide = root.join("café 日本.txt");
+  let wide = root.join("café 日本.txt");
   expect(fs.isFile(&wide), "UTF-8 name is a file");
 }
 
 fn failures(root &Path) {
-  imm missing = root.join("missing.txt");
-  imm nowhere = root.join("nowhere/x.txt");
+  let missing = root.join("missing.txt");
+  let nowhere = root.join("nowhere/x.txt");
   failsWith(root, fs.readFile(&missing),
     "readFile <root>/missing.txt: No such file or directory", "read a file not there");
   match fs.readFile(&missing) {
-    case imm e Error {
+    case let e Error {
       expect(e.notFound(), "not there is notFound");
       expectInt(i64.from(e.code), i64.from(posix.ENOENT), "not there is ENOENT");
       expectStr(e.op.view(), "readFile", "op");
@@ -160,24 +160,24 @@ fn failures(root &Path) {
 }
 
 fn status(root &Path) {
-  imm before = Timestamp.now();
-  imm p = root.join("stat.txt");
-  imm missing = root.join("missing.txt");
+  let before = Timestamp.now();
+  let p = root.join("stat.txt");
+  let missing = root.join("missing.txt");
   ok(fs.writeFile(&p, "12345"), "write for stat");
   match fs.stat(&p) {
-    case imm s Ok {
+    case let s Ok {
       expectInt(s.size, 5, "stat size");
       expect(s.isFile, "stat isFile");
       expect(not s.isDir, "stat file is not isDir");
       // Whole seconds, rounded down, and the clock is read before: within a minute
-      imm late = s.modified - before;
+      let late = s.modified - before;
       expect(late > Duration.fromSeconds(-2) and late <= Duration.fromSeconds(60), "modified is now");
       expectInt(s.modified.unixNanos() % 1000000000, 0, "modified is whole seconds");
     }
     case is Error { expect(false, "stat of a file"); }
   }
   match fs.stat(root) {
-    case imm s Ok {
+    case let s Ok {
       expect(s.isDir, "stat folder isDir");
       expect(not s.isFile, "stat folder is not isFile");
     }
@@ -195,13 +195,13 @@ fn status(root &Path) {
 }
 
 fn renaming(root &Path) {
-  imm a = root.join("a.txt");
-  imm b = root.join("b.txt");
-  imm c = root.join("c.txt");
+  let a = root.join("a.txt");
+  let b = root.join("b.txt");
+  let c = root.join("c.txt");
   ok(fs.writeFile(&a, "A"), "write a");
   ok(fs.rename(&a, &b), "rename a to b");
   expect(not fs.exists(&a), "a is gone");
-  imm got = contents(&b);
+  let got = contents(&b);
   expectStr(got.view(), "A", "b holds what a did");
 
   // Windows refuses to rename onto a file that is there; POSIX replaces it
@@ -211,7 +211,7 @@ fn renaming(root &Path) {
     failsWith(root, fs.rename(&b, &c),
       "rename <root>/b.txt to <root>/c.txt: File exists", "Windows: rename onto a file refused");
     match fs.rename(&b, &c) {
-      case imm e Error {
+      case let e Error {
         expect(e.alreadyExists(), "rename onto a file is alreadyExists");
         expect(e.path.view() == b.view() and e.other.view() == c.view(), "the error holds both paths");
       }
@@ -219,24 +219,24 @@ fn renaming(root &Path) {
     }
   } else {
     ok(fs.rename(&b, &c), "POSIX: rename onto a file replaces it");
-    imm replaced = contents(&c);
+    let replaced = contents(&c);
     expectStr(replaced.view(), "A", "the replaced file holds what b did");
     ok(fs.rename(&c, &b), "and back again");
   }
-  imm missing = root.join("missing.txt");
-  imm d = root.join("d.txt");
+  let missing = root.join("missing.txt");
+  let d = root.join("d.txt");
   failsWith(root, fs.rename(&missing, &d),
     "rename <root>/missing.txt to <root>/d.txt: No such file or directory", "rename a file not there");
 
   // A folder renamed, with what is in it
-  imm dir1 = root.join("dir1");
-  imm dir2 = root.join("dir2");
-  imm in1 = root.join("dir1/in.txt");
-  imm in2 = root.join("dir2/in.txt");
+  let dir1 = root.join("dir1");
+  let dir2 = root.join("dir2");
+  let in1 = root.join("dir1/in.txt");
+  let in2 = root.join("dir2/in.txt");
   ok(fs.makeDir(&dir1), "make dir1");
   ok(fs.writeFile(&in1, "in"), "write into dir1");
   ok(fs.rename(&dir1, &dir2), "rename a folder");
-  imm moved = contents(&in2);
+  let moved = contents(&in2);
   expectStr(moved.view(), "in", "a renamed folder keeps its file");
 
   ok(fs.removeFile(&b), "remove b");
@@ -244,7 +244,7 @@ fn renaming(root &Path) {
 }
 
 fn main() i32 {
-  imm root = makeRoot("cone-fs-test-files");
+  let root = makeRoot("cone-fs-test-files");
   require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
   require(fs.makeDir(&root) is Ok, "make the test's folder");
 

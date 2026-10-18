@@ -24,7 +24,7 @@ import llmreference use *;
 import llmkernels use *;
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
@@ -56,16 +56,16 @@ fn floatSpec(rng &mut Rng, n usize, amp f32) BufSpec { spec(floatWords(synthetic
 // microseconds from submit to the answer
 fn runOnce(device &mut Device, kernels &Kernels, works &mut Works, held &mut List[Buffer], specs &List[BufSpec],
     shape &Shape, record &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool, times usize, first bool) f64 {
-  mut job = Job.make(device);
-  mut slots = List[u32].empty();
-  mut i = 0usize;
+  var job = Job.make(device);
+  var slots = List[u32].empty();
+  var i = 0usize;
   while i < specs.len() {
     if first {
       if specs[i].words.len() > 0usize { slots.push(job.give(upload(device, specs[i].words.view()))); }
       else { slots.push(job.give(zeroed(device, specs[i].zeros))); }
     } else {
       match held.pop() {
-        case mut b Some { slots.push(job.give(b)); }
+        case var b Some { slots.push(job.give(b)); }
         case is None { }
       }
     }
@@ -76,13 +76,13 @@ fn runOnce(device &mut Device, kernels &Kernels, works &mut Works, held &mut Lis
     if !record(kernels, &mut job, device, slots.view(), shape) { printStr("(the case was refused)\n"); }
     i = i + 1usize;
   }
-  imm start = Instant.now();
-  imm ticket = works.submit(device, job, Target.Here(1u64));
-  mut got = List[Completion].empty();
+  let start = Instant.now();
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
   works.waitFor(device, ticket, &mut got);
-  imm took = start.elapsed();
+  let took = start.elapsed();
   // the buffers come back: hold them, last slot first, so the next job pops slot 0 first
-  mut k = specs.len();
+  var k = specs.len();
   while k > 0usize {
     k = k - 1usize;
     held.push(got[0usize].take(u32.from(k)));
@@ -93,20 +93,20 @@ fn runOnce(device &mut Device, kernels &Kernels, works &mut Works, held &mut Lis
 // Microseconds for one dispatch: (t51 - t1) / 50, the median of 5
 fn timeCase(device &mut Device, kernels &Kernels, works &mut Works, specs &List[BufSpec], shape &Shape,
     record &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool) f64 {
-  mut held = List[Buffer].empty();
+  var held = List[Buffer].empty();
   runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, true);   // uploads, untimed
-  mut diffs = List[f64].empty();
-  mut rep = 0usize;
+  var diffs = List[f64].empty();
+  var rep = 0usize;
   while rep < 5usize {
-    imm t1 = runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, false);
-    imm t51 = runOnce(device, kernels, works, &mut held, specs, shape, record, 51usize, false);
+    let t1 = runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, false);
+    let t51 = runOnce(device, kernels, works, &mut held, specs, shape, record, 51usize, false);
     diffs.push((t51 - t1) / 50.0d);
     rep = rep + 1usize;
   }
   // the median of five: the third smallest
-  mut a = 0usize;
+  var a = 0usize;
   while a < 5usize {
-    mut b = a + 1usize;
+    var b = a + 1usize;
     while b < 5usize {
       if *diffs[b] < *diffs[a] { diffs.swap(a, b); }
       b = b + 1usize;
@@ -171,19 +171,19 @@ fn typeName(qt u32) &str {
 }
 
 fn pad(s &str, width usize) {
-  mut n = s.len;
+  var n = s.len;
   printStr(s);
   while n < width { printStr(" "); n = n + 1usize; }
 }
 
 fn matvecCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, qt u32, rows usize, cols usize) {
   match syntheticMatrix(rng, qt, rows, cols) {
-    case imm m Some {
-      mut specs = List[BufSpec].empty();
+    case let m Some {
+      var specs = List[BufSpec].empty();
       specs.push(spec(m.words()));
       specs.push(floatSpec(rng, cols, 1.0));
       specs.push(zeroSpec(rows));
-      imm us = timeCase(device, kernels, works, &specs, &new Shape(rows, cols, 0usize, 0usize, 0usize, 0usize, qt), &recMatvec);
+      let us = timeCase(device, kernels, works, &specs, &new Shape(rows, cols, 0usize, 0usize, 0usize, 0usize, qt), &recMatvec);
       printStr("matvec "); printStr(typeName(qt)); printStr(" "); printUInt(u64.from(rows)); printStr(" x "); printUInt(u64.from(cols));
       printStr(": "); printFloat(us); printStr(" us, weights read at "); printFloat(f64.from(m.bytes.len()) / us / 1000.0d); printStr(" GB/s\n");
     }
@@ -193,12 +193,12 @@ fn matvecCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut R
 
 fn matmulCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, qt u32, rows usize, cols usize, batch usize) {
   match syntheticMatrix(rng, qt, rows, cols) {
-    case imm m Some {
-      mut specs = List[BufSpec].empty();
+    case let m Some {
+      var specs = List[BufSpec].empty();
       specs.push(spec(m.words()));
       specs.push(floatSpec(rng, cols * batch, 1.0));
       specs.push(zeroSpec(rows * batch));
-      imm us = timeCase(device, kernels, works, &specs, &new Shape(rows, cols, batch, 0usize, 0usize, 0usize, qt), &recMatmul);
+      let us = timeCase(device, kernels, works, &specs, &new Shape(rows, cols, batch, 0usize, 0usize, 0usize, qt), &recMatmul);
       printStr("matmul "); printStr(typeName(qt)); printStr(" "); printUInt(u64.from(rows)); printStr(" x "); printUInt(u64.from(cols));
       printStr(" x batch "); printUInt(u64.from(batch)); printStr(": "); printFloat(us); printStr(" us, ");
       printFloat(2.0d * f64.from(rows) * f64.from(cols) * f64.from(batch) / us / 1000.0d); printStr(" GFLOP/s\n");
@@ -214,21 +214,21 @@ fn line(name &str, us f64) {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("llmkernels bench");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
-  mut device = adapter.requestDevice();
+  var instance = Instance.create("llmkernels bench");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  var device = adapter.requestDevice();
   if !device.isValid() {
     printStr("no device\n");
     return 1i32;
   }
-  imm kernels = Kernels.make(&device);
+  let kernels = Kernels.make(&device);
   if !kernels.isValid() {
     printStr("the kernels were not made\n");
     return 1i32;
   }
-  mut works = Works.make();
-  mut rng = Rng.fromSeed(2026u64);
+  var works = Works.make();
+  var rng = Rng.fromSeed(2026u64);
   if (libc.getenv("GPUWORK_REPORT") as usize) != 0usize { printStr("adapter: "); printStr(adapter.name.view()); printStr("\n"); }
 
   // ---- matvec: a decode step's weights ----
@@ -251,40 +251,40 @@ fn main() i32 {
 
   // ---- the rest ----
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 4096usize, 3.0));
     specs.push(floatSpec(&mut rng, 4096usize, 1.0));
     specs.push(zeroSpec(4096usize));
     line("rmsnorm 1 row of 4096", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(4096usize, 1usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recRms));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 128usize * 4096usize, 3.0));
     specs.push(floatSpec(&mut rng, 4096usize, 1.0));
     specs.push(zeroSpec(128usize * 4096usize));
     line("rmsnorm 128 rows of 4096", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(4096usize, 128usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recRms));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(spec(floatWords(ropeFrequencies(128usize, 10000.0).view())));
     specs.push(floatSpec(&mut rng, 32usize * 128usize, 1.0));
     line("rope 1 token, 32 heads of 128 (position 1000)", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 32usize, 128usize, 1000usize, 0usize, 0usize, 0u32), &recRope));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(spec(floatWords(ropeFrequencies(128usize, 10000.0).view())));
     specs.push(floatSpec(&mut rng, 128usize * 32usize * 128usize, 1.0));
     line("rope 128 tokens, 32 heads of 128", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(128usize, 32usize, 128usize, 0usize, 0usize, 0usize, 0u32), &recRope));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 32000usize, 4.0));
     specs.push(zeroSpec(32000usize));
     line("softmax 1 row of 32000 (the vocabulary)", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(32000usize, 1usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recSoftmax));
   }
   {
     // decode over 2048 positions: 32 heads of 128 over 8 key-value heads
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 32usize * 128usize, 1.0));
     specs.push(floatSpec(&mut rng, 2048usize * 8usize * 128usize, 1.0));
     specs.push(floatSpec(&mut rng, 2048usize * 8usize * 128usize, 1.0));
@@ -293,7 +293,7 @@ fn main() i32 {
     line("attention decode, 2048 positions, 32 heads of 128 / 8", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 32usize, 8usize, 128usize, 2047usize, 2048usize, 0u32), &recAttention));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 32usize * 128usize, 1.0));
     specs.push(floatSpec(&mut rng, 512usize * 8usize * 128usize, 1.0));
     specs.push(floatSpec(&mut rng, 512usize * 8usize * 128usize, 1.0));
@@ -303,7 +303,7 @@ fn main() i32 {
   }
   {
     // prefill of 128 tokens, 128 positions
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 128usize * 32usize * 128usize, 1.0));
     specs.push(floatSpec(&mut rng, 128usize * 8usize * 128usize, 1.0));
     specs.push(floatSpec(&mut rng, 128usize * 8usize * 128usize, 1.0));
@@ -312,20 +312,20 @@ fn main() i32 {
     line("attention prefill, 128 tokens, 32 heads of 128 / 8", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(128usize, 32usize, 8usize, 128usize, 0usize, 128usize, 0u32), &recAttention));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 1024usize, 1.0));
     specs.push(zeroSpec(2048usize * 1024usize));
     line("kv append 1 token of 1024 (8 heads of 128)", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(1usize, 1024usize, 1000usize, 0usize, 0usize, 0usize, 0u32), &recAppend));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 11008usize, 6.0));
     specs.push(zeroSpec(11008usize));
     line("silu 11008", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(11008usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recSilu));
     line("gelu 11008", timeCase(&mut device, &kernels, &mut works, &specs, &new Shape(11008usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0u32), &recGelu));
   }
   {
-    mut specs = List[BufSpec].empty();
+    var specs = List[BufSpec].empty();
     specs.push(floatSpec(&mut rng, 11008usize, 6.0));
     specs.push(floatSpec(&mut rng, 11008usize, 6.0));
     specs.push(zeroSpec(11008usize));

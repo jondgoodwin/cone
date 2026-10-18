@@ -10,7 +10,7 @@ mod cycles;
 import testing use *;
 import collector;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10 + d; }
 
 fn settle() {
@@ -34,35 +34,35 @@ struct NodeValue {
 }
 alias Node = Gc[mut, NodeValue];
 
-// Matched by value: a reference into an Option held in a 'mut' variable could
+// Matched by value: a reference into an Option held in a 'var' variable could
 // see it changed while in use
 fn nextOf(r Option[Node]) Option[Node] {
   match r {
-    case imm s Some[Node] { s.next; }
+    case let s Some[Node] { s.next; }
     else { None; }
   }
 }
 
 // Two objects each holding the other
 fn dropPair() {
-  imm a = new Ring(1, None);
-  imm b = new Ring(2, Some[Ring](a));
+  let a = new Ring(1, None);
+  let b = new Ring(2, Some[Ring](a));
   a.next = Some[Ring](b);
 }
 
 // One object holding itself
 fn dropSelf() {
-  imm a = new Ring(3, None);
+  let a = new Ring(3, None);
   a.next = Some[Ring](a);
 }
 
 // A ring of n plain nodes, numbered 1 to n; the first returned
 fn ring(n i64) Node {
-  imm first = new Node(1, None);
-  mut last = first;
-  mut i = 2i64;
+  let first = new Node(1, None);
+  var last = first;
+  var i = 2i64;
   while i <= n {
-    imm node = new Node(i, None);
+    let node = new Node(i, None);
     last.next = Some[Node](node);
     last = node;
     i = i + 1;
@@ -77,12 +77,12 @@ fn dropRing() {
 
 // Walk k steps round the ring from 'start', summing the numbers
 fn walk(start Node, k i64) i64 {
-  mut at Option[Node] = Some[Node](start);
-  mut total = 0i64;
-  mut i = 0i64;
+  var at Option[Node] = Some[Node](start);
+  var total = 0i64;
+  var i = 0i64;
   while i < k {
     match &at {
-      case imm s &Some[Node] { total = total + (*s).n; }
+      case let s &Some[Node] { total = total + (*s).n; }
       else { }
     }
     at = nextOf(at);
@@ -92,7 +92,7 @@ fn walk(start Node, k i64) i64 {
 }
 
 fn keptRing() {
-  imm r = ring(5);
+  let r = ring(5);
   settle();
   expectUInt(live(), 5, "a ring reached from a root is kept whole");
   expectInt(walk(r, 10), 30, "twice round: 2 * (1+2+3+4+5)");

@@ -26,10 +26,10 @@ import actors;
 import aio use File;
 
 fn fileOf(r Result[File, IoError]) File {
-  mut res = r;
-  mut f = File.none();
+  var res = r;
+  var f = File.none();
   match &mut res {
-    case mut ok &mut Ok {f <=> *ok;}
+    case var ok &mut Ok {f <=> *ok;}
     else {}
   }
   f;
@@ -50,7 +50,7 @@ fn num(what &str, n u64) {
 // The error code of a failed answer, 0 for a success
 fn codeOf[T](r Result[T, IoError]) u64 {
   match r {
-    case imm e Error {u64.from(e.code);}
+    case let e Error {u64.from(e.code);}
     else {0u64;}
   }
 }
@@ -58,16 +58,16 @@ fn codeOf[T](r Result[T, IoError]) u64 {
 // What a write answered: its count, or 1000000 and the error code
 fn countOf(r Result[usize, IoError]) u64 {
   match r {
-    case imm n Ok {u64.from(n);}
-    case imm e Error {1000000u64 + u64.from(e.code);}
+    case let n Ok {u64.from(n);}
+    case let e Error {1000000u64 + u64.from(e.code);}
   }
 }
 
 // A block of n bytes, byte i being i mod 251 xor seed
 fn block(pool &Pool, n usize, seed u8) IoBuf {
-  mut b = pool.mustTake(n);
-  imm room = b.whole();
-  mut i = 0usize;
+  var b = pool.mustTake(n);
+  let room = b.whole();
+  var i = 0usize;
   while i < n {
     room[i] = u8.from(i % 251usize) ^ seed;
     i = i + 1usize;
@@ -79,9 +79,9 @@ fn block(pool &Pool, n usize, seed u8) IoBuf {
 // Whether the n bytes of b from 'from' are those of a block of seed, byte
 // 'base' of it on
 fn isRun(b &IoBuf, from usize, n usize, base usize, seed u8) bool {
-  imm v = b.view();
+  let v = b.view();
   if v.len < from + n {return false;}
-  mut i = 0usize;
+  var i = 0usize;
   while i < n {
     if v[from + i] != u8.from((base + i) % 251usize) ^ seed {return false;}
     i = i + 1usize;
@@ -96,10 +96,10 @@ fn isBlock(b &IoBuf, from usize, n usize, seed u8) bool {
 
 // The buffer a read's answer holds, or an empty one
 fn bufOf(r Result[IoBuf, IoError]) IoBuf {
-  mut res = r;
-  mut b = IoBuf.empty();
+  var res = r;
+  var b = IoBuf.empty();
   match &mut res {
-    case mut ok &mut Ok {b <=> *ok;}
+    case var ok &mut Ok {b <=> *ok;}
     else {}
   }
   b;
@@ -110,9 +110,9 @@ actor Peeker {
 
   // Reads the first block of a file sent to it
   pub async do peek(self, f File, done OneshotSender[u64]) {
-    imm b = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let b = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
     note("the sent file reads in the other actor", b.len() == 4096usize and isBlock(&b, 0usize, 4096usize, 11u8));
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
@@ -122,9 +122,9 @@ actor Filer {
   peeker Peeker;
 
   pub async do run(self, done OneshotSender[u64]) {
-    imm name = Path.from("aiofiles.tmp");
+    let name = Path.from("aiofiles.tmp");
 
-    imm f = fileOf(await aio.openFile(&name, Access.Create));
+    let f = fileOf(await aio.openFile(&name, Access.Create));
     note("created", not f.isNone());
 
     // Three blocks, written out of order
@@ -133,22 +133,22 @@ actor Filer {
     num("block 1 wrote", countOf(await f.writeAt(4096u64, block(&pool, 4096usize, 22u8))));
 
     // Each read back
-    imm r0 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let r0 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
     note("block 0 read back", r0.len() == 4096usize and isBlock(&r0, 0usize, 4096usize, 11u8));
-    imm r1 = bufOf(await f.readAt(4096u64, pool.mustTake(4096usize)));
+    let r1 = bufOf(await f.readAt(4096u64, pool.mustTake(4096usize)));
     note("block 1 read back", r1.len() == 4096usize and isBlock(&r1, 0usize, 4096usize, 22u8));
-    imm r2 = bufOf(await f.readAt(8192u64, pool.mustTake(4096usize)));
+    let r2 = bufOf(await f.readAt(8192u64, pool.mustTake(4096usize)));
     note("block 2 read back", r2.len() == 4096usize and isBlock(&r2, 0usize, 4096usize, 33u8));
 
     // The end of the file: Done, the buffer as it went
-    imm cap = pool.mustTake(4096usize).capacity();
-    imm eb = bufOf(await f.readAt(12288u64, pool.mustTake(4096usize)));
+    let cap = pool.mustTake(4096usize).capacity();
+    let eb = bufOf(await f.readAt(12288u64, pool.mustTake(4096usize)));
     note("read at the end: done, nothing added", eb.len() == 0usize and eb.capacity() == cap);
-    imm pb = bufOf(await f.readAt(1000000u64, pool.mustTake(4096usize)));
+    let pb = bufOf(await f.readAt(1000000u64, pool.mustTake(4096usize)));
     note("read past the end: done, nothing added", pb.len() == 0usize and pb.capacity() == cap);
 
     // A read that crosses the end gets what is there
-    imm c0 = bufOf(await f.readAt(10000u64, pool.mustTake(4096usize)));
+    let c0 = bufOf(await f.readAt(10000u64, pool.mustTake(4096usize)));
     num("read across the end got", u64.from(c0.len()));
     note("  and they are the bytes", c0.len() == 2288usize and isRun(&c0, 0usize, 2288usize, 1808usize, 33u8));
 
@@ -156,39 +156,39 @@ actor Filer {
     num("read with no room: error code", codeOf[IoBuf](await f.readAt(0u64, IoBuf.empty())));
 
     // Sixteen bytes over the middle of block 1 (at 4,096 + 100)
-    mut patch = pool.mustTake(16usize);
+    var patch = pool.mustTake(16usize);
     patch.append("0123456789ABCDEF");
     num("patch wrote", countOf(await f.writeAt(4196u64, patch)));
-    imm rp = bufOf(await f.readAt(4096u64, pool.mustTake(4096usize)));
+    let rp = bufOf(await f.readAt(4096u64, pool.mustTake(4096usize)));
     note("the patch reads back", rp.len() == 4096usize and rp.view()[100usize] == '0' and rp.view()[115usize] == 'F');
     note("  and the bytes around it are as they were", isBlock(&rp, 0usize, 100usize, 22u8)
       and rp.view()[116usize] == (u8.from(116usize % 251usize) ^ 22u8));
 
     // Opened again, to read: what was written is there; a write to it fails
-    imm again = fileOf(await aio.openFile(&name, Access.Read));
+    let again = fileOf(await aio.openFile(&name, Access.Read));
     note("opened again to read", not again.isNone());
-    imm k0 = bufOf(await again.readAt(0u64, pool.mustTake(4096usize)));
+    let k0 = bufOf(await again.readAt(0u64, pool.mustTake(4096usize)));
     note("  and what was written is there", k0.len() == 4096usize and isBlock(&k0, 0usize, 4096usize, 11u8));
     note("  a write to it fails", countOf(await again.writeAt(0u64, block(&pool, 16usize, 5u8))) >= 1000000u64);
 
     // To update: the bytes are kept, a write changes only its own
-    imm upd = fileOf(await aio.openFile(&name, Access.Update));
+    let upd = fileOf(await aio.openFile(&name, Access.Update));
     note("opened to update", not upd.isNone());
-    imm u0 = bufOf(await upd.readAt(8192u64, pool.mustTake(4096usize)));
+    let u0 = bufOf(await upd.readAt(8192u64, pool.mustTake(4096usize)));
     note("  its bytes are kept", u0.len() == 4096usize and isBlock(&u0, 0usize, 4096usize, 33u8));
     num("  a write of 16 bytes wrote", countOf(await upd.writeAt(0u64, block(&pool, 16usize, 44u8))));
-    imm u1 = bufOf(await upd.readAt(0u64, pool.mustTake(4096usize)));
+    let u1 = bufOf(await upd.readAt(0u64, pool.mustTake(4096usize)));
     note("  the 16 bytes are new", isBlock(&u1, 0usize, 16usize, 44u8));
     note("  and the rest is not", u1.view()[16usize] == (u8.from(16usize % 251usize) ^ 11u8));
 
     // A file that is not there
-    imm missing = Path.from("aiofiles-missing.tmp");
+    let missing = Path.from("aiofiles-missing.tmp");
     num("opening a file that is not there: error code", codeOf[File](await aio.openFile(&missing, Access.Read)));
 
     // To create: emptied, then block 0 written, and the file sent on
-    imm made = fileOf(await aio.openFile(&name, Access.Create));
+    let made = fileOf(await aio.openFile(&name, Access.Create));
     note("opened to create", not made.isNone());
-    imm m0 = bufOf(await made.readAt(0u64, pool.mustTake(4096usize)));
+    let m0 = bufOf(await made.readAt(0u64, pool.mustTake(4096usize)));
     note("  it was emptied", m0.len() == 0usize);
     num("  block 0 wrote", countOf(await made.writeAt(0u64, block(&pool, 4096usize, 11u8))));
     peeker.peek(made, done);
@@ -197,11 +197,11 @@ actor Filer {
 
 fn main() {
   initAll();
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx OneshotSender[u64];
+  var rx OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    imm f = new Filer(Pool.make(), new Peeker(Pool.make()));
+    let f = new Filer(Pool.make(), new Peeker(Pool.make()));
     f.run(tx);
   }
   rx.recv();

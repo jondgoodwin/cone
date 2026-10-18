@@ -63,9 +63,9 @@ pub struct PairEvents[T Copy] {
 
 // The last u32 of a list, taken off it (NONE for an empty one)
 fn popU32(l &mut List[u32]) u32 {
-  mut r = NONE;
+  var r = NONE;
   match l.pop() {
-    case imm s Some { r = s; }
+    case let s Some { r = s; }
     case is None { }
   }
   r;
@@ -80,22 +80,22 @@ fn absf(a f32) f32 inline {if a < 0. {-a;} else {a;};}
 // The cell an f32 coordinate falls in on a grid of 'size' from 'origin'
 // (kept within 21 bits either side of zero, so a key can pack three of them)
 fn cellOf(x f32, origin f32, invSize f32) i32 inline {
-  imm f = libc.floorf((x - origin) * invSize);
-  imm c = if f < -1048576. {-1048576.;} else if f > 1048575. {1048575.;} else {f;};
+  let f = libc.floorf((x - origin) * invSize);
+  let c = if f < -1048576. {-1048576.;} else if f > 1048575. {1048575.;} else {f;};
   i32.from(c);
 }
 
 // The surface area of a box: the cost measure of the surface area heuristic
 fn area(b Aabb3) f32 inline {
-  imm d = b.max - b.min;
+  let d = b.max - b.min;
   2. * (d.x * d.y + d.y * d.z + d.z * d.x);
 }
 
 // Squared distance from a point to a box (0 inside)
 fn distSqPointBox(p Vec3, b Aabb3) f32 inline {
-  imm dx = maxf(maxf(b.min.x - p.x, p.x - b.max.x), 0.);
-  imm dy = maxf(maxf(b.min.y - p.y, p.y - b.max.y), 0.);
-  imm dz = maxf(maxf(b.min.z - p.z, p.z - b.max.z), 0.);
+  let dx = maxf(maxf(b.min.x - p.x, p.x - b.max.x), 0.);
+  let dy = maxf(maxf(b.min.y - p.y, p.y - b.max.y), 0.);
+  let dz = maxf(maxf(b.min.z - p.z, p.z - b.max.z), 0.);
   dx * dx + dy * dy + dz * dz;
 }
 
@@ -117,20 +117,20 @@ pub const ALL_PLANES = 63u32;
 // View Frustum Culling Algorithms for Bounding Boxes" (2000). The answers
 // agree with Frustum.testAabb: NONE is Outside, 0 is Inside, else Intersecting.
 fn cullMask(f &Frustum, b &Aabb3, mask u32) u32 {
-  mut out = 0u32;
-  mut i = 0usize;
+  var out = 0u32;
+  var i = 0usize;
   while i < 6usize {
-    imm bit = 1u32 << u32.from(i);
+    let bit = 1u32 << u32.from(i);
     if (mask & bit) != 0u32 {
-      imm n = f.planes[i].normal;
-      imm d = f.planes[i].d;
-      imm px = if n.x >= 0. {b.max.x;} else {b.min.x;};
-      imm py = if n.y >= 0. {b.max.y;} else {b.min.y;};
-      imm pz = if n.z >= 0. {b.max.z;} else {b.min.z;};
+      let n = f.planes[i].normal;
+      let d = f.planes[i].d;
+      let px = if n.x >= 0. {b.max.x;} else {b.min.x;};
+      let py = if n.y >= 0. {b.max.y;} else {b.min.y;};
+      let pz = if n.z >= 0. {b.max.z;} else {b.min.z;};
       if n.x * px + n.y * py + n.z * pz + d < 0. {return NONE;}
-      imm qx = if n.x >= 0. {b.min.x;} else {b.max.x;};
-      imm qy = if n.y >= 0. {b.min.y;} else {b.max.y;};
-      imm qz = if n.z >= 0. {b.min.z;} else {b.max.z;};
+      let qx = if n.x >= 0. {b.min.x;} else {b.max.x;};
+      let qy = if n.y >= 0. {b.min.y;} else {b.max.y;};
+      let qz = if n.z >= 0. {b.min.z;} else {b.max.z;};
       if n.x * qx + n.y * qy + n.z * qz + d < 0. {out = out | bit;}
     }
     i = i + 1usize;
@@ -149,7 +149,7 @@ pub struct RayQ {
   pub inv Vec3;
 
   pub fn from(r Ray3) RayQ {
-    imm inv = new Vec3(if r.direction.x != 0. {1. / r.direction.x;} else {0.;},
+    let inv = new Vec3(if r.direction.x != 0. {1. / r.direction.x;} else {0.;},
       if r.direction.y != 0. {1. / r.direction.y;} else {0.;},
       if r.direction.z != 0. {1. / r.direction.z;} else {0.;});
     new RayQ(r.origin, r.direction, inv);
@@ -160,25 +160,25 @@ pub struct RayQ {
 // multiple of the direction; 0 if it starts inside; -1 if it misses or the
 // entry is beyond 'maxT'. The box is closed: touching counts.
 fn rayBox(r &RayQ, b &Aabb3, maxT f32) f32 {
-  mut tNear = 0.;
-  mut tFar = maxT;
+  var tNear = 0.;
+  var tFar = maxT;
   if r.d.x != 0. {
-    imm t1 = (b.min.x - r.o.x) * r.inv.x;
-    imm t2 = (b.max.x - r.o.x) * r.inv.x;
+    let t1 = (b.min.x - r.o.x) * r.inv.x;
+    let t2 = (b.max.x - r.o.x) * r.inv.x;
     tNear = maxf(tNear, minf(t1, t2));
     tFar = minf(tFar, maxf(t1, t2));
   }
   else if r.o.x < b.min.x or r.o.x > b.max.x {return -1.;}
   if r.d.y != 0. {
-    imm t1 = (b.min.y - r.o.y) * r.inv.y;
-    imm t2 = (b.max.y - r.o.y) * r.inv.y;
+    let t1 = (b.min.y - r.o.y) * r.inv.y;
+    let t2 = (b.max.y - r.o.y) * r.inv.y;
     tNear = maxf(tNear, minf(t1, t2));
     tFar = minf(tFar, maxf(t1, t2));
   }
   else if r.o.y < b.min.y or r.o.y > b.max.y {return -1.;}
   if r.d.z != 0. {
-    imm t1 = (b.min.z - r.o.z) * r.inv.z;
-    imm t2 = (b.max.z - r.o.z) * r.inv.z;
+    let t1 = (b.min.z - r.o.z) * r.inv.z;
+    let t2 = (b.max.z - r.o.z) * r.inv.z;
     tNear = maxf(tNear, minf(t1, t2));
     tFar = minf(tFar, maxf(t1, t2));
   }
@@ -207,9 +207,9 @@ struct MinHeap {
 
   fn push(self &mut, e HeapEntry) {
     a.push(e);
-    mut i = a.len() - 1usize;
+    var i = a.len() - 1usize;
     while i > 0usize {
-      imm p = (i - 1usize) / 2usize;
+      let p = (i - 1usize) / 2usize;
       if a[p].key <= a[i].key {break;}
       a.swap(p, i);
       i = p;
@@ -217,20 +217,20 @@ struct MinHeap {
   }
 
   fn pop(self &mut) HeapEntry {
-    imm last = a.len() - 1usize;
+    let last = a.len() - 1usize;
     a.swap(0usize, last);
-    mut top = new HeapEntry(0., 0u32, false, new Vec3(0., 0., 0.), 0.);
+    var top = new HeapEntry(0., 0u32, false, new Vec3(0., 0., 0.), 0.);
     match a.pop() {
-      case imm s Some { top = s; }
+      case let s Some { top = s; }
       case is None { }
     }
-    mut i = 0usize;
-    imm n = a.len();
+    var i = 0usize;
+    let n = a.len();
     while true {
-      imm l = 2usize * i + 1usize;
+      let l = 2usize * i + 1usize;
       if l >= n {break;}
-      imm r = l + 1usize;
-      mut m = l;
+      let r = l + 1usize;
+      var m = l;
       if r < n and a[r].key < a[l].key {m = r;}
       if a[i].key <= a[m].key {break;}
       a.swap(i, m);
@@ -249,10 +249,10 @@ struct Seen {
 
   // Marks a slot; true if it was not marked before
   fn mark(self &mut, slot u32) bool {
-    imm w = usize.from(slot >> 6u32);
+    let w = usize.from(slot >> 6u32);
     while self.bits.len() <= w {self.bits.push(0u64);}
-    imm bit = 1u64 << u64.from(slot & 63u32);
-    imm cur = *bits[w];
+    let bit = 1u64 << u64.from(slot & 63u32);
+    let cur = *bits[w];
     if (cur & bit) != 0u64 {return false;}
     bits.set(w, cur | bit);
     true;

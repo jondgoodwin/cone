@@ -18,7 +18,7 @@ import sync use *;
 import time use Duration, Instant;
 
 // A value whose deaths are counted
-mut @threadlocal deaths u64 = 0u64;
+var @threadlocal deaths u64 = 0u64;
 
 struct Counted {
   pub n u64;
@@ -30,21 +30,21 @@ struct Counted {
 // The next value's number, or 0 for None
 fn got(o Option[u64]) u64 {
   match o {
-    case imm s Some {s;}
+    case let s Some {s;}
     case is None[u64] {0u64;}
   }
 }
 
 fn gotCounted(o Option[Counted]) u64 {
   match o {
-    case imm s Some {s.n;}
+    case let s Some {s.n;}
     case is None[Counted] {0u64;}
   }
 }
 
 fn gotOwned(o Option[Uni[Counted]]) u64 {
   match o {
-    case imm s Some {s.n;}
+    case let s Some {s.n;}
     case is None[Uni[Counted]] {0u64;}
   }
 }
@@ -57,8 +57,8 @@ fn dropSender(tx Sender[u64]) {}
 fn dropReceiver(rx Receiver[Counted]) {}
 
 fn order() {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
   expectUInt(got(rx.tryRecv()), 0u64, "tryRecv on an empty channel is None");
   expectBool(rx.isClosed(), false, "a new channel is open");
@@ -79,15 +79,15 @@ fn order() {
 // 10000 sent before any is received: 313 blocks queued at once. Each value
 // is checked against the next number expected.
 fn blocks() {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  mut next = 1u64;
-  mut want = 1u64;
-  mut wrong = 0u64;
-  mut round = 1u64;
+  var next = 1u64;
+  var want = 1u64;
+  var wrong = 0u64;
+  var round = 1u64;
   while round <= 70u64 {
-    mut i = 0u64;
+    var i = 0u64;
     while i < round {
       tx.send(next);
       next = next + 1u64;
@@ -107,15 +107,15 @@ fn blocks() {
   expectUInt(wrong, 0u64, "each in its place");
   expectUInt(got(rx.tryRecv()), 0u64, "and none left");
 
-  mut sum = 0u64;
-  mut i = 0u64;
+  var sum = 0u64;
+  var i = 0u64;
   while i < 10000u64 {
     tx <- next + i;
     i = i + 1u64;
   }
   i = 0u64;
   while i < 10000u64 {
-    imm v = got(rx.recv());
+    let v = got(rx.recv());
     if v != want + i {
       wrong = wrong + 1u64;
     }
@@ -128,8 +128,8 @@ fn blocks() {
 }
 
 fn closing() {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
   tx <- (7u64, 8u64);
   rx.close();
@@ -142,10 +142,10 @@ fn closing() {
   expectUInt(got(rx.tryRecv()), 0u64, "and tryRecv");
 
   // The last sender's going closes it; a clone is a second sender
-  mut tx1 Sender[u64];
-  mut rx1 Receiver[u64];
+  var tx1 Sender[u64];
+  var rx1 Receiver[u64];
   tx1, rx1 = Channel[u64].make();
-  imm tx2 = tx1.clone();
+  let tx2 = tx1.clone();
   tx1 <- 11u64;
   tx2.send(12u64);
   dropSender(tx1);
@@ -160,10 +160,10 @@ fn closing() {
 }
 
 fn timeouts() {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm start = Instant.now();
+  let start = Instant.now();
   expectUInt(got(rx.recvTimeout(Duration.fromMillis(30))), 0u64, "recvTimeout on an empty channel is None");
   expect(start.elapsed() >= Duration.fromMillis(30), "after waiting at least the 30 ms");
   tx <- 14u64;
@@ -177,16 +177,16 @@ fn timeouts() {
 fn finalizing() {
   deaths = 0u64;
   {
-    mut tx Sender[Counted];
-    mut rx Receiver[Counted];
+    var tx Sender[Counted];
+    var rx Receiver[Counted];
     tx, rx = Channel[Counted].make();
-    mut i = 1u64;
+    var i = 1u64;
     while i <= 100u64 {
       tx <- new Counted(i);
       i = i + 1u64;
     }
     expectUInt(deaths, 0u64, "a value sent is not finalized");
-    mut sum = 0u64;
+    var sum = 0u64;
     i = 0u64;
     while i < 40u64 {
       sum = sum + gotCounted(rx.recv());
@@ -204,10 +204,10 @@ fn finalizing() {
 
   deaths = 0u64;
   {
-    mut tx Sender[Uni[Counted]];
-    mut rx Receiver[Uni[Counted]];
+    var tx Sender[Uni[Counted]];
+    var rx Receiver[Uni[Counted]];
     tx, rx = Channel[Uni[Counted]].make();
-    mut i = 1u64;
+    var i = 1u64;
     while i <= 50u64 {
       tx.send(new Uni[Counted](i));
       i = i + 1u64;

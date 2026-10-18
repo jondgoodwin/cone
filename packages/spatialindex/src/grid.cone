@@ -83,7 +83,7 @@ pub struct HashGrid[T Copy] {
 
   fn newEntry(self &mut, slot u32, next u32) u32 {
     if freeEntry != NONE {
-      imm e = freeEntry;
+      let e = freeEntry;
       freeEntry = entries[usize.from(e)].next;
       entries[usize.from(e)].slot = slot;
       entries[usize.from(e)].next = next;
@@ -94,17 +94,17 @@ pub struct HashGrid[T Copy] {
   }
 
   fn headOf(self &, key u64) u32 {
-    mut r = NONE;
+    var r = NONE;
     match cells.getCopy(&key) {
-      case imm h Some { r = h; }
+      case let h Some { r = h; }
       case is None { }
     }
     r;
   }
 
   fn addToCells(self &mut, slot u32, b Aabb3) {
-    imm si = usize.from(slot);
-    imm rg = rangeOf(b);
+    let si = usize.from(slot);
+    let rg = rangeOf(b);
     if rg.volume() > maxCells {
       items.list[si].x = 0u32;
       items.list[si].y = u32.from(big.len());
@@ -122,15 +122,15 @@ pub struct HashGrid[T Copy] {
       lo = lo.min(new Vec3(f32.from(rg.x0), f32.from(rg.y0), f32.from(rg.z0)));
       hi = hi.max(new Vec3(f32.from(rg.x1), f32.from(rg.y1), f32.from(rg.z1)));
     }
-    mut x = rg.x0;
+    var x = rg.x0;
     while x <= rg.x1 {
-      mut y = rg.y0;
+      var y = rg.y0;
       while y <= rg.y1 {
-        mut z = rg.z0;
+        var z = rg.z0;
         while z <= rg.z1 {
-          imm key = cellKey(x, y, z);
-          imm head = headOf(key);
-          imm e = newEntry(slot, head);
+          let key = cellKey(x, y, z);
+          let head = headOf(key);
+          let e = newEntry(slot, head);
           cells.insert(key, e);
           z = z + 1i32;
         }
@@ -141,23 +141,23 @@ pub struct HashGrid[T Copy] {
   }
 
   fn removeFromCells(self &mut, slot u32) {
-    imm si = usize.from(slot);
+    let si = usize.from(slot);
     if items.list[si].x == 0u32 {
       // oversize: out of the list, the last one taking its place
-      imm at = items.list[si].y;
-      imm last = big.len() - 1usize;
-      imm moved = *big[last];
+      let at = items.list[si].y;
+      let last = big.len() - 1usize;
+      let moved = *big[last];
       big.set(usize.from(at), moved);
       items.list[usize.from(moved)].y = at;
       big.truncate(last);
       return;
     }
-    imm rg = rangeOf(items.list[si].box);
-    mut x = rg.x0;
+    let rg = rangeOf(items.list[si].box);
+    var x = rg.x0;
     while x <= rg.x1 {
-      mut y = rg.y0;
+      var y = rg.y0;
       while y <= rg.y1 {
-        mut z = rg.z0;
+        var z = rg.z0;
         while z <= rg.z1 {
           dropEntry(cellKey(x, y, z), slot);
           z = z + 1i32;
@@ -169,12 +169,12 @@ pub struct HashGrid[T Copy] {
   }
 
   fn dropEntry(self &mut, key u64, slot u32) {
-    mut prev = NONE;
-    mut cur = headOf(key);
+    var prev = NONE;
+    var cur = headOf(key);
     while cur != NONE {
-      imm ci = usize.from(cur);
+      let ci = usize.from(cur);
       if entries[ci].slot == slot {
-        imm next = entries[ci].next;
+        let next = entries[ci].next;
         if prev == NONE {
           if next == NONE {cells.remove(&key);}
           else {cells.insert(key, next);}
@@ -197,7 +197,7 @@ pub struct HashGrid[T Copy] {
   }
 
   pub fn insert(self &mut, box Aabb3, handle T) Proxy {
-    imm p = items.add(box, handle);
+    let p = items.add(box, handle);
     addToCells(p.slot, box);
     flagMoved(p.slot);
     p;
@@ -205,14 +205,14 @@ pub struct HashGrid[T Copy] {
 
   pub fn remove(self &mut, p Proxy) bool {
     if !items.alive(p) {return false;}
-    imm si = usize.from(p.slot);
+    let si = usize.from(p.slot);
     removeFromCells(p.slot);
-    mut ended = List[u32].empty();
+    var ended = List[u32].empty();
     pairs.forget(p.slot, &mut ended);
-    imm h = items.list[si].handle;
-    mut i = 0usize;
+    let h = items.list[si].handle;
+    var i = 0usize;
     while i < ended.len() {
-      imm o = *ended[i];
+      let o = *ended[i];
       pendingRemoved.push(pairOf(p.slot, h, o, items.list[usize.from(o)].handle));
       i = i + 1usize;
     }
@@ -235,9 +235,9 @@ pub struct HashGrid[T Copy] {
   // and not used. Answers whether the lists changed.
   pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
     if !items.alive(p) {return false;}
-    imm si = usize.from(p.slot);
-    imm a = rangeOf(items.list[si].box);
-    imm b = rangeOf(box);
+    let si = usize.from(p.slot);
+    let a = rangeOf(items.list[si].box);
+    let b = rangeOf(box);
     flagMoved(p.slot);
     if a.x0 == b.x0 and a.y0 == b.y0 and a.z0 == b.z0 and a.x1 == b.x1 and a.y1 == b.y1 and a.z1 == b.z1 {
       items.list[si].box = box;
@@ -259,7 +259,7 @@ pub struct HashGrid[T Copy] {
 
   // Clips a range to the populated one
   fn clipRange(self &, r CellRange) CellRange {
-    imm p = populated();
+    let p = populated();
     new CellRange(if r.x0 > p.x0 {r.x0;} else {p.x0;}, if r.y0 > p.y0 {r.y0;} else {p.y0;},
       if r.z0 > p.z0 {r.z0;} else {p.z0;}, if r.x1 < p.x1 {r.x1;} else {p.x1;},
       if r.y1 < p.y1 {r.y1;} else {p.y1;}, if r.z1 < p.z1 {r.z1;} else {p.z1;});
@@ -275,30 +275,30 @@ pub struct HashGrid[T Copy] {
   }
 
   pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
-    imm r = new Vec3(s.radius, s.radius, s.radius);
+    let r = new Vec3(s.radius, s.radius, s.radius);
     walkBox(new Aabb3(s.center - r, s.center + r), 1i32, s, visit);
   }
 
   // The shared walk of the box and the sphere query: 'mode' 0 tests items
   // against the box, 1 against the ball (whose box is 'box').
   fn walkBox[F fn(h T, p Proxy) bool](self &, box Aabb3, mode i32, ball Sphere, visit &mut F) {
-    imm rg = clipRange(rangeOf(box));
+    let rg = clipRange(rangeOf(box));
     if walkable(rg) {
-      mut x = rg.x0;
+      var x = rg.x0;
       while x <= rg.x1 {
-        mut y = rg.y0;
+        var y = rg.y0;
         while y <= rg.y1 {
-          mut z = rg.z0;
+          var z = rg.z0;
           while z <= rg.z1 {
-            mut e = headOf(cellKey(x, y, z));
+            var e = headOf(cellKey(x, y, z));
             while e != NONE {
-              imm slot = entries[usize.from(e)].slot;
-              imm it = items.list[usize.from(slot)];
+              let slot = entries[usize.from(e)].slot;
+              let it = items.list[usize.from(slot)];
               if hits(it.box, box, mode, ball) {
                 // report in the cube of the minimum corner of the meeting of the two boxes
-                imm rx = cellOf(maxf(it.box.min.x, box.min.x), 0., inv);
-                imm ry = cellOf(maxf(it.box.min.y, box.min.y), 0., inv);
-                imm rz = cellOf(maxf(it.box.min.z, box.min.z), 0., inv);
+                let rx = cellOf(maxf(it.box.min.x, box.min.x), 0., inv);
+                let ry = cellOf(maxf(it.box.min.y, box.min.y), 0., inv);
+                let rz = cellOf(maxf(it.box.min.z, box.min.z), 0., inv);
                 if rx == x and ry == y and rz == z {
                   if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
                 }
@@ -311,10 +311,10 @@ pub struct HashGrid[T Copy] {
         }
         x = x + 1i32;
       }
-      mut i = 0usize;
+      var i = 0usize;
       while i < big.len() {
-        imm slot = *big[i];
-        imm it = items.list[usize.from(slot)];
+        let slot = *big[i];
+        let it = items.list[usize.from(slot)];
         if hits(it.box, box, mode, ball) {
           if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
         }
@@ -322,10 +322,10 @@ pub struct HashGrid[T Copy] {
       }
     }
     else {
-      mut i = 0usize;
+      var i = 0usize;
       while i < items.list.len() {
         if items.isLive(i) {
-          imm it = items.list[i];
+          let it = items.list[i];
           if hits(it.box, box, mode, ball) {
             if !visit(it.handle, new Proxy(u32.from(i), it.gen)) {return;}
           }
@@ -343,22 +343,22 @@ pub struct HashGrid[T Copy] {
   // cubes inside the populated range are tested (when that is fewer than the
   // items), otherwise every item is.
   pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
-    imm rg = populated();
+    let rg = populated();
     if walkable(rg) {
-      mut seen = Seen.create();
-      mut x = rg.x0;
+      var seen = Seen.create();
+      var x = rg.x0;
       while x <= rg.x1 {
-        mut y = rg.y0;
+        var y = rg.y0;
         while y <= rg.y1 {
-          mut z = rg.z0;
+          var z = rg.z0;
           while z <= rg.z1 {
-            imm cb = new Aabb3(new Vec3(f32.from(x) * size, f32.from(y) * size, f32.from(z) * size),
+            let cb = new Aabb3(new Vec3(f32.from(x) * size, f32.from(y) * size, f32.from(z) * size),
               new Vec3(f32.from(x + 1i32) * size, f32.from(y + 1i32) * size, f32.from(z + 1i32) * size));
             if cullMask(f, &cb, ALL_PLANES) != NONE {
-              mut e = headOf(cellKey(x, y, z));
+              var e = headOf(cellKey(x, y, z));
               while e != NONE {
-                imm slot = entries[usize.from(e)].slot;
-                imm it = items.list[usize.from(slot)];
+                let slot = entries[usize.from(e)].slot;
+                let it = items.list[usize.from(slot)];
                 if (it.x <= 1u32 or seen.mark(slot)) and cullMask(f, &it.box, ALL_PLANES) != NONE {
                   if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
                 }
@@ -371,10 +371,10 @@ pub struct HashGrid[T Copy] {
         }
         x = x + 1i32;
       }
-      mut i = 0usize;
+      var i = 0usize;
       while i < big.len() {
-        imm slot = *big[i];
-        imm it = items.list[usize.from(slot)];
+        let slot = *big[i];
+        let it = items.list[usize.from(slot)];
         if cullMask(f, &it.box, ALL_PLANES) != NONE {
           if !visit(it.handle, new Proxy(slot, it.gen)) {return;}
         }
@@ -382,10 +382,10 @@ pub struct HashGrid[T Copy] {
       }
     }
     else {
-      mut i = 0usize;
+      var i = 0usize;
       while i < items.list.len() {
         if items.isLive(i) {
-          imm it = items.list[i];
+          let it = items.list[i];
           if cullMask(f, &it.box, ALL_PLANES) != NONE {
             if !visit(it.handle, new Proxy(u32.from(i), it.gen)) {return;}
           }
@@ -399,57 +399,57 @@ pub struct HashGrid[T Copy] {
   // Voxel Traversal Algorithm for Ray Tracing", 1987) through the populated
   // range, and ends when the next cube is beyond the reach in force.
   pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
-    imm r = RayQ.from(ray);
-    mut limit = maxT;
+    let r = RayQ.from(ray);
+    var limit = maxT;
     // oversize items first
-    mut i = 0usize;
+    var i = 0usize;
     while i < big.len() {
-      imm slot = *big[i];
-      imm it = items.list[usize.from(slot)];
-      imm t = rayBox(&r, &it.box, limit);
+      let slot = *big[i];
+      let it = items.list[usize.from(slot)];
+      let t = rayBox(&r, &it.box, limit);
       if t >= 0. {
-        imm res = visit(it.handle, new Proxy(slot, it.gen), t);
+        let res = visit(it.handle, new Proxy(slot, it.gen), t);
         if res < 0. {return;}
         if res < limit {limit = res;}
       }
       i = i + 1usize;
     }
     if !anyCells {return;}
-    imm pb = new Aabb3(lo * size, (hi + new Vec3(1., 1., 1.)) * size);
-    imm t0 = rayBox(&r, &pb, limit);
+    let pb = new Aabb3(lo * size, (hi + new Vec3(1., 1., 1.)) * size);
+    let t0 = rayBox(&r, &pb, limit);
     if t0 < 0. {return;}
-    imm start = ray.origin + ray.direction * t0;
-    mut ix = clampCell(cellOf(start.x, 0., inv), i32.from(lo.x), i32.from(hi.x));
-    mut iy = clampCell(cellOf(start.y, 0., inv), i32.from(lo.y), i32.from(hi.y));
-    mut iz = clampCell(cellOf(start.z, 0., inv), i32.from(lo.z), i32.from(hi.z));
-    imm dx = ray.direction.x;
-    imm dy = ray.direction.y;
-    imm dz = ray.direction.z;
-    imm sx = if dx > 0. {1i32;} else if dx < 0. {-1i32;} else {0i32;};
-    imm sy = if dy > 0. {1i32;} else if dy < 0. {-1i32;} else {0i32;};
-    imm sz = if dz > 0. {1i32;} else if dz < 0. {-1i32;} else {0i32;};
-    mut tx = if sx == 0i32 {FAR;} else {(f32.from(if sx > 0i32 {ix + 1i32;} else {ix;}) * size - ray.origin.x) / dx;};
-    mut ty = if sy == 0i32 {FAR;} else {(f32.from(if sy > 0i32 {iy + 1i32;} else {iy;}) * size - ray.origin.y) / dy;};
-    mut tz = if sz == 0i32 {FAR;} else {(f32.from(if sz > 0i32 {iz + 1i32;} else {iz;}) * size - ray.origin.z) / dz;};
-    imm ddx = if sx == 0i32 {FAR;} else {size / absf(dx);};
-    imm ddy = if sy == 0i32 {FAR;} else {size / absf(dy);};
-    imm ddz = if sz == 0i32 {FAR;} else {size / absf(dz);};
-    imm x0 = i32.from(lo.x);
-    imm x1 = i32.from(hi.x);
-    imm y0 = i32.from(lo.y);
-    imm y1 = i32.from(hi.y);
-    imm z0 = i32.from(lo.z);
-    imm z1 = i32.from(hi.z);
-    mut seen = Seen.create();
+    let start = ray.origin + ray.direction * t0;
+    var ix = clampCell(cellOf(start.x, 0., inv), i32.from(lo.x), i32.from(hi.x));
+    var iy = clampCell(cellOf(start.y, 0., inv), i32.from(lo.y), i32.from(hi.y));
+    var iz = clampCell(cellOf(start.z, 0., inv), i32.from(lo.z), i32.from(hi.z));
+    let dx = ray.direction.x;
+    let dy = ray.direction.y;
+    let dz = ray.direction.z;
+    let sx = if dx > 0. {1i32;} else if dx < 0. {-1i32;} else {0i32;};
+    let sy = if dy > 0. {1i32;} else if dy < 0. {-1i32;} else {0i32;};
+    let sz = if dz > 0. {1i32;} else if dz < 0. {-1i32;} else {0i32;};
+    var tx = if sx == 0i32 {FAR;} else {(f32.from(if sx > 0i32 {ix + 1i32;} else {ix;}) * size - ray.origin.x) / dx;};
+    var ty = if sy == 0i32 {FAR;} else {(f32.from(if sy > 0i32 {iy + 1i32;} else {iy;}) * size - ray.origin.y) / dy;};
+    var tz = if sz == 0i32 {FAR;} else {(f32.from(if sz > 0i32 {iz + 1i32;} else {iz;}) * size - ray.origin.z) / dz;};
+    let ddx = if sx == 0i32 {FAR;} else {size / absf(dx);};
+    let ddy = if sy == 0i32 {FAR;} else {size / absf(dy);};
+    let ddz = if sz == 0i32 {FAR;} else {size / absf(dz);};
+    let x0 = i32.from(lo.x);
+    let x1 = i32.from(hi.x);
+    let y0 = i32.from(lo.y);
+    let y1 = i32.from(hi.y);
+    let z0 = i32.from(lo.z);
+    let z1 = i32.from(hi.z);
+    var seen = Seen.create();
     while true {
-      mut e = headOf(cellKey(ix, iy, iz));
+      var e = headOf(cellKey(ix, iy, iz));
       while e != NONE {
-        imm slot = entries[usize.from(e)].slot;
-        imm it = items.list[usize.from(slot)];
+        let slot = entries[usize.from(e)].slot;
+        let it = items.list[usize.from(slot)];
         if it.x <= 1u32 or seen.mark(slot) {
-          imm t = rayBox(&r, &it.box, limit);
+          let t = rayBox(&r, &it.box, limit);
           if t >= 0. {
-            imm res = visit(it.handle, new Proxy(slot, it.gen), t);
+            let res = visit(it.handle, new Proxy(slot, it.gen), t);
             if res < 0. {return;}
             if res < limit {limit = res;}
           }
@@ -479,8 +479,8 @@ pub struct HashGrid[T Copy] {
   }
 
   pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
-    mut best Option[Hit[T]] = None;
-    mut grab = fn(h T, p Proxy, t f32) f32 {
+    var best Option[Hit[T]] = None;
+    var grab = fn(h T, p Proxy, t f32) f32 {
       best = Some(new Hit[T](h, p, t));
       t;
     };
@@ -489,7 +489,7 @@ pub struct HashGrid[T Copy] {
   }
 
   pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
-    mut wrap = fn(h T, p Proxy, t f32) f32 {
+    var wrap = fn(h T, p Proxy, t f32) f32 {
       if visit(h, p, t) {FAR;} else {-1.;};
     };
     rayCast(ray, maxT, &mut wrap);
@@ -500,7 +500,7 @@ pub struct HashGrid[T Copy] {
     if out.len() == k and n.distSq >= out[k - 1usize].distSq {return;}
     if out.len() < k {out.push(n);}
     else {out.set(k - 1usize, n);}
-    mut j = out.len() - 1usize;
+    var j = out.len() - 1usize;
     while j > 0usize and out[j - 1usize].distSq > out[j].distSq {
       out.swap(j - 1usize, j);
       j = j - 1usize;
@@ -514,43 +514,43 @@ pub struct HashGrid[T Copy] {
   pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
     out.clear();
     if items.count == 0usize or k == 0usize {return;}
-    mut i = 0usize;
+    var i = 0usize;
     while i < big.len() {
-      imm slot = *big[i];
-      imm it = items.list[usize.from(slot)];
+      let slot = *big[i];
+      let it = items.list[usize.from(slot)];
       offer(out, k, new Neighbor[T](it.handle, new Proxy(slot, it.gen), distSqPointBox(point, it.box)));
       i = i + 1usize;
     }
-    imm pc = new Vec3(f32.from(cellOf(point.x, 0., inv)), f32.from(cellOf(point.y, 0., inv)), f32.from(cellOf(point.z, 0., inv)));
-    imm inside = anyCells and pc.x >= lo.x and pc.x <= hi.x and pc.y >= lo.y and pc.y <= hi.y
+    let pc = new Vec3(f32.from(cellOf(point.x, 0., inv)), f32.from(cellOf(point.y, 0., inv)), f32.from(cellOf(point.z, 0., inv)));
+    let inside = anyCells and pc.x >= lo.x and pc.x <= hi.x and pc.y >= lo.y and pc.y <= hi.y
       and pc.z >= lo.z and pc.z <= hi.z;
-    mut scanned = false;
+    var scanned = false;
     if inside {
-      imm cx = i32.from(pc.x);
-      imm cy = i32.from(pc.y);
-      imm cz = i32.from(pc.z);
-      mut seen = Seen.create();
-      mut r = 0i32;
-      mut visited = 0i64;
+      let cx = i32.from(pc.x);
+      let cy = i32.from(pc.y);
+      let cz = i32.from(pc.z);
+      var seen = Seen.create();
+      var r = 0i32;
+      var visited = 0i64;
       // the farthest shell that can matter
-      imm rmax = maxi(maxi(maxi(cx - i32.from(lo.x), i32.from(hi.x) - cx), maxi(cy - i32.from(lo.y), i32.from(hi.y) - cy)),
+      let rmax = maxi(maxi(maxi(cx - i32.from(lo.x), i32.from(hi.x) - cx), maxi(cy - i32.from(lo.y), i32.from(hi.y) - cy)),
         maxi(cz - i32.from(lo.z), i32.from(hi.z) - cz));
       while r <= rmax {
         visited = visited + (2i64 * i64.from(r) + 1i64) * (2i64 * i64.from(r) + 1i64) * (2i64 * i64.from(r) + 1i64);
         if visited * 4i64 > i64.from(items.count) + 16i64 and r > 0i32 {scanned = true; break;}
-        mut x = cx - r;
+        var x = cx - r;
         while x <= cx + r {
-          mut y = cy - r;
+          var y = cy - r;
           while y <= cy + r {
-            mut z = cz - r;
+            var z = cz - r;
             while z <= cz + r {
               // only the shell: some coordinate at distance r
-              imm edge = x == cx - r or x == cx + r or y == cy - r or y == cy + r or z == cz - r or z == cz + r;
+              let edge = x == cx - r or x == cx + r or y == cy - r or y == cy + r or z == cz - r or z == cz + r;
               if edge {
-                mut e = headOf(cellKey(x, y, z));
+                var e = headOf(cellKey(x, y, z));
                 while e != NONE {
-                  imm slot = entries[usize.from(e)].slot;
-                  imm it = items.list[usize.from(slot)];
+                  let slot = entries[usize.from(e)].slot;
+                  let it = items.list[usize.from(slot)];
                   if it.x <= 1u32 or seen.mark(slot) {
                     offer(out, k, new Neighbor[T](it.handle, new Proxy(slot, it.gen), distSqPointBox(point, it.box)));
                   }
@@ -564,10 +564,10 @@ pub struct HashGrid[T Copy] {
           x = x + 1i32;
         }
         // nothing outside the shells so far is nearer than the faces of the block
-        imm gx = minf(point.x - f32.from(cx - r) * size, f32.from(cx + r + 1i32) * size - point.x);
-        imm gy = minf(point.y - f32.from(cy - r) * size, f32.from(cy + r + 1i32) * size - point.y);
-        imm gz = minf(point.z - f32.from(cz - r) * size, f32.from(cz + r + 1i32) * size - point.z);
-        imm bound = minf(gx, minf(gy, gz));
+        let gx = minf(point.x - f32.from(cx - r) * size, f32.from(cx + r + 1i32) * size - point.x);
+        let gy = minf(point.y - f32.from(cy - r) * size, f32.from(cy + r + 1i32) * size - point.y);
+        let gz = minf(point.z - f32.from(cz - r) * size, f32.from(cz + r + 1i32) * size - point.z);
+        let bound = minf(gx, minf(gy, gz));
         if out.len() == k and out[k - 1usize].distSq <= bound * bound {return;}
         r = r + 1i32;
       }
@@ -577,15 +577,15 @@ pub struct HashGrid[T Copy] {
     out.clear();
     i = 0usize;
     while i < big.len() {
-      imm slot = *big[i];
-      imm it = items.list[usize.from(slot)];
+      let slot = *big[i];
+      let it = items.list[usize.from(slot)];
       offer(out, k, new Neighbor[T](it.handle, new Proxy(slot, it.gen), distSqPointBox(point, it.box)));
       i = i + 1usize;
     }
     i = 0usize;
     while i < items.list.len() {
       if items.isLive(i) and items.list[i].x != 0u32 {
-        imm it = items.list[i];
+        let it = items.list[i];
         offer(out, k, new Neighbor[T](it.handle, new Proxy(u32.from(i), it.gen), distSqPointBox(point, it.box)));
       }
       i = i + 1usize;
@@ -595,20 +595,20 @@ pub struct HashGrid[T Copy] {
   // ---------------- pairs ----------------
 
   fn queryBox(self &, box Aabb3, found &mut List[u32]) {
-    mut collect = fn(h T, p Proxy) bool { found.push(p.slot); true; };
+    var collect = fn(h T, p Proxy) bool { found.push(p.slot); true; };
     overlapAabb(box, &mut collect);
   }
 
   pub fn allPairs(self &, out &mut List[Pair[T]]) {
-    mut found = List[u32].empty();
-    mut i = 0usize;
+    var found = List[u32].empty();
+    var i = 0usize;
     while i < items.list.len() {
       if items.isLive(i) {
         found.clear();
         queryBox(items.list[i].box, &mut found);
-        mut j = 0usize;
+        var j = 0usize;
         while j < found.len() {
-          imm o = *found[j];
+          let o = *found[j];
           if usize.from(o) > i {
             out.push(pairOf(u32.from(i), items.list[i].handle, o, items.list[usize.from(o)].handle));
           }
@@ -620,19 +620,19 @@ pub struct HashGrid[T Copy] {
   }
 
   pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < pendingRemoved.len() {
       events.removed.push(*pendingRemoved[i]);
       i = i + 1usize;
     }
     pendingRemoved.clear();
-    mut found = List[u32].empty();
-    mut added = List[u32].empty();
-    mut ended = List[u32].empty();
+    var found = List[u32].empty();
+    var added = List[u32].empty();
+    var ended = List[u32].empty();
     i = 0usize;
     while i < moved.len() {
-      imm m = *moved[i];
-      imm mi = usize.from(m);
+      let m = *moved[i];
+      let mi = usize.from(m);
       i = i + 1usize;
       if !items.isLive(mi) or !items.list[mi].moved {continue;}
       items.list[mi].moved = false;
@@ -641,15 +641,15 @@ pub struct HashGrid[T Copy] {
       ended.clear();
       queryBox(items.list[mi].box, &mut found);
       pairs.sync(m, &found, &mut added, &mut ended);
-      mut j = 0usize;
+      var j = 0usize;
       while j < added.len() {
-        imm o = *added[j];
+        let o = *added[j];
         events.added.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
         j = j + 1usize;
       }
       j = 0usize;
       while j < ended.len() {
-        imm o = *ended[j];
+        let o = *ended[j];
         events.removed.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
         j = j + 1usize;
       }

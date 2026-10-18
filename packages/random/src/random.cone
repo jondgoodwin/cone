@@ -109,9 +109,9 @@ extern {
 
 // 64 random bits from the OS, or None if it refused
 fn osWord() Option[u64] {
-  mut low = 0u32;
-  mut high = 0u32;
-  mut bits = 0u64;
+  var low = 0u32;
+  var high = 0u32;
+  var bits = 0u64;
   if isWindows() {
     if randS(&mut low as *u32) != 0 or randS(&mut high as *u32) != 0 { return None; }
     bits = (u64.from(high) << 32u64) | u64.from(low);
@@ -130,7 +130,7 @@ fn osWord() Option[u64] {
 // generator of one u64 of state
 pub fn splitMix64(state &mut u64) u64 {
   *state = *state + 0x9e3779b97f4a7c15u64;
-  mut z = *state;
+  var z = *state;
   z = (z ^ (z >> 30u64)) * 0xbf58476d1ce4e5b9u64;
   z = (z ^ (z >> 27u64)) * 0x94d049bb133111ebu64;
   z ^ (z >> 31u64);
@@ -141,18 +141,18 @@ pub fn splitMix64(state &mut u64) u64 {
 // The 128-bit product of two u64, as (high 64 bits, low 64 bits), from four
 // 32 x 32 products
 fn mulWide(a u64, b u64) (u64, u64) {
-  imm mask = 0xFFFFFFFFu64;
-  imm a0 = a & mask;
-  imm a1 = a >> 32u64;
-  imm b0 = b & mask;
-  imm b1 = b >> 32u64;
-  imm p00 = a0 * b0;
-  imm p01 = a0 * b1;
-  imm p10 = a1 * b0;
-  imm p11 = a1 * b1;
+  let mask = 0xFFFFFFFFu64;
+  let a0 = a & mask;
+  let a1 = a >> 32u64;
+  let b0 = b & mask;
+  let b1 = b >> 32u64;
+  let p00 = a0 * b0;
+  let p01 = a0 * b1;
+  let p10 = a1 * b0;
+  let p11 = a1 * b1;
   // The middle column: its carry into the high half is at most 2
-  imm mid = (p00 >> 32u64) + (p01 & mask) + (p10 & mask);
-  imm high = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
+  let mid = (p00 >> 32u64) + (p01 & mask) + (p10 & mask);
+  let high = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
   (high, a * b);
 }
 
@@ -163,16 +163,16 @@ fn mulWide(a u64, b u64) (u64, u64) {
 // additions, multiplications and divisions, in this order, so every machine
 // gets the same bits. The result is within a few ulp of the true logarithm.
 fn lnPositive(x f64) f64 {
-  imm bits = x as u64;
-  mut e = i64.from((bits >> 52u64) & 0x7FFu64) - 1023i64;
-  mut m = ((bits & 0xFFFFFFFFFFFFFu64) | 0x3FF0000000000000u64) as f64;
+  let bits = x as u64;
+  var e = i64.from((bits >> 52u64) & 0x7FFu64) - 1023i64;
+  var m = ((bits & 0xFFFFFFFFFFFFFu64) | 0x3FF0000000000000u64) as f64;
   if m > 1.4142135623730951d {
     m = m * 0.5d;
     e = e + 1i64;
   }
-  imm s = (m - 1.0d) / (m + 1.0d);
-  imm t = s * s;
-  mut p = 1.0d / 21.0d;
+  let s = (m - 1.0d) / (m + 1.0d);
+  let t = s * s;
+  var p = 1.0d / 21.0d;
   p = p * t + 1.0d / 19.0d;
   p = p * t + 1.0d / 17.0d;
   p = p * t + 1.0d / 15.0d;
@@ -206,11 +206,11 @@ pub struct Rng {
   // The generator 'seed' names, the seed expanded by SplitMix64 into four
   // state words. The same seed gives the same numbers on every platform
   pub fn fromSeed(seed u64) Rng {
-    mut sm = seed;
-    imm a = splitMix64(&mut sm);
-    imm b = splitMix64(&mut sm);
-    imm c = splitMix64(&mut sm);
-    imm d = splitMix64(&mut sm);
+    var sm = seed;
+    let a = splitMix64(&mut sm);
+    let b = splitMix64(&mut sm);
+    let c = splitMix64(&mut sm);
+    let d = splitMix64(&mut sm);
     new Rng(a, b, c, d, 0.0d, false);
   }
 
@@ -224,22 +224,22 @@ pub struct Rng {
   // A generator whose 256 bits of state come from the OS, or None if the OS
   // would not give them
   pub fn fromEntropy() Option[Rng] {
-    mut words = 0usize;
-    mut w0 = 0u64;
-    mut w1 = 0u64;
-    mut w2 = 0u64;
-    mut w3 = 0u64;
-    match osWord() { case imm v Some { w0 = v; } case is None { return None; } }
-    match osWord() { case imm v Some { w1 = v; } case is None { return None; } }
-    match osWord() { case imm v Some { w2 = v; } case is None { return None; } }
-    match osWord() { case imm v Some { w3 = v; } case is None { return None; } }
+    var words = 0usize;
+    var w0 = 0u64;
+    var w1 = 0u64;
+    var w2 = 0u64;
+    var w3 = 0u64;
+    match osWord() { case let v Some { w0 = v; } case is None { return None; } }
+    match osWord() { case let v Some { w1 = v; } case is None { return None; } }
+    match osWord() { case let v Some { w2 = v; } case is None { return None; } }
+    match osWord() { case let v Some { w3 = v; } case is None { return None; } }
     Some[Rng](Rng.fromState(w0, w1, w2, w3));
   }
 
   // 'fromEntropy', or 'fromSeed(seed)' if the OS gave nothing
   pub fn fromEntropyOr(seed u64) Rng {
     match Rng.fromEntropy() {
-      case mut r Some { return r; }
+      case var r Some { return r; }
       case is None { return Rng.fromSeed(seed); }
     }
     Rng.fromSeed(seed);
@@ -255,8 +255,8 @@ pub struct Rng {
 
   // The next 64 random bits
   pub fn next(self &mut) u64 {
-    imm result = (s1 * 5u64).rotateLeft(7u32) * 9u64;
-    imm t = s1 << 17u64;
+    let result = (s1 * 5u64).rotateLeft(7u32) * 9u64;
+    let t = s1 << 17u64;
     s2 = s2 ^ s0;
     s3 = s3 ^ s1;
     s1 = s1 ^ s2;
@@ -278,14 +278,14 @@ pub struct Rng {
   // Advance 2^128 steps at once, the reference 'jump': 2^128 non-overlapping
   // streams of 2^128 draws each, one per thread or actor
   pub fn jump(self &mut) {
-    mut a = 0u64;
-    mut b = 0u64;
-    mut c = 0u64;
-    mut d = 0u64;
-    mut word = 0usize;
+    var a = 0u64;
+    var b = 0u64;
+    var c = 0u64;
+    var d = 0u64;
+    var word = 0usize;
     while word < 4usize {
-      imm poly = jumpWord(word);
-      mut bit = 0u64;
+      let poly = jumpWord(word);
+      var bit = 0u64;
       while bit < 64u64 {
         if (poly & (1u64 << bit)) != 0u64 {
           a = a ^ s0;
@@ -308,7 +308,7 @@ pub struct Rng {
   // A generator at this one's place, while this one jumps 2^128 steps ahead:
   // call it again for the next stream
   pub fn jumped(self &mut) Rng {
-    imm child = self.copyOf();
+    let child = self.copyOf();
     self.jump();
     child;
   }
@@ -318,10 +318,10 @@ pub struct Rng {
   // An integer in [0, n), every one equally likely (Lemire's method). 0 if n is 0
   pub fn below(self &mut, n u64) u64 {
     if n == 0u64 { return 0u64; }
-    mut m = mulWide(self.next(), n);
+    var m = mulWide(self.next(), n);
     if m.1 < n {
       // 2^64 mod n: the low halves under it come from one value too many
-      imm threshold = (0u64 - n) % n;
+      let threshold = (0u64 - n) % n;
       while m.1 < threshold {
         m = mulWide(self.next(), n);
       }
@@ -342,7 +342,7 @@ pub struct Rng {
   // hi the largest
   pub fn closedU64(self &mut, lo u64, hi u64) u64 {
     if hi < lo { return lo; }
-    imm span = hi - lo + 1u64;
+    let span = hi - lo + 1u64;
     if span == 0u64 { return self.next(); }
     lo + self.below(span);
   }
@@ -357,7 +357,7 @@ pub struct Rng {
   // are its ends
   pub fn closedI64(self &mut, lo i64, hi i64) i64 {
     if hi < lo { return lo; }
-    imm span = (hi as u64) - (lo as u64) + 1u64;
+    let span = (hi as u64) - (lo as u64) + 1u64;
     if span == 0u64 { return self.next() as i64; }
     ((lo as u64) + self.below(span)) as i64;
   }
@@ -383,18 +383,18 @@ pub struct Rng {
   // The list's values in a random order (Fisher-Yates), every order equally
   // likely
   pub fn shuffle[T](self &mut, items &mut List[T]) {
-    mut i = items.len();
+    var i = items.len();
     while i > 1usize {
       i = i - 1usize;
-      imm j = self.index(i + 1usize);
+      let j = self.index(i + 1usize);
       items.swap(i, j);
     }
   }
 
   // The shuffled list 0, 1, ..., n - 1
   pub fn permutation(self &mut, n usize) List[usize] {
-    mut order = new List[usize];
-    mut i = 0usize;
+    var order = new List[usize];
+    var i = 0usize;
     while i < n {
       order.push(i);
       i = i + 1usize;
@@ -424,16 +424,16 @@ pub struct Rng {
       hasSpare = false;
       return spare;
     }
-    mut x = 0.0d;
-    mut y = 0.0d;
-    mut q = 0.0d;
+    var x = 0.0d;
+    var y = 0.0d;
+    var q = 0.0d;
     while true {
       x = self.unit() * 2.0d - 1.0d;
       y = self.unit() * 2.0d - 1.0d;
       q = x * x + y * y;
       if q < 1.0d and q != 0.0d { break; }
     }
-    imm factor = (-2.0d * lnPositive(q) / q).sqrt();
+    let factor = (-2.0d * lnPositive(q) / q).sqrt();
     spare = y * factor;
     hasSpare = true;
     x * factor;

@@ -28,7 +28,7 @@ mod barrier;
 import testing use *;
 import collector;
 
-mut @threadlocal finals = 0i64;
+var @threadlocal finals = 0i64;
 struct LeafValue {
   pub n i64;
   fn final(self &uni) { finals = finals + 1; }
@@ -58,7 +58,7 @@ fn emptyBox() Box {
 // c -> Hop -> w, w holding Leaf n: made here, so no frame of the case holds
 // the leaf, the Hop or w
 fn chain(n i64) Hop2 {
-  imm w = emptyBox();
+  let w = emptyBox();
   w.leaf = Some[Leaf](new Leaf(n));
   new Hop2(new Hop(w));
 }
@@ -67,7 +67,7 @@ fn chain(n i64) Hop2 {
 // into it could see another reference empty it while in use
 fn leafOf(o Option[Leaf]) i64 {
   match o {
-    case imm s Some[Leaf] { s.n; }
+    case let s Some[Leaf] { s.n; }
     else { -1; }
   }
 }
@@ -80,7 +80,7 @@ fn isBlack(p *u8) bool {
 
 // A collection marking, h black, and c and w not yet marked
 fn markedH(h Box, c Hop2) bool {
-  imm w = c.to.to;
+  let w = c.to.to;
   Gc.phase() == 1u32 and isBlack(&*h as *u8) and !isBlack(&*c as *u8) and !isBlack(&*w as *u8);
 }
 
@@ -93,7 +93,7 @@ fn finish(f0 i64) bool {
 // -- The moves, each in a function of its own, so its stack slots are gone
 // before the collection ends
 fn viaRef(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   h.leaf = w.leaf;
   w.leaf = none();
 }
@@ -102,11 +102,11 @@ fn setThrough(dst &mut BoxValue, src &mut BoxValue) {
   src.leaf = none();
 }
 fn viaBorrow(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   setThrough(&mut *h, &mut *w);
 }
 fn viaElement(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   h.cells[1] = w.leaf;
   w.leaf = none();
 }
@@ -114,20 +114,20 @@ fn putFirst(s &mut Array[Option[Leaf]], v Option[Leaf]) {
   s[0] = v;
 }
 fn viaSlice(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   putFirst(&mut h.cells, w.leaf);
   w.leaf = none();
 }
 fn viaSwap(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   h.leaf <=> w.leaf;
 }
 fn viaLeftAssign(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   w.leaf = h.leaf := w.leaf;
 }
 fn viaWhole(h Box, c Hop2) {
-  imm w = c.to.to;
+  let w = c.to.to;
   *h = new BoxValue(w.leaf, [none(), none()]);
   w.leaf = none();
 }
@@ -137,89 +137,89 @@ fn viaNew(h Box, c Hop2) {
 
 // -- Each case: the heap built, h black, the move, the collection finished
 fn caseRef() {
-  imm c = chain(42);
-  imm h = emptyBox();
+  let c = chain(42);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "via a Gc reference: h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaRef(h, c);
   expect(finish(f0), "the leaf stored into black h is not finalized");
   expectInt(leafOf(h.leaf), 42, "and h holds it");
 }
 fn caseBorrow() {
-  imm c = chain(43);
-  imm h = emptyBox();
+  let c = chain(43);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "via a borrow: h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaBorrow(h, c);
   expect(finish(f0), "the leaf stored through a borrow is not finalized");
   expectInt(leafOf(h.leaf), 43, "and h holds it");
 }
 fn caseElement() {
-  imm c = chain(44);
-  imm h = emptyBox();
+  let c = chain(44);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "into an array: h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaElement(h, c);
   expect(finish(f0), "the leaf stored into an element of black h is not finalized");
   expectInt(leafOf(h.cells[1]), 44, "and h's cell holds it");
 }
 fn caseSlice() {
-  imm c = chain(45);
-  imm h = emptyBox();
+  let c = chain(45);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "into a slice: h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaSlice(h, c);
   expect(finish(f0), "the leaf stored through a slice of black h's array is not finalized");
   expectInt(leafOf(h.cells[0]), 45, "and h's cell holds it");
 }
 fn caseSwap() {
-  imm c = chain(46);
-  imm h = emptyBox();
+  let c = chain(46);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "by swap: h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaSwap(h, c);
   expect(finish(f0), "the leaf swapped into black h is not finalized");
   expectInt(leafOf(h.leaf), 46, "and h holds it");
 }
 fn caseLeftAssign() {
-  imm c = chain(47);
-  imm h = emptyBox();
+  let c = chain(47);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "by := : h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaLeftAssign(h, c);
   expect(finish(f0), "the leaf stored into black h by := is not finalized");
   expectInt(leafOf(h.leaf), 47, "and h holds it");
 }
 fn caseWhole() {
-  imm c = chain(48);
-  imm h = emptyBox();
+  let c = chain(48);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "a whole value: h black, the leaf's holders not yet marked");
-  imm f0 = finals;
+  let f0 = finals;
   viaWhole(h, c);
   expect(finish(f0), "the leaf in a Box stored over black h is not finalized");
   expectInt(leafOf(h.leaf), 48, "and h holds it");
 }
 fn caseNew() {
-  imm c = chain(49);
-  imm h = emptyBox();
+  let c = chain(49);
+  let h = emptyBox();
   Gc.step(0usize);
   Gc.step(0usize);
   expect(markedH(h, c), "a new object: h black");
-  imm f0 = finals;
+  let f0 = finals;
   viaNew(h, c);
   expect(finish(f0), "a leaf made while marking and stored only into black h is not finalized");
   expectInt(leafOf(h.leaf), 7, "and h holds it");

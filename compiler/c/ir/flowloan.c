@@ -51,7 +51,7 @@ typedef struct {
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
     uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
-    uint8_t globalview; // a shape loan's collection is a 'mut' global, or reached from one: any call may write it
+    uint8_t globalview; // a shape loan's collection is a 'var' global, or reached from one: any call may write it
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
 } Loan;
 
@@ -1278,7 +1278,7 @@ static void loanReport(Pending *pend, INode *usenode) {
     int temp = loanTempKind(&loan->place);
     if (pend->kind == AccessEnd && temp == LoanTempStatement) {
         errorMsgNode(pend->access, ErrorFrozen,
-            "The temporary made here ends with its statement while '%s' still holds a borrow of it (made %s), used again %s. A temporary lasts to the end of its block only where a variable's initializer borrows it ('imm r = &make();'); keep it in a variable first.",
+            "The temporary made here ends with its statement while '%s' still holds a borrow of it (made %s), used again %s. A temporary lasts to the end of its block only where a variable's initializer borrows it ('let r = &make();'); keep it in a variable first.",
             &holder->namesym->namestr, where, used);
         return;
     }
@@ -1816,12 +1816,12 @@ static int loanRootsHas(Loan *l, uint32_t var) {
     return 0;
 }
 
-// A global that can be written: an 'imm' one cannot change, so a borrow into it stays good across any call
+// A global that can be written: a 'let' one cannot change, so a borrow into it stays good across any call
 static int loanVarIsMutGlobal(VarDclNode *var) {
     return loanVarIsGlobal(var) && var->perm && (permGetFlags(var->perm) & MayWrite);
 }
 
-// Is this place in a 'mut' global, or in something reached from one: by the global's own name, or
+// Is this place in a 'var' global, or in something reached from one: by the global's own name, or
 // through a reference whose loans say it came from one? Which globals a call writes is not
 // followed, so a borrow into such a place is asked of every call (reshapeCall's 'globalview')
 int loanPlaceInGlobal(Place *p) {
@@ -1924,7 +1924,7 @@ int loanShapeGlobalView(uint32_t loan) {
     if (loans[loan].globalview)
         return 1;
     // Storage the function does not own (reached through a reference a caller lent) of a type some
-    // 'mut' global reaches: the reference may be that global, which a callee cannot tell
+    // 'var' global reaches: the reference may be that global, which a callee cannot tell
     if (loans[loan].rootsext && reshapeMutGlobalsReach(loans[loan].shapecont))
         return 2;
     return 0;
@@ -2054,11 +2054,11 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' may change the %s it is called on, and its body is not visible here, so it is assumed to change its shape", name, cont);
         break;
     case ReshapeGlobalView:
-        snprintf(buf, size, "the borrow points into a 'mut' global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
+        snprintf(buf, size, "the borrow points into a 'var' global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
             name, sum ? "store over" : "change the shape of");
         break;
     case ReshapeGlobalMaybe:
-        snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
+        snprintf(buf, size, "a 'var' global reaches a %s and this borrow was lent by a caller, so it may point into that global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
             cont, name, sum ? "store over" : "change the shape of");
         break;
     case ReshapeUnseen:

@@ -30,23 +30,23 @@
 
 // The rotation vector (axis times angle) of a unit quaternion, the shorter way round
 pub fn rotVec(q0 Quat) Vec3 {
-  mut q = q0;
+  var q = q0;
   if q.w < 0. { q = new Quat(-q.x, -q.y, -q.z, -q.w); }
-  imm s = (q.x * q.x + q.y * q.y + q.z * q.z).sqrt();
+  let s = (q.x * q.x + q.y * q.y + q.z * q.z).sqrt();
   if s < 0.000001 { return new Vec3(q.x, q.y, q.z) * 2.; }
   new Vec3(q.x, q.y, q.z) * (2. * atan2(s, q.w) / s);
 }
 
 // Set the pose the joints are driven towards: 'pose' in the model space placed at 'placement'
 pub fn setTarget(rig &mut Ragdoll, skel &Skeleton, pose &Pose, placement Rigid) {
-  mut models = List[Transform3].empty();
+  var models = List[Transform3].empty();
   skel.modelTransforms(pose, &mut models);
-  mut k = 0usize;
+  var k = 0usize;
   while k < rig.links.len() {
-    imm l = rig.links[k];
-    imm bm = *models[l.bone];
+    let l = rig.links[k];
+    let bm = *models[l.bone];
     if l.parent >= 0i32 {
-      imm pb = *models[rig.links[usize.from(l.parent)].bone];
+      let pb = *models[rig.links[usize.from(l.parent)].bone];
       rig.links[k].targetRel = (pb.rotation.conjugate() * bm.rotation).normalize();
     } else {
       rig.rootTarget = (placement.rot * bm.rotation * l.shapeRot).normalize();
@@ -57,15 +57,15 @@ pub fn setTarget(rig &mut Ragdoll, skel &Skeleton, pose &Pose, placement Rigid) 
 
 // The rotation of link k's body relative to its parent's that the target pose says
 pub fn targetBodyRelative(rig &Ragdoll, k usize) Quat {
-  imm l = rig.links[k];
-  imm pl = rig.links[usize.from(l.parent)];
+  let l = rig.links[k];
+  let pl = rig.links[usize.from(l.parent)];
   (pl.shapeRot.conjugate() * l.targetRel * l.shapeRot).normalize();
 }
 
 // The target orientation of link k's body in the world, from the parent's actual orientation
 pub fn targetRotation(rig &Ragdoll, w &World, k usize) Quat {
-  imm l = rig.links[k];
-  imm pl = rig.links[usize.from(l.parent)];
+  let l = rig.links[k];
+  let pl = rig.links[usize.from(l.parent)];
   (w.rotationOf(pl.body) * targetBodyRelative(rig, k)).normalize();
 }
 
@@ -77,8 +77,8 @@ pub fn driveError(rig &Ragdoll, w &World, k usize) f32 {
 
 // The largest drive error over the joints
 pub fn maxDriveError(rig &Ragdoll, w &World) f32 {
-  mut m = 0.;
-  mut k = 0usize;
+  var m = 0.;
+  var k = 0usize;
   while k < rig.links.len() { m = maxf(m, driveError(rig, w, k)); k = k + 1usize; }
   m;
 }
@@ -86,20 +86,20 @@ pub fn maxDriveError(rig &Ragdoll, w &World) f32 {
 // The inertia (kg m^2, a scalar: a third of the trace plus mass times distance squared) of link k's body and
 // every body below it, about link k's joint
 pub fn subtreeInertia(rig &Ragdoll, w &World, k usize) f32 {
-  imm l = rig.links[k];
-  imm anchor = w.transformOf(l.body).pos - w.rotationOf(l.body) * l.center;
-  mut total = 0.;
-  mut j = k;
+  let l = rig.links[k];
+  let anchor = w.transformOf(l.body).pos - w.rotationOf(l.body) * l.center;
+  var total = 0.;
+  var j = k;
   while j < rig.links.len() {
-    mut a = i32.from(j);
-    mut below = false;
+    var a = i32.from(j);
+    var below = false;
     while a >= 0i32 {
       if usize.from(a) == k { below = true; break; }
       a = rig.links[usize.from(a)].parent;
     }
     if below {
-      imm b = w.bodies[usize.from(rig.links[j].body)];
-      imm tr = b.inertiaLocal.cell(0usize, 0usize) + b.inertiaLocal.cell(1usize, 1usize) + b.inertiaLocal.cell(2usize, 2usize);
+      let b = w.bodies[usize.from(rig.links[j].body)];
+      let tr = b.inertiaLocal.cell(0usize, 0usize) + b.inertiaLocal.cell(1usize, 1usize) + b.inertiaLocal.cell(2usize, 2usize);
       total = total + tr / 3. + b.mass * (b.pos - anchor).lengthSquared();
     }
     j = j + 1usize;
@@ -109,36 +109,36 @@ pub fn subtreeInertia(rig &Ragdoll, w &World, k usize) f32 {
 
 // Configure the solver's drive rows from the blend and the target, and apply the light passive damping
 pub fn driveJoints(rig &mut Ragdoll, w &mut World, dt f32) {
-  imm bl = clampf(rig.blend, 0., 1.);
-  mut k = 0usize;
+  let bl = clampf(rig.blend, 0., 1.);
+  var k = 0usize;
   while k < rig.links.len() {
-    imm l = rig.links[k];
+    let l = rig.links[k];
     if l.parent < 0i32 or l.joint == NoBody { k = k + 1usize; continue; }
     if bl > 0. {
       // stiffness: the full torque at 'fullTorqueError'; damping: the ratio against the inertia the joint carries
-      imm stiff = l.maxTorque * bl / rig.fullTorqueError;
+      let stiff = l.maxTorque * bl / rig.fullTorqueError;
       w.setJointDrive(l.joint, stiff, 2. * rig.damping * (stiff * subtreeInertia(rig, w, k)).sqrt(), l.maxTorque * bl);
       w.setDriveTarget(l.joint, targetBodyRelative(rig, k));
     } else {
       w.clearJointDrive(l.joint);
     }
     // passive joint friction: relative spin of the pair decays at 'passiveDamping' times the unpowered share
-    imm pd = rig.passiveDamping * (1. - bl);
+    let pd = rig.passiveDamping * (1. - bl);
     if pd > 0. {
-      imm pl = rig.links[usize.from(l.parent)];
-      imm ip = usize.from(pl.body);
-      imm ic = usize.from(l.body);
-      imm wr = w.bodies[ic].angVel - w.bodies[ip].angVel;
+      let pl = rig.links[usize.from(l.parent)];
+      let ip = usize.from(pl.body);
+      let ic = usize.from(l.body);
+      let wr = w.bodies[ic].angVel - w.bodies[ip].angVel;
       if wr.length() > 0.000001 {
-        imm iA = rotateInertia(w.bodies[ip].rot, w.bodies[ip].invInertiaLocal);
-        imm iB = rotateInertia(w.bodies[ic].rot, w.bodies[ic].invInertiaLocal);
-        imm iRef = subtreeInertia(rig, w, k);
-        imm kd = pd * iRef;
-        imm km = mat3Add(iA, iB);
-        imm tr = km.cell(0usize, 0usize) + km.cell(1usize, 1usize) + km.cell(2usize, 2usize);
+        let iA = rotateInertia(w.bodies[ip].rot, w.bodies[ip].invInertiaLocal);
+        let iB = rotateInertia(w.bodies[ic].rot, w.bodies[ic].invInertiaLocal);
+        let iRef = subtreeInertia(rig, w, k);
+        let kd = pd * iRef;
+        let km = mat3Add(iA, iB);
+        let tr = km.cell(0usize, 0usize) + km.cell(1usize, 1usize) + km.cell(2usize, 2usize);
         if tr > 0.0000001 {
-          imm ieff = 3. / tr;
-          imm lam = km.inverse() * (wr * (-kd * dt / (ieff + kd * dt)));
+          let ieff = 3. / tr;
+          let lam = km.inverse() * (wr * (-kd * dt / (ieff + kd * dt)));
           w.bodies[ic].angVel = w.bodies[ic].angVel + iB * lam;
           w.bodies[ip].angVel = w.bodies[ip].angVel - iA * lam;
         }
@@ -148,26 +148,26 @@ pub fn driveJoints(rig &mut Ragdoll, w &mut World, dt f32) {
   }
   // the optional hold on the pelvis' orientation
   if rig.rootHertz > 0. and bl > 0. {
-    mut r = 0usize;
+    var r = 0usize;
     while r < rig.links.len() {
       if rig.links[r].parent < 0i32 {
-        imm ir = usize.from(rig.links[r].body);
-        imm om = 2. * pi * rig.rootHertz;
-        imm kpr = bl * om * om;
-        imm kdr = 2. * rig.damping * om * bl.sqrt();
-        imm er = rotVec(rig.rootTarget * w.bodies[ir].rot.conjugate());
-        imm wv = w.bodies[ir].angVel;
-        mut acc = (er * kpr - wv * (kpr * dt + kdr)) * (1. / (1. + kdr * dt + kpr * dt * dt));
-        imm lim = 60. * bl;
+        let ir = usize.from(rig.links[r].body);
+        let om = 2. * pi * rig.rootHertz;
+        let kpr = bl * om * om;
+        let kdr = 2. * rig.damping * om * bl.sqrt();
+        let er = rotVec(rig.rootTarget * w.bodies[ir].rot.conjugate());
+        let wv = w.bodies[ir].angVel;
+        var acc = (er * kpr - wv * (kpr * dt + kdr)) * (1. / (1. + kdr * dt + kpr * dt * dt));
+        let lim = 60. * bl;
         if acc.length() > lim { acc = acc * (lim / acc.length()); }
         if er.length() > 0.001 {
           // the whole ragdoll is turned as one rigid body about its centre of mass: every body spins up by the same
           // amount and moves as a point of that turn, so the assist adds no momentum
-          imm com = rig.centerOfMass(w);
-          imm dw = acc * dt;
-          mut q = 0usize;
+          let com = rig.centerOfMass(w);
+          let dw = acc * dt;
+          var q = 0usize;
           while q < rig.links.len() {
-            imm iq = usize.from(rig.links[q].body);
+            let iq = usize.from(rig.links[q].body);
             w.wake(rig.links[q].body);
             w.bodies[iq].angVel = w.bodies[iq].angVel + dw;
             w.bodies[iq].linVel = w.bodies[iq].linVel + dw.cross(w.bodies[iq].pos - com);

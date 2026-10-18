@@ -138,9 +138,9 @@ fn appendHost(out &mut String, host &str, bracketed bool) {
 // s with every byte that is not unreserved percent-encoded: a value for a
 // query or a path segment
 pub fn encodeComponent(text &str) String {
-  imm s &Array[u8] = text;
-  mut out = String.withCapacity(s.len);
-  mut i = 0usize;
+  let s &Array[u8] = text;
+  var out = String.withCapacity(s.len);
+  var i = 0usize;
   while i < s.len {
     if isUnreserved(s[i]) {out.appendByte(s[i]);} else {appendEncoded(&mut out, s[i]);}
     i = i + 1usize;
@@ -151,9 +151,9 @@ pub fn encodeComponent(text &str) String {
 // s with its percent-encoding undone; None when a '%' is not followed by
 // two hex digits
 pub fn decode(text &str) Option[String] {
-  imm s &Array[u8] = text;
-  mut out = String.withCapacity(s.len);
-  mut i = 0usize;
+  let s &Array[u8] = text;
+  var out = String.withCapacity(s.len);
+  var i = 0usize;
   while i < s.len {
     if s[i] == '%' {
       if i + 2usize >= s.len or not isHex(s[i + 1usize]) or not isHex(s[i + 2usize]) {return None;}
@@ -182,7 +182,7 @@ pub struct UrlError {
 
   // 'url: a port is 0 to 65535 (at 22)'
   pub fn message(self &) String {
-    mut out = String.from("url: ");
+    var out = String.from("url: ");
     out.append(why.view());
     out.append(" (at ");
     out.appendUInt(u64.from(at));
@@ -230,12 +230,12 @@ pub struct Url {
 
   // An absolute URL read from text (see the package's header, READING)
   pub fn parse(text &str) Result[Url, UrlError] {
-    mut u = Url.empty();
-    imm t = trimEnds(text);
-    imm e = parseInto(t, &mut u);
+    var u = Url.empty();
+    let t = trimEnds(text);
+    let e = parseInto(t, &mut u);
     if not e.isNone() {return Error[Url, UrlError](e);}
     if u.scheme.len() == 0usize {return Error[Url, UrlError](UrlError.make(0usize, "a URL starts with its scheme, as 'https:'"));}
-    imm f = finish(&mut u);
+    let f = finish(&mut u);
     if not f.isNone() {return Error[Url, UrlError](f);}
     Ok[Url, UrlError](u);
   }
@@ -262,7 +262,7 @@ pub struct Url {
   // Host and port as HTTP writes them in Host: the port only when it is not
   // the scheme's default
   pub fn authority(self &) String {
-    mut out = String.empty();
+    var out = String.empty();
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
     if hasPort and port != defaultPort(scheme.view()) {
       out.append(":");
@@ -274,7 +274,7 @@ pub struct Url {
   // 'https://example.com:443': scheme, host and port, the port always
   // written
   pub fn origin(self &) String {
-    mut out = scheme.copy();
+    var out = scheme.copy();
     out.append("://");
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
     out.append(":");
@@ -290,7 +290,7 @@ pub struct Url {
 
   // The request target: the path (at least '/') and the query
   pub fn target(self &) String {
-    mut out = if path.len() == 0usize {String.from("/");} else {path.copy();};
+    var out = if path.len() == 0usize {String.from("/");} else {path.copy();};
     if hasQuery {
       out.append("?");
       out.append(query.view());
@@ -300,7 +300,7 @@ pub struct Url {
 
   // The URL as text (see the package's header, WRITING)
   pub fn text(self &) String {
-    mut out = String.empty();
+    var out = String.empty();
     if scheme.len() > 0usize {
       out.append(scheme.view());
       out.append(":");
@@ -332,8 +332,8 @@ pub struct Url {
 
 // text without the spaces and C0 controls at either end
 fn trimEnds(text &Array[u8]) &Array[u8] {
-  mut a = 0usize;
-  mut b = text.len;
+  var a = 0usize;
+  var b = text.len;
   while a < b and text[a] <= 0x20u8 {a = a + 1usize;}
   while b > a and text[b - 1usize] <= 0x20u8 {b = b - 1usize;}
   &text[a ..< b];
@@ -342,9 +342,9 @@ fn trimEnds(text &Array[u8]) &Array[u8] {
 // Whether s is a scheme: a letter, then letters, digits, '+', '-', '.'
 fn isScheme(s &Array[u8]) bool {
   if s.len == 0usize or not isAlpha(s[0usize]) {return false;}
-  mut i = 1usize;
+  var i = 1usize;
   while i < s.len {
-    imm c = s[i];
+    let c = s[i];
     if not (isAlpha(c) or isDigit(c) or c == '+' or c == '-' or c == '.') {return false;}
     i = i + 1usize;
   }
@@ -354,9 +354,9 @@ fn isScheme(s &Array[u8]) bool {
 // A path, query or fragment's text, made tidy (see READING): its error, or
 // none
 fn tidy(s &Array[u8], base usize, out &mut String) UrlError {
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len {
-    imm c = s[i];
+    let c = s[i];
     if isControl(c) {return UrlError.make(base + i, "a URL holds a control character");}
     if needsEncoding(c) {appendEncoded(out, c);} else {out.appendByte(c);}
     i = i + 1usize;
@@ -369,13 +369,13 @@ fn tidy(s &Array[u8], base usize, out &mut String) UrlError {
 // they need
 fn parseInto(t &Array[u8], u &mut Url) UrlError {
   // The scheme: before a ':' that comes before any '/', '?' or '#'
-  mut i = 0usize;
+  var i = 0usize;
   while i < t.len and t[i] != ':' and t[i] != '/' and t[i] != '?' and t[i] != '#' {i = i + 1usize;}
-  mut pos = 0usize;
+  var pos = 0usize;
   if i < t.len and t[i] == ':' {
-    imm s = &t[0usize ..< i];
+    let s = &t[0usize ..< i];
     if not isScheme(s) {return UrlError.make(0usize, "a scheme is a letter, then letters, digits, '+', '-' and '.'");}
-    mut k = 0usize;
+    var k = 0usize;
     while k < s.len {
       u.scheme.appendByte(lower(s[k]));
       k = k + 1usize;
@@ -385,17 +385,17 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
   // The authority: after '//', up to '/', '?' or '#'
   if pos + 1usize < t.len and t[pos] == '/' and t[pos + 1usize] == '/' {
     u.hasAuthority = true;
-    imm start = pos + 2usize;
-    mut end = start;
+    let start = pos + 2usize;
+    var end = start;
     while end < t.len and t[end] != '/' and t[end] != '?' and t[end] != '#' {end = end + 1usize;}
-    imm e = parseAuthority(&t[start ..< end], start, u);
+    let e = parseAuthority(&t[start ..< end], start, u);
     if not e.isNone() {return e;}
     pos = end;
   }
   // The path, up to '?' or '#'
-  mut end = pos;
+  var end = pos;
   while end < t.len and t[end] != '?' and t[end] != '#' {end = end + 1usize;}
-  imm pe = tidy(&t[pos ..< end], pos, &mut u.path);
+  let pe = tidy(&t[pos ..< end], pos, &mut u.path);
   if not pe.isNone() {return pe;}
   pos = end;
   // The query, up to '#'
@@ -403,14 +403,14 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
     u.hasQuery = true;
     end = pos + 1usize;
     while end < t.len and t[end] != '#' {end = end + 1usize;}
-    imm qe = tidy(&t[pos + 1usize ..< end], pos + 1usize, &mut u.query);
+    let qe = tidy(&t[pos + 1usize ..< end], pos + 1usize, &mut u.query);
     if not qe.isNone() {return qe;}
     pos = end;
   }
   // The fragment: the rest
   if pos < t.len and t[pos] == '#' {
     u.hasFragment = true;
-    imm fe = tidy(&t[pos + 1usize ..], pos + 1usize, &mut u.fragment);
+    let fe = tidy(&t[pos + 1usize ..], pos + 1usize, &mut u.fragment);
     if not fe.isNone() {return fe;}
   }
   UrlError.none();
@@ -419,15 +419,15 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
 // '[userinfo@]host[:port]', a at offset base of the text
 fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
   // The user information: before the last '@'
-  mut at = a.len;
-  mut k = 0usize;
+  var at = a.len;
+  var k = 0usize;
   while k < a.len {
     if a[k] == '@' {at = k;}
     k = k + 1usize;
   }
-  mut hostStart = 0usize;
+  var hostStart = 0usize;
   if at < a.len {
-    imm ui = &a[0usize ..< at];
+    let ui = &a[0usize ..< at];
     k = 0usize;
     while k < ui.len {
       if isControl(ui[k]) {return UrlError.make(base + k, "a URL holds a control character");}
@@ -436,15 +436,15 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
     u.userinfo = String.fromBytes(ui);
     hostStart = at + 1usize;
   }
-  imm hp = &a[hostStart ..];
-  imm hb = base + hostStart;
+  let hp = &a[hostStart ..];
+  let hb = base + hostStart;
   // The host: an IPv6 address in brackets, or up to the port's ':'
-  mut hostEnd = 0usize;
+  var hostEnd = 0usize;
   if hp.len > 0usize and hp[0usize] == '[' {
-    mut close = 1usize;
+    var close = 1usize;
     while close < hp.len and hp[close] != ']' {close = close + 1usize;}
     if close == hp.len {return UrlError.make(hb, "an IPv6 address in a URL ends with ']'");}
-    imm v6 = &hp[1usize ..< close];
+    let v6 = &hp[1usize ..< close];
     if v6.len > 0usize and (v6[0usize] == 'v' or v6[0usize] == 'V') {
       return UrlError.make(hb + 1usize, "an IPvFuture address ('[v1.x]') is not read yet");
     }
@@ -464,10 +464,10 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
     if hostEnd < hp.len and hp[hostEnd] != ':' {return UrlError.make(hb + hostEnd, "an IPv6 address in brackets is followed by ':' and its port, or nothing");}
   } else {
     while hostEnd < hp.len and hp[hostEnd] != ':' {hostEnd = hostEnd + 1usize;}
-    imm h = &hp[0usize ..< hostEnd];
+    let h = &hp[0usize ..< hostEnd];
     k = 0usize;
     while k < h.len {
-      imm c = h[k];
+      let c = h[k];
       if c >= 0x80u8 {return UrlError.make(hb + k, "an internationalized host name is not read yet (IDNA)");}
       if c == '%' {return UrlError.make(hb + k, "a percent-encoded host name is not read yet");}
       if not (isUnreserved(c) or isSubDelim(c)) {return UrlError.make(hb + k, "a host name holds a character no host may");}
@@ -478,8 +478,8 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
   }
   // The port: decimal, at most 65535; empty is no port
   if hostEnd < hp.len {
-    imm p = &hp[hostEnd + 1usize ..];
-    mut v = 0u32;
+    let p = &hp[hostEnd + 1usize ..];
+    var v = 0u32;
     k = 0usize;
     while k < p.len {
       if not isDigit(p[k]) {return UrlError.make(hb + hostEnd + 1usize + k, "a port is written in decimal digits");}
@@ -497,10 +497,10 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
 
 // Whether s is an IPv4 address in dotted decimal: four numbers, 0 to 255
 fn isIpv4(s &Array[u8]) bool {
-  mut parts = 0u32;
-  mut digits = 0u32;
-  mut v = 0u32;
-  mut i = 0usize;
+  var parts = 0u32;
+  var digits = 0u32;
+  var v = 0u32;
+  var i = 0usize;
   while i <= s.len {
     if i == s.len or s[i] == '.' {
       if digits == 0u32 or v > 255u32 {return false;}
@@ -521,9 +521,9 @@ fn isIpv4(s &Array[u8]) bool {
 
 // Whether s is an IPv6 address as RFC 4291 writes one (section 2.2)
 fn isIpv6(s &Array[u8]) bool {
-  mut groups = 0u32;
-  mut elided = false;
-  mut i = 0usize;
+  var groups = 0u32;
+  var elided = false;
+  var i = 0usize;
   if s.len >= 2usize and s[0usize] == ':' and s[1usize] == ':' {
     elided = true;
     i = 2usize;
@@ -532,7 +532,7 @@ fn isIpv6(s &Array[u8]) bool {
     return false;
   }
   while true {
-    imm start = i;
+    let start = i;
     while i < s.len and isHex(s[i]) {i = i + 1usize;}
     if i < s.len and s[i] == '.' {
       // An IPv4 tail: the last 32 bits
@@ -540,7 +540,7 @@ fn isIpv6(s &Array[u8]) bool {
       groups = groups + 2u32;
       break;
     }
-    imm digits = i - start;
+    let digits = i - start;
     if digits == 0usize or digits > 4usize {return false;}
     groups = groups + 1u32;
     if i == s.len {break;}
@@ -575,12 +575,12 @@ fn finish(u &mut Url) UrlError {
 
 // path without its '.' and '..' segments (RFC 3986, 5.2.4)
 pub fn removeDotSegments(text &str) String {
-  imm path &Array[u8] = text;
-  mut out = String.withCapacity(path.len);
-  mut i = 0usize;
-  imm n = path.len;
+  let path &Array[u8] = text;
+  var out = String.withCapacity(path.len);
+  var i = 0usize;
+  let n = path.len;
   while i < n {
-    imm rest = &path[i ..];
+    let rest = &path[i ..];
     if rest.len >= 3usize and &rest[0usize ..< 3usize] == "../" {
       i = i + 3usize;                                     // A
     } elif rest.len >= 2usize and &rest[0usize ..< 2usize] == "./" {
@@ -601,7 +601,7 @@ pub fn removeDotSegments(text &str) String {
       i = n;                                              // D
     } else {
       // E: the first segment, with its '/', moves to the output
-      mut j = i + 1usize;
+      var j = i + 1usize;
       while j < n and path[j] != '/' {j = j + 1usize;}
       out.appendBytes(&path[i ..< j]);
       i = j;
@@ -612,8 +612,8 @@ pub fn removeDotSegments(text &str) String {
 
 // s without its last segment and the '/' before it
 fn dropLastSegment(s &String) String {
-  imm v = s.view();
-  mut k = v.len;
+  let v = s.view();
+  var k = v.len;
   while k > 0usize {
     k = k - 1usize;
     if v[k] == '/' {return String.from(&v[0usize ..< k]);}
@@ -624,14 +624,14 @@ fn dropLastSegment(s &String) String {
 // base's path merged with a relative path (RFC 3986, 5.2.3)
 fn merge(base &Url, rel &str) String {
   if base.hasAuthority and base.path.len() == 0usize {
-    mut out = String.from("/");
+    var out = String.from("/");
     out.append(rel);
     return out;
   }
-  imm v = base.path.view();
-  mut k = v.len;
+  let v = base.path.view();
+  var k = v.len;
   while k > 0usize and v[k - 1usize] != '/' {k = k - 1usize;}
-  mut out = String.from(&v[0usize ..< k]);
+  var out = String.from(&v[0usize ..< k]);
   out.append(rel);
   out;
 }
@@ -639,10 +639,10 @@ fn merge(base &Url, rel &str) String {
 // The reference ref resolved against base, an absolute URL (RFC 3986,
 // 5.2.2), and checked as Url.parse checks one
 pub fn resolveRef(base &Url, ref &str) Result[Url, UrlError] {
-  mut r = Url.empty();
-  imm e = parseInto(trimEnds(ref), &mut r);
+  var r = Url.empty();
+  let e = parseInto(trimEnds(ref), &mut r);
   if not e.isNone() {return Error[Url, UrlError](e);}
-  mut t = Url.empty();
+  var t = Url.empty();
   if r.scheme.len() > 0usize {
     t <=> r;
   } else {
@@ -686,7 +686,7 @@ pub fn resolveRef(base &Url, ref &str) Result[Url, UrlError] {
     t.fragment <=> r.fragment;
     t.hasFragment = r.hasFragment;
   }
-  imm f = finish(&mut t);
+  let f = finish(&mut t);
   if not f.isNone() {return Error[Url, UrlError](f);}
   Ok[Url, UrlError](t);
 }

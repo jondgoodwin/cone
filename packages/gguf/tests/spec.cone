@@ -11,9 +11,9 @@ import testing use *;
 import collections use *;
 import gguf use *;
 
-fn orS(o Option[&str], d &str) &str { match o { case imm v Some { return v; } case is None { return d; } } }
-fn orU(o Option[u64], d u64) u64 { match o { case imm v Some { return v; } case is None { return d; } } }
-fn orF(o Option[f64], d f64) f64 { match o { case imm v Some { return v; } case is None { return d; } } }
+fn orS(o Option[&str], d &str) &str { match o { case let v Some { return v; } case is None { return d; } } }
+fn orU(o Option[u64], d u64) u64 { match o { case let v Some { return v; } case is None { return d; } } }
+fn orF(o Option[f64], d f64) f64 { match o { case let v Some { return v; } case is None { return d; } } }
 
 struct Bld {
   out List[u8];
@@ -31,7 +31,7 @@ struct Bld {
   }
   fn wstr(self &mut, s &str) {
     self.w64(u64.from(s.len()));
-    mut i = 0usize;
+    var i = 0usize;
     while i < s.len() { out.push(s[i]); i = i + 1usize; }
   }
   fn magic(self &mut) {
@@ -43,7 +43,7 @@ struct Bld {
 }
 
 fn hand(version u32, alignmentKv u32) List[u8] {
-  mut b = new Bld(List[u8].empty());
+  var b = new Bld(List[u8].empty());
   b.magic();
   b.w32(version);
   b.w64(2u64);                                  // tensors
@@ -57,26 +57,26 @@ fn hand(version u32, alignmentKv u32) List[u8] {
     b.wstr("general.alignment");   b.w32(4u32);  b.w32(alignmentKv);
   }
   // tensors: w, 32 x Q8_0 (34 bytes) at 0; v, 2 x 2 F32 (16 bytes) at the next 32 or 64
-  imm a = if alignmentKv > 0u32 { usize.from(alignmentKv); } else { 32usize; };
+  let a = if alignmentKv > 0u32 { usize.from(alignmentKv); } else { 32usize; };
   b.wstr("w");  b.w32(1u32);  b.w64(32u64);       b.w32(8u32);  b.w64(0u64);
   b.wstr("v");  b.w32(2u32);  b.w64(2u64);  b.w64(2u64);  b.w32(0u32);
   b.w64(u64.from((34usize + a - 1usize) / a * a));
   b.padTo(a);
   // w: d = 0.5 (0x3800), qs[j] = j - 16
   b.w8(0x00u32); b.w8(0x38u32);
-  mut j = 0u32;
+  var j = 0u32;
   while j < 32u32 { b.w8(j + 240u32); j = j + 1u32; }       // (j - 16) & 255 = j + 240
   b.padTo(a);
   // v: 1.0 2.0 3.0 4.0
   b.w32(0x3f800000u32); b.w32(0x40000000u32); b.w32(0x40400000u32); b.w32(0x40800000u32);
-  mut result = List[u8].empty();
+  var result = List[u8].empty();
   result <=> b.out;
   result;
 }
 
 fn check(bytes &List[u8], version u32, alignment u64, label &str) {
   match parse(bytes.view()) {
-    case imm m Ok {
+    case let m Ok {
       expectUInt(u64.from(m.version), u64.from(version), label);
       expectUInt(m.alignment, alignment, label);
       expectUInt(u64.from(m.meta.len()), if alignment == 32u64 { 4u64; } else { 5u64; }, label);
@@ -85,7 +85,7 @@ fn check(bytes &List[u8], version u32, alignment u64, label &str) {
       expectUInt(orU(m.uint("llama.block_count"), 0u64), 32u64, label);
       expectFloat(orF(m.float("llama.rope.freq_base"), 0.0d), 10000.0d, 0.0d, label);
       match m.list("tokenizer.ggml.tokens") {
-        case imm l Some {
+        case let l Some {
           expectUInt(u64.from(l.len()), 3u64, label);
           expectStr(orS(l.text(0usize), ""), "<unk>", label);
           expectStr(orS(l.text(2usize), ""), "ab", label);
@@ -108,34 +108,34 @@ fn check(bytes &List[u8], version u32, alignment u64, label &str) {
       expectUInt(m.tensors[1usize].rowCount(), 2u64, label);
       // w dequantises: -8 .. 7.5; v is 1 2 3 4
       match tensorToF32(&m, bytes.view(), m.tensors[0usize]) {
-        case imm w Ok {
+        case let w Ok {
           expectFloat(f64.from(*w[0usize]), -8.0d, 0.0d, label);
           expectFloat(f64.from(*w[31usize]), 7.5d, 0.0d, label);
         }
         case is Error { expect(false, label); }
       }
       match tensorToF32(&m, bytes.view(), m.tensors[1usize]) {
-        case imm v Ok {
+        case let v Ok {
           expectFloat(f64.from(*v[0usize]) + f64.from(*v[1usize]) * 10.0d + f64.from(*v[2usize]) * 100.0d + f64.from(*v[3usize]) * 1000.0d, 4321.0d, 0.0d, label);
         }
         case is Error { expect(false, label); }
       }
     }
-    case imm e Error {
-      imm msg = e.message();
+    case let e Error {
+      let msg = e.message();
       expectStr(msg.view(), "<parsed>", label);
     }
   }
 }
 
 fn main() i32 {
-  imm v3 = hand(3u32, 0u32);
+  let v3 = hand(3u32, 0u32);
   check(&v3, 3u32, 32u64, "version 3");
-  imm v2 = hand(2u32, 0u32);
+  let v2 = hand(2u32, 0u32);
   check(&v2, 2u32, 32u64, "version 2");
-  imm a64 = hand(3u32, 64u32);
+  let a64 = hand(3u32, 64u32);
   check(&a64, 3u32, 64u64, "alignment 64");
-  imm a8 = hand(3u32, 8u32);
+  let a8 = hand(3u32, 8u32);
   check(&a8, 3u32, 8u64, "alignment 8");
   done();
 }

@@ -539,7 +539,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    expectation the result does not match captures nothing and the call is judged
    as with none. The step sits after the arguments and the bounds and before the
    literals take their default, in a function and in a type literal alike, so
-   `imm n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
+   `let n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
    `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. A slot still
    empty is reported by `genericMissingParms`, which names the parameters and the
    brackets to write, and the call becomes an error node, so no second diagnostic
@@ -760,7 +760,7 @@ Every other question a clause asks is
   an unbounded parameter refuses every borrow. A lone `T is Sendable` that
   is unmet is `ErrorNotSendable`, not `ErrorWhereUnmet`: its message names what
   binds the argument and where it sits, which part of the borrow rule a borrow
-  failed (`genericNotSendableWhy`), and says that a local's `mut` is not
+  failed (`genericNotSendableWhy`), and says that a local's `var` is not
   what is checked. One that was met while a struct the argument reaches was
   still being laid out is noted (`genericSendableNote`) and judged again once
   type check has finished (`genericSendableCheckAll`, from `conec.c`).
@@ -859,7 +859,7 @@ unchanged. A failed
 instance is never memoized, so each use asking for it is refused where it is.
 **An argument that is `errorType` is refused without a report.** A type
 parameter inferred from a value whose initializer was already refused
-(`imm f = (a, b) => false;`, `ErrorClosureParm`, then `viaGen(f)` with
+(`let f = (a, b) => false;`, `ErrorClosureParm`, then `viaGen(f)` with
 `[F fn(a i64, b i64) bool]`) is bound to `errorType`, which meets no clause and
 has no name to say so with: the message asked `inodeGetName` of it and ended in
 `ErrorUnreachable`. `genericRequirementsMetIn` answers 0 for it with nothing

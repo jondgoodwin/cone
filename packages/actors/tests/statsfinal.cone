@@ -28,7 +28,7 @@ struct Probe {
   pub started Atomic[u64];
 }
 
-imm probe Probe;
+let probe Probe;
 
 fn @initpure init() {
   probe = new Probe(Atomic[bool].of(false), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
@@ -47,11 +47,11 @@ struct Who is Sendable {
 }
 
 fn reader(who Who) u64 {
-  mut last = 0u64;
-  mut n = 0u64;
+  var last = 0u64;
+  var n = 0u64;
   probe.started.add(1u64);
   while probe.stop.load() == false {
-    imm st = actors.stats();
+    let st = actors.stats();
     n = n + 1u64;
     if st.workers != 128u32 {
       probe.badWorkers.add(1u64);
@@ -69,14 +69,14 @@ fn main() i32 {
   initAll();
   actors.configure(new actors.Options(workers: 128u32, batch: 10u32));
   {
-    imm e = new Echo();
-    mut i = 0u64;
+    let e = new Echo();
+    var i = 0u64;
     while i < 100u64 {
       e.hear(i);
       i = i + 1u64;
     }
   }
-  imm t = thread.start(new Who(1u64), &reader);
+  let t = thread.start(new Who(1u64), &reader);
   while probe.started.load() == 0u64 {
     thread.yieldNow();
   }
@@ -86,7 +86,7 @@ fn main() i32 {
   expect(probe.calls.load() > 0u64, "the reader read stats() while the workers ran or stopped");
   expectUInt(probe.badWorkers.load(), 0u64, "every read answered 128 workers");
   expectUInt(probe.badMessages.load(), 0u64, "no read went backwards or passed the 100 sent");
-  imm st = actors.stats();
+  let st = actors.stats();
   expectUInt(u64.from(st.workers), 128u64, "128 workers in the totals after the stop");
   expectUInt(st.messages, 100u64, "every message in the totals after the stop");
   done();

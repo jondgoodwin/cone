@@ -36,12 +36,12 @@ import render use *;
 // A width x height RGBA image, rows from the top, squares 'square' texels
 // across alternating (low, high) per channel
 fn checkerRgba(width u32, height u32, square u32, low u8, high u8) List[u8] {
-  mut l = List[u8].empty();
-  mut y = 0u32;
+  var l = List[u8].empty();
+  var y = 0u32;
   while y < height {
-    mut x = 0u32;
+    var x = 0u32;
     while x < width {
-      imm v = if ((x / square) + (y / square)) % 2u32 == 0u32 { high; } else { low; };
+      let v = if ((x / square) + (y / square)) % 2u32 == 0u32 { high; } else { low; };
       l.push(v);
       l.push(v);
       l.push(v);
@@ -55,7 +55,7 @@ fn checkerRgba(width u32, height u32, square u32, low u8, high u8) List[u8] {
 
 // The sRGB byte's linear light
 fn linear(b u8) f64 {
-  imm c = f64.from(b) / 255d;
+  let c = f64.from(b) / 255d;
   if c <= 0.04045d { return c / 12.92d; }
   libc.pow((c + 0.055d) / 1.055d, 2.4d);
 }
@@ -63,11 +63,11 @@ fn linear(b u8) f64 {
 // Where level 'level' starts in a chain of a 'w' x 'h' image, in texels, and
 // its size
 fn levelStart(w u32, h u32, level u32) usize {
-  mut at = 0usize;
-  mut l = 0u32;
+  var at = 0usize;
+  var l = 0u32;
   while l < level {
-    imm lw = if (w >> l) > 0u32 { w >> l; } else { 1u32; };
-    imm lh = if (h >> l) > 0u32 { h >> l; } else { 1u32; };
+    let lw = if (w >> l) > 0u32 { w >> l; } else { 1u32; };
+    let lh = if (h >> l) > 0u32 { h >> l; } else { 1u32; };
     at = at + usize.from(lw) * usize.from(lh);
     l = l + 1u32;
   }
@@ -77,14 +77,14 @@ fn levelStart(w u32, h u32, level u32) usize {
 // The mean of channel 'c' over level 'level' of the chain, as bytes
 // ('srgb' false) or linear light ('srgb')
 fn levelMean(chain &List[u8], w u32, h u32, level u32, c usize, srgb bool) f64 {
-  imm lw = if (w >> level) > 0u32 { w >> level; } else { 1u32; };
-  imm lh = if (h >> level) > 0u32 { h >> level; } else { 1u32; };
-  imm start = levelStart(w, h, level);
-  imm v = chain.view();
-  mut sum = 0d;
-  mut i = 0usize;
+  let lw = if (w >> level) > 0u32 { w >> level; } else { 1u32; };
+  let lh = if (h >> level) > 0u32 { h >> level; } else { 1u32; };
+  let start = levelStart(w, h, level);
+  let v = chain.view();
+  var sum = 0d;
+  var i = 0usize;
   while i < usize.from(lw) * usize.from(lh) {
-    imm b = v[(start + i) * 4usize + c];
+    let b = v[(start + i) * 4usize + c];
     sum = sum + if srgb { linear(b); } else { f64.from(b); };
     i = i + 1usize;
   }
@@ -93,12 +93,12 @@ fn levelMean(chain &List[u8], w u32, h u32, level u32, c usize, srgb bool) f64 {
 
 // The share of level 'level''s texels whose alpha reaches 'cutoff'
 fn passingShare(chain &List[u8], w u32, h u32, level u32, cutoff f32) f64 {
-  imm lw = if (w >> level) > 0u32 { w >> level; } else { 1u32; };
-  imm lh = if (h >> level) > 0u32 { h >> level; } else { 1u32; };
-  imm start = levelStart(w, h, level);
-  imm v = chain.view();
-  mut n = 0usize;
-  mut i = 0usize;
+  let lw = if (w >> level) > 0u32 { w >> level; } else { 1u32; };
+  let lh = if (h >> level) > 0u32 { h >> level; } else { 1u32; };
+  let start = levelStart(w, h, level);
+  let v = chain.view();
+  var n = 0usize;
+  var i = 0usize;
   while i < usize.from(lw) * usize.from(lh) {
     if f32.from(v[(start + i) * 4usize + 3usize]) / 255. >= cutoff { n = n + 1usize; }
     i = i + 1usize;
@@ -110,17 +110,17 @@ fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 128usize + x) 
 
 // The mean and standard deviation of channel 0 over row 'y' from x0 up to x1
 fn rowStats(p *u8, y usize, x0 usize, x1 usize, mean &mut f64, spread &mut f64) {
-  mut sum = 0d;
-  mut x = x0;
+  var sum = 0d;
+  var x = x0;
   while x < x1 {
     sum = sum + f64.from(px(p, x, y, 0usize));
     x = x + 1usize;
   }
-  imm m = sum / f64.from(x1 - x0);
-  mut sq = 0d;
+  let m = sum / f64.from(x1 - x0);
+  var sq = 0d;
   x = x0;
   while x < x1 {
-    imm d = f64.from(px(p, x, y, 0usize)) - m;
+    let d = f64.from(px(p, x, y, 0usize)) - m;
     sq = sq + d * d;
     x = x + 1usize;
   }
@@ -131,14 +131,14 @@ fn rowStats(p *u8, y usize, x0 usize, x1 usize, mean &mut f64, spread &mut f64) 
 // The plane drawn in 'material' from 0.5 above it, read back
 fn drawPlane(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
     plane MeshHandle, material MaterialHandle) {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.lookAt(new Vec3(0., 0.5, 0.), new Vec3(0., 0.5, -10.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0., 1.);
-  imm light = Light.directional(new Vec3(0., -1., 0.), Color.gray(1.8849556), Color.gray(0.2));
-  mut list = DrawList.empty();
+  let light = Light.directional(new Vec3(0., -1., 0.), Color.gray(1.8849556), Color.gray(0.2));
+  var list = DrawList.empty();
   list.add(plane, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(100., 1., 100.)));
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, color, depth, &camera, &light, &list);
   encoder.copyTextureToBuffer(color, readback);
   device.queue.submit(encoder.finish());
@@ -147,9 +147,9 @@ fn drawPlane(renderer &mut Renderer, device &mut Device, color &Texture, depth &
 }
 
 fn image(rgba &List[u8], w i32, h i32) Image {
-  mut img = new Image(w, h, 4, List[u8].empty());
-  imm v = rgba.view();
-  mut i = 0usize;
+  var img = new Image(w, h, 4, List[u8].empty());
+  let v = rgba.view();
+  var i = 0usize;
   while i < v.len() {
     img.pixels.push(v[i]);
     i = i + 1usize;
@@ -165,20 +165,20 @@ fn main() i32 {
   expectUInt(u64.from(mipLevelCount(1u32, 1u32)), 1u64, "1 x 1: 1 level");
 
   {
-    imm base = checkerRgba(64u32, 64u32, 1u32, 0u8, 255u8);
-    imm chain = buildMips(&base, 64u32, 64u32, MIP_COLOUR);
+    let base = checkerRgba(64u32, 64u32, 1u32, 0u8, 255u8);
+    let chain = buildMips(&base, 64u32, 64u32, MIP_COLOUR);
     // 64^2 + 32^2 + ... + 1 = 5461 texels
     expectUInt(u64.from(chain.len()), 5461u64 * 4u64, "a colour chain holds every level");
-    imm v = chain.view();
-    imm b = base.view();
-    mut same = true;
-    mut i = 0usize;
+    let v = chain.view();
+    let b = base.view();
+    var same = true;
+    var i = 0usize;
     while i < b.len() {
       if v[i] != b[i] { same = false; }
       i = i + 1usize;
     }
     expect(same, "the first level is the image");
-    mut level = 0u32;
+    var level = 0u32;
     while level < 7u32 {
       expectFloat(levelMean(&chain, 64u32, 64u32, level, 0usize, true), 0.5, 0.01d,
         "a colour level's mean in linear light is the base's");
@@ -189,15 +189,15 @@ fn main() i32 {
   }
   {
     // A not-square, not-even image
-    imm base = checkerRgba(5u32, 3u32, 1u32, 20u8, 220u8);
-    imm chain = buildMips(&base, 5u32, 3u32, MIP_LINEAR);
+    let base = checkerRgba(5u32, 3u32, 1u32, 20u8, 220u8);
+    let chain = buildMips(&base, 5u32, 3u32, MIP_LINEAR);
     expectUInt(u64.from(chain.len()), (15u64 + 2u64 + 1u64) * 4u64, "5 x 3, 2 x 1, 1 x 1");
     expectFloat(levelMean(&chain, 5u32, 3u32, 2u32, 0usize, false), 120., 25d, "the 1 x 1 level is near the middle of 20 and 220");
   }
   {
-    imm base = checkerRgba(32u32, 16u32, 1u32, 0u8, 200u8);
-    imm chain = buildMips(&base, 32u32, 16u32, MIP_LINEAR);
-    mut level = 0u32;
+    let base = checkerRgba(32u32, 16u32, 1u32, 0u8, 200u8);
+    let chain = buildMips(&base, 32u32, 16u32, MIP_LINEAR);
+    var level = 0u32;
     while level < mipLevelCount(32u32, 16u32) {
       expectFloat(levelMean(&chain, 32u32, 16u32, level, 1usize, false), 100., 1.1d,
         "a linear level's mean in bytes is the base's");
@@ -206,10 +206,10 @@ fn main() i32 {
   }
   {
     // Normals tilted +x and -x in stripes: (0.6, 0, 0.8) is bytes (204, 128, 230)
-    mut base = List[u8].empty();
-    mut y = 0u32;
+    var base = List[u8].empty();
+    var y = 0u32;
     while y < 8u32 {
-      mut x = 0u32;
+      var x = 0u32;
       while x < 8u32 {
         if x % 2u32 == 0u32 {
           base.push(204u8);
@@ -223,27 +223,27 @@ fn main() i32 {
       }
       y = y + 1u32;
     }
-    imm chain = buildMips(&base, 8u32, 8u32, MIP_NORMAL);
-    imm v = chain.view();
-    mut worst = 0d;
-    mut level = 1u32;
+    let chain = buildMips(&base, 8u32, 8u32, MIP_NORMAL);
+    let v = chain.view();
+    var worst = 0d;
+    var level = 1u32;
     while level < 4u32 {
-      imm lw = 8u32 >> level;
-      imm start = levelStart(8u32, 8u32, level);
-      mut i = 0usize;
+      let lw = 8u32 >> level;
+      let start = levelStart(8u32, 8u32, level);
+      var i = 0usize;
       while i < usize.from(lw * lw) {
-        imm nx = f64.from(v[(start + i) * 4usize]) / 255d * 2d - 1d;
-        imm ny = f64.from(v[(start + i) * 4usize + 1usize]) / 255d * 2d - 1d;
-        imm nz = f64.from(v[(start + i) * 4usize + 2usize]) / 255d * 2d - 1d;
-        imm len = libc.sqrt(nx * nx + ny * ny + nz * nz);
-        imm off = if len > 1d { len - 1d; } else { 1d - len; };
+        let nx = f64.from(v[(start + i) * 4usize]) / 255d * 2d - 1d;
+        let ny = f64.from(v[(start + i) * 4usize + 1usize]) / 255d * 2d - 1d;
+        let nz = f64.from(v[(start + i) * 4usize + 2usize]) / 255d * 2d - 1d;
+        let len = libc.sqrt(nx * nx + ny * ny + nz * nz);
+        let off = if len > 1d { len - 1d; } else { 1d - len; };
         if off > worst { worst = off; }
         i = i + 1usize;
       }
       level = level + 1u32;
     }
     expectFloat(worst, 0., 0.02d, "a normal map's every texel is a unit vector at every level");
-    imm last = levelStart(8u32, 8u32, 3u32) * 4usize;
+    let last = levelStart(8u32, 8u32, 3u32) * 4usize;
     expectInt(i64.from(v[last]), 128i64, "opposite tilts cancel: x is flat");
     expectInt(i64.from(v[last + 2usize]), 255i64, "and the vector points straight out");
   }
@@ -251,12 +251,12 @@ fn main() i32 {
     // A cut-out card: about a quarter of the texels opaque (orange), the rest clear and black. A plain
     // chain's alpha averages towards 0.25, so at 8 x 8 no texel reaches a cut-off of 0.5;
     // the cut-out chain keeps the share that passes, and the colour of what shows
-    mut base = List[u8].empty();
-    mut y = 0u32;
+    var base = List[u8].empty();
+    var y = 0u32;
     while y < 64u32 {
-      mut x = 0u32;
+      var x = 0u32;
       while x < 64u32 {
-        imm solid = (x * 7u32 + y * 13u32 + (x * y) % 5u32) % 10u32 < 3u32;
+        let solid = (x * 7u32 + y * 13u32 + (x * y) % 5u32) % 10u32 < 3u32;
         base.push(if solid { 200u8; } else { 0u8; });
         base.push(if solid { 100u8; } else { 0u8; });
         base.push(if solid { 50u8; } else { 0u8; });
@@ -265,75 +265,75 @@ fn main() i32 {
       }
       y = y + 1u32;
     }
-    imm plain = buildMips(&base, 64u32, 64u32, MIP_COLOUR);
-    imm cut = buildMipsCut(&base, 64u32, 64u32, MIP_CUTOUT, 0.5);
+    let plain = buildMips(&base, 64u32, 64u32, MIP_COLOUR);
+    let cut = buildMipsCut(&base, 64u32, 64u32, MIP_CUTOUT, 0.5);
     expectUInt(u64.from(cut.len()), u64.from(plain.len()), "a cut-out chain holds the same levels");
-    imm baseShare = passingShare(&cut, 64u32, 64u32, 0u32, 0.5);
-    mut worstShare = 0d;
-    mut level = 1u32;
+    let baseShare = passingShare(&cut, 64u32, 64u32, 0u32, 0.5);
+    var worstShare = 0d;
+    var level = 1u32;
     while level < 5u32 {
-      imm s = passingShare(&cut, 64u32, 64u32, level, 0.5);
-      imm d = if s > baseShare { s - baseShare; } else { baseShare - s; };
+      let s = passingShare(&cut, 64u32, 64u32, level, 0.5);
+      let d = if s > baseShare { s - baseShare; } else { baseShare - s; };
       if d > worstShare { worstShare = d; }
       level = level + 1u32;
     }
-    imm plainShare = passingShare(&plain, 64u32, 64u32, 3u32, 0.5);
+    let plainShare = passingShare(&plain, 64u32, 64u32, 3u32, 0.5);
     expectFloat(baseShare, 0.24d, 0.06d, "the base level is about a quarter opaque");
     expectFloat(worstShare, 0., 0.12d, "a cut-out chain keeps the share of texels that pass, at every level to 4 x 4");
     expectFloat(plainShare, 0., 0.01d, "a plain chain loses them all by 8 x 8");
-    imm start3 = levelStart(64u32, 64u32, 3u32) * 4usize;
-    imm cv = cut.view();
-    imm pv = plain.view();
+    let start3 = levelStart(64u32, 64u32, 3u32) * 4usize;
+    let cv = cut.view();
+    let pv = plain.view();
     expect(cv[start3] > 185u8 and cv[start3] < 215u8, "a cut-out level's colour is the opaque texels', not diluted by the clear ones");
     expect(pv[start3] < 150u8, "where a plain chain's is dimmed by them");
   }
 
   // ---- 2. On the GPU ----
-  mut instance = Instance.create("render mips");
+  var instance = Instance.create("render mips");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
   expect(device.maxAnisotropy == 0. or device.maxAnisotropy >= 1., "the device's anisotropy is none or at least 1");
 
-  imm target = new TextureDescriptor(128u32, 128u32, TEXTURE_FORMAT_RGBA8_UNORM,
+  let target = new TextureDescriptor(128u32, 128u32, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&target);
-  imm depthDesc = new TextureDescriptor(128u32, 128u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(65536u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  imm p = readback.mappedRange();
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var color = device.createTexture(&target);
+  let depthDesc = new TextureDescriptor(128u32, 128u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(65536u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let p = readback.mappedRange();
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
 
   // The plane repeats its texture 100 times across its 200 units: 2 units a repeat
-  imm planeMesh = Mesh.plane(4, 100.);
-  imm plane = renderer.addMesh(&mut device, &planeMesh);
+  let planeMesh = Mesh.plane(4, 100.);
+  let plane = renderer.addMesh(&mut device, &planeMesh);
 
   // White: the lit value of a texel of 1 is 0.8 (ambient 0.2, light 0.6)
-  imm whiteMaterial = Material.plain(new Color(1., 1., 1., 1.));
-  imm white = renderer.addMaterial(&mut device, &whiteMaterial);
+  let whiteMaterial = Material.plain(new Color(1., 1., 1., 1.));
+  let white = renderer.addMaterial(&mut device, &whiteMaterial);
   drawPlane(&mut renderer, &mut device, &color, &depth, &readback, plane, white);
-  mut mean = 0d;
-  mut spread = 0d;
+  var mean = 0d;
+  var spread = 0d;
   rowStats(p, 67usize, 20usize, 108usize, &mut mean, &mut spread);
   expectFloat(mean, 204., 2d, "a white plane: 0.8 in the far rows");
 
   // 1-texel squares: in the far rows, grey
-  imm fineRgba = checkerRgba(64u32, 64u32, 1u32, 0u8, 255u8);
-  imm fineImage = image(&fineRgba, 64, 64);
-  imm fineTexture = renderer.addTexture(&mut device, &fineImage);
-  imm fineMaterial = Material.textured(new Color(1., 1., 1., 1.), fineTexture);
-  imm fine = renderer.addMaterial(&mut device, &fineMaterial);
+  let fineRgba = checkerRgba(64u32, 64u32, 1u32, 0u8, 255u8);
+  let fineImage = image(&fineRgba, 64, 64);
+  let fineTexture = renderer.addTexture(&mut device, &fineImage);
+  let fineMaterial = Material.textured(new Color(1., 1., 1., 1.), fineTexture);
+  let fine = renderer.addMaterial(&mut device, &fineMaterial);
   drawPlane(&mut renderer, &mut device, &color, &depth, &readback, plane, fine);
-  mut row = 66usize;
+  var row = 66usize;
   while row < 70usize {
     rowStats(p, row, 20usize, 108usize, &mut mean, &mut spread);
     expectFloat(mean, 102., 10d, "the far rows of a fine checkerboard average to half the white plane's");
@@ -342,17 +342,17 @@ fn main() i32 {
   }
 
   // 16-texel squares: in the near rows, resolved
-  imm coarseRgba = checkerRgba(64u32, 64u32, 16u32, 0u8, 255u8);
-  imm coarseImage = image(&coarseRgba, 64, 64);
-  imm coarseTexture = renderer.addTexture(&mut device, &coarseImage);
-  imm coarseMaterial = Material.textured(new Color(1., 1., 1., 1.), coarseTexture);
-  imm coarse = renderer.addMaterial(&mut device, &coarseMaterial);
+  let coarseRgba = checkerRgba(64u32, 64u32, 16u32, 0u8, 255u8);
+  let coarseImage = image(&coarseRgba, 64, 64);
+  let coarseTexture = renderer.addTexture(&mut device, &coarseImage);
+  let coarseMaterial = Material.textured(new Color(1., 1., 1., 1.), coarseTexture);
+  let coarse = renderer.addMaterial(&mut device, &coarseMaterial);
   drawPlane(&mut renderer, &mut device, &color, &depth, &readback, plane, coarse);
-  mut lo = 255i64;
-  mut hi = 0i64;
-  mut x = 0usize;
+  var lo = 255i64;
+  var hi = 0i64;
+  var x = 0usize;
   while x < 128usize {
-    imm v = px(p, x, 124usize, 0usize);
+    let v = px(p, x, 124usize, 0usize);
     if v < lo { lo = v; }
     if v > hi { hi = v; }
     x = x + 1usize;

@@ -35,17 +35,17 @@ actor Handler {
   ex Exchange;
 
   pub async do run(self) {
-    imm path = String.from(ex.request.path());
-    imm p = path.view();
+    let path = String.from(ex.request.path());
+    let p = path.view();
     if p == "/events" {
       ex.startEvents();
-      imm a = sse.Event.named("tls", "one");
-      imm b = sse.Event.message("two");
-      imm r1 = await ex.sendEvent(&a);
-      imm r2 = await ex.sendEvent(&b);
-      imm f = await ex.finish();
+      let a = sse.Event.named("tls", "one");
+      let b = sse.Event.message("two");
+      let r1 = await ex.sendEvent(&a);
+      let r2 = await ex.sendEvent(&b);
+      let f = await ex.finish();
     } else {
-      mut t = String.from(ex.request.methodName());
+      var t = String.from(ex.request.methodName());
       t.append(" ");
       t.append(path.view());
       t.append(" ");
@@ -63,11 +63,11 @@ actor Acceptor {
   server Server;
 
   pub async do open(self, cfg ServerConfig, ports Sender[u16], secure Sender[u64]) {
-    imm r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
-    mut res = r;
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
     match &mut res {
-      case mut ok &mut Ok {server <=> *ok;}
-      case imm e &mut Error {
+      case var ok &mut Ok {server <=> *ok;}
+      case let e &mut Error {
         printStr("listen failed, with a reason: ");
         printStr(yes(e.message().len() > 0usize and e.kind() == actorhttp.ServerErrorKind.Failed));
         printStr("\n");
@@ -79,13 +79,13 @@ actor Acceptor {
 
   pub async do serve(self) {
     while true {
-      imm n = await server.next();
+      let n = await server.next();
       match n {
-        case mut ok Ok {
-          imm h = new Handler(ok);
+        case var ok Ok {
+          let h = new Handler(ok);
           h.run();
         }
-        case imm e Error {break;}
+        case let e Error {break;}
       }
     }
   }
@@ -101,23 +101,23 @@ actor Acceptor {
 
 // The tls package's test certificates
 fn certs(name &str) Path {
-  mut p = String.from("../../../../../tls/tests/certs/");
+  var p = String.from("../../../../../tls/tests/certs/");
   p.append(name);
   Path.fromString(p);
 }
 
 fn readText(name &str) String {
-  mut out = String.empty();
-  imm file = certs(name);
+  var out = String.empty();
+  let file = certs(name);
   match fs.readFile(&file) {
-    case mut r Ok {out <=> r;}
-    case imm e Error {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out;
 }
 
 fn url(scheme &str, port u16, path &str) String {
-  mut u = String.from(scheme);
+  var u = String.from(scheme);
   u.append("://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
@@ -126,7 +126,7 @@ fn url(scheme &str, port u16, path &str) String {
 
 // A client that trusts the test root (and asks no one else)
 fn trusting() Client {
-  mut cfg = httpclient.Config.make();
+  var cfg = httpclient.Config.make();
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   Client.make(cfg, actorhttp.defaultMaxBody);
@@ -136,13 +136,13 @@ fn say(what &str, r Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
-    case imm ok &Ok {
+    case let ok &Ok {
       printUInt(u64.from(ok.status));
       printStr(" ");
       printStr(ok.body.view());
       printStr("\n");
     }
-    case imm e &Error {
+    case let e &Error {
       printStr("failed at ");
       printStr(httpclient.stageName(e.failure.stage));
       printStr("\n");
@@ -156,8 +156,8 @@ fn say(what &str, r Result[Response, FetchError]) {
 // happens now and then
 fn refusedTls(r Result[Response, FetchError]) bool {
   match &r {
-    case imm e &Error {
-      imm s = e.failure.stage;
+    case let e &Error {
+      let s = e.failure.stage;
       e.kind() == actorhttp.FetchErrorKind.Failed and (s == httpclient.Stage.Tls or s == httpclient.Stage.Read or
         s == httpclient.Stage.Closed);
     }
@@ -167,7 +167,7 @@ fn refusedTls(r Result[Response, FetchError]) bool {
 
 fn isOk(r Result[Response, FetchError]) bool {
   match &r {
-    case imm ok &Ok {true;}
+    case let ok &Ok {true;}
     else {false;}
   }
 }
@@ -178,27 +178,27 @@ actor Prober {
 
   pub async do run(self, port u16, done OneshotSender[u64]) {
     say("https get", await client.get(url("https", port, "/hello").view()));
-    mut post = Request.make("POST", url("https", port, "/echo").view());
+    var post = Request.make("POST", url("https", port, "/echo").view());
     post.body = String.from("over tls");
     say("https post", await client.send(post));
     say("https again", await client.get(url("https", port, "/again").view()));
 
     // Events over TLS
-    imm r = await client.events(Request.get(url("https", port, "/events").view()));
+    let r = await client.events(Request.get(url("https", port, "/events").view()));
     match r {
-      case imm es Ok {
+      case let es Ok {
         printStr("events: status ");
         printUInt(u64.from(es.status));
         printStr(", event stream: ");
         printStr(yes(es.isEventStream()));
         printStr("\n");
-        mut going = true;
+        var going = true;
         while going {
-          imm n = await es.next();
+          let n = await es.next();
           match n {
-            case imm ok Ok {
+            case let ok Ok {
               match ok {
-                case imm ev Some {
+                case let ev Some {
                   printStr("  ");
                   printStr(ev.kind());
                   printStr(": ");
@@ -208,73 +208,73 @@ actor Prober {
                 case is None[sse.Event] {going = false;}
               }
             }
-            case imm er Error {
+            case let er Error {
               printStr("  error\n");
               going = false;
             }
           }
         }
       }
-      case imm e Error {printStr("events failed\n");}
+      case let e Error {printStr("events failed\n");}
     }
 
     // A client that does not trust the root, and one that does not speak TLS at all
-    imm untrusting = await plain.get(url("https", port, "/hello").view());
+    let untrusting = await plain.get(url("https", port, "/hello").view());
     printStr("an untrusting client is refused at the handshake: ");
     printStr(yes(refusedTls(untrusting)));
     printStr("\n");
-    imm unencrypted = await plain.get(url("http", port, "/hello").view());
+    let unencrypted = await plain.get(url("http", port, "/hello").view());
     printStr("a plain client to the TLS port gets no answer: ");
     printStr(yes(not isOk(unencrypted)));
     printStr("\n");
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
 
 fn take[T](rx &mut Receiver[T], dflt T) T {
   match rx.recv() {
-    case imm v Some {v;}
+    case let v Some {v;}
     else {dflt;}
   }
 }
 
 fn main() i32 {
   initAll();
-  mut ptx Sender[u16];
-  mut prx Receiver[u16];
+  var ptx Sender[u16];
+  var prx Receiver[u16];
   ptx, prx = Channel[u16].make();
-  mut stx Sender[u64];
-  mut srx Receiver[u64];
+  var stx Sender[u64];
+  var srx Receiver[u64];
   stx, srx = Channel[u64].make();
   {
     // A TLS server
-    imm certFile = certs("server.pem");
-    imm keyFile = certs("server.key");
-    imm cfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile));
-    imm acceptor = new Acceptor(Server.none());
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    let cfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile));
+    let acceptor = new Acceptor(Server.none());
     acceptor.open(cfg, ptx.clone(), stx.clone());
-    imm port = take[u16](&mut prx, 0u16);
+    let port = take[u16](&mut prx, 0u16);
     printStr("the server says it is secure: ");
     printStr(yes(take[u64](&mut srx, 0u64) == 1u64));
     printStr("\n");
     acceptor.serve();
     {
-      mut tx OneshotSender[u64];
-      mut rx OneshotReceiver[u64];
+      var tx OneshotSender[u64];
+      var rx OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
-      imm p = new Prober(trusting(), Client.standard());
+      let p = new Prober(trusting(), Client.standard());
       p.run(port, tx);
       rx.recv();
     }
     acceptor.stop();
 
     // A server whose key is not its certificate's
-    imm badKey = certs("untrusted.key");
-    imm bad = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &badKey));
-    imm broken = new Acceptor(Server.none());
+    let badKey = certs("untrusted.key");
+    let bad = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &badKey));
+    let broken = new Acceptor(Server.none());
     broken.open(bad, ptx.clone(), stx.clone());
-    imm bport = take[u16](&mut prx, 1u16);
+    let bport = take[u16](&mut prx, 1u16);
     printStr("a server with the wrong key listens: ");
     printStr(yes(bport != 0u16 and bport != 1u16));
     printStr("\n");

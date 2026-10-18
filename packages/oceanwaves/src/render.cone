@@ -50,25 +50,25 @@ pub struct OceanRenderer {
 
   // The renderer's resources for 'ocean'; check 'isValid'
   pub fn create(renderer &mut Renderer, device &mut Device, ocean &Ocean, look OceanLook) OceanRenderer {
-    imm n = ocean.cascades[0usize].spec.n;
-    imm textures = [TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT,
+    let n = ocean.cascades[0usize].spec.n;
+    let textures = [TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT,
       TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT];
-    imm desc = new CustomPipeline(spirv: &OCEAN_SPIRV, textures: &textures, streams: 1u32, paramBytes: 160u64,
+    let desc = new CustomPipeline(spirv: &OCEAN_SPIRV, textures: &textures, streams: 1u32, paramBytes: 160u64,
       cullMode: CULL_MODE_NONE);
-    imm pipeline = renderer.addPipeline(device, &desc);
-    mut zero = List[f32].withCapacity(3usize * n * n);
+    let pipeline = renderer.addPipeline(device, &desc);
+    var zero = List[f32].withCapacity(3usize * n * n);
     zero.resize(3usize * n * n, 0.);
-    imm h = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
-    imm dx = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
-    imm dz = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
-    imm sx = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
-    imm sz = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
-    imm fm = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
-    imm maps = [h, dx, dz, sx, sz, fm];
-    imm params = paramsOf(ocean, &look);
-    imm material = renderer.addCustomMaterial(device, pipeline, params.view(), &maps);
-    imm nearMesh = renderer.addMesh(device, &gridMesh(NEAR_HALF, NEAR_CELLS, 0.));
-    imm farMesh = renderer.addMesh(device, &gridMesh(FAR_CELL * f32.from(FAR_CELLS) * 0.5, FAR_CELLS, NEAR_HALF));
+    let h = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
+    let dx = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
+    let dz = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
+    let sx = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
+    let sz = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
+    let fm = renderer.addFieldTexture(device, u32.from(3usize * n), u32.from(n), zero.view());
+    let maps = [h, dx, dz, sx, sz, fm];
+    let params = paramsOf(ocean, &look);
+    let material = renderer.addCustomMaterial(device, pipeline, params.view(), &maps);
+    let nearMesh = renderer.addMesh(device, &gridMesh(NEAR_HALF, NEAR_CELLS, 0.));
+    let farMesh = renderer.addMesh(device, &gridMesh(FAR_CELL * f32.from(FAR_CELLS) * 0.5, FAR_CELLS, NEAR_HALF));
     new OceanRenderer(pipeline, material, nearMesh, farMesh, h, dx, dz, sx, sz, fm, look, n, List[f32].empty(), 0d);
   }
 
@@ -76,19 +76,19 @@ pub struct OceanRenderer {
 
   // Write the cascades' present fields into the textures, and the parameters (the look, the sea's size)
   pub fn upload(self &mut, renderer &mut Renderer, device &mut Device, ocean &Ocean) {
-    imm t0 = time.Instant.now();
-    imm total = 3usize * n * n;
+    let t0 = time.Instant.now();
+    let total = 3usize * n * n;
     stage.resize(total, 0.);
-    mut field = 0;
+    var field = 0;
     while field < 6 {
-      mut c = 0usize;
+      var c = 0usize;
       while c < 3usize {
-        imm cs = ocean.cascades[c];
-        imm src = if field == 0 { cs.height.view(); } elif field == 1 { cs.dispX.view(); } elif field == 2 { cs.dispZ.view(); }
+        let cs = ocean.cascades[c];
+        let src = if field == 0 { cs.height.view(); } elif field == 1 { cs.dispX.view(); } elif field == 2 { cs.dispZ.view(); }
           elif field == 3 { cs.slopeX.view(); } elif field == 4 { cs.slopeZ.view(); } else { cs.foam.view(); };
-        mut z = 0usize;
+        var z = 0usize;
         while z < n {
-          mut x = 0usize;
+          var x = 0usize;
           while x < n {
             stage.set(z * 3usize * n + c * n + x, src[z * n + x]);
             x = x + 1usize;
@@ -97,20 +97,20 @@ pub struct OceanRenderer {
         }
         c = c + 1usize;
       }
-      imm handle = if field == 0 { height; } elif field == 1 { dispX; } elif field == 2 { dispZ; }
+      let handle = if field == 0 { height; } elif field == 1 { dispX; } elif field == 2 { dispZ; }
         elif field == 3 { slopeX; } elif field == 4 { slopeZ; } else { foam; };
       renderer.writeFieldTexture(device, handle, stage.view());
       field = field + 1;
     }
-    imm params = paramsOf(ocean, &look);
+    let params = paramsOf(ocean, &look);
     renderer.setCustomParams(device, material, params.view());
     uploadSeconds = t0.elapsed().secondsF64();
   }
 
   // Add the sea to a draw list for a camera at (x, z)
   pub fn addToList(self &, list &mut DrawList, x f32, z f32) {
-    imm sx = libc.floorf(x / FAR_CELL) * FAR_CELL;
-    imm sz = libc.floorf(z / FAR_CELL) * FAR_CELL;
+    let sx = libc.floorf(x / FAR_CELL) * FAR_CELL;
+    let sz = libc.floorf(z / FAR_CELL) * FAR_CELL;
     list.add(near, material, Mat4.fromTranslation(new Vec3(sx, 0., sz)));
     list.add(far, material, Mat4.fromTranslation(new Vec3(sx, 0., sz)));
   }
@@ -118,19 +118,19 @@ pub struct OceanRenderer {
 
 // The material's parameters as ocean.slang's Params has them
 fn paramsOf(ocean &Ocean, look &OceanLook) List[f32] {
-  imm cs = &ocean.cascades;
-  imm n = f32.from(cs[0usize].spec.n);
+  let cs = &ocean.cascades;
+  let n = f32.from(cs[0usize].spec.n);
   // how much each cascade displaces the vertices: by the mesh's spacing (1.3 m): a wave needs 4 vertices
   // across its shortest wavelength to be moved, fading in from 2 to 4 vertices a wavelength
-  mut lod = [0., 0., 0.];
-  mut c = 0usize;
+  var lod = [0., 0., 0.];
+  var c = 0usize;
   while c < 3usize {
-    imm shortest = 6.28318530718 / cs[c].spec.kMax;
-    imm vertices = shortest / (2. * NEAR_HALF / f32.from(NEAR_CELLS));
+    let shortest = 6.28318530718 / cs[c].spec.kMax;
+    let vertices = shortest / (2. * NEAR_HALF / f32.from(NEAR_CELLS));
     lod[c] = fclampf((vertices - 2.) / 2., 0., 1.);
     c = c + 1usize;
   }
-  mut p = List[f32].withCapacity(40usize);
+  var p = List[f32].withCapacity(40usize);
   p.push(cs[0usize].spec.length); p.push(cs[1usize].spec.length); p.push(cs[2usize].spec.length); p.push(n);
   p.push(look.sunDirection.x); p.push(look.sunDirection.y); p.push(look.sunDirection.z); p.push(0.);
   p.push(look.sunGlint.red); p.push(look.sunGlint.green); p.push(look.sunGlint.blue); p.push(0.);
@@ -147,11 +147,11 @@ fn paramsOf(ocean &Ocean, look &OceanLook) List[f32] {
 // A square grid of cells (positions at y = 0, normal up, uv 0) from -half to +half each way, with the
 // middle square of half side 'hole' left out (0: none)
 fn gridMesh(half f32, cells i32, hole f32) Mesh {
-  mut m = Mesh.empty();
-  imm step = 2. * half / f32.from(cells);
-  mut j = 0;
+  var m = Mesh.empty();
+  let step = 2. * half / f32.from(cells);
+  var j = 0;
   while j <= cells {
-    mut i = 0;
+    var i = 0;
     while i <= cells {
       m.positions.push(new Vec3(-half + f32.from(i) * step, 0., -half + f32.from(j) * step));
       m.normals.push(new Vec3(0., 1., 0.));
@@ -162,16 +162,16 @@ fn gridMesh(half f32, cells i32, hole f32) Mesh {
   }
   j = 0;
   while j < cells {
-    mut i = 0;
+    var i = 0;
     while i < cells {
-      imm cx = -half + (f32.from(i) + 0.5) * step;
-      imm cz = -half + (f32.from(j) + 0.5) * step;
-      imm inside = hole > 0. and libc.fabsf(cx) < hole and libc.fabsf(cz) < hole;
+      let cx = -half + (f32.from(i) + 0.5) * step;
+      let cz = -half + (f32.from(j) + 0.5) * step;
+      let inside = hole > 0. and libc.fabsf(cx) < hole and libc.fabsf(cz) < hole;
       if !inside {
-        imm a = u32.from(j * (cells + 1) + i);
-        imm b = a + 1u32;
-        imm c = a + u32.from(cells + 1);
-        imm d = c + 1u32;
+        let a = u32.from(j * (cells + 1) + i);
+        let b = a + 1u32;
+        let c = a + u32.from(cells + 1);
+        let d = c + 1u32;
         m.indices.push(a); m.indices.push(c); m.indices.push(b);
         m.indices.push(b); m.indices.push(c); m.indices.push(d);
       }
@@ -184,7 +184,7 @@ fn gridMesh(half f32, cells i32, hole f32) Mesh {
 
 // spirv-begin ocean.spv OCEAN_SPIRV
 // Written by tools/shaders/shaders.py from ocean.slang (sha256 e7c302d144cef61705667037f81b6089248eb3b4eff0efd6e004ba3ce7e8a24f): do not edit.
-imm OCEAN_SPIRV Array[u32, 5861] = [
+let OCEAN_SPIRV Array[u32, 5861] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000645u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

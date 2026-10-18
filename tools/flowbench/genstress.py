@@ -26,10 +26,10 @@ GROUPS = 4        # groups per function in those files
 def group(i: int) -> list[str]:
     """A borrow held across a loop, then its source used after its last use."""
     return [
-        f"  mut p{i} = new Pt({i}, {i});",
-        f"  imm r{i} = &mut p{i};",
+        f"  var p{i} = new Pt({i}, {i});",
+        f"  let r{i} = &mut p{i};",
         f"  r{i}.x = r{i}.x + 1i64;",
-        f"  mut j{i} = 0i64;",
+        f"  var j{i} = 0i64;",
         f"  while j{i} < 3i64 {{",
         f"    if j{i} == 1i64 {{ r{i}.y = j{i}; }} else {{ total = total + r{i}.x; }}",
         f"    j{i} = j{i} + 1i64;",
@@ -42,9 +42,9 @@ def group(i: int) -> list[str]:
 def plain(i: int) -> list[str]:
     """The same work with no borrow held: what an ungated function looks like."""
     return [
-        f"  mut p{i} = new Pt({i}, {i});",
+        f"  var p{i} = new Pt({i}, {i});",
         f"  p{i}.x = p{i}.x + 1i64;",
-        f"  mut j{i} = 0i64;",
+        f"  var j{i} = 0i64;",
         f"  while j{i} < 3i64 {{",
         f"    if j{i} == 1i64 {{ p{i}.y = j{i}; }} else {{ total = total + p{i}.x; }}",
         f"    j{i} = j{i} + 1i64;",
@@ -61,8 +61,8 @@ def looped(i: int, depth: int, nested: bool) -> list[str]:
     statements follow one another, so the pair isolates what nesting costs.
     """
     out = [
-        f"  mut p{i} = new Pt({i}, {i});",
-        f"  imm r{i} = &mut p{i};",
+        f"  var p{i} = new Pt({i}, {i});",
+        f"  let r{i} = &mut p{i};",
         f"  r{i}.x = r{i}.x + 1i64;",
     ]
     closers = []
@@ -72,7 +72,7 @@ def looped(i: int, depth: int, nested: bool) -> list[str]:
         body = [f"{pad}  total = total + r{i}.x;"]
         if level == depth - 1:
             body.append(f"{pad}  if {j} == 1i64 {{ r{i}.y = {j}; }} else {{ total = total + r{i}.x; }}")
-        out.append(f"{pad}mut {j} = 0i64;")
+        out.append(f"{pad}var {j} = 0i64;")
         out.append(f"{pad}while {j} < 3i64 {{")
         out += body
         close = [f"{pad}  {j} = {j} + 1i64;", f"{pad}}}"]
@@ -94,7 +94,7 @@ def generate(mode: str, n: int) -> str:
     out = list(HEADER)
     if mode == "big":
         out.append("fn big() i64 {")
-        out.append("  mut total = 0i64;")
+        out.append("  var total = 0i64;")
         for g in range(n):
             out += group(g)
         out.append("  total;")
@@ -102,7 +102,7 @@ def generate(mode: str, n: int) -> str:
     elif mode in ("many", "plain", "nest", "flat"):
         for f in range(FUNCTIONS if mode in ("nest", "flat") else n):
             out.append(f"fn fn_{f}() i64 {{")
-            out.append("  mut total = 0i64;")
+            out.append("  var total = 0i64;")
             for g in range(GROUPS):
                 if mode == "many":
                     out += group(g)

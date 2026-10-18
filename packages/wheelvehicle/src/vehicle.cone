@@ -97,29 +97,29 @@ pub struct Vehicle {
 
   // A vehicle of 'spec' at 'pos' (its centre of mass), orientation 'rot', at rest
   pub fn create(world &mut World, spec VehicleSpec, pos Vec3, rot Quat) Vehicle {
-    imm shape = world.addShape(Shape.single(Prim.box(spec.chassisHalf)));
-    mut def = BodyDef.dynamicAt(shape, pos);
+    let shape = world.addShape(Shape.single(Prim.box(spec.chassisHalf)));
+    var def = BodyDef.dynamicAt(shape, pos);
     def.rot = rot;
     def.mass = spec.mass;
     def.linearDamping = 0.;
     def.angularDamping = 0.;
     def.allowSleep = false;
-    imm id = world.createBody(def);
-    mut ws = List[WheelState].empty();
+    let id = world.createBody(def);
+    var ws = List[WheelState].empty();
     // the wheelbase for the steering: from the mean place of the fixed wheels (a tandem axle pivots about its
     // middle) to the farthest steered wheel
-    mut front = -1000.;
-    mut rearSum = 0.;
-    mut rearCount = 0.;
-    mut i = 0usize;
+    var front = -1000.;
+    var rearSum = 0.;
+    var rearCount = 0.;
+    var i = 0usize;
     while i < spec.wheels.len() {
       ws.push(new WheelState(0., 0., 0., 0., false, 0., 0., 0., 0., 0., zero3(), 1.));
       if spec.wheels[i].steer > 0.5 and spec.wheels[i].mount.x > front { front = spec.wheels[i].mount.x; }
       if spec.wheels[i].steer < 0.5 { rearSum = rearSum + spec.wheels[i].mount.x; rearCount = rearCount + 1.; }
       i = i + 1usize;
     }
-    imm rear = if rearCount > 0. { rearSum / rearCount; } else { 0.; };
-    imm idle = spec.engine.idle;
+    let rear = if rearCount > 0. { rearSum / rearCount; } else { 0.; };
+    let idle = spec.engine.idle;
     new Vehicle(id, spec, ws, front - rear, rear, 0., 0., 0., false, false, 0., 1, 0., idle, 0., true);
   }
 
@@ -148,54 +148,54 @@ pub struct Vehicle {
 
   // The wheel's frame at the contact: a steered wheel's heading projected on the ground
   fn wheelDirs(q Quat, steerAngle f32, n Vec3) (Vec3, Vec3) {
-    imm h = q * new Vec3(libc.cosf(steerAngle), 0., libc.sinf(steerAngle));
-    imm f = (h - n * h.dot(n)).normalize();
+    let h = q * new Vec3(libc.cosf(steerAngle), 0., libc.sinf(steerAngle));
+    let f = (h - n * h.dot(n)).normalize();
     (f, f.cross(n));
   }
 
   // The Ackermann angle of wheel 'i' for the centre angle 'delta'
   fn ackermann(self &, i usize, delta f32) f32 {
-    imm sf = spec.wheels[i].steer;
+    let sf = spec.wheels[i].steer;
     if sf < 0.5 or libc.fabsf(delta) < 0.00001 { return sf * delta; }
-    imm radius = wheelbase / libc.tanf(delta);
-    imm l = spec.wheels[i].mount.x - rearX;
+    let radius = wheelbase / libc.tanf(delta);
+    let l = spec.wheels[i].mount.x - rearX;
     libc.atanf(l / (radius - spec.wheels[i].mount.z));
   }
 
   // Add the wheels' forces to the chassis for the step of 'dt' seconds about to be taken. 'surface' gives the
   // grip factor of the ground at (x, z): 1 dry, less when wet, loose or iced.
   pub fn apply[F fn(x f32, z f32) f32](self &mut, world &mut World, surface &F, dt f32) {
-    imm com = world.centerOfMass(body);
-    imm q = world.rotationOf(body);
-    imm up = q * new Vec3(0., 1., 0.);
-    imm fwd = q * new Vec3(1., 0., 0.);
-    imm vel = world.linearVelocity(body);
-    imm angVel = world.angularVelocity(body);
+    let com = world.centerOfMass(body);
+    let q = world.rotationOf(body);
+    let up = q * new Vec3(0., 1., 0.);
+    let fwd = q * new Vec3(1., 0., 0.);
+    let vel = world.linearVelocity(body);
+    let angVel = world.angularVelocity(body);
     speed = vel.dot(fwd);
-    imm nw = spec.wheels.len();
+    let nw = spec.wheels.len();
 
     // ---- steering
-    imm fast = vclamp(libc.fabsf(speed) / spec.steerSpeed, 0., 1.);
-    imm target = steerInput * (spec.steerLock * (1. - fast) + spec.steerLockFast * fast);
-    imm stepMax = spec.steerRate * dt;
+    let fast = vclamp(libc.fabsf(speed) / spec.steerSpeed, 0., 1.);
+    let target = steerInput * (spec.steerLock * (1. - fast) + spec.steerLockFast * fast);
+    let stepMax = spec.steerRate * dt;
     steerAngle = steerAngle + vclamp(target - steerAngle, -stepMax, stepMax);
 
     // ---- suspension
-    mut hitPoint = List[Vec3].empty();
-    mut hitNormal = List[Vec3].empty();
-    mut i = 0usize;
+    var hitPoint = List[Vec3].empty();
+    var hitNormal = List[Vec3].empty();
+    var i = 0usize;
     while i < nw {
-      imm w = spec.wheels[i];
-      imm origin = com + q * w.mount;
-      imm hit = world.castRay(origin, up * -1., w.travel + w.radius, QueryFilter.all().without(body));
-      imm ext = hit.t - w.radius;
-      mut c = 0.;
-      mut touching = false;
+      let w = spec.wheels[i];
+      let origin = com + q * w.mount;
+      let hit = world.castRay(origin, up * -1., w.travel + w.radius, QueryFilter.all().without(body));
+      let ext = hit.t - w.radius;
+      var c = 0.;
+      var touching = false;
       if hit.hit and ext < w.travel { c = w.travel - ext; touching = true; }
-      imm prev = wheels[i].compression;
-      imm wasTouching = wheels[i].contact;
-      imm cdot = if touching and wasTouching { (c - prev) / dt; } else { 0.; };
-      mut force = 0.;
+      let prev = wheels[i].compression;
+      let wasTouching = wheels[i].contact;
+      let cdot = if touching and wasTouching { (c - prev) / dt; } else { 0.; };
+      var force = 0.;
       if touching {
         force = w.stiffness * c;
         if c > w.travel { force = force + w.stiffness * 9. * (c - w.travel); }
@@ -213,12 +213,12 @@ pub struct Vehicle {
     // anti-roll bars: wheels of one axle
     i = 0usize;
     while i < nw {
-      mut j = i + 1usize;
+      var j = i + 1usize;
       while j < nw {
         if spec.wheels[i].axle == spec.wheels[j].axle {
-          imm k = *spec.axleRoll[spec.wheels[i].axle];
+          let k = *spec.axleRoll[spec.wheels[i].axle];
           if k > 0. {
-            imm f = k * (wheels[i].compression - wheels[j].compression);
+            let f = k * (wheels[i].compression - wheels[j].compression);
             if wheels[i].contact { wheels[i].load = vmax(0., wheels[i].load + f); }
             if wheels[j].contact { wheels[j].load = vmax(0., wheels[j].load - f); }
           }
@@ -229,14 +229,14 @@ pub struct Vehicle {
     }
 
     // ---- drivetrain
-    mut omegaDrive = 0.;
-    mut ax = 0usize;
+    var omegaDrive = 0.;
+    var ax = 0usize;
     while ax < spec.axleShare.len() {
-      imm share = *spec.axleShare[ax];
+      let share = *spec.axleShare[ax];
       if share > 0. {
-        mut sum = 0.;
-        mut cnt = 0.;
-        mut wi = 0usize;
+        var sum = 0.;
+        var cnt = 0.;
+        var wi = 0usize;
         while wi < nw {
           if spec.wheels[wi].axle == ax { sum = sum + wheels[wi].omega; cnt = cnt + 1.; }
           wi = wi + 1usize;
@@ -249,10 +249,10 @@ pub struct Vehicle {
     if reverse and gear >= 0 and libc.fabsf(speed) < 1.5 { gear = -1; shiftTimer = 0.2; }
     if !reverse and gear < 0 { gear = 1; shiftTimer = 0.2; }
     if gear == 0 and !reverse and automatic { gear = 1; }
-    mut ratio = 0.;
+    var ratio = 0.;
     if gear > 0 { ratio = *spec.gearbox.ratios[usize.from(gear - 1)] * spec.gearbox.finalDrive; }
     if gear < 0 { ratio = -spec.gearbox.reverse * spec.gearbox.finalDrive; }
-    imm rpmWheels = libc.fabsf(omegaDrive * ratio) * 9.5492966;
+    let rpmWheels = libc.fabsf(omegaDrive * ratio) * 9.5492966;
     if shiftTimer > 0. { shiftTimer = shiftTimer - dt; }
     if gear > 0 and shiftTimer <= 0. and automatic {
       if rpmWheels > spec.gearbox.upRpm and throttle > 0.2 and gear < i32.from(spec.gearbox.ratios.len()) {
@@ -262,74 +262,74 @@ pub struct Vehicle {
       }
       ratio = *spec.gearbox.ratios[usize.from(gear - 1)] * spec.gearbox.finalDrive;
     }
-    imm locked = gear != 0 and shiftTimer <= 0. and rpmWheels >= spec.gearbox.clutchRpm;
-    mut tIn = 0.;
+    let locked = gear != 0 and shiftTimer <= 0. and rpmWheels >= spec.gearbox.clutchRpm;
+    var tIn = 0.;
     if locked {
       rpm = vmax(spec.engine.idle, rpmWheels);
       tIn = spec.engine.torqueAt(rpm, throttle);
     } elif gear != 0 and shiftTimer <= 0. {
-      imm launch = spec.engine.idle + throttle * (spec.gearbox.clutchRpm * 1.6 - spec.engine.idle);
+      let launch = spec.engine.idle + throttle * (spec.gearbox.clutchRpm * 1.6 - spec.engine.idle);
       rpm = launch;
       tIn = vclamp(spec.engine.torqueAt(rpm, throttle), 0., spec.gearbox.clutchTorque);
     } else {
       rpm = vmax(spec.engine.idle, vmin(rpmWheels, spec.engine.limiter));
     }
-    imm wheelTorque = tIn * ratio * spec.gearbox.efficiency;
+    let wheelTorque = tIn * ratio * spec.gearbox.efficiency;
     // the engine's inertia, seen from the wheels, spread over the driven wheels
-    imm reflected = if locked { spec.engine.inertia * ratio * ratio; } else { 0.; };
+    let reflected = if locked { spec.engine.inertia * ratio * ratio; } else { 0.; };
 
     // ---- tyres and wheel spin
-    mut torqueOnAxle = List[f32].empty();
+    var torqueOnAxle = List[f32].empty();
     ax = 0usize;
     while ax < spec.axleShare.len() { torqueOnAxle.push(wheelTorque * *spec.axleShare[ax]); ax = ax + 1usize; }
     // the wheels' new spin, from each wheel's own tyre (the axle's differential comes after)
-    mut newOmega = List[f32].empty();
-    mut dFdw = List[f32].empty();
-    mut fx0 = List[f32].empty();
-    mut fy0 = List[f32].empty();
-    mut inertiaOf = List[f32].empty();
+    var newOmega = List[f32].empty();
+    var dFdw = List[f32].empty();
+    var fx0 = List[f32].empty();
+    var fy0 = List[f32].empty();
+    var inertiaOf = List[f32].empty();
     i = 0usize;
     while i < nw {
-      imm w = spec.wheels[i];
-      imm share = if w.axle < spec.axleShare.len() { *spec.axleShare[w.axle]; } else { 0.; };
-      mut nOnAxle = 0.;
-      mut wk = 0usize;
+      let w = spec.wheels[i];
+      let share = if w.axle < spec.axleShare.len() { *spec.axleShare[w.axle]; } else { 0.; };
+      var nOnAxle = 0.;
+      var wk = 0usize;
       while wk < nw { if spec.wheels[wk].axle == w.axle { nOnAxle = nOnAxle + 1.; } wk = wk + 1usize; }
-      imm inertia = w.inertia + reflected * share / vmax(1., nOnAxle);
+      let inertia = w.inertia + reflected * share / vmax(1., nOnAxle);
       inertiaOf.push(inertia);
       // the drive on this wheel: the axle's share, split equally (the differential corrects it below)
-      imm drive = *torqueOnAxle[w.axle] / vmax(1., nOnAxle);
-      imm om = wheels[i].omega;
-      mut brakeTorque = brakePedal * w.brake;
+      let drive = *torqueOnAxle[w.axle] / vmax(1., nOnAxle);
+      let om = wheels[i].omega;
+      var brakeTorque = brakePedal * w.brake;
       if handbrake { brakeTorque = brakeTorque + w.handbrake; }
       wheels[i].steerAngle = ackermann(i, steerAngle);
       if wheels[i].contact {
-        imm n = *hitNormal[i];
-        imm dirs = wheelDirs(q, wheels[i].steerAngle, n);
-        imm cp = *hitPoint[i];
-        imm vc = vel + angVel.cross(cp - com);
-        imm vx = vc.dot(dirs.0);
-        imm vy = vc.dot(dirs.1);
-        imm grip = (*surface)(cp.x, cp.z);
+        let n = *hitNormal[i];
+        let dirs = wheelDirs(q, wheels[i].steerAngle, n);
+        let cp = *hitPoint[i];
+        let vc = vel + angVel.cross(cp - com);
+        let vx = vc.dot(dirs.0);
+        let vy = vc.dot(dirs.1);
+        let grip = (*surface)(cp.x, cp.z);
         wheels[i].grip = grip;
-        imm vs = vmax(libc.fabsf(vx), w.tyre.lowSpeed);
-        imm tanA = vy / vs;
-        imm kappa = (om * w.radius - vx) / vs;
-        imm t0 = tyreForce(&w.tyre, wheels[i].load, kappa, tanA, grip);
-        imm dom = 0.5;
-        imm kappa1 = ((om + dom) * w.radius - vx) / vs;
-        imm t1 = tyreForce(&w.tyre, wheels[i].load, kappa1, tanA, grip);
+        let vs = vmax(libc.fabsf(vx), w.tyre.lowSpeed);
+        let tanA = vy / vs;
+        let kappa = (om * w.radius - vx) / vs;
+        let t0 = tyreForce(&w.tyre, wheels[i].load, kappa, tanA, grip);
+        let dom = 0.5;
+        let kappa1 = ((om + dom) * w.radius - vx) / vs;
+        let t1 = tyreForce(&w.tyre, wheels[i].load, kappa1, tanA, grip);
         // the slope of force against spin, taken as it is where the tyre is gripping (positive, which the
         // implicit step needs) and as zero past the peak, where it is negative and the step goes explicit
         // (a locked wheel is not made unstable by it)
-        imm slope = vmax(0., (t1.fx - t0.fx) / dom);
+        let slope = vmax(0., (t1.fx - t0.fx) / dom);
         // rolling resistance, opposing the motion
-        imm roll = w.tyre.rolling * wheels[i].load * (if vx > 0.2 { -1.; } elif vx < -0.2 { 1.; } else { -vx / 0.2; });
-        imm net = drive - w.radius * t0.fx;
-        mut omNew = om + dt * net / (inertia + dt * w.radius * slope);
+        let roll = w.tyre.rolling * wheels[i].load * (if vx > 0.2 { -1.; } elif vx < -0.2 { 1.; } else { -vx / 0.2; });
+        let net = drive - w.radius * t0.fx;
+        var omNew = om + dt * net / (inertia + dt * w.radius * slope);
         // the brake: a velocity constraint limited by its torque
         if brakeTorque > 0. {
-          imm dB = brakeTorque * dt / (inertia + dt * w.radius * slope);
+          let dB = brakeTorque * dt / (inertia + dt * w.radius * slope);
           if libc.fabsf(omNew) <= dB { omNew = 0.; } elif omNew > 0. { omNew = omNew - dB; } else { omNew = omNew + dB; }
         }
         newOmega.push(omNew);
@@ -340,9 +340,9 @@ pub struct Vehicle {
         wheels[i].slipAngle = libc.atanf(tanA);
       } else {
         // in the air: free spin, the brake still acts
-        mut omNew = om + dt * drive / inertia;
+        var omNew = om + dt * drive / inertia;
         if brakeTorque > 0. {
-          imm dB = brakeTorque * dt / inertia;
+          let dB = brakeTorque * dt / inertia;
           if libc.fabsf(omNew) <= dB { omNew = 0.; } elif omNew > 0. { omNew = omNew - dB; } else { omNew = omNew + dB; }
         }
         newOmega.push(omNew);
@@ -357,18 +357,18 @@ pub struct Vehicle {
     // the differentials: the wheels of an axle coupled by a torque limited by the kind
     i = 0usize;
     while i < nw {
-      mut j = i + 1usize;
+      var j = i + 1usize;
       while j < nw {
         if spec.wheels[i].axle == spec.wheels[j].axle and spec.wheels[i].axle < spec.axleDiff.len() {
-          imm d = spec.axleDiff[spec.wheels[i].axle];
+          let d = spec.axleDiff[spec.wheels[i].axle];
           if d.kind != DIFF_OPEN {
-            imm ii = *inertiaOf[i];
-            imm ij = *inertiaOf[j];
-            imm reduced = ii * ij / (ii + ij);
-            imm need = (*newOmega[i] - *newOmega[j]) * reduced / dt;
-            imm axleTorque = libc.fabsf(*torqueOnAxle[spec.wheels[i].axle]);
-            imm limit = if d.kind == DIFF_LOCKED { 1.0e9; } else { d.preload + d.bias * axleTorque; };
-            imm carried = vclamp(need, -limit, limit);
+            let ii = *inertiaOf[i];
+            let ij = *inertiaOf[j];
+            let reduced = ii * ij / (ii + ij);
+            let need = (*newOmega[i] - *newOmega[j]) * reduced / dt;
+            let axleTorque = libc.fabsf(*torqueOnAxle[spec.wheels[i].axle]);
+            let limit = if d.kind == DIFF_LOCKED { 1.0e9; } else { d.preload + d.bias * axleTorque; };
+            let carried = vclamp(need, -limit, limit);
             newOmega[i] = *newOmega[i] - carried * dt / ii;
             newOmega[j] = *newOmega[j] + carried * dt / ij;
           }
@@ -380,13 +380,13 @@ pub struct Vehicle {
     // apply the forces and take the new spin
     i = 0usize;
     while i < nw {
-      imm w = spec.wheels[i];
-      imm dw = *newOmega[i] - wheels[i].omega;
+      let w = spec.wheels[i];
+      let dw = *newOmega[i] - wheels[i].omega;
       if wheels[i].contact {
-        imm n = *hitNormal[i];
-        imm dirs = wheelDirs(q, wheels[i].steerAngle, n);
-        imm fx = *fx0[i] + *dFdw[i] * dw;
-        imm fy = *fy0[i];
+        let n = *hitNormal[i];
+        let dirs = wheelDirs(q, wheels[i].steerAngle, n);
+        let fx = *fx0[i] + *dFdw[i] * dw;
+        let fy = *fy0[i];
         wheels[i].fx = fx;
         wheels[i].fy = fy;
         world.applyForceAt(body, dirs.0 * fx + dirs.1 * fy, *hitPoint[i]);
@@ -400,7 +400,7 @@ pub struct Vehicle {
       i = i + 1usize;
     }
     // air drag and downforce, at the centre of mass
-    imm sp = vel.length();
+    let sp = vel.length();
     world.applyForce(body, vel * (-0.5 * 1.2 * spec.dragArea * sp) + up * (-spec.downforce * sp * sp));
   }
 }

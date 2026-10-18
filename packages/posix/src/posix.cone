@@ -134,8 +134,8 @@ pub const EINVAL = 22i32;
 pub const EMFILE = 24i32;
 pub const ENOSPC = 28i32;
 pub const EROFS = 30i32;
-pub extern imm ENAMETOOLONG i32;
-pub extern imm ENOTEMPTY i32;
+pub extern let ENAMETOOLONG i32;
+pub extern let ENOTEMPTY i32;
 
 // ---------------------------------------------------------------------------
 // The two systems' own functions, declared on every platform
@@ -227,14 +227,14 @@ fn statOfLinux(raw &LinuxStat) Stat {
 // junction to what it leads to, as POSIX's does; 'lstat', below, does not.
 pub fn @c("cone_posix_stat") stat(path cstr, buf &mut Stat) i32 {
   if core.isWindows() {
-    mut raw = emptyWinStat();
-    imm r = _stat64(path, &mut raw);
+    var raw = emptyWinStat();
+    let r = _stat64(path, &mut raw);
     if r == 0i32 {*buf = statOfWin(&raw);}
     r;
   }
   else {
-    mut raw = emptyLinuxStat();
-    imm r = linuxStat(path, &mut raw as *u8);
+    var raw = emptyLinuxStat();
+    let r = linuxStat(path, &mut raw as *u8);
     if r == 0i32 {*buf = statOfLinux(&raw);}
     r;
   }
@@ -303,22 +303,22 @@ const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
 // The block 'getenv' answers in, grown as needed: its address and size. Each
 // thread has a block of its own, so one thread's call never overwrites what
 // another is reading
-mut @threadlocal envAnswer = 0usize;
-mut @threadlocal envAnswerSize = 0usize;
+var @threadlocal envAnswer = 0usize;
+var @threadlocal envAnswerSize = 0usize;
 
 // getenv(name): the variable's value, in a block overwritten by the same
 // thread's next call, as POSIX allows; null when it is not set
 pub fn @c("cone_posix_getenv") getenv(name cstr) *u8 {
   if core.isWindows() {
-    imm nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
+    let nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
     if nameLen == 0i32 {return null;};
-    imm wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
+    let wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
     MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, wname, nameLen);
-    imm wvalue = _wgetenv(wname);
+    let wvalue = _wgetenv(wname);
     libc.free(wname as *u8);
     if wvalue == null {return null;};
     // A lone surrogate, which is no character, becomes U+FFFD
-    imm size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, null, 0i32, null, null);
+    let size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, null, 0i32, null, null);
     if size <= 0i32 {return null;};
     if usize.from(size) > envAnswerSize {
       envAnswer = libc.realloc(envAnswer as *u8, usize.from(size)) as usize;
@@ -338,18 +338,18 @@ pub fn @c("cone_posix_getenv") getenv(name cstr) *u8 {
 // POSIX returns -1.
 pub fn @c("cone_posix_setenv") setenv(name cstr, value cstr, overwrite i32) i32 {
   if core.isWindows() {
-    imm nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
+    let nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
     if nameLen == 0i32 {return EINVAL;};
-    imm wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
+    let wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
     MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, wname, nameLen);
-    imm valueLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, value.ptr(), -1i32, null, 0i32);
+    let valueLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, value.ptr(), -1i32, null, 0i32);
     if valueLen == 0i32 {
       libc.free(wname as *u8);
       return EINVAL;
     };
-    imm wvalue = libc.malloc(usize.from(valueLen) * 2usize) as *u16;
+    let wvalue = libc.malloc(usize.from(valueLen) * 2usize) as *u16;
     MultiByteToWideChar(utf8Page, invalidUtf8Fails, value.ptr(), -1i32, wvalue, valueLen);
-    mut result = 0i32;
+    var result = 0i32;
     if overwrite != 0i32 or _wgetenv(wname) == null {
       result = _wputenv_s(wname, wvalue);
     };
@@ -433,8 +433,8 @@ fn emptyFindData() FindData64 {
 // Whether a C string holds '*' or '?', which '_findfirst64' would read as a
 // pattern rather than a name
 fn hasWildcard(cpath cstr) bool {
-  imm path = cpath.ptr();
-  mut i = 0usize;
+  let path = cpath.ptr();
+  var i = 0usize;
   while path[i] != 0u8 {
     if path[i] == '*' or path[i] == '?' {return true;};
     i = i + 1usize;
@@ -450,8 +450,8 @@ fn hasWildcard(cpath cstr) bool {
 pub fn @c("cone_posix_lstat") lstat(path cstr, buf &mut Stat) i32 {
   if core.isWindows() {
     if not hasWildcard(path) {
-      mut info = emptyFindData();
-      imm handle = _findfirst64(path, &mut info);
+      var info = emptyFindData();
+      let handle = _findfirst64(path, &mut info);
       if handle != -1isize {
         _findclose(handle);
         if (info.attrib & _A_REPARSE) != 0u32 {
@@ -464,8 +464,8 @@ pub fn @c("cone_posix_lstat") lstat(path cstr, buf &mut Stat) i32 {
     stat(path, buf);
   }
   else {
-    mut raw = emptyLinuxStat();
-    imm r = linuxLstat(path, &mut raw);
+    var raw = emptyLinuxStat();
+    let r = linuxLstat(path, &mut raw);
     if r == 0i32 {*buf = statOfLinux(&raw);}
     r;
   }
@@ -513,7 +513,7 @@ fn emptyDirent() dirent {
 // On Windows it lists the pattern 'name/*'.
 pub fn @c("cone_posix_opendir") opendir(cname cstr) *DIR {
   if core.isWindows() {
-    mut st = emptyStat();
+    var st = emptyStat();
     if stat(cname, &mut st) != 0i32 {return null;};
     if (st.st_mode & S_IFMT) != S_IFDIR {
       *libc.errno() = ENOTDIR;
@@ -521,12 +521,12 @@ pub fn @c("cone_posix_opendir") opendir(cname cstr) *DIR {
     };
     // The pattern: the name, a '/' unless it ends in a separator already (or
     // is a drive, 'C:'), and '*'
-    imm name = cname.ptr();
-    imm len = libc.strlen(cname);
-    imm pattern = libc.malloc(len + 3usize);
+    let name = cname.ptr();
+    let len = libc.strlen(cname);
+    let pattern = libc.malloc(len + 3usize);
     libc.memcpy(pattern, name, len);
-    mut at = len;
-    imm last = if len > 0usize {name[len - 1usize];} else {0u8;};
+    var at = len;
+    let last = if len > 0usize {name[len - 1usize];} else {0u8;};
     if len > 0usize and last != '/' and last != '\\' and last != ':' {
       pattern[at] = '/';
       at = at + 1usize;
@@ -534,11 +534,11 @@ pub fn @c("cone_posix_opendir") opendir(cname cstr) *DIR {
     pattern[at] = '*';
     pattern[at + 1usize] = 0u8;
 
-    imm zero *DIR = null;
-    imm dir = libc.malloc((zero + 1) as usize) as *DIR;
-    imm d = dir as &mut DIR;
+    let zero *DIR = null;
+    let dir = libc.malloc((zero + 1) as usize) as *DIR;
+    let d = dir as &mut DIR;
     *d = new DIR(-1isize, false, emptyFindData(), emptyDirent());
-    imm saved = *libc.errno();
+    let saved = *libc.errno();
     d.handle = _findfirst64(cstr.fromPtr(pattern), &mut d.data);
     libc.free(pattern);
     // A directory with nothing in it, not even '.' (a drive's root), lists nothing
@@ -546,11 +546,11 @@ pub fn @c("cone_posix_opendir") opendir(cname cstr) *DIR {
     dir;
   }
   else {
-    imm stream = linuxOpendir(cname);
+    let stream = linuxOpendir(cname);
     if stream == null {return null;};
-    imm zero *DIR = null;
-    imm dir = libc.malloc((zero + 1) as usize) as *DIR;
-    imm d = dir as &mut DIR;
+    let zero *DIR = null;
+    let dir = libc.malloc((zero + 1) as usize) as *DIR;
+    let d = dir as &mut DIR;
     *d = new DIR(stream as isize, false, emptyFindData(), emptyDirent());
     dir;
   }
@@ -560,18 +560,18 @@ pub fn @c("cone_posix_opendir") opendir(cname cstr) *DIR {
 // order, or null after the last, errno left as it was. The entry is the
 // directory's own, overwritten by the next call and freed by 'closedir'.
 pub fn @c("cone_posix_readdir") readdir(dir *DIR) *dirent {
-  imm d = dir as &mut DIR;
+  let d = dir as &mut DIR;
   if core.isWindows() {
     if d.handle == -1isize {return null;};
     if not d.pending {
-      imm saved = *libc.errno();
+      let saved = *libc.errno();
       if _findnext64(d.handle, &mut d.data) != 0i32 {
         if *libc.errno() == ENOENT {*libc.errno() = saved;};
         return null;
       };
     };
     d.pending = false;
-    imm attrib = d.data.attrib;
+    let attrib = d.data.attrib;
     d.entry.d_type = if (attrib & _A_REPARSE) != 0u32 {DT_LNK;}
       else if (attrib & _A_SUBDIR) != 0u32 {DT_DIR;}
       else {DT_REG;};
@@ -579,14 +579,14 @@ pub fn @c("cone_posix_readdir") readdir(dir *DIR) *dirent {
     &d.entry as *dirent;
   }
   else {
-    imm got = linuxReaddir(d.handle as *u8);
+    let got = linuxReaddir(d.handle as *u8);
     if got == null {return null;};
-    imm raw = got as &LinuxDirent;
+    let raw = got as &LinuxDirent;
     d.entry.d_ino = raw.d_ino;
     d.entry.d_type = raw.d_type;
     // Name and its NUL, 256 bytes at most, into 260
-    imm from *u8 = &[]raw.d_name as *u8;
-    imm to *u8 = &[]d.entry.d_name as *u8;
+    let from *u8 = &[]raw.d_name as *u8;
+    let to *u8 = &[]d.entry.d_name as *u8;
     libc.memcpy(to, from, libc.strlen(cstr.fromPtr(from)) + 1usize);
     &d.entry as *dirent;
   }
@@ -594,8 +594,8 @@ pub fn @c("cone_posix_readdir") readdir(dir *DIR) *dirent {
 
 // closedir(dir): ends the listing and frees what 'opendir' allocated
 pub fn @c("cone_posix_closedir") closedir(dir *DIR) i32 {
-  imm d = dir as &mut DIR;
-  mut result = 0i32;
+  let d = dir as &mut DIR;
+  var result = 0i32;
   if core.isWindows() {
     if d.handle != -1isize {_findclose(d.handle);};
   }

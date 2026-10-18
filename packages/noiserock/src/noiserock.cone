@@ -47,48 +47,48 @@ struct Rng {
 }
 
 fn dirOf(ring i32, slice i32, rings i32, slices i32) Vec3 {
-  imm th = pi * f32.from(ring) / f32.from(rings);
-  imm ph = 2. * pi * f32.from(slice) / f32.from(slices);
+  let th = pi * f32.from(ring) / f32.from(rings);
+  let ph = 2. * pi * f32.from(slice) / f32.from(slices);
   new Vec3(libc.sinf(th) * libc.cosf(ph), libc.cosf(th), libc.sinf(th) * libc.sinf(ph));
 }
 
 // The rock described, standing on y = 0 (its foot flat), centred on x = z = 0
 pub fn rockMesh(p &RockParams) mesh.Mesh {
-  mut rng = new Rng(pcg(p.seed ^ 0x7f4a7c15u32));
+  var rng = new Rng(pcg(p.seed ^ 0x7f4a7c15u32));
   // the cutting planes: unit normals and their distances
-  mut nrm = List[Vec3].empty();
-  mut off = List[f32].empty();
-  mut i = 0;
+  var nrm = List[Vec3].empty();
+  var off = List[f32].empty();
+  var i = 0;
   while i < p.facets {
-    imm z = rng.unit() * 2. - 1.;
-    imm a = rng.unit() * 6.2831853;
-    imm r = libc.sqrtf(1. - z * z);
+    let z = rng.unit() * 2. - 1.;
+    let a = rng.unit() * 6.2831853;
+    let r = libc.sqrtf(1. - z * z);
     nrm.push(new Vec3(r * libc.cosf(a), z, r * libc.sinf(a)));
     off.push(p.facetDepth + 0.14 * rng.unit());
     i = i + 1;
   }
-  imm rings = if p.rings < 3 { 3; } else { p.rings; };
-  imm slices = if p.slices < 4 { 4; } else { p.slices; };
-  mut m = mesh.Mesh.empty();
-  imm yMin = 0. - p.height * p.flatBase;
-  mut ring = 0;
+  let rings = if p.rings < 3 { 3; } else { p.rings; };
+  let slices = if p.slices < 4 { 4; } else { p.slices; };
+  var m = mesh.Mesh.empty();
+  let yMin = 0. - p.height * p.flatBase;
+  var ring = 0;
   while ring <= rings {
-    mut slice = 0;
+    var slice = 0;
     while slice < slices {
-      imm d = dirOf(ring, slice, rings, slices);
-      mut r f32 = 1. + p.bumpAmp * noise.fbm3(d * p.bumpFreq, p.seed, 3, 2., 0.5).value;
-      mut k = 0usize;
+      let d = dirOf(ring, slice, rings, slices);
+      var r f32 = 1. + p.bumpAmp * noise.fbm3(d * p.bumpFreq, p.seed, 3, 2., 0.5).value;
+      var k = 0usize;
       while k < nrm.len() {
-        imm c = d.dot(*nrm[k]);
+        let c = d.dot(*nrm[k]);
         if c > 0.05 {
-          imm lim = *off[k] / c;
+          let lim = *off[k] / c;
           if lim < r { r = lim; }
         }
         k = k + 1usize;
       }
-      mut pt = new Vec3(d.x * r * p.width, d.y * r * p.height, d.z * r * p.depth);
+      var pt = new Vec3(d.x * r * p.width, d.y * r * p.height, d.z * r * p.depth);
       pt.y = if pt.y < yMin { yMin; } else { pt.y; };
-      imm rough = p.roughAmp * noise.fbm3(pt * 5., p.seed + 17u32, 2, 2., 0.5).value;
+      let rough = p.roughAmp * noise.fbm3(pt * 5., p.seed + 17u32, 2, 2., 0.5).value;
       pt = pt + d * (rough * p.width);
       pt.y = if pt.y < yMin { yMin; } else { pt.y; };
       m.positions.push(new Vec3(pt.x, pt.y - yMin, pt.z));
@@ -99,12 +99,12 @@ pub fn rockMesh(p &RockParams) mesh.Mesh {
   // triangles, wound counterclockwise seen from outside
   ring = 0;
   while ring < rings {
-    mut slice = 0;
+    var slice = 0;
     while slice < slices {
-      imm a = u32.from(ring * slices + slice);
-      imm b = u32.from(ring * slices + (slice + 1) % slices);
-      imm c = u32.from((ring + 1) * slices + slice);
-      imm d = u32.from((ring + 1) * slices + (slice + 1) % slices);
+      let a = u32.from(ring * slices + slice);
+      let b = u32.from(ring * slices + (slice + 1) % slices);
+      let c = u32.from((ring + 1) * slices + slice);
+      let d = u32.from((ring + 1) * slices + (slice + 1) % slices);
       if ring > 0 { m.indices.push(a); m.indices.push(b); m.indices.push(c); }
       if ring < rings - 1 { m.indices.push(b); m.indices.push(d); m.indices.push(c); }
       slice = slice + 1;
@@ -113,15 +113,15 @@ pub fn rockMesh(p &RockParams) mesh.Mesh {
   }
   if p.smooth { m.computeSmoothNormals(); } else { m.computeFlatNormals(); }
   // box-projected uvs
-  imm off0 = new Vec2(toUnit(pcg(p.seed + 3u32)), toUnit(pcg(p.seed + 5u32)));
-  mut v = 0usize;
+  let off0 = new Vec2(toUnit(pcg(p.seed + 3u32)), toUnit(pcg(p.seed + 5u32)));
+  var v = 0usize;
   while v < m.positions.len() {
-    imm q = *m.positions[v];
-    imm n = *m.normals[v];
-    imm ax = libc.fabsf(n.x);
-    imm ay = libc.fabsf(n.y);
-    imm az = libc.fabsf(n.z);
-    imm uv = if ay >= ax and ay >= az { new Vec2(q.x, q.z); }
+    let q = *m.positions[v];
+    let n = *m.normals[v];
+    let ax = libc.fabsf(n.x);
+    let ay = libc.fabsf(n.y);
+    let az = libc.fabsf(n.z);
+    let uv = if ay >= ax and ay >= az { new Vec2(q.x, q.z); }
       elif ax >= az { new Vec2(q.z, q.y); } else { new Vec2(q.x, q.y); };
     m.uvs.push(new Vec2(uv.x / p.tileMetres + off0.x, uv.y / p.tileMetres + off0.y));
     v = v + 1usize;

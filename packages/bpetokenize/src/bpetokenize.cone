@@ -192,7 +192,7 @@ pub struct BuildError {
 
   // One line for a person: 'bpetokenize: merge 3 ("he llo") names a token that is not in the vocabulary'
   pub fn message(self &) String {
-    mut out = String.from("bpetokenize: ");
+    var out = String.from("bpetokenize: ");
     out.append(reason.view());
     out;
   }
@@ -211,7 +211,7 @@ pub struct DecodeError {
   pub vocabSize usize;
 
   pub fn message(self &) String {
-    mut out = String.from("bpetokenize: token id ");
+    var out = String.from("bpetokenize: token id ");
     out.appendUInt(u64.from(id));
     out.append(" at position ");
     out.appendUInt(u64.from(position));
@@ -284,7 +284,7 @@ pub struct Tokenizer {
       return Some[BuildError](new BuildError(BuildErrorKind.TooManyTokens, tokens.len,
         String.from("there are more tokens than ids of 32 bits can number")));
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < tokens.len {
       if not vocab.contains(tokens[i].view()) {
         vocab.insert(tokens[i].copy(), u32.from(i));
@@ -300,9 +300,9 @@ pub struct Tokenizer {
           String.from("a special token has no text")));
       }
       match vocab.getCopy(special[i].view()) {
-        case imm id Some { isSpecial.set(usize.from(id), true); }
+        case let id Some { isSpecial.set(usize.from(id), true); }
         case is None {
-          mut why = String.from("the special token \"");
+          var why = String.from("the special token \"");
           why.append(special[i].view());
           why.append("\" is not in the vocabulary");
           return Some[BuildError](new BuildError(BuildErrorKind.UnknownSpecial, i, why));
@@ -314,12 +314,12 @@ pub struct Tokenizer {
     starts.push(0usize);
     i = 0usize;
     while i < tokens.len {
-      imm text &Array[u8] = tokens[i].view();
+      let text &Array[u8] = tokens[i].view();
       if self.special(i) {
         pushAll(&mut pool, text);
       }
       else {
-        imm raw = fromByteLevel(text);
+        let raw = fromByteLevel(text);
         pushAll(&mut pool, raw.view());
       }
       starts.push(pool.len());
@@ -334,15 +334,15 @@ pub struct Tokenizer {
       i = i + 1usize;
     }
     // the 256 single-byte tokens
-    mut b = 0u32;
+    var b = 0u32;
     while b < 256u32 {
-      mut one = List[u8].empty();
+      var one = List[u8].empty();
       one.push(u8.from(b));
-      imm spelt = toByteLevel(one.view());
+      let spelt = toByteLevel(one.view());
       match vocab.getCopy(spelt.view()) {
-        case imm id Some { byteIds.push(id); }
+        case let id Some { byteIds.push(id); }
         case is None {
-          mut why = String.from("the vocabulary has no token for the byte ");
+          var why = String.from("the vocabulary has no token for the byte ");
           why.appendUInt(u64.from(b));
           why.append(" (\"");
           why.append(spelt.view());
@@ -358,21 +358,21 @@ pub struct Tokenizer {
   // Put special token id among the specials, the longest text first (and, among
   // equals, the earlier id first)
   fn addSpecial(self &mut, id u32) {
-    imm len = self.lengthOf(usize.from(id));
-    mut at = specialIds.len();
+    let len = self.lengthOf(usize.from(id));
+    var at = specialIds.len();
     while at > 0usize {
-      imm other = specialIds.view()[at - 1usize];
+      let other = specialIds.view()[at - 1usize];
       if self.lengthOf(usize.from(other)) >= len { break; }
       at = at - 1usize;
     }
     // insert at 'at': push then rotate down
     specialIds.push(id);
-    mut k = specialIds.len() - 1usize;
+    var k = specialIds.len() - 1usize;
     while k > at {
       specialIds.swap(k, k - 1usize);
       k = k - 1usize;
     }
-    imm firstByte = pool.view()[self.startOf(usize.from(id))];
+    let firstByte = pool.view()[self.startOf(usize.from(id))];
     specialFirst.set(usize.from(firstByte), true);
   }
 
@@ -380,33 +380,33 @@ pub struct Tokenizer {
   fn special(self &, id usize) bool { isSpecial.view()[id]; }
   fn startOf(self &, id usize) usize { starts.view()[id]; }
   fn lengthOf(self &, id usize) usize {
-    imm s = starts.view();
+    let s = starts.view();
     s[id + 1usize] - s[id];
   }
 
   // One merge rule, the index'th in the list
   fn addMerge(self &mut, index usize, left &str, right &str) Option[BuildError] {
-    mut l = 0u32;
-    mut r = 0u32;
+    var l = 0u32;
+    var r = 0u32;
     match vocab.getCopy(left) {
-      case imm id Some { l = id; }
+      case let id Some { l = id; }
       case is None { return Some[BuildError](self.mergeFault(BuildErrorKind.UnknownMergePart, index, left, right,
         "names a token that is not in the vocabulary")); }
     }
     match vocab.getCopy(right) {
-      case imm id Some { r = id; }
+      case let id Some { r = id; }
       case is None { return Some[BuildError](self.mergeFault(BuildErrorKind.UnknownMergePart, index, left, right,
         "names a token that is not in the vocabulary")); }
     }
-    mut joined = String.from(left);
+    var joined = String.from(left);
     joined.append(right);
-    mut made = 0u32;
+    var made = 0u32;
     match vocab.getCopy(joined.view()) {
-      case imm id Some { made = id; }
+      case let id Some { made = id; }
       case is None { return Some[BuildError](self.mergeFault(BuildErrorKind.MissingMergeResult, index, left, right,
         "makes a token that is not in the vocabulary")); }
     }
-    imm key = (u64.from(l) << 32u64) | u64.from(r);
+    let key = (u64.from(l) << 32u64) | u64.from(r);
     if not merges.contains(&key) {
       merges.insert(key, (u64.from(index) << 32u64) | u64.from(made));
     }
@@ -414,7 +414,7 @@ pub struct Tokenizer {
   }
 
   fn mergeFault(self &, kind BuildErrorKind, index usize, left &str, right &str, what &str) BuildError {
-    mut why = String.from("merge ");
+    var why = String.from("merge ");
     why.appendUInt(u64.from(index));
     why.append(" (\"");
     why.append(left);
@@ -430,28 +430,28 @@ pub struct Tokenizer {
   // made before merging
   pub fn build(tokens &Array[String], merges &Array[String], special &Array[String], pre PreTokenizer)
       Result[Tokenizer, BuildError] {
-    mut t = Tokenizer.blank(pre);
+    var t = Tokenizer.blank(pre);
     match t.loadVocabulary(tokens, special) {
-      case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+      case let e Some { return Error[Tokenizer, BuildError](e.copy()); }
       case is None { }
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < merges.len {
-      imm text &Array[u8] = merges[i].view();
+      let text &Array[u8] = merges[i].view();
       // split at the first space that is not the first byte
-      mut sp = 1usize;
+      var sp = 1usize;
       while sp < text.len and text[sp] != ' ' { sp = sp + 1usize; }
       if text.len < 3usize or sp >= text.len - 1usize {
-        mut why = String.from("merge ");
+        var why = String.from("merge ");
         why.appendUInt(u64.from(i));
         why.append(" (\"");
         why.append(merges[i].view());
         why.append("\") is not two tokens with a space between them");
         return Error[Tokenizer, BuildError](new BuildError(BuildErrorKind.BadMerge, i, why));
       }
-      imm line = merges[i].view();
+      let line = merges[i].view();
       match t.addMerge(i, line.slice(0usize, sp), line.sliceFrom(sp + 1usize)) {
-        case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+        case let e Some { return Error[Tokenizer, BuildError](e.copy()); }
         case is None { }
       }
       i = i + 1usize;
@@ -462,15 +462,15 @@ pub struct Tokenizer {
   // The same, with the merges as pairs of tokens
   pub fn buildPairs(tokens &Array[String], merges &Array[MergePair], special &Array[String], pre PreTokenizer)
       Result[Tokenizer, BuildError] {
-    mut t = Tokenizer.blank(pre);
+    var t = Tokenizer.blank(pre);
     match t.loadVocabulary(tokens, special) {
-      case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+      case let e Some { return Error[Tokenizer, BuildError](e.copy()); }
       case is None { }
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < merges.len {
       match t.addMerge(i, merges[i].left.view(), merges[i].right.view()) {
-        case imm e Some { return Error[Tokenizer, BuildError](e.copy()); }
+        case let e Some { return Error[Tokenizer, BuildError](e.copy()); }
         case is None { }
       }
       i = i + 1usize;
@@ -495,7 +495,7 @@ pub struct Tokenizer {
   // The bytes an id decodes to, or None for an id outside the vocabulary
   pub fn tokenBytes(self &, id u32) Option[&Array[u8]] {
     if usize.from(id) >= isSpecial.len() { return None; }
-    imm from = self.startOf(usize.from(id));
+    let from = self.startOf(usize.from(id));
     Some[&Array[u8]](&pool.view()[from..<from + self.lengthOf(usize.from(id))]);
   }
 
@@ -512,14 +512,14 @@ pub struct Tokenizer {
 
   // The ids of a text, special tokens recognised
   pub fn encode(self &, text &Array[u8]) List[u32] {
-    mut out = List[u32].empty();
+    var out = List[u32].empty();
     self.encodeWith(text, true, &mut out);
     out;
   }
 
   // The ids of a text, with a special token's text encoded like any other text
   pub fn encodePlain(self &, text &Array[u8]) List[u32] {
-    mut out = List[u32].empty();
+    var out = List[u32].empty();
     self.encodeWith(text, false, &mut out);
     out;
   }
@@ -527,13 +527,13 @@ pub struct Tokenizer {
   // Append the ids of a text to out; 'parseSpecial' says whether a special
   // token's text in the input is its token
   pub fn encodeWith(self &, text &Array[u8], parseSpecial bool, out &mut List[u32]) {
-    mut work = Work.empty();
-    mut segment = 0usize;
-    mut pos = 0usize;
+    var work = Work.empty();
+    var segment = 0usize;
+    var pos = 0usize;
     if parseSpecial and specialIds.len() > 0usize {
       while pos < text.len {
         if specialFirst.view()[usize.from(text[pos])] {
-          imm id = self.specialAt(text, pos);
+          let id = self.specialAt(text, pos);
           if id != deadSymbol {
             self.encodeSegment(&text[segment..<pos], &mut work, out);
             out.push(id);
@@ -551,12 +551,12 @@ pub struct Tokenizer {
   // The id of the longest special token that text has at pos, or deadSymbol
   // (which is no id) when there is none
   fn specialAt(self &, text &Array[u8], pos usize) u32 {
-    imm ids = specialIds.view();
-    mut k = 0usize;
+    let ids = specialIds.view();
+    var k = 0usize;
     while k < ids.len {
-      imm id = usize.from(ids[k]);
-      imm from = self.startOf(id);
-      imm len = self.lengthOf(id);
+      let id = usize.from(ids[k]);
+      let from = self.startOf(id);
+      let len = self.lengthOf(id);
       if pos + len <= text.len and &text[pos..<pos + len] == &pool.view()[from..<from + len] { return ids[k]; }
       k = k + 1usize;
     }
@@ -567,10 +567,10 @@ pub struct Tokenizer {
   fn encodeSegment(self &, text &Array[u8], work &mut Work, out &mut List[u32]) {
     work.ends.clear();
     pieceEndsWith(&pre, text, &mut work.ends, &mut work.scan);
-    mut start = 0usize;
-    mut i = 0usize;
+    var start = 0usize;
+    var i = 0usize;
     while i < work.ends.len() {
-      imm end = work.ends.view()[i];
+      let end = work.ends.view()[i];
       self.mergeWord(&text[start..<end], work, out);
       start = end;
       i = i + 1usize;
@@ -579,68 +579,68 @@ pub struct Tokenizer {
 
   // The pair at symbol i and the symbol after it, in the heap if a rule joins it
   fn queuePair(self &, sym &Array[u32], next &Array[usize], heap &mut List[u64], i usize) {
-    imm j = next[i];
+    let j = next[i];
     if j == noLink { return; }
-    imm key = (u64.from(sym[i]) << 32u64) | u64.from(sym[j]);
+    let key = (u64.from(sym[i]) << 32u64) | u64.from(sym[j]);
     match merges.getCopy(&key) {
-      case imm found Some { heapPush(heap, ((found >> 32u64) << 32u64) | u64.from(i)); }
+      case let found Some { heapPush(heap, ((found >> 32u64) << 32u64) | u64.from(i)); }
       case is None { }
     }
   }
 
   // One word's bytes merged into tokens, appended to out
   fn mergeWord(self &, word &Array[u8], work &mut Work, out &mut List[u32]) {
-    imm n = word.len;
+    let n = word.len;
     if n == 1usize {
       out.push(byteIds.view()[usize.from(word[0usize])]);
       return;
     }
     // the symbols' ids live in a local List for the word, so that pushing to out can't touch them
-    mut symbols = List[u32].empty();
+    var symbols = List[u32].empty();
     symbols <=> work.sym;
     symbols.clear();
     work.prev.clear();
     work.next.clear();
     work.heap.clear();
-    mut i = 0usize;
+    var i = 0usize;
     while i < n {
       symbols.push(byteIds.view()[usize.from(word[i])]);
       work.prev.push(if i == 0usize { noLink; } else { i - 1usize; });
       work.next.push(if i + 1usize < n { i + 1usize; } else { noLink; });
       i = i + 1usize;
     }
-    imm sym = symbols.viewMut();
-    imm prev = work.prev.viewMut();
-    imm next = work.next.viewMut();
+    let sym = symbols.viewMut();
+    let prev = work.prev.viewMut();
+    let next = work.next.viewMut();
     i = 0usize;
     while i + 1usize < n {
       self.queuePair(sym, next, &mut work.heap, i);
       i = i + 1usize;
     }
     while work.heap.len() > 0usize {
-      imm top = heapPop(&mut work.heap);
-      imm left = usize.from(top & 0xFFFFFFFFu64);
+      let top = heapPop(&mut work.heap);
+      let left = usize.from(top & 0xFFFFFFFFu64);
       if sym[left] == deadSymbol { continue; }
-      imm right = next[left];
+      let right = next[left];
       if right == noLink { continue; }
-      imm key = (u64.from(sym[left]) << 32u64) | u64.from(sym[right]);
+      let key = (u64.from(sym[left]) << 32u64) | u64.from(sym[right]);
       match merges.getCopy(&key) {
         case is None { continue; }
-        case imm found Some {
+        case let found Some {
           // a stale entry: this place's pair has changed since it was queued
           if (found >> 32u64) != (top >> 32u64) { continue; }
           sym[left] = u32.from(found & 0xFFFFFFFFu64);
           sym[right] = deadSymbol;
-          imm after = next[right];
+          let after = next[right];
           next[left] = after;
           if after != noLink { prev[after] = left; }
-          imm before = prev[left];
+          let before = prev[left];
           if before != noLink { self.queuePair(sym, next, &mut work.heap, before); }
           self.queuePair(sym, next, &mut work.heap, left);
         }
       }
     }
-    mut at = 0usize;
+    var at = 0usize;
     while at != noLink {
       out.push(sym[at]);
       at = next[at];
@@ -654,21 +654,21 @@ pub struct Tokenizer {
   // 'skipSpecial', the special tokens add nothing. An id outside the vocabulary
   // is an error and leaves out as it was.
   pub fn decodeInto(self &, ids &Array[u32], skipSpecial bool, out &mut List[u8]) Result[usize, DecodeError] {
-    imm size = isSpecial.len();
-    mut i = 0usize;
+    let size = isSpecial.len();
+    var i = 0usize;
     while i < ids.len {
       if usize.from(ids[i]) >= size {
         return Error[usize, DecodeError](new DecodeError(i, ids[i], size));
       }
       i = i + 1usize;
     }
-    imm before = out.len();
+    let before = out.len();
     i = 0usize;
     while i < ids.len {
-      imm id = usize.from(ids[i]);
+      let id = usize.from(ids[i]);
       if not (skipSpecial and self.special(id)) {
-        mut k = self.startOf(id);
-        imm end = k + self.lengthOf(id);
+        var k = self.startOf(id);
+        let end = k + self.lengthOf(id);
         while k < end { out.push(pool.view()[k]); k = k + 1usize; }
       }
       i = i + 1usize;
@@ -678,9 +678,9 @@ pub struct Tokenizer {
 
   // The bytes of the ids
   pub fn decode(self &, ids &Array[u32]) Result[List[u8], DecodeError] {
-    mut out = List[u8].empty();
+    var out = List[u8].empty();
     match self.decodeInto(ids, false, &mut out) {
-      case imm e Error { return Error[List[u8], DecodeError](e.copy()); }
+      case let e Error { return Error[List[u8], DecodeError](e.copy()); }
       case is Ok { }
     }
     Ok[List[u8], DecodeError](out);
@@ -689,7 +689,7 @@ pub struct Tokenizer {
 
 // Every byte of b, appended
 fn pushAll(out &mut List[u8], b &Array[u8]) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.len { out.push(b[i]); i = i + 1usize; }
 }
 
@@ -697,12 +697,12 @@ fn pushAll(out &mut List[u8], b &Array[u8]) {
 
 fn heapPush(h &mut List[u64], v u64) {
   h.push(v);
-  imm a = h.viewMut();
-  mut i = a.len - 1usize;
+  let a = h.viewMut();
+  var i = a.len - 1usize;
   while i > 0usize {
-    imm parent = (i - 1usize) / 2usize;
+    let parent = (i - 1usize) / 2usize;
     if a[parent] <= a[i] { break; }
-    imm t = a[parent];
+    let t = a[parent];
     a[parent] = a[i];
     a[i] = t;
     i = parent;
@@ -711,22 +711,22 @@ fn heapPush(h &mut List[u64], v u64) {
 
 // Remove and answer the least; the heap is not empty
 fn heapPop(h &mut List[u64]) u64 {
-  imm a = h.viewMut();
-  imm top = a[0usize];
-  imm last = a[a.len - 1usize];
+  let a = h.viewMut();
+  let top = a[0usize];
+  let last = a[a.len - 1usize];
   h.truncate(h.len() - 1usize);
   if h.len() > 0usize {
-    imm b = h.viewMut();
+    let b = h.viewMut();
     b[0usize] = last;
-    mut i = 0usize;
+    var i = 0usize;
     while true {
-      mut least = i;
-      imm l = i * 2usize + 1usize;
-      imm r = l + 1usize;
+      var least = i;
+      let l = i * 2usize + 1usize;
+      let r = l + 1usize;
       if l < b.len and b[l] < b[least] { least = l; }
       if r < b.len and b[r] < b[least] { least = r; }
       if least == i { break; }
-      imm t = b[least];
+      let t = b[least];
       b[least] = b[i];
       b[i] = t;
       i = least;
@@ -744,12 +744,12 @@ fn heapPop(h &mut List[u64]) u64 {
 // many bytes of what it has decoded so far and keeps the rest for the next
 // token. Bytes that are not UTF-8 are counted whole.
 pub fn utf8Complete(b &Array[u8]) usize {
-  mut back = 1usize;
+  var back = 1usize;
   while back <= 3usize and back <= b.len and (b[b.len - back] & 0xC0u8) == 0x80u8 { back = back + 1usize; }
   if back > 3usize or back > b.len { return b.len; }
   // c is the byte that begins the last character, if it begins a multi-byte one
-  imm c = b[b.len - back];
-  mut want = 1usize;
+  let c = b[b.len - back];
+  var want = 1usize;
   if c >= 0xC2u8 and c <= 0xDFu8 { want = 2usize; }
   elif c >= 0xE0u8 and c <= 0xEFu8 { want = 3usize; }
   elif c >= 0xF0u8 and c <= 0xF4u8 { want = 4usize; }
