@@ -99,6 +99,19 @@ int litAdoptCharAsByte(INode **nodep, INode *totype);
 // argument, is that byte. Returns 1 when the literal was retyped.
 int litAdoptCharBesideByte(INode **objp, Nodes *args);
 
+// Is this a number literal written with no suffix that has not yet been given a
+// type (it is an i32 or f64 only by default)?
+int litIsUntypedNumber(INode *node);
+
+// An untyped number literal that is a binary operator's receiver takes the type of
+// the argument beside it, when that is a number type. 'othertype' is the
+// argument's type. Returns 1 when the literal was retyped.
+int litAdoptBesideOperand(INode **objp, INode *othertype);
+
+// Fold an operator application of untyped number literals ('2.0 * 3.0', '200 + 100')
+// into one untyped literal, in place. Returns 1 when the call is now that literal.
+int litFoldUntyped(FnCallNode *call);
+
 // Is this a character literal, as written, beyond ASCII, wanted as a u8? The
 // literal is a code point and a byte is not one: refused, saying so
 int litCharRefusedAsByte(INode *node, INode *totypedcl);

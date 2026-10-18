@@ -1701,6 +1701,21 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // An ASCII character literal beside a byte is that byte, whichever side it is on
     if (callnode->flags & FlagOperator)
         litAdoptCharBesideByte(&callnode->objfn, callnode->args);
+    // A number literal with no suffix, on the left of an operator whose other operand
+    // has a number type, is that type: '0.5 - s' for an f64 's', '1 - n' for an i64
+    // 'n'. Written on the right it takes the type by being the argument.
+    if ((callnode->flags & FlagOperator) && callnode->args && callnode->args->used == 1
+        && litIsUntypedNumber(callnode->objfn)) {
+        INode *arg = nodesGet(callnode->args, 0);
+        if (isExpNode(arg) && !litIsUntypedNumber(arg)) {
+            INode *argtype = iexpGetTypeDcl(arg);
+            // An operator reads through a borrow of a number: its number is the operand's type
+            while (argtype->tag == RefTag && fnCallBorrowTypeReadsThrough(argtype))
+                argtype = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
+            if (litAdoptBesideOperand(&callnode->objfn, argtype))
+                obj = callnode->objfn;
+        }
+    }
     assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
@@ -3728,6 +3743,25 @@ static int fnCallArgMayInfer(INode *arg) {
     return arg->tag == FnCallTag;
 }
 
+// A number operator that wants both operands the one number type: a sum, difference,
+// product, quotient or remainder, or an ordering comparison
+static int fnCallIsNumericOp(Name *op) {
+    return op == plusName || op == minusName || op == multName || op == divName || op == remName
+        || op == ltName || op == leName || op == gtName || op == geName;
+}
+
+// The number type of an operand, when it is a plain number (not a pointer or a reference
+// to one, nor a bool or a char), else NULL
+static INode *fnCallOperandNumber(INode *operand) {
+    if (!isExpNode(operand) || inodeIsError(operand) || litIsUntypedNumber(operand))
+        return NULL;
+    INode *type = iexpGetTypeDcl(operand);
+    if ((type->tag == IntNbrTag || type->tag == UintNbrTag || type->tag == FloatNbrTag)
+        && type != (INode*)boolType && type != (INode*)charType)
+        return type;
+    return NULL;
+}
+
 // A variant of a generic enum constructed with its type arguments left to be
 // inferred ('Some(5)', 'None', 'Some(None)'): what the generic it is given to
 // wants of it may fix them ('Some(5)' wanted as an 'Option[i64]' holds an i64).
@@ -4186,10 +4220,16 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // type the receiver's '<-' takes for an append. Any other operand keeps
     // the order it always had, the argument first, since a macro method's
     // argument is not checked until the macro has expanded.
+    //
+    // An 'if' or 'match' as the argument of an arithmetic or comparison operator
+    // is wanted as the receiver's number type too: its branches that are literals
+    // are that type, as a literal there is ('x * (if c {1.25} else {0.8})').
     INode *opexpect = NULL;
     Name *argopname = fnCallOperatorName(node);
-    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName)
-        && node->args && node->args->used == 1 && fnCallArgMayInfer(nodesGet(node->args, 0))
+    int numericif = argopname && node->args && node->args->used == 1 && nodesGet(node->args, 0)->tag == IfTag
+        && fnCallIsNumericOp(argopname);
+    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName || numericif)
+        && node->args && node->args->used == 1 && (numericif || fnCallArgMayInfer(nodesGet(node->args, 0)))
         && !objfnChecked && !calleeIsOverload
         && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
         inodeTypeCheckAny(pstate, &node->objfn);
@@ -4204,6 +4244,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 INode *found = isMethodType(rcvtype) ? iNsTypeFindFnField((INsTypeNode*)rcvtype, argopname) : NULL;
                 if (found)
                     opexpect = fnCallArgAgreed(found, 1, 0, 1);
+            }
+            else if (numericif) {
+                // (a receiver that is an untyped literal is no type to want: it takes the argument's;
+                // nor is a pointer or a reference to a number)
+                opexpect = fnCallOperandNumber(node->objfn);
             }
             else
                 opexpect = rcvtype;
@@ -4320,6 +4365,12 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             && ((IExpNode*)other)->vtype != NULL)
             rcvexpect = iexpGetDerefTypeDcl(other);
     }
+    // An 'if' as the receiver of a number operator, '(if c {1.} else {2.}) * x': its
+    // branches that are literals are the other operand's number type, as it is for the
+    // 'if' on the right (numericif above)
+    if (!rcvexpect && !calleeIsOverload && !objfnChecked && argopname && fnCallIsNumericOp(argopname)
+        && node->args && node->args->used == 1 && node->objfn->tag == IfTag)
+        rcvexpect = fnCallOperandNumber(nodesGet(node->args, 0));
     if (rcvexpect) {
         inodeTypeCheck(pstate, &node->objfn, rcvexpect);
         objfnChecked = 1;
@@ -4358,6 +4409,16 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     int isTypeLit = isTypeNode(node->objfn) && (node->flags & FlagIndex);
     if (!isTypeLit && namedValRefuseArgs(node->args, node->flags & FlagIndex ? "an index" : "a call")) {
         node->vtype = errorType;
+        return;
+    }
+
+    // An expression made only of untyped number literals is one such literal, as
+    // its place may type it (litFoldUntyped)
+    if ((node->flags & FlagOperator) && litFoldUntyped(node)) {
+        INode *folded = (INode*)node;
+        if (expectType != NULL && expectType != unknownType && expectType != noCareType)
+            litAdoptNumberType(&folded, expectType);
+        *(INode**)nodep = folded;
         return;
     }
 

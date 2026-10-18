@@ -12,7 +12,7 @@
 
 // The sum of w[c] * x[c] over c < cols, in f64 in column order (a product of two f32s is exact in f64)
 fn dot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
-  var acc = 0.0d;
+  var acc = 0.0;
   var c = 0usize;
   while c < cols {
     acc = acc + f64.from(w[c]) * f64.from(x[x0 + c]);
@@ -53,7 +53,7 @@ pub fn matmulCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f32]) bool
 
 // The sum of |w[c] x[c]| in f64, the size of the terms a sum is made of
 fn absDot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
-  var acc = 0.0d;
+  var acc = 0.0;
   var c = 0usize;
   while c < cols {
     acc = acc + libc.fabs(f64.from(w[c]) * f64.from(x[x0 + c]));
@@ -98,7 +98,7 @@ pub fn matmulMagnitudeCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f
 // the dequantisation's own two roundings. The GPU's sum obeys it in whatever order it adds, so a kernel's
 // error against a twin that sums in f64 is within it.
 pub fn sumTolerance(n usize, absSum f64) f64 {
-  f64.from(n + 4usize) * 5.9604644775390625e-8d * absSum
+  f64.from(n + 4usize) * 5.9604644775390625e-8 * absSum
 }
 
 // y = x / sqrt(mean(x^2) + eps) * w, for each of 'rows' rows of 'n'
@@ -106,14 +106,14 @@ pub fn rmsnormCpu(x &Array[f32], w &Array[f32], n usize, rows usize, eps f32, y 
   if n == 0usize or x.len < n * rows or w.len < n or y.len < n * rows { return false; }
   var r = 0usize;
   while r < rows {
-    var ss = 0.0d;
+    var ss = 0.0;
     var i = 0usize;
     while i < n {
       let v = f64.from(x[r * n + i]);
       ss = ss + v * v;
       i = i + 1usize;
     }
-    let scale = 1.0d / libc.sqrt(ss / f64.from(n) + f64.from(eps));
+    let scale = 1.0 / libc.sqrt(ss / f64.from(n) + f64.from(eps));
     i = 0usize;
     while i < n {
       y[r * n + i] = f32.from(f64.from(x[r * n + i]) * scale * f64.from(w[i]));
@@ -129,7 +129,7 @@ pub fn ropeFrequencies(ropeDim usize, base f32) List[f32] {
   var out = List[f32].withCapacity(ropeDim / 2usize);
   var i = 0usize;
   while i < ropeDim / 2usize {
-    out.push(f32.from(libc.pow(f64.from(base), 0.0d - 2.0d * f64.from(i) / f64.from(ropeDim))));
+    out.push(f32.from(libc.pow(f64.from(base), 0.0 - 2.0 * f64.from(i) / f64.from(ropeDim))));
     i = i + 1usize;
   }
   out
@@ -183,7 +183,7 @@ pub fn softmaxCpu(x &Array[f32], n usize, rows usize, y &mut Array[f32]) bool {
       if f64.from(x[r * n + i]) > m { m = f64.from(x[r * n + i]); }
       i = i + 1usize;
     }
-    var sum = 0.0d;
+    var sum = 0.0;
     i = 0usize;
     while i < n {
       sum = sum + libc.exp(f64.from(x[r * n + i]) - m);
@@ -217,10 +217,10 @@ pub fn attentionCpu(q &Array[f32], kCache &Array[f32], vCache &Array[f32], nToke
       let kvh = h / (nHeads / nKvHeads);
       let qBase = (t * nHeads + h) * headDim;
       scores.clear();
-      var m = -1.0e300d;
+      var m = -1.0e300;
       var j = 0usize;
       while j < seqLen {
-        var acc = 0.0d;
+        var acc = 0.0;
         var d = 0usize;
         while d < headDim {
           acc = acc + f64.from(q[qBase + d]) * f64.from(kCache[j * kvDim + kvh * headDim + d]);
@@ -231,7 +231,7 @@ pub fn attentionCpu(q &Array[f32], kCache &Array[f32], vCache &Array[f32], nToke
         if s > m { m = s; }
         j = j + 1usize;
       }
-      var total = 0.0d;
+      var total = 0.0;
       j = 0usize;
       while j < seqLen {
         let e = libc.exp(*scores[j] - m);
@@ -241,7 +241,7 @@ pub fn attentionCpu(q &Array[f32], kCache &Array[f32], vCache &Array[f32], nToke
       }
       var d = 0usize;
       while d < headDim {
-        var acc = 0.0d;
+        var acc = 0.0;
         j = 0usize;
         while j < seqLen {
           acc = acc + *scores[j] * f64.from(vCache[j * kvDim + kvh * headDim + d]);
@@ -271,22 +271,22 @@ pub fn kvAppendCpu(src &Array[f32], cache &mut Array[f32], nTokens usize, kvDim 
 // x / (1 + e^-x)
 pub fn siluValue(x f32) f32 {
   let v = f64.from(x);
-  f32.from(v / (1.0d + libc.exp(0.0d - v)))
+  f32.from(v / (1.0 + libc.exp(0.0 - v)))
 }
 
 // tanh in f64 from exp (libc has no tanh here): (1 - e^-2|v|) / (1 + e^-2|v|), signed
 fn tanh64(v f64) f64 {
-  let a = if v < 0.0d { 0.0d - v } else { v };
-  let t = libc.exp(-2.0d * a);
-  let r = (1.0d - t) / (1.0d + t);
-  if v < 0.0d { return 0.0d - r; }
+  let a = if v < 0.0 { 0.0 - v } else { v };
+  let t = libc.exp(-2.0 * a);
+  let r = (1.0 - t) / (1.0 + t);
+  if v < 0.0 { return 0.0 - r; }
   r
 }
 
 // 0.5 x (1 + tanh(sqrt(2 / pi) (x + 0.044715 x^3))), the tanh GELU ggml uses
 pub fn geluValue(x f32) f32 {
   let v = f64.from(x);
-  f32.from(0.5d * v * (1.0d + tanh64(0.79788456080286535588d * (v + 0.044715d * v * v * v))))
+  f32.from(0.5 * v * (1.0 + tanh64(0.79788456080286535588 * (v + 0.044715 * v * v * v))))
 }
 
 pub fn siluCpu(x &Array[f32], n usize, y &mut Array[f32]) bool {

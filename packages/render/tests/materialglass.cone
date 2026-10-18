@@ -58,7 +58,7 @@ fn powerPreference() u32 {
 fn halfToFloat(h u16) f32 {
   let bits = u32.from(h);
   let exponent = (bits >> 10u32) & 31u32;
-  let sign = if (bits & 0x8000u32) != 0u32 { -1. } else { 1. };
+  let sign = if (bits & 0x8000u32) != 0u32 { -1.f } else { 1. };
   if exponent == 0u32 { return 0.; }
   let f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
   sign * (f as f32)
@@ -81,7 +81,7 @@ fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Te
 
 fn within(got f64, want f64, relative f64, absolute f64) bool {
   let d = if got < want { want - got } else { got - want };
-  d <= absolute + relative * (if want < 0d { -want } else { want })
+  d <= absolute + relative * (if want < 0.0 { -want } else { want })
 }
 
 fn glowing(r f32, g f32, b f32) PbrMaterial {
@@ -92,7 +92,7 @@ fn glowing(r f32, g f32, b f32) PbrMaterial {
 fn edgeColumn(p *u8, c usize, from u32) i64 {
   var x = from;
   while x < SIZE {
-    if radiance(p, x, 48u32, c) > 0.5d { return i64.from(x); }
+    if radiance(p, x, 48u32, c) > 0.5 { return i64.from(x); }
     x = x + 1u32;
   }
   -1i64
@@ -105,39 +105,39 @@ fn edgeCrossing(p *u8, c usize, level f64) f64 {
   while x < 76u32 {
     let v0 = radiance(p, x - 1u32, 48u32, c);
     let v1 = radiance(p, x, 48u32, c);
-    if v1 > level and v0 <= level { return f64.from(x) - 0.5d + (level - v0) / (v1 - v0); }
+    if v1 > level and v0 <= level { return f64.from(x) - 0.5 + (level - v0) / (v1 - v0); }
     x = x + 1u32;
   }
-  -1d
+  -1.0
 }
 
 // The tangent of half the field of view (60 degrees across)
-fn tanHalf() f64 { libc.tan(0.5235987755982988d) }
+fn tanHalf() f64 { libc.tan(0.5235987755982988) }
 
 // The pane's x where the edge at the background's x = 'edge' shows through a pane 'depth' thick of index
 // 'ior' (found by bisection): the projection of the point the refracted ray leaves the volume at is the
 // edge's. The camera is at z = 1, the pane at z = 0, the background at z = -1.
 fn edgeThroughPane(edge f64, ior f64, thickness f64) f64 {
-  let edgeNdc = edge / (2d * tanHalf());
-  var lo = 0d;
-  var hi = 0.9d;
+  let edgeNdc = edge / (2.0 * tanHalf());
+  var lo = 0.0;
+  var hi = 0.9;
   var i = 0;
   while i < 60 {
-    let px = 0.5d * (lo + hi);
-    let sinI = px / libc.sqrt(1d + px * px);
+    let px = 0.5 * (lo + hi);
+    let sinI = px / libc.sqrt(1.0 + px * px);
     let sinT = sinI / ior;
-    let cosT = libc.sqrt(1d - sinT * sinT);
+    let cosT = libc.sqrt(1.0 - sinT * sinT);
     let ex = px + thickness * sinT;
     let ez = -thickness * cosT;
-    let ndc = ex / ((1d - ez) * tanHalf());
+    let ndc = ex / ((1.0 - ez) * tanHalf());
     if ndc < edgeNdc { lo = px; } else { hi = px; }
     i = i + 1;
   }
-  0.5d * (lo + hi)
+  0.5 * (lo + hi)
 }
 
 // The column of the pane's x
-fn columnOf(px f64) f64 { px / tanHalf() * 48d + 48d }
+fn columnOf(px f64) f64 { px / tanHalf() * 48.0 + 48.0 }
 
 fn main() i32 {
   var instance = Instance.create("materialglass");
@@ -205,11 +205,11 @@ fn main() i32 {
     scene.add(plane, gm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
     let through = edgeColumn(p, 1usize, 0u32);
-    let want = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
-    expect(f64.from(through) > f64.from(bare60) + 0.5d, "the glass moved the edge");
-    expect(through >= 0i64 and f64.from(through) >= want - 1d and f64.from(through) <= want + 1d,
+    let want = columnOf(edgeThroughPane(0.3, 1.5, 0.5));
+    expect(f64.from(through) > f64.from(bare60) + 0.5, "the glass moved the edge");
+    expect(through >= 0i64 and f64.from(through) >= want - 1.0 and f64.from(through) <= want + 1.0,
       "the edge shows through the pane where the refracted ray puts it (the glTF volume's model)");
-    if !(f64.from(through) >= want - 1d and f64.from(through) <= want + 1d) { eprint <- "  edge at column "; eprint <- through; eprint <- ", wanted "; eprint <- want; eprint <- "\n"; }
+    if !(f64.from(through) >= want - 1.0 and f64.from(through) <= want + 1.0) { eprint <- "  edge at column "; eprint <- through; eprint <- ", wanted "; eprint <- want; eprint <- "\n"; }
     expectUInt(u64.from(renderer.ext[0usize].captures), 1u64, "one capture, for the glass");
   }
 
@@ -225,9 +225,9 @@ fn main() i32 {
     let r = radiance(p, 48u32, 48u32, 0usize);
     let g = radiance(p, 48u32, 48u32, 1usize);
     let b = radiance(p, 48u32, 48u32, 2usize);
-    expectFloat(r / b, 0.5d, 0.01d, "absorption: red is half of blue (the attenuation colour at its distance)");
-    expectFloat(g / b, 0.25d, 0.005d, "and green a quarter");
-    expect(b > 0.93d and b < 0.99d, "the blue is 1 less the Fresnel reflectance");
+    expectFloat(r / b, 0.5, 0.01, "absorption: red is half of blue (the attenuation colour at its distance)");
+    expectFloat(g / b, 0.25, 0.005, "and green a quarter");
+    expect(b > 0.93 and b < 0.99, "the blue is 1 less the Fresnel reflectance");
     // A tint
     var tinted = glass;
     tinted.baseColor = new Color(1., 0.5, 0.5, 1.);
@@ -237,7 +237,7 @@ fn main() i32 {
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));
     scene.add(plane, tm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
-    expectFloat(radiance(p, 48u32, 48u32, 1usize) / radiance(p, 48u32, 48u32, 0usize), 0.5d, 0.01d, "a tint multiplies the light that passes");
+    expectFloat(radiance(p, 48u32, 48u32, 1usize) / radiance(p, 48u32, 48u32, 0usize), 0.5, 0.01, "a tint multiplies the light that passes");
     // Half transmissive
     var half = glass;
     half.glass = 0.5;
@@ -247,7 +247,7 @@ fn main() i32 {
     scene.add(plane, hm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
     // 0.5 x (0.5 x the red's share of 1 - Fresnel) + 0.5 x the white behind: 0.5 + 0.25 (1 - R)
-    expectFloat(radiance(p, 48u32, 48u32, 0usize), 0.74d, 0.02d, "a pane that passes half leaves half the picture and half the glass's red");
+    expectFloat(radiance(p, 48u32, 48u32, 0usize), 0.74, 0.02, "a pane that passes half leaves half the picture and half the glass's red");
   }
 
   // ---- 3. Dispersion ----
@@ -262,21 +262,21 @@ fn main() i32 {
     scene.add(plane, gm, pane);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &scene);
     // The white behind reads 0.96 through the pane (1 less the Fresnel reflectance): the edge is where it crosses half of that
-    let er = edgeCrossing(p, 0usize, 0.48d);
-    let eg = edgeCrossing(p, 1usize, 0.48d);
-    let eb = edgeCrossing(p, 2usize, 0.48d);
-    let wantR = columnOf(edgeThroughPane(0.3d, 1.25d, 0.5d));
-    let wantG = columnOf(edgeThroughPane(0.3d, 1.5d, 0.5d));
-    let wantB = columnOf(edgeThroughPane(0.3d, 1.75d, 0.5d));
+    let er = edgeCrossing(p, 0usize, 0.48);
+    let eg = edgeCrossing(p, 1usize, 0.48);
+    let eb = edgeCrossing(p, 2usize, 0.48);
+    let wantR = columnOf(edgeThroughPane(0.3, 1.25, 0.5));
+    let wantG = columnOf(edgeThroughPane(0.3, 1.5, 0.5));
+    let wantB = columnOf(edgeThroughPane(0.3, 1.75, 0.5));
     // (the picture behind is a grid of pixels, so an edge in it is known to within half a pixel: the
     // positions are checked to a column, the spacings, which that does not touch, to 0.3)
-    expect(er >= wantR - 1d and er <= wantR + 1d, "dispersion: the red edge is where index 1.25 puts it");
-    expect(eg >= wantG - 1d and eg <= wantG + 1d, "the green edge, index 1.5");
-    expect(eb >= wantB - 1d and eb <= wantB + 1d, "the blue edge, index 1.75");
+    expect(er >= wantR - 1.0 and er <= wantR + 1.0, "dispersion: the red edge is where index 1.25 puts it");
+    expect(eg >= wantG - 1.0 and eg <= wantG + 1.0, "the green edge, index 1.5");
+    expect(eb >= wantB - 1.0 and eb <= wantB + 1.0, "the blue edge, index 1.75");
     expect(er < eg and eg < eb, "in the order of the indices: three edges, not one");
-    expect(within(eg - er, wantG - wantR, 0d, 0.3d) and within(eb - eg, wantB - wantG, 0d, 0.3d),
+    expect(within(eg - er, wantG - wantR, 0.0, 0.3) and within(eb - eg, wantB - wantG, 0.0, 0.3),
       "and as far apart as the indices put them");
-    if !(er < eg and eg < eb and within(eg - er, wantG - wantR, 0d, 0.3d) and within(eb - eg, wantB - wantG, 0d, 0.3d)) {
+    if !(er < eg and eg < eb and within(eg - er, wantG - wantR, 0.0, 0.3) and within(eb - eg, wantB - wantG, 0.0, 0.3)) {
       eprint <- "  edge columns "; eprint <- er; eprint <- ", "; eprint <- eg; eprint <- ", "; eprint <- eb; eprint <- "; wanted "; eprint <- wantR; eprint <- ", "; eprint <- wantG; eprint <- ", "; eprint <- wantB; eprint <- "\n";
     }
   }
@@ -301,7 +301,7 @@ fn main() i32 {
       var x = 50u32;
       while x < 76u32 {
         let v = radiance(p, x, 48u32, 1usize);
-        if v > 0.1d and v < 0.86d { n = n + 1i64; }
+        if v > 0.1 and v < 0.86 { n = n + 1i64; }
         x = x + 1u32;
       }
       widths[k] = n;
@@ -330,7 +330,7 @@ fn main() i32 {
     device.waitIdle();
     expectUInt(u64.from(renderer.ext[0usize].captures), u64.from(before), "a target that cannot be sampled makes no capture");
     let seen = radiance(p, 48u32, 48u32, 1usize);
-    expect(seen < 0.2d, "and the glass shows the environment alone, black, not the white behind");
+    expect(seen < 0.2, "and the glass shows the environment alone, black, not the white behind");
     // No glass, no reflecting mesh: no capture
     scene.clear();
     scene.add(plane, whiteM, Mat4.fromTrs(new Vec3(0., 0., -1.), face, new Vec3(3., 1., 3.)));

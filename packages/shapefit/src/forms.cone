@@ -39,11 +39,11 @@ pub struct Form {
   pub iterations u32;     // refinement steps taken
 
   pub fn make(kind u32, params List[f64]) Form {
-    new Form(kind, params, true, 0usize, 0.d, 0.d, 0u32)
+    new Form(kind, params, true, 0usize, 0.0, 0.0, 0u32)
   }
 
   pub fn failed(kind u32) Form {
-    new Form(kind, List[f64].empty(), false, 0usize, 0.d, 0.d, 0u32)
+    new Form(kind, List[f64].empty(), false, 0usize, 0.0, 0.0, 0u32)
   }
 
   pub fn name(self &) &str {
@@ -66,10 +66,10 @@ fn pv(p &List[f64], k usize) DVec3 { new DVec3(*p[k], *p[k + 1usize], *p[k + 2us
 // w's direction by its length (Rodrigues)
 fn rotationOf(w DVec3) List[f64] {
   let th = w.length();
-  let k = if th > 1.0e-12d { w * (1.d / th) } else { new DVec3(0.d, 0.d, 1.d) };
-  let s = if th > 1.0e-12d { libc.sin(th) } else { 0.d };
-  let c = if th > 1.0e-12d { libc.cos(th) } else { 1.d };
-  let t = 1.d - c;
+  let k = if th > 1.0e-12 { w * (1.0 / th) } else { new DVec3(0.0, 0.0, 1.0) };
+  let s = if th > 1.0e-12 { libc.sin(th) } else { 0.0 };
+  let c = if th > 1.0e-12 { libc.cos(th) } else { 1.0 };
+  let t = 1.0 - c;
   var r = List[f64].withCapacity(9usize);
   r.push(c + k.x * k.x * t);        r.push(k.x * k.y * t - k.z * s);  r.push(k.x * k.z * t + k.y * s);
   r.push(k.y * k.x * t + k.z * s);  r.push(c + k.y * k.y * t);        r.push(k.y * k.z * t - k.x * s);
@@ -80,22 +80,22 @@ fn rotationOf(w DVec3) List[f64] {
 // The rotation vector of a rotation matrix (row-major), the inverse of rotationOf
 fn rotationVectorOf(r &List[f64]) DVec3 {
   let tr = *r[0] + *r[4] + *r[8];
-  var cs = (tr - 1.d) * 0.5d;
-  if cs > 1.d { cs = 1.d; }
-  if cs < -1.d { cs = -1.d; }
+  var cs = (tr - 1.0) * 0.5;
+  if cs > 1.0 { cs = 1.0; }
+  if cs < -1.0 { cs = -1.0; }
   let th = libc.acos(cs);
   let ax = new DVec3(*r[7] - *r[5], *r[2] - *r[6], *r[3] - *r[1]);
-  if th < 1.0e-9d { return ax * 0.5d; }
-  if th > 3.14159d {
+  if th < 1.0e-9 { return ax * 0.5; }
+  if th > 3.14159 {
     // A half turn: the axis from the diagonal, signs from the off-diagonals
-    let kx = sqrtd((*r[0] + 1.d) * 0.5d);
-    let ky = sqrtd((*r[4] + 1.d) * 0.5d);
-    let kz = sqrtd((*r[8] + 1.d) * 0.5d);
-    var v = new DVec3(kx, if *r[1] + *r[3] < 0.d { -ky } else { ky }, if *r[2] + *r[6] < 0.d { -kz } else { kz });
-    if kx < 1.0e-6d { v = new DVec3(0.d, ky, if *r[5] + *r[7] < 0.d { -kz } else { kz }); }
+    let kx = sqrtd((*r[0] + 1.0) * 0.5);
+    let ky = sqrtd((*r[4] + 1.0) * 0.5);
+    let kz = sqrtd((*r[8] + 1.0) * 0.5);
+    var v = new DVec3(kx, if *r[1] + *r[3] < 0.0 { -ky } else { ky }, if *r[2] + *r[6] < 0.0 { -kz } else { kz });
+    if kx < 1.0e-6 { v = new DVec3(0.0, ky, if *r[5] + *r[7] < 0.0 { -kz } else { kz }); }
     return v * th;
   }
-  ax * (th / (2.d * libc.sin(th)))
+  ax * (th / (2.0 * libc.sin(th)))
 }
 
 // The distance from q, in the frame of an ellipsoid with semi-axes (a, b, c)
@@ -103,9 +103,9 @@ fn rotationVectorOf(r &List[f64]) DVec3 {
 // q_i r_i^2 / (r_i^2 + t) where t is the root of sum (r_i q_i / (r_i^2 + t))^2 = 1
 // (Eberly), found by Newton's method kept inside a bracket.
 fn ellipsoidDistance(q DVec3, a f64, b f64, c f64) f64 {
-  let f0 = sqd(q.x / a) + sqd(q.y / b) + sqd(q.z / c) - 1.d;
+  let f0 = sqd(q.x / a) + sqd(q.y / b) + sqd(q.z / c) - 1.0;
   let rmin = mind(a, mind(b, c));
-  if q.lengthSquared() < 1.0e-24d { return -rmin; }
+  if q.lengthSquared() < 1.0e-24 { return -rmin; }
   let a2 = a * a;
   let b2 = b * b;
   let c2 = c * c;
@@ -115,8 +115,8 @@ fn ellipsoidDistance(q DVec3, a f64, b f64, c f64) f64 {
   let ez = c * q.z;
   var lo = -m2;
   var hi = sqrtd(ex * ex + ey * ey + ez * ez) - m2;
-  if hi <= lo { hi = lo + 1.d; }
-  var t = 0.5d * (lo + hi);
+  if hi <= lo { hi = lo + 1.0; }
+  var t = 0.5 * (lo + hi);
   var iter = 0;
   while iter < 80 {
     let da = a2 + t;
@@ -125,57 +125,57 @@ fn ellipsoidDistance(q DVec3, a f64, b f64, c f64) f64 {
     let fa = ex / da;
     let fb = ey / db;
     let fc = ez / dc;
-    let g = fa * fa + fb * fb + fc * fc - 1.d;
-    if g > 0.d { lo = t; } else { hi = t; }
-    let dg = -2.d * (fa * fa / da + fb * fb / db + fc * fc / dc);
-    var nt = if dg < 0.d { t - g / dg } else { 0.5d * (lo + hi) };
-    if nt <= lo or nt >= hi { nt = 0.5d * (lo + hi); }
-    if absd(nt - t) < 1.0e-14d * (1.d + absd(t)) { t = nt; iter = 1000; } else { t = nt; iter += 1; }
+    let g = fa * fa + fb * fb + fc * fc - 1.0;
+    if g > 0.0 { lo = t; } else { hi = t; }
+    let dg = -2.0 * (fa * fa / da + fb * fb / db + fc * fc / dc);
+    var nt = if dg < 0.0 { t - g / dg } else { 0.5 * (lo + hi) };
+    if nt <= lo or nt >= hi { nt = 0.5 * (lo + hi); }
+    if absd(nt - t) < 1.0e-14 * (1.0 + absd(t)) { t = nt; iter = 1000; } else { t = nt; iter += 1; }
   }
   let px = a2 * q.x / (a2 + t);
   let py = b2 * q.y / (b2 + t);
   let pz = c2 * q.z / (c2 + t);
   let d = sqrtd(sqd(q.x - px) + sqd(q.y - py) + sqd(q.z - pz));
-  if f0 < 0.d { -d } else { d }
+  if f0 < 0.0 { -d } else { d }
 }
 
 // The value of a quadric (ten coefficients) at x, and its gradient
 fn quadricValue(p &List[f64], x DVec3, grad &mut DVec3) f64 {
   let v = *p[0] * x.x * x.x + *p[1] * x.y * x.y + *p[2] * x.z * x.z + *p[3] * x.x * x.y + *p[4] * x.x * x.z
     + *p[5] * x.y * x.z + *p[6] * x.x + *p[7] * x.y + *p[8] * x.z + *p[9];
-  *grad = new DVec3(2.d * *p[0] * x.x + *p[3] * x.y + *p[4] * x.z + *p[6],
-    2.d * *p[1] * x.y + *p[3] * x.x + *p[5] * x.z + *p[7],
-    2.d * *p[2] * x.z + *p[4] * x.x + *p[5] * x.y + *p[8]);
+  *grad = new DVec3(2.0 * *p[0] * x.x + *p[3] * x.y + *p[4] * x.z + *p[6],
+    2.0 * *p[1] * x.y + *p[3] * x.x + *p[5] * x.z + *p[7],
+    2.0 * *p[2] * x.z + *p[4] * x.x + *p[5] * x.y + *p[8]);
   v
 }
 
 // The distance from x to a quadric's surface by repeated first-order steps
 // (x moved by -f grad / |grad|^2 until it lies on the surface); signed by f at x
 fn quadricDistance(p &List[f64], x DVec3) f64 {
-  var g = new DVec3(0.d, 0.d, 0.d);
+  var g = new DVec3(0.0, 0.0, 0.0);
   let f0 = quadricValue(p, x, &mut g);
   var q = x;
   var it = 0;
   while it < 8 {
     let f = quadricValue(p, q, &mut g);
     let gg = g.lengthSquared();
-    if gg < 1.0e-30d { it = 100; } else {
+    if gg < 1.0e-30 { it = 100; } else {
       q = q - g * (f / gg);
       it += 1;
     }
   }
   let d = (x - q).length();
-  if f0 < 0.d { -d } else { d }
+  if f0 < 0.0 { -d } else { d }
 }
 
 // The distance from x to the segment a b
 fn segmentDistance(x DVec3, a DVec3, b DVec3) f64 {
   let ab = b - a;
   let len2 = ab.lengthSquared();
-  var t = 0.d;
-  if len2 > 1.0e-30d { t = (x - a).dot(ab) / len2; }
-  if t < 0.d { t = 0.d; }
-  if t > 1.d { t = 1.d; }
+  var t = 0.0;
+  if len2 > 1.0e-30 { t = (x - a).dot(ab) / len2; }
+  if t < 0.0 { t = 0.0; }
+  if t > 1.0 { t = 1.0; }
   (x - (a + ab * t)).length()
 }
 
@@ -191,7 +191,7 @@ fn distanceTo(kind u32, p &List[f64], x DVec3) f64 {
     let v = x - pv(p, 0usize);
     let q = new DVec3(*r[0] * v.x + *r[3] * v.y + *r[6] * v.z, *r[1] * v.x + *r[4] * v.y + *r[7] * v.z,
       *r[2] * v.x + *r[5] * v.y + *r[8] * v.z);
-    ellipsoidDistance(q, absd(*p[3]) + 1.0e-12d, absd(*p[4]) + 1.0e-12d, absd(*p[5]) + 1.0e-12d)
+    ellipsoidDistance(q, absd(*p[3]) + 1.0e-12, absd(*p[4]) + 1.0e-12, absd(*p[5]) + 1.0e-12)
   } elif kind == FormQuadric {
     quadricDistance(p, x)
   } elif kind == FormCylinder {
@@ -220,16 +220,16 @@ pub fn ellipsoidAxis(f &Form, k usize) Vec3 {
 pub fn formCenter(f &Form) Vec3 {
   if f.kind == FormCylinder {
     let d = unitd(pv(&f.params, 3usize));
-    let c = pv(&f.params, 0usize) + d * (0.5d * (*f.params[7] + *f.params[8]));
+    let c = pv(&f.params, 0usize) + d * (0.5 * (*f.params[7] + *f.params[8]));
     c.toVec3()
   } elif f.kind == FormCapsule {
-    ((pv(&f.params, 0usize) + pv(&f.params, 3usize)) * 0.5d).toVec3()
+    ((pv(&f.params, 0usize) + pv(&f.params, 3usize)) * 0.5).toVec3()
   } elif f.kind == FormQuadric {
     // The centre of the quadric: solve 2 A c = -b
     var a = zeros(9usize);
-    a.set(0usize, 2.d * *f.params[0]); a.set(1usize, *f.params[3]); a.set(2usize, *f.params[4]);
-    a.set(3usize, *f.params[3]); a.set(4usize, 2.d * *f.params[1]); a.set(5usize, *f.params[5]);
-    a.set(6usize, *f.params[4]); a.set(7usize, *f.params[5]); a.set(8usize, 2.d * *f.params[2]);
+    a.set(0usize, 2.0 * *f.params[0]); a.set(1usize, *f.params[3]); a.set(2usize, *f.params[4]);
+    a.set(3usize, *f.params[3]); a.set(4usize, 2.0 * *f.params[1]); a.set(5usize, *f.params[5]);
+    a.set(6usize, *f.params[4]); a.set(7usize, *f.params[5]); a.set(8usize, 2.0 * *f.params[2]);
     var b = List[f64].empty();
     b.push(-*f.params[6]); b.push(-*f.params[7]); b.push(-*f.params[8]);
     if solveLinear(&mut a, &mut b, 3usize) { new Vec3(f32.from(*b[0]), f32.from(*b[1]), f32.from(*b[2])) }

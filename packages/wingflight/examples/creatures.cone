@@ -66,7 +66,7 @@ struct BodyField {
   k f32;
 
   pub fn distance(self &, p Vec3) f32 {
-    var d = 3.0e38;
+    var d = 3.0e38f;
     var i = 0usize;
     while i < a.len() {
       let c = taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]);
@@ -144,7 +144,7 @@ struct Subject {
   weightMs f64;
 }
 
-fn msSince(t Instant) f64 { f64.from(t.elapsed().nanos()) / 1.0e6d }
+fn msSince(t Instant) f64 { f64.from(t.elapsed().nanos()) / 1.0e6 }
 
 fn buildSubject(device &mut Device, renderer &mut Renderer, spec RigSpec, feathered bool, bodyColor Color) Subject {
   var built = buildRig(&spec);
@@ -295,7 +295,7 @@ fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, 
   device.endFrame();
   device.waitIdle();
   let ticks = st.tick.mappedRange() as *u64;
-  let ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+  let ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6;
   if name.len() > 0usize {
     let image = Image.fromTexels(st.shot.mappedRange(), i32.from(W), i32.from(H), false);
     if !image.save(&filepath.Path.from(name)) { print <- "COULD NOT WRITE "; printStr(name); print <- "\n"; }
@@ -346,15 +346,15 @@ fn quadSpeed(t f32) f32 {
 fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str) bool {
   var ok = true;
   var loco = Locomotion.make(&subject.rig);
-  let dt = 1. / 60.;
+  let dt = 1.f / 60.;
   let frames = 47 * 60;
   // The path: heading follows a gentle S
   var x f32 = 0.;
   var z f32 = 0.;
-  let winStart = [5.0, 13.0, 21.0, 30.0];
+  let winStart = [5.0f, 13.0, 21.0, 30.0];
   let winLabel = ["quad-walk", "quad-trot", "quad-canter", "quad-gallop"];
   var winArmed = [false, false, false, false];
-  var winCycle0 = [0., 0., 0., 0.];
+  var winCycle0 = [0.f, 0., 0., 0.];
   var winTaken = [0u32, 0u32, 0u32, 0u32];
   var lastGait = String.from(loco.gaitName());
   var worstPlant f32 = 0.;
@@ -420,7 +420,7 @@ fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str
     f = f + 1;
   }
   print <- "quadruped: "; print <- i64.from(shots); print <- " pictures; worst planted-foot drift "; print <- worstPlant * 1000.; print <- " mm; feet down while moving "; print <- i64.from(minDownMoving);
-  print <- " to "; print <- i64.from(maxDown); print <- "; CPU "; print <- f64.from(cpuNs) / f64.from(updates) / 1.0e6d; print <- " ms a step (locomotion update)\n";
+  print <- " to "; print <- i64.from(maxDown); print <- "; CPU "; print <- f64.from(cpuNs) / f64.from(updates) / 1.0e6; print <- " ms a step (locomotion update)\n";
   if worstPlant > 0.005 { print <- "FAIL: a foot slid while it was down\n"; ok = false; }
 
   // The cost: 120 frames of a gallop pose
@@ -434,7 +434,7 @@ fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str
     gl.update(&subject.rig, dt, gx, gz, 0., &bumpy);
     k = k + 1;
   }
-  var gpu f64 = 0d;
+  var gpu f64 = 0.0;
   var cpuDraw i64 = 0i64;
   k = 0;
   while k < 130 {
@@ -450,7 +450,7 @@ fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str
     if k >= 10 { gpu = gpu + ms; }
     k = k + 1;
   }
-  print <- "quadruped frame: GPU "; print <- gpu / 120d; print <- " ms (shadows, skinned body "; print <- u64.from(subject.triangles); print <- " triangles, post); building the draw list "; print <- f64.from(cpuDraw) / 130d / 1.0e6d; print <- " ms\n";
+  print <- "quadruped frame: GPU "; print <- gpu / 120.0; print <- " ms (shadows, skinned body "; print <- u64.from(subject.triangles); print <- " triangles, post); building the draw list "; print <- f64.from(cpuDraw) / 130.0 / 1.0e6; print <- " ms\n";
   ok
 }
 
@@ -471,7 +471,7 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
   let tuck = TuckPose.legs();
   print <- "flier: span "; print <- flier.params.span; print <- " m, area "; print <- flier.params.area; print <- " m2, aspect "; print <- flier.params.aspectRatio();
   print <- ", stall speed "; print <- flier.stallSpeed(); print <- " m/s\n";
-  let dt = 1. / 60.;
+  let dt = 1.f / 60.;
   var goal = Goal.make(new Vec3(0., 0., 0.), 11.5, false);
   goal.target = new Vec3(0., 0., -400.);
   var t f32 = 0.;
@@ -571,7 +571,7 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
   let miss = new Vec2(touchdownAt.x - goal.target.x, touchdownAt.z - goal.target.z).length();
   print <- "flier: "; print <- i64.from(shots); print <- " pictures; peak height "; print <- maxAlt; print <- " m; peak bank "; print <- degrees(maxBank); print <- " degrees; total turn ";
   print <- degrees(absf(yawTotal)); print <- " degrees; landed "; print <- i64.from(landed); print <- " "; print <- miss; print <- " m from the goal after "; print <- t; print <- " s; running feet drift ";
-  print <- worstPlant * 1000.; print <- " mm; CPU "; print <- f64.from(cpuNs) / f64.from(steps) / 1.0e6d; print <- " ms a step (flight, legs, pose)\n";
+  print <- worstPlant * 1000.; print <- " mm; CPU "; print <- f64.from(cpuNs) / f64.from(steps) / 1.0e6; print <- " ms a step (flight, legs, pose)\n";
   if maxAlt < 12.0 { print <- "FAIL: it did not reach 12 m\n"; ok = false; }
   if maxBank < 0.4363 { print <- "FAIL: it did not bank over 25 degrees\n"; ok = false; }
   if degrees(absf(yawTotal)) < 60. { print <- "FAIL: it did not turn\n"; ok = false; }
@@ -587,7 +587,7 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
   cf.tuck = 1.;
   var cg = Goal.make(new Vec3(0., 12., -400.), 11., true);
   cg.maxBank = 0.7;
-  var gpu f64 = 0d;
+  var gpu f64 = 0.0;
   var k = 0;
   while k < 130 {
     cf.update(dt, &cg, &flatGround);
@@ -603,7 +603,7 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
     if k >= 10 { gpu = gpu + ms; }
     k = k + 1;
   }
-  print <- "flier frame: GPU "; print <- gpu / 120d; print <- " ms (shadows, skinned body "; print <- u64.from(subject.triangles); print <- " triangles and feathers, post)\n";
+  print <- "flier frame: GPU "; print <- gpu / 120.0; print <- " ms (shadows, skinned body "; print <- u64.from(subject.triangles); print <- " triangles and feathers, post)\n";
   ok
 }
 
@@ -615,9 +615,9 @@ fn wingStudy(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, 
   let rig = &subject.rig;
   let params = estimateWing(rig, wings, 1.0);
   let names = ["wing-folded", "wing-spread", "wing-top", "wing-bottom", "wing-upstroke"];
-  let folds = [1., 0., 0., 0., 0.];
-  let amps = [0., 0., 1., 1., 1.];
-  let phases = [0., 0., 0., 0.5, 0.80];
+  let folds = [1.f, 0., 0., 0., 0.];
+  let amps = [0.f, 0., 1., 1., 1.];
+  let phases = [0.f, 0., 0., 0.5, 0.80];
   var i = 0usize;
   while i < 5usize {
     var m = WingMotion.still();

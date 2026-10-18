@@ -57,7 +57,7 @@ fn flatWorld() World {
 }
 
 fn dry(world &mut World, car &mut Vehicle, seconds f32) {
-  let dt = 1. / 120.;
+  let dt = 1.f / 120.;
   var n = i32.from(seconds / dt);
   while n > 0 {
     car.apply(world, (x, z) => 1., dt);
@@ -76,34 +76,34 @@ fn rollDeg(w &World, id u32) f32 {
 }
 
 fn totalLoad(car &Vehicle) f32 {
-  var s = 0.;
+  var s = 0.f;
   var i = 0usize;
   while i < car.wheels.len() { s = s + car.wheels[i].load; i = i + 1usize; }
   s
 }
 
 fn main() i32 {
-  let g = 9.81;
+  let g = 9.81f;
   // 1. at rest
   var w1 = flatWorld();
   var car = Vehicle.create(&mut w1, sedanSpec(), new Vec3(0., 0.56, 0.), Quat.identity());
   dry(&mut w1, &mut car, 4.);
-  var worstLoad = 0.;
+  var worstLoad = 0.f;
   var i = 0usize;
   while i < 4usize {
     let e = libc.fabsf(car.wheels[i].load - 1300. * g / 4.) / (1300. * g / 4.);
     if e > worstLoad { worstLoad = e; }
     i = i + 1usize;
   }
-  expectFloat(f64.from(worstLoad), 0d, 0.03, "at rest each wheel carries a quarter of the weight");
-  expectFloat(f64.from(w1.centerOfMass(car.body).y), 0.53d, 0.02, "at the ride height");
+  expectFloat(f64.from(worstLoad), 0.0, 0.03, "at rest each wheel carries a quarter of the weight");
+  expectFloat(f64.from(w1.centerOfMass(car.body).y), 0.53, 0.02, "at the ride height");
   expect(libc.fabsf(pitchDeg(&w1, car.body)) < 0.3 and libc.fabsf(rollDeg(&w1, car.body)) < 0.3, "level");
-  expectFloat(f64.from(w1.linearVelocity(car.body).length()), 0d, 0.02, "and still");
+  expectFloat(f64.from(w1.linearVelocity(car.body).length()), 0.0, 0.02, "and still");
 
   // 2. heave
   var w2 = flatWorld();
   var c2 = Vehicle.create(&mut w2, sedanSpec(), new Vec3(0., 0.59, 0.), Quat.identity());
-  let dt = 1. / 120.;
+  let dt = 1.f / 120.;
   var prevVy = 0.;
   var tMin = -1.;      // the first minimum of the height, half a damped period after the release
   var t = 0.;
@@ -116,7 +116,7 @@ fn main() i32 {
     prevVy = vy;
   }
   expect(tMin > 0., "the car bounces: its height has a minimum");
-  expectFloat(f64.from(tMin * 2.), 0.73d, 0.09d, "the damped heave period is twice the time to the first minimum");
+  expectFloat(f64.from(tMin * 2.), 0.73, 0.09, "the damped heave period is twice the time to the first minimum");
 
   // 3. acceleration
   var w3 = flatWorld();
@@ -125,8 +125,8 @@ fn main() i32 {
   c3.drive(1., 0., 0.);
   var t100 = -1.;
   var maxGear = 0;
-  var maxRpm = 0.;
-  var topSpeed = 0.;
+  var maxRpm = 0.f;
+  var topSpeed = 0.f;
   t = 0.;
   while t < 60. {
     c3.apply(&mut w3, (x, z) => 1., dt);
@@ -143,7 +143,7 @@ fn main() i32 {
   expect(topSpeed > 180. and topSpeed < 260., "top speed 180 to 260 km/h");
   expect(maxRpm < 6800., "never over the limiter");
   let rolling = (c3.wheels[2].omega + c3.wheels[3].omega) * 0.5 * 0.33;
-  expectFloat(f64.from(rolling), f64.from(c3.speed), 0.06d * f64.from(c3.speed), "rolling speed of the driven wheels against the road speed");
+  expectFloat(f64.from(rolling), f64.from(c3.speed), 0.06 * f64.from(c3.speed), "rolling speed of the driven wheels against the road speed");
 
   // 4. reverse
   var w4 = flatWorld();
@@ -193,10 +193,10 @@ fn main() i32 {
     if t > 4. { yaw = w6.angularVelocity(c6.body).y; }
   }
   // right turn: negative rotation about +y; delta from the lock at 6 m/s
-  let lock6 = 0.5 * (1. - 6. / 40.) + 0.07 * 6. / 40.;
+  let lock6 = 0.5f * (1. - 6. / 40.) + 0.07 * 6. / 40.;
   let delta = 0.2 * lock6;
   let expectedYaw = 6. * libc.tanf(delta) / 2.6;
-  expectFloat(f64.from(-yaw), f64.from(expectedYaw), 0.08d * f64.from(expectedYaw), "the yaw rate at 6 m/s is v tan(delta) / L");
+  expectFloat(f64.from(-yaw), f64.from(expectedYaw), 0.08 * f64.from(expectedYaw), "the yaw rate at 6 m/s is v tan(delta) / L");
 
   // 7. the grip limit
   var w7 = flatWorld();
@@ -246,7 +246,7 @@ fn main() i32 {
   var airEnd = -1.;
   var vyStart = 0.;
   var vyEnd = 0.;
-  var maxCompress = 0.;
+  var maxCompress = 0.f;
   while t < 6. {
     c9.drive(vclampT(0.1 + (20. - w9.linearVelocity(c9.body).x) * 0.3, 0., 1.), 0., 0.);
     c9.apply(&mut w9, (x, z) => 1., dt);
@@ -266,7 +266,7 @@ fn main() i32 {
   if airEnd > airStart + 0.2 {
     // the car is in the air: the centre of mass falls with g (minus the small air drag)
     let accel = (vyEnd - vyStart) / (airEnd - airStart);
-    expectFloat(f64.from(-accel), 9.81d, 0.03d * 9.81d, "in the air the centre of mass falls at g");
+    expectFloat(f64.from(-accel), 9.81, 0.03 * 9.81, "in the air the centre of mass falls at g");
   }
   let up9 = w9.rotationOf(c9.body) * new Vec3(0., 1., 0.);
   expect(up9.y > 0.95, "lands upright");
@@ -277,12 +277,12 @@ fn main() i32 {
   var w10 = flatWorld();
   var bug = Vehicle.create(&mut w10, buggySpec(), new Vec3(0., 0.78, 0.), Quat.identity());
   dry(&mut w10, &mut bug, 4.);
-  expectFloat(f64.from(totalLoad(&bug)), f64.from(900. * g), 0.03d * 900d * 9.81d, "the buggy's wheels carry its weight");
+  expectFloat(f64.from(totalLoad(&bug)), f64.from(900. * g), 0.03 * 900.0 * 9.81, "the buggy's wheels carry its weight");
   expect(libc.fabsf(pitchDeg(&w10, bug.body)) < 1.5 and libc.fabsf(rollDeg(&w10, bug.body)) < 1.5, "and it sits level");
   var w11 = flatWorld();
   var tk = Vehicle.create(&mut w11, truckSpec(), new Vec3(0., 0.98, 0.), Quat.identity());
   dry(&mut w11, &mut tk, 5.);
-  expectFloat(f64.from(totalLoad(&tk)), f64.from(5000. * g), 0.03d * 5000d * 9.81d, "the truck's six wheels carry its weight");
+  expectFloat(f64.from(totalLoad(&tk)), f64.from(5000. * g), 0.03 * 5000.0 * 9.81, "the truck's six wheels carry its weight");
   expect(libc.fabsf(pitchDeg(&w11, tk.body)) < 1.5 and libc.fabsf(rollDeg(&w11, tk.body)) < 1.5, "and it sits level");
   // 11. the buggy drives on all four wheels: 8 s of full throttle, then every wheel's rolling speed is within 8
   //     percent of the road speed (four driven wheels: front axle 45 percent, rear 55) and it is over 60 km/h
@@ -293,7 +293,7 @@ fn main() i32 {
   dry(&mut w12, &mut bg, 8.);
   bg.speed = w12.linearVelocity(bg.body).dot(w12.rotationOf(bg.body) * new Vec3(1., 0., 0.));
   expect(bg.kmh() > 60., "the buggy is over 60 km/h after 8 s");
-  var worstRoll = 0.;
+  var worstRoll = 0.f;
   i = 0usize;
   while i < 4usize {
     let rs = bg.wheels[i].omega * 0.4;
@@ -320,9 +320,9 @@ fn main() i32 {
     t = t + dt;
     if t > 5. { yawT = w13.angularVelocity(tk2.body).y; }
   }
-  let lockT = 0.35 * (1. - 5. / 20.) + 0.1 * 5. / 20.;
+  let lockT = 0.35f * (1. - 5. / 20.) + 0.1 * 5. / 20.;
   let expectedYawT = 5. * libc.tanf(0.2 * lockT) / 3.9;
-  expectFloat(f64.from(-yawT), f64.from(expectedYawT), 0.12d * f64.from(expectedYawT), "the truck's yaw rate is v tan(delta) / L about its tandem axle's middle");
+  expectFloat(f64.from(-yawT), f64.from(expectedYawT), 0.12 * f64.from(expectedYawT), "the truck's yaw rate is v tan(delta) / L about its tandem axle's middle");
 
   // 13. a manual gearbox stays in the gear it is put in: first gear, full throttle for 12 s: still first, never over the
   //     limiter, and it cannot pass the road speed first gear allows (6800 rpm: 19.2 m/s)
@@ -332,7 +332,7 @@ fn main() i32 {
   c14.shiftTo(1);
   c14.drive(1., 0., 0.);
   t = 0.;
-  var maxRpm14 = 0.;
+  var maxRpm14 = 0.f;
   var gearChanged = false;
   while t < 12. {
     c14.apply(&mut w14, (x, z) => 1., dt);
@@ -355,7 +355,7 @@ fn main() i32 {
   c15.drive(0.3, 0., 0.);
   dry(&mut w15, &mut c15, 0.8);
   let rpm3 = 20. / 0.33 * 1.45 * 3.6 * 9.5492966;
-  expectFloat(f64.from(c15.rpm), f64.from(rpm3), 0.08d * f64.from(rpm3), "third gear at 20 m/s: the engine turns at the wheels' speed times the ratio");
+  expectFloat(f64.from(c15.rpm), f64.from(rpm3), 0.08 * f64.from(rpm3), "third gear at 20 m/s: the engine turns at the wheels' speed times the ratio");
 
   // 14. the handbrake: at 15 m/s with it on and no throttle, the rear wheels lock (spin under 2 rad/s within 1.5 s),
   //     the front ones keep turning (over 70 percent of the road's), and the car slows at over 0.25 g
@@ -381,9 +381,9 @@ fn splitSpin(spec VehicleSpec) f32 {
   var car = Vehicle.create(&mut w, spec, new Vec3(0., 0.56, 0.), Quat.identity());
   dry(&mut w, &mut car, 1.);
   car.drive(1., 0., 0.);
-  let dt = 1. / 120.;
+  let dt = 1.f / 120.;
   var t = 0.;
-  var worst = 0.;
+  var worst = 0.f;
   while t < 1.5 {
     let zc = w.positionOf(car.body).z;
     car.apply(&mut w, (x, z) => if z < zc { 0.1 } else { 1. }, dt);

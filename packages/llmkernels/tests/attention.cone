@@ -32,8 +32,8 @@ import gpuwork use *;
 import llmreference use *;
 import llmkernels use *;
 
-const U = 5.9604644775390625e-8d;           // 2^-24
-const GARBAGE = 123456.0;
+const U = 5.9604644775390625e-8;           // 2^-24
+const GARBAGE = 123456.0f;
 
 fn preference() u32 {
   let env = libc.getenv("GPU_POWER_PREFERENCE");
@@ -49,8 +49,8 @@ fn zerosF(n usize) List[f32] {
 }
 
 fn attentionUnits(headDim usize, seqLen usize, a f64) f64 {
-  2.0d * f64.from(headDim + 4usize) * a + 2.0d * (3.0d + 4.0d * a) + f64.from(seqLen + 4usize)
-    + f64.from((seqLen + 127usize) / 128usize) + 20.0d
+  2.0 * f64.from(headDim + 4usize) * a + 2.0 * (3.0 + 4.0 * a) + f64.from(seqLen + 4usize)
+    + f64.from((seqLen + 127usize) / 128usize) + 20.0
 }
 
 struct Stats {
@@ -79,10 +79,10 @@ fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &
     while h < nHeads {
       let kvh = h / (nHeads / nKvHeads);
       let qBase = (t * nHeads + h) * headDim;
-      var a = 0.0d;
+      var a = 0.0;
       var j = 0usize;
       while j < seqLen {
-        var s = 0.0d;
+        var s = 0.0;
         var d = 0usize;
         while d < headDim {
           s = s + libc.fabs(f64.from(q[qBase + d]) * f64.from(k[j * kvDim + kvh * headDim + d]));
@@ -95,7 +95,7 @@ fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &
       let units = attentionUnits(headDim, seqLen, a);
       var d = 0usize;
       while d < headDim {
-        var vmax = 0.0d;
+        var vmax = 0.0;
         j = 0usize;
         while j < seqLen {
           let av = libc.fabs(f64.from(v[j * kvDim + kvh * headDim + d]));
@@ -104,7 +104,7 @@ fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &
         }
         let err = libc.fabs(f64.from(*got[qBase + d]) - f64.from(*want[qBase + d]));
         if !(err <= units * U * vmax) { bad = bad + 1u64; }
-        if vmax > 0.0d {
+        if vmax > 0.0 {
           let seen = err / (U * vmax);
           if seen > stats.worst { stats.worst = seen; }
           if seen / units > stats.worstRatio { stats.worstRatio = seen / units; }
@@ -191,7 +191,7 @@ fn main() i32 {
   let kernels = Kernels.make(&device);
   require(kernels.isValid(), "the kernels");
   var works = Works.make();
-  var stats = new Stats(0.0d, 0.0d);
+  var stats = new Stats(0.0, 0.0);
   var rng = Rng.fromSeed(99u64);
 
   // tokens, heads, kv heads, head dim, pos0, maxSeq

@@ -119,7 +119,7 @@ fn waterMesh(l &Landscape) Mesh {
       let i0 = iz * w + ix;
       let ids = [i0, i0 + 1usize, i0 + w, i0 + w + 1usize];
       var wet = 0;
-      var sum = 0.;
+      var sum = 0.f;
       var k = 0usize;
       while k < 4usize {
         if *l.water.waterDepth[ids[k]] > 0.02 {
@@ -181,8 +181,8 @@ fn mapImage(l &Landscape, biomes &List[Biome]) Image {
 
 // How rough the surface is at the grid's own scale: the mean of |h(x-1) + h(x+1) + h(z-1) + h(z+1) - 4 h|
 fn roughness(hf &Heightfield) f32 {
-  var s = 0.;
-  var n = 0.;
+  var s = 0.f;
+  var n = 0.f;
   var iz = 1usize;
   while iz + 1usize < hf.h {
     var ix = 1usize;
@@ -283,15 +283,15 @@ fn main(argc i32, argv **u8) i32 {
     let t1 = time.Instant.now();
     let gpuField = generateGpu(&mut device, &spec);
     let gpuGen = t1.elapsed().secondsF64();
-    var maxGen = 0.;
+    var maxGen = 0.f;
     var i = 0usize;
     while i < cpuField.data.len() {
       let d = libc.fabsf(*cpuField.data[i] - *gpuField.data[i]);
       if d > maxGen { maxGen = d; }
       i = i + 1usize;
     }
-    print <- "heights: CPU "; print <- cpuGen * 1000d; print <- " ms, GPU (kernel, with upload and readback) ";
-    print <- gpuGen * 1000d; print <- " ms; largest difference "; print <- maxGen; print <- " m\n";
+    print <- "heights: CPU "; print <- cpuGen * 1000.0; print <- " ms, GPU (kernel, with upload and readback) ";
+    print <- gpuGen * 1000.0; print <- " ms; largest difference "; print <- maxGen; print <- " m\n";
 
     // erosion: the CPU and the GPU on the same heights
     var a1 = cpuField.tile(0, 0, res, res);
@@ -299,7 +299,7 @@ fn main(argc i32, argv **u8) i32 {
     var a2 = cpuField.tile(0, 0, res, res);
     let r2 = erodeGpu(&mut device, &mut a2, &spec.erosion, &spec.plan);
     var meanDiff = 0.;
-    var maxDiff = 0.;
+    var maxDiff = 0.f;
     var moved = 0.;
     i = 0usize;
     while i < a1.data.len() {
@@ -313,7 +313,7 @@ fn main(argc i32, argv **u8) i32 {
     print <- "roughness (mean |laplacian| x cell, m): before "; print <- roughness(&cpuField); print <- ", after CPU erosion ";
     print <- roughness(&a1); print <- ", after GPU erosion "; print <- roughness(&a2); print <- "\n";
     print <- "erosion ("; print <- u64.from(spec.plan.hydraulic); print <- " hydraulic + "; print <- u64.from(spec.plan.thermal);
-    print <- " thermal): CPU "; print <- r1.seconds * 1000d; print <- " ms, GPU "; print <- r2.seconds * 1000d;
+    print <- " thermal): CPU "; print <- r1.seconds * 1000.0; print <- " ms, GPU "; print <- r2.seconds * 1000.0;
     print <- " ms (ok "; print <- i64.from(r2.ok); print <- "); mean height moved by erosion "; print <- moved / f32.from(a1.data.len());
     print <- " m; CPU vs GPU mean difference "; print <- meanDiff; print <- " m, largest "; print <- maxDiff; print <- " m\n";
 
@@ -322,13 +322,13 @@ fn main(argc i32, argv **u8) i32 {
       var g = a2.tile(0, 0, res, res);
       let tA = time.Instant.now();
       let hyA = analyze(&g, 0.0005, spec.lakeMin, spec.lakeMax);
-      let msAnalyze = tA.elapsed().secondsF64() * 1000d;
+      let msAnalyze = tA.elapsed().secondsF64() * 1000.0;
       let tB = time.Instant.now();
       let rmA = carveRivers(&mut g, &hyA, &spec.rivers);
-      let msCarve = tB.elapsed().secondsF64() * 1000d;
+      let msCarve = tB.elapsed().secondsF64() * 1000.0;
       let tC = time.Instant.now();
       let mkA = computeMasks(&g, &hyA, &rmA, &spec.masks, &spec.biomes);
-      let msMasks = tC.elapsed().secondsF64() * 1000d;
+      let msMasks = tC.elapsed().secondsF64() * 1000.0;
       print <- "stages (CPU): drainage analysis "; print <- msAnalyze; print <- " ms (it runs twice), river carving "; print <- msCarve;
       print <- " ms, masks and biomes "; print <- msMasks; print <- " ms ("; print <- u64.from(mkA.biomeCount); print <- " biomes)\n";
     }
@@ -336,7 +336,7 @@ fn main(argc i32, argv **u8) i32 {
     // the whole landscape through the GPU path
     let l = buildLandscapeOn(&mut device, &spec);
     let wc = countWater(&l);
-    print <- "landscape built in "; print <- l.seconds * 1000d; print <- " ms; heights "; print <- l.height.minHeight();
+    print <- "landscape built in "; print <- l.seconds * 1000.0; print <- " ms; heights "; print <- l.height.minHeight();
     print <- " to "; print <- l.height.maxHeight(); print <- " m; largest drainage "; print <- l.hydrology.maxAccum() * cell * cell / 1.0e6;
     print <- " km2; lake cells "; print <- u64.from(wc[0usize]); print <- ", river cells "; print <- u64.from(wc[1usize]); print <- "\n";
     var b = 0usize;
@@ -382,7 +382,7 @@ fn main(argc i32, argv **u8) i32 {
     camera.lookAt(new Vec3(span * 0.5, hi + span * 0.16, span * 1.12), new Vec3(span * 0.5, lo + (hi - lo) * 0.3, span * 0.3), new Vec3(0., 1., 0.));
 
     // GPU time of the draw: the mean of 30 frames after 5
-    var gpuMs = 0d;
+    var gpuMs = 0.0;
     var counted = 0u32;
     var f = 0u32;
     while f < 35u32 {
@@ -398,7 +398,7 @@ fn main(argc i32, argv **u8) i32 {
       device.waitIdle();
       if f >= 5u32 {
         let ticks = timeBuf.mappedRange() as *u64;
-        gpuMs = gpuMs + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+        gpuMs = gpuMs + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6;
         counted = counted + 1u32;
       }
       f = f + 1u32;

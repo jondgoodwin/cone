@@ -106,7 +106,7 @@ pub fn decimate(m &PolyMesh, ratio f32) PolyMesh {
 // the nearest
 pub fn decimateTarget(m &PolyMesh, ratio f32) u32 {
   let r = f64.from(clampf(ratio, 0., 1.));
-  u32.from(r * f64.from(triangleCount(m)) + 0.5d)
+  u32.from(r * f64.from(triangleCount(m)) + 0.5)
 }
 
 // How many triangles m makes, a face of n corners n - 2
@@ -133,7 +133,7 @@ pub fn decimateWith(m &PolyMesh, faces u32, maxError f32, symmetry u32, weight &
   let nt = c.tv.len() / 3usize;
   var live = nt;
   let target = usize.from(faces);
-  var worst = 0.d;
+  var worst = 0.0;
   var collapses = 0u32;
   let limit = f64.from(maxError);
 
@@ -148,7 +148,7 @@ pub fn decimateWith(m &PolyMesh, faces u32, maxError f32, symmetry u32, weight &
     if fresh and c.evaluate(a, b) {
       if c.cCost > cost {
         c.pushEdge(a, b, c.cCost);
-      } elif limit >= 0.d and c.cCost.sqrt() > limit {
+      } elif limit >= 0.0 and c.cCost.sqrt() > limit {
         live = target;   // stop: everything left costs more
       } else {
         let chosen = c.cCost;
@@ -173,7 +173,7 @@ struct Quadric {
   pub c2 f64; pub cd f64;
   pub d2 f64;
 
-  fn zero() Quadric {new Quadric(0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d)}
+  fn zero() Quadric {new Quadric(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)}
 
   // w times the squared distance to the plane n . x + d = 0 (n unit length)
   fn plane(n DVec3, d f64, w f64) Quadric {
@@ -195,8 +195,8 @@ struct Quadric {
     let x = p.x;
     let y = p.y;
     let z = p.z;
-    a2 * x * x + 2.d * ab * x * y + 2.d * ac * x * z + 2.d * ad * x + b2 * y * y + 2.d * bc * y * z + 2.d * bd * y
-      + c2 * z * z + 2.d * cd * z + d2
+    a2 * x * x + 2.0 * ab * x * y + 2.0 * ac * x * z + 2.0 * ad * x + b2 * y * y + 2.0 * bc * y * z + 2.0 * bd * y
+      + c2 * z * z + 2.0 * cd * z + d2
   }
 
   // The point where the quadric is least, into 'out', when A is well
@@ -209,18 +209,18 @@ struct Quadric {
     let c02 = ab * bc - b2 * ac;
     let det = a2 * c00 + ab * c01 + ac * c02;
     let s = a2 + b2 + c2;
-    if s <= 0.d or absd(det) <= 0.00000001d * s * s * s { return false; }
+    if s <= 0.0 or absd(det) <= 0.00000001 * s * s * s { return false; }
     let c11 = a2 * c2 - ac * ac;
     let c12 = ab * ac - a2 * bc;
     let c22 = a2 * b2 - ab * ab;
-    let inv = 1.d / det;
+    let inv = 1.0 / det;
     *out = new DVec3(-(c00 * ad + c01 * bd + c02 * cd) * inv, -(c01 * ad + c11 * bd + c12 * cd) * inv,
       -(c02 * ad + c12 * bd + c22 * cd) * inv);
     true
   }
 }
 
-fn absd(a f64) f64 {if a < 0.d {-a} else {a}}
+fn absd(a f64) f64 {if a < 0.0 {-a} else {a}}
 
 fn dcross(a DVec3, b DVec3) DVec3 {new DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)}
 
@@ -540,7 +540,7 @@ struct Collapser {
     let q2 = if v2 == a or v2 == b {p} else {p2};
     let before = dcross(p1 - p0, p2 - p0);
     let after = dcross(q1 - q0, q2 - q0);
-    before.lengthSquared() > 0.d and before.dot(after) <= 0.d
+    before.lengthSquared() > 0.0 and before.dot(after) <= 0.0
   }
 
   // Whether 'other' may collapse into 'keep' in place: each corner at
@@ -588,9 +588,9 @@ struct Collapser {
   }
 
   fn onPlane(self &, p DVec3) DVec3 {
-    if axis == DecimateSymmetryX { new DVec3(0.d, p.y, p.z) }
-    elif axis == DecimateSymmetryY { new DVec3(p.x, 0.d, p.z) }
-    else { new DVec3(p.x, p.y, 0.d) }
+    if axis == DecimateSymmetryX { new DVec3(0.0, p.y, p.z) }
+    elif axis == DecimateSymmetryY { new DVec3(p.x, 0.0, p.z) }
+    else { new DVec3(p.x, p.y, 0.0) }
   }
 
   fn reflect(self &, p DVec3) DVec3 {
@@ -602,8 +602,8 @@ struct Collapser {
   // The cost of collapsing to p: the quadric there over the area
   fn costAt(self &, q Quadric, w f64, p DVec3) f64 {
     var e = q.at(p);
-    if w > 0.d { e = e / w; }
-    if e <= tie { 0.d } else { e }
+    if w > 0.0 { e = e / w; }
+    if e <= tie { 0.0 } else { e }
   }
 
   // The fraction of the way from k to o that p lies, along the edge, held
@@ -612,10 +612,10 @@ struct Collapser {
     let pk = *pos[usize.from(k)];
     let d = *pos[usize.from(o)] - pk;
     let l2 = d.lengthSquared();
-    if l2 <= 0.d { return 0.; }
+    if l2 <= 0.0 { return 0.; }
     var t = (p - pk).dot(d) / l2;
-    if t < 0.d { t = 0.d; }
-    if t > 1.d { t = 1.d; }
+    if t < 0.0 { t = 0.0; }
+    if t > 1.0 { t = 1.0; }
     f32.from(t)
   }
 
@@ -666,7 +666,7 @@ struct Collapser {
       let keep = if a < b {a} else {b};
       let other = if a < b {b} else {a};
       let project = (planeA and planeB) or crossing;
-      let mid0 = (pa + pb) * 0.5d;
+      let mid0 = (pa + pb) * 0.5;
       let mid = if project {self.onPlane(mid0)} else {mid0};
       var opt = mid;
       if q.solve(&mut opt) {
@@ -1082,12 +1082,12 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
 
   // Positions relative to the box's centre (its symmetry axis kept at 0)
   let box = m.bounds();
-  var origin = new DVec3(0.d, 0.d, 0.d);
+  var origin = new DVec3(0.0, 0.0, 0.0);
   if nv > 0usize {
-    origin = (DVec3.from(box.min) + DVec3.from(box.max)) * 0.5d;
-    if symmetry == DecimateSymmetryX { origin = new DVec3(0.d, origin.y, origin.z); }
-    elif symmetry == DecimateSymmetryY { origin = new DVec3(origin.x, 0.d, origin.z); }
-    elif symmetry == DecimateSymmetryZ { origin = new DVec3(origin.x, origin.y, 0.d); }
+    origin = (DVec3.from(box.min) + DVec3.from(box.max)) * 0.5;
+    if symmetry == DecimateSymmetryX { origin = new DVec3(0.0, origin.y, origin.z); }
+    elif symmetry == DecimateSymmetryY { origin = new DVec3(origin.x, 0.0, origin.z); }
+    elif symmetry == DecimateSymmetryZ { origin = new DVec3(origin.x, origin.y, 0.0); }
   }
   var pos = List[DVec3].withCapacity(nv);
   var v = 0usize;
@@ -1132,7 +1132,7 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
   var pinned = List[bool].withCapacity(nv);
   v = 0usize;
   while v < nv {
-    wts.push(if wch != NoIndex {f64.from(m.float(wch, u32.from(v)))} else {1.d});
+    wts.push(if wch != NoIndex {f64.from(m.float(wch, u32.from(v)))} else {1.0});
     pinned.push(vcrease != NoIndex and m.float(vcrease, u32.from(v)) > 0.);
     v = v + 1usize;
   }
@@ -1144,7 +1144,7 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
   v = 0usize;
   while v < nv {
     quad.push(Quadric.zero());
-    area.push(0.d);
+    area.push(0.0);
     v = v + 1usize;
   }
   let sharpW = f64.from(DecimateSharpWeight);
@@ -1155,14 +1155,14 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
     let p2 = *pos[usize.from(*tv[3usize * t + 2usize])];
     let n = dcross(p1 - p0, p2 - p0);
     let len = n.length();
-    if len > 0.d {
-      let nu = n * (1.d / len);
-      let qt = Quadric.plane(nu, -nu.dot(p0), len * 0.5d);
+    if len > 0.0 {
+      let nu = n * (1.0 / len);
+      let qt = Quadric.plane(nu, -nu.dot(p0), len * 0.5);
       var k = 0usize;
       while k < 3usize {
         let vk = usize.from(*tv[3usize * t + k]);
         quad.set(vk, *quad[vk] + qt.scaled(*wts[vk]));
-        area.set(vk, *area[vk] + len * 0.5d);
+        area.set(vk, *area[vk] + len * 0.5);
         k = k + 1usize;
       }
       // Sharp sides: boundary, creased, or a seam
@@ -1177,8 +1177,8 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
           let l2 = d.lengthSquared();
           let pn = dcross(d, nu);
           let pl = pn.length();
-          if l2 > 0.d and pl > 0.d {
-            let pu = pn * (1.d / pl);
+          if l2 > 0.0 and pl > 0.0 {
+            let pu = pn * (1.0 / pl);
             let qs = Quadric.plane(pu, -pu.dot(*pos[va]), sharpW * l2);
             quad.set(va, *quad[va] + qs.scaled(*wts[va]));
             quad.set(vb, *quad[vb] + qs.scaled(*wts[vb]));
@@ -1224,13 +1224,13 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
     v = v + 1usize;
   }
   let mirror = mirrorLinks(&pos, symmetry, box);
-  let diag = if nv > 0usize {f64.from((box.max - box.min).length())} else {0.d};
-  let tie = 0.000000000001d * diag * diag;
+  let diag = if nv > 0usize {f64.from((box.max - box.min).length())} else {0.0};
+  let tie = 0.000000000001 * diag * diag;
 
   var col = new Collapser(pos: pos, origin: origin, quad: quad, area: area, alive: alive, ver: ver, pinned: pinned,
     mirror: mirror, axis: symmetry, tie: tie, tv: tv, tAlive: tAlive, incHead: incHead, incNext: incNext, incTri: incTri,
     nvSlots: nvSlots, vvals: vvals, ncSlots: ncSlots, cvals: cvals,
-    cFound: false, cKeep: 0u32, cOther: 0u32, cPos: new DVec3(0.d, 0.d, 0.d), cT: 0., cCost: 0.d, cHalf: false,
+    cFound: false, cKeep: 0u32, cOther: 0u32, cPos: new DVec3(0.0, 0.0, 0.0), cT: 0., cCost: 0.0, cHalf: false,
     hp: List[u32].empty(), hn: 0usize, eCost: List[f64].empty(), eA: List[u32].empty(), eB: List[u32].empty(),
     eVa: List[u32].empty(), eVb: List[u32].empty(), free: List[u32].empty(), freeN: 0usize);
 
@@ -1323,8 +1323,8 @@ fn mirrorLinks(pos &List[DVec3], symmetry u32, box Aabb3) List[u32] {
   }
   if symmetry == DecimateSymmetryNone or n == 0usize { return mirror; }
   let diag = f64.from((box.max - box.min).length());
-  let tol = 0.00001d * diag;
-  let size = if tol > 0.d {2.d * tol} else {1.d};
+  let tol = 0.00001 * diag;
+  let size = if tol > 0.0 {2.0 * tol} else {1.0};
   // The spatial hash, as weld's, over cells twice the tolerance wide
   var slots = 1usize;
   while slots < 2usize * n { slots = slots * 2usize; }
@@ -1394,7 +1394,7 @@ fn mirrorLinks(pos &List[DVec3], symmetry u32, box Aabb3) List[u32] {
 // The cell a coordinate falls in, held to a billion cells either way
 fn dcell(x f64, size f64) i32 {
   var c = libc.floor(x / size);
-  if c < -1000000000.d { c = -1000000000.d; }
-  if c > 1000000000.d { c = 1000000000.d; }
+  if c < -1000000000.0 { c = -1000000000.0; }
+  if c > 1000000000.0 { c = 1000000000.0; }
   i32.from(c)
 }

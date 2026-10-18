@@ -52,21 +52,21 @@ import msdftext use *;
 const W = 640u32;
 const H = 300u32;
 
-fn absf(v f64) f64 { if v < 0.0d { return -v; } v }
+fn absf(v f64) f64 { if v < 0.0 { return -v; } v }
 
 // Red channel of pixel (x, y) as coverage, 0 to 1
 fn cov(p *u8, x u32, y u32) f64 {
-  if x >= W or y >= H { return 0.0d; }
-  f64.from(*(p + usize.from((y * W + x) * 4u32))) / 255.0d
+  if x >= W or y >= H { return 0.0; }
+  f64.from(*(p + usize.from((y * W + x) * 4u32))) / 255.0
 }
 
 fn chan(p *u8, x u32, y u32, c u32) f64 {
-  f64.from(*(p + usize.from((y * W + x) * 4u32 + c))) / 255.0d
+  f64.from(*(p + usize.from((y * W + x) * 4u32 + c))) / 255.0
 }
 
 // The sum of coverage over the box [x0, x1) x [y0, y1)
 fn area(p *u8, x0 u32, y0 u32, x1 u32, y1 u32) f64 {
-  var sum = 0.0d;
+  var sum = 0.0;
   var y = y0;
   while y < y1 {
     var x = x0;
@@ -76,7 +76,7 @@ fn area(p *u8, x0 u32, y0 u32, x1 u32, y1 u32) f64 {
   sum
 }
 
-fn floorU(v f64) u32 { if v < 0.0d { return 0u32; } u32.from(libc.floor(v)) }
+fn floorU(v f64) u32 { if v < 0.0 { return 0u32; } u32.from(libc.floor(v)) }
 
 fn near(got f64, want f64, rel f64, slack f64, label &Array[u8]) {
   expectFloat(got, want, rel * want + slack, label);
@@ -176,7 +176,7 @@ fn rampWidth(p *u8, y u32, x0 u32, x1 u32) u32 {
   var x = x0;
   while x < x1 {
     let c = cov(p, x, y);
-    if c > 0.1d and c < 0.9d { n = n + 1u32; }
+    if c > 0.1 and c < 0.9 { n = n + 1u32; }
     x = x + 1u32;
   }
   n
@@ -187,7 +187,7 @@ fn placed(layout &TextLayout, i usize) PlacedGlyph { *layout.glyphs[i] }
 
 // Checks of the overlay text at one size, drawn with its top left at (ox, oy)
 fn checkText(p *u8, font &Font, layout &TextLayout, ox f64, oy f64, size f64, tag &Array[u8]) {
-  let k = size / 1000.0d;
+  let k = size / 1000.0;
   // Per glyph: the box, the area in k^2 units
   var gi = 0usize;
   while gi < 4usize {
@@ -201,52 +201,52 @@ fn checkText(p *u8, font &Font, layout &TextLayout, ox f64, oy f64, size f64, ta
     let bottom = base - f64.from(box.yMin) * k;
     // The pixels the glyph's ink can touch (its edges ramp over half a pixel each side): at 12 px the
     // glyphs are a pixel or two apart, so no more
-    let x0 = floorU(left - 0.5d);
-    let x1 = floorU(right + 0.5d) + 1u32;
-    let y0 = floorU(top - 0.5d);
-    let y1 = floorU(bottom + 0.5d) + 1u32;
-    let want = if gi == 0usize { 175000.0d } elif gi == 1usize { 140000.0d } elif gi == 2usize { 250000.0d } else { 35000.0d };
-    near(area(p, x0, y0, x1, y1), want * k * k, 0.02d, 0.4d, tag);
+    let x0 = floorU(left - 0.5);
+    let x1 = floorU(right + 0.5) + 1u32;
+    let y0 = floorU(top - 0.5);
+    let y1 = floorU(bottom + 0.5) + 1u32;
+    let want = if gi == 0usize { 175000.0 } elif gi == 1usize { 140000.0 } elif gi == 2usize { 250000.0 } else { 35000.0 };
+    near(area(p, x0, y0, x1, y1), want * k * k, 0.02, 0.4, tag);
     var ax = 0u32;
     var bx = 0u32;
     var ay = 0u32;
     var yb = 0u32;
-    let any = inkBox(p, x0, y0, x1, y1, 0.1d, &mut ax, &mut bx, &mut ay, &mut yb);
+    let any = inkBox(p, x0, y0, x1, y1, 0.1, &mut ax, &mut bx, &mut ay, &mut yb);
     expect(any, tag);
     // The ink's first and last pixel column and row (above a tenth of coverage) lie within a pixel of the font's
     // box. The triangle's apex is the exception at the top: a point narrower than an atlas texel (1/48 em)
     // is cut short, by up to 5% of the em (measured: about 1.5 texels).
-    expectFloat(f64.from(ax), left, 1.0d, tag);
-    expectFloat(f64.from(bx) + 1.0d, right, 1.0d, tag);
-    let cut = if gi == 0usize { 0.05d * size } else { 0.0d };
-    expectFloat(f64.from(ay), top - 0.5d + cut * 0.5d, 0.51d + cut * 0.5d, tag);
-    expectFloat(f64.from(yb) + 1.0d, bottom, 1.0d, tag);
+    expectFloat(f64.from(ax), left, 1.0, tag);
+    expectFloat(f64.from(bx) + 1.0, right, 1.0, tag);
+    let cut = if gi == 0usize { 0.05 * size } else { 0.0 };
+    expectFloat(f64.from(ay), top - 0.5 + cut * 0.5, 0.51 + cut * 0.5, tag);
+    expectFloat(f64.from(yb) + 1.0, bottom, 1.0, tag);
     gi = gi + 1usize;
   }
   // The bar: an edge ramp of at most 2 pixels, a square corner, exact lengths
   let bar = placed(layout, 1usize);
   let pen = ox + f64.from(bar.x);
   let base = oy + f64.from(bar.baseline);
-  let left = pen + 100.0d * k;
-  let right = pen + 300.0d * k;
+  let left = pen + 100.0 * k;
+  let right = pen + 300.0 * k;
   let bottom = base;
-  let midY = floorU(base - 350.0d * k);
-  expect(rampWidth(p, midY, floorU(left - 1.0d), floorU(left) + 2u32) <= 2u32, tag);
-  expect(rampWidth(p, midY, floorU(right) - 1u32, floorU(right + 1.0d) + 1u32) <= 2u32, tag);
+  let midY = floorU(base - 350.0 * k);
+  expect(rampWidth(p, midY, floorU(left - 1.0), floorU(left) + 2u32) <= 2u32, tag);
+  expect(rampWidth(p, midY, floorU(right) - 1u32, floorU(right + 1.0) + 1u32) <= 2u32, tag);
   // Row length: the width of the bar
-  near(area(p, floorU(left - 0.5d), midY, floorU(right + 0.5d) + 1u32, midY + 1u32), 200.0d * k, 0.015d, 0.15d, tag);
+  near(area(p, floorU(left - 0.5), midY, floorU(right + 0.5) + 1u32, midY + 1u32), 200.0 * k, 0.015, 0.15, tag);
   // The corner pixel (the one holding the bottom left corner): the product of the two edges' coverages
   let cx = floorU(left);
   let cy = floorU(bottom);
-  let fx = (f64.from(cx) + 1.0d) - left;       // how much of the pixel is right of the left edge, if the edge is in it
+  let fx = (f64.from(cx) + 1.0) - left;       // how much of the pixel is right of the left edge, if the edge is in it
   let fy = bottom - f64.from(cy);              // how much of the pixel is above the bottom edge
-  if fx > 0.0d and fx < 1.0d and fy > 0.0d and fy < 1.0d {
+  if fx > 0.0 and fx < 1.0 and fy > 0.0 and fy < 1.0 {
     // (the shader's coverage is from the distance, not the area: within 0.15 of the product)
-    expectFloat(cov(p, cx, cy), fx * fy, 0.15d, tag);
+    expectFloat(cov(p, cx, cy), fx * fy, 0.15, tag);
   }
   // Well inside, solid; well outside, black
-  expectFloat(cov(p, floorU(left + 0.5d * 200.0d * k), midY), 1.0d, 0.02d, tag);
-  expectFloat(cov(p, floorU(left - 2.0d), midY), 0.0d, 0.02d, tag);
+  expectFloat(cov(p, floorU(left + 0.5 * 200.0 * k), midY), 1.0, 0.02, tag);
+  expectFloat(cov(p, floorU(left - 2.0), midY), 0.0, 0.02, tag);
 }
 
 fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Font, target &Texture, depth &Texture,
@@ -275,21 +275,21 @@ fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Fon
   shot(p, "world.bmp");
   let leftInk = area(p, 0u32, 0u32, W / 2u32, H);
   let rightInk = area(p, W / 2u32, 0u32, W, H);
-  expect(leftInk > 400.0d, "world text in front of the wall is drawn");
-  expectFloat(rightInk, 0.0d, 0.001d, "world text behind the wall is not");
+  expect(leftInk > 400.0, "world text in front of the wall is drawn");
+  expectFloat(rightInk, 0.0, 0.001, "world text behind the wall is not");
   // Its middle is where the anchor projects
   let centre = vp.projectPoint(new Vec3(-1.4, 0., 3.));
   var ax = 0u32;
   var bx = 0u32;
   var ay = 0u32;
   var yb = 0u32;
-  inkBox(p, 0u32, 0u32, W / 2u32, H, 0.5d, &mut ax, &mut bx, &mut ay, &mut yb);
-  let px = (f64.from(centre.x) + 1.0d) * 0.5d * f64.from(W);
-  let py = (1.0d - f64.from(centre.y)) * 0.5d * f64.from(H);
+  inkBox(p, 0u32, 0u32, W / 2u32, H, 0.5, &mut ax, &mut bx, &mut ay, &mut yb);
+  let px = (f64.from(centre.x) + 1.0) * 0.5 * f64.from(W);
+  let py = (1.0 - f64.from(centre.y)) * 0.5 * f64.from(H);
   // The ink is the box of A's left to I's right and A's bottom to its top, not the layout's block, so the
   // anchor lands within the block: compare the layout block's middle with the same projection of the ink
-  expectFloat(f64.from(ax + bx) * 0.5d, px, 0.12d * f64.from(bx - ax), "world text: centred horizontally on its anchor");
-  expectFloat(f64.from(ay + yb) * 0.5d, py, 0.2d * f64.from(yb - ay), "world text: centred vertically on its anchor");
+  expectFloat(f64.from(ax + bx) * 0.5, px, 0.12 * f64.from(bx - ax), "world text: centred horizontally on its anchor");
+  expectFloat(f64.from(ay + yb) * 0.5, py, 0.2 * f64.from(yb - ay), "world text: centred vertically on its anchor");
   text.clearText(front);
   text.clearText(hidden);
 
@@ -311,17 +311,17 @@ fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Fon
   var bx1 = 0u32;
   var by0 = 0u32;
   var by1 = 0u32;
-  expect(inkBox(p, 0u32, 0u32, W, H, 0.5d, &mut bx0, &mut bx1, &mut by0, &mut by1), "billboard: ink");
+  expect(inkBox(p, 0u32, 0u32, W, H, 0.5, &mut bx0, &mut bx1, &mut by0, &mut by1), "billboard: ink");
   // Ink extents in the text's metres: A's left (0) to I's right (the second glyph's pen + 300 k), A's bottom to its top (700)
   let i1 = placed(&layout, 1usize);
-  let inkW = f64.from(i1.x) + 0.3d;
-  let inkH = 0.7d;
+  let inkW = f64.from(i1.x) + 0.3;
+  let inkH = 0.7;
   let ratio = f64.from(bx1 - bx0 + 1u32) / f64.from(by1 - by0 + 1u32);
-  expectFloat(ratio, inkW / inkH, 0.06d * (inkW / inkH), "spherical billboard keeps the text's proportions seen from the side");
+  expectFloat(ratio, inkW / inkH, 0.06 * (inkW / inkH), "spherical billboard keeps the text's proportions seen from the side");
   let c2 = vp2.projectPoint(new Vec3(0., 0., 0.));
-  let px2 = (f64.from(c2.x) + 1.0d) * 0.5d * f64.from(W);
-  let py2 = (1.0d - f64.from(c2.y)) * 0.5d * f64.from(H);
-  expectFloat(f64.from(bx0 + bx1) * 0.5d, px2, 0.12d * f64.from(bx1 - bx0), "billboard centred on its anchor");
+  let px2 = (f64.from(c2.x) + 1.0) * 0.5 * f64.from(W);
+  let py2 = (1.0 - f64.from(c2.y)) * 0.5 * f64.from(H);
+  expectFloat(f64.from(bx0 + bx1) * 0.5, px2, 0.12 * f64.from(bx1 - bx0), "billboard centred on its anchor");
 
   // The same text as a fixed sign turned 60 degrees about y, and seen head-on
   text.clearText(billboard);
@@ -338,10 +338,10 @@ fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Fon
   var sx1 = 0u32;
   var sy0 = 0u32;
   var sy1 = 0u32;
-  expect(inkBox(p, 0u32, 0u32, W, H, 0.5d, &mut sx0, &mut sx1, &mut sy0, &mut sy1), "sign: ink");
+  expect(inkBox(p, 0u32, 0u32, W, H, 0.5, &mut sx0, &mut sx1, &mut sy0, &mut sy1), "sign: ink");
   let signRatio = f64.from(sx1 - sx0 + 1u32) / f64.from(sy1 - sy0 + 1u32);
   // Foreshortened by cos 60 = 1/2 (a little off for perspective)
-  expectFloat(signRatio, 0.5d * inkW / inkH, 0.15d * (inkW / inkH), "a fixed sign turned 60 degrees is half as wide");
+  expectFloat(signRatio, 0.5 * inkW / inkH, 0.15 * (inkW / inkH), "a fixed sign turned 60 degrees is half as wide");
 }
 
 // Text into an rgba16float texture (the format of render's HDR frame), which is also
@@ -446,10 +446,10 @@ fn main() i32 {
       shot(p, "overlay.bmp");
       expectUInt(u64.from(text.drawCalls), 2u64, "two draws");
       expectUInt(u64.from(text.glyphs), 8u64, "eight glyphs");
-      checkText(p, &font, &big, 20.0d, 10.0d, 200.0d, "200 px text");
-      checkText(p, &font, &small, 20.0d, 240.0d, 12.0d, "12 px text");
+      checkText(p, &font, &big, 20.0, 10.0, 200.0, "200 px text");
+      checkText(p, &font, &small, 20.0, 240.0, 12.0, "12 px text");
       // No ink beyond the quads: the pixels outside every glyph's quad (a pixel's slack) are black
-      var stray = 0.0d;
+      var stray = 0.0;
       var y = 0u32;
       while y < H {
         var x = 0u32;
@@ -458,13 +458,13 @@ fn main() i32 {
           var t = 0usize;
           while t < 2usize {
             let l = if t == 0usize { &big } else { &small };
-            let ox = 20.0d;
-            let oy = if t == 0usize { 10.0d } else { 240.0d };
+            let ox = 20.0;
+            let oy = if t == 0usize { 10.0 } else { 240.0 };
             var q = 0usize;
             while q < l.quads.len() {
               let quad = *l.quads[q];
-              if f64.from(x) >= ox + f64.from(quad.x0) - 1.0d and f64.from(x) <= ox + f64.from(quad.x1) + 1.0d
-                  and f64.from(y) >= oy + f64.from(quad.y0) - 1.0d and f64.from(y) <= oy + f64.from(quad.y1) + 1.0d {
+              if f64.from(x) >= ox + f64.from(quad.x0) - 1.0 and f64.from(x) <= ox + f64.from(quad.x1) + 1.0
+                  and f64.from(y) >= oy + f64.from(quad.y0) - 1.0 and f64.from(y) <= oy + f64.from(quad.y1) + 1.0 {
                 inside = true;
               }
               q = q + 1usize;
@@ -476,7 +476,7 @@ fn main() i32 {
         }
         y = y + 1u32;
       }
-      expectFloat(stray, 0.0d, 0.0001d, "no ink outside the glyphs' quads");
+      expectFloat(stray, 0.0, 0.0001, "no ink outside the glyphs' quads");
       text.clearText(hBig);
       text.clearText(hSmall);
 
@@ -497,12 +497,12 @@ fn main() i32 {
       shot(p, "effects.bmp");
       // The bar: left edge at 100 + 20 = 120, right 160, top 20 + 160 - 140 = 40, bottom 180
       let midY = 110u32;
-      expectFloat(chan(p, 140u32, midY, 0u32), 1.0d, 0.02d, "effects: the fill is white (red)");
-      expectFloat(chan(p, 140u32, midY, 2u32), 1.0d, 0.02d, "effects: the fill is white (blue)");
-      expectFloat(chan(p, 115u32, midY, 0u32), 1.0d, 0.03d, "effects: 5 px outside the left edge is outline red");
-      expectFloat(chan(p, 115u32, midY, 1u32), 0.0d, 0.03d, "effects: outline has no green");
-      expectFloat(chan(p, 115u32, midY, 2u32), 0.0d, 0.03d, "effects: outline has no blue");
-      expectFloat(chan(p, 105u32, midY, 0u32) + chan(p, 105u32, midY, 2u32), 0.0d, 0.03d, "effects: 15 px outside is black");
+      expectFloat(chan(p, 140u32, midY, 0u32), 1.0, 0.02, "effects: the fill is white (red)");
+      expectFloat(chan(p, 140u32, midY, 2u32), 1.0, 0.02, "effects: the fill is white (blue)");
+      expectFloat(chan(p, 115u32, midY, 0u32), 1.0, 0.03, "effects: 5 px outside the left edge is outline red");
+      expectFloat(chan(p, 115u32, midY, 1u32), 0.0, 0.03, "effects: outline has no green");
+      expectFloat(chan(p, 115u32, midY, 2u32), 0.0, 0.03, "effects: outline has no blue");
+      expectFloat(chan(p, 105u32, midY, 0u32) + chan(p, 105u32, midY, 2u32), 0.0, 0.03, "effects: 15 px outside is black");
       // The shadow falls 8 right: the outline reaches 10 beyond the right edge (170), the shadow's own outline-less
       // edge 8 + 0 beyond 160 = 168: inside the outline. Below the bar: the bottom edge is 180, the shadow 188,
       // the outline reaches 190: blue shows only where the outline does not cover: none here. Shadow beyond
@@ -518,13 +518,13 @@ fn main() i32 {
       finish(&mut device, &mut encoder2, &target, &readback);
       shot(p, "shadow.bmp");
       // Right of the bar (160) the shadow runs to 172; at y just below the middle
-      expectFloat(chan(p, 166u32, midY, 2u32), 1.0d, 0.03d, "shadow: blue 6 px beyond the right edge");
-      expectFloat(chan(p, 166u32, midY, 0u32), 0.0d, 0.03d, "shadow: only blue");
-      expectFloat(chan(p, 176u32, midY, 2u32), 0.0d, 0.03d, "shadow: nothing beyond it");
-      expectFloat(chan(p, 140u32, midY, 0u32), 1.0d, 0.02d, "shadow: the fill stays over it");
+      expectFloat(chan(p, 166u32, midY, 2u32), 1.0, 0.03, "shadow: blue 6 px beyond the right edge");
+      expectFloat(chan(p, 166u32, midY, 0u32), 0.0, 0.03, "shadow: only blue");
+      expectFloat(chan(p, 176u32, midY, 2u32), 0.0, 0.03, "shadow: nothing beyond it");
+      expectFloat(chan(p, 140u32, midY, 0u32), 1.0, 0.02, "shadow: the fill stays over it");
       // Below the bottom edge (180) the shadow runs to 192 (the bar at x 120..160 shifted right: 132..172)
-      expectFloat(chan(p, 150u32, 186u32, 2u32), 1.0d, 0.03d, "shadow: blue below the bar");
-      expectFloat(chan(p, 125u32, 186u32, 2u32), 0.0d, 0.03d, "shadow: not left of the shifted shadow");
+      expectFloat(chan(p, 150u32, 186u32, 2u32), 1.0, 0.03, "shadow: blue below the bar");
+      expectFloat(chan(p, 125u32, 186u32, 2u32), 0.0, 0.03, "shadow: not left of the shifted shadow");
       text.clearText(fx);
 
       // 2b. Into render's half-float HDR frame, overlay and world, as before tone mapping

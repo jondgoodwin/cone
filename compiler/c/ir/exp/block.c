@@ -301,6 +301,13 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             eachLower(pstate, blk);
         }
     }
+    // A number range with a literal first bound and an end that is not one,
+    // 'each i in 0 ..< n': the end is checked first, and the first bound takes
+    // its number type, as a literal beside an operator does
+    else if (eachRangeFirstFollowsEnd(blk)) {
+        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 1), &hoists);
+        eachRangeFirstAdopt(blk);
+    }
 
     // A brand minted in a loop's body is its pass's (lifetime.h)
     if (blk->flags & FlagLoop) {

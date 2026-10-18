@@ -386,6 +386,10 @@ enum NodeTags {
 // wanted and its value is ASCII (litAdoptCharAsByte). The parser sets it on the
 // literal only; a char made any other way is never taken for a byte.
 #define FlagCharLit   0x0004        // ULit: a character literal as written
+// An integer literal no digits were written for: the value of an expression of
+// untyped literals, folded where it was type checked (litFoldUntyped). 0x0008 is
+// FlagMatchAny on a ULit.
+#define FlagLitFolded 0x0010        // ULit: the value an expression of untyped integer literals came to
 
 #define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
 // Flow's marks for drop flags (compiler/c/doc/phases/flow.md, "Drop flags"). A

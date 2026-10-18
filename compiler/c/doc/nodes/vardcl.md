@@ -239,8 +239,8 @@ nothing.
    A static's value is its storage's initializer, written once before anything
    runs, which is why it is held to a global's rule wherever it is declared. The
    rule reads the value **after** coercion, so it must still be a literal once
-   coerced: an untyped integer literal adopts the declared type, a float literal
-   or a constant's use widened to a wider number of its kind is folded into a
+   coerced: an untyped number literal adopts the declared type, an `f`-suffixed
+   float literal or a constant's use widened to a wider number of its kind is folded into a
    literal of that type, and a string literal converted to a slice is a recast of
    a literal (all in [literals](literals.md)); a number conversion a coercion
    wraps around a constant expression is folded with it (`let g i64 = K + 1`),

@@ -504,6 +504,29 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     nodesAdd(&outer->stmts, (INode*)loop);
 }
 
+// The parser's hidden variables of a number range, '-first' and '-end'
+// (parseEachLoop), found by their names in the first two statements of the
+// range's block
+static VarDclNode *eachRangeVar(BlockNode *outer, uint32_t at, char *name, size_t len) {
+    if (outer->stmts->used <= at || nodesGet(outer->stmts, at)->tag != VarDclTag)
+        return NULL;
+    VarDclNode *var = (VarDclNode*)nodesGet(outer->stmts, at);
+    return var->namesym == nametblFind(name, len) ? var : NULL;
+}
+
+int eachRangeFirstFollowsEnd(BlockNode *outer) {
+    VarDclNode *first = eachRangeVar(outer, 0, "-first", 6);
+    VarDclNode *end = first ? eachRangeVar(outer, 1, "-end", 4) : NULL;
+    return end != NULL && first->value != NULL && litIsUntypedNumber(first->value) && first->vtype == unknownType;
+}
+
+void eachRangeFirstAdopt(BlockNode *outer) {
+    VarDclNode *first = eachRangeVar(outer, 0, "-first", 6);
+    VarDclNode *end = eachRangeVar(outer, 1, "-end", 4);
+    if (first != NULL && end != NULL && end->vtype != NULL && end->vtype != unknownType)
+        litAdoptBesideOperand(&first->value, end->vtype);
+}
+
 Name *eachRangeStepName = NULL;
 
 void eachRangeNames() {
