@@ -395,7 +395,24 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     inodeCheckState = svState;
 }
 
+static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *expectType);
+
+// A declaration is checked once, so a trial (error.h, "A trial") that reaches one
+// before the program does would take its diagnostics with it, and leave it marked
+// checked with nothing said. The declarations a trial did not make are checked
+// loud: what they report is the program's.
 static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expectType) {
+    if (errorSilent && !((*node)->flags & (TypeChecked | TypeChecking))
+        && inodeGetOwner(*node) != NULL && !closureTrialOwns(*node)) {
+        int saved = errorLoudBegin();
+        inodeTypeCheckWalkNode(pstate, node, expectType);
+        errorLoudEnd(saved);
+        return;
+    }
+    inodeTypeCheckWalkNode(pstate, node, expectType);
+}
+
+static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     // A declaration is type checked once, however many places reach it. This
     // pass lowers and replaces nodes, so a second walk of one corrupts it; the

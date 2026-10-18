@@ -100,7 +100,11 @@ function. (`selfmethod` stays reserved.)
 3. **The permissions are found by trying.** Whether a borrow is `&` or `&mut`,
    and whether `()` takes `self &` or `self &mut`, is what the body does. The
    body is checked as a clone, its diagnostics counted and not printed
-   (`errorSilent`), first with the weakest permissions; if that fails, with
+   (`closureTry`, a trial of `shared/error.h`), first with the weakest permissions;
+   a function the body names that nothing has checked yet is checked in the trial all
+   the same, but its diagnostics are the program's and are printed
+   ([type check](../phases/type-check.md), "A trial does not own what it reaches");
+   if that fails, with
    every borrow the variable allows `&mut` (a variable is borrowed `&mut` only
    if it is `var`) and `self &mut`; if that passes, each `&mut` borrow is taken
    back in turn while the body still checks, and `self` last, which stays `&mut`
@@ -411,4 +415,5 @@ says so, and the object defines the hidden struct's methods, internally
 | `ir/meta/generic.c` | `genericParmTraitBound` | the plain trait that bounds a parameter a literal is given to |
 | `ir/exp/typelit.c` | `typeLitNewCallable` | `new Uni[fn(sig)](c)` |
 | `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
-| `shared/error.c` | `errorSilent` | diagnostics counted and not printed |
+| `shared/error.c` | `errorTrialBegin`, `errorTrialEnd`, `errorLoudBegin`, `errorsOwn` | a trial's diagnostics counted and not printed; the loud window of a declaration it did not make |
+| `ir/exp/closure.c` | `closureTrialOwns` | whether a declaration was made by the trial now open |

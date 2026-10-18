@@ -16,9 +16,53 @@
 
 int errors = 0;
 int warnings = 0;
-// Non-zero while a closure's body is tried under a guess at its permissions
-// (closure.c): a diagnostic is counted and not printed
+// Non-zero while code is checked as a trial (error.h): a diagnostic is counted
+// and not printed
 int errorSilent = 0;
+uint32_t errorTrialMark = 0;
+// Inside a loud window: how deep, and the diagnostics it reported
+static int errorLoudDepth = 0;
+static int errorsLoud = 0;
+static int warningsLoud = 0;
+
+void errorTrialBegin(ErrorTrial *trial, uint32_t mark) {
+    trial->errors = errors;
+    trial->warnings = warnings;
+    trial->loudErrors = errorsLoud;
+    trial->loudWarnings = warningsLoud;
+    trial->mark = mark;
+    trial->svmark = errorTrialMark;
+    if (errorSilent == 0)
+        errorTrialMark = mark;
+    ++errorSilent;
+}
+
+int errorTrialEnd(ErrorTrial *trial) {
+    --errorSilent;
+    if (errorSilent == 0)
+        errorTrialMark = trial->svmark;
+    int loudErrors = errorsLoud - trial->loudErrors;
+    int own = (errors - trial->errors) - loudErrors;
+    errors = trial->errors + loudErrors;
+    warnings = trial->warnings + (warningsLoud - trial->loudWarnings);
+    return own == 0;
+}
+
+int errorLoudBegin(void) {
+    int saved = errorSilent;
+    errorSilent = 0;
+    ++errorLoudDepth;
+    return saved;
+}
+
+void errorLoudEnd(int saved) {
+    --errorLoudDepth;
+    errorSilent = saved;
+}
+
+int errorsOwn(void) {
+    return errors - errorsLoud;
+}
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...) {
@@ -40,11 +84,15 @@ void errorOut(int code, const char *msg, va_list args) {
     // Prefix for error message
     if (code < WarnCode) {
         errors++;
+        if (!errorSilent && errorLoudDepth)
+            errorsLoud++;
         if (!errorSilent)
             fprintf(stderr, "Error %d: ", code);
     }
     else if (code < Uncounted) {
         warnings++;
+        if (!errorSilent && errorLoudDepth)
+            warningsLoud++;
         if (!errorSilent)
             fprintf(stderr, "Warning %d: ", code);
     }

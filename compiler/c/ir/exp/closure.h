@@ -47,7 +47,8 @@ typedef struct ClosureInfo {
     uint8_t expanded;           // Written in a body an importer expands (an inline function, a generic's instance): every object that makes the closure defines it
     ClosureNode *lit;           // The literal, for messages
     Name *method;               // The name of its one method: '()', or the trait's method it was given to fill
-    int errbase;                // The error count when its struct began to be checked: a failure since is its body's, reported there
+    int errbase;                // The error count (errorsOwn) when its struct began to be checked: a failure since is its body's, reported there
+    uint32_t serial;            // The number in its struct's name, 'closure#N': which was made before which
 } ClosureInfo;
 
 ClosureNode *newClosureNode();
@@ -64,6 +65,12 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
 // The closure a hidden struct, or one of its members, belongs to; else NULL
 ClosureInfo *closureOfStruct(INode *node);
 ClosureInfo *closureOfDcl(INode *dcl);
+
+// Is this declaration the work of a trial now open (error.h, "A trial"), so that
+// what checking it reports is the trial's to discard? Else it is the program's.
+int closureTrialOwns(INode *dcl);
+// The number of the last hidden struct made: what a trial opens with (errorTrialBegin)
+uint32_t closureSerialNow(void);
 
 // A name use inside a closure's '()' that names a variable the closure holds:
 // rewritten to the access of its field. Answers whether it was.

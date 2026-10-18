@@ -264,6 +264,10 @@ typedef struct ClosurePlan {
 
 static uint32_t closureSerial = 0;
 
+uint32_t closureSerialNow(void) {
+    return closureSerial;
+}
+
 // Does this variable allow a '&mut' borrow of it?
 static int closureVarMut(VarDclNode *var) {
     INode *perm = itypeGetTypeDcl(var->perm);
@@ -442,7 +446,8 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     info->retinfer = 0;
     info->retset = 0;
     info->method = plan->method;
-    info->errbase = errors;
+    info->errbase = errorsOwn();
+    info->serial = closureSerial;
     info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
     info->lit = clo;
 
@@ -558,7 +563,8 @@ StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *refty
     info->retinfer = 0;
     info->retset = 0;
     info->method = parensName;
-    info->errbase = errors;
+    info->errbase = errorsOwn();
+    info->serial = closureSerial;
     info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
     info->lit = NULL;
 
@@ -622,9 +628,8 @@ StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *refty
 // its diagnostics unprinted and uncounted.
 static int closureTry(TypeCheckState *pstate, ClosureNode *tmpl, ClosurePlan *plan, INode **statetypes,
         FnSigNode *exsig) {
-    int svErrors = errors;
-    int svWarnings = warnings;
-    errorSilent++;
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerial);
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
     clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
@@ -632,11 +637,58 @@ static int closureTry(TypeCheckState *pstate, ClosureNode *tmpl, ClosurePlan *pl
     clonePopState();
     cloneDclPop(dclpos);
     closureBuild(pstate, copy, plan, statetypes, exsig, 0);
-    int ok = errors == svErrors;
-    errorSilent--;
-    errors = svErrors;
-    warnings = svWarnings;
-    return ok;
+    return errorTrialEnd(&trial);
+}
+
+// Does this type name a closure's hidden struct made since the trial began, or
+// an instance of a generic made with one?
+static int closureTrialMentions(INode *type, int depth) {
+    if (type == NULL || depth > 6 || !isTypeNode(type) || inodeIsError(type))
+        return 0;
+    INode *dcl = itypeGetDerefTypeDcl(type);
+    if (dcl == NULL)
+        return 0;
+    ClosureInfo *info = closureOfStruct(dcl);
+    if (info)
+        return info->serial > errorTrialMark;
+    Nodes *targs = itypeInstanceTypeArgs(dcl);
+    if (targs == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(targs, cnt, nodesp))
+        if (closureTrialMentions(*nodesp, depth + 1))
+            return 1;
+    return 0;
+}
+
+// Is this declaration made by a trial now open, so that it is the trial's and
+// not the program's? A trial makes hidden structs for the copy it checks (and
+// for closures written inside the copy), and a generic's instance made for one.
+// Anything else it reaches first exists without it, is checked only once, and
+// reports for the program (error.h, "A trial").
+int closureTrialOwns(INode *dcl) {
+    for (INode *node = dcl; node; node = inodeGetOwner(node)) {
+        if (node->tag == FnDclTag) {
+            FnDclNode *fn = (FnDclNode*)node;
+            if (fn->namesym == NULL || (fn->closure && fn->closure->serial > errorTrialMark))
+                return 1;
+        }
+        if (node->tag == StructTag) {
+            ClosureInfo *info = closureOfStruct(node);
+            if (info && info->serial > errorTrialMark)
+                return 1;
+        }
+        Nodes *targs = itypeInstanceTypeArgs(node);
+        if (targs) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(targs, cnt, nodesp))
+                if (closureTrialMentions(*nodesp, 0))
+                    return 1;
+        }
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------------------

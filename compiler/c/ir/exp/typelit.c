@@ -831,14 +831,10 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
     INode *probe = cloneNode(&cstate, index->objfn);
     clonePopState();
     cloneDclPop(dclpos);
-    errorSilent++;
-    int svErrors = errors;
-    int svWarnings = warnings;
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerialNow());
     inodeTypeCheck(pstate, &probe, unknownType);
-    int probeok = errors == svErrors && isExpNode(probe) && !inodeIsError(probe);
-    errorSilent--;
-    errors = svErrors;
-    warnings = svWarnings;
+    int probeok = errorTrialEnd(&trial) && isExpNode(probe) && !inodeIsError(probe);
     FieldDclNode *regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
     // A value that is no region but leads to one ('allocRegion', as an actor's
     // state has) is made the head's region: 'x.allocRegion()' is the head from
@@ -853,14 +849,9 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
         probe = cloneNode(&cstate, index->objfn);
         clonePopState();
         cloneDclPop(dclpos);
-        errorSilent++;
-        svErrors = errors;
-        svWarnings = warnings;
+        errorTrialBegin(&trial, closureSerialNow());
         inodeTypeCheck(pstate, &probe, unknownType);
-        probeok = errors == svErrors && isExpNode(probe) && !inodeIsError(probe);
-        errorSilent--;
-        errors = svErrors;
-        warnings = svWarnings;
+        probeok = errorTrialEnd(&trial) && isExpNode(probe) && !inodeIsError(probe);
         regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
     }
     if (probeok && regionfld == NULL) {

@@ -8,6 +8,8 @@
 #ifndef error_h
 #define error_h
 
+#include <stdint.h>
+
 typedef struct INode INode;    // ../ast/ast.h
 
 // Exit error codes
@@ -730,9 +732,37 @@ enum ErrorCode {
 
 extern int errors;
 extern int warnings;
-// Non-zero while a closure's body is tried under a guess at its permissions:
-// a diagnostic is counted and not printed
+// Non-zero while code is checked as a trial (below): a diagnostic is counted and
+// not printed
 extern int errorSilent;
+
+// A trial: code checked on a copy, to learn whether it checks, with its own
+// diagnostics counted, not printed, and not kept (a closure's body under a guess
+// at its permissions; the head of a region allocation). A declaration the trial
+// reaches first is not the trial's: it exists whether or not the trial does, and
+// is checked only once, so what it reports is the program's. The check opens a
+// loud window (errorLoudBegin) around such a declaration, which prints and keeps
+// what it reports.
+typedef struct ErrorTrial {
+    int errors, warnings;           // The counts at the start
+    int loudErrors, loudWarnings;   // The loud ones counted before the start
+    uint32_t mark, svmark;          // What the caller gave, and the mark outside
+} ErrorTrial;
+
+// Open a trial. 'mark' is the caller's tick of its own counter (errorTrialMark
+// reads it back), so that it can tell what the trial itself made.
+void errorTrialBegin(ErrorTrial *trial, uint32_t mark);
+// Close it: the counts are what they were, plus what was reported loud. Answers
+// whether the trial itself reported no error.
+int errorTrialEnd(ErrorTrial *trial);
+// The mark of the outermost trial open, meaningful only while errorSilent
+extern uint32_t errorTrialMark;
+// Open a loud window inside a trial; give what it answers to errorLoudEnd
+int errorLoudBegin(void);
+void errorLoudEnd(int saved);
+// The errors counted, less those a loud window reported inside a trial: a count
+// for a question about the code being checked alone
+int errorsOwn(void);
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);

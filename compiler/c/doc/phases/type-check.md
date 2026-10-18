@@ -196,6 +196,21 @@ initial value, which is the case nothing else can serve.
 source order, and `var a = a` inside a function fails at name resolution because
 the name is not yet in scope.
 
+**A trial does not own what it reaches.** Two checks run on a copy to learn
+whether it checks, with the copy's diagnostics counted and thrown away (`ErrorTrial`,
+`shared/error.h`): a closure's body under a guess at its permissions
+(`closureTry`), and the head of `new a[T](...)` (`typeLitNewInRegion`). The copy's
+names are the program's declarations, and demand checks a declaration the first time
+anything reaches it, trial included. That declaration is checked once, so what it
+reports must not go with the trial: `inodeTypeCheck` opens a loud window
+(`errorLoudBegin`) around any declaration with an owner that is first reached while a
+trial is open and that the trial did not make (`closureTrialOwns`: a closure's hidden
+struct and `()`, an anonymous function, and an instance of a generic made with one,
+all made since the outermost trial began, are the trial's). In the window
+diagnostics print and are kept when the trial ends; the trial's own verdict counts
+the rest. A closure's body uses `errorsOwn`, which leaves the window's out, to tell
+its own failure from another declaration's.
+
 ### Layout before members
 
 **Every type is laid out before any type's members are checked.** A type's
@@ -886,7 +901,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `selfActorSend` | from `fnCallLowerMethod`: a call of one of an actor's behaviours on its state, anywhere but its dispatch function, is a send: the receiver becomes the handle, `<Actor>.self'` on the method's `self`, and the handle's method sending it is selected. In the `init` it is a send like any other: the init runs on the state in the actor's block (`parseactor.c`). In the `final`, outside the actor's methods, or through a state that is not the method's own `self`, it is `ErrorBehaviourSend` |
 | `ir/exp/typelit.c` | `typeLitNewChecked` | an actor's state constructed, by its fields' names or by an init it declares, anywhere but its handle's initializer and its init's fill of its `self` (`typeLitSelfFill`, set by `assignTypeCheck`) is `ErrorActorStateInit`: it would be a state in no actor, from which `selfactor` makes a handle to nothing. The state is also a move type whatever its fields (`structTypeCheck`), so it is never copied out through a method's borrow (`ErrorMoveOut`) |
 | `ir/inode.c`, `ir/types/actor.c` | `inodeTypeCheck`, `actorFutureCall` | a call of a handle's method sending a behaviour, whose value is kept (its expected type neither don't-care nor void, and it is not an `await`'s operand): for a behaviour returning a value it is made a call of the handle's method that makes and sends for a future, and its value is the `actors.Future[T]`; for one returning nothing it is refused (`ErrorFutureVoid`). As a statement of its own it stays the send, fire and forget |
-| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight |
+| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight; and the loud window of a declaration first reached inside a trial that the trial did not make (section 4, "A trial does not own what it reaches") |
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the six causes of section 6, and the hop-by-hop trace |

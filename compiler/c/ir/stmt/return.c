@@ -212,7 +212,7 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         }
         // A closure's value that already failed is reported where it failed: it
         // does not also mismatch the signature the closure was given to
-        else if (tstate->fn && tstate->fn->closure && errors > tstate->fn->closure->errbase)
+        else if (tstate->fn && tstate->fn->closure && errorsOwn() > tstate->fn->closure->errbase)
             ;
         else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
             int whycode;

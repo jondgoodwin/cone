@@ -1,0 +1,65 @@
+// A closure is tried on a copy of its body to find the permissions it needs, with
+// the diagnostics of the trial thrown away. A function the body calls that is
+// checked for the first time in that trial is not the trial's: it is checked once
+// and only there, so its errors are the program's and are reported, once, where
+// they are. They were thrown away with the trial, the function was left marked
+// checked, and generation met its broken body ("Compiler defect: a function
+// declaration whose value is neither a block nor an intrinsic", ErrorUnreachable)
+// with the real error never shown. Each function below is first reached from a
+// closure given to a different place the closure is tried for: a generic's
+// signature bound, an overload set, a trait's method, a closure inside a closure,
+// a generic function's instance, and a function of a type written after main.
+
+mod closure_typecheck_trial_dcl;
+
+pub trait Calc {
+  pub fn run(self &, x f32) f32;
+}
+
+fn viaBound[F fn(f32) f32](f &F, x f32) f32 { f(x) }
+fn taperOne[F fn(u f32) f32] overload taper(m i32, f &F) f32 { f(f32.from(m)) }
+fn taperTwo[F fn(u f32, v f32) f32] overload taper(m i32, f &F) f32 { f(f32.from(m), 2.f) }
+fn viaTrait(c &<Calc, x f32) f32 { c.run(x) }
+
+fn main() {
+  let k f32 = 2.5;
+  viaBound(fn(u f32) f32 { badBound(u) * k }, 3.5);
+  taper(3, fn(u f32) f32 { badOverload(u) * k });
+  viaTrait(fn(x f32) f32 { badTrait(x) * k }, 3.5);
+  viaBound(fn(u f32) f32 { viaBound(fn(v f32) f32 { badNested(v) * k }, u) }, 3.5);
+  viaBound(fn(u f32) f32 { badGeneric[f32](u) * k }, 3.5);
+  viaBound(fn(u f32) f32 { Late.badStatic(u) * k }, 3.5);
+}
+
+fn badBound(x f32) f32 {
+  var t = 2;
+  x * t                                    //~ ErrorNoCandidate:5 "No method declared by `*` accepts the call's arguments"
+}
+
+fn badOverload(x f32) f32 {
+  var t = 2;
+  x * t                                    //~ ErrorNoCandidate:5 "No method declared by `*` accepts the call's arguments"
+}
+
+fn badTrait(x f32) f32 {
+  var t = 2;
+  x * t                                    //~ ErrorNoCandidate:5 "No method declared by `*` accepts the call's arguments"
+}
+
+fn badNested(x f32) f32 {
+  var t = 2;
+  x * t                                    //~ ErrorNoCandidate:5 "No method declared by `*` accepts the call's arguments"
+}
+
+fn badGeneric[T](x T) T {
+  var t = 2;
+  x * t                                    //~ ErrorNoCandidate:5 "No method declared by `*` accepts the call's arguments"
+}
+
+struct Late {
+  pub n i32;
+  pub fn badStatic(x f32) f32 {
+    var t = 2;
+    x * t                                  //~ ErrorNoCandidate:7 "No method declared by `*` accepts the call's arguments"
+  }
+}
