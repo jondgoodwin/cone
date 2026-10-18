@@ -714,6 +714,10 @@ enum ErrorCode {
     ErrorTailSemi = 1510,       // A block whose value is used (a function that returns a value, a block after '=', as an argument or operand or after 'return', the last line of a block whose own value is used, an 'if' or 'match' arm in such a place) ends its last line, an expression or a statement that ends in a block, in ';'. A ';' delimits statements, so the block ends in an empty statement, which has no value: the ';' is left off where the value is used. The ';' is not the author's to keep whatever the line's type is, so a line that gives no value is refused as well. Pointed at the ';'
     ErrorTailOpen = 1511,       // A block whose value is not used (a function that returns nothing, an 'if' or 'match' used as a statement, a loop body, a closure's that returns nothing) ends its last line, an expression, with no ';'. The ';' is kept wherever the value is not used, whatever the line's type is: `print <- "hi"` ending a function that returns nothing is refused. The rule depends on where the block stands and never on the last line's type. Pointed at the line
 
+    // A binary or octal literal that is malformed (parser/lexer.c lexScanNumber)
+    ErrorRadixDigit = 1512,     // A binary or octal literal with no digit after its prefix (`0b`, `0o`, `0b_`) or with a digit its radix does not have (`0b2`, `0o8`): 'b' takes 0 and 1 and 'o' takes 0 to 7. Pointed at the digit that is wrong, or at the prefix's letter when there is none. Hex is not held to this rule: `0x` is read as zero
+    ErrorRadixFloat = 1513,     // A binary or octal literal written with a fraction, an exponent or a float suffix (`0b1.0`, `0o7e2`, `0b1f32`): it is a whole number. Pointed at the '.', the 'e' or 'p', or the suffix. A '.' before a name is the call of a method (`0b101.abs`) and a '..' is the range
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

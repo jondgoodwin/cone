@@ -1,0 +1,111 @@
+// Binary and octal integer literals: what the lexer builds from '0b' and '0o'.
+//
+// They follow hexadecimal's rules in everything but the digits: an upper-case
+// prefix is the same as a lower-case one ('0B' as '0X'), '_' separates digits
+// wherever it falls after the prefix, the integer suffixes are read as they are
+// after any integer, the digits accumulate into 64 bits at most, and a literal
+// with no suffix takes the type of the place it is written into. A leading
+// '-' still negates the literal. Every fact is printed, since a literal's whole
+// content is its value and its type. Malformed forms are in
+// lexical_reject_radix and an out-of-range value in typemgmt_typecheck_litrange.
+
+mod lexical_literals_radix;
+
+import stdio use *;
+
+fn showInt(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showUInt(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn binary() {
+  showInt("bin-plain", 0b101);
+  showInt("bin-upper-prefix", 0B101);
+  showInt("bin-zero", 0b0);
+  showInt("bin-leading-zeros", 0b0000_0101);
+  showInt("bin-underscores", 0b1_0_1);
+  // An underscore may follow the prefix and end the digits, as in hex
+  showInt("bin-underscore-first", 0b_101);
+  showInt("bin-underscore-last", 0b101_);
+  showInt("bin-negative", -0b101);
+  showInt("bin-byte", 0b1111_1111);
+  showInt("bin-i32", 0b101i32);
+  showInt("bin-i64", 0b1i64);
+  showUInt("bin-u8", 0b1010u8);
+  showUInt("bin-u8-max", 0b1111_1111u8);
+  showUInt("bin-u16-max", 0b1111_1111_1111_1111u16);
+  showUInt("bin-u32", 0b1u32);
+  showUInt("bin-u-bare", 0b110u);
+  showUInt("bin-usize", 0b1000usize);
+  showInt("bin-i8-max", 0b111_1111i8);
+  showInt("bin-isize", 0b11isize);
+  // The widest value a literal can carry: sixty-four ones
+  showUInt("bin-u64-max", 0b1111111111111111111111111111111111111111111111111111111111111111u64);
+  showUInt("bin-u64-top-bit", 0b1000000000000000000000000000000000000000000000000000000000000000u64);
+  // A literal takes the type of the place it stands in
+  let a u8 = 0b1111_0000;
+  showUInt("bin-place-u8", u64.from(a));
+}
+
+fn octal() {
+  showInt("oct-plain", 0o17);
+  showInt("oct-upper-prefix", 0O17);
+  showInt("oct-zero", 0o0);
+  showInt("oct-underscores", 0o7_7);
+  showInt("oct-underscore-first", 0o_17);
+  showInt("oct-underscore-last", 0o17_);
+  showInt("oct-negative", -0o17);
+  showInt("oct-all-digits", 0o01234567);
+  showInt("oct-permissions", 0o755);
+  showInt("oct-i32", 0o17i32);
+  showInt("oct-i64", 0o10i64);
+  showUInt("oct-u8", 0o17u8);
+  showUInt("oct-u8-max", 0o377u8);
+  showUInt("oct-u16-max", 0o177777u16);
+  showUInt("oct-u32", 0o10u32);
+  showUInt("oct-usize", 0o10usize);
+  showInt("oct-i8-max", 0o177i8);
+  // Sixty-four bits: 0o1 and twenty-one groups of seven fill 64
+  showUInt("oct-u64-max", 0o1777777777777777777777u64);
+  showUInt("oct-u64-top-bit", 0o1000000000000000000000u64);
+  let a u8 = 0o360;
+  showUInt("oct-place-u8", u64.from(a));
+}
+
+// A plain leading zero is still a decimal number: Cone has no C octal
+fn decimal() {
+  showInt("dec-leading-zero", 017);
+  showInt("dec-zero", 0);
+}
+
+// A '.' before a name is a method call, a '..' is a range, and neither is a
+// fraction. An integer has no such methods, so the call is refused in
+// lexical_reject_int_method; here the range is the one that compiles
+fn ranges() {
+  var total = 0;
+  each i in 0b1..0b100 {
+    total += i;
+  }
+  showInt("bin-range", total);
+  var total8 = 0;
+  each i in 0o1..0o4 {
+    total8 += i;
+  }
+  showInt("oct-range", total8);
+}
+
+fn main() {
+  binary();
+  octal();
+  decimal();
+  ranges();
+}

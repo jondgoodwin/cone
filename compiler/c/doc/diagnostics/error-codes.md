@@ -151,6 +151,15 @@ the same code. They are the parser's, one code each for every kind of block (a f
 arm, a block that is an operand, a macro, a loop's `else`, a loop's body), and a closure that
 is given its type, which type check judges (`closureContextTail`).
 
+`ErrorRadixDigit` and `ErrorRadixFloat` are the two ways a binary (`0b`) or octal (`0o`)
+literal can be malformed (lexer). `ErrorRadixDigit` is no digit after the prefix (`0b`, `0o`,
+`0b_`), pointed at the prefix's letter, or a digit the radix does not have (`0b2`, `0o8`),
+pointed at that digit. `ErrorRadixFloat` is a fraction, an exponent or a float suffix on
+such a literal (`0b1.0`, `0o7e2`, `0b1f32`), pointed at the `.`, the `e` or `p`, or the
+`f`: the literal is a whole number. Each literal is reported once, and a reported one is
+read on as the integer 0 so nothing is said again about it. Hexadecimal is not held to
+these rules (`0x` is read as 0).
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

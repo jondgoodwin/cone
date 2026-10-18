@@ -1,0 +1,58 @@
+// Binary and octal literals the lexer refuses.
+//
+// '0b' takes the digits 0 and 1 and '0o' takes 0 to 7, with '_' between them as
+// hexadecimal allows. A literal with no digit, with a digit its radix does not
+// have, or with a fraction, an exponent or a float suffix is refused once, at
+// the character that makes it so, and the token still ends where it should, so
+// nothing after it is reported twice. A '.' before a name is a method call and
+// '..' is the range, as for any integer. The accepted neighbours are printed by
+// lexical_literals_radix; an out-of-range value is typemgmt_typecheck_litrange's.
+//
+// This is a parse-stage file, so nothing later than the parser runs.
+
+mod lexical_reject_radix;
+
+fn main() {
+  // No digit: reported at the prefix's letter, upper case or lower
+  let a = 0b;                          //~ ErrorRadixDigit:12 "needs at least one binary digit"
+  let b = 0o;                          //~ ErrorRadixDigit:12 "An octal literal needs at least one octal digit"
+  let c = 0B;                          //~ ErrorRadixDigit:12
+  let d = 0O;                          //~ ErrorRadixDigit:12
+  let e = 0b_;                         //~ ErrorRadixDigit:12
+  let f = 0bu8;                        //~ ErrorRadixDigit:12
+  // A digit the radix does not have: reported at that digit, once
+  let g = 0b2;                         //~ ErrorRadixDigit:13 "'2' is not a binary digit; a binary literal holds only 0 and 1"
+  let h = 0b102;                       //~ ErrorRadixDigit:15
+  let i = 0b1_0_9;                     //~ ErrorRadixDigit:17
+  let j = 0b12345;                     //~ ErrorRadixDigit:14
+  let k = 0o8;                         //~ ErrorRadixDigit:13 "'8' is not an octal digit; an octal literal holds only 0 to 7"
+  let l = 0o19;                        //~ ErrorRadixDigit:14
+  let m = 0o7_7_8u8;                   //~ ErrorRadixDigit:17
+  let n = 0o9;                         //~ ErrorRadixDigit:13
+  // A fraction, at the '.'
+  let o = 0b1.0;                       //~ ErrorRadixFloat:14 "A binary literal is a whole number and takes no fraction"
+  let p = 0o7.5;                       //~ ErrorRadixFloat:14 "An octal literal is a whole number and takes no fraction"
+  let q = 0b1.;                        //~ ErrorRadixFloat:14
+  // An exponent, at the 'e' or 'p'
+  let r = 0b1e3;                       //~ ErrorRadixFloat:14 "takes no exponent"
+  let s = 0o7E-2;                      //~ ErrorRadixFloat:14 "An octal literal is a whole number and takes no exponent"
+  let t = 0b1p3;                       //~ ErrorRadixFloat:14
+  let u = 0o7P+1;                      //~ ErrorRadixFloat:14
+  // A float suffix, at the 'f'
+  let v = 0b1f32;                      //~ ErrorRadixFloat:14 "takes no float suffix"
+  let w = 0o7f64;                      //~ ErrorRadixFloat:14
+  let x = 0b1f;                        //~ ErrorRadixFloat:14
+  // A literal reported for its digit is not reported again for what follows it
+  let y = 0b2.5;                       //~ ErrorRadixDigit:13
+  let z = 0o8f32;                      //~ ErrorRadixDigit:13
+  // The same literals, well formed
+  let a1 = 0b1;
+  let b1 = 0o7;
+  let c1 = 0b11u8;
+  let d1 = 0o17_i32;
+  each e1 in 0b1..0b11 {
+    let e2 = e1;
+  }
+  let f1 = 0B1_0;
+  let g1 = 0O1_0;
+}

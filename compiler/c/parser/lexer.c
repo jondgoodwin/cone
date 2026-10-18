@@ -788,15 +788,36 @@ static int lexDotStartsMember(char *p, uint64_t base) {
     return 1;
 }
 
+/** Report a malformed binary or octal literal at the character that makes it so.
+ * Errors name the token's start, so the position is moved to 'at' for the report
+ * and put back; the token's own start is where its node is positioned. */
+static void lexRadixError(int code, char *at, const char *msg, const char *radix, char *srcbeg) {
+    int octal = *radix == 'o';
+    lex->tokp = at;
+    if (code == ErrorRadixDigit && msg == NULL)
+        errorMsgLex(code, "%s %s literal needs at least one %s digit after its '%.2s' prefix",
+            octal ? "An" : "A", radix, radix, srcbeg);
+    else if (code == ErrorRadixDigit)
+        errorMsgLex(code, "'%c' is not %s %s digit; %s %s literal holds only %s", *at,
+            octal ? "an" : "a", radix, octal ? "an" : "a", radix, octal ? "0 to 7" : "0 and 1");
+    else
+        errorMsgLex(code, "%s %s literal is a whole number and takes no %s",
+            octal ? "An" : "A", radix, msg);
+    lex->tokp = srcbeg;
+}
+
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
 
     char *srcbeg;        // Pointer to the start of the token
-    uint64_t base;        // Radix for integer (10 or 16)
+    uint64_t base;        // Radix for integer (2, 8, 10 or 16)
     uint64_t intval;    // Calculated integer value for integer literal
     uint64_t digit;     // Value of the digit being accumulated
     char isFloat;        // nonzero when number token is a float, 'e' when in exponent
     char overflow;      // nonzero once the digits no longer fit in intval
+    char badRadix = '\0';   // nonzero once a binary or octal literal has been reported
+    int ndigits = 0;     // digits taken after a binary or octal prefix
+    const char *radix = NULL;  // "binary" or "octal" for those literals
 
     lex->tokp = srcbeg = srcp;
 
@@ -811,6 +832,16 @@ void lexScanNumber(char *srcp) {
         base = 16;
         srcp += 2;
     }
+    else if (*srcp=='0' && (*(srcp+1)=='b' || *(srcp+1)=='B')) {
+        base = 2;
+        radix = "binary";
+        srcp += 2;
+    }
+    else if (*srcp=='0' && (*(srcp+1)=='o' || *(srcp+1)=='O')) {
+        base = 8;
+        radix = "octal";
+        srcp += 2;
+    }
 
     // Validate and process remaining numeric digits
     isFloat = '\0';
@@ -818,8 +849,16 @@ void lexScanNumber(char *srcp) {
     intval = 0;
     while (1) {
         // Only one exponent allowed. In a hex literal 'e' and 'E' are digits,
-        // so only 'p' or 'P' can begin its exponent
-        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P')) {
+        // so only 'p' or 'P' can begin its exponent. A binary or octal literal has
+        // none: its 'e' is not a digit, so an 'e' that a digit follows is an exponent
+        // written where there can be none, and so is a 'p'
+        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P'
+            || (radix && (*srcp=='e' || *srcp=='E')
+                && ((srcp[1]>='0' && srcp[1]<='9') || ((srcp[1]=='-' || srcp[1]=='+') && srcp[2]>='0' && srcp[2]<='9'))))) {
+            if (radix && !badRadix) {
+                lexRadixError(ErrorRadixFloat, srcp, "exponent", radix, srcbeg);
+                badRadix = '\1';
+            }
             isFloat = 'e';
             if (*++srcp == '-' || *srcp == '+')
                 srcp++;
@@ -841,13 +880,27 @@ void lexScanNumber(char *srcp) {
             // ('4.sqrt()', '3.e5'), not a decimal point; '3.' alone is a float
             if (lexDotStartsMember(srcp, base))
                 break;
+            if (radix && !badRadix) {
+                lexRadixError(ErrorRadixFloat, srcp, "fraction", radix, srcbeg);
+                badRadix = '\1';
+            }
             srcp++;
             isFloat = '.';
             continue;
         }
         // Extract a number digit value from the character
-        if (*srcp>='0' && *srcp<='9')
-            digit = *srcp++ - '0';
+        if (*srcp>='0' && *srcp<='9') {
+            digit = *srcp - '0';
+            // A digit the radix does not have is refused where it stands, and the
+            // scan goes on through the rest of the number so one literal is
+            // reported once
+            if (radix && digit >= base && !badRadix) {
+                lexRadixError(ErrorRadixDigit, srcp, radix, radix, srcbeg);
+                badRadix = '\1';
+            }
+            srcp++;
+            ndigits++;
+        }
         else if (*srcp=='_') {
             srcp++;
             continue;
@@ -858,6 +911,8 @@ void lexScanNumber(char *srcp) {
             digit = *srcp++ - 'a'+10;
         else
             break;
+        if (radix && digit >= base)
+            digit = 0;
         // Accumulate the digit unless it would carry past 64 bits. The digits
         // are still consumed so the token ends where it should, and an integer
         // that overflowed is reported once, below, once its suffix is known.
@@ -867,8 +922,21 @@ void lexScanNumber(char *srcp) {
             intval = intval*base + digit;
     }
 
+    // A binary or octal literal needs a digit. The report is at the prefix's
+    // letter: the character after it may be a space or the line's end
+    if (radix && !badRadix && ndigits == 0) {
+        lexRadixError(ErrorRadixDigit, srcbeg + 1, NULL, radix, srcbeg);
+        badRadix = '\1';
+    }
+
     // Process number's explicit type as part of the token
     if (*srcp=='f') {
+        // A float suffix on a binary or octal literal would make it the float read
+        // from its own spelling, which is no number
+        if (radix && !badRadix) {
+            lexRadixError(ErrorRadixFloat, srcp, "float suffix", radix, srcbeg);
+            badRadix = '\1';
+        }
         isFloat = 'f';
         lex->langtype = (INode*)f32Type;
         if (*(++srcp)=='6' && *(srcp+1)=='4') {
@@ -909,6 +977,15 @@ void lexScanNumber(char *srcp) {
         // as an integer does (litAdoptNumberType), and is an f64 where nothing
         // says: unknownType here is newFLitNode's cue
         lex->langtype = unknownType;
+
+    // A binary or octal literal that was reported is a plain integer, so nothing
+    // after it reads a float or a value read from its spelling
+    if (badRadix) {
+        isFloat = '\0';
+        intval = 0;
+        overflow = '\0';
+        lex->langtype = unknownType;
+    }
 
     // Set value and type
     if (isFloat) {

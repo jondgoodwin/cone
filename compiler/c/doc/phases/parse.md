@@ -159,6 +159,22 @@ carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
 `lexical_reject_overflow` holds the boundary in both bases.
 
+**`0b` and `0o` are integer prefixes beside `0x`, on the same scan.** `lexScanNumber` sets
+`base` to 2 or 8 (and `radix`, the word the messages use) and runs the loop it runs for 16:
+the same `_` separators, the same accumulation and overflow rule, the same suffixes, and an
+upper-case prefix letter as `0X` is. What the radix adds is refusals, each at the character
+that causes it through `lexRadixError`, which moves the token position there for the report:
+a digit past the radix, and no digit at all (`ErrorRadixDigit`, the latter at the prefix's
+letter), and a `.` that is no member access or range, an `e`/`E` that a digit follows, a `p`/`P`
+or an `f` suffix (`ErrorRadixFloat`), which would otherwise make a float read back from
+the literal's own spelling (`atof("0o7")` is 0). Hex's `e` is a digit and its `p` an
+exponent; a binary or octal literal has neither. A literal reported once is finished as the
+integer 0 with an unsuffixed type, so nothing after it is reported twice, and the digits
+are still all consumed so the token ends where it should. `lexDotStartsMember` needs no case
+for them: a `.` before a name is a call and `..` a range, as after any integer.
+`lexical_literals_radix` holds the values and `lexical_reject_radix` the refusals;
+`typemgmt_typecheck_litrange` holds the range rule, which reads the spelling.
+
 **A float literal must fit the type its suffix gives it.** With a suffix its type is
 decided here — `f32` for `f` and `f32`, `f64` for `f64` — and nothing later changes it, so
 a value past that type's range would be generated as infinity. `lexScanNumber`
