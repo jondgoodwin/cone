@@ -1,0 +1,757 @@
+
+<!-- from: conc-actors.html#qfn (with #fine-tuning) | suggested home: design notes, Concurrency (queued methods) | why: planned, not built; also bears on the open question whether an actor mailbox and a channel are one mechanism (Lane C) -->
+	<h2 id="fine-tuning">Fine-tuning</h2>
+	<p><i>Not built yet: the queued method, below.</i></p>
+
+	<h2 id="qfn">Queued methods: qfn (not built)</h2>
+	<p>Any particular channel's messages are all the same type, but might very well be some sort of variant type,
+		allowing different kinds of messages to be sent. Cone makes it easier to support this kind of message-passing
+		by supporting the definition of queued-methods for the message type. For example:
+<pre>
+struct CommandMessage {
+  pub counter u32;
+  pub qfn increment() {
+    ++counter;
+  }
+  pub qfn decrement() {
+    --counter;
+  }
+}
+</pre>
+	<p>A message can be sent to the actor in what looks like a normal method call:</p>
+<pre>
+actor.increment();
+</pre>
+	<p>However, instead of executing the function right away, the message is appended to the actor's queue.
+		Later, the actor can pop this message off and dispatch it, which automatically then dispatches to the 
+		appropriate method's logic, updating the counter that is part of the actor's state.</p>
+	<p>A "qfn" will never specify a return type, because it is always being performed asynchronously with no guarantee of
+		any value ever being calculated or returned.  If a return value is desired, then one can pass the along a reference
+		to the actor to which a message back can be sent.</p>
+
+<!-- from: conc-sharing.html#race (opening paragraphs and the as-built note) | suggested home: design notes, Concurrency (Sendable as designed) | why: the design text says a shared immutable reference is sendable; as built, every borrow but a whole-program one is refused (the page now states the as-built rule). conc-primitives.html also lists scoped threads as "deliberately not provided" while this note says borrows are checked "until scoped threads join inside it": a question for Jon (Lane C) -->
+	<h2 id="race">Race condition safety</h2>
+	<p>Any data passed or shared between threads must be done so safely.
+		Cone ensures this by only allowing "sendable" data to be sent to another thread.
+		The only type of data that is not sendable is a reference that has the "mut" or "ro" permission,
+		or any aggregate type containing such a reference. Data of any other type is sendable,
+		including shared, immutable references, unique references (which are moved from one thread to another),
+		and any other move or copy type.</p>
+	<p>These restrictions apply to all mechanisms that support communications between threads,
+		such as thread creation, concurrent data structures, and more.</p>
+	<p style="margin-left: 40px;"><i>Note: As built, a shared, immutable reference is not sendable: a borrow of
+		any permission, <span class="pre">&amp;imm</span> included, is refused where
+		<span class="pre">Sendable</span> is asked (Error 1194, as for <span class="pre">Channel[&amp;imm i64]</span>),
+		save one that lasts the whole program, handed where the generic asks
+		<span class="pre">Sendable + 'static</span> (<a href="#static-borrow">below</a>; a borrow of a local there is
+		Error 1249). What the compiler checks today, next, is the rule as built.</i></p>
+
+<!-- from: conc-sharing.html "Message-based Communications" (no id) | suggested home: design notes, Concurrency (actors over MPSC channels) | why: an early description of actors as threads owning MPSC queues; actors as built are on conc-actors.html. Relevant to the OPEN question whether an actor mailbox and a channel are one mechanism (Lane C) -->
+	<h2>Message-based Communications</h2>
+	<p>An efficient model for thread-based concurrency is independent actors (threads) that throw work to each
+		other in the form of messages placed on an actor's queue. Each actor pulls off messages from its queue in order,
+		and then performs the work requested by the message. For now, let's assume that actors do not need
+		shared, mutable access to objects nor do they perform any resource-blocking operations.</p>
+	<p>A straightforward way to implement this actor model involves using library-packaged actors
+		that own and use concurrent message queues (or channels). 
+		Such multiple-producer-single-consumer (MPSC) channels are themselves
+		library packaged-delivered concurrent FIFO data structures. 
+		Any actor that wants some actor to perform work adds that work to the actor's queue
+		in the form of a message. As part of a continuous loop, the actor owning the queue 
+		pops a message off the queue and completely performs the non-blocking work it requests.</p>
+	<p>Actors, which own such a queue, have a page of their own, <a href="conc-actors.html">Actors</a>, and so has what an actor does while it waits for another's answer, <a href="conc-await.html">Awaiting a reply</a>.</p>
+
+<!-- from: conc-sharing.html "Concurrent data structures" (no id) | suggested home: design notes, Concurrency | why: planned, not built (the page note says so); the claim "never use locks and never block" describes the plan (Lane C) -->
+	<h3>Concurrent data structures</h3>
+	<p>The message queue used by actor is one of several kinds of concurrent data structures.
+		Other examples include concurrent arrays and dictionaries.</p>
+	<p>Concurrent data structures are implemented in a way that makes it always possible
+		to access and mutate these structures across multiple threads.
+		Every operation (method) on these types is essentially atomic. 
+		Importantly, these operations never use locks and never block.</p>
+
+<!-- from: conc-io.html#original-exploration | suggested home: design notes, Concurrency (why actors, not async/await or green threads, for I/O) | why: an archived design essay. Its argument (await spreads up the stack; detecting blocked threads is costly; actors put the continuation at the top of the stack and can take a cancel message) is now told briefly, without naming languages, in conc-await.html#await-sync. The essay names "Gothreads" (Lane C) -->
+	<h2 id="original-exploration">Appendix: the original exploration (an archived design essay)</h2>
+
+	<p>The text under this heading is the original exploration of the question, kept as it was
+		written. What is built is described above.</p>
+	<p>I/O encompasses any processing activity that extends beyond the boundaries of CPU/memory computation,
+		including user input and presentation, file or network requests, timers, etc.
+		From the perspective of the CPU, I/O activity can often take a long, indeterminate amount of time,
+		which presents a complicating challenge to efficiently scheduling concurrent work.</p>
+	<p>In essence, we want to satisfy these essential requirements:</p>
+	<ul>
+	<li>We don't want I/O activity to block the CPU from performing other available work.</li>
+	<li>When any I/O activity reports progress, we often want to continue processing where we left off,
+		based on a remembered execution and data state (context).</li>
+	<li>We sometimes want the option to "cancel" already-requested i/o work based on time-outs, failures or other changed conditions.
+		Sometimes, we want to cascade cancellation through multiple levels of already-submitted requests.</li>
+	</ul>
+	
+	<p>There are several architectural approaches to satisfy these requirements:</p>
+	<ul>
+	<li><b>Async/Await.</b>
+		I/O requests are always issued asynchronously (non-blocking), whose returned type is a promise.
+		When I/O finishes or fails, the promise fires the appropriate pre-determined logic. 
+		<p>Syntactic sugar is used to hide the complexity of
+		the promise handling, so that the "before" and "after" code look like a single block of sequential code.
+		Under the covers, they are actually independent logic, with the context of the "before" code captured as
+		an implicit closure that is passed as a continuation to the "after" code.</p>
+		<p>There are two significant drawbacks to this approach:</p>
+		<ul>
+		<li>async/await logic infects all functions/methods above it in the execution stack</li>
+		<li>There is no graceful way to implement cancellability</li>
+		</ul></li>
+		
+	<li><b>Gothreads.</b>
+		I/O requests are synchronous (blocking). It is up to the runtime scheduler to detect that a gothread 
+		is effectively blocked on i/o and effectively re-balance work so that other gothreads keep all CPUs busy.
+		<p>Although this approach avoids the infectious coloring issue of async/await
+			and is easier on the programmer (no extra annotations), it has its own drawbacks:</p>
+		<ul>
+		<li>The runtime logic needed to detect that a gothread is blocked on i/o is not cheap, quick or foolproof.
+			The same holds true for the reverse, noticing when the gothread becomes unblocked.
+			As a result, this approach is likely slower than an equivalent async/await implementation.</li>
+		<li>There is no graceful way to implement cancellability</li>
+		</ul>
+		
+	<li><b>Actors.</b>
+		Whenever multi-step i/o is required, the requesting actor (Requester) spawns a new actor (Workflow).
+			Part of the spawning message is the id of the Requester actor to return the final result to.
+			Workflow issues i/o requests as asynchronous messages to some environmental i/o actor.
+			Completed (or failed) i/o are sent as messages to the Workflow actor who can use its preserved
+			context to know what to do next. When the Workflow actor is finished with all its processing,
+			it returns a response to the Requester workflow as a message.</p>
+		<p>Like async/await, this uses continuation-passing style. In this case, the continuation is an actor (and its state)
+			able to support multiple kinds of messages. Since the actor accepts asynchronous messages from
+			any actor, it can also support the notion of a cancel message, and even the ability to pass that
+			cancel message on, dependending on its state. Unlike async/await, there is no notion of infectious
+			function colors up the execution stack, as all actors are already found at the top of the execution stack from the
+			point-of-view of the runtime scheduler.</p>
+		<p>The primary challenge of this approach is that it requires the programmer to manage
+			the concurrent workflow explicitly with actors. This may be a challenge for programmers
+			who are only familiar with synchronous-style programming.</p></li>
+	</ul>
+		
+	<p>Currently, the projected design for Cone is leaning towards an Actor-based approach for handling asynchronous I/O,
+		sequential workflows, and cancellability.</p>
+<!-- from: safe-types.html#intfloat (Lane E) | suggested home: design notes, number types | planned, not built: the primitive int-N and float-N types. The working part of the old #customnbr (a struct wrapping a standard number, with its own from) stays on safe-types.html#customnbr, now shown with a units example that runs. -->
+	<h4 id="intfloat">The primitive 'int' and 'float' number types</h4>
+	<p style="margin-left: 40px;"><i>Note: The primitive <span class="pre">int-</span> and
+		<span class="pre">float-</span> types are not implemented, and the standard number
+		types (<span class="pre">i32</span>, <span class="pre">f64</span> and the rest) are built
+		into the compiler rather than defined in a library. A custom number type written as below,
+		with a standard number type as its field in place of <span class="pre">int-32</span>, does
+		work: a struct wrapping the number, methods on it, and its conversion from a number,
+		<span class="pre">Nbr32.from(somenbr)</span>, declared as below. The standard number
+		types' <span class="pre">from</span> is built into the compiler with them, and so are
+		<a href="guide-numbers.html#bits">an integer's bit methods</a>, which are implemented.</i></p>
+	<p><span class="pre">int-32</span> specifies a 32-bit integer.
+		Any integer value from 1 to 128 may be specified after the dash, to establish the number of bits.</p>
+	<p>Similarly, <span class="pre">float-32</span> is a 32-bit floating point number.
+		Floats only support 32 and 64-bit values.</p>
+	<p>Unlike <span class="pre">i32</span>, <span class="pre">int-32</span> does not define any methods
+		for manipulating its values (e.g., adding and subtracting).
+		It is also agnostic on the semantic interpretation of its values ... it does not even signify
+		whether the integer value should be interpreted as signed or unsigned.
+		Its lack of built-in methods and interpretation is what makes it an ideal foundation for defining
+		new types with very different interpretations and methods.</p>
+
+<!-- from: safe-types.html#customnbr (Lane E) | suggested home: design notes, beside int-N above | the int-32-based Nbr32 examples; int-32 is not built (safe-types now shows a struct over f64 that runs) -->
+	<p>Creating a new numeric integer type is nearly as simple as wrapping an primitive integer
+		type as a field in a struct. For example:</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+}
+</pre>
+	<p>Methods may be added to this struct to define the operations that may be performed on values of this type.
+		These methods can make use of fast internal integer primitive functions (TBD).</p>
+<pre>
+struct Nbr32 {
+    pub nbr int-32;
+
+    pub fn from(n i32) Nbr32 {
+        new Nbr32(n);
+    }
+}
+</pre>
+
+<!-- from: safe-types.html#coercion (Lane E) | suggested home: design notes, with exceptions and throws | the old coercion example uses throws and ? (not built), so it cannot run; safe-types now shows coercions that compile -->
+		For example:</p>
+<pre>
+fn doStuff () {
+  imm bigint u32 = 101u8;        // Coerce a u8 to u32
+  mut matrix = new So[Mat4];     // Allocate a matrix
+  imm float = mat4det(matrix)?;  // Coerce So[Mat4] to &amp;Mat4
+}
+
+fn mat4det(mat &amp;Mat4) f32 throws DivByZero {
+  // ...
+  return 1.0;                     // Coerce f32 to Result&lt;&gt;
+}
+</pre>
+
+
+<!-- from: guide-structs.html#mutation (a method named = taking over assignment) | suggested home: design notes, planned not built | MEASURED 16 Oct: a declared = method is silently not called (repro A/findings/assign-method-not-called.cone) | Lane A, verbatim from guide-structs.html at HEAD lines 661-674 -->
+	<h4 id="mutation">Value Mutation Methods</h4>
+	<p>Several operator methods may be implemented that change an existing mutable value in memory.
+		When the value is held by some variable, the compiler effectively obtains a mutable reference to the variable,
+		and calls the method using the mutable reference.</p>
+	<p>This can be illustrated with a simple example. Let's say that a type wants to override the simple assignment
+		operator with a method that performs a deep (rather than the default shallow) copy of the value.
+		The signature of the method will accept a mutable reference to the target:</p>
+<pre>
+fn `=`(self &amp;mut, value) Self {
+}
+</pre>
+	<p>When assignment is performed for a value of this type (<span class="pre">a = b</span>),
+		it will obtain a mutable borrowed reference to the lval 'a' and then
+		call the method like this:  <span class="pre">&amp;uni a.`=`(b)</span>.</p>
+
+<!-- from: guide-structs.html#properties (computed properties with a setter; the Counter example's getter lacks self, and the setter is not built, Error 1016) | suggested home: design notes, planned not built | rec-methods.html#properties keeps the getter, which works | Lane A, verbatim from guide-structs.html at HEAD lines 696-731 -->
+	<h4 id="properties">Computed Properties</h4>
+	<p>For public fields, there is often no reason to implement getters and setters to offer
+		direct access to their values, because it is faster to access the fields directly.
+		However, if it would be unsafe to offer direct access to certain fields,
+		in order to preserve specific data invariants, one should make them private
+		and then potentially offer appropriate getter and setter methods that preserve the invariants.</p>
+
+ 	<p>Implementing a getter and setter is easy:</p>
+<pre>
+struct Counter {
+	count u32 = 0;
+
+  // a getter
+  pub fn counter() u32 {
+    count;
+  }
+
+  // a setter (notice the use of a mutable reference, since the value will be changed)
+  pub fn count(self &amp;mut, cnt u32) {
+    count = cnt;
+  }
+}
+</pre>
+	<p>And here we use them:</p>
+<pre>
+mut x = new Counter();
+x.counter; // 0
+x.counter = 10; // uses the "setter" to set the value
+x.counter; // 10
+</pre>
+	<p>Since we can omit the parentheses when using a getter or setter,
+		their use looks just like access to a public field.
+		This makes it possible to start off with a type that makes a field public,
+		and then later changes it to private because of an invariant.
+		By implementing getters and setters instead, the API can be preserved
+		even as the implementation evolves.</p>
+
+<!-- from: guide-structs.html#clone (the clone method as first designed: an initializer that copies would call) | suggested home: design notes | today a clone method is ordinary, and one written against self &new is refused; rec-methods.html#finalizer says so | Lane A, verbatim from guide-structs.html at HEAD lines 1611-1627 -->
+	<h4 id="clone">Clone method</h4>
+<p>As discussed in <a href="mem-moves.html">Moves in depth</a>, it is not always obvious
+	how to create a faithful copy of some types' values.
+	When this difficulty exists (e.g., a value that contains references to other values),
+	a type may define a <span class="pre">clone</span> method
+	whose logic is capable of creating a faithful copy.</p>
+<p>A clone method is essentially an initializer whose second parameter
+	is a value or another borrowed reference to the value we want to copy:</p>
+<pre>
+fn clone(self &amp;new, from &amp;) {
+  *self = new Self(x: from.x, y: from.y, z: from.z);
+}
+</pre>
+	<p>A clone method takes no part in copying: whenever copies are automatically made (e.g., assignment or
+		function calls), no copy calls it, so declaring one does not make a type copyable. It is an ordinary method,
+		called by name. A clone method written against the <span class="pre">new</span> permission, as above, is refused
+		under that name (see the note at <a href="#initializer">Initializers</a>).</p>
+
+<!-- from: guide-enums.html#partial (partial matches on arrays, structs and variants, with the open spelling question) | suggested home: design notes, planned not built | not built | Lane A, verbatim from guide-enums.html at HEAD lines 914-951 -->
+<p style="margin-left: 40px;"><i>Note: Not implemented: partial matches that test the values inside an array,
+    a struct or a variant (<span class="pre">case is [1, _]</span>,
+    <span class="pre">case is Point[0., _]</span>, <span class="pre">SomeInt[&lt;0]</span>). The square brackets
+    those partial patterns are written with here are provisional:
+    how a pattern spells a type or a construction is an open design question, as is how a variant is constructed.</i></p>
+<h4 id="partial">Partial matches</h4>
+  <p>When dealing with a composite data structure, partial matching
+  supports value or type matching on selected parts of that data.
+  A partial match pattern mimics the type structure of the data we are matching
+  against, specifying match patterns for the value or type of 
+  particular substructural elements.
+  It also supports "destructuring", binding variables to these or other substructural elements.</p>
+  <p>Partial match patterns begin with the <span class="pre">is</span> operator. 
+    Additional specifics of the pattern vary by type.</p>
+
+  <h5 id="array">Collection partial matches</h5>
+  <p>A partial match can check whether an array (or array reference) begins with
+    elements that match patterns:</p>
+<pre>
+match numbers {
+  case is [1, _] { 1; }
+  case is [_, 1] { 2; }
+  case is [&lt;=0, &lt;=0] { 3; }
+  else { 4; }
+}
+</pre>
+
+  <h5 id="struct">Struct partial matches</h5>
+  <p>A matching pattern may be created for specific named fields:</p>
+<pre>
+match points {
+  case is Point[0., _] { 1; }
+  case is Point[_, 0.] { 2; }
+  case is Point[&lt;0., &amp;lt=0.] { 3; }
+  else { 4; }
+}
+</pre>
+  <p>Any unspecified fields in a struct pattern are assumed to match.</p>
+
+<!-- from: guide-enums.html#variantpartial (matching inside a variant's values: SomeInt[<0], PointStruct[x=_, y=_]) | suggested home: design notes, with the block above | not built | Lane A, verbatim from guide-enums.html at HEAD lines 1074-1082 -->
+  <p>If desired, pattern matching and binding can also be applied to the internal value(s):</p>
+<pre>
+match oddval {
+  case imm intval = SomeInt[&lt;0] { -intval; }
+  case imm intval = SomeInt { intval; }
+  case is PointStruct[x=_, y=_] { i32.from(x * y); }
+  case is None { 0; }
+}
+</pre>
+
+<!-- from: guide-enums.html#option-create (a plain value coerced to an Option: mut maybeInt ?i32 = 5) | suggested home: design notes | not built; guide-dict.html#option says to write Some(5) | Lane A, verbatim from guide-enums.html at HEAD lines 1104-1114 -->
+<pre>
+mut maybeInt ?i32 = 5;
+</pre>
+	<p>Notice that the type specifies a question mark before the integer type.
+		The question mark signifies this is an Option type. It is a syntactic abbreviation for
+		<span class="pre">Option[i32]</span>.</p>
+	<p>The value of 5 is automatically coerced into its optional integer equivalent
+		(not built yet, as the note above says: write <span class="pre">Some(5)</span> today).
+		It would also be possible to specify this explicitly using
+		<span class="pre">Some[i32](5)</span> or its shorter inferred version:
+		<span class="pre">Some(5)</span>.</p>
+
+<!-- from: guide-enums.html#option-test (an Option as a condition through isTrue, and why narrowing never comes from a method) | suggested home: design notes | not built; the reasoning paragraph is design rationale worth keeping | Lane A, verbatim from guide-enums.html at HEAD lines 1154-1175 -->
+	<h4 id="option-test">Testing for a value</h4>
+	<p style="margin-left: 40px;"><i>Note: Not built. Core's Option declares no <span class="pre">isTrue</span>, so an
+		Option used as a condition is refused (Error 1013: the condition requires a true/false value); test the
+		variant, <span class="pre">maybePoint is None</span>, or compare, <span class="pre">maybePoint == None</span>,
+		as below.</i></p>
+	<p>An Option used as a condition, <span class="pre">if maybePoint { ... }</span>, is a plain truth test:
+		it asks the Option's <span class="pre">isTrue</span>, which is true when it holds a value, and nothing more.
+		It does not unwrap anything, and <span class="pre">maybePoint</span> is the same optional value inside the block.
+		Narrowing comes only from the language's own tests, <span class="pre">is</span> and a binding, never from what
+		a method returns: <span class="pre">isTrue</span> is one method among others, and a three-variant enum whose
+		false covers two of them has no one variant to narrow to. To ask whether a value is there and say
+		so, test the variant:</p>
+<pre>
+if maybeRef is None {
+  // do some error recovery actions
+}
+</pre>
+	<p>Inside the block <span class="pre">maybeRef</span> is known to be <span class="pre">None</span>, and after a block
+		that leaves it is known not to be (<a href="guide-conditionals.html#flow">Flow typing</a>). It is still the whole
+		Option: <span class="pre">Some</span> holds its integer as a type, with no field to name,
+		so to work with the value inside, bind it.</p>
+
+
+<!-- from: guide-enums.html#option-planned (the Option operators: ?, or, ?.) | suggested home: design notes (error-handling design) | not built, kept as first written | Lane A, verbatim from guide-enums.html at HEAD lines 1226-1281 -->
+	<h4 id="option-planned">The Option operators</h4>
+	<p style="margin-left: 40px;"><i>Note: Nothing in this section is built. It is the design these pages
+		first described, kept as it was written. The design of error handling is under way, and will rewrite
+		this section, and with it the operators an Option and a Result are meant to have.</i></p>
+
+	<h5 id="option-force">Force unwrap, treat None as an exception</h5>
+	<p style="margin-left: 40px;"><i>Note: Not built. A <span class="pre">?</span> after a value is
+		refused as an invalid term; unwrap with <span class="pre">match</span> until it is built.</i></p>
+	<p>One approach is to expect the value to <b>not</b> be None, and treat it as an
+		<a href="guide-functions.html#throwing">exception</a> if it is.
+	To handle a optional value this way, follow the optional value with the <span class="pre">?</span> operator.</p>
+<pre>
+imm val = maybeInt?;
+</pre>
+	<p>If maybeInt is not None, then val will be the unwrapped integer value inside.</p>
+	<p>An exception will be thrown if maybeInt is None.
+	This exception can be caught and handled if a <span class="pre">catch None</span> handler is provided.
+		If one is not specified, the exception will panic.</p>
+
+	<h5 id="option-default">Give None a default value</h5>
+	<p style="margin-left: 40px;"><i>Note: Not built. <span class="pre">or</span> with an optional value
+		on its left is not this operator yet, so the example below does not compile;
+		unwrap with <span class="pre">match</span> until it is built.</i></p>
+	<p>An alternative approach to unwrapping involves specifying a default value
+		use when the optional value is None. This form of unwrapping uses the
+		<span class="pre">or</span> operator:</p>
+<pre>
+imm val = (maybeInt or 0) * scale;
+</pre>
+	<p><span class="pre">val</span> will use the value of <span class="pre">maybeInt</span>
+		if it is not None. Otherwise it will use 0.</p>
+	<p>The value to the right of the operator cannot be a optional type,
+		and its type must match that of the wrapped type for the optional value on the left.
+		The expression for the default value will only be evaluated
+		when the optional value is None.
+	</p>
+
+	<h5 id="option-propagate">None propagation on safe method calls</h5>
+	<p style="margin-left: 40px;"><i>Note: Not built. The compiler reports <span class="pre">?.</span>
+		as reserved wherever it is written.</i></p>
+	<p>A third operator applies when we want to perform some operation on a optional value
+		when it is <b>not</b> None, but evaluate to None when it is.
+		This approach uses the <span class="pre">?.</span> operator,
+		a variation of the dot operator used to perform methods or access fields:</p>
+<pre>
+imm x = maybePoint?.dist();
+</pre>
+	<p>If maybePoint is not None, then x is a optional value that wraps the calculated distance of that point.
+		However, if maybePoint is None, then x will also be None.
+		In effect, we are performing a method or accessing a field if it is safe to do so,
+		and propagating None otherwise.
+		Unlike the previous two operators, the result of using <span class="pre">?.</span> is always a optional value.
+	</p>
+	<p>This operator may also appear on the left hand side of an assignment statement,
+		and will bypass the assignment altogether if the optional value is None.
+	</p>
+
+<!-- from: guide-collections.html#closure (each over a closure) | suggested home: design notes | not built | Lane A, verbatim from guide-collections.html at HEAD lines 1696-1720 -->
+<h4 id="closure">Closure Iterator</h4>
+	<p><i>Not built yet: <span class="pre">each</span> over a closure. <a href="guide-functions.html">Closures</a> are built,
+			but a source for <span class="pre">each</span> today is a value with a <span class="pre">next</span> or an
+			<span class="pre">iter</span> method. The closure spelling below is a sketch.</i> Look to closures for iterator versatility.
+			Using closure iterators, one can scan through elements in a complex collection,
+			retrieve values from a streaming resource, algorithmically calculate a sequence of values, etc.
+		Because closures are stateful, they can generate a new value on every call.</p>
+	<p>In order for a closure to be suitable as an iterator, it must be able to signal when it is done producing values.
+		 It typically does this by returning an <a href="guide-enums.html#option">optional value</a>,
+		 with the value of <span class="pre">None</span> signalling when it is done, just as a cursor's
+		 <span class="pre">next</span> does.</p>
+	<p>In the following example, imagine a closure that starts off
+	holding the value 12, and halves (and returns) its value on each call. When the value gets to 0,
+	it returns <span class="pre">None</span> instead:</p>
+<pre>
+mut sum = 0;
+each x in |{cnt = 12}| if cnt &gt; 0 {Some(cnt /= 2)} else {None} {
+  sum += x;
+}
+</pre>
+		<p>The value of sum at the end will be 10, as each successive call to the closure returns 6, 3, and 1.
+			After 1, it returns <span class="pre">None</span>, which stops iteration.</p>
+		<p>Because it is stateful, a closure is typically single use. It is created before it is needed, used to produce values lazily,
+			and then discarded afterward.
+			This is because, unless its state can be independently reset, it will only ever afterward say it is out of values.</p>
+
+<!-- from: concurrency.html (no id; the paragraph after the kinds of concurrency) | suggested home: design notes, Concurrency (structured concurrency as designed) | why: states as fact that "all the above models support structured concurrency" and that libraries split m pieces of work across n processes; as built, the page now says what each tool does (concurrency.html#structured), and splitting across processes is not built (Lane C) -->
+	<p>All the above models support structured concurrency. 
+		All new processes or threads are effectively owned resources. 
+		Like all owned resources, there is a programmatic point-in-time when owned threads are joined, terminated and freed
+		according to the logic of the finalizer.
+		Libraries also support the ability to split m pieces of work across n independent processes/logic.
+		(A <a href="conc-parallel.html#parallel"><span class="pre">parallel each</span></a> loop splits the pieces of a loop
+		across the actors package's worker threads; splitting across processes is not implemented.)</p>
+
+<!-- from: guide-functions.html#method (the special name my inside a method call's arguments) | suggested home: design notes, planned not built | the old Numbers note says my is not built | Lane F, verbatim from guide-functions.html at HEAD (a74d7982a) lines 234-238 -->
+	<p><b>Note:</b> Inside any argument on a method call,
+		the special name <span class="pre">my</span> may be used.
+		Its value is the same as the object of the method call.
+		This can be helpful to call helper methods on the object
+		to prepare other argument values.</p>
+
+<!-- from: guide-functions.html#return (a throws signature) | suggested home: design notes, with the exceptions block | not built | Lane F, verbatim from guide-functions.html at HEAD (a74d7982a) lines 399-407 -->
+	<p><span class="pre">throws</span> may be specified after the return types to show
+		that a function may throw an error value
+		(using <span class="pre">throw</span> instead of <span class="pre">return</span>)
+		if something goes wrong.
+		See <a href="#throws">Results and throws</a> for more information.</p>
+<pre>
+// returns an integer on success, or else throws ErrorCond value for an exception
+fn dosomething() i32 throws ErrorCond;
+</pre>
+
+<!-- from: guide-functions.html#planned (exceptions: throws, throw, catch, the ? and || operators, Results and throws) | suggested home: design notes, error handling | not built; kept as first written | Lane F, verbatim from guide-functions.html at HEAD (a74d7982a) lines 1048-1193 -->
+	<h3 id="planned">Planned, not built: exceptions, and the operators</h3>
+	<p style="margin-left: 40px;"><i>Note: Nothing in this section is built. It is the design these pages
+		first described, kept as it was written. The design of error handling is under way, and will rewrite
+		this section, and with it the operators a Result is meant to have; the <span class="pre">?</span> operator and
+		its companions are coming soon. Today a Result is handled with <span class="pre">match</span>, as
+		<a href="#result-tour">above</a>. The operators planned for an Option are with
+		<a href="guide-enums.html#option">Option</a>.</i></p>
+
+	<h4 id="throwing">Throwing Exceptions</h4>
+	<p>Recoverable exceptions are always directly communicated from one function
+		back to the function that called it.
+		Instead of returning the expected value, it throws an exception value.</p>
+<pre>
+fn factorial(mut n i32) i32 throws bool {
+  if n &lt;= 0 { throw false; }
+  mut result = 1;
+  while n {
+    result *= n--;
+  }
+  result;
+}
+</pre>
+	<p>This function specifies <span class="pre">throws</span> as part of its signature
+		to indicate that if it cannot successfully return an integer value,
+		it will throw a boolean exception instead.
+		The first line does exactly that: If the parameter is a negative number,
+		it throws an exception value of <span class="pre">false</span>.</p>
+
+	<h4 id="handling">Exception Handling</h4>
+	<p>Now that we have a function that can throw an exception,
+		let's show different ways to handle it.</p>
+
+	<h5>Give exception a default value</h5>
+	<p>Use the <span class="pre">||</span> operator to establish
+		a default value in the event of a thrown exception.</p>
+<pre>
+fn calc(n i32) i32 {
+  factorial(n) || 0;
+}
+</pre>
+	<p>If <span class="pre">factorial</span> throws an exception,
+		it is treated as if it had returned 0 instead.
+		The value to the right of the operator must be a plain value,
+		and its type must match that of the success value on the left.</p>
+
+	<h5>Panic on exception</h5>
+	<p>Use the <span class="pre">?</span> operator following any call
+		to an exception-throwing function.</p>
+<pre>
+fn calc(n i32) i32 {
+  factorial(n)? + 10;
+}
+</pre>
+	<p>This checks whether the function call succeeds
+		and returns a value. If so, it adds 10 to that result and returns it.
+		Since this function gives no clue on how to handle an exception,
+		the default behavior on a thrown exception will be that the program
+		panics and shuts down.</p>
+
+	<h5>Exception propagation</h5>
+	<p>Another approach involves
+		re-throwing the exception to the next caller up the call stack.</p>
+<pre>
+fn calc(n i32) i32 throws bool {
+  factorial(n)? + 10;
+}
+</pre>
+	<p>Even though this function still does not specify an exception handler,
+		its signature shows that it also throws exceptions.
+		As a result, if the call to factorial throws an exception,
+		that exception will be re-thrown to the function which called
+		<span class="pre">calc</span>.
+		Importantly, there must be a type match between the exception value
+		received and the one the function re-throws.</p>
+
+	<h5>catch exception handlers</h5>
+	<p>If we want some other behavior than panic or re-throw,
+		one or more exception handlers must be specified in the form of
+		a <span class="pre">catch</span> blocks.
+		This block appears at some point after the
+		<span class="pre">try</span>, but need not be
+		immediately afterwards.</p>
+<pre>
+fn calc(n i32) i32 {
+  factorial(n)? + 10;
+
+  catch {
+    0;
+  }
+}
+</pre>
+	<p>Should the call to <span class="pre">factorial</span>
+		throw an exception, the <span class="pre">catch</span>
+		block handler will be run. In this case, it returns the number 0.
+		In effect, we have completely recovered from the thrown exception,
+		as this <span class="pre">calc</span> itself throws no exception.</p>
+	<p>Alternatively, we could handle it by throwing an
+		exception of a different type or value.</p>
+<pre>
+fn calc(n i32) i32 throws i32 {
+  factorial(n)? + 10;
+
+  catch {
+    throw 0;
+  }
+}
+</pre>
+	<p>If we need more information about the exception,
+		a variable name (and optionally a type) may also be specified on
+		the <span class="pre">catch</span> statement.
+		This binds to the exception value, so that it may be interrogated:
+	</p>
+<pre>
+fn calc(n i32) i32 throws i32 {
+  factorial(n)? + 10;
+
+  catch err {
+    if err {
+      panic("factorial failed");
+    } else {
+      throw 0;
+    }
+  }
+}
+</pre>
+	<p>This handler will trigger a <span class="pre">panic</span>
+		if the thrown exception value is <span class="pre">false</span>.
+		Otherwise, it will throw a new exception value of 0.</p>
+
+	<h4 id="throws">Results and throws</h4>
+	<p>In the discussion of <a href="#throwing">exception handling</a> above,
+		we introduced the idea that some functions can choose to throw an exception value
+		on failure and a regular value on success.
+		This is actually just a Result value being returned.
+		Built-in language syntax just makes it clearer and simpler to work with such values:</p>
+	<ul>
+		<li>A function whose return signature is <span class="pre">i32 throws bool</span> is
+			another way to write a Result type: <span class="pre">Result[i32, bool]</span></li>
+		<li><span class="pre">return 3</span> is equivalent to <span class="pre">return Ok(3)</span>.</li>
+		<li><span class="pre">throw false</span> is equivalent to <span class="pre">return Error(false)</span>.</li>
+	</ul>
+
+	<h4 id="operators">The ? and || operators</h4>
+	<p>The <span class="pre">?</span> operator (try) and <span class="pre">||</span> operator (or else)
+		offer more concise and readable ways to perform various common patterns for applying
+		pattern matching blocks against a Result value.</p>
+
+<!-- from: guide-functions.html#twoway (two-way yield, co-routines) | suggested home: design notes | an idea, not built | Lane F, verbatim from guide-functions.html at HEAD (a74d7982a) lines 1444-1481 -->
+	<h5 id="twoway">Two-way yield</h5>
+	<p style="margin-left: 40px;"><i>This is an interesting idea
+		which may or may not end up in the language in something like this form. None of it is built.</i></p>
+	<p>Co-routines are functions able to suspend their execution back to their caller
+		using the <span class="pre">yield</span> statement.
+		The caller may later resume the co-routine where it left off.
+		Information may be exchanged between the caller and co-routine
+		at each yield and resumption.</p>
+<pre>
+// A type defining what might yield, and what is expected back
+yieldenum Number {
+  even(i32) i32;
+  odd(i32) i32;
+}
+
+// A co-routine that yields according to the protocol
+fn gen(n i32) yields Number {
+  while n {
+    if n &amp; 1 {
+      n += yield odd(n);
+    } else {
+      n -= yield even(n);
+    }
+  }
+}
+
+// Make use of the co-routine
+fn main() {
+  genner = executer.spawn(gen);
+  while {
+    match genner(10) {
+      even(n): TBD;
+      odd(n): TBD;
+      _: break;
+    }
+  }
+}
+</pre>
+
+<!-- from: mem-regions.html#so and #rc (old) | suggested home: design notes, regions | the planned 'region' declaration spelling; built form is a struct declaring RegionRef (kept on mem-regions#so, mem-rc#rc). Old note: "The region declaration the first examples of Region Strategies show is not implemented: a region is a struct that declares RegionRef." Is this spelling still planned, or superseded? | Lane B, verbatim from mem-regions.html at HEAD -->
+<pre>
+region So is Move {    // Move ensures move semantics on references, i.e. no aliasing
+    pub fn alloc(size usize) Option[*u8] {
+	    malloc(size);  // May use any general-purpose memory allocator
+    }
+	pub fn free(self &amp;uni So) {
+	    free();
+	}
+}
+</pre>
+<pre>
+region Rc {
+    pub cnt u32;
+    pub fn alloc(size usize) Option[*u8] {
+	    malloc(size);
+    }
+	pub fn init(self &amp;uni Rc) {
+	    cnt = 1;
+	}
+	pub fn aliasRef(self &amp;uni Rc) {
+	    ++cnt;
+	}
+	pub fn dealiasRef(self &amp;uni Rc) {
+	    if (--cnt == 0) {
+		  free();
+	    }
+	}
+	pub fn free(self &amp;uni Rc) {
+	    free();
+	}
+}
+</pre>
+
+<!-- from: mem-regions.html#rc (old) | suggested home: design notes, weak references | '.weak' on an owning reference; old note: "Nor is .weak on an owning reference: a weak reference is made with Weak[T].of(owner) from an Rcw owner." Built form kept on mem-rc / mem-weak#rcw | Lane B, verbatim -->
+<p>To prevent cycle-based memory leaks, one can use a variation that supports weak references to make any cycle
+	breakable. A weak reference may be obtained from any owning reference:</p>
+<pre>
+childnode.parent = parentnoderef.weak;
+</pre>
+
+<!-- from: mem-regions.html#arenas (old "First-class Arenas") | suggested home: design notes, arenas | the planned allocation and lifetime spellings for a dynamic arena; old note: "The &amp;arena mut 5 allocation and the Arena['a] and ArenaRef+'a' spellings below are not implemented; the arena package's DynArena hands out keys." Built form (DynArena, '=a) kept on mem-arenas#dynarena | Lane B, verbatim -->
+<pre>
+mut arena = Arena.empty();     // A new dynamic arena
+imm objref = &amp;arena mut 5;  // Allocate a new i32 object in the new arena region
+arena[objref] = 2;          // Change the value of the object
+</pre>
+<pre>
+fn dowork(arena Arena['a], objref ArenaRef+'a') { ... }
+</pre>
+<p>Weak references may be used to solve this flexible lifetime requirement. Every request to allocate a new object in
+	the arena returns a weak reference. We know the object is still alive as long as the arena is alive, so to access
+	the object, we only need to prove the arena is still there.</p>
+
+<!-- from: mem-regions.html#countedpool (old "Pools of Counted or Owned Values") | suggested home: design notes, pools | RcPool / SoPool and their allocation spelling, not built; old note: "how a value is allocated in a dynamic region such as a pool is an open design question, and only the generational Pool exists." A one-paragraph Not-built-yet mention stays on mem-pools#countedpool | Lane B, verbatim -->
+<p>A pool region must be created before using it to allocate values:</p>
+<pre>
+mut eventPool RcPool[Event];
+</pre>
+<p>This example creates a new region called <span class="pre">eventPool</span>. All its allocated object have the type
+	<span class="pre">Event</span> (which might be an enum type). This pool is an <span class="pre">RcPool</span>, which
+	means references to pool-allocated objects are reference-counted, thereby determining when to free the object. An
+	<span class="pre">SoPool</span> would use single-owner references, and so on.</p>
+<p>Once a pool region is defined, the region may be specified to allocate a new value:</p>
+<pre>
+imm newevent = &amp;eventPool mut Event.QuitEvent;
+</pre>
+<p>Responsiveness and determinism varies according to the reference freeing mechanism: SoPool and RcPool will do pretty
+	well.</p>
+
+<!-- from: mem-ownregion.html#planned ("The planned alloc declaration") | suggested home: design notes, regions | an 'alloc' declaration form, not recognized by the compiler; built form is a struct declaring RegionRef (mem-ownregion#regionstruct). Note it uses the old method spellings (allocate, *mutx). Is it still planned? | Lane B, verbatim -->
+<p>The compiler does not yet recognize an <span class="pre">alloc</span> declaration. It is meant to read like this, a
+	struct whose methods are named for the events above:</p>
+<pre>
+// A simple reference counting allocator
+alloc Rc {
+  refcnt usize;
+
+  fn allocate(size usize) *uni Rc {
+    imm rcref = malloc(size) as *uni Rc;
+    rcref.refcnt = 1;
+    rcref;
+  }
+  fn aliasRef(self *mutx Rc) {
+    .refcnt += 1;
+  }
+  fn dealiasRef(self *mutx Rc) {
+    .refcnt -= 1;
+    if .refcnt == 0 {
+      .free();
+    }
+  }
+  fn free(self *mutx Rc) {
+    free(self as *u8);
+  }
+}
+</pre>
+<p>Notice also that allocators work with pointers (which have no assigned allocator). In that form all allocator methods
+	would be considered wrapped as trust blocks, which allows the use of pointers as well as trusted functions like malloc()
+	and free(). The pointers are automatically and correctly cast by the compiler back and forth from the correct pointer
+	to the correct reference.</p>

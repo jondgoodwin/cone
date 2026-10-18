@@ -1,0 +1,378 @@
+<html>
+  <head>
+	  <title>Global state: constants, globals and initialization - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Global state: constants, globals and initialization</div>
+		</div>
+
+    <div class="text">
+
+	<p>A module holds state as well as names: its constants and its global variables, one of each for the
+		whole program, the way a struct's value holds its fields. State that lasts as long as the program, and
+		that every function and every thread may reach, needs more care than a local variable: it has to be set
+		up before anything reads it, released when the program ends, and kept safe from threads that share it.
+		This page covers constants, global and static variables, globals with one copy per thread, and the
+		initializer and finalizer every module may have. Afterwards you can give a module the state it needs,
+		and know when it is ready.</p>
+<pre>
+mod visits;
+
+import stdio use *;
+
+// A named constant: fixed when the program is compiled
+const daysInWeek = 7;
+
+// A global, declared with its type and given its value at start-up
+imm days i32;
+
+// The module's initializer runs before main
+fn @initpure init() {
+  days = 52 * daysInWeek;
+}
+
+// The module's finalizer runs after main returns
+fn final() {
+  print &lt;- "closing the visitor book\n";
+}
+
+fn visit() i32 {
+  // A static variable: one copy, kept from call to call
+  static mut count = 0;
+  count += 1;
+  count;
+}
+
+fn main() {
+  visit();
+  visit();
+  print &lt;- visit(), " visits in ", days, " days\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+3 visits in 364 days
+closing the visitor book
+</pre>
+	<p><b>Try this:</b> move the line in <span class="pre">final</span> into <span class="pre">init</span>, and
+		see it print before anything <span class="pre">main</span> does.</p>
+
+	<h2 id="why">A module's own state</h2>
+	<p>Because there is one of each global and every thread may reach it, a global is more constrained than a
+		local. Because a module may need to set its state up when the program starts, and release it when the
+		program ends, every module may have an initializer and a finalizer, run in the order the modules
+		<a href="mod-packages.html#dag">depend on each other</a>, so a module's state is ready before any module
+		that depends on it starts. And because a global is to a module what a field is to a type, its members may
+		be folded in as names of the module (<a href="mod-extensibility.html#globals">Folding through a
+		global</a>).</p>
+
+	<h2 id="const">Named constants</h2>
+	<p>A <span class="pre">const</span> gives a value fixed when the program is compiled a name:</p>
+<pre>
+const pi = 3.141592;
+</pre>
+	<p>Wherever the program names <span class="pre">pi</span>, the compiler puts in the constant itself. A
+		constant's value may be an expression computed from constants alone: number literals,
+		<span class="pre">true</span> and <span class="pre">false</span>, and other named constants, declared before
+		it or after, combined by the <a href="guide-numbers.html#arithops">arithmetic, bitwise and shift
+		operators</a> (<span class="pre">+ - * / % | &amp; ^ ~ &lt;&lt; &gt;&gt;</span>, and a prefix
+		<span class="pre">-</span>), the comparisons, <span class="pre">not</span>, <span class="pre">and</span>
+		and <span class="pre">or</span>, a number's conversion <span class="pre">T.from(x)</span>, a
+		reinterpretation with <span class="pre">as</span>, and parentheses. The constant is the literal the
+		expression computes:</p>
+<pre>
+const Red = 0x1u32;
+const Green = 0x2u32;
+const All = Red | Green | Blue;    // 0x7u32
+const Blue = 0x4u32;
+const Half = 1.0f32 / 2.0f32;      // 0.5f32
+</pre>
+	<p>Each operator gives the value it gives when the program runs, on the same type: an
+		<span class="pre">f32</span> is computed as an <span class="pre">f32</span>, integer division truncates
+		toward zero, and <span class="pre">&lt;&lt;</span> drops the bits shifted out. What has no value when the
+		program runs is an error: a result its type cannot hold (<span class="pre">255u8 + 1u8</span>), a
+		division or remainder by zero, and a float converted to an integer that cannot hold it. So is a shift by
+		the type's width or more, or by a negative amount, although the running program gives one a value
+		(<a href="guide-numbers.html#shift">Shift operators</a>). So is a constant whose value names itself,
+		directly or through other constants. A function call, a variable or a method like
+		<span class="pre">sqrt</span> is not a constant, so neither is an expression using one. The same
+		expressions may be written wherever a constant is required: a global variable's or a static's value, a
+		parameter's or a field's default, and the elements of an array, struct or tuple literal in any of
+		these.</p>
+	<p>A variant of an <a href="guide-enums.html">enum</a> that holds no value is a constant:
+		<span class="pre">Kind.Os</span> for <span class="pre">enum Kind {Os, Cancelled, TimedOut;}</span>, and
+		<span class="pre">None</span> for an <span class="pre">Option</span>, whose other variant does hold one. It
+		is its tag, and the rest of the enum's value, where it is wider than the tag, is zero. It may be a named
+		constant's value, a global's, a parameter's or a field's default, or an element of an array, struct or
+		tuple literal in any of these. A variant that holds a value is not, nor is a variant of an enum that has
+		fields in common, whose value is no part of the tag.</p>
+<pre>
+enum Kind {Os, Cancelled, TimedOut;}
+
+const Fallback Kind = Kind.TimedOut;
+struct Failure {
+	pub code u32;
+	pub kind Kind = Kind.Os;       // left out of new Failure(5u32), it is Os
+	pub next Option[i32] = None;   // and none; Some(5) is not a constant
+}
+</pre>
+	<p>A constant may name a compound literal too, such as an array, a struct or a tuple. Each use of it is
+		that literal, so it may be used however the literal could be:</p>
+<pre>
+const primes Array[u32, 4] = [2u32, 3u32, 5u32, 7u32];
+
+primes[n]          // an element, by a constant or run-time index
+&amp;primes            // a reference to the array, as &amp;[2u32, 3u32, 5u32, 7u32] is
+</pre>
+	<p>A constant's elements and fields may be read, and a constant array or string, which is kept in read-only
+		memory as its literal is, may be borrowed: as a reference or a slice, never <span class="pre">mut</span>,
+		living as long as the program. No other constant may be borrowed, nor may a field of one or of one of its
+		elements, since each use of it is a fresh copy with no place in memory, as its literal would be; that
+		includes calling a method that takes a borrowed <span class="pre">self</span> on one.
+		(<a href="mem-borrowing.html">Borrowed references</a> explains borrowing.)</p>
+
+	<h2 id="global">Global variables</h2>
+	<p>A constant cannot change and has no place in memory. A <b>global variable</b> has one, for as long as
+		the program runs. Global variables across all modules, and types' statics, are managed by the global
+		region: their memory is allocated all at once when the program is loaded, they come into being when the
+		program starts and disappear only when it stops, and the lifetime that names that scope is
+		<span class="pre">'static</span> (<a href="mem-lifetimes.html">Lifetimes</a>). Two constraints apply to
+		every one:</p>
+	<ul>
+		<li><b>Its type must be <a href="conc-sharing.html#shareable">Shareable</a>.</b> Every thread may name a
+			global at once, and every program is taken to have threads, so a plain <span class="pre">mut</span>
+			global is refused. A global may be <span class="pre">imm</span> (given its value where it is declared,
+			or by <a href="#dyninit">the module's initializer</a>), <span class="pre">imm</span> holding a lock or an
+			atomic value (the shared mutable form, <a href="conc-locks.html">Lock permissions</a>),
+			<a href="#threadlocal"><span class="pre">@threadlocal</span></a> (one per thread, never shared), or
+			<a href="#workgroup"><span class="pre">@workgroup</span></a>. A value known only after the program has
+			started (a device made, a choice read from the command line) belongs to the object it describes, and is
+			handed down as state rather than kept in a global.<br/>
+			<i>Not yet checked: a plain <span class="pre">mut</span> global is still accepted today. The check at
+			the declaration is being built.</i></li>
+		<li><b>It must be given a valid value.</b> Usually the initial value is known when the program is
+			compiled: a literal, a named constant, or a <a href="#const">constant expression</a>. Otherwise the
+			global is declared with its type and no value, and <a href="#dyninit">the module's initializer</a>
+			assigns it, as <span class="pre">days</span> is above.</li>
+	</ul>
+	<p>A borrow of a global may be returned, since the global outlives every caller. A borrow into a
+		<span class="pre">mut</span> global has one rule more, about calls that may reshape a collection through
+		the global while the borrow is held: <a href="mem-shape.html#globalview">A borrow into a mut
+		global</a>.</p>
+	<p>A global may also fold its type's members in as names of the module, with the same
+		<span class="pre">use</span> clause a struct's field carries, so a function of the module writes
+		<span class="pre">area()</span> where it would have written <span class="pre">config.area()</span>. There
+		is exactly one global, at an address known when the program is compiled, which makes this the cheapest
+		fold there is; <a href="mod-extensibility.html#globals">Folding through a global</a> has the whole
+		clause.</p>
+
+	<h2 id="statics">Static variables</h2>
+	<h3 id="static-local">Static variables in a function</h3>
+	<p>A variable declared inside a function is ordinarily created afresh on every call and released when the
+		call ends. One declared <span class="pre">static</span> is one copy instead, shared by every call of the
+		function, initialized once before the program starts running, and kept across calls, like
+		<span class="pre">count</span> in <span class="pre">visit</span> above:</p>
+<pre>
+fn tick() i32 {
+  static mut calls = 0;
+  calls = calls + 1;   // 1 on the first call, 2 on the second, ...
+  calls;
+}
+</pre>
+	<p>The same word means the same thing at every scale. Inside a <a href="#static">type</a>, a static
+		variable is one copy shared by every value of that type, rather than a field held by each value. At the
+		top of a <a href="#global">module</a>, it is the module's one copy, which is what a global variable is
+		already. A generic type or module has one copy <i>per instance</i>: each instance, such as
+		<span class="pre">Box[i32]</span>, is a type or module in its own right with its own static, since the
+		static's type may name the generic parameter. Because a static's initial value is written into its
+		storage before anything runs, it must be a literal, as a global variable's must.
+		<span class="pre">static</span> applies to a variable and to nothing else: a function has no copy per call
+		to share, and neither does a type or a statement.</p>
+
+	<h3 id="static">Static variables in a struct</h3>
+	<p>A field is held by every value of the struct, one copy each. A variable declared
+		<span class="pre">static</span> inside the struct is one copy shared by all of them. It is not a field: no
+		value carries it and no initializer sets it. From outside the struct it is reached through the type's
+		name, in the same way as the struct's <a href="mod-namespaces.html#staticfn">static functions</a>; inside
+		the struct's own methods and functions it is reached by its bare name.</p>
+<pre>
+struct Tally {
+  pub n i32;
+  pub static mut made = 0;
+
+  pub fn make(n i32) Tally {
+    made = made + 1;       // shared by every Tally
+    new Tally(n);
+  }
+}
+
+imm a = Tally.make(1);
+imm b = Tally.make(2);
+imm count = Tally.made;   // 2
+</pre>
+	<p>Like a global variable, a static must be initialized with a constant value (a literal, a named constant
+		or a <a href="#const">constant expression</a>), and it obeys <span class="pre">pub</span> as any other
+		member of the struct does. A generic struct's static belongs to each instance separately:
+		<span class="pre">Crate[i32]</span> and <span class="pre">Crate[f32]</span> are two types, and each has its
+		own copy.</p>
+
+	<h2 id="threadlocal">Thread-local global variables</h2>
+	<p>A global variable written with <span class="pre">@threadlocal</span> after its permission is <b>one copy
+		per thread</b>: every thread that runs has its own, and a thread's code reads and writes only its own.
+		Since no other thread can see it, it may be <span class="pre">mut</span>:</p>
+<pre>
+mut @threadlocal depth i64 = 0i64;
+
+fn enter() {
+  depth = depth + 1i64;   // this thread's depth, whatever the others' are
+}
+</pre>
+	<p>Each thread's copy starts from the initial value written on the declaration, which is why a
+		thread-local global is constrained more than other globals:</p>
+	<ul>
+		<li><b>It must be written with an initial value</b>, a literal as every global's is. It cannot be left for
+			the <a href="#dyninit">module's initializer</a> to assign, since that runs on one thread and would give a
+			value to that thread's copy alone.</li>
+		<li><b>It must be <span class="pre">mut</span>.</b> A copy per thread of a value no thread can change would
+			be the same value in every copy.</li>
+		<li><b>Its type may not need finalizing</b>: not a struct with a
+			<a href="rec-methods.html#finalizer">finalizer</a>, nor anything holding one, nor an owning reference
+			whose region has work to do when it is dropped. Nothing finalizes a thread's copy yet when its thread
+			ends.</li>
+		<li><b>Only a global declared in a module may be thread-local</b>: not a local, a function's or a type's
+			static, a parameter, a field, or a module trait's global.</li>
+	</ul>
+	<p>A thread-local global is declared <span class="pre">extern</span> like any other, with
+		<span class="pre">@threadlocal</span> kept and no value, and a library's
+		<a href="safe-c.html#includefile">include file</a> declares its thread-local globals that way. Every
+		declaration of it must say <span class="pre">@threadlocal</span>, because a compiled object reaches a
+		thread's copy by a different route than it reaches ordinary storage. The compiler checks this only among
+		the declarations of one compile. The language itself starts no thread; a thread the
+		<a href="conc-threads.html#thread"><span class="pre">thread</span> package</a> starts, or one started
+		through the operating system directly, sees its own copy as described.</p>
+	<p id="workgroup">A global written with <span class="pre">@workgroup</span> after its permission is a GPU
+		workgroup's: one copy for each workgroup of a compute dispatch, which its invocations share, and an
+		ordinary global on the CPU (<a href="conc-gpu.html#workgroup">Workgroup memory</a>). It is written as a
+		thread-local is, but with no initial value; a global is one or the other, never both.</p>
+
+	<h2 id="dyninit">The module's initializer</h2>
+	<p>Sometimes a global's initial value is not known, or is too complex to write out, when the program is
+		compiled. Then the global is declared with its type and no value, and the module's initializer, a function
+		called <span class="pre">init</span>, gives it one when the program or library is loaded:</p>
+<pre>
+struct Handler {
+  pub port i32;
+}
+
+imm handler Handler;
+
+fn @initpure init() {
+  handler = new Handler(80);
+}
+</pre>
+	<p>The global is declared with its type, since there is no value to infer it from. Inside
+		<span class="pre">init</span> it starts out holding nothing, exactly as a local declared without a value
+		does: <span class="pre">init</span> may assign it once, even when it is <span class="pre">imm</span>, and
+		may not read it before it does. Every other function sees it holding the value
+		<span class="pre">init</span> gave it.</p>
+	<p>The initializer is declared <span class="pre">initpure</span>, a less constrained version of
+		<a href="safe-purity.html#pure"><span class="pre">pure</span></a>. A function marked
+		<span class="pre">initpure</span> may not read any uninitialized global of its module, and may call only
+		functions marked <span class="pre">pure</span> or <span class="pre">initpure</span>. That marks it as safe to
+		call while initialization runs, because it relies on no state that is not ready yet: no uninitialized
+		global of its module, and the modules it depends on are initialized first. It does not forbid input and
+		output. Set-up an initializer needs, such as loading a library, opening a device or reading the
+		environment, is done through functions marked <span class="pre">initpure</span>, kept to what the module's
+		own state needs.</p>
+	<p>To make initialization safe and complete, the compiler:</p>
+	<ul>
+		<li>verifies that every global declared without a value is assigned one somewhere in its module's
+			<span class="pre">init</span>;</li>
+		<li>verifies that <span class="pre">pure</span> and <span class="pre">initpure</span> functions keep their
+			constraints;</li>
+		<li>runs the initializers of the modules a module depends on before its own.</li>
+	</ul>
+	<p><i>The first and last are implemented. The second is not: a function marked
+		<span class="pre">@initpure</span> is accepted, and nothing yet checks what it calls, since
+		<span class="pre">pure</span> functions are not implemented.</i></p>
+
+	<h3 id="final">The module's finalizer</h3>
+	<p>The initializer is written <span class="pre">fn @initpure init()</span>, taking no parameters and
+		returning nothing. A module may also declare a <b>finalizer</b>, a function called
+		<span class="pre">final</span>, written <span class="pre">fn final()</span>, to release its own state when
+		the program is shutting down, as <span class="pre">visits</span> does at the top of this page.</p>
+	<p>Each module declares only its own initializer and finalizer, for its own state; it cannot set up another
+		module's. A module may declare either, both or neither. At module scope the names
+		<span class="pre">init</span> and <span class="pre">final</span> mean these two, and naming anything else by
+		them is an error.</p>
+	<p>Where a module's globals hold values whose type has a <a href="rec-methods.html#finalizer">finalizer</a>,
+		or owning references, the compiler gives the module a finalizer that runs the module's own
+		<span class="pre">final</span>, if it declares one, and then finalizes each such global, releasing an
+		owner as a local's end would, in the order they are declared: the way a type's
+		<span class="pre">final</span> runs before its fields are finalized. Such a module may not declare a
+		function named <span class="pre">drop</span>, which is the name the compiler gives it.</p>
+
+	<h2 id="initall">When every module's initializer and finalizer run</h2>
+	<p>A program does not start them itself. The compiler stitches every module's initializer together in the
+		order the modules <a href="mod-packages.html#dag">depend on each other</a>: each module's runs after the
+		initializers of every module it depends on, and the program's own module's runs last. Every module's
+		finalizer runs in exactly the reverse order, the program's own first. A module with neither is left
+		out.</p>
+	<p>Then the compiler builds the program's entry, the C <span class="pre">main</span> the system calls,
+		round the program's own <span class="pre">main</span>: the entry runs every module's initializer, calls
+		<span class="pre">main</span> (with the command line's <span class="pre">argc</span> and
+		<span class="pre">argv</span> if it takes them), runs every module's finalizer, and exits with the value
+		<span class="pre">main</span> returned (0 if it returns nothing). So everything has been initialized when
+		<span class="pre">main</span> begins, and a program that opened files in an initializer has them closed by a
+		finalizer when <span class="pre">main</span> returns. The program's <span class="pre">main</span> is a
+		function of the module that is the program, taking nothing, or an <span class="pre">i32</span> and a
+		<span class="pre">**u8</span>, and returning an integer or nothing:</p>
+<pre>
+fn main() i32 {
+  run();
+  0;
+}
+</pre>
+	<p>The functions <span class="pre">initAll()</span> and <span class="pre">finalAll()</span>, which every
+		module can use, run the same two stitched sequences, and each runs its modules once: a program that calls
+		them itself, as programs did before the entry was built, finds nothing left to run at
+		<span class="pre">initAll()</span>, and runs the finalizers at its first <span class="pre">finalAll()</span>
+		(so it may finalize early) and not again when <span class="pre">main</span> returns.</p>
+	<p><i>A program ends without running any finalizer when it panics, or calls the C library's
+		<span class="pre">exit</span> or <span class="pre">abort</span>: the entry's finalizers run only when
+		<span class="pre">main</span> returns. A library compiled on its own has no entry of its own, and keeps its
+		initializer and finalizer for the program that imports it, whose include file for the library declares
+		them with <span class="pre">extern</span>, and declares the globals its finalizer finalizes. A C program
+		that calls such a library is on its own for setting it up. A <span class="pre">main</span> that takes any
+		other parameters, a function with a C name that is the program's own C entry, and a WebAssembly or GPU
+		module get no entry from the compiler.</i></p>
+	<p id="cinit">A <a href="safe-c.html#cnames">C-named</a> module is reached by its C names, not by an import,
+		so a program need not know it exists: the program may link it, as every program links the runtime, and
+		declare <span class="pre">extern</span> only the functions it calls. Its initializer is therefore run when
+		the object holding it is loaded, as a C static constructor is, before the program's
+		<span class="pre">main</span> and ahead of every other module's initializer. So a C-named module's
+		initializer may not depend on a module with an initializer of its own, unless that module is C-named too.
+		Its initializer and finalizer are named after the module as any module's are,
+		<span class="pre">cla.init</span> and not the C name <span class="pre">init</span>, so two C-named modules
+		may each declare them.</p>
+	<p style="margin-left: 40px;"><i>Not followed yet: where two C-named modules with initializers are compiled
+		separately, the order their initializers run is the linker's, not the order the modules depend on each
+		other (within one compile it is that order). A C-named module's finalizer runs only in a program that
+		imports the module.</i></p>
+
+	<p>You can now give a module state, and know that it is ready before any code that depends on it runs.
+		The pages so far divided a program into parts; the next three are about making parts work together
+		without being welded together, starting with reaching a part's names as your own.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-extensibility.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

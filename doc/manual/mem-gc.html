@@ -1,0 +1,179 @@
+<html>
+  <head>
+	  <title>Garbage collection - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Garbage collection: Gc and an actor's own region</div>
+		</div>
+
+    <div class="text">
+
+	<p>Some data is a tangle: a graph whose nodes point at each other every which way, cycles and all, with no natural
+		owner for anything. Single owners cannot build it, counting leaks its cycles, and an arena never lets any of it go. A
+		<b>tracing garbage collector</b> handles it with no thought from the program: every so often it finds what the program
+		can still reach, and frees the rest. This page covers how tracing works, what it costs, and the two collectors Cone
+		has: <span class="pre">Gc</span>, and the one every actor has of its own. Afterwards you can choose a collector where
+		it is the right tool, and know what you are paying:</p>
+
+<pre>
+mod ring;
+
+import stdio use *;
+import collector;
+
+// Two people who each point at the other: a cycle no count could free
+struct Person {
+  pub id i64;
+  pub friend Option[Gc[mut, Person]];
+  fn final(self &amp;uni) { print &lt;- "collected person ", id, "\n"; }
+}
+
+fn befriend() {
+  imm a = new Gc[mut, Person](1, None[Gc[mut, Person]]);
+  imm b = new Gc[mut, Person](2, Some(a));
+  a.friend = Some(b);                    // the cycle is closed
+  print &lt;- "made a pair\n";
+}                                        // nothing reaches them now
+
+fn main() {
+  befriend();
+  Gc.collect();                          // a whole collection: the pair is unreachable
+  print &lt;- "done\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+made a pair
+collected person 2
+collected person 1
+done
+</pre>
+	<p><b>Try this:</b> take out <span class="pre">Gc.collect()</span>. The program now ends before any collection has
+		run, and neither finalizer prints: a collector frees a value when it gets round to it, not when the value's last
+		reference goes.</p>
+
+	<h2 id="tracing">How tracing works</h2>
+	<p>A tracing region keeps information about every value it allocates, including where each one holds references to
+		other values in the region. From time to time its collector traces every reference reachable from a set of
+		<i>roots</i>, the program's variables, on the stack and elsewhere. Any value it cannot reach can never be used again,
+		so it is finalized and freed. Cycles are no problem: the pair above point at each other, but nothing reaches either
+		of them.</p>
+	<p>Its region ref declares neither <span class="pre">aliasRef</span> nor <span class="pre">Move</span>, and has no
+		<span class="pre">dealiasRef</span>. So copying one of its references costs nothing, and an owning reference going
+		away does nothing at all: it is the collector, not the reference, that decides when a value dies
+		(<a href="mem-ownregion.html#owners">Single owner, shared and counted</a>).</p>
+	<p>Collectors come in many kinds, and the old picture of a program frozen while its whole heap is traced is only the
+		simplest. An <i>incremental</i> collector does its work a little at a time, between the program's own steps. A
+		<i>generational</i> one spends its effort on young values, since most values die young. A <i>concurrent</i> one runs
+		beside the program on other threads. And a collector per actor tidies one actor's memory between its messages,
+		stopping nothing else.</p>
+	<p>What every kind gives is flexibility: any shape of data, handled the same way, with nothing for the program to
+		decide, and steady memory use over a long run. Throughput is better than counting's, though below the other
+		strategies', because of the tracing. What every kind costs:</p>
+	<ul>
+		<li><b>Responsiveness.</b> Some tracing work has to happen at moments the program does not choose; a simple
+			collector stops the program for it, and even an incremental one adds work to the steps it runs in.</li>
+		<li><b>Determinism.</b> A value is freed some time after its last use, so a finalizer runs late, which matters when
+			a value holds something scarce, like a file.</li>
+		<li><b>Runtime.</b> A collector that performs well, incremental, generational and safe with threads, is large and
+			complex, and needs tuning.</li>
+		<li><b>Memory.</b> Running fast can take four to six times the memory actually in use.</li>
+	</ul>
+	<p>Two collectors exist, both as library code: the <span class="pre">collector</span> package's
+		<span class="pre">Gc</span>, the general one, and an actor's own, <span class="pre">ActorGc</span>.</p>
+
+	<h2 id="gc">Gc, the general collector</h2>
+	<p>The <span class="pre">collector</span> package's <span class="pre">Gc</span> is the general incremental collector:
+		<span class="pre">import collector;</span> and then <span class="pre">new Gc[mut, T](...)</span>. It is an incremental
+		mark and sweep, which works a bounded step at a time inside allocation once the heap passes its trigger, and whole on
+		<span class="pre">Gc.collect()</span>. Run generationally (<span class="pre">Gc.setGenerational(true)</span>), what
+		survives a collection is old, and the collections after it are minor: they mark and sweep only the young values, the
+		write barrier staying on between them so that an old value's new young child is found. It runs a dead value's
+		finalizer one collection before it frees the value, so a finalizer may still read the Gc values it holds. A finalizer
+		runs some time after its value became unreachable, when a collection's step reaches it, not at a moment the program
+		chooses. <span class="pre">Gc.step(work)</span> runs some collection work on demand, and
+		<span class="pre">Gc.setStress(true)</span> a step at every allocation, for testing.</p>
+	<p>It is single threaded, and for use outside actors only: a <span class="pre">Gc</span> reference held in an actor's
+		state or used in an actor's method is refused, as it is in a <span class="pre">parallel each</span> (<i>Error 1389: A
+		traced reference (a Gc, for example) cannot be used inside an actor or a parallel each ... Use Gc only in code that
+		runs on a single thread; in an actor, allocate with 'new self[T](...)' and hold an ActorGc</i>). <b>It is
+		discouraged.</b> It is likely to be replaced, nothing else in Cone's packages depends on it, and new code does not
+		build on it.</p>
+	<p>A traced value may not hold a borrowed reference, even a string literal's <span class="pre">&amp;str</span>: it
+		lives as long as it is reached, past any lifetime a borrow is checked against, and its trace cannot see a borrow (<i>Error
+		1173</i>). It may hold <span class="pre">Rc</span> and <span class="pre">So</span> owners, which its finalizer
+		releases. Where else a traced reference may and may not be held is with
+		<a href="mem-ownregion.html#held">traced regions</a>.</p>
+
+	<h2 id="actorgc">ActorGc, an actor's own region</h2>
+	<p>Inside an actor, the <span class="pre">actors</span> package's <span class="pre">ActorGc</span> is a region of the
+		actor's own. It is collected only between that actor's messages, by a copying collector, so a collection stops no other
+		actor and needs no write barrier and no scan of a stack. An actor's state leads to this region
+		(<a href="mem-ownregion.html#regionvalue">Region values</a>), and <span class="pre">new self[T](...)</span> in the
+		actor's methods allocates there. The reference it gives is an <span class="pre">ActorGc[mut, T]</span>:</p>
+<pre>
+mod keeper;
+
+import stdio use *;
+import actors;
+
+struct Node { pub n i64; pub next Option[ActorGc[mut, Node]]; }
+
+actor Keeper {
+  head Option[ActorGc[mut, Node]];
+
+  fn init(self &amp;new) { *self = new Self(None[ActorGc[mut, Node]]); }
+
+  pub async do push(self, n i64) {
+    head = Some[ActorGc[mut, Node]](new self[Node](n, head));   // in the actor's own region
+  }
+
+  pub async do total(self) {
+    mut sum = 0i64;
+    mut at = head;
+    while {
+      match at {
+        case imm k Some[ActorGc[mut, Node]] { sum = sum + k.n; at = k.next; }
+        else { break; }
+      }
+    }
+    print &lt;- "total: ", sum, "\n";
+  }
+}
+
+fn main() {
+  imm k = new Keeper();
+  k.push(1i64);
+  k.push(2i64);
+  k.push(3i64);
+  k.total();
+}
+</pre>
+	<p>This prints <span class="pre">total: 6</span>. A bare <span class="pre">new ActorGc[mut, T](...)</span> names no
+		actor, so it has no region to be in, and panics: <span class="pre">ActorGc: a value is made in an actor's region by 'new
+		self[T](...)', never by 'new ActorGc[...]' on its own</span>. How the region is collected, what it costs an actor, and
+		how a collection made in it works are with <a href="conc-runtime.html#actor-gc">the actor's own region</a>.</p>
+	<p id="collectors">In the terms of <a href="mem-ownregion.html">Making your own region</a>: <span class="pre">ActorGc</span>
+		declares the built-in trait <span class="pre">ActorLocal</span> (a provisional name) beside
+		<span class="pre">Traced</span>. Its references stay in one actor, no stack is scanned for its roots, and it declares no
+		<span class="pre">writeBarrier</span>, so a reference behind an <span class="pre">Rc</span> is traced. The compiler
+		refuses a traced region's reference inside an actor or a <span class="pre">parallel each</span> unless the region
+		declares <span class="pre">ActorLocal</span>; there, a read-only reference counts as Shareable, and none may be
+		made.</p>
+
+	<p>You can now hand a tangled graph to a collector, keep an actor's data in a region no other actor waits for, and
+		weigh what collection costs. That completes the strategies. The last two pages go underneath them: where a
+		collection's own memory comes from, and how to write a region of your own.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-collections.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

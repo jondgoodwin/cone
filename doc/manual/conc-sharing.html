@@ -1,0 +1,352 @@
+<html>
+  <head>
+	  <title>What may cross a thread: Sendable and Shareable - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">What may cross a thread: Sendable and Shareable</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not yet checked: <a href="mod-globals.html#global">a global's type must be
+		Shareable</a> (a plain <span class="pre">mut</span> global, which several threads could reach, is not yet refused),
+		and a value's own methods that change it through a <span class="pre">&amp;</span>. Not built yet: concurrent data
+		structures other than channels and atomic values. The <span class="pre">sync</span> package runs on Windows and
+		Linux (x86-64), not yet on macOS.</i></p>
+
+	<p>Every tool in this part does one of two things with a value: hands it to another thread, as a message to an actor
+		does, or lets several threads read it at once, as the passes of a <span class="pre">parallel each</span> do. Get
+		either wrong and two threads race on the same memory. Cone decides both questions with two built-in markers,
+		<span class="pre">Sendable</span> and <span class="pre">Shareable</span>, which the compiler works out from what a
+		type holds, with nothing for you to write. This page says what each allows and why, so that you can read a
+		refusal and fix it. Here one price list is read on every core and sent to an actor:</p>
+
+<pre>
+mod prices;
+
+import stdio use *;
+import collections use *;
+import actors;
+import sync use Arc;
+
+struct Prices {
+  pub loaf i32;
+  pub bun i32;
+}
+
+actor Till {
+  // Every parameter of a behaviour must be Sendable
+  pub async do sell(self, prices Arc[imm, Prices], loaves i32, buns i32) {
+    print &lt;- "The till charges $", loaves * prices.loaf + buns * prices.bun, "\n";
+  }
+}
+
+fn main() {
+  // An Arc's count is atomic, so its owners may live on any thread
+  imm prices = new Arc[imm, Prices](loaf: 3, bun: 1);
+
+  // Every pass of a parallel each may read it at once: it is Shareable
+  imm orders = new List[i32] &lt;- 1, 2, 3, 4;
+  imm costs = new List[i32] &lt;- parallel each n in orders yield *n * prices.loaf;
+  print &lt;- "Ten loaves cost $", costs.parallel().sum(), "\n";
+
+  // And it may be sent to an actor: it is Sendable
+  imm till = new Till();
+  till.sell(prices, 2, 5);
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Ten loaves cost $30
+The till charges $11
+</pre>
+	<p>Now make the price list an <span class="pre">Rc[imm, Prices]</span>, the counted owner for one thread, and the
+		behaviour is refused where it is declared:</p>
+<pre>
+Error 1194: Actor Till's behaviour sell takes prices, a Rc[imm, Prices], which is not Sendable: it is an owner
+that may be copied, and Rc does not declare ThreadSafe: its copies could not be made and dropped on several
+threads at once. It may cross as a uni owner, which moves it, or as an owner of a region declaring ThreadSafe,
+such as Arc. A message carries its arguments to the thread the actor runs on, so each must be Sendable.
+</pre>
+	<p>Nothing in the price list changes, yet it may not cross. The danger is in the owner, not the value: every copy of
+		an <span class="pre">Rc</span> adds one to its count, and two threads adding at the same moment can lose one, so
+		the list is freed while a thread still reads it. An <span class="pre">Arc</span> counts with atomic operations, so
+		its copies may be made and dropped anywhere.</p>
+
+	<h2 id="race">Race safety: what the compiler promises</h2>
+	<p>A <b>data race</b> is two threads reaching the same memory at once, at least one of them writing, with nothing to
+		order them. Its symptoms are the worst kind: a total that is occasionally wrong, an object freed twice once a week.
+		Cone refuses a data race when the program is compiled, with two layers of rules.</p>
+	<p>The first layer is the one <a href="memory.html">Memory</a> taught: <a href="mem-permissions.html">permissions</a>.
+		A reference's permission says what its holder may do and what others may do meanwhile, so a value that may be
+		changed through one reference is never read through another unchecked, on any thread. Lock permissions
+		(<a href="conc-locks.html">Lock permissions</a>) make the same promise for a value that several threads change,
+		taking a lock as a borrow begins. This part does not repeat those rules.</p>
+	<p>The second layer is this page's: a value reaches another thread only if its type says it may. Together they
+		promise that every way a program has to share a value between threads is safe: a message, a thread's start, a
+		channel, a parallel loop's body. What the compiler does not promise is just as important. It does not prevent a
+		<b>deadlock</b> (two threads each waiting for what the other holds), nor a <b>race condition</b> in the wider
+		sense, where the result depends on which thread got there first, as in the Guide's bakery, where which customer
+		went short could change from run to run, though the loaves were always counted right. And it trusts the program
+		in a few named places, each said where it arises: a raw pointer; a type that declares a marker for itself
+		(below); a GPU kernel's buffers (<a href="conc-gpu.html">The GPU</a>); the runtime's low-level parallel loop
+		(<a href="conc-runtime.html#parallelrange">How the runtime works</a>); a function the compiler cannot read, such as
+		an <span class="pre">extern</span> one, that writes a global from a parallel loop; and, until it is checked, a plain
+		<span class="pre">mut</span> global.</p>
+
+	<h2 id="sendable">Sendable: what may be handed to another thread</h2>
+	<p><span class="pre">Sendable</span> says a value may be handed to another thread. It is asked wherever a value
+		crosses:</p>
+	<ul>
+	<li>of every parameter of an actor's behaviour and initializer, and of a behaviour's answer
+		(<a href="conc-actors.html#declaration">The declaration</a>). An actor's state is not asked, since it never crosses
+		as a value: it may hold an <span class="pre">Rc</span>, and its methods may borrow freely;</li>
+	<li>of the value <a href="conc-threads.html#thread"><span class="pre">thread.start</span></a> and
+		<span class="pre">thread.startWith</span> hand a new thread, and of what the thread returns;</li>
+	<li>of the values a <a href="conc-threads.html#channel">channel</a> carries: <span class="pre">Channel[T]</span>,
+		<span class="pre">Sender[T]</span>, <span class="pre">SoloSender[T]</span> and <span class="pre">Receiver[T]</span>
+		ask it of <span class="pre">T</span>, as the one-shot channel does;</li>
+	<li>by any generic that asks it of a type parameter, as a <a href="mod-generativity.html#constraints">constraint</a>,
+		which is how library code marks what crosses threads.</li>
+	</ul>
+	<p>The compiler grants <span class="pre">Sendable</span> to a type unless it holds, directly or in a field, an array
+		element, a tuple element or an enum's variant, one of these:</p>
+	<ul>
+	<li><b>a borrowed reference, of any permission</b>, <span class="pre">&amp;imm</span> included: a borrow's lifetime is
+		checked in one thread alone (but for a borrow that lasts the whole program, <a href="#static-borrow">below</a>);</li>
+	<li><b>an owner that may be copied whose permission is not race-safe</b>: <span class="pre">Rc[mut, T]</span>,
+		<span class="pre">Arc[mut, T]</span>, and the lock permission for one thread, <span class="pre">Rc[Rwcell, T]</span>.
+		The lock permissions for threads cross, <span class="pre">Arc[Mutex, T]</span> and
+		<span class="pre">Arc[Rwlock, T]</span>, where <span class="pre">T</span> may (<a href="conc-locks.html">Lock
+		permissions</a>);</li>
+	<li><b>an owner that may be copied in a region that does not declare <span class="pre">ThreadSafe</span></b>, whatever
+		its permission: <span class="pre">Rc[imm, T]</span>, whose count is not atomic. <span class="pre">Arc[imm, T]</span>
+		and <span class="pre">Arc[opaq, T]</span> cross;</li>
+	<li><b>a traced reference</b>, <span class="pre">Gc</span> or an actor's <span class="pre">ActorGc</span>, whatever its
+		permission: the first's collector is single-threaded, and the second stays in the actor whose collector moves it
+		(<a href="conc-runtime.html#actor-gc">The actor's own garbage-collected region</a>);</li>
+	<li><b>a raw pointer</b>, whose target nothing checks.</li>
+	</ul>
+	<p>An owner that moves takes its value with it: a <span class="pre">uni</span> owner of any region, and any owner of
+		<span class="pre">So</span>, crosses when what it points at may. So does an <span class="pre">Arc[imm, T]</span>
+		owner: an <span class="pre">Arc</span> of a value holding a <span class="pre">mut</span> reference is refused. A
+		reference to a function crosses, and so does an actor's handle, whatever its state holds. A type holding raw
+		pointers it shares safely declares <span class="pre">is Sendable</span>, which the compiler takes on trust, as a
+		channel's ends, <span class="pre">ThreadRef</span>, and the <span class="pre">collections</span> package's
+		<span class="pre">List</span> and <span class="pre">Dict</span> do; an instance of a generic type declaring it is
+		<span class="pre">Sendable</span> only where its type arguments are.</p>
+	<p>What is checked is the type of the value, not how a variable was declared: a local declared
+		<span class="pre">mut x = 5</span> holds a number, which is Sendable, while <span class="pre">&amp;mut x</span> is a
+		borrow, which is not. A refusal names the part of the type that binds it to its thread:</p>
+<pre>
+struct Counter { pub n i64; }
+struct Job { pub data &amp;mut Counter; }
+
+fn work(j Job) i64 { j.data.n; }
+
+mut c = new Counter(1i64);
+imm t = thread.start(new Job(&amp;mut c), &amp;work);    // refused
+</pre>
+<pre>
+Error 1194: start requires A is Sendable, and Job is not Sendable: Job.data is &amp;mut Counter, a borrowed
+reference of permission mut, and a borrow crosses threads only if it lives for the whole program and is imm or
+opaq (any number of threads may read what it reaches, and none writes) or uni (it moves, so one holder has it).
+This permission lets a holder write while others may read. What is checked is the types of the references a
+value holds, not how a variable was declared: a local declared 'mut x = 5' holds a number, which is Sendable.
+</pre>
+
+	<h2 id="shareable">Shareable: what several threads may read at once</h2>
+	<p>Sending is one question; sharing is another. <span class="pre">Shareable</span> says a <i>borrow</i> of a value may
+		be held by several threads at once, so each reads it while the others do: the passes of a
+		<span class="pre">parallel each</span> naming a value from outside the loop
+		(<a href="conc-parallel.html#parallelbody">What the body may do</a>), the threads that hold an
+		<span class="pre">Arc</span>, the closures of a parallel reduction. The compiler grants it from what a type holds,
+		never from names, to every type that does not hold, directly or in a field, an element, a variant, a type argument
+		or behind a borrow or an owner, one of these:</p>
+	<ul>
+	<li><b>an owner that may be copied in a region that does not declare <span class="pre">ThreadSafe</span></b> (an
+		<span class="pre">Rc</span>): two threads copying it write its count at once without an atomic operation;</li>
+	<li><b>a traced reference</b>, <span class="pre">Gc</span>, whose copies are roots in a collector that is
+		single-threaded. A read-only <span class="pre">ActorGc[imm, T]</span> is the exception, in the passes of a
+		<span class="pre">parallel each</span> in its own actor's behaviour
+		(<a href="conc-parallel.html#parallelactor">In an actor's behaviour</a>);</li>
+	<li><b>a reference that writes through a path others share</b>: a <span class="pre">&amp;mut</span> (Cone's
+		<span class="pre">&amp;mut</span> may be shared, so what holds one writes through a <span class="pre">&amp;</span> of
+		it), or an <span class="pre">Arc[mut, T]</span>. A closure that names a <span class="pre">&amp;mut</span> variable
+		is not Shareable, whatever its <span class="pre">()</span> takes, nor is a struct with a
+		<span class="pre">&amp;mut</span> field;</li>
+	<li><b>a reference to a trait or a callable that does not say what is behind it</b>
+		(<span class="pre">&amp;&lt;Shape</span>, <span class="pre">&amp;&lt;fn(i32) i32</span>,
+		<span class="pre">So[Shape]</span>): the implementers are not known, so nothing says a borrow of the value may be
+		shared. <span class="pre">+ Shareable</span>, or <span class="pre">+ Sendable</span>, vouches for it
+		(<a href="#marks">below</a>).</li>
+	</ul>
+	<p>Raw pointers in a struct that is not generic are trusted, as the parallel-body check has always trusted them
+		(nothing is followed behind one); a type holding ones it shares safely declares <span class="pre">is
+		Shareable</span>; and an instance of a generic type is Shareable only where its type arguments are
+		(<span class="pre">List[Rc[T]]</span>, <span class="pre">Dict[K, Rc[V]]</span> and <span class="pre">Option[Rc[T]]</span>
+		are not), whatever the collection keeps its items behind. A plain borrow, an <span class="pre">Arc[imm, T]</span>
+		and an <span class="pre">Arc[Mutex, T]</span> of a Shareable <span class="pre">T</span>, an atomic and a number are
+		Shareable. What the compiler grants <span class="pre">Sendable</span> it also grants
+		<span class="pre">Shareable</span>, so an <span class="pre">Arc[imm, T]</span> of one may be read by several threads
+		at once; a type declaring <span class="pre">Sendable</span> over raw pointers promises that of them, and declares
+		<span class="pre">Shareable</span> as well where its borrows may be shared. A generic asks it of its argument as it
+		asks Sendable: <span class="pre">[F fn() + Shareable]</span>.</p>
+
+	<h2 id="marks">Saying what is behind a reference: Sendable, Shareable and ShapeKeeping</h2>
+	<p>A reference to a trait or a callable hides the type of the value behind it, so it is not
+		<span class="pre">Sendable</span> or <span class="pre">Shareable</span> unless it says so. The markers follow the
+		signature or the trait with a <span class="pre">+</span>, in either order:</p>
+<pre>
+fn work(f So[fn(x i32) i32 + Sendable]) i32 { f(1); }
+fn read(f &amp;&lt;fn(x i32) i32 + Shareable, x i32) i32 { f(x); }
+So[Shape + Sendable + Shareable]
+</pre>
+	<p>The marker is a requirement on the closure or value put behind the reference: a value is made such a reference
+		only if its type is each marker, and one that is not is refused where the reference is made, naming the variable it
+		borrows or the owner it holds. An owner of a closure sent to a thread lists what it uses, so it has its own
+		copy:</p>
+<pre>
+imm k = 3;
+imm c = new So[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k; });   // k is listed: its own copy
+imm th = thread.start(c, &amp;work);                                          // th.join() is 3
+</pre>
+	<p>A closure that holds an <span class="pre">Rc</span> is refused, and told what to hold instead:</p>
+<pre>
+imm hf = new Rc[imm, Grid](h: 0.5);
+imm flock = new So[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { x + z + hf.h; });
+</pre>
+<pre>
+Error 1194: `So[uni, fn(f32, f32) f32 + Sendable]` says the closure behind it is Sendable, and this closure is
+not: it holds 'hf' (Rc[imm, Grid]), which is an owner that may be copied, and Rc does not declare ThreadSafe:
+its copies could not be made and dropped on several threads at once. It may cross as a uni owner, which moves
+it, or as an owner of a region declaring ThreadSafe, such as Arc. Its list holds 'hf' as its own: give it
+something that can go there (an Arc where it is an Rc, a value copied where it is a borrow).
+</pre>
+	<p>With <span class="pre">hf</span> an <span class="pre">Arc[imm, Grid]</span>, the same closure goes to a thread. A
+		reference with markers is a reference with fewer, never the other way: a <span class="pre">So[fn() +
+		Sendable]</span> goes where a <span class="pre">So[fn()]</span> is wanted. A <span class="pre">parallel each</span>
+		body may name a reference to a trait or a callable from outside the loop only if it carries one of the two
+		markers.</p>
+	<p>A third marker, <span class="pre">ShapeKeeping</span>, says that a call through the reference reshapes nothing the
+		caller holds a borrow into, so the caller's borrows of the elements of a collection survive the call
+		(<a href="mem-shape.html#shapekeeping">Shape changes</a>). Unlike the other two, it is a fact of the
+		methods the reference calls rather than of the type behind it: a closure or a struct whose method pushes to a list
+		it reaches through a <span class="pre">&amp;mut</span> is refused, naming the push:</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 { f(w); w.score; }
+
+imm n = visit(&amp;mut w, fn (x &amp;mut World) { x.score = x.score + 1; });   // Ok: writes a field
+imm m = visit(&amp;mut w, fn (x &amp;mut World) { x.items.push(5); });         // refused
+</pre>
+<pre>
+Error 1500: `&amp;&lt;fn(&amp;mut World) + ShapeKeeping` says a call through it keeps the shape of what the caller has
+borrowed, and this closure calls `push` (line 26) on a `List` that it reaches through a shared mutable path (a
+`&amp;mut` parameter, a variable it borrows or holds by reference, or a global), which could be a collection the
+caller holds a borrow into. Leave '+ ShapeKeeping' off, which ends the caller's borrows into a collection at the
+call, or don't reshape it there.
+</pre>
+	<p>Only <span class="pre">Sendable</span>, <span class="pre">Shareable</span> and <span class="pre">ShapeKeeping</span>
+		may follow the <span class="pre">+</span>. A reference to a known type takes no marker (ask the type,
+		<span class="pre">T is Sendable</span>), and joining two traits with their methods,
+		<span class="pre">&amp;&lt;Shape + Named</span>, is not built.</p>
+
+	<h2 id="static-borrow">A borrow that lasts the whole program</h2>
+	<p>A borrow of a local is refused everywhere <span class="pre">Sendable</span> is asked, because the local may be gone
+		while the other thread still holds the borrow. A borrow that lasts the whole program, <span class="pre">'static</span>
+		(<a href="mem-lifetimes.html">Lifetimes</a>), has no such end: it is checked in no thread's scope, so it may cross
+		threads and actors in either of two cases, and in no other:</p>
+	<ul>
+	<li>it is <span class="pre">imm</span> or <span class="pre">opaq</span>, and what it reaches is safe for two threads to
+		read at once, as the value of an <span class="pre">Arc[imm, T]</span> must be: no <span class="pre">Rc</span> and no
+		<span class="pre">Gc</span> in it, no raw pointer, no borrow that is itself refused;</li>
+	<li>it is <span class="pre">uni</span>, and what it reaches is safe to move. A <span class="pre">uni</span> borrow
+		moves, so one holder only has it.</li>
+	</ul>
+	<p>An <span class="pre">ro</span> borrow never crosses, even of a global: <span class="pre">ro</span> only stops
+		<i>this</i> holder from writing, and another holder (<span class="pre">mut</span>) may still change what it reads
+		(<a href="mem-permissions.html#ro">Permissions</a>). Nor does a <span class="pre">mut</span> one. Nor does a borrow of
+		an invariant lifetime (<span class="pre">&amp;'=a T</span>, a key): the lifetime is an arena's brand, and the arena
+		dies when its owner drops it. A <span class="pre">uni</span> borrow of a named global is refused where it is made
+		("cannot obtain this permission"): any code reaches a global by name, so it is not unique. A
+		<span class="pre">uni</span> borrow of an owner that nothing else can reach would be unique, and crosses; an owner
+		leaked for the rest of the program, which would make one, is not built yet, but a signature may already take one:
+		<span class="pre">fn f(p &amp;'static uni T)</span>.</p>
+	<p>A generic says that a type parameter may be such a borrow by bounding it, <span class="pre">[A Sendable +
+		'static]</span>, as <span class="pre">thread.start</span> does, and each call is then checked to hand it only borrows
+		of the whole program (<a href="mem-lifetimes.html">Lifetime bounds</a>); without the bound,
+		<span class="pre">Sendable</span> refuses every borrow. An actor's initializer or behaviour takes one by writing it
+		<span class="pre">'static</span>, and what it reaches is asked the same way. So is a behaviour's answer: it may be
+		<span class="pre">&amp;'static imm T</span>, <span class="pre">&amp;'static opaq T</span> or
+		<span class="pre">&amp;'static uni T</span>, or a struct holding one, under the same rule.</p>
+<pre>
+imm table Array[u64, 3] = [1u64, 2u64, 3u64];
+fn sum(t &amp;imm Array[u64, 3]) u64 { (*t)[0] + (*t)[1] + (*t)[2]; }
+fn peek(t &amp;Array[u64, 3]) u64 { (*t)[0]; }
+
+actor Reader {
+  total u64;
+  pub async do addTable(self, t &amp;'static imm Array[u64, 3]) { total = total + (*t)[0]; }
+}
+
+imm t = thread.start(&amp;imm table, &amp;sum);    // Ok: an imm borrow of a global; t.join() is 6
+reader.addTable(&amp;imm table);               // Ok: the same, to an actor
+
+thread.start(&amp;table, &amp;peek);               // refused: an ro borrow
+thread.start(&amp;imm onTheStack, &amp;sum);       // refused: a borrow of a local
+</pre>
+<pre>
+Error 1194: start requires A is Sendable, and &amp;ro Array[u64, 3] is not Sendable: it is a borrowed reference of
+permission ro, and a borrow crosses threads only if it lives for the whole program and is imm or opaq (any
+number of threads may read what it reaches, and none writes) or uni (it moves, so one holder has it). 'ro' only
+stops this holder writing: another holder could still change what it reaches. ...
+Error 1249: The type parameter A is bounded by ''static' ('A + 'static'), so the borrow handed in for it must be
+global: this one lives only as long as a value of this function.
+</pre>
+
+	<h2 id="arc">Sharing immutable data: Arc</h2>
+	<p>Most data that several threads need is data nobody changes: a price list, a mesh, a table of settings. It is
+		shared through the <span class="pre">sync</span> package's <span class="pre">Arc</span> region
+		(<span class="pre">import sync use Arc</span>), whose count is atomic, as the program at the top shows:
+		<span class="pre">Arc[imm, T]</span> owners may be copied and dropped on any thread, and the value is freed once,
+		after the last (<a href="mem-rc.html#arc">the Arc region</a>). An <span class="pre">Rc</span> owner's count is
+		not atomic, and it must stay on one thread.</p>
+
+	<h2 id="mutable">Sharing what changes</h2>
+	<p>Threads that change one value together pay for it twice: in the synchronization each change needs (a lock, or an
+		atomic instruction), and in the caches of every other core, which lose their copy whenever one core writes. Shared,
+		changing data is also where deadlocks come from. So the fastest and safest design shares as little that changes as
+		it can: it sends small messages, moves a uniquely owned value from one thread to the next rather than sharing it,
+		and shares freely what nobody changes. The <a href="mem-permissions.html">static permissions</a> check all of that
+		when the program is compiled, at no cost when it runs.</p>
+	<p>When threads truly must change one value, there are four ways, from the most used:</p>
+	<ul>
+	<li><b>Give the value to an actor</b>, and send it what to do, as the Guide's bakery gives the loaves to the stock
+		room. One message at a time reaches it, so it needs no lock at all.</li>
+	<li><b>Guard it with a lock permission</b>, <span class="pre">Arc[Mutex, T]</span> or
+		<span class="pre">Arc[Rwlock, T]</span>: a borrow takes the lock, and its last use gives it back, so nothing
+		reaches the value unlocked (<a href="conc-locks.html">Lock permissions</a>, in Memory).</li>
+	<li><b>Make it an atomic value</b>, a number, flag or pointer whose every change is indivisible
+		(<a href="conc-primitives.html#atomic">Atomic values</a>).</li>
+	<li><b>Pass values between plain threads through a channel</b>, a queue that any number of threads put into and one
+		takes from (<a href="conc-threads.html#channel">Channels</a>).</li>
+	</ul>
+	<p>Concurrent data structures beyond those, such as dictionaries that many threads change at once without a lock, are
+		not built yet.</p>
+
+	<p>You can now tell whether a value may be sent or shared, read the refusal when it may not, and choose how threads
+		share what changes. The Guide's actors waited for each other's answers with <span class="pre">await</span>; the next
+		page says exactly what happens at that pause, and what a future is.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-await.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

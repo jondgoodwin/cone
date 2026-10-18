@@ -1,0 +1,404 @@
+<html>
+  <head>
+	  <title>Permissions - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Permissions: what a reference may do</div>
+		</div>
+
+    <div class="text">
+
+	<p>Two threads changing one value at the same moment is a data race: the value ends up half one change and half
+		the other, and the bug appears only now and then. Cone prevents it before the program runs, with a
+		<b>permission</b> on every reference that says what it may do: read, change, be copied, cross to another thread.
+		This page covers the static permissions, the ones the compiler checks alone, and how a reference passes from one
+		to another. Afterwards you can choose the permission each reference needs, and know why the compiler accepts it:</p>
+
+<pre>
+mod readings;
+
+import stdio use *;
+import collections use *;
+import thread;
+
+fn total(readings So[List[i64]]) i64 {
+  mut sum = 0i64;
+  each r in readings.iter() { sum += *r; }
+  sum;
+}
+
+fn main() {
+  // A new owner is uni: the one and only way to the list
+  imm readings = new So[List[i64]](4);
+  readings.push(12);
+  readings.push(7);
+  readings.push(30);
+
+  // So it may move to another thread: nobody is left behind to race with it
+  imm worker = thread.start(readings, &amp;total);
+  imm sum i64 = worker.join();
+  print &lt;- "total: ", sum, "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+total: 49
+</pre>
+	<p><b>Try this:</b> change both <span class="pre">So[List[i64]]</span> to
+		<span class="pre">Rc[mut, List[i64]]</span>, an owner that may be copied and changed through every copy. The
+		compiler refuses to start the thread: <i>Error 1194: start requires A is Sendable, and Rc[mut, List] is not
+		Sendable: it is an owner whose permission, mut, is not race-safe: only a uni, imm or opaq reference may be shared
+		with or sent to another thread.</i></p>
+
+	<h2 id="variable">A permission belongs to a reference</h2>
+	<p>The Guide met <span class="pre">imm</span> and <span class="pre">mut</span> on variables
+		(<a href="guide-values.html#vars">imm and mut</a>): they say whether the <i>variable</i> can be changed, given a
+		new value. A permission on a <i>reference</i> says what may be done with the reference: whether the value it
+		points at may be read or changed, and whether the reference may be copied or sent. The two are separate, which
+		is easiest to see when a variable holds a reference:</p>
+<pre>
+imm fixed = 1;
+mut counter = 2;
+imm ref1 = &amp;imm fixed;     // an imm variable holding an imm reference
+mut ref3 = &amp;imm fixed;     // a mut variable holding an imm reference
+imm ref2 = &amp;mut counter;   // an imm variable holding a mut reference
+mut ref4 = &amp;mut counter;   // a mut variable holding a mut reference
+</pre>
+	<p>Because of the variable's <span class="pre">mut</span>, <span class="pre">ref3</span> and
+		<span class="pre">ref4</span> may be changed to hold a different reference, and <span class="pre">ref1</span> and
+		<span class="pre">ref2</span> may not. Because of the reference's <span class="pre">mut</span>, the values that
+		<span class="pre">ref2</span> and <span class="pre">ref4</span> point at may be changed through them, and the
+		ones <span class="pre">ref1</span> and <span class="pre">ref3</span> point at may not:</p>
+<pre>
+ref3 = &amp;imm other;   // Ok: the variable is mut
+ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lval (the variable is imm)
+*ref4 = 5;           // Ok: the reference is mut
+*ref1 = 5;           // Error 1017: You do not have permission to modify lval (the reference is imm)
+</pre>
+	<p>A borrow can only ask for what its source allows: <span class="pre">&amp;imm</span> of a
+		<span class="pre">mut</span> variable is refused (<i>Error 1034: Borrowed reference cannot obtain this
+		permission</i>), since the variable may change while the borrow promises it will not.</p>
+
+	<h2 id="list">The static permissions</h2>
+	<p>There are two kinds of permission. A <b>static</b> permission is a keyword, written in lower case, whose
+		guarantees the compiler enforces entirely by itself, so it costs nothing while the program runs, and a reference
+		can move from one static permission to another (<a href="#transitions">below</a>). A <b>lock</b> permission is a
+		library type, named as types are, with its first letter alone capitalized: <span class="pre">Arc[Mutex, T]</span>,
+		<span class="pre">Arc[Rwlock, T]</span>, <span class="pre">Rc[Rwcell, T]</span>. Its guarantees are kept partly
+		by the compiler and partly by a lock taken while the program runs, and only an owning reference in a region can
+		carry one; <a href="conc-locks.html">Lock permissions</a>, in the regions half of this part, has them. This page
+		is about the static ones, and there are six:</p>
+	<dl>
+	<dt id="uni">uni</dt>
+	<dd><p>A <span class="pre">uni</span> (unique) reference may read and change its value, and it is the only
+		reference to that value there is. Because of that one restriction it is governed by
+		<a href="rec-moves.html">moves</a>: passing it to another variable, function or thread leaves it unusable where
+		it was. In return it may hop from thread to thread with no runtime cost at all, the fastest way to hand changeable
+		data to another thread, as the readings above did. It is the natural permission for something new, which starts
+		with one reference (or a graph of values reached through one), and it can later become shared, changeable or
+		unchanging. Knowing a reference is unique can also make code faster. A new owning reference is
+		<span class="pre">uni</span> unless it says otherwise.</p></dd>
+
+	<dt id="imm">imm</dt>
+	<dd><p>An <span class="pre">imm</span> (immutable) reference may read its value but never change it, and promises
+		that nothing else will change it either. Any number of <span class="pre">imm</span> references may point at the
+		same value, on any number of threads, since a value nobody changes cannot be raced on.</p></dd>
+
+	<dt id="mut">mut</dt>
+	<dd><p>A <span class="pre">mut</span> (mutable) reference may read and change its value, and any number of them
+		may point at the same value and change it at any time. The price is that they all stay on one thread. A
+		<span class="pre">mut</span> reference may also store another variant over an enum's value; a reference
+		narrowed into one of its variants is refused if that could happen while it is used
+		(<a href="mem-shape.html#enums">an enum's variant</a>).</p></dd>
+
+	<dt id="mut1">mut1</dt>
+	<dd><p>A <span class="pre">mut1</span> reference, like <span class="pre">mut</span>, may read and change its value,
+		and may be copied. It differs in one way: a reference into the payload of an enum's variant taken through it is
+		never asked whether another name could change the variant, as through <span class="pre">uni</span> and
+		<span class="pre">imm</span>, since nothing else can. Like <span class="pre">mut</span>, its references stay on
+		one thread, and it is refused on a type that <a href="#immutable">never changes</a>.</p></dd>
+
+	<dt id="ro">ro</dt>
+	<dd><p>A <span class="pre">ro</span> (read-only) reference may read its value but not change it. That sounds like
+		<span class="pre">imm</span>, and is not the same: <span class="pre">imm</span> guarantees that no reference
+		anywhere changes the value, which is what makes it safe to share between threads, while
+		<span class="pre">ro</span> promises only that this reference will not, and other <span class="pre">mut</span>
+		references may. So a <span class="pre">ro</span> reference may not be shared with another thread. Of the borrows,
+		only <span class="pre">imm</span>, <span class="pre">opaq</span> and <span class="pre">uni</span> ones may cross
+		to another thread, and only one that lasts the whole program (<a href="conc-sharing.html#static-borrow">Race
+		condition safety</a>).</p>
+		<p>What <span class="pre">ro</span> is for is taking a reference of <a href="#toro">nearly any permission</a>: a
+		function that promises only to read accepts a borrow of a value whoever else can change it. That is why a borrow
+		written with no permission, <span class="pre">&amp;T</span>, is <span class="pre">ro</span>, except to a type
+		that <a href="#immutable">declares it never changes</a>.</p></dd>
+
+	<dt id="opaq">opaq</dt>
+	<dd><p>An <span class="pre">opaq</span> (opaque) reference may neither read nor change what it points at. It
+		suits a reference to a function, or to an <a href="safe-c.html">opaque</a> value, where reaching
+		the value makes no sense, and since it touches nothing it may be shared with any thread.</p></dd>
+	</dl>
+
+	<h2 id="race">How permissions rule out data races</h2>
+	<p>A data race needs three things at once: two references to one value, on two threads, and at least one of them
+		changing it. Each permission removes one of the three, in its own way. <span class="pre">uni</span> allows no
+		second reference. <span class="pre">imm</span> allows no change. <span class="pre">mut</span>,
+		<span class="pre">mut1</span> and <span class="pre">ro</span> allow both, and so keep every reference on one
+		thread. <span class="pre">opaq</span> reaches nothing. And where many threads really must change one value, a
+		<a href="conc-locks.html">lock permission</a> lets only one reach it at a time. The compiler checks every
+		reference that crosses to another thread against these rules, whatever region the value is in;
+		<a href="conc-sharing.html#race">What may cross a thread</a> has the full rules for sending and sharing. <b>Not
+		checked yet:</b> a <span class="pre">mut</span> global reached from several threads, and a value that crosses by a
+		route that does not ask, such as a raw pointer cast or an <span class="pre">extern</span> call.</p>
+	<p>The same permissions keep a single thread honest too. Since a <span class="pre">uni</span> or
+		<span class="pre">imm</span> reference promises that nothing else is changing the value under it, code holding one
+		can rely on the value staying as it last saw it, and the compiler can use that to make the code faster.</p>
+
+	<h2 id="transitions">Changing a reference's permission</h2>
+	<p>A copy of a reference normally keeps the original's permission, which is usually what keeps its promises. In
+		some cases a copy with a different permission is just as safe.</p>
+	<h3 id="toro">To ro</h3>
+	<p>A <span class="pre">ro</span> reference may be borrowed from a reference of any permission but
+		<span class="pre">opaq</span>. Promising only to read can never break another reference's promise, which is what
+		makes <span class="pre">ro</span> the right parameter for a function that only reads.</p>
+	<h3 id="fromuni">From uni, for a while</h3>
+	<p>A value with one <span class="pre">uni</span> reference sometimes needs several for a while. A
+		<a href="mem-borrowing.html">borrow</a> gives them, temporarily, until the borrow's last use. A
+		<span class="pre">&amp;mut</span> borrow is shared and mutable, so while it is still to be used its source becomes
+		one more <span class="pre">mut</span> alias of the value: the source may be read, changed and borrowed again (any
+		number of <span class="pre">&amp;mut</span> borrows may be held at once), and only what needs the source unique
+		is refused: moving it, sending it, lending it <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
+		ending it (<a href="mem-borrowing.html#freezing">What a borrow leaves its source free to do</a>). A
+		<span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span> borrow, which promises more, freezes the
+		source against reading and changing too. Once the borrows' last use is behind it, the source is unique again, and
+		usable in every way:</p>
+<pre>
+imm uniref = new So[i32](5);
+imm bref1 &amp;mut i32 = uniref;     // the owner lends a 'mut' borrow
+imm bref2 = bref1;               // shared with another borrow
+*uniref = 6;                     // Ok: uniref is one more 'mut' alias while the borrows are to be used
+consume(uniref);                 // Error 1168: 'uniref' is borrowed mutably, and that borrow is used again
+                                 //   below. It may not be moved until after that last use.
+*bref2 = *bref1 + 1;             // the borrows' last use
+consume(uniref);                 // Ok: uniref is unique again (and the value it hands over is 7)
+</pre>
+	<p>A source reached as <span class="pre">uni</span>, which is what a local variable is, is frozen as just described.
+		A source reached through a shared <span class="pre">mut</span> or <span class="pre">ro</span> path, such as what a
+		<span class="pre">&amp;mut</span> parameter points at, is only kept alive while a borrow of it is still to be used.
+		An owning reference lent as a borrow, as in the example, freezes its source the same way; lent as a
+		<span class="pre">&amp;uni</span>, it is borrowed from too, not moved, and finalized at its own scope's end.</p>
+	<p>What such a borrow shares is the value the <span class="pre">uni</span> reference points at. A borrow of the
+		<span class="pre">uni</span> reference itself keeps that reference's permission: it may not be seen as a borrow of
+		a shared owning reference, because reading through it would copy out a second owner of a value promised
+		unique:</p>
+<pre>
+fn share(b &amp;Rc[mut, i32]) Rc[mut, i32] { *b; }
+imm uniref = new Rc[i32](5);
+imm other = share(&amp;uniref);     // Error 1013: a borrowed Rc[i32] is not a borrowed Rc[mut, i32]
+</pre>
+	<h3 id="permanent">From uni, for good</h3>
+	<p>A <span class="pre">uni</span> owning reference can also become shared for good, by moving it into an owning
+		reference of a shared permission, <span class="pre">mut</span> or <span class="pre">imm</span>. The
+		<span class="pre">uni</span> reference is consumed by the move, and what is left is a shareable reference, which
+		may be copied:</p>
+<pre>
+imm ref = new Rc[i32](5);           // a new owner: uni
+imm shared Rc[mut, i32] = ref;      // moved into a shared, mutable owner
+imm also = shared;                  // two owners of the same value
+*also = 7;                          // either may change it
+*ref;                               // Error 1048: This variable's value has been moved out.
+</pre>
+	<p>This trip is normally one way. Once shared, a reference cannot safely become <span class="pre">uni</span> again,
+		nor a <span class="pre">mut</span> one <span class="pre">imm</span>: as <span class="pre">mut</span> it can never
+		cross to another thread, and as <span class="pre">imm</span> it can never be changed. <b>Not built yet:</b> moving
+		a <span class="pre">uni</span> owner into a <i>borrowed</i> reference of a shared permission,
+		<span class="pre">imm newref &amp;mut i32 = ref;</span>, is meant to be the same permanent move. Today it borrows
+		instead, and <span class="pre">ref</span> stays usable; only a move into an owning type, as above, consumes it.</p>
+
+	<h2 id="recovery">Getting a permission back</h2>
+	<p>Not every transition is for good. In some circumstances a lost permission can safely be recovered:</p>
+	<ul>
+		<li><b>When a borrow ends.</b> Borrowing moves to a new permission only for the borrow's life. After the borrow's
+			last use, the source has its own permission back: a <span class="pre">uni</span> borrowed as
+			<span class="pre">mut</span> or <span class="pre">imm</span> is <span class="pre">uni</span> again, and so is
+			any reference borrowed as <span class="pre">ro</span>. A borrowed <span class="pre">&amp;uni</span> reference,
+			or slice, passed where a borrowed reference is wanted (<span class="pre">&amp;</span>,
+			<span class="pre">&amp;imm</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;uni</span>, as
+			an argument, a method's receiver or a variable's type) is recovered the same way: the call is lent a fresh,
+			shorter borrow of it instead of the reference itself, the caller is frozen meanwhile, and has its reference,
+			still unique, once that borrow's last use is behind it
+			(<a href="mem-borrowing.html#handle">Passing a borrow on</a>):
+<pre>
+fn peek(r &amp;R) {..}
+fn bump(r &amp;mut R) {..}
+fn twice(r &amp;uni R) {
+  peek(r);          // lends a fresh, shorter borrow: r is still ours
+  bump(r);
+  peek(r);
+}
+</pre></li>
+		<li><b>Not built yet: pure method calls.</b> Calling a method on an object held through a
+			<span class="pre">uni</span> reference, without losing it to the method by a move and without borrowing, will
+			be possible when the method is <a href="safe-purity.html">pure</a> and no other argument of the call is a
+			<span class="pre">mut</span> or <span class="pre">ro</span> reference. Pure functions are not built yet.</li>
+		<li><b>Not built yet: recover blocks</b>, below.</li>
+	</ul>
+	<h3 id="recover">Recover blocks</h3>
+	<p><b>Not built yet.</b> A <span class="pre">recover</span> block will turn a permission back the other way: any
+		mutable permission made inside it can be recovered as any permission, and any read-only one as any read-only
+		permission or <span class="pre">opaq</span>. That is useful for:</p>
+	<ul>
+		<li>making a shared, mutable structure inside the block and receiving it back as a <span class="pre">uni</span>
+			reference;</li>
+		<li>making a cyclic structure that never changes: build it shared and mutable inside the block, and recover it as
+			<span class="pre">imm</span>;</li>
+		<li>turning <span class="pre">uni</span> into <span class="pre">mut</span> for a stretch of complex changes, and
+			returning it as <span class="pre">uni</span> again;</li>
+		<li>taking a mutable field out of a <span class="pre">uni</span> value as a <span class="pre">uni</span> of its
+			own.</li>
+	</ul>
+	<p>It is meant to read like this, for the third case:</p>
+<pre>
+recover {
+  imm ref1 = uniref as &amp;mut i32;
+  imm ref2 = ref1;
+  *ref1 = 5;
+  ref2 as &amp;uni i32;
+}
+</pre>
+	<p>To make the reverse transition safe, the block may reach no <span class="pre">mut</span>,
+		<span class="pre">ro</span> or lock reference from outside it, local or global, and may call only pure functions.
+		Then no reference made inside can leak out, every alias made inside ends inside, and whatever the block returns
+		is known to be unique.</p>
+
+	<h2 id="fields">When a struct's fields are references</h2>
+	<p>A struct whose fields are references and the permissions on those references affect each other, both
+		ways:</p>
+	<ul>
+		<li><b>Permissions are infectious.</b> The permission of a field's reference can impose itself on the whole
+			struct.</li>
+		<li><b>Viewpoint adaptation.</b> The permission of a reference to the struct can restrict what any field's
+			reference allows.</li>
+	</ul>
+	<h3 id="infectious">Permissions are infectious</h3>
+	<p>Take a car whose fields are references:</p>
+<pre>
+struct Car {
+  pub engine &amp;uni Engine;
+  pub owner &amp;mut Person;
+}
+</pre>
+	<p>Since <span class="pre">engine</span> is a <span class="pre">uni</span> reference, which moves, the whole
+		<span class="pre">Car</span> moves (<a href="rec-moves.html#movecopy">Which types move</a>): if any part of a
+		value moves, so does the value. And since <span class="pre">owner</span> is a <span class="pre">mut</span>
+		reference, which must stay on its thread, so must any Car, and any reference to one. That holds for every
+		permission that keeps to one thread: <span class="pre">mut</span>, <span class="pre">ro</span> and
+		<span class="pre">Rwcell</span>.</p>
+	<h3 id="view">Viewpoint adaptation</h3>
+	<p>Now take a read-only borrow of a Car:</p>
+<pre>
+fn handleCar(car &amp;Car) {
+  if car.owner.age &lt; 18 {
+    car.owner.age = 18;       // Error 1017: You do not have permission to modify lval
+  }
+}
+</pre>
+	<p>The owner field is a <span class="pre">mut</span> reference, but the reference to the car is not, and without
+		permission to change the Car there is no permission to change anything reached through it either. That is
+		<b>viewpoint adaptation</b>: the permission you get is what every reference on the way allows. To read a value,
+		every reference on the path must allow reading; to change it, every one must allow changing. A borrowed reference
+		held in a field is no exception: through a <span class="pre">&amp;Car</span>, <span class="pre">car.owner</span>
+		reads and lends only <span class="pre">&amp;</span>, so calling a <span class="pre">self &amp;mut</span> method
+		on it is refused too (<i>Error 1034: Borrowed reference cannot obtain this permission: it is held in a place
+		reached through a reference that only reads</i>). A method that changes what a <span class="pre">&amp;mut</span>
+		field points at takes <span class="pre">self &amp;mut</span>; one declared <span class="pre">self &amp;</span>
+		may only read through it. Through a <span class="pre">&amp;mut Car</span>, or a Car held by value,
+		<span class="pre">owner</span> keeps its own permission.</p>
+	<p id="fieldperm">A field's own declared permission takes part the same way: what governs access to it is derived
+		from both the field's permission and the struct value's. A field declares none by default, which means
+		<span class="pre">mut</span>, so the struct value's permission alone decides. One declared
+		<span class="pre">imm</span>, <span class="pre">pub imm id i32</span>, is not writable even through a
+		<span class="pre">&amp;mut</span> to the struct (<i>Error 1017: You do not have permission to modify lval</i>).</p>
+	<p>An owning field is no exception either. For <span class="pre">app So[App]</span> in a struct
+		<span class="pre">Holder</span>, through a <span class="pre">&amp;Holder</span> the field lends only
+		<span class="pre">&amp;</span>, so a <span class="pre">self &amp;mut</span> method cannot be called on
+		<span class="pre">h.app</span>. Through a <span class="pre">&amp;mut Holder</span> or an
+		<span class="pre">Rc[mut, Holder]</span> it lends <span class="pre">&amp;mut</span> and
+		<span class="pre">&amp;</span>, but not <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
+		since another name for the same holder could replace the owner while the loan is in use. A
+		<span class="pre">&amp;mut</span> borrow of what the owner owns is allowed, and a call or a store that could
+		replace the owner while it is still to be used is refused (<a href="mem-shape.html#owners">An owner stored
+		over</a>).</p>
+	<p>A <span class="pre">uni</span> field is stricter. A shared reference cannot see through a
+		<span class="pre">uni</span> one, since that would share what is supposed to be unique, and "shared" here includes
+		<span class="pre">&amp;mut</span>: through a <span class="pre">&amp;Car</span> or a <span class="pre">&amp;mut
+		Car</span>, <span class="pre">car.engine</span> is an error however it is used, read, lent, written or copied out
+		into a local, because another name for the same Car could reach the engine too (<i>Error 1490: The `&amp;uni`
+		field `engine` cannot be seen through a `&amp;` reference: that reference could be another name for what holds the
+		field</i>). The same holds for a <span class="pre">&amp;uni</span> held as an element of an array or a tuple: it is
+		seen only through <span class="pre">uni</span> references, or from an array or tuple held by value.</p>
+	<p>The engine can be seen only when the car reference is <span class="pre">uni</span> too, or the Car is held by
+		value, with no other name to reach it. By the design, the owner should then be out of sight, since it is shared
+		and mutable: moving that <span class="pre">uni</span> Car to another thread would scatter
+		<span class="pre">mut</span> references to the same Person across threads. <b>Not built yet:</b> seeing through a
+		field of a different permission is refused only for a <span class="pre">uni</span> field, so today a
+		<span class="pre">&amp;uni Car</span> can still read what its <span class="pre">mut</span> owner field points
+		at.</p>
+	<h3 id="isolated">Externally isolated graphs</h3>
+	<p>It would be safe to move the car to another thread if every <span class="pre">mut</span> reference to its
+		owner travelled with it. What that needs is a graph of values that is <i>externally isolated</i>: draw a line
+		around it, and only one reference crosses the line from outside, the owning <span class="pre">uni</span> reference
+		to its root. Inside, several references may reach the same node, but none comes from outside. <b>Not built
+		yet:</b> the way to build and work on one is the <a href="#recover">recover block</a>: turn the
+		<span class="pre">uni</span> root into <span class="pre">mut</span> inside the block, see and change every shared,
+		mutable node, read or take values out of them, and return the root as <span class="pre">uni</span> again.</p>
+
+	<h2 id="immutable">A type that never changes: Immutable</h2>
+	<p>Rarely needed, but worth knowing: a type may declare that nothing ever changes it through a reference, with the
+		marker <span class="pre">Immutable</span>, which a type declares and the compiler never grants by itself. The body
+		of text, <span class="pre">str</span>, declares it, and any struct may,
+		<span class="pre">struct Money is Immutable {..}</span>. It has two separate effects:</p>
+	<ul>
+		<li><b>The default permission is <span class="pre">imm</span>.</b> A reference to the type written with no
+			permission is <span class="pre">imm</span>: <span class="pre">&amp;str</span> is <span class="pre">&amp;imm
+			str</span>, a method's <span class="pre">self &amp;</span> is <span class="pre">&amp;imm</span>, and an owner in
+			a region that copies, written without a permission, is <span class="pre">imm</span> too, so
+			<span class="pre">Rc[str]</span> is <span class="pre">Rc[imm, str]</span> and its owners are copied, where
+			<span class="pre">Rc[T]</span> of an ordinary type is <span class="pre">uni</span> and moves.
+			<span class="pre">imm</span> may still be written, and so may <span class="pre">ro</span> and
+			<span class="pre">opaq</span>. A borrow made with <span class="pre">&amp;</span> from a place that cannot be
+			borrowed as <span class="pre">imm</span> (a <span class="pre">mut</span> variable) is
+			<span class="pre">ro</span>, as it is for any type.</li>
+		<li><b>The permissions that write through a shared path are refused.</b> <span class="pre">mut</span>,
+			<span class="pre">mut1</span> and a lock permission (<span class="pre">Rc[Rwcell, str]</span>) on the type are an
+			error that names <span class="pre">Immutable</span>, so there is no <span class="pre">&amp;mut str</span>.
+			<span class="pre">uni</span> is not refused: it is the one holder's, a finalizer receives its
+			<span class="pre">self</span> as <span class="pre">&amp;uni</span>, and <span class="pre">Rc[uni, str]</span> is
+			a unique owner that moves.</li>
+	</ul>
+<pre>
+fn length(s &amp;str) usize { s.len; }   // s is &amp;imm str
+imm a = new Rc[str](view);            // Rc[imm, str]
+imm b = a;                            // copied, not moved: a is still held
+fn change(s &amp;mut str) {}              // Error 1297: str declares Immutable, so nothing changes it
+                                      //   through a reference: 'mut' is refused.
+</pre>
+	<p>The marker is a promise the compiler holds a reference to, not a check of the type's own fields: a struct
+		declaring it is trusted not to write its own fields through a <span class="pre">uni</span> or a variable's
+		name.</p>
+
+	<p>You can now pick the permission each reference needs, read a race-safety error as the rule it enforces, and
+		lend a unique value without losing it. One question remains for every borrow: how long it lives. The compiler
+		usually works that out, and the next page is about the few places it needs to be told.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-lifetimes.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

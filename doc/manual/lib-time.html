@@ -1,0 +1,836 @@
+<html>
+  <head>
+	  <title>Time - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Time</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built yet: time zones (a <span class="pre">DateTime</span> is always UTC, and a written
+		offset is only read, into UTC); dates written by a pattern or in a person's language (only RFC 3339 and HTTP's
+		dates are written and read); repeating timers; and checked or saturating <span class="pre">Duration</span>
+		arithmetic (overflow wraps).</i></p>
+
+	<p>Four library packages deal with time. <span class="pre">time</span> holds the values: how long
+		(<span class="pre">Duration</span>), when on the machine's steady clock (<span class="pre">Instant</span>),
+		when on the calendar's clock (<span class="pre">Timestamp</span>), and a <span class="pre">Clock</span> a
+		program reads instants from, real or synthetic. <span class="pre">calendar</span> reads a
+		<span class="pre">Timestamp</span> as years, months, days and hours, and writes and reads dates as text.
+		<span class="pre">timewheel</span> is a set of timers that costs almost nothing to arm and to cancel.
+		<span class="pre">iocore</span>, the I/O completion loop, uses all three to give an operation a deadline and a
+		program a timer.</p>
+	<p>What runs where: <span class="pre">calendar</span> and <span class="pre">timewheel</span> call nothing of the
+		operating system's. <span class="pre">time</span> calls it for one thing, <span class="pre">Instant.now()</span>:
+		Windows' <span class="pre">QueryPerformanceCounter</span>, or on Linux <span class="pre">clock_gettime</span>,
+		chosen when the program is compiled. <span class="pre">iocore</span>'s loop is an I/O completion port on
+		Windows and epoll on Linux.</p>
+
+	<h2 id="duration">Duration</h2>
+	<p>A <span class="pre">Duration</span> is a signed length of time, a count of nanoseconds in an
+		<span class="pre">i64</span>: about 292 years either way. It is made with a constructor that names its unit,
+		<span class="pre">Duration.fromNanos</span>, <span class="pre">fromMicros</span>, <span class="pre">fromMillis</span>,
+		<span class="pre">fromSeconds</span>, <span class="pre">fromMinutes</span> or <span class="pre">fromHours</span>, each
+		taking an <span class="pre">i64</span> count, or <span class="pre">Duration.zero()</span>. It is read back with
+		<span class="pre">d.nanos()</span>, <span class="pre">micros()</span>, <span class="pre">millis()</span>,
+		<span class="pre">seconds()</span>, <span class="pre">minutes()</span> and <span class="pre">hours()</span>, each the
+		whole count of its unit with the fraction dropped toward zero (1.999 seconds is 1 second, and -1.999
+		seconds is -1), or as <span class="pre">d.secondsF64()</span>, seconds with the fraction as an
+		<span class="pre">f64</span>.</p>
+	<p>Durations add and subtract (<span class="pre">d + e</span>, <span class="pre">d - e</span>, <span class="pre">-d</span>,
+		and <span class="pre">+=</span>, <span class="pre">-=</span>), multiply and divide by an
+		<span class="pre">i64</span> (<span class="pre">d * 4</span>, <span class="pre">d / 4</span>, divided toward zero),
+		and compare with <span class="pre">==  !=  &lt;  &lt;=  &gt;  &gt;=</span>. <span class="pre">d.isZero()</span>,
+		<span class="pre">d.isNegative()</span> and <span class="pre">d.abs()</span> do what they say. A negative duration is a
+		value like any other: one instant less a later one is negative.</p>
+	<p><span class="pre">new Duration()</span> is zero. It is the spelling for a field's or a parameter's default, since a
+		default must be a constant and <span class="pre">Duration.zero()</span> is a call.</p>
+	<p>Overflow is whatever <span class="pre">i64</span> arithmetic does, which is to wrap, with no check:
+		<span class="pre">Duration.fromHours(n)</span> for an <span class="pre">n</span> past about 2.5 million, a sum past
+		292 years, and the <span class="pre">abs</span> of the most negative duration all wrap round silently. Dividing a
+		duration by zero is as undefined as dividing an <span class="pre">i64</span> by zero.</p>
+<pre>
+import stdio use *;
+import time use Duration, Instant, Timestamp;
+
+// A field's default must be a constant, so a Duration default is 'new Duration()'
+struct Options {
+  pub timeout Duration = new Duration();
+  pub retries i64 = 3i64;
+}
+
+fn main() {
+  imm d = Duration.fromMillis(1999);
+  printStr("whole seconds: ");
+  printInt(d.seconds());                       // 1
+  printStr("\nwith the fraction: ");
+  printFloat(d.secondsF64());                  // 1.999
+  printStr("\nnegated, whole seconds: ");
+  printInt((-d).seconds());                    // -1, toward zero
+  printStr("\n");
+
+  imm a = Duration.fromSeconds(90);
+  imm b = Duration.fromMinutes(1);
+  printStr("90 s - 1 min = ");
+  printInt((a - b).seconds());                 // 30
+  printStr(" s; times 4 = ");
+  printInt(((a - b) * 4).seconds());           // 120
+  printStr(" s; divided by 4 = ");
+  printInt(((a - b) / 4).millis());            // 7500
+  printStr(" ms\n");
+  printStr(if a &gt; b {"90 s is longer than 1 min\n";} else {"?\n";});
+  printStr(if (b - a).isNegative() {"1 min - 90 s is negative\n";} else {"?\n";});
+  printInt((b - a).abs().seconds());           // 30
+  printStr(" s is its abs\n");
+
+  mut total = Duration.zero();
+  total += Duration.fromMillis(250);
+  total += Duration.fromMicros(750);
+  printInt(total.micros());                    // 250750
+  printStr(" us in all\n");
+
+  imm o = new Options();
+  printStr(if o.timeout.isZero() {"default timeout is zero\n";} else {"?\n";});
+  imm p = new Options(timeout: Duration.fromSeconds(2));
+  printInt(p.timeout.millis());
+  printStr(" ms\n");
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+whole seconds: 1
+with the fraction: 1.999
+negated, whole seconds: -1
+90 s - 1 min = 30 s; times 4 = 120 s; divided by 4 = 7500 ms
+90 s is longer than 1 min
+1 min - 90 s is negative
+30 s is its abs
+250750 us in all
+default timeout is zero
+2000 ms
+</pre>
+
+	<h2 id="instant">Instant</h2>
+	<p>An <span class="pre">Instant</span> is a moment of the machine's steady clock. The clock never goes back and is not
+		moved when the calendar clock is set, so it is the clock to measure with and to set deadlines by. One
+		<span class="pre">Instant</span> means nothing by itself, since its origin is arbitrary (near the machine's start);
+		two taken in one run of a program give the time between them.</p>
+	<ul>
+	<li><span class="pre">Instant.now()</span> reads the steady clock. <span class="pre">i.elapsed()</span> is
+		<span class="pre">Instant.now() - i</span>, a <span class="pre">Duration</span>.</li>
+	<li><span class="pre">i + d</span> and <span class="pre">i - d</span> are an <span class="pre">Instant</span> a
+		<span class="pre">Duration</span> later or earlier; <span class="pre">i - j</span> is the
+		<span class="pre">Duration</span> from <span class="pre">j</span> to <span class="pre">i</span>, negative if
+		<span class="pre">j</span> is later. Instants compare with <span class="pre">==  !=  &lt;  &lt;=  &gt;  &gt;=</span>,
+		earlier being less.</li>
+	<li><span class="pre">i.nanos()</span> and <span class="pre">Instant.fromNanos(n)</span> are the count of nanoseconds
+		from the clock's origin, for a program that keeps a count of its own. Only differences between them mean
+		anything. <span class="pre">new Instant()</span> is the origin.</li>
+	</ul>
+	<p>Deadlines in Cone's I/O are <span class="pre">Instant</span>s, never durations: to wait five seconds from now, add
+		the <span class="pre">Duration</span> to <span class="pre">Instant.now()</span>.
+		<span class="pre">thread.sleep</span> and the timed waits of <span class="pre">sync</span> take a
+		<span class="pre">Duration</span> (<a href="conc-primitives.html">Concurrency</a>).</p>
+
+	<h2 id="timestamp">Timestamp</h2>
+	<p>A <span class="pre">Timestamp</span> is a moment of Coordinated Universal Time: a signed count of nanoseconds since
+		1970-01-01 00:00:00 UTC, as Unix time counts, negative before 1970. Its range is 1677 to 2262. Leap seconds
+		are ignored, as Unix time ignores them: every day is 86400 seconds. It is read from the calendar clock, which may be
+		set back or forward while a program runs, so measure a duration with
+		<span class="pre">Instant</span>s, never with two <span class="pre">Timestamp</span>s.</p>
+	<ul>
+	<li><span class="pre">Timestamp.now()</span> is UTC now. <span class="pre">Timestamp.fromUnixSeconds(s)</span> and
+		<span class="pre">Timestamp.fromUnixNanos(n)</span> make one from a count, as a file's time and
+		<span class="pre">libc.time()</span> count them; <span class="pre">t.unixSeconds()</span> and
+		<span class="pre">t.unixNanos()</span> read it back. <span class="pre">unixSeconds</span> rounds down, toward the
+		past, as Unix time does: half a second before 1970 is in second -1. <span class="pre">new Timestamp()</span> is
+		the epoch.</li>
+	<li><span class="pre">t + d</span> and <span class="pre">t - d</span> are a <span class="pre">Timestamp</span> a
+		<span class="pre">Duration</span> later or earlier; <span class="pre">t - u</span> is the
+		<span class="pre">Duration</span> from <span class="pre">u</span> to <span class="pre">t</span>. They compare like
+		instants.</li>
+	</ul>
+	<p>A <span class="pre">Timestamp</span> has no years, months or days, and no text form; those are the
+		<span class="pre">calendar</span> package's, below.</p>
+	<p>The package is called <span class="pre">time</span>, and libc's <span class="pre">time()</span>, the C library's
+		whole seconds since 1970, has the same name. A module that imports the package and also folds all of libc's names
+		in collides on it; leave libc's out with <span class="pre">import libc use * but time;</span>, and write
+		<span class="pre">libc.time(null)</span> where it is wanted.</p>
+
+	<h2 id="clock">Clock, real and synthetic</h2>
+	<p>A <span class="pre">Clock</span> is where a program that measures time reads it, so that it can be handed a
+		synthetic clock instead of the real one: in a test, a replay, or a simulation run faster than the wall.
+		<span class="pre">Clock.real()</span> reads <span class="pre">Instant.now()</span>.
+		<span class="pre">Clock.synth()</span> starts at <span class="pre">Instant.fromNanos(0)</span> and moves only when
+		told to, by exactly what it is told: <span class="pre">c.advance(d)</span>. <span class="pre">c.now()</span> is the
+		clock's instant, and the public field <span class="pre">c.synthetic</span> says which kind it is.
+		<span class="pre">advance</span> asserts that the clock is synthetic and that <span class="pre">d</span> is not
+		negative: a clock never goes back.</p>
+	<p>Code written to take a <span class="pre">Clock</span> runs on time a test chooses. The same loop, timed by a
+		synthetic clock advanced by a frame at a time, takes 960 milliseconds every run:</p>
+<pre>
+import stdio use *;
+import thread;
+import time use Duration, Instant, Timestamp, Clock;
+
+// Code that times its work by whatever clock it is handed. A frame loop
+// advances a synthetic clock by its frame time; a real one needs no help.
+fn run(clock &amp;mut Clock, frames i64) Duration {
+  imm start = clock.now();
+  mut i = 0i64;
+  while i &lt; frames {
+    if clock.synthetic { clock.advance(Duration.fromMillis(16)); }
+    i = i + 1i64;
+  }
+  clock.now() - start;
+}
+
+fn main() {
+  mut synth = Clock.synth();
+  printInt(synth.now().nanos());                    // 0: a synthetic clock starts at its origin
+  printStr(" ns at the start\n");
+  printInt(run(&amp;mut synth, 60).millis());           // 960, every run
+  printStr(" ms for 60 synthetic frames\n");
+  synth.advance(Duration.fromSeconds(1));
+  printInt(synth.now().nanos());                    // 1960000000
+  printStr(" ns now\n");
+
+  // The real clock: only comparisons are deterministic
+  mut real = Clock.real();
+  imm start = Instant.now();
+  thread.sleep(Duration.fromMillis(20));
+  imm took = start.elapsed();
+  printStr(if took &gt;= Duration.fromMillis(20) {"slept at least 20 ms\n";} else {"too short\n";});
+  printStr(if took &lt; Duration.fromSeconds(5) {"and under 5 s\n";} else {"too long\n";});
+  imm r = real.now();
+  printStr(if r &gt;= start {"the real clock has not gone back\n";} else {"back?\n";});
+
+  // A Timestamp is the calendar's clock, UTC since 1970
+  imm now = Timestamp.now();
+  printStr(if now.unixSeconds() &gt; 1767225600 {"it is after 2026-01-01\n";} else {"?\n";});
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+0 ns at the start
+960 ms for 60 synthetic frames
+1960000000 ns now
+slept at least 20 ms
+and under 5 s
+the real clock has not gone back
+it is after 2026-01-01
+</pre>
+
+	<h2 id="calendar">calendar: civil dates and times</h2>
+	<p>The <span class="pre">calendar</span> package reads a <span class="pre">Timestamp</span> the way a calendar does.
+		It uses the proleptic Gregorian calendar, its leap-year rule run back before 1582 and on past 9999, with years
+		counted astronomically (year 0 is 1 BC, year -1 is 2 BC). Every day is 86400 seconds, with no leap second. All of it
+		is UTC. A part out of its range is never wrapped or carried into a value: a constructor answers an
+		<span class="pre">Option</span>, <span class="pre">None</span> for a date or a time that does not exist, and reading a
+		text answers a <span class="pre">Result</span> whose error says what was wrong
+		(<a href="#time-error">TimeError</a>).</p>
+	<p><span class="pre">calendar.isLeapYear(y)</span> and <span class="pre">calendar.daysInMonth(y, m)</span> (0 for a
+		month not 1 to 12) are the rules for a year or month alone.</p>
+
+	<h3 id="date">Date and Weekday</h3>
+	<p>A <span class="pre">Date</span> is a year, a month and a day of the month, made only when the day exists.
+		<span class="pre">Date.fromYmd(y, m, d)</span> answers <span class="pre">Some</span> date or
+		<span class="pre">None</span>: <span class="pre">Date.fromYmd(2026, 2, 29)</span> is <span class="pre">None</span>.
+		<span class="pre">Date.fromUnixDays(n)</span> is the date <span class="pre">n</span> days after 1970-01-01, and
+		<span class="pre">new Date()</span> is 1970-01-01 itself.</p>
+	<ul>
+	<li><span class="pre">d.year()</span> (an <span class="pre">i32</span>), <span class="pre">d.month()</span> and
+		<span class="pre">d.day()</span> (<span class="pre">i8</span>s), <span class="pre">d.dayOfYear()</span> (1 to
+		365 or 366, an <span class="pre">i16</span>), <span class="pre">d.unixDays()</span> (the days since 1970-01-01, negative
+		before it).</li>
+	<li><span class="pre">d.weekday()</span> is a <span class="pre">Weekday</span>, the enum
+		<span class="pre">Weekday.Monday</span> to <span class="pre">Weekday.Sunday</span>;
+		<span class="pre">d.isoWeekday()</span> is ISO 8601's number for it, 1 (Monday) to 7.</li>
+	<li><span class="pre">d.isLeapYear()</span>, <span class="pre">d.daysInMonth()</span>,
+		<span class="pre">d.daysInYear()</span>.</li>
+	<li><span class="pre">d.addDays(n)</span> and <span class="pre">d.subDays(n)</span> are the date <span class="pre">n</span>
+		days later or earlier; <span class="pre">d.daysSince(e)</span> is the days from <span class="pre">e</span> to
+		<span class="pre">d</span>, negative when <span class="pre">e</span> is later. Dates compare with
+		<span class="pre">==  !=  &lt;  &lt;=  &gt;  &gt;=</span>, earlier being less.</li>
+	</ul>
+	<p>A year that arithmetic carries past the range of an <span class="pre">i32</span> (about two billion years) wraps.</p>
+
+	<h3 id="time-of-day">TimeOfDay</h3>
+	<p>A <span class="pre">TimeOfDay</span> is an hour (0 to 23), a minute and a second (0 to 59) and a nanosecond (0 to
+		999999999). <span class="pre">TimeOfDay.fromHms(h, m, s)</span> and <span class="pre">TimeOfDay.fromHms(h, m, s, ns)</span>
+		answer <span class="pre">Some</span> or <span class="pre">None</span> when a part is out of range, so
+		<span class="pre">fromHms(24, 0, 0)</span> is <span class="pre">None</span>. <span class="pre">t.hour()</span>,
+		<span class="pre">minute()</span> and <span class="pre">second()</span> are <span class="pre">i8</span>s,
+		<span class="pre">t.nanosecond()</span> an <span class="pre">i32</span>, and
+		<span class="pre">t.sinceMidnight()</span> a <span class="pre">Duration</span>. They compare like dates;
+		<span class="pre">new TimeOfDay()</span> is midnight.</p>
+
+	<h3 id="datetime">DateTime</h3>
+	<p>A <span class="pre">DateTime</span> is a <span class="pre">Date</span> and a <span class="pre">TimeOfDay</span> together,
+		in UTC. It is the calendar's reading of a <span class="pre">Timestamp</span>, over any year a
+		<span class="pre">Date</span> holds, where a <span class="pre">Timestamp</span> holds only 1677 to 2262.</p>
+	<ul>
+	<li><span class="pre">DateTime.fromTimestamp(t)</span>: every <span class="pre">Timestamp</span> has one.
+		<span class="pre">dt.toTimestamp()</span> answers <span class="pre">Some</span> timestamp, or
+		<span class="pre">None</span> outside 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z.</li>
+	<li><span class="pre">DateTime.fromYmdHms(y, mo, d, h, mi, s)</span>, with an optional seventh argument of nanoseconds,
+		answers <span class="pre">Some</span> or <span class="pre">None</span>; <span class="pre">DateTime.fromParts(date, tod)</span>
+		joins two values already made.</li>
+	<li><span class="pre">dt.date()</span> and <span class="pre">dt.time()</span> take it apart.</li>
+	<li><span class="pre">dt + d</span> and <span class="pre">dt - d</span> are a <span class="pre">Duration</span> later or
+		earlier, carried across days, months and years; <span class="pre">dt - e</span> is the
+		<span class="pre">Duration</span> from <span class="pre">e</span> to <span class="pre">dt</span> (it wraps past 292
+		years, as a <span class="pre">Duration</span> does). They compare as dates do; <span class="pre">new DateTime()</span> is
+		the epoch.</li>
+	</ul>
+
+	<h3 id="rfc3339">Writing and reading RFC 3339</h3>
+	<p>Each of <span class="pre">Date</span>, <span class="pre">TimeOfDay</span> and <span class="pre">DateTime</span> writes
+		itself with <span class="pre">rfc3339()</span>, a <span class="pre">String</span> of the
+		<span class="pre">collections</span> package, and reads what it writes with its own
+		<span class="pre">parseRfc3339(text)</span>, a <span class="pre">Result</span>. A <span class="pre">Timestamp</span> is
+		the <span class="pre">time</span> package's type, so it is written and read by two functions of this one:
+		<span class="pre">calendar.rfc3339(t)</span> and <span class="pre">calendar.parseRfc3339(text)</span>.</p>
+	<ul>
+	<li>A date is <span class="pre">2026-10-03</span>, a time <span class="pre">14:05:09</span>, a date-time
+		<span class="pre">2026-10-03T14:05:09Z</span>, always UTC.</li>
+	<li>A fraction of a second is written only when there is one, in as few digits as hold it exactly:
+		<span class="pre">14:05:09.5</span>, <span class="pre">14:05:09.000000001</span>. It is read in one to nine digits;
+		more than nine is refused, not rounded.</li>
+	<li>A date-time is read with its offset, which RFC 3339 requires: <span class="pre">Z</span>, or
+		<span class="pre">+hh:mm</span> or <span class="pre">-hh:mm</span>, converted to UTC. The <span class="pre">T</span>
+		and <span class="pre">Z</span> may be lower case; a space for the <span class="pre">T</span> is refused, as is a
+		date-time with no offset.</li>
+	<li>A second of 60, a leap second, is refused, since a <span class="pre">Timestamp</span> does not count them.</li>
+	<li>RFC 3339's years are 0000 to 9999. A year outside them is written and read in ISO 8601's expanded form, a sign and at
+		least six digits (<span class="pre">+010000-01-01</span>, <span class="pre">-000044-03-15</span>), so that every
+		<span class="pre">DateTime</span> is written and read back. <span class="pre">calendar.parseRfc3339</span> refuses a
+		text outside a <span class="pre">Timestamp</span>'s range, and says the range.</li>
+	</ul>
+
+	<h3 id="http-dates">HTTP dates</h3>
+	<p>HTTP's dates (RFC 9110, section 5.6.7) are written and read for a <span class="pre">Timestamp</span> only.
+		<span class="pre">calendar.httpDate(t)</span> writes IMF-fixdate, <span class="pre">Sun, 06 Nov 1994 08:49:37 GMT</span>,
+		dropping the fraction of a second toward the past. <span class="pre">calendar.parseHttpDate(text)</span> reads any of
+		the three forms HTTP allows: that one, RFC 850's (<span class="pre">Sunday, 06-Nov-94 08:49:37 GMT</span>) and asctime's
+		(<span class="pre">Sun Nov  6 08:49:37 1994</span>). Names are case-sensitive, as HTTP-date is. The day's name must
+		be the date's: <span class="pre">Mon, 06 Nov 1994</span> is refused, since 6 November 1994 was a Sunday. RFC 850's
+		two-digit year is read as the latest year ending in those digits that is not more than 50 years after now.
+		<span class="pre">parseHttpDate</span> takes now from <span class="pre">Timestamp.now()</span>;
+		<span class="pre">calendar.parseHttpDateAsOf(text, now)</span> takes it as a <span class="pre">Timestamp</span>, for
+		a test or a replay. A leap second is refused.</p>
+
+	<h3 id="time-error">TimeError</h3>
+	<p>A text that is not a date or a time is refused, never read as some other moment: the whole text must be the format,
+		and nothing else, every part in range. The refusal is the <span class="pre">Error</span> of the
+		<span class="pre">Result</span>, holding a <span class="pre">TimeError</span>: the public fields
+		<span class="pre">at</span>, the byte it stopped at counted from 0, and <span class="pre">reason</span>, a
+		<span class="pre">String</span>; and <span class="pre">e.message()</span>, the line to show a person.</p>
+<pre>
+import stdio use *;
+import collections use String;
+import time use Duration, Timestamp;
+import calendar use Date, Weekday, TimeOfDay, DateTime;
+
+// A Date.fromYmd answers an Option: None for a day that does not exist
+fn show(y i64, m i64, d i64) {
+  match Date.fromYmd(y, m, d) {
+    case imm date Some {
+      printStr(date.rfc3339().view());
+      printStr(" is day ");
+      printInt(i64.from(date.dayOfYear()));
+      printStr(" of ");
+      printInt(i64.from(date.daysInYear()));
+      printStr(", ISO weekday ");
+      printInt(i64.from(date.isoWeekday()));
+      printStr(if date.weekday() == Weekday.Saturday or date.weekday() == Weekday.Sunday {", a weekend\n";} else {", a weekday\n";});
+    }
+    case is None { printStr("no such date\n"); }
+  }
+}
+
+// Reading an RFC 3339 date-time, converted to UTC, or why not
+fn read(text &amp;str) {
+  printStr(text);
+  printStr("  -&gt;  ");
+  match DateTime.parseRfc3339(text) {
+    case imm ok Ok { printStr(ok.rfc3339().view()); }
+    case imm e Error { printStr(e.message().view()); }
+  }
+  printStr("\n");
+}
+
+fn main() {
+  show(2026, 10, 3);
+  show(2026, 2, 29);
+  show(2024, 2, 29);
+
+  // Date arithmetic is by days
+  match Date.fromYmd(2026, 12, 25) {
+    case imm xmas Some {
+      imm base = xmas.subDays(100);
+      printStr(base.rfc3339().view());
+      printStr(" + 100 days = ");
+      printStr(base.addDays(100).rfc3339().view());
+      printStr("; days between: ");
+      printInt(xmas.daysSince(base));
+      printStr("\n");
+    }
+    case is None {}
+  }
+
+  // A Timestamp read as a DateTime, and back
+  imm ts = Timestamp.fromUnixNanos(1759500309250000000);
+  imm dt = DateTime.fromTimestamp(ts);
+  printStr(dt.rfc3339().view());                    // 2025-10-03T14:05:09.25Z
+  printStr("\n");
+  printStr(calendar.rfc3339(ts).view());            // the same, straight from the Timestamp
+  printStr("\n");
+  printStr(calendar.httpDate(ts).view());           // Fri, 03 Oct 2025 14:05:09 GMT
+  printStr("\n");
+  printInt(i64.from(dt.date().year()));
+  printStr("\n");
+  imm later = dt + Duration.fromHours(36);          // carried across the day
+  printStr(later.rfc3339().view());
+  printStr("\n");
+  printInt((later - dt).hours());
+  printStr(" hours between\n");
+  match dt.toTimestamp() {
+    case imm t Some { printStr(if t == ts {"round trips to the Timestamp\n";} else {"?\n";}); }
+    case is None { printStr("outside a Timestamp\n"); }
+  }
+
+  // A year outside a Timestamp's range is still a DateTime
+  match DateTime.fromYmdHms(3000, 1, 1, 0, 0, 0) {
+    case imm far Some {
+      printStr(far.rfc3339().view());
+      match far.toTimestamp() {
+        case is Some { printStr(" has a Timestamp\n"); }
+        case is None { printStr(" has no Timestamp\n"); }
+      }
+    }
+    case is None {}
+  }
+
+  // A time of day
+  match TimeOfDay.fromHms(14, 5, 9, 500000000) {
+    case imm t Some { printStr(t.rfc3339().view()); printStr("\n"); }
+    case is None {}
+  }
+  match TimeOfDay.fromHms(24, 0, 0) {
+    case is Some { printStr("24:00:00 exists\n"); }
+    case is None { printStr("24:00:00 does not\n"); }
+  }
+
+  // Reading: offsets are converted, malformed text is refused with where and why
+  read("2026-10-03T19:35:09.25+05:30");
+  read("2026-10-03t19:35:09z");
+  read("2026-10-03 19:35:09Z");
+  read("2026-13-03T19:35:09Z");
+  read("2026-10-03T19:35:60Z");
+  read("2026-10-03T19:35:09");
+
+  // HTTP's dates, in all three forms
+  match calendar.parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT") {
+    case imm ok Ok { printStr(calendar.httpDate(ok).view()); printStr("\n"); }
+    case imm e Error { printStr(e.message().view()); printStr("\n"); }
+  }
+  match calendar.parseHttpDate("Mon, 06 Nov 1994 08:49:37 GMT") {
+    case is Ok { printStr("read\n"); }
+    case imm e Error { printStr(e.message().view()); printStr("\n"); }
+  }
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+2026-10-03 is day 276 of 365, ISO weekday 6, a weekend
+no such date
+2024-02-29 is day 60 of 366, ISO weekday 4, a weekday
+2026-09-16 + 100 days = 2026-12-25; days between: 100
+2025-10-03T14:05:09.25Z
+2025-10-03T14:05:09.25Z
+Fri, 03 Oct 2025 14:05:09 GMT
+2025
+2025-10-05T02:05:09.25Z
+36 hours between
+round trips to the Timestamp
+3000-01-01T00:00:00Z has no Timestamp
+14:05:09.5
+24:00:00 does not
+2026-10-03T19:35:09.25+05:30  -&gt;  2026-10-03T14:05:09.25Z
+2026-10-03t19:35:09z  -&gt;  2026-10-03T19:35:09Z
+2026-10-03 19:35:09Z  -&gt;  at byte 10: a space between the date and the time: RFC 3339 writes 'T'
+2026-13-03T19:35:09Z  -&gt;  at byte 5: the month is 13, outside 01 to 12
+2026-10-03T19:35:60Z  -&gt;  at byte 17: the second is 60, a leap second, which this package does not count (a Timestamp ignores leap seconds)
+2026-10-03T19:35:09  -&gt;  at byte 19: the date-time has no offset: RFC 3339 ends it with 'Z' or '+hh:mm' or '-hh:mm'
+Sun, 06 Nov 1994 08:49:37 GMT
+at byte 0: 1994-11-06 is a Sunday, not a Monday
+</pre>
+
+	<h2 id="timewheel">timewheel: timers</h2>
+	<p>A <span class="pre">Wheel</span> is a set of timers for a program that arms a great many and fires almost none:
+		every connection has an idle timeout, every request a deadline, and nearly all are cancelled because what they
+		guard happened in time. Arming and cancelling a timeout cost the same however many are pending, and a timer may
+		fire up to a tick late (a tick is one millisecond, <span class="pre">timewheel.tick()</span> as a
+		<span class="pre">Duration</span>, <span class="pre">timewheel.tickNanos</span> as a count) but never early. A
+		<span class="pre">Wheel</span> is pure data: it has no thread, waits for nothing and calls no operating system.
+		Whoever owns it says what time it is, with a <span class="pre">Clock</span> (a synthetic one in a test) or
+		<span class="pre">Instant.now()</span>, and waits for the time itself; the <span class="pre">iocore</span> loop
+		owns one and does exactly that. A <span class="pre">Wheel</span> is <span class="pre">Sendable</span>: it may be made
+		on one thread and handed to another.</p>
+
+	<h3 id="timewheel-arm">Arming and cancelling</h3>
+	<p><span class="pre">Wheel.make(now)</span> is an empty wheel whose time starts at <span class="pre">now</span>, an
+		<span class="pre">Instant</span>. Deadlines are absolute instants, never durations: a caller with &ldquo;5
+		seconds&rdquo; adds it to now. Each timer carries a <span class="pre">u64</span> token, plain data the wheel
+		hands back and never reads; what it means (an operation to cancel, a message to send) is the caller's.</p>
+	<ul>
+	<li><span class="pre">w.insert(at, token)</span> arms a timer for the instant <span class="pre">at</span> and answers a
+		<span class="pre">TimerId</span>. A timer a tick or more away is a timeout in the wheel: it fires at the first tick
+		at or after its deadline. A deadline less than a tick after the wheel's time, or already past, is put in the
+		<i>precise</i> set by itself, and fires on time, to the nanosecond the loop wakes. So one call serves both kinds:
+		what is far off can be late by a tick, what is near cannot.</li>
+	<li><span class="pre">w.insertPrecise(at, token)</span> keeps a far deadline precise too, for a timer whose point is
+		being on time (frame pacing, a fixed step). The precise set is small and costs more to arm and cancel than a
+		timeout does.</li>
+	<li><span class="pre">w.cancel(id)</span> answers true if the timer was pending and now never fires, and false, doing
+		nothing, if it has fired or been cancelled already.</li>
+	<li><span class="pre">w.isPending(id)</span> and <span class="pre">w.isPrecise(id)</span> ask about a timer;
+		<span class="pre">w.len()</span> and <span class="pre">w.isEmpty()</span> count the pending ones.</li>
+	</ul>
+	<p>A <span class="pre">TimerId</span> names a timer, not just a place: the id of a timer that fired or was cancelled
+		never names a timer armed later, so cancelling it finds nothing. <span class="pre">TimerId.none()</span> names no
+		timer (cancelling it does nothing), <span class="pre">id.isNone()</span> asks, and ids compare with
+		<span class="pre">==</span> and <span class="pre">!=</span>.</p>
+
+	<h3 id="timewheel-drive">Driving the wheel</h3>
+	<p>The program that owns the wheel is a loop: wait until the wheel needs to be looked at, then ask what is due.</p>
+	<ul>
+	<li><span class="pre">w.nextExpiry()</span> is <span class="pre">Some</span> the instant the loop must next wake at, or
+		<span class="pre">None</span> with nothing armed. It is never later than the timer it is for, but may be earlier:
+		a far timer costs a few wakes in its life where it moves down a level and nothing fires.
+		<span class="pre">w.nextPrecise()</span> is the earliest precise deadline alone, and
+		<span class="pre">w.nextTimeout()</span> the next tick the wheel needs; <span class="pre">nextExpiry</span> is the
+		earlier of the two.</li>
+	<li><span class="pre">w.expired(now, out)</span> moves the wheel's time on to <span class="pre">now</span> and appends to
+		<span class="pre">out</span>, a <span class="pre">List[Expiry]</span>, every timer due, answering how many. Each
+		is delivered exactly once, and a delivered timer is gone. What one call delivers comes in deadline order, ties in
+		the order armed. An <span class="pre">Expiry</span> has the public fields <span class="pre">id</span>,
+		<span class="pre">token</span> and <span class="pre">deadline</span> (the instant it was armed for). Time does not
+		go back: an instant before the wheel's time is taken as the wheel's time, and <span class="pre">w.now()</span> is
+		the latest instant <span class="pre">expired</span> was given.</li>
+	<li><span class="pre">w.stats()</span> counts what has happened: pending, armed, cancelled, fired and wakes,
+		among others (a <span class="pre">Stats</span> with public fields).</li>
+	</ul>
+<pre>
+import stdio use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+// The wheel's next wake, in microseconds on the clock, or -1 for none
+fn nextUs(w &amp;Wheel) i64 {
+  mut r = -1i64;
+  match w.nextExpiry() {
+    case imm s Some { r = s.nanos() / 1000i64; }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+fn main() {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  mut out = new List[Expiry];
+
+  // Three timeouts and a deadline under a tick away
+  imm idle = w.insert(clock.now() + Duration.fromSeconds(30), 1u64);       // an idle timeout
+  imm req = w.insert(clock.now() + Duration.fromMillis(5), 2u64);          // a request's deadline
+  imm odd = w.insert(clock.now() + Duration.fromMicros(2500), 3u64);       // 2.5 ms
+  imm soon = w.insert(clock.now() + Duration.fromMicros(400), 4u64);       // under a tick
+  printStr(if w.isPrecise(soon) {"400 us off: precise\n";} else {"?\n";});
+  printStr(if w.isPrecise(odd) {"?\n";} else {"2.5 ms off: a timeout in the wheel\n";});
+  printInt(i64.from(w.len()));
+  printStr(" pending; next wake at ");
+  printInt(nextUs(&amp;w));
+  printStr(" us\n");
+
+  // The request finished in time: cancel its deadline
+  printStr(if w.cancel(req) {"cancelled the request's deadline\n";} else {"?\n";});
+  printStr(if w.cancel(req) {"?\n";} else {"cancelling again does nothing\n";});
+
+  // The loop: move the clock to the next wake, then ask what is due
+  while nextUs(&amp;w) &gt;= 0i64 and nextUs(&amp;w) &lt; 100000i64 {
+    imm at = nextUs(&amp;w);
+    clock.advance(Duration.fromMicros(at) - Duration.fromNanos(clock.now().nanos()));
+    out.clear();
+    imm n = w.expired(clock.now(), &amp;mut out);
+    printStr("at ");
+    printInt(at);
+    printStr(" us: ");
+    printInt(i64.from(n));
+    printStr(" due");
+    if n &gt; 0usize {
+      printStr(", token ");
+      printUInt(out[0usize].token);
+    }
+    printStr("\n");
+  }
+  printStr(if w.isPending(idle) {"the 30 s idle timeout is still pending\n";} else {"?\n";});
+  printStr(if w.cancel(idle) {"and is cancelled\n";} else {"?\n";});
+  printInt(i64.from(w.len()));
+  printStr(" pending; ");
+  printInt(i64.from(w.stats().fired));
+  printStr(" fired, ");
+  printInt(i64.from(w.stats().cancelled));
+  printStr(" cancelled\n");
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+400 us off: precise
+2.5 ms off: a timeout in the wheel
+4 pending; next wake at 400 us
+cancelled the request's deadline
+cancelling again does nothing
+at 400 us: 1 due, token 4
+at 3000 us: 1 due, token 3
+the 30 s idle timeout is still pending
+and is cancelled
+0 pending; 2 fired, 2 cancelled
+</pre>
+	<p>The 2.5 millisecond timeout fires at 3000 microseconds, the first tick at or after its deadline; the 400
+		microsecond one fires at 400, on time.</p>
+
+	<h3 id="timewheel-lanes">Lanes and slop</h3>
+	<p>A timer goes in one of 8 lanes (<span class="pre">timewheel.lanes</span>); <span class="pre">insert</span> uses lane 0,
+		and <span class="pre">w.insertIn(lane, at, token)</span> names one. A lane's <i>slop</i> is how much later than its
+		tick its timers may fire, so that timers near one another fire in one wake: each is rounded up to the next
+		multiple of the slop on the wheel's grid. A background lane's idle timeouts can take a generous slop; a lane serving
+		frames takes none. <span class="pre">w.setSlop(lane, d)</span> sets it (whole ticks; under two ticks is none, and every
+		lane starts with none) and <span class="pre">w.slopOf(lane)</span> reads it. Changing a lane's slop moves no timer
+		already armed. Slop never makes a timer precise or early, and the precise set has none. A lane out of range
+		asserts.</p>
+<pre>
+import stdio use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+fn main() {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  mut out = new List[Expiry];
+  imm t0 = clock.now();
+
+  // Lane 1 is for background idle timeouts: they may fire up to 10 ms late
+  w.setSlop(1u32, Duration.fromMillis(10));
+  w.insertIn(1u32, t0 + Duration.fromMillis(1), 1u64);
+  w.insertIn(1u32, t0 + Duration.fromMillis(3), 2u64);
+  w.insertIn(1u32, t0 + Duration.fromMicros(9900), 3u64);
+  w.insert(t0 + Duration.fromMillis(4), 100u64);                    // lane 0: no slop
+  // A precise timer an hour off stays precise
+  imm frame = w.insertPrecise(t0 + Duration.fromSeconds(3600), 200u64);
+  printStr(if w.isPrecise(frame) {"the hour-off timer is precise\n";} else {"?\n";});
+
+  // Wake at each next expiry and say what fired
+  mut wakes = 0i64;
+  while wakes &lt; 3i64 {
+    match w.nextExpiry() {
+      case imm s Some {
+        clock.advance(s - clock.now());
+        out.clear();
+        imm n = w.expired(clock.now(), &amp;mut out);
+        printStr("at ");
+        printInt(clock.now().nanos() / 1000000i64);
+        printStr(" ms: ");
+        printInt(i64.from(n));
+        printStr(" fired:");
+        mut k = 0usize;
+        while k &lt; out.len() {
+          printStr(" ");
+          printUInt(out[k].token);
+          k = k + 1usize;
+        }
+        printStr("\n");
+      }
+      case is None[Instant] {}
+    }
+    wakes = wakes + 1i64;
+  }
+  printInt(i64.from(w.len()));
+  printStr(" still pending\n");
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+the hour-off timer is precise
+at 4 ms: 1 fired: 100
+at 10 ms: 3 fired: 1 2 3
+at 3600000 ms: 1 fired: 200
+0 still pending
+</pre>
+	<p>Lane 0's timer fires at its own tick, 4 ms; lane 1's three, due at 1, 3 and 9.9 ms, fire together in one wake at
+		10 ms; and the precise timer an hour off fires exactly at the hour.</p>
+
+	<h2 id="io-timers">Timers, deadlines and cancelling in I/O</h2>
+	<p>The <span class="pre">iocore</span> loop (<a href="conc-ioloop.html">The I/O loop underneath</a>) owns a
+		<span class="pre">timewheel.Wheel</span> and gives a program three time-related things. All its times are
+		<span class="pre">Instant</span>s; <span class="pre">forever()</span> is an instant that never comes. The loop
+		runs on Windows and on Linux. Every operation, a timer included, answers <i>exactly once</i>, with a
+		<span class="pre">Completion</span> whose <span class="pre">c.outcome()</span> is
+		<span class="pre">Outcome.Done(n)</span>, <span class="pre">Outcome.Failed(code)</span>,
+		<span class="pre">Outcome.Cancelled</span> or <span class="pre">Outcome.TimedOut</span>; a buffer lent to the
+		operation comes back in <span class="pre">c.buf</span>.</p>
+
+	<h3 id="io-timer">A timer</h3>
+	<p><span class="pre">lp.after(at, to)</span> is a timer: it answers <span class="pre">Done</span> at the instant
+		<span class="pre">at</span>, to the target <span class="pre">to</span> (<span class="pre">Target.Here(token)</span>
+		is the loop's own <span class="pre">poll</span>), unless it is cancelled first. It answers an
+		<span class="pre">OpId</span>. <span class="pre">lp.afterIn(at, to, group)</span> puts the timer in a cancel group.</p>
+	<p><span class="pre">lp.poll(until, out)</span> is the one place the loop waits. It appends the answers that are ready
+		to <span class="pre">out</span> and answers how many; it waits in the kernel at most until the instant
+		<span class="pre">until</span>, or until the loop's next timer is due, whichever is sooner.
+		<span class="pre">poll(forever(), out)</span> waits as long as it takes and <span class="pre">poll(Instant.now(), out)</span>
+		never waits. Windows' own wait is only as fine as its timer tick, 15.6 ms by default, so the loop arms a
+		high-resolution timer for the next due instant and has the kernel deliver its expiry to the completion port: the
+		wait ends on time without raising the whole system's timer resolution. A timer a tick or more off goes through the
+		wheel and may be up to a millisecond late; one nearer fires at the instant the loop wakes for it.</p>
+
+	<h3 id="io-deadline">A deadline on an operation</h3>
+	<p>A deadline is an absolute <span class="pre">Instant</span>. <span class="pre">lp.submitBy(op, to, deadline)</span>
+		starts an operation that answers <span class="pre">TimedOut</span> if it has not finished by then;
+		<span class="pre">lp.submitIn(op, to, group, deadline)</span> does the same inside a cancel group, the deadline
+		being the tighter of the one given and the group's (<span class="pre">forever()</span> to use the group's alone).</p>
+	<ul>
+	<li>An operation whose deadline has already passed is answered <span class="pre">TimedOut</span> at submit and never
+		started.</li>
+	<li>At the deadline the loop asks the operation to cancel, and the answer says <span class="pre">TimedOut</span>. The
+		kernel (or the pool's thread) then has a grace, 1 ms unless <span class="pre">lp.setGrace(d)</span> says otherwise,
+		to give the buffer back. A socket's cancel is answered in microseconds, and the <span class="pre">TimedOut</span>
+		comes with its buffer.</li>
+	<li>Past the grace, the loop answers <span class="pre">TimedOut</span> at once <i>without</i> the buffer, promptly, as a
+		frame loop needs even when a read on a hung share is stuck. The buffer goes home to its pool when the kernel lets
+		it go. After such an answer the operation's effect is unknown: a receive may have taken bytes, a send may have
+		sent. If the kernel answers between the loop's decision and its delivery, the kernel's own outcome is the
+		answer.</li>
+	<li>A blocking-pool job still queued at its deadline is taken out of its queue and answered
+		<span class="pre">TimedOut</span> with its buffer, never run. One already running cannot be stopped, and is
+		answered after the grace without its buffer.</li>
+	</ul>
+	<p>A timer has no separate deadline: its time is its deadline. Only its cancel group's deadline can end it
+		earlier, answering <span class="pre">TimedOut</span>.</p>
+
+	<h3 id="io-cancel">Cancelling</h3>
+	<p><span class="pre">lp.cancel(id)</span> asks an operation or a timer to end. It is a request, so the operation
+		still answers exactly once, and the answer says how it ended: <span class="pre">Cancelled</span> if the cancel caught
+		it, <span class="pre">Done</span> or <span class="pre">Failed</span> if it had finished first; the buffer comes back
+		either way. It answers true while the operation's answer is still to come, and false once the answer is decided or
+		for an id that names nothing, so asking twice does no harm. A cancelled timer is answered
+		<span class="pre">Cancelled</span> there and then, so a second cancel of it says false.
+		<span class="pre">lp.request(id)</span> is a <span class="pre">Request</span>, a handle another thread may hold: its
+		<span class="pre">cancel()</span>, or its death, posts the cancel to the loop, which acts on it at its next poll
+		and wakes if it sleeps; <span class="pre">detach()</span> lets it go without cancelling.</p>
+	<p>A <span class="pre">CancelGroup</span> cancels many operations and timers at once, from any thread, and carries a
+		deadline that its children inherit as the tighter. Its nesting, its shields, and what each answers are in
+		<a href="conc-ioloop.html#cancel-groups">Cancel groups</a>. The part a time user needs: <span class="pre">CancelGroup.until(d)</span>
+		is a group whose operations submitted with <span class="pre">submitIn</span> (or <span class="pre">externalIn</span>) answer
+		<span class="pre">TimedOut</span> by <span class="pre">d</span>; <span class="pre">g.childUntil(d)</span> is a child
+		with the tighter of <span class="pre">d</span> and its parent's deadline; and a timer joined with
+		<span class="pre">afterIn</span> is bound by the deadline too: due before it, the timer answers
+		<span class="pre">Done</span> at its own time; due after it, the timer answers <span class="pre">TimedOut</span>
+		at the deadline.</p>
+<pre>
+// (helpers: waitFor polls until n answers are in 'out'; how and say print an answer's
+// token, outcome and whether its buffer came back; pair makes two connected
+// sockets, a and b, on which nothing is ever sent, so a receive on one is silent)
+
+fn main() {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+  mut a = Handle.none();
+  mut b = Handle.none();
+  a, b = pair(&amp;mut lp);
+
+  // 1. A timer answers Done at its time; a cancelled one answers Cancelled
+  lp.after(Instant.now() + Duration.fromMillis(20), Target.Here(1u64));
+  imm hour = lp.after(Instant.now() + Duration.fromSeconds(3600), Target.Here(2u64));
+  printStr(if lp.cancel(hour) {"cancel: true\n";} else {"cancel: false\n";});
+  printStr(if lp.cancel(hour) {"cancel again: true\n";} else {"cancel again: false\n";});
+  waitFor(&amp;mut lp, &amp;mut out, 2usize);
+  sayAll(&amp;mut out);
+
+  // 2. An operation with a deadline: a receive on a silent socket
+  imm t0 = Instant.now();
+  lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(3u64), t0 + Duration.fromMillis(50));
+  waitFor(&amp;mut lp, &amp;mut out, 1usize);
+  sayAll(&amp;mut out);
+  printStr(if t0.elapsed() &gt;= Duration.fromMillis(50) {"not before the deadline\n";} else {"EARLY\n";});
+
+  // 3. A deadline already past: answered at submit, never started
+  lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(4u64), Instant.now() - Duration.fromMillis(1));
+  waitFor(&amp;mut lp, &amp;mut out, 1usize);
+  sayAll(&amp;mut out);
+
+  // 4. A group with a deadline, and the same group cancelled
+  imm t1 = Instant.now();
+  imm g = CancelGroup.until(t1 + Duration.fromMillis(40));
+  lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(5u64), g, forever());
+  lp.afterIn(t1 + Duration.fromMillis(200), Target.Here(6u64), g);
+  waitFor(&amp;mut lp, &amp;mut out, 2usize);
+  sayAll(&amp;mut out);
+  printStr(if t1.elapsed() &lt; Duration.fromMillis(200) {"the timer did not wait for its own 200 ms\n";} else {"the timer waited for its own 200 ms\n";});
+
+  imm h = CancelGroup.make();
+  lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(7u64), h, forever());
+  lp.afterIn(Instant.now() + Duration.fromSeconds(3600), Target.Here(8u64), h);
+  h.cancel();
+  waitFor(&amp;mut lp, &amp;mut out, 2usize);
+  sayAll(&amp;mut out);
+  printUInt(lp.inFlight());
+  printStr(" in flight\n");
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+cancel: true
+cancel again: false
+token 2: Cancelled, buffer none
+token 1: Done, buffer none
+token 3: TimedOut, buffer back
+not before the deadline
+token 4: TimedOut, buffer back
+token 6: TimedOut, buffer none
+token 5: TimedOut, buffer back
+the timer did not wait for its own 200 ms
+token 8: Cancelled, buffer none
+token 7: Cancelled, buffer back
+0 in flight
+</pre>
+	<p>Answers arrive in the order they were decided, not the order they were submitted: the cancelled timer (token 2)
+		was decided at once, and the 20 millisecond timer (token 1) only when its time came. The receive with a 50
+		millisecond deadline (token 3) answers <span class="pre">TimedOut</span> with its buffer; the one whose deadline had
+		already passed (token 4) was never started. In the group with a 40 millisecond deadline, the timer (token 6), due
+		at 200 milliseconds, answers <span class="pre">TimedOut</span> at the deadline, at once and without a buffer; the
+		receive (token 5) answers a moment later, once the kernel has given its buffer back. The cancelled
+		group answers its timer and its receive <span class="pre">Cancelled</span> and leaves nothing in flight.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="library.html">The Standard Library</a> &mdash; the catalogue of packages.</li>
+		<li><a href="conc-io.html">I/O from an actor</a> &mdash; sleeping and deadlines in I/O an actor awaits.</li>
+		<li><a href="conc-ioloop.html">The I/O loop underneath</a> &mdash; cancel groups and timers on the loop.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;"><a href="lib-http.html"><img alt="_" src="next.png" /></a></p>
+
+	</div>
+	</body>
+</html>

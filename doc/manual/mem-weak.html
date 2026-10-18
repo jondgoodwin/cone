@@ -1,0 +1,158 @@
+<html>
+  <head>
+	  <title>Weak references - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Weak references: breaking cycles</div>
+		</div>
+
+    <div class="text">
+
+	<p>Counted owners that own each other in a cycle keep each other alive for ever: a parent owns its children, each
+		child points back at its parent, and when the program lets go of the family, every count is still above zero. A
+		<b>weak reference</b> points at a value without keeping it alive, so one weak link in each cycle lets the whole
+		cycle be freed. This page covers how to make one, how to use one, which may find its value gone, and the other kinds
+		of reference that work the same way. Afterwards you can build counted structures with back-links that do not
+		leak:</p>
+
+<pre>
+mod family;
+
+import stdio use *;
+import rcweak use *;
+import collections use *;
+
+struct ChildValue {
+  pub name &amp;str;
+  pub parent Weak[ParentValue];          // the weak half of the cycle
+  fn final(self &amp;uni) { print &lt;- "child gone\n"; }
+}
+alias Child = Rcw[mut, ChildValue];
+
+struct ParentValue {
+  pub name &amp;str;
+  pub kids List[Child];                  // the strong half: the parent owns its children
+  fn final(self &amp;uni) { print &lt;- "parent gone\n"; }
+}
+alias Parent = Rcw[mut, ParentValue];
+
+fn main() {
+  imm p = new Parent("Ada", List[Child].empty());
+  imm w = Weak[ParentValue].of(p);
+  p.kids.push(new Child("Byron", w.clone()));
+
+  // A weak reference is asked for an owner, and may answer that there is none
+  match p.kids[0usize].parent.upgrade() {
+    case imm parent Some { print &lt;- p.kids[0usize].name, "'s parent is ", parent.name, "\n"; }
+    case is None { print &lt;- "no parent any more\n"; }
+  }
+}                                        // p goes: its value is freed, cycle and all
+</pre>
+	<p>It prints:</p>
+<pre>
+Byron's parent is Ada
+parent gone
+child gone
+</pre>
+	<p><b>Try this:</b> make the back-link strong, <span class="pre">pub parent Rcw[mut, ParentValue];</span>, and hand
+		the child <span class="pre">p</span> itself. The program prints the parent's name and nothing more: neither
+		<span class="pre">gone</span> line appears, because parent and child hold each other's counts up, and the pair
+		leaks.</p>
+
+	<h2 id="cycle">What makes a reference weak</h2>
+	<p>Owning and borrowed references always point at a live value, and may always be used to reach it. A weak reference
+		may not: what weak references of every kind share is that they do not keep their value alive, so before one is used,
+		it must be asked whether its value is still there. That makes it a little like an
+		<a href="guide-enums.html#option">Option</a>, and a little more: the asking is done by logic that knows how the
+		value's region tracks its values.</p>
+	<p>For <a href="mem-rc.html">reference counting</a>, the region keeps a second count beside the count of owners: the
+		number of weak references. The value is finalized when its last owner goes, as always, and its memory is kept until
+		its last weak reference goes too, so a weak reference can always look and find that the value has died. There are
+		other ways to stop counted cycles leaking, such as tracing the cycles now and then, but a weak link in each cycle is
+		the common one.</p>
+
+	<h2 id="rcw">Rcw and Weak</h2>
+	<p>Cycle-breaking weak references are library code, not a kind of reference built into the language. The
+		<span class="pre">rcweak</span> package's region <span class="pre">Rcw</span> counts both owners and weak
+		references. An owner is allocated as any other, <span class="pre">new Rcw[mut, T](...)</span>, and the weak
+		reference is an ordinary struct, <span class="pre">Weak[T]</span>:</p>
+	<ul>
+		<li><span class="pre">Weak[T].of(owner)</span> makes one from an <span class="pre">Rcw[mut, T]</span> owner, and
+			<span class="pre">Weak[T].none()</span> one that points at nothing. A <span class="pre">Weak[T]</span> moves when
+			assigned or passed, and is copied only by <span class="pre">w.clone()</span>.</li>
+		<li><span class="pre">w.upgrade()</span> gives an Option of a new counted owner: <span class="pre">Some</span> while
+			the value is alive, and <span class="pre">None</span> once it has died. The owner in a
+			<span class="pre">Some</span> goes when the Option does.</li>
+		<li><span class="pre">w.alive()</span> and <span class="pre">w.strong()</span> do the same in two steps.
+			<span class="pre">w.strong()</span> of a dead value is a <a href="safe-panics.html#panic">panic</a> at the line
+			calling it.</li>
+	</ul>
+	<p>Once the last owner is gone, a weak reference finds nothing:</p>
+<pre>
+mod alone;
+
+import stdio use *;
+import rcweak use *;
+
+struct Thing {
+  pub n i64;
+  fn final(self &amp;uni) { printStr("thing gone\n"); }
+}
+
+fn main() i32 {
+  mut w = Weak[Thing].none();
+  {
+    imm owner = new Rcw[mut, Thing](7);
+    w = Weak[Thing].of(owner);
+    printStr(if w.alive() { "alive\n"; } else { "dead\n"; });
+  }                                        // the last owner goes: the Thing is finalized
+  printStr(if w.alive() { "alive\n"; } else { "dead\n"; });
+  match w.upgrade() {
+    case imm o Some { printInt(o.n); }
+    case is None { printStr("none\n"); }
+  }
+  imm s = w.strong();                      // a dead value: a panic
+  printStr("not reached\n");
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">alive</span>, <span class="pre">thing gone</span>, <span class="pre">dead</span> and
+		<span class="pre">none</span>, and then the <span class="pre">w.strong()</span> panics:
+		<span class="pre">panic at alone.cone:23: rcweak: strong() of a weak reference whose value has died</span>.</p>
+	<p>The design has a weak reference matched directly into a borrow of its value, bounded by a lifetime as any borrow is.
+		<b>Not built yet:</b> that pattern match; today a weak reference gives a new counted owner instead, as above.
+		<span class="pre">Arc</span> has no weak references yet: <span class="pre">Weak</span> is made only from an
+		<span class="pre">Rcw</span> owner.</p>
+
+	<h2 id="others">Other references that may find nothing</h2>
+	<p>Two other regions hand out references that work the same way, each checked by its own region:</p>
+	<ul>
+		<li>A <a href="mem-arenas.html#dynarena">dynamic arena</a>'s keys reach a value only through the arena that made
+			it. They are checked when the program is compiled, so they cost nothing at run time.</li>
+		<li>A <a href="mem-pools.html#genpool">pool</a>'s generational <span class="pre">Ref</span> is checked on each use
+			against the slot it names, and finds nothing once its value has been removed, even after another value takes the
+			slot.</li>
+	</ul>
+
+	<h3 id="cached">Cached weak references</h3>
+	<p><b>Not built yet.</b> Imagine a large number of sizable values that cannot all fit in memory at once, but can be
+		reloaded or rebuilt on demand. Weak references could point at such cached values, knowing that the store underneath
+		may unload some at any time to make room for others. Matching on such a weak reference would reload its value if it
+		had been purged, before giving a usable borrow of it.</p>
+
+	<p>You can now build counted structures with back-links that free themselves, and use a reference that may find its
+		value gone. Counted values shared by several owners raise one more question: how several owners, perhaps on several
+		threads, can safely change one value. That is what lock permissions are for.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-locks.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

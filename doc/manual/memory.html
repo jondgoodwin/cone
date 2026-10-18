@@ -1,0 +1,234 @@
+<html>
+  <head>
+	  <title>Memory management - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Memory management: choosing a strategy</div>
+		</div>
+
+    <div class="text">
+
+	<p>Every value a program makes needs memory, and that memory must be given back once the value is done
+		with: not before, or the program reads memory that now holds something else, and not never, or the program
+		leaks. Most languages settle how for you, with one strategy for every value. Cone lets you choose, variable by
+		variable. This page tours the strategies, what each does well and badly, and what is at stake; the rest of
+		this part shows how to use each one. Here are five rooms of one house plan, each managed a different way:</p>
+
+<pre>
+mod rooms;
+
+import stdio use *;
+import sync use Arc;
+import arena use *;
+
+struct Room {
+  pub name &amp;str;
+  pub width i32;
+  pub length i32;
+}
+
+// Borrows a room: it neither knows nor cares how the room's memory is managed
+fn describe(r &amp;Room) {
+  print &lt;- r.name, ": ", r.width * r.length, " square metres\n";
+}
+
+fn main() {
+  // A local variable: its memory goes when main ends, at no cost
+  imm hall = new Room("hall", 2, 6);
+
+  // A single owner, So: freed the moment its one owner goes
+  imm kitchen = new So[Room]("kitchen", 4, 5);
+
+  // A counted owner, Rc: copies share it, and the last one frees it
+  imm lounge = new Rc[imm, Room]("lounge", 6, 7);
+  imm sameLounge = lounge;
+
+  // Arc counts atomically, so its owners may be on several threads
+  imm study = new Arc[imm, Room]("study", 3, 4);
+
+  // An arena: many values, all freed at once when the arena goes
+  mut plan = Arena.empty();
+  imm attic = plan.alloc(new Room("attic", 5, 8));
+
+  describe(&amp;hall);
+  describe(kitchen);
+  describe(sameLounge);
+  describe(study);
+  describe(attic);
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+hall: 12 square metres
+kitchen: 20 square metres
+lounge: 42 square metres
+study: 12 square metres
+attic: 40 square metres
+</pre>
+	<p><b>Try this:</b> hand the kitchen to a second owner, <span class="pre">imm chef = kitchen;</span>, before
+		it is described. A single owner moves rather than copying, so the compiler refuses the later
+		<span class="pre">describe(kitchen)</span>: <i>This variable's value has been moved out.</i> Do the same with the
+		lounge, and both names keep working.</p>
+	<p>Five rooms, four ways of managing memory and a local variable, and one function serves them all. That
+		function takes a <b>borrowed reference</b>, <span class="pre">&amp;Room</span>: it may use a room for as long
+		as the call lasts, but it does not own one, so it neither frees a room nor pays for any of the bookkeeping
+		that the strategies differ in. The rest of this page is about those differences.</p>
+
+	<h2 id="stakes">What is at stake</h2>
+	<p>Memory goes wrong in a few well-known ways, and each strategy is a different answer to them:</p>
+	<ul>
+		<li><b>Use after free.</b> Memory given back too soon is soon handed out again, to something else. A
+			reference that still points there reads, or worse writes, a value that is no longer the one it meant. Its
+			close cousins are a <b>double free</b>, giving the same memory back twice, and an <b>invalid free</b>,
+			giving back memory that was never handed out. These are the errors that crash programs at random and let
+			attackers in.</li>
+		<li><b>Leaks.</b> Memory never given back is lost to the program. A tool that runs for a second and exits
+			hardly notices, since the operating system takes everything back at the end. An editor, a game or a
+			server that runs for days grows until it fails.</li>
+		<li><b>Data races.</b> When two threads reach the same value and one of them changes it, the other may read
+			it half changed. Who may change a value, while who else can see it, is the same question memory management
+			asks about who may free it, and Cone answers both with one idea, the
+			<a href="mem-permissions.html">permission</a> each reference carries.</li>
+		<li><b>How much memory.</b> Strategies also differ in how expansively they use memory: how much
+			bookkeeping each value carries, how long memory stays held after its last use, and how much spare room a
+			strategy needs to run well.</li>
+	</ul>
+	<p>The division of labour is one sentence: <b>regions and lifetimes ensure memory safety; permissions ensure
+		data-race safety.</b> Between them, Cone's compiler is designed to rule out the first and the third, whichever
+		strategy a value uses: no reference outlives the value it points to, nothing is freed twice, and no two threads
+		race on one value. The pages of this part show those checks at work. A few gaps remain today, among them a
+		<span class="pre">mut</span> global reached from several threads, and raw pointers, which are not yet fenced off
+		behind the <span class="pre">trust</span> keyword planned for them; <a href="safety.html">Safety</a> says exactly
+		what a clean compile promises. Leaks and memory use are not errors the compiler can see; they are what the choice
+		of strategy is about.</p>
+
+	<h2 id="strategies">The strategies, and what each costs</h2>
+	<p>Every strategy has to decide when a value can no longer be used, so that its memory can be given back. They
+		differ in how they decide, and so in what they cost. None wins on every count, which is why no single one is
+		right for every value.</p>
+	<ul>
+		<li><b>A single owner</b> (<a href="mem-regions.html#so"><span class="pre">So</span></a>, and every local
+			variable). Each value has exactly one owner. Ownership may move, but never be copied, so the value can be
+			freed the moment its owner goes, decided when the program is compiled. Nothing is counted or traced while it
+			runs, freeing is immediate and predictable, and no memory is held past its last owner. The cost is the shape
+			of the data: one owner means a tree, where each value hangs from one parent. Two parents sharing a node, or a
+			cycle, cannot be built from single owners alone, and moving values in and out of their owners takes some
+			care.</li>
+		<li><b>Reference counting</b> (<a href="mem-rc.html"><span class="pre">Rc</span></a> on one thread,
+			<a href="mem-rc.html#arc"><span class="pre">Arc</span></a> across threads). Each value counts its owners.
+			Copying an owner adds one, dropping one subtracts one, and the value is freed when the count reaches zero.
+			Values may be shared, and are still freed promptly and fairly predictably, with a small runtime. The cost is
+			throughput, often the worst of any strategy: every copy and drop updates a count, in memory that may be far
+			from anything else the program is touching, and atomically for <span class="pre">Arc</span>. And a cycle of
+			owners keeps its own counts above zero for ever, so it leaks unless one link of it is a
+			<a href="mem-weak.html">weak reference</a>.</li>
+		<li><b>Tracing garbage collection</b> (<a href="mem-gc.html"><span class="pre">Gc</span>, and each actor's own
+			<span class="pre">ActorGc</span></a>). Every so often a collector traces what the program can still reach,
+			starting from its variables, and frees the rest. Any shape of data works, cycles included, and copying a
+			reference costs nothing. Its reputation comes from collectors that stop the whole program while they trace,
+			causing pauses at moments nobody chose. That is one kind among many: an incremental collector works in small
+			steps between the program's own, a generational one spends its effort on young values, since most die young,
+			a concurrent one runs alongside the program, and an actor's own collector in Cone tidies one actor's memory
+			between its messages, stopping no other actor. What every tracing collector pays is the work of tracing, a
+			delay between a value's last use and its freeing (so a finalizer runs late), a larger runtime, and room:
+			running fast can take four to six times the memory actually in use. Where
+			data is a tangled graph and those costs are affordable, a collector is the simplest correct answer.</li>
+		<li><b>Arenas</b> (<a href="mem-arenas.html"><span class="pre">Arena</span>,
+			<span class="pre">DynArena</span></a>). An arena hands out memory by moving a pointer along a large block,
+			and never frees one value: it frees everything at once when the arena itself goes. Allocation is as fast as
+			it gets, there is no bookkeeping and no pause, and any shape of data works. The cost is memory, which only
+			grows until the arena dies, and finalizers, which all wait for that moment. For a burst of work, one frame,
+			one request, one compile, that is exactly right.</li>
+		<li><b>Pools</b> (<a href="mem-pools.html"><span class="pre">Pool</span></a>). A pool holds values of one
+			type in slots of one size, reuses a slot as soon as its value is removed, and hands out references that
+			check whether their value is still there. It is fast, reuses memory well, and lets a value be removed at any
+			moment while others still refer to it. The cost is that every value in it has the one type.</li>
+	</ul>
+	<p>One more way to use a value costs nothing at all: to <b>borrow</b> it. A
+		<a href="mem-borrowing.html">borrowed reference</a> never frees anything, so no strategy's bookkeeping applies
+		to it, and the compiler checks that it never outlives what it borrowed. Its limit is that lifetime: a borrow
+		cannot be kept beyond the scope it came from. And underneath them all, memory can still be managed by hand
+		with raw pointers (<a href="safe-pointers.html">Pointers</a>), which is how new strategies are built; such code is
+		meant to be marked as trusted, which is not built yet.</p>
+	<p>In short:</p>
+	<table>
+		<tr><th></th><th>Single owner</th><th>Counting</th><th>Tracing</th><th>Arena</th><th>Pool</th></tr>
+		<tr><td>Runtime cost</td><td>none</td><td>every copy and drop</td><td>tracing</td><td>none</td><td>small</td></tr>
+		<tr><td>Pauses</td><td>none</td><td>freeing a large structure</td><td>depends on the collector</td><td>none</td><td>none</td></tr>
+		<tr><td>Freed</td><td>at once</td><td>at once</td><td>later</td><td>with the arena</td><td>when removed</td></tr>
+		<tr><td>Memory overhead</td><td>none</td><td>a count each</td><td>several times</td><td>grows until the end</td><td>reuses slots</td></tr>
+		<tr><td>Shapes of data</td><td>trees</td><td>no cycles, without weak references</td><td>any</td><td>any</td><td>any, one type</td></tr>
+		<tr><td>Runtime size</td><td>none</td><td>small</td><td>large</td><td>small</td><td>small</td></tr>
+	</table>
+
+	<h2 id="choosing">Choosing, variable by variable</h2>
+	<p>Real programs want all of these at once: a game wants a pool for its creatures, an arena for each frame's
+		scratch work and single owners for the rest; a server wants an arena per request and a few counted values
+		shared across threads. A language with one strategy makes every value pay for the needs of the hardest ones.
+		Cone instead lets each variable choose, by the type of its reference: <span class="pre">So[Room]</span>,
+		<span class="pre">Rc[imm, Room]</span>, <span class="pre">Arc[imm, Room]</span>, or a borrow into an arena.
+		The rooms program above is that idea in miniature.</p>
+	<p>The differences are large enough to matter. Tracing and counting are flexible and nearly invisible, and are
+		usually the slowest in throughput and the least predictable in responsiveness; an arena or a pool can be ten to
+		twenty times faster, and a single owner is often faster still. A realtime 3-D frame has about 17 milliseconds to
+		draw everything, and there that difference decides what a program can do.</p>
+	<p>Two things make the mixing work. A <b>borrowed reference</b> may point at a value whatever its strategy, so
+		most functions take borrows, like <span class="pre">describe</span>, and are written once for every strategy,
+		with none of the strategies' costs inside them: the more a program uses borrowed references instead of owning
+		ones, the faster and more flexible it becomes. And each reference carries a <b>permission</b> saying what it
+		may do, which the compiler checks the same way whatever the strategy, so safety does not depend on the choice.</p>
+	<p>Nor do you need all of this at once. A local variable and an occasional <span class="pre">So</span> or
+		<span class="pre">Rc</span> take a program a long way; the other strategies are there for when a measurement,
+		or the shape of the data, asks for them.</p>
+
+	<h2 id="pages">How this part is laid out</h2>
+	<p>It comes in two halves. The first is about using values that someone else owns, which needs no strategy at
+		all. It assumes one fact about moves: a single owner, like any value there can only be one of, moves rather than
+		copies (<a href="rec-moves.html">Moves</a>, in Recipes, has the rules for such values).</p>
+	<ul>
+		<li><a href="mem-borrowing.html"><b>Borrowed references</b></a>: lending a value instead of moving it, and
+			what a borrow leaves its source free to do.</li>
+		<li><a href="mem-permissions.html"><b>Permissions</b></a>: the static permissions, <span class="pre">uni</span>,
+			<span class="pre">mut</span>, <span class="pre">imm</span>, <span class="pre">ro</span> and the rest, and how
+			they keep threads from racing.</li>
+		<li><a href="mem-lifetimes.html"><b>Lifetime annotations</b></a>: telling the compiler how long a borrow
+			lives, where it cannot work it out.</li>
+		<li><a href="mem-shape.html"><b>Borrowing into a collection or an enum</b></a>: why a push waits for a
+			borrow of an element.</li>
+	</ul>
+	<p>The second is about the strategies themselves, each a <b>region</b> that owns its values:</p>
+	<ul>
+		<li><a href="mem-regions.html"><b>Regions and owning references</b></a>: <span class="pre">new</span>, the
+			owning reference types, and the single owner, <span class="pre">So</span>.</li>
+		<li><a href="mem-lifecycle.html"><b>When a value dies</b></a>: the exact moment each finalizer runs, for a
+			local, a temporary, a value assigned over, a value in a region, an enum and a global.</li>
+		<li><a href="mem-rc.html"><b>Reference counting</b></a>: <span class="pre">Rc</span> and
+			<span class="pre">Arc</span>.</li>
+		<li><a href="mem-weak.html"><b>Weak references</b></a>: breaking a cycle of counted owners.</li>
+		<li><a href="conc-locks.html"><b>Lock permissions</b></a>: <span class="pre">Mutex</span>,
+			<span class="pre">Rwlock</span> and <span class="pre">Rwcell</span>, for values several owners change.</li>
+		<li><a href="mem-arenas.html"><b>Arenas</b></a>: scratch arenas, and dynamic arenas whose keys carry an
+			invariant lifetime.</li>
+		<li><a href="mem-pools.html"><b>Pools</b></a>: the generational <span class="pre">Pool</span>.</li>
+		<li><a href="mem-gc.html"><b>Garbage collection</b></a>: <span class="pre">Gc</span>, and an actor's own
+			region.</li>
+		<li><a href="mem-collections.html"><b>Collections in a region</b></a>: where a list's memory comes from.</li>
+		<li><a href="mem-ownregion.html"><b>Making your own region</b></a>: a region written as a struct.</li>
+	</ul>
+
+	<p>You now know what each strategy costs, what the compiler guards whichever you choose, and why Cone lets
+		every variable choose for itself. It all starts with the way of using a value that costs nothing and needs no
+		strategy at all: borrowing it.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-borrowing.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

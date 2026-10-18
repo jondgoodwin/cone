@@ -1,0 +1,189 @@
+<html>
+  <head>
+	  <title>Raw pointers: *T - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Raw pointers: *T</div>
+		</div>
+
+    <div class="text">
+
+	<p>A reference comes with guarantees: it points at a live value, through a permission, for no longer than
+		its lifetime allows. A <b>raw pointer</b> comes with none of them. It may be null, it may step through
+		memory by arithmetic, and nothing checks where it points. That is what memory from
+		<a href="safe-c.html">C</a> looks like, and what
+		a data structure the compiler cannot check is built on. This page covers making pointers, null, arithmetic,
+		comparing, and reading and writing through them, so you can work with raw memory knowing which promises
+		have become yours. Here is a C string copied by hand:</p>
+
+<pre>
+mod strcopy;
+
+import stdio use *;
+import libc;
+
+fn main() {
+  imm text &amp;Array[u8] = "pointers";
+
+  // Room for the bytes and the zero that ends a C string, from C's allocator
+  imm block = malloc(text.len + 1usize);
+  if block == null {
+    panic("out of memory");
+  }
+
+  // Copy byte by byte, stepping two pointers along
+  mut src = text as *u8;            // the address of text[0]
+  mut dst = block;
+  mut left = text.len;
+  while left &gt; 0usize {
+    *dst++ = *src++;
+    left -= 1usize;
+  }
+  *dst = 0u8;                       // the zero C looks for
+
+  // Indexing a pointer is not bounds-checked
+  print &lt;- "first and last: ", block[0], " ", block[7], "\n";
+
+  // The caller promises the zero, so the bytes can be read as a C string
+  imm copy = cstr.fromPtr(block);
+  print &lt;- "copied ", copy.len(), " bytes: ", copy.view(), "\n";
+
+  libc.free(block);                 // C's memory is the program's to give back
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+first and last: 112 115
+copied 8 bytes: pointers
+</pre>
+	<p><b>Try this:</b> print <span class="pre">block[8]</span>, the zero. <span class="pre">block[20]</span> would
+		compile just as happily, and read whatever lies past the end of the block.</p>
+	<p>Every line that reads or writes through a pointer here is one the compiler cannot check, so in Cone's
+		design it belongs inside <a href="safe-trust.html"><span class="pre">trust</span></a>: dereferencing,
+		indexing, arithmetic, and casting a pointer to a reference. <span class="pre">trust</span> is not built yet,
+		and until it is, these compile without it. Using pointers safely is the programmer's job alone.</p>
+
+	<h2 id="making">Declaring and making a pointer</h2>
+	<p>A pointer's type is written with <span class="pre">*</span> where a reference has
+		<span class="pre">&amp;</span>, followed by the value's type and nothing else: no region, lifetime or
+		permission.</p>
+<pre>
+imm ptr1 *i32;   // a pointer to an integer
+</pre>
+	<p>A pointer usually gets its value from a reference, or from an external function, as
+		<span class="pre">malloc</span>'s is above. A reference coerces to a pointer to the same type, or can be cast
+		with <span class="pre">as</span>, which makes a copy of the address:</p>
+<pre>
+imm ptr2 *i32 = &amp;n;           // coerced
+imm ptr3 = ref1 as *i32;       // cast
+</pre>
+	<p>A slice is an address and a count, so it is not a pointer, and none is made of it implicitly.
+		<span class="pre">as</span> takes the address of its first element, the count dropped, for a C function that
+		takes a buffer and a length, as <span class="pre">text as *u8</span> does above
+		(<a href="safe-types.html#slicenoptr">A slice is no pointer</a>). A C <i>string</i> is not a pointer either
+		but a <a href="lib-string.html#cstr">cstr</a>, which promises the zero that ends it; a C string that may be
+		null stays a <span class="pre">*u8</span>, and <span class="pre">cstr.fromPtr</span> makes a
+		<span class="pre">cstr</span> of one whose zero the caller vouches for.</p>
+	<p>The other way, a pointer may be cast to a reference, <span class="pre">ptr as &amp;i32</span>. That is how a
+		library hands out memory it manages as a safe reference, and it is a promise that the memory holds a live
+		<span class="pre">i32</span> for as long as the reference is used, so in Cone's design the cast needs
+		<span class="pre">trust</span>, <span class="pre">ref = trust {ptr1 as &amp;i32};</span> (not built yet: today
+		the cast is written without it).</p>
+	<p>A pointer does not belong to a region. Memory the program asked for explicitly, from
+		<span class="pre">malloc</span> say, is the program's to free, as the example's last line does.</p>
+
+	<h2 id="null">null</h2>
+	<p>The null pointer is written <span class="pre">null</span>. It takes the pointer type it is wanted as, so it
+		may initialize or be assigned to a pointer, be passed for a pointer parameter or returned as one, fill a
+		pointer field, or be compared with a pointer:</p>
+<pre>
+mut ptr3 *i32 = null;
+if ptr3 == null { ptr3 = ref1 as *i32; }
+</pre>
+	<p>Only a raw pointer may be null: a reference never is, and an <a href="guide-dict.html#option">Option</a>'s
+		absence is <span class="pre">None</span>. So <span class="pre">null</span> is an error anywhere it is wanted as
+		something else, and anywhere nothing says which pointer type it is:</p>
+<pre>
+imm p = null;          // **ERROR** 1237: Nothing here says which raw pointer type 'null' is. Give it
+                       //   one where it is wanted, as in 'imm p *u8 = null'.
+imm p *u8 = null;      // fine, and so is: null as *u8
+</pre>
+	<p>A null pointer is false as a condition and every other pointer true, so <span class="pre">if !p</span> asks
+		whether <span class="pre">p</span> is null. It is zero: <span class="pre">0usize as *i32</span> is the same
+		pointer.</p>
+	<p id="defaults"><span class="pre">null</span> is a constant, so it may be a global's initial value or a field's or
+		parameter's default. So may a constant reinterpreted as a pointer with <span class="pre">as</span>, a fixed
+		address a device or a C library documents. A struct's pointer fields can then start out set, and a new value
+		need not mention them:</p>
+<pre>
+struct Buffer {
+  pub base *u8 = null;
+  pub guard *u8 = 4096usize as *u8;
+  pub len usize = 0usize;
+}
+
+imm b = new Buffer();     // b.base == null is true; b.guard as usize is 4096
+</pre>
+	<p>A field's default must be a constant, of the kinds <a href="guide-structs.html#struct">Structs</a> lists
+		(a literal, a named constant, a constant expression such as <span class="pre">Red | Green</span>, a variant of an
+		enum that holds no value such as <span class="pre">next Option[i32] = None</span>, or a tuple or array of them).
+		Two more kinds are for pointers: <span class="pre">null</span>, and a constant reinterpreted to a number or pointer
+		type with <span class="pre">as</span>. A struct of such constants is one too; a variant that holds a value is
+		not.</p>
+
+	<h2 id="arithmetic">Pointer arithmetic</h2>
+	<p>A reference stands in for the value it points at. A pointer does not: operations on a pointer act on the
+		pointer itself. Arithmetic moves it forward or back across elements of its type with
+		<span class="pre">++</span>, <span class="pre">--</span>, <span class="pre">+</span>,
+		<span class="pre">-</span>, <span class="pre">+=</span> or <span class="pre">-=</span>, before or after
+		(<span class="pre">*dst++ = *src++</span> above reads, writes, then moves both):</p>
+<pre>
+++p;                       // p, a mut variable, points to the next element
+imm later = first + 4usize;
+</pre>
+	<p>The step is the size of the type pointed at, not one byte: incrementing a <span class="pre">*i32</span> moves
+		it 4 bytes on, since a 32-bit integer is 4 bytes, and any number added to it is in effect multiplied by 4.</p>
+
+	<h2 id="compare">Comparing pointers</h2>
+	<p>Pointer comparisons compare the pointers, not what they point at (unlike
+		<a href="mem-borrowing.html#ops">references</a>, whose <span class="pre">==</span> compares the values they
+		refer to). Two pointers of the same type can be compared: <span class="pre">==</span> is true when both point
+		to the same place, and <span class="pre">===</span> and <span class="pre">!==</span>, which ask that question
+		of references, mean the same as <span class="pre">==</span> and <span class="pre">!=</span> on pointers.
+		<span class="pre">&lt;</span>, <span class="pre">&gt;</span> and the rest say which address is the greater,
+		which is how to tell whether a pointer has run past the end of a block.</p>
+
+	<h2 id="deref">Reading and writing through a pointer</h2>
+	<p>As with references, <span class="pre">*</span> reaches the value a pointer points at, and
+		<span class="pre">[]</span> treats the pointer as the start of an array, <span class="pre">ptr1[2]</span>
+		being the third element on. Unlike a slice's, a pointer's index is not bounds-checked, which can save time
+		where the index is known to be safe, and does harm where it is not. Both belong inside
+		<span class="pre">trust</span> in Cone's design (not built yet):</p>
+<pre>
+trust {                    // Not built yet: today, write the line without trust
+  ptr1[2] = ptr2[1];
+}
+</pre>
+	<p>Storing through a pointer, <span class="pre">*ptr = value</span>, treats the place as already holding a
+		value of its type. Where that type is an owning reference, the reference the place held is released before
+		the new one is stored; a value whose type has a <span class="pre">final</span> is not finalized. Reading a
+		value of a type that moves with <span class="pre">*ptr</span> marks the variable <span class="pre">ptr</span>
+		as moved. Memory that holds no value yet, or a value being moved out for good, is what the intrinsics
+		<a href="safe-intrinsics.html#writeraw"><span class="pre">mem.writeRaw</span></a> and
+		<a href="safe-intrinsics.html#readraw"><span class="pre">mem.readRaw</span></a> are for.</p>
+
+	<p>You can now work with raw memory and know which promises you have taken on. Next is the mechanism
+		that makes taking them on visible: <span class="pre">trust</span>.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-trust.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,233 @@
+<html>
+  <head>
+	  <title>Numbers - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Numbers</div>
+		</div>
+
+    <div class="text">
+
+	<p>Every example so far has quietly trusted its numbers to fit. Here is one that does not. An old legend says the
+		inventor of chess asked a king for a modest reward: one grain of wheat on the first square of the board, two
+		on the second, four on the third, doubling on every square up to the 64th. Counting it up takes a number type
+		big enough, a shift of bits, and a conversion from a count to a weight. By the end of this page you can do all
+		three, with any number type Cone has.</p>
+
+<pre>
+mod chessboard;
+
+import stdio use *;
+
+fn main() {
+  // 1 has no suffix, so grains is an i32: a 32-bit signed integer
+  mut grains = 1;
+  each square in 2 .. 33 {        // square 1 already has its grain
+    grains *= 2;
+    if square &gt;= 30 {             // show only the last few squares
+      print &lt;- "Square ", square, ": ", grains, " grains\n";
+    }
+  }
+
+  // A u64 is a 64-bit unsigned integer. Each square holds 1 doubled
+  // once for every square before it, and doubling n times is
+  // 1u64 &lt;&lt; n: a single 1 bit, shifted n places left
+  mut total = 0u64;
+  each n in 0u64 ..&lt; 64u64 {
+    total += 1u64 &lt;&lt; n;
+  }
+  print &lt;- "All 64 squares: ", total, " grains\n";
+  print &lt;- "Bits that are 1 in the total: ", total.countOnes(), "\n";
+
+  // f64.from converts the count to a 64-bit floating-point number.
+  // Call a grain 65 mg; a tonne is a billion (1e9) milligrams
+  imm tonnes = f64.from(total) * 65d / 1e9d;
+  print &lt;- "Weight: ", tonnes / 1e9d, " billion tonnes\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Square 30: 536870912 grains
+Square 31: 1073741824 grains
+Square 32: -2147483648 grains
+Square 33: 0 grains
+All 64 squares: 18446744073709551615 grains
+Bits that are 1 in the total: 64
+Weight: 1199.04 billion tonnes
+</pre>
+	<p>The world grows something like 800 million tonnes of wheat a year, so the king owed roughly 1,500 years of the
+		whole world's harvest (fewer if his grains were lighter than 65 mg, but not by enough to help him).</p>
+	<p><b>Try this:</b> print <span class="pre">total + 1u64</span>, one grain more, and see why the total is exactly
+		the largest number a <span class="pre">u64</span> can hold.</p>
+
+	<h2 id="sizes">Number types and their sizes</h2>
+	<p>Square 32 is where the <span class="pre">i32</span> gave out. An <span class="pre">i32</span> has 32 bits, one
+		of them for the sign, so it holds whole numbers from -2,147,483,648 to 2,147,483,647, and square 32 needs
+		2,147,483,648. The arithmetic wraps around silently: one past the largest <span class="pre">i32</span> is the
+		smallest, and doubling that gives 0. An unsigned type wraps the same way below zero:
+		<span class="pre">3u32 - 5u32</span> is 4,294,967,294. So the type has to be big enough for the largest
+		value it will ever hold.</p>
+	<p>Every number type says its size, in bits, in its name:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+		<tr><td><span class="pre">i8</span>, <span class="pre">i16</span>, <span class="pre">i32</span>,
+			<span class="pre">i64</span></td>
+			<td>Signed whole numbers. An <span class="pre">i8</span> holds -128 to 127; an
+			<span class="pre">i64</span> reaches about 9.2 billion billion either side of 0.</td></tr>
+		<tr><td><span class="pre">u8</span>, <span class="pre">u16</span>, <span class="pre">u32</span>,
+			<span class="pre">u64</span></td>
+			<td>Unsigned whole numbers, from 0. A <span class="pre">u8</span> holds 0 to 255; a
+			<span class="pre">u64</span> 0 to 18,446,744,073,709,551,615.</td></tr>
+		<tr><td><span class="pre">f32</span>, <span class="pre">f64</span></td>
+			<td>Floating-point numbers, with about 7 and about 16 significant digits.</td></tr>
+		<tr><td><span class="pre">usize</span>, <span class="pre">isize</span></td>
+			<td>Unsigned and signed whole numbers as wide as a memory address: 64 bits on today's machines. They
+			count sizes and positions in memory.</td></tr>
+	</table>
+	<p>A floating-point number keeps a fixed number of significant digits and, separately, how far to move the
+		point, so it trades exactness for range: an <span class="pre">f64</span> reaches past 10<sup>308</sup>. That
+		suits the weight, which nobody needs to the milligram. <span class="pre">print</span> shows a float to six
+		significant digits, which is why the weight came out as 1199.04.</p>
+
+	<h2 id="writing"><span id="literals"></span><span id="typedlit"></span>Writing numbers: literals and suffixes</h2>
+	<!-- Literal defaults under design (number-literals conversation, 14-15 Oct 2026); replace this paragraph when it settles. -->
+	<p>A whole number with no suffix, such as <span class="pre">42</span>, is an <span class="pre">i32</span>, and one
+		with a decimal point or an exponent, such as <span class="pre">2.5</span> or <span class="pre">1e9</span>, is
+		an <span class="pre">f32</span>. A suffix names the type instead: <span class="pre">65u8</span>,
+		<span class="pre">5000000000i64</span>, and the short forms <span class="pre">u</span> for
+		<span class="pre">u32</span>, <span class="pre">f</span> for <span class="pre">f32</span> and
+		<span class="pre">d</span> for <span class="pre">f64</span>, as in <span class="pre">65d</span>. A whole
+		number with no suffix also takes the type its context wants: in <span class="pre">total += 1</span>, where
+		<span class="pre">total</span> is a <span class="pre">u64</span>, the 1 is a <span class="pre">u64</span>
+		too.</p>
+	<p>Underscores group digits and are otherwise ignored, as in <span class="pre">1_000_000</span>, and
+		<span class="pre">0x</span> starts a hexadecimal number: <span class="pre">0xFF</span> is 255.</p>
+
+	<h2 id="computing"><span id="arith"></span><span id="arithops"></span>Arithmetic and comparison</h2>
+	<p><span class="pre">+</span>, <span class="pre">-</span>, <span class="pre">*</span>, <span class="pre">/</span> and
+		<span class="pre">%</span> work with the usual precedence. Dividing two whole numbers gives a whole number,
+		rounding toward zero, and <span class="pre">%</span> gives the remainder, which takes the sign of the number
+		divided:</p>
+<pre>
+imm a = 7 / 2;       // 3
+imm b = -7 / 2;      // -3
+imm c = -7 % 2;      // -1
+imm d = 7.0 / 2.0;   // 3.5, between floats
+</pre>
+	<p>The comparisons <span class="pre">==</span>, <span class="pre">!=</span>, <span class="pre">&lt;</span>,
+		<span class="pre">&lt;=</span>, <span class="pre">&gt;</span> and <span class="pre">&gt;=</span> give a
+		<span class="pre">bool</span>, as <a href="guide-conditionals.html#asking">Conditionals</a> showed. Give an
+		operator two numbers of the same type; when they differ, convert one with <span class="pre">from</span>,
+		<a href="#converting">below</a>.</p>
+
+	<h2 id="bitwork"><span id="bitwise"></span>Working with bits</h2>
+	<p>The total's surprise is in its bits. Each square's grains are a single 1 bit, one place further left than on the
+		square before, so adding all 64 squares sets every one of the <span class="pre">u64</span>'s 64 bits. The
+		total is 2<sup>64</sup> - 1, the largest <span class="pre">u64</span> there is, and
+		<span class="pre">countOnes()</span> finds 64 ones. The bitwise operators work on integers bit by bit, and
+		the shifts move all the bits at once:</p>
+<pre>
+0xF0u &amp; 0x3Cu     // 48, 0x30: the bits set in both
+0xE0u | 0xB8u     // 248, 0xF8: the bits set in either
+0xFFu ^ 0x0Fu     // 240, 0xF0: the bits set in one but not both
+~0u8              // 255: every bit flipped
+0x0Cu &lt;&lt; 1u       // 24: one place left doubles it
+-8 &gt;&gt; 1           // -4: on a signed number, &gt;&gt; keeps the sign
+</pre>
+	<p>The same <span class="pre">&amp;</span>, <span class="pre">|</span>, <span class="pre">^</span> and
+		<span class="pre">~</span> work on <span class="pre">bool</span> values too, as one bit each:
+		<span class="pre">true ^ false</span> is <span class="pre">true</span>. Unlike <span class="pre">and</span> and
+		<span class="pre">or</span>, they always work out both sides.</p>
+	<p id="shift">The amount to shift by is the same type as the number shifted, which is why the program counts its
+		doublings with <span class="pre">u64</span>s, <span class="pre">0u64 ..&lt; 64u64</span>.
+		<span class="pre">&lt;&lt;</span> fills the bits it vacates with zeros. <span class="pre">&gt;&gt;</span> fills
+		with zeros on an unsigned number, and with copies of the sign bit on a signed one, so a negative number stays
+		negative. Every amount has an answer, the same in every build: an amount of the type's width or more shifts
+		every bit out, so <span class="pre">1u64 &lt;&lt; 64u64</span> is 0, and <span class="pre">&gt;&gt;</span> on a
+		signed number leaves the sign in every bit, 0 or -1. The amount is read as an unsigned number of its width,
+		so a negative amount is past the width too. In a <a href="mod-globals.html#const">constant</a>, where the
+		compiler works the value out, such a shift is an error instead: <i>"Error 1231: This constant's shift is by 40,
+		so it has no value: a shift of u32 is by 0 to 31."</i></p>
+	<p>Every integer type also has methods that count and move its bits:</p>
+<pre>
+total.countOnes()               // 64: how many bits are 1
+40u32.trailingZeros()           // 3: the zeros below the lowest 1, as 40 is 8 * 5
+32u32 - 1000u32.leadingZeros()  // 10: the bits it takes to write 1000
+0x81u8.rotateLeft(1)            // 3: the bit shifted out of the top comes in at the bottom
+1u32.shlMasked(33)              // 2: the shift a processor does, by 33 modulo 32
+</pre>
+	<p id="bits">Each count is a <span class="pre">u32</span>, and each is defined for 0, as the width:
+		<span class="pre">0u32.trailingZeros()</span> is 32. A signed integer's bits are counted with its sign's:
+		<span class="pre">(-1i16).countOnes()</span> is 16. The methods that move bits take an amount, a
+		<span class="pre">u32</span>, used modulo the width: <span class="pre">rotateLeft</span> and
+		<span class="pre">rotateRight</span> bring the bits shifted out of one end back in at the other, and
+		<span class="pre">shlMasked</span> and <span class="pre">shrMasked</span> are the one-instruction shifts most
+		processors have, which differ from <span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span> only
+		past the width. <span class="pre">shrMasked</span> fills as <span class="pre">&gt;&gt;</span> does. The same
+		operations are core's intrinsics, <span class="pre">mem.countOnes(x)</span> and the rest
+		(<a href="safe-intrinsics.html#bits">Intrinsics</a>).</p>
+
+	<h2 id="updating"><span id="lval"></span>Changing a variable in place: += and ++</h2>
+	<p><span class="pre">grains *= 2</span> and <span class="pre">total += 1u64 &lt;&lt; n</span> change a
+		<span class="pre">mut</span> variable using its own value. Every arithmetic and bitwise operator has this
+		form: <span class="pre">+=</span>, <span class="pre">-=</span>, <span class="pre">*=</span>,
+		<span class="pre">/=</span>, <span class="pre">%=</span>, <span class="pre">&amp;=</span>,
+		<span class="pre">|=</span>, <span class="pre">^=</span>, <span class="pre">&lt;&lt;=</span> and
+		<span class="pre">&gt;&gt;=</span>. <span class="pre">++</span> adds one and <span class="pre">--</span>
+		takes one away. Written before the variable, the expression gives the new value; after it, the old one:</p>
+<pre>
+mut count = 10;
+count += 5;          // 15
+count %= 4;          // 3
+++count;             // 4
+imm was = count++;   // was is 4, and count is 5
+</pre>
+
+	<h2 id="converting"><span id="conversion"></span><span id="numrconv"></span>Converting between number types: from</h2>
+	<p>Other than a whole number widening into a bigger one, a number changes type only when the program asks. To
+		convert, call <span class="pre">from</span> on the type you want, with the value: <span class="pre">T.from(x)</span> gives <span class="pre">x</span> as a
+		<span class="pre">T</span>. That is how the program turned its count into something it could weigh,
+		<span class="pre">f64.from(total)</span>. A conversion does what the machine does:</p>
+<pre>
+f64.from(7)        // 7.0
+i32.from(-2.75)    // -2: a float loses its fraction, rounding toward zero
+u8.from(300)       // 44: a narrower integer keeps only the low 8 bits
+i8.from(200u8)     // -56: the same 8 bits, read as signed
+</pre>
+	<p>Converting first is also how to compute past a type's limits:</p>
+<pre>
+imm million = 1000000;
+imm wrong = million * million;                     // -727379968: too big for an i32
+imm right = i64.from(million) * i64.from(million); // 1000000000000
+</pre>
+	<p>Every number type has <span class="pre">from</span>, and it takes a value of any number type.
+		<a href="safe-types.html#from">Conversion: from</a> gives every case, among them
+		<span class="pre">bool.from(n)</span> and a number's conversion to and from a <span class="pre">char</span>.</p>
+
+	<h2 id="methods">Methods on numbers: sqrt, sin and cos</h2>
+	<p>Floats have <span class="pre">sqrt</span>, <span class="pre">sin</span> and <span class="pre">cos</span>,
+		called like any method; <span class="pre">sin</span> and <span class="pre">cos</span> take an angle in
+		radians:</p>
+<pre>
+(3d * 3d + 4d * 4d).sqrt()        // 5
+imm pi = 3.14159265358979d;
+(30d * pi / 180d).sin()           // 0.5
+</pre>
+	<p>A number has no <span class="pre">abs</span>, <span class="pre">min</span> or <span class="pre">max</span> yet;
+		an <span class="pre">if</span> does the job: <span class="pre">if x &lt; 0 { -x; } else { x; }</span>.</p>
+
+	<p>You can now pick a number type big enough for the job, write its literals, compute with it down to the bits,
+		and convert between types. Every example has also been printing text; next comes
+		<span class="pre">String</span>, text that a program builds and changes as it runs.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="guide-text.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

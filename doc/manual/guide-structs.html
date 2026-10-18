@@ -1,0 +1,248 @@
+<html>
+  <head>
+	  <title>Structs: named fields and methods - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Structs: named fields and methods</div>
+		</div>
+
+    <div class="text">
+
+	<p>A tuple keeps values together, but only by position: was it the width first, or the height? A
+		<b>struct</b> is a tuple whose values have names, plus everything names make possible: a type of your own,
+		values with defaults, parts kept private, and <b>methods</b>, the things a value of the type can do. This page
+		shows how to declare a struct, build its values, give it methods, and work on one value at a time. Here are
+		points and rectangles:</p>
+<pre>
+mod shapes;
+
+import stdio use *;
+
+// A Point is a pair of numbers whose values have names
+struct Point {
+  pub x f32 = 0.;               // a field may have a default value
+  pub y f32 = 0.;
+
+  // A function of the type, with no 'self': called as Point.origin()
+  pub fn origin() Point {
+    new Point();                // both fields take their defaults
+  }
+
+  // A method: 'x' and 'y' here are self.x and self.y
+  pub fn dist(self, other Point) f32 {
+    imm dx = other.x - x;
+    imm dy = other.y - y;
+    (dx * dx + dy * dy).sqrt;
+  }
+
+  // A method that gives back a new Point, and leaves this one as it was
+  pub fn scaled(self, k f32) Point {
+    new Point(x * k, y * k);
+  }
+
+  // A method that changes the Point it is called on
+  pub fn moveBy(self &amp;mut, dx f32, dy f32) {
+    x += dx;
+    y += dy;
+  }
+
+  pub fn show(self) {
+    print &lt;- "(", x, ", ", y, ")";
+  }
+}
+
+// A struct may hold another struct as a field
+struct Rect {
+  pub corner Point;
+  pub w f32 = 1.;
+  pub h f32 = 1.;
+
+  pub fn area(self) f32 {
+    w * h;
+  }
+
+  pub fn center(self) Point {
+    new Point(corner.x + w / 2., corner.y + h / 2.);
+  }
+
+  // Two values handed back at once, as a tuple
+  pub fn size(self) f32, f32 {
+    w, h;
+  }
+}
+
+fn main() {
+  imm a = new Point(x: 3., y: 4.);    // fields named...
+  imm b = new Point(1., 2.);          // ...or listed in order
+  print &lt;- "a is "; a.show(); print &lt;- ", ", a.dist(Point.origin()), " from the origin\n";
+  print &lt;- "a doubled is "; a.scaled(2.).show(); print &lt;- "\n";
+
+  mut box = new Rect(corner: b, w: 4., h: 2.);
+  print &lt;- "box area ", box.area(), ", center "; box.center().show(); print &lt;- "\n";
+
+  box.corner.moveBy(1., 1.);          // box is mut, so its corner may move
+  print &lt;- "moved, its center is "; box.center().show(); print &lt;- "\n";
+
+  imm w f32;
+  imm h f32;
+  w, h = box.size();
+  print &lt;- "box is ", w, " by ", h, "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+a is (3, 4), 5 from the origin
+a doubled is (6, 8)
+box area 8, center (3, 3)
+moved, its center is (4, 4)
+box is 4 by 2
+</pre>
+	<p><b>Try this:</b> give <span class="pre">Rect</span> a <span class="pre">perimeter</span> method, or a
+		<span class="pre">grow</span> method that changes its width and height, and call it on
+		<span class="pre">box</span>.</p>
+
+	<h2 id="together">Fields: values with names</h2>
+	<p>A struct gives a group of values a name, and the name is a new type, used like any other: for a variable, a
+		parameter, a return value, or a field of another struct, as <span class="pre">Rect</span> holds a
+		<span class="pre">Point</span>. Each <b>field</b> is declared like a variable, with a name and a type, and the
+		struct's values keep their fields together in memory. Names are what a tuple lacked:
+		<span class="pre">box.w</span> says what <span class="pre">pair.0</span> never could.</p>
+	<p id="struct">A value is built with <span class="pre">new</span>, the struct's name, and the fields' values in
+		parentheses. They may be named, <span class="pre">new Point(x: 3., y: 4.)</span>, or listed in the order the
+		fields are declared, <span class="pre">new Point(1., 2.)</span>. A field with a default value may be left out,
+		so <span class="pre">new Point()</span> is the origin, and with nothing to give, the empty parentheses may go
+		too: <span class="pre">new Point</span>. Every field without a default must be given a value; leave one out and
+		the compiler says <i>"Not enough values specified on type literal"</i>. A field's default must be a constant:
+		a literal, a named constant, a <a href="guide-values.html#const">constant expression</a> worked out from them,
+		a variant of an <a href="guide-enums.html">enum</a> that holds no value, or a tuple or an array of such
+		constants.</p>
+	<p id="fieldaccess">A field is read with a dot, <span class="pre">a.x</span>, and changed the same way,
+		<span class="pre">p.y = p.x</span>, if the variable holding the value is <span class="pre">mut</span>. In an
+		<span class="pre">imm</span> variable every field is as fixed as the variable: <i>"You do not have permission to
+		modify lval"</i>. A field of a field works the same way, which is how <span class="pre">box.corner</span>
+		moves above.</p>
+	<p id="structdcl">A struct may hold any type as a field except itself, since a value that contains itself would
+		be infinitely large, and the compiler says so: <i>"Bad contains Bad by value: infinite size. Break the cycle by
+		holding it through a reference."</i> A struct may hold a <a href="guide-list.html">List</a> of itself, though,
+		since a list keeps its items in a block of their own, and that is how a tree is built:</p>
+<pre>
+struct Node {
+  pub id i64;
+  pub kids List[Node];
+}
+</pre>
+	<p id="empty">A struct may also have no fields at all, <span class="pre">struct Nothing {}</span>. Its values take
+		no room, yet they can be passed around and can have methods, which makes an empty struct a useful marker.
+		Cone's own <a href="safe-types.html#void"><span class="pre">void</span></a> is one.</p>
+
+	<h2 id="methods-tour">Methods: what a value can do</h2>
+	<p>A <b>method</b> is a function written inside the struct whose first parameter is named
+		<span class="pre">self</span>: the value the method is called on. <span class="pre">a.dist(b)</span> calls
+		<span class="pre">dist</span> with <span class="pre">a</span> as its <span class="pre">self</span> and
+		<span class="pre">b</span> as <span class="pre">other</span>. Inside a method, a field or another method of the
+		same type can be named on its own, so <span class="pre">x</span> is short for <span class="pre">self.x</span>
+		and <span class="pre">clear()</span> for <span class="pre">self.clear()</span>, as long as no local variable
+		of the method has the same name. Inside the struct, <span class="pre">Self</span> names the struct itself, and a
+		parameter's type may be left off when it is <span class="pre">Self</span>: <span class="pre">fn dist(self, other)
+		f32</span> means the same as the version above.</p>
+	<p id="methodname">A method's name belongs to its type, so <span class="pre">Point</span>'s
+		<span class="pre">dist</span> and some other type's <span class="pre">dist</span> never get in each other's way,
+		nor does either clash with a variable or function outside. Within one type, though, a field and a method may
+		not share a name: <i>"Duplicate name n: every function/method needs its own name."</i></p>
+	<p id="methods">Most methods in the program take <span class="pre">self</span> as a value and give back an answer,
+		or a new value. <span class="pre">scaled</span> builds a new <span class="pre">Point</span> and leaves
+		<span class="pre">a</span> as it was, and that makes a program easy to follow: <span class="pre">a</span> is
+		the same after every such call as before it. Since each gives back a value, the next method can be called
+		straight on it, <span class="pre">a.scaled(2.).show()</span>, a chain that reads left to right.</p>
+	<p>A function inside the struct with no <span class="pre">self</span> belongs to the type rather than to any one
+		value. It is called through the type's name: <span class="pre">Point.origin()</span>. It is the natural home
+		for ways of making a value that need a name of their own.</p>
+	<p>Methods belong to a type that has a declaration to write them in: a struct, an enum, or a trait. A tuple or an
+		array has none, so a group of values that needs methods is made a struct, with the tuple or the array as a
+		field.</p>
+
+	<h2 id="self">Methods that change their value</h2>
+	<p><span class="pre">moveBy</span> is different: its <span class="pre">self</span> is written
+		<span class="pre">self &amp;mut</span>, and that says the method may change the value it is called on.
+		<span class="pre">x += dx</span> changes this point's own <span class="pre">x</span>, not a copy of it. Such a
+		method can only be called on a value that may be changed: one in a <span class="pre">mut</span> variable, or a
+		field of one, as <span class="pre">box.corner.moveBy(1., 1.)</span> is. The variable is lent to the method for
+		the length of the call. On an <span class="pre">imm</span> variable the call is refused:</p>
+<pre>
+imm p = new Point(1., 2.);
+p.moveBy(1., 1.);    // Error 1034: Cannot borrow a mutable reference to `p`, which is not mutable
+</pre>
+	<p>The <span class="pre">&amp;</span> marks a <b>borrowed reference</b>: the method is handed a way to reach the
+		caller's value, rather than a copy of it. <span class="pre">self &amp;</span>, with no
+		<span class="pre">mut</span>, reaches the value only to read it, which spares copying a large one. The
+		<a href="memory.html">Memory</a> part explains borrowed references in full; for a method, it is enough to read
+		<span class="pre">self &amp;mut</span> as "may change the value it is called on", and to give the type's methods
+		that change nothing a plain <span class="pre">self</span>.</p>
+
+	<h2 id="with">Working on one value: with blocks</h2>
+	<p>A chain suits methods that each hand back a value. When several statements in a row work on the same value, a
+		<span class="pre">with</span> block names it once. Inside the block the value is <span class="pre">this</span>,
+		and a bare dot reaches its fields and methods:</p>
+<pre>
+imm box = new Rect(corner: Point.origin(), w: 4.);
+with box {
+  print &lt;- .w, " by ", .h, ", area ", .area(), "\n";     // 4 by 1, area 4
+}
+</pre>
+	<p><span class="pre">.w</span> is <span class="pre">box.w</span>, and <span class="pre">.area()</span> is
+		<span class="pre">box.area()</span>. In this form <span class="pre">this</span> is the value given, to read and
+		to call methods on; a block that changes the value works through a borrowed reference to it.
+		<a href="rec-with.html#with">with blocks</a>, in Recipes, has that form and the rest of the operators that act
+		on <span class="pre">this</span>.</p>
+
+	<h2 id="copying">Copying a struct</h2>
+	<p>Like a number, a struct value is copied when it is assigned, passed to a function or handed back from one. A
+		change to the copy leaves the original as it was:</p>
+<pre>
+mut p = new Point(3., 4.);
+mut q = p;
+q.x = 0.;            // p.x is still 3
+</pre>
+	<p>That is usually what you want for a small value such as a point. For a large value, or when a function should
+		change the caller's value rather than its own copy, the function takes a borrowed reference instead, as a
+		method's <span class="pre">self &amp;mut</span> does. A struct with a field that is not copied, such
+		as a <a href="guide-text.html#moving">String</a> or a list, is moved instead of copied, as that field would be
+		(<a href="rec-moves.html#movecopy">Moves</a>, in Recipes, has the rule in full).</p>
+	<p id="structcompare">Two struct values cannot be compared with <span class="pre">==</span> until the struct says
+		what makes two of its values equal: <i>"Method or field `==` not found."</i> Only the type knows whether two
+		points that differ in the tenth decimal place are the same point. How a struct gains
+		<span class="pre">==</span>, and <span class="pre">+</span> and the rest, is on
+		<a href="rec-methods.html#operators">Method patterns</a>, in Recipes.</p>
+
+	<h2 id="private">Public and private</h2>
+	<p>The <span class="pre">pub</span> in front of each field and method makes it public: code anywhere may use it.
+		Without <span class="pre">pub</span> it is private to the <a href="mod-namespaces.html#typens">module</a> that
+		declares the struct: any code in that module may use it, through any value of the struct, and no code outside
+		may. That is how a type keeps its promises. When a field's value must obey some rule, a fraction's denominator
+		never 0, a list's count never more than its room, the field is left private, and the type's own methods, which
+		keep the rule, are the only way to change it. A struct whose fields must be kept even from the rest of its
+		module is declared in a module of its own.</p>
+	<p>Privacy reaches construction too. Code outside the module cannot give a private field a value with
+		<span class="pre">new</span>, though it may leave a private field with a default to its default. And a public
+		field of a public struct may not have a type that is private to the module, since code outside would then be
+		holding a type it cannot name.</p>
+
+	<p>You can now gather values into a type of your own, give it methods that answer questions or change it, and
+		decide what the rest of the program may touch. Given methods with particular names, a struct can become a good
+		deal more: added with <span class="pre">+</span>, indexed with <span class="pre">[]</span>, called like a
+		function, walked by <span class="pre">each</span>, and set to run code as each value is made and as it dies.
+		<a href="rec-methods.html">Method patterns</a>, in Recipes, gathers those, once the collections have shown them at
+		work. Next, a type whose values come in kinds: enums.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-enums.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

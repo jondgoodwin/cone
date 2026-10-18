@@ -1,0 +1,162 @@
+<html>
+  <head>
+	  <title>Pools - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Pools: values of one kind that come and go</div>
+		</div>
+
+    <div class="text">
+
+	<p>A game is full of things of one kind that appear and vanish at any moment: creatures, bullets, sparks. One
+		creature follows another for a while, and then its target dies. A single owner could free the target, but would leave
+		the follower pointing at nothing; a counted owner would keep a dead creature alive for as long as anyone follows it. A
+		<b>pool</b> keeps values of one type in slots, frees one the moment it is removed, and hands out references that check,
+		on each use, whether their value is still there. This page covers the generational <span class="pre">Pool</span> and
+		how its references stay safe. Afterwards you can let values vanish while others still refer to them:</p>
+
+<pre>
+mod chase;
+
+import stdio use *;
+import pool use *;
+
+struct Npc { pub hp i64; pub target Ref[Npc]; }
+
+fn report(world &amp;Pool[Npc], who Ref[Npc]) {
+  match world.get(world[who].target) {          // is the target still there?
+    case imm t Some { print &lt;- "following a target with ", t.hp, " hp\n"; }
+    case is None { print &lt;- "target gone\n"; }
+  }
+}
+
+fn main() {
+  mut world = Pool[Npc].empty();
+  imm orc = world.add(new Npc(10, Ref[Npc].none()));
+  imm elf = world.add(new Npc(8, orc));         // the elf follows the orc
+  report(&amp;world, elf);
+  world.remove(orc);                            // the orc dies, whoever follows it
+  report(&amp;world, elf);
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+following a target with 10 hp
+target gone
+</pre>
+	<p><b>Try this:</b> after the orc is removed, read it directly, <span class="pre">print &lt;-
+		world[orc].hp;</span>. The program stops with a panic: <span class="pre">pool: pool[r] of a reference whose value has
+		been removed</span>. Asking with <span class="pre">get</span> first is the safe way.</p>
+
+	<h2 id="pool">How a pool works</h2>
+	<p>A pool's mechanism follows from one constraint: all its values have the same type, and so the same size. It begins
+		with a block of memory, which grows, divided into slots of that size. Allocating either reuses a slot from a list of
+		free ones, or takes a new slot from the unused part of the block, and removing a value puts its slot back on the
+		list.</p>
+	<p>That makes a pool fast, faster than any strategy but an arena, and good with memory, since freed slots are reused at
+		once. Freeing is prompt and predictable, and the runtime is small. Values of one type side by side in memory are also
+		quick to walk in order, which is how a game often processes all its creatures each frame. The one limit is that every
+		value in a pool has the one type: a pool per kind of thing. An enum counts as one type, and since all its variants
+		are one size, a pool of an enum can hand out and reclaim any of its variants interchangeably (unless the enum is
+		<a href="mem-regions.html#unsized">@unsized</a>).</p>
+	<p>The hard part is the references. A borrowed reference cannot be kept from one frame to the next; an owning
+		reference would let the value be freed under the others, or keep it from being freed. So a pool hands out a kind of
+		<a href="mem-weak.html">weak reference</a>: asked each time whether its value is still alive, and giving a borrow of the
+		value if it is. Underneath, a pool can tell in several ways, generational indexing, a variant of counting, or lists
+		of subscribers; Cone's <span class="pre">Pool</span> uses the first.</p>
+
+	<h2 id="genpool">The generational Pool</h2>
+	<p>The <span class="pre">pool</span> package's <span class="pre">Pool</span> is a generational pool:
+		<span class="pre">mut p = Pool[T].empty()</span>. It is a value, like an arena.</p>
+	<ul>
+		<li><span class="pre">p.add(value)</span> returns a <span class="pre">Ref[T]</span>: a slot and a generation, the
+			count of values that slot has held. A <span class="pre">Ref</span> owns nothing and is copied freely, and
+			<span class="pre">Ref[T].none()</span> is one that refers to nothing.</li>
+		<li><span class="pre">p.get(r)</span> answers <span class="pre">Some</span> borrow of the value, or
+			<span class="pre">None</span> once <span class="pre">p.remove(r)</span> has finalized it, even after another value
+			takes its slot, since the slot's generation has moved on. <span class="pre">p.getMut(r)</span> answers a mutable
+			borrow the same way.</li>
+		<li><span class="pre">p[r]</span> and <span class="pre">&amp;mut p[r]</span> borrow the value, ending the program
+			with a panic if it has been removed.</li>
+	</ul>
+<pre>
+mod events;
+
+import stdio use *;
+import pool use *;
+
+struct Event {
+  pub kind i64;
+  fn final(self &amp;uni) { printStr("removed "); printInt(kind); printStr("\n"); }
+}
+
+fn main() i32 {
+  mut p = Pool[Event].empty();
+  imm a = p.add(new Event(1));          // a Ref[Event]: a slot and a generation
+  imm b = p.add(new Event(2));
+  imm copy = a;                         // a Ref owns nothing and is copied freely
+  printInt(p[a].kind);                  // p[r] borrows the value
+  printStr("\n");
+  p.remove(a);                          // finalizes it
+  p.add(new Event(3));                  // takes a's slot again
+  match p.get(copy) {                   // the old Ref still finds nothing
+    case imm e Some { printStr("alive\n"); }
+    case is None { printStr("gone\n"); }
+  }
+  match p.get(b) {
+    case imm e Some { printInt(e.kind); printStr("\n"); }
+    case is None { printStr("gone\n"); }
+  }
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">1</span>, <span class="pre">removed 1</span>, <span class="pre">gone</span> and
+		<span class="pre">2</span>, and when the pool dies, <span class="pre">removed 3</span> and
+		<span class="pre">removed 2</span>.</p>
+
+	<h3 id="borrows">Borrows of a pool's values</h3>
+	<p>A borrow from <span class="pre">p[r]</span> or <span class="pre">&amp;mut p[r]</span>, or the Option that
+		<span class="pre">p.get(r)</span> or <span class="pre">p.getMut(r)</span> returns, which carries the pool's loan
+		wherever it goes, keeps the pool from being changed while it is used: no <span class="pre">remove</span>, and no
+		<span class="pre">add</span>, which may move every value. Nor may the pool be moved or ended, and no such borrow may be
+		returned or stored where it would outlive the pool:</p>
+<pre>
+mut p = Pool[Pt].empty();
+imm r = p.add(new Pt(7));
+imm o = p.get(r);              // an Option holding a borrow into p
+p.add(new Pt(8));              // Error 1168: 'p' is borrowed (by 'get'), and that borrow is used
+match o { case imm e Some { e.x; } else { 0; } }   //   again below
+</pre>
+	<p>A pool reached through a shared path (a <span class="pre">&amp;mut Pool</span> parameter, a field of
+		<span class="pre">self</span>, an <span class="pre">Rc</span> owner) is protected the same way, by the rules for
+		<a href="mem-shape.html">shape-changing values</a>, since a <span class="pre">Pool</span> is one: a
+		<span class="pre">remove</span> through it is refused while such a borrow is used (<i>Error 1339: This call could change
+		the shape of a 'Pool' while 'e' still holds a borrow into it</i>).</p>
+	<p><b>Not built yet:</b> pairing a <span class="pre">Ref</span> with its own pool. Used with another pool of the same
+		type, a Ref is checked there, against that pool's slots and generations, and cannot reach outside that pool's
+		memory.</p>
+
+	<h3 id="countedpool">Pools of counted or single owners</h3>
+	<p><b>Not built yet.</b> The design also has pools whose values are freed by another strategy: an
+		<span class="pre">RcPool</span>, whose references are counted and free a value when the last goes, and an
+		<span class="pre">SoPool</span>, of single owners. How a value is allocated in a dynamic region such as a pool is an
+		open design question; today the packages allocate with <span class="pre">a.alloc(value)</span>,
+		<span class="pre">new a[T](...)</span> and <span class="pre">p.add(value)</span>, and only the generational
+		<span class="pre">Pool</span> exists.</p>
+
+	<p>You can now keep many values of one kind, remove any of them at any moment, and hold references that find out
+		safely when their value has gone. One strategy remains, the one that handles any shape of data with no thought at all:
+		garbage collection.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-gc.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,485 @@
+<html>
+  <head>
+	  <title>Regions and owning references - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Regions and owning references: new and So</div>
+		</div>
+
+    <div class="text">
+
+	<p>A local variable lasts as long as its block, and a borrow no longer than what it borrows. A value that must
+		outlive the function that made it, a node in a tree, a record kept for later, needs memory of its own, and
+		something to decide when to give it back. In Cone that something is a <b>region</b>, and each region is one of
+		the strategies from the <a href="memory.html">opening tour</a>. This page covers what every region shares:
+		allocating with <span class="pre">new</span>, the owning reference you get back, and when a value is freed, with
+		the simplest region, the single owner <span class="pre">So</span>. Afterwards you can build data that lives as
+		long as you need:</p>
+
+<pre>
+mod tree;
+
+import stdio use *;
+
+// Each node owns its children through a single owner, So
+struct Node {
+  pub value i32;
+  pub left Option[So[Node]];
+  pub right Option[So[Node]];
+  fn final(self &amp;uni) { print &lt;- "free ", value, "\n"; }
+}
+
+// new allocates a node that outlives this function: its owner is returned
+fn node(v i32, left Option[So[Node]], right Option[So[Node]]) So[Node] {
+  new So[Node](v, left, right);
+}
+
+fn leaf(v i32) Option[So[Node]] {
+  Some(node(v, None[So[Node]], None[So[Node]]));
+}
+
+// Borrows a node: it works whatever owns it
+fn sum(n &amp;Node) i32 {
+  mut total = n.value;
+  if imm l Some = &amp;n.left { total += sum(*l); }
+  if imm r Some = &amp;n.right { total += sum(*r); }
+  total;
+}
+
+fn main() {
+  imm root = node(1, leaf(2), leaf(3));
+  print &lt;- "sum: ", sum(root), "\n";
+}                          // root's owner goes: the whole tree is freed
+</pre>
+	<p>It prints:</p>
+<pre>
+sum: 6
+free 1
+free 2
+free 3
+</pre>
+	<p><b>Try this:</b> give two parents the same child: <span class="pre">imm four = leaf(4);</span> and then
+		<span class="pre">node(1, four, four)</span>. A single owner moves, so the compiler refuses the second
+		<span class="pre">four</span>: <i>This variable's value has been moved out.</i> A child shared by two parents needs
+		a region that allows several owners, <a href="mem-rc.html">reference counting</a>, next.</p>
+	<p><span class="pre">sum</span> takes a borrowed reference, and with <span class="pre">*l</span> each owner lends what
+		it owns. That is the payoff of borrowing first: code that takes a borrow works the same whatever region the value
+		lives in, single owner, counted, collected or in an arena, and pays none of that region's costs inside it. Most of a
+		program's functions can be written that way, and only the code that makes and keeps values needs to know where they
+		live.</p>
+
+	<h2 id="what">What a region is</h2>
+	<p>Global variables sit at fixed addresses chosen when the program is linked. Local variables come and go on a stack,
+		last in, first out, one stack for each thread. Neither suits a value made at run time that must survive the scope
+		that made it. That needs the <i>heap</i>, the large pool of memory outside the globals, the code and the
+		stacks.</p>
+	<p>Cone divides the heap into <b>regions</b>. Each region has its own strategy for allocating memory and for taking it
+		back, and every value on the heap lies wholly within one region, which governs it. Because no one strategy is right
+		for every value (<a href="memory.html#strategies">The strategies, and what each costs</a>), a program chooses, for
+		each value it allocates, the region whose strategy suits the way the value will be used.</p>
+	<p>A few words keep the rest of this part precise:</p>
+	<ul>
+		<li>A <b>region</b> is the part of memory managed by one region's rules. Every point in memory is managed by
+			exactly one region: the <i>global region</i> is the memory the linker sets up, the <i>local region</i> is a
+			thread's stack, and every other region is memory owned and managed by the region that allocated it.</li>
+		<li><b>Regions nest.</b> Each piece of memory has exactly one <i>immediate</i> manager, and managers stack: an
+			<span class="pre">Rc</span> allocation holds a <span class="pre">List</span>'s block, and inside that block the
+			List manages its elements.</li>
+		<li>A <b>static region</b>'s state and life are global, kept by a module: a tracing collector's heap, say. A
+			<b>dynamic region</b>'s state is a value, and the region lives as long as that value does: an
+			<a href="mem-arenas.html">arena</a>, a <a href="mem-pools.html">pool</a>, a collection.</li>
+		<li>A <b>region ref</b> is what an owning reference's type names, <span class="pre">Rc</span> in
+			<span class="pre">Rc[mut, Node]</span>: a struct declaring the built-in trait <span class="pre">RegionRef</span>,
+			which is the bookkeeping a region keeps in front of each value it manages, and whose methods the compiler calls
+			at each event in a reference's life (<a href="mem-ownregion.html">Making your own region</a>). The region itself
+			is the module, or for a dynamic region the value, behind it.</li>
+		<li>Between them, <b>the region decides when a value dies, and the compiler runs the death</b>, since only the
+			compiler knows the value's type: the value's <span class="pre">final</span>, then its fields' finalizers, then
+			the owners its fields hold, then the region's <span class="pre">free</span>.</li>
+	</ul>
+	<p>A region gives out two kinds of reference:</p>
+	<ul>
+		<li><b>Owning references.</b> Allocating a value in a region gives back an owning reference to it. Some regions
+			allow copies of it, which are owning references too. Whatever the strategy, the region frees the value only when
+			its last owning reference is gone, so an owning reference is always safe to use, and a value is freed exactly
+			once.</li>
+		<li><b><a href="mem-weak.html">Weak references</a></b>, which point at a value that may or may not still exist, and
+			must be checked before use.</li>
+	</ul>
+
+	<h2 id="new">Allocating a value: new</h2>
+	<p>Like every <a href="rec-methods.html#initializer">construction</a>, an allocation begins with
+		<span class="pre">new</span>. What follows is the type of owning reference wanted back:</p>
+<pre>
+imm node = new Rc[mut, Node](1);
+</pre>
+	<ul>
+		<li><b>The region ref</b> names the region that allocates the value and manages its life: here
+			<span class="pre">Rc</span>, which counts references. It may be <span class="pre">Rc</span> or <span class="pre">So</span> from core; the
+			<span class="pre">sync</span> package's <a href="mem-rc.html#arc">Arc</a>, an Rc whose count several threads may
+			change at once; the <span class="pre">collector</span> package's garbage-collected
+			<a href="mem-gc.html#gc">Gc</a> (discouraged, single threaded and outside actors only); the
+			<span class="pre">rcweak</span> package's <a href="mem-weak.html#rcw">Rcw</a>; or any region ref of your own, a struct declaring
+			<span class="pre">is RegionRef</span> (<a href="mem-ownregion.html">Making your own region</a>). The region ref's
+			methods, and whether it declares <a href="rec-moves.html#movecopy"><span class="pre">Move</span></a>, decide when a value
+			is freed; its finalizer runs just before (<a href="rec-methods.html#finalizer">finalizers</a>).</li>
+		<li><b>The <a href="mem-permissions.html">permission</a></b> says what the reference may do. It can be a static
+			permission or a <a href="conc-locks.html">lock</a> permission, and with none written it is
+			<span class="pre">uni</span>.</li>
+		<li><b>The value type</b> is the type of the value allocated: here a <span class="pre">Node</span>.</li>
+	</ul>
+	<p>The parentheses hold the arguments of the value's <a href="rec-methods.html#initializer">initializer</a>,
+		chosen as for any construction: here <span class="pre">Node</span>'s implicit initializer, which takes its fields in
+		order. Empty parentheses may be left off. What comes back is an owning reference of the type written,
+		<span class="pre">Rc[mut, Node]</span>.</p>
+	<p id="empty">A value of no size cannot be allocated: there is no owning reference to a value of an empty struct,
+		<span class="pre">new So[Empty]()</span> (<i>Error 1013: May not allocate a value of abstract or zero-size type</i>).</p>
+
+	<h3 id="value">Allocating a finished value</h3>
+	<p>The parentheses may instead hold one finished value of the value type, which is moved into the new allocation, as
+		though every type had an initializer taking a finished value of itself. A value no initializer constructs, a number,
+		an array, a tuple, an enum or its variant, a reference, is always allocated this way, and its allocation takes
+		exactly one value, converted to the value type as a variable's initial value is: a number literal takes on the value
+		type, and an enum's variant becomes its enum:</p>
+<pre>
+imm count = new Rc[u64](5);                            // the literal is a u64
+imm grid = new Rc[mut, Array[i32, 3]]([1, 2, 3]);
+imm pair = new So[(i32, f32)]((1, 2.0));
+imm maybe = new So[Option[i32]](Some(3));
+imm name = new Arc[imm, String](String.from("x"));     // a call's result
+imm list = new Rc[mut, List[Fin]](items);              // items is moved in
+</pre>
+	<p>A struct's allocation is told apart by type: when exactly one argument is given and its type is the struct itself
+		(through an <a href="mod-namespaces.html">alias</a> as well), it is the finished value, moved in, and no initializer
+		runs; otherwise the arguments go to the struct's initializers, as for any construction. A reference to the struct, or
+		a value that would only convert to it, is not the struct itself:</p>
+<pre>
+imm s = new Seeded(4);                  // Seeded's init runs
+imm byInit = new Rc[Seeded](5);         // Seeded's init runs again, on 5
+imm moved = new Rc[Seeded](s);          // s is moved in; no init runs
+</pre>
+	<p>A value is constructed once: <span class="pre">new Point(p)</span>, where <span class="pre">p</span> is already a
+		Point, is refused (<i>Error 1227: This is already a value of Point, which needs no construction: use it as it is, or
+		allocate it with 'new R[perm, Point](value)'</i>).</p>
+	<p>An <a href="mod-namespaces.html">alias</a> of an owning reference type allocates the same way, so a program that
+		names its reference type once writes its allocations with that name. And to make a
+		<a href="mod-substitution.html">virtual reference</a>, allocate the concrete type and let the reference coerce where
+		the virtual one is wanted:</p>
+<pre>
+alias Node = Gc[mut, NodeValue];
+imm leaf = new Node(1);                             // a Gc[mut, NodeValue]
+imm shape Rc[mut, Shape] = new Rc[mut, Circle](5);  // Shape a trait, Circle a struct that is one
+</pre>
+
+	<h3 id="contents">Allocating with contents</h3>
+	<p>An allocation takes contents after <span class="pre">&lt;-</span>, as a value's construction does
+		(<a href="lib-collections.html#send">the send operator</a>). An array's contents fill it in the region's
+		memory, an element at a time, each value evaluated as its element is filled: no array is made elsewhere and copied
+		in, so an array of a million elements is allocated and filled with no copy of it anywhere. They are the same
+		contents a value construction of the array takes, the scalars of a multi-dimensional one written in order, and the
+		allocation then takes nothing in parentheses. A collection's contents are appended through the new reference once
+		it is made, as they are appended to a value it constructs:</p>
+<pre>
+imm zeros = new Rc[mut, Array[i32, 1000, 1000]] &lt;- fill 0;
+imm grid = new So[Array[i32, 2, 3]] &lt;- 1, 2, 3, 4, 5, 6;
+imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
+</pre>
+	<p>Today a single owner of a collection does not take contents this way: <span class="pre">new So[List[i32]](10)
+		&lt;- 1, 2, 3</span> is refused with a misleading <i>Error 1048: This variable's value has been moved out</i>. Allocate
+		it, then push.</p>
+
+	<h3 id="dynbody">Allocating text and other bodies with no fixed size</h3>
+	<p>Some types have no size of their own: a value of one is never held in a variable, a field or a parameter, only
+		behind a reference, which carries what is missing. A trait's <a href="mod-substitution.html">virtual reference</a>
+		carries a table of its methods. The body of text, <span class="pre">str</span>, is reached by a reference that
+		carries its byte count: a pointer and a <span class="pre">usize</span>, in every region and for a borrow alike
+		(<span class="pre">&amp;str</span>, <span class="pre">So[str]</span>, <span class="pre">Rc[str]</span>,
+		<span class="pre">Arc[str]</span>, <span class="pre">Gc[str]</span>), 16 bytes where a reference to a type with a
+		size is 8. <span class="pre">str</span> declares <a href="mem-permissions.html#immutable">Immutable</a>, so a
+		reference to it written with no permission is <span class="pre">imm</span> (<span class="pre">&amp;str</span> is
+		<span class="pre">&amp;imm str</span>, <span class="pre">Rc[str]</span> is <span class="pre">Rc[imm, str]</span>) and
+		<span class="pre">mut</span> is refused on it. The region's bookkeeping sits before the first byte, as it does for any
+		value, and the owner points at the byte, so one hop reaches the text.</p>
+	<p>There is no value of such a body to construct or to move in, so its allocation takes a borrow of one in the
+		parentheses and copies the bytes the borrow holds, as many as it has, into the memory the region gives. A borrow of
+		the body is made from a slice of bytes with <span class="pre">as</span>, and converts to a slice by itself; both are
+		the same pair, and <span class="pre">as</span> checks only that. <b>Not built yet:</b> checking that the bytes are
+		UTF-8, and that nothing still writes them while the text is used:</p>
+<pre>
+imm bytes &amp;Array[u8] = "hello";
+imm view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
+imm text = new Rc[str](view);                // a copy, in Rc's memory
+imm same = trynew So[str](view);             // an Option, None if memory ran out
+printStr(text);                              // lent as a borrow, which is the &amp;str printStr takes
+</pre>
+	<p><b>A string literal is a <span class="pre">&amp;imm str</span></b>: a borrow of its text, in read-only memory,
+		that lasts as long as the program, so it may be sent to another thread. The text is followed by a zero byte for C
+		that the count leaves out, and an owner of <span class="pre">str</span> keeps one after its bytes too
+		(<a href="lib-string.html#cstr">C strings</a>). Wherever an owner of <span class="pre">str</span> is wanted, in any
+		region, a literal (and only a literal) is copied into one without <span class="pre">new</span>; any other
+		<span class="pre">&amp;str</span> is copied with <span class="pre">new</span> as above:</p>
+<pre>
+imm name So[str] = "Padma";                  // new So[str]("Padma"), copied from read-only memory
+fn greet(who Rc[str]) {..}
+greet("Jayne");                              // the same copy, into an Rc
+</pre>
+	<p>A growable <span class="pre">String</span> is a literal's other destination: where one is wanted a literal is copied
+		into it (<span class="pre">imm s String = "core";</span>), by the static function <span class="pre">fromLiteral</span>
+		a type declares to say so. And <span class="pre">s.freeze()</span> moves a String's bytes into a
+		<span class="pre">So[str]</span> without copying them (<a href="guide-text.html#unique">Handing text on</a>).</p>
+	<p>Where a read-only borrow of such a type is wanted, <span class="pre">&amp;String</span> for one, the literal is
+		borrowed from a temporary made the same way: <span class="pre">&amp;String.fromLiteral("core")</span>, written out.
+		The temporary lasts to the end of the statement and is dropped there, like any temporary a borrow points at (a
+		function's parameter and an <span class="pre">init</span>'s, in <span class="pre">new File("x")</span>, are given
+		one alike); a local's initializer keeps it to the end of the block, as <span class="pre">imm r = &amp;make()</span>
+		does (<a href="mem-borrowing.html#temporary">Borrowing a temporary</a>). It is lent only to a borrow that cannot
+		write (<span class="pre">&amp;mut String</span> is refused, since what is written to the temporary is lost with it),
+		and only inside a function's body, where a statement ends it: a global, a constant, a field's default, a returned
+		value or an <span class="pre">if</span> arm is not given one. A parameter's default is made at each call that leaves
+		the argument out, as if the caller had written the literal there: <span class="pre">fn shout(s &amp;String =
+		"core")</span> called as <span class="pre">shout()</span> lends a temporary of its own (and a
+		<span class="pre">String</span> by value is made for the call):</p>
+<pre>
+fn shout(s &amp;String) {..}
+shout("core");                               // a temporary String, lent to the call, dropped at the semicolon
+imm r &amp;String = "core";                      // the temporary lasts as long as the block
+</pre>
+	<h3 id="owned">Owning an array</h3>
+	<p>The other body with no fixed size is <span class="pre">Array[T]</span>, the array type without a size, whose
+		elements are any type <span class="pre">T</span> and whose count is known only at run time. Its borrow <i>is</i> the
+		slice: <span class="pre">&amp;Array[T]</span>, and <span class="pre">&amp;mut Array[T]</span> the slice that changes
+		its elements (the older spelling <span class="pre">&amp;[]T</span> is refused, <i>Error 1336</i>). A slice of bytes,
+		<span class="pre">&amp;Array[u8]</span>, and a borrow of the text body, <span class="pre">&amp;str</span>, are the same
+		pair of words and different types, and either converts to the other with <span class="pre">as</span>. Every array
+		reference is borrowed: there is no owning array reference, and an owning reference is thin, virtual, or carries the
+		count of a body, <span class="pre">str</span> or <span class="pre">Array[T]</span>. An array is owned in one of three
+		ways, chosen by how its length is known:</p>
+	<ul>
+	<li><b>A fixed-size array</b>, whose size is part of its type. It may be held in a variable or a field, or allocated
+		in a region and reached by a thin reference whose type carries the size. Its contents follow the allocation after
+		<span class="pre">&lt;-</span> and fill it in the region's memory (<a href="#contents">above</a>); an array already
+		made is moved in from the parentheses. Today that array must be named first: an array construction written inside
+		the parentheses, <span class="pre">new Rc[mut, Array[i32, 4]](new Array[i32, 4] &lt;- 1, 2, 3, 4)</span>, is refused
+		with a misleading <i>Error 1226</i>.
+<pre>
+imm grid = new Rc[mut, Array[i32, 4]] &lt;- fill 0i32;   // grid's type: Rc[mut, Array[i32, 4]]
+imm four = new Array[i32, 4] &lt;- 1, 2, 3, 4;
+imm made = new Rc[mut, Array[i32, 4]](four);          // four is moved in
+</pre></li>
+	<li><b>An owner of <span class="pre">Array[T]</span></b>, when the number of elements is chosen at run time and
+		never changes: <span class="pre">So[Array[T]]</span>, <span class="pre">Rc[Array[T]]</span>,
+		<span class="pre">Arc[Array[T]]</span> or <span class="pre">Gc[Array[T]]</span>, each a pointer and a count, one hop
+		to the elements. It is allocated by copying the elements of a slice, as an owner of <span class="pre">str</span> is,
+		so only where the elements copy. The owner has <span class="pre">len</span>, is indexed
+		(<span class="pre">o[i]</span>) and takes a borrowed range (<span class="pre">&amp;o[a ..&lt; b]</span>) as a slice
+		does, and is lent as the slice wherever a <span class="pre">&amp;Array[T]</span> is wanted, a generic's element type
+		inferred from it. A borrow of a fixed-size array, <span class="pre">&amp;Array[T, n]</span>, converts to the slice.
+		Its permission says what may change: held writable (<span class="pre">So[Array[T]]</span>,
+		<span class="pre">Rc[mut, Array[T]]</span>) its elements change but its length does not; held
+		<span class="pre">imm</span> (<span class="pre">Rc[imm, Array[T]]</span>, <span class="pre">Arc[imm, Array[T]]</span>)
+		nothing changes. The owner's death finalizes each element, and a <span class="pre">Gc</span> object counts the bytes
+		its elements really take.
+<pre>
+fn sum(xs &amp;Array[i32]) i32 { mut t = 0; each x in xs { t += *x; } t; }
+
+imm primes = new Array[i32, 4] &lt;- 2, 3, 5, 7;
+imm shared = new Rc[imm, Array[i32]](&amp;primes);   // a copy: a pointer and a count, 16 bytes
+imm total = sum(shared);                         // lent as the &amp;Array[i32] sum takes: 17
+imm middle = &amp;shared[1usize ..&lt; 3usize];         // a borrowed range of it
+</pre></li>
+	<li><b>A collection</b>, when the length is chosen at run time and may grow or shrink, which is exactly what a
+		<span class="pre">List</span> is: a pointer to its elements, how many there are, and how many it has room for. A list
+		held in a local is used directly; one that several owners share is a managed reference to it,
+		<span class="pre">new Rc[mut, List[i32]](names)</span>. The length of a shared list lives once, in the list, where
+		every owner sees the same count; a length carried in each copy of a reference could not stay in step when the list
+		grows. That is why there is no owning reference to a growable array, and writing <span class="pre">+[]</span>, as a
+		type or an allocation, is an error that says so (<i>Error 1203: There is no owning array reference '+[]'</i>).</li>
+	</ul>
+	<p id="listfreeze">A list that will not grow again can become an owned array without a copy: <span class="pre">list.freeze()</span>
+		consumes the list and moves its block, shrunk to the elements it holds, into a <span class="pre">So[Array[T]]</span>.
+		The elements are not copied, move types included, and the owner's death finalizes each of them once. A list that holds
+		nothing makes a one-byte block, since the owner of an <span class="pre">Array[T]</span> always owns heap bytes:</p>
+<pre>
+mut list = List[i32].empty();
+list.push(4);
+imm kept = list.freeze();                       // a So[Array[i32]] holding the list's elements, moved
+</pre>
+	<p>An owner of a body is a counted owner or a single one by its region and permission, like any other: copies,
+		parameters and fields are counted (an owner of <span class="pre">str</span>, written with no permission, is
+		<span class="pre">imm</span> and copies, though a <span class="pre">So</span> owner still moves), a
+		<span class="pre">uni</span> owner moves, and the last to go gives the block back through the region's
+		<span class="pre">free</span>. A collector's region marks it through its pointer. Each owner carries its own count,
+		which is right because the body never grows.</p>
+
+	<h2 id="type">Owning reference types</h2>
+	<p>Wherever a type is written, a variable, a field, a parameter, a return type, an
+		<a href="mod-namespaces.html">alias</a>, a generic's argument, an allocation, an owning reference type is written the
+		same way: the region, then in square brackets an optional permission and the value type:</p>
+<pre>
+alias Link = Rc[mut, Node];    // shared and mutable
+fn first(n Rc[Node]) i64 {..}  // no permission written: uni, the only owner
+mut list = List[Gc[imm, Leaf]].empty();
+</pre>
+	<p>Left out, the permission is <span class="pre">uni</span>, which may become any other, so
+		<span class="pre">Rc[Node]</span> is <span class="pre">Rc[uni, Node]</span>. The region ref is a struct declaring
+		<span class="pre">is RegionRef</span>; a permission given to anything else is an error. A generic region ref takes its
+		own brackets first, then the reference's: <span class="pre">R[A][mut, Node]</span>, allocated as any other,
+		<span class="pre">new R[A][mut, Node](1)</span>. When the value type is an open trait, the reference is a
+		<a href="mod-substitution.html">virtual reference</a>, which carries a table of methods beside its pointer
+		(<span class="pre">Rc[mut, Shape]</span>); when it is a body whose length the reference carries, it is a
+		<a href="#dynbody">pointer and a count</a> (<span class="pre">So[str]</span>); for any other value type, an enum
+		included, it is a single pointer.</p>
+	<p>A <a href="guide-enums.html#matchvariants">match</a> pattern never spells an owning reference type: it names the
+		variant, <span class="pre">Circle</span>, and the matched value supplies the region and the permission, so on an
+		<span class="pre">Rc[imm, Shape]</span> it binds an <span class="pre">Rc[imm, Circle]</span>. On an
+		<span class="pre">Rc[mut, Shape]</span> the narrowing is refused, since another owner could change the variant while
+		it is used (<a href="mem-shape.html#enums">An enum's variant</a>). The older plus-sign spelling,
+		<span class="pre">+Rc-mut Circle</span>, is refused (<i>Error 1414: A pattern names only the variant</i>).</p>
+
+	<h3 id="unsized">An enum reached only by reference: @unsized</h3>
+	<p>An enum's value normally takes the room of its largest variant, so that it can be held anywhere and given any
+		variant in place; because all its variants are one size, memory holding one variant can be given another instead,
+		and a <a href="mem-pools.html">pool</a> can hand out and reclaim the variants of one enum interchangeably. Padding
+		every variant to the largest costs memory, though, and whether to pay it is a choice only the program can make.
+		Writing <span class="pre">@unsized</span> declines it:</p>
+<pre>
+enum @unsized Shape {
+  pub kind i32;
+
+  pub struct Dot;
+  pub struct Polygon { pub points Array[Point, 64]; }
+}
+
+imm someDot = Shape.Dot(1);
+imm shape &amp;Shape = &amp;someDot;     // a reference to a variant coerces to one to the enum
+</pre>
+	<p>Each variant then takes only what it needs, and the enum has no single size, so no value of it may be held, not in
+		a variable, a parameter or a field (<i>Error 1069: Variable s cannot be held by value: Shape is an '@unsized' enum, so
+		its variants differ in size. Reach it through a reference.</i>), and it is reached only by reference. Everything else
+		is unchanged: the tag is still in the value, a common field is still readable through the reference, matching still
+		recovers the variant, and dispatch still works. What is given up is the value semantics: holding one in a variable,
+		copying it, passing it by value, and swapping a variant in place. Its references are thin and say nothing of the size.
+		Most types that want this are graphs and trees, and those are usually better served by an open
+		<a href="mod-substitution.html">trait</a> and structs that are one: once a type is reached by reference anyway, there
+		is little left for a closed set to buy. So <span class="pre">@unsized</span> is for the case that is genuinely closed,
+		wants exhaustive matching, and has variants whose sizes differ enough to matter.</p>
+
+	<h2 id="copies">Several owners of one value</h2>
+	<p>The <i>first</i> owning reference to a value always comes from an allocation. Where the region and permission allow
+		it, more owning references to the same value are made by copying an existing one, by assignment or by passing it to
+		a function:</p>
+<pre>
+imm node = new Rc[imm, Node](4);
+imm node2 = node;            // node2 and node point at the same value
+</pre>
+
+	<h2 id="expire">When a value is freed</h2>
+	<p>An owning reference keeps its value alive. While a value has at least one owning reference, its region will not
+		free it; only when all of them have gone may the region reclaim it, though how soon depends on the region. An owning
+		reference goes when what holds it goes or takes a new value. One never stored anywhere is used up by the expression
+		it is part of, almost at once. One stored in a variable goes no later than the end of the variable's scope, and
+		sooner if the variable takes another value. One held inside a value goes when that value does. When a region decides
+		to reclaim a value, it first runs the value's <a href="rec-methods.html#finalizer">finalizer</a>, if it has
+		one.</p>
+
+	<h3 id="failure">When memory runs out: trynew</h3>
+	<p>An allocation can fail, rarely, when the region cannot get enough memory. How a program finds out depends on how the
+		allocation is written:</p>
+	<ul>
+		<li><b><span class="pre">new</span></b>: the program <a href="safe-panics.html#panic">panics</a> and shuts down,
+			naming the line of the allocation and the size it asked for: <span class="pre">out of memory allocating 24
+			bytes</span>.</li>
+		<li><b><span class="pre">trynew</span></b>: the allocation gives back an <a href="guide-enums.html#option">Option</a>
+			of the owning reference, <span class="pre">Some</span> holding it when the memory was obtained and
+			<span class="pre">None</span> when it was not, which the program may handle as any Option. Only an allocation can
+			fail this way, so <span class="pre">trynew</span> takes an owning reference type, never a value type. An array's
+			contents after it are filled only when the memory was obtained: on <span class="pre">None</span>, none of their
+			values is evaluated. <b>Not built yet:</b> contents after a <span class="pre">trynew</span> of anything else, such
+			as a list (<i>Error 1228</i>); allocate it with <span class="pre">trynew</span> alone, then append on
+			<span class="pre">Some</span>. A <span class="pre">trynew</span> in a region value, such as an arena, is refused
+			too: whether an allocation in such a region can fail is not settled.</li>
+	</ul>
+<pre>
+imm maybe = trynew Rc[mut, Node](1);    // an Option[Rc[mut, Node]]
+match maybe {
+  case imm n Some[Rc[mut, Node]] { adopt(n); }
+  else { fallBack(); }
+}
+
+imm names = trynew Rc[mut, List[i32]](10);   // not: trynew ... &lt;- 1, 2, 3
+match names {
+  case imm s Some[Rc[mut, List[i32]]] { s &lt;- 1, 2, 3; }
+  else { fallBack(); }
+}
+</pre>
+
+	<h2 id="using">Using an owning reference</h2>
+	<p>An owning reference is used much as a borrowed one is: it is <a href="mem-borrowing.html#ops">dereferenced,
+		compared</a> and <a href="mem-borrowing.html#implicit">read through</a> the same way, and wherever a borrowed
+		reference is wanted it lends what it owns (<a href="mem-borrowing.html#making">Making a borrow</a>), as the tree's
+		owners did for <span class="pre">sum</span>. What differs is what copying and dropping it do, which is up to its
+		region. A value owned by a region may not be moved out through a shared owner, though a sole owner may give it up
+		(<a href="rec-moves.html#outof">Moving a value out</a>).</p>
+
+	<h2 id="so">The single owner: So</h2>
+	<p>The single-owner strategy follows from one constraint: a value it allocates has exactly one owning reference. That
+		reference may be passed from function to function, or from thread to thread, but only by
+		<a href="rec-moves.html">moving</a>, so no copy of it is ever made, and when it goes, the value can be finalized and
+		freed at once. Core's <span class="pre">So</span> is that region's ref. Written as a region ref of your own would be,
+		it is a struct declaring <span class="pre">RegionRef</span> and <span class="pre">Move</span>, with no fields, one method
+		to get the memory and one to give it back (<a href="mem-ownregion.html">Making your own region</a>):</p>
+<pre>
+struct Solo is RegionRef, Move {    // Move: a copy of the reference is a move, so never two owners
+    fn alloc(size usize) *u8 {
+        RawBlocks.alloc(size, 16usize);  // any general-purpose allocator will do
+    }
+    fn free(self &amp;uni Solo) {
+        RawBlocks.release(self as *u8);
+    }
+}
+</pre>
+	<p>Choose a single owner for a value with one natural owner: the tree above, a record in a list, a resource. It costs
+		nothing while the program runs, frees each value the moment its owner goes, and is the only strategy where the
+		program decides exactly when a value is destroyed. It uses memory tightly and needs almost no runtime. Its limits
+		follow from the constraint: data takes the shape of a tree, so a node with two parents or a cycle needs another
+		region, and getting a value out of a struct or array that owns it takes a <a href="rec-moves.html#swap">swap</a>.
+		Any number of <a href="mem-borrowing.html">borrows</a> of a singly owned value may still be made for a while,
+		bounded by the scope they were made in.</p>
+
+	<h2 id="order">The order of an allocation</h2>
+	<p>Every allocation runs its steps in the same order. First the initializer's arguments are evaluated, in the order
+		written, or the finished value is. Then the region obtains the memory, and nothing more (its
+		<span class="pre">alloc</span>). Then the region's initializer fills its bookkeeping in place, then a
+		<a href="conc-locks.html">lock</a> permission's does the same for its part, and then the value's initializer fills
+		the value in place, where it was allocated, or the finished value is stored there, or an array's contents fill it,
+		each value evaluated then. Last, the owning reference goes where the expression puts it:</p>
+<pre>
+imm p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
+imm q = new Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
+</pre>
+	<p id="inplace">A construction always fills its value in place, where the value goes, so no copy is made.
+		Declaring a variable with a construction hands the initializer the variable's own memory, and allocating one hands
+		it the memory the region obtained, after the region's own bookkeeping is filled (a finished value given instead is
+		moved in, and no initializer runs: <a href="mem-ownregion.html#inregion">Constructing in a region</a> shows both). A
+		value constructed where it has no place yet, as an argument to a function or a field of another construction, is
+		built in a temporary and copied there.</p>
+	<p>An initializer, or a value of an array's contents, may itself allocate, even in a garbage-collected region, whose
+		collector may run while it does: such a region's new object is held as a root and its value reads as empty from the
+		moment its memory is obtained, so a collection finds it, and nothing it half holds, until it is filled.</p>
+
+	<p>You can now allocate values that outlive their function, give them a single owner, and lend them to code that does
+		not care where they live. The region decides when a value dies; next is exactly when that is, for a value in a
+		region and every other kind, and in what order its finalizers run.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-lifecycle.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

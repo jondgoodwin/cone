@@ -1,0 +1,197 @@
+<html>
+  <head>
+	  <title>Collections: what every collection shares - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Collections: what every collection shares</div>
+		</div>
+
+    <div class="text">
+
+	<p>Most programs gather values whose number is known only when they run: the primes below some limit, the words of
+		a text, the orders of the day. A <b>collection</b> holds as many values as it is given, and every kind is made,
+		filled and walked the same way. This page covers what they share: building one with the send operator, walking
+		it with <span class="pre">each</span>, and working on all of it at once. As a schoolboy, Gauss is said to have
+		added up 1 to 100 in moments, as 50 pairs that each make 101. Here is his sum, the long way:</p>
+<pre>
+mod gauss;
+
+import stdio use *;
+// collections gives us List, Dict and the rest
+import collections use *;
+
+fn main() {
+  // The numbers 1 to 100, made by a loop that sends one value per pass
+  imm numbers = new List[i32] &lt;- each i in 1 .. 100 yield i;
+
+  // each walks a collection, a value at a time
+  mut total = 0;
+  each n in numbers {
+    total += n;
+  }
+  print &lt;- "1 + 2 + ... + 100 = ", total, "\n";
+
+  // map, filter and sum work on the whole collection at once
+  imm odd = numbers.iter().filter(n =&gt; n % 2 == 1).count();
+  imm squares = numbers.iter().map(n =&gt; n * n).sum();
+  print &lt;- odd, " are odd, and the squares of all 100 add up to ", squares, "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+1 + 2 + ... + 100 = 5050
+50 are odd, and the squares of all 100 add up to 338350
+</pre>
+	<p><b>Try this:</b> Gauss's pairs give 50 &times; 101. Change the 100 to 1000 and check that the pairing still
+		works: 500 pairs of 1001.</p>
+
+	<h2 id="giving">Making a collection with the send operator</h2>
+	<p><span class="pre">new List[i32]</span> makes an empty list. The type in the square brackets says what the list
+		holds, as the types in <span class="pre">Result[i32, &amp;str]</span> did on
+		<a href="guide-functions.html#result-tour">Functions</a>: there is one <span class="pre">List</span>, and the
+		brackets fill in the rest, so a <span class="pre">List[i32]</span>, a <span class="pre">List[bool]</span> and a
+		list of structs of your own are the same List holding different things.</p>
+	<p>Put the send operator straight after <span class="pre">new</span>, and it gives the collection all its contents
+		as it is made. It is the arrow that has sent text to <span class="pre">print</span> since the first page, and
+		what follows it is a list of <b>entries</b>, each sent in turn. An entry can be more than a single value:</p>
+<pre>
+imm small = new List[i32] &lt;- 2, 3, 5, 7;              // these four values
+imm zeros = new List[i32] &lt;- 5 of 0;                  // one value, five times
+imm flags = new List[bool](8) &lt;- fill false;          // room for 8, then filled
+imm squares = new List[i32] &lt;- each i in 1 .. 10 yield i * i;
+                                                      // 1 4 9 16 25 36 49 64 81 100
+</pre>
+	<p id="builder">The last entry is the <span class="pre">each</span> of <a href="guide-loops.html#counting">Loops</a>,
+		with <span class="pre">yield</span> and a value in place of its block: every pass of the loop sends one value into
+		the new collection, as the numbers 1 to 100 went into Gauss's list. It takes the same
+		<span class="pre">if</span> after its range, to skip the passes that fail:</p>
+<pre>
+imm oddSquares = new List[i32] &lt;- each i in 1 .. 10 if i % 2 == 1 yield i * i;   // 1 9 25 49 81
+</pre>
+	<p>Anything <span class="pre">each</span> can walk can fill a collection, and that includes a
+		<a href="guide-functions.html#generators-tour">generator</a>. Here is the Fibonacci generator from Functions,
+		handing its values straight into a list, all of them, or only the even ones:</p>
+<pre>
+imm fibs = new List[i64] &lt;- each fibonacci(12);      // 0 1 1 2 3 5 8 13 21 34 55 89
+imm evenFibs = new List[i64] &lt;- each f in fibonacci(12) if f % 2 == 0 yield f;   // 0 2 8 34
+</pre>
+	<p>With no variable, <span class="pre">each</span> sends every value it is handed. All of these work after a
+		collection that already exists, too: the send operator adds its entries to whatever is on its left, so
+		<span class="pre">small &lt;- 11, 13</span> adds two more primes to a list held in a <span class="pre">mut</span> variable. A
+		dictionary is built the same way, with pairs for entries, as <a href="guide-dict.html">Dict</a> shows.
+		<a href="lib-collections.html#send">The send operator's entries</a> has every form in full.</p>
+
+	<h2 id="iteration">Walking a collection with each</h2>
+	<p><span class="pre">each</span> walks a collection as it walks a range, from the first value to the last. Each pass,
+		the variable is the next item <i>where it lies</i>, a borrow of it rather than a copy, so a large item costs
+		nothing to visit and the collection is whole afterwards. A borrowed number reads like a number: it can be added,
+		compared and printed as <span class="pre">total += n</span> does. Where the value itself is wanted, to keep a copy
+		or to hand it to something that takes a value, a <span class="pre">*</span> in front fetches it:
+		<span class="pre">imm last = *n</span>.</p>
+	<p>While a loop walks a collection, the collection cannot change: an item the loop is looking at could otherwise be
+		moved out from under it. Changing items in place, and taking them out as you go, have methods of their own, on
+		<a href="guide-list.html#changing">List</a>.</p>
+
+	<h2 id="walking">Working on a whole collection: map, filter and sum</h2>
+	<p id="adapters">Many loops over a collection only add its values up, count the ones that pass a test, or change
+		each one. A collection can do that for you. <span class="pre">iter()</span> hands out its values one at a time,
+		and steps chained after it work on all of them:</p>
+<pre>
+imm doubled = squares.iter().map(x =&gt; x * 2).sum();          // 770: each doubled, then added up
+imm over20 = squares.iter().filter(x =&gt; x &gt; 20).count();     // 6: those over 20
+imm evens = new List[i32] &lt;- each squares.iter().filter(x =&gt; x % 2 == 0);   // 4 16 36 64 100
+</pre>
+	<p><span class="pre">x =&gt; x * 2</span> is a closure, in the short form <a href="guide-functions.html#closures-tour">Functions</a>
+		promised: its parameter, an arrow and its body, with no types written, since the list already says what its
+		values are. <span class="pre">map</span> turns each value into another, <span class="pre">filter</span> keeps the
+		values its test is true of, and <span class="pre">sum</span> and <span class="pre">count</span> walk what is left
+		and give the answer. Nothing is done until one of those walks it, and then the whole chain runs as one loop.
+		Each step is an <b>adapter</b>: it takes the values coming to it and hands on changed ones, or fewer.
+		<span class="pre">take</span>, <span class="pre">min</span>, <span class="pre">max</span>,
+		<span class="pre">any</span>, <span class="pre">find</span> and the rest are in
+		<a href="lib-collections.html#adapters">the full list</a>.</p>
+	<p>One thing to know: <span class="pre">iter()</span> hands out borrows, like <span class="pre">each</span>, and
+		<span class="pre">sum</span> wants numbers, so <span class="pre">numbers.iter().sum()</span> is refused with the
+		advice to map the borrows to values first: <span class="pre">numbers.iter().map(n =&gt; *n).sum()</span>. A
+		<span class="pre">map</span> that computes a new value, as <span class="pre">n * n</span> does, has done that
+		already.</p>
+
+	<h2 id="sharing">Sharing a collection: Arc</h2>
+	<p>A collection owns its values, so, like a <a href="guide-text.html#moving">String</a>, it moves. Handing one to a
+		function gives it away:</p>
+<pre>
+fn total(xs List[i32]) i32 { mut sum = 0; each x in xs { sum += x; } sum; }
+
+imm primes = new List[i32] &lt;- 2, 3, 5, 7, 11;
+print &lt;- total(primes), "\n";
+print &lt;- primes.len(), "\n";    // Error: This variable's value has been moved out.
+</pre>
+	<p>When a collection is to be used in several places at once, put it behind an <b>Arc</b>. An Arc is a
+		<b>shared reference</b>: no one variable owns the list. Copying the Arc copies only the reference, never the
+		list, and every copy reaches the same list, which is freed once the last copy is gone:</p>
+<pre>
+mod share;
+
+import stdio use *;
+import collections use *;
+// sync gives us Arc, a reference that may be shared
+import sync use Arc;
+
+// total is handed a shared reference to the list, not the list itself
+fn total(xs Arc[imm, List[i32]]) i32 {
+  mut sum = 0;
+  each x in xs {
+    sum += x;
+  }
+  sum;
+}
+
+fn main() {
+  imm list = new List[i32] &lt;- 2, 3, 5, 7, 11;
+  imm primes = new Arc[imm, List[i32]](list);   // the list moves into the Arc
+  imm also = primes;                            // a second reference to the same list
+  print &lt;- total(primes), " ", total(also), " ", primes.len(), "\n";   // 28 28 5
+}
+</pre>
+	<p>The <span class="pre">imm</span> in <span class="pre">Arc[imm, List[i32]]</span> says the list can be read
+		through the reference and never changed. With nobody able to change it, any number of hands may read it at
+		once, even hands working at the same time, which is just how <a href="guide-actors.html">Actors</a> uses one.
+		References come back in depth in <a href="memory.html">Memory</a>, along with lighter ways to lend a collection
+		for a moment.</p>
+
+	<h2 id="others">The collections, and where to find them</h2>
+	<p>Two collections carry most programs, and each has a page of its own next:</p>
+	<ul>
+		<li><a href="guide-list.html"><b>List</b></a>: values in a row, found by their position, growing at the end.</li>
+		<li><a href="guide-dict.html"><b>Dict</b></a>: values found by a key, such as a word or a name.</li>
+	</ul>
+	<p>The <span class="pre">collections</span> package has more of the same family, each made, sent to and walked the
+		same way, and described in <a href="lib-collections.html">the collections reference</a>:</p>
+	<ul>
+		<li id="set"><a href="lib-collections.html#set"><b>Set</b></a> says only whether it holds something: a
+			dictionary of keys alone, for "have I seen this before?"</li>
+		<li id="deque"><a href="lib-collections.html#deque"><b>Deque</b></a> is a list that is quick at both ends, for a
+			queue where values join at the back and leave from the front.</li>
+		<li id="ordereddict"><a href="lib-collections.html#ordereddict"><b>OrderedDict</b></a> is a dictionary that
+			visits its keys in the order they went in, for output that must come out the same way every time.</li>
+		<li id="string"><a href="guide-text.html"><b>String</b></a> is a collection too: a row of bytes, read as
+			text.</li>
+		<li id="fixedarrays"><a href="lib-collections.html#array"><b>Array</b></a> holds a fixed number of values, set
+			when it is made, such as the three coordinates of a point in space.</li>
+	</ul>
+
+	<p>You can now build a collection in a line, walk it, and sum it up, filter it or change every value at once. Next,
+		the List up close, sieving out the primes the way Eratosthenes did.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-list.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

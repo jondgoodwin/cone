@@ -1,0 +1,303 @@
+<html>
+  <head>
+	  <title>Functions, closures and generators - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Functions, closures and generators</div>
+		</div>
+
+    <div class="text">
+
+	<p>A function gives a piece of work a name, so it is written once and used wherever it is needed. Here is pi,
+		at last with a name of its own, worked out to as many terms as the caller asks for:</p>
+
+<pre>
+mod pi;
+
+import stdio use *;
+
+// calcpi takes the number of terms, an i32, and gives back an f64.
+// '= 10' is a default: a call may leave the number of terms off.
+fn calcpi(terms i32 = 10) f64 {
+  mut left = terms;
+  mut result = 0.5d;
+  mut seed = 1d;
+  mut top = 1d;
+  mut bot = 1d;
+  mut twos = 2d;
+  while left &gt; 0 {
+    top *= seed;
+    bot *= seed + 1d;
+    twos *= 2d * 2d;
+    result += top / (bot * (seed + 2d) * twos);
+    seed += 2d;
+    left -= 1;
+  }
+  result * 6d;    // the last expression is what the function gives back
+}
+
+fn main() {
+  print &lt;- "with 2 terms:  ", calcpi(2), "\n";
+  print &lt;- "with 10 terms: ", calcpi(), "\n";
+  print &lt;- "with 20 terms: ", calcpi(20), "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+with 2 terms:  3.13906
+with 10 terms: 3.14159
+with 20 terms: 3.14159
+</pre>
+	<p><b>Try this:</b> call <span class="pre">calcpi</span> with 1, 3 and 5 terms, and watch the digits arrive.</p>
+
+	<h2 id="naming"><span id="functions"></span><span id="name"></span><span id="return"></span><span id="implicit"></span>A name for a piece of work</h2>
+	<p>A function's first line says everything a caller needs to know. <span class="pre">calcpi</span> takes one
+		parameter, with a name and a type, and after the parentheses comes the type of what it gives back. Inside, the
+		parameters are variables, set to the values the caller passed, in order. As two variables of one block may not
+		share a name, neither may two parameters, <span class="pre">self</span> included: <span class="pre">fn f(a i32,
+		a i32)</span> is an error. The types are written out on the
+		parameters and the result, so a reader, and the compiler, can check every call without looking inside.</p>
+	<p>The function gives back the value of its last expression, as a block does. <span class="pre">return</span> is for
+		leaving before the end. The arguments of a call are worked out in order, left to right, before the function
+		runs, and its variables, parameters included, belong to that one call: two calls, even of the same function,
+		never share them.</p>
+	<p id="parms">A parameter may have a default, as <span class="pre">terms i32 = 10</span> does, and then a call may
+		leave it off: <span class="pre">calcpi()</span> is <span class="pre">calcpi(10)</span>. A default is a value fixed
+		when the program is compiled: a literal, a named <a href="guide-values.html#const">constant</a>, an expression
+		of them such as <span class="pre">step * 2</span>, or an enum's variant that holds nothing. Once one parameter
+		has a default, every parameter after it needs one too, and a call may leave off any run of them from the end:
+		for <span class="pre">fn span(start i32 = 0, len i32 = 10)</span>, <span class="pre">span()</span>,
+		<span class="pre">span(5)</span> and <span class="pre">span(5, 2)</span> all work.</p>
+	<p id="parmmut">A parameter cannot be changed inside the function unless it is declared
+		<span class="pre">mut</span>, which is why <span class="pre">calcpi</span> counts down a variable of its own,
+		<span class="pre">left</span>. A <span class="pre">mut</span> parameter is the function's own copy: in
+		<span class="pre">fn halve(mut n i32)</span>, changing <span class="pre">n</span> leaves the caller's variable as
+		it was. A function can also give back several values at once, written as a list of types, which is a
+		<a href="guide-tuples.html#returning">tuple</a>.</p>
+	<p>A function may call itself. Euclid's greatest common divisor, the loop from the last page, becomes three lines:
+		the answer for <span class="pre">a</span> and <span class="pre">b</span> is the answer for
+		<span class="pre">b</span> and the remainder, until the remainder is 0:</p>
+<pre>
+fn gcd(a i32, b i32) i32 {
+  if b == 0 { a; } else { gcd(b, a % b); }
+}
+
+gcd(84, 36)       // 12
+</pre>
+	<p id="recursive">A call that is the last thing a function does, as <span class="pre">gcd</span>'s is, may be
+		turned into a jump by the compiler, so deep recursion of this shape need not use up the stack; nothing
+		promises it, though. A function marked <span class="pre">inline</span>, written after its return type, has its
+		body generated within each caller's (<a href="safe-purity.html#inline">Inline functions</a>).</p>
+
+	<h2 id="result-tour"><span id="result"></span>Functions that can fail: Result</h2>
+	<p>Some work can fail for reasons that are not a bug: a file that is not there, text that is not a number, an
+		average of nothing at all. A function like that says so in its return type, and gives back a
+		<b>Result</b>: <span class="pre">Ok</span> holding the answer, or <span class="pre">Error</span> holding what went
+		wrong. It is a good habit from the start, because it is how a program stays honest about everything that can
+		go wrong:</p>
+<pre>
+fn average(total i32, count i32) Result[i32, &amp;str] {
+  if count == 0 {
+    return Error("there is nothing to average");
+  }
+  Ok(total / count);
+}
+</pre>
+	<p>The caller cannot use a Result as though it were the answer. It checks which one it got, and a
+		<span class="pre">match</span> does that, with a case for each; a case names the variable that receives what is
+		inside. The match must cover both, so a failure cannot be overlooked by accident:</p>
+<pre>
+match average(30, 0) {
+  case imm avg Ok { print &lt;- "average: ", avg, "\n"; }
+  case imm why Error { print &lt;- "no average: ", why, "\n"; }   // this one runs
+}
+</pre>
+	<p>When only the failure matters, <span class="pre">is</span> asks which it is:
+		<span class="pre">if r is Error { ... }</span>. And a function that cannot deal with a failure itself passes it
+		on to its own caller:</p>
+<pre>
+fn doubledAverage(total i32, count i32) Result[i32, &amp;str] {
+  match average(total, count) {
+    case imm avg Ok { Ok(avg * 2); }
+    case imm why Error { Error(why); }
+  }
+}
+</pre>
+	<p>Those are the patterns in use today. Shorter ways to pass an error on, such as a
+		<span class="pre">?</span> operator, are being designed and are not built yet. The <span class="pre">&amp;str</span> here is a view of a piece of text, which
+		<a href="guide-text.html">String</a> explains, and <span class="pre">Result</span> itself is an ordinary enum, as
+		<a href="guide-enums.html#resultenum">Enums</a> shows. The standard library's functions that can fail answer
+		one too: the <span class="pre">fs</span> package's (<a href="lib-fs.html#fs-failure">Failure: Result and
+		FsError</a>), and the I/O an actor awaits (<a href="conc-io.html#await-io">Awaiting I/O</a>). What must never
+		happen at all is not a Result but a <a href="safe-panics.html">panic</a>.</p>
+
+	<h2 id="closures-tour"><span id="closures"></span>Closures: functions with state</h2>
+	<p>A <b>closure</b> is a function written right where it is used, with no name of its own. It is a value like any
+		other, so it is kept in a variable and called through it. In its simplest form it uses the variables around
+		it:</p>
+<pre>
+imm rate = 3;
+imm triple = fn(x i32) i32 { x * rate; };
+triple(14)        // 42
+</pre>
+	<p>What makes a closure more than a function is that it can carry state of its own. Its state goes in square
+		brackets after its parameters, and lives on from one call to the next. This one hands out the Fibonacci
+		numbers, one per call, each the sum of the two before:</p>
+<pre>
+mut nextFib = fn() [mut a = 0i64, mut b = 1i64] i64 {
+  imm now = a;
+  a, b = b, a + b;      // both change at once
+  now;
+};
+
+each i in 1 .. 10 {
+  print &lt;- " ", nextFib();       // 0 1 1 2 3 5 8 13 21 34
+}
+</pre>
+	<p id="closuredef"><span id="full"></span><span class="pre">a</span> and <span class="pre">b</span> belong to the
+		closure, and a second closure written the same way would have its own. In full, a closure is written
+		<span class="pre">fn (parameters) [state] returnType { body }</span>: a function's definition without the name,
+		with the state in square brackets after the parameters, where a bracket cannot be taken for the return type. Each
+		state entry is a field of the closure, a name with an initial value whose type is the value's, and the entries
+		are separated by commas; a closure with no state leaves the list out, as <span class="pre">triple</span> does. An
+		entry is <span class="pre">imm</span> unless written <span class="pre">mut</span>, and
+		the variable that holds a closure that changes its state is <span class="pre">mut</span> too. An entry's initial
+		value is read in the code around the closure, not from the entries before it: in <span class="pre">[a = 1, b =
+		a]</span>, <span class="pre">b</span> starts from the <span class="pre">a</span> outside.</p>
+	<p id="own">An entry is how a closure gets a value of its own, by the ordinary rules for values:</p>
+<pre>
+imm ribs = 3;
+imm shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
+shape(2)          // 2 * 3 + 11: 17
+</pre>
+	<p>An entry with no <span class="pre">=</span>, <span class="pre">[ribs]</span>, starts from the variable of that
+		name around the closure: a value that copies is copied, and one that moves is moved, as it would be passed to a
+		function. <span class="pre">[buf = xs]</span> moves a value in, and <span class="pre">xs</span> can no longer be
+		used. Listing a counted handle, an <span class="pre">Rc</span> or an <span class="pre">Arc</span>, gives the closure
+		a count of its own, and the handle's permission says whether the closure may change what it points at.
+		<span class="pre">[mut n = 0]</span> is new state, and <span class="pre">[r = &amp;p]</span> is a borrow written
+		out, which gives the closure the borrow's lifetime. Listing also tells the reader which values are the closure's
+		own. A closure with only its own state and copies can be kept after the code around it has finished, or handed to
+		an <a href="guide-actors.html">actor</a>; one that uses the variables around it cannot.</p>
+	<p id="capture">A closure that uses a variable around it, without listing it, borrows it: it reads it where it
+		stands, or changes it if the body does, and the compiler works out which from the body. Only a
+		<span class="pre">mut</span> variable can be changed that way; changing any other is the ordinary "no permission to
+		modify" error, reported inside the body. While the closure is still to be used, nothing else may change the
+		variable (nor read it, if the closure changes it), and once the closure's last use is past, it can. Borrowing is
+		the default because a copy made silently would duplicate state: a closure that added to its own copy of a total
+		would leave the total unchanged, with no sign that it had. A closure written in a method that names a member of
+		the object, <span class="pre">hits</span>, reaches it through the method's <span class="pre">self</span>, which it
+		borrows as it borrows any variable; a closure sees exactly what the code around it sees, private members included,
+		wherever it is later called from.</p>
+	<p id="ret">A closure is a value, and its body is its one method, so a few rules follow from that.
+		<span class="pre">return</span> inside it leaves the closure, never the function around it. It cannot call
+		itself, since it has no name inside its own body (<i>"Error 1393: A closure cannot call itself"</i>), so
+		recursion is a named function's work. It is written in a function, never at the module level as a global's value
+		or a field's default, where there is nothing for it to borrow. Its return type is the one written; or else the one
+		the signature it is given to says; or else it is read off the body: the first <span class="pre">return</span> or
+		final expression fixes it, and the others must fit. A body whose last statement changes something
+		(<span class="pre">total += x;</span>) returns nothing. Paths that give different types are refused, with
+		<i>Error 1392</i> asking for the return type to be written. And a function that takes a closure names the signature
+		it will call, behind <span class="pre">&amp;&lt;</span>:</p>
+<pre>
+// f is any closure, or function, that takes an i32 and gives one back
+fn apply(f &amp;&lt;fn(x i32) i32, x i32) i32 { f(x); }
+
+imm off = 10;
+apply(x =&gt; x * 2, 21)                        // 42
+apply(fn(x i32) i32 { x + off; }, 1)         // 11
+apply(fn(x) { x + off; }, 1)                 // 11: the type comes from the signature
+</pre>
+	<p>A closure that changes what it holds is passed as <span class="pre">&amp;&lt;mut fn(x i32) i32</span> instead.
+		This <span class="pre">&amp;&lt;</span> is a reference that stands for anything that can be called that way; the
+		<a href="mod-functions.html#cloref">Closure references</a> section of Modularity has every form of it, and
+		what a closure may hold and where it may go. A parameter's type may be left out, as in the last call, only where
+		the closure is given to something that says what the signature is: a parameter such as
+		<span class="pre">f</span>, a generic bound <span class="pre">F fn(sig)</span>, or an owner of a closure
+		(<a href="mod-functions.html#owner">An owner of a closure</a>).</p>
+	<p id="short">For a small closure handed to something that already knows its types, there is a short form, the
+		parameters, an arrow and the body: <span class="pre">x =&gt; x * 2</span>, <span class="pre">(a, b) =&gt; a.len()
+		&lt; b.len()</span>, <span class="pre">() =&gt; 5</span>, <span class="pre">n =&gt; total += n</span>. It takes
+		parameter names only, and a body that is one expression, an assignment or a block; it has no state list and no
+		written return type, so a closure that needs either is written in full. A comma after the body belongs to the list
+		the closure is in, so <span class="pre">f(x =&gt; x + 1, 3)</span> is a call with two arguments, and the arrow is
+		<span class="pre">=&gt;</span>, not <span class="pre">-&gt;</span>, which would read as "returns". That is how
+		closures are handed to a collection to keep, change or add up its items, on
+		<a href="guide-collections.html">Collections</a>.</p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: a closure that is called once and consumed, whose body moves
+		one of its state entries out.</i></p>
+
+	<h2 id="generators-tour"><span id="generators"></span>Generators: functions that hand out values</h2>
+	<p>The Fibonacci closure has to be called once for every number. A <b>generator</b> turns that around: it is a
+		function written as the loop that makes the sequence, and <span class="pre">each</span> walks the values it
+		hands out. It says <span class="pre">yields</span> and a type where a return type would go, and each
+		<span class="pre">yield</span> hands out one value:</p>
+<pre>
+fn fibonacci(n i32) yields i64 {
+  mut a = 0i64;
+  mut b = 1i64;
+  each i in 1 .. n {
+    yield a;
+    a, b = b, a + b;
+  }
+}
+
+each f in fibonacci(10) {
+  print &lt;- " ", f;              // 0 1 1 2 3 5 8 13 21 34
+}
+</pre>
+	<p>After each <span class="pre">yield</span>, the generator waits, its variables just as they were, until
+		<span class="pre">each</span> asks for the next value; then it carries on from where it stopped. When its body
+		ends, so does the sequence. Calling <span class="pre">fibonacci(10)</span> runs none of it yet:
+		<span class="pre">each</span> runs it a step at a time, as it needs each value, and a loop that leaves early
+		with <span class="pre">break</span> simply never asks for the rest. Walking a list or a dictionary works the same
+		way, and <a href="guide-collections.html">Collections</a> comes back to it.</p>
+	<p id="yieldeach"><span class="pre">yield each</span> hands on every value of another generator in turn, which joins
+		sequences, and makes a recursive walk, such as through a tree, as short as the recursion. A method can be a
+		generator too, walking what its value holds:</p>
+<pre>
+fn count(n i32) yields i32 {
+  mut i = 0;
+  while i &lt; n { yield i; i += 1; }
+}
+
+fn joined(a i32, b i32) yields i32 {
+  yield each count(a);
+  yield 99;
+  yield each count(b);
+}
+
+struct Span {
+  lo i32;
+  hi i32;
+  fn evens(self &amp;) yields i32 {
+    each x in lo .. hi if x % 2 == 0 { yield x; }
+  }
+}
+
+each v in joined(2, 3) { print &lt;- " ", v; }               //  0 1 99 0 1 2
+imm span = new Span(3, 10);
+each v in span.evens() { print &lt;- " ", v; }              //  4 6 8 10
+</pre>
+	<p>A <span class="pre">yield</span> is a statement of its own, never part of a larger expression. A generator is
+		an ordinary value with a <span class="pre">next</span> method, which is all <span class="pre">each</span> needs, and
+		the iterator adapters take one as they take any cursor: <span class="pre">count(5).map(x =&gt; x * 2).sum()</span>
+		is 20 (<a href="rec-methods.html#iterator">Being walked: next</a>). <a href="rec-generators.html">Generators:
+		writing your own</a>, in Recipes, has the rest: generator methods, generic generators, what may be borrowed across
+		a <span class="pre">yield</span>, and when a generator dies.</p>
+
+	<p>You can now name a piece of work, give it state, and have it hand out a sequence. Next come the types
+		themselves, starting with the numbers that every example so far has quietly relied on.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-numbers.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

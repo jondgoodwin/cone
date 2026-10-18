@@ -1,0 +1,130 @@
+<html>
+  <head>
+	  <title>with blocks: working on one value - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">with blocks: working on one value</div>
+		</div>
+
+    <div class="text">
+
+	<p>You are working on one value part by part: read this field, change that one, call a method, add to a list. The
+		value's name is written in front of every line, and it is noise. A <span class="pre">with</span> block focuses a
+		block on one value, so its fields and methods are reached with a bare dot. This recipe has the form in full,
+		including the one that changes the value through a reference, and the operators that act on the focused value.
+		<a href="guide-structs.html#with">Structs</a> introduced its short, read-only form, and
+		<a href="modularity.html#composition">Modularity</a> has composition at every layer. Here a point is made one
+		unit long:</p>
+<pre>
+mod with1;
+
+import stdio use *;
+
+struct Point {
+  pub x f32;
+  pub y f32;
+}
+
+fn main() {
+  mut point = new Point(3., 4.);
+
+  // Make point one unit long: .x is point.x, through this
+  with &amp;mut point {
+    imm len = (.x * .x + .y * .y).sqrt();
+    if len &gt; 0. {
+      .x /= len;
+      .y /= len;
+    }
+  }
+  print &lt;- point.x, " ", point.y, "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+0.6 0.8
+</pre>
+	<p><b>Try this:</b> take away the <span class="pre">&amp;mut</span>, so the block is given
+		<span class="pre">point</span> itself, and predict what happens. The compiler refuses both divisions: <i>Error 1034:
+		Cannot borrow a mutable reference to `this`, which is not mutable.</i> Given a value rather than a reference,
+		the block works on a copy of it, which may be read but not changed.</p>
+
+	<h2 id="why">Focusing a block on one value</h2>
+	<p id="with">A <span class="pre">with</span> block is an expression followed by a block. Its mechanism has two
+		parts: a variable named <span class="pre">this</span>, defined for the block and holding the expression's value
+		(not to be confused with a method's <a href="guide-structs.html#self"><span class="pre">self</span></a>), and
+		operators that act on <span class="pre">this</span> when nothing is written to their left. It may look like
+		method chaining, but it does more:</p>
+	<ul>
+		<li>the methods called need not return their receiver, as chaining requires;</li>
+		<li>calls may come anywhere in the block's logic, between other statements, rather than strung together in one
+			expression;</li>
+		<li>it reaches fields as well as methods.</li>
+	</ul>
+
+	<h2 id="this">The this variable</h2>
+	<p>Throughout the block, <span class="pre">this</span> holds the value of the expression after
+		<span class="pre">with</span>:</p>
+<pre>
+// 'this' is the number of radians in a degree
+with 3.14159f32 / 180. {
+  quarter = 90. * this;    // 1.5708
+  acute = 10. * this;      // 0.174533
+}
+</pre>
+	<p>is shorthand for</p>
+<pre>
+{
+  imm this = 3.14159f32 / 180.;
+  quarter = 90. * this;
+  acute = 10. * this;
+}
+</pre>
+	<p><span class="pre">with</span> blocks may be nested, and then <span class="pre">this</span> in any statement
+		is the innermost block's value.</p>
+
+	<h2 id="dotprefix">The dot with nothing before it</h2>
+	<p>The dot operator normally has a value to its left, whose field it reaches or whose method it calls. With
+		nothing to its left, it means <span class="pre">this</span>: <span class="pre">.x</span> is
+		<span class="pre">this.x</span>. The program at the top of this page shows the usual pattern. Its block works
+		on <span class="pre">&amp;mut point</span>, a mutable reference, because it changes the point: without the
+		reference, <span class="pre">this</span> would be a copy, which is <span class="pre">imm</span> and is gone at
+		the end of the block. Through the reference, <span class="pre">.x</span> and <span class="pre">.y</span> reach
+		<span class="pre">point</span>'s own fields, and the block reads more cleanly without
+		<span class="pre">point.</span> in front of every one.</p>
+
+	<h2 id="streamprefix">The send operator with nothing before it</h2>
+	<p>The <a href="guide-collections.html">send operator</a>, <span class="pre">&lt;-</span>, adds what is on its
+		right to the collection on its left. With nothing on its left, it adds to <span class="pre">this</span>:</p>
+<pre>
+mut numbers = new List[f32];
+with &amp;mut numbers {
+  &lt;- 3.4;
+  &lt;- 2.6;
+  &lt;- 1.4;
+}
+// numbers.len() is 3
+</pre>
+	<p>To add several values with nothing else to do, the send operator alone is shorter:
+		<span class="pre">numbers &lt;- 9.5, 8.5;</span>.</p>
+
+	<h2 id="dotindex">.[]: indexing this (not built)</h2>
+	<p style="margin-left: 40px;"><i>Not built yet: the compiler refuses <span class="pre">.[4]</span>.</i></p>
+	<p><span class="pre">.[]</span> would reach an element of the collection <span class="pre">this</span> holds, as
+		<span class="pre">.[4] = 1.6;</span> for <span class="pre">numbers[4] = 1.6;</span>.</p>
+
+	<p>You can now work on one value's parts without repeating its name, reading them from the value itself or
+		changing them through a reference to it. The next recipe is for a <span class="pre">match</span> whose cases no
+		literal, range or comparison can say: patterns of your own.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="rec-patterns.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

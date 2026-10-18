@@ -1,0 +1,269 @@
+<html>
+  <head>
+	  <title>Actors - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Actors</div>
+		</div>
+
+    <div class="text">
+
+	<p>Every program so far has run on one core of your machine, while the others sat idle. This page puts them to
+		work, so that more gets done, faster. Cone's way to do it is the <b>actor</b>, and it may be the first thing in
+		this Guide you have not met before: a worker with a job of its own, which keeps its own data and handles the work
+		sent to it, one piece at a time. You call it like a method, and Cone does the rest. Here is a bakery whose two
+		tills sell from one stock room at once:</p>
+
+<pre>
+mod bakery;
+
+import stdio use *;
+// The actors package runs actors, on every core
+import actors;
+
+const price = 3;          // dollars a loaf
+
+// An actor is declared like a struct. Its fields are its own:
+// only its behaviours, below, can reach them
+actor StockRoom {
+  loaves i32 = 100;
+
+  // A behaviour, marked 'async do'. Calling it sends the stock room
+  // a message, which it handles when its turn comes
+  pub async do take(self, wanted i32) i32 {
+    imm given = if wanted &lt;= loaves { wanted; } else { loaves; };
+    loaves -= given;
+    given;                              // the answer, sent back
+  }
+
+  pub async do left(self) i32 { loaves; }
+}
+
+// A till serves a customer from the stock room's loaves
+actor Till {
+  stock StockRoom;                      // how this till reaches the stock room
+
+  pub async do serve(self, wanted i32) i32 {
+    // await: ask the stock room, and carry on here when it answers
+    imm got = await stock.take(wanted);
+    got * price;                        // what the customer pays
+  }
+}
+
+// The shop runs the day
+actor Shop {
+  stock StockRoom;
+  east Till;
+  west Till;
+
+  pub async do open(self) {
+    // Two customers, served at once, one at each till
+    imm ana = east.serve(30);
+    imm ben = west.serve(40);
+    print &lt;- "Ana pays $", await ana, "\n";
+    print &lt;- "Ben pays $", await ben, "\n";
+    print &lt;- "Left on the shelf: ", await stock.left(), "\n";
+  }
+}
+
+fn main() {
+  // new makes an actor, and gives back a handle to reach it through
+  imm stock = new StockRoom();
+  imm shop = new Shop(stock, new Till(stock), new Till(stock));
+  shop.open();      // one message; the program ends when the work is done
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Ana pays $90
+Ben pays $120
+Left on the shelf: 30
+</pre>
+	<p><b>Try this:</b> stock the shelf with 50 loaves, and run it a few times. Someone now goes short, and which of
+		them can change from run to run, since either till may reach the stock room first. Between them, though, they
+		always pay for exactly 50 loaves: never one more.</p>
+
+	<h2 id="why">Workers with a job of their own</h2>
+	<p>Doing several things at once has always had one hard part: two pieces of a program changing the same data at the
+		same moment. Picture both tills reading "50 loaves" off the shelf, and each selling 40. If you have written
+		threaded code, you know the usual cure, a lock around every shared value, and how hard it is to get every one of
+		them right.</p>
+	<p>An actor takes the shared data away. The count of loaves belongs to the stock room, and nothing else can touch
+		it; the tills ask the stock room instead. Their requests wait in its <b>mailbox</b>, and it handles them one at
+		a time. Two requests can never tangle inside it, whichever order they
+		arrive in, and that is why the Try this never sells a loaf twice.</p>
+	<p>Some work is a one-off, started, finished and its answer collected, and the
+		<a href="guide-parallel.html">next page</a> has the simplest tool for that. But much of a running system is not
+		like that. The stock room has state, and an ongoing responsibility: to take on whatever requests are sent to it,
+		and answer each as and when it can, for as long as the shop is open. An actor is that kind of worker.</p>
+	<p>Underneath, Cone keeps a pool of worker threads, one for each core, and whenever an actor has a message waiting,
+		a free thread runs it. You never start a thread, wait for one to finish, or take a lock. You decide which parts
+		of the work belong together, give each part to an actor along with the data it needs, and let them talk.
+		Cone has other ways to make work happen at the same time, and the <a href="concurrency.html">Concurrency</a>
+		part has them all; actors and <span class="pre">parallel each</span> are the two to build on first.</p>
+
+	<h2 id="first-actor"><span id="making"></span>Declaring an actor</h2>
+	<p>An actor is written like a <a href="guide-structs.html">struct</a>, with <span class="pre">actor</span> in place of
+		<span class="pre">struct</span>, in a module that imports the <span class="pre">actors</span> package. Its fields
+		are its state, and they are never <span class="pre">pub</span>: only its own behaviours reach them. Code outside
+		that tries is refused, with a message that says what to do instead:</p>
+<pre>
+`loaves` is part of actor StockRoom's private state, which only its own methods reach, one message at a time. Send it a behaviour that uses it.
+</pre>
+	<p>A method marked <span class="pre">async do</span> is a <b>behaviour</b>: a message the actor understands. Inside
+		one, the fields are used by name, and changed freely, since nothing else runs in this actor while it does.</p>
+	<p><span class="pre">new StockRoom()</span> makes the actor and gives back its <b>handle</b>, the value you reach it
+		through. As with a struct, the fields are filled in order from the arguments, and a field with a default, such
+		as <span class="pre">loaves i32 = 100</span>, takes it when the argument is left off. A handle may be copied as
+		often as you like: the shop and both tills hold the one stock room's handle, and whatever any of them sends lands
+		in the same mailbox.</p>
+	<p id="declaring">Beside its behaviours, an actor may have what a struct has: an <span class="pre">init</span>, run
+		inside the actor when <span class="pre">new</span> makes it; plain <span class="pre">fn</span> methods, helpers
+		its behaviours call directly, with no message; and a <span class="pre">final</span>, run when it dies. Inside a
+		behaviour, <span class="pre">selfactor</span> is the actor's own handle, which it can send a message to, or hand
+		to another actor:</p>
+<pre>
+actor Oven {
+  baked i32;
+
+  fn init(self &amp;new, start i32) {          // run by 'new Oven(0)', inside the actor
+    *self = new Self(baked: start);
+  }
+
+  fn batch(self &amp;, trays i32) i32 {         // a helper: an ordinary call, no message
+    trays * 12;
+  }
+
+  pub async do bake(self, trays i32) i32 {
+    baked += self.batch(trays);
+    baked;
+  }
+
+  pub async do bakeTwice(self, trays i32) i32 {
+    await selfactor.bake(trays);           // a message to itself
+    await selfactor.bake(trays);
+  }
+}
+</pre>
+	<p>An actor lives as long as something holds its handle or its mailbox holds a message, so a handle dropped with
+		messages still queued leaves the actor alive until they are handled. Actors holding each other's handles in a
+		cycle never die, until one lets go. <a href="conc-actors.html">Actors in depth</a> has the four shapes a
+		behaviour can take, and the rest of an actor's life.</p>
+
+	<h2 id="sending">Calling a behaviour sends a message</h2>
+	<p><span class="pre">east.serve(30)</span> looks like a method call, and that is how you write it. What it does is
+		put a message in the till's mailbox and return at once, without waiting for the till. It is the same idea as the
+		<a href="guide-first.html#send">send operator</a>, a send dressed as a method call: you write the call, and Cone
+		carries the message, and schedules the till to handle it on whichever thread is free. One actor's messages to
+		another are handled in the order they were sent.</p>
+	<p><span class="pre">main</span> starts the day with <span class="pre">shop.open()</span>, a message like any other, so
+		<span class="pre">main</span> reaches its end almost at once. The program then waits until no actor has anything
+		left to do, and stops.</p>
+
+	<h2 id="awaiting">async and await</h2>
+	<p>A behaviour is <b>asynchronous</b>: it runs later, when the actor gets to the message, which is what
+		<span class="pre">async</span> says. A send is one way, so when the sender needs the answer, it writes
+		<span class="pre">await</span>. In <span class="pre">serve</span>, <span class="pre">await stock.take(wanted)</span>
+		sends <span class="pre">take</span> to the stock room, and the till's behaviour pauses there until the answer
+		comes back. Pausing does not hold up a core: the thread goes off to other work, and the till may even
+		handle its other messages meanwhile. When the answer arrives, the behaviour carries on from where it stopped,
+		with the stock room's answer as the <span class="pre">await</span>'s value.</p>
+	<p>So <span class="pre">serve</span> reads top to bottom, like any function, though it runs on two actors and,
+		perhaps, two cores. The <span class="pre">await</span>s mark the seams where it waits on another actor. Only a
+		behaviour that declares a return type sends an answer, so only such a behaviour can be awaited, and
+		<span class="pre">await</span> stands only inside a behaviour. That is why the bakery has a
+		<span class="pre">Shop</span>: <span class="pre">main</span> is a plain function, so it starts things off with a
+		send, and the waiting happens in an actor.</p>
+	<p>Awaiting each call as it is made, <span class="pre">await east.serve(30)</span>, would have the shop wait for Ana
+		before it even began on Ben. Instead, <span class="pre">imm ana = east.serve(30)</span> sends the message at once
+		and keeps its <b>future</b>: a value standing for the answer to come. Both customers' messages are out before
+		either answer is needed, so the two tills serve them at the same time, and the shop awaits the futures
+		afterwards. The stock room's count is right by the time the shop asks for it, because each till had its answer
+		from the stock room before it answered the shop.</p>
+	<p id="await">So how a behaviour is called says what becomes of its answer: <span class="pre">await</span> waits for
+		it here, a variable keeps its future for later, and a call written as a statement of its own sends the message
+		and drops the answer. Whether there is an answer at all is the behaviour's to say: one with no return type sends
+		none, and awaiting it is refused, with the advice to declare a return type, a status, if the caller needs to know
+		it finished. An <span class="pre">await</span> also lets go of every borrow the behaviour holds, since the actor
+		handles other messages while it waits. <a href="conc-await.html">Awaiting in depth</a> has the rest.</p>
+
+	<h2 id="sharing"><span id="arc"></span>What you can send</h2>
+	<p>A message carries its values to another actor, which may be running on another core, and each kind of value
+		crosses in its own safe way.</p>
+	<p><b>Numbers are copied.</b> <span class="pre">east.serve(30)</span> puts a copy of 30 in the message.</p>
+	<p><b>A value that moves just flows.</b> A <span class="pre">String</span>, a list, or any other value that
+		<a href="rec-moves.html">moves</a> rather than copies is handed over whole: it moves into the message, and
+		from then on only the receiver has it. Here the shop hands a customer's name to an order book:</p>
+<pre>
+actor OrderBook {
+  names List[String];
+
+  pub async do add(self, name String) {
+    names &lt;- name;                // the book keeps the String
+  }
+}
+</pre>
+<pre>
+imm name = String.from("Ana");
+book.add(name);                   // the String moves into the message
+</pre>
+	<p>Once the name has gone, the shop cannot use it: <span class="pre">name</span> after the send is refused, with
+		<span class="pre">This variable's value has been moved out. It is no longer there to use.</span> So two actors
+		never hold the same String at once, and nothing needs guarding.</p>
+	<p><b>Handles are shared,</b> as the tills share the stock room's.</p>
+	<p><b>What nobody changes, everybody may share.</b> A larger value that every actor reads, such as a price list, is
+		made once as an <span class="pre">Arc</span>, from the <span class="pre">sync</span> package, and handed to as many
+		actors as need it. Every copy reaches the one price list, and the <span class="pre">imm</span> in
+		<span class="pre">Arc[imm, Prices]</span> says no one may change it, so every actor may read it at once:</p>
+<pre>
+import sync use Arc;
+
+struct Prices {
+  pub loaf i32;
+  pub bun i32;
+}
+
+actor Till {
+  prices Arc[imm, Prices];        // one price list, read by every till
+
+  pub async do serve(self, loaves i32, buns i32) i32 {
+    loaves * prices.loaf + buns * prices.bun;
+  }
+}
+
+// Made once, and handed to as many tills as you like
+imm prices = new Arc[imm, Prices](loaf: 3, bun: 1);
+imm east = new Till(prices);
+imm west = new Till(prices);
+</pre>
+	<p id="sendable">The compiler checks all of this for you, from what each behaviour's parameters hold, with nothing for
+		you to write; a value that could not travel safely is refused where the behaviour is declared. A borrow
+		(<span class="pre">&amp;x</span>) is the usual one, since it points into memory its own thread may free, and an
+		<span class="pre">Rc</span>, whose count only one thread may keep. The actor's own fields are never sent, so they
+		may hold anything. When several actors
+		truly must <i>change</i> one value, give that value to an actor of its own, as the bakery gives the loaves to the
+		stock room. The rest of what may cross is in <a href="conc-sharing.html">What may cross a thread</a>, and the
+		locks for the rare case that needs one, permissions such as <span class="pre">Arc[Mutex, T]</span> that take a
+		lock whenever the value is borrowed, are in <a href="conc-locks.html">Lock permissions</a>.</p>
+
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> and <span class="pre">sync</span>
+		packages run on Windows and Linux (x86-64), not yet on macOS. What is not built yet, among it a time limit on
+		an <span class="pre">await</span> and waiting for whichever of several answers comes first, is listed in
+		<a href="conc-actors.html">Actors in depth</a> and <a href="conc-await.html">Awaiting in depth</a>.</i></p>
+
+	<p>You can now give each part of a program to an actor of its own, call it like a method, and let the actors work
+		side by side on every core. When the work is one big loop rather than standing roles, there is something simpler
+		still: one word in front of an <span class="pre">each</span>.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-parallel.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

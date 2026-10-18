@@ -1,0 +1,237 @@
+<html>
+  <head>
+	  <title>Panics and assert: when a program must stop - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Panics and assert: when a program must stop</div>
+		</div>
+
+    <div class="text">
+
+	<p>Some failures are part of a program's ordinary life: a file that is not there, text that is not a
+		number. A function reports those with a <a href="guide-functions.html#result-tour">Result</a>, and its
+		caller decides what to do. Others mean the program itself is wrong: an index past the end, a promise
+		broken. Going on would only compound the damage, so the program <b>panics</b>: it says what failed and
+		where, and stops. This page covers <span class="pre">panic</span>, <span class="pre">assert</span>, the
+		checks the compiler adds for you, and how to make a failure point at the line that caused it.</p>
+
+<pre>
+mod shelf;
+
+import stdio use *;
+
+// How many loaves are left on one of the bakery's shelves
+fn stockOn(shelves &amp;Array[i32], n usize) i32 {
+  assert(n &lt; shelves.len, "there is no such shelf");
+  shelves[n];
+}
+
+fn main() {
+  imm shelves = [12, 0, 7];
+  imm first = stockOn(&amp;shelves, 0usize);
+  print &lt;- "shelf 0 holds ", first, "\n";
+  imm missing = stockOn(&amp;shelves, 5usize);
+  print &lt;- "shelf 5 holds ", missing, "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+shelf 0 holds 12
+panic at shelf.cone:7: there is no such shelf
+</pre>
+	<p><b>Try this:</b> take the <span class="pre">assert</span> line out and run it again. The program still
+		stops at shelf 5, now with the compiler's own message.</p>
+
+	<h2 id="why">A bug report, not error handling</h2>
+	<p>The question to ask of any failure is whether a correct program could meet it. A missing file, yes: so
+		the function that opens it returns a Result, and the caller must deal with both answers. Shelf 5, no: the
+		bakery has three shelves, so asking for a fifth is a mistake in the program, and no caller can do anything
+		sensible with it. That is what a panic is for. It is a bug report, written at the moment the bug shows,
+		and it is never a way to handle an error.</p>
+	<p>The same goes for running out of memory, or reaching memory past the end of an array: there is no
+		graceful way on. Two failures you might expect here do <b>not</b> panic: integer overflow wraps around
+		silently (<a href="guide-numbers.html">Numbers</a>), and dividing by zero is not checked.</p>
+
+	<h2 id="panic">What a panic does</h2>
+	<p>The core library's <span class="pre">panic</span> panics with the message it is given, and
+		<span class="pre">assert</span> panics when its condition is false. Either way, the program writes out
+		whatever it has printed so far, then one line to standard error, naming the source file, the line, and the
+		message, as above. Then it ends at once, through the C library's <span class="pre">abort</span>. On a thread
+		other than the one the program started on, the line names it:
+		<span class="pre">panic in thread 5828 at ...</span>.</p>
+	<p>Nothing unwinds. No finalizer runs, no caller sees the panic, and the program's other threads end with
+		it. That is a deliberate choice: since no function ever has to be ready to be unwound through, none carries
+		the hidden code and tables that would take, and a lock held when a panic strikes needs no special state,
+		because nothing will run that could wait for it (<a href="conc-locks.html">Locks</a>). In Cone's design,
+		keeping one failure from bringing down a whole program is the job of
+		<a href="guide-actors.html">actors</a>, whose memory can be discarded whole; that is not built yet.</p>
+
+	<h3 id="checks">The checks the compiler adds</h3>
+	<p>Some checks you never write. The compiler checks every index into an array, list or slice, and every
+		range taken from one, and every allocation, and each failure panics the same way, naming what it compared:</p>
+<pre>
+panic at bounds.cone:9: index 3 is out of bounds for a count of 3
+</pre>
+	<p>A range gives <span class="pre">slice 2..&lt;7 is out of bounds for a count of 5</span>, and an allocation its
+		region cannot satisfy gives <span class="pre">out of memory allocating 24 bytes</span>. A check costs its
+		test and nothing more on the path where it passes; the report is built out of the way, only when it
+		fails. On WebAssembly, which links no runtime to write the report, a failed check is a trap instead.</p>
+
+	<h2 id="assert">assert, and checks for debug builds only</h2>
+	<p><span class="pre">assert</span> panics when its condition is false, with the message given, or with
+		<span class="pre">assertion failed</span> if there is none. It is checked in every build, release builds
+		included, so it is the right tool for a promise the program depends on:</p>
+<pre>
+assert(idx &lt; bound);
+assert(idx &lt; bound, "the index is within the table");
+</pre>
+	<p>Some checks are too slow for a finished program, though: walking a whole table to confirm it is still in
+		order, after every change. <span class="pre">assertDebug</span> is checked only in a debug build
+		(<span class="pre">conec --debug</span>, and Congo's default unless it is given
+		<span class="pre">--release</span>). In a release build the whole use is dropped and its condition is
+		<b>not evaluated</b>, so the check may cost what it likes, and a condition with a side effect has it only in
+		a debug build. <span class="pre">assertDebugMsg</span> is the same with a message of its own:</p>
+<pre>
+assertDebug(isSorted(&amp;table));
+assertDebugMsg(isSorted(&amp;table), "the table is kept sorted");
+</pre>
+	<p>With a table of <span class="pre">[3, 9, 4]</span> and an <span class="pre">isSorted</span> that prints a
+		note as it checks, a debug build prints the note and then <span class="pre">panic at adebug.cone:17: assertion
+		failed</span>, naming the line of the <span class="pre">assertDebug</span>; a release build prints neither,
+		and carries on.</p>
+	<p>Both are <a href="mod-generativity.html">macros</a> in the core library, which is how the condition can go
+		unevaluated: it is substituted where the macro is used rather than evaluated before a call. Each expands to an
+		<span class="pre">if</span> on <span class="pre">isDebugBuild()</span>, a
+		<a href="safe-intrinsics.html#debugbuild">constant of the build</a> that is true in a debug build, and a
+		program may branch on it the same way. A macro takes no default argument, which is why the form with a
+		message has a name of its own. The camelCase spelling of <span class="pre">assertDebug</span> is for now.
+		A test can also expect a panic, or a debug-only check, on purpose:
+		<a href="lib-test.html#test-files">Testing</a> shows how.</p>
+	<p id="requires">An earlier design had <span class="pre">assert</span> checked only in test builds, and a
+		<span class="pre">requires</span> statement as the check that always runs. That role is now
+		<span class="pre">assert</span>'s; <span class="pre">requires</span> and <span class="pre">ensures</span> are kept
+		for the <a href="#contracts">contract conditions</a> below, which are not built yet.</p>
+
+	<h3 id="unreachable">unreachable and todo</h3>
+	<p>Two more ways to panic say why in their name. <span class="pre">unreachable()</span> marks code the author
+		knows cannot be reached, and <span class="pre">todo()</span> code not written yet. Each panics if it runs, with a
+		message of its own or one given:</p>
+<pre>
+fn name(n i32) &amp;str {
+  match n {
+    case 1 { "one"; }
+    case 2 { "two"; }
+    else { unreachable(); }
+  }
+}
+
+fn area(sides i32, size i32) i32 {
+  if sides == 4 { size * size; } else { todo("areas of other shapes"); }
+}
+</pre>
+	<p><span class="pre">area(3, 3)</span> panics with <span class="pre">panic at never.cone:18: areas of other
+		shapes</span>.</p>
+
+	<h3 id="never">Never</h3>
+	<p>Notice that <span class="pre">area</span> gives back an <span class="pre">i32</span>, yet its
+		<span class="pre">else</span> block holds no number. That works because <span class="pre">todo</span>, like
+		<span class="pre">panic</span> and <span class="pre">unreachable</span>, returns <span class="pre">Never</span>:
+		the type that says a call does not return. So such a call may end a block that must produce a value, as a
+		<span class="pre">return</span> may, and the block has no value on that path:</p>
+<pre>
+imm half = if n &gt;= 0 { n / 2; } else { panic("negative"); };
+</pre>
+	<p>A function of your own may return <span class="pre">Never</span>. It must then end in a call that does not
+		return, or in an <span class="pre">if</span> each of whose paths does, and it may not say
+		<span class="pre">return</span>. The C library's <span class="pre">abort</span> and
+		<span class="pre">exit</span> return <span class="pre">Never</span> too. Wherever a value is asked of it,
+		<span class="pre">Never</span> is <a href="safe-types.html#void"><span class="pre">void</span></a>; it adds only
+		that control does not come back.</p>
+<pre>
+fn fail(why &amp;str) Never {
+  panic(why);
+}
+</pre>
+
+	<h2 id="where">Pointing at the caller's line</h2>
+	<p>Look again at the first program's report: <span class="pre">shelf.cone:7</span> is the
+		<span class="pre">assert</span> inside <span class="pre">stockOn</span>. But <span class="pre">stockOn</span> did
+		nothing wrong; the mistake was the call asking for shelf 5. The core library's own functions avoid this: a
+		panic from <span class="pre">assert</span> names the line that called <span class="pre">assert</span>, not a
+		line inside the core library. They do it with two parameters whose default values
+		<a href="safe-intrinsics.html#srcloc">answer where the call taking them is</a>,
+		<span class="pre">file &amp;Array[u8] = srcFile()</span> and <span class="pre">line u32 = srcLine()</span>.
+		A function that panics on its caller's behalf may declare the same two and hand them on:</p>
+<pre>
+fn stockOn(shelves &amp;Array[i32], n usize,
+           file &amp;Array[u8] = srcFile(), line u32 = srcLine()) i32 {
+  assert(n &lt; shelves.len, "there is no such shelf", file, line);
+  shelves[n];
+}
+</pre>
+	<p>Now the same mistake reports the line in <span class="pre">main</span> that asked for shelf 5. A message
+		is text, a <span class="pre">&amp;str</span>: a literal, or a <span class="pre">String</span>'s
+		<span class="pre">view()</span>. <span class="pre">assertDebug</span> and <span class="pre">assertDebugMsg</span>
+		take neither parameter: being macros, a <span class="pre">srcFile()</span> or <span class="pre">srcLine()</span>
+		in their body already answers where the macro is used (or, for a macro used inside another macro's body,
+		where the outermost one is).</p>
+
+	<h3 id="hook">The panic hook</h3>
+	<p>A program that runs unattended may need its panics recorded somewhere besides standard error.
+		<span class="pre">setPanicHook</span> names a function that a panic calls once its line is written and before
+		the program ends, with the message and the location. The last hook set is the one called, from whichever
+		thread panicked. A panic inside the hook ends the program at once.</p>
+<pre>
+fn logPanic(msg &amp;str, file &amp;str, line u32) {
+  eprint &lt;- "logged: ", msg, " (", file, " line ", line, ")\n";
+}
+
+fn main() {
+  setPanicHook(&amp;logPanic);
+  // ... the shelves, as above, with stockOn handing on its caller's line
+  imm five = stockOn(&amp;shelves, 5usize);
+}
+</pre>
+	<p>Both lines go to standard error, the panic's first:</p>
+<pre>
+panic at shelf2.cone:20: there is no such shelf
+logged: there is no such shelf (shelf2.cone line 20)
+</pre>
+
+	<h2 id="contracts">Contract conditions</h2>
+	<p style="margin-left: 40px;"><i>Not built yet. This is the design these pages first described, kept as it
+		was written; the design of error handling now under way may rewrite it.</i></p>
+	<p>Where a function should preserve some invariants on entry and on exit, <span class="pre">requires</span>
+		and <span class="pre">ensures</span> clauses may be added to its signature. They make the contract that
+		governs the function's use visible, and stronger: if a condition fails, the program panics.</p>
+<pre>
+fn factorial(mut n i32) i32
+  requires n &gt; 0
+  ensures result &gt; 0 {
+
+  mut result = 1;
+  while n {
+    result *= n--;
+  }
+  result;
+}
+</pre>
+	<p>This function expects a positive, non-zero number, and returns one. Any other behaviour is a bug, to be
+		caught quickly in testing and fixed.</p>
+
+	<p>You can now make a program stop loudly, at the right line, the moment it goes wrong, and keep the
+		expensive checks out of the finished build. Next, the boundary where the compiler's own checks end: calling
+		code written in C.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-c.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

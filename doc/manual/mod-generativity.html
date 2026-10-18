@@ -1,0 +1,920 @@
+<html>
+  <head>
+	  <title>Generics and macros: one template, many versions - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Generics and macros: one template, many versions</div>
+		</div>
+
+    <div class="text">
+
+	<p>Some logic is the same whatever type it works on: the larger of two values, a list, a sort. Writing it
+		once per type means fixing every bug once per type. Instead you write it once, as a <b>template</b> with the
+		type left open, and the compiler makes a version for each type you use it with. This page covers generic
+		functions, types and modules; the constraints that say what a type must be able to do to be used; and
+		macros, which make a fresh copy at every use. Afterwards you can write a piece of logic once and use it
+		with any type that fits.</p>
+<pre>
+mod largest;
+
+import stdio use *;
+
+// One template. T stands for a type: the compiler makes a
+// version of max for each type it is used with
+fn max[T](a T, b T) T {
+  if a &gt; b {a;} else {b;}
+}
+
+// A generic type: a pair of values of any one type
+struct Pair[T] {
+  pub first T;
+  pub second T;
+
+  pub fn larger(self &amp;) T {
+    max(first, second);
+  }
+}
+
+fn main() {
+  print &lt;- max(4, 6), " ", max(2.5, 1.5), "\n";
+  imm sizes = new Pair[i64](10i64, 3i64);
+  print &lt;- sizes.larger(), "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+6 2.5
+10
+</pre>
+	<p><b>Try this:</b> call <span class="pre">max(true, false)</span>. Nothing says what <span class="pre">&gt;</span>
+		means for a <span class="pre">bool</span>, so the version for <span class="pre">bool</span> cannot be made;
+		<a href="#constraints">constraints</a>, below, are how a template says so up front.</p>
+
+	<h2 id="why">Many versions from one template</h2>
+	<p>Generativity makes many concrete components from one template, each obtained by putting in the parameters
+		given where it is wanted. Cone has three kinds:</p>
+	<ul>
+		<li><b>Generics</b> make one version for each different set of arguments: <span class="pre">max[i32]</span>
+			and <span class="pre">max[f32]</span> are two functions, and every use of <span class="pre">max[i32]</span>
+			is the same one. Functions, types and <a href="#generic">modules</a> may be generic.</li>
+		<li><b><a href="#macros">Macros</a></b> make a new version in place at every use, even where the arguments
+			are the same.</li>
+		<li><b><a href="#meta">Metaprogramming</a></b>, which is planned and not built, would decide what logic is
+			compiled at all.</li>
+	</ul>
+	<p>The gain is reuse of one pattern of logic for many types. Because the versions are made when the program
+		is compiled, a generic is the static form of <a href="mod-subtyping.html#strategies">substitution</a>: a call into a
+		generated version is direct, where a call through a virtual reference goes through a table. The cost is
+		coupling: the template, its versions and the code that uses them all depend on one another, which makes a
+		program harder to understand and more fragile under change. Collections are the classic use, since one
+		generic applies the same logic to whatever the collection holds, but the usefulness goes well beyond them:
+		core's own <a href="guide-functions.html#result-tour">Result</a> and <span class="pre">Option</span> are
+		generic enums.</p>
+
+	<h2 id="genericfns">Generic functions</h2>
+	<p>A generic function is a function with a list of type parameters in square brackets after its name.
+		<span class="pre">max[T]</span> above is generic over one type, <span class="pre">T</span>, and expects both
+		its parameters, and its result, to be of it. A use may name the type, or leave the compiler to work it
+		out:</p>
+<pre>
+imm val1 = max[i32](4, 6);      // 6
+imm val2 = max[f32](2.0, 5.0);  // 5
+imm val3 = max(4, 6);           // T is i32, from the arguments
+</pre>
+	<p>In effect the compiler writes a <span class="pre">max</span> for <span class="pre">i32</span> and another
+		for <span class="pre">f32</span>, putting the type in wherever the template says <span class="pre">T</span>.
+		Each version is made where it is first used, once however many times it is used. A generic imported from
+		another package is no different: its body comes with the package's
+		<a href="mod-packages.html#build">include file</a>, and the program makes the versions it uses. When the
+		package and the program both use the same one, both compiled objects contain it, and linking keeps one.</p>
+
+	<h3 id="inference">Working out the type arguments</h3>
+	<p>When a type argument can be worked out from the arguments' types, it need not be written. An unsuffixed
+		integer literal is whichever number type the other arguments give: <span class="pre">max(big, 6)</span> with a
+		<span class="pre">big</span> of type <span class="pre">i64</span> infers <span class="pre">i64</span> and types
+		the <span class="pre">6</span> as one. Only when no other argument says does the literal default to
+		<span class="pre">i32</span>. A float literal is not adaptable so: it is an <span class="pre">f32</span>
+		wherever it stands, and an <span class="pre">f64</span> is written <span class="pre">2.5d</span>.</p>
+	<p>A type parameter may also be found inside a parameter's type. A pointer, reference or slice to
+		<span class="pre">T</span> infers <span class="pre">T</span> from what the value passed points at; a generic
+		type's instance, such as <span class="pre">Box[T]</span>, infers each of its type arguments from the instance
+		passed; and a function reference's signature, such as <span class="pre">&amp;fn(a A) R</span>, infers each type
+		parameter it names from the signature of the function referenced, parameter by parameter and then the return
+		type:</p>
+<pre>
+fn first[T](s &amp;Array[T]) T {s[0];}
+fn unbox[T](b &amp;Box[T]) T {b.v;}
+fn apply[A, R](arg A, f &amp;fn(a A) R) R {f(arg);}
+fn widen(n i32) i64 {i64.from(n) * 1000;}
+
+imm nums = [4, 5, 6];
+imm n = first(&amp;nums);     // T is i32
+imm v = unbox(&amp;boxedf);   // T is f32, when boxedf is a Box[f32]
+imm w = apply(7, &amp;widen); // A is i32 and R is i64
+</pre>
+	<p>A type parameter that no argument names, but the constraint of one that an argument does, is read off that
+		argument's methods: see <a href="#generictrait">A generic trait as a constraint</a>.</p>
+
+	<h3 id="expected">Inference from where a value goes</h3>
+	<p>A type parameter that nothing the call is given says may be said by where the call's value goes. What the
+		generic makes, written in its type parameters, is matched against the type expected of the value, and the
+		parameters still unsaid take what it holds. A function makes its return type, a generic type itself,
+		<span class="pre">Box[T]</span>, and an enum's variant its enum, <span class="pre">Option[T]</span>. A
+		variable's declared type, a return type, the left side of an assignment, a parameter's type, a field's type,
+		the branches of an <span class="pre">if</span> and a block's last value all say what is expected:</p>
+<pre>
+fn make[T]() Box[T] { new Box[T](0); }
+
+imm b Box[i64] = make();         // T is i64
+imm c Result[i64, i32] = Ok(5);  // the error type is i32, from the declared type
+fn parse() Option[i64] {
+  return None;                   // T is i64, from the return type
+}
+</pre>
+	<p>This is one mechanism for every generic and every enum, not a rule about <span class="pre">Option</span>. It
+		only fills the parameters nothing else named: an argument, a bound, or a type argument written in brackets
+		always wins, and an expected type the generic's result does not match says nothing, so the usual mismatch is
+		reported. An unsuffixed integer literal follows the expected type before it takes its default, so
+		<span class="pre">imm n i64 = add(2000000000, 2000000000)</span> adds <span class="pre">i64</span>s. The
+		expected type of a call among the arguments of an overload set is the type every candidate that could take
+		the call declares there, if they all agree. When one operand of <span class="pre">==</span> or
+		<span class="pre">!=</span> is a call, the other operand's type is what it is expected to be, and so is the
+		parameter type of the <span class="pre">&lt;-</span> being appended to.</p>
+	<p>Where nothing gives a parameter, the call is refused, and the message shows how to write the type arguments
+		out: <span class="pre">imm z = None;</span> is refused with "Could not infer the type parameter T of None,
+		since neither its arguments nor where its value goes say what it is. Write the type arguments out:
+		None[T]."</p>
+	<p>The expectation reaches inward. A construction given to a construction is wanted as the type its place has,
+		so <span class="pre">Some(None)</span> wanted as an <span class="pre">Option[Option[i64]]</span> holds a
+		<span class="pre">None[i64]</span>, and <span class="pre">Some(5)</span> there holds an
+		<span class="pre">i64</span>. A construction given to a generic function waits for the other arguments, which
+		may say what its place is: in <span class="pre">id2(None, 5)</span>, with <span class="pre">fn id2[T](a
+		Option[T], b T)</span>, the <span class="pre">5</span> makes <span class="pre">T</span> an
+		<span class="pre">i32</span> and the <span class="pre">None</span> an <span class="pre">Option[i32]</span>. And
+		<span class="pre">None</span> on the left of <span class="pre">==</span> or <span class="pre">!=</span> is
+		typed as the right side is. A call of a generic function given as an argument is not a construction, and is
+		typed from its own arguments alone.</p>
+	<p>A variant of an enum given to a generic is typed by what is expected of it too. In
+		<span class="pre">return Error(Fault.SoldOut);</span> from a function returning <span class="pre">Result[Drink,
+		Fault]</span>, the <span class="pre">Fault.SoldOut</span> is a <span class="pre">Fault</span>, so the error type is
+		<span class="pre">Fault</span>, not the variant's own type, as when a variant is passed to a parameter of its
+		enum. The same holds for <span class="pre">Ok(Drink.Tea)</span> and <span class="pre">Some(Color.Red)</span>,
+		wherever the value goes, for a variant that holds a value, <span class="pre">Fault.Short(3)</span>, and for a
+		variant of a generic enum of your own.</p>
+
+	<p id="variantargs">Where nothing says, a generic variant's type arguments are written in brackets after its name,
+		and its values after them: <span class="pre">None[i32]</span>, <span class="pre">Some[i32](5)</span>. Square
+		brackets after a variant give type arguments and never values, so <span class="pre">Some[5]</span> and
+		<span class="pre">None[]</span> are refused, naming the spelling that replaces them ("A variant is constructed with
+		parentheses: write Some(...), not Some[...]"). In a pattern or after <span class="pre">is</span> a name stays a
+		type: <span class="pre">case is None[IoBuf]</span>. An empty variant's name is a value, so a method may be called
+		on it directly, <span class="pre">Lamp.Red.get()</span>, as <span class="pre">(Lamp.Red).get()</span>; only a
+		method that takes <span class="pre">self</span> reads this way, and a variant that holds values is not a value by
+		its name alone, so <span class="pre">Shape.Circle.area()</span> is refused for the <span class="pre">self</span> it
+		lacks. A generic enum's empty variant has nothing to take its type arguments from as a receiver, so they are
+		written: <span class="pre">Pending.Waiting[i64].key()</span>.</p>
+	<h2 id="generictypes">Generic types</h2>
+	<p>A generic type looks like any type declaration, with the list of types it is generic over after its name.
+		Core declares <span class="pre">Option</span> this way, as a generic enum:</p>
+<pre>
+pub enum Option[T] {
+  None;
+  Some(T);
+}
+</pre>
+	<p>Its variants are names of the enum, so they are reached through it, <span class="pre">Option.Some(7)</span>,
+		and a generic variant is instantiated exactly as it would be named bare. <span class="pre">Some</span> and
+		<span class="pre">None</span> are bare in every program because core folds them in with
+		<span class="pre">pub use Option;</span> (<a href="guide-enums.html#naming">Naming a variant</a>). A variant is
+		constructed with parentheses, <span class="pre">Some(5)</span>, and an empty one by its name alone,
+		<span class="pre">None</span>. One declaration serves every type:</p>
+<pre>
+mut anint Option[i32];
+mut someint Option[i32];
+mut afloat Option[f32];
+</pre>
+	<p><span class="pre">anint</span> and <span class="pre">someint</span> have the same type, an integer that may
+		be missing, and <span class="pre">afloat</span>'s type is different. Once declared, a generic type may be used
+		anywhere any other type may, including as a type argument of another generic. It is always named with its
+		type arguments: <span class="pre">Option</span> alone is not a type, only <span class="pre">Option[i32]</span>
+		and its other instances are, except inside its own braces, where its bare name is the instance being
+		defined.</p>
+	<p>So inside <span class="pre">struct Box[T] { ... }</span>, <span class="pre">Box</span> means
+		<span class="pre">Box[T]</span>: in <span class="pre">Box[i64]</span> it is <span class="pre">Box[i64]</span>, in
+		<span class="pre">Box[f32]</span> it is <span class="pre">Box[f32]</span>. A generic enum's braces take in its
+		methods and every variant's body, and there a variant's bare name, <span class="pre">None</span> or
+		<span class="pre">Option.None</span>, is that variant at the enum's current arguments too:</p>
+<pre>
+struct Box[T] {
+  pub v T;
+  fn again(self &amp;) Box {new Box(v);}          // Box[T], built from a T
+  fn other(self &amp;) Box[i32] {new Box[i32](7);} // any other instance, in full
+}
+
+enum Maybe[T] {
+  struct Yes {
+    pub value T;
+    fn drop(self &amp;) Maybe {Maybe.No;}  // Maybe[T] and Maybe.No[T]
+  }
+  struct No {}
+}
+</pre>
+	<p>Any other instance is still written in full, even inside the braces, and even a use of the generic's own
+		name given type arguments names the instance those arguments say: <span class="pre">Box[i32]</span> inside
+		<span class="pre">Box[T]</span> is <span class="pre">Box[i32]</span>, and <span class="pre">Box[T]</span> is the
+		same instance as the bare <span class="pre">Box</span>. Another generic named bare inside is no more a type
+		there than anywhere else. A generic enum may also extend another enum, generic or not, and be extended: see
+		<a href="mod-extensibility.html#enumgeneric">Extending an enum</a>.</p>
+
+	<h3 id="genericstruct">Generic structs, and their functions</h3>
+	<p>A generic struct is declared the same way, as this beginning of a resizeable collection is:</p>
+<pre>
+struct Buffer[T] {
+	pub ptr *T;
+	pub used usize;
+	pub cap usize;
+}
+
+mut string Buffer[u8];
+mut pointers Buffer[So[Node]];
+</pre>
+	<p>A generic type's functions are reached through an instance, as any type's are through its name:
+		<span class="pre">List[u8].empty()</span> calls <span class="pre">List[u8]</span>'s own
+		<span class="pre">empty</span>. A function or static variable of the generic itself cannot be named, as
+		<span class="pre">List.empty()</span>: only each instance has them. Reaching a static variable through an
+		instance is not yet implemented.</p>
+
+	<h3 id="genericmethods">Generic methods</h3>
+	<p>A type, generic or not, may have generic methods, which look and act much like generic functions. The type
+		arguments follow the method's name, wherever it is written, and may be left out where the arguments after
+		<span class="pre">self</span> infer them:</p>
+<pre>
+struct Holder {
+  pub k i64;
+  pub fn pick[T](self &amp;, v T) T {v;}
+  fn twice(self &amp;) i64 {pick(2i64) + pick[i64](3);}  // self.pick
+}
+
+imm h = new Holder(1);
+imm a = h.pick(6i32);             // T is i32
+imm b = h.pick[i64](7);
+imm c = Holder.pick(&amp;h, 8i32);    // the receiver passed, T is i32
+</pre>
+	<p>A generic type's method may be generic too, over type parameters of its own: each instance of the type has
+		the method, and each makes its own versions of it, as <span class="pre">Box[i64]</span> makes
+		<span class="pre">pair[f32]</span> for <span class="pre">bx.pair[f32](1.5)</span>.</p>
+
+	<h3 id="multiple">Several type parameters</h3>
+	<p>A generic type or function may take more than one type. Core's
+		<a href="guide-functions.html#result-tour">Result</a> is declared like this one, which takes another name so
+		as not to collide with it:</p>
+<pre>
+enum Outcome[T, E] {
+  Good(T);
+  Bad(E);
+}
+
+struct BadArith { pub code i32; }
+
+mut i32OrBad Outcome[i32, BadArith] = Outcome.Good(3);
+</pre>
+
+	<h2 id="value">Value parameters: generic over a number</h2>
+	<p>A generic function or method may be generic over a number as well as over types. The parameter is named,
+		then given an integer type, in the place a type parameter's constraint goes:</p>
+<pre>
+fn dot[N usize](a &amp;Array[f32, N], b &amp;Array[f32, N]) f32 {
+  mut sum = 0.0;
+  each i in 0usize ..&lt; N { sum = sum + a[i] * b[i]; }
+  sum;
+}
+</pre>
+	<p>The parameter stands for an integer literal of its type, in the way a type parameter stands for a type. It
+		is used only as itself: as an array's size, <span class="pre">Array[T, N]</span>, or as a value in the body,
+		here the loop's limit. The compiler makes an instance for each number, as it does for each type, so
+		<span class="pre">dot</span> over arrays of 3 and of 4 are two functions, each as fast as one written for
+		that size. The number is inferred from an argument whose type has the size, or written in the brackets after
+		the name, beside any type parameters in the order declared. An inferred 3 and a written 3 are the same
+		instance:</p>
+<pre>
+imm a = new Array[f32, 3] &lt;- 1.0, 2.0, 3.0;
+imm b = new Array[f32, 3] &lt;- 4.0, 5.0, 6.0;
+imm x = dot(&amp;a, &amp;b);      // N is 3, read off both arrays: 32
+imm y = dot[3](&amp;a, &amp;b);   // the same instance
+
+fn filled[T, N usize](v T) Array[T, N] {
+  new Array[T, N] &lt;- fill v;
+}
+imm z = filled[i32, 4](7);   // four 7s
+</pre>
+	<p>A written number is an integer literal, not negative, that the parameter's type holds and, with a suffix,
+		of that type. It is no variable, because the compiler decides it when it makes the instance. A number
+		inferred from two arguments must agree: <span class="pre">dot(&amp;a3, &amp;a4)</span> is refused, naming
+		both sizes. The size may be that of a slice's elements, and nested arrays give one number each:</p>
+<pre>
+fn width[T, N usize](rows &amp;Array[Array[T, N]]) usize {N;}
+fn cells[N usize, M usize](g &amp;Array[f32, N, M]) usize {N * 100usize + M;}
+</pre>
+	<p>A generic type's method may take a number of its own, <span class="pre">fn chunk[N usize](self &amp;)</span>,
+		called <span class="pre">buf.chunk[3]()</span>. A field of the same name as such a method is still indexed,
+		<span class="pre">s.pick[2]</span>. The first user is core's <span class="pre">asArrays[N]()</span>, a method
+		of an array and a slice that sees its elements as rows of <span class="pre">N</span>
+		(<a href="lib-collections.html#asarrays">Seen as rows</a>).</p>
+	<p><i>Not built, and refused: arithmetic over the parameter in a type, <span class="pre">Array[T, N +
+		1]</span>, which would need two such sizes compared; a number parameter on a generic type,
+		<span class="pre">struct Matrix[N usize]</span>; a parameter that is not an integer (<span class="pre">f32</span>,
+		<span class="pre">bool</span> and <span class="pre">char</span> are not); a constraint beside the integer
+		type, and a <span class="pre">where</span> clause about it.</i> A parameter is not a type, so it names no
+		type of a value's: <span class="pre">x N</span> is not a parameter's type.</p>
+
+	<h2 id="generic">Generic modules</h2>
+	<p style="margin-left: 40px;"><i>A module may be generic, instantiated with type arguments where it is used,
+		each instance with its own globals. Type parameters only: parameters with constraints or of other kinds are
+		not implemented. A generic module may not yet hold a submodule, a generic function or type, a trait or an
+		enum, a macro, a module trait, or a global with a <span class="pre">use</span> clause, and it may not be
+		C-named.</i></p>
+	<p>A module may be <b>generic</b>, written as a <a href="#generictypes">generic type</a> is: its type
+		parameters in square brackets after its name on the <span class="pre">mod</span> line. Here it is a one-file
+		submodule of a program:</p>
+<pre>
+// src/stack.cone
+pub mod stack[T];
+
+pub mut @threadlocal count i64 = 0i64;
+pub mut @threadlocal top T = 0;
+
+fn @initpure init() {
+  // runs once for each instance
+}
+
+pub fn push(x T) {
+  top = x;
+  count = count + 1i64;
+}
+</pre>
+	<p>It is used through an <b>instance</b>, named with type arguments where it is used, as
+		<span class="pre">Box[i64]</span> names an instance of a generic type:</p>
+<pre>
+fn main() {
+  stack[i64].push(3i64);
+  stack[f64].push(1.5d);
+  imm n = stack[i64].count;    // 1
+}
+</pre>
+	<ul>
+		<li><b>Each instance is a module of its own</b>, with its own global variables and its own
+			<a href="mod-globals.html#dyninit">initializer and finalizer</a>: <span class="pre">stack[i64].count</span>
+			and <span class="pre">stack[f64].count</span> are two globals.</li>
+		<li><b>The same arguments are the same instance</b>, wherever they are written: <span class="pre">stack[i64]</span>
+			named in two modules is one module with one set of globals.</li>
+		<li><b>Nothing of a generic module is compiled until an instance is named.</b> It has no members of its own
+			to reach, so its name without type arguments names no member, and nothing of it can be folded or
+			extended: <span class="pre">stack.push</span>, <span class="pre">use stack;</span>, <span class="pre">import
+			stack use *</span> and <span class="pre">extends stack</span> are errors. Inside its own body, its name is
+			the instance being defined: <span class="pre">stack.count</span> there is that instance's global.</li>
+		<li><b>An instance initializes after its generic's dependencies and after the modules its type arguments
+			come from</b>, and finalizes in the reverse. Given a type of the module that uses it, the instance's
+			initializer runs after that module's.</li>
+		<li><b>Across packages</b>, a package's include file carries its generic module's whole source, and each
+			package or program that uses an instance compiles it; the copies merge when the program is linked, so an
+			instance still has one set of globals. A library's root module may be generic; a program's may not.</li>
+		<li>A generic module conforms to a <a href="mod-substitution.html#modtrait">module trait</a> on its
+			<span class="pre">mod</span> line, as any module does, and each instance is checked against it.</li>
+	</ul>
+
+	<h2 id="constraints">Constraints: what a type must be able to do</h2>
+	<p>A template that uses <span class="pre">+</span> or calls a method works only for types that have them, and
+		without saying so the mistake is found deep inside the template, wherever the version for the wrong type
+		fails. A <b>constraint</b> is an early warning: it says in the signature what a type must be, so a use with
+		the wrong type is refused where it is written.</p>
+
+	<h3 id="supertypes">A trait as a constraint</h3>
+	<p>The simplest constraint names a trait after the type parameter:</p>
+<pre>
+fn twice[T Integer](x T) T {
+  x + x;
+}
+
+trait Measured {
+  pub fn size(self &amp;) i64;
+}
+
+fn total[T Measured](a &amp;T, b &amp;T) i64 {
+  a.size() + b.size();
+}
+</pre>
+	<p>A constraint says what <span class="pre">T</span> <i>is</i>, the same question <span class="pre">p is
+		Mobile</span> asks of a value and <span class="pre">struct Node is Id</span> answers for a type
+		(<a href="mod-substitution.html#isa">Traits</a>). It is answered once the type arguments are
+		known, by asking it of them; it is never used to work out a type argument the call did not supply.</p>
+	<ul>
+		<li><b>A trait with members</b> is met by any type that fits it, whether or not it declares
+			<span class="pre">is Measured</span>: a struct with a <span class="pre">size</span> method of that
+			signature is <span class="pre">Measured</span>. A type declaring it is one too.</li>
+		<li><b>A <a href="mod-substitution.html#marker">marker trait</a></b>, one requiring nothing of a value, is
+			met only by a type that declares it with <span class="pre">is</span>, or that the compiler grants it to:
+			every type is exactly one of <span class="pre">Move</span> and <span class="pre">Copy</span>;
+			<span class="pre">Integer</span> is granted to the integer types, <span class="pre">i8</span> to
+			<span class="pre">i64</span>, <span class="pre">u8</span> to <span class="pre">u64</span>,
+			<span class="pre">isize</span> and <span class="pre">usize</span>; <span class="pre">Pointer</span> to the
+			raw pointer types, <span class="pre">*T</span> whatever <span class="pre">T</span>, and not to a reference;
+			<span class="pre">Sendable</span> to every type whose values may cross to another thread
+			(<a href="conc-sharing.html#race">Race condition safety</a>); <span class="pre">Shareable</span> to every
+			type a borrow of which several threads may hold at once (<a href="conc-sharing.html#shareable">Sendable and
+			Shareable</a>); and <span class="pre">Sized</span> and <span class="pre">DynSized</span> to a type by its
+			size (below). <span class="pre">Immutable</span> is declared, never granted: <span class="pre">str</span>
+			declares it, and a struct may (<a href="mem-permissions.html#immutable">Immutable</a>). A struct identical to
+			one declaring a marker, but not declaring it, does not meet it.</li>
+	</ul>
+	<p><b>Size.</b> <span class="pre">Sized</span> is granted to a type whose size is known when the program is
+		compiled, which a value may be, and which a reference reaches by one pointer. <span class="pre">DynSized</span>
+		is granted to those and to a type whose size a reference to it carries: a trait, whose
+		<a href="mod-substitution.html#virtref">virtual reference</a> carries a vtable, and <span class="pre">str</span>,
+		a body of bytes, and <span class="pre">Array[T]</span>, a body of <span class="pre">T</span>s, whose references
+		carry their count (<a href="mem-regions.html#dynbody">dynamically sized bodies</a>). A type declared
+		<span class="pre">@opaque</span>, and an <span class="pre">@unsized</span> enum, are neither: a reference to one
+		is a single pointer that tells nothing of its size. Neither marker can be declared by a type
+		(<span class="pre">is Sized</span> is refused). A name that is one of these, or <span class="pre">str</span>, is
+		the compiler's in every module: a module declaring its own is refused as a duplicate name.</p>
+	<p>With <span class="pre">T</span> constrained, a wrong type is refused where it is used, with nothing reported
+		from inside the template. <span class="pre">twice(2.5)</span> says "twice requires T is Integer, and f32 is not
+		Integer." A generic type is refused the same way, wherever an instance of it is named:
+		<span class="pre">Num[f32]</span> for a <span class="pre">struct Num[T Integer]</span>.</p>
+	<p>In a trait's requirement, <span class="pre">Self</span> stands for the type meeting it
+		(<a href="mod-substitution.html#self">Self in a trait</a>), so a trait can ask for a method taking another value
+		of the same type:</p>
+<pre>
+trait Comparable {
+  pub fn `&gt;`(self &amp;, b &amp;Self) bool;
+}
+
+fn max[T Comparable](a &amp;T, b &amp;T) &amp;T {
+  if a &gt; b {a;} else {b;}
+}
+
+struct Money {
+  pub cents i64;
+  pub fn `&gt;`(self &amp;, b &amp;Self) bool {cents &gt; b.cents;}
+}
+
+imm low = new Money(250);
+imm high = new Money(475);
+max(&amp;low, &amp;high).cents;   // 475
+</pre>
+	<p><span class="pre">Money</span> is <span class="pre">Comparable</span>: its <span class="pre">&gt;</span> takes a
+		<span class="pre">&amp;Money</span> where the trait's takes a <span class="pre">&amp;Self</span>. Only a struct
+		fits a trait with members yet: a number type meets the markers granted to it and no trait of your own, so this
+		<span class="pre">max</span> cannot yet be called on two <span class="pre">i32</span> values ("max requires T is
+		Comparable, and i32 is not Comparable").</p>
+
+	<h3 id="combining">Combining traits</h3>
+	<p>Several traits may constrain one type parameter, joined with <span class="pre">+</span>; the type must meet
+		them all:</p>
+<pre>
+fn fill[T Integer + Copy](dst &amp;mut Array[T], v T) {
+  each i in 0usize ..&lt; dst.len() { dst[i] = v; }
+}
+</pre>
+
+	<h3 id="generictrait">A generic trait as a constraint</h3>
+	<p>A trait with type parameters of its own is a constraint when it is given its type arguments, which may be the
+		function's other type parameters or types. It is written in the square brackets or in a
+		<span class="pre">where</span> clause (below), as for any trait:</p>
+<pre>
+trait Stack[T] {
+  pub fn push(self &amp;mut, v T);
+  pub fn pop(self &amp;mut) Option[T];
+}
+trait Peek[T] {
+  pub fn peek(self &amp;) Option[T];
+}
+
+fn drain[T, S Stack[T]](s &amp;mut S) Option[T] {s.pop();}
+fn fillTwo[S Stack[i64]](s &amp;mut S, a i64, b i64) {s.push(a); s.push(b);}
+fn peeked[T, S](s &amp;mut S) Option[T] where S is Stack[T] and S is Peek[T] {s.peek();}
+fn both[T, S Stack[T] + Peek[T]](s &amp;mut S) {}
+</pre>
+	<p>A type fits <span class="pre">Stack[i64]</span> as it fits any trait, by having the methods the trait
+		requires, here <span class="pre">push(self &amp;mut, v i64)</span> and <span class="pre">pop(self &amp;mut)
+		Option[i64]</span>, the trait's signatures with <span class="pre">T</span> replaced by
+		<span class="pre">i64</span>; or by saying <span class="pre">is Stack[i64]</span>. <span class="pre">Stack[i64]</span>
+		and <span class="pre">Stack[f64]</span> are different traits, so one type may fit both. Whether it does is
+		decided where the function is used, for the arguments it is given. A type that does not fit is refused there,
+		naming the trait at the arguments of that use, the method it lacks or has with another signature, and the
+		signature required:</p>
+<pre>
+// WrongParm has push(self &amp;mut, v bool)
+drain[i64, WrongParm](&amp;mut wp);
+</pre>
+<pre>
+Error 1186: drain requires S is Stack[i64], and WrongParm is not Stack[i64]. WrongParm has
+push(self &amp;mut, v bool), but Stack[i64] requires push(self &amp;mut, v i64).
+</pre>
+	<p>The arguments may be written, <span class="pre">drain[i64, IntSlot](&amp;mut box)</span>, or inferred. The type
+		parameter <span class="pre">S</span> is inferred from the argument as always. <span class="pre">T</span>, which
+		no argument's type names, is then read off the methods <span class="pre">S</span> has: each parameter type and
+		the return type of the trait's methods are matched with those of the same-named method of the type, so
+		<span class="pre">drain(&amp;mut box)</span> finds <span class="pre">i64</span> in <span class="pre">IntSlot</span>'s
+		<span class="pre">pop</span>. It fills only what is still empty, and the constraint is then decided as above, so a
+		type whose methods disagree is refused with the message above. A type parameter another argument names is
+		inferred from that argument first, except an unsuffixed integer literal passed for a bare
+		<span class="pre">T</span>, which is whichever number type is wanted and names <span class="pre">T</span> only if
+		nothing else does: <span class="pre">fill(&amp;mut box, 8)</span> types the <span class="pre">8</span> as an
+		<span class="pre">i64</span> when the stack is an <span class="pre">i64</span> box. A constraint names a generic
+		trait only with all its type arguments, so <span class="pre">[S Stack]</span> is refused. A bound may name any
+		parameter of the declaration, written before it or after: <span class="pre">[T, S Stack[T]]</span> and
+		<span class="pre">[S Stack[T], T]</span> say the same.</p>
+
+	<h3 id="sigbound">A function signature as a constraint</h3>
+	<p>A function signature written bare, <span class="pre">fn(a &amp;T, b &amp;T) i32</span>, is a constraint too, one
+		that needs no trait declared: the type has a <span class="pre">pub</span> <span class="pre">()</span> method whose
+		parameters after its receiver, and whose return type, meet those (the parameters' names do not matter, and a
+		parameter may be written as its type alone, <span class="pre">fn(&amp;T, &amp;T) i32</span>). A signature is met
+		as a <a href="mod-subtyping.html#variance">function reference's</a> is: by its own types, or by parameters that are
+		supertypes of the signature's and a result that is a subtype, where the difference is a recast with no
+		conversion. It is written
+		in the square brackets or in a <span class="pre">where</span> clause, and joins other constraints with
+		<span class="pre">+</span> or <span class="pre">and</span>. The generic's body calls the parameter directly,
+		<span class="pre">order(x, y)</span>, in each instance, and the permission it takes the parameter by decides what
+		that call may do: <span class="pre">&amp;F</span> reaches a <span class="pre">()</span> that takes
+		<span class="pre">self &amp;</span>, <span class="pre">&amp;mut F</span> one that takes <span class="pre">self
+		&amp;mut</span> too, and keeps what it changed, and <span class="pre">F</span> by value one that takes
+		<span class="pre">self &amp;</span>. A callable whose <span class="pre">()</span> takes <span class="pre">self
+		&amp;mut</span>, such as a closure that changes a variable it borrows, given to a parameter taken as
+		<span class="pre">&amp;F</span> is refused at the caller's argument, which says to take the parameter as
+		<span class="pre">&amp;mut F</span> or to pass a callable that only reads.</p>
+<pre>
+// The bodies call order(x, y), and work(), as a function is called
+fn sortBy[T, F fn(a &amp;T, b &amp;T) i32](xs &amp;mut Array[T], order &amp;F) {}
+fn counted[T, F](xs &amp;mut Array[T], order &amp;mut F) where F is fn(a &amp;T, b &amp;T) i32 {}
+fn launch[F fn() + Sendable](work &amp;mut F) {}
+
+fn byAge(a &amp;Person, b &amp;Person) i32 { a.age - b.age; }
+struct Descending { pub fn `()`(self &amp;, a &amp;Person, b &amp;Person) i32 { b.age - a.age; } }
+
+sortBy(&amp;mut people, &amp;byAge);                     // a plain function, referenced, meets it as it is
+sortBy(&amp;mut people, &amp;new Descending());          // so does a struct with that '()'
+sortBy(&amp;mut people, (a, b) =&gt; a.age - b.age);    // so does a closure written there
+</pre>
+	<p>A <a href="guide-functions.html#closures-tour">closure literal</a> given to such a parameter takes its
+		parameters' types from the signature, with the type parameters the call's other arguments name read off them
+		(<span class="pre">T</span> above is <span class="pre">Person</span> from <span class="pre">people</span>), so the
+		short form <span class="pre">(a, b) =&gt; ...</span>, and the full form with a parameter's type left out, both
+		work; written with its types, it needs nothing from the signature. For <span class="pre">&amp;F</span> and
+		<span class="pre">&amp;mut F</span> the literal is lent as a temporary of the statement. A signature's result may
+		be a type parameter nothing else settles (<span class="pre">fn map[T, U, F fn(x T) U](v T, f F) U</span>): the
+		literal's parameters are typed from <span class="pre">T</span> and its body gives <span class="pre">U</span>, so
+		<span class="pre">map(7, x =&gt; x * 3)</span> needs nothing written. A <span class="pre">&amp;&lt;fn(x T) U</span>
+		parameter cannot do this, since nothing then reads <span class="pre">U</span> off the closure.</p>
+	<p>A type parameter that only the signature names is read off the argument's function or
+		<span class="pre">()</span>, as a generic trait's is: <span class="pre">fn make[T, F fn() T](f &amp;F) T</span>
+		given <span class="pre">&amp;seven</span> finds the <span class="pre">T</span> that <span class="pre">seven</span>
+		returns. A type that does not meet the signature is refused where the generic is used, naming the signature as
+		written and as it comes to at those arguments, and what the argument has instead: a function of another
+		signature, no <span class="pre">()</span>, one that is not <span class="pre">pub</span>, or one with other
+		parameters or another return type. The constraint is no <span class="pre">&amp;fn(sig)</span> pointer: that stays
+		the one-word address of a function, and a function referenced meets the constraint by its signature alone:
+		through <span class="pre">&amp;F</span>, <span class="pre">F</span> is the function's type, and taken by value
+		(<span class="pre">f F</span>) it is the reference itself, <span class="pre">&amp;fn(i32) i32</span>. A plain
+		function has no state to change, so <span class="pre">&amp;mut F</span> is for a struct or a closure. A signature
+		is not a constraint on a macro's or a generic module's parameter, nor in a condition on an
+		<span class="pre">is</span> entry.</p>
+	<p>The constraint is the <i>static</i> form of taking a callable: the generic is compiled for each callable it is
+		given, and the call is inlined. The <i>dynamic</i> form, <span class="pre">&amp;&lt;fn(sig)</span>
+		(<a href="mod-functions.html#cloref">Closure references</a>), is compiled once and calls through the
+		reference, which is what a field or a variable holding a callable of unknown shape needs. A bound may carry the
+		markers a thread or a parallel loop asks, <span class="pre">[F fn() + Sendable]</span> and
+		<span class="pre">[F fn() + Shareable]</span>.</p>
+
+	<h4 id="genoverload">Generic overloads</h4>
+	<p>A generic function or method whose every type parameter is bound this way may declare an
+		<a href="mod-namespaces.html#overload">overload name</a>, and so share it with functions that take a number or
+		another kind of callable. For the choice, the generic's <span class="pre">&amp;F</span> (or
+		<span class="pre">&amp;mut F</span>, or <span class="pre">F</span>) parameter counts as a callable parameter of its
+		signature, and the call picks the overload by what it is given:</p>
+<pre>
+fn taperNum overload taper(m i32, t f32) f32 { f32.from(m) * t; }
+fn taperOne[F fn(u f32) f32] overload taper(m i32, f &amp;F) f32 { f(f32.from(m)); }
+fn taperTwo[F fn(u f32, v f32) f32] overload taper(m i32, f &amp;F) f32 { f(f32.from(m), 2.); }
+
+taper(2, 0.5);                 // the number: 1
+imm k = 3.;
+taper(2, t =&gt; t * k);          // taperOne: 6
+taper(2, (a, b) =&gt; a + b);     // taperTwo: 4
+taper(2, &amp;new Doubler());      // a struct whose '()' is (u f32) f32: taperOne, 4
+</pre>
+	<p>A closure literal is matched in steps. It can meet only the overloads whose parameter there is a callable (a
+		number never takes it). Of those, the generics the call's other arguments leave viable, then the ones that take
+		as many parameters as the literal writes, then, if several remain, the ones whose signature has exactly the
+		parameter types the literal writes. One left is chosen; none or more than one is an error that names the
+		candidates and says to write the parameter's types, <span class="pre">taper(2, fn(u f32) f32 { u; })</span>. The
+		body is never tried against the candidates to see which fits. A function reference or a struct is matched by its
+		exact signature, and two generics it meets are an ambiguity error naming both.</p>
+	<p>A generic with a type parameter that is not bound by a signature, such as <span class="pre">[T]</span> or
+		<span class="pre">[T Comparable]</span>, may not declare an overload name; the error names the unbound
+		parameter. Once the overload is chosen it stands: if its instance then fails to type check, the call does not fall
+		back to another overload. A generic method joins a shared name on the same terms as a generic function: when
+		every type parameter is bound to a function signature.</p>
+	<h3 id="where">where clauses</h3>
+	<p>The same constraints may instead be written as a <span class="pre">where</span> clause just before the block,
+		after a function's signature or after a type's name and its <span class="pre">is</span> list. Each clause is
+		<span class="pre">T is Name</span>, clauses are joined with <span class="pre">and</span>, and a clause may join
+		traits with <span class="pre">+</span> as the square brackets do. These declarations say exactly what their
+		bracketed forms say:</p>
+<pre>
+fn twice[T](x T) T where T is Integer {
+  x + x;
+}
+
+fn fill[T](dst &amp;mut Array[T], v T) where T is Integer and T is Copy {
+  each i in 0usize ..&lt; dst.len() { dst[i] = v; }
+}
+
+struct Num[T] where T is Integer {
+  pub v T;
+}
+</pre>
+	<p>A <span class="pre">where</span> clause may also offer a choice, which the square brackets cannot: clauses
+		joined with <span class="pre">or</span> are met when any of them is. <span class="pre">and</span> binds tighter
+		than <span class="pre">or</span>, as in an expression, and parentheses group. A clause may name a type instead of
+		a trait, <span class="pre">T is bool</span>, met by that type alone, and the type may be written out as an
+		instance: <span class="pre">K is So[str]</span>, or <span class="pre">U is Option[T]</span> (met when
+		<span class="pre">U</span> is the <span class="pre">Option</span> of whatever <span class="pre">T</span> is). Core
+		declares its atomic values so: <span class="pre">pub struct Atomic[T] is AtomicValue, Move where T is Integer or
+		T is bool or T is Pointer</span>. With three traits of your own, <span class="pre">A</span>,
+		<span class="pre">B</span> and <span class="pre">C</span>:</p>
+<pre>
+fn loose[T](x &amp;T) where T is A and T is B or T is C {}     // (A and B) or C
+fn tight[T](x &amp;T) where T is A and (T is B or T is C) {}   // A and (B or C)
+</pre>
+	<p>The whole clause is evaluated once the type arguments are known, and a use whose arguments make it false is
+		refused, naming it whole: "Atomic requires T is Integer or T is bool or T is Pointer, and it is false for T =
+		f64." <span class="pre">not</span> is not built, and neither is <span class="pre">or</span> in the square
+		brackets, where every trait named is required: <span class="pre">[T A or B]</span> is refused, and is written
+		<span class="pre">[T] ... where T is A or T is B</span>.</p>
+	<p>A <span class="pre">where</span> clause also orders lifetimes (<a href="mem-lifetimes.html#where">Lifetime
+		annotations</a>): <span class="pre">'a &gt;= 'b</span> says <span class="pre">'a</span> lasts at least as long as
+		<span class="pre">'b</span>, and <span class="pre">'a == 'b</span> each as long as the other. Such a clause may be
+		written on any function, generic or not, over the lifetimes its signature names, and on a struct over the
+		lifetimes it declares, and joins lifetime and type clauses by <span class="pre">and</span>:</p>
+<pre>
+fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b and T is Copy {
+  x;
+}
+</pre>
+	<p>A lifetime comparison is never an alternative of an <span class="pre">or</span>, nor under a
+		<span class="pre">not</span>: a lifetime is never instanced, so no instance settles which alternative holds, and
+		the body could rely on none of them. Clauses over types keep their <span class="pre">or</span>.</p>
+	<p id="bounds">A generic function's type parameter may carry a <i>lifetime bound</i>, <span class="pre">T +
+		'a</span>: any borrow inside a value of type <span class="pre">T</span> lives at least as long as
+		<span class="pre">'a</span>, a lifetime the signature names (<a href="mem-lifetimes.html#bounds">Lifetime
+		annotations</a>). It is written in the square brackets after the parameter or after its traits, and in a
+		<span class="pre">where</span> clause as <span class="pre">T + 'a</span>, or after the traits of a
+		<span class="pre">T is</span> clause, as the brackets write it. Each pair of declarations says the same:</p>
+<pre>
+fn put[T + 'a](d &amp;mut &amp;'a R, x T) {}
+fn put[T](d &amp;mut &amp;'a R, x T) where T + 'a {}
+
+fn post[T Show + 'a](d &amp;mut &amp;'a R, x T) {}
+fn post[T](d &amp;mut &amp;'a R, x T) where T is Show + 'a {}
+</pre>
+	<p>A bound alone is <span class="pre">T + 'a</span>, not <span class="pre">T is 'a</span>, since
+		<span class="pre">T</span> is no lifetime. A bound joins the rest of a <span class="pre">where</span> clause by
+		<span class="pre">and</span> only, as a lifetime comparison does, and an <span class="pre">or</span> or a
+		<span class="pre">not</span> over one is refused. A generic type's parameter takes no bound yet.</p>
+
+	<h3 id="methodwhere">A method that exists only for some instances</h3>
+	<p>On a method of a generic type, a <span class="pre">where</span> clause over the type's parameters is not a
+		requirement but a condition for the method existing. An instance whose type arguments do not meet it is a
+		perfectly good type that lacks the method: nothing of the method is checked or generated for it, and calling it
+		is the error.</p>
+<pre>
+struct Cell[T] {
+  pub v T;
+  pub fn load(self &amp;) T {v;}
+  pub fn add(self &amp;mut, n T) T where T is Integer {
+    v = v + n;
+    v;
+  }
+}
+
+mut ci = new Cell[i32](3);
+mut cb = new Cell[bool](true);
+ci.add(4);       // 7
+cb.load();       // true
+cb.add(true);    // ERROR
+</pre>
+<pre>
+Error 1187: No method add for Cell[bool]: it exists only where T is Integer, and bool is not Integer.
+</pre>
+	<p>Because the method is absent, an instance fits only the traits it has the members for:
+		<span class="pre">Cell[i32]</span> fits a trait requiring <span class="pre">add</span>, and
+		<span class="pre">Cell[bool]</span> does not, whether the trait is asked for by a constraint or by a
+		<a href="mod-substitution.html#virtref">virtual reference</a>. A generic method's own <span class="pre">where</span>
+		clause over its own type parameters is a requirement, as a generic function's is. One joining the type's
+		parameter and its own with <span class="pre">or</span>, <span class="pre">where T is Integer or U is bool</span>,
+		cannot be decided until both are known, so the method exists in every instance of the type, and the whole clause
+		is a requirement where the method's instance is made.</p>
+	<p>A condition joined by <span class="pre">or</span> works the same way. Core's <span class="pre">Atomic[T]</span>
+		(<a href="conc-primitives.html#atomic">Atomic values</a>) has an <span class="pre">add</span> <span class="pre">where
+		T is Integer</span> and a <span class="pre">bitOr</span> <span class="pre">where T is Integer or T is bool</span>,
+		so an <span class="pre">Atomic[bool]</span> has <span class="pre">bitOr</span> and no <span class="pre">add</span>,
+		and an <span class="pre">Atomic[*Node]</span> has neither.</p>
+
+	<h3 id="conditionalis">A type that meets a trait for some instances</h3>
+	<p>One entry of a generic type's <span class="pre">is</span> list may carry a condition, written after the word
+		<span class="pre">if</span>. Each instance decides it with its own type arguments: an instance meeting the
+		condition has the entry, as if it had been written without one, and an instance not meeting it lacks the entry.
+		The condition is written as a <span class="pre">where</span> clause's is, and asks only about the type's own type
+		parameters. The plainest use is a future, which must move when what it holds moves, and copy when that copies
+		(<a href="rec-moves.html#conditional">Move for some instances</a>):</p>
+<pre>
+struct Cell[T] {
+  pub v T;
+}
+struct Future[T] is Move if T is Move {
+  pub c Rc[imm, Cell[T]];
+}
+
+fn moves[X](x &amp;X) i32 where X is Move { 1; }
+
+moves(&amp;futureOfHandle);    // fine: Future[Handle] is Move
+moves(&amp;futureOfI32);       // ERROR
+</pre>
+<pre>
+Error 1186: moves requires X is Move, and Future[i32] is not Move. Future is Move only where T is Move, and
+that is false for T = i32.
+</pre>
+	<p>In plain words: <span class="pre">Future[T]</span> is a move type exactly when <span class="pre">T</span> is,
+		and a generic function asking <span class="pre">where X is Move</span> gets the answer for the instance it is
+		given. The same works for any trait. A marker trait, one requiring nothing of a value, is met only by a type
+		declaring it, so a wrapper passes it on by declaring it under the same condition:</p>
+<pre>
+trait Checked {}
+struct Wrapper[T] is Checked if T is Checked {
+  pub v T;
+}
+</pre>
+	<p>A trait with methods is met where the instance has them. Its methods are written with the same condition as a
+		<span class="pre">where</span> clause (<a href="#methodwhere">A method that exists only for some instances</a>),
+		so an instance lacking the entry lacks them too:</p>
+<pre>
+trait Show {
+  fn show(self &amp;) i64;
+}
+struct Labelled[T] is Show if T is Show {
+  pub v T;
+  pub fn show(self &amp;) i64 where T is Show {
+    v.show() + 100;
+  }
+}
+</pre>
+	<p>Such a trait is still met structurally as well: an instance that has every method it requires fits it
+		whatever its <span class="pre">is</span> list says, as any type does. <span class="pre">is Sendable if T is
+		Sendable</span> declares an instance safe to send to another thread, on the type's word, only where its argument
+		is.</p>
+	<p>An entry with a condition is never the type's base, whichever position it is written in, since what a type
+		stands on does not vary by instance. <span class="pre">Copy</span> takes no condition: a type copies wherever
+		nothing makes it move, so the condition is written on <span class="pre">Move</span>. A type with no type
+		parameters takes none, having nothing to vary. A condition on an entry of a trait's <span class="pre">is</span>
+		list, which a trait passes on to every type implementing it, and on an enum's variant, which is made with its
+		enum, is not built: it is refused. A <span class="pre">where</span> clause after the <span class="pre">is</span>
+		list keeps its own meaning, a requirement on the whole type: <span class="pre">struct Future[T] is Move where T
+		is Move</span> is Move for every instance and refuses <span class="pre">Future[i32]</span>.</p>
+
+	<h3 id="notbuilt">Constraints not built yet</h3>
+	<p><i>Not built yet:</i> a <span class="pre">where</span> clause is meant to be able to say more than
+		<span class="pre">T is Name</span>: a relationship between two type parameters, and a constraint on a type
+		expression rather than a parameter. <span class="pre">struct Xyz[T, Y] where T &lt; Y and Option[T] is
+		Node;</span> would say that <span class="pre">T</span> is a supertype of <span class="pre">Y</span> and that an
+		optional <span class="pre">T</span> is a valid <span class="pre">Node</span>. Neither form is built, nor
+		<span class="pre">not</span>, nor a constraint on a generic module's or a macro's parameters, nor a condition on
+		an <span class="pre">is</span> entry of a trait or of an enum's variant, nor a lifetime bound on a generic
+		type's parameter. A generic's body is checked only in each instance, as it always has been, not against its
+		constraints where it is declared. When it is, a body under an <span class="pre">or</span> will be held to what
+		<i>every</i> alternative supports: under <span class="pre">where T is Integer or T is bool</span>, a body may use
+		what integers and <span class="pre">bool</span> both have, such as <span class="pre">^</span>, and not
+		<span class="pre">+</span>, which only one of them has.</p>
+
+	<h2 id="macros">Macros: a fresh copy at every use</h2>
+	<p>A generic makes one version per set of type arguments, and every call of it is a call. A <b>macro</b> is
+		closer to the source: its logic is written into the program in place, wherever it is used, with the arguments
+		put in wherever its parameters appear.</p>
+<pre>
+// A macro that evaluates to the largest value
+macro max[a, b] {
+	imm aa = a;
+	imm bb = b;
+	if aa &gt; bb {aa;} else {bb;}
+}
+
+fn tester(x i32, y i32) {
+  imm maxnbr = max(x, y);
+}
+</pre>
+	<p>A macro's logic must be syntactically complete and valid. Macros are hygienic: names defined in the macro are
+		out of reach of the code where it is used, and the other way round. <span class="pre">max</span> captures its
+		parameters into variables before using them so that each argument's expression is evaluated once; written
+		without that, each would be evaluated twice, possibly to different values. The other side of that is an argument
+		that is never evaluated at all, when the macro's logic does not reach it. Core's
+		<span class="pre">assertDebug</span> (<a href="safe-panics.html#panic">Panics</a>) is a macro for that reason: in
+		a release build its condition is not evaluated.</p>
+	<p>Written in a macro's logic, <a href="safe-intrinsics.html#srcloc">srcFile() and srcLine()</a> answer where the
+		macro is used, not where its logic is written; in a macro used inside another's logic, where the outermost one
+		is used. A macro may take no default argument.</p>
+	<p>A macro need not declare any parameters. Then its name is the whole of its use, and expands to the macro's
+		logic wherever a value is expected: as an initializer, as either operand of an operator, as an argument, as what
+		a function returns, and as the value a block hands back. Writing an empty argument list,
+		<span class="pre">two()</span>, means exactly the same thing.</p>
+<pre>
+// A macro that evaluates to the same number every time
+macro two { 2; }
+
+fn tester(x i32) i32 {
+  imm a = two;          // an initializer
+  imm b = two + x;      // either operand of an operator
+  two * b;              // the value the function hands back
+}
+</pre>
+
+	<h3 id="macromethods">Macros as methods</h3>
+	<p>A macro may be declared inside a struct, trait or enum, where it becomes a member of that type. As with a
+		function, it is a method when its first parameter is named <span class="pre">self</span>, and it is used like a
+		method, with the receiver before the dot and any further arguments in parentheses:</p>
+<pre>
+enum Maybe {
+  pub struct Nothing {}
+  pub struct Just {value i32;}
+
+  // The value held, or a default when nothing is
+  pub macro orElse[self, dflt] {
+    imm s = self;
+    match s {
+      case imm j &amp;Just {j.value;}
+      case imm n &amp;Nothing {dflt;}
+    }
+  }
+}
+
+fn tester(m &amp;imm Maybe) i32 {
+  m.orElse(0);
+}
+</pre>
+	<p>The receiver stands in for <span class="pre">self</span> exactly as an argument stands in for any other macro
+		parameter: it is a piece of source, put in wherever <span class="pre">self</span> appears in the macro's logic,
+		and evaluated as many times as it appears. That is why <span class="pre">orElse</span> captures it into a variable
+		first. A macro method with no parameters beyond <span class="pre">self</span> is used as the bare member name,
+		<span class="pre">m.isSet</span>, or with an empty argument list.</p>
+	<p>Inside the macro's logic, the type's fields and methods are reached through <span class="pre">self</span>, as
+		in <span class="pre">self.value</span>, and never by their bare names. The logic expands into whichever function
+		uses the macro, so it may reach the type's private members through <span class="pre">self</span> just as a method
+		would, wherever it is used. Inside a method of the same type, a macro method may itself be named bare, as a
+		method may, and means <span class="pre">self.name</span>.</p>
+
+	<h2 id="meta">Metaprogramming (not built)</h2>
+	<p style="margin-left: 40px;"><i>Not built yet: none of this is implemented. The compiler reports a word
+		beginning with <span class="pre">#</span> and ignores the rest of its line.</i></p>
+	<p>Metaprogramming would give fine-grained control over what program logic gets compiled: including or leaving
+		out certain code, and generating data or logic by algorithm. In effect it is a second, similar-looking language,
+		its constructs marked with <span class="pre">#</span>, that manipulates the program's logic as data.
+		Meta-conditionals are control-flow blocks that decide what logic gets compiled, as ordinary ones decide what gets
+		run, and inside generics or macros they are evaluated when an instance is made.</p>
+	<p id="metavars"><b>Meta variables</b> would be immutable and exist only while the program is compiled, holding
+		typed constant values calculated from an expression: <span class="pre">imm #arrsize = 10;</span>. Some would have
+		their values set by the compiler, giving information about the compile-time environment, such as the target
+		platform and architecture (<a href="safe-platforms.html">Platforms and targets</a>), and a compiler option could
+		pass data into a program in others.</p>
+	<p id="metaif"><b><span class="pre">#if</span></b> would decide whether to include specific logic in the compiled
+		program, and <b id="metaeach"><span class="pre">#each</span></b> would generate the same logic once for each
+		entry of a collection:</p>
+<pre>
+#if #target == "windows" {
+	... Windows-specific logic ...
+}
+#elif #target == "linux" {
+	... Linux-specific logic ...
+}
+
+#each #x in #table {
+	... some logic ...
+}
+</pre>
+
+	<p>You can now write logic once for many types, say up front what those types must be able to do, and generate
+		code in place with a macro. That completes the part: from dividing a program into modules, to folding names,
+		to traits and generics, you have the means to build large programs from parts that can each change on their
+		own. Next, <a href="safety.html">Safety</a>: what Cone guarantees, where trust comes in, and how a program
+		reaches code written in C.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="safety.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

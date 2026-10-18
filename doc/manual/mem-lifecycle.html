@@ -1,0 +1,190 @@
+<html>
+  <head>
+	  <title>When a value dies - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">When a value dies: the order of finalizers</div>
+		</div>
+
+    <div class="text">
+
+	<p>For most values, the moment they die does not matter. For a value with a
+		<a href="rec-methods.html#finalizer">finalizer</a>, a socket, a file, a lock, it is the moment the socket closes,
+		the file is flushed or the lock is let go, so it is worth knowing exactly. This page gives that moment for every
+		kind of value: a local, a temporary made in the middle of an expression, a value assigned over, a value in a
+		region, an enum and a global. Afterwards you can read a block of code and say when, and in what order, each of its
+		finalizers runs:</p>
+<pre>
+mod lifecycle;
+
+import stdio use *;
+
+struct Log {
+  pub n i32;
+  fn final(self &amp;uni) { print &lt;- "  final ", n, "\n"; }
+}
+
+fn make(n i32) Log { print &lt;- "  make ", n, "\n"; new Log(n); }
+fn take(l Log) { print &lt;- "  take ", l.n, "\n"; }
+
+fn main() {
+  print &lt;- "a field of a temporary:\n";
+  imm n = make(1).n;            // the Log dies at the end of this statement
+  print &lt;- "moved into a call:\n";
+  take(make(2));                // take's parameter finalizes it
+  print &lt;- "a condition:\n";
+  if make(3).n &gt; 0 {            // dies once the condition is decided, before the branch
+    print &lt;- "  branch\n";
+  }
+  print &lt;- "assigned over:\n";
+  mut v = make(4);
+  v = make(5);                  // 5 is made, then 4 finalized, then 5 stored
+  print &lt;- "end of main:\n";
+}                               // v, holding 5, dies here
+</pre>
+	<p>It prints:</p>
+<pre>
+a field of a temporary:
+  make 1
+  final 1
+moved into a call:
+  make 2
+  take 2
+  final 2
+a condition:
+  make 3
+  final 3
+  branch
+assigned over:
+  make 4
+  make 5
+  final 4
+end of main:
+  final 5
+</pre>
+	<p><b>Try this:</b> move <span class="pre">print &lt;- "end of main:\n";</span> to just before
+		<span class="pre">v = make(5);</span>, and predict where <span class="pre">final 4</span> lands.</p>
+
+	<h2 id="dies">Locals and parameters</h2>
+	<p><a href="rec-moves.html">Moves</a> decide who holds a value; its holder decides when it dies. A local dies at
+		the end of its block, the newest first, and a parameter at the end of its function, as
+		<span class="pre">take</span>'s did. A value that moved out of a variable belongs to its new holder, and the
+		variable has nothing left to finalize; one that moved on only some paths is finalized where it is still held, which
+		its <a href="rec-moves.html#condmoves">drop flag</a> decides. Whoever does it, the value's own finalizer runs
+		first, then its fields' finalizers in the order the fields are declared, and so on down
+		(<a href="rec-methods.html#finalizer">Ending a value</a>).</p>
+
+	<h2 id="temporaries">Temporaries</h2>
+	<p>A <b>temporary</b> is a value an expression produces that nothing takes: it is not bound to a variable, stored in
+		a field or element, passed by value, returned or moved. A call's result whose field is read, an owning reference
+		read through, an owner lent to a call as a borrowed reference, a value thrown away by a statement: each is a
+		temporary, and dies at the end of the statement that produced it, the newest first. One produced by the condition
+		of an <span class="pre">if</span> or a <span class="pre">while</span> dies once the condition is decided, before
+		the branch runs, so each pass of a loop finalizes its own; and one produced by the right operand of
+		<span class="pre">and</span> or <span class="pre">or</span>, which runs on some paths only, dies at the end of that
+		operand. A value moved out of a temporary owner belongs to its new holder, and the owner's memory is freed without
+		it. A temporary that a variable's initializer borrows lives on to the end of the variable's block instead
+		(<a href="mem-borrowing.html#temporary">Borrowing a temporary</a>).</p>
+	<p>A temporary that a raw pointer made from it may outlive is not finalized at all. Nothing follows a raw pointer
+		(<a href="safe-pointers.html">Pointers</a>, in Safety), so the compiler leaves the value as it is rather than
+		finalize it and leave the pointer dangling. An ordinary borrow of the same temporary does not keep it:</p>
+<pre>
+fn mk(n i32) R {..}
+fn id(r &amp;R) &amp;R {..}          // answers the borrow it is handed
+
+imm p = id(&amp;mk(2)) as *R;    // p may outlive the temporary: R's final never runs for it
+imm q = id(&amp;mk(3));          // an ordinary borrow: R's final runs at the end of this statement
+</pre>
+
+	<h2 id="assigned">A value assigned over</h2>
+	<p>A value assigned over dies as it is replaced: the new value is evaluated first, then the old one is finalized,
+		then the new one is stored, as <span class="pre">v = make(5)</span> showed. This is so for a variable, a field or an
+		element of one, and a value reached through a reference (<span class="pre">*r = v</span>). Where the variable holds
+		nothing to replace, because it was never given a value or its value moved out, nothing is finalized; where that
+		depends on the path, its <a href="rec-moves.html#condmoves">drop flag</a> decides.</p>
+
+	<h2 id="region">A value in a region</h2>
+	<p>A value allocated in a region is finalized when the region lets it go: when its single owner goes, or, for a
+		counted region, its last owner (<a href="mem-regions.html#expire">When a value is freed</a>). It dies as above, and
+		only then is its memory freed, so a finalizer may still use everything its value owns. A value moved out of a
+		region's object belongs to its new holder, which finalizes it; the object's memory is freed without finalizing what
+		was moved out. Only the whole value moves, never one of its fields
+		(<a href="rec-moves.html#outof">Moving a value out</a>), so no object dies partly moved out.</p>
+
+	<h2 id="final">An enum's value</h2>
+	<p>An enum's value is finalized as the variant it holds would be: the tag says which. An enum may declare its own
+		<span class="pre">final</span>, which runs for every variant, and a variant may declare one too: the variant's
+		finalizer runs first, then the enum's, then the finalizers of the variant's fields (the enum's common fields among
+		them), then the owning references those fields hold are released: the more specific type before the more general.
+		An enum none of whose variants has anything to finalize costs nothing when its value dies: dropping an
+		<span class="pre">Option[i32]</span> does no work, while dropping an <span class="pre">Option[String]</span>
+		finalizes the string when it holds one, and the owner held in a <span class="pre">Some</span> is let go with its
+		Option:</p>
+<pre>
+struct Handle { pub fd i32; }
+struct Named { pub n i32; fn final(self &amp;uni) { print &lt;- "field final\n"; } }
+
+enum Resource {
+  fn final(self &amp;uni) { print &lt;- "released\n"; }       // runs for every variant, after its own
+  struct File {
+    pub handle Handle;
+    pub name Named;
+    fn final(self &amp;uni) { print &lt;- "close ", handle.fd, "\n"; }   // runs first, for a File
+  }
+  struct Nothing {}
+}
+
+imm r Resource = Resource.File(new Handle(7), new Named(1));   // dies: close 7, released, field final
+imm s Resource = Resource.Nothing;                             // dies: released
+</pre>
+
+	<h2 id="globals">A global variable</h2>
+	<p>A global variable lives until the program shuts down. Whatever it holds is then finalized by its module's
+		finalizer, after the module's own <span class="pre">final</span>: a value whose type finalizes, a tuple or an array
+		of them, or an owning reference, which is released (<a href="mod-globals.html#dyninit">The module's
+		initializer</a>, in Modularity, describes a module's own initializer and finalizer):</p>
+<pre>
+mod globals;
+
+import stdio use *;
+
+struct R {
+  pub n i32;
+  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
+}
+
+imm one R;
+imm pair (R, R);
+imm many Array[R, 2];
+imm owned So[R];
+
+fn @initpure init() {
+  one = new R(1);
+  pair = (new R(2), new R(3));
+  many = [new R(4), new R(5)];
+  owned = new So[R](6);
+}
+
+fn main() {
+  print &lt;- "main ends\n";
+}
+</pre>
+	<p>This prints <span class="pre">main ends</span>, and then, after <span class="pre">main</span> returns,
+		<span class="pre">final 1</span> through <span class="pre">final 6</span>, one to a line.</p>
+
+	<p>You can now say, for any value, when it dies and in what order its finalizers run, which is what code holding a
+		socket, a file or a lock needs to know. The single owner of the last page frees its value the moment that owner goes;
+		next is the region that lets several owners hold one value, and frees it when the last of them goes: reference counting.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-rc.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

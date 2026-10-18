@@ -1,0 +1,206 @@
+<html>
+  <head>
+	  <title>Packages: modules compiled and shared on their own - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Packages: modules compiled and shared on their own</div>
+		</div>
+
+    <div class="text">
+
+	<p>A module that other programs depend on is worth compiling once, giving a version, and sharing. That is
+		a <b>package</b>: modularity at the size of a library. Everything the last two pages said about a module
+		holds inside a package, since a package is a module and the modules inside it. This page adds what
+		changes at the package's edge: how a program depends on one, what one shows, how it is compiled apart
+		from the programs that use it, and the rule that holds at every size, that dependencies run one way.
+		Here is a small library, and a program that uses it:</p>
+<pre>
+measure/                       room/
+  congo.toml                     congo.toml
+  src/                           src/
+    measure.cone                   room.cone
+    convert.cone
+</pre>
+<pre>
+// measure/src/measure.cone
+// A library package: a program imports it by name
+mod measure;
+
+// convert is a submodule; pub use passes its names on as measure's own
+pub use convert;
+
+pub fn perimeter(width i32, depth i32) i32 {
+  twice(width + depth);
+}
+
+// Private: no program that imports measure can call it
+fn twice(n i32) i32 {
+  n * 2;
+}
+</pre>
+<pre>
+// measure/src/convert.cone
+// A submodule of the library, public to the rest of the package
+pub mod convert;
+
+pub fn toFeet(metres i32) i32 {
+  metres * 328 / 100;
+}
+</pre>
+<pre>
+// room/src/room.cone
+// A program that depends on the measure package
+mod room;
+
+import stdio use *;
+import measure;
+
+fn main() {
+  print &lt;- "perimeter: ", measure.perimeter(4, 5), " m\n";
+  print &lt;- "in feet:   ", measure.toFeet(18), " ft\n";
+}
+</pre>
+	<p>Congo finds <span class="pre">measure</span> by its name, in the folders it searches for packages, so the folder
+		that holds <span class="pre">measure</span> is listed as one of them
+		(<a href="guide-congo.html#finding">Growing a program with Congo</a> shows how). Then
+		<span class="pre">congo run</span>, inside <span class="pre">room</span>, compiles <span class="pre">measure</span>
+		on its own, then <span class="pre">room</span>, links them, and runs the program:</p>
+<pre>
+perimeter: 18 m
+in feet:   59 ft
+</pre>
+	<p><b>Try this:</b> call <span class="pre">measure.twice(3)</span> from <span class="pre">room</span>, or
+		<span class="pre">measure.convert.toFeet(18)</span>. Both are refused, for reasons this page explains.</p>
+
+	<h2 id="package">What a package is</h2>
+	<p>A <b>package</b> is one top-level module and the modules inside it, built on its own and shared as a
+		unit. On disk it is a folder holding a manifest, <span class="pre">congo.toml</span>, which gives its
+		name, its version and whether it builds into a program or a library, and its source under
+		<span class="pre">src</span>. There the <a href="mod-namespaces.html#dcl">module rules</a> apply
+		unchanged, with <span class="pre">src/<i>name</i>.cone</span>, named for the package, as the root
+		module's designated file. The build tool, Congo, builds packages: <span class="pre">congo new</span> makes
+		one, <span class="pre">congo run</span> builds and runs it, and <span class="pre">congo test</span> runs
+		its tests (<a href="lib-test.html">Testing</a>). <a href="guide-congo.html">Growing a program with
+		Congo</a> walks through using them.</p>
+	<p><b>A package's imports are its dependencies.</b> The manifest lists none: an
+		<span class="pre">import</span> of a name that is not a module of the package is another package,
+		found by its name, and that is all it takes to depend on it. The
+		<a href="library.html">packages that come with Cone</a>, <span class="pre">core</span>,
+		<span class="pre">stdio</span>, <span class="pre">collections</span> and the rest, are packages of exactly
+		this shape.</p>
+	<p>A package may also have a <span class="pre">gpu</span> folder beside <span class="pre">src</span>,
+		holding the part of it that runs on a GPU as well: more submodules of the root, each a file opening with
+		its own <span class="pre">mod</span> or a folder holding its designated file, which
+		<span class="pre">src</span> reaches by name as it reaches any submodule, and which may not use
+		<span class="pre">src</span> in return. <a href="conc-gpu.html#gpufolder">The GPU</a> has the rules.</p>
+	<p id="cpackage"><span id="linksections"></span>A <b>C package</b> wraps a library written in C. Its source
+		is a <a href="safe-c.html#cnames">C-named</a> module, <span class="pre">src/<i>name</i>.cone</span>,
+		declaring what the C library defines, and its manifest names the C library, which is then linked into
+		every program that imports the package; what differs by system (the library's name on Windows and on
+		Linux, say) is said there too. A program imports it by name, <span class="pre">import winstr;</span>,
+		with no C declarations of its own. <a href="safe-c.html">Talking to C</a> covers the module's side.</p>
+
+	<h2 id="visibility">What a package shows</h2>
+	<p>A program that imports a package sees one module, the package's root, and of that only what is
+		<span class="pre">pub</span>. <span class="pre">twice</span> is private to
+		<span class="pre">measure</span>, so to <span class="pre">room</span> it does not exist at all:</p>
+<pre>
+Error 1019: The name twice does not refer to a declared name
+Error 1042: convert is private to its module and may not be named from outside it.
+</pre>
+	<p>The second refusal is the package's edge. A submodule written <span class="pre">pub mod</span> is public
+		to the rest of its package, so <span class="pre">measure</span>'s other modules could name
+		<span class="pre">convert</span>, but never beyond the package. A program reaches a submodule's names
+		only where the package's root re-exports them with <span class="pre">pub use</span>, as
+		<span class="pre">measure</span> does for <span class="pre">toFeet</span>. So the root module's public
+		names are the package's whole interface, however the package is divided inside, and the package may
+		reorganize its submodules freely without any program noticing.</p>
+
+	<h2 id="build">Compiled apart: the include file</h2>
+	<p>A package is compiled on its own, before anything that imports it, and a program is compiled against a
+		description of the package rather than its source. Compiling a library writes that description, its
+		<b>include file</b>, beside its object. It is Cone source, generated, never written by hand. Here is the
+		one compiling <span class="pre">measure</span> wrote:</p>
+<pre>
+// Generated by conec: the include file of package measure, from measure.cone.
+// A program importing measure compiles against this file in place of that source.
+// Do not edit it: change measure's source and compile measure again.
+
+//#line 1 "measure.cone"
+// A library package: a program imports it by name
+mod measure;
+
+//#line 1 "convert.cone"
+// A submodule of the library, public to the rest of the package
+mod convert {
+//#line 4 "convert.cone"
+pub extern fn toFeet(metres i32) i32;
+}
+
+//#line 4 "measure.cone"
+// convert is a submodule; pub use passes its names on as measure's own
+pub use convert;
+
+pub extern fn perimeter(width i32, depth i32) i32;
+</pre>
+	<p>It declares each public function, method and global the library defines with
+		<a href="safe-c.html#includefile"><span class="pre">extern</span></a> and no body, so a program compiled
+		against it calls into the library's own object when the two are linked. (This is the one place a module
+		block, <span class="pre">mod convert { ... }</span>, is ever written, and its submodules are private
+		blocks, which is why <span class="pre">convert</span> cannot be named from <span class="pre">room</span>.)
+		The rest of what the build tool does, and the build description it hands the compiler, which lists each
+		module's files and says where each import is found, belongs to Congo; how an import is found in one is in
+		<a href="mod-namespaces.html#described">Where an import is found</a>.</p>
+	<p>Some rules follow from compiling apart:</p>
+	<ul>
+		<li><b>A library's module names its symbols.</b> Every declaration of a library is spelled after its
+			module (a function <span class="pre">perimeter</span> as <span class="pre">measure.perimeter</span>), as
+			a program importing it spells it. A program's module is not, so its <span class="pre">main</span> is
+			the entry point the linker expects.</li>
+		<li><b>A library exports what its importers need.</b> Its public functions and globals, and the public
+			functions of its public types, are visible to the linker. So is a private function, global or type
+			that an <span class="pre">inline</span>, generic or macro body, or a trait's default, names: such a body
+			is written whole in the include file, so the importer builds its own copy of it, and the copy calls what
+			it names. Everything else the package defines stays private to its object.</li>
+		<li><b>A generic is made by every package that uses it.</b> Each object holds the versions of a generic
+			that its own code uses, the library's and the program's alike, as it holds the table a type's
+			<a href="mod-substitution.html#traits">trait</a> methods are reached through. Where two objects hold the
+			same one, linking keeps a single copy (<a href="mod-generativity.html#genericfns">Generic
+			functions</a>).</li>
+	</ul>
+
+	<h2 id="dag">Dependencies run one way</h2>
+	<p>Imports never go round in a loop, between packages or between the modules of one package. A module
+		<b>depends on</b> each module it imports, on the module holding a name it imports, on the module it
+		<a href="mod-extensibility.html#extends">extends</a>, and on each of its own submodules. A package depends
+		on every package it imports. If those dependencies ever lead from a module back to itself, the program is
+		in error, and the error names the modules round the loop. Congo checks this before it compiles anything,
+		as here, where a submodule tried to import a name of the module that contains it:</p>
+<pre>
+congo: error: import loop between modules of package loopy: loopy -&gt; loopy.scaling -&gt; loopy. Imports
+between modules must not loop (loopy contains loopy.scaling; loopy.scaling imports Point of loopy at
+src\scaling\scaling.cone:2). A module may not depend on a module that contains it: move what they
+share into a sister both import.
+</pre>
+	<p>The rule is what makes the rest of this part work. A package can be compiled on its own only if
+		everything it needs was compiled first, which needs an order. So every program's packages, and every
+		package's modules, have one, each after everything it depends on. That is also the order their
+		<a href="mod-globals.html#dyninit">initializers</a> run in, and their finalizers run in the reverse. And
+		a loop is a design smell as much as a build problem: two parts that each need the other are really one
+		part, or share a third that both should depend on, which is exactly the cure the message gives.</p>
+
+	<p>You can now build a library as a package, choose what it shows, and depend on it. A module holds more
+		than names, though: it can hold state, and that state has to be set up before anything uses it.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="mod-globals.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

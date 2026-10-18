@@ -1,0 +1,127 @@
+<html>
+  <head>
+	  <title>Tuples: several values at once - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Tuples: several values at once</div>
+		</div>
+
+    <div class="text">
+
+	<p>Some answers come in more than one piece. A division gives a quotient and a remainder; a time splits into
+		hours, minutes and seconds. A <b>tuple</b> holds a few values together, each with its own type, with nothing to
+		declare first. This short page shows how a function hands back several values, how the caller catches them, and
+		how to hold, read and swap them. Here it turns the moment Apollo 11 touched down, counted in seconds from launch,
+		into hours, minutes and seconds:</p>
+
+<pre>
+mod landing;
+
+import stdio use *;
+
+// divmod gives back two values: how many times b goes into a,
+// and what is left over
+fn divmod(a i32, b i32) i32, i32 {
+  a / b, a % b;
+}
+
+fn main() {
+  // Apollo 11 touched down on the Moon this many seconds after launch
+  imm elapsed = 369940;
+
+  // Declare a variable for each answer, then catch both at once
+  imm minutes i32;
+  imm seconds i32;
+  minutes, seconds = divmod(elapsed, 60);
+
+  imm hours i32;
+  imm mins i32;
+  hours, mins = divmod(minutes, 60);
+  print &lt;- "It landed ", hours, " hours, ", mins, " minutes and ", seconds, " seconds after launch\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+It landed 102 hours, 45 minutes and 40 seconds after launch
+</pre>
+	<p><b>Try this:</b> the crew splashed down in the Pacific 703115 seconds after launch. How long was the whole
+		flight?</p>
+
+	<h2 id="returning">Handing back several values</h2>
+	<p><span class="pre">divmod</span>'s return type is a list of types, <span class="pre">i32, i32</span>, and its
+		last expression is a list of values, <span class="pre">a / b, a % b</span>. Together they are a tuple: one value
+		made of two, handed back as one. The caller takes it apart with one variable for each value, in order, on the
+		left of the <span class="pre">=</span>. Each variable's type must match its value's, which is why
+		<span class="pre">minutes</span> and <span class="pre">seconds</span> are declared first, with their types, and
+		then given their values together. That is the delayed assignment of
+		<a href="guide-values.html">page two</a>, done for two variables at once.</p>
+	<p>Nothing needs declaring for the tuple itself. The types are the declaration: a tuple of an
+		<span class="pre">i32</span> and an <span class="pre">i32</span> is the same type wherever it is written, and so
+		is any tuple with the same number of values, of the same types, in the same order.</p>
+
+	<h2 id="parallel">Parallel assignment</h2>
+	<p>Giving several variables their values in one statement is <b>parallel assignment</b>, and it has one property
+		that makes it more than shorthand: every value on the right is worked out before any variable on the left
+		changes. So two variables trade their values with no third one to hold either:</p>
+<pre>
+mut a = 1;
+mut b = 2;
+a, b = b, a;          // a is 2, b is 1
+</pre>
+	<p>That is the move the Fibonacci closure made on <a href="guide-functions.html#closures-tour">Functions</a>,
+		<span class="pre">a, b = b, a + b</span>: the new <span class="pre">b</span> is worked out from the old
+		<span class="pre">a</span>, not the new one. Fields take part like any variable,
+		<span class="pre">p.x, p.y = p.y, p.x</span>, and so may three or more values. For the commonest case, two
+		values trading places, there is also the swap operator: <span class="pre">a &lt;=&gt; b</span>.</p>
+
+	<h2 id="tuplevar">A tuple in one variable</h2>
+	<p>A tuple need not be taken apart. A variable may hold the whole of it, and its values, called its
+		<b>elements</b>, are read by their position, counting from 0, after a dot:</p>
+<pre>
+mut pair (i32, i32) = 7, 3;
+print &lt;- "pair is ", pair.0, " and ", pair.1, "\n";      // pair is 7 and 3
+pair = pair.1, pair.0;
+print &lt;- "swapped, ", pair.0, " and ", pair.1, "\n";     // swapped, 3 and 7
+
+imm both = divmod(100, 7);
+print &lt;- "100 / 7 is ", both.0, " remainder ", both.1, "\n";   // 100 / 7 is 14 remainder 2
+</pre>
+	<p>Where the type is written, as it is for a variable, a parameter or a field, the element types go in parentheses:
+		<span class="pre">(i32, i32)</span>. The elements may be of any types, mixed: a reading might be
+		<span class="pre">(i32, bool, f64)</span>. A value assigned to the variable must fit it, as many values as it
+		has elements, each fitting its element's type, so a number with no suffix takes its element's number type, and
+		<span class="pre">pair = 1, 2, 3</span> is refused: <i>"Expression's type does not match lval's type"</i>.
+		Parentheses around the values change nothing: <span class="pre">pair = (9, 8)</span> is the same
+		assignment.</p>
+	<p>A tuple may hold another, and the dots go on: <span class="pre">t.1.0</span> is element 0 of element 1 of
+		<span class="pre">t</span>. A number after the dot is always an element's position, never part of a decimal
+		number. An element is read from a call's result just as well: <span class="pre">divmod(100, 7).1</span> is 2. A
+		tuple whose values are all constants is itself a constant, so it may be a named constant, a global's first
+		value, or a field's default: <span class="pre">const Unit (f32, f32) = 1, 1;</span>. And a tuple type used often
+		can be given a name with <span class="pre">alias</span>, which is the tuple itself under another name:</p>
+<pre>
+alias Pair = (i32, i32);
+fn first(a Pair) i32 { a.0; }
+</pre>
+
+	<h2 id="names">When the values deserve names</h2>
+	<p>A tuple is at its best travelling a short way, from a function to the code that called it, where the variables
+		that catch it give its values their meaning. Kept for longer, it starts to cost: <span class="pre">both.0</span>
+		says nothing about what it holds, and a reader has to remember whether the quotient came first. Nor can a tuple
+		have methods of its own, since a tuple type has no declaration to put them in.</p>
+	<p>You can now hand several values back from a function, catch them, keep them together and swap them. When the
+		values deserve names, and the group deserves methods of its own, it is time for a struct: a tuple whose
+		values have names, which is the next page.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="guide-structs.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

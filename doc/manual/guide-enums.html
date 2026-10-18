@@ -1,0 +1,350 @@
+<html>
+  <head>
+	  <title>Enums: one of several kinds - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Enums: one of several kinds</div>
+		</div>
+
+    <div class="text">
+
+	<p>Some things come in kinds. A drink is an espresso, a latte or a tea. An order either goes through or fails, for
+		one of a few reasons. An <b>enum</b> names every kind a value may be, and each value is exactly one of them. This
+		page shows how to declare one, build its values, and find out which kind you have with
+		<span class="pre">match</span>, the same <span class="pre">match</span> that chose among numbers in
+		<a href="guide-conditionals.html#matching">Conditionals</a>. A small café takes orders by code number:</p>
+<pre>
+mod cafe;
+
+import stdio use *;
+
+// A plain enum: a closed set of names
+enum Size {
+  Small, Medium, Large;
+
+  // One function over the whole enum, taking the value
+  pub fn ml(self Size) i32 {
+    match self {
+      case Small {240;}
+      case Medium {350;}
+      case Large {470;}
+    }
+  }
+}
+
+// Variants that carry values of their own, and a field they all share
+enum Drink {
+  pub size Size;
+
+  Espresso;
+  struct Latte {
+    pub shots i32;
+    pub oat bool;
+  }
+  struct Tea {
+    pub minutes i32;
+  }
+}
+
+// Why an order can fail
+enum Fault {
+  SoldOut;
+  NoSuchCode(i32);
+}
+
+// A price in cents. Every variant has a case, so no 'else' is needed.
+fn price(d Drink) i32 {
+  imm base = match d {
+    case Espresso {250;}
+    case imm l Latte if l.oat {350 + 60 * l.shots;}
+    case imm l Latte {320 + 60 * l.shots;}
+    case imm t Tea {200 + 10 * t.minutes;}
+  };
+  if d.size == Size.Large {base + 80;} else {base;}
+}
+
+// A drink for a code on the menu, or the reason there is none
+fn order(code i32) Result[Drink, Fault] {
+  match code {
+    case 1 {Ok(Drink.Espresso(Size.Small));}
+    case 2 {Ok(Drink.Latte(Size.Large, 2, true));}
+    case 3 {Ok(Drink.Tea(Size.Medium, 4));}
+    case 4 {Error(Fault.SoldOut);}
+    else {Error(Fault.NoSuchCode(code));}
+  }
+}
+
+fn main() {
+  each code in 1 .. 5 {
+    print &lt;- "#", code, ": ";
+    match order(code) {               // a Result is an enum too
+      case imm d Ok {
+        print &lt;- d.size.ml(), " ml for ", price(d), " cents";
+        if d is Tea {print &lt;- " (let it steep)";}
+        print &lt;- "\n";
+      }
+      case imm f Error {
+        match f {
+          case SoldOut {print &lt;- "sold out, sorry\n";}
+          case imm n NoSuchCode {print &lt;- "there is no drink ", n, "\n";}
+        }
+      }
+    }
+  }
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+#1: 240 ml for 250 cents
+#2: 470 ml for 550 cents
+#3: 350 ml for 240 cents (let it steep)
+#4: sold out, sorry
+#5: there is no drink 5
+</pre>
+	<p><b>Try this:</b> add a hot chocolate to <span class="pre">Drink</span>, and watch the compiler point you to the
+		one match that has to learn its price.</p>
+
+	<h2 id="kinds">One of several kinds</h2>
+	<p id="enum">An enum declares a <b>closed set</b> of variants. The whole set is written in one place, inside the
+		enum's braces, so the compiler knows every kind a value can be, and nothing elsewhere can add another. That is
+		what lets it check a match for you. Leave the tea out of <span class="pre">price</span> and the program does not
+		compile:</p>
+<pre>
+Error 1417: This match does not cover Tea: add a case for each, or end the match with 'else {}'.
+</pre>
+	<p>So when the menu gains a hot chocolate next month, the compiler walks you to every match that names each variant
+		and now has one more to learn. A match that ends in <span class="pre">else</span> has said what to do with
+		anything it did not name, and is left alone.</p>
+	<p id="enumcopy">Every value of an enum takes the same room in memory: the size of its largest variant, plus a
+		small hidden <b>tag</b> that says which variant it is. That is why a Drink can be held in a variable, passed to a
+		function and handed back as easily as a number, whichever kind of drink it is. It is copied like a number, too,
+		unless one of its variants holds something that moves, such as a <a href="guide-text.html#moving">String</a>:
+		then the whole enum moves, since any value of it might be that variant.</p>
+
+	<h2 id="threeforms">Three ways to write a variant</h2>
+	<p id="forms">One enum may mix all three:</p>
+	<ul>
+		<li><b>A bare name</b>, <span class="pre">Espresso</span> or <span class="pre">Small</span>, carries nothing of
+			its own.</li>
+		<li><b>A struct</b>, <span class="pre">struct Latte {...}</span>, carries named fields, and may have methods, as
+			any <a href="guide-structs.html">struct</a> does.</li>
+		<li><b>A name and a type in parentheses</b>, <span class="pre">NoSuchCode(i32)</span>, carries one value of that
+			type, with no field name.</li>
+	</ul>
+	<p>The three are less different than they look. A bare name is a struct with no fields:
+		<span class="pre">Espresso;</span> declares just what <span class="pre">struct Espresso;</span> would. So a plain
+		set of names, like <span class="pre">Size</span>, and a set of structs, like <span class="pre">Drink</span>, are
+		the same construct, and there is no second one to learn.</p>
+	<p>A field written outside the variants, as <span class="pre">size</span> is in <span class="pre">Drink</span>,
+		belongs to every variant, so it can be read from any Drink without asking which one it is:
+		<span class="pre">d.size</span>. A variant's own fields wait until the program knows which variant it has:
+		<span class="pre">d.shots</span> is refused, since only a latte has shots. A field every variant shares is
+		told from a variant written with a type by its parentheses: <span class="pre">size Size;</span> is a field,
+		<span class="pre">NoSuchCode(i32);</span> a variant. An enum with shared fields names everything it holds, so
+		its variants are written as structs or bare names, never with a type in parentheses.</p>
+	<p id="init">A value is built by naming its variant through the enum, with its values in parentheses, the shared
+		ones first: <span class="pre">Drink.Latte(Size.Large, 2, true)</span>. There is no <span class="pre">new</span>,
+		and a bare name is a value all by itself: <span class="pre">Size.Large</span>. Each variant's value is of its own
+		kind, a <span class="pre">Drink.Latte</span>, and it is taken wherever a Drink is wanted: by a parameter, a
+		field, or a function's result, as <span class="pre">order</span> hands its variants straight to
+		<span class="pre">Ok</span> and <span class="pre">Error</span>.</p>
+	<p>A <span class="pre">mut</span> variable given a variant is the enum, since it is there to change:
+		<span class="pre">mut light = Light.Red;</span> followed by <span class="pre">light = Light.Green;</span> is fine, and
+		so is <span class="pre">mut o = Some(5); o = None;</span>. An <span class="pre">imm</span> variable keeps the
+		variant's own type, so its values stay in reach: <span class="pre">imm d = Drink.Latte(Size.Large, 2, true);</span>
+		reads <span class="pre">d</span>'s Latte fields directly. A <span class="pre">mut</span> variable meant to stay one
+		variant says so: <span class="pre">mut d Drink.Latte = ...</span>
+		(<a href="mod-substitution.html#mutvariant">the full rule</a>). Comparing with <span class="pre">==</span>
+		against a variant that holds no values tests which variant it is: <span class="pre">light == Light.Green</span>.</p>
+
+	<h2 id="matchagain">match on variants</h2>
+	<p id="matchvariants">In <a href="guide-conditionals.html#matching">Conditionals</a>, <span class="pre">match</span>
+		chose among numbers. Here it chooses among variants, and it is the same <span class="pre">match</span>: the cases
+		are tried from the top, the first that fits runs, and the value of the block that runs is the value of the
+		match, as <span class="pre">imm base = match d {...}</span> shows. What is new is the pattern, which is a
+		variant's name:</p>
+	<ul>
+		<li><span class="pre">case Espresso</span> asks only whether the value is that variant
+			(<span class="pre">case is Espresso</span> says the same).</li>
+		<li><span class="pre">case imm l Latte</span> asks the same, and when it is, gives you the latte as
+			<span class="pre">l</span>, with its own fields to read. The binding may be <span class="pre">mut</span>,
+			to change it.</li>
+		<li>A guard narrows a case further, just as it does on a number. The oat-milk latte comes first; a latte
+			without oat milk fails its guard and falls to the next case.</li>
+		<li>For a variant written with a type in parentheses, the name you bind is what it holds:
+			<span class="pre">case imm n NoSuchCode</span> makes <span class="pre">n</span> the number itself.</li>
+	</ul>
+	<p>Inside a pattern the variants are named bare. The match knows which enum it is looking at, so
+		<span class="pre">Latte</span> means <span class="pre">Drink.Latte</span> without being told, and it asks that
+		enum first, whatever else the name might mean nearby. A binding is the variant's value, taken from the value
+		matched: a copy where it copies, and a move where it holds something that moves. Through a borrowed reference
+		it is a reference into the variant, which <a href="mem-borrowing.html">Borrowed references</a> explains.</p>
+	<p>When only one variant matters, a whole match is more than the question needs. <span class="pre">is</span> asks
+		it, true or false, as <span class="pre">d is Tea</span> does in the program. And where the test holds, the
+		compiler knows which variant the value is, so its own fields can be read:</p>
+<pre>
+fn shots(d Drink) i32 {
+  if d is Latte {
+    return d.shots;      // here d is known to be a Latte
+  }
+  0;
+}
+</pre>
+	<p>A binding in an <span class="pre">if</span> tests and hands over the variant in one step, with an
+		<span class="pre">else</span> for when it is something else:</p>
+<pre>
+if imm l Latte = d {
+  print &lt;- l.shots, " shots\n";
+} else {
+  print &lt;- "no shots\n";
+}
+</pre>
+	<p id="letelse">And when the rest of a function only makes sense for one variant, the binding can be a declaration
+		whose <span class="pre">else</span> leaves. Past it, the variable is there for the rest of the block. The
+		<span class="pre">else</span> must not fall through: it ends in <span class="pre">return</span>,
+		<span class="pre">break</span>, <span class="pre">continue</span>, or a call that never returns, such as
+		<span class="pre">panic</span>:</p>
+<pre>
+fn steep(d Drink) i32 {
+  imm t Tea = d else { return 0; };
+  t.minutes;                 // steep(Drink.Tea(Size.Large, 5)) is 5
+}
+</pre>
+
+	<h2 id="compare">Comparing enum values</h2>
+	<p>An enum whose variants are all bare names compares with <span class="pre">==</span> and
+		<span class="pre">!=</span>, as <span class="pre">d.size == Size.Large</span> does: such a value is nothing but
+		its tag. Comparing with a variant that carries nothing always works that way, whatever the enum's other
+		variants carry: <span class="pre">unit != Shape.Dot</span> just asks whether <span class="pre">unit</span> is a
+		Dot, and <span class="pre">maybe == None</span> whether an Option is empty. The other side may be the enum or any of
+		its variants, so a variable that holds a variant compares too, with a variant written out or with another such
+		variable: <span class="pre">imm s = Size.Large; s == Size.Large</span>. In an enum with shared fields,
+		though, every variant carries those, the bare names included.</p>
+	<p>Where both values may carry fields, two values are equal when they are the same variant and that variant's own
+		<span class="pre">==</span> says so. The tags are compared first, and only if they match is the variant's
+		<span class="pre">==</span> called, so each variant that carries fields declares one, as a struct would
+		(<a href="rec-methods.html#operators">Method patterns</a>). Without one, comparing the enum is refused, and the
+		error names the variant that lacks it; there is no comparison of a struct's contents to fall back on, and
+		deriving one is still to come. A <span class="pre">match</span> recovers the variant instead. That includes
+		Option and Result, whose <span class="pre">Some</span>, <span class="pre">Ok</span> and
+		<span class="pre">Error</span> declare no <span class="pre">==</span>: two Options holding values are matched,
+		not compared, for now.</p>
+<pre>
+enum Shape {
+  struct Circle {
+    pub radius f32;
+    pub fn `==`(self, other Circle) bool {radius == other.radius;}
+  }
+  struct Dot;                       // equal to any other Dot
+}
+
+imm unit Shape = Shape.Circle(1.0);
+unit == Shape.Circle(1.0)           // true: the same variant, equal fields
+unit == Shape.Circle(2.0)           // false
+unit != Shape.Dot                   // true
+</pre>
+	<p>Enums compare for equality only, never for order: which variant a value is, is not a size, and the order
+		variants are declared in is not a magnitude. Comparing reads both values and changes neither, so even an enum
+		that moves can be compared and used afterwards.</p>
+
+	<h2 id="enummethods">Methods on an enum</h2>
+	<p><span class="pre">pub fn ml(self Size) i32</span> names the enum as what it takes, so it is one function over the
+		whole enum: inside it <span class="pre">self</span> is a Size, and <span class="pre">match self</span> asks which.
+		A state that moves on is written the same way, as a function that takes a value and gives back the next:</p>
+<pre>
+enum Light {
+  Red, Green, Amber;
+
+  pub fn next(self Light) Light {
+    match self {
+      case Red {Light.Green;}
+      case Green {Light.Amber;}
+      case Amber {Light.Red;}
+    }
+  }
+}
+
+mut light Light = Light.Red;
+light = light.next();          // Green
+light = light.next();          // Amber
+</pre>
+	<p>Nothing is changed in place: <span class="pre">next</span> hands back a new value, and the variable takes it.
+		A method written inside a variant's struct belongs to that variant alone, as a struct's method does. A method
+		written among the variants that every variant should answer, each in its own way, is a step toward traits,
+		which <a href="mod-substitution.html">Traits</a> covers along with the enum's part in them.</p>
+
+	<h2 id="naming">Naming variants: use</h2>
+	<p>A variant is a name of its enum, not of the module around it, so outside the enum it is reached through the
+		enum: <span class="pre">Size.Large</span>, <span class="pre">Fault.SoldOut</span>. Two enums may each have a
+		<span class="pre">Quit</span> without getting in each other's way. Inside the enum's braces, every name it
+		declares is bare, its variants included, which is why <span class="pre">ml</span> can say
+		<span class="pre">Small</span>.</p>
+	<p>A module that wants an enum's variants as names of its own says so with <span class="pre">use</span>, written at
+		the module's top level, like an <span class="pre">import</span>:</p>
+<pre>
+use Size;                              // Small, Medium and Large, bare
+use Event KeyEvent as Key, QuitEvent;  // only these, one of them renamed
+use Colors but Blue;                   // every variant but one
+</pre>
+	<p>After <span class="pre">use Size;</span>, <span class="pre">Large</span> means
+		<span class="pre">Size.Large</span>, in the module that declares the enum as in any other. A name folded in this
+		way must not be one the module already has for something else, so two enums that each have a
+		<span class="pre">Quit</span> are folded by renaming one or leaving it out. A pattern needs none of this, since it
+		already knows its enum. <a href="mod-namespaces.html">Namespaces</a> has the forms in full, and how
+		<span class="pre">pub use</span> makes the names public.</p>
+
+	<h2 id="tags">Tag values</h2>
+	<p>Each variant's tag is a number the compiler assigns, counting up from 0 in the order the variants are written.
+		A variant may give its own instead, and counting carries on from it, so only the variants that need a particular
+		number say so. An enum may also name the integer type its tags are laid out in, which fixes their size. That is
+		how an enum lines up with the constants of a library written in another language:</p>
+<pre>
+enum Colors u32 {
+  Red   = 0xFF0000,
+  Green = 0x00FF00,
+  Blue  = 0x0000FF;
+}
+</pre>
+	<p>The tag itself is never a field a program can read or change: which variant a value is, is found by matching,
+		or compared with <span class="pre">==</span>. <a href="safe-c.html">Talking to C</a> has the rest: negative
+		values, how wide a tag is when no type is named, and placing the tag somewhere other than first.</p>
+
+	<h2 id="resultenum">Result and Option: the enums every program has</h2>
+	<p><a href="guide-functions.html#result-tour">Functions</a> introduced <span class="pre">Result</span>: a function
+		that can fail gives back <span class="pre">Ok</span> with its value or <span class="pre">Error</span> with what
+		went wrong. Now it can be said what a Result is. The core library declares it as an ordinary enum, with two
+		variants written as types:</p>
+<pre>
+enum Result[T, E] {Ok(T); Error(E);}
+</pre>
+	<p>The <span class="pre">[T, E]</span> leave the two types open until a Result is used: a
+		<span class="pre">Result[Drink, Fault]</span> holds a Drink when it is <span class="pre">Ok</span> and a Fault
+		when it is an <span class="pre">Error</span>. Nothing else about it is special. <span class="pre">match
+		order(code)</span> is the match you would write for any enum, and the error can be anything, an enum of your own
+		included: <span class="pre">Fault</span> lists the ways an order can fail, and the inner match tells them
+		apart.</p>
+	<p id="option">Its partner is <span class="pre">Option</span>, for a value that may not be there at all:</p>
+<pre>
+enum Option[T] {None; Some(T);}
+</pre>
+	<p>A lookup that may find nothing gives back an Option: <span class="pre">Some</span> with what it found, or
+		<span class="pre">None</span>. The variants of both are bare in every program, because the core library makes them
+		so. Option is taught where it is first needed, in <a href="guide-dict.html#option">Dict</a>, at the first lookup
+		that may come back empty.</p>
+
+	<p>You can now say that a value is one of several kinds, give each kind its own data, and handle every kind with
+		the compiler checking that none is missed. Next come collections, which hold as many values as a program needs,
+		and which hand you an Option when they have nothing to give.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-collections.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,1406 @@
+<html>
+  <head>
+	  <title>Collections - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Collections</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built yet: a <span class="pre">Set</span>'s union and intersection, and a
+		trait that covers a set's <span class="pre">insert</span> and <span class="pre">remove</span>;
+		<span class="pre">each</span> over a closure, and a source that runs its own loop around the body of an
+		<span class="pre">each</span>; for an array, its <span class="pre">len</span>, the <span class="pre">$-</span>
+		operator, copying and filling a range of elements, comparison and pattern matching; for a slice, the count form
+		of a subslice, <span class="pre">$-</span>, a slice made from a reference or a pointer, copying and filling a
+		range, and its <span class="pre">ptr</span>. The send operator's list of entries (values,
+		<span class="pre">n of x</span>, <span class="pre">fill x</span>, pairs and <span class="pre">each</span>) is
+		built, after a value and after a construction. Each section below says what else is not built.</i></p>
+
+	<p>The <span class="pre">collections</span> package holds the growable collections: <a href="#list">List</a>,
+		<a href="#dict">Dict</a>, <a href="#ordereddict">OrderedDict</a>, <a href="#set">Set</a>,
+		<a href="#deque">Deque</a> and <a href="#string">String</a>, all brought in by
+		<span class="pre">import collections use *;</span>. Under them are the language's own
+		<a href="#array">arrays</a>, whose size is fixed, and <a href="#slices">slices</a>, borrowed views of a run of
+		elements. This page also covers what every collection shares: <a href="#send">the send operator's entries</a>,
+		<a href="#iteration">walking a collection</a> and <a href="#adapters">the adapters</a>. The Guide teaches them
+		in <a href="guide-collections.html">Collections</a>, <a href="guide-list.html">List</a> and
+		<a href="guide-dict.html">Dict</a>.</p>
+	<p>Each collection keeps its elements in one block it gets from its region (the heap's unless it was made in
+		another; <a href="mem-collections.html">Collections placed in a region</a>) through a raw pointer, not in an array
+		reference. A list or a dictionary is constructed with <span class="pre">new</span>, its first values after
+		<span class="pre">&lt;-</span>: <span class="pre">new List[i32](100) &lt;- fill 0</span>
+		(<a href="#contents">a collection's contents</a>).</p>
+
+	<h2 id="list">List</h2>
+	<p>A <span class="pre">List[T]</span> is a growable array: pushing onto it makes room as it needs, doubling
+		its block as it fills. <span class="pre">xs &lt;- v</span> is a push. An element is read
+		with <span class="pre">xs[i]</span>, which is a borrow of the element, so it is
+		dereferenced to get the value, and <span class="pre">&amp;mut xs[i]</span> borrows it to change.</p>
+<pre>
+mod listdemo;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut xs = List[i32].empty();
+  xs.push(3);
+  xs &lt;- 4;                       // &lt;- is push
+  xs.push(5);
+  print &lt;- xs.len();
+  print &lt;- "\n";
+  print &lt;- *xs[1usize];          // an element is a borrow, so dereference it
+  print &lt;- "\n";
+  match xs.pop() {
+    case imm v Some {print &lt;- v; print &lt;- "\n";}
+    case is None {print &lt;- "empty\n";}
+  }
+  match xs.get(7usize) {         // get does not panic
+    case imm v Some {print &lt;- *v; print &lt;- "\n";}
+    case is None {print &lt;- "no seventh\n";}
+  }
+  mut total = 0;
+  each x in xs {                 // walks the slice the list lends
+    total += *x;
+  }
+  print &lt;- total;
+  print &lt;- "\n";
+  imm zeros = new List[i32](5) &lt;- fill 0;
+  print &lt;- zeros.len();
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">3</span>, <span class="pre">4</span>, <span class="pre">5</span>,
+		<span class="pre">no seventh</span>, <span class="pre">7</span> and <span class="pre">5</span>,
+		one to a line. <span class="pre">peek()</span> (an <span class="pre">Option</span> of a borrow of the
+		last value) and <span class="pre">get(i)</span> (the same for position <span class="pre">i</span>,
+		<span class="pre">None</span> past the end) do not panic.</p>
+	<p>A list is <span class="pre">String</span>'s twin for any element.
+		<span class="pre">list.view()</span> lends its elements as a <span class="pre">&amp;Array[T]</span>, the slice, and the
+		list <a href="mod-extensibility.html#lend">folds the methods of <span class="pre">Array[T]</span> in as its own</a>
+		(<span class="pre">list.len</span> is <span class="pre">Array[T]</span>'s).
+		<span class="pre">list.viewMut()</span> lends them as a <span class="pre">&amp;mut Array[T]</span>, and a list reached only by
+		a <span class="pre">&amp;uni</span> (a <span class="pre">&amp;uni</span> parameter, <span class="pre">(&amp;uni list).viewUni()</span>
+		for a local) lends them as a <span class="pre">&amp;uni Array[T]</span>, <span class="pre">viewUni</span>, which a
+		<a href="conc-parallel.html#parallelroot"><span class="pre">parallel each</span> that changes its items</a> may take as its
+		source; a String's bytes likewise.</p>
+	<p><span class="pre">list.freeze()</span> consumes the list and moves its elements, uncopied, into a fixed-size
+		owner, a <span class="pre">So[Array[T]]</span> (<a href="memory.html">Memory</a>).</p>
+	<p>The rest of a list's methods: <span class="pre">List[T].empty()</span> and
+		<span class="pre">List[T].withCapacity(n)</span> make one, as <span class="pre">new List[T]</span> and
+		<span class="pre">new List[T](n)</span> do; <span class="pre">capacity()</span>, <span class="pre">isEmpty()</span>
+		and <span class="pre">reserve(n)</span>; <span class="pre">set(i, v)</span> and <span class="pre">swap(i, j)</span>,
+		each a panic past the end; <span class="pre">clear()</span>; <span class="pre">truncate(n)</span>, which cuts the
+		list to <span class="pre">n</span> values, finalizing those it drops, and does nothing when
+		<span class="pre">n</span> is not less than its length; <span class="pre">resize(n, v)</span>, which makes it
+		<span class="pre">n</span> copies of a value long or drops the values past <span class="pre">n</span>, and exists
+		only where <span class="pre">T</span> copies; and <span class="pre">sortBy(f)</span>, which sorts in place by a
+		closure that takes two values and answers a negative number when the first comes first. The cursors
+		(<span class="pre">iter</span>, <span class="pre">mutItems</span>, <span class="pre">indexed</span>,
+		<span class="pre">chunks</span>, <span class="pre">mutChunks</span>, <span class="pre">mutArrays</span>,
+		<span class="pre">drain</span>) are under <a href="#iteration">Walking a collection</a>.</p>
+
+	<h2 id="dict">Dict</h2>
+	<p><span class="pre">Dict[K, V]</span> is a SwissTable: an
+		open-addressed table with a control byte for each bucket (empty, removed, or the top 7 bits of the
+		key's hash), read eight at a time as one 64-bit word, so a lookup compares a key only in a bucket
+		whose tag matches; it holds up to 7/8 of its buckets, and doubles when full. Its keys are any type
+		that is <span class="pre">Hash</span>: integers and <span class="pre">bool</span>, a
+		<span class="pre">String</span>, a <span class="pre">pool.Ref[T]</span>, a struct that declares
+		<span class="pre">is Hash</span> (the compiler supplies its hash from its fields, and the struct writes
+		the <span class="pre">==</span> that goes with it); a float key is
+		refused. A key moves in and the dictionary owns it.</p>
+<pre>
+mod dictdemo;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut counts = new Dict[String, i64];
+  imm words = ["to", "be", "or", "not", "to", "be"];
+  each w in words {
+    *counts.getOrInsert(String.from(*w), 0i64) += 1i64;   // one search; the String moves in
+  }
+  print &lt;- counts.len();
+  print &lt;- "\n";
+  print &lt;- *counts["be"];                          // a &amp;str looks up a Dict[String, V]
+  print &lt;- "\n";
+  if counts.contains("not") { print &lt;- "has not\n"; }
+  match counts.get("or") {
+    case imm n Some {print &lt;- *n; print &lt;- "\n";}
+    case is None {print &lt;- "none\n";}
+  }
+  match counts.remove("to") {                      // the value comes out
+    case imm n Some {print &lt;- n; print &lt;- "\n";}
+    case is None {print &lt;- "none\n";}
+  }
+  print &lt;- counts.len();
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">4</span>, <span class="pre">2</span>, <span class="pre">has not</span>,
+		<span class="pre">1</span>, <span class="pre">2</span> and <span class="pre">3</span>, one to a line.</p>
+
+	<h3 id="dictmethods">Looking things up</h3>
+	<p>Lookups take a <span class="pre">&amp;K</span>: <span class="pre">get(&amp;k)</span> is an
+		<span class="pre">Option</span> of a borrow of the value, <span class="pre">getMut</span> a mutable one,
+		<span class="pre">getCopy</span> an <span class="pre">Option</span> of a copy (only where the value
+		copies, which is the lookup that works through a shared <span class="pre">Rc[mut, Dict[K, V]]</span>),
+		<span class="pre">contains</span>, <span class="pre">remove</span> (the value moved out, the key
+		finalized), <span class="pre">d[&amp;k]</span> and <span class="pre">&amp;mut d[&amp;k]</span>
+		(a panic for a key it does not hold), <span class="pre">insert(k, v)</span> (when it replaced an
+		entry, finalizing the old key, an <span class="pre">Option</span> holding the old value moved out to
+		the caller, and <span class="pre">None</span> for a new key; the value dies with the
+		caller's binding, or at the end of a statement that ignores it; <span class="pre">d &lt;- k: v</span> ignores it), <span class="pre">getOrInsert(k, v)</span> (a mutable
+		borrow of the value held, or else <span class="pre">v</span> moved in, with one search:
+		<span class="pre">*counts.getOrInsert(word, 0) += 1</span>), <span class="pre">clear</span>,
+		<span class="pre">len</span> and <span class="pre">capacity</span> (the entries it holds before it
+		grows).</p>
+
+	<h3 id="dicttext">Text keys looked up as <span class="pre">&amp;str</span></h3>
+	<p>A <span class="pre">Dict[String, V]</span>, a <span class="pre">Dict[So[str], V]</span> or a
+		<span class="pre">Dict[Rc[str], V]</span> (an owner of text is <span class="pre">Hash</span>, an
+		immutable key with no spare capacity; a literal given to <span class="pre">insert</span> is
+		copied into the owner) also takes the key as the body it lends or holds, a
+		<span class="pre">&amp;str</span>
+		(<span class="pre">d.contains("core")</span>), for every one of these lookups: a literal, a view
+		(<span class="pre">s.view()</span>, a slice of text), a <span class="pre">So[str]</span> and an
+		<span class="pre">Rc[str]</span> are each lent as a <span class="pre">&amp;str</span>, so none
+		builds a <span class="pre">String</span> to ask. They find the key they equal because a
+		<span class="pre">str</span>, a <span class="pre">String</span> and a literal feed a hasher the same bytes
+		(<span class="pre">str</span> has a <span class="pre">hash</span> of its own) and
+		<span class="pre">==</span> compares the bytes. A <span class="pre">d["sdl"]</span> of a key it does
+		not hold is a panic that names the key; one by a <span class="pre">&amp;K</span> does not. A
+		<span class="pre">&amp;Array[u8]</span> is not text until it says so: <span class="pre">bytes as &amp;str</span>.</p>
+
+	<h3 id="dictorder">Visiting order and seeds</h3>
+	<p>A dictionary is <b>unordered</b>: each dictionary keeps a
+		seed of its own, the process's random one by default, so <span class="pre">keys()</span>,
+		<span class="pre">values()</span> and <span class="pre">entries()</span> (cursors, each
+		<span class="pre">next()</span> giving an <span class="pre">Option</span> of a borrow, the
+		dictionary loaned while one is used) visit in a different order on every run, and a program sorts,
+		or looks a key up, rather than rely on it. <span class="pre">Dict[K, V].deterministic()</span> fixes the
+		seed, and then the same keys inserted in the same order are visited in the same order on every run;
+		<span class="pre">Dict[K, V].withSeed(n)</span> takes one of your own. When the order matters to the
+		output, use an <a href="#ordereddict"><span class="pre">OrderedDict</span></a>,
+		a <span class="pre">Dict</span> that visits in the order of insertion, with the same methods under the same names.</p>
+
+	<h2 id="ordereddict">OrderedDict</h2>
+	<p><span class="pre">OrderedDict[K, V]</span> is a
+		<span class="pre">Dict</span> that visits in the order of insertion, on every run and under every
+		seed, which is what a program wants to print, write out as a file, or replay (a JSON object, a
+		configuration, HTTP headers). It has the same methods under the same names, including the
+		<span class="pre">&amp;str</span> lookups of an <span class="pre">OrderedDict[String, V]</span> and the cursors
+		<span class="pre">keys()</span>, <span class="pre">values()</span> and <span class="pre">entries()</span>,
+		and the same seeds.</p>
+<pre>
+mod ordered;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut headers = new OrderedDict[String, String];
+  headers &lt;- String.from("Host"): String.from("example.org");
+  headers &lt;- String.from("Accept"): String.from("text/html");
+  headers &lt;- String.from("Host"): String.from("cone.dev");   // replaced where it stands
+  each key, value in headers {
+    print &lt;- key.view();
+    print &lt;- ": ";
+    print &lt;- value.view();
+    print &lt;- "\n";
+  }
+  headers.remove("Host");                                    // the later entries move down
+  headers &lt;- String.from("Host"): String.from("again");      // a key put back goes last
+  each key in headers.keys() {
+    print &lt;- key.view();
+    print &lt;- "\n";
+  }
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">Host: cone.dev</span>, <span class="pre">Accept: text/html</span>, then
+		<span class="pre">Accept</span> and <span class="pre">Host</span>.</p>
+	<p>Its layout is a compact, ordered table: a
+		dense array of (hash, key, value) in insertion order, which the cursors walk front to back, and beside
+		it an index with the same control bytes and eight-at-a-time probe as <span class="pre">Dict</span>'s,
+		holding for each bucket a <span class="pre">u32</span> position in the array, so a table holds fewer than
+		2<sup>32</sup> entries. A lookup is one memory access slower than <span class="pre">Dict</span>'s;
+		iteration is faster, with no empty buckets to skip. Inserting a key it holds replaces that entry
+		<i>where it stands</i>; a key put back after a <span class="pre">remove</span> goes to the end.
+		<span class="pre">remove</span> keeps the order: every later entry moves down one place, so it costs
+		the entries after the one removed.
+		<span class="pre">swapRemove(&amp;k)</span> is O(1) but moves the last entry into the hole, which
+		breaks the order. If you mostly look keys up and rarely iterate, <span class="pre">Dict</span> is the
+		faster choice.</p>
+
+	<h2 id="set">Set</h2>
+	<p><span class="pre">Set[T]</span> is a set of any type that is
+		<span class="pre">Hash</span>: a <span class="pre">Dict</span> whose values take no bytes, so it has
+		the dictionary's table, seed and unordered visiting. <span class="pre">insert(x)</span> answers whether
+		<span class="pre">x</span> was new (a held element stays, and the item given dies),
+		<span class="pre">contains(&amp;x)</span>, <span class="pre">remove(&amp;x)</span> (true when it was
+		held), <span class="pre">clear</span>, <span class="pre">len</span>, <span class="pre">isEmpty</span>,
+		<span class="pre">capacity</span>, <span class="pre">deterministic()</span> and
+		<span class="pre">withSeed(n)</span>; <span class="pre">items()</span> is a cursor over borrows of the
+		elements. A <span class="pre">Set[String]</span> takes an element as the <span class="pre">&amp;str</span>
+		a <span class="pre">String</span> lends (<span class="pre">s.contains("core")</span>).</p>
+<pre>
+mod setdemo;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut seen = new Set[String];
+  imm words = ["to", "be", "or", "not", "to", "be"];
+  mut repeats = 0;
+  each w in words {
+    if not seen.insert(String.from(*w)) {      // insert answers whether the element was new
+      repeats += 1;
+    }
+  }
+  print &lt;- seen.len();
+  print &lt;- " distinct, ";
+  print &lt;- repeats;
+  print &lt;- " repeats\n";
+  if seen.contains("or") { print &lt;- "or is in\n"; }
+  if seen.remove("or") { print &lt;- "or removed\n"; }
+  if not seen.contains("or") { print &lt;- "or is out\n"; }
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">4 distinct, 2 repeats</span>, then <span class="pre">or is in</span>,
+		<span class="pre">or removed</span> and <span class="pre">or is out</span>.</p>
+
+	<h2 id="deque">Deque</h2>
+	<p><span class="pre">Deque[T]</span> is a double-ended queue, a
+		growable ring buffer: its values are in one block, as a
+		circle, the first at a slot that moves, so <span class="pre">push</span> and
+		<span class="pre">pop</span> at the back and <span class="pre">pushFront</span> and
+		<span class="pre">popFront</span> at the front are all O(1), where a
+		<span class="pre">List</span> can take a value off its front only by moving every other one.
+		<span class="pre">peek()</span> and <span class="pre">peekFront()</span> are an
+		<span class="pre">Option</span> of a borrow of the last and the first value,
+		<span class="pre">get(i)</span> the same of position <span class="pre">i</span> counted from the
+		front (<span class="pre">None</span> past the end), <span class="pre">d[i]</span> and
+		<span class="pre">&amp;mut d[i]</span> borrow it (a panic past the end), and
+		<span class="pre">items()</span> is a cursor over borrows from the front to the back.</p>
+<pre>
+mod dequedemo;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut line = Deque[i32].empty();
+  line.push(1);
+  line.push(2);
+  line.push(3);
+  line.pushFront(0);                  // O(1) at the front too
+  match line.popFront() {
+    case imm v Some {print &lt;- v; print &lt;- "\n";}
+    case is None {print &lt;- "empty\n";}
+  }
+  match line.peek() {                 // the last, as a borrow
+    case imm v Some {print &lt;- *v; print &lt;- "\n";}
+    case is None {print &lt;- "empty\n";}
+  }
+  print &lt;- *line[1usize];             // counted from the front
+  print &lt;- "\n";
+  each v in line {
+    print &lt;- *v;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">0</span>, <span class="pre">3</span>, <span class="pre">2</span> and
+		<span class="pre">1 2 3</span>.</p>
+	<p>A full block is replaced by one twice the size (4, 8, 16, ...), the values moved in order with the
+		first in slot 0; it never shrinks. <span class="pre">reserve(n)</span>,
+		<span class="pre">capacity</span>, <span class="pre">clear</span> (finalizing front to back,
+		keeping the block), <span class="pre">len</span>, <span class="pre">isEmpty</span> and
+		<span class="pre">new Deque[T](n)</span>, a block of exactly <span class="pre">n</span> slots,
+		are a list's. Its values may wrap round the block's end, so it has no
+		<span class="pre">view()</span>: read them by position or with the cursor.</p>
+
+	<h2 id="string">String</h2>
+	<p><span class="pre">String</span> is the growable string: a list of bytes, lent as text,
+		<span class="pre">&amp;str</span>, by <span class="pre">s.view()</span>, with the methods of text folded in as its
+		own. The Guide's <a href="guide-text.html">String</a> teaches it, and its methods are listed with text's.</p>
+
+	<h2 id="send">The send operator's entries</h2>
+	<p><span class="pre">&lt;-</span> is the one operator for giving values to anything that takes them:
+		<span class="pre">print &lt;- "Hello"</span> writes text out, <span class="pre">xs &lt;- 4</span> pushes onto a
+		list, <span class="pre">ages &lt;- name: 31</span> puts a key and its value in a dictionary, and
+		<span class="pre">new List[i32] &lt;- 2, 3, 5</span> builds a list with its contents. A type takes values this way
+		by declaring methods that overload <span class="pre">`&lt;-`</span>
+		(<a href="rec-methods.html#append">Method patterns</a>).</p>
+	<p>The receiver is borrowed for the append with the permission that the chosen
+		method's <span class="pre">self</span> declares. A method taking
+		<span class="pre">self &amp;mut</span>, as a collection's does, needs a receiver
+		that may be written: a <span class="pre">mut</span> variable or global. Held through a reference,
+		it is the reference's permission that is checked, never the variable's, so an
+		<span class="pre">imm</span> variable holding an <span class="pre">Rc[mut, List[i32]]</span>,
+		an <span class="pre">Arc[mut, List[i32]]</span> or a <span class="pre">&amp;mut List[i32]</span> is
+		appended to, while an <span class="pre">Arc[imm, ...]</span>, a
+		<span class="pre">&amp;List[i32]</span> or a list in an <span class="pre">imm</span> variable is refused.
+		A method taking <span class="pre">self &amp;</span> changes nothing the receiver holds, as the
+		methods of <span class="pre">stdio</span>'s <span class="pre">print</span> do, whose data lives in
+		the C library's stream: it is available on a receiver in an <span class="pre">imm</span> variable, and
+		<span class="pre">print</span> is an <span class="pre">imm</span> global.
+		(<a href="mem-borrowing.html">Borrowed references</a> explains borrowing.)</p>
+	<p>What follows the send operator is a list of entries, separated by commas,
+		and each is appended in turn, as though it had an append of its own:</p>
+<pre>
+print &lt;- "Hello ", user;   // equivalent to: print &lt;- "Hello "; print &lt;- user
+</pre>
+	<p>Besides a value, an entry may take one of four forms, each recognized only in this list:</p>
+	<ul>
+		<li><b><span class="pre">n of x</span></b> appends n values, evaluating
+			<span class="pre">x</span> once for each: <span class="pre">xs &lt;- 4 of 0</span>.
+			Nothing is shared between them, so a construction gives a new value each time,
+			while a variable holding a value that moves is moved by the first and is gone
+			for the second. The count is a <span class="pre">usize</span>; a constant one is
+			from 0 through 4294967295, as an array's size is.</li>
+		<li><b><span class="pre">fill x</span></b> appends <span class="pre">x</span>,
+			evaluated once for each, until the collection is full: until its
+			<span class="pre">len()</span> reaches its <span class="pre">capacity()</span>,
+			the two methods it asks. A collection that declares neither cannot be filled.</li>
+		<li><b><span class="pre">k: v</span></b> appends a key and its value together,
+			through a <span class="pre">&lt;-</span> method that takes the two:
+			<span class="pre">ages &lt;- name: 31</span>. Appended in order, a later value for
+			a key the dictionary already holds replaces the earlier.</li>
+		<li><b><span class="pre">each</span></b> draws values from a source, one at a time:
+			<span class="pre">each src</span> appends every item of <span class="pre">src</span>
+			(an item a loop would lend as a borrow is appended as a copy of it), and
+			<span class="pre">each x in src if cond yield v</span> is a loop's own header
+			(<a href="#builder">below</a>), the <span class="pre">yield</span> giving what is
+			appended on each pass. <span class="pre">yield k: v</span> appends a pair.
+			The source may be anything <span class="pre">each</span> walks, a number range
+			included. With <span class="pre">parallel</span> before the <span class="pre">each</span>
+			the passes run at the same time and the values are joined in the order of the passes,
+			into a <span class="pre">List</span> only
+			(<a href="conc-parallel.html#parallelbuilder">The parallel builder</a>).</li>
+	</ul>
+<pre>
+mut xs = new List[i32];
+xs &lt;- 1, 2, 3 of 0;          // 1, 2, 0, 0, 0
+xs &lt;- fill -1;                // -1 until xs.len() is xs.capacity()
+tx &lt;- job, 2 of next();       // a channel's '&lt;-' sends each
+imm copy = new List[i32] &lt;- each xs;                          // every item of xs
+imm evens = new List[i32] &lt;- each x in xs if x % 2 == 0 yield x * 10;
+imm older = new Dict[i32, i32] &lt;- each id, age in ages yield *id: age + 1;
+imm tens = new List[i32] &lt;- each xs.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain of adapters
+xs &lt;- 9, each other.drain(), 8;      // items that move are handed over, not copied
+imm doubled = new List[i32] &lt;- parallel each x in xs yield x * 2;   // at the same time, in order
+</pre>
+	<p>The loop reads its source while the list is appended to, so the two may not be the
+		same list: <span class="pre">xs &lt;- each xs</span> is refused as
+		<span class="pre">each x in xs { xs.push(*x); }</span> is, since the list could
+		move what the loop is reading. An array's contents may not use <span class="pre">each</span>:
+		its size is fixed, and a loop's count is not known when it is compiled.</p>
+	<p>The words <span class="pre">of</span> and <span class="pre">fill</span> mean
+		this only in the list; elsewhere they are ordinary names. In the list,
+		<span class="pre">fill</span> is the word when a space and then a value follow it,
+		so <span class="pre">fill(3)</span> still calls a function and
+		<span class="pre">xs &lt;- fill;</span> still appends a variable named <span class="pre">fill</span>.</p>
+	<p>The list runs to the end of the statement, across as many lines as it needs.
+		Inside another comma-separated list, such as a call's arguments, a construction's
+		contents (below) take one entry, and several are parenthesized:
+		<span class="pre">draw(new List[i32] &lt;- (1, 2), x)</span>.</p>
+	<p>Inside a <span class="pre">with</span> block, <span class="pre">&lt;-</span> with nothing on its left
+		appends to <span class="pre">this</span> (<a href="rec-with.html#streamprefix">The send operator with nothing before it</a>).
+		A negative value after a comparison pattern's <span class="pre">&lt;</span> needs a space,
+		<span class="pre">case &lt; -1</span>, since <span class="pre">&lt;-</span> is this operator.</p>
+
+	<h3 id="contents">A collection's contents</h3>
+	<p>A <a href="rec-methods.html#initializer">construction</a> may be followed by
+		<span class="pre">&lt;-</span> and a list. The value is built by its
+		<span class="pre">init</span>, whose arguments the parentheses carry, such as a
+		capacity; then each entry is appended to it; and the whole is the value built:</p>
+<pre>
+imm primes = new List[i32] &lt;- 2, 3, 5, 7;
+imm zeros = new List[f32](100) &lt;- fill 0.0;     // room for 100, then filled
+imm ages = new Dict[String, i32] &lt;- String.from("Ann"): 31, String.from("Bo"): 12;
+</pre>
+	<p>An <a href="#arraycontents">array</a> has no <span class="pre">init</span>
+		and no <span class="pre">&lt;-</span>, and its size is fixed, so its construction is
+		its contents, which fill it exactly: <span class="pre">new Array[f32, 4] &lt;- fill 0.0</span>.
+		Written with several sizes, its entries are its scalars, row by row:
+		<span class="pre">new Array[i32, 2, 3] &lt;- 1, 2, 3, 4, 5, 6</span>.</p>
+	<p>An <a href="mem-regions.html#contents">allocation</a> is a construction too, and takes
+		contents the same way. An array's fill it in the region's memory, an element at a time;
+		a collection's are appended through the new reference:</p>
+<pre>
+imm grid = new Rc[mut, Array[f32, 4]] &lt;- fill 0.0;
+imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
+</pre>
+
+	<h3 id="builder">each inside &lt;-: &lt;- each &hellip; if &hellip; yield</h3>
+	<p>An <span class="pre">each</span> may stand in the list after the send operator
+		(<a href="#send">above</a>), beside values, <span class="pre">of</span>,
+		<span class="pre">fill</span> and pairs. With only a source it drains it: every item is appended.
+		With variables it is the loop's own header, including the <span class="pre">if</span> filter,
+		and a <span class="pre">yield</span> in the place of a block says what each pass appends:</p>
+<pre>
+imm copy = new List[i32] &lt;- each other;                     // every item of other
+imm big = new List[i32] &lt;- each x in other if x &gt; 9 yield *x;
+imm squares = new List[i32] &lt;- each i in 1 .. 5 yield i * i;    // 1 4 9 16 25
+imm index = new Dict[i32, str] &lt;- each p in people yield p.id: p.name;
+xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
+imm tens = new List[i32] &lt;- each other.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain
+</pre>
+	<p>This <span class="pre">yield</span> belongs to the entry: it is not a generator's, which is a
+		statement of its own, so a generator may build a list this way and then hand values to
+		its caller. Two or more variables unpack a tuple item as they do in a loop, and
+		<span class="pre">yield k: v</span> appends a pair to a collection that takes a key and a value.
+		The items an <span class="pre">each</span> gives of a collection are borrows, so a drain appends a copy
+		of each (a type that moves is not copied: drain a source that hands its items over,
+		<span class="pre">each other.drain()</span>), and a <span class="pre">yield</span> writes the
+		<span class="pre">*</span> itself where it wants the value. The list being appended to cannot be the
+		source: <span class="pre">xs &lt;- each xs</span> is refused, as pushing to a list while a loop
+		walks it is. An array's contents cannot hold an <span class="pre">each</span>, as its size is fixed.</p>
+	<p id="builderchain">The source may be a chain of <a href="#adapters">adapters</a>, in the bare form or after
+		<span class="pre">in</span> in the header form: the chain is a cursor, and the entry walks it as any other, one
+		loop. A chain that starts at a list's <span class="pre">iter()</span> hands out borrows, so the items are copied as
+		from the list itself; a chain whose closure makes the value (<span class="pre">map(s =&gt; String.from(s.view()))</span>)
+		hands the value over; and one that starts at <span class="pre">drain()</span> moves the items out of the list, those a
+		<span class="pre">filter</span> rejects are dropped, and the list is left empty:</p>
+<pre>
+imm lengths = new List[usize] &lt;- each names.drain().map(s =&gt; s.len);      // names is left empty
+imm kept = new List[i32] &lt;- each v in xs.iter().map(x =&gt; *x * 2) if v &gt; 6 yield v + 1;
+imm squares = new Dict[i32, i32] &lt;- each k, v in xs.iter().map(x =&gt; (*x, *x * *x)) yield k: v;
+</pre>
+	<p>A chain that starts at the list being appended to is refused as <span class="pre">xs &lt;- each xs</span> is
+		(<span class="pre">xs &lt;- each xs.iter().map(f)</span>, and with <span class="pre">drain()</span>). A chain whose
+		closure reads the list while it grows (its <span class="pre">len</span>, an item's value) is allowed. A dictionary takes pairs by <span class="pre">yield k: v</span>
+		in the header form; the bare form <span class="pre">new Dict[K, V] &lt;- each pairs</span> is not built for any source.
+		<span class="pre">new List[T] &lt;- parallel each chain</span> is refused: a chain cannot be split (<a href="conc-parallel.html#parallelbuilder">on its own page</a>).</p>
+	<p>A cursor whose <span class="pre">next</span> names no lifetime <i>lends</i>: each item is a borrow of the cursor
+		itself, gone at the next step. A chain over one feeds the entry the same way when each entry is a value made from the
+		item (a number copied, <span class="pre">map(x =&gt; *x + 1)</span>, a field read). A list that would keep the lent
+		items themselves (of a struct holding the borrow) is refused, whatever adapters sit in the chain.</p>
+
+	<h2 id="iteration">Walking a collection</h2>
+	<p>Walking a collection is
+		<a href="guide-loops.html#counting">each</a>. A <span class="pre">List</span> is walked as the slice it lends, a
+		counted loop; <span class="pre">iter()</span> is its cursor, for code generic over cursors
+		(<a href="mod-substitution.html"><span class="pre">Iterator</span></a>), and the methods of
+		<span class="pre">Array[T]</span> it folds in come with it: <span class="pre">mutItems()</span> lends each
+		element as a <span class="pre">&amp;mut</span> to change, <span class="pre">indexed()</span> pairs a position
+		(a <span class="pre">usize</span>) with a borrow of the element, <span class="pre">chunks(n)</span> and
+			<span class="pre">mutChunks(n)</span> hand out its values in runs of <span class="pre">n</span> (each run a
+			slice, a <span class="pre">&amp;mut</span> one from <span class="pre">mutChunks</span>, which a list gives
+			itself), <span class="pre">asArrays[N]()</span> and <span class="pre">mutArrays[N]()</span> see them
+				as rows of <span class="pre">N</span> over the same block
+				(<a href="#asarrays">Seen as Rows</a>), and <span class="pre">drain()</span>
+		leaves the list empty at once (keeping its block) and hands each value over by value, finalizing those a
+		loop left early did not reach.</p>
+<pre>
+mod walking;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  mut xs = List[i32].empty();
+  xs &lt;- 1, 2, 3, 4, 5;
+
+  each x in xs.mutItems() {              // each element lent as a &amp;mut
+    *x = *x * 10;
+  }
+  each i, x in xs.indexed() {            // a position beside a borrow of the element
+    print &lt;- i;
+    print &lt;- "=";
+    print &lt;- *x;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  each run in xs.chunks(2usize) {        // runs of two; each run is a slice
+    print &lt;- run.len;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  mut ys = List[i32].empty();
+  ys &lt;- 7, 8, 9;
+  each a, b in zip(&amp;xs, &amp;ys) {           // two collections side by side
+    print &lt;- *a + *b;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  each x in xs.drain() {                 // leaves the list empty; each value by value
+    print &lt;- x;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  print &lt;- xs.len();
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>This prints <span class="pre">0=10 1=20 2=30 3=40 4=50</span>, <span class="pre">2 2 1</span>,
+		<span class="pre">17 28 39</span>, <span class="pre">10 20 30 40 50</span> and <span class="pre">0</span>,
+		each on its own line.</p>
+	<p>A <span class="pre">Deque</span>, a <span class="pre">Set</span>, a
+		<span class="pre">Dict</span> and an <span class="pre">OrderedDict</span> each have an
+		<span class="pre">iter()</span> that <span class="pre">each</span> calls itself:
+		a deque's and a set's give a borrow of each element (<span class="pre">items()</span> is the same cursor),
+		a dictionary's gives its pairs, a borrow of the key and a borrow of the value, which
+		<span class="pre">each key, value in dict</span> unpacks. The dictionaries' other views are cursors too:
+		<span class="pre">keys()</span>, <span class="pre">values()</span> and <span class="pre">entries()</span>
+		(a borrow of each entry, with its <span class="pre">key</span> and <span class="pre">value</span>).
+		<span class="pre">zip(&amp;a, &amp;b)</span> walks two lists, arrays, slices, deques, sets or dictionaries side by side.
+		A dictionary or set is not changed while a loop walks it, and a dictionary's order is the one
+		described <a href="#dictorder">above</a>. A <span class="pre">String</span>'s text is walked through
+		<span class="pre">chars()</span> and <span class="pre">charIndices()</span>
+		(<a href="guide-text.html">The Methods of str</a>).</p>
+
+	<p style="margin-left: 40px;"><i>Note: Not built yet: closure iterators, and a source that runs its own loop around the body of an <span class="pre">each</span>.</i></p>
+
+	<h3 id="sources">What each walks</h3>
+	<p><span class="pre">each</span> supports several ways to iterate over a sequence of values:</p>
+	<ul>
+		<li><b>Number range</b>, for simple arithmetic progressions.</li>
+		<li><b>Array, slice or list</b>, to work with individual elements.</li>
+		<li><b>Cursor</b>, something with a <span class="pre">next</span> method, and anything that gives one.
+			A <a href="guide-functions.html#generators-tour">generator</a> is a cursor.</li>
+		<li><b>Closure</b>, to deal with algorithmically-generated values (not built yet).</li>
+	</ul>
+
+	<h3 id="eachitems">Arrays, slices and lists</h3>
+	<p><span class="pre">each</span> can be used to iterate through
+		every element of an array, a slice or a list, one at a time. The variable is a
+		<b>borrow</b> of the element
+		(the elements themselves stay where they are, and the list is still whole afterwards).
+		A borrowed number needs no <span class="pre">*</span> in an expression: it is read through on either side of
+		an operator (<span class="pre">x + total</span>, <span class="pre">total + x</span>), on the right of a
+		compound assignment (<span class="pre">sum += x</span>) and in a comparison
+		(<span class="pre">x &gt; 1</span>, or <span class="pre">x == y</span> for two borrows, which compares the values),
+		and so is any value that copies freely: a <span class="pre">bool</span>, a <span class="pre">char</span>,
+		a plain struct
+		(<a href="mem-borrowing.html">Implicit De-referencing</a>). The <span class="pre">*</span> is
+		written where the value itself is wanted: a copy of the item
+		(<span class="pre">imm y = *x</span>), a value handed to a function, a <span class="pre">break</span>
+		or <span class="pre">yield</span>, or a store through a <span class="pre">&amp;mut</span>:</p>
+<pre>
+mut sum = 0;
+each x in [4, 3, 8, 2] {
+  sum += x;
+}
+
+mut chars = 0usize;
+each name in names {      // a List[String]: name is a &amp;String
+  chars += name.len;
+}
+</pre>
+	<p>An array or a slice is walked by a counted loop over its length, and so is a list, which lends its
+		elements as a slice: none of them makes an iterator object, and the loop is
+		the one a <span class="pre">while</span> over the indexes would be. While the loop runs the list
+		may not be changed, since the borrows it hands out would not survive a change.
+			For the same reason an <span class="pre">await</span> in the body is refused over an array or a list,
+			whose borrow would have to last across it; over a number range it is fine
+			(<a href="conc-await.html#await-loop">An await in a loop</a>).</p>
+<h4 id="mutitems">Changing items in place: <span class="pre">mutItems</span></h4>
+	<p>A plain <span class="pre">each</span> only reads. To change the items of a list, an array or a slice
+		where they are, walk <span class="pre">mutItems()</span>, which lends each item as a
+		<span class="pre">&amp;mut</span>:</p>
+<pre>
+each x in list.mutItems() {
+  *x = *x * 2;       // x is a &amp;mut of the item
+}
+</pre>
+	<p>It is the same counted loop as a plain <span class="pre">each</span> over a slice. The list stays
+		borrowed mutably while the loop runs, so nothing else may read or change it until the loop is over.
+		A list, an array or a slice that is only read has no <span class="pre">mutItems</span> to take
+		(a list in an <span class="pre">imm</span> variable, or a <span class="pre">&amp;Array[T]</span> parameter).</p>
+	<p>A borrow written as the source, <span class="pre">each x in &amp;mut list</span>, is refused, in
+		<span class="pre">parallel each</span> and in <span class="pre">&lt;- each</span> too, with the message to write
+		<span class="pre">list.mutItems()</span>: <span class="pre">each</span> reads what it walks, and the
+		change in place is a method that lends the items. <span class="pre">each x in &amp;list</span> is allowed
+		and reads, as <span class="pre">each x in list</span> does.</p>
+<h4 id="drain">Taking items out: <span class="pre">drain</span></h4>
+	<p><span class="pre">list.drain()</span> gives the values up one at a time, <b>moving</b> each out of the list
+		into the loop's variable, which then holds the value itself (not a borrow of it), so it works for
+		items such as a <span class="pre">String</span> that cannot be copied:</p>
+<pre>
+each name in names.drain() {   // name is a String, moved out of names
+  joined.append(name.view());
+}
+// names is now empty (its block is kept for reuse)
+</pre>
+	<p>The list is left empty as soon as <span class="pre">drain</span> is called, and may not be used while
+		the loop runs. Each pass's value is finalized as the pass ends. A loop left early, by
+		<span class="pre">break</span> or <span class="pre">return</span>, finalizes the values it did not reach.</p>
+<h4 id="indexed">Positions: <span class="pre">indexed</span></h4>
+	<p><span class="pre">indexed()</span> of a list, an array or a slice gives each position with a borrow of
+		its item, a pair that two variables unpack. Walked directly by <span class="pre">each</span>, it is a
+		counted loop, as a plain <span class="pre">each</span> is:</p>
+<pre>
+each i, name in names.indexed() {   // i is a usize, name a borrow of the item
+  print(i, name);
+}
+</pre>
+	<p>A bare <span class="pre">indexed()</span> always borrows its items for reading, on a <span class="pre">&amp;mut</span>
+		slice as on any other. To change them, call it on <span class="pre">mutItems()</span>, a cursor of its own whose
+		<span class="pre">indexed()</span> lends each item as a <span class="pre">&amp;mut</span>:</p>
+<pre>
+each i, p in buf.mutItems().indexed() {
+  *p = f(i);                        // p is a &amp;mut of the item
+}
+</pre>
+	<p>Every other cursor that declares <span class="pre">is Iterator[T]</span> has an
+		<span class="pre">indexed()</span> too: a generator, a chain, a cursor of one's own. Its
+		item is the same pair, the position (a <span class="pre">usize</span>, counted from 0 as the cursor is walked)
+		and what the cursor gives. Positions count what the cursor wrapped gives, so after a
+		<span class="pre">filter</span> they number what is left, and an <span class="pre">indexed()</span> before the
+		<span class="pre">filter</span> keeps the original positions. A cursor that lends its items (one whose
+		<span class="pre">next</span> names no lifetime, so an item is gone at the next step) still lends once
+		numbered: the borrow is inside the pair, and every use that would keep it past the next step is refused as
+		it is without the numbering.</p>
+<pre>
+each i, y in xs.iter().map(x =&gt; *x * 2).filter(y =&gt; *y &gt; 20).indexed() {
+  printInt(i64.from(i) * y);        // i counts the items the filter kept
+}
+</pre>
+<h4 id="chunks">Runs: <span class="pre">chunks</span> and <span class="pre">mutChunks</span></h4>
+	<p><span class="pre">chunks(n)</span> of a list, an array or a slice hands out its items in runs of
+		<span class="pre">n</span>, each run a slice; <span class="pre">mutChunks(n)</span> hands each out as a
+		<span class="pre">&amp;mut</span> slice, to change in place. The last run is what is left, so it is shorter when
+		<span class="pre">n</span> does not divide the count; <span class="pre">n</span> larger than the count is one run of
+		everything; an empty source has no run. <span class="pre">n</span> of 0 is a panic, at the line of the call.
+		<span class="pre">indexed()</span> numbers the runs from 0:</p>
+<pre>
+each run in list.chunks(4) {              // run is a &amp;Array[T] of 4 items (the last may be fewer)
+  ...
+}
+each y, row in pixels.mutChunks(width).indexed() {
+  each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+}
+</pre>
+	<p>The cursor <span class="pre">chunks</span> gives has <span class="pre">len</span> (how many runs are left),
+		<span class="pre">at(k)</span> (run number <span class="pre">k</span> of those left) and
+		<span class="pre">split(at)</span> (the runs before run <span class="pre">at</span> and those from it on, each a cursor over
+		the same items), so it is a <span class="pre">ParallelIterable</span> that cuts only between runs.
+		<a href="conc-parallel.html#parallelfill">A parallel each</a> walks it.</p>
+	<p>For a buffer of pixels, three bytes each, <span class="pre">mutArrays[3]()</span> first sees it as a slice
+		of <span class="pre">Array[u8, 3]</span> (<a href="#asarrays">Seen as Rows</a>), so the
+		runs are rows of pixels and a pixel's channels are indexed:
+		<span class="pre">each y, line in pixels.mutArrays[3]().mutChunks(width).indexed() { line[x][0] = ...; }</span></p>
+<h4 id="zip">Two together: <span class="pre">zip</span></h4>
+	<p><span class="pre">zip(&amp;xs, &amp;ys)</span> walks two lists (or deques, sets, dictionaries, or
+		anything else with an <span class="pre">iter</span> method) side by side, giving a pair of what each
+		gives, and ends when the shorter does:</p>
+<pre>
+each x, y in zip(&amp;xs, &amp;ys) {
+  ...
+}
+</pre>
+	<p>An array and a slice have an <span class="pre">iter()</span> too (<span class="pre">each x in a.iter()</span>
+		is the loop <span class="pre">each x in a</span> is), and <span class="pre">zip</span> takes them, with
+		the <span class="pre">&amp;</span> a list takes: <span class="pre">zip(&amp;arr, &amp;xs)</span>, or two
+		slice parameters, <span class="pre">zip(s, t)</span>.</p>
+	<p>A <b>cursor</b> is zipped with its own method, which takes the other cursor
+		by value (the <span class="pre">&amp;</span> of the function would borrow a value that ends with the
+		statement), so a chain goes on from it. Every cursor that declares <span class="pre">is Iterator[T]</span>
+		has it (see <a href="#adapters">Adapters</a>), the cursor of a list or an array, a deque, a dictionary, a
+		generator and a cursor of your own, as well as what <span class="pre">chunks(n)</span>,
+		<span class="pre">mutChunks(n)</span> and <span class="pre">mutItems()</span> give:
+		<span class="pre">xs.iter().zip(ys.iter())</span>, <span class="pre">a.mutChunks(n).zip(b.mutChunks(3usize * n))</span>.
+		It gives the same pairs as the function (a tuple, which <span class="pre">each x, y</span> unpacks), ends with
+		the shorter, and the pairs can be mapped, filtered and counted like any items:
+		<span class="pre">xs.iter().zip(ys.iter()).map(p =&gt; *p.0 * *p.1).sum()</span>. The argument is a cursor, not a
+		collection: <span class="pre">xs.iter().zip(ys)</span> is refused. Its
+		<span class="pre">indexed()</span> numbers the pairs from 0, three variables, the position and one item from
+		each source. <span class="pre">each</span> walks it through <span class="pre">next</span>.</p>
+<pre>
+each y, ra, rb in a.mutChunks(n).zip(b.mutChunks(3usize * n)).indexed() {
+  ...                          // ra is a &amp;mut slice of n items of a, rb of 3n items of b
+}
+each x, y, z in a.mutChunks(n).zip(b.mutChunks(m)).zip(c.mutChunks(k)) {
+  ...                          // a third cursor: a flat triple of the three
+}
+</pre>
+
+	<h3 id="cursors">Cursors</h3>
+	<p>A <b>cursor</b> is anything with a <span class="pre">next</span> method that answers an
+		<a href="guide-enums.html#option">optional value</a>, <span class="pre">Some</span> with the next item or
+		<span class="pre">None</span> when there are no more. A type needs no declaration to be one,
+		only the method (it is met by shape, as <a href="mod-substitution.html"><span class="pre">Iterator</span></a>
+			in the core library names, which is what generic code asks for):</p>
+<pre>
+struct Countdown {
+  n i32;
+
+  pub fn next(self &amp;mut) Option[i32] {
+    if n &lt;= 0 { return None[i32]; }
+    imm v = n;
+    n = n - 1;
+    Some[i32](v);
+  }
+}
+
+mut countdown = new Countdown(3);
+mut digits = 0;
+each n in countdown {     // iterates: 3 2 1
+  digits = digits * 10 + n;
+}
+</pre>
+	<p>The cursor is used as it is: a cursor in a variable is advanced there, so a loop left with
+		<span class="pre">break</span> can be followed by another that carries on from where it stopped.
+		A cursor that lends (a deque's <span class="pre">items()</span>, say) gives borrows
+		of its items, as an array does; one that gives values gives the values themselves.
+		An item that moves (a <span class="pre">String</span> the cursor hands out) is taken out of the
+		optional value by the one variable, and is the variable's from then on; several variables, which would
+		take the elements of a moving pair out one by one, are refused.</p>
+<h4 id="iter-cursor">Something that gives a cursor</h4>
+	<p>A value with no <span class="pre">next</span> but an <span class="pre">iter</span> method,
+		which gives a cursor, is walked through the cursor it gives, as if the loop had called
+		<span class="pre">iter</span> itself:</p>
+<pre>
+each x in collection {  // equivalent to: each x in collection.iter()
+}
+</pre>
+	<p>The collections give cursors in this way: a deque's, a set's and the dictionaries'.
+		Calling <span class="pre">iter</span> only reads the collection: it is borrowed and not consumed,
+		and may not be changed while the loop runs.
+			Other views of a collection are ordinary methods that answer a cursor, walked the same way:
+			<span class="pre">each k in dict.keys()</span>, <span class="pre">dict.values()</span>,
+			<span class="pre">deque.items()</span>, <span class="pre">text.chars()</span>
+			(<a href="#iteration">Collection Types</a>).</p>
+
+	<h5>Two variables</h5>
+	<p>Two or more variables unpack an item that is a tuple. A dictionary's cursor gives its
+		pairs, a borrow of the key and a borrow of the value, so</p>
+<pre>
+mut both = 0;
+each key, value in ages {   // a Dict[i64, i64]
+  both += key * value;
+}
+</pre>
+	<p>and one variable would take the pair whole (<span class="pre">pair.0</span> and
+		<span class="pre">pair.1</span>). A number of variables that does not match the tuple, and
+		any number but one for an array, a slice or a list, are refused.</p>
+
+	<h2 id="adapters">Adapters</h2>
+	<p>Every cursor that declares itself an <a href="mod-substitution.html"><span class="pre">Iterator</span></a> has the steps
+		that work on a sequence as a whole, as methods the trait shares: the cursors of the collections (<span class="pre">xs.iter()</span>,
+		<span class="pre">chunks</span>, <span class="pre">mutItems</span>, <span class="pre">indexed</span>, a dictionary's, a deque's), a
+		<span class="pre">zip</span>, <span class="pre">text.chars()</span>, a <a href="guide-functions.html#generators-tour">generator</a>, and a struct of your own that says
+		<span class="pre">is Iterator[T]</span>, <span class="pre">T</span> being what its <span class="pre">next</span> gives. A step gives a
+		cursor again; none does any work until a <b>terminal</b> method walks the chain once, from where the cursor is, and
+		leaves it advanced:</p>
+<pre>
+imm k = 3;
+imm total = xs.iter().map(x =&gt; *x * k).filter(y =&gt; *y &gt; 9).sum();
+each v in xs.iter().map(x =&gt; *x * k) {      // a step is a cursor too: each walks it
+}
+
+struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum and the rest
+  n i64;
+  pub fn next(self &amp;mut) Option[i64] { ... }
+}
+</pre>
+	<table border="1" cellpadding="4" cellspacing="0">
+		<tr><td><span class="pre">map(f)</span></td><td>each item through <span class="pre">f</span>; the closure is typed from the item and its result is the new item's type</td></tr>
+		<tr><td><span class="pre">filter(f)</span></td><td>the items <span class="pre">f</span> is true of; <span class="pre">f</span> is given a <i>borrow</i> of the item</td></tr>
+		<tr><td><span class="pre">take(n)</span>, <span class="pre">skip(n)</span></td><td>at most the first <span class="pre">n</span> items; all but the first <span class="pre">n</span> (any integer, a plain literal included; more than there are is none)</td></tr>
+		<tr><td><span class="pre">zip(other)</span></td><td>pairs of an item from this cursor and one from <span class="pre">other</span> (a cursor), ending with the shorter (<a href="#zip">Two together</a>)</td></tr>
+		<tr><td><span class="pre">fold(init, f)</span></td><td><span class="pre">f(result so far, item)</span> over the items, starting from <span class="pre">init</span></td></tr>
+		<tr><td><span class="pre">any(f)</span>, <span class="pre">all(f)</span></td><td>whether <span class="pre">f</span> is true of some / every item; stops at the first that settles it; false / true for no items</td></tr>
+		<tr><td><span class="pre">count()</span></td><td>how many items</td></tr>
+		<tr><td><span class="pre">find(f)</span></td><td>the first item <span class="pre">f</span> (given a borrow) is true of, as an <span class="pre">Option</span></td></tr>
+		<tr><td><span class="pre">sum()</span>, <span class="pre">min()</span>, <span class="pre">max()</span></td><td>for number items: the total (0 for none); the smallest and largest as an <span class="pre">Option</span>, <span class="pre">None</span> for no items (the first of equals)</td></tr>
+	</table>
+	<p>An item is whatever the cursor gives. A cursor that lends (<span class="pre">xs.iter()</span>) gives borrows, so a closure
+		reads through them: <span class="pre">map(x =&gt; *x * 2)</span>. A <span class="pre">filter</span>'s closure is given a borrow
+		of the item, a borrow of a borrow for such a cursor, which an operator reads through
+		(<span class="pre">filter(y =&gt; *y &gt; 3)</span> for either kind). <span class="pre">sum</span>,
+		<span class="pre">min</span> and <span class="pre">max</span> are methods only where the items are numbers
+		(integers, <span class="pre">f32</span>, <span class="pre">f64</span>), so a cursor that lends is mapped to values first,
+		<span class="pre">map(x =&gt; *x).max()</span>, and a struct has none of them. <span class="pre">find</span> hands the item back,
+		and a borrow cannot be handed back through the chain's steps (each step's <span class="pre">next</span> is a method whose signature
+		names no lifetime, so its result is held to lend from the step), so it too is called on values:
+		<span class="pre">map(x =&gt; *x).find(y =&gt; *y == 5)</span>.</p>
+	<p>A chain is compiled into one loop, with each closure's body in line. How that works, and the
+		<span class="pre">Iterator</span> trait that gives a cursor its adapters, are in
+		<a href="mod-substitution.html#iterators">Traits</a> and <a href="mod-generativity.html">Generativity</a>.</p>
+	<p><i>Not built yet:</i> a source that runs its own loop around the body of an <span class="pre">each</span>, taking the body
+		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
+		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;
+		<span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span> in the body would reach the source as
+		signals, and an <span class="pre">await</span> in such a body may be refused. The parallel reductions are <a href="conc-parallel.html#parallelreduce">on their own page</a>.
+		A chain feeding the entries of <a href="#builderchain">a collection being built</a> (<span class="pre">&lt;- each</span>) is built.</p>
+
+	<h2 id="array">Array</h2>
+    <p style="margin-left: 40px;"><i>Note: Implemented: the array type, with one size or several,
+        array literals, nested arrays, elements given by expressions, a string as an array of u8,
+        construction with contents (<span class="pre">new Array[T, n] &lt;- fill x</span>), copying, getting and
+        setting one element by index, <span class="pre">each</span> over an array, and a run-time bounds check on every index. Not implemented:
+        the len method (a slice's is), the $- operator, multi-element segments and fills,
+        comparison, and pattern matching. An index out of range is caught only at run time, even
+        when it is a constant.</i></p>
+
+	<p id="fixedarrays">A list grows. An <b>array</b>'s size is fixed when it is made, and never changes. That suits
+		values whose number is part of the problem: the three coordinates of a point in space, the sixteen numbers of a
+		4&times;4 matrix, a table of the days in each month. An array is written as its values in square brackets, and is
+		read with <span class="pre">[i]</span> and walked with <span class="pre">each</span>, just as a list is:</p>
+<pre>
+imm days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+mut total = 0;
+each d in days {
+  total += d;
+}
+print &lt;- total, " days; February has ", days[1], "\n";   // 365 days; February has 28
+
+imm point = [3d, 4d, 12d];
+imm far = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();   // 13
+
+mut grid = new Array[f64, 4, 4] &lt;- fill 0d;     // a 4&times;4 matrix of zeros
+each i in 0usize ..&lt; 4 {
+  grid[i][i] = 1d;                              // ones down the diagonal
+}
+</pre>
+	<p>The size is part of an array's type: <span class="pre">days</span> is an <span class="pre">Array[i32, 12]</span>.
+		So an array takes no <span class="pre">&lt;-</span> once it is made, though <span class="pre">fill</span> can fill
+		a new one.</p>
+
+    <p>An array holds a specified number of values, all of the same type.
+		The size of the array (its number of elements) is a fixed, constant value and is not resizable.
+        The array's elements are located next to each other in memory.
+		Elements are individually accessed using an unsigned integer index.</p>
+        <p>For example:</p>
+<pre>
+mut numbers Array[f32, 3] = [3.1, 4.1, 5.92];
+imm nbr = numbers[1];     // nbr is 4.1
+numbers[0] = 2.;          // numbers is now [2., 4.1, 5.92]
+</pre>
+    <p>Here, <span class="pre">numbers</span> is an array containing three floating-point numbers as its elements.
+      As the redundant type specification <span class="pre">Array[f32, 3]</span> indicates, the type of its elements
+      is <span class="pre">f32</span> and the length of the array is 3.
+	  The <span class="pre">[]</span> operator enables access to a specific element.</p>
+
+    <h3 id="arraytype">The array type</h3>
+    <p>An array type is written <span class="pre">Array[T, n]</span>: the element type first, then the size.
+        The size is an integer literal from 0 through 4294967295, and is part of the type: an <span class="pre">Array[f32, 3]</span>
+        and an <span class="pre">Array[f32, 4]</span> are different types.
+        <span class="pre">Array</span> looks like a generic type taking a number, and is built into the language;
+        a module that declares its own <span class="pre">Array</span> names that one instead.
+        An array type may be written wherever a type may: a variable, a field, a parameter, a return value,
+        the type a reference refers to, or a generic's type argument
+        (<span class="pre">Option[Array[u8, 4]]</span>).
+        In a generic function or method the size may be a number parameter,
+        <span class="pre">Array[f32, N]</span>, and nothing computed from it
+        (<a href="mod-generativity.html#value">Value Parameters</a>).</p>
+	<p>An array type may give several sizes, one for each dimension.
+        Such an array is an array of arrays, the first size the outermost,
+        so <span class="pre">Array[f32, 2, 3]</span> is the same type as
+        <span class="pre">Array[Array[f32, 3], 2]</span>: two rows of three.
+        Its first index picks the row and its second the element in that row,
+        and the elements are stored row by row, the last index varying fastest:</p>
+<pre>
+imm matrix Array[f32, 3, 3] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+imm val = matrix[1][1];  // 1.
+</pre>
+    <p>That is how the array itself is laid out. A library type built over an array decides what its
+        elements mean: <span class="pre">geomath</span>'s <span class="pre">Mat3</span> holds its nine
+        values column by column in an <span class="pre">Array[f32, 9]</span>.</p>
+	<p><b>Warning:</b> Typically, when you want a collection type capability, you won't reach directly for an array,
+		because of the fixed-size limitations and because you cannot implement methods directly on arrays.
+		More likely, you will use one of the library-based <a href="guide-collections.html">collection types</a>.
+		If you look under the covers of these, you will see these are
+		basically <span class="pre">struct</span> types that wrap around a specific array, or a pointer
+		to elements they allocate (as well as possibly other fields), and lend their elements as an
+		<a href="#slices">array reference</a>.
+		Being structs, they offer implemented methods to work with the collection and its elements.</p>
+
+    <h3 id="arrayinit">Initialization</h3>
+    <p>To create or initialize an array, specify the values of all its elements
+        separated by commas and enclosed within square brackets (as the above example demonstrates).
+        When this array constructor is used to initialize a global variable,
+        the element values must be constants.
+        When used as part of a function's logic, element values may be specified using expressions:
+    </p>
+<pre>
+imm pair = [nbr * nbr, nbr + nbr];
+</pre>
+    <p>An alternative way to create an array of bytes is to fill it from a string literal,
+        where the array's type says how many bytes it is:</p>
+<pre>
+imm hello Array[u8, 12] = "Hello world!";
+</pre>
+     <p>A string is encoded as an sequence of utf-8 code points.
+        The length is the number of bytes it occupies, and the array must be exactly that long:
+        any other length is an error. The type of each element is u8.
+        For C-compatibility, the zero terminator ('\0') is placed at the end of the string, but not counted in its length.
+        A string literal that is not filling an array is not an array: it is a
+        borrowed reference to its text, <span class="pre">&amp;str</span>
+        (<a href="guide-text.html">A String as a Slice of Bytes</a> describes how it converts to a slice of bytes, and
+        <a href="mem-regions.html">owning references</a> how it is copied into an owner).
+    </p>
+
+    <h4 id="arraycontents">Contents</h4>
+    <p>An array may also be constructed with its contents: <span class="pre">new</span>, its type,
+        then <span class="pre">&lt;-</span> and the values that fill it, in order.
+        This is the <a href="#send">send operator</a>'s list, which any collection takes,
+        and the same forms may be used:
+        values listed, <span class="pre">n of x</span> for n values, and <span class="pre">fill x</span>
+        for as many as are left to fill. A value that is repeated is evaluated once for each element.
+        This example creates a 100-byte string, where all bytes are spaces:</p>
+<pre>
+imm spaces = new Array[u8, 100] &lt;- fill ' ';
+imm row = new Array[f32, 4] &lt;- 1.0, 3 of 0.0;
+</pre>
+    <p>An array's size is fixed, so its contents give exactly that many values, and the count
+        before <span class="pre">of</span> is a constant, from 0 through 4294967295.
+        An array has no initializer, so the construction takes no parentheses, and a global's
+        contents, like its array literal's elements, are constants.</p>
+    <p>The contents of an array written with several sizes are its scalars, the values of the
+        element type written first, row by row, in the order the array stores them, so each
+        entry counts scalars and <span class="pre">n of x</span> and <span class="pre">fill</span>
+        run on across the rows. The contents give exactly as many as the product of the sizes,
+        which may be at most 4294967295. Written nested, the array's elements are its rows, and
+        its contents are those rows, each constructed in turn; inside the outer list, a row's own
+        list is parenthesized. The two spellings are still one type, so either construction is
+        assigned, passed and returned where the other is wanted:</p>
+<pre>
+imm grid = new Array[i32, 2, 3] &lt;- 1, 2, 3, 4, 5, 6;     // rows [1, 2, 3] and [4, 5, 6]
+imm cube = new Array[u8, 2, 3, 4] &lt;- fill 0u8;           // all 24 bytes
+imm rows = new Array[Array[i32, 3], 2] &lt;- fill new Array[i32, 3] &lt;- (1, 2, 3);
+</pre>
+    <p>An alias of an array type keeps the spelling it names. A generic's type parameter
+        stands for a type, not a spelling, so through it an array's contents are its rows.
+        An array written with several sizes whose element type is itself an array,
+        <span class="pre">Array[Array[u8, 4], 2, 3]</span>, takes no contents: whether they would
+        be its bytes or its four-byte arrays is not decided, so it is written nested to be
+        constructed with contents.</p>
+    <p>An allocation takes the same contents, and fills the array in the region's memory
+        (<a href="mem-regions.html#contents">owning references</a>).</p>
+
+    <h3 id="arraylen">Getting the length</h3>
+    <p style="margin-left: 40px;"><i>Note: Not built, as the note above says: <span class="pre">len</span> on an
+        array value is refused (Error 1025: Invalid operation on an array), so the example below does not compile.
+        A slice's <span class="pre">len</span> is built (<a href="#slices">Slices</a>).</i></p>
+    <p>To get a count of how many elements are in an array,
+        use the <span class="pre">len</span> method:</p>
+<pre>
+imm hello Array[u8, 5] = "Hello";
+imm length = hello.len;   // =5
+</pre>
+
+    <h3 id="index">Indexing</h3>
+    <p>A <b>single element</b> within an array may be accessed using
+        an unsigned integer index value enclosed in square brackets.
+        The specified index may be an expression.
+        An index of <span class="pre">0</span> refers to the first element.</p>
+    <p>Indexing can be used to get or set the specified element:</p>
+<pre>
+mut c_array Array[u8, 4] = "coal";
+c_array[2] = c_array[1];    // the 3rd element is now the same as the second
+// c_array now holds the array value "cool"
+</pre>
+    <p>Array indexing is automatically bounds-checked by its known size.
+        Any attempt to supply an invalid index results in a compile-time or run-time error.
+        At run time it is a <a href="safe-panics.html#panic">panic</a> naming the index, the
+        size and the line: <span class="pre">index 4 is out of bounds for a count of 4</span>.</p>
+    <p><b>Note:</b> It is also possible to use the ampersand operator to <a href="mem-borrowing.html#internal">borrow a reference</a>
+        to a specific indexed element in an array.</p>
+
+    <h4 id="fromend">Indexing from the end</h4>
+    <p>Sometimes it is more convenient to index an element based on
+        its position relative to the end of the array.
+        This can be accomplished in a verbose way:
+    </p>
+<pre>
+imm nbrs = [2, 4, 6];
+imm four = nbrs[my.len - 2]; // =4 - the 2nd from the end
+</pre>
+    <p>The less verbose equivalent uses the <span class="pre">$-</span> operator:</p>
+<pre>
+imm four = nbrs[$-2];
+</pre>
+    <p><span class="pre">$-</span> is equivalent to <span class="pre">my.len - </span></p>
+
+    <h4 id="arrayiter">Iterating over an array</h4>
+    <p>Using indexing and the <span class="pre">len</span> method,
+    one can now easily iterate over every element in an array:</p>
+<pre>
+imm numbers = [3.5, 4.0, 5.5, 3.0];
+mut average = 0.0;
+mut i = 0;
+while i &lt; numbers.len {
+  average += numbers[i++];
+}
+average /= numbers.len;      // == 4.0
+</pre>
+    <p>A cleaner, more concise approach uses an <a href="guide-loops.html#counting">each</a> block instead:</p>
+<pre>
+imm numbers = [3.5, 4.0, 5.5, 3.0];
+mut average = 0.0;
+each nbr in numbers {      // nbr borrows each element
+    average += nbr;
+}
+average /= 4.0;              // the number of elements: == 4.0
+</pre>
+
+    <h4 id="segcopy">Multi-element copying</h4>
+    <p>Multiple elements of an array may be copied into another array using a range index.</p>
+<pre>
+mut greetings Array[u8, 11] = "Hello Jeter";
+greetings[7,4] = greetings[1,4]; // "Hello Jello"
+greetings[6..10] = "Peter";      // "Hello Peter"
+greetings[6..&lt;11] = "Helen";      // "Hello Helen"
+greetings[6..] = "Jayne";        // "Hello Jayne" (end is assumed if unspecified)
+</pre>
+    <p>As the examples show, several range operators are supported.
+        The first number is always the index of the first element in the segment.
+        The meaning of the number after the range operator varies:</p>
+    <ul>
+        <li><span class="pre">,</span> - The second number specifies how many elements
+            are in the array segment.</li>
+        <li><span class="pre">..&lt;</span> - The second number specifies the index of the element
+            after the last element in the array segment.</li>
+        <li><span class="pre">..</span> - The second number specifies the index of the last
+            element in the array segment.
+            If unspecified, it is assumed to be the last element of the array.</li>
+    </ul>
+    <p>Both array segments must have the same element type and length.
+        Array segments can only be used for copying elements from one array to another
+        using assignment or variable initialization.
+        An array segment cannot be passed as an argument in a function call or used in a comparison.
+    </p>
+    <p><b>Note:</b> One can also use the ampersand operator to
+        <a href="#slice">borrow an array reference (slice)</a>
+        to a specific set of elements in an array.</p>
+
+    <h4 id="segfill">Multi-element fills</h4>
+    <p>Using the same range operators, a single value can be repeatedly filled into a segment's elements:</p>
+<pre>
+mut numbers = [0, -1, -2, -3];
+numbers[1 ..&lt; 3] = 2;
+// numbers == [0, 2, 2, -3]
+</pre>
+    <p>The type of the fill value must be the same as the type of the array's elements.</p>
+	<h3 id="arraycopy">Copying an array</h3>
+    <p>Like numeric values, array values may be passed around between variables and functions:</p>
+<pre>
+imm hello Array[u8, 5] = "Hello";
+fn main() {
+  mut dessert = jello(hello);
+}
+
+fn jello(mut saying Array[u8, 5]) Array[u8, 5] {
+  saying = "jello";
+  saying;
+}
+</pre>
+    <p>In this example, a copy of the <span class="pre">hello</span> variable's array
+        is passed to the function <span class="pre">jello</span>.
+        It replaces that copy's contents with the string "jello" and returns it to <span class="pre">main</span>.
+        The mutable local variable <span class="pre">dessert</span> now holds a copy of the array string "jello".</p>
+    <p>When arrays are passed around, we always make copies of the array (just like we do with numbers).
+        Any changes made to a copy won't change the original array.
+        The exception is an array whose element type has <a href="rec-moves.html">move semantics</a>:
+        such an array moves rather than copies, whether its type is written out or inferred from an array literal.</p>
+    <p>This may not always be the behavior that you want, though.
+        If instead you want to pass around a reference to an array,
+        such that any changes <i>do</i> change the original array,
+        obtain and pass an <a href="#slices">array reference</a>.</p>
+    <h3 id="arraycompare">Comparing arrays</h3>
+    <p>Two arrays may be compared, so long as they have the same element type.</p>
+    <p>To be equivalent the arrays must have the same length and every element must be the same.
+        To make element comparison possible,
+        the element's type must support the <span class="pre">==</span> method.</p>
+<pre>
+imm somebody = "John";
+if somebody == "Jane" {
+  ....
+}
+</pre>
+    <p>Comparing for order (e.g., &lt;) is also handled by comparing the two arrays element-by-element,
+    stopping the first time two elements are not the same.
+    The number of elements compared is the minimum of the lengths of the two arrays.
+    If the element check shows them as equivalent, the lesser-sized array comes first in order.</p>
+    <p>The <a href="guide-conditionals.html#matching"><span class="pre">match</span></a> statement
+        or <span class="pre">is</span> operator is to support more array comparison, particularly
+        partial pattern matching, which is not built yet.</p>
+
+	<h2 id="slices">Slices</h2>
+<p style="margin-left: 40px;"><i>Note: Not implemented: a subslice's count form (<span class="pre">,</span>),
+        an index relative to the end (<span class="pre">$-</span>), a slice made from a reference or a pointer,
+        and copying and filling a range of elements. A borrowed array or string literal
+        (<span class="pre">&amp;[1, 2, 3]</span>, <span class="pre">&amp;"Padma"</span>) is not yet a slice: it is a
+        reference to the array, with no <span class="pre">.len</span> of its own.
+        Making text from bytes, <span class="pre">bytes as &amp;str</span>, does not yet check that the bytes are
+        UTF-8, nor that nothing still writes them while the text is used.</i></p>
+    <p>An array reference, or slice, is a borrowed view of some number of elements of the same type,
+        laid out one after another in memory. How many there are is known only at runtime, so the
+        reference carries the count alongside the pointer to the first element.
+        A slice does not own its elements: it is borrowed from something that does,
+        and like any <a href="mem-borrowing.html">borrowed reference</a> it may not outlive it.</p>
+<h3 id="slice">Borrowing a Slice</h3>
+    <p>A slice may be borrowed from any array, from another slice, or from a collection that lends one:</p>
+<pre>
+imm nbrSlice = &amp;[1, 2, 3];
+imm textSlice = &amp;"Padma";
+imm listSlice = list.view();    // from a List
+imm fillSlice = list.viewMut(); // from a List, its elements changeable: &amp;mut Array[T]
+imm uniSlice = (&amp;uni list).viewUni(); // from a List lent &amp;uni: &amp;uni Array[T]
+</pre>
+    <p>These slices point to all elements of the source's array. (The first two borrow a literal: see
+        <a href="#literals">below</a> for how that differs from a slice made with <span class="pre">&amp;[]</span>.)</p>
+    <p>If a static array is passed as a call argument where a slice is expected,
+         it is automatically converted into a slice:</p>
+<pre>
+print("abc");    // equivalent to print(&amp;"abc")
+</pre>
+
+    <p><b>Safety Note:</b>
+        Because a slice is a borrowed reference, its lifetime is limited,
+        ensuring it can never outlive the source array it provides a view into.
+        Depending on permissions, it may temporarily lock out access to the variable it borrows from,
+        thereby ensuring the original array cannot be moved or resized while the slice is active.
+    </p>
+
+    <h4 id="literals">Borrowing a Literal or a Constant</h4>
+    <p>A literal whose elements are all constants, an array literal or a string literal, is kept in
+        read-only memory, and so is a <a href="guide-values.html">named constant</a> holding an array literal or the
+        byte array a string literal fills. A borrow of one is a constant too: it lives as long as the program, so a
+        function may return it, and it may not be <span class="pre">mut</span>.</p>
+    <p>Written <span class="pre">&amp;[1, 2, 3]</span> or <span class="pre">&amp;"Padma"</span>, the borrow is a
+        reference to the array (<span class="pre">&amp;Array[i32, 3]</span>). It is taken wherever a slice is wanted,
+        but it has no <span class="pre">.len</span> of its own. <span class="pre">&amp;[][1, 2, 3]</span> is the slice,
+        with one:</p>
+<pre>
+const primes Array[u32, 4] = [2u32, 3u32, 5u32, 7u32];
+
+fn firstOf(p &amp;Array[u32]) u32 { p[0]; }
+fn smalls() &amp;Array[i32] { &amp;[1, 2, 3]; }       // the borrow outlives the call
+
+imm nums &amp;Array[i32, 3] = &amp;[1, 2, 3];        // a reference to the array: nums.len is refused
+imm sl &amp;Array[i32] = &amp;[][1, 2, 3];           // the slice: sl.len is 3
+imm two = firstOf(&amp;primes);                 // a named constant, borrowed: 2
+</pre>
+
+    <h4 id="temporary">Borrowing a Computed Literal</h4>
+    <p>An array literal with a computed element, such as <span class="pre">&amp;[x, y]</span>, is a temporary.
+        It lives to the end of its statement, or, where a variable's initializer borrows it, to the end of the
+        block (see <a href="mem-borrowing.html#temporary">borrowing a temporary</a>). A borrow of it cannot be returned
+        from the function:</p>
+<pre>
+imm s = &amp;[][x, y];                  // lives to the end of the block
+imm t = total(&amp;[x, y, 6]);          // lives to the end of the statement
+</pre>
+
+    <h4 id="subslices">Subslices</h4>
+    <p>It is also possible to create a new slice that points
+        to some subset of the elements in some array or slice.
+        This is accomplished by indexing using a range operator
+        between two unsigned integers:</p>
+    <ul>
+    <li><span class="pre">..</span> includes the last specified element.</li>
+    <li><span class="pre">..&lt;</span> stops before the last specified element.</li>
+    <li><span class="pre">,</span> specifies how many elements are in the slice.</li>
+    </ul>
+    <p>The two range operators are the ones a number range of
+        <a href="guide-loops.html#counting">each</a> and a
+        <a href="guide-conditionals.html#matching">range pattern</a> use. For example:</p>
+<pre>
+imm x = &amp;"Abcd"[1..&lt;3];   // a slice pointing to "bc"
+imm y = &amp;"Abcd"[1..3];    // a slice pointing to "bcd"
+imm z = &amp;"Abcd"[2, 1];  // a slice pointing to "c"
+</pre>
+    <p>If either index integer is unspecified, 0 and end are assumed
+        (so <span class="pre">[..3]</span> is the elements 0 through 3,
+        <span class="pre">[..&lt;3]</span> the first three, and
+        <span class="pre">[1..]</span> everything from 1 on).
+        A range is checked against the length of what it is taken from, as an index is:
+        its start may not come after its end, nor its end after the last element.
+        The subslice has the permission and lifetime a borrowed reference to one of those
+        elements would have.</p>
+<pre>
+imm r = &amp;y[1..];        // a slice pointing to "cd" (end assumed)
+imm s = &amp;y[..];         // a slice pointing to "bcd" (0 and end assumed)
+</pre>
+    <p>An index integer may be specified relative to the last element:</p>
+<pre>
+imm r = &amp;y[$-2..];      // a slice pointing to "cd"
+</pre>
+    <p>A slice may also be created from a regular reference or a pointer:</p>
+<pre>
+imm slice1 = &amp;ref[..];      // Slice count from reference is always 1
+imm slice2 = &amp;ptr[0..5];
+</pre>
+<h3>Operations</h3>
+    <p>Slices may be indexed, copied, compared, iterated over, and queried for their properties.
+        Many of these operations work the same way they do with static arrays.
+        A slice, and an array, calls the methods of core's <span class="pre">Array[T]</span>:
+        <span class="pre">iter()</span>, <span class="pre">indexed()</span>,
+        <span class="pre">mutItems()</span> (a <span class="pre">&amp;mut</span> slice's, for changing elements in
+        place), <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> (the elements in runs of
+        <span class="pre">n</span>, each run a slice, a <span class="pre">&amp;mut</span> one from
+        <span class="pre">mutChunks</span>), which <a href="#eachitems">each</a> walks.</p>
+
+    <h4>Access an Element</h4>
+    <p>A single element within an array may be accessed using
+        an unsigned integer value enclosed in square brackets.
+        This supports both getting and setting the values at a specific index:</p>
+<pre>
+c_array[3] = c_array[2];    // the 4th element is now the same as the third
+</pre>
+    <p>Indexing is automatically bounds-checked by its known size. An index out of
+        bounds is a <a href="safe-panics.html">panic</a> naming the index, the size and
+        the line; so is a range, <span class="pre">&amp;s[a..&lt;b]</span>, that starts after it
+        ends or ends past the size.</p>
+
+    <h4>Borrowed Reference to an Element</h4>
+    <p>One can create a borrowed reference to any element of a slice
+    in the same way as for an static array:</p>
+<pre>
+imm nbrRef = &amp;nbrSlice[1];     // points to 2
+imm charRef = &amp;textSlice[2];   // points to 'd'
+</pre>
+    <p>Borrowing a reference to a single element is <i>not</i> a slice.
+    It is just a regular borrowed reference to some value.</p>
+
+    <h4>Copy or Fill Elements</h4>
+    <p>Multiple elements of an array may be
+        copied into another array using a range in square brackets.
+        Both content segments must have the same type and size.</p>
+<pre>
+arrref[1 by 2] = sliceref[0 by 2];
+greetings[n by 5] = "Kevin";
+</pre>
+    <p>Similarly, a single value can be repeatedly filled into a slice's elements:</p>
+<pre>
+arrref[1 ..&lt; 3] = 2;
+</pre>
+
+    <h4>Iteration</h4>
+    <p>The <span class="pre">each</span> loop may iterate over a slice's elements:</p>
+<pre>
+mut sum = 0;
+each x in intslice {      // x borrows each element
+    sum += x;
+}
+</pre>
+    <p>Each pass's variable is a borrow of the element, which cannot be changed through it.
+        Walking <span class="pre">mutItems()</span> instead lends each element as a <span class="pre">&amp;mut</span>
+        to change it where it lies, and <span class="pre">indexed()</span> pairs each element with its
+        position:</p>
+<pre>
+each x in mutslice.mutItems() {
+    *x = *x + 1;
+}
+each i, x in intslice.indexed() {      // i is a usize
+    sum += i32.from(i) * x;
+}
+</pre>
+    <p>Both are counted loops over the slice, as the plain <span class="pre">each</span> is
+        (<a href="#mutitems">Changing items in place</a>). A bare <span class="pre">indexed()</span>
+        lends <span class="pre">&amp;</span> on any slice, a <span class="pre">&amp;mut</span> one too;
+        <span class="pre">mutslice.mutItems().indexed()</span> lends each element as a
+        <span class="pre">&amp;mut</span>. <span class="pre">chunks(n)</span> and
+        <span class="pre">mutChunks(n)</span> hand the elements out in runs of <span class="pre">n</span>, each run a slice
+        (the last is what is left; <span class="pre">n</span> of 0 is a panic), and a
+        <a href="conc-parallel.html#parallelfill">parallel each</a> gives each pass a run of its own:</p>
+<pre>
+each run in intslice.chunks(4) { ... }          // run is a slice of up to 4 elements
+each y, row in mutslice.mutChunks(w).indexed() {
+    row[0] = y;                                  // row is a &amp;mut slice
+}
+</pre>
+
+    <h4 id="asarrays">Seen as Rows: asArrays</h4>
+    <p><span class="pre">asArrays[N]()</span> sees a slice of <span class="pre">T</span> as a slice of
+        <span class="pre">Array[T, N]</span> over the same memory: nothing is copied, and element
+        <span class="pre">k</span> of row <span class="pre">i</span> is element <span class="pre">i * N + k</span>
+        of the slice. <span class="pre">N</span> is a <a href="mod-generativity.html#value">number parameter</a>
+        written in brackets, since no argument says it.
+        <span class="pre">mutArrays[N]()</span> is the same on a <span class="pre">&amp;mut</span> slice
+        and gives a <span class="pre">&amp;mut</span> one, so writing a row's element changes the original
+        (it has a name of its own, as <span class="pre">mutChunks</span> has beside <span class="pre">chunks</span>).
+        Both are methods of an array, a slice and a list. A count that is not a multiple of
+        <span class="pre">N</span>, and an <span class="pre">N</span> of 0, are a panic at the line of the call.</p>
+<pre>
+imm bytes = &amp;[][1u8, 2u8, 3u8, 4u8, 5u8, 6u8];
+imm rows = bytes.asArrays[3]();      // &amp;Array[Array[u8, 3]]: [1 2 3] [4 5 6]
+imm c = rows[1][2];                  // 6
+imm rows3 = pixels.mutArrays[3]();
+rows3[0][1] = 9u8;                 // changes pixels[1]
+</pre>
+    <p>The rows are a slice like any other, so the runs cursors cut them: a picture of bytes, three to a
+        pixel, is written a row to a pass, a pixel's channels by index, and leaves the bytes the same
+        loop leaves when it computes <span class="pre">x * 3 + k</span> itself:</p>
+<pre>
+parallel each y, line in pixels.mutArrays[3]().mutChunks(width).indexed() {
+    each x in 0usize ..&lt; width {
+        line[x][0] = red(x, y);
+        line[x][1] = green(x, y);
+        line[x][2] = blue(x, y);
+    }
+}
+</pre>
+
+    <h4>Comparison</h4>
+    <p>Two slices may be compared for identity with <span class="pre">===</span>
+        (or <span class="pre">!==</span>), so long as they have the same type.
+        This comparison checks for equality of both the starting pointer and the element count,
+        so it asks whether the two view the same elements, not whether their elements are equal.</p>
+<pre>
+if slice1 === slice2 {
+   ....
+}
+</pre>
+    <p>As with other <a href="mem-borrowing.html">references</a>, <span class="pre">==</span>
+        (or <span class="pre">!=</span>) on two slices compares what they refer to, element by element.
+        Two slices are equal when they have the same number of elements and each element
+        is <span class="pre">==</span> to the element at the same index in the other.
+        Each pair is compared with the element type's own <span class="pre">==</span>:
+        a number's or a <span class="pre">bool</span>'s, or one a struct
+        <a href="rec-methods.html#compare">declares</a>; a slice of slices compares
+        each inner slice the same way.
+        Floating point elements compare as floating point numbers do, so a NaN is not equal
+        to any element, itself included, and -0.0 is equal to 0.0.
+        A slice whose element type has no <span class="pre">==</span> cannot be compared this way.</p>
+<pre>
+imm name &amp;Array[u8] = "Padma";
+if name == "Padma" {   // true: the same five bytes
+   ....
+}
+</pre>
+    <p>What a slice is compared with may be anything that would be accepted where that slice
+        is wanted: another slice, an array or a reference to one, or a string literal.
+        An array or a reference to one may be on the left too.</p>
+    <p>Comparing for order (e.g., &lt;) is not possible directly.
+        One can of course compare the component parts of a slice separately.</p>
+
+    <h4>Property Queries</h4>
+    <p>A slice is a "fat" reference, as it holds two pieces of information:</p>
+    <ul>
+        <li>a pointer to the first element of the array</li>
+        <li>an unsigned integer specifying how many elements are in the array</li>
+    </ul>
+    <p>The count is <span class="pre">len</span>: <span class="pre">imm len = slice.len;</span>.</p>
+    <p style="margin-left: 40px;"><i>Note: Not built yet: the pointer, <span class="pre">slice.ptr</span>, which is
+        refused (Error 1025: Invalid operation on an array ref).</i></p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="lib-fs.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

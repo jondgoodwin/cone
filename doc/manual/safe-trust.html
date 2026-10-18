@@ -1,0 +1,115 @@
+<html>
+  <head>
+	  <title>trust: when you know better than the compiler - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">trust: when you know better than the compiler</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">trust</span> is not built yet. It is not yet a
+		keyword, so a program that writes it does not compile, and the operations it is meant to guard (the raw
+		pointer operations, calls to <span class="pre">extern</span> functions, and the intrinsics marked "needs
+		trust") compile today without it. What is built is the other half: the casts that need it are refused.</i></p>
+
+	<p>The compiler's gift is rigour: it notices, every time, when code breaks one of its rules. But its rules
+		are simple ones, checked quickly, and it cannot tell when code that breaks one is still entirely safe. Then
+		it is not helping; it is in the way. <span class="pre">trust</span> is the way past: written before an
+		expression or a block, it turns certain checks off there, and marks that code as the programmer's
+		responsibility. This page covers what <span class="pre">trust</span> allows, the casts that need it, and why
+		it is kept narrow. Here is the compiler stopping at the edge of what it can check:</p>
+<pre>
+fn poke(r &amp;P) { imm m = r as &amp;mut P; m.x = 99; }
+</pre>
+	<p>It is refused:</p>
+<pre>
+Error 1502: `as` changes the reference's permission from ro to mut, which is not a coercion. Between
+references `as` may only be a legal coercion (`uni` to `mut`, `imm` or `&amp;`; `mut` or `imm` to `&amp;`);
+anything else needs `trust`, which is not built yet.
+</pre>
+
+	<h2 id="allows">What trust allows</h2>
+	<p>Safety comes from the programmer and the compiler working together, each bringing what the other lacks.
+		The compiler will never understand what a program is meant to do as well as its programmer does; the
+		programmer can never match the compiler's tireless consistency. So the compiler checks everything it can,
+		and where its checks fall short, the programmer, who has the final responsibility for safety anyway, says
+		"trust me on this". Preceding an expression or a block with <span class="pre">trust</span> allows:</p>
+	<ul>
+		<li><b>Raw pointer</b> dereferences, arithmetic and casts. They bypass every constraint a reference is held
+			to: permissions, lifetimes, regions and bounds checks (<a href="safe-pointers.html">Raw pointers</a>).</li>
+		<li><b>Calls to <span class="pre">extern</span> functions.</b> Cone has no way to know whether code written in
+			another language was as careful about safety as Cone is (<a href="safe-c.html#extern">Calling C</a>).</li>
+		<li><b>Type reinterpretation</b> that is not also a coercion, where Cone cannot know that the value will be
+			used safely as its new type (<a href="#reinterpret">below</a>).</li>
+		<li><b>Access to an untagged overlay's fields</b>, where Cone cannot know which field holds a value
+			(<a href="#overlays">below</a>).</li>
+		<li>The <a href="safe-intrinsics.html">intrinsics</a> whose misuse breaks memory safety, each marked "needs
+			trust" on that page.</li>
+	</ul>
+	<p>Code the compiler cannot verify is then isolated and visible as such, rather than spread through a program,
+		while the programmer stays free to do what they can see is safe. And <span class="pre">trust</span> is meant
+		to stay narrow: a remedy for checks that are over-cautious, refusing what is in fact safe because the compiler
+		cannot see far enough to confirm it, not a general way out of the language's rules. A whole function's block
+		can be marked, by writing <span class="pre">trust</span> after its signature, as the overlay example below
+		does.</p>
+
+	<h2 id="reinterpret">Reinterpretations that need trust</h2>
+	<p>A <a href="safe-types.html#as">reinterpretation</a> with <span class="pre">as</span> keeps a value's bits
+		and changes its type. When the new type is one the value could be coerced to, that is safe:
+		<span class="pre">someref as ?&amp;i32</span> makes a reference that may be absent out of one that is not,
+		and compiles today. Any other reinterpretation could let a value misbehave, handled within the rules of a type
+		it does not really belong to, so where Cone cannot be sure of the risk it asks for
+		<span class="pre">trust</span>, and the programmer who writes it accepts the responsibility. Reading a
+		reference that may be absent as one that is not, with no check for <span class="pre">None</span> in sight, is
+		one:</p>
+<pre>
+imm someref = trust {nullref as &amp;i32};    // Not built yet: today this cast is refused
+</pre>
+	<p>So are the reference casts that change a permission other than as a coercion would: a
+		<span class="pre">&amp;</span> as <span class="pre">&amp;mut</span>, which would write through a reference that
+		promised not to, and a <span class="pre">&amp;mut</span> as <span class="pre">&amp;uni</span>, which would make
+		the only reference one that other names still reach. Both are refused today, as above, with a message naming
+		both permissions. The bytes-to-text cast, <span class="pre">bytes as &amp;str</span>, is allowed today, but it
+		promises that the bytes are text and that nothing changes them while the text is used, which only the
+		programmer can know, so it is for <span class="pre">trust</span> too once that is built.
+		<a href="safe-types.html#as">Reinterpretation: as</a> has every rule of <span class="pre">as</span>, including
+		which casts need nothing at all.</p>
+
+	<h2 id="overlays">Untagged overlays</h2>
+	<p>An <a href="guide-enums.html">enum</a> carries a tag, so which variant a value holds is part of the value,
+		and a pattern match is what recovers it. An <b>untagged overlay</b>, several differently-typed fields sharing
+		one piece of storage with nothing saying which is live, gives that knowledge up in exchange for the space. The
+		compiler then cannot verify that the field read is the one last written, because there is nothing for it to
+		check against, and <span class="pre">trust</span> is how the programmer tells it not to worry here. This
+		function, the whole of it marked trusted, keeps a small number and a reference in one word, telling them
+		apart by the low two bits:</p>
+<pre>
+fn getInt(v Overlay) usize trust {      // Not built yet: no spelling for Overlay, nor trust
+  if (v.nbr &amp; 3 == 0) {
+    *v.ref;
+  } else {
+    v.nbr&gt;&gt;2;
+  }
+}
+</pre>
+	<p><b>Cone has no spelling for an overlay.</b> The tagged form is an enum, and it is the one to reach for:
+		what an overlay adds is the obligation to track the live field by hand, which is exactly what
+		<span class="pre">trust</span> would be asserting.</p>
+
+	<p>You can now tell which operations are the programmer's responsibility, and how Cone's design marks them.
+		Next, two promises a function's own declaration can make: that its body is copied into each caller, and that
+		it touches nothing but its arguments.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-purity.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

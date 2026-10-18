@@ -1,0 +1,748 @@
+<html>
+  <head>
+	  <title>Intrinsics: what library code asks of the compiler - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Intrinsics: what library code asks of the compiler</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Everything on this page is implemented, except that no call is yet
+		required to be inside <a href="safe-trust.html">trust</a>, because trust itself is not built. The constants of
+		the build beside <span class="pre">isDebugBuild</span>, the target's OS and conec's <span class="pre">-D</span>,
+		are <a href="#buildconst">a provisional mechanism; its final design is open</a>.</i></p>
+
+	<p>Collections, regions and locks are written in Cone, in its libraries, yet each needs something only the
+		compiler knows: how large a type is, how to run a value's finalizer where it sits, how to move a value into
+		memory that holds nothing yet. An <b>intrinsic</b> is how Cone hands such a capability to library code. It
+		looks like a function and is called like one, but the compiler supplies what it does. This page covers every
+		intrinsic, so that you can build your own container, region or lock on the same footing as the standard
+		library's. Here is a small stack in memory from C's allocator:</p>
+
+<pre>
+mod rawstack;
+
+import stdio use *;
+import libc;
+
+// A value that says when it dies
+struct Order {
+  pub id i32;
+  fn final(self &amp;uni) {
+    print &lt;- "  order ", id, " cleaned up\n";
+  }
+}
+
+// A stack of up to 'cap' values, in memory asked of C's allocator.
+// The intrinsics in mem do what otherwise only the compiler does.
+struct Pile[T] {
+  slots *T;
+  count usize;
+  cap usize;
+
+  fn make(cap usize) Pile[T] {
+    imm slots = malloc(mem.sizeof[T]() * cap) as *T;
+    new Pile[T](slots, 0usize, cap);
+  }
+
+  fn push(self &amp;mut, value T) {
+    assert(count &lt; cap, "the pile is full");
+    mem.writeRaw[T](slots + count, value);   // into a slot that holds nothing yet
+    count += 1usize;
+  }
+
+  fn pop(self &amp;mut) T {
+    assert(count &gt; 0usize, "the pile is empty");
+    count -= 1usize;
+    mem.readRaw[T](slots + count);           // moved out: the slot holds nothing now
+  }
+
+  fn final(self &amp;uni) {
+    if mem.needsFinal[T]() {
+      while count &gt; 0usize {
+        count -= 1usize;
+        mem.finalize[T](slots + count);      // a value left behind dies where it sits
+      }
+    }
+    libc.free(slots as *u8);
+  }
+}
+
+fn main() {
+  print &lt;- "an Order takes ", mem.sizeof[Order](), " bytes; needs finalizing: ",
+    mem.needsFinal[Order](), "\n";
+  mut orders = Pile[Order].make(4usize);
+  orders.push(new Order(1));
+  orders.push(new Order(2));
+  orders.push(new Order(3));
+  {
+    imm last = orders.pop();
+    print &lt;- "popped order ", last.id, "\n";
+  }
+  print &lt;- orders.count, " left when main ends\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+an Order takes 4 bytes; needs finalizing: true
+popped order 3
+  order 3 cleaned up
+2 left when main ends
+  order 2 cleaned up
+  order 1 cleaned up
+</pre>
+	<p>Order 3 dies when <span class="pre">last</span> goes, at the end of its block; the two left in the pile die
+		when the pile does, through <span class="pre">mem.finalize</span>. <b>Try this:</b> make it a
+		<span class="pre">Pile[i32]</span>, and <span class="pre">needsFinal</span> lets <span class="pre">final</span>
+		skip the loop altogether.</p>
+
+	<h2 id="meaning">What an intrinsic means</h2>
+	<p>Each intrinsic is defined by what it means in Cone, stated below with every edge case, never as "whatever
+		the code generator's instruction does". A code generator is one way to implement that meaning, which is what
+		lets an intrinsic mean the same thing on any back end.</p>
+
+	<h3 id="declaring">Declaring an intrinsic</h3>
+	<p>An intrinsic is declared with the <span class="pre">@intrinsic</span> attribute after
+		<span class="pre">fn</span>, and an ordinary Cone signature:</p>
+<pre>
+pub fn @intrinsic sizeof[T]() usize;
+</pre>
+	<p>Only the <span class="pre">core</span> package may declare one: as a function of one of its modules, or as a
+		function (taking no <span class="pre">self</span>) of a plain struct one of them declares. Anywhere else,
+		<span class="pre">@intrinsic</span> is an error.</p>
+	<p>Core declares most of the intrinsics inside <span class="pre">mem</span> (all but
+		<a href="#srcloc">srcFile and srcLine</a>, <a href="#debugbuild">isDebugBuild</a>, the provisional
+		<a href="#buildconst">constants of the build</a> and a GPU workgroup's <a href="#barriers">barriers</a>), and
+		every module, core being its prelude, reaches them through that one name, as
+		<span class="pre">mem.sizeof[T]()</span> above does. So the intrinsics' own names are free: a module may
+		declare its own <span class="pre">finalize</span> or <span class="pre">sizeof</span>. Only
+		<span class="pre">mem</span> itself is a name every module has.</p>
+	<p><span class="pre">mem</span> also holds one function that is not an intrinsic,
+		<span class="pre">sliceEq[T](a &amp;Array[T], b &amp;Array[T]) bool</span>: the element-by-element comparison
+		that <span class="pre">==</span> on two <a href="lib-collections.html#slices">slices</a> performs, written in
+		Cone.</p>
+	<p id="memstruct"><b>Why <span class="pre">mem</span> is a struct.</b> <span class="pre">mem</span> is meant to be
+		a submodule of core, <span class="pre">core.mem</span>. A submodule of core cannot yet be reached from outside
+		it: a compile that finds core by itself reads only core's one source file, and the include file other packages
+		compile against keeps a package's submodules private. So <span class="pre">mem</span> is declared as an
+		<span class="pre">@opaque</span> struct, which holds no value, whose functions are reached by the same path a
+		submodule's would be. When it becomes a submodule, no call changes.</p>
+	<p>The compiler keeps a registry of the intrinsics it defines. A declaration must name one of them, and must say
+		exactly what the registry says: the same type parameters, parameters and result. An unknown name or a different
+		signature is an error. An intrinsic has no symbol of its own, so it may not be <span class="pre">extern</span>,
+		carry <span class="pre">@c</span>, or have a reference to it borrowed.</p>
+	<p>A type argument must be of the kind the intrinsic accepts. Every intrinsic below needs a type with a size: one
+		declared <span class="pre">@opaque</span>, for example, is refused where the intrinsic is instantiated for it.
+		The atomic operations and an integer's bit operations accept fewer types still, stated with them.</p>
+
+	<h3 id="fallback">Fallback bodies</h3>
+	<p>Where the registry allows it, the declaration may give a body written in Cone:</p>
+<pre>
+pub fn @intrinsic readRaw[T](p *T) T {*p;}
+</pre>
+	<p>The body is the <b>fallback</b>: a back end with no implementation of its own for the intrinsic runs it
+		instead, expanded at each call as an inline function would be. It must mean exactly what the intrinsic means.
+		An intrinsic that nothing written in Cone can express, such as <span class="pre">sizeof</span>, has no fallback,
+		and a body for it is an error. The compiler's <span class="pre">--intrinsic-fallback</span> option runs every
+		fallback body in place of the compiler's own implementation, so that the two can be tested to agree.</p>
+	<p>Today's LLVM back end implements every intrinsic itself. Those with a fallback body are
+		<span class="pre">readRaw</span>, <span class="pre">moveRaw</span>, the atomic operations and
+		<a href="#bits">an integer's bit operations</a>.</p>
+
+	<h2 id="memory">Sizes, finalizing and raw memory</h2>
+	<p>Each of these is called as <span class="pre">mem.<i>name</i>[T](...)</span>
+		(<span class="pre">traceRoots</span>, which takes no type, as <span class="pre">mem.traceRoots(...)</span>).
+		Where an argument is a pointer to <span class="pre">T</span> or a <span class="pre">T</span>, the type argument
+		may be left for the call to <a href="mod-generativity.html">infer</a>: <span class="pre">mem.finalize(p)</span>
+		for a <span class="pre">p *Point</span>. Several take a <a href="safe-pointers.html">raw pointer</a> and trust
+		the caller's promise about it. Misused, they break memory safety in ways the compiler cannot see, so a call to
+		one belongs inside <a href="safe-trust.html"><span class="pre">trust</span></a>. That is marked below as "needs
+		trust" (not yet enforced).</p>
+
+	<h3 id="sizeof">sizeof</h3>
+<pre>
+fn @intrinsic sizeof[T]() usize
+</pre>
+	<p>The number of bytes from one <span class="pre">T</span> to the next in an array: its size, including the
+		padding at its end that keeps the next one aligned. <span class="pre">mem.sizeof[T]() * n</span> is the memory
+		<span class="pre">n</span> values need. A struct with no fields has size 0. The answer is a constant for the
+		target: no code runs to compute it. It is not yet usable where the compiler itself needs a number, such as an
+		array's length, because the compiler asks the target's layout for it when it generates code. No fallback.</p>
+
+	<h3 id="alignof">alignof</h3>
+<pre>
+fn @intrinsic alignof[T]() usize
+</pre>
+	<p>The alignment in bytes the target requires of a <span class="pre">T</span> in memory: always a power of two,
+		at least 1, and <span class="pre">sizeof[T]()</span> is always a multiple of it. A struct's alignment is its
+		strictest field's. A constant for the target, as <span class="pre">sizeof</span> is. No fallback.</p>
+
+	<h3 id="needsfinal">needsFinal</h3>
+<pre>
+fn @intrinsic needsFinal[T]() bool
+</pre>
+	<p>Whether <span class="pre">finalize[T]</span> does anything: true when <span class="pre">T</span> is an owning
+		reference whose release does something (its region declares <span class="pre">dealiasRef</span>, or is
+		<span class="pre">Move</span>), has a <span class="pre">final</span> method, has a field whose type needs
+		finalizing (such an owning reference among them), is a tuple or an array whose element type does, or is an
+		enum one of whose variants does: true for <span class="pre">Option[String]</span>, false for
+		<span class="pre">Option[i32]</span>. False for numbers, raw pointers, borrowed references, references into a
+		region whose owners' going does nothing (a traced region's, whose collector frees its values), and structs of
+		them. A constant. It lets a collection skip the loop over its elements when there is nothing to do, as the
+		pile above does. No fallback.</p>
+
+	<h3 id="finalize">finalize</h3>
+<pre>
+fn @intrinsic finalize[T](p *T)
+</pre>
+	<p>Runs the death of the <span class="pre">T</span> at <span class="pre">p</span> where it sits, exactly as a
+		region-held value of type <span class="pre">T</span> dies, except that its memory is not given back: first
+		<span class="pre">T</span>'s own <span class="pre">final</span>, if it has one; then each field's death, in field
+		order, recursively; then each owning reference its fields hold is released (which may finalize and free what
+		that reference points at). If <span class="pre">T</span> is itself an owning reference, that reference is
+		released: one owner goes away, and if it was the last, the value it points at dies. If
+		<span class="pre">T</span> is an enum, the value dies as the variant it holds. If it is a tuple, each element
+		dies in order; if it is a fixed-size array, each element dies in element order, first element first. For a type
+		with nothing to finalize (<span class="pre">needsFinal[T]()</span> is false) it does nothing.</p>
+	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized <span class="pre">T</span>, aligned
+		for it. Afterwards that <span class="pre">T</span> is dead: reading it as a <span class="pre">T</span> or
+		finalizing it again is a program error the compiler cannot detect. No fallback: the finalizer the compiler
+		builds for <span class="pre">T</span> is the implementation.</p>
+
+	<h3 id="typerecord">typeRecord</h3>
+<pre>
+fn @intrinsic typeRecord[T]() *TypeRecord
+</pre>
+	<p>The address of <span class="pre">T</span>'s <b>type record</b>, a constant holding what library code needs to
+		handle a <span class="pre">T</span> it cannot name the type of: a region that keeps values of many types, and
+		must later finalize each. <span class="pre">TypeRecord</span> is a struct core declares, so it is a name of every
+		module:</p>
+<pre>
+pub struct TypeRecord {
+  pub size usize;              // sizeof[T]()
+  pub align usize;             // alignof[T]()
+  pub finalize &amp;fn(p *u8);     // what finalize[T] does to the T at p
+  pub trace &amp;fn(p *u8, mode u32);  // what trace[T] does to the T at p
+  pub flags u32;               // bit 0: needsFinal[T](); bit 1: holdsTraced[T]()
+}
+</pre>
+	<p><span class="pre">size</span> and <span class="pre">align</span> are what <span class="pre">sizeof</span> and
+		<span class="pre">alignof</span> say. <span class="pre">finalize</span> is a function that, called with the
+		address of a <span class="pre">T</span>, does exactly what <span class="pre">finalize[T]</span> does to it, with
+		the same needs: a live, initialized <span class="pre">T</span> there, dead afterwards. Where
+		<span class="pre">T</span> needs no finalizing it is a function that does nothing, and bit 0 of
+		<span class="pre">flags</span> is clear, so a caller can skip the call. <span class="pre">trace</span> is a
+		function that, called with the address of a <span class="pre">T</span> and a mode, does exactly what
+		<span class="pre">trace[T]</span> does to it: what a tracing collector calls to find the traced references a
+		value holds. Where <span class="pre">T</span> holds none it does nothing, and bit 1 of
+		<span class="pre">flags</span> is clear. Neither function pointer is ever null.</p>
+<pre>
+imm rec = mem.typeRecord[Point]() as &amp;TypeRecord;
+imm fin = rec.finalize;
+fin(p as *u8);          // p's Point dies where it sits
+</pre>
+	<p>Asking twice in one compiled object gives the same address; nothing says two objects share one record, so
+		records should not be compared across them. A region can also be handed the record of every value it
+		allocates, by declaring its <span class="pre">alloc</span> to take one (<a href="mem-ownregion.html">A region of
+		your own</a>). A constant. No fallback.</p>
+
+	<h3 id="holdstraced">holdsTraced</h3>
+<pre>
+fn @intrinsic holdsTraced[T]() bool
+</pre>
+	<p>Whether a <span class="pre">T</span> needs tracing: whether it holds a <b>traced reference</b>, that is,
+		whether <span class="pre">T</span> is a reference into a region that declares <span class="pre">Traced</span>
+		(<a href="mem-ownregion.html">A region of your own</a>), or a struct, tuple, fixed-size array or enum holding one
+		inline, or an <span class="pre">Rc</span> or <span class="pre">So</span> reference to a value that holds one (a
+		trace passes through an owner), or a type that declares <span class="pre">GcTraceElements</span> and gives
+		references to values that do (a list of traced references). What a borrow or a raw pointer points at is not
+		part of the value. A constant. No fallback.</p>
+
+	<h3 id="trace">trace</h3>
+<pre>
+fn @intrinsic trace[T](p *T, mode u32)
+</pre>
+	<p>Hands each traced reference the <span class="pre">T</span> at <span class="pre">p</span> holds to its region's
+		<span class="pre">mark</span>, with the slot it is stored in: a struct's fields in field order, recursively; a
+		tuple's elements in order; a fixed-size array's elements in element order; an enum's fields as the variant it
+		holds; the value an <span class="pre">Rc</span> or <span class="pre">So</span> owner holds (an
+		<span class="pre">Rc</span>'s once for each <span class="pre">mode</span>, which is its
+		<span class="pre">visit</span>'s epoch); and the values a type declaring <span class="pre">GcTraceElements</span>
+		holds, in the order its cursor gives them. A reference that is null (an <span class="pre">Option</span> holding
+		<span class="pre">None</span>) is passed over. Where the region's <span class="pre">mark</span> takes them, it is
+		also handed the reference's permission and <span class="pre">mode</span>, which means whatever the region's
+		collector wants it to: the compiler only passes it on. For a type holding no traced reference
+		(<span class="pre">holdsTraced[T]()</span> is false) it does nothing.</p>
+	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized <span class="pre">T</span>. No
+		fallback: the walk the compiler builds for <span class="pre">T</span> is the implementation.</p>
+
+	<h3 id="traceroots">traceRoots</h3>
+<pre>
+fn @intrinsic traceRoots(mode u32)
+</pre>
+	<p>Hands every traced reference the running functions hold on the stack to its region's
+		<span class="pre">mark</span>, as <span class="pre">trace</span> hands those a value holds, with the same
+		<span class="pre">mode</span>: what a collector starts its marking from. It takes no type parameter. The
+		stack's traced references are every local and parameter whose type holds one (a reference into a traced region,
+		or a struct, tuple, array or enum holding one where it sits), in every function that has not yet returned, and
+		every temporary such a function is making: an allocation's result, a call's result, and a value read through a
+		reference or made from a raw pointer, each kept until the same expression runs again or its function returns.
+		So a reference that is only an argument being gathered for a call is found while an earlier argument's call
+		runs, and the value of a traced allocation, made before its region's <span class="pre">alloc</span> is called,
+		is found while <span class="pre">alloc</span> runs. A borrowed reference is not traced: what it borrows from is
+		held by its owner, which is. Where more than one of them holds a reference, <span class="pre">mark</span> is
+		called for each. A function holding no traced reference costs nothing and is passed over; a value reached only
+		through another object is not a root.</p>
+	<p>No fallback: the frames the compiler links in each function holding traced references are the
+		implementation, walked by the C library the compiler links with.</p>
+
+	<h3 id="slicefromparts">sliceFromParts, sliceFromPartsMut and sliceFromPartsUni</h3>
+<pre>
+fn @intrinsic sliceFromParts[T](p *T, len usize) &amp;Array[T]
+fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &amp;mut Array[T]
+fn @intrinsic sliceFromPartsUni[T](p *T, len usize) &amp;uni Array[T]
+</pre>
+	<p>A borrowed slice of the <span class="pre">len</span> consecutive <span class="pre">T</span> values starting at
+		<span class="pre">p</span>: read-only from <span class="pre">sliceFromParts</span>, writable from
+		<span class="pre">sliceFromPartsMut</span>, and writable and the only way to reach them from
+		<span class="pre">sliceFromPartsUni</span>. A <span class="pre">len</span> of 0 gives an empty slice, whatever
+		<span class="pre">p</span> is.</p>
+	<p>Needs trust: the <span class="pre">len</span> values must be initialized, lie in one allocation, and stay
+		there, unmoved and unfreed, for as long as the slice is used, which the compiler cannot see. A writable slice
+		must be the only way those values are reached while it is used, and a <span class="pre">&amp;uni</span> one
+		promises that to everything else (a list's <span class="pre">viewUni</span> lends one only from a list it
+		reaches as <span class="pre">&amp;uni</span>). A <span class="pre">&amp;mut</span> slice cannot be cast
+		<span class="pre">&amp;uni</span> instead: <span class="pre">as</span> between references may only be a coercion
+		(<a href="safe-types.html#as">Reinterpretation: as</a>). No fallback.</p>
+
+	<h3 id="readraw">readRaw</h3>
+<pre>
+fn @intrinsic readRaw[T](p *T) T
+</pre>
+	<p>Moves the <span class="pre">T</span> at <span class="pre">p</span> out and returns it: the value is the
+		caller's now, and the slot is left dead. Nothing at the slot is finalized, and <span class="pre">p</span> may be
+		used again (for another slot, or to write this one). This differs from <span class="pre">*p</span>, which, for a
+		type that moves, marks the variable <span class="pre">p</span> itself as moved.</p>
+	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized <span class="pre">T</span>. Reading
+		the same live value twice gives two owners of it, and it dies twice. Fallback: <span class="pre">{*p;}</span>.</p>
+
+	<h3 id="writeraw">writeRaw</h3>
+<pre>
+fn @intrinsic writeRaw[T](p *T, value T)
+</pre>
+	<p>Moves <span class="pre">value</span> into the slot at <span class="pre">p</span>, which is treated as holding
+		nothing: whatever was there is neither finalized nor released. This is how a value goes into memory that has
+		just been allocated. <span class="pre">*p = value</span> is not the same: storing an owning reference that way
+		releases the reference the slot is taken to hold, which in uninitialized memory is whatever bytes are there.</p>
+	<p>Where <span class="pre">value</span> is a construction by an <span class="pre">init</span> the type declares,
+		<span class="pre">mem.writeRaw[T](p, new T(args))</span>, the <span class="pre">init</span> runs on the slot
+		itself, its <span class="pre">self</span> being <span class="pre">p</span>, as an allocation's value is made in
+		place: so an <span class="pre">init</span> that uses where its value is (an actor's, which sends to the actor
+		through it) sees where the value stays.</p>
+	<p>Needs trust: <span class="pre">p</span> must be aligned for <span class="pre">T</span> and point into memory
+		the caller may write. If the slot held a live value, that value is forgotten, never finalized. No
+		fallback: nothing written in Cone stores without releasing.</p>
+	<p>A <span class="pre">T</span> holding a traced reference is refused, and so it is for
+		<span class="pre">moveRaw</span>: memory placed this way is an arena's, a pool's or a collection's, which no
+		collector traces. Where the call is in a generic's body, the refusal is reported where the program chose the
+		type, as at <span class="pre">List[Gc[mut, Node]]</span>.</p>
+
+	<h3 id="moveraw">moveRaw</h3>
+<pre>
+fn @intrinsic moveRaw[T](to *T, from *T, count usize)
+</pre>
+	<p>Moves <span class="pre">count</span> consecutive values from <span class="pre">from</span> to
+		<span class="pre">to</span>, as if each were read with <span class="pre">readRaw</span> and written with
+		<span class="pre">writeRaw</span>. The two ranges may overlap, and the result is as if every value were read
+		before any was written. Nothing is finalized: the values now live at <span class="pre">to</span>, and the slots
+		of <span class="pre">from</span> that <span class="pre">to</span> does not cover are dead. A
+		<span class="pre">count</span> of 0 does nothing.</p>
+	<p>Needs trust: both ranges must lie in memory the caller may use, and the values at
+		<span class="pre">from</span> must be live. Fallback: a loop of <span class="pre">readRaw</span> and
+		<span class="pre">writeRaw</span>, running upward when <span class="pre">to</span> is below
+		<span class="pre">from</span> and downward otherwise. The LLVM back end does it as one block move.</p>
+
+	<h2 id="source">Where the code is, and what the build is</h2>
+	<p>These are declared at core's top level, not in <span class="pre">mem</span>, and every module calls them
+		bare.</p>
+
+	<h3 id="srcloc">srcFile and srcLine</h3>
+<pre>
+pub fn @intrinsic srcFile() &amp;str
+pub fn @intrinsic srcLine() u32
+</pre>
+	<p>Where the call is written: the name of its source file, as text, without the folders it is in, and its line,
+		counting from 1. Each is a constant. A parameter whose default is <span class="pre">srcFile()</span> may be
+		declared <span class="pre">&amp;str</span> or <span class="pre">&amp;Array[u8]</span>, since any
+		<span class="pre">&amp;str</span> converts to a slice of bytes.</p>
+	<p><b>Written as a parameter's default value, each answers where the call taking the default is</b>, each call
+		its own place, not where the parameter is declared. This is how a function reports its caller's location, as
+		<a href="safe-panics.html#where">panic</a> and <span class="pre">assert</span> do, and any function may do the
+		same, and hand the two on:</p>
+<pre>
+fn requirePositive(n i32, file &amp;Array[u8] = srcFile(), line u32 = srcLine()) {
+  assert(n &gt; 0, "must be positive", file, line);
+}
+
+requirePositive(-5);    // panics naming this line
+</pre>
+	<p>A parameter's default value is otherwise a literal; these two are the exception. An argument written for the
+		parameter replaces the default, as for any. Written in an inline function's body, the place is in that body. No
+		fallback: the place of a call is known only to the compiler.</p>
+	<p><b>Written in a <a href="mod-generativity.html">macro</a>'s body, each answers where the macro is used.</b>
+		In a macro used inside another macro's body, that is where the outermost macro is used. An argument keeps its
+		own place: a macro's argument is the source written at its use, and a call to either in it answers there. This
+		is how core's <span class="pre">assertDebug</span> macro names its caller's line
+		(<a href="safe-panics.html#assert">Panics</a>).</p>
+
+	<h3 id="debugbuild">isDebugBuild</h3>
+<pre>
+pub fn @intrinsic isDebugBuild() bool
+</pre>
+	<p>Whether this compile is a debug build: <span class="pre">conec --debug</span>, or
+		<span class="pre">build: debug</span> in a build description, which is what Congo writes unless it is given
+		<span class="pre">--release</span>. A constant, true or false for the whole compile. The side of an
+		<span class="pre">if</span> on it that the build does not take is never generated, in a debug build as in a
+		release one, so it costs nothing and none of it reaches the object:</p>
+<pre>
+if isDebugBuild() {checkEveryInvariant(&amp;table);}
+</pre>
+	<p>Both sides are type checked in every build. No fallback: the build is known only to the compiler. The
+		constants below are built the same way.</p>
+
+	<h3 id="buildconst">Constants of the build: a provisional mechanism; its final design is open</h3>
+	<p><i>Temporary. These let a package write code for one platform, or for a build the command line names, until
+		the language has its own design for compile-time configuration. Their names, their forms and the flag may all
+		change.</i></p>
+<pre>
+pub fn @intrinsic isWindows() bool
+pub fn @intrinsic isLinux() bool
+pub fn @intrinsic isMacOS() bool
+pub fn @intrinsic isWasm() bool
+pub fn @intrinsic isDefined(name &amp;Array[u8]) bool
+pub fn @intrinsic definedInt(name &amp;Array[u8]) i64
+</pre>
+	<p>Each is a constant of the compile, as <span class="pre">isDebugBuild</span> is, declared at core's top level
+		and called bare. The first four say which OS the compile targets, read from its target triple with no flag:
+		the host's, or the one <span class="pre">--triple</span> or <span class="pre">--wasm</span> names.
+		<span class="pre">isWindows</span> holds for a triple naming <span class="pre">windows</span>
+		(<span class="pre">x86_64-pc-windows-msvc</span>), <span class="pre">isLinux</span> for one naming
+		<span class="pre">linux</span>, <span class="pre">isMacOS</span> for one naming <span class="pre">darwin</span> or
+		<span class="pre">macos</span>, and <span class="pre">isWasm</span> for a WebAssembly one; at most one holds, and
+		none for a SPIR-V triple (<a href="safe-platforms.html">Platforms and targets</a>).</p>
+	<p><span class="pre">isDefined</span> and <span class="pre">definedInt</span> read constants named on
+		<span class="pre">conec</span>'s command line: <span class="pre">-D NAME</span> defines
+		<span class="pre">NAME</span> as 1, and <span class="pre">-D NAME=123</span> as that integer (decimal or
+		<span class="pre">0x</span> hex, negative too), C's convention. A name given twice takes the last.
+		<span class="pre">isDefined</span> answers whether the name was defined, and <span class="pre">definedInt</span>
+		its integer, 0 for a name never defined. The name is written as a string literal, since it is looked up as the
+		program compiles; anything else is an error. Congo passes <span class="pre">-D</span> to every compile of a
+		build: <span class="pre">congo run -D TRACE -D LEVEL=2</span> makes
+		<span class="pre">isDefined("TRACE")</span> true and <span class="pre">definedInt("LEVEL")</span> 2.</p>
+<pre>
+if isWindows() {SwitchToThread();} else {sched_yield();}
+if isDefined("TRACE") {traceEveryMessage(&amp;queue);}
+imm level = definedInt("LEVEL");
+</pre>
+	<p>An <span class="pre">if</span> whose condition is one of these, or <span class="pre">!</span>,
+		<span class="pre">and</span> or <span class="pre">or</span> of them, has only the side the build takes generated.
+		A call on the other side, to a function only another platform's libraries define, is never generated, so the
+		program links without it. Both sides are still name resolved and type checked on every platform, so a name used
+		only on one side must still be declared on every platform: an <span class="pre">extern</span> declaration of a
+		function the target does not have is allowed, and costs nothing while nothing generated calls it. A comparison
+		of one, <span class="pre">definedInt("LEVEL") &gt; 2</span>, is not itself such a condition: both its sides are
+		generated, though an optimized build may fold it.</p>
+	<p>The same holds for the functions a side calls, however far down. A function that no live code reaches is not
+		part of the object, in a debug build as in a release one. What is live is what the object makes visible and what
+		that reaches: <span class="pre">main</span>; in a library, every <span class="pre">pub</span> function, and in
+		any compile a <span class="pre">pub</span> function with a C name; the function behind every address taken
+		(<span class="pre">&amp;name</span>, a closure), every trait's vtable slot and every finalizer that live code can
+		run. So a platform's calls can be gathered in a function of their own, called from the branch for that platform
+		only:</p>
+<pre>
+fn waitWindows(word *u32, ms u32) bool {WaitOnAddress(word, ...) != 0i32;}
+fn waitLinux(word *u32, ns u64) bool {cone_futexWait(word, ...) != 0i32;}
+fn wait(word *u32, ns u64) bool {
+  if isWindows() {waitWindows(word, msCeil(ns));} else {waitLinux(word, ns);}
+}
+</pre>
+	<p>On Linux <span class="pre">waitWindows</span> is not emitted, so the program does not need
+		<span class="pre">WaitOnAddress</span>. A <span class="pre">pub</span> function of a library is live whatever
+		calls it: one holding only another platform's calls is in the library's object, and the program that links the
+		library needs what it calls.</p>
+	<p>These are core's, found bare through the prelude. A <a href="safe-c.html#cnames">C-named module</a> has no
+		prelude, so it imports <span class="pre">core</span> and writes <span class="pre">core.isWindows()</span>;
+		<span class="pre">libc</span>, which <span class="pre">core</span> itself imports, cannot, and so cannot choose a
+		declaration by platform.</p>
+
+	<h2 id="atomics">Atomic operations</h2>
+	<p>An atomic operation reads or changes the <span class="pre">T</span> at a pointer <b>indivisibly</b>: no other
+		thread sees it half done, and when several threads operate on one location at once, each operation happens
+		whole, one after another. They are the parts a thread-safe counter, flag or lock is built from. Everyday code
+		uses core's <a href="conc-primitives.html#atomic"><span class="pre">Atomic[T]</span></a>, built on them. Each
+		takes a raw pointer and so needs trust: <span class="pre">p</span> must point at a live, initialized
+		<span class="pre">T</span>, aligned for it, which every thread reaches only through atomic operations while any
+		of them may be writing.</p>
+<pre>
+mut counter = 0i32;
+imm p = &amp;mut counter as *i32;
+imm before = mem.atomicAdd[i32](p, 5i32, MemOrder.SeqCst);   // before is 0; counter is 5
+</pre>
+
+	<h3 id="atomictypes">Which types</h3>
+	<p><span class="pre">T</span> is one of the types a target operates on indivisibly without a lock:</p>
+	<ul>
+		<li>an integer type of 8 to 64 bits, signed or unsigned, including <span class="pre">usize</span> and
+			<span class="pre">isize</span>;</li>
+		<li><span class="pre">bool</span>;</li>
+		<li>a raw pointer, to anything.</li>
+	</ul>
+	<p>Each operation takes the part of that set it has a meaning for: <span class="pre">atomicAdd</span>,
+		<span class="pre">atomicSub</span>, <span class="pre">atomicMin</span> and <span class="pre">atomicMax</span> an
+		integer; <span class="pre">atomicAnd</span>, <span class="pre">atomicOr</span> and <span class="pre">atomicXor</span>
+		an integer or a <span class="pre">bool</span>; the load, the store, the swap and the compare-swap all three.
+		Anything else is an error where the operation is instantiated for it: a float, a struct, a tuple, an array, and
+		every kind of reference, borrowed, owning or managed. A <span class="pre">bool</span> is operated on as the byte
+		that holds it, which holds 0 or 1.</p>
+
+	<h3 id="orderings">Orderings</h3>
+	<p>An atomic operation is indivisible by itself; what it promises about the memory around it is its
+		<b>ordering</b>, on the C11 model. Core declares the orderings as an enum, <span class="pre">MemOrder</span>, a
+		name of every module as <span class="pre">mem</span> is:</p>
+<pre>
+pub enum MemOrder u8 {
+  Relaxed, Acquire, Release, AcqRel, SeqCst;
+}
+</pre>
+	<ul>
+		<li><span class="pre">Relaxed</span>: the operation is indivisible, and promises nothing about any other
+			memory.</li>
+		<li><span class="pre">Acquire</span>, on an operation that loads: what this thread does after it is not seen to
+			happen before it, so a thread that loads what another stored with <span class="pre">Release</span> sees
+			everything the other did before that store.</li>
+		<li><span class="pre">Release</span>, on an operation that stores: what this thread did before it is not seen to
+			happen after it.</li>
+		<li><span class="pre">AcqRel</span>, on a read-modify-write: both.</li>
+		<li><span class="pre">SeqCst</span>: both, as far as the operation loads and stores, and every
+			<span class="pre">SeqCst</span> operation of the program also happens in one order that every thread sees. It
+			is the one to use when in doubt.</li>
+	</ul>
+	<p>The ordering is an ordinary argument, but the compiler requires it to be a <b>constant</b>, because which
+		instruction the call becomes depends on it: a variant written where the call is,
+		<span class="pre">MemOrder.SeqCst</span>, or a <span class="pre">const</span> holding one. A
+		<span class="pre">MemOrder</span> held in a variable or passed as a parameter is an error at the call, even
+		where its value never changes.</p>
+<pre>
+const acquire = MemOrder.Acquire;
+imm n = mem.atomicLoad[i32](p, acquire);    // allowed
+imm o = MemOrder.Acquire;
+imm m = mem.atomicLoad[i32](p, o);          // **ERROR** 1177: The ordering mem.atomicLoad is given
+                                            //   must be a constant ...: which instruction the call is
+                                            //   depends on it.
+</pre>
+	<p>An ordering an operation cannot promise is an error at the call, such as
+		<span class="pre">mem.atomicLoad[i32](p, MemOrder.Release)</span> (1178: A load has nothing to release, so
+		mem.atomicLoad takes Relaxed, Acquire or SeqCst, not Release). In full:</p>
+	<ul>
+		<li>a load (<span class="pre">atomicLoad</span>) has nothing to release, so it takes
+			<span class="pre">Relaxed</span>, <span class="pre">Acquire</span> or <span class="pre">SeqCst</span>, not
+			<span class="pre">Release</span> or <span class="pre">AcqRel</span>;</li>
+		<li>a store (<span class="pre">atomicStore</span>) has nothing to acquire, so it takes
+			<span class="pre">Relaxed</span>, <span class="pre">Release</span> or <span class="pre">SeqCst</span>, not
+			<span class="pre">Acquire</span> or <span class="pre">AcqRel</span>;</li>
+		<li>a read-modify-write, the swap included, takes all five;</li>
+		<li><span class="pre">atomicCompareSwap</span> takes two: the ordering when it stores, which may be any of the
+			five, and the ordering when it does not, when it has only loaded. That failure ordering is
+			<span class="pre">Relaxed</span>, <span class="pre">Acquire</span> or <span class="pre">SeqCst</span>, and no
+			stronger than the success ordering: <span class="pre">Acquire</span> needs a success ordering of
+			<span class="pre">Acquire</span>, <span class="pre">AcqRel</span> or <span class="pre">SeqCst</span>, and
+			<span class="pre">SeqCst</span> needs <span class="pre">SeqCst</span>.</li>
+	</ul>
+	<p>An ordering has no default: every call writes its own. <a href="conc-primitives.html#atomic"><span
+		class="pre">Atomic[T]</span></a> gives <span class="pre">SeqCst</span> without writing it. There is no
+		standalone fence: each ordering belongs to an operation.</p>
+
+	<h3 id="atomicload">atomicLoad and atomicStore</h3>
+<pre>
+fn @intrinsic atomicLoad[T](p *T, order MemOrder) T
+fn @intrinsic atomicStore[T](p *T, value T, order MemOrder)
+</pre>
+	<p><span class="pre">atomicLoad</span> answers the <span class="pre">T</span> at <span class="pre">p</span>;
+		<span class="pre">atomicStore</span> puts <span class="pre">value</span> there. Neither finalizes or releases
+		anything, which none of these types needs. Fallback: <span class="pre">{*p;}</span> and
+		<span class="pre">{*p = value;}</span>.</p>
+
+	<h3 id="atomicswap">atomicSwap</h3>
+<pre>
+fn @intrinsic atomicSwap[T](p *T, value T, order MemOrder) T
+</pre>
+	<p>Puts <span class="pre">value</span> at <span class="pre">p</span> and answers what was there before, as one
+		indivisible step. Fallback: a load, then a store.</p>
+
+	<h3 id="atomicadd">atomicAdd, atomicSub, atomicAnd, atomicOr and atomicXor</h3>
+<pre>
+fn @intrinsic atomicAdd[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicSub[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicAnd[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicOr[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicXor[T](p *T, value T, order MemOrder) T
+</pre>
+	<p>Each reads the <span class="pre">T</span> at <span class="pre">p</span>, combines it with
+		<span class="pre">value</span>, stores the result there, and answers the value it read, <b>the one from
+		before</b>, all as one indivisible step. Add and subtract wrap: a <span class="pre">u8</span> holding 255 plus 1
+		holds 0, and an <span class="pre">i32</span> holding its largest value plus 1 holds its smallest; neither is an
+		error. And, or and exclusive or act on every bit, and on a <span class="pre">bool</span> are the logical
+		operations. Fallback: a load, the operator (<span class="pre">+</span>, <span class="pre">-</span>,
+		<span class="pre">&amp;</span>, <span class="pre">|</span>, <span class="pre">^</span>), then a store.</p>
+
+	<h3 id="atomicmin">atomicMin and atomicMax</h3>
+<pre>
+fn @intrinsic atomicMin[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicMax[T](p *T, value T, order MemOrder) T
+</pre>
+	<p>Each keeps at <span class="pre">p</span> the lesser, or the greater, of the <span class="pre">T</span> there and
+		<span class="pre">value</span>, and answers the value from before, as one indivisible step. They compare as
+		<span class="pre">T</span> does: signed for a signed integer, unsigned for an unsigned one, so a
+		<span class="pre">u8</span> holding 200 is greater than 3, and an <span class="pre">i8</span> holding -56, the
+		same bits, less. Fallback: a load, a comparison, and a store when <span class="pre">value</span> is the lesser
+		(the greater).</p>
+
+	<h3 id="atomiccas">atomicCompareSwap</h3>
+<pre>
+fn @intrinsic atomicCompareSwap[T](p *T, expected T, desired T,
+    success MemOrder, failure MemOrder) T, bool
+</pre>
+	<p>If the <span class="pre">T</span> at <span class="pre">p</span> equals <span class="pre">expected</span>,
+		stores <span class="pre">desired</span> there; either way, answers two values: the <span class="pre">T</span> it
+		found at <span class="pre">p</span>, and whether it stored. Equal means <span class="pre">==</span>, which for
+		these types is the same bits: two pointers are equal when they hold the same address. It never fails
+		spuriously: when the value found equals <span class="pre">expected</span>, it stores. The two results are a
+		<a href="guide-tuples.html#parallel">tuple</a>, taken apart by assignment:</p>
+<pre>
+mut seen = 0i32;
+mut stored = false;
+seen, stored = mem.atomicCompareSwap[i32](p, 5i32, 9i32,
+    MemOrder.AcqRel, MemOrder.Acquire);       // with counter at 5: seen 5, stored true
+</pre>
+	<p>Fallback: a load, a comparison, and a store when they are equal.</p>
+
+	<h3 id="atomicfallback">What a fallback promises</h3>
+	<p>An atomic operation's fallback body is the plain operation, which is right only while one thread reaches
+		<span class="pre">p</span>: it is what a back end with no atomic instructions of its own runs, and is correct for
+		a program with one thread. The types and the orderings are checked the same way whichever runs.</p>
+
+	<h3 id="atomicllvm">How LLVM does it</h3>
+	<p>Each operation is one LLVM instruction, aligned as the type is: an atomic <span class="pre">load</span> or
+		<span class="pre">store</span>, an <span class="pre">atomicrmw</span> (<span class="pre">xchg</span>,
+		<span class="pre">add</span>, <span class="pre">sub</span>, <span class="pre">and</span>,
+		<span class="pre">or</span>, <span class="pre">xor</span>, and <span class="pre">min</span> and
+		<span class="pre">max</span> or <span class="pre">umin</span> and <span class="pre">umax</span> as
+		<span class="pre">T</span> is signed or not), or a strong <span class="pre">cmpxchg</span> carrying both
+		orderings. <span class="pre">Relaxed</span> is LLVM's <span class="pre">monotonic</span>. A
+		<span class="pre">bool</span> is operated on as an <span class="pre">i8</span>. On a GPU each acts at the scope of
+		the memory it changes, and <span class="pre">SeqCst</span>, which Vulkan does not have, is acquire-release
+		(<a href="conc-gpu.html#atomics">The GPU</a>).</p>
+
+	<h2 id="barriers">A GPU workgroup's barriers</h2>
+<pre>
+pub fn @intrinsic workgroupBarrier() {}
+pub fn @intrinsic storageBarrier() {}
+</pre>
+	<p>Every invocation of a compute workgroup waits at a barrier until all have reached it, and what each wrote
+		before it, to workgroup memory or to the kernel's buffers, every other reads after it
+		(<a href="conc-gpu.html#barriers">The GPU</a>). They are core's, outside <span class="pre">mem</span>, as
+		<span class="pre">isDebugBuild</span> is. On a GPU each is SPIR-V's <span class="pre">OpControlBarrier</span> at
+		the workgroup's scope, acquire-release over workgroup memory (<span class="pre">workgroupBarrier</span>) or, at
+		the device's scope, over the buffers (<span class="pre">storageBarrier</span>). On the CPU each calls the running
+		thread's barrier hook, which core's <span class="pre">setBarrierHook</span> sets and
+		<span class="pre">clearBarrierHook</span> clears, and is nothing when the thread has none, as when a kernel runs
+		one invocation at a time (<a href="conc-gpu.html#cpubarriers">The GPU</a>, "Barriers on the CPU"); on
+		WebAssembly each is nothing. The fallback body, empty, is what <span class="pre">--intrinsic-fallback</span>
+		gives on every target.</p>
+
+	<h2 id="bits">An integer's bits</h2>
+	<p>Seven operations on an integer's bits. <span class="pre">T</span> is an integer type of 8 to 64 bits,
+		<span class="pre">usize</span> and <span class="pre">isize</span> among them; any other type is refused where the
+		intrinsic is instantiated for it. None needs trust. Each is also a method of every integer type,
+		<span class="pre">x.leadingZeros()</span> for <span class="pre">mem.leadingZeros(x)</span>, which the compiler
+		builds with the type (<a href="guide-numbers.html#bits">Numbers</a>). Each has a fallback body, which works a bit
+		at a time.</p>
+
+	<h3 id="counts">countOnes, leadingZeros and trailingZeros</h3>
+<pre>
+fn @intrinsic countOnes[T](x T) u32
+fn @intrinsic leadingZeros[T](x T) u32
+fn @intrinsic trailingZeros[T](x T) u32
+</pre>
+	<p>How many bits of <span class="pre">x</span> are 1; how many are 0 above its highest 1; how many are 0 below
+		its lowest 1. A signed <span class="pre">x</span> is counted as its bits, the sign's among them. Defined for 0:
+		<span class="pre">leadingZeros</span> and <span class="pre">trailingZeros</span> of 0 are the width, never
+		undefined (<span class="pre">0u32.trailingZeros()</span> is 32).</p>
+
+	<h3 id="rotate">rotateLeft and rotateRight</h3>
+<pre>
+fn @intrinsic rotateLeft[T](x T, n u32) T
+fn @intrinsic rotateRight[T](x T, n u32) T
+</pre>
+	<p><span class="pre">x</span>'s bits moved by <span class="pre">n</span> modulo the width, those shifted out of
+		one end coming in at the other. Every <span class="pre">n</span> is defined, and one that is a multiple of the
+		width gives <span class="pre">x</span>.</p>
+
+	<h3 id="masked">shlMasked and shrMasked</h3>
+<pre>
+fn @intrinsic shlMasked[T](x T, n u32) T
+fn @intrinsic shrMasked[T](x T, n u32) T
+</pre>
+	<p><span class="pre">x</span> shifted by <span class="pre">n</span> modulo the width, left or right: one
+		instruction on most processors. <span class="pre">shrMasked</span> is arithmetic, filling with the sign bit, for a
+		signed <span class="pre">T</span>, and logical, filling with zeros, for an unsigned one. They differ from the
+		operators <span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span> only when
+		<span class="pre">n</span> is the width or more: there the operators shift every bit out
+		(<a href="guide-numbers.html#shift">Shift operators</a>), and these shift by what is left after taking whole
+		widths off (<span class="pre">mem.shlMasked[u32](1u32, 33u32)</span> is 2).</p>
+
+	<h3 id="mulfold">mulFold</h3>
+<pre>
+fn @intrinsic mulFold(a u64, b u64) u64
+</pre>
+	<p>The full 128-bit product of <span class="pre">a</span> and <span class="pre">b</span>, its high 64 bits and
+		its low 64 bits exclusive-or'd together: the mixing step of the wyhash family of hashes, which core's
+		<span class="pre">Hasher</span> is built on (<a href="mod-substitution.html#hash">Hash</a>). It is a function of
+		two numbers and nothing else, and is one multiply on a 64-bit target. The low half alone is
+		<span class="pre">a * b</span>, so the high half alone is <span class="pre">mulFold(a, b) ^ (a * b)</span>. It is
+		declared in <span class="pre">mem</span> and has a fallback body, which forms the product from 32-bit
+		halves.</p>
+<pre>
+mem.mulFold(3u64, 5u64)                           // 15: the high half is 0
+mem.mulFold(0xFFFFFFFFFFFFFFFFu64, 1u64)          // 0xFFFFFFFFFFFFFFFF
+mem.mulFold(0xFFFFFFFFu64, 0xFFFFFFFFu64)         // 0xFFFFFFFE00000001
+mem.mulFold(0x8000000000000000u64, 2u64)          // 1: the product is 2^64, high half 1, low half 0
+</pre>
+
+	<h3 id="bitsllvm">How LLVM does them</h3>
+	<p>The counts are <span class="pre">llvm.ctpop</span>, <span class="pre">llvm.ctlz</span> and
+		<span class="pre">llvm.cttz</span>, the last two told that 0 is not poison, their result resized to a
+		<span class="pre">u32</span>; the rotates <span class="pre">llvm.fshl</span> and <span class="pre">llvm.fshr</span>
+		with <span class="pre">x</span> as both halves; and the masked shifts a <span class="pre">shl</span>,
+		<span class="pre">ashr</span> or <span class="pre">lshr</span> by the amount's low bits.
+		<span class="pre">mulFold</span> extends both operands to 128 bits, multiplies, shifts the high half down and
+		exclusive-ors the halves.</p>
+
+	<p>You have reached the bottom of Cone's safety: the operations the compiler performs on library code's behalf,
+		and the promises each one asks you to keep. With them you can build a container, a region or a lock as the
+		standard library does. That ends the parts; next come the recipes, solutions to particular problems you may run
+		into, which draw on all of them.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="recipes.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

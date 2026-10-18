@@ -1,0 +1,311 @@
+<html>
+  <head>
+	  <title>Moves: values there can only be one of - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Moves: values there can only be one of</div>
+		</div>
+
+    <div class="text">
+
+	<p>You have a value there can only be one of: the one handle to an open file, the one owner of a block of memory,
+		the one baton a relay team carries. A copy would make two, so Cone <b>moves</b> such a value instead: handing it
+		on leaves the giver with nothing. That is a restriction, and this recipe gathers the ways of working with it:
+		which types move, what a move leaves behind, how to hand a value on and get it back, and how to get one out of a
+		struct, an array or a reference. Here a team passes its one baton. The baton has a <b>finalizer</b>, the method
+		named <span class="pre">final</span>, which runs by itself when the value dies
+		(<a href="rec-methods.html#finalizer">Ending a value</a>, in the previous recipe, has finalizers in full):</p>
+<pre>
+mod relay;
+
+import stdio use *;
+
+// A relay team has one baton. Its finalizer makes it a type that moves:
+// handing it on leaves the giver with nothing
+struct Baton {
+  pub legs i32;
+  fn final(self &amp;uni) {
+    print &lt;- "the baton is put away after ", legs, " legs\n";
+  }
+}
+
+// A runner takes the baton, runs a leg, and hands it back on
+fn run(name &amp;str, b Baton) Baton {
+  mut held = b;
+  held.legs += 1;
+  print &lt;- name, " runs leg ", held.legs, "\n";
+  held;
+}
+
+fn main() {
+  mut baton = new Baton(0);
+  each name in ["Ama", "Bo", "Cy", "Dee"] {
+    baton = run(*name, baton);    // out to the runner, and back again
+  }
+  print &lt;- "the team finishes\n";
+}                                 // the one baton is finalized here, once
+</pre>
+	<p>It prints:</p>
+<pre>
+Ama runs leg 1
+Bo runs leg 2
+Cy runs leg 3
+Dee runs leg 4
+the team finishes
+the baton is put away after 4 legs
+</pre>
+	<p><b>Try this:</b> take away <span class="pre">baton =</span>, so the runner keeps the baton, and predict what the
+		second runner gets. The compiler refuses it: <i>This variable's value may have been moved out on a path that
+		reaches here (a branch, or an earlier pass of a loop).</i></p>
+	<p>Each call moves the baton into <span class="pre">run</span>, which leaves <span class="pre">baton</span> empty;
+		<span class="pre">run</span> hands it back as its answer, and the assignment fills <span class="pre">baton</span>
+		again. However many legs are run, there is one baton, and it is finalized once. You met the same thing with a
+		<a href="guide-text.html#moving">String</a>, which moves because it owns its text.</p>
+
+	<h2 id="movecopy">Which types move, and why</h2>
+	<p id="why">A copy is a second, independent value: right for a number, trouble for some values. Copy a file handle,
+		close the file through one copy, and the other reaches nothing, or a different file opened later in its place. A
+		complex value may have no faithful copy, or making one would mean allocating memory or opening resources, which a
+		silent copy should not do. And one holder pays back: the value can be freed the moment its holder goes, decided
+		when the program is compiled (the <a href="mem-regions.html#so">single owner</a> in Memory), and changeable data
+		can be handed to another thread with no lock, since nobody is left behind to race with it.</p>
+	<p>Whether a value copies or moves is decided by its type, never by how it is used. A type moves if:</p>
+	<ol>
+		<li><b>It says so,</b> by naming <span class="pre">Move</span> among the traits it declares. A theatre ticket
+			copied would let two people into one seat:
+<pre>
+struct Ticket is Move {
+  pub seat i32;
+}
+</pre>
+			A type declaring <span class="pre">AtomicValue</span>, the marker of an
+			<a href="conc-primitives.html#atomic">atomic value</a>, moves too: a copy would be a second value that no
+			atomic operation on the first could reach.</li>
+		<li><b>It has a <a href="rec-methods.html#finalizer">finalizer</a>,</b> as the baton does. A type that cleans up
+			after itself almost certainly owns something, and each copy would clean it up again.</li>
+		<li><b>Any of its fields moves.</b> If part of a value cannot be copied, the whole value cannot be. A struct
+			holding a <span class="pre">List</span> of itself moves without declaring it, and so does each of two types
+			that hold a <span class="pre">List</span> of the other.</li>
+		<li><b>It is an enum and any of its variants moves</b>, since a value of the enum may be that variant
+			(<a href="guide-enums.html">Enums</a>).</li>
+		<li><b>It is a unique reference,</b> the one and only way to its value, as the <span class="pre">So[str]</span>
+			of <a href="guide-text.html#unique">Handing text on</a> is. In Memory's terms that is an owning reference
+			whose <a href="mem-permissions.html">permission</a> forbids sharing it (<span class="pre">uni</span>), or whose
+			region declares <span class="pre">Move</span>, as <span class="pre">So</span> does
+			(<a href="mem-regions.html#so">The single owner</a>). By the rule for fields, anything holding one moves
+			too.</li>
+	</ol>
+	<p>Anything else copies. <b>Not built yet:</b> the design also has a type move when any of its fields is a
+		reference to other data, since such a value has no obvious safe copy. Today a struct whose fields are borrowed
+		references or shared owning references (<span class="pre">&amp;</span>, <span class="pre">&amp;mut</span>,
+		<span class="pre">Rc[mut, T]</span>, <span class="pre">Rc[imm, T]</span>) copies; only a
+		<span class="pre">So</span> or <span class="pre">uni</span> field makes it move.</p>
+	<p>Declaring <span class="pre">is Copy</span> is an assertion, not an instruction: it changes nothing on a type that
+		copies anyway, and is refused on one the rules make move:</p>
+<pre>
+struct Point is Copy {       // accepted: nothing here moves
+  pub x i32;
+  pub y i32;
+}
+struct Lap is Copy {         // Error 1167: Lap is declared Copy, but its 'final' makes it move:
+  fn final(self &amp;uni) { }    //   each copy would be finalized.
+}
+</pre>
+	<p>A <span class="pre">clone</span> method changes none of this, since no copy calls it
+		(<a href="rec-methods.html#finalizer">Ending a value</a>). <span class="pre">Copy</span> and
+		<span class="pre">Move</span> are traits rather than attributes because other code may ask about them: a generic
+		asks with <span class="pre">where T is Move</span> (<a href="mod-generativity.html#constraints">Generic
+		constraints</a>, in Modularity). A function's body cannot ask: <span class="pre">v is Move</span> there tests an
+		enum's variant, and is refused on a value with no variants.</p>
+
+	<h2 id="deactivate">What a move leaves behind</h2>
+	<p>A move may well copy the value's bytes; what it guarantees is that only one holder can use them afterwards. It
+		does that by <b>deactivating the source</b>: once a value has moved out of a variable, the variable may not be used
+		again, neither read nor borrowed, until it is given a new value, as <span class="pre">baton</span> was in the
+		relay. That holds whether the value was assigned to another variable, handed to a function, or handed on as the
+		value of a block, an <span class="pre">if</span> or a loop:</p>
+<pre>
+fn store(b Baton) { print &lt;- "stored\n"; }  // takes the baton: it dies when store ends
+fn look(b &amp;Baton) { }                       // only borrows it
+
+imm baton = new Baton(0);
+imm kept = { baton; };     // the block hands baton on: it moves
+store(baton);              // Error 1048: This variable's value has been moved out.
+</pre>
+	<p>A value a function returns is handed to its caller, with no source left behind to deactivate.</p>
+
+	<h3 id="condmoves">Moves on some paths: drop flags</h3>
+	<p>A value may move on one path and not another:</p>
+<pre>
+fn practice(raining bool) {
+  imm baton = new Baton(0);
+  if raining {
+    store(baton);          // moved on this path only
+  }
+  print &lt;- "practice ends\n";
+}                          // put away here only if it did not rain
+</pre>
+	<p>The baton is still finalized exactly once, by whoever holds it at the end. <span class="pre">practice(true)</span>
+		prints <span class="pre">stored</span>, then <span class="pre">the baton is put away after 0 legs</span> as
+		<span class="pre">store</span>'s parameter dies, then <span class="pre">practice ends</span>;
+		<span class="pre">practice(false)</span> prints <span class="pre">practice ends</span> and then the baton's line. To
+		know which happened, the compiler keeps a hidden <b>drop flag</b> beside such a variable, set where its value
+		arrives and cleared where it moves out, and tests it at the end of the block. A variable moved on every path, or on
+		none, needs no flag and costs nothing. The paths may part in an <span class="pre">if</span> or a
+		<span class="pre">match</span>, in a loop that may not run, or at an early <span class="pre">return</span> or
+		<span class="pre">break</span>, and the same flag serves a variable given a new value on only some paths
+		(<a href="mem-lifecycle.html#assigned">A value assigned over</a>).</p>
+	<p>What the compiler will not do is guess. Where the paths join, the value may or may not be there, so it assumes
+		the worse: adding <span class="pre">look(&amp;baton);</span> before <span class="pre">print</span> is refused
+		(<i>Error 1048: This variable's value has been moved out</i>) until the variable is given a new value. A move
+		inside a loop is the same, since a value moved in one pass is gone in the next; that is what the Try this above ran
+		into.</p>
+
+	<h3 id="surfing">From scope to scope</h3>
+	<p>A moving value can be pictured as surfing from scope to scope, its life lengthened each time it is handed on, as
+		the baton was from runner to runner. When it fails to surf out of its last scope, it is finalized at that scope's
+		end, since nothing can use it any more. <a href="mem-lifecycle.html">When a value dies</a>, in Memory, has the
+		exact moment for every kind of value.</p>
+	<p><b>Not built yet:</b> ending a moving value early by assigning it to the anonymous variable,
+		<span class="pre">_ = baton;</span>, after which <span class="pre">baton</span> would be deactivated. Today the
+		name <span class="pre">_</span> is not recognised (<i>Error 1019: The name _ does not refer to a declared
+		name</i>). On a value that copies it would have no effect.</p>
+
+	<h2 id="outof">Moving a value out of a struct, an array or a reference</h2>
+	<p>Moving a whole struct or array is always allowed, and takes every field or element with it. Moving one piece out
+		is another matter, because something would be left with a hole in it:</p>
+	<ul>
+		<li><b>A field of a struct, or an element of a tuple.</b> The struct could no longer be used whole, and
+			finalizing it would have no sound answer for the missing part. This holds wherever the struct is (a variable,
+			a parameter, a <span class="pre">self</span> taken by value, a temporary, behind a reference), wherever the
+			value would go (a variable, a call, a literal, back to a caller, or out as the value of a block, an
+			<span class="pre">if</span> or a loop), and for anything reached through a field, such as what an owning
+			reference in a field points at.</li>
+		<li><b>An element of an array</b> (<span class="pre">batons[0]</span>, <span class="pre">grid[1][0]</span>),
+			wherever the array is, a <span class="pre">So</span>'s included. The elements left behind would never be
+			finalized; the refused move leaves the array as it was.</li>
+		<li><b>Through a borrowed reference,</b> such as the <span class="pre">self &amp;mut</span> a method is lent
+			(<a href="mem-borrowing.html">Borrowed references</a>, in Memory, has them in full), whatever its permission,
+			including calling through it a method whose <span class="pre">self</span> is taken by value. A borrow does not
+			own the value: the place it borrows from does, and still holds the value when the borrow ends.</li>
+		<li><b>Through a shared owning reference,</b> one that may be copied, such as a counted
+			<a href="mem-rc.html"><span class="pre">Rc[mut, T]</span></a>, <span class="pre">Rc[imm, T]</span> or
+			<span class="pre">Rc[ro, T]</span>, or one into a region that declares neither <span class="pre">aliasRef</span>
+			nor <span class="pre">Move</span>. The other holders would still point at the value. A sole owner may give
+			its value up, though: a <span class="pre">So</span>, or an <span class="pre">Rc[uni, T]</span> (which is what
+			<span class="pre">Rc[T]</span> means). That deactivates the owner and leaves it <i>hollow</i>: its memory is
+			still freed, but nothing that moved is finalized there.</li>
+	</ul>
+<pre>
+struct Team {
+  pub baton Baton;
+  pub lane i32;
+}
+
+imm team = new Team(new Baton(0), 4);
+imm b = team.baton;      // Error 1166: May not move field 'baton' out of the struct that holds it.
+                         //   Swap a value in with '&lt;=&gt;', or move the whole struct.
+imm moved = team;        // allowed: the whole struct moves, its baton with it
+
+fn first(batons Array[Baton, 2]) {
+  imm b = batons[0];     // Error 1121: May not move a value out of an element of an array,
+}                        //   which would be left with a hole in it. Swap a value in with '&lt;=&gt;',
+                         //   or move the whole array.
+fn borrowed(r &amp;mut Baton) {
+  store(*r);             // Error 1120: May not move a value out through a borrowed reference,
+}                        //   which does not own it.
+fn shared(r Rc[mut, Baton]) {
+  store(*r);             // Error 1120: May not move a value out through a shared owning
+}                        //   reference, which does not solely own it.
+fn sole(owner So[Baton]) {
+  store(*owner);         // allowed: the sole owner gives its value up
+}
+</pre>
+	<p>One case is a move of the whole value in disguise, and is allowed: a <span class="pre">match</span> that takes
+		what a variant holds out through its binding (all of a variant declared as a type, such as
+		<span class="pre">Some</span>, or the one field of a struct variant), where only the match holds the matched value
+		(a call's answer, such as <span class="pre">names.pop()</span>, or a variable the match consumes), and the variant
+		holds nothing else and has no finalizer of its own. Nothing is left with a hole, and nothing is finalized
+		twice:</p>
+<pre>
+match names.pop() {
+  case mut s Some { imm last = s; print &lt;- last.view(), "\n"; }
+  case is None { }
+}
+</pre>
+	<p>A variant with two fields, or with a finalizer of its own, is still refused, and so is taking the contents twice.
+		This is what lets <span class="pre">each</span> take an item that moves out of a cursor's
+		<span class="pre">Option</span>, as <a href="guide-list.html#changing">drain</a> does.</p>
+
+	<h3 id="swap">Getting a value out anyway: swap and :=</h3>
+	<p>Those are real limits on keeping moving values in structs and arrays, and two operators get around them by never
+		leaving a hole. The <b>swap operator</b>, <span class="pre">&lt;=&gt;</span>, exchanges two values, whether they
+		copy or move. To take a moving value out of a field or element, swap another value of its type in, use what came
+		out, and swap it back if you like. Neither value is copied, and the struct always holds something whole:</p>
+<pre>
+mut team = new Team(new Baton(3), 4);
+mut spare = new Baton(5);
+team.baton &lt;=&gt; spare;                 // the team now holds baton 5, and spare baton 3
+</pre>
+	<p>The <b>left-assignment operator</b>, <span class="pre">:=</span>, stores a new value and gives back the one it
+		replaced. (Ordinary assignment, used as an expression, gives a copy of the new value, which a moving value cannot
+		give.)</p>
+<pre>
+mut old = team.baton := new Baton(6); // the team holds baton 6, and old the one it held
+</pre>
+
+	<h2 id="conditional">A generic type that moves for some instances</h2>
+	<p>A generic type, one declared with a type parameter as <span class="pre">List[T]</span> is
+		(<a href="mod-generativity.html">Generics</a>, in Modularity, shows how), moves exactly when its parameter does if
+		it holds a value of it, by the rule for fields: a <span class="pre">Box[i32]</span> holding an
+		<span class="pre">i32</span> copies, and a <span class="pre">Box[Ticket]</span> moves. But a type may stand for a
+		value it does not hold. A future, which keeps an answer that will arrive later, holds a shared reference to the
+		cell the answer will be put in, and a shared reference copies whatever it points at. Such a type says when it moves
+		with a condition after its <span class="pre">Move</span>, following the word <span class="pre">if</span>:</p>
+<pre>
+struct Cell[T] {
+  pub v T;
+}
+struct Future[T] is Move if T is Move {
+  pub c Rc[imm, Cell[T]];
+}
+
+imm f = new Future[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+imm f2 = f;     // a copy: i32 does not move, so neither does Future[i32]
+imm f3 = f;     // another copy; f is still there
+
+imm g = new Future[Ticket](new Rc[imm, Cell[Ticket]](new Cell[Ticket](new Ticket(7))));
+imm g2 = g;     // moves g: Ticket moves, so Future[Ticket] does
+imm g3 = g;     // Error 1048: This variable's value has been moved out.
+</pre>
+	<p>So the answer inside a future of something that moves can be taken only once, and a future of something that
+		copies is copied freely. The actors package's <span class="pre">Future[T]</span> is declared this way
+		(<a href="conc-await.html#future">Futures</a>).</p>
+	<p>Each instance decides the condition with its own type arguments. A condition can add
+		<span class="pre">Move</span>, never take it away: where it fails, the instance copies unless another rule makes it
+		move. It is written as a <a href="mod-generativity.html#where">where clause</a> is, clauses
+		<span class="pre">T is Name</span> joined with <span class="pre">and</span> and <span class="pre">or</span> and
+		grouped by parentheses, each about one of the type's own parameters: <span class="pre">struct Pair[A, B] is Move
+		if B is Move</span> asks about the second only. <span class="pre">Copy</span> takes no condition, and nor does a
+		type with no type parameters. The condition belongs to the entry it follows; a <span class="pre">where</span>
+		clause after the <span class="pre">is</span> list is a requirement on the whole type instead:
+		<span class="pre">struct Future[T] is Move where T is Move</span> makes every instance move, and refuses
+		<span class="pre">Future[i32]</span> outright (<i>Error 1186: Future requires T is Move, and i32 is not
+		Move.</i>).</p>
+
+	<p>You can now tell which of your types move, and work with a value there can only be one of: hand it on, get it
+		back, swap it out of a struct, and know it is finalized exactly once. Working on one value part by part, moved or
+		not, usually means writing its name in front of every line; the next recipe saves that: with blocks.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="rec-with.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

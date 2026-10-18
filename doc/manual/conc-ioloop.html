@@ -1,0 +1,289 @@
+<html>
+  <head>
+	  <title>The I/O loop underneath: iocore and the I/O thread - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">The I/O loop underneath: iocore and the I/O thread</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">iocore</span> (sockets, timers, files, cancel groups and the
+		blocking pool) and <span class="pre">iobuf</span> run on Windows and on Linux. Not built yet: batching of datagrams
+		(many in one call), and more than one I/O thread.</i></p>
+
+	<p>Every socket, file and timer an actor awaited on <a href="conc-io.html">the last page</a> was answered by one loop,
+		<span class="pre">iocore</span>'s, on a thread of its own. Most programs never touch it. This page is for those that
+		do: a plain thread that wants many operations in flight without actors, a library that builds a service of its own
+		over the loop, or a program that must know what becomes of I/O still waiting when it ends. Afterwards you can drive
+		the loop yourself, and say what an <span class="pre">await</span> on I/O does underneath. Here are the kitchen's three
+		timers again, with no actor: one thread hands the loop three jobs and waits for their answers.</p>
+
+<pre>
+mod timers;
+
+import stdio use *;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+
+fn main() {
+  mut lp = Loop.mustMake();
+  imm now = Instant.now();
+
+  // Three jobs for the loop: wake at these times.
+  // Each carries a token, which comes back in its answer
+  lp.after(now + Duration.fromMillis(300i64), Target.Here(1u64));   // the tea
+  lp.after(now + Duration.fromMillis(200i64), Target.Here(2u64));   // the toast
+  lp.after(now + Duration.fromMillis(400i64), Target.Here(3u64));   // the egg
+
+  // One thread, waiting for all three answers
+  mut out = List[Completion].empty();
+  while out.len() &lt; 3usize {
+    lp.poll(forever(), &amp;mut out);            // the only place the loop waits
+  }
+  each c in out {
+    print &lt;- "timer ", c.token, " is done\n";
+  }
+}
+</pre>
+	<p>It prints, in the order the timers come due:</p>
+<pre>
+timer 2 is done
+timer 1 is done
+timer 3 is done
+</pre>
+	<p>Nothing here pauses. <span class="pre">lp.after(at, to)</span> hands the loop a job and returns at once;
+		<span class="pre">lp.poll(until, out)</span> is the one place the thread waits, until an answer arrives or the time it
+		was given comes (<span class="pre">forever()</span> never comes), and it appends the answers to
+		<span class="pre">out</span>. The token is the program's own number for the job: the loop hands it back and never
+		reads it, so the program knows which job each answer is for. The kitchen's actor did the same, with
+		<span class="pre">aio</span> doing these steps for it (<a href="#io-thread">The I/O thread, and the program's
+		end</a>).</p>
+
+	<h2 id="loop">What the loop does</h2>
+	<p><span class="pre">iocore</span> is a completion loop: a program hands a loop a job (receive into this buffer, send
+		these bytes, accept a connection, read a file at an offset, wake at a time) and later gets exactly one answer for it,
+		carrying the buffer back. One thread drives a loop: it submits to it and polls it, and another thread that wants a
+		loop has its own. On Windows the loop is an I/O completion port. On Linux it is epoll: a socket's operation is tried
+		at once, and waits in a queue of the socket's if it would block; a file's runs on a thread of the blocking pool. An
+		operation's answers are the same on both.</p>
+	<p>A job can carry a deadline and belong to a cancel group (<a href="#cancel-groups">below</a>), and a blocking pool
+		runs work that has no completion form: the <a href="conc-io.html#await-io-pool">names, file metadata and child
+		processes</a> an actor awaits run there. Beneath the loop lie <span class="pre">iobuf</span>, owned buffers lent to
+		an operation by moving them; <span class="pre">timewheel</span>, its timers;
+		<a href="lib-time.html"><span class="pre">time</span> and <span class="pre">calendar</span></a>, time values; and
+		<span class="pre">diag</span>, records of where an operation's time went.
+		<a href="lib-time.html#io-timers">Timers, deadlines and cancelling in I/O</a> covers the loop's timers and the
+		answers they give.</p>
+	<p>An answer goes where its job's <span class="pre">Target</span> says. <span class="pre">Target.Here(token)</span>, as
+		above, sends it to this loop's own <span class="pre">poll</span>. Others hand it to another loop, to a
+		<a href="conc-threads.html#channel">channel</a> (<span class="pre">Target.Chan</span>), to a thread waiting on a
+		<a href="conc-threads.html#oneshot">one-shot channel</a> (<span class="pre">Target.Once</span>), or to another
+		runtime, which is how the I/O thread under <span class="pre">aio</span> turns each answer into a message to the actor
+		awaiting it.</p>
+
+	<h2 id="datagrams">Datagrams (UDP) on the loop</h2>
+	<p>The loop's datagrams are the same as the <a href="conc-io.html#await-io-udp">UDP sockets</a> an actor awaits, driven
+		by hand. <span class="pre">lp.bindUdp(addr)</span> makes a UDP socket bound to an address (port 0 has the system
+		choose one, which <span class="pre">lp.localAddr(h)</span> tells). It is not connected: each datagram names where it
+		goes, and each one received names where it came from. Two operations, one datagram each, are answered like the
+		others: <span class="pre">Op.SendTo(sock, addr, buf)</span> sends all of the buffer as one datagram, and
+		<span class="pre">Op.RecvFrom(sock, buf)</span> takes one into the buffer's room, its sender in the answer's
+		<span class="pre">peer</span>, a <span class="pre">SocketAddr</span>. Deadlines, cancel groups and the handle's close
+		end them as they end a TCP socket's operations, the buffer back in the answer.</p>
+<pre>
+import stdio use *;
+import collections use List;
+import iobuf use *;
+import iocore use *;
+
+fn main() {
+  mut lp = Loop.mustMake();
+  imm pool = Pool.make();
+  imm server = lp.mustBindUdp(SocketAddr.localhost(0u16));   // port 0: the system chooses
+  imm client = lp.mustBindUdp(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(server) {
+    case imm a Ok {port = a.port();}
+    case imm e Error {}
+  }
+  lp.submit(Op.RecvFrom(server, pool.mustTake(1500usize)), Target.Here(1u64));
+  mut hello = pool.mustTake(64usize);
+  hello.append("hello");
+  lp.submit(Op.SendTo(client, SocketAddr.localhost(port), hello), Target.Here(2u64));
+  mut out = List[Completion].empty();
+  while out.len() &lt; 2usize {
+    lp.poll(forever(), &amp;mut out);            // the only place the loop waits
+  }
+  each c in out {
+    if c.token == 1u64 {
+      printUInt(u64.from(c.n));
+      printStr(" bytes from ");
+      printStr(c.peer.text().view());
+      printStr("\n");
+    }
+  }
+}
+</pre>
+	<p>This prints a line like the following, the client's port the one the system chose:</p>
+<pre>
+5 bytes from 127.0.0.1:50526
+</pre>
+	<ul>
+	<li>A datagram of no bytes is a datagram: <span class="pre">RecvFrom</span> answers Done(0) and names its sender. It is
+		not the end of anything, as a stream's Done(0) is.</li>
+	<li>A datagram longer than the receive's room is cut, as UDP cuts it: the answer is Failed with error 10040
+		(<span class="pre">WSAEMSGSIZE</span>, on Linux too), the room filled with its first bytes and the sender named; the
+		rest of that datagram is lost, and the next receive takes the next datagram whole. A <span class="pre">SendTo</span>
+		of more than UDP carries fails with the same number.</li>
+	<li>UDP promises no delivery: Done on a <span class="pre">SendTo</span> says the system took the datagram. Datagrams
+		that arrive while no receive is waiting are held by the socket, up to what the system allows, and lost beyond it.
+		Take them with one receive at a time on a socket; the order in which several outstanding receives on one socket are
+		filled is not promised.</li>
+	<li>On Windows a datagram sent to a port nobody holds would make the sender's next receive fail (Winsock reports the
+		ICMP "port unreachable" on it); that is turned off, so the receive goes on waiting, as it does on Linux.</li>
+	</ul>
+	<p>The <a href="lib-netmsg.html"><span class="pre">netmsg</span> package</a> is a game's protocol built on these two
+		operations: acknowledged packets, reliable messages and latest-wins values between a server and its clients.</p>
+
+	<h2 id="cancel-groups">Cancel groups</h2>
+	<p>Work in flight on the loop can be asked to end. <span class="pre">lp.cancel(id)</span> asks one operation to. A
+		<span class="pre">CancelGroup</span> asks many at once. A group is a value: copying it makes another handle on the same
+		group, it is handed to many operations on any loops, and it crosses threads. Its one <span class="pre">cancel()</span>,
+		from any thread, asks every operation in it to end, and a loop asleep in <span class="pre">poll</span> wakes at once to
+		act on it.</p>
+	<p>An operation joins a group as it is submitted, with <span class="pre">lp.submitIn(op, to, group, deadline)</span>, or
+		<span class="pre">lp.afterIn(at, to, group)</span> for a timer. A cancel is a request, so each operation still answers
+		exactly once, and its answer says how it ended: <span class="pre">Cancelled</span> if the cancel caught it, or
+		<span class="pre">Done</span> (or <span class="pre">Failed</span>) if it had finished first, its buffer back either way.
+		Cancelled is a state, not an event: from the cancel on, <span class="pre">group.isCancelled()</span> is true, and an
+		operation submitted into the group is answered <span class="pre">Cancelled</span> at once, its buffer back, and never
+		started. <span class="pre">cancel()</span> is idempotent: it answers true the first time and false after.</p>
+<pre>
+import stdio use *;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+
+fn main() {
+  mut lp = Loop.mustMake();
+  imm group = CancelGroup.make();
+  imm hour = Duration.fromSeconds(3600i64);
+  lp.afterIn(Instant.now() + hour, Target.Here(1u64), group);   // two timers, an hour away,
+  lp.afterIn(Instant.now() + hour, Target.Here(2u64), group);   // in the group
+  lp.after(Instant.now() + hour, Target.Here(3u64));            // and one outside it
+  printStr(if group.cancel() {"first cancel\n";} else {"cancel again\n";});
+  printStr(if group.cancel() {"first cancel\n";} else {"cancel again\n";});
+  mut out = List[Completion].empty();
+  while out.len() &lt; 2usize {
+    lp.poll(forever(), &amp;mut out);            // the only place the loop waits
+  }
+  mut cancelled = 0u64;
+  each c in out {
+    match c.outcome() {
+      case is Cancelled {cancelled = cancelled + 1u64;}
+      else {}
+    }
+  }
+  printUInt(cancelled);
+  printStr(" cancelled, ");
+  printUInt(lp.inFlight());
+  printStr(" still waiting\n");
+}
+</pre>
+	<p>This prints:</p>
+<pre>
+first cancel
+cancel again
+2 cancelled, 1 still waiting
+</pre>
+	<p>The timer outside the group is still in flight; the loop cancels it when it dies. Groups nest and carry deadlines,
+		which are absolute: an <span class="pre">Instant</span>, never a duration.</p>
+	<ul>
+	<li><span class="pre">group.child()</span> is cancelled with <span class="pre">group</span> and by its own cancel, which
+		does not reach <span class="pre">group</span>.</li>
+	<li><span class="pre">CancelGroup.until(deadline)</span> is a group whose operations answer
+		<span class="pre">TimedOut</span> by the deadline, a timer among them: one due after the deadline answers
+		<span class="pre">TimedOut</span> at it, one due before answers <span class="pre">Done</span> at its own time.
+		<span class="pre">group.childUntil(d)</span> is a child whose deadline is the tighter of its parent's and
+		<span class="pre">d</span>, so deadlines are inherited as the tighter, all the way down.</li>
+	<li><span class="pre">group.shield(d)</span> is for cleanup after a cancel: the group's cancel and deadline do not
+		reach the shield, its own deadline <span class="pre">d</span> bounds it, and its own cancel still ends it.</li>
+	</ul>
+	<p>The same groups limit the operations an actor awaits, through
+		<a href="conc-io.html#await-io-limits"><span class="pre">IoLimits</span></a>. What an actor cannot do is cancel a
+		paused behaviour itself, short of the operation it awaits (<a href="conc-await.html#await-unbuilt">Not built
+		yet</a>).</p>
+
+	<h2 id="io-thread">The I/O thread, and the program's end</h2>
+	<p>The operations an actor awaits through <span class="pre">aio</span> run on one thread of their own, the I/O thread, which
+		the first operation awaited starts: it waits in <span class="pre">iocore</span>'s completion loop, and hands each
+		answer to the actor awaiting it as a message, in its mailbox. The worker threads never wait on I/O. An operation in
+		flight keeps the actor awaiting it alive, whether or not anything else holds the actor, as a request to another actor
+		does. There is one I/O thread; more than one is not built yet.</p>
+	<p>But it does not keep the <i>program</i> alive. At the program's end, the final its entry runs waits until no actor
+		is queued or running (an actor paused on I/O is neither; <a href="conc-runtime.html#runtime">The runtime starts and
+		stops by itself</a>) and then ends the I/O: every operation still in flight is cancelled and every socket closed,
+		and the answers are not delivered. Each behaviour still paused on one is <b>abandoned</b>: the rest of it never
+		runs, and every value it held when it paused is finalized, in the order it would have died in had the behaviour
+		ended there, once nothing else holds its actor. A server waiting for a connection that never comes ends this way; so
+		does a read from a peer that never sends, and an HTTP fetch still in flight. A program whose work is waiting on I/O
+		therefore keeps <span class="pre">main</span> waiting until it is done, as <a href="conc-io.html">the kitchen</a>
+		does on its channel.</p>
+	<p>Or <span class="pre">main</span> can end by calling <span class="pre">actors.waitUntilIdle()</span>. It returns once
+		no actor is queued or running and no awaited operation is outstanding: every timer or I/O operation an actor awaits
+		has been answered, and whatever its answer started has run. The runtime stays running, and the final then ends the
+		program as above.</p>
+<pre>
+mod idle;
+
+import stdio use *;
+import time use Duration;
+import actors;
+import aio;
+
+actor Timer {
+  pub async do ring(self, millis i64) {
+    imm r = await aio.sleep(Duration.fromMillis(millis));
+    print &lt;- "rang\n";
+  }
+}
+
+fn main() {
+  imm t = new Timer();
+  t.ring(200i64);
+  actors.waitUntilIdle();   // returns once "rang" is printed
+  print &lt;- "done\n";
+}
+</pre>
+	<p>It prints <span class="pre">rang</span>, then <span class="pre">done</span>. Without the call,
+		<span class="pre">main</span> returns at once, and the sleeping behaviour is abandoned as above.</p>
+	<ul>
+		<li>A program that never goes idle, such as a listening server, never returns from it. There is no time limit.</li>
+		<li>Called before any actor exists, it returns at once. Called from one of the runtime's own workers, it is a
+			panic.</li>
+		<li>Call it only as <span class="pre">main</span>'s last statement: a message another thread sends while it
+			waits may arrive after it returns.</li>
+		<li>Every <span class="pre">await</span> counts, so it covers <span class="pre">aio</span>,
+			<span class="pre">actorhttp</span> and any other package that hands an actor something to await.</li>
+	</ul>
+	<p style="margin-left: 40px;"><i>Interim: how a program ends with I/O in flight is to be designed again. This call
+		stands in until then.</i></p>
+
+	<p>You can now drive the <span class="pre">iocore</span> loop from a plain thread, send datagrams on it, cancel its
+		work in groups, and say what happens to I/O still waiting when a program ends. The I/O thread answers the actors;
+		the worker threads run them, and the next page opens up the runtime that keeps those workers.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-runtime.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

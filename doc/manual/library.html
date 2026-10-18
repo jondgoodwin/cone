@@ -1,0 +1,915 @@
+<html>
+  <head>
+	  <title>The Standard Library - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">The Standard Library</div>
+		</div>
+
+    <div class="text">
+
+	<p>Cone's standard library is a set of packages that come with the language, in the
+		<span class="pre">packages</span> folder of its repository. Each is written in Cone (a few lean on the C
+		library or the operating system), each is built on its own, and a program uses one by importing it by name.
+		This page lists them, says what each is for, how to import it, and where it is documented. Seven of them have
+		pages of their own: <a href="lib-string.html">text: str, String and cstr</a>;
+		<a href="lib-collections.html">collections</a>;
+		<a href="lib-fs.html">files, folders, paths, the environment and processes</a>;
+		<a href="lib-time.html">time</a>; <a href="lib-http.html">HTTP, TLS and URLs</a>;
+		<a href="lib-netmsg.html">game networking</a>; and <a href="lib-test.html">testing</a>.</p>
+	<p>The graphics, windowing and 3-D packages in the same folder are not described here.</p>
+
+	<h2 id="importing">Importing a package</h2>
+	<p>A package is imported by its name, with the <span class="pre">import</span> statement of
+		<a href="mod-namespaces.html">Namespaces</a> (and <a href="safe-c.html">Talking to C</a> for <span class="pre">extern</span>). There is no list of dependencies to write: Congo reads the
+		<span class="pre">import</span> lines, finds each package by name (<a href="mod-packages.html#package">Packages
+		and Congo</a>), builds it, and links it. The three usual forms:</p>
+<pre>
+mod tour;
+
+import stdio use *;
+import collections use *;
+import time use Duration;
+import textdiff;
+
+fn main() {
+  // 'use *' brings in every public name: List, String, Dict...
+  mut names = List[String].empty();
+  names.push(String.from("collections"));
+  names.push(String.from("time"));
+  printUInt(u64.from(names.len()));
+  printStr(" packages used\n");
+
+  // 'use Duration' brings in just that one
+  imm pause = Duration.fromMillis(1500);
+  printInt(pause.millis());
+  printStr(" ms\n");
+
+  // with no 'use', the package's name is the way in: textdiff.unifiedText
+  imm shown = textdiff.unifiedText("a\n", "b\n", "old", "new");
+  printStr(shown.view());
+}
+</pre>
+	<p>which prints:</p>
+<pre>
+2 packages used
+1500 ms
+--- old
++++ new
+@@ -1 +1 @@
+-a
++b
+</pre>
+	<p>One package needs no import at all: <span class="pre">core</span>, the prelude, whose names (
+		<span class="pre">Option</span>, <span class="pre">Result</span>, <span class="pre">str</span>, the
+		atomic values, the panic functions) every module has already.</p>
+
+	<h2 id="packages">The packages</h2>
+
+	<h3 id="foundations">Foundations</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">core</span><br>(no import)</td><td>The prelude: <span class="pre">Option</span>,
+		<span class="pre">Result</span>, <span class="pre">str</span> and the other types and functions of the
+		language itself, and its intrinsics (<a href="safe-intrinsics.html">Intrinsics</a>).</td></tr>
+	<tr><td><span class="pre">stdio</span><br><span class="pre">import stdio use *;</span></td><td>Printing text and
+		numbers to standard output and standard error: <span class="pre">printStr</span>,
+		<span class="pre">printInt</span>, <span class="pre">print &lt;- x</span>, and the
+		<span class="pre">eprint</span> forms for standard error. The <span class="pre">&lt;-</span> prints text,
+		integers, floats, a <span class="pre">bool</span> (as <span class="pre">true</span> or
+		<span class="pre">false</span>) and a <span class="pre">char</span> (as its UTF-8 bytes), and a borrow of a number,
+		bool or char as the value it lends. Standard output is buffered;
+		<span class="pre">print.flush()</span> writes it out before another program writes to the same place.</td></tr>
+	<tr><td><span class="pre">libc</span><br><span class="pre">import libc;</span></td><td>The ISO C library as C
+		spells it: C names, C types, errors as C reports them. A raw layer for programs that call C; the
+		packages below wrap it.</td></tr>
+	<tr><td><span class="pre">posix</span><br><span class="pre">import posix;</span></td><td>The POSIX functions
+		beyond ISO C (files, directories, processes, the environment), as raw bindings over the Windows C runtime.
+		<span class="pre">fs</span> and <span class="pre">env</span> are the Cone layer over it.</td></tr>
+	<tr><td><span class="pre">conestd</span><br>(no import)</td><td>The runtime every program links beside its own
+		code: the end of a panic, printing, and the raw blocks the heap's memory comes from. A program never
+		imports it.</td></tr>
+	</table>
+
+	<h3 id="memory">Collections and memory</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">collections</span><br><span class="pre">import collections use *;</span></td>
+		<td><span class="pre">List</span>, <span class="pre">String</span>, <span class="pre">Dict</span>,
+		<span class="pre">OrderedDict</span>, <span class="pre">Set</span> and <span class="pre">Deque</span>
+		(<a href="guide-collections.html">Collection Types</a>).</td></tr>
+	<tr><td><span class="pre">arena</span><br><span class="pre">import arena use *;</span></td>
+		<td><span class="pre">Arena</span>: values allocated one after another and freed together
+		(<a href="mem-regions.html">Region Strategies</a>).</td></tr>
+	<tr><td><span class="pre">pool</span><br><span class="pre">import pool use *;</span></td>
+		<td><span class="pre">Pool[T]</span>: values added and removed one at a time, reached by a
+		generational <span class="pre">Ref</span> that stops reaching anything once its value is removed
+		(<a href="mem-regions.html">Region Strategies</a>).</td></tr>
+	<tr><td><span class="pre">rcweak</span><br><span class="pre">import rcweak use *;</span></td>
+		<td><span class="pre">Rcw</span> and <span class="pre">Weak[T]</span>: reference counting with weak
+		references that do not keep a value alive (<a href="mem-weak.html">Weak References</a>).</td></tr>
+	<tr><td><span class="pre">collector</span><br><span class="pre">import collector;</span></td>
+		<td><span class="pre">Gc</span>, a tracing garbage-collected region. Single-threaded, for code outside
+		actors only, and discouraged: inside an actor, use the actor's own collected region
+		(<a href="mem-regions.html">Region Strategies</a>).</td></tr>
+	</table>
+
+	<h3 id="threads">Threads, locks and actors</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">thread</span><br><span class="pre">import thread;</span></td>
+		<td>OS threads: start, join, detach, sleep, park (<a href="conc-primitives.html">Threads, atomics and locks</a>).</td></tr>
+	<tr><td><span class="pre">sync</span><br><span class="pre">import sync use *;</span></td>
+		<td>What threads share safely: <span class="pre">Arc</span>, the futex, <span class="pre">Mutex</span>,
+		<span class="pre">Rwlock</span>, <span class="pre">Condvar</span>, <span class="pre">Once</span>,
+		channels and the one-shot <span class="pre">Oneshot</span>
+		(<a href="conc-primitives.html">Threads, atomics and locks</a>, <a href="conc-sharing.html">Thread Communications</a>).</td></tr>
+	<tr><td><span class="pre">actors</span><br><span class="pre">import actors;</span></td>
+		<td>The runtime an <span class="pre">actor</span> declaration runs on: mailboxes, the scheduler of worker
+		threads, futures, parallel loops. A module that declares an actor or uses
+		<span class="pre">parallel each</span> imports it
+		(<a href="conc-actors.html">Actors</a>, <a href="conc-parallel.html">Parallel each</a>).</td></tr>
+	</table>
+
+	<h3 id="files">Files, paths, environment and processes</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">fs</span><br><span class="pre">import fs;</span></td>
+		<td>Files and folders: read and write whole files, list, walk, rename, remove, stat, the current folder.</td></tr>
+	<tr><td><span class="pre">path</span><br><span class="pre">import path;</span></td>
+		<td>File paths taken apart and put together as text; never asks the file system anything.</td></tr>
+	<tr><td><span class="pre">env</span><br><span class="pre">import env;</span></td>
+		<td>The program's environment variables.</td></tr>
+	<tr><td><span class="pre">process</span><br><span class="pre">import process;</span></td>
+		<td>Running another program and waiting for it; the program's own arguments.</td></tr>
+	</table>
+	<p>All four are on <a href="lib-fs.html">their own page</a>.</p>
+
+	<h3 id="timepkgs">Time</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">time</span><br><span class="pre">import time use *;</span></td>
+		<td><span class="pre">Duration</span>, <span class="pre">Instant</span>, <span class="pre">Timestamp</span>
+		and <span class="pre">Clock</span>.</td></tr>
+	<tr><td><span class="pre">calendar</span><br><span class="pre">import calendar;</span></td>
+		<td>Civil dates and times over a <span class="pre">Timestamp</span>, and RFC 3339 and HTTP date text.</td></tr>
+	<tr><td><span class="pre">timewheel</span><br><span class="pre">import timewheel use *;</span></td>
+		<td>Timers that cost almost nothing to arm and cancel, for the I/O loop.</td></tr>
+	</table>
+	<p>All three are on <a href="lib-time.html">their own page</a>.</p>
+
+	<h3 id="asyncio">Asynchronous I/O</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">iobuf</span><br><span class="pre">import iobuf use *;</span></td>
+		<td>Owned buffers for I/O, lent to an operation by moving them: <span class="pre">IoBuf</span>,
+		<span class="pre">Pool</span>, <span class="pre">Bytes</span>, <span class="pre">Chain</span>.</td></tr>
+	<tr><td><span class="pre">iocore</span><br><span class="pre">import iocore use *;</span></td>
+		<td>The completion loop: hand it a job (receive, send, accept, read a file, send or receive a
+		datagram, wake at a time) and later get
+		exactly one answer. Jobs may carry a deadline and join a cancel group.</td></tr>
+	<tr><td><span class="pre">aio</span><br><span class="pre">import aio;</span></td>
+		<td>I/O an actor awaits: a behaviour <span class="pre">await</span>s a socket's (TCP or UDP) or a file's operation, a timer, a name lookup, a file's metadata or a child process, and pauses
+		until the answer comes. An operation may join a cancel group and carry a deadline.</td></tr>
+	<tr><td><span class="pre">actorhttp</span><br><span class="pre">import actorhttp;</span></td>
+		<td>HTTP and HTTPS an actor awaits: a behaviour <span class="pre">await</span>s
+		<span class="pre">client.get(url)</span>, or a request on a connection, and pauses until the whole response
+		comes, or reads a response as it arrives, in chunks or as server-sent events. A fetch may join a cancel
+		group and carry a deadline. The other way round, an actor serves: it awaits each request of a listening
+		server, plain or through TLS, and answers it, whole or streamed (server-sent events too). A working name.</td></tr>
+	<tr><td><span class="pre">diag</span><br><span class="pre">import diag;</span></td>
+		<td>Records of where an I/O operation's time went: one record per operation, a loop's counters,
+		latency histograms.</td></tr>
+	</table>
+	<p><a href="conc-io.html">I/O from an actor</a> and <a href="conc-ioloop.html">The I/O loop underneath</a> describe
+		them.</p>
+
+	<h3 id="networkpkgs">HTTP, TLS and URLs</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">url</span><br><span class="pre">import url;</span></td>
+		<td>URLs read, resolved and written as text.</td></tr>
+	<tr><td><span class="pre">http</span><br><span class="pre">import http;</span></td>
+		<td>HTTP's message types, shared by every version.</td></tr>
+	<tr><td><span class="pre">http1</span><br><span class="pre">import http1;</span></td>
+		<td>HTTP/1.1's connection core, with no I/O of its own.</td></tr>
+	<tr><td><span class="pre">httpconn</span><br><span class="pre">import httpconn;</span></td>
+		<td>HTTP over sockets on an I/O loop, client and server.</td></tr>
+	<tr><td><span class="pre">httpclient</span><br><span class="pre">import httpclient;</span></td>
+		<td>Fetching an <span class="pre">http://</span> or <span class="pre">https://</span> URL in one call.</td></tr>
+	<tr><td><span class="pre">tls</span><br><span class="pre">import tls;</span></td>
+		<td>TLS 1.2 and 1.3 over OpenSSL, with no I/O of its own.</td></tr>
+	<tr><td><span class="pre">sse</span><br><span class="pre">import sse;</span></td>
+		<td>Server-sent events (<span class="pre">text/event-stream</span>) read from bytes as they arrive, and written,
+		in Cone, with no I/O of its own.</td></tr>
+	</table>
+	<p>All seven are on <a href="lib-http.html">their own page</a>.</p>
+
+	<h3 id="gamenet">Game networking</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">netmsg</span><br><span class="pre">import netmsg use *;</span></td>
+		<td>A game's protocol over UDP, after Gaffer On Games: reliable ordered messages and latest-wins values on one
+		connection, acknowledgements that survive heavy loss, a challenge handshake; a connection is an actor, the same
+		over a socket, in one process, or across a simulated lossy link. A working name.</td></tr>
+	</table>
+	<p><a href="lib-netmsg.html">Game Networking</a> describes it.</p>
+
+	<h3 id="chatpkgs">Chat APIs: chatapi</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">chatapi</span><br><span class="pre">import chatapi use *;</span></td>
+		<td>A client for the OpenAI-compatible Chat Completions API, pointed at any base URL (OpenAI's, or a
+		llama.cpp, vLLM or Ollama server on this machine): messages and settings in, a whole reply or a stream of
+		chunks out, over <span class="pre">json</span>, <span class="pre">sse</span> and
+		<span class="pre">actorhttp</span>. The key is read from an environment variable the caller names and is sent
+		only as the Authorization field. Written in Cone, with no C library.</td></tr>
+	</table>
+
+	<h3 id="chatapi">chatapi</h3>
+	<p>A <span class="pre">Chat</span> is an <a href="guide-actors.html">actor</a> made from an
+		<span class="pre">actorhttp.Client</span> and an <span class="pre">Endpoint</span> (a base URL and the
+		<em>name</em> of the environment variable that holds the key, or none). A behaviour awaits
+		<span class="pre">chat.complete(request)</span> for a whole reply, or <span class="pre">chat.stream(request)</span>
+		for a <span class="pre">ChatStream</span> whose <span class="pre">next()</span> awaits each chunk's
+		<span class="pre">Delta</span> (the text it adds, then <span class="pre">None</span> at the end) and whose
+		<span class="pre">collect()</span> gathers the rest into a reply. A <span class="pre">ChatRequest</span> holds the
+		model, the messages (system, user, assistant, tool) and the settings <span class="pre">temperature</span>,
+		<span class="pre">topP</span>, <span class="pre">maxTokens</span> and <span class="pre">stop</span>; a setting left
+		<span class="pre">None</span> is not sent. Every call answers a <span class="pre">Result</span>: the error says
+		whether the key was missing, the network failed, the API refused it (its status and error object) or the answer
+		was not what the API writes, and <span class="pre">isRetryable()</span> whether trying again may help. The
+		package's header lists what it chose and what it left out (tool calls, images, several choices, retries).</p>
+<pre>
+mod ask;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actorhttp use Client;
+import chatapi use *;
+
+actor Asker {
+  chat Chat;
+
+  pub async do ask(self, done OneshotSender[i32]) {
+    mut req = ChatRequest.make("my-model");
+    req.addUser("Why is the sky blue?");
+    imm opened = await chat.stream(req);
+    match opened {
+      case imm cs Ok {
+        mut going = true;
+        while going {
+          imm n = await cs.next();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm d Some {printStr(d.content.view());}
+                case is None[Delta] {going = false;}
+              }
+            }
+            case imm e Error {printStr(e.message().view()); going = false;}
+          }
+        }
+      }
+      case imm e Error {printStr(e.message().view());}
+    }
+    mut d = done;
+    d.send(0i32);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx OneshotSender[i32];
+  mut rx OneshotReceiver[i32];
+  tx, rx = Oneshot[i32].make();
+  {
+    // a server on this machine needs no key; OpenAI's is Endpoint.openai(), the key in $OPENAI_API_KEY
+    imm a = new Asker(new Chat(Client.standard(), Endpoint.loopback(8080u16)));
+    a.ask(tx);
+  }
+  rx.recv();
+  finalAll();
+  0i32;
+}
+</pre>
+	<p><span class="pre">chatapi</span>'s tests run against a mock server on loopback, and
+		<span class="pre">examples/ask.cone</span> takes a base URL, a model, the key's variable and a prompt.</p>
+
+	<h3 id="textpkgs">Text: textdiff, toml and json</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">textdiff</span><br><span class="pre">import textdiff;</span></td>
+		<td>The differences between two texts, line by line, and the unified diff that shows them, as
+		<span class="pre">diff -u</span> prints it.</td></tr>
+	<tr><td><span class="pre">toml</span><br><span class="pre">import toml;</span></td>
+		<td>A reader for a subset of TOML: tables, and string, integer, boolean and list-of-string values.
+		It reads Congo's manifests, and suits any small configuration file that keeps to the subset.</td></tr>
+	<tr><td><span class="pre">json</span><br><span class="pre">import json;</span></td>
+		<td>JSON (RFC 8259) read and written: a value tree, a streaming reader of events, a writer, numbers kept as
+		written and read as i64 or f64 on request, UTF-8 checked. Written in Cone, with no C library.</td></tr>
+	</table>
+
+	<h3 id="textdiff">textdiff</h3>
+	<p><span class="pre">textdiff.unifiedText(a, b, aName, bName)</span> compares two texts, split into lines,
+		and answers the unified diff as a <span class="pre">String</span>, empty when the texts are the same. A
+		fifth argument, <span class="pre">around</span>, sets how many unchanged lines show around each change
+		(3 unless given). <span class="pre">unified</span> does the same for two lists of lines, and
+		<span class="pre">spans</span> answers the edit itself as a list of stretches, each equal, deleted,
+		inserted or replaced.</p>
+<pre>
+mod showdiff;
+
+import stdio use *;
+import textdiff;
+
+fn main() {
+  imm shown = textdiff.unifiedText("one\ntwo\nthree\n", "one\n2\nthree\n", "want", "got");
+  printStr(shown.view());
+}
+</pre>
+	<p>prints:</p>
+<pre>
+--- want
++++ got
+@@ -1,3 +1,3 @@
+ one
+-two
++2
+ three
+</pre>
+
+	<h3 id="toml">toml</h3>
+	<p><span class="pre">toml.parse(text)</span> answers a <span class="pre">Result[Document, TomlError]</span>. A
+		<span class="pre">Document</span> holds tables, and <span class="pre">doc["package"]</span> is a table (a
+		panic if there is none; ask <span class="pre">doc.has("package")</span> first). A table answers
+		<span class="pre">getString</span>, <span class="pre">getInt</span>, <span class="pre">getBool</span> and
+		<span class="pre">getStrings</span>, each an <span class="pre">Option</span> that is
+		<span class="pre">None</span> when the key is missing or holds another kind of value. A table
+		name may be dotted: <span class="pre">[link.windows]</span> is the table
+		<span class="pre">doc["link.windows"]</span>, found by its whole name, whether or not
+		<span class="pre">[link]</span> is written. A TOML
+		feature outside the subset (floats, dates, inline tables, dotted keys) is an error whose message names the line.</p>
+<pre>
+mod readname;
+
+import stdio use *;
+import toml;
+
+fn main() i32 {
+  mut doc = new toml.Document();
+  match toml.parse("[package]\nname = \"hello\"\nversion = \"0.1.0\"\n") {
+    case mut ok Ok { doc &lt;=&gt; ok; }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  match doc["package"].getString("name") {
+    case imm n Some { printStr(n.view()); printStr("\n"); }
+    case is None { printStr("no name\n"); }
+  }
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">hello</span>.</p>
+
+	<h3 id="json">json</h3>
+	<p><span class="pre">json.parse(text)</span> answers a <span class="pre">Result[Json, JsonError]</span>. A
+		<span class="pre">Json</span> is an enum (<span class="pre">Null</span>, <span class="pre">Bool</span>,
+		<span class="pre">Number</span>, <span class="pre">Text</span>, <span class="pre">Array</span>,
+		<span class="pre">Object</span>) that can be matched, and answers the common questions as methods:
+		<span class="pre">get</span> and <span class="pre">at</span> reach a member or an element, and
+		<span class="pre">getText</span>, <span class="pre">getI64</span>, <span class="pre">getF64</span> and
+		<span class="pre">getBool</span> answer an <span class="pre">Option</span> that is
+		<span class="pre">None</span> when the member is missing or of another kind
+		(<span class="pre">i64Or</span> and its kin take a fallback; <span class="pre">requireText</span> and its kin
+		answer an error that names the member). A number is kept as the text it was written in, and is read as an
+		integer or an f64 only when asked: <span class="pre">asI64</span> is exact and refuses a fraction or a value
+		out of range, <span class="pre">asF64</span> is the nearest f64. <span class="pre">toText()</span> and
+		<span class="pre">toPretty(2usize)</span> write a tree back. A <span class="pre">Reader</span> answers a
+		text's events one at a time with no tree built, and a <span class="pre">Writer</span> writes without one.
+		Nesting is limited to 512 levels by default, so a hostile text is refused early. There is no reflection yet:
+		mapping a struct to JSON and back is written by hand (the package's <span class="pre">examples/mapping.cone</span>
+		is one). The package's header lists what it chose and what it left out.</p>
+<pre>
+mod tour;
+
+import stdio use *;
+import json;
+
+fn main() i32 {
+  mut doc json.Json = json.Json.Null;
+  match json.parse("{\"name\": \"hello\", \"size\": 12, \"tags\": [\"a\", \"b\"]}") {
+    case mut ok Ok { doc &lt;=&gt; ok; }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  match doc.getText("name") {
+    case imm n Some { printStr(n); printStr("\n"); }
+    case is None { printStr("no name\n"); }
+  }
+  printInt(doc.i64Or("size", -1i64));
+  printStr("\n");
+  match doc.toPretty(2usize) {
+    case imm t Ok { printStr(t.view()); printStr("\n"); }
+    case imm e Error {
+      imm m = e.message();
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  0i32;
+}
+</pre>
+	<p>prints:</p>
+<pre>
+hello
+12
+{
+  "name": "hello",
+  "size": 12,
+  "tags": [
+    "a",
+    "b"
+  ]
+}
+</pre>
+
+	<h3 id="randompkg">Random numbers</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">random</span><br><span class="pre">import random;</span></td>
+		<td>A seeded, repeatable generator (xoshiro256**) whose state is a value, not a global: integers in a range
+		with no modulo bias, floats in [0, 1), a shuffle, a choice, and normal and exponential numbers. The same seed
+		gives the same numbers on Windows and Linux. Written in Cone; not for keys or tokens.</td></tr>
+	</table>
+
+	<h3 id="random">random</h3>
+	<p>An <span class="pre">Rng</span> is made from a seed, <span class="pre">Rng.fromSeed(42u64)</span>, or from
+		the operating system's entropy, <span class="pre">Rng.fromEntropy()</span> (an <span class="pre">Option</span>:
+		<span class="pre">None</span> if the OS refuses; <span class="pre">fromEntropyOr(seed)</span> falls back to a
+		seed). It holds its own state, so a program makes as many as it needs and hands one to a function as
+		<span class="pre">&amp;mut Rng</span>; <span class="pre">jumped()</span> gives a generator that cannot overlap
+		this one's numbers, one per thread. <span class="pre">below(n)</span> is an integer in
+		[0, n) with every value equally likely; <span class="pre">rangeI64(lo, hi)</span> and
+		<span class="pre">closedI64(lo, hi)</span> take a half-open and a closed range (and the
+		<span class="pre">U64</span> forms). <span class="pre">unit()</span> is an f64 in [0, 1),
+		<span class="pre">shuffle(&amp;mut list)</span> a Fisher-Yates shuffle of a <span class="pre">List</span>,
+		<span class="pre">choice(&amp;list)</span> a borrowed random element (<span class="pre">None</span> if the list is
+		empty), <span class="pre">normal()</span> and <span class="pre">exponential()</span> the usual distributions.
+		The package's header lists each method chosen and what was left out; the numbers from a seed are pinned in its
+		tests against the reference implementations.</p>
+<pre>
+mod dice;
+
+import stdio use *;
+import random;
+
+fn main() i32 {
+  mut rng = random.Rng.fromSeed(42u64);
+  printInt(i64.from(rng.below(6u64)) + 1i64);
+  printStr(" ");
+  printInt(rng.rangeI64(-10i64, 10i64));
+  printStr("\n");
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">1 -3</span> on every machine.</p>
+
+	<h3 id="binarytextpkg">Bytes as text: base64 and hex</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">binarytext</span><br><span class="pre">import binarytext;</span></td>
+		<td>Base64 (RFC 4648's standard and URL-safe alphabets, with or without padding) and hex, encoded and decoded,
+		one-shot or streamed in chunks split anywhere. Decoding is strict by default. Written in Cone, with no C
+		library and no call to the OS.</td></tr>
+	</table>
+
+	<h3 id="binarytext">binarytext</h3>
+	<p><span class="pre">encodeBase64(bytes)</span> and <span class="pre">encodeBase64Url(bytes)</span> answer a
+		<span class="pre">String</span> (padded); <span class="pre">encodeBase64With(bytes, &amp;format)</span> takes a
+		<span class="pre">Base64Format</span>: <span class="pre">standard()</span>, <span class="pre">urlSafe()</span>,
+		<span class="pre">standardUnpadded()</span> or <span class="pre">urlSafeUnpadded()</span>.
+		<span class="pre">encodeHex(bytes)</span> writes lower case, <span class="pre">encodeHexUpper</span> upper.
+		<span class="pre">decodeBase64(text)</span>, <span class="pre">decodeBase64Url</span>,
+		<span class="pre">decodeBase64With(text, &amp;format)</span> and <span class="pre">decodeHex</span> answer a
+		<span class="pre">Result[List[u8], DecodeError]</span>. Decoding is strict: a character outside the alphabet
+		(the two alphabets are not mixed), whitespace, padding that does not match the format, a lone last digit, and
+		unused trailing bits that are not zero (so that one value has one text) are each refused, with the kind of fault
+		and its byte offset. A format opts in to what is looser: <span class="pre">acceptingWhitespace()</span>,
+		<span class="pre">acceptingAnyPadding()</span>, <span class="pre">acceptingTrailingBits()</span>; hex decoding
+		takes either case and has <span class="pre">decodeHexSkippingWhitespace</span>.
+		<span class="pre">Base64Encoder</span>, <span class="pre">Base64Decoder</span>, <span class="pre">HexEncoder</span>
+		and <span class="pre">HexDecoder</span> are values that hold their own state: feed them chunks with
+		<span class="pre">update</span>, then <span class="pre">finish</span>. The package's header lists each choice
+		and what was left out; the tests carry RFC 4648's section 10 vectors.</p>
+<pre>
+mod tokens;
+
+import stdio use *;
+import binarytext;
+
+fn main() i32 {
+  imm text = binarytext.encodeBase64("foobar");
+  printStr(text.view());
+  printStr(" ");
+  imm hex = binarytext.encodeHex("foobar");
+  printStr(hex.view());
+  printStr("\n");
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">Zm9vYmFy 666f6f626172</span>.</p>
+
+	<h3 id="cryptohashpkg">Hashes and message authentication</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">cryptohash</span><br><span class="pre">import cryptohash;</span></td>
+		<td>SHA-256, SHA-512 and SHA-1 (legacy, not for new security uses), HMAC over each, and a constant-time
+		comparison for MACs. A hasher is a value fed with <span class="pre">update</span>; one call hashes a whole
+		message. Written in Cone with no C library; the same bytes on Windows and Linux; checked against NIST's
+		and the RFCs' published vectors. Not a password hash.</td></tr>
+	</table>
+
+	<h3 id="cryptohash">cryptohash</h3>
+	<p><span class="pre">sha256(data)</span>, <span class="pre">sha512(data)</span> and
+		<span class="pre">sha1(data)</span> hash a byte slice (a string literal, a
+		<span class="pre">String</span>'s or <span class="pre">List[u8]</span>'s <span class="pre">view()</span>)
+		and answer the digest as a fixed array, <span class="pre">Array[u8, 32]</span>,
+		<span class="pre">Array[u8, 64]</span> and <span class="pre">Array[u8, 20]</span>. To hash a message in
+		pieces, make a hasher, <span class="pre">Sha256.make()</span> (or <span class="pre">Sha512</span>,
+		<span class="pre">Sha1</span>), feed it with <span class="pre">update(data)</span> as many times as needed
+		and ask <span class="pre">finish()</span>. The hasher holds its own state, with no global behind it;
+		<span class="pre">finish</span> leaves it as it was, so it can take more and be asked again,
+		<span class="pre">copyOf()</span> forks one in progress, and <span class="pre">reset()</span> empties it.
+		<span class="pre">HmacSha256.make(key)</span> (and <span class="pre">HmacSha512</span>,
+		<span class="pre">HmacSha1</span>) is the same for a keyed MAC, with <span class="pre">hmacSha256(key, data)</span>
+		for one call; <span class="pre">verify(tag)</span> compares a received tag with the right one in constant time
+		(<span class="pre">constantTimeEq(a, b)</span> does it for any two byte strings). SHA-1 collisions can
+		be made: use it only for a format that names it. The package's header lists each method chosen and what was
+		left out, and what the compiler could still do to the constant-time loop.</p>
+<pre>
+mod digest;
+
+import stdio use *;
+import cryptohash;
+
+fn main() i32 {
+  imm d = cryptohash.sha256("abc");
+  printInt(i64.from(d[0]));
+  imm tag = cryptohash.hmacSha256("a key", "a message");
+  mut mac = cryptohash.HmacSha256.make("a key");
+  mac.update("a message");
+  printStr(" ");
+  printInt(if mac.verify(&amp;tag) { 1i64; } else { 0i64; });
+  printStr("\n");
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">186 1</span> on every machine (186 is 0xba, the first byte of SHA-256 of "abc",
+		<span class="pre">ba7816bf...</span>).</p>
+
+	<h3 id="llvmpkg">LLVM</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">llvmc</span><br><span class="pre">import llvmc;</span></td>
+		<td>LLVM's C API, declared by hand: make a context, a module, types, constants, globals and functions with the
+		instruction builder, verify and print the IR, run the new pass manager's pipelines over it, attach debug
+		information, and have a target machine write an object file. It covers every LLVM-C function the C compiler
+		calls. A C binding to LLVM 23.1's library, which must be installed.</td></tr>
+	</table>
+	<p>A function is called by its C name without the <span class="pre">LLVM</span> prefix
+		(<span class="pre">llvmc.BuildAdd</span>), a handle is a pointer to a type of its own
+		(<span class="pre">*llvmc.Value</span> is not a <span class="pre">*llvmc.Type</span>), and the C enums
+		are Cone enums with LLVM's values (<span class="pre">llvmc.IntPredicate.IntEQ</span>). A few functions
+		beginning with a lower-case letter copy the text LLVM hands out into a <span class="pre">String</span>
+		(<span class="pre">moduleToString</span>, <span class="pre">checkModule</span>). The package's header lists each
+		choice and what was left out; the tests build functions, verify them, break a module on purpose, write an object
+		file and run its code.</p>
+
+	<h3 id="deflatepkg">Compression</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">deflate</span><br><span class="pre">import deflate;</span></td>
+		<td>DEFLATE (RFC 1951) compressed and decompressed, with zlib (RFC 1950) and gzip (RFC 1952) framing, the
+		Adler-32 and CRC-32, and streaming both ways: an inflater and a deflater whose state is a value, fed
+		input split anywhere and answering output in bounded pieces. Written in Cone, with no C library; the
+		PNG reader and writer of <span class="pre">imagedecode</span> stand on it.</td></tr>
+	</table>
+
+	<h3 id="deflate">deflate</h3>
+	<p>For data in memory, one call each way: <span class="pre">zlibCompress(data, level)</span>,
+		<span class="pre">gzipCompress(data, level)</span> and <span class="pre">rawDeflate(data, level)</span> answer
+		a <span class="pre">List[u8]</span>; <span class="pre">zlibDecompress(data, expected)</span> and
+		<span class="pre">gzipDecompress(data, expected)</span> answer a
+		<span class="pre">Result[List[u8], DeflateError]</span>, the error holding a
+		<span class="pre">kind</span> (a bad header, a bad code, a match reaching before the start, a cut stream,
+		a checksum that does not match, more output than allowed, bytes after a gzip file) and a
+		<span class="pre">reason</span>. The level is 0 (stored), 1 (LZ77 with the fixed Huffman code) or 2
+		(the same matcher with a dynamic Huffman code per block); level 2 runs about as fast as zlib's level 6 and
+		makes streams a few per cent bigger. The checksums check themselves: a stream that fails its Adler-32,
+		its CRC-32 or its length is refused.</p>
+	<p>For a stream that arrives in pieces, or output that must not be held whole, an
+		<span class="pre">Inflater</span> (and a <span class="pre">Deflater</span>) is made for a
+		<span class="pre">Format</span> (<span class="pre">Raw</span>, <span class="pre">Zlib</span> or
+		<span class="pre">Gzip</span>), is given input with <span class="pre">feed</span> in pieces of any size
+		cut anywhere, is told with <span class="pre">finish</span> that none is left, and answers
+		<span class="pre">pull(&amp;mut out, max)</span>: at most <span class="pre">max</span> bytes appended to
+		<span class="pre">out</span>, and a <span class="pre">Status</span> that says what it waits for
+		(<span class="pre">NeedInput</span>, <span class="pre">MoreOutput</span>, <span class="pre">Done</span>, or
+		for an inflater <span class="pre">Failed</span>). The state is all in the value, so there is no global; an
+		inflater caps its output at 1 GiB unless <span class="pre">setLimit</span> says otherwise, since a small
+		stream can expand a thousandfold. A gzip file with several members is inflated member after member and the
+		data joined, and the header fields of the member (time, name, comment, extra field) are kept in a
+		<span class="pre">GzipHeader</span>. The package's header lists each method chosen and what was left out, and
+		its speed and size next to zlib's on six files.</p>
+<pre>
+mod squeeze;
+
+import stdio use *;
+import collections use *;
+import deflate;
+
+fn main() i32 {
+  imm text = "the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog";
+  imm packed = deflate.gzipCompress(text, 2);
+  printInt(i64.from(text.len));
+  printStr(" bytes became ");
+  printInt(i64.from(packed.len()));
+  printStr(" as a gzip file\n");
+  match deflate.gzipDecompress(packed.view(), 0usize) {
+    case imm ok Ok { printStr(String.fromBytes(ok.view()).view()); printStr("\n"); }
+    case imm e Error { printStr(e.reason.view()); return 1i32; }
+  }
+  0i32;
+}
+</pre>
+	<p>prints:</p>
+<pre>
+88 bytes became 72 as a gzip file
+the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
+</pre>
+
+	<h3 id="llmpkg">Language models: weights and layers</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">llmreference</span><br><span class="pre">import llmreference use *;</span></td>
+		<td>The CPU side of running a Llama-family model: the weight block layouts of a GGUF file (F32, F16, Q8_0,
+		Q4_K, Q6_K) and their decoders, half-precision conversion, seeded synthetic weights, and a CPU twin of
+		each GPU kernel (matrix-vector and matrix-matrix products over the quantised weights, RMSNorm, rotary
+		position embedding, softmax, attention over a KV cache, SiLU, GELU, add, multiply). Written in Cone with
+		no GPU.</td></tr>
+	<tr><td><span class="pre">llmkernels</span><br><span class="pre">import llmkernels use *;</span></td>
+		<td>The same layers as GPU compute kernels (Slang, compiled ahead of time and run through
+		<span class="pre">gpuwork</span>; see <a href="conc-gpu.html">The GPU</a>), each checked against its twin.
+		Needs a Vulkan 1.3 device.</td></tr>
+	</table>
+
+	<h3 id="llmreference">llmreference and llmkernels</h3>
+	<p>A weight matrix is a <span class="pre">QMatrix</span>: rows of <span class="pre">cols</span> elements of one
+		type, each row a whole number of the type's blocks, the bytes in the tensor's own layout.
+		<span class="pre">syntheticMatrix(&amp;mut rng, QTYPE_Q4_K, rows, cols)</span> makes one of seeded random
+		blocks (so a test needs no model file), <span class="pre">m.row(r)</span> decodes a row to f32, and
+		<span class="pre">m.words()</span> packs the bytes into the 32-bit words a GPU buffer holds. The kernels read
+		those words by byte offset and unpack the half-precision scales with integers, so the device needs no 8-bit
+		or 16-bit storage feature. In <span class="pre">llmkernels</span>,
+		<span class="pre">Kernels.make(&amp;device)</span> builds the eleven pipelines once, and each method
+		(<span class="pre">matvec</span>, <span class="pre">matmul</span>, <span class="pre">rmsnorm</span>,
+		<span class="pre">rope</span>, <span class="pre">softmax</span>, <span class="pre">attention</span>,
+		<span class="pre">kvAppend</span>, <span class="pre">silu</span>, <span class="pre">gelu</span>,
+		<span class="pre">add</span>, <span class="pre">mul</span>) records one dispatch into a
+		<span class="pre">gpuwork</span> <span class="pre">Job</span> over buffers already given to it, answering whether
+		it was recorded.</p>
+	<p>The twins work in f64 and round once, so a GPU result's difference from its twin is the GPU's own error. The
+		tests bound each kernel by a stated tolerance (a sum of products by <span class="pre">(n + 4) 2<sup>-24</sup></span>
+		times the sum of its terms' absolute values; the others by units of 2<sup>-24</sup> that the packages' headers
+		derive) and, run with <span class="pre">LLMKERNELS_REPORT</span> set, print the worst error seen: on the
+		RTX 4060 Laptop GPU the sums are within 4 units of a bound of up to 2300. Both packages' headers list the
+		method choices and what was left out (flash attention, several sequences at once, f16 activations, subgroup
+		and 16-bit fast paths, the other quantisation types), the block layouts, and the one check still to do: the
+		layouts are written from knowledge of ggml and have not been compared with a real model file.</p>
+
+	<h3 id="ggufpkg">Model files: GGUF</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">gguf</span><br><span class="pre">import gguf;</span></td>
+		<td>GGUF files, the container that llama.cpp's language models come in, read and written over a byte slice:
+		the header, the metadata (every value type, arrays and arrays of arrays, so a tokenizer's vocabulary and
+		merges), the tensor table, and a tensor's elements read as f32 for F32, F16, BF16, Q4_0, Q8_0, Q4_K and
+		Q6_K. A <span class="pre">Writer</span> makes synthetic models for tests. Written in Cone, with no C
+		library; groundwork for running small open models locally, it runs none.</td></tr>
+	</table>
+
+	<h3 id="gguf">gguf</h3>
+	<p><span class="pre">parse(bytes)</span> answers a <span class="pre">Result[Model, GgufError]</span>. A
+		<span class="pre">Model</span> holds the metadata in file order (<span class="pre">text(key)</span>,
+		<span class="pre">uint(key)</span>, <span class="pre">int(key)</span>, <span class="pre">float(key)</span>,
+		<span class="pre">flag(key)</span> and <span class="pre">list(key)</span> answer an Option of that kind of
+		value; <span class="pre">get(key)</span> the whole <span class="pre">Value</span>) and a table of
+		<span class="pre">Tensor</span>s (<span class="pre">name</span>, <span class="pre">kind</span>,
+		<span class="pre">dims</span>, <span class="pre">offset</span>, <span class="pre">elements</span>,
+		<span class="pre">bytes</span>), found by <span class="pre">find(name)</span>. It does not hold the tensors'
+		bytes: they stay in the bytes that were parsed (a buffer read from a file, or later a mapped file), and
+		<span class="pre">tensorBytes(file, t)</span> is a view of one. <span class="pre">tensorToF32</span>,
+		<span class="pre">rowToF32</span> and <span class="pre">dequantize</span> read tensors as f32. Every field of the
+		file is checked, and a fault is a <span class="pre">GgufError</span> with a <span class="pre">kind</span>, the
+		<span class="pre">offset</span> of the byte at fault and a <span class="pre">reason</span>: a wrong magic, a
+		big-endian file, a version other than 2 and 3, a count the file cannot hold, a string or array past the end, a
+		tensor whose dimensions overflow or are not whole blocks, a tensor outside the file or off its alignment.
+		The package's header lists the block layouts, each method chosen and what was left out (other quantised types
+		are refused as a whole file), and says which parts of the Q4_K and Q6_K layouts were checked only against
+		values worked out by hand.</p>
+<pre>
+mod toy;
+
+import stdio use *;
+import collections use *;
+import gguf;
+
+fn main() i32 {
+  mut w = gguf.Writer.make();
+  w.putText("general.architecture", "toy");
+  w.addValues("eye", gguf.TensorType.F32, &amp;[2u64, 2u64], &amp;[1.0, 0.0, 0.0, 1.0]);
+  mut file = List[u8].empty();
+  match w.finish() {
+    case mut ok Ok { file &lt;=&gt; ok; }
+    case is Error { return 1i32; }
+  }
+  match gguf.parse(file.view()) {
+    case imm model Ok {
+      each t in model.tensors {
+        printStr(t.name.view());
+        printStr(" ");
+        printStr(t.kind.name());
+        printStr(" ");
+        printInt(i64.from(t.bytes));
+        printStr("\n");
+      }
+    }
+    case is Error { return 1i32; }
+  }
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">eye F32 16</span>.</p>
+
+	<h3 id="bpetokenizepkg">Language-model tokens</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">bpetokenize</span><br><span class="pre">import bpetokenize;</span></td>
+		<td>Byte-level byte-pair-encoding tokenization, the tokenizer of the GPT-2 and Llama 3 families: a text is cut
+		into words, each word is merged by rank into a vocabulary's tokens, and the tokens are numbered; decoding
+		numbers back to the bytes. The vocabulary and the merge list come in as plain arrays of strings, so it
+		depends on no file format. Written in Cone, with no C library, and any bytes (UTF-8 or not) encode and
+		decode as they are.</td></tr>
+	</table>
+
+	<h3 id="bpetokenize">bpetokenize</h3>
+	<p><span class="pre">Tokenizer.build(tokens, merges, special, preTokenizer)</span> answers a
+		<span class="pre">Result[Tokenizer, BuildError]</span>. <span class="pre">tokens</span> is the vocabulary in id
+		order, each token spelt as a byte-level vocabulary spells it (<span class="pre">toByteLevel(bytes)</span> makes
+		that spelling: GPT-2's table, in which a space is <span class="pre">Ġ</span>); <span class="pre">merges</span>
+		are the rules, best first, each the text <span class="pre">left right</span> (or
+		<span class="pre">MergePair</span> values with <span class="pre">buildPairs</span>); <span class="pre">special</span>
+		are the texts of the tokens matched whole in an input. The 256 single-byte tokens must be in the vocabulary, and
+		every merge must name tokens that are, or the build is refused with a <span class="pre">BuildError</span> that
+		says which.
+		<span class="pre">encode(bytes)</span> answers a <span class="pre">List[u32]</span> of ids,
+		<span class="pre">encodePlain</span> the same with no special token recognised, and
+		<span class="pre">encodeWith(bytes, parseSpecial, &amp;mut out)</span> appends to a list. <span class="pre">decode(ids)</span>
+		answers the bytes (an id outside the vocabulary is an error, with its place); <span class="pre">decodeInto</span>
+		can leave the special tokens out. The cut made before merging is a <span class="pre">PreTokenizer</span>:
+		<span class="pre">Gpt2</span>, <span class="pre">Llama3</span> (cl100k's expression, which GPT-4 and Llama 3, 3.1 and 3.2
+		use), <span class="pre">Qwen2</span> or <span class="pre">Whole</span> (no cut). It is hand-written, with no
+		regular-expression engine, and matches the published expressions on the scripts it lists (Latin, Greek,
+		Cyrillic, Armenian, Hebrew, Arabic, Devanagari, Thai, Georgian, Hangul, Hiragana, Katakana and the CJK
+		ideographs); another script is cut as symbols. Merging is rank-priority merging with a heap, O(n log n)
+		in the length of a word. Not covered: SentencePiece and Unigram tokenizers, byte-fallback vocabularies,
+		normalisers, other families' cuts (GPT-4o, DeepSeek, Falcon, StarCoder), and a trainer. The package's header
+		lists each method chosen and what was left out.</p>
+<pre>
+mod tokens;
+
+import stdio use *;
+import collections use *;
+import bpetokenize;
+
+fn main() i32 {
+  mut tokens = List[String].empty();       // the 256 byte tokens, then the merged ones
+  mut b = 0u32;
+  while b &lt; 256u32 {
+    mut one = List[u8].empty();
+    one.push(u8.from(b));
+    tokens.push(bpetokenize.toByteLevel(one.view()));
+    b = b + 1u32;
+  }
+  tokens.push("he");                       // 256
+  tokens.push("ll");                       // 257
+  tokens.push("hell");                     // 258
+  tokens.push("&lt;|end|&gt;");                  // 259, a special token
+  mut merges = List[String].empty();
+  merges.push("h e");
+  merges.push("l l");
+  merges.push("he ll");
+  mut special = List[String].empty();
+  special.push("&lt;|end|&gt;");
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(),
+                                    bpetokenize.PreTokenizer.Gpt2) {
+    case imm tok Ok {
+      imm ids = tok.encode("hello&lt;|end|&gt;");
+      mut i = 0usize;
+      while i &lt; ids.len() {
+        printInt(i64.from(ids.view()[i]));
+        printStr(" ");
+        i = i + 1usize;
+      }
+      match tok.decode(ids.view()) {
+        case imm bytes Ok { printStr(bytes.view() as &amp;str); }
+        case imm e Error { return 1i32; }
+      }
+      printStr("\n");
+    }
+    case imm e Error { return 1i32; }
+  }
+  0i32;
+}
+</pre>
+	<p>prints <span class="pre">258 111 259 hello&lt;|end|&gt;</span>: <span class="pre">hell</span> is one token, the
+		<span class="pre">o</span> is the byte 111, and the special token is matched whole.</p>
+
+	<h3 id="testpkg">Testing</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">testing</span><br><span class="pre">import testing use *;</span></td>
+		<td>Checks for a package's tests (<span class="pre">expectInt</span>, <span class="pre">require</span>,
+		<span class="pre">done</span>), run by <span class="pre">congo test</span>; see
+		<a href="lib-test.html">Testing</a>.</td></tr>
+	</table>
+
+	<h2 id="platforms">Where they run</h2>
+	<p>These run on Windows and on Linux, each over the system's own calls (chosen by
+		<span class="pre">isWindows()</span>, so only the target's are generated):
+		<span class="pre">posix</span>, <span class="pre">fs</span>, <span class="pre">env</span> (over
+		<span class="pre">posix</span>) and <span class="pre">process</span>;
+		<span class="pre">iobuf</span> (its blocks come from <span class="pre">VirtualAlloc</span> on Windows and
+		<span class="pre">mmap</span> on Linux), <span class="pre">iocore</span> (over an I/O completion port
+		on Windows, epoll on Linux), <span class="pre">aio</span>, <span class="pre">http1</span>,
+		<span class="pre">httpconn</span>, <span class="pre">httpclient</span> and <span class="pre">tls</span>
+		(over OpenSSL on both, which judges a server's certificate with the system's own verifier on Windows and with
+		its own check against the system's roots on Linux, where <span class="pre">libssl-dev</span> must be installed);
+		and <span class="pre">path</span>
+		reads the paths of the system it is built for: on Windows drive letters and shares, and both
+		<span class="pre">/</span> and <span class="pre">\</span> as separators; on Linux only
+		<span class="pre">/</span>, with a root and no volume.</p>
+	<p>What is Windows-only beneath <span class="pre">fs</span>, <span class="pre">path</span> and
+		<span class="pre">env</span> is <span class="pre">posix</span>'s: on Windows its POSIX names map onto the
+		Windows C runtime, and its folder listing (<span class="pre">opendir</span>, <span class="pre">readdir</span>)
+		and <span class="pre">lstat</span> are written over the runtime's <span class="pre">_findfirst64</span>; on
+		Linux they are the C library's. <span class="pre">process</span> has an interface that belongs to no one
+		system, but its insides are written over <span class="pre">kernel32</span>
+		(<span class="pre">CreateProcessW</span>, pipes, a job object) on Windows and over
+		<span class="pre">posix_spawn</span> on Linux, since neither ISO C nor POSIX alone can do it on both.</p>
+	<p><span class="pre">random</span> asks the OS for one thing, entropy to seed from
+		(<span class="pre">rand_s</span> on Windows, <span class="pre">getentropy</span> elsewhere, as the hash seed
+		is drawn). Its numbers from a seed are the same on both, and have been run on Windows only.</p>
+	<p><span class="pre">cryptohash</span> asks the OS for nothing; its tests pass on Windows and on Linux
+		(Ubuntu 24.04), with the same digests and tags.</p>
+	<p><span class="pre">llvmc</span> links LLVM's C library on both (<span class="pre">LLVM-C.dll</span> from
+		<span class="pre">C:\LLVM\23</span> on Windows, <span class="pre">libLLVM</span> from
+		<span class="pre">/usr/lib/llvm-23</span> on Linux); its tests pass on both, with the same IR text and answers.</p>
+	<p><span class="pre">deflate</span> calls nothing of the system's; its tests, and those of
+		<span class="pre">imagedecode</span> over it, have been run on both, and write the same bytes.</p>
+	<p><span class="pre">llmreference</span> is Cone alone and has no call of the system's; its tests pass on Windows
+		and on Linux (Ubuntu 24.04), and its example prints the same numbers on both. <span class="pre">llmkernels</span>
+		needs a GPU and the GPU packages, which run on Windows only for now: it compiles on Linux and its tests
+		(which run on a real GPU) do not.</p>
+	<p><span class="pre">gguf</span> calls nothing of the system's; its tests pass on Windows and on Linux
+		(Ubuntu 24.04), and write and read the same bytes.</p>
+	<p><span class="pre">bpetokenize</span> calls nothing of the system's; its tests pass on Windows and on Linux
+		(Ubuntu 24.04), with the same token ids.</p>
+	<p>The others use nothing that belongs to Windows alone. Of these,
+		<span class="pre">sync</span>, <span class="pre">thread</span>, <span class="pre">actors</span> and
+		<span class="pre">time</span> are the ones that have been run on Linux so far, with <span class="pre">core</span>
+		and a program that only prints.</p>
+
+	<p>Testing is on <a href="lib-test.html">its own page</a>, awaiting I/O from an actor is in
+		<a href="conc-io.html">I/O from an actor</a>, and the platform notes are gathered in
+		<a href="safe-platforms.html">Platforms and targets</a>.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="lib-string.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

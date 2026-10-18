@@ -1,0 +1,155 @@
+<html>
+  <head>
+	  <title>List: values in a row that grows - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">List: values in a row that grows</div>
+		</div>
+
+    <div class="text">
+
+	<p>A <b>List</b> keeps values in a row, in the order they arrive, finds each by its position, and grows at the end
+		as values are sent to it. It is the collection most programs reach for first. This page shows how to make one, read
+		and change its values by position, change them all at once, take them out, and sort them. Eratosthenes found the
+		primes by crossing out the multiples of each one he found; this sieve also counts how many different primes
+		divide every number on the way:</p>
+
+<pre>
+mod sieve;
+
+import stdio use *;
+// collections gives us List, Dict and the rest
+import collections use *;
+
+fn main() {
+  // Positions in a list are counted with usize, so the limit is one
+  imm limit = 1000usize;
+
+  // For every number below the limit, how many primes divide it:
+  // room for 1000 values, every one filled with 0 to begin with
+  mut factors = new List[i32](limit) &lt;- fill 0;
+
+  // A list that starts empty, and grows as primes are sent to it
+  mut primes = new List[usize];
+
+  // A number that no smaller prime divides is prime,
+  // and it marks every multiple of itself
+  each n in 2usize ..&lt; limit {
+    continue if factors[n] &gt; 0;
+    primes &lt;- n;
+    each m in n ..&lt; limit by n {
+      factors[m] += 1;
+    }
+  }
+
+  print &lt;- primes.len(), " primes below ", limit, ", the last ", primes[primes.len() - 1], "\n";
+  print &lt;- "210 has ", factors[210], " different prime factors\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+168 primes below 1000, the last 997
+210 has 4 different prime factors
+</pre>
+	<p><b>Try this:</b> 210 is 2 &times; 3 &times; 5 &times; 7. The first number with five different prime factors
+		is 2310, past the end of this list. Raise the limit to 3000 and ask <span class="pre">factors</span> about
+		it.</p>
+
+	<h2 id="growing">Making a list and sending values to it</h2>
+	<p><span class="pre">new List[usize]</span> makes an empty list of <span class="pre">usize</span> values, and
+		<span class="pre">new List[i32](limit) &lt;- fill 0</span> makes one with room for <span class="pre">limit</span>
+		values, then fills that room with zeros. Whatever a list holds, the compiler holds it to:
+		<span class="pre">primes &lt;- true</span> is refused, with <i>"A bool is not a number, and usize is wanted
+		here."</i></p>
+	<p>The send operator puts a value on the end of a list, <span class="pre">primes &lt;- n</span>, and takes several,
+		separated by commas: <span class="pre">primes &lt;- 1009, 1013</span>. The list makes room as it needs it. The
+		method it calls is <span class="pre">push</span>, which may also be called by name:
+		<span class="pre">primes.push(n)</span>. <span class="pre">len()</span> says how many values a list holds. All
+		the ways of building a list in one go, from <a href="guide-collections.html#giving">Collections</a>, work here:
+		<span class="pre">new List[i32] &lt;- 2, 3, 5, 7</span>, <span class="pre">5 of 0</span>,
+		<span class="pre">each &hellip; yield</span>.</p>
+
+	<h2 id="positions">Finding a value by its position</h2>
+	<p>A value is found by its position, counted from 0: <span class="pre">primes[0]</span> is 2. A position is a
+		<span class="pre">usize</span>, the unsigned type for counting things in memory, which is why the sieve counts
+		with one. In a list held in a <span class="pre">mut</span> variable, a value can be changed where it stands,
+		<span class="pre">factors[m] += 1</span>, or replaced, <span class="pre">factors[m] = 0</span>, and
+		<span class="pre">swap(i, j)</span> trades two. A position past the end stops the program with a
+		<a href="safe-panics.html">panic</a> that says what went wrong: <i>"index 5 is out of range for a length of
+		2"</i>.</p>
+	<p>Like the variable of an <span class="pre">each</span>, <span class="pre">primes[0]</span> is the value where it
+		lies in the list, a borrow, not a copy. It reads like the value in arithmetic, a comparison or a
+		<span class="pre">print</span>, as the sieve's <span class="pre">factors[n] &gt; 0</span> does. Where the value
+		itself is wanted, a <span class="pre">*</span> fetches a copy: <span class="pre">imm first = *primes[0]</span>,
+		or <span class="pre">if *flags[1]</span> for a list of <span class="pre">bool</span>, since a condition
+		must be a <span class="pre">bool</span> itself.</p>
+	<p id="shapechanging">That borrow has a consequence worth knowing early. A list keeps its values in one block of
+		memory, and growing may move them all to a bigger one. So while a borrow of a value is still to be used, the list
+		may be read but not grown, and the compiler refuses the push that would leave the borrow pointing at nothing:</p>
+<pre>
+mut list = new List[i32] &lt;- 10, 20;
+imm first = list[0];       // a borrow of the first value
+list.push(30);             // refused
+print &lt;- first, "\n";
+</pre>
+	<p>The compiler names both places: <i>"Error 1168: 'list' is borrowed (by '[]' at &hellip;), and that borrow is
+		used again at &hellip;. It may not be borrowed mutably until after that last use."</i></p>
+	<p>Copying the value out first, <span class="pre">imm first = *list[0]</span>, leaves nothing to wait for, and
+		so does moving the push after the borrow's last use. <a href="mem-borrowing.html">Borrowed references</a> has
+		the rule in full.</p>
+
+	<h2 id="changing">Changing every value, and taking them out</h2>
+	<p>A plain <span class="pre">each</span> only reads. To change every value where it stands, walk
+		<span class="pre">mutItems()</span>, which lends each one for changing, and write through it with
+		<span class="pre">*</span>. <span class="pre">indexed()</span> hands out each value's position beside it:</p>
+<pre>
+mut xs = new List[i32] &lt;- 3, 1, 2;
+each x in xs.mutItems() {
+  *x *= 10;                         // xs is now 30 10 20
+}
+each i, x in xs.indexed() {
+  print &lt;- i, ":", x, " ";          // 0:30 1:10 2:20
+}
+</pre>
+	<p>A list of values that move rather than copy, such as Strings, gives them up one at a time with
+		<span class="pre">drain()</span>: each value is moved out of the list into the loop's variable, and the list is
+		left empty, ready to be filled again. <span class="pre">clear()</span> empties a list without looking at
+		its values.</p>
+<pre>
+mut names = new List[String] &lt;- String.from("Euclid"), String.from("Hypatia");
+mut kept = List[String].empty();
+each name in names.drain() {
+  kept &lt;- name;                     // the String itself moves on: names is now empty
+}
+</pre>
+
+	<h2 id="sorting">Sorting</h2>
+	<p><span class="pre">sortBy</span> sorts a list in place. Its closure is handed two values and says which comes
+		first: a negative number for the first, a positive one for the second. Smallest first is
+		<span class="pre">xs.sortBy((a, b) =&gt; a - b)</span>, and largest first, for a table of scores,
+		<span class="pre">scores.sortBy((a, b) =&gt; b - a)</span>.</p>
+
+	<h2 id="maybe">When there may be nothing to give</h2>
+	<p>Some questions a list can be asked have no answer. <span class="pre">pop()</span> takes the last value off, but a
+		list may be empty; <span class="pre">get(i)</span> asks for a position without risking a panic, but the position
+		may be past the end. Both give back an <span class="pre">Option</span>, which holds the value if there is one,
+		and which the next page explains at its first lookup. Every List method, the ones for handing a list's values to
+		C among them, is in <a href="lib-collections.html#list">the collections reference</a>.</p>
+	<p>For a fixed number of values there is also Array; see <a href="lib-collections.html#array">the
+		reference</a>.</p>
+
+	<p>You can now keep values in a row, find and change them by position, change them all, take them out and sort
+		them. Next, the other way of finding a value: by a key, such as a word, with Dict.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-dict.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

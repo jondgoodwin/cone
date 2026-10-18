@@ -1,0 +1,60 @@
+// Actors: two tills sell from one stock room, at the same time
+// (the Guide's Actors page)
+
+mod bakery;
+
+import stdio use *;
+// The actors package runs actors, on every core
+import actors;
+
+const price = 3;          // dollars a loaf
+
+// An actor is declared like a struct. Its fields are its own:
+// only its behaviours, below, can reach them
+actor StockRoom {
+  loaves i32 = 100;
+
+  // A behaviour, marked 'async do'. Calling it sends the stock room
+  // a message, which it handles when its turn comes
+  pub async do take(self, wanted i32) i32 {
+    imm given = if wanted <= loaves { wanted; } else { loaves; };
+    loaves -= given;
+    given;                              // the answer, sent back
+  }
+
+  pub async do left(self) i32 { loaves; }
+}
+
+// A till serves a customer from the stock room's loaves
+actor Till {
+  stock StockRoom;                      // how this till reaches the stock room
+
+  pub async do serve(self, wanted i32) i32 {
+    // await: ask the stock room, and carry on here when it answers
+    imm got = await stock.take(wanted);
+    got * price;                        // what the customer pays
+  }
+}
+
+// The shop runs the day
+actor Shop {
+  stock StockRoom;
+  east Till;
+  west Till;
+
+  pub async do open(self) {
+    // Two customers, served at once, one at each till
+    imm ana = east.serve(30);
+    imm ben = west.serve(40);
+    print <- "Ana pays $", await ana, "\n";
+    print <- "Ben pays $", await ben, "\n";
+    print <- "Left on the shelf: ", await stock.left(), "\n";
+  }
+}
+
+fn main() {
+  // new makes an actor, and gives back a handle to reach it through
+  imm stock = new StockRoom();
+  imm shop = new Shop(stock, new Till(stock), new Till(stock));
+  shop.open();      // one message; the program ends when the work is done
+}

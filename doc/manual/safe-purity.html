@@ -1,0 +1,118 @@
+<html>
+  <head>
+	  <title>Inline and pure functions - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Inline and pure functions</div>
+		</div>
+
+    <div class="text">
+
+	<p>A function's declaration can promise more than its types. <span class="pre">inline</span> promises that
+		its body is written into each caller, which makes a small function free to call.
+		<span class="pre">pure</span> promises that it computes its result from its arguments alone, which makes it
+		easy to reason about, test and run at compile time. This page covers both; afterwards you can choose when a
+		function is worth marking. Here is a function small enough that a call would cost more than its work:</p>
+
+<pre>
+mod inline1;
+
+import stdio use *;
+
+// Small enough that a call would cost more than the work:
+// its body is written into each caller instead
+fn clamp(x i32, low i32, high i32) i32 inline {
+  if x &lt; low { low; } elif x &gt; high { high; } else { x; }
+}
+
+fn main() {
+  each reading in -20 .. 140 by 40 {
+    print &lt;- reading, " becomes ", clamp(reading, 0, 100), "\n";
+  }
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+-20 becomes 0
+20 becomes 20
+60 becomes 60
+100 becomes 100
+140 becomes 100
+</pre>
+
+	<h2 id="inline">Inline functions</h2>
+	<p><span class="pre">inline</span> is written after a function's return type. Wherever an inline function or
+		method is called, its logic is generated within the caller's. For a small function that can be a real gain,
+		not only because the call and the return disappear, but more because the code stays together, which the
+		processor's instruction cache rewards.</p>
+	<p>The price is that an inline function has no code of its own, so a reference to one cannot be borrowed:</p>
+<pre>
+imm f = &amp;clamp;    // **ERROR** 1083: May not borrow a reference to an inline function. Its body is
+                   //   copied into each caller, so it has no code of its own to point at.
+</pre>
+	<p>For the same reason an inline body cannot be <span class="pre">extern</span>: a package that offers an
+		inline function writes its body in full in its include file, so each program can copy it in
+		(<a href="safe-c.html#externmethods">Calling C</a>).</p>
+
+	<h2 id="pure">Pure functions</h2>
+	<p style="margin-left: 40px;"><i>Note: Not built yet. <span class="pre">pure</span> is not yet accepted, and
+		the related <span class="pre">@initpure</span> is accepted but not checked.</i></p>
+	<p>Sometimes it is valuable to know that a function's <i>only</i> work is calculating its result from the
+		information passed to it. Such a function is <b>pure</b>, and is marked so. A pure function may not:</p>
+	<ul>
+		<li><b>Access global, mutable variables</b>, except to use regions to allocate memory.</li>
+		<li><b>Call functions or methods that are not pure.</b> This in effect prevents it from doing any I/O,
+			since that needs functions that will never be marked pure.</li>
+	</ul>
+<pre>
+pure fn factorial(mut n i32) i32 {      // Not built yet
+  if n&lt;=1 {
+    return 1;
+  }
+  mut result = 1;
+  while n-- &gt; 1 {
+    result *= n;
+  }
+  result;
+}
+</pre>
+	<p>Marking a function pure makes code that uses it easier to understand, debug and test, because a reader
+		can be sure that:</p>
+	<ul>
+		<li>passing it the same data always returns the same results;</li>
+		<li>using it triggers no unexpected change of state (a side effect), such as I/O;</li>
+		<li>it changes no state other than objects it has explicitly been given mutable references to.</li>
+	</ul>
+	<p>Purity also makes guarantees that matter elsewhere: a pure function can safely calculate a constant value
+		while the program compiles, and it is the model for what a module's initializer may do when it
+		<a href="mod-globals.html#dyninit">sets up global variables</a> as the program starts. There the looser
+		<span class="pre">initpure</span> rule applies: the function relies on no state that is not ready yet, and
+		may still do set-up such as loading a library or opening a device, kept to what the module's own state
+		needs.</p>
+
+	<h3 id="strong">Strong purity</h3>
+	<p><i>Fine-tuning: rarely needed.</i></p>
+	<p>The compiler enforces only the constraints listed above, which some would call a weak form of purity. A
+		stronger form, <b>referential transparency</b>, is had by also ensuring that:</p>
+	<ul>
+		<li>none of the parameters is a mutable reference or a pointer;</li>
+		<li>the logic never uses an operation that may not be deterministic, such as comparing pointers or
+			reinterpreting machine-specific encodings as other types.</li>
+	</ul>
+	<p>Only a strongly pure function can safely be memoized, its results remembered and reused.</p>
+
+	<p>You can now make a small function free to call, and know what purity will promise. Next, the targets a
+		Cone program runs on, and how code can choose by target.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-platforms.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

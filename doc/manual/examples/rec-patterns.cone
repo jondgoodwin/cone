@@ -1,0 +1,70 @@
+// Adding up a sum written as text: each case of a match calls an ordinary
+// function on the text that is left, with 'using', and moves past what it found.
+
+mod sums;
+
+import stdio use *;
+
+// Each pattern takes the text that is left as its first parameter
+
+// The text after p, if the text starts with it
+fn lit(text &str, p &str) Option[&str] {
+  if text.startsWith(p) { Some(&text[p.len() ..]); } else { None[&str]; }
+}
+
+// The text after a run of digits, if it starts with one
+fn digits(text &str) Option[&str] {
+  mut i = 0usize;
+  while i < text.len() and text[i] >= '0' and text[i] <= '9' { i += 1; }
+  if i > 0 { Some(&text[i ..]); } else { None[&str]; }
+}
+
+// True when nothing is left
+fn atEnd(text &str) bool { text.len() == 0; }
+
+// The text with its leading spaces skipped (not a pattern: it always succeeds)
+fn blank(text &str) &str {
+  mut i = 0usize;
+  while i < text.len() and text[i] == ' ' { i += 1; }
+  &text[i ..];
+}
+
+// The number written at the start of text, which ends where after begins
+fn value(text &str, after &str) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < text.len() - after.len() {
+    n = n * 10 + i64.from(text[i] - '0');
+    i += 1;
+  }
+  n;
+}
+
+// Adds up a sum such as "12 + 30 - 5", or gives None if it is not one
+fn sum(text &str) Option[i64] {
+  mut rest = blank(text);
+  mut total = 0i64;
+  mut sign = 1i64;                 // the sign of the number that is due
+  while true {
+    match rest {
+      case imm after using digits() { total += sign * value(rest, after); rest = blank(after); }
+      else { return None[i64]; }
+    }
+    match rest {
+      case imm p using lit("+") { sign = 1; rest = blank(p); }
+      case imm p using lit("-") { sign = -1; rest = blank(p); }
+      case using atEnd() { return Some(total); }
+      else { return None[i64]; }
+    }
+  }
+  None[i64];
+}
+
+fn main() {
+  each text in ["12 + 30 - 5", "  7", "1 + + 2", "100 - 1 x"] {
+    match sum(*text) {
+      case imm n Some { print <- "\"", *text, "\" is ", n, "\n"; }
+      case is None { print <- "\"", *text, "\" is not a sum\n"; }
+    }
+  }
+}

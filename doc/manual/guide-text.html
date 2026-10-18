@@ -1,0 +1,236 @@
+<html>
+  <head>
+	  <title>String - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">String</div>
+		</div>
+
+    <div class="text">
+
+	<p>Names, messages, whatever someone typed: nearly every program works with text. Text that a Cone program
+		builds and changes is a <span class="pre">String</span>. This page shows how to build one, ask questions of
+		it and walk its characters, and it brings in the first value in the Guide that moves rather than copies.
+		Here is a program that checks for a <i>pangram</i>, a sentence that uses every letter of the alphabet:</p>
+
+<pre>
+mod pangram;
+
+import stdio use *;
+import collections use *;      // collections gives us String
+
+// A line about 'text': how many of the alphabet's 26 letters it uses.
+// &amp;str is a view of a piece of text, wherever that text is kept
+fn verdict(text &amp;str) String {
+  // A String can change: this one starts as a copy of 'text',
+  // then has every capital letter made small
+  mut lower = String.from(text);
+  lower.lowerAscii();
+
+  // Count each letter of the alphabet that turns up somewhere in it
+  mut used = 0;
+  'next: each letter in "abcdefghijklmnopqrstuvwxyz".chars() {
+    each c in lower.chars() {
+      if c == letter { used += 1; continue 'next; }
+    }
+  }
+
+  // &lt;- adds to the end of a String, just as it sends to print
+  mut line = String.from(text);
+  line &lt;- ": ", used, " of 26 letters";
+  if used == 26 { line &lt;- ", a pangram"; }
+  line;                          // the finished String goes back to the caller
+}
+
+fn main() {
+  print &lt;- verdict("The quick brown fox jumps over the lazy dog").view(), "\n";
+  print &lt;- verdict("Pack my box with five dozen liquor jugs").view(), "\n";
+  print &lt;- verdict("Hello, world").view(), "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+The quick brown fox jumps over the lazy dog: 26 of 26 letters, a pangram
+Pack my box with five dozen liquor jugs: 26 of 26 letters, a pangram
+Hello, world: 7 of 26 letters
+</pre>
+	<p><b>Try this:</b> swap the lazy dog for a lazy cat, and see what it costs the fox.</p>
+
+	<h2 id="twokinds">String and &amp;str</h2>
+	<p>A <span class="pre">String</span> comes from the <span class="pre">collections</span> package, which is why the
+		program imports it. It owns the memory its text is kept in, and grows that memory as text is added. Text
+		written into the program, a string literal, is different: it never changes, and it lasts as long as the
+		program runs. Its type is <span class="pre">&amp;str</span>, a view of a piece of text; the
+		<span class="pre">&amp;</span> marks a <i>reference</i>, and there is more on references below.</p>
+	<p>A function that only reads text takes a <span class="pre">&amp;str</span>, as <span class="pre">verdict</span>
+		does, and then any text will do: a literal as it is, or a String's text through its
+		<span class="pre">view()</span>. <span class="pre">print</span> reads text the same way, which is why the
+		program prints each String's <span class="pre">view()</span>:</p>
+<pre>
+fn shout(text &amp;str) {
+  print &lt;- text, "!\n";
+}
+
+imm motto = "less is more";
+mut title = String.from(motto);   // a String holding a copy of the text
+title.upperAscii();
+shout(motto);                     // less is more!
+shout(title.view());              // LESS IS MORE!
+</pre>
+	<p>A String has every method of <span class="pre">str</span> as its own, so whatever you can ask of a literal you
+		can ask of a String, and it has more besides: methods that change it, like
+		<span class="pre">upperAscii</span>. Where a String is wanted and a literal is given, the literal's text is
+		copied into a new String for you: <span class="pre">imm word String = "copied";</span>.</p>
+
+	<!-- Moved here 15 Oct 2026 from the old "Values, variables and expressions" page: a String is the first
+	     value a reader meets that moves. -->
+	<h2 id="moving">Copy or move</h2>
+	<p>Assigning a number, or handing one to a function, copies it. Changing the copy leaves the original as it
+		was:</p>
+<pre>
+imm a = 3;
+mut b = a;      // b holds a copy of a's value
+b += 1;         // b is 4, and a is still 3
+</pre>
+	<p>A String is different. It owns the memory its text is kept in, and two copies would each believe that memory
+		was theirs to change and to free. So a String <b>moves</b> instead: assigning it, or handing it to a function,
+		passes its text on, and the variable it came from has nothing left. The compiler refuses any later use of
+		it:</p>
+<pre>
+imm plan = String.from("day two: the coast road");
+imm today = plan;              // the text moves from plan to today
+print &lt;- today.view(), "\n";   // day two: the coast road
+// print &lt;- plan.view();       // Error: This variable's value has been moved out.
+</pre>
+	<p>Nothing is copied when a String moves. Its text stays where it is in memory, and only the ownership passes on:
+		that is how <span class="pre">verdict</span> hands its finished <span class="pre">line</span> back to
+		<span class="pre">main</span>. And since a String only ever has one owner, Cone knows exactly when its text is
+		no longer needed, and frees it then, with no garbage collector and nothing for you to free by hand.</p>
+	<p>Whether a value copies or moves is decided by its type, not by how it is used. Numbers copy, and a String
+		moves; you will meet moving again with <a href="guide-structs.html">structs</a> and
+		<a href="guide-collections.html">collections</a>. A type you write moves when it has a finalizer, when any of its
+		fields moves, or when it says so by naming <span class="pre">Move</span>; every other type copies.
+		<a href="rec-moves.html">Moves</a>, in Recipes, has the rest.</p>
+
+	<!-- So becomes Uni when the rename lands (Jon, 15 Oct 2026). -->
+	<h3 id="unique">Handing text on: a unique reference</h3>
+	<p>Once a String is finished, <span class="pre">freeze()</span> turns it into fixed text held by a
+		<b>unique reference</b>, a <span class="pre">So[str]</span>: the one and only way to reach that text. The bytes
+		are not copied; the reference now owns them, and they can no longer change. A unique reference can be passed
+		around like any other value, from variable to variable and function to function, and because it is the only
+		one, it moves as a String does:</p>
+<pre>
+fn announce(news So[str]) {
+  print &lt;- "News: ", news, "\n";
+}
+
+mut headline = String.from("Quick brown fox");
+headline &lt;- " jumps over lazy dog";
+imm news = headline.freeze();  // finished: the text now belongs to news
+announce(news);                // News: Quick brown fox jumps over lazy dog
+// announce(news);             // Error: news has already moved into announce
+</pre>
+	<p>References, unique and otherwise, come back in depth later, in the <a href="memory.html">Memory</a> part.</p>
+
+	<h2 id="building">Building a String with the send operator</h2>
+	<p><span class="pre">&lt;-</span> is the send operator: <span class="pre">print &lt;- x</span> sends
+		<span class="pre">x</span> to the output, and <span class="pre">s &lt;- x</span> sends it to the end of
+		<span class="pre">s</span>. Text is added as it is and a number as its digits, and one
+		<span class="pre">&lt;-</span> can send several, separated by commas, with no format to get wrong. Text built
+		before it is printed can also be laid out first: <span class="pre">padStart</span> fills a String out to a
+		width from the front, which lines numbers up on the right, and <span class="pre">padEnd</span> fills it from
+		the back.</p>
+<pre>
+mut table = String.empty();    // a String with nothing in it yet
+each n in 1 .. 5 {
+  mut cube = String.empty();
+  cube &lt;- n * n * n;
+  cube.padStart(5);            // five wide: "  125"
+  table &lt;- n, cube.view(), "\n";
+}
+print &lt;- table.view();
+</pre>
+	<p>It prints:</p>
+<pre>
+1    1
+2    8
+3   27
+4   64
+5  125
+</pre>
+	<p>Other methods change a String where it is: <span class="pre">replace</span>, <span class="pre">insert</span>,
+		<span class="pre">truncate</span>, <span class="pre">clear</span>, and <span class="pre">upperAscii</span> and
+		<span class="pre">lowerAscii</span> as above. Each needs a <span class="pre">mut</span> variable, since it changes
+		the text (<a href="lib-string.html#string">every method of String</a> is in the library reference):</p>
+<pre>
+mut s = String.from("hello world");
+s.replace("world", "there");     // hello there
+s.insert(0, "oh, ");             // oh, hello there
+</pre>
+
+	<h2 id="asking">Asking questions of text</h2>
+	<p>The methods of <span class="pre">str</span> read text without changing it, so a literal has them as well as a
+		String. Here they ask about a place and a date, with its stray spaces trimmed off first:</p>
+<pre>
+imm place = "  Ithaca, 1200 BC  ".trim();   // Ithaca, 1200 BC
+place.len()                  // 15
+place.startsWith("Ith")      // true
+place.endsWith("BC")         // true
+place.contains("12")         // true
+&amp;place[0 ..&lt; 6]              // Ithaca: a piece of the text, itself a &amp;str
+"apple" &lt; "banana"           // true
+</pre>
+	<p><span class="pre">==</span> asks whether two texts are the same, and <span class="pre">&lt;</span> and the
+		other comparisons put them in order by their characters' codes, in which every capital comes before every
+		small letter: <span class="pre">"Zebra" &lt; "apple"</span> is true. <span class="pre">find</span> says where a piece of text first starts, or that it does not
+		appear at all. It gives back an <span class="pre">Option</span>: <span class="pre">Some</span> holding the
+		position, or <span class="pre">None</span>. An Option is matched just as a Result is, and
+		<a href="guide-enums.html">Enums</a> shows how both are made:</p>
+<pre>
+match place.find(",") {
+  case imm at Some { print &lt;- "comma at ", at, "\n"; }   // comma at 6
+  case None { print &lt;- "no comma\n"; }
+}
+</pre>
+
+	<h2 id="bytes-first">Counting in bytes</h2>
+	<p>Text in Cone is UTF-8, so text in any language is kept and printed just as it is written. In UTF-8 an English
+		letter takes one byte, but <span class="pre">é</span> and <span class="pre">ü</span> take two each, and a
+		Japanese character three. Every length and every position in Cone's text counts <b>bytes</b>, which costs
+		nothing to find, since the text need not be read from the start to reach it. When you want characters,
+		<span class="pre">charCount()</span> counts them and <span class="pre">chars()</span> walks them, one at a
+		time:</p>
+<pre>
+imm shop = "Café Zürich";
+print &lt;- shop.len(), " bytes, ", shop.charCount(), " characters\n";   // 13 bytes, 11 characters
+each c in shop.chars() {
+  print &lt;- "[", c, "]";        // [C][a][f][é][ ][Z][ü][r][i][c][h]
+}
+</pre>
+	<p>Each <span class="pre">c</span> is a <span class="pre">char</span>, one character, which is how
+		<span class="pre">verdict</span> compares its letters. Bytes also explain a small surprise:
+		<span class="pre">upperAscii</span> and <span class="pre">lowerAscii</span> change only the 26 ASCII letters,
+		which are one byte each, so <span class="pre">"Café Zürich"</span> in capitals comes out as
+		<span class="pre">CAFé ZüRICH</span>.</p>
+
+	<p id="strmethods"><span id="cstr"></span><span id="bytes"></span>Every method of <span class="pre">str</span> and <span class="pre">String</span>, how text is handed to C as a
+		<span class="pre">cstr</span>, and how bytes become text are listed in
+		<a href="lib-string.html">Text: str, String and cstr</a>.</p>
+
+	<p>You can now build text, ask questions of it, walk its characters, and hand it on knowing that it moves.
+		Next come tuples, the simplest way to keep a few values together, and after them the structs that gather
+		values into types of your own, with methods of their own, just as a String has <span class="pre">replace</span>
+		and <span class="pre">view</span>.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="guide-tuples.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

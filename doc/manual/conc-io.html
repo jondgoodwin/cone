@@ -1,0 +1,577 @@
+<html>
+  <head>
+	  <title>I/O from an actor: awaiting sockets, files, timers and HTTP - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">I/O from an actor: awaiting sockets, files, timers and HTTP</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">aio</span>, <span class="pre">actorhttp</span>, the HTTP and
+		TLS packages, and <span class="pre">iocore</span> and <span class="pre">iobuf</span> beneath them run on Windows and
+		on Linux. Batching of datagrams (many in one call) is not built yet.</i></p>
+
+	<p>A program that talks to the world spends most of its time waiting: for a connection, for bytes from a peer, for a
+		disk, for a clock. A thread that blocks while it waits is a core doing nothing. In Cone an actor's behaviour
+		<span class="pre">await</span>s the operation instead, exactly as it awaits <a href="conc-await.html">another actor's
+		answer</a>: the actor goes on with its other messages, and the rest of the behaviour runs when the answer comes.
+		This page covers the packages that do it and each kind of operation: sockets, datagrams, files, timers, names, file
+		metadata, child processes and HTTP. Afterwards you can write a server, a client or a pipeline that keeps every core
+		busy while it waits. Here three timers wait on one actor at once:</p>
+
+<pre>
+mod kitchen;
+
+import stdio use *;
+import time use Duration;
+import sync use *;
+import actors;
+import aio;
+
+actor Timer {
+  // Waits without holding a thread, then says so
+  pub async do ring(self, what &amp;'static imm str, ms i64, done Sender[i64]) {
+    imm r = await aio.sleep(Duration.fromMillis(ms));
+    match r {
+      case imm e Error { print &lt;- what, ": the timer failed\n"; }
+      else { print &lt;- what, " is ready after ", ms, " ms\n"; }
+    }
+    mut d = done;
+    d &lt;- ms;                      // tell main this one is done
+  }
+}
+
+fn main() {
+  mut tx Sender[i64];
+  mut rx Receiver[i64];
+  tx, rx = Channel[i64].make();
+
+  // Three timers on one actor: none of them holds a worker while it waits
+  imm t = new Timer();
+  t.ring("The tea", 300i64, tx.clone());
+  t.ring("The toast", 200i64, tx.clone());
+  t.ring("The egg", 400i64, tx.clone());
+
+  // A behaviour paused on I/O does not keep the program running,
+  // so main waits until all three have rung
+  each i in 1 .. 3 {
+    rx.recv();
+  }
+}
+</pre>
+	<p>It prints, in the order the timers come due rather than the order they were sent:</p>
+<pre>
+The toast is ready after 200 ms
+The tea is ready after 300 ms
+The egg is ready after 400 ms
+</pre>
+	<p>One actor handled all three messages, and each <span class="pre">ring</span> paused at its
+		<span class="pre">await</span> so the next could start. Note the last lines of <span class="pre">main</span>. A program
+		ends when no actor is queued or running, and an actor paused on I/O is neither: without the wait, the program would
+		end at once and the timers would never ring (<a href="conc-ioloop.html#io-thread">The I/O thread, and the program's
+		end</a>). Here <span class="pre">main</span> waits on a <a href="conc-threads.html#channel">channel</a>, a queue between threads
+		which each timer sends to as it finishes; a long-running server waits the same way for word that it is done.</p>
+
+	<h2 id="io-packages">The I/O packages</h2>
+	<p>What is built is in library packages, which <a href="library.html#asyncio">the standard library chapter</a>
+		lists. From the plainest to the most capable:</p>
+	<ul>
+	<li><b>Blocking, synchronous I/O:</b> <a href="lib-fs.html"><span class="pre">fs</span></a> (files and folders),
+		<span class="pre">path</span> and <span class="pre">env</span> (beneath them, the <span class="pre">posix</span>
+		package is the C library's own POSIX functions on Linux and maps POSIX onto the Windows C runtime on Windows), and
+		<span class="pre">process</span>, which runs a program and waits for it, written over Windows' own
+		<span class="pre">kernel32</span> or over <span class="pre">posix_spawn</span> on Linux. Fine for a tool that does one
+		thing at a time; a thread that calls them waits.</li>
+	<li><b>Asynchronous I/O, completion-based:</b> <span class="pre">iocore</span>, the loop the rest are built over: a
+		thread hands it a job and later gets exactly one answer for it, carrying the buffer back. With it come
+		<span class="pre">iobuf</span> (owned buffers), <span class="pre">timewheel</span> (its timers),
+		<a href="lib-time.html"><span class="pre">time</span> and <span class="pre">calendar</span></a> and
+		<span class="pre">diag</span> (where an operation's time went). <a href="conc-ioloop.html">The I/O loop
+		underneath</a> opens it up.</li>
+	<li><b>HTTP and TLS over it</b> (<a href="lib-http.html">HTTP, TLS and URLs</a>): <span class="pre">http1</span>,
+		HTTP/1.1's connection core, sans-IO; <span class="pre">httpconn</span>, which joins it to real sockets on a loop,
+		client and server; <span class="pre">tls</span>, TLS 1.2 and 1.3 over OpenSSL, also sans-IO, with a server's
+		certificate checked by the operating system; <span class="pre">url</span>, URLs as data; and
+		<span class="pre">httpclient</span>, which fetches an <span class="pre">http://</span> or
+		<span class="pre">https://</span> URL in one call, with connection pooling, retries and redirects.</li>
+	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may <span class="pre">await</span> a
+		socket's operation (listen, accept, connect, read, write), a file's (open, read at an offset, write at an offset), a
+		timer (<span class="pre">aio.sleep(d)</span>), a name looked up (<span class="pre">aio.resolve(host)</span>), a file's
+		metadata (<span class="pre">aio.stat(path)</span>) or a child process (<span class="pre">aio.run(args)</span>), and
+		pauses there until the operation's answer comes. TCP sockets, UDP sockets and files.</li>
+	<li><b>HTTP an actor awaits:</b> <span class="pre">actorhttp</span>. An actor's behaviour may
+		<span class="pre">await</span> <span class="pre">client.get(url)</span>, for <span class="pre">http://</span> or
+		<span class="pre">https://</span>, and gets the whole response, or the response as it arrives, in chunks or as
+		server-sent events; and an actor may serve: await each request of a listening server and answer it, whole or
+		streamed (<a href="#await-io-http">below</a>).</li>
+	</ul>
+	<p>Most programs need only the last two, and the rest of this page is about them. The <span class="pre">iocore</span>
+		loop underneath, for a program that drives it itself, is <a href="conc-ioloop.html">the next page</a>'s.</p>
+
+	<h2 id="await-io">Awaiting I/O</h2>
+	<p>The <span class="pre">aio</span> package makes each operation; awaited, the behaviour pauses, the actor goes on with
+		its other messages, and when the operation has finished, the rest of the behaviour runs with its answer. A server and
+		a client, each an actor, the client sending five bytes to the server over a TCP connection on this machine:</p>
+<pre>
+// The Socket an answer holds, swapped out of it: Socket.none() if it failed
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &amp;mut res {
+    case mut ok &amp;mut Ok {s &lt;=&gt; *ok;}
+    case imm e &amp;mut Error {say("failed", u64.from((*e).code));}
+  }
+  s;
+}
+
+actor Client {
+  pool Pool;
+
+  pub async do send(self, port u16) {
+    imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    mut buf = pool.mustTake(64usize);
+    buf.append("hello");
+    imm sent = await conn.write(buf);          // pauses until all of it is sent
+    match sent {
+      case imm e Error {say("write failed", u64.from(e.code));}
+      else {}
+    }
+  }                                           // conn closes here
+}
+
+actor Server {
+  pool Pool;
+  client Client;
+
+  pub async do serve(self) u64 {
+    imm listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    imm addr = await listener.localAddr();     // the port the system chose
+    match addr {
+      case imm a Ok {client.send(a.port());}
+      case imm e Error {say("no address", u64.from(e.code));}
+    }
+    imm conn = socketOf(await listener.accept());
+    imm none = await conn.read(IoBuf.empty());           // a buffer with no room
+    match none {
+      case imm e Error {say("no room: error", u64.from(e.code));}
+      else {}
+    }
+    mut total = 0u64;
+    mut more = true;
+    while more {
+      imm got = await conn.read(pool.mustTake(4096usize));
+      match got {
+        case imm b Ok {
+          if b.len() == 0usize {
+            say("end of stream", total);                 // the peer closed
+            more = false;
+          } else {
+            say("received", u64.from(b.len()));
+            total = total + u64.from(b.len());
+          }
+        }
+        case imm e Error {
+          say("read failed", u64.from(e.code));
+          more = false;
+        }
+      }
+    }
+    total;
+  }
+}
+</pre>
+	<p>(<span class="pre">say</span> prints a word and a number on a line; <span class="pre">Pool</span> and
+		<span class="pre">IoBuf</span> are <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
+		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, and <span class="pre">Socket</span>
+		<span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server prints:</p>
+<pre>
+no room: error 122
+received 5
+end of stream 5
+</pre>
+	<p>Each <span class="pre">await</span> there pauses one behaviour, and only it. While the server waits for a
+		connection, the client waits for its connect; the worker threads run neither until an answer comes.</p>
+
+	<h3 id="await-io-answers">What an operation answers</h3>
+	<p>Each operation declares its own answer, and the <span class="pre">await</span>'s value is exactly that:
+		<span class="pre">await</span> adds nothing to it. An operation that can fail answers as a synchronous call that can
+		fail does, with a <span class="pre">Result</span>: the success, or the operating system's failure, an
+		<span class="pre">IoError</span>. Its <span class="pre">code</span> is Windows' error number for the failure, on
+		every system: on Linux the <span class="pre">errno</span> is turned into the Windows number that names the same
+		condition (<span class="pre">ERROR_CONNECTION_REFUSED</span> for <span class="pre">ECONNREFUSED</span>), and one with
+		no such number is its <span class="pre">errno</span> above <span class="pre">0x10000000</span>. Its
+		<span class="pre">message()</span> is the system's words for it.</p>
+	<ul>
+	<li><span class="pre">aio.listen(addr)</span>, <span class="pre">aio.connect(addr)</span>,
+		<span class="pre">listener.accept()</span>: a <span class="pre">Socket</span>. Cone does not yet move a value out of a
+		matched variant's field, so it comes out by a swap, as <span class="pre">socketOf</span> does.</li>
+	<li><span class="pre">conn.read(buf)</span>: the buffer, given back with what arrived appended to it. The buffer is
+		moved into the read, which is how the system may write into it while the behaviour waits, and the read's answer is
+		how it comes back. At the end of the stream, when the peer has closed, it comes back as it went, its length
+		unchanged. A buffer with no room fails with 122, as above. A failed read's buffer goes home to its pool.</li>
+	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer; the buffer goes home.</li>
+	<li><span class="pre">s.localAddr()</span>: the address the socket is bound to.</li>
+	<li><span class="pre">aio.openFile(path, access)</span>: a <span class="pre">File</span>, out of the
+		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is.
+		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span> answer as
+		<span class="pre">read</span> and <span class="pre">write</span> do (<a href="#await-io-files">Files</a>).</li>
+	</ul>
+	<p>An operation's answer should be used. An <span class="pre">await</span> on one that is a statement of its own drops
+		the failure unread, so it is warned. The program still compiles, and the answer is dropped as any unused value
+		is:</p>
+<pre>
+  pub async do careless(self, conn Socket) {
+    await conn.write(pool.mustTake(64usize));   // warned: the answer is thrown away
+  }
+</pre>
+<pre>
+Warning 3005: This 'await' waits for an operation, which answers with a Result, and the answer is thrown away. An
+operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail
+answers, so a failure here goes unread: bind it, 'imm r = await ...', and match on it.
+</pre>
+	<p>An operation is made by the call (<span class="pre">conn.read(buf)</span>) and started by the
+		<span class="pre">await</span>; one made and never awaited does nothing, and is dropped. That is why one behaviour
+		cannot start two operations and await them both: three timers at once took three
+		<span class="pre">ring</span> messages above. An operation that did not finish, cancelled or past its deadline,
+		answers like one that failed (next).</p>
+
+	<h3 id="await-io-limits">Cancelling an operation, and limiting it</h3>
+	<p>A read from a peer that never sends would wait for ever. So every operation can be limited, and is answered exactly
+		once, with one of four outcomes: done (the <span class="pre">Ok</span> answer), failed (an
+		<span class="pre">Error</span> whose <span class="pre">code</span> is the system's), cancelled, or timed out. The last
+		two are <span class="pre">Error</span>s too. An <span class="pre">IoError</span> has a <span class="pre">kind()</span>,
+		an <span class="pre">IoErrorKind</span>: <span class="pre">Os</span> for a failure of the system (its
+		<span class="pre">code</span> and <span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span>
+		or <span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or <span class="pre">Truncated</span> (a
+		datagram cut to the room that took it, <a href="#await-io-udp">below</a>; its <span class="pre">code</span> is the
+		system's, 10040). The kind is what <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span>
+		read, and <span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
+		questions, so no system error, whatever its number, is taken for either. The buffer an operation was given goes home
+		to its pool.</p>
+	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes an
+		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
+		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>,
+		<span class="pre">aio.connectIn(addr, lim)</span>, a file's <span class="pre">f.readAtIn(offset, buf, lim)</span> and
+		<span class="pre">f.writeAtIn(offset, buf, lim)</span>, and a UDP socket's <span class="pre">u.recvFromIn(buf, lim)</span>
+		and <span class="pre">u.sendToIn(addr, buf, lim)</span>. An <span class="pre">IoLimits</span> holds a
+		cancel group (<span class="pre">iocore</span>'s <span class="pre">CancelGroup</span>, made with
+		<span class="pre">CancelGroup.make()</span>; <a href="conc-ioloop.html#cancel-groups">Cancel groups</a> has the
+		other ways) and an absolute deadline, an <span class="pre">Instant</span>:
+		<span class="pre">IoLimits.within(group)</span>, <span class="pre">IoLimits.until(deadline)</span>, or both with
+		<span class="pre">new IoLimits(Some[CancelGroup](group), deadline)</span>. The operation ends when the group is
+		cancelled, or at the deadline, the tighter of it and the group's (a group made with
+		<span class="pre">CancelGroup.until(d)</span>, or a <span class="pre">childUntil(d)</span> of one, carries a deadline
+		of its own, and a child's is never later than its parent's). A group is a value: it goes in a message to another
+		actor, or to a thread, and its one <span class="pre">cancel()</span> ends every operation in it, in whichever actors
+		they are.</p>
+<pre>
+actor Reader {
+  pool Pool;
+
+  pub async do fetch(self, conn Socket, group CancelGroup) u64 {
+    imm until = Instant.now() + Duration.fromSeconds(5i64);
+    imm got = await conn.readIn(pool.mustTake(4096usize), new IoLimits(Some[CancelGroup](group), until));
+    match got {
+      case imm b Ok {u64.from(b.len());}
+      case imm e Error {
+        if aio.isCancelled(e) {say("cancelled", 0u64);}
+        elif aio.isTimedOut(e) {say("too slow", 0u64);}
+        else {say("failed", u64.from(e.code));}
+        0u64;
+      }
+    }
+  }
+}
+</pre>
+	<p>Whoever holds <span class="pre">group</span>, in this actor (a message to itself, which runs while
+		<span class="pre">fetch</span> is paused), in another, or on a plain thread, may call <span class="pre">group.cancel()</span>,
+		and the read ends. A cancel and the operation's completion that race are settled by <span class="pre">iocore</span>:
+		the answer is whichever came first, never both. Cancelled is a state: an operation started in a group already
+		cancelled, or with a deadline already past, is answered at once. Closing a socket, by dropping it, cancels the
+		operations in flight on it.</p>
+	<p>A cancel does not undo what a write already sent, or a read already took: an operation that ended cancelled or timed
+		out may have done part of its work, and its answer does not say how much.</p>
+
+	<h3 id="await-io-sockets">Sockets</h3>
+	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor. Dropping it closes the
+		socket, after whatever operations were started on it before. A socket in a paused behaviour waits with the
+		behaviour, as any value does (<a href="conc-await.html#await-cross">What crosses an await</a>), so it stays open until
+		the behaviour ends.</p>
+
+	<h3 id="await-io-udp">UDP sockets</h3>
+	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system choose one,
+		which <span class="pre">u.localAddr()</span> tells) and answers a <span class="pre">UdpSocket</span>, out of the
+		<span class="pre">Result</span> by a swap as a <span class="pre">Socket</span> is. A <span class="pre">UdpSocket</span>
+		is a kind of its own beside <span class="pre">Socket</span> and <span class="pre">File</span>:
+		<span class="pre">read</span>, <span class="pre">write</span> and <span class="pre">accept</span> are not on it, and
+		<span class="pre">recvFrom</span> and <span class="pre">sendTo</span> are not on the others, so a call of the wrong
+		kind does not compile. It is not connected: each datagram names where it goes.</p>
+	<ul>
+	<li><span class="pre">u.recvFrom(buf)</span>: one datagram, appended to the buffer, which is moved in. The answer is a
+		<span class="pre">Datagram</span>, whose <span class="pre">buf</span> is the buffer given back, its length grown by
+		the datagram's, and whose <span class="pre">from</span> is the sender's <span class="pre">SocketAddr</span>. A
+		datagram of no bytes is a datagram, not an end: the length does not grow. A buffer with no room fails with 122, as a
+		read's does.</li>
+	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Error</span> whose
+		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span> (<span class="pre">aio.isTruncated(e)</span>
+		or <span class="pre">e.isTruncated()</span>; its <span class="pre">code</span> is 10040,
+		<span class="pre">WSAEMSGSIZE</span>, on both systems). The rest of the datagram is lost, the next one is whole, and
+		the buffer goes home to its pool as a failed read's does, the bytes that fitted with it.</li>
+	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to <span class="pre">addr</span>,
+		the count its length, the buffer going home. UDP promises no delivery: the answer says the system took the datagram.
+		One too large for the network fails with 10040.</li>
+	</ul>
+	<p>Both take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span> and
+		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A <span class="pre">UdpSocket</span>
+		moves and closes when dropped, as a <span class="pre">Socket</span> does. One receive at a time per socket is the
+		supported use; datagrams that arrive while none is outstanding wait in the socket's buffer, which the operating
+		system bounds.</p>
+<pre>
+actor Echo {
+  pool Pool;
+
+  pub async do once(self, u UdpSocket) {                   // u: bound earlier, by bindUdp
+    imm r = await u.recvFrom(pool.mustTake(1500usize));
+    match r {
+      case imm d Ok {
+        mut reply = pool.mustTake(64usize);
+        reply.append("got it");
+        imm sent = await u.sendTo(d.from, reply);          // back to the sender
+      }
+      case imm e Error {
+        if aio.isTruncated(e) {say("too long", 0u64);}     // longer than 1500 bytes
+      }
+    }
+  }
+}
+</pre>
+
+	<h3 id="await-io-files">Files</h3>
+	<p><span class="pre">aio.openFile(path, access)</span> opens a file on the I/O thread, with
+		<span class="pre">iocore</span>'s <span class="pre">Access</span>: <span class="pre">Read</span> an existing file;
+		<span class="pre">Create</span> a new one, or an existing one emptied, to read and write; <span class="pre">Update</span>
+		an existing one or a new one, its bytes kept, to read and write. It answers a <span class="pre">File</span>, or the
+		system's failure (a name that is not there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2, on both systems). The
+		path is copied. <span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span> work
+		at a byte offset, with no position kept in the file, so any number may be in flight on one file at once. A read
+		appends what is there to the buffer, up to its room, and from the end of the file or past it comes back with the
+		buffer as it went; a buffer with no room fails with 122, as a socket's does. A write answers the count written, all of
+		its buffer. Both take the <span class="pre">In</span> forms above, and answer exactly once, done, failed, cancelled or
+		timed out. <span class="pre">openFile</span> has no <span class="pre">In</span> form: opening is one call to the
+		system, which cannot be cancelled once begun.</p>
+<pre>
+actor Patcher {
+  pool Pool;
+
+  pub async do patch(self, name Path) u64 {
+    imm f = fileOf(await aio.openFile(&amp;name, Access.Update));   // fileOf: as socketOf
+    mut b = pool.mustTake(5usize);
+    b.append("hello");
+    imm w = await f.writeAt(100u64, b);                     // five bytes at offset 100
+    match w {
+      case imm n Ok {u64.from(n);}                          // 5
+      case imm e Error {u64.from(e.code);}
+    }
+  }                                                         // f closes here
+}
+</pre>
+	<p>A <span class="pre">File</span>, like a <span class="pre">Socket</span>, moves: it may be sent in a message to
+		another actor, and dropping it closes the file, after the operations started on it before, cancelling any still in
+		flight. On Windows the operations are the completion port's; on Linux they run on a thread of the blocking pool
+		(<span class="pre">pread</span> and <span class="pre">pwrite</span>), and answer the same.
+		<span class="pre">fileio</span>, the file service with classes and a queue-depth governor, is a package of its own,
+		not built yet.</p>
+
+	<h3 id="await-io-sleep">Sleeping</h3>
+	<p><span class="pre">aio.sleep(d)</span> and <span class="pre">aio.sleepUntil(at)</span> are timers an actor awaits, as
+		the kitchen above does: the behaviour pauses, its actor and its worker go on with other messages, and the rest of the
+		behaviour runs when the time comes. <span class="pre">d</span> is a <span class="pre">Duration</span>, counted from the
+		<span class="pre">await</span>; <span class="pre">at</span> is an absolute <span class="pre">Instant</span> (one already
+		past is answered at once, as is a zero <span class="pre">Duration</span>). Both answer
+		<span class="pre">Result[void, IoError]</span>: <span class="pre">Ok</span> when the time has come, an
+		<span class="pre">Error</span> of kind <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span> when
+		the limits ended it first. Their <span class="pre">In</span> forms, <span class="pre">aio.sleepIn(d, lim)</span> and
+		<span class="pre">aio.sleepUntilIn(at, lim)</span>, take the <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
+		of the other operations. A group's cancel ends the sleep as <span class="pre">Cancelled</span>, at once if the group is
+		cancelled already. A sleep due after the deadline (the limits' own, or the group's, the tighter) is answered
+		<span class="pre">TimedOut</span> at the deadline instead; one due at or before it is <span class="pre">Ok</span> at its
+		time, as <span class="pre">iocore</span>'s timer in a cancel group is (<a href="lib-time.html">the time chapter</a>
+		shows the same on a loop).</p>
+<pre>
+  pub async do pause(self, group CancelGroup) {
+    // Half a second, unless the group is cancelled first
+    imm r = await aio.sleepIn(Duration.fromMillis(500i64), IoLimits.within(group));
+    match r {
+      case imm e Error {say("cancelled", 0u64);}
+      else {say("half a second has passed", 0u64);}
+    }
+  }
+</pre>
+
+	<h3 id="await-io-pool">Names, file metadata and child processes</h3>
+	<p>Three things have no completion form of their own, and run on a thread of <span class="pre">iocore</span>'s
+		blocking pool: the behaviour pauses, a pool thread does the work, and the answer comes back as the other operations'
+		do.</p>
+	<ul>
+	<li><span class="pre">aio.resolve(host, port)</span> looks a name up (or an address written as text): a
+		<span class="pre">List[SocketAddr]</span>, every address found, each with the port (default 0). A name with no address
+		is the system's failure (<span class="pre">11001</span>, <span class="pre">WSAHOST_NOT_FOUND</span>, for a name that is
+		not there).</li>
+	<li><span class="pre">aio.stat(path)</span> asks a file's metadata: <span class="pre">iocore</span>'s
+		<span class="pre">FileStat</span>, with its <span class="pre">size</span>, <span class="pre">attributes</span>,
+		<span class="pre">modified</span> time and <span class="pre">isDir()</span>. A path that is not there is
+		<span class="pre">ERROR_FILE_NOT_FOUND</span>, 2.</li>
+	<li><span class="pre">aio.run(args, opts, dir)</span> and <span class="pre">aio.runLine(line, opts, dir)</span> run a
+		child process and wait for it, as the <span class="pre">process</span> package's synchronous
+		<span class="pre">run</span> and <span class="pre">runLine</span> do, with the same <span class="pre">Options</span>
+		and the same <span class="pre">Output</span>: its exit code (an answer, not an error), and what it wrote to its
+		standard output and standard error, apart. The <span class="pre">Error</span> is a program that could not be started,
+		an <span class="pre">IoError</span> whose code is the system's number. The synchronous <span class="pre">process</span>
+		package stays beside it.</li>
+	</ul>
+	<p>Each has an <span class="pre">In</span> form taking <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
+		(<span class="pre">resolveIn</span>, <span class="pre">statIn</span>, <span class="pre">runIn</span>,
+		<span class="pre">runLineIn</span>). A job still queued for a thread, which a cancel group's cancel or a deadline takes
+		out of its queue, is answered <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span> without having
+		run. A job a thread has taken cannot be stopped: a cancel waits for it to end, and a deadline answers
+		<span class="pre">TimedOut</span> at the deadline while the work goes on, its answer dropped. So a child process is
+		not stopped by its limits: give its <span class="pre">Options</span> a <span class="pre">timeout</span>, which stops
+		it and everything it started. At most four children run at once (the general lane's threads); more wait their
+		turn.</p>
+<pre>
+actor Builder {
+  pub async do build(self) u64 {
+    mut args = List[String].empty();
+    args.push(String.from("conec"));
+    args.push(String.from("app.cone"));
+    // The compile runs on a pool thread; this actor handles its other messages meanwhile
+    imm r = await aio.run(args.view(), new process.Options(timeout: Duration.fromSeconds(60i64)));
+    match r {
+      case imm ok Ok {u64.from(ok.exitCode);}
+      case imm e Error {u64.from(e.code);}      // 2: no program of that name
+    }
+  }
+}
+</pre>
+	<p>What is left out: a child's standard input and output as streams while it runs, a spawn apart from the wait (the
+		<span class="pre">process</span> package offers neither), and a file's metadata by its open
+		<span class="pre">File</span>.</p>
+
+	<h3 id="await-io-http">HTTP an actor awaits</h3>
+	<p>The <span class="pre">actorhttp</span> package (a working name, as <span class="pre">netmsg</span> is; the final
+		name is yet to be chosen) makes HTTP and HTTPS fetches awaitable the same way: an actor writes
+		<span class="pre">await client.get(url)</span> and the behaviour pauses until the whole response is in. The fetch is
+		<span class="pre">httpclient</span>'s (its pools of connections per server, its retries and redirects, TLS under
+		<span class="pre">https://</span>), run on a thread of <span class="pre">actorhttp</span>'s own, and the answer comes
+		back as a message, as an <span class="pre">aio</span> operation's does:</p>
+<pre>
+actor Weather {
+  client Client;
+
+  pub async do show(self, url String, done OneshotSender[u64]) {
+    // The whole response, awaited: this actor handles its other messages
+    // meanwhile. It is given ten seconds, and the answer says how it ended
+    imm r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(10i64)));
+    match r {
+      case imm ok Ok {
+        say("status", u64.from(ok.status));
+        printStr(ok.body.view());
+        printStr("\n");
+      }
+      case imm e Error {
+        if e.isTimedOut() {printStr("too slow\n");}
+        elif e.isCancelled() {printStr("cancelled\n");}
+        else {printStr(e.message().view()); printStr("\n");}
+      }
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+</pre>
+	<p>Fetching from a small server on this machine that answers with the weather, it prints
+		<span class="pre">status 200</span> and the body, <span class="pre">sunny, 21 C</span>. The
+		<span class="pre">done</span> it is handed is the sending end of a <a href="conc-threads.html#oneshot">one-shot
+		channel</a>, on which <span class="pre">main</span> waits, as the kitchen's waited on its channel.</p>
+	<p>A <span class="pre">Client</span> (<span class="pre">Client.standard()</span>, or
+		<span class="pre">Client.make(config, maxBody)</span> with an <span class="pre">httpclient.Config</span> and the most
+		body bytes a response may have) is a handle that moves: it may be sent in a message, and <span class="pre">clone()</span>
+		makes another handle to the same client, so any number of actors fetch through one set of connection pools at once.
+		The last handle's going ends the client, and every fetch of it in flight is answered cancelled.
+		<span class="pre">get(url)</span> and <span class="pre">send(request)</span> (an <span class="pre">httpclient.Request</span>,
+		with its method, header fields, body, intent and redirect limit) answer a <span class="pre">Result</span>: the success
+		is <span class="pre">httpclient</span>'s <span class="pre">Response</span>, with the status, the header fields, the
+		whole body as bytes, the URL that answered after any redirects, and its timing. An HTTP error status such as 404 is
+		an answer, not an <span class="pre">Error</span>. The <span class="pre">Error</span> is a
+		<span class="pre">FetchError</span>: the network or the client refusing (a name not found, a refused connection, a
+		certificate refused, a body longer than the limit, a URL that does not parse), with <span class="pre">httpclient</span>'s
+		<span class="pre">Failure</span> in its <span class="pre">failure</span> saying at which stage and why, or the fetch
+		cancelled or past its deadline, which <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span>
+		read; never a panic. <span class="pre">getIn(url, lim)</span> and <span class="pre">sendIn(request, lim)</span> take the
+		same <span class="pre">IoLimits</span> as <span class="pre">aio</span>'s operations (a cancel group and an absolute
+		deadline), and a request's own deadline is kept beside it, the tighter winning.</p>
+	<p>A program that wants one connection itself has <span class="pre">actorhttp.connect(host, port)</span> and
+		<span class="pre">actorhttp.connectSecure(host, port, tlsConfig)</span>, which answer a <span class="pre">Conn</span> that
+		moves like a <span class="pre">Socket</span>: <span class="pre">conn.request(head, body)</span> writes a request head
+		(<span class="pre">RequestHead.make("GET", "/", "example.com")</span>) and a body and answers the whole response;
+		<span class="pre">conn.requestIn(head, body, lim)</span> adds limits. The connection carries one exchange at a time; a
+		request cancelled or timed out on the wire resets it (HTTP/1.1's only way to stop one), and later requests on it fail
+		as closed. A <span class="pre">connectSecure</span> connection is made when the TCP connection is: the TLS handshake
+		runs under the first request, and a certificate the client's configuration refuses ends that request failed at the
+		TLS stage (or at the read or closed stage, if the connection broke before the request was asked for). Dropping a
+		<span class="pre">Conn</span> closes the connection.</p>
+	<p>A response can instead be read as it arrives. <span class="pre">client.stream(request)</span> is answered when the
+		response's head is in, with a <span class="pre">BodyStream</span> (the status and header fields are fields of it) whose
+		<span class="pre">read()</span> awaits the next piece of the body: <span class="pre">Some(piece)</span>, then
+		<span class="pre">None</span> when the body is whole, or an <span class="pre">Error</span> as above.
+		<span class="pre">client.events(request)</span> is the same for server-sent events (the <span class="pre">sse</span>
+		package's, <a href="lib-http.html#sse">HTTP, TLS and URLs</a>): an <span class="pre">EventStream</span> whose
+		<span class="pre">next()</span> awaits the next <span class="pre">sse.Event</span>. A reader that awaits slowly slows the
+		sender (the connection is told to send more only as the actor takes what is there), and dropping the stream cancels
+		the rest of the fetch.</p>
+	<p>The other way round, <span class="pre">actorhttp.listen(addr, config)</span> answers a <span class="pre">Server</span>
+		(a handle that moves and <span class="pre">clone()</span>s; its last handle's going closes it), and
+		<span class="pre">await server.next()</span> answers the next request, whole, as an <span class="pre">Exchange</span>: the
+		<span class="pre">Request</span> (method, target, header fields, body, the client's address) and the way to answer it.
+		A server usually has one actor looping on <span class="pre">next()</span> and giving each Exchange, which moves, to an
+		actor of its own. The actor answers once: <span class="pre">ex.respond(head, body)</span>, or
+		<span class="pre">ex.start(head, length)</span> then <span class="pre">await ex.write(bytes)</span> as often as it likes
+		and <span class="pre">await ex.finish()</span> (a body of unknown length goes chunked), or
+		<span class="pre">ex.startEvents()</span> then <span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of
+		server-sent events. A write is answered when the connection has taken the bytes, so an actor that awaits each is
+		slowed to its peer's speed; a peer that has left answers the write <span class="pre">Closed</span>.
+		<span class="pre">ServerConfig.secure(tlsConfig)</span> makes the connections TLS; its other fields bound the request
+		body a server takes (past it, 413) and the requests that may wait for an actor (past it, 503). An Exchange dropped
+		without an answer is answered 500. The package's header lists each choice; <span class="pre">tests/server.cone</span>,
+		<span class="pre">events.cone</span> and <span class="pre">tlsserver.cone</span> are these, run.</p>
+	<p>A cancel and a completion that race, and a fetch dropped with its client, are settled as an
+		<span class="pre">aio</span> operation's are: exactly one answer. At the program's end, a behaviour still paused on a
+		fetch is abandoned, as one paused on a socket is (<a href="conc-ioloop.html#io-thread">The I/O thread, and the
+		program's end</a>).</p>
+
+	<h3 id="await-io-unbuilt">Not built yet</h3>
+	<ul>
+	<li>A socket's half-close, awaited; <span class="pre">fileio</span>, the file service.</li>
+	<li>A request's body streamed from an actor or to one (a client sends it whole; a server delivers it whole, up to a
+		limit), a stream that reconnects, Upgrade and WebSocket, and <span class="pre">httpclient</span> and
+		<span class="pre">httpconn</span> running on <span class="pre">aio</span>'s own sockets (<span class="pre">actorhttp</span>
+		keeps a thread and a loop of its own).</li>
+	</ul>
+
+	<p>You can now serve, fetch, read files and sleep from an actor without holding a thread, and limit or cancel any of it.
+		Every one of those answers came from one loop on a thread of its own; the next page opens that loop up, for a
+		program that drives it itself.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-ioloop.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

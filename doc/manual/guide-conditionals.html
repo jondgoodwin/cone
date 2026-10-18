@@ -1,0 +1,275 @@
+<html>
+  <head>
+	  <title>Blocks and conditionals: if and match - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Blocks and conditionals: if and match</div>
+		</div>
+
+    <div class="text">
+
+	<p>What day of the week did Apollo 11 land on the Moon? There is a formula that turns any date into its
+		weekday with nothing but whole-number arithmetic, and working it out takes a few scratch values along the
+		way. That is a job for a block. By the end of this page the same program names the day, for any date, using
+		<span class="pre">if</span> and <span class="pre">match</span>.</p>
+
+	<h2 id="blocks">Blocks</h2>
+<pre>
+mod moonday;
+
+import stdio use *;
+
+fn main() {
+  // Apollo 11 landed on the Moon on 20 July 1969
+  imm day = 20;
+  imm month = 7;
+  imm year = 1969;
+
+  // A block's value is the value of its last statement.
+  // Its scratch variables, century and inCentury, exist only inside it.
+  imm weekday = {
+    imm century = year / 100;
+    imm inCentury = year % 100;
+    (day + 13 * (month + 1) / 5 + inCentury + inCentury / 4
+      + century / 4 + 5 * century) % 7;
+  };
+  print &lt;- "Weekday number ", weekday, ", counting Saturday as 0\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+Weekday number 1, counting Saturday as 0
+</pre>
+	<p id="block">Braces group statements into a <b>block</b>, and the statements run in order. A block is also a
+		value: the value of its last statement. So a calculation that needs a few steps can be written right where
+		its answer is wanted, and <span class="pre">weekday</span> is given that answer.</p>
+	<p id="blockscope">A variable declared inside a block belongs to it. <span class="pre">century</span> and
+		<span class="pre">inCentury</span> exist only between its braces, and nothing outside can use them by
+		mistake. A block can see the variables around it, as this one uses <span class="pre">year</span> and
+		<span class="pre">day</span>, but not the other way round. When a block ends, its variables go, and anything
+		they own is released then.</p>
+	<p>Day 1 is a Sunday. But the program can only say "1", and the formula has a catch: it is right only from
+		March to December.</p>
+
+	<h2 id="choosing"><span id="if"></span><span id="ifexpr"></span><span id="elif"></span>Choosing with if</h2>
+	<p>The formula counts January and February as months 13 and 14 of the year before. An
+		<span class="pre">if</span> chooses between two blocks, and since a block is a value, so is the
+		<span class="pre">if</span>: it gives the value of whichever block ran. Put these two lines in place of
+		<span class="pre">month</span> and <span class="pre">year</span> in the formula, and it works for every
+		date:</p>
+<pre>
+  imm m = if month &lt; 3 { month + 12; } else { month; };
+  imm y = if month &lt; 3 { year - 1; } else { year; };
+</pre>
+	<p>An <span class="pre">if</span> used as a value needs its <span class="pre">else</span>, since every path must
+		give a value, and both blocks give the same type. Used as a plain statement, run for what it does, the
+		<span class="pre">else</span> is optional, and <span class="pre">elif</span> ("else if") tests further
+		conditions in turn:</p>
+<pre>
+if day == 1 and month == 1 {
+  print &lt;- "Happy new year!\n";
+} elif day == 25 and month == 12 {
+  print &lt;- "Merry Christmas!\n";
+}
+</pre>
+	<p id="asking"><span id="condexp"></span><span id="boolops"></span>Conditions are written without parentheses around them. They compare with
+		<span class="pre">==</span>, <span class="pre">!=</span>, <span class="pre">&lt;</span>,
+		<span class="pre">&lt;=</span>, <span class="pre">&gt;</span> and <span class="pre">&gt;=</span>, and combine
+		with the words <span class="pre">and</span>, <span class="pre">or</span> and <span class="pre">not</span>,
+		which stop as soon as the answer is known. <span class="pre">not</span> (also written
+		<span class="pre">!</span>) binds tightest, then <span class="pre">and</span>, then <span class="pre">or</span>, and all
+		three come after the comparisons, so <span class="pre">a &lt; 3 or not done and b == 0</span> needs no
+		parentheses. A condition is a value of type <span class="pre">bool</span>, <span class="pre">true</span> or
+		<span class="pre">false</span>, and can be kept in a variable: <span class="pre">imm leap = year % 4 == 0;</span>.</p>
+	<p>A comparison takes two values of the same type: <span class="pre">2 &lt;= 2.0</span> is refused, since an
+		<span class="pre">i32</span> is not an <span class="pre">f32</span>, until one of them is converted
+		(<a href="guide-numbers.html#converting">Numbers</a>). A number may also stand alone as a condition, true when
+		it is not zero, so <span class="pre">if count { ... }</span> means <span class="pre">if count != 0 { ... }</span>
+		(<a href="safe-types.html#truthy">Coercion to bool</a>). The types you make yourself are compared once they
+		declare <span class="pre">==</span> (<a href="rec-methods.html#compare">Method patterns</a>, in Recipes).</p>
+
+	<h2 id="matching"><span id="match"></span>Choosing with match</h2>
+	<p>Now to turn the number into a name. A chain of seven <span class="pre">elif</span>s would work, but
+		<span class="pre">match</span> names the value once and lists the cases, like a table. Here is the whole
+		program, trying it on the first day of 2000, the date so many feared computers would get wrong:</p>
+<pre>
+mod weekday;
+
+import stdio use *;
+
+fn main() {
+  imm day = 1;
+  imm month = 1;
+  imm year = 2000;
+
+  // January and February count as months 13 and 14 of the year before
+  imm m = if month &lt; 3 { month + 12; } else { month; };
+  imm y = if month &lt; 3 { year - 1; } else { year; };
+
+  imm weekday = {
+    imm century = y / 100;
+    imm inCentury = y % 100;
+    (day + 13 * (m + 1) / 5 + inCentury + inCentury / 4
+      + century / 4 + 5 * century) % 7;
+  };
+
+  // A match gives the value of the first case that fits
+  imm name = match weekday {
+    case 0 { "Saturday"; }
+    case 1 { "Sunday"; }
+    case 2 { "Monday"; }
+    case 3 { "Tuesday"; }
+    case 4 { "Wednesday"; }
+    case 5 { "Thursday"; }
+    case 6 { "Friday"; }
+    else { "a day that cannot be"; }   // a number could be anything
+  };
+  print &lt;- day, "/", month, "/", year, " was a ", name, "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+1/1/2000 was a Saturday
+</pre>
+	<p><b>Try this:</b> put in your own birthday, or 20 July 1969 again, now that it can say "Sunday".</p>
+	<p>The cases are tried from the top, and the block of the first one that fits runs; its value is the
+		match's value. A match must say what happens to every value it can be given. A number could be anything,
+		so a match on one ends with <span class="pre">else</span>, for whatever is left; leave it out and the
+		compiler stops you.</p>
+	<p>A case can do more than name one value. It can join several with <span class="pre">or</span>, take a range,
+		where <span class="pre">2 .. 6</span> runs through 6 and <span class="pre">2 ..&lt; 6</span> stops before it,
+		or add a further condition with <span class="pre">if</span>, called a guard:</p>
+<pre>
+imm kind = match weekday {
+  case 0 or 1 { "the weekend"; }
+  case 6 if day == 13 { "Friday the 13th"; }
+  case 2 .. 6 { "a working day"; }
+  else { "a day that cannot be"; }
+};
+</pre>
+	<p>Order matters, because the first case that fits wins: a Friday the 13th never reaches the working days.</p>
+	<p id="patterns"><span id="ranges"></span><span id="equivpat"></span><span id="comparepat"></span>A pattern is a value to compare with, and the value can be more than a literal: a named
+		constant, <span class="pre">case LIMIT</span>, or any expression written after <span class="pre">==</span>,
+		<span class="pre">case ==limit * 2</span>. A comparison leaves out the matched value, as
+		<span class="pre">case &gt;3</span>; a negative number after <span class="pre">&lt;</span> takes a space,
+		<span class="pre">case &lt; -1</span>, since <span class="pre">&lt;-</span> is the send operator. A whole
+		condition is not a pattern, and the compiler says so:</p>
+<pre>
+case n &gt; 3 { ... }     // Error 1117: A condition is not a pattern: a value alone is compared with the
+                       // matched value. Write the comparison with the matched value left out, as '&gt;3',
+                       // or put the condition in an 'if' guard.
+</pre>
+	<p>Text matches text, so <span class="pre">case "ball" or "bat"</span> holds when the text is exactly one of
+		those, and anything that can be ordered matches a range, characters among them:
+		<span class="pre">case 'a' .. 'z'</span>. A case joins several patterns with <span class="pre">or</span>.</p>
+	<p id="cover">The compiler checks that a match says what happens to every value. It can count only an enum's
+		variants and a <span class="pre">bool</span>'s two values, so a match on a <span class="pre">bool</span> with
+		<span class="pre">case true</span> and <span class="pre">case false</span> needs no
+		<span class="pre">else</span>, while a match on a number, a character or text always ends with one. Where no
+		other value can happen, <span class="pre">else {}</span> says so. A case with a guard may fail, so it never
+		counts toward covering its value. The opposite mistake is caught too: a case that the cases above it already
+		match, or an <span class="pre">else</span> after cases that cover everything, can never run, and is refused
+		(Error 1418). <a href="guide-enums.html">Enums</a> shows covering at its most useful, where every variant must
+		have its case.</p>
+
+	<h2 id="twovalues">Two values at once</h2>
+	<p>A match can look at several values at once, separated by commas, with one pattern for each in every case.
+		<span class="pre">_</span> takes any value. A time such as 1745 splits into its hour and its minute:</p>
+<pre>
+match t / 100, t % 100 {
+  case 0, 0 { print &lt;- "midnight"; }
+  case 12, 0 { print &lt;- "noon"; }
+  case _, 0 { print &lt;- t / 100, " o'clock"; }
+  case _, &lt; 30 { print &lt;- "just after ", t / 100; }
+  else { print &lt;- "nearly ", t / 100 + 1; }
+}
+</pre>
+	<p>It reads like a small decision table, which is exactly what it is. A case can also compare, as
+		<span class="pre">&lt; 30</span> does here.</p>
+	<p id="columns">The values after <span class="pre">match</span> are worked out once each, left to right, before any
+		case is tried; no tuple is made, the commas are all it takes. <span class="pre">_</span> belongs to this form
+		alone, and a column's pattern does not bind a variable. Where every column is an enum or a
+		<span class="pre">bool</span>, the compiler counts the combinations, and a match that has a case for each needs
+		no <span class="pre">else</span>.</p>
+
+	<h2 id="using">Patterns of your own: using</h2>
+	<p>A literal, a range and a comparison cover most cases, but not a test such as "is it odd?" or "does the line
+		start with <span class="pre">GET</span>?". For those, any ordinary function can be a pattern, with nothing to
+		declare. <span class="pre">using</span> calls it with the matched value as its first argument, followed by the
+		arguments written. What the function gives back says what the case does: a <span class="pre">bool</span> only
+		tests, and an <span class="pre">Option</span> tests and binds, the case being taken when it gives
+		<span class="pre">Some</span>, and the name before <span class="pre">using</span> getting what is inside. Two things
+		here arrive ahead of their own pages: an <span class="pre">Option</span> is a value that may hold something
+		(<span class="pre">Some</span>) or nothing (<span class="pre">None</span>), which <a href="guide-dict.html#option">Dict</a>
+		teaches properly, and <span class="pre">&amp;str</span> is a view of a piece of text, as
+		<a href="guide-text.html">String</a> explains:</p>
+<pre>
+mod router;
+
+import stdio use *;
+
+// The text after a prefix, if the line starts with it
+fn prefix(line &amp;str, p &amp;str) Option[&amp;str] {
+  if line.startsWith(p) { Some(&amp;line[p.len() ..]); } else { None[&amp;str]; }
+}
+
+fn isOdd(n i32) bool { n % 2 == 1; }
+
+fn between(n i32, lo i32, hi i32) bool { n &gt;= lo and n &lt;= hi; }
+
+fn route(line &amp;str) {
+  match line {
+    case imm path using prefix("GET ") { print &lt;- "fetch ", path, "\n"; }   // prefix(line, "GET ")
+    case imm path using prefix("PUT ") { print &lt;- "store ", path, "\n"; }
+    case "HEAD" { print &lt;- "headers only\n"; }
+    else { print &lt;- "not understood\n"; }
+  }
+}
+
+fn kind(n i32) &amp;str {
+  match n {
+    case 0 { "zero"; }
+    case using isOdd() { "odd"; }             // isOdd(n)
+    case using between(10, 20) { "teen"; }    // between(n, 10, 20)
+    else { "other"; }
+  }
+}
+
+fn main() {
+  route("GET /index.html");
+  route("PUT /notes.txt");
+  route("DELETE /");
+  print &lt;- kind(7), " ", kind(12), " ", kind(40), "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+fetch /index.html
+store /notes.txt
+not understood
+odd teen other
+</pre>
+	<p>Cases are still tried from the top, and a function runs only when its case is reached, at most once. Which
+		values a function matches only running it can say, so a match with one ends with
+		<span class="pre">else</span>. A pattern never consumes anything: <span class="pre">prefix</span> hands back what is
+		left of the line, and the case carries on with that. <a href="rec-patterns.html">Patterns of your own</a>, in
+		Recipes, has the full rules (what a binding gets, joining and guards, the same patterns in an
+		<span class="pre">if</span> and a declaration, a parser written this way), and how a match is compiled to a jump
+		table.</p>
+
+	<p>You can now group work into blocks, and choose between them, with conditions, cases and patterns of your own.
+		Next, loops: running a block again and again, which is how one short program can close in on the digits of
+		pi.</p>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="guide-loops.html"><img alt="_" src="next.png" /></a>
+		</p>
+
+	</div>
+	</body>
+</html>

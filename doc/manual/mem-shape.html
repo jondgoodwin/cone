@@ -1,0 +1,796 @@
+<html>
+  <head>
+	  <title>Borrowing into a collection or an enum - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Borrowing into a collection or an enum: shape changes</div>
+		</div>
+
+    <div class="text">
+
+	<p>A list keeps its elements in one block of memory, and a push may move them all to a bigger one. A borrow of an
+		element made before the push would point at the old block, now freed. An enum has the same problem in another
+		form: given another variant, its bytes mean something else. Some values can change their <b>shape</b>, and a borrow
+		into one must not outlive a change of it. This page covers what the compiler refuses, why, and the three ways to
+		write code it accepts. Afterwards you can hold borrows into collections and enums with confidence, and fix the
+		refusals when they come:</p>
+
+<pre>
+mod scores;
+
+import stdio use *;
+import collections use *;
+
+fn main() {
+  mut scores = List[i32].empty();
+  scores.push(10);
+  scores.push(20);
+  imm best = &amp;mut scores[0usize];   // a borrow into the list's block of elements
+  imm n = scores.len();             // fine: the list may be read
+  scores.set(1usize, 5);            // fine: an element written in place
+  *best = 7;                        // the borrow's last use
+  scores.push(30);                  // fine: the borrow is over
+  each s in scores.iter() {
+    print &lt;- *s, " ";
+  }
+  print &lt;- "(", n, " before the push)\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+7 5 30 (2 before the push)
+</pre>
+	<p><b>Try this:</b> move <span class="pre">scores.push(30);</span> up above <span class="pre">*best = 7;</span>.
+		The compiler refuses it: <i>Error 1339: This call could change the shape of a 'List' while 'best' still holds a
+		borrow into it ... 'push' reshapes the 'List' it is called on: it writes a field of it, runs a finalizer of an
+		element, or moves an element out. A 'List' that changes shape may move or free what it lent.</i></p>
+
+	<h2 id="shape">Why a push waits for a borrow of an element</h2>
+	<p>A resizable collection (a list, a dictionary, a string) may move all of its elements to a bigger block when it
+		grows, and an enum may be given another variant. A borrow into one points into storage that such a change would
+		leave dangling, or read as the wrong type. The borrow itself is always allowed. What is refused is a change of
+		shape while the borrow is still to be used, and the rule is the same for a collection and an enum.</p>
+	<p>For a local list, a read-only borrow of an element (<span class="pre">list[i]</span>,
+		<span class="pre">dict[key]</span>, <span class="pre">s.view()</span>) holds the list against any change: it may
+		be read, but a push waits for the borrow's last use (<a href="mem-borrowing.html#returned">A borrow a function
+		returns</a>). A mutable borrow (<span class="pre">&amp;mut list[i]</span>; <span class="pre">list.viewMut()</span>,
+		a <span class="pre">&amp;mut Array[T]</span> of every element; a String's <span class="pre">s.viewMut()</span> of
+		its bytes) is one more alias of the elements, as in the program above: until its last use the collection may still
+		be read and written in place, but not reshaped, by a push, a <span class="pre">clear</span> or a
+		<span class="pre">pop</span>. Copying out what is needed before the push leaves no borrow to wait for:
+		<span class="pre">imm firstX = l[0usize].x; l.push(p);</span>.</p>
+	<p>A collection reached through a shared path is held to the same rule. A <span class="pre">mut</span> reference is
+		shared, so another name may make the change while the borrow is in use; the borrow lets the path be read, lent and
+		written as any alias does, and a change of the collection's shape, by the same name or another, is refused. The
+		rest of this page is how the compiler tells.</p>
+
+	<h2 id="shapechanging">Elements of a collection and changing its shape</h2>
+	<p>The resizable collections (<span class="pre">List</span>, <span class="pre">Deque</span>,
+		<span class="pre">String</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>,
+		<span class="pre">Set</span> and <span class="pre">Pool</span>) each declare <span class="pre">ShapeChanging</span>
+		(a provisional name): they may move their elements when they change, and so may a type that wraps one. A borrow
+		of an element of a collection reached through a path other references share (a <span class="pre">&amp;mut</span>
+		parameter, an <span class="pre">Rc[mut, T]</span> owner, a field of <span class="pre">self</span>) is allowed,
+		and refused only if something could reshape the collection while the borrow is still to be used. That has two
+		parts, and both are enforced.</p>
+	<p><b>A change through the same name.</b> A borrow that a method of the collection returns (an element, a cursor, a
+		view), or that a free function handed a reference to the collection returns, is an alias loan of the path the
+		collection was reached through, while the borrow is still to be used. The path may be read, lent and written, but
+		its shape may not be changed, by a push, a clear or a store over it. Each of these is refused at the push (error
+		1339):</p>
+<pre>
+import collections use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn f(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  l.push(p);                    // Error 1339: e is used again below
+  e.x;
+}
+
+fn g(dq &amp;mut Deque[i64]) {
+  mut it = dq.items();          // a cursor
+  dq.push(9);                   // Error 1339: it is used again below
+  it.next();
+}
+
+struct Holder {
+  items List[Pt];
+  fn h(self &amp;mut, p Pt) i64 {  // the same through a field of self
+    imm e = items[0usize];
+    items.push(p);              // Error 1339
+    e.x;
+  }
+}
+</pre>
+	<p>A borrow that may write (<span class="pre">&amp;mut l[0usize]</span>, <span class="pre">l.viewMut()</span>) is an
+		alias loan the same way, and so is a read-only one. Either lets the path be read, lent again and written, and
+		refuses only a change of its shape, by the same name or by another:</p>
+<pre>
+fn grow(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = &amp;mut l[0usize];
+  imm n = l.len();              // Ok: the path may be read,
+  l.set(1usize, p);             // and an element written in place
+  e.x = e.x + 1;
+  e.x + i64.from(n);            // (a l.push(p) anywhere above would be refused)
+}
+</pre>
+
+	<h3 id="shapetypes">Shape-changing types of your own</h3>
+	<p>A type does not have to declare <span class="pre">ShapeChanging</span> to be one: the compiler finds it from the
+		type's methods, whatever the type declares. A type changes shape when one method writes storage the type owns (a
+		raw pointer, or a field that holds one, such as a list) and one returns a borrow. So <span class="pre">Bag</span>
+		below changes shape, and so does a struct that holds a <span class="pre">Bag</span>:</p>
+<pre>
+struct Bag {
+  items List[Pt];
+  fn first(self &amp;) &amp;Pt { items[0usize]; }
+  fn add(self &amp;mut, p Pt) { items.push(p); }
+}
+fn bagAdd(bag &amp;mut Bag, p Pt) i64 {
+  imm e = bag.first();
+  bag.add(p);                   // Error 1339: e is used again below
+  e.x;
+}
+
+struct Shelf {
+  bag Bag;
+  fn first(self &amp;) &amp;Pt { bag.first(); }
+  fn add(self &amp;mut, p Pt) { bag.add(p); }
+}
+fn shelfAdd(s &amp;mut Shelf, p Pt) i64 {
+  imm e = s.first();
+  s.add(p);                     // Error 1339, the same
+  e.x;
+}
+</pre>
+	<p>Writing a number (a cursor that advances, a count) reshapes nothing, and neither does writing an element in
+		place, so a type whose only writes are those does not change shape:</p>
+<pre>
+struct Counter {
+  items List[Pt];
+  at usize;
+  fn current(self &amp;) &amp;Pt { items[at]; }
+  fn advance(self &amp;mut) { at = at + 1usize; }
+}
+fn count(a &amp;mut Counter, b &amp;mut Counter) i64 {
+  imm e = a.current();
+  b.advance();                  // Ok: advance writes only a position
+  e.x;
+}
+</pre>
+	<p>Code the compiler cannot read counts as writing: an <span class="pre">extern</span> function, a virtual call, a
+		function pointer, and a function of another package whose body its include file leaves out. That is why the
+		include file records the types its package's compile found shape-changing.</p>
+	<p>Declaring <span class="pre">ShapeChanging</span> only asserts what the compiler finds, so a type that declares it
+		and has no such methods is refused:</p>
+<pre>
+struct Reader is ShapeChanging {   // Error 1338: Reader declares ShapeChanging, but the compiler finds
+  items List[Pt];                  //   nothing in its methods that makes it so
+  fn first(self &amp;) &amp;Pt { items[0usize]; }
+}
+</pre>
+	<p>A type of your own that is not built on a collection changes shape when a method, or a free function of its
+		module that takes it by reference, lends a borrow of it, and one writes storage it owns.
+		<span class="pre">fn first(c &amp;Cell) &amp;i64</span> and <span class="pre">fn grow(c &amp;mut Cell)</span> beside
+		the struct <span class="pre">Cell</span> are enough. Code in another module reaches the type only through its public
+		methods and fields:</p>
+<pre>
+import libc;
+
+struct Cell { ptr *i64; }
+fn first(c &amp;Cell) &amp;i64 { c.ptr as &amp;i64; }
+fn grow(c &amp;mut Cell) { c.ptr = libc.realloc(c.ptr as *u8, 64usize) as *i64; }
+
+fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
+  imm e = first(a);
+  grow(b);                      // Error 1339: e is used again below
+  *e;
+}
+</pre>
+
+	<h2 id="reshape">When a call could reshape a collection</h2>
+	<p><b>A change through another name.</b> The second part of the rule: another reference to the same collection, or a
+		call that could make one, leaves the element dangling, so a change through it is refused too. The compiler asks of
+		every call made while such a borrow is still to be used, or is being handed to a call, whether the call could
+		reshape the collection. It never goes by a method's name. A call could, when:</p>
+	<ol>
+	<li>it is a method taking the collection writable whose body, or anything its body calls,
+		<ul>
+		<li>writes a field of the collection (<span class="pre">clear</span>, <span class="pre">pop</span> and
+			<span class="pre">truncate</span> each write the length), or</li>
+		<li>runs a finalizer of an element, which frees what the element owns (<span class="pre">set</span> on a
+			<span class="pre">List[String]</span> finalizes the String it replaces, so a view of that String's bytes held
+			through another name dangles; on a <span class="pre">List[i64]</span>, whose element has no finalizer, it
+			reshapes nothing), or</li>
+		<li>moves an element that owns something out of the storage and does not put it back;</li>
+		</ul></li>
+	<li>it is handed a value that can reach a collection of that type (as a field, an element, a variant, a pointer, a
+		reference or an owner) by a path it may write, and its body, or what it calls, reshapes one; or</li>
+	<li>it is handed nothing that reaches one and reshapes one through a global; or</li>
+	<li>the borrow points into a <span class="pre">mut</span> global, or into anything reached from one, or is reached
+		through a reference some <span class="pre">mut</span> global of that type could be, and the call,
+		<a href="#globalview">whatever it is handed</a>, reshapes one through a global or is code the compiler cannot
+		read.</li>
+	</ol>
+	<p>Moving elements about within the storage (<span class="pre">swap</span>, <span class="pre">sortBy</span>)
+		destroys none and moves none out, and the bytes a String element owns stay where they are, so a view of them stays
+		good. Writing an element that has no finalizer in place, <span class="pre">l[i] = v</span> on numbers, reshapes
+		nothing.</p>
+	<p>A function whose body the compiler cannot read (an <span class="pre">extern</span> function, a call through a
+		function pointer or a trait, a function of another package that is neither generic nor inline) is assumed to reshape
+		whatever it is handed that reaches the collection, unless the call is through a virtual reference marked
+		<a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A mutable virtual reference
+		(<span class="pre">&amp;&lt;mut Trait</span>, a <span class="pre">&amp;&lt;mut fn</span> called) is assumed to reach
+		any collection even when handed nothing (<a href="mod-substitution.html#reshape">a visitor and its closure</a>). A
+		read-only reference (<span class="pre">&amp;</span> or <span class="pre">&amp;imm</span>) cannot write what it
+		reaches, and a value the function owns whole, a local, cannot be the collection reached through a reference, so
+		neither makes a call one that could.</p>
+	<p>All of these are refused when the borrow is still to be used afterwards (error 1339):</p>
+<pre>
+fn clearOther(l &amp;mut List[Pt], m &amp;mut List[Pt]) i64 {
+  imm e = l[0usize];
+  m.clear();                    // Error 1339: clear writes the length (so do pop and truncate)
+  e.x;
+}
+
+fn setString(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  m.set(0usize, s);             // Error 1339: set finalizes the String it replaces
+  t.len;
+}
+
+fn bump(q &amp;mut List[Pt], p Pt) { q.push(p); }
+
+fn viaCall(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  bump(m, p);                   // Error 1339: bump is handed a list and pushes
+  e.x;
+}
+
+mut pool List[Pt];
+fn @initpure init() { pool = List[Pt].empty(); }
+fn resetPool() { pool.clear(); }
+
+fn viaGlobal(l &amp;mut List[Pt]) i64 {
+  imm e = l[0usize];
+  resetPool();                  // Error 1339: resetPool clears a list through a global
+  e.x;
+}
+
+extern fn elsewhere(q &amp;mut List[Pt]);
+
+fn viaExtern(l &amp;mut List[Pt], m &amp;mut List[Pt]) i64 {
+  imm e = l[0usize];
+  elsewhere(m);                 // Error 1339: its body is not visible, so it is assumed to reshape
+  e.x;
+}
+</pre>
+	<p>And these reshape nothing, so they are accepted (in a program with no <span class="pre">mut</span> global that
+		could be the list, <a href="#globalview">below</a>):</p>
+<pre>
+fn setNum(l &amp;mut List[i64], m &amp;mut List[i64]) i64 {
+  imm e = l[0usize];
+  m.set(0usize, 9i64);          // Ok: a number has no finalizer
+  *e;
+}
+
+fn swapStr(l &amp;mut List[String], m &amp;mut List[String]) usize {
+  imm t = l[0usize].view();
+  m.swap(0usize, 1usize);       // Ok: the bytes of each String stay where they are
+  t.len;
+}
+
+fn readOnly(l &amp;mut List[Pt], m &amp;List[Pt]) i64 {
+  imm e = l[0usize];
+  e.x + i64.from(m.len());      // Ok: a read-only reference cannot write
+}
+
+fn ownedLocal(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  mut mine = List[Pt].empty();
+  mine.push(p);                 // Ok: a local list is not the one reached through l
+  e.x + mine[0usize].x;
+}
+</pre>
+	<p>Two names for one collection can arise in several ways. Each of these is refused at the push
+		(<span class="pre">p</span> is a value to push, and the push through the second name moves the element
+		<span class="pre">e</span> points at):</p>
+	<ul>
+		<li><b>A parameter.</b> Two <span class="pre">&amp;mut</span> parameters, which the caller may have made one
+			list.</li>
+		<li><b>A field of <span class="pre">self</span>.</b> A borrow of one field, and a push through
+			<span class="pre">other.items</span> in a method, <span class="pre">other</span> being the same value.</li>
+		<li><b>An <span class="pre">Rc[mut, T]</span> owner.</b> The owner copied, so two names hold the one list.</li>
+		<li><b>An arena allocation held by name.</b> A list allocated in an arena and held by two names.</li>
+		<li><b>A reference made from a pointer.</b> Two references made from one pointer.</li>
+	</ul>
+<pre>
+struct Bag2 {
+  items List[Pt];
+  fn fb(self &amp;mut, other &amp;mut Bag2, p Pt) i64 {
+    imm e = items[0usize];
+    other.items.push(p);        // Error 1339: other may be self
+    e.x;
+  }
+}
+
+fn fa(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m.push(p);                    // Error 1339: m may be l
+  e.x;
+}
+
+fn fc(p Pt) i64 {
+  imm l = new Rc[mut, List[Pt]](List[Pt].empty());
+  imm l2 = l;
+  imm e = l[0usize];
+  l2.push(p);                   // Error 1339
+  e.x;
+}
+
+fn fd(a &amp;mut Arena, p Pt) i64 {
+  imm l = a.alloc(List[Pt].empty());
+  imm l2 = l;
+  imm e = l[0usize];
+  l2.push(p);                   // Error 1339
+  e.x;
+}
+
+fn fe(ptr *List[Pt], p Pt) i64 {
+  imm l = ptr as &amp;mut List[Pt];
+  imm l2 = ptr as &amp;mut List[Pt];
+  imm e = l[0usize];
+  l2.push(p);                   // Error 1339
+  e.x;
+}
+</pre>
+	<p>A borrow handed to the very call beside the reference that changes it is refused too, for the caller may have
+		made <span class="pre">out</span> and <span class="pre">x</span> one string:</p>
+<pre>
+fn appendBoth(out &amp;mut String, x &amp;String) {
+  out.append(x.view());         // Error 1339: x's view is in use while out may change shape
+}
+</pre>
+	<p>Taking the view through an element, with no name for the element, is the same as naming it first. The view of
+		<span class="pre">ui.items[0usize].label</span> is of one <span class="pre">String</span>, the field of an
+		<span class="pre">Item</span>, and a call can change it through another name only if it is handed what holds that
+		<span class="pre">Item</span> (the <span class="pre">List[Item]</span> and whatever holds the list), or a reference
+		to a <span class="pre">String</span>, which may be that one. A <span class="pre">String</span> that some other
+		struct holds is another value. The same goes for the view of an element of a <span class="pre">List[String]</span>:
+		the call must be handed the list, or a reference to a <span class="pre">String</span>. A
+		<span class="pre">String</span> appended to is asked the same way when it is written as a field of a struct: it is
+		another value than the view is into if that struct is not the one that holds the viewed
+		<span class="pre">String</span> (a value is the field of one struct only), so
+		<span class="pre">pad.input.clipboard.append(pad.texts[i].view())</span> is accepted. A
+		<span class="pre">String</span> that is a field of the very struct, a name, a list's element, or a field that holds
+		a reference says nothing of where it is held, and is still asked:</p>
+<pre>
+struct Item { label String; }
+struct Dl {
+  chars String;
+  fn text(self &amp;mut, s &amp;str) { chars.append(s); }
+}
+struct Ed {
+  items List[Item];
+  fn grow(self &amp;mut, s &amp;str) { imm r = &amp;mut items[0usize]; r.label.append(s); }
+}
+struct Ui { items List[Item]; }
+
+fn draw(dl &amp;mut Dl, ui &amp;Ui) {
+  dl.text(ui.items[0usize].label.view());       // Ok: dl holds a String of its own, and no Item
+}
+
+fn twoParams(ed &amp;mut Ed, src &amp;mut Ed) {
+  ed.grow(src.items[0usize].label.view());      // Error 1339: ed and src may be one value; the same
+                                                //   as imm item = src.items[0usize]; item.label.view()
+  imm c = String.from(src.items[0usize].label.view());
+  ed.grow(c.view());                            // Ok: copied out first
+}
+
+struct Input { clipboard String; }
+struct Pad { texts List[String]; input Input; }
+
+fn copyOut(pad &amp;mut Pad, i usize) {
+  pad.input.clipboard.append(pad.texts[i].view());   // Ok: the clipboard is a field of an Input,
+}                                                    //   not an element of the list
+
+fn twoEds(a &amp;mut Ed, b &amp;mut Ed) {
+  a.items[0usize].label.append(b.items[0usize].label.view());   // Error 1339: both are the label of
+}                                                               //   an Item, and a and b may be one value
+</pre>
+	<p>A collection held as an element of an array is followed as one held by a local or a field is: a borrow into
+		<span class="pre">ls[i][j]</span>, the element <span class="pre">j</span> of the list that is element
+		<span class="pre">i</span> of the array <span class="pre">ls</span>, is a borrow into that list, whether the array
+		is the owner's own, a struct's field, a multi-dimensional one, or a <span class="pre">&amp;mut</span> or
+		<span class="pre">&amp;uni</span> slice. Since the compiler cannot tell one index from another, a call or store
+		that could reshape any element of the array is refused while the borrow is still to be used, as one that reshapes
+		the list the borrow is into would be. Reading another element, or swapping two, reshapes nothing and is
+		accepted:</p>
+<pre>
+fn grow(x &amp;mut List[i64], e &amp;mut i64) { x.push(1); }
+
+fn two() {
+  mut ls = [List[i64].empty(), List[i64].empty()];
+  ls[0usize].push(7);
+  grow(&amp;mut ls[0usize], &amp;mut ls[0usize][0usize]);   // Error 1339: grow pushes, and the second
+                                                    //   borrow points into the block that may move
+  imm e = &amp;mut ls[0usize][0usize];
+  ls[1usize].push(1);                               // Error 1339: any element of the array may be
+  *e;                                               //   the one e is into
+}
+</pre>
+
+	<h3 id="stores">Stores</h3>
+	<p>A store is asked as a call is, for it is no call but could do the same. While such a borrow is still to be used,
+		an assignment or a swap through another name is refused when it replaces the collection whole
+		(<span class="pre">*m = List[String].empty();</span>), a struct holding one, or an element that owns something, or a
+		field of one, found by indexing the collection (<span class="pre">m[0usize] = s</span> finalizes the old String, so a
+		view of its bytes dangles). So is a store over a field that owns the collection through an owning reference
+		(<span class="pre">So</span>, <span class="pre">Rc</span>, <span class="pre">Arc</span>, or a region a program
+		declares), and a store over the whole struct that holds it. These are refused with error 1426:</p>
+<pre>
+struct Item { pub n i64; }
+struct Ship { pub fuel i64; pub vec So[List[Item]]; }
+
+fn whole(l &amp;mut List[String], m &amp;mut List[String]) usize {
+  imm t = l[0usize].view();
+  *m = List[String].empty();    // Error 1426: the old list is freed
+  t.len;
+}
+
+fn elem(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
+  imm t = l[0usize].view();
+  m[0usize] = s;                // Error 1426: the old String is finalized
+  t.len;
+}
+
+fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
+  imm e = a.vec[0usize];
+  b.vec = new So[List[Item]](List[Item].empty());   // Error 1426: the list the owner held is freed
+  e.n;
+}
+
+fn wholeShip(a &amp;mut Ship, b &amp;mut Ship, s Ship) i64 {
+  imm e = a.vec[0usize];
+  *b = s;                       // Error 1426, the same
+  e.n;
+}
+</pre>
+	<p>Writing an element that owns nothing in place is not refused, nor is replacing a field of an element through the
+		reference that borrowed the element:</p>
+<pre>
+fn setPt(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m[0usize] = p;                // Ok: a Pt owns nothing
+  e.x;
+}
+
+fn fieldOfElem(l &amp;mut List[Pt]) i64 {
+  imm e = &amp;mut l[0usize];
+  e.x = 12;                     // Ok: a field of the element, through the borrow
+  e.x;
+}
+</pre>
+	<p>A store over a <span class="pre">String</span> field of some other struct, <span class="pre">g.log = s</span> for
+		<span class="pre">g &amp;mut Log</span>, is refused too while the view of a list's String element is held (error
+		1426), though a call in the same position is told that a field of another struct is another value
+		(<a href="#reshape">above</a>).</p>
+
+	<h3 id="owners">An owner stored over</h3>
+	<p>The same rule covers what an owning reference (<span class="pre">So</span>, <span class="pre">Rc</span>,
+		<span class="pre">Arc</span>, or a region a program declares) owns. Storing over an owner frees what it points at, as
+		replacing a list frees its block, so the owner is the shape-changing value of a borrow into its contents:
+		<span class="pre">&amp;mut *s</span>, a field of what it owns, or the owner itself lent where a borrow of its
+		contents is wanted. <a href="mem-permissions.html#view">Another name for the same holder</a> can replace the owner:
+		a second <span class="pre">&amp;mut</span> parameter, or a local lent <span class="pre">&amp;mut</span> beside a
+		borrow of what it owns (a local may be lent <span class="pre">&amp;mut</span> more than once to one call). The
+		borrow is allowed, and refused when something could replace the owner while it is still to be used. A call handed a
+		way to write an owner of that type, whose body (or something it calls) stores over one, is refused with error 1339,
+		and a store over an owner, or over a struct, an array or an <span class="pre">Option</span> that holds one by value,
+		with error 1426:</p>
+<pre>
+struct Item { pub v i64; }
+struct Ship { pub fuel i64; pub it So[Item]; }
+
+fn clobber(x &amp;mut So[Item], y &amp;mut Item) {
+  *x = new So[Item](9);         // the old Item is freed
+  y.v;                          // and read
+}
+
+fn lend() {
+  mut s = new So[Item](1);
+  clobber(&amp;mut s, s);           // Error 1339: clobber stores over the owner it is handed,
+}                               //   beside a borrow of its contents
+
+fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
+  imm y = &amp;mut *a.it;
+  b.it = new So[Item](9);       // Error 1426: b may be a
+  y.v;
+}
+</pre>
+	<p>Writing the value the owner points at, a field of it, or the whole value in place, replaces nothing the owner
+		frees, so a callee that only reads, or writes through the borrow, is accepted, as is an owner of another type,
+		another field of the ship, and an owner stored over after the borrow's last use:</p>
+<pre>
+fn writes(x &amp;mut So[Item], y &amp;mut Item) {
+  x.v = 5;                      // Ok: a field of the Item
+  **x = new Item(7);            // Ok: the Item replaced in place, at the same address
+  y.v;
+}
+
+fn after(a &amp;mut So[Item]) i64 {
+  imm n = (**a).v;
+  *a = new So[Item](n + 1);     // Ok: the borrow was used up first
+  n;
+}
+</pre>
+	<p>An owner of an array (<span class="pre">So[Array[Item]]</span>, what a list's <span class="pre">freeze</span>
+		gives) and an owner of a trait object (<span class="pre">So[Gadget]</span>, <span class="pre">Rc[mut, Gadget]</span>)
+		are owners like any other, the borrow an element's, or one a method of the trait lent into the object's state. A call
+		through a mutable virtual reference runs code the compiler cannot read, so it is assumed to replace an owner of the
+		type as it is assumed to reshape a collection (<a href="#shapekeeping">ShapeKeeping</a>): calling another method of
+		the object while a borrow its <span class="pre">count()</span> lent is held is refused, unless the owner is declared
+		<span class="pre">So[Gadget + ShapeKeeping]</span>.</p>
+
+	<h2 id="enums">An enum's variant</h2>
+	<p>For an enum, nothing is frozen. A reference into the payload of an enum's variant, the binding of
+		<span class="pre">case mut c Circle</span> on a reference, is a borrow into the enum, through a
+		<span class="pre">mut</span> or <span class="pre">ro</span> reference from anywhere (a parameter, a field reached
+		through a reference, a reference a variable holds) as well as a borrow of a local made where it is matched. It is
+		allowed, and the fields of the variant may be written through it. It is refused only if something could change
+		which variant the enum holds while it is still to be used: the enum stored over whole or swapped, through the same
+		name or another, or handed to a call whose body (or what it calls) does either, or whose body the compiler cannot
+		read. Writing a field within the variant, by the binding or by the enum's name, or a field the variants share, is
+		not a change:</p>
+<pre>
+enum Shape {
+  struct Circle { pub radius i32; }
+  struct Rect { pub x i32; pub w i32; pub h i32; }
+}
+
+fn grow(s &amp;mut Shape) {
+  match s {
+    case mut c Circle { c.radius = 2; }   // Ok: nothing changes the variant while c is used
+    else {}
+  }
+}
+fn restart(s &amp;mut Shape) i32 {
+  match s {
+    case mut c Circle {
+      c.radius = 2;
+      *s = Shape.Rect(1, 2, 3);
+      c.radius;                 // Error 1425: 'c', a reference into one of the variants of a 'Shape'
+    }                           //   value, is used here after the store, which could change which
+    else { 0; }                 //   variant the 'Shape' value holds
+  }
+}
+</pre>
+	<p>The same store after the narrowed reference's last use is fine, which is how a state machine moves to its next
+		state. A <span class="pre">&amp;mut</span> borrow of a local is an alias loan and is asked the same; a read-only
+		borrow of a local is frozen (<a href="mem-borrowing.html#freezing">What a borrow leaves its source free to do</a>),
+		and a <span class="pre">uni</span>, <span class="pre">imm</span> or <a href="mem-permissions.html#mut1">mut1</a>
+		reference has no other name to change it, so neither is asked. A name narrowed by a test,
+		<span class="pre">if s is Circle</span>, is followed the same way (flow typing). A value owned by an <span class="pre">Rc</span> is another owner of the value, and no loan stands for
+		the other owners: where none can store another variant (<span class="pre">Rc[imm, T]</span>) the binding is a copy
+		of the owner typed as the variant, and where one could (<span class="pre">mut</span>, <span class="pre">ro</span>) it
+		is refused (<i>Error 1034: A 'mut' reference to Shape, held by an owner (an 'Rc'), may not be narrowed to a
+		reference into one of its variants</i>).</p>
+
+	<h2 id="cures">The cures</h2>
+	<p>A refusal is cured in one of three ways, each of which keeps the borrow:</p>
+	<ul>
+	<li>Make the source <span class="pre">&amp;imm</span>, which nothing may write
+		(<span class="pre">x &amp;imm String</span>).</li>
+	<li>Make the receiver <span class="pre">&amp;uni</span>, which no other name reaches
+		(<span class="pre">out &amp;uni String</span>). A <span class="pre">&amp;uni</span> reference passed to a call that
+		wants a <span class="pre">&amp;uni</span> is borrowed from, so a method taking <span class="pre">self &amp;uni</span>
+		may be called twice.</li>
+	<li>Copy what is needed out first, so that no borrow is left to wait.</li>
+	</ul>
+<pre>
+fn appendImm(out &amp;mut String, x &amp;imm String) { out.append(x.view()); }
+fn appendUni(out &amp;uni String, x &amp;String) { out.append(x.view()); }
+
+fn appendCopy(out &amp;mut String, x &amp;String) {
+  imm c = String.from(x.view());
+  out.append(c.view());
+}
+
+fn twice(s &amp;uni String, x &amp;String) {
+  appendUni(s, x);
+  appendUni(s, x);              // Ok: the first call borrowed from s, and has given it back
+}
+</pre>
+
+	<h2 id="shapekeeping">Calls through a virtual reference: ShapeKeeping</h2>
+	<p>Rarely needed, but it decides whether a visitor or a callback can be called while a collection is borrowed. A call
+		through a virtual reference, <span class="pre">&amp;&lt;fn(x &amp;mut World)</span> or
+		<span class="pre">&amp;&lt;mut Scorer</span>, runs code the compiler cannot read where the call is. So it is assumed to
+		reshape whatever it is handed that reaches the collection, and the borrow ends at the call (error 1339):</p>
+<pre>
+struct Entity { pub hp i64; }
+struct World { pub score i64; pub entities List[Entity]; }
+
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World)) i64 {
+  imm e = w.entities[0usize];
+  f(w);                         // Error 1339: f's body is not visible, so it may push
+  e.hp;
+}
+</pre>
+	<p>A <i>mutable</i> virtual reference, <span class="pre">&amp;&lt;mut fn(...)</span> or
+		<span class="pre">&amp;&lt;mut Trait</span>, is assumed to reach the collection even when the call is handed nothing
+		that does: the closure behind it may have captured the list (by <span class="pre">&amp;mut</span>), the struct behind
+		it may hold it, and the type that says so is hidden. So a borrow into a collection reached through a shared path ends
+		at the call, however the call is spelled:</p>
+<pre>
+fn visit[T](xs &amp;List[T], f &amp;&lt;mut fn(x &amp;T)) {
+  each x in xs.iter() { f(x); }  // Error 1339: f may be a closure that pushes to xs, which moves
+}                                //   the block iter reads
+</pre>
+	<p>A read-only virtual reference (<span class="pre">&amp;&lt;fn</span>, <span class="pre">&amp;&lt;Trait</span> with methods
+		that take <span class="pre">self &amp;</span>) can write nothing it reaches, and is not asked. A list lent
+		<span class="pre">&amp;imm</span> is one nothing can write, so <span class="pre">visit(xs &amp;imm List[T], ...)</span> is
+		Ok (its caller needs a list that is <span class="pre">imm</span>); and the mark below promises the same of the
+		closure.</p>
+	<p>The reference can promise otherwise. <span class="pre">ShapeKeeping</span>, the twin of
+		<span class="pre">ShapeChanging</span>, is a marker the compiler finds, like <span class="pre">Shareable</span>, and is
+		written after a <span class="pre">+</span> in the type of the reference or the owner
+		(<a href="conc-sharing.html#marks">Closure references</a>). A call through such a reference keeps the borrows of the
+		caller:</p>
+<pre>
+fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  f(w);                         // Ok: whatever f is, it reshapes nothing it was handed
+  e.hp;
+}
+
+trait Scorer { pub fn bump(self &amp;mut, w &amp;mut World); }
+
+fn tune(w &amp;mut World, s &amp;&lt;mut Scorer + ShapeKeeping) i64 {
+  imm e = w.entities[0usize];
+  s.bump(w);                    // Ok, the same
+  e.hp;
+}
+</pre>
+	<p>The promise is held by the closure or the struct put behind the reference, where it becomes one, as a marker like
+		<span class="pre">+ Shareable</span> is. It holds when nothing in the body of the closure, or of the methods the
+		trait dispatches to, or in what they call, reshapes a collection that it reaches through a path others share: through
+		a parameter that is a <span class="pre">&amp;mut</span> (or holds one), or through a variable a closure borrows, or a
+		reference a struct holds. The question is the one a call is asked above, put to the body. Writing a field or an
+		element, the method's own new collections, a parameter held by value or <span class="pre">&amp;uni</span>, and
+		reading through <span class="pre">&amp;</span> or <span class="pre">&amp;imm</span> are all free:</p>
+<pre>
+visit(w, fn (x &amp;mut World) { x.score = x.score + 1; x.entities[0usize].hp = 6; });   // Ok
+
+visit(w, fn (x &amp;mut World) { x.entities.push(new Entity(1)); });
+    // Error 1500: this closure calls push on a List that it reaches through a &amp;mut parameter
+
+fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
+  visit(w, fn (x &amp;mut World) { log.push(1); });   // Error 1500: the log it borrows is as shared as w
+}
+</pre>
+	<p>The check is as coarse as the one for a call, for the same reasons. A closure that pushes to a list of
+		<span class="pre">log</span>'s type is refused even if the caller borrowed from some other list of that type, and so
+		is a method that pushes to a list the struct owns when a parameter reaches a list of that type. A function named with
+		<span class="pre">&amp;</span>, <span class="pre">&amp;grow</span>, is held by its body; a function reference held in a
+		variable has none the compiler can read, and is refused. A type does not declare
+		<span class="pre">ShapeKeeping</span>.</p>
+	<p>A struct of another package can be put behind such a reference too. Its package's include file carries no method
+		bodies, so the package's own compile does the reading and the file says the result: a struct all of whose methods
+		(the public ones that take <span class="pre">self</span>) reshape nothing they reach through a shared mutable path is
+		written there with <span class="pre">ShapeKeeping</span> after its <span class="pre">is</span>. The importer takes the
+		struct as the file says. One method that does reshape, even one the trait never calls, leaves the marker off, and the
+		whole struct is refused. A function of another package named with <span class="pre">&amp;</span> has no body to
+		read, and is refused.</p>
+
+	<h2 id="globalview">A borrow into a mut global</h2>
+	<p>A function may write a global by its name, whatever it is handed, and the check does not keep a summary of which
+		globals a function writes. So a borrow into a <span class="pre">mut</span> global (the view of a String it holds, an
+		element of a List it holds), or into anything reached from one, is asked of every call made while it is still to be
+		used, or while it is being handed to a call, whether or not the call is handed the global. The call is refused (error
+		1339) when it, or something it calls, reshapes a collection of that type through a global, as above, or when it is
+		code the compiler cannot read: a call through a virtual reference, a closure or any function value (a
+		<span class="pre">&amp;fn</span> held in a parameter, a field, a global or a local, including one a callee makes); an
+		<span class="pre">extern</span> C function handed anything whose type can reach something callable (a
+		<span class="pre">&amp;fn</span>, a virtual reference, a closure or trait object an owner holds, directly or in a
+		struct or behind a pointer it is handed), which C may call back; or a Cone function whose body is not here. A call
+		that reshapes nothing is let through, and so is an <span class="pre">extern</span> C function handed nothing
+		callable, such as a print handed the view, as are the intrinsics, an init, and a call through a virtual reference
+		marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A global that is
+		<span class="pre">imm</span> cannot change, so a borrow into it is not asked.</p>
+<pre>
+struct Item { label String; }
+struct Ed {
+  items List[Item];
+  fn growFirst(self &amp;mut, s &amp;str) { items[0usize].label.append(s); }
+}
+struct Holder { pub f &amp;&lt;fn(s &amp;str); }
+
+mut gl Ed;
+mut title String;
+mut count i64;
+fn @initpure init() { gl = new Ed(List[Item].empty()); title = String.from("t"); count = 0; }
+
+fn grow(s &amp;str) { gl.growFirst(s); }
+fn show(s &amp;str) usize { s.len; }
+
+fn direct() {
+  grow(gl.items[0usize].label.view());  // Error 1339: grow writes gl, and moves the String the
+}                                       //   view points into
+
+fn readOnlyCallee() usize {
+  imm v = gl.items[0usize].label.view();
+  imm n = show("x");                    // Ok: show reshapes nothing
+  n + v.len;
+}
+
+fn viaClosure(h &amp;Holder) {
+  h.f(gl.items[0usize].label.view());   // Error 1339: h.f is code the compiler cannot read,
+}                                       //   and may write gl
+</pre>
+	<p>A global named from C is not followed: a global of a <span class="pre">mod @c</span> module is an external symbol,
+		and an <span class="pre">extern</span> function handed nothing could write it.</p>
+	<p>The cure for a call that may reshape is to read what is needed out of the global before it: a number, or a copy of
+		the String made by a method of the global itself (<span class="pre">title.copy()</span>), and to hold that:</p>
+<pre>
+fn copied() {
+  imm text = title.copy();              // Ok: a copy of the String, not a borrow of it
+  imm n = count;                        // Ok: a number
+  grow("!");
+  show(text.view());
+}
+</pre>
+	<p>A function handed a reference cannot tell that it is the global: the <span class="pre">&amp;mut Ed</span> parameter
+		of a function that is called with <span class="pre">&amp;mut gl</span>. So where a <span class="pre">mut</span> global
+		reaches the type of the collection (a global holding a <span class="pre">List[Item]</span> reaches
+		<span class="pre">List[Item]</span>, <span class="pre">Item</span> and <span class="pre">String</span>), a borrow into
+		it reached through a reference is asked of the same calls. A program with no <span class="pre">mut</span> global of
+		that type is not affected:</p>
+<pre>
+fn useHolder(h &amp;Holder, s &amp;str) { h.f(s); }   // h.f is a closure that may write gl
+
+fn viaParam(h &amp;Holder, g &amp;mut Ed) {
+  useHolder(h, g.items[0usize].label.view());  // Error 1339: g may be gl, and the closure may write it
+}
+</pre>
+
+	<h2 id="notfollowed">What the check does not follow</h2>
+	<p>The check does not tell two values of one type apart. A function handed a <span class="pre">List[Pt]</span> that
+		reshapes one is taken to reshape the one an element was borrowed from, even when the compiler could show they
+		differ, as for a list freshly allocated in the function. (A list the function owns whole, a plain local, is the
+		exception, as above.)</p>
+<pre>
+fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  imm m = new So[List[Pt]](List[Pt].empty());
+  bump(&amp;mut *m, p);            // Error 1339: refused, though m cannot be l
+  e.x;
+}
+</pre>
+	<p>The same holds of owners (<a href="#owners">above</a>): a callee that replaces some <span class="pre">So[Node]</span>
+		is taken to replace the one a borrow is into, though it replaces a different node's. A borrow into the owner a method
+		is called through is its receiver and no other name for the owner, so <span class="pre">left.insert(v)</span> is asked
+		only of the other arguments.</p>
+	<p>Nor does it tell which global a function writes: a borrow of a collection a <span class="pre">mut</span> global could
+		be is refused across a call that reshapes a collection of that type through any global, or that runs code it cannot
+		read (<a href="#globalview">above</a>), even when the global it writes is another. A virtual call or a closure called
+		anywhere in the callee counts, even one handed nothing.</p>
+
+	<p>You can now hold a borrow into a list, a dictionary, a string or an enum, know which calls and stores must wait for
+		it, and reach for one of the three cures when one is refused. That completes the borrowed half of this part. Next, the
+		regions: where values that outlive a single function come from.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="mem-regions.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

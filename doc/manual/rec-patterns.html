@@ -1,0 +1,320 @@
+<html>
+  <head>
+	  <title>Patterns of your own: using - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Patterns of your own: using</div>
+		</div>
+
+    <div class="text">
+
+	<p>You need a case that no literal, range or comparison can say. Does the line start with
+		<span class="pre">GET</span>, and what follows it? Is the number prime? Does the text begin with a number, and
+		where does the number end? A chain of <span class="pre">if</span>s can ask, but loses the match's table of
+		cases. Instead, any ordinary function can be a pattern, written in a case with <span class="pre">using</span>.
+		This recipe has the full rules, then how a match is compiled, and a way to keep the matched value for the cases.
+		It assumes <span class="pre">match</span> from <a href="guide-conditionals.html#matching">Conditionals</a> and
+		<span class="pre">Option</span> from <a href="guide-dict.html#option">Dict</a>. Here a function adds up a sum
+		written as text, with a match deciding what the text that is left starts with:</p>
+<pre>
+mod sums;
+
+import stdio use *;
+
+// Each pattern takes the text that is left as its first parameter
+
+// The text after p, if the text starts with it
+fn lit(text &amp;str, p &amp;str) Option[&amp;str] {
+  if text.startsWith(p) { Some(&amp;text[p.len() ..]); } else { None[&amp;str]; }
+}
+
+// The text after a run of digits, if it starts with one
+fn digits(text &amp;str) Option[&amp;str] {
+  mut i = 0usize;
+  while i &lt; text.len() and text[i] &gt;= '0' and text[i] &lt;= '9' { i += 1; }
+  if i &gt; 0 { Some(&amp;text[i ..]); } else { None[&amp;str]; }
+}
+
+// True when nothing is left
+fn atEnd(text &amp;str) bool { text.len() == 0; }
+
+// The text with its leading spaces skipped (not a pattern: it always succeeds)
+fn blank(text &amp;str) &amp;str {
+  mut i = 0usize;
+  while i &lt; text.len() and text[i] == ' ' { i += 1; }
+  &amp;text[i ..];
+}
+
+// The number written at the start of text, which ends where after begins
+fn value(text &amp;str, after &amp;str) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i &lt; text.len() - after.len() {
+    n = n * 10 + i64.from(text[i] - '0');
+    i += 1;
+  }
+  n;
+}
+
+// Adds up a sum such as "12 + 30 - 5", or gives None if it is not one
+fn sum(text &amp;str) Option[i64] {
+  mut rest = blank(text);
+  mut total = 0i64;
+  mut sign = 1i64;                 // the sign of the number that is due
+  while true {
+    match rest {
+      case imm after using digits() { total += sign * value(rest, after); rest = blank(after); }
+      else { return None[i64]; }
+    }
+    match rest {
+      case imm p using lit("+") { sign = 1; rest = blank(p); }
+      case imm p using lit("-") { sign = -1; rest = blank(p); }
+      case using atEnd() { return Some(total); }
+      else { return None[i64]; }
+    }
+  }
+  None[i64];
+}
+
+fn main() {
+  each text in ["12 + 30 - 5", "  7", "1 + + 2", "100 - 1 x"] {
+    match sum(*text) {
+      case imm n Some { print &lt;- "\"", *text, "\" is ", n, "\n"; }
+      case is None { print &lt;- "\"", *text, "\" is not a sum\n"; }
+    }
+  }
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+"12 + 30 - 5" is 37
+"  7" is 7
+"1 + + 2" is not a sum
+"100 - 1 x" is not a sum
+</pre>
+	<p><b>Try this:</b> add a case <span class="pre">case imm p using lit("plus") { sign = 1; rest = blank(p); }</span>
+		to the second match, and give <span class="pre">sum</span> the text <span class="pre">"2 plus 2"</span>.</p>
+	<p>Each case of the second match calls a function on the text that is left, and the first that says yes runs.
+		<span class="pre">digits</span> and <span class="pre">lit</span> hand back the text after what they found, and the
+		case moves <span class="pre">rest</span> on past it; <span class="pre">atEnd</span> only tests. That is how a
+		parser can be written as a match over the text that is left, a case for each thing the text may start with.</p>
+
+	<h2 id="using">A function as a pattern</h2>
+	<p>A pattern of your own is an ordinary function, or a method, that tests the matched value, and nothing about it is
+		special to the language. Nothing is declared to make a function a pattern, and a library's patterns are written
+		and used the same way as your own.</p>
+	<p>A case names it with <span class="pre">using</span> and the call of the function, written without the matched
+		value: the matched value is the function's first argument, and, for a method, the argument after
+		<span class="pre">self</span>. The arguments written are the ones that follow, so
+		<span class="pre">case using between(10, 20)</span> calls <span class="pre">between(n, 10, 20)</span>, and
+		<span class="pre">case using c.big()</span> calls <span class="pre">c.big(n)</span>. What the function gives back
+		says what the pattern does:</p>
+	<ul>
+		<li>a <b><span class="pre">bool</span></b> only tests. <span class="pre">case using atEnd()</span> calls
+			<span class="pre">atEnd(rest)</span>, and the case is taken when it is true;</li>
+		<li>an <b><span class="pre">Option</span></b> tests and binds. <span class="pre">case imm p using
+			lit("+")</span> calls <span class="pre">lit(rest, "+")</span>, and the case is taken when it gives
+			<span class="pre">Some</span>, <span class="pre">p</span> being what it holds. The name comes first, as in
+			<span class="pre">case imm n Ok</span>, and may be <span class="pre">mut</span>, so the case may change its
+			own copy.</li>
+	</ul>
+	<p>A function with several outcomes gives an enum instead, and is called once and matched as any enum is, with a
+		case for each variant and every variant covered (<a href="guide-enums.html#matchvariants">Enums</a>).</p>
+
+	<h2 id="binding">What a binding gets</h2>
+	<p>A binding gets what the function gave back, as a variant's binding does: the contents of the
+		<span class="pre">Some</span>, a copy of plain data, or a move of what owns something, which is finalized as the
+		case ends, as any bound value is. A pattern with several results gives them as a struct, bound whole and read by
+		field name, or as a tuple, read by position:</p>
+<pre>
+struct Halves { pub left i32; pub right i32; }
+
+// The tens and the units of a number of two digits or more
+fn split(n i32) Option[Halves] {
+  if n &gt;= 10 { Some(new Halves(n / 10, n % 10)); } else { None[Halves]; }
+}
+// The quotient and remainder, unless d is 0
+fn divmod(n i32, d i32) Option[(i32, i32)] {
+  if d != 0 { Some((n / d, n % d)); } else { None[(i32, i32)]; }
+}
+
+match 47 {
+  case imm m using split() { print &lt;- m.left, " and ", m.right, "\n"; }     // 4 and 7
+  else { }
+}
+match 47 {
+  case imm q using divmod(5) { print &lt;- q.0, " r ", q.1, "\n"; }            // 9 r 2
+  else { }
+}
+</pre>
+	<p>And a pattern that hands out a value with a finalizer hands it to the case, which finalizes it as it ends:</p>
+<pre>
+struct Ticket {
+  pub seat i32;
+  fn final(self &amp;uni) { print &lt;- "ticket ", seat, " torn up\n"; }
+}
+fn issue(n i32) Option[Ticket] {
+  if n &gt; 0 { Some(new Ticket(n)); } else { None[Ticket]; }
+}
+
+match 12 {
+  case imm t using issue() { print &lt;- "seat ", t.seat, "\n"; }
+  else { }
+}
+print &lt;- "after the match\n";
+</pre>
+	<p>prints <span class="pre">seat 12</span>, then <span class="pre">ticket 12 torn up</span>, then
+		<span class="pre">after the match</span>.</p>
+
+	<h2 id="order">Tried top to bottom, called at most once</h2>
+	<p>Cases are tried from the top, and a function runs only when its case is reached, at most once for it, never ahead
+		of time. A case of another kind before it that matches means it is never called, and the cases after it are
+		tried when it does not match. So a method pattern may keep a state that its calls change, since each call is made
+		as written, in this order:</p>
+<pre>
+struct Counter {
+  pub calls i32;
+  pub fn big(self &amp;mut, n i32) bool { calls += 1; n &gt; 100; }
+}
+
+mut c = new Counter(0);
+each n in [5, 500, 7] {
+  match *n {
+    case 7 { print &lt;- "seven\n"; }
+    case using c.big() { print &lt;- "big\n"; }
+    else { print &lt;- "small\n"; }
+  }
+}
+print &lt;- "big was called ", c.calls, " times\n";
+</pre>
+	<p>It prints <span class="pre">small</span>, <span class="pre">big</span> and <span class="pre">seven</span>, then
+		<span class="pre">big was called 2 times</span>: the 7 was taken by the case above, and
+		<span class="pre">big</span> was never asked. What a pattern costs shows where it is declared, not at the case,
+		and whether a pattern is <span class="pre">inline</span> is its author's choice.</p>
+
+	<h2 id="advance">A pattern never advances anything</h2>
+	<p>A pattern tests the matched value and gives back what is left of it, as <span class="pre">lit</span> does, and
+		the case moves on, by assigning the rest (<span class="pre">rest = blank(p);</span> in the sum), as it would change
+		any state. Nothing is half consumed by a pattern that did not match, since nothing moves until a case has
+		matched.</p>
+
+	<h2 id="joining">Joining patterns, guards and columns</h2>
+	<p>A test that only answers <span class="pre">bool</span> may be joined to other patterns with
+		<span class="pre">or</span>, and followed by an <span class="pre">if</span> guard
+		(<a href="guide-conditionals.html#matching">Conditionals</a>), as any pattern is:</p>
+<pre>
+fn isOdd(n i32) bool { n % 2 == 1; }
+fn isPrime(n i32) bool {
+  if n &lt; 2 { return false; }
+  mut d = 2;
+  while d * d &lt;= n { if n % d == 0 { return false; } d += 1; }
+  true;
+}
+
+imm k = match n {
+  case using isOdd() or using isPrime() { "odd or prime"; }     // 2 is prime
+  else { "neither"; }
+};
+</pre>
+	<p>A case that binds stands alone, never joined to others with <span class="pre">or</span>, and may have a guard
+		that uses the binding. The cases below are tried in turn, so a short path falls through to the second:</p>
+<pre>
+match line {
+  case imm rest using lit("GET ") if rest.len() &gt; 2 { print &lt;- "long ", rest, "\n"; }
+  case imm rest using lit("GET ") { print &lt;- "short ", rest, "\n"; }     // "GET /a" is short
+  else { }
+}
+</pre>
+	<p>A <span class="pre">match a, b</span> may test a column with a function, <span class="pre">case using isOdd(),
+		4</span>, but binds nothing in it: a binding there is refused (<i>Error 1419: A pattern in a column of 'match a, b'
+		does not bind a variable</i>). The matched value of a case that binds may be a call, which is made once, as for
+		every pattern.</p>
+
+	<h2 id="cover">A match with a function's pattern ends in else</h2>
+	<p>A match with a pattern of your own ends in <span class="pre">else</span>, whatever its other cases cover
+		(<a href="guide-conditionals.html#cover">Covering every value</a>): which values a function matches, only running
+		it says. Even a match on a <span class="pre">bool</span> with a case for <span class="pre">true</span> and one for
+		<span class="pre">false</span> needs it, once one case is a <span class="pre">using</span>:</p>
+<pre>
+Error 1423: A match with a 'using' pattern needs an 'else': which values a function's pattern matches is
+known only by running it. End the match with 'else {}', which may say that no other value can happen.
+</pre>
+
+	<h2 id="ifbind">Outside a match: if, elif and a declaration that leaves</h2>
+	<p>The same patterns bind in an <span class="pre">if</span>, an <span class="pre">elif</span>, and a declaration
+		that leaves when the pattern does not match, with the matched value after the <span class="pre">=</span>, as the
+		variants' bindings do (<a href="guide-enums.html#letelse">Binding past an early exit</a>). A function that only
+		tests is simply the condition of the <span class="pre">if</span>, <span class="pre">if isOdd(n) {
+		++count; }</span>:</p>
+<pre>
+fn handle(line &amp;str) i32 {
+  if imm rest using lit("GET ") = line { print &lt;- "get ", rest, "\n"; }
+  elif imm other using lit("DEL ") = line { print &lt;- "del ", other, "\n"; }
+  imm path using lit("PUT ") = line else { return -1; };    // leaves unless it matches
+  print &lt;- "put ", path, "\n";
+  0;
+}
+</pre>
+
+	<h2 id="switch">How a match is compiled: jump tables</h2>
+	<p>Nothing is written for this: it is what the cases mean, and it matters only when you tune a match that runs very
+		often. A match on <b>one integer, character or enum</b> compiles to a single <span class="pre">switch</span> on
+		that value in every build, which the back end makes a jump table, a binary search or a bit test as the cases lie.
+		The cases that count are those before the first that does not test the value against constants: a constant (a
+		literal or a named constant), a range, <span class="pre">or</span> of those, and, on an enum, a variant, a binding
+		of one, and a trait that names variants (<a href="mod-substitution.html#traitpat">Trait patterns</a>). Those cases
+		are the <span class="pre">switch</span>. The rest, from the first case with an <span class="pre">if</span> guard,
+		a comparison such as <span class="pre">&gt; 3</span>, a text, a range too wide to list (more than 128 values), a
+		pattern of your own, or from the <span class="pre">else</span>, is tried in order as the default; so a pattern of
+		your own and the cases after it are tried in order, as written. A match that covers an enum with no
+		<span class="pre">else</span> has its last case as the default. Cases are still tried top to bottom: a value two
+		cases share belongs to the first.</p>
+<pre>
+fn kind(c char) i32 {
+  match c {
+    case 'a' or 'e' or 'i' or 'o' or 'u' { 1; }   // these four cases are the switch
+    case 'b' .. 'd' { 2; }
+    case '0' .. '9' { 3; }
+    case ' ' { 4; }
+    case 'Ā' .. '\U0010ffff' { 5; }               // too wide: tried after the switch, in order
+    else { 0; }
+  }
+}
+</pre>
+	<p>Whichever way it is compiled, the answers are the same: <span class="pre">kind</span> gives 1, 2, 3, 4, 5 and 0
+		for <span class="pre">'e'</span>, <span class="pre">'c'</span>, <span class="pre">'7'</span>,
+		<span class="pre">' '</span>, <span class="pre">'Ā'</span> and <span class="pre">'z'</span>.</p>
+
+	<h2 id="matchassign">Keeping the matched value: match (m = ...)</h2>
+	<p>Any expression can follow <span class="pre">match</span>, and its value is what the cases are matched with. To
+		keep that value for the cases, the expression may be an assignment to a variable declared before the match. Today
+		it must be written in parentheses: <span class="pre">match m = n * 2 {</span> is refused (<i>Error 1004:
+		Expected '{' to start a block</i>).</p>
+<pre>
+mut m = 0;
+each n in 1 .. 4 {
+  match (m = n * 2) {
+    case 6 { print &lt;- "six, from ", n, "\n"; }
+    else { print &lt;- "m is ", m, "\n"; }
+  }
+}
+</pre>
+	<p>It prints <span class="pre">m is 2</span>, <span class="pre">m is 4</span>, <span class="pre">six, from 3</span>
+		and <span class="pre">m is 8</span>.</p>
+
+	<p>You can now write any test a match needs as an ordinary function, have it bind what it finds, and read a parser
+		as a table of what the text may start with. The sum above walked its text with patterns and a loop; the next
+		recipe walks a sequence the other way round, writing the walk once and handing out its values: generators.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="rec-generators.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,504 @@
+<html>
+  <head>
+	  <title>Calling C: extern and @c - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Calling C: extern and @c</div>
+		</div>
+
+    <div class="text">
+
+	<p>Much of the world's useful code is written in C: operating-system services, graphics libraries,
+		compression, the C library itself. A Cone program calls it directly, at the cost of a C call, and C can call
+		back into Cone the same way. This page covers declaring what C defines, C names and the bindings built from
+		them, publishing Cone functions to C, and how structs cross between the two. Afterwards you can write a
+		binding to a C library. Here a Cone program uses three C functions, one of which calls Cone back:</p>
+
+<pre>
+mod csort;
+
+import stdio use *;
+
+// C's div_t, laid out as C lays it out: two ints
+struct DivT { pub quot i32; pub rem i32; }
+
+// Three functions of the C library, declared with their C names
+extern {
+  fn @c div(numer i32, denom i32) DivT;
+  fn @c strlen(s cstr) usize;
+  fn @c qsort(base *u8, count usize, size usize, compare &amp;fn @c (a *u8, b *u8) i32);
+}
+
+// A Cone function C can call: qsort hands it two pointers into the array
+fn @c byValue(a *u8, b *u8) i32 {
+  imm x = *(a as *i32);
+  imm y = *(b as *i32);
+  if x &lt; y { -1; } elif x &gt; y { 1; } else { 0; }
+}
+
+fn main() {
+  imm d = div(17, 5);
+  print &lt;- "17 / 5 is ", d.quot, " remainder ", d.rem, "\n";
+
+  print &lt;- "\"Cone\" is ", strlen("Cone"), " bytes long\n";
+
+  mut loaves = [42, 7, 19, 3, 25];
+  qsort(&amp;mut loaves as *u8, 5usize, mem.sizeof[i32](), &amp;byValue);
+  each n in loaves {
+    print &lt;- n, " ";
+  }
+  print &lt;- "\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+17 / 5 is 3 remainder 2
+"Cone" is 4 bytes long
+3 7 19 25 42
+</pre>
+	<p><b>Try this:</b> make <span class="pre">byValue</span> sort the loaves from most to fewest.</p>
+	<p>C is not held to Cone's rules, and Cone cannot check that C code is as careful as the compiler is with
+		Cone's. So the boundary is plain to see: C's types are spelled out (<span class="pre">*u8</span> is a
+		<a href="safe-pointers.html">raw pointer</a>, <span class="pre">cstr</span> a C string), and a call to an
+		<span class="pre">extern</span> function is one of the things
+		<a href="safe-trust.html"><span class="pre">trust</span></a> exists for, once it is built. Reaching another
+		<i>Cone</i> module is a different matter, the business of <span class="pre">import</span>
+		(<a href="mod-namespaces.html">Namespaces</a>).</p>
+
+	<h2 id="extern">extern: defined elsewhere</h2>
+	<p><span class="pre">extern</span> says one thing: this function, method or global variable is <i>defined
+		elsewhere</i>, in another compiled unit, a C library or a separately built Cone package. So it is declared
+		here without a body or a value, and the linker finds its definition. It says nothing about how the symbol is
+		spelled; that is for <a href="#cnaming"><span class="pre">@c</span></a> and the
+		<a href="#cnames">module</a> to say. <span class="pre">extern</span> is written in front of a declaration, or
+		of a block of them:</p>
+<pre>
+pub extern fn addOne(n i64) i64;
+extern imm hits Atomic[u64];
+
+pub extern {
+  fn printStr(str &amp;str);
+  fn printInt(nbr i64);
+}
+</pre>
+	<p>A <span class="pre">pub</span> before a block reaches every declaration in it. A declaration may be private:
+		an include file declares the private names a public <span class="pre">inline</span> body reaches, since that
+		body is compiled into the importer, which then needs them. A function with a body, or a global with a value,
+		is an error in an <span class="pre">extern</span> declaration. A
+		<a href="mod-globals.html#threadlocal">thread-local</a> global is declared with its attribute,
+		<span class="pre">extern mut @threadlocal depth i64;</span>, and may name a C thread-local in a
+		<span class="pre">@c</span> module as well as a Cone one.</p>
+
+	<h3 id="externmethods">Methods and operators</h3>
+	<p>Inside a type, <span class="pre">extern fn</span> declares a method, a static function or an operator
+		defined elsewhere:</p>
+<pre>
+pub struct Acc {
+  pub total i64;
+
+  pub extern fn plus(self, n i64) i64;
+  pub extern fn `+`(self, other Acc) Acc;
+  pub extern fn zero() Acc;
+}
+</pre>
+	<p>Such a method meets a trait's requirement like any other. What a user needs the body of cannot be
+		<span class="pre">extern</span>, and is an error: an <span class="pre">inline</span> or generic function, a
+		trait's methods, a generic type's methods. They are written whole, and compiled where they are used. A type's
+		fields are part of its value, and are declared as they are.</p>
+
+	<h3 id="assoctypes">The types a C library uses</h3>
+	<p>A C library's functions and globals usually come with types and constants of its own. These are declared
+		beside the <span class="pre">extern</span> declarations, in the same module, since an
+		<span class="pre">extern</span> block holds functions and variables only. Marking an external function
+		<a href="safe-trust.html">trustable</a>, so that a call to it that passes a pointer needs no
+		<span class="pre">trust</span> block, is not built yet.</p>
+	<p id="anonfield">A struct C shares is declared with the same fields in the same order, as
+		<span class="pre">DivT</span> is above. Where C's layout has a part Cone has no use for, padding or a reserved
+		slot, the field may be named <span class="pre">_</span>: it keeps its place in the layout, and nothing can read
+		it by name. Since a value must still be built with every field, give such a field a default, or a value in its
+		place when the fields are listed in order:</p>
+<pre>
+struct Header {
+  pub kind u16;
+  _ u16 = 0u16;      // C's reserved half-word
+  pub size u32;
+}
+
+imm h = new Header(kind: 1u16, size: 64u32);     // 8 bytes, as C lays it out
+</pre>
+
+	<h3 id="tags">C's constants as an enum: tag values</h3>
+	<p>A C library's constants are often a list of named numbers, and an <span class="pre">enum</span> whose tag
+		values match them lines up with it. <a href="guide-enums.html#tags">Enums</a> shows the basics: a variant may
+		write its own tag value, counting resumes from the last value written, and the enum may name the integer type
+		its tags are laid out in. Naming that type fixes the tag's width, so a value too large for it is an error
+		rather than a silent widening away from the layout you asked for:</p>
+<pre>
+enum TooBig u8 {
+  Fine = 1,
+  Large = 300;      // **ERROR** 1092: Tag value 300 of Large does not fit u8, this enum's integer type,
+}                   //   whose values run from 0 to 255.
+</pre>
+	<p>Without a named type, the tag is as wide as the largest value needs. Note that this follows the largest
+		<i>value</i>, not the number of variants: an enum of two variants, one of them 300, has a 2-byte tag.</p>
+	<p>A tag value may be negative, as some libraries' constants are. Each value must fit the named integer type the
+		way any <a href="syntax-lexical.html#number">integer literal</a> must fit its type, and a negative sign counts:
+		<span class="pre">-4</span> fits <span class="pre">i32</span>, while its bit pattern
+		<span class="pre">0xFFFFFFFC</span> does not (1092 again), and a negative value fits no unsigned type. Counting
+		resumes from a negative value too, counting up. An enum that names no type and holds a negative value gets the
+		narrowest signed tag that holds every value: one holding -3 and 100 takes a single byte.</p>
+<pre>
+enum VkResult i32 {
+  Success = 0,
+  NotReady,                  // 1
+  ErrorOutOfHostMemory = -1,
+  ErrorOutOfDeviceMemory = -2,
+  ErrorDeviceLost = -4;
+}
+</pre>
+	<p>For alignment, the tag may be wanted somewhere other than first. Write an anonymous field of type
+		<span class="pre">tag</span> where it should go. <span class="pre">tag</span> means this only where a field's type
+		is written, so it is not a reserved word, and a field may still be named <span class="pre">tag</span>:</p>
+<pre>
+enum Aligned {
+  pub wide i64;
+  _ tag;
+
+  pub struct Small {pub n i32;}
+  pub struct Large {pub a i64; pub b i64;}
+}
+</pre>
+
+	<h3 id="opaque">Opaque types</h3>
+	<p>Some types only the C library knows the size and layout of: it hands out pointers to them and takes them
+		back, and is reluctant to say more, or the program has no need to know. Such a type is <b>opaque</b>, since its
+		contents cannot be seen, and it is declared as a struct with no fields:</p>
+<pre>
+struct @opaque Handle;
+
+extern fn @c fopen(path cstr, mode cstr) *Handle;
+extern fn @c fclose(f *Handle) i32;
+</pre>
+	<p>No variable or field may hold an opaque value, so none can be created or passed around, its fields cannot be
+		reached, and even its size is unknown (<span class="pre">mem.sizeof</span> refuses it). It is used through
+		references and pointers, which can be obtained, passed around and stored like any other. Methods may be
+		declared on it, typically implemented by the library that knows its layout, but a pointer to it may not be
+		dereferenced to read or change the value:</p>
+<pre>
+imm h = *f;    // **ERROR** 1069: Variable h cannot be held by value: Handle is declared @opaque,
+               //   so this program is not told how large it is. Hold it through a reference.
+</pre>
+
+	<h3 id="cstr">Text and buffers</h3>
+	<p>C passes text as a pointer to bytes ending in a zero. Cone's name for that is
+		<span class="pre">cstr</span>, and a binding declares C's strings with it, as <span class="pre">strlen</span>
+		does above. A string literal is a <span class="pre">cstr</span> wherever one is wanted, and so is a
+		<span class="pre">String</span>'s <span class="pre">cstr()</span>, with no copy; a plain
+		<span class="pre">&amp;str</span> is not, since it promises no zero after its bytes. Everything about C strings,
+		including how text C hands back is read and kept, is in <a href="lib-string.html#cstr">C strings: cstr</a>. A C
+		buffer is a pointer and a count, two parameters: a slice is passed as <span class="pre">xs as *T</span> and its
+		length (<a href="safe-types.html#slicenoptr">A slice is no pointer</a>).</p>
+
+	<h3 id="listcfill">A list that a C function fills</h3>
+	<p>Many C functions fill a buffer the caller provides, after the caller asks how many values there will be.
+		A <span class="pre">List</span> handles that shape with no unsafe code:
+		<span class="pre">list.resize(n, zero)</span> makes it <span class="pre">n</span> copies of a value long (or drops
+		the values past <span class="pre">n</span>), the C function is handed <span class="pre">list.viewMut()</span>, as a
+		pointer, <span class="pre">list.viewMut() as *T</span>, with the count, and
+		<span class="pre">list.truncate(written)</span> cuts it to the count C wrote, finalizing the values it drops (it
+		does nothing when <span class="pre">written</span> is not less than the length). <span class="pre">resize</span>
+		exists only where <span class="pre">T</span> copies; a list of values with finalizers is shortened with
+		<span class="pre">truncate</span>. Here a Cone function stands in for the C one:</p>
+<pre>
+mod cfill;
+
+import stdio use *;
+import collections use *;
+
+// Stands in for a C function that fills at most out.len values and says how many it wrote
+fn squares(out &amp;mut Array[i32]) usize {
+  mut n = 0usize;
+  while n &lt; out.len and n &lt; 5usize {
+    out[n] = i32.from(n) * i32.from(n);
+    n = n + 1usize;
+  }
+  n;
+}
+
+fn main() i32 {
+  mut xs = List[i32].empty();
+  xs.resize(8usize, 0);                 // room to fill: eight zeros
+  imm written = squares(xs.viewMut());
+  xs.truncate(written);                 // keep only what was written
+  print &lt;- xs.len();
+  print &lt;- ": ";
+  each x in xs {
+    print &lt;- *x;
+    print &lt;- " ";
+  }
+  print &lt;- "\n";
+  0i32;
+}
+</pre>
+	<p>It prints <span class="pre">5: 0 1 4 9 16</span>. The list's other methods are in the
+		<a href="lib-collections.html#list">Collections reference</a>.</p>
+
+	<h3>extern in a file of its own</h3>
+	<p>It can help to put the <span class="pre">extern</span> declarations for a C library (libcurl, say, or
+		SDL) in a file of their own. Placed in a module's folder, that file is one of the module's files like any
+		other, so every file of the module can use its declarations. A C-named binding is a module of its own, since
+		<span class="pre">@c</span> is on its <span class="pre">mod</span> line.</p>
+
+	<h2 id="cnaming">C names: @c</h2>
+	<p>Cone spells the names the linker sees its own way, with the module and type a declaration belongs to.
+		C spells them bare. <span class="pre">@c</span> says a name is spelled as C spells it, and is written after
+		the keyword of a <span class="pre">mod</span> line or a <span class="pre">fn</span>, in one of four forms:
+		<span class="pre">@c</span>, <span class="pre">@c("text")</span>, <span class="pre">@c(system)</span> and
+		<span class="pre">@c("text", system)</span>.</p>
+	<p>On a <span class="pre">fn</span> it gives that one function a C name: bare, its own name; with a string, the
+		string is its whole symbol. That is how the program above declares <span class="pre">div</span>, and how a
+		C function is declared in an ordinary module:</p>
+<pre>
+pub extern fn @c abs(n i32) i32;
+</pre>
+	<p><span class="pre">system</span> selects the platform's system calling convention (stdcall on 32-bit
+		Windows), for the function or for every function of the module, and an <span class="pre">extern</span> one is
+		also imported from a DLL:</p>
+<pre>
+extern fn @c(system) GetTickCount() u32;
+</pre>
+	<p><span class="pre">@c</span> goes only where there is one symbol to name. It is an error on a type, on an
+		anonymous, generic or <span class="pre">inline</span> function, and on a trait's or a generic type's method.
+		<span class="pre">extern system</span>, the older spelling of the system convention, is an error that names
+		<span class="pre">@c(system)</span>.</p>
+
+	<h3 id="cnames">C-named modules: a binding to a C library</h3>
+	<p>A whole module is <b>C-named</b> by writing <span class="pre">@c</span> after
+		<span class="pre">mod</span>. Its functions and global variables then take their names unchanged, as C
+		spells them, after the prefix a string gives, and <span class="pre">@c(system)</span> gives its functions
+		the platform's system calling convention. That is what a binding to a C library is: a module whose names
+		bind to the library's symbols, imported like any other, and seen from outside as Cone:</p>
+<pre>
+mod @c("SDL_") sdl;
+
+pub extern {
+  fn Init(flags u32) i32;                    // the C function SDL_Init
+  fn Quit();                                 // SDL_Quit
+  fn @c("IMG_Load") LoadImage(file cstr) *u8; // a name outside the prefix
+}
+</pre>
+	<p>Everyone else imports it and calls <span class="pre">sdl.Init</span>. The C library itself is bound this
+		way: the <span class="pre">libc</span> package is the module <span class="pre">mod @c libc;</span>, and a
+		program that imports it calls <span class="pre">libc.fwrite</span>, <span class="pre">libc.remove</span> and the
+		rest by their C names.</p>
+	<p>Inside a C-named module, a <span class="pre">@c</span> with a string on a function names a symbol outside
+		the prefix, as <span class="pre">LoadImage</span> does; a bare <span class="pre">@c</span> on a function the
+		module already gives a C name says nothing, and is an error. Naming, and the <a href="#cabi">C calling
+		convention</a> that comes with a C name, are the only things the module changes about its declarations
+		(apart from its prelude, below). Whether each declaration is defined elsewhere is its own
+		<span class="pre">extern</span>, and a C-named module may hold bodies too, which it compiles and publishes
+		under C names when they are <span class="pre">pub</span>. A type's methods and a generic function keep
+		Cone names, since a C name has no room for an owner or type arguments. Such a module, alone in its package,
+		is a <a href="mod-packages.html#cpackage">C package</a>, whose manifest names the C library to link.</p>
+	<p>A C-named module does not import core automatically, as every other module does: it declares what a C
+		library defines, in C's types, and core itself imports one, <span class="pre">libc</span>. So core's names,
+		such as <span class="pre">Option</span> and <span class="pre">malloc</span>, are not in reach in it unless it
+		imports <span class="pre">core</span> itself, and declaring one of them there is no clash.</p>
+
+	<h3 id="exporting">Exporting to C</h3>
+	<p>The other direction works the same way. A Cone function with a body is published to C under a C name by
+		writing <span class="pre">pub</span> and <span class="pre">@c</span>: the symbol is then external, and C code
+		links against it. Without <span class="pre">pub</span> it is still spelled as C spells it, but stays private
+		to its object, which is all a callback like <span class="pre">byValue</span> needs. The same holds for the
+		bodies of a C-named module.</p>
+<pre>
+pub fn @c("cone_square") square(x i64) i64 { x * x; }
+
+fn @c("main") start() i32 {    // the program's entry, under another Cone name
+  0i32;
+}
+</pre>
+	<p>A callback parameter that C calls is typed <span class="pre">&amp;fn @c (sig)</span>, as
+		<span class="pre">qsort</span>'s <span class="pre">compare</span> is, and the Cone function handed to it is
+		declared <span class="pre">fn @c</span>. That reference type is never taken for a Cone function's
+		<span class="pre">&amp;fn(sig)</span>, since the two are called differently
+		(<a href="mod-functions.html#cnamed">A reference to a C-named function</a>). A pointer C hands Cone to a
+		function is called as C calls it, too. A type's method named with <span class="pre">@c</span> keeps Cone's
+		convention, since a vtable calls it by its Cone signature.</p>
+
+	<h3 id="cabi">Structs and bools by value</h3>
+	<p style="margin-left: 40px;"><i>Note: a C-named function passes a struct by value as C does on x86-64
+		(Windows, Linux and macOS) only, not yet on WebAssembly.</i></p>
+	<p>A function with a C name is called as C calls it, and calls C as C expects. Where it takes or returns a
+		struct by value, the struct is passed the way the platform's C compiler passes the same C struct. So a Cone
+		struct laid out as C lays out the struct crosses either way unchanged: to an <span class="pre">extern</span>
+		function C defines, and into a Cone function C calls, directly or through a pointer that Cone handed C.</p>
+<pre>
+struct Vec4 { pub x f32; pub y f32; pub z f32; pub w f32; }
+
+extern fn @c v4_sum(v Vec4) f32;       // float v4_sum(Vec4 v);
+pub fn @c scaled(v Vec4, k f32) Vec4 { // C calls it: Vec4 scaled(Vec4 v, float k);
+  new Vec4(v.x * k, v.y * k, v.z * k, v.w * k);
+}
+</pre>
+	<p>How a struct crosses is the platform's C ABI, and the compiler follows it:</p>
+	<ul>
+		<li><b>On 64-bit Windows</b> a struct of 1, 2, 4 or 8 bytes crosses as one integer of its size, whatever its
+			fields (floats too). Any other size is passed as a pointer to a copy the caller made, and is returned
+			through a pointer to the caller's result slot, which C passes as a hidden first parameter. The
+			<span class="pre">Vec4</span> above is 16 bytes, so it crosses by pointer both ways; a struct of two
+			<span class="pre">i32</span>s is one 64-bit integer.</li>
+		<li><b>On x86-64 Linux and macOS</b> (System V) a struct of up to 16 bytes is passed in registers, each
+			eightbyte of it in an integer register if any integer or pointer is in it, and in a floating-point register
+			if it holds only floats: the <span class="pre">Vec4</span> above travels in two floating-point registers, a
+			struct of an <span class="pre">i32</span> and an <span class="pre">f64</span> in one of each, and a result
+			likewise comes back in registers. A larger struct is copied to the stack, as is one that finds too few
+			registers left, and a larger result comes back through the caller's result slot.</li>
+	</ul>
+	<p>The C library's own <span class="pre">div</span> and <span class="pre">lldiv</span> return a struct each way,
+		on 64-bit Windows: <span class="pre">div</span>'s 8 bytes as one integer, and <span class="pre">lldiv</span>'s
+		16 through a result pointer:</p>
+<pre>
+struct DivT { pub quot i32; pub rem i32; }      // C's div_t
+struct LldivT { pub quot i64; pub rem i64; }    // C's lldiv_t
+
+extern fn @c div(numer i32, denom i32) DivT;
+extern fn @c lldiv(numer i64, denom i64) LldivT;
+
+imm d = div(17, 5);          // d.quot is 3 and d.rem is 2
+imm l = lldiv(17i64, 5i64);  // so are l.quot and l.rem
+</pre>
+	<p>A <span class="pre">bool</span> is C's <span class="pre">bool</span>: an argument or a result crosses as one
+		byte holding 0 or 1, widened in its register as the platform's C compiler widens it, and a
+		<span class="pre">bool</span> field of a struct is one byte holding 0 or 1, as a C <span class="pre">bool</span>
+		field is. An integer narrower than C's <span class="pre">int</span> is widened by its sign as C widens it on
+		that platform. A <span class="pre">bool</span>, and an 8- or 16-bit integer, cross as C's do on 64-bit
+		Windows, x86-64 Linux and macOS, and WebAssembly.</p>
+<pre>
+extern fn @c SetWindowFullscreen(window *Window, fullscreen bool) bool;  // bool f(Window *, bool);
+</pre>
+	<p>A slice, a tuple or an array is not a C type, and passes as Cone passes it: a slice's pointer and length
+		arrive as two arguments, as a C function's <span class="pre">(char *, size_t)</span> takes them.
+		<a href="safe-platforms.html">Platforms and targets</a> gathers what differs by target.</p>
+
+	<h2 id="onecname">One C name, one symbol</h2>
+	<p>C has one namespace for its symbols, so a C name means the same thing wherever it is declared. Several
+		modules of one program may each declare the same C function, and they all call the one function:</p>
+<pre>
+mod geometry;
+
+extern {
+  fn @c abs(n i32) i32;     // also declared by the module that contains this one
+}
+</pre>
+	<p>Every declaration of one C name must agree: a function in its parameter and return types and its calling
+		convention, a global in its type and its permission. Two that do not are an error, as C's "conflicting types"
+		is, and the error names both. One of them may have a body, which is then the C name's definition, and the
+		others are declarations of it; two bodies under one C name are an error too. A private C-named function is
+		not among them: it stays private to its module, and a C function of the same name declared elsewhere is still
+		reached. The compiler checks the modules it compiles together; between packages compiled separately, the
+		linker does.</p>
+
+	<h2 id="includefile">Linking against a Cone package compiled on its own</h2>
+	<p><i>Needed by those who publish a Cone package for others to link against, and useful to anyone reading the
+		files Congo generates.</i></p>
+	<p><span class="pre">extern</span> is also how one Cone package reaches another that was compiled separately.
+		The package is reached through an <b>include file</b>: the package's root module, with everything its object
+		defines declared <span class="pre">extern</span>, and its types, macros, <span class="pre">inline</span> bodies
+		and generics written in full. The include file's module is an ordinary, Cone-named module of the package's
+		name, so each <span class="pre">extern</span> declaration is spelled exactly as the package defines it, and the
+		two objects link. It is Cone source, named for the package: <span class="pre">stdio</span>'s is
+		<span class="pre">build/debug/stdio.cone</span> in a program Congo builds, generated by compiling
+		<span class="pre">stdio</span>, and it declares the globals <span class="pre">print</span> and
+		<span class="pre">eprint</span> and the methods of their type <span class="pre">IOStream</span>, all defined in
+		<span class="pre">stdio</span>'s own object.</p>
+	<p>Compiling a package as a library writes its include file, <span class="pre"><i>name</i>.cone</span>, beside
+		the object. It is the package's own source with what a program does not need taken out: each body the
+		package's object holds is left out and its declaration marked <span class="pre">extern</span>, each private
+		declaration nothing a program expands reaches is left out, and everything else, comments included, is kept as
+		written, under a comment saying the file is generated and is not to be edited. A global whose type the source
+		leaves to be inferred has its type written in. Where the include file's lines stop being the source's, a
+		comment such as <span class="pre">//#line 24 "loc.cone"</span> says the line after it is line 24 of the
+		package's <span class="pre">loc.cone</span>, so an error or a panic in code a program compiles from the include
+		file names the package's source file and line. Congo compiles each package before what imports it, and every
+		importer against the include file that compile wrote, the packages that come with Cone included; an include
+		file may still be written by hand where a build description names one.</p>
+	<p id="nested">What the package's root reaches in one of its
+		<a href="mod-namespaces.html#submodule">submodules</a> (a type a public function names, a function an
+		<span class="pre">inline</span> body calls, the names a <span class="pre">pub use</span> re-exports) is declared
+		in a nested module block inside the include file, holding only what is reached, edited the same way:</p>
+<pre>
+mod coll;
+
+mod vec {
+pub struct Stack {
+  pub len i64;
+  a i64;
+
+  pub extern fn push(self, v i64) Stack;
+}
+
+pub extern fn stackOf(x i64, y i64) Stack;
+}
+
+pub use vec Stack, stackOf;
+
+pub extern fn countOf(s &amp;vec.Stack) i64;
+</pre>
+	<p>Each name in a block is spelled after the submodule that declares it, as the package's object spells it. A
+		block is private to the package: a program reaches <span class="pre">Stack</span> as
+		<span class="pre">coll.Stack</span>, through the root's <span class="pre">pub use</span>, and cannot name
+		<span class="pre">coll.vec</span>. A submodule nothing reaches has no block, and a generic submodule's block
+		holds its whole text. Only a generated include file (one an import line names that opens with the generator's
+		comment) may hold a module block; in source, and in an include file written by hand, a module is never
+		declared inside a file, and the compiler says so (1100: A module cannot be declared inside a file).</p>
+	<p>An include file opens with its <span class="pre">mod</span> line and its imports follow, as in any module
+		file. A package whose public functions take or return another package's types imports that package in its
+		include file, as it does in its source. A program importing the first package can then use those values, their
+		fields and their methods; it names the second package only if it imports it too, or if the include file's
+		import says <span class="pre">pub</span>.</p>
+	<p>A global the package <a href="mod-extensibility.html#globals">folds through</a> is declared
+		<span class="pre">extern</span> with the source's fold clause, as in
+		<span class="pre">pub extern mut config Config pub use *;</span>, so the names the fold puts into the package
+		are names of the include file too.</p>
+	<p>A generic function or type is written whole, because each program makes the instances it uses from that
+		body: the package cannot know which type arguments its users will give. The package's object holds the
+		instances the package itself uses, and the program's object holds the ones it uses; where both use the same
+		one, say <span class="pre">larger[i64]</span>, both objects define it, and the linker keeps one copy. Any
+		private function the generic's body calls is declared <span class="pre">extern</span> in the include file, as
+		for an <span class="pre">inline</span> body.</p>
+<pre>
+pub fn larger[T](a T, b T) T {
+  if a &gt; b {a;} else {b;}
+}
+
+pub struct Pair[T] {
+  pub a T;
+  pub b T;
+
+  pub fn sum(self) T {a + b;}
+}
+</pre>
+	<p>A package whose root module is a <a href="mod-generativity.html#generic">generic module</a>,
+		<span class="pre">mod g[T];</span>, is reached the same way: its include file is the generic module's whole
+		source, and each package or program that uses an instance, say <span class="pre">g[i64]</span>, compiles it.
+		The copies merge at link, globals included, so the instance has one set of globals however many objects use
+		it. A package's include file shows its root module alone, so a generic module inside a package is not yet
+		reachable from outside it. <a href="mod-packages.html">Packages and the build</a> covers the build
+		description and the rest of what a package is.</p>
+
+	<p>You can now call C, be called by it, and write the binding a C library needs. What C hands back is often a
+		raw pointer, which is next.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="safe-pointers.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
