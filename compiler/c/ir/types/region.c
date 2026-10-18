@@ -536,8 +536,9 @@ void regionTracedRawCall(TypeCheckState *pstate, FnCallNode *call, FnDclNode *fn
 }
 
 // A type as a diagnostic names it: itypeName, except that an owning reference
-// is spelled out, 'R[perm, T]', since the type argument a rule complains of is
-// so often one. Good until the next call.
+// is spelled out, 'R[T]' or 'R[perm, T]' (itypeSpellCat's rule: the permission
+// is left out where it is the default), since the type argument a rule
+// complains of is so often one. Good until the next call.
 static char *regionTracedTypeName(INode *type) {
     static char buf[256];
     INode *dcl = itypeGetTypeDcl(type);
@@ -545,8 +546,11 @@ static char *regionTracedTypeName(INode *type) {
         return itypeName(type);
     RefNode *ref = (RefNode *)dcl;
     Name *permname = inodeGetName(itypeGetTypeDcl(ref->perm));
-    snprintf(buf, sizeof(buf), "%s[%s, %s]", &regionDcl(ref->region)->namesym->namestr,
-        permname ? &permname->namestr : "?", itypeName(ref->vtexp));
+    if (refOwnerPermIsDefault(ref))
+        snprintf(buf, sizeof(buf), "%s[%s]", &regionDcl(ref->region)->namesym->namestr, itypeName(ref->vtexp));
+    else
+        snprintf(buf, sizeof(buf), "%s[%s, %s]", &regionDcl(ref->region)->namesym->namestr,
+            permname ? &permname->namestr : "?", itypeName(ref->vtexp));
     return buf;
 }
 

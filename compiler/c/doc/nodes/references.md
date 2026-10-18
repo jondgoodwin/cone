@@ -211,8 +211,12 @@ check lowers it into a `RefNode`. Everything from type check on sees only the
   from the argument's region), a field's fold (`foldSourceDcl`), and a
   global's fold peek (`modFoldPeek`, which peeks the head rather than resolving
   it).
-- **Diagnostics** spell a managed reference as it is written, permission
-  always given: `Rc[mut, Point]` (`itypeSpellCat`, `regionTracedTypeName`).
+- **Diagnostics** spell a managed reference as it is written, the permission
+  left out where it is the one an owner takes unwritten (`refOwnerPermIsDefault`:
+  `uni`, or `imm` over a type declaring `Immutable`) and given otherwise, so a
+  spelling reads back as the same type: `Uni[Point]`, `Rc[mut, Point]`,
+  `Uni[uni, str]` (`itypeSpellCat`, `regionTracedTypeName`). A borrow's
+  permission is always given.
 
 ## Name resolution
 

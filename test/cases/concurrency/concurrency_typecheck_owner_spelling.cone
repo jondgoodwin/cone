@@ -1,0 +1,25 @@
+// How a message spells an owning reference. The permission an owner takes when
+// none is written is left out, 'Uni[Holds]' and 'Rc[Holds]', in any region, and
+// any other is written, 'Uni[imm, Holds]' and 'Rc[mut, Holds]', so that what the
+// message prints is a spelling that reads back as the same type. The thread check
+// is where a type is named most, so it carries the three shapes.
+
+mod concurrency_typecheck_owner_spelling;
+
+fn crosses[T Sendable]() {}
+
+// Holds a borrow, which no thread may take
+struct Holds {pub p &mut i32;}
+
+// Immutable moves the default: an owner of it is 'imm' unwritten, so 'uni' is
+// the one to write there, and 'imm' the one left out
+struct Tag is Immutable {pub p &mut i32;}
+
+fn main() {
+  crosses[Uni[uni, Tag]]();    //~ ErrorNotSendable "Uni[uni, Tag] is not Sendable: Tag.p is &mut i32"
+  crosses[Uni[Tag]]();         //~ ErrorNotSendable "Uni[Tag] is not Sendable: Tag.p is &mut i32"
+  crosses[Uni[Holds]]();       //~ ErrorNotSendable "Uni[Holds] is not Sendable: Holds.p is &mut i32"
+  crosses[Uni[imm, Holds]]();  //~ ErrorNotSendable "Uni[imm, Holds] is not Sendable: Holds.p is &mut i32"
+  crosses[Rc[Holds]]();        //~ ErrorNotSendable "Rc[Holds] is not Sendable: Holds.p is &mut i32"
+  crosses[Rc[mut, Holds]]();   //~ ErrorNotSendable "Rc[mut, Holds] is not Sendable"
+}

@@ -75,6 +75,19 @@ INode *refImmutableDefaultPerm(INode *target) {
     return itypeIsImmutable(target) ? newPermUseNode(immPerm) : NULL;
 }
 
+// The permission an owner takes when none is written (refTypeCheck,
+// refvirtTypeCheck): 'uni', or 'imm' where a thin reference's target declares
+// Immutable (rule one). Whether 'ref' has it, for a type printed in a message.
+int refOwnerPermIsDefault(RefNode *ref) {
+    if (ref->region == NULL || !isTypeNode(ref->region) || itypeGetTypeDcl(ref->region) == (INode*)borrowRef
+        || ref->perm == NULL || !isTypeNode(ref->perm))
+        return 0;
+    INode *perm = itypeGetTypeDcl(ref->perm);
+    if (ref->tag == RefTag && ref->vtexp && isTypeNode(ref->vtexp) && itypeIsImmutable(ref->vtexp))
+        return perm == (INode*)immPerm;
+    return perm == (INode*)uniPerm;
+}
+
 // 'Immutable', rule two, the ban on mutation: a permission that writes through
 // a path others share, 'mut', 'mut1' or a lock permission ('Arc[Mutex, str]'),
 // is refused on a reference to a type declaring Immutable, written or

@@ -103,6 +103,12 @@ int refIsFat(RefNode *ref);
 INode *refImmutableDefaultPerm(INode *target);
 int refImmutableBan(INode *lexnode, INode *perm, INode *target);
 
+// Is this owning reference's permission the one written when none is written?
+// Answers 0 for a borrow, whose permission a message always spells. A
+// diagnostic leaves the default out, 'Uni[T]' and 'Rc[T]', and writes any other
+// ('Uni[imm, T]', 'Rc[mut, T]'), so that what it prints reads back as the same type.
+int refOwnerPermIsDefault(RefNode *ref);
+
 // Allocate normalized reference type info
 void *refTypeInfoAlloc();
 

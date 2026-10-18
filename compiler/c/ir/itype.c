@@ -569,7 +569,8 @@ int itypeThreadBound(INode *type, int *settled) {
 
 // Append to 'buf' a type as the thread check's message spells it: a reference
 // or an array as it is written ('&mut Point', 'Rc[imm, Point]', '*u64',
-// 'Array[u8, 4]'), a permission always spelled out, anything else by its name
+// 'Array[u8, 4]'), a borrow's permission always spelled out and an owner's left
+// out when it is the default ('Uni[Point]'), anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
     size_t used = strlen(buf);
     if (!isTypeNode(type)) {
@@ -605,8 +606,12 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
             refMarksCat(buf, size, ref->marks);
             return;
         }
-        // A managed reference: 'Rc[mut, Point]', whether thin or virtual
-        snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
+        // A managed reference: 'Rc[mut, Point]', whether thin or virtual, its
+        // permission left out where it is the one an owner takes unwritten: 'Rc[Point]'
+        if (refOwnerPermIsDefault(ref))
+            snprintf(buf + used, size - used, "%s[", rname);
+        else
+            snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
         itypeSpellCat(buf, size, ref->vtexp, depth + 1);
         refMarksCat(buf, size, ref->marks);
         used = strlen(buf);
