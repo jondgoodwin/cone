@@ -1754,6 +1754,14 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
         && !structSeesPrivate(pstate, objdereftype);
+    // A generic's body calls through its bound: a type that declares the bound's
+    // trait with 'is' has asserted the fit, and meets it from every module, its
+    // private member of that name included (the bound itself was decided so,
+    // structMemberHidden)
+    if (notpublic && objdereftype->tag == StructTag
+        && (genericBoundReachesMember((INode*)callnode, (StructNode*)objdereftype, methsym)
+            || (pstate && pstate->fn && genericBoundReachesMember((INode*)pstate->fn, (StructNode*)objdereftype, methsym))))
+        notpublic = 0;
     if (notpublic)
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     // A method the type holds by folding is bound to an alias; the visibility

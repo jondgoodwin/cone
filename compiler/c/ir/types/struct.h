@@ -260,6 +260,10 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
 // value: because it is written in the module that declares the type, or in an
 // extension of its enum (structEnumSeesPrivate)?
 int structSeesPrivate(TypeCheckState *pstate, INode *type);
+// Does the type say, in its own declaration, that it complies with the trait: by
+// 'is', directly or through a trait that names it, or as a variant of the trait?
+// 'depth' is 0 from outside.
+int structDeclaresTraitTree(StructNode *strnode, StructNode *trait, int depth);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);

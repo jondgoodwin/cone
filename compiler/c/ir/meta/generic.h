@@ -194,6 +194,17 @@ struct ClosureCap *genericClosureNotShareableCap(INode *type, int mutrule);
 // 'errnode', naming the clause, and return 1. Otherwise return 0.
 int genericReportAbsent(INode *errnode, INode *typedcl, Name *name);
 
+// Is 'member' of struct 'type' reached by code in a generic's instance THROUGH
+// the generic's bound? True when 'node' (any node of the instance: a call, a
+// function) was instantiated from a generic one of whose type parameters is
+// bounded by a trait, 'type' is that parameter's argument and declares the
+// trait with 'is', and the trait requires a member by this name. Such a type has
+// asserted the fit itself and meets the trait everywhere, so a private member
+// is named by the body as the bound promised (struct.md, "A private member of a
+// type meets a trait's requirement only for code inside the module declaring
+// the type").
+int genericBoundReachesMember(INode *node, StructNode *type, Name *member);
+
 // Is this function a member of a generic type's template that exists only
 // where its clause holds? A use of one from an instance is a use of what that
 // instance does not have; report it at 'errnode' and return 1.

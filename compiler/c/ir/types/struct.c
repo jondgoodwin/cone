@@ -4961,7 +4961,7 @@ FieldDclNode *structVirtRefFieldVariant(StructNode *trait, StructNode *strnode, 
 
 // Does the type say, in its own declaration, that it complies with the trait: by
 // 'is', directly or through a trait that names it, or as a variant of the trait?
-static int structDeclaresTraitTree(StructNode *strnode, StructNode *trait, int depth) {
+int structDeclaresTraitTree(StructNode *strnode, StructNode *trait, int depth) {
     if (strnode == trait)
         return 1;
     if (depth > 8)

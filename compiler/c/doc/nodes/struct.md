@@ -447,6 +447,23 @@ at the instantiation, from the type's own module as from any other. Pinned by
 `trait_typecheck_bound_privacy`, `trait_typecheck_bound_privacy_back` and
 `trait_bound_privacy`.
 
+⚠ **A type declaring the trait with `is` passes the bound, so the body must name
+its private member.** `structMemberHidden` never hides a member from a type that
+declares the trait (`structDeclaresTraitTree`), so such a type meets a generic's
+bound from every module, and the generic's body, an instance cloned with that type
+for the parameter, then calls or reads the member through it. The member lookup of
+`fnCallLowerMethodOn` refuses a private member to code outside the module
+(`ErrorNotPublic`), so it first asks `genericBoundReachesMember`: the call sits in
+an instance (`instnode` names the call that made it) whose generic, function or
+type, bounds a parameter by a trait, the parameter's argument is this type, the
+type declares that trait, and the trait requires a member by this name. Only a
+member the trait names is reached: another private member of the same type, or one
+of a second trait the generic does not bound by, stays refused, and so does a call
+written anywhere that is not such an instance's body. The field read is not a
+separate path; `x.id` goes through the same lookup. A clause under an `or` reaches
+nothing (the body may rely only on what every alternative gives). Pinned by
+`trait_priv_is_generic` (runs) and `trait_typecheck_priv_is_generic` (refusals).
+
 ⚠ **A slot is filled by no stronger a `self` than the trait's method declares.**
 `fnSigVrefEqual` skips the receiver, so a vtable slot's match would meet a trait's
 `self &` with a method taking `self &mut`, and a call through a `&<Trait` would

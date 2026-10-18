@@ -2552,6 +2552,62 @@ int genericReportAbsent(INode *errnode, INode *typedcl, Name *name) {
     return 0;
 }
 
+// Does one condition of a generic's bound a parameter by a trait that requires
+// 'member', the parameter's argument being 'type', which declares the trait? An
+// 'and' holds if either side does; an 'or' never does, since a body governed by
+// it may rely only on what every alternative gives.
+static int genericBoundCondReaches(INode *cond, Nodes *parms, Nodes *args, StructNode *type, Name *member) {
+    if (cond->tag == AndLogicTag)
+        return genericBoundCondReaches(((LogicNode*)cond)->lexp, parms, args, type, member)
+            || genericBoundCondReaches(((LogicNode*)cond)->rexp, parms, args, type, member);
+    if (cond->tag != IsTag)
+        return 0;
+    GenVarDclNode *parm;
+    INode *arg = genericClauseType((CastNode*)cond, parms, args, &parm);
+    if (arg == NULL || parm == NULL || itypeGetTypeDcl(arg) != (INode*)type)
+        return 0;
+    StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
+    if (trait == NULL || !structDeclaresTraitTree(type, trait, 0))
+        return 0;
+    INode *required = namespaceFind(&trait->namespace, member);
+    return required && (required->flags & FlagMethFld);
+}
+
+int genericBoundReachesMember(INode *node, StructNode *type, Name *member) {
+    if (node == NULL || type == NULL || (type->flags & TraitType))
+        return 0;
+    Nodes *args = itypeInstanceTypeArgs(node);
+    if (args == NULL || !isNameUseNode(((FnCallNode*)node->instnode)->objfn))
+        return 0;
+    INode *generic = nameUseGetDcl((NameUseNode*)((FnCallNode*)node->instnode)->objfn);
+    Nodes *where = NULL;
+    Nodes *parms = NULL;
+    if (generic == NULL)
+        return 0;
+    if (generic->tag == FnDclTag && ((FnDclNode*)generic)->genericinfo) {
+        where = ((FnDclNode*)generic)->where;
+        parms = ((FnDclNode*)generic)->genericinfo->parms;
+    }
+    else if (generic->tag == StructTag) {
+        StructNode *owner = (StructNode*)generic;
+        if (owner->flags & HasTagField)
+            owner = structGetBaseTrait(owner);
+        if (owner && owner->genericinfo) {
+            where = owner->genericinfo->where;
+            parms = owner->genericinfo->parms;
+        }
+    }
+    if (where == NULL || parms == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        if (genericBoundCondReaches(*nodesp, parms, args, type, member))
+            return 1;
+    }
+    return 0;
+}
+
 int genericReportTemplateMember(INode *errnode, FnDclNode *fn) {
     if (fn->where == NULL)
         return 0;
