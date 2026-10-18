@@ -13,7 +13,7 @@ pub const QTYPE_Q6_K = 14u32;
 
 // Whether this is one of the five
 pub fn isQType(qtype u32) bool {
-  qtype == QTYPE_F32 or qtype == QTYPE_F16 or qtype == QTYPE_Q8_0 or qtype == QTYPE_Q4_K or qtype == QTYPE_Q6_K;
+  qtype == QTYPE_F32 or qtype == QTYPE_F16 or qtype == QTYPE_Q8_0 or qtype == QTYPE_Q4_K or qtype == QTYPE_Q6_K
 }
 
 // The elements in one block: 1 for F32 and F16 (they are not blocked), 32 for Q8_0, 256 for Q4_K and Q6_K.
@@ -22,7 +22,7 @@ pub fn blockElems(qtype u32) usize {
   if qtype == QTYPE_F32 or qtype == QTYPE_F16 { return 1usize; }
   if qtype == QTYPE_Q8_0 { return 32usize; }
   if qtype == QTYPE_Q4_K or qtype == QTYPE_Q6_K { return 256usize; }
-  0usize;
+  0usize
 }
 
 // The bytes in one block: 4 (F32), 2 (F16), 34 (Q8_0: a half and 32 bytes), 144 (Q4_K: two halves, 12 bytes of
@@ -34,7 +34,7 @@ pub fn blockBytes(qtype u32) usize {
   if qtype == QTYPE_Q8_0 { return 34usize; }
   if qtype == QTYPE_Q4_K { return 144usize; }
   if qtype == QTYPE_Q6_K { return 210usize; }
-  0usize;
+  0usize
 }
 
 // The bytes of one row of 'cols' elements, 0 if the type is not one of the five or 'cols' is not a whole
@@ -42,7 +42,7 @@ pub fn blockBytes(qtype u32) usize {
 pub fn rowBytes(qtype u32, cols usize) usize {
   let be = blockElems(qtype);
   if be == 0usize or cols % be != 0usize { return 0usize; }
-  cols / be * blockBytes(qtype);
+  cols / be * blockBytes(qtype)
 }
 
 // ---- Half-precision floats (IEEE 754 binary16), converted in integers ----
@@ -67,7 +67,7 @@ pub fn f16ToF32(h u16) f32 {
   } else {
     out = (sign << 31u32) | ((exponent + 112u32) << 23u32) | (mantissa << 13u32);
   }
-  out as f32;
+  out as f32
 }
 
 // The half-precision value nearest to this f32 (ties to even): overflow to infinity, tiny values to a
@@ -96,16 +96,16 @@ pub fn f32ToF16(f f32) u16 {
   var half = (u32.from(e16) << 10u32) | (m >> 13u32);
   let rem = m & 0x1fffu32;
   if rem > 0x1000u32 or (rem == 0x1000u32 and (half & 1u32) == 1u32) { half = half + 1u32; }
-  u16.from(sign | half);
+  u16.from(sign | half)
 }
 
 // ---- Bytes in, bytes out ----
 
-fn byteAt(b &Array[u8], i usize) u32 { u32.from(b[i]); }
+fn byteAt(b &Array[u8], i usize) u32 { u32.from(b[i]) }
 
-fn halfAt(b &Array[u8], i usize) f32 { f16ToF32(u16.from(byteAt(b, i) | (byteAt(b, i + 1usize) << 8u32))); }
+fn halfAt(b &Array[u8], i usize) f32 { f16ToF32(u16.from(byteAt(b, i) | (byteAt(b, i + 1usize) << 8u32))) }
 
-fn signedAt(b &Array[u8], i usize) i32 { i32.from(i8.from(b[i])); }
+fn signedAt(b &Array[u8], i usize) i32 { i32.from(i8.from(b[i])) }
 
 // A byte buffer as the 32-bit words a GPU storage buffer holds: little-endian, the last word padded with zeros
 pub fn packWords(bytes &Array[u8]) List[u32] {
@@ -121,7 +121,7 @@ pub fn packWords(bytes &Array[u8]) List[u32] {
     out.push(w);
     i = i + 4usize;
   }
-  out;
+  out
 }
 
 // Put a half's two bytes (little-endian) on the end of a byte list
@@ -145,7 +145,7 @@ pub fn encodeF32(values &Array[f32]) List[u8] {
   var out = List[u8].withCapacity(values.len * 4usize);
   var i = 0usize;
   while i < values.len { pushF32(&mut out, values[i]); i = i + 1usize; }
-  out;
+  out
 }
 
 // F16 bytes of these values, each rounded to the nearest half
@@ -153,7 +153,7 @@ pub fn encodeF16(values &Array[f32]) List[u8] {
   var out = List[u8].withCapacity(values.len * 2usize);
   var i = 0usize;
   while i < values.len { pushHalf(&mut out, f32ToF16(values[i])); i = i + 1usize; }
-  out;
+  out
 }
 
 // Q8_0 bytes of these values (a whole number of blocks of 32, else nothing): for each block the scale d =
@@ -188,13 +188,13 @@ pub fn encodeQ8_0(values &Array[f32]) List[u8] {
     }
     b = b + 32usize;
   }
-  out;
+  out
 }
 
 // ggml's roundf: to the nearest integer, halves away from zero
 fn roundHalfAway(x f32) f32 {
   if x >= 0.0 { return libc.floorf(x + 0.5); }
-  0.0 - libc.floorf(0.5 - x);
+  0.0 - libc.floorf(0.5 - x)
 }
 
 // ---- Decoders ----
@@ -297,19 +297,19 @@ pub fn dequantizeRow(qtype u32, bytes &Array[u8], at usize, cols usize, out &mut
     }
     sb = sb + 1usize;
   }
-  true;
+  true
 }
 
 // Q4_K's six-bit scale number j (0 to 7) from the 12 scale bytes at 'at' (ggml's get_scale_min_k4)
 fn scaleK4(b &Array[u8], at usize, j usize) u32 {
   if j < 4usize { return byteAt(b, at + j) & 63u32; }
-  (byteAt(b, at + j + 4usize) & 15u32) | ((byteAt(b, at + j - 4usize) >> 6u32) << 4u32);
+  (byteAt(b, at + j + 4usize) & 15u32) | ((byteAt(b, at + j - 4usize) >> 6u32) << 4u32)
 }
 
 // ...and its six-bit minimum number j
 fn minK4(b &Array[u8], at usize, j usize) u32 {
   if j < 4usize { return byteAt(b, at + j + 4usize) & 63u32; }
-  (byteAt(b, at + j + 4usize) >> 4u32) | ((byteAt(b, at + j) >> 6u32) << 4u32);
+  (byteAt(b, at + j + 4usize) >> 4u32) | ((byteAt(b, at + j) >> 6u32) << 4u32)
 }
 
 // ---- A weight matrix on the CPU ----
@@ -327,11 +327,11 @@ pub struct QMatrix {
   pub fn make(qtype u32, rows usize, cols usize, bytes List[u8]) Option[QMatrix] {
     let rb = rowBytes(qtype, cols);
     if rb == 0usize or bytes.len() != rows * rb { return None; }
-    Some[QMatrix](new QMatrix(qtype, rows, cols, bytes));
+    Some[QMatrix](new QMatrix(qtype, rows, cols, bytes))
   }
 
   // Bytes from the start of one row to the next
-  pub fn stride(self &) usize { rowBytes(qtype, cols); }
+  pub fn stride(self &) usize { rowBytes(qtype, cols) }
 
   // Row 'r' decoded to f32
   pub fn row(self &, r usize) List[f32] {
@@ -339,9 +339,9 @@ pub struct QMatrix {
     var i = 0usize;
     while i < cols { out.push(0.0); i = i + 1usize; }
     dequantizeRow(qtype, bytes.view(), r * rowBytes(qtype, cols), cols, out.viewMut());
-    out;
+    out
   }
 
   // The bytes as the words a GPU storage buffer holds
-  pub fn words(self &) List[u32] { packWords(bytes.view()); }
+  pub fn words(self &) List[u32] { packWords(bytes.view()) }
 }

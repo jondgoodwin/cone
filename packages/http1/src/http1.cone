@@ -218,7 +218,7 @@ pub struct Config {
       bodyWindow: 262144usize, writeWatermark: 262144usize,
       headTimeout: Duration.fromSeconds(30), bodyTimeout: Duration.fromSeconds(30),
       idleTimeout: Duration.fromSeconds(60), expectTimeout: Duration.fromSeconds(1),
-      autoErrorResponse: true);
+      autoErrorResponse: true)
   }
 }
 
@@ -323,10 +323,10 @@ pub struct Connection is Move {
 
   // A client connection, idle until its first request (its idle timeout
   // running from now)
-  pub fn client(cfg Config, pool Pool, now Instant) Connection {Connection.make(true, cfg, pool, now);}
+  pub fn client(cfg Config, pool Pool, now Instant) Connection {Connection.make(true, cfg, pool, now)}
 
   // A server connection, awaiting its first request
-  pub fn server(cfg Config, pool Pool, now Instant) Connection {Connection.make(false, cfg, pool, now);}
+  pub fn server(cfg Config, pool Pool, now Instant) Connection {Connection.make(false, cfg, pool, now)}
 
   fn make(client bool, cfg Config, pool Pool, now Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) Connection {
     if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
@@ -340,10 +340,10 @@ pub struct Connection is Move {
       idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
       armHead: false, armExpect: false,
       closed: false, failed: false, failureOut: false, failure: HttpError.empty(),
-      exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64);
+      exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64)
   }
 
-  pub fn isClient(self &) bool {clientRole;}
+  pub fn isClient(self &) bool {clientRole}
 
   // ------------------------------------------------------------- the four calls
 
@@ -397,7 +397,7 @@ pub struct Connection is Move {
       b <=> tail;
     }
     bytesOut = bytesOut + u64.from(b.len());
-    b;
+    b
   }
 
   // The one Instant the driver must wake at and call handleTimeout, or None
@@ -421,7 +421,7 @@ pub struct Connection is Move {
       any = true;
       if expectAt < best {best = expectAt;}
     }
-    if any {Some[Instant](best);} else {None;};
+    if any {Some[Instant](best)} else {None}
   }
 
   // The driver woke at 'at': act on every deadline due
@@ -528,7 +528,7 @@ pub struct Connection is Move {
         return Event.Paused;
       }
     }
-    Event.Paused;
+    Event.Paused
   }
 
   // ------------------------------------------------------------- credit
@@ -536,13 +536,13 @@ pub struct Connection is Move {
   // How many more bytes handleInput will take now
   pub fn readCredit(self &) usize {
     if closed or failed or eof {return 0usize;}
-    if input.len() >= cfg.maxBuffered {0usize;} else {cfg.maxBuffered - input.len();};
+    if input.len() >= cfg.maxBuffered {0usize} else {cfg.maxBuffered - input.len()}
   }
 
   // The consumer is done with n bytes of body the Data events handed out
   pub fn release(self &mut, n usize) {
     let wasBlocked = self.blocked();
-    outstanding = if n >= outstanding {0usize;} else {outstanding - n;};
+    outstanding = if n >= outstanding {0usize} else {outstanding - n};
     if wasBlocked and not self.blocked() and self.inBody() {
       bodyAt = now + cfg.bodyTimeout;
       bodyArmed = true;
@@ -550,12 +550,12 @@ pub struct Connection is Move {
   }
 
   // Bytes waiting to be sent
-  pub fn queued(self &) usize {out.len() + tail.len() + held.len();}
+  pub fn queued(self &) usize {out.len() + tail.len() + held.len()}
 
   // How many more bytes sendData takes before the watermark refuses
   pub fn writeRoom(self &) usize {
     let q = self.queued();
-    if q >= cfg.writeWatermark {0usize;} else {cfg.writeWatermark - q;};
+    if q >= cfg.writeWatermark {0usize} else {cfg.writeWatermark - q}
   }
 
   // ------------------------------------------------------------- sending
@@ -563,7 +563,7 @@ pub struct Connection is Move {
   // Whether a request may be sent now: a client, open, with no exchange in
   // progress
   pub fn canSendRequest(self &) bool {
-    clientRole and not closed and not failed and not eof and ws == WriteState.Idle and rs == ReadState.Idle;
+    clientRole and not closed and not failed and not eof and ws == WriteState.Idle and rs == ReadState.Idle
   }
 
   // A client's request: its head now, its body (if any) by sendData and
@@ -592,7 +592,7 @@ pub struct Connection is Move {
       self.put("Content-Length: ");
       self.putNum(body.length, 10u64);
       self.put("\r\n");
-      ws = if body.length == 0u64 {WriteState.Done;} else {WriteState.Sized;};
+      ws = if body.length == 0u64 {WriteState.Done} else {WriteState.Sized};
       wremaining = body.length;
     } elif body.isUnsized() {
       self.put("Transfer-Encoding: chunked\r\n");
@@ -646,7 +646,7 @@ pub struct Connection is Move {
       self.put("Content-Length: ");
       self.putNum(body.length, 10u64);
       self.put("\r\n");
-      ws = if body.length == 0u64 {WriteState.Done;} else {WriteState.Sized;};
+      ws = if body.length == 0u64 {WriteState.Done} else {WriteState.Sized};
       wremaining = body.length;
     } elif body.isUnsized() {
       if peer10 {
@@ -699,7 +699,7 @@ pub struct Connection is Move {
     self.putBuf(buf);
     if ws == WriteState.Chunked {self.put("\r\n");}
     if ws == WriteState.Sized {wremaining = wremaining - u64.from(n);}
-    None;
+    None
   }
 
   // The body is whole. Nothing more to do (already whole, abandoned, or the
@@ -732,11 +732,11 @@ pub struct Connection is Move {
 
   // Whether the connection has ended, cleanly or not: nothing more will be
   // read
-  pub fn isClosed(self &) bool {closed or failed;}
+  pub fn isClosed(self &) bool {closed or failed}
 
   // Whether the driver should close the socket now: the connection has
   // ended and everything it had to send has been taken
-  pub fn shouldClose(self &) bool {(closed or failed) and out.len() == 0usize and tail.len() == 0usize;}
+  pub fn shouldClose(self &) bool {(closed or failed) and out.len() == 0usize and tail.len() == 0usize}
 
   // End the connection now, dropping whatever was not yet sent: HTTP/1.1's
   // only way to cancel an exchange
@@ -745,19 +745,19 @@ pub struct Connection is Move {
     self.dropOutput();
   }
 
-  pub fn exchangeCount(self &) u64 {exchanges;}
-  pub fn bytesReceived(self &) u64 {bytesIn;}
-  pub fn bytesSent(self &) u64 {bytesOut;}
+  pub fn exchangeCount(self &) u64 {exchanges}
+  pub fn bytesReceived(self &) u64 {bytesIn}
+  pub fn bytesSent(self &) u64 {bytesOut}
 
   // ------------------------------------------------------------- reading, inside
 
   fn inBody(self &) bool {
     rs == ReadState.Sized or rs == ReadState.ChunkSize or rs == ReadState.ChunkData or
-      rs == ReadState.ChunkEnd or rs == ReadState.Trailers or rs == ReadState.UntilClose;
+      rs == ReadState.ChunkEnd or rs == ReadState.Trailers or rs == ReadState.UntilClose
   }
 
   // Waiting on the consumer to release credit
-  fn blocked(self &) bool {outstanding >= cfg.bodyWindow;}
+  fn blocked(self &) bool {outstanding >= cfg.bodyWindow}
 
   // A server's request head begins: its timeout runs, from its first byte
   fn startHead(self &mut) {
@@ -774,7 +774,7 @@ pub struct Connection is Move {
     failureOut = true;
     var e = HttpError.empty();
     e <=> failure;
-    Event.Failed(e);
+    Event.Failed(e)
   }
 
   fn fail(self &mut, kind ErrorKind, status u16, why &str) {
@@ -805,7 +805,7 @@ pub struct Connection is Move {
 
   fn closedMidBody(self &mut) Event {
     self.fail(ErrorKind.Closed, 0u16, "the connection closed in the middle of a body");
-    self.failedEvent();
+    self.failedEvent()
   }
 
   // Copy what arrived into headBuf and check it, up to the blank line that
@@ -829,7 +829,7 @@ pub struct Connection is Move {
       headBuf.setLen(have + n);
     }
     let v = headBuf.view();
-    let lim = if v.len < cfg.maxHeadBytes {v.len;} else {cfg.maxHeadBytes;};
+    let lim = if v.len < cfg.maxHeadBytes {v.len} else {cfg.maxHeadBytes};
     var i = headScan;
     while i < lim {
       let c = v[i];
@@ -842,7 +842,7 @@ pub struct Connection is Move {
         if clientRole {
           // A response's line may end in an LF alone (RFC 9112, 2.2): its
           // head ends at a line with nothing before its CR or LF
-          let lineAt = if bare {i;} else {i - 1usize;};
+          let lineAt = if bare {i} else {i - 1usize};
           if lineAt == 0usize or v[lineAt - 1usize] == '\n' {
             headScan = 0usize;
             return i + 1usize;
@@ -861,7 +861,7 @@ pub struct Connection is Move {
     if lim >= cfg.maxHeadBytes {
       self.fail(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");
     }
-    0usize;
+    0usize
   }
 
   // The head gathered is consumed: its bytes leave the input, its buffer
@@ -885,7 +885,7 @@ pub struct Connection is Move {
       return Event.NeedData;
     }
     headArmed = false;
-    if clientRole {self.responseHead(len);} else {self.requestHead(len);};
+    if clientRole {self.responseHead(len)} else {self.requestHead(len)}
   }
 
   // A server's request head, gathered: parsed, checked, and its body's
@@ -927,7 +927,7 @@ pub struct Connection is Move {
     requestSeen = true;
     sawBytes = false;
     let body = self.startBody(mode, n);
-    Event.Request(head, body);
+    Event.Request(head, body)
   }
 
   // A client's response head, gathered: an interim one, or the final one
@@ -993,7 +993,7 @@ pub struct Connection is Move {
       keepAlive = false;
     }
     let body = self.startBody(mode, n);
-    Event.Response(head, body);
+    Event.Response(head, body)
   }
 
   // Begin reading a body framed so: what is known of it
@@ -1003,7 +1003,7 @@ pub struct Connection is Move {
     if mode == frameSized {
       rs = ReadState.Sized;
       remaining = n;
-      return if n == 0u64 {BodyLength.empty();} else {BodyLength.sized(n);};
+      return if n == 0u64 {BodyLength.empty()} else {BodyLength.sized(n)};
     }
     if mode == frameChunked {
       rs = ReadState.ChunkSize;
@@ -1015,7 +1015,7 @@ pub struct Connection is Move {
     }
     rs = ReadState.Sized;
     remaining = 0u64;
-    BodyLength.empty();
+    BodyLength.empty()
   }
 
   // The next piece of a body that has arrived, as Data: a whole segment of
@@ -1037,7 +1037,7 @@ pub struct Connection is Move {
         case is None[IoBuf] {}
       }
     } else {
-      let want = if n > u64.from(maxCopy) {maxCopy;} else {usize.from(n);};
+      let want = if n > u64.from(maxCopy) {maxCopy} else {usize.from(n)};
       match pool.take(want) {
         case var s Some {buf <=> s;}
         case is None[IoBuf] {}
@@ -1054,7 +1054,7 @@ pub struct Connection is Move {
     let got = buf.len();
     outstanding = outstanding + got;
     if rs != ReadState.UntilClose {remaining = remaining - u64.from(got);}
-    Event.Data(buf);
+    Event.Data(buf)
   }
 
   // A chunk's size line: true once read (the state moved on), false when it
@@ -1087,7 +1087,7 @@ pub struct Connection is Move {
     }
     // A bare CR before the line's end (or before what has arrived of it) is
     // refused at once, and so, in a request, is a bare LF
-    let upTo = if found {at;} else {input.len();};
+    let upTo = if found {at} else {input.len()};
     match input.findByte('\n') {
       case let p Some {
         if p < upTo {
@@ -1153,7 +1153,7 @@ pub struct Connection is Move {
       rs = ReadState.ChunkData;
       remaining = size;
     }
-    true;
+    true
   }
 
   // The trailer section after the last chunk: End once it is whole
@@ -1190,7 +1190,7 @@ pub struct Connection is Move {
       self.failWith(err);
       return self.failedEvent();
     }
-    self.endMessage(trailers);
+    self.endMessage(trailers)
   }
 
   // The message read is whole
@@ -1207,7 +1207,7 @@ pub struct Connection is Move {
       h <=> held;
     }
     self.endExchange();
-    Event.End(trailers);
+    Event.End(trailers)
   }
 
   // When both messages are whole the exchange is over: the connection is
@@ -1274,7 +1274,7 @@ pub struct Connection is Move {
     while true {
       k = k - 1usize;
       let r = v % base;
-      d[k] = if r < 10u64 {u8.from(r) + '0';} else {u8.from(r) - 10u8 + 'a';};
+      d[k] = if r < 10u64 {u8.from(r) + '0'} else {u8.from(r) - 10u8 + 'a'};
       v = v / base;
       if v == 0u64 {break;}
     }
@@ -1363,5 +1363,5 @@ fn isTargetText(s &Array[u8]) bool {
     if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
     i = i + 1usize;
   }
-  true;
+  true
 }

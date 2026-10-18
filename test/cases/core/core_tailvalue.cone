@@ -1,0 +1,168 @@
+// A block's value is its last line written without a ';', where the value is used; the ';'
+// stays everywhere the value is not used.
+//
+// Each kind of block that can give a value is here with its value taken, then the same
+// kinds as statements, which throw the value away and keep the ';'. What every one gives
+// is printed. The refusals are core_parse_tailvalue.
+
+mod core_tailvalue;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+var calls = 0i64;
+
+fn bump() i64 {
+  calls += 1;
+  calls
+}
+
+// A function that writes a return type gives its last line
+fn functionBody() i64 { 7 }
+
+// A function that writes none keeps the ';' on a line that gives a value and on one that does not
+fn voidFunction() {
+  bump();
+  printStr("a void function\n");
+}
+
+// A call that returns nothing, as the last line of a function that returns nothing
+fn voidCall() {
+  voidFunction();
+}
+
+// 'if', 'elif' and 'else', each arm giving its last line
+fn ifArms(n i64) i64 {
+  if n == 1 { 10 }
+  elif n == 2 { 20 }
+  else { 30 }
+}
+
+// 'match', both kinds of arm
+fn matchArms(n i64) i64 {
+  match n {
+    case 1 { 100 }
+    case 2 { 200 }
+    else { 300 }
+  }
+}
+
+// Arms that run several lines give the last
+fn longerArms(n i64) i64 {
+  if n > 0 {
+    let doubled = n * 2;
+    doubled + 1
+  }
+  else {
+    0i64 - n
+  }
+}
+
+// The last line of a block whose value is used is a block of the same kind
+fn nested(n i64) i64 {
+  {
+    if n > 5 { { n * 10 } } else { 1 }
+  }
+}
+
+// A generic function that writes a type, instanced with the type given
+fn identity[T](a T) T { a }
+
+// A method, and a method that returns nothing
+struct Counter {
+  pub n i64;
+  pub fn get(self) i64 { n }
+  pub fn add(self &mut, amount i64) { n += amount; }
+}
+
+// A closure given where a signature says what it gives
+fn applyTo(f &fn(a i64) i64, v i64) i64 { f(v) }
+
+// A macro is replaced by its value
+macro twice[x] { x + x }
+
+// A loop that runs out gives the value of its 'else'
+fn loopElse(limit i64) i64 {
+  var i = 0i64;
+  let r = while i < limit {
+    i += 1;
+    if i == 99 { break 0 - 1; }
+  } else { i * 2 };
+  r
+}
+
+// Statements: the value is thrown away and the ';' is kept
+fn statements(n i64) {
+  if n > 0 { bump(); } else { bump(); bump(); }
+  match n {
+    case 1 { bump(); }
+    else { bump(); }
+  }
+  { bump(); }
+  var i = 0i64;
+  while i < 2 { i += 1; bump(); }
+  each j in 0 ..< 2 { bump(); }
+}
+
+// A ';' after a statement that ends in a block delimits an empty statement after it: harmless
+// mid-block, and as the last line of a block whose value is not used
+fn emptyStatements(n i64) {
+  if n > 0 { bump(); } else { bump(); bump(); };
+  match n {
+    case 1 { bump(); }
+    else { bump(); }
+  };
+  { bump(); };
+  var i = 0i64;
+  while i < 2 { i += 1; bump(); };
+  each j in 0 ..< 2 { bump(); };
+  bump();;
+  if n > 0 { bump(); } else { bump(); };
+}
+
+fn main() {
+  show("function body", functionBody());
+  voidFunction();
+  voidCall();
+  show("if", ifArms(1) + ifArms(2) + ifArms(3));
+  show("match", matchArms(1) + matchArms(2) + matchArms(3));
+  show("longer arms", longerArms(5) + longerArms(0 - 4));
+  show("nested", nested(6) + nested(2));
+  show("generic", identity(40) + identity(2));
+  var c = new Counter(3);
+  c.add(4);
+  show("method", c.get());
+  show("macro", twice[21]);
+  show("loop else", loopElse(4));
+
+  // Blocks in each place a value is used: after '=', as an argument, as an operand, after 'return'
+  let a = { let t = 5; t * t };
+  let b = if a > 20 { 1 } else { 2 };
+  show("after =", a + b);
+  show("argument", identity({ 3 + 4 }));
+  show("operand", 1 + { 2 * 3 } + if a > 20 { 100 } else { 0 });
+  let typed = fn(x i64) i64 { x * 3 };
+  let inferredValue = fn(x i64) { x + 1 };
+  var seen = 0i64;
+  var inferredNothing = fn(x i64) { seen += x; };
+  show("closure typed", typed(5));
+  show("closure arrow block", applyTo(x => { let y = x * 2; y + 1 }, 5));
+  show("closure inferred value", inferredValue(5));
+  inferredNothing(7);
+  show("closure inferred nothing", seen);
+
+  calls = 0;
+  statements(1);
+  statements(0);
+  show("statements ran", calls);
+  calls = 0;
+  emptyStatements(1);
+  emptyStatements(0);
+  show("empty statements ran", calls);
+}

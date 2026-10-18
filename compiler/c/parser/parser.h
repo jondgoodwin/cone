@@ -248,6 +248,10 @@ INode *parseEachFilter(ParseState *parse);
 INode *parseEachFilterStmt(INode *condexp, Name *lifesym);
 // Parse an expression block
 INode *parseExprBlock(ParseState *parse, int isloop);
+// Where a block stands, for the ';' of its last line: its value is used (no ';'), is not
+// used (the ';' stays), or is read off the line (a closure's, either)
+enum { TailUnused = 0, TailUsed = 1, TailFree = 2 };
+void parseTailCheck(INode *node, int used);
 INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c

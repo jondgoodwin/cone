@@ -75,7 +75,7 @@ for name, fields in structs:
         cone.append('    libc.free(raw as *u8);')
         cone.append('  }')
     c.append(line)
-cone.append('  0;')
+cone.append('  0')
 cone.append('}')
 
 with open(os.path.join(here, 'layout.inc'), 'w', newline='\n') as f:

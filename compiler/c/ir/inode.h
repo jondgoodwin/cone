@@ -356,6 +356,13 @@ enum NodeTags {
 // this one: name resolution reads it with that loop as the innermost (blockNameRes).
 // The 'break' ending it is aimed at the loop it leaves from the start (FlagBreakAimed).
 #define FlagLoopElse  0x0100        // Block: the 'else' of the loop it stands in
+// The block ends in ';' after an expression or a statement that ends in a block, so its
+// last statement is an empty one and the block is void. The parser has judged whether
+// that is where the ';' belongs (parseTailCheck); the flag is kept for a closure, whose
+// return type is read off its paths: a closure that ends so returns nothing, and one
+// whose last line has no ';' returns it (closureImplicitReturn)
+#define FlagTailSemi  0x0080        // Block: its last statement is empty, after an expression or a block-ending statement
+#define FlagTailOpen  0x0200        // Block: its last statement is an expression statement with no ';'
 #define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain

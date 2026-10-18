@@ -10,7 +10,7 @@ import sdf use *;
 fn scene(p Vec3) f32 {
   let body = roundBox(p, new Vec3(1., 0.5, 0.5), 0.1);
   let hole = cylinder(rotate(p, turn), 1., 0.3);
-  smoothSubtract(body, hole, 0.05);
+  smoothSubtract(body, hole, 0.05)
 }
 
 let horn = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);   // length, base radius, taper, curl, ribs, rib depth

@@ -616,8 +616,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // (A closure whose return type is not written reads it off its paths)
     if (fnnode->closure && fnnode->closure->retinfer)
         closureImplicitReturn(fnnode);
-    else
+    else {
+        // A function literal with no name, and a closure, take their return type from where
+        // they are given when they write none
+        if (fnnode->closure || fnnode->namesym == NULL)
+            closureContextTail(fnnode);
         fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
+    }
 
     // Type check/inference of the function's logic.
     //

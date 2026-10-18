@@ -1,0 +1,27 @@
+// The ';' of a closure's last line. A closure that writes its return type is judged as a
+// function is, by the parser (core_parse_tailvalue). One that writes none takes the type
+// from where it is given, or reads it off its body, and the last line goes by that: left off
+// where the signature given says a value, kept where it says nothing. With no signature
+// to give it the closure returns the line's value without a ';' and nothing with one, and
+// both are accepted (core_tailvalue).
+
+mod closure_typecheck_tailvalue;
+
+fn say() {}
+fn takesInt(f &fn(x i32) i32) i32 { f(1) }
+fn takesNothing(f &fn(x i32)) { f(1); }
+
+// The signature says a value: the ';' would throw it away
+fn semiWhereAValue() i32 {
+  takesInt(fn(x i32) { x + 1; })        //~ ErrorTailSemi:29 "gives no value"
+}
+
+// A statement that ends in a block, followed by a ';', is an empty last statement as well
+fn emptyWhereAValue() i32 {
+  takesInt(fn(x i32) { if x > 0 { 1 } else { 2 }; })   //~ ErrorTailSemi:49 "gives no value"
+}
+
+// The signature says nothing: the line keeps its ';'
+fn openWhereNothing() {
+  takesNothing(fn(x i32) { say() });    //~ ErrorTailOpen:28 "nothing uses"
+}

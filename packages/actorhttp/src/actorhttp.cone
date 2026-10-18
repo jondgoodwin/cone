@@ -326,7 +326,7 @@ fn @initpure init() {
 
 // A panic, reported at the line calling 'die'
 fn die(msg &str, file &Array[u8] = srcFile(), line u32 = srcLine()) Never {
-  panic(msg, file, line);
+  panic(msg, file, line)
 }
 
 // ---------------------------------------------------------------------------
@@ -347,25 +347,25 @@ pub struct FetchError {
   pub failure httpclient.Failure;   // Failed: the stage, the system's code, the HTTP error; else none
   cause FetchErrorKind;
 
-  pub fn failed(f httpclient.Failure) FetchError {new FetchError(f, FetchErrorKind.Failed);}
-  pub fn cancelled() FetchError {new FetchError(httpclient.Failure.none(), FetchErrorKind.Cancelled);}
-  pub fn timedOut() FetchError {new FetchError(httpclient.Failure.none(), FetchErrorKind.TimedOut);}
+  pub fn failed(f httpclient.Failure) FetchError {new FetchError(f, FetchErrorKind.Failed)}
+  pub fn cancelled() FetchError {new FetchError(httpclient.Failure.none(), FetchErrorKind.Cancelled)}
+  pub fn timedOut() FetchError {new FetchError(httpclient.Failure.none(), FetchErrorKind.TimedOut)}
 
   // How it came to be
-  pub fn kind(self &) FetchErrorKind {cause;}
+  pub fn kind(self &) FetchErrorKind {cause}
 
   // Ended by a cancel
-  pub fn isCancelled(self &) bool {cause == FetchErrorKind.Cancelled;}
+  pub fn isCancelled(self &) bool {cause == FetchErrorKind.Cancelled}
 
   // Ended by its deadline
-  pub fn isTimedOut(self &) bool {cause == FetchErrorKind.TimedOut;}
+  pub fn isTimedOut(self &) bool {cause == FetchErrorKind.TimedOut}
 
   // 'connect: closed: the connection could not be made (...)', or 'cancelled',
   // or 'deadline passed'
   pub fn message(self &) String {
     if cause == FetchErrorKind.Cancelled {return String.from("cancelled");}
     if cause == FetchErrorKind.TimedOut {return String.from("deadline passed");}
-    failure.message();
+    failure.message()
   }
 }
 
@@ -413,9 +413,9 @@ let ended Atomic[bool];
 // The ids handles carry: never 0
 let nextId Atomic[u64];
 
-fn newId() u64 {nextId.add(1u64) + 1u64;}
+fn newId() u64 {nextId.add(1u64) + 1u64}
 
-fn nullJob() *JobHead {null;}
+fn nullJob() *JobHead {null}
 
 // A job's block, its body moved in
 fn newJob[J](body J) *u8 {
@@ -425,7 +425,7 @@ fn newJob[J](body J) *u8 {
   }
   (*p).head = new JobHead(nullJob(), &runJob[J], &dropJob[J]);
   mem.writeRaw[J](&(*p).body as *J, body);
-  p as *u8;
+  p as *u8
 }
 
 // On the service thread: the job's body moved out, its block freed, and run
@@ -537,7 +537,7 @@ fn svcMain(arg SvcArg) u32 {
       }
     }
   }
-  0u32;
+  0u32
 }
 
 // The package's finalizer, run by finalAll() before the actors package's:
@@ -578,7 +578,7 @@ struct JobHold is Move {
   fn take(self &mut) *u8 {
     let j = job;
     job = null;
-    j;
+    j
   }
 
   fn final(self &uni) {
@@ -592,7 +592,7 @@ struct JobHold is Move {
 fn awaitable[J, R](body J) actors.Awaitable[R] {
   actors.Awaitable[R].make(fn(rp actors.Reply) [var held = new JobHold(newJob[J](body))] {
     startJob[J](held.take(), rp);
-  });
+  })
 }
 
 // A job nothing awaits: it is queued at once
@@ -615,37 +615,37 @@ pub struct Client is Move {
   id u64;
 
   // A client with httpclient's defaults, whose bodies are read up to defaultMaxBody
-  pub fn standard() Client {Client.make(httpclient.Config.make(), defaultMaxBody);}
+  pub fn standard() Client {Client.make(httpclient.Config.make(), defaultMaxBody)}
 
   // A client with cfg's pools, limits and TLS, whose response bodies are
   // read up to maxBody bytes (past it the exchange fails at Stage.Limit)
   pub fn make(cfg httpclient.Config, maxBody usize) Client {
     let id = newId();
     post[CreateClientJob](new CreateClientJob(id, cfg, maxBody));
-    new Client(id);
+    new Client(id)
   }
 
   // A Client naming nothing, which ends nothing
-  pub fn none() Client {new Client(0u64);}
+  pub fn none() Client {new Client(0u64)}
 
-  pub fn isNone(self &) bool {id == 0u64;}
+  pub fn isNone(self &) bool {id == 0u64}
 
   // Another handle to the same client, its pools and its limits
   pub fn clone(self &) Client {
     if id != 0u64 {
       post[RefJob](new RefJob(id, true));
     }
-    new Client(id);
+    new Client(id)
   }
 
   // A GET of a URL written as text, answered with the whole response
   pub fn get(self &, url &str) actors.Awaitable[Result[httpclient.Response, FetchError]] {
-    self.sendIn(httpclient.Request.get(url), IoLimits.none());
+    self.sendIn(httpclient.Request.get(url), IoLimits.none())
   }
 
   // A GET ended if lim says so (the package's header, CANCEL AND DEADLINES)
   pub fn getIn(self &, url &str, lim IoLimits) actors.Awaitable[Result[httpclient.Response, FetchError]] {
-    self.sendIn(httpclient.Request.get(url), lim);
+    self.sendIn(httpclient.Request.get(url), lim)
   }
 
   // A request, answered with the whole response. A request the client
@@ -653,7 +653,7 @@ pub struct Client is Move {
   // program error: a panic at the caller's line
   pub fn send(self &, req httpclient.Request, file &Array[u8] = srcFile(), line u32 = srcLine())
       actors.Awaitable[Result[httpclient.Response, FetchError]] {
-    self.sendIn(req, IoLimits.none(), file, line);
+    self.sendIn(req, IoLimits.none(), file, line)
   }
 
   // A request ended if lim says so, and its own deadline and group too: the
@@ -667,7 +667,7 @@ pub struct Client is Move {
       else {}
     }
     if lim.deadline < r.deadline {r.deadline = lim.deadline;}
-    awaitable[FetchJob, Result[httpclient.Response, FetchError]](new FetchJob(id, r, new actors.Reply()));
+    awaitable[FetchJob, Result[httpclient.Response, FetchError]](new FetchJob(id, r, new actors.Reply()))
   }
 
   // A request whose response the actor reads as it arrives, body chunk by
@@ -675,14 +675,14 @@ pub struct Client is Move {
   // arrives, with a BodyStream whose 'read' awaits each piece
   pub fn stream(self &, req httpclient.Request, file &Array[u8] = srcFile(), line u32 = srcLine())
       actors.Awaitable[Result[BodyStream, FetchError]] {
-    self.streamIn(req, IoLimits.none(), file, line);
+    self.streamIn(req, IoLimits.none(), file, line)
   }
 
   // The same, the whole fetch ended if lim says so, and the request's own deadline and group too
   pub fn streamIn(self &, req httpclient.Request, lim IoLimits, file &Array[u8] = srcFile(), line u32 = srcLine())
       actors.Awaitable[Result[BodyStream, FetchError]] {
     let r = limitedRequest(req, lim, file, line);
-    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](new StreamOpenJob(id, r, false, new actors.Reply()));
+    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](new StreamOpenJob(id, r, false, new actors.Reply()))
   }
 
   // A request whose response is read as server-sent events (STREAMS): it asks
@@ -691,7 +691,7 @@ pub struct Client is Move {
   // EventStream whose 'next' awaits each event. It is no GET only: any method
   pub fn events(self &, req httpclient.Request, file &Array[u8] = srcFile(), line u32 = srcLine())
       actors.Awaitable[Result[EventStream, FetchError]] {
-    self.eventsIn(req, IoLimits.none(), file, line);
+    self.eventsIn(req, IoLimits.none(), file, line)
   }
 
   // The same, the whole stream ended if lim says so, and the request's own deadline and group too
@@ -700,7 +700,7 @@ pub struct Client is Move {
     var r = limitedRequest(req, lim, file, line);
     if not r.headers.has("Accept") {r.headers.add("Accept", "text/event-stream");}
     if not r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
-    awaitable[StreamOpenJob, Result[EventStream, FetchError]](new StreamOpenJob(id, r, true, new actors.Reply()));
+    awaitable[StreamOpenJob, Result[EventStream, FetchError]](new StreamOpenJob(id, r, true, new actors.Reply()))
   }
 
   fn final(self &uni) {
@@ -719,7 +719,7 @@ fn limitedRequest(req httpclient.Request, lim IoLimits, file &Array[u8], line u3
     else {}
   }
   if lim.deadline < r.deadline {r.deadline = lim.deadline;}
-  r;
+  r
 }
 
 // What httpconn would panic at in a request's head, found where the call is made
@@ -741,7 +741,7 @@ fn isVisible(s &Array[u8]) bool {
     if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
     i = i + 1usize;
   }
-  true;
+  true
 }
 
 // What the client would panic at, found where the call is made
@@ -766,9 +766,9 @@ pub struct Conn is Move {
   id u64;
 
   // A Conn naming nothing, which closes nothing
-  pub fn none() Conn {new Conn(0u64);}
+  pub fn none() Conn {new Conn(0u64)}
 
-  pub fn isNone(self &) bool {id == 0u64;}
+  pub fn isNone(self &) bool {id == 0u64}
 
   // A request with its whole body ('' for none), on this connection: the
   // response, whole. The head is the caller's to make, its authority the
@@ -776,7 +776,7 @@ pub struct Conn is Move {
   // the wire at a time, and a second waits for it
   pub fn request(self &, head RequestHead, body String, file &Array[u8] = srcFile(), line u32 = srcLine())
       actors.Awaitable[Result[httpclient.Response, FetchError]] {
-    self.requestIn(head, body, IoLimits.none(), file, line);
+    self.requestIn(head, body, IoLimits.none(), file, line)
   }
 
   // A request ended if lim says so (the package's header, CANCEL AND DEADLINES)
@@ -784,7 +784,7 @@ pub struct Conn is Move {
       actors.Awaitable[Result[httpclient.Response, FetchError]] {
     checkHead(&head, file, line);
     awaitable[ExchangeJob, Result[httpclient.Response, FetchError]](
-      new ExchangeJob(id, head, body, lim.group, lim.deadline, new actors.Reply()));
+      new ExchangeJob(id, head, body, lim.group, lim.deadline, new actors.Reply()))
   }
 
   fn final(self &uni) {
@@ -798,12 +798,12 @@ pub struct Conn is Move {
 // httpconn's driver, bounded by its connectTimeout (10 s)
 pub fn connect(host &str, port u16) actors.Awaitable[Result[Conn, FetchError]] {
   awaitable[ConnectJob, Result[Conn, FetchError]](
-    new ConnectJob(String.from(host), port, false, tls.ClientConfig.make(), new actors.Reply()));
+    new ConnectJob(String.from(host), port, false, tls.ClientConfig.make(), new actors.Reply()))
 }
 
 // A connection to host:port through TLS, the server's certificate checked as
 // cfg says (the host is the name it must hold)
 pub fn connectSecure(host &str, port u16, cfg tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
   awaitable[ConnectJob, Result[Conn, FetchError]](
-    new ConnectJob(String.from(host), port, true, cfg, new actors.Reply()));
+    new ConnectJob(String.from(host), port, true, cfg, new actors.Reply()))
 }

@@ -22,6 +22,7 @@ typedef struct FnSigNode {
     uint8_t lifechecked;   // lifeSigCheck has settled 'lifenamed' and 'lifeorder'
     uint8_t lifestatic;    // Its order bounds a lifetime by ''static': a type parameter's bound (lifetime.h)
     Name *spelled;         // A signature written bare as a generic bound: the text it was written as, for messages; else NULL
+    uint8_t retwritten;    // A return type is written. The body's last line then gives the value, with no ';', whatever the type is once a generic is instanced (fnImplicitReturn)
     uint8_t ccall;         // C's calling convention: the signature of a C-named function ('fn @c', a function of an '@c' module) and the type '&fn @c (...)' of a reference to one
 } FnSigNode;
 

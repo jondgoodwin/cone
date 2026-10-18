@@ -251,7 +251,7 @@ def main() -> int:
               stdio.print <- "triple of 14 is ";
               stdio.print <- tri.triple(14i32);
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         out = run(congo + ["run", "fetch_demo.cone"], job, env)

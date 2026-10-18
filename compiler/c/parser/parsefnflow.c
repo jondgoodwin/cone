@@ -184,13 +184,6 @@ static INode *parseJumpEnd(ParseState *parse, BreakRetNode *jump, INode *trailin
     return (INode*)parseJumpIf(trailing, 0, (INode*)jump);
 }
 
-// Parse an expression statement within a function
-INode *parseExpStmt(ParseState *parse) {
-    INode *node = parseAnyExpr(parse);
-    parseEndOfStatement();
-    return node;
-}
-
 // Parse a return statement
 INode *parseReturn(ParseState *parse) {
     BreakRetNode *stmtnode = newReturnNode();
@@ -1527,11 +1520,87 @@ INode *parseWith(ParseState *parse) {
     return (INode *)blk;
 }
 
+// An expression statement in a block. A ';' is a delimiter: 'A; B; C' is three statements,
+// and the block's value is the last, C. In 'A; B;' the last statement is empty, and an
+// empty statement's value is void. So the ';' after the block's last expression throws
+// its value away, and the block's value is used or not by the construct it stands in
+// (parseTailCheck). The statement is handed back with a mark to point an error at in
+// *semip: the ';' that follows it, which makes the block's last statement an empty one, or,
+// where the block's '}' stood in its place (*openp set), the line's first token.
+static INode *parseBlockExpStmt(ParseState *parse, INode **semip, int *openp) {
+    char *startp = lex->tokp, *linep = lex->linep;
+    uint32_t linenbr = lex->linenbr;
+    INode *node = parseAnyExpr(parse);
+    *semip = NULL;
+    *openp = 0;
+    if (lexIsToken(RCurlyToken)) {
+        // A mark standing where the line begins, to point an error at
+        *openp = 1;
+        *semip = (INode*)newNilLitNode();
+        (*semip)->srcp = startp;
+        (*semip)->linep = linep;
+        (*semip)->linenbr = linenbr;
+        return node;
+    }
+    if (lexIsToken(SemiToken))
+        *semip = (INode*)newNilLitNode();   // positioned at the ';'
+    parseEndOfStatement();
+    return node;
+}
+
+// A block ending in ';' ends in an empty statement, which has no value. So the block's
+// last line has no ';' where the block's value is used, and keeps it everywhere else,
+// whatever type the line has (ErrorTailSemi, ErrorTailOpen).
+// 'used' says where the block stands: TailUnused, TailUsed, or TailFree where the type
+// to give is read off the line, as a closure's is. It follows the block into the
+// statements that end in a block: the last statement of a block hands on what the
+// block has, and any other statement is unused. A statement that ends in a block
+// (an 'if', a 'match', a loop) takes no ';' and is not itself judged, but its arms are.
+// A block that is an operand of an expression is judged where it is parsed.
+static void parseTailCheckBlock(BlockNode *blk, int used, int viaelse);
+
+void parseTailCheck(INode *node, int used) {
+    if (node == NULL)
+        return;
+    if (node->tag == IfTag) {
+        Nodes *arms = ((IfNode *)node)->condblk;
+        for (uint32_t i = 1; i < arms->used; i += 2)
+            parseTailCheck(nodesGet(arms, i), used);
+    }
+    else if (node->tag == BlockTag)
+        parseTailCheckBlock((BlockNode *)node, used, 0);
+}
+
+static void parseTailCheckBlock(BlockNode *blk, int used, int viaelse) {
+    // A loop's 'else' stands inside the loop as an arm of its exit, and is judged
+    // once, from the loop, with the loop's own use
+    if ((blk->flags & FlagLoopElse) && !viaelse)
+        return;
+    uint32_t n = blk->stmts->used;
+    if (blk->flags & FlagLoop) {
+        if (blk->elseblk)
+            parseTailCheckBlock(blk->elseblk, used, 1);
+        used = TailUnused;   // a loop's body gives nothing
+    }
+    if (used == TailUsed && (blk->flags & FlagTailSemi))
+        errorMsgNode(blk->tailmark, ErrorTailSemi, TailSemiMsg);
+    else if (used == TailUnused && (blk->flags & FlagTailOpen))
+        errorMsgNode(blk->tailmark, ErrorTailOpen, TailOpenMsg);
+    for (uint32_t i = 0; i < n; ++i)
+        parseTailCheck(nodesGet(blk->stmts, i), i + 1 == n ? used : TailUnused);
+}
+
 // Parse a block of statements/expressions
 INode *parseExprBlock(ParseState *parse, int isloop) {
     BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
     if (blk->stmts == NULL)
         blk->stmts = newNodes(8);
+    INode *expstmt = NULL, *expsemi = NULL;   // the latest expression statement, and its ';'
+    int expopen = 0;
+    // The latest statement that ends in a block, and the ';' written directly after it. A
+    // statement that ends in a block delimits itself, so that ';' delimits an empty
+    // statement after it, and the block's last statement is that one
+    INode *blockstmt = NULL, *blocksemi = NULL;
 
     // A block's statements stand at the top level, even inside a list: a
     // comma there belongs to them, not to the list around the block
@@ -1540,8 +1609,14 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
     parseBlockStart();
 
     while (!parseBlockEnd()) {
+        int endsinblock = lex->toktype == IfToken || lex->toktype == MatchToken || lex->toktype == WhileToken
+            || lex->toktype == EachToken || lex->toktype == WithToken || lex->toktype == LCurlyToken
+            || lex->toktype == LifetimeToken
+            || (lex->toktype == IdentToken && lex->val.ident == parallelName && lexNextIsWord("each"));
         switch (lex->toktype) {
         case SemiToken:
+            if (blockstmt && blocksemi == NULL && nodesLast(blk->stmts) == blockstmt)
+                blocksemi = (INode*)newNilLitNode();   // positioned at the ';'
             lexNextToken();
             break;
 
@@ -1607,7 +1682,8 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
                 nodesAdd(&blk->stmts, parseEach(parse, NULL, 1));
                 break;
             }
-            nodesAdd(&blk->stmts, parseExpStmt(parse));
+            expstmt = parseBlockExpStmt(parse, &expsemi, &expopen);
+            nodesAdd(&blk->stmts, expstmt);
             break;
 
         case LifetimeToken:
@@ -1672,8 +1748,30 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         }
 
         default:
-            nodesAdd(&blk->stmts, parseExpStmt(parse));
+            expstmt = parseBlockExpStmt(parse, &expsemi, &expopen);
+            nodesAdd(&blk->stmts, expstmt);
         }
+        if (endsinblock) {
+            blockstmt = nodesLast(blk->stmts);
+            blocksemi = NULL;
+        }
+    }
+
+    // Whether the block's last line is an expression, and whether it ends in ';'. Whether
+    // that is right depends on whether the block's value is used, which the construct the
+    // block stands in tells: parseTailCheck judges it there. The ';' after a statement that
+    // ends in a block makes the block's last statement an empty one, as it does after an
+    // expression. Mid-block, or where no value is used, that empty statement is harmless
+    if (blockstmt && blocksemi && nodesLast(blk->stmts) == blockstmt) {
+        blk->tailmark = blocksemi;
+        blk->flags |= FlagTailSemi;
+    }
+    else if (expstmt && nodesLast(blk->stmts) == expstmt) {
+        blk->tailmark = expsemi;
+        if (expopen)
+            blk->flags |= FlagTailOpen;
+        else if (expsemi)
+            blk->flags |= FlagTailSemi;   // (neither where the ';' was missing and reported)
     }
 
     parse->inlist = svinlist;
@@ -2176,6 +2274,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
         macro->parms = parseGenericParms(parse, 0, NULL, NULL);
     }
     macro->body = parseExprBlock(parse, 0);
+    parseTailCheck(macro->body, TailUsed);   // a macro is replaced by its value
     return macro;
 }
 
@@ -2473,6 +2572,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         parse->genctx = genctx;
         parse->genoperand = 0;
         fnnode->value = parseExprBlock(parse, 0);
+        // The body's value is used when the signature writes a return type
+        parseTailCheck(fnnode->value, ((FnSigNode*)fnnode->vtype)->retwritten ? TailUsed : TailUnused);
         parse->genctx = svgenctx;
         parse->genoperand = svgenoperand;
         bodyendp = lex->prevend;

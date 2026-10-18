@@ -19,6 +19,8 @@ caused, were measured.*
 | --- | --- |
 | `stmts` | ordered statements. **Never NULL** — `--checktree` reports `ErrorBadTree` if it is |
 | `lifesym` | the `Name` of a `'label:` annotation, else NULL. The *declaration* side; `BreakRetNode.life` is the use side |
+| `tailmark` | the parser's note on the last line, with `FlagTailSemi` or `FlagTailOpen`: the `;` that makes the block's last statement an empty one, or the last line's first token where it has no `;`. Read by `parseTailCheck` as the construct the block stands in is finished, and by a closure's body; nothing after type check reads it |
+| `elseblk` | on a loop, the block of its `else` (`blockElseFinish`), which `parseTailCheck` judges with the loop's use |
 | `breaks` | the `BreakRetNode`s targeting this block. NULL for a regular block; allocated for a loop; created lazily for an **inline** function's body |
 | `vtype` | `unknownType` until the end of type check |
 | `flowmark` | where this block's scope starts on the flow stack. Set by `blockFlow` on entry and **valid only while flow is inside the block**; read by a `break` or `continue` naming it, to know how many scopes it is leaving |
@@ -27,6 +29,7 @@ caused, were measured.*
 | --- | --- |
 | `FlagLoop` | a loop block. **Set only by `newLoopBlockNode`** |
 | `FlagLoopStep` | the last statement is `each`'s synthesized step |
+| `FlagTailSemi`, `FlagTailOpen` | `FlagTailSemi`: the block ends in a `;` after an expression or a statement that ends in a block, so its last statement is an empty one (a `;` delimits statements, and an empty statement has no value). `FlagTailOpen`: the last statement is an expression with no `;` before the `}`. Whether that is right depends on whether the block's value is used ([Parse](../phases/parse.md), "Blocks and statement ends") |
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
 | `FlagParallel` | the outer block of a `parallel each`; set with `FlagEach` by the parser and **kept** once `parallelEachLower` has built the loop, for the body's checks and for generation, which outlines the loop. With `FlagParIncl` (a range written `<=`) and `FlagParRange` (a number range, not a source) |
@@ -193,7 +196,7 @@ statements; the loop below then checks them as built. By the source's type:
   held first unless it is a place.
 
 Each pass of a cursor loop declares its variable from the item:
-`let x = match cursor.next() { case let s Some { s; } case is None {
+`let x = match cursor.next() { case let s Some { s } case is None {
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
 a variable of the pass's own, `let -item = ...; let k = -item.0; let v =

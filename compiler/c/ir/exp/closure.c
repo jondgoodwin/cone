@@ -896,13 +896,32 @@ void closureImplicitReturn(FnDclNode *fn) {
     INode *last = blk->stmts->used ? nodesLast(blk->stmts) : NULL;
     if (last && last->tag == ReturnTag)
         return;
-    if (last && isExpOrMacroNode(last) && !closureIsChange(last)) {
+    // A last line ended by ';' throws its value away, so the closure returns nothing;
+    // one without the ';' returns it. Either is the closure's to write, as its return
+    // type is read off the paths
+    int semi = (blk->flags & FlagTailSemi) != 0;
+    if (last && isExpOrMacroNode(last) && !closureIsChange(last) && !semi) {
         nodesLast(blk->stmts) = (INode*)newReturnNodeExp(last);
         return;
     }
     // Nothing to hand back: it returns nothing
     fn->closure->retset = 1;
     fnImplicitReturn(sig->rettype, blk);
+}
+
+// A closure whose return type is not written takes it from where it is given, and the
+// ';' of its last line goes by that: left off where a value is wanted, kept where none is.
+// (A closure that writes its type is judged as a function is, by the parser.)
+void closureContextTail(FnDclNode *fn) {
+    BlockNode *blk = (BlockNode*)fn->value;
+    FnSigNode *sig = (FnSigNode*)fn->vtype;
+    if (sig->retwritten || blk->stmts->used == 0)
+        return;
+    int voidret = sig->rettype->tag == VoidTag;
+    if ((blk->flags & FlagTailSemi) && !voidret)
+        errorMsgNode(blk->tailmark, ErrorTailSemi, TailSemiMsg);
+    else if ((blk->flags & FlagTailOpen) && voidret)
+        errorMsgNode(blk->tailmark, ErrorTailOpen, TailOpenMsg);
 }
 
 void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {

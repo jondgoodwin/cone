@@ -22,6 +22,13 @@ typedef struct BlockNode {
     IExpNodeHdr;
     Nodes *stmts;
     Name *lifesym;     // nullable
+    // The parser's note on the last line, read by parseTailCheck as the construct the block
+    // stands in is finished, and by nothing after. When the reader wrote the last line as an
+    // expression statement, FlagTailSemi or FlagTailOpen says whether it ends in ';', and
+    // tailmark is where to point an error: the ';', or the line's first token where it has none.
+    // elseblk, on a loop, is the block of its 'else'
+    INode *tailmark;
+    struct BlockNode *elseblk;
     Nodes *breaks;
     size_t flowmark;   // transient: where this block's scope starts on the flow
                        // stack, so a break/continue targeting it knows how many

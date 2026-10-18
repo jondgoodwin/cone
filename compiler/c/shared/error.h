@@ -708,6 +708,10 @@ enum ErrorCode {
 
     ErrorAndAnd = 1509,         // '&&' written as an operator after an operand (`ready && go()`): Cone has no '&&'; logical and is 'and'. '&&' would otherwise read as the bitwise '&' of a borrow of the right side, which evaluates that side whatever the left is. It is refused at the operator and read as 'and', so nothing after it is reported twice. '&&' before an operand or in a type is two borrows and is unchanged, and so is `a & &b` written with a space
 
+    // A block's last line and its value (parser/parsefnflow.c parseTailCheck; ir/exp/closure.c closureContextTail)
+    ErrorTailSemi = 1510,       // A block whose value is used (a function that returns a value, a block after '=', as an argument or operand or after 'return', the last line of a block whose own value is used, an 'if' or 'match' arm in such a place) ends its last line, an expression or a statement that ends in a block, in ';'. A ';' delimits statements, so the block ends in an empty statement, which has no value: the ';' is left off where the value is used. The ';' is not the author's to keep whatever the line's type is, so a line that gives no value is refused as well. Pointed at the ';'
+    ErrorTailOpen = 1511,       // A block whose value is not used (a function that returns nothing, an 'if' or 'match' used as a statement, a loop body, a closure's that returns nothing) ends its last line, an expression, with no ';'. The ';' is kept wherever the value is not used, whatever the line's type is: `print <- "hi"` ending a function that returns nothing is refused. The rule depends on where the block stands and never on the last line's type. Pointed at the line
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
@@ -719,6 +723,10 @@ enum ErrorCode {
     // Uncounted
     Uncounted = 9000,
 };
+
+// What ErrorTailSemi and ErrorTailOpen say, wherever they are reported
+#define TailSemiMsg "This block gives no value because its last line ends in ';'. Remove the ';' to give the value."
+#define TailOpenMsg "End this line with ';': nothing uses this block's value."
 
 extern int errors;
 extern int warnings;

@@ -308,9 +308,10 @@ whose assertion is "this takes twenty seconds" asserts nothing worth having.
 ## 3. Write the source
 
 **Braces and semicolons.** A block is delimited by braces and every statement
-that does not end in a block ends with `;`, the last one before a `}`
-included. The language has no other way to write either, so a scenario that
-omits a `;` is asserting `ErrorNoSemi`.
+that does not end in a block ends with `;`, except the last line of a block
+whose value is used, which leaves it off; a block whose value is not used keeps
+it (`core_parse_tailvalue` pins both). The language has no other way to write
+either, so a scenario that omits a `;` elsewhere is asserting `ErrorNoSemi`.
 
 **The header.** A file the compiler builds as a module — a flat scenario, a
 support module, a folder's designated file, a one-file module — opens, after its

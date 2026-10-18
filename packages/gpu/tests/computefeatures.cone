@@ -48,7 +48,7 @@ import collections use List;
 fn preference() u32 {
   let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
-  POWER_PREFERENCE_HIGH_PERFORMANCE;
+  POWER_PREFERENCE_HIGH_PERFORMANCE
 }
 
 // ---- Half-precision floats, written in Cone ----
@@ -59,7 +59,7 @@ fn pow2(e i32) f64 {
   var k = e;
   while k > 0 { r = r * 2d; k = k - 1; }
   while k < 0 { r = r / 2d; k = k + 1; }
-  r;
+  r
 }
 
 // 'v' (not negative) rounded to the nearest whole number, a tie to the even one
@@ -68,7 +68,7 @@ fn roundEven(v f64) u32 {
   let d = v - f64.from(t);
   if d > 0.5d { return t + 1u32; }
   if d < 0.5d { return t; }
-  if t % 2u32 == 0u32 { t; } else { t + 1u32; };
+  if t % 2u32 == 0u32 { t } else { t + 1u32 }
 }
 
 // The half-precision bit pattern nearest 'x', ties to even (the rounding the GPU does for each operation), for
@@ -97,35 +97,35 @@ fn toHalf(x f64) u32 {
     return sign | roundEven(a * 16777216d);
   }
   // A mantissa that rounds up to 1024 carries into the exponent, which is what adding it does
-  sign | ((u32.from(e + 15) << 10u32) + roundEven((m - 1d) * 1024d));
+  sign | ((u32.from(e + 15) << 10u32) + roundEven((m - 1d) * 1024d))
 }
 
 // The value of a half-precision bit pattern
 fn fromHalf(h u32) f64 {
-  let s = if (h & 0x8000u32) != 0u32 { -1d; } else { 1d; };
+  let s = if (h & 0x8000u32) != 0u32 { -1d } else { 1d };
   let e = i32.from((h >> 10u32) & 31u32);
   let m = f64.from(h & 1023u32);
   if e == 0 { return s * m * pow2(-24); }
-  s * (1d + m / 1024d) * pow2(e - 15);
+  s * (1d + m / 1024d) * pow2(e - 15)
 }
 
 // The half nearest 'x', as a value
-fn halve(x f64) f64 { fromHalf(toHalf(x)); }
+fn halve(x f64) f64 { fromHalf(toHalf(x)) }
 
 // ---- Data ----
 
 // The next number of a small linear congruential generator (31 bits)
 fn next(state &mut u64) u64 {
   *state = (*state * 1103515245u64 + 12345u64) % 2147483648u64;
-  *state;
+  *state
 }
 
 fn signedByte(w u32, k u32) i32 {
   let v = i32.from((w >> (8u32 * k)) & 255u32);
-  if v >= 128 { v - 256; } else { v; };
+  if v >= 128 { v - 256 } else { v }
 }
 
-fn unsignedByte(w u32, k u32) i32 { i32.from((w >> (8u32 * k)) & 255u32); }
+fn unsignedByte(w u32, k u32) i32 { i32.from((w >> (8u32 * k)) & 255u32) }
 
 // ---- Running a kernel ----
 
@@ -162,15 +162,15 @@ fn run(device &mut Device, shader &ShaderModule, entry &str, buffers &Array[&Buf
   device.queue.submit(encoder.finish());
   device.endFrame();
   device.waitIdle();
-  readback.mappedRange();
+  readback.mappedRange()
 }
 
 fn storage(device &mut Device, bytes u64) Buffer {
-  device.createBuffer(bytes, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+  device.createBuffer(bytes, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC)
 }
 
-fn word(p *u8, i usize) u32 { *((p + i * 4usize) as *u32); }
-fn f32At(p *u8, i usize) f32 { *((p + i * 4usize) as *f32); }
+fn word(p *u8, i usize) u32 { *((p + i * 4usize) as *u32) }
+fn f32At(p *u8, i usize) f32 { *((p + i * 4usize) as *f32) }
 
 // spirv-begin cfhalf.spv CFHALF_SPIRV
 // Written by tools/shaders/shaders.py from cfhalf.slang (sha256 93f5129fe601faa54db81ffb85ccd821d28668e121914ca1ae648a5a95376426): do not edit.
@@ -702,7 +702,7 @@ let CFQUANT_SPIRV Array[u32, 1218] = [
 ];
 // spirv-end
 
-fn yesNo(b bool) &str { if b { "yes"; } else { "no"; }; }
+fn yesNo(b bool) &str { if b { "yes" } else { "no" } }
 
 fn main() i32 {
   let report = (libc.getenv("GPU_COMPUTE_REPORT") as usize) != 0usize;
@@ -751,7 +751,7 @@ fn main() i32 {
     var h = 0usize;
     while h < heaps.len() {
       printStr("  heap "); printUInt(u64.from(h)); printStr(": "); printUInt(heaps[h].bytes); printStr(" bytes, ");
-      printStr(if heaps[h].deviceLocal { "device-local\n"; } else { "not device-local\n"; });
+      printStr(if heaps[h].deviceLocal { "device-local\n" } else { "not device-local\n" });
       h = h + 1usize;
     }
   }
@@ -814,7 +814,7 @@ fn main() i32 {
       and c.storage8Bit == has.storage8Bit and c.subgroupExtendedTypes == has.subgroupExtendedTypes
       and c.integerDotProduct == has.integerDotProduct, "everything present is enabled");
     expectUInt(d.maxStorageBufferBindingSize, has.maxStorageBufferRange, "largeBuffers: the binding limit is the GPU's maxStorageBufferRange");
-    let perStage = if has.maxPerStageDescriptorStorageBuffers > 64u32 { 64u32; } else { has.maxPerStageDescriptorStorageBuffers; };
+    let perStage = if has.maxPerStageDescriptorStorageBuffers > 64u32 { 64u32 } else { has.maxPerStageDescriptorStorageBuffers };
     expectUInt(u64.from(d.maxStorageBuffersPerStage), u64.from(perStage), "and the storage buffers a stage the GPU's (at most 64)");
 
     // ---- 5. A buffer larger than the GPU allows ----
@@ -834,7 +834,7 @@ fn main() i32 {
     let wideBefore = failures();
     let widePipeline = d.createPipelineLayout(&wideLayouts, 0u32);
     expectBool(widePipeline.isValid(), perStage >= 12u32, "a layout of 12 storage buffers is made when the GPU allows it");
-    expectUInt(u64.from(failures() - wideBefore), if perStage >= 12u32 { 0u64; } else { 1u64; }, "and refused when it does not");
+    expectUInt(u64.from(failures() - wideBefore), if perStage >= 12u32 { 0u64 } else { 1u64 }, "and refused when it does not");
   }
   let planned = failures();
 
@@ -929,7 +929,7 @@ fn main() i32 {
       r = run(&mut device, &shader, "byteMain", &bufs, 4u32, &out, 1024u64, &readback);
       i = 0usize;
       while i < 256usize {
-        let s = i32.from(bytes[i]) - if bytes[i] >= 128u8 { 256; } else { 0; };
+        let s = i32.from(bytes[i]) - if bytes[i] >= 128u8 { 256 } else { 0 };
         let want = 3 * s + i32.from(bytes[i ^ 1usize]);
         if i32.from(word(r, i)) != want { bad = bad + 1u32; }
         i = i + 1usize;
@@ -1123,7 +1123,7 @@ fn main() i32 {
           acc = acc + f32.from(s) * scale;
           let term = f64.from(s) * f64.from(scale);
           exact = exact + term;
-          size = size + (if term < 0d { 0d - term; } else { term; });
+          size = size + (if term < 0d { 0d - term } else { term });
           b = b + 1usize;
         }
         want[row] = acc;
@@ -1143,7 +1143,7 @@ fn main() i32 {
         row = 0usize;
         while row < rows {
           let got = f64.from(f32At(r, row));
-          let err = if got > reference[row] { got - reference[row]; } else { reference[row] - got; };
+          let err = if got > reference[row] { got - reference[row] } else { reference[row] - got };
           if err > 0.00001d * magnitude[row] + 0.000001d { badSubgroup = badSubgroup + 1u32; }
           row = row + 1usize;
         }
@@ -1156,7 +1156,7 @@ fn main() i32 {
   }
 
   expectUInt(u64.from(failures()), u64.from(planned), "no failure beyond the refusals the test provoked");
-  expectUInt(u64.from(refusals), 1u64 - (if has.float16Arithmetic { 0u64; } else { 1u64; }), "the drawing device's refusal was the first");
+  expectUInt(u64.from(refusals), 1u64 - (if has.float16Arithmetic { 0u64 } else { 1u64 }), "the drawing device's refusal was the first");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
-  done();
+  done()
 }

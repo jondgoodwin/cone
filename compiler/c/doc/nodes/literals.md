@@ -218,7 +218,7 @@ variable, global or constant declared without a type, an array literal's
 elements. Such a literal still carries `FlagUnkType` when it is
 generated, so the `i32` is final, and `litCheckDefaultRange`, called from
 `genlExpr`, refuses one whose value does not fit it (`ErrorLitRange`) rather than
-materializing it at 32 bits — `x + if v {5000000000;} else {1;}` would add
+materializing it at 32 bits — `x + if v {5000000000} else {1}` would add
 `705032704`. It is checked there because generation is the one place every such
 literal is reached, in a body, a global's initializer and a constant's value
 alike, after everything that could have typed it has run.

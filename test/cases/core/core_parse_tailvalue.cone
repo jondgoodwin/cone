@@ -1,0 +1,203 @@
+// The ';' of a block's last line goes by where the block stands, never by the type of
+// the line. A ';' delimits statements, so a block that ends in one ends in an empty
+// statement, whose value is void: the ';' is left off where the block's value is used
+// (ErrorTailSemi), and kept where it is not (ErrorTailOpen), whatever the line gives, a
+// value or nothing. A statement that ends in a block delimits itself, so a ';' after one is
+// the delimiter of an empty statement after it, and is refused in a used place as any
+// other is; mid-block, or where no value is used, that empty statement is harmless.
+//
+// Parse-stage only: the parser judges the ';', so analysis never runs on the file and each
+// function can name what it likes. Each condition sits in its own function so recovery from
+// one cannot swallow the next.
+
+mod core_parse_tailvalue;
+
+fn say() {}
+fn five() i32 { 5 }
+
+// ---- The value is used, and the line ends in ';' ----
+
+// A function that writes a return type
+fn functionBody() i32 {
+  five();                //~ ErrorTailSemi:9 "gives no value"
+}
+
+// The line itself gives no value: the ';' still goes, as the function writes a type
+fn lineGivesNothing() i32 {
+  say();                 //~ ErrorTailSemi:8 "gives no value"
+}
+
+// The arms of an 'if' that is the function's value, 'elif' and 'else' as well
+fn ifArms(c bool, d bool) i32 {
+  if c { 1; }            //~ ErrorTailSemi:11 "gives no value"
+  elif d { 2; }          //~ ErrorTailSemi:13 "gives no value"
+  else { 3; }            //~ ErrorTailSemi:11 "gives no value"
+}
+
+// The arms of a 'match'
+fn matchArms(n i32) i32 {
+  match n {
+    case 1 { 10; }       //~ ErrorTailSemi:16 "gives no value"
+    else { 20; }         //~ ErrorTailSemi:14 "gives no value"
+  }
+}
+
+// A block after '=', as an argument, as an operand, and after 'return'
+fn operandBlocks(c bool) i32 {
+  let a = { five(); };               //~ ErrorTailSemi:19 "gives no value"
+  let b = if c { 1; }                //~ ErrorTailSemi:19 "gives no value"
+          else { 2; };               //~ ErrorTailSemi:19 "gives no value"
+  say({ 3; });                       //~ ErrorTailSemi:10 "gives no value"
+  let d = 1 + { 4; };                //~ ErrorTailSemi:18 "gives no value"
+  return { 5; };                     //~ ErrorTailSemi:13 "gives no value"
+}
+
+// The last line of a block whose own value is used is a block of the same kind
+fn nested() i32 {
+  { { five(); } }        //~ ErrorTailSemi:13 "gives no value"
+}
+
+// A loop that gives a value when it runs out: its 'else'
+fn loopElse(c bool) i32 {
+  let r = while c { break 1; } else { 2; };   //~ ErrorTailSemi:40 "gives no value"
+  r
+}
+
+// The same for an 'each' over a source, a pattern that binds, a 'with', and a let-else's block
+fn eachElse(xs &List[i32]) i32 {
+  let r = each x in xs { if *x == 3 { break 1; } }
+          else { 2; };                  //~ ErrorTailSemi:19 "gives no value"
+  r
+}
+
+fn boundArms(o ?i32) i32 {
+  if let n Some = o { n; }       //~ ErrorTailSemi:24 "gives no value"
+  else { 0; }                    //~ ErrorTailSemi:11 "gives no value"
+}
+
+fn withBlock(c bool) i32 {
+  with five() { this; }          //~ ErrorTailSemi:21 "gives no value"
+}
+
+// A closure that writes its return type is judged as a function is, a short form with a block
+// as its body gives that block's value
+fn closures() {
+  let f = fn(x i32) i32 { x; };      //~ ErrorTailSemi:28 "gives no value"
+  let g = x => { x; };               //~ ErrorTailSemi:19 "gives no value"
+}
+
+// A macro is replaced by its value
+macro twice[x] { x + x; }            //~ ErrorTailSemi:23 "gives no value"
+
+// A generic function that writes a return type returns a value, whatever it is instanced with
+fn identity[T](a T) T { a; }         //~ ErrorTailSemi:26 "gives no value"
+
+// A method
+struct Counter {
+  pub n i32;
+  pub fn get(self) i32 { n; }        //~ ErrorTailSemi:27 "gives no value"
+}
+
+// ---- The value is used, and a statement that ends in a block is followed by a ';' ----
+
+fn afterIf(c bool) i32 {
+  if c { 1 } else { 2 };                 //~ ErrorTailSemi:24 "gives no value"
+}
+
+fn afterElif(c bool, d bool) i32 {
+  if c { 1 } elif d { 2 } else { 3 };    //~ ErrorTailSemi:37 "gives no value"
+}
+
+fn afterMatch(n i32) i32 {
+  match n {
+    case 1 { 10 }
+    else { 20 }
+  };                                     //~ ErrorTailSemi:4 "gives no value"
+}
+
+fn afterLoopElse(c bool) i32 {
+  while c { break 1; } else { 2 };       //~ ErrorTailSemi:34 "gives no value"
+}
+
+fn afterEach(xs &List[i32]) i32 {
+  each x in xs { if *x == 3 { break 1; } } else { 2 };   //~ ErrorTailSemi:54 "gives no value"
+}
+
+fn afterBlock() i32 {
+  { 5 };                                 //~ ErrorTailSemi:8 "gives no value"
+}
+
+fn afterWith() i32 {
+  with five() { this };                  //~ ErrorTailSemi:23 "gives no value"
+}
+
+// A block that is an operand, and a closure that writes its type
+fn afterInOperand(c bool) i32 {
+  let a = { if c { 1 } else { 2 }; };    //~ ErrorTailSemi:34 "gives no value"
+  let f = fn(x i32) i32 { if x > 0 { 1 } else { 2 }; };   //~ ErrorTailSemi:52 "gives no value"
+  return 0;
+}
+
+// ---- The value is not used, and the line has no ';' ----
+
+// A function that writes no return type, the line giving a value or nothing
+fn voidCall() {
+  five()                 //~ ErrorTailOpen:3 "nothing uses"
+}
+
+fn voidPrint() {
+  print <- "hi"          //~ ErrorTailOpen:3 "nothing uses"
+}
+
+fn voidAssignment() {
+  var x = 0;
+  x = 1                  //~ ErrorTailOpen:3 "nothing uses"
+}
+
+// An 'if' or 'match' used as a statement
+fn statementArms(c bool, n i32) {
+  if c { say() }         //~ ErrorTailOpen:10 "nothing uses"
+  else { five() }        //~ ErrorTailOpen:10 "nothing uses"
+  match n {
+    case 1 { say() }     //~ ErrorTailOpen:14 "nothing uses"
+    else { say() }       //~ ErrorTailOpen:12 "nothing uses"
+  }
+}
+
+// An 'if' that is not the last line of a block whose value is used is a statement
+fn middleIf(c bool) i32 {
+  if c { say() }         //~ ErrorTailOpen:10 "nothing uses"
+  1
+}
+
+// The body of a loop
+fn loopBodies(c bool) {
+  while c { say() }                //~ ErrorTailOpen:13 "nothing uses"
+  each i in 0 ..< 3 { say() }      //~ ErrorTailOpen:23 "nothing uses"
+}
+
+// A block of its own as a statement
+fn blockStatement() {
+  { say() }              //~ ErrorTailOpen:5 "nothing uses"
+}
+
+// A loop over a source, with an 'else' that is a statement, a parallel loop, a pattern that
+// binds and a let-else's block that must leave
+fn statementForms(xs &List[i32], o ?i32) {
+  each x in xs { say() }                       //~ ErrorTailOpen:18 "nothing uses"
+  else { say() }                               //~ ErrorTailOpen:10 "nothing uses"
+  parallel each i in 0 ..< 3 { say() }         //~ ErrorTailOpen:32 "nothing uses"
+  if let n Some = o { say() }                  //~ ErrorTailOpen:23 "nothing uses"
+  let m Some = o else { say() };               //~ ErrorTailOpen:25 "nothing uses"
+}
+
+// A generator's body returns nothing
+fn count() yields i32 {
+  yield 1;
+  say()                  //~ ErrorTailOpen:3 "nothing uses"
+}
+
+// A method that writes no return type
+struct Printer {
+  pub fn put(self) { say() }       //~ ErrorTailOpen:22 "nothing uses"
+}

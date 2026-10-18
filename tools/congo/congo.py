@@ -2177,7 +2177,7 @@ import stdio;
 
 fn main() i32 {{
   stdio.print <- "Hello, world!\\n";
-  0i32;
+  0i32
 }}
 """
 
@@ -2189,7 +2189,7 @@ LIBRARY_TEMPLATE = """\
 mod {name};
 
 pub fn answer() i64 {{
-  42i64;
+  42i64
 }}
 """
 

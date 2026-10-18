@@ -82,27 +82,27 @@ pub struct NetTotals {
 // c >> 1 & 1, c >> 2 & 1); edge e runs along axis a = e / 4, at offset
 // e & 1 along axis (a + 1) % 3 and e >> 1 & 1 along axis (a + 2) % 3.
 
-fn cornerBit(c u32, axis u32) u32 { (c >> axis) & 1u32; }
+fn cornerBit(c u32, axis u32) u32 { (c >> axis) & 1u32 }
 
 fn edgeStart(e u32) u32 {
   let a = e / 4u32;
-  ((e & 1u32) << ((a + 1u32) % 3u32)) | (((e >> 1u32) & 1u32) << ((a + 2u32) % 3u32));
+  ((e & 1u32) << ((a + 1u32) % 3u32)) | (((e >> 1u32) & 1u32) << ((a + 2u32) % 3u32))
 }
-fn edgeEnd(e u32) u32 { edgeStart(e) | (1u32 << (e / 4u32)); }
+fn edgeEnd(e u32) u32 { edgeStart(e) | (1u32 << (e / 4u32)) }
 
 // The pieces of a cell, from surfaceNet's tables packed two words a config
 // (src/gridmesher.cone packs them): word 0 holds edges 0 to 7's piece
 // numbers, four bits each, and word 1 edges 8 to 11's, then the count of
 // pieces in bits 16 to 19; NoPieceBits is an edge not crossed
 pub fn tablePieces(tables &Array[u32], config u32) u32 {
-  (tables[usize.from(2u32 * config + 1u32)] >> 16u32) & 15u32;
+  (tables[usize.from(2u32 * config + 1u32)] >> 16u32) & 15u32
 }
 pub fn tableEdge(tables &Array[u32], config u32, e u32) u32 {
   if e < 8u32 {
-    (tables[usize.from(2u32 * config)] >> (4u32 * e)) & 15u32;
+    (tables[usize.from(2u32 * config)] >> (4u32 * e)) & 15u32
   } else {
-    (tables[usize.from(2u32 * config + 1u32)] >> (4u32 * (e - 8u32))) & 15u32;
-  };
+    (tables[usize.from(2u32 * config + 1u32)] >> (4u32 * (e - 8u32))) & 15u32
+  }
 }
 
 // ---- The grid ----
@@ -110,14 +110,14 @@ pub fn tableEdge(tables &Array[u32], config u32, e u32) u32 {
 // The invocation's number, the dispatch flattened: x, then rows of x
 // workgroups of 64 (a dispatch is at most 65,535 workgroups a side)
 fn flatId(inv Invocation) u32 {
-  inv.globalId[0usize] + inv.globalId[1usize] * inv.groupCount[0usize] * 64u32;
+  inv.globalId[0usize] + inv.globalId[1usize] * inv.groupCount[0usize] * 64u32
 }
 
-fn sampleAt(g SampleGrid, x u32, y u32, z u32) usize { usize.from(x + g.samplesX * (y + g.samplesY * z)); }
+fn sampleAt(g SampleGrid, x u32, y u32, z u32) usize { usize.from(x + g.samplesX * (y + g.samplesY * z)) }
 
 // The sample at corner c of cell (x, y, z)
 fn cornerValue(g SampleGrid, values &Array[f32], x u32, y u32, z u32, c u32) f32 {
-  values[sampleAt(g, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32))];
+  values[sampleAt(g, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32))]
 }
 
 // Cell (x, y, z)'s config: bit c set when its corner c is inside (below 0)
@@ -128,18 +128,18 @@ fn cellConfig(g SampleGrid, values &Array[f32], x u32, y u32, z u32) u32 {
     if cornerValue(g, values, x, y, z, c) < 0. { config = config | (1u32 << c); }
     c = c + 1u32;
   }
-  config;
+  config
 }
 
-fn pick(a u32, x u32, y u32, z u32) u32 { if a == 0u32 { x; } elif a == 1u32 { y; } else { z; }; }
+fn pick(a u32, x u32, y u32, z u32) u32 { if a == 0u32 { x } elif a == 1u32 { y } else { z } }
 
 // The cell number of the cell at (pa, pu, pv) along (a, a + 1, a + 2)
 fn cellAlong(g SampleGrid, a u32, pa u32, pu u32, pv u32) u32 {
   let nx = g.samplesX - 1u32;
   let ny = g.samplesY - 1u32;
-  if a == 0u32 { pa + nx * (pu + ny * pv); }
-  elif a == 1u32 { pv + nx * (pa + ny * pu); }
-  else { pu + nx * (pv + ny * pa); };
+  if a == 0u32 { pa + nx * (pu + ny * pv) }
+  elif a == 1u32 { pv + nx * (pa + ny * pu) }
+  else { pu + nx * (pv + ny * pa) }
 }
 
 // Whether sample (x, y, z)'s edge along axis a carries a quad: the four
@@ -157,7 +157,7 @@ fn quadEdge(g SampleGrid, tables &Array[u32], configs &Array[u32], x u32, y u32,
   let nv = pick(w, g.samplesX, g.samplesY, g.samplesZ) - 1u32;
   if !(pa < na and pu >= 1u32 and pu < nu and pv >= 1u32 and pv < nv) { return false; }
   let config = configs[usize.from(cellAlong(g, a, pa, pu - 1u32, pv - 1u32))];
-  tableEdge(tables, config, a * 4u32 + 3u32) != NoPieceBits;
+  tableEdge(tables, config, a * 4u32 + 3u32) != NoPieceBits
 }
 
 // ---- The passes ----
@@ -204,7 +204,7 @@ pub fn @compute(64) scanTotals(inv Invocation, s ScanStep, items &Array[u32], to
   let b = flatId(inv);
   let start = b * ScanBlock;
   if start < s.count {
-    let end = if s.count - start < ScanBlock { s.count; } else { start + ScanBlock; };
+    let end = if s.count - start < ScanBlock { s.count } else { start + ScanBlock };
     var sum = 0u32;
     var i = start;
     while i < end {
@@ -221,7 +221,7 @@ pub fn @compute(64) scanApply(inv Invocation, s ScanStep, items &mut Array[u32],
   let b = flatId(inv);
   let start = b * ScanBlock;
   if start < s.count {
-    let end = if s.count - start < ScanBlock { s.count; } else { start + ScanBlock; };
+    let end = if s.count - start < ScanBlock { s.count } else { start + ScanBlock };
     var run = bases[usize.from(b)];
     var i = start;
     while i < end {
@@ -245,38 +245,38 @@ pub fn @compute(64) gather(inv Invocation, t NetTotals, cellStarts &Array[u32], 
 // difference on each axis, or twice the one-sided one at the grid's faces
 fn cornerGradient(g SampleGrid, values &Array[f32], x u32, y u32, z u32) Vec3 {
   new Vec3(axisDifference(g, values, x, y, z, 0u32), axisDifference(g, values, x, y, z, 1u32),
-    axisDifference(g, values, x, y, z, 2u32));
+    axisDifference(g, values, x, y, z, 2u32))
 }
 
 fn axisDifference(g SampleGrid, values &Array[f32], x u32, y u32, z u32, a u32) f32 {
   let p = pick(a, x, y, z);
   let n = pick(a, g.samplesX, g.samplesY, g.samplesZ);
-  let dx = if a == 0u32 { 1u32; } else { 0u32; };
-  let dy = if a == 1u32 { 1u32; } else { 0u32; };
-  let dz = if a == 2u32 { 1u32; } else { 0u32; };
+  let dx = if a == 0u32 { 1u32 } else { 0u32 };
+  let dy = if a == 1u32 { 1u32 } else { 0u32 };
+  let dz = if a == 2u32 { 1u32 } else { 0u32 };
   let here = values[sampleAt(g, x, y, z)];
   if p == 0u32 {
-    2. * (values[sampleAt(g, x + dx, y + dy, z + dz)] - here);
+    2. * (values[sampleAt(g, x + dx, y + dy, z + dz)] - here)
   } elif p + 1u32 == n {
-    2. * (here - values[sampleAt(g, x - dx, y - dy, z - dz)]);
+    2. * (here - values[sampleAt(g, x - dx, y - dy, z - dz)])
   } else {
-    values[sampleAt(g, x + dx, y + dy, z + dz)] - values[sampleAt(g, x - dx, y - dy, z - dz)];
-  };
+    values[sampleAt(g, x + dx, y + dy, z + dz)] - values[sampleAt(g, x - dx, y - dy, z - dz)]
+  }
 }
 
 // The gradient at corner c of cell (x, y, z)
 fn cellCornerGradient(g SampleGrid, values &Array[f32], x u32, y u32, z u32, c u32) Vec3 {
-  cornerGradient(g, values, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32));
+  cornerGradient(g, values, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32))
 }
 
 // Corner c's trilinear weight at (u, v, w) = at in the cell: on each axis,
 // the coordinate where the corner's bit is 1 and one minus it where 0, the
 // product taken x, y, z
 fn cornerWeight(at Vec3, c u32) f32 {
-  let wx = if cornerBit(c, 0u32) == 1u32 { at.x; } else { 1. - at.x; };
-  let wy = if cornerBit(c, 1u32) == 1u32 { at.y; } else { 1. - at.y; };
-  let wz = if cornerBit(c, 2u32) == 1u32 { at.z; } else { 1. - at.z; };
-  wx * wy * wz;
+  let wx = if cornerBit(c, 0u32) == 1u32 { at.x } else { 1. - at.x };
+  let wy = if cornerBit(c, 1u32) == 1u32 { at.y } else { 1. - at.y };
+  let wz = if cornerBit(c, 2u32) == 1u32 { at.z } else { 1. - at.z };
+  wx * wy * wz
 }
 
 // Each crossed cell's vertices, one per piece, where 'starts' (the scanned
@@ -309,9 +309,9 @@ pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &Array[u32], valu
         let d0 = cornerValue(g, values, x, y, z, c0);
         let t = divExact(d0, d0 - cornerValue(g, values, x, y, z, edgeEnd(e)));
         let a = e / 4u32;
-        let within = new Vec3(if a == 0u32 { t; } else { f32.from(cornerBit(c0, 0u32)); },
-          if a == 1u32 { t; } else { f32.from(cornerBit(c0, 1u32)); },
-          if a == 2u32 { t; } else { f32.from(cornerBit(c0, 2u32)); });
+        let within = new Vec3(if a == 0u32 { t } else { f32.from(cornerBit(c0, 0u32)) },
+          if a == 1u32 { t } else { f32.from(cornerBit(c0, 1u32)) },
+          if a == 2u32 { t } else { f32.from(cornerBit(c0, 2u32)) });
         sum = sum + within;
         count = count + 1u32;
       }
@@ -331,7 +331,7 @@ pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &Array[u32], valu
       c = c + 1u32;
     }
     let len2 = grad.x * grad.x + grad.y * grad.y + grad.z * grad.z;
-    normals[v] = if len2 > 0. { grad * divExact(1., sqrtExact(len2)); } else { new Vec3(1., 0., 0.); };
+    normals[v] = if len2 > 0. { grad * divExact(1., sqrtExact(len2)) } else { new Vec3(1., 0., 0.) };
     vertexCells[v] = i;
     piece = piece + 1u32;
   }
@@ -344,10 +344,10 @@ fn edgeVertex(g SampleGrid, tables &Array[u32], configs &Array[u32], starts &Arr
   let cell = cellAlong(g, a, pa, cu, cv);
   let config = configs[usize.from(cell)];
   let e = a * 4u32 + (pu - cu) + 2u32 * (pv - cv);
-  starts[usize.from(cell)] + tableEdge(tables, config, e);
+  starts[usize.from(cell)] + tableEdge(tables, config, e)
 }
 
-fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z; }
+fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z }
 
 // The quads across each sample's edges, where 'quadStarts' puts them: the
 // four cells round the edge counterclockwise seen from its outside end, as
@@ -379,9 +379,9 @@ pub fn @compute(64) emit(inv Invocation, g SampleGrid, tables &Array[u32], confi
       let cell = cellAlong(g, a, pa, pu - 1u32, pv - 1u32);
       let inside = cornerBit(configs[usize.from(cell)], edgeStart(a * 4u32 + 3u32)) == 1u32;
       let qa = v0;
-      let qb = if inside { v1; } else { v3; };
+      let qb = if inside { v1 } else { v3 };
       let qc = v2;
-      let qd = if inside { v3; } else { v1; };
+      let qd = if inside { v3 } else { v1 };
       let ac = positions[usize.from(qc)] - positions[usize.from(qa)];
       let bd = positions[usize.from(qd)] - positions[usize.from(qb)];
       let o = usize.from(6u32 * slot);

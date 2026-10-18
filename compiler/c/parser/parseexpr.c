@@ -269,6 +269,7 @@ static INode *parseClosureFn(ParseState *parse) {
     INode *rettype = parseType(parse);
     parse->inrettype = svinrettype;
     clo->sig->rettype = rettype;
+    clo->sig->retwritten = rettype != unknownType;
 
     // Its body is its own: a generator's seams and the code around do not reach into it
     GenCtx *svgenctx = parse->genctx;
@@ -276,6 +277,9 @@ static INode *parseClosureFn(ParseState *parse) {
     parse->genctx = NULL;
     parse->genoperand = 0;
     clo->body = parseExprBlock(parse, 0);
+    // A closure that writes its return type is judged as a function is. Without it the type is
+    // read off the body (or the place it is given to), and the last line may go either way
+    parseTailCheck(clo->body, clo->sig->retwritten ? TailUsed : TailFree);
     parse->genctx = svgenctx;
     parse->genoperand = svgenoperand;
     return (INode*)clo;
@@ -421,6 +425,8 @@ INode *parseTerm(ParseState *parse) {
         default: node = parseExprBlock(parse, 0); break;
         }
         --parse->genoperand;
+        // An operand's value is used
+        parseTailCheck(node, TailUsed);
         return node;
     }
     // 'async do' declares an actor's behaviour, in an actor's body: reported,

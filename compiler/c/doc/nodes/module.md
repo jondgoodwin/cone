@@ -608,7 +608,7 @@ pub mod trait Runner {
     pub var scale i64;              // a requirement
     pub var offset = 100i64;        // a default
     pub fn run(n i64) i64 {         // a default
-        step(n) * scale + offset;
+        step(n) * scale + offset
     }
 }
 ```

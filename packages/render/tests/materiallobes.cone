@@ -63,22 +63,22 @@ fn powerPreference() u32 {
   if (e as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(e), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   }
-  POWER_PREFERENCE_HIGH_PERFORMANCE;
+  POWER_PREFERENCE_HIGH_PERFORMANCE
 }
 
 fn halfToFloat(h u16) f32 {
   let bits = u32.from(h);
   let exponent = (bits >> 10u32) & 31u32;
-  let sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  let sign = if (bits & 0x8000u32) != 0u32 { -1. } else { 1. };
   if exponent == 0u32 { return 0.; }
   let f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
-  sign * (f as f32);
+  sign * (f as f32)
 }
 
 // Channel 'c' of pixel ('x', 'y') of the half-float frame at 'p', 'width' texels wide
 fn radiance(p *u8, width u32, x u32, y u32, c usize) f64 {
   let h = p as *u16;
-  f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(width) + usize.from(x)) * 4usize + c)));
+  f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(width) + usize.from(x)) * 4usize + c)))
 }
 
 // One frame of 'list' into 'color' (half-float, readable), read back
@@ -95,27 +95,27 @@ fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Te
 // The mean of the four pixels round the middle of the frame: the one point on the camera's axis
 fn centre(p *u8, c usize) f64 {
   (radiance(p, SIZE, 31u32, 31u32, c) + radiance(p, SIZE, 32u32, 31u32, c) + radiance(p, SIZE, 31u32, 32u32, c)
-    + radiance(p, SIZE, 32u32, 32u32, c)) * 0.25d;
+    + radiance(p, SIZE, 32u32, 32u32, c)) * 0.25d
 }
 
 fn within(got f64, want f64, relative f64, absolute f64) bool {
-  let d = if got < want { want - got; } else { got - want; };
-  d <= absolute + relative * (if want < 0d { -want; } else { want; });
+  let d = if got < want { want - got } else { got - want };
+  d <= absolute + relative * (if want < 0d { -want } else { want })
 }
 
 // ---- The CPU's side ----
 
-fn square(x f64) f64 { x * x; }
+fn square(x f64) f64 { x * x }
 
 // Charlie's sheen distribution and Neubelt's visibility
 fn sheenD(noh f64, alpha f64) f64 {
   let invA = 1d / alpha;
-  let sin2h = if 1d - noh * noh > 0.0078125d { 1d - noh * noh; } else { 0.0078125d; };
-  (2d + invA) * libc.pow(sin2h, invA * 0.5d) / (2d * 3.14159265358979d);
+  let sin2h = if 1d - noh * noh > 0.0078125d { 1d - noh * noh } else { 0.0078125d };
+  (2d + invA) * libc.pow(sin2h, invA * 0.5d) / (2d * 3.14159265358979d)
 }
 fn sheenV(nov f64, nol f64) f64 {
   let v = 1d / (4d * (nol + nov - nol * nov));
-  if v > 1d { 1d; } else { v; };
+  if v > 1d { 1d } else { v }
 }
 
 // The sheen lobe's directional albedo: its integral over the hemisphere of light directions (midpoint rule)
@@ -141,7 +141,7 @@ fn sheenAlbedo(nov f64, roughness f64) f64 {
     }
     i = i + 1;
   }
-  sum / 400d * (6.283185307179586d / 800d);
+  sum / 400d * (6.283185307179586d / 800d)
 }
 
 // d'Eon and Luebke's green skin profile, a sum of five Gaussians (variances in mm2)
@@ -149,19 +149,19 @@ fn profile(r f64) f64 {
   var sum = 0d;
   var i = 0;
   while i < 5 {
-    let v = if i == 0 { 0.0064d; } elif i == 1 { 0.0484d; } elif i == 2 { 0.187d; } elif i == 3 { 0.567d; } else { 1.99d; };
-    let w = if i == 0 { 0.455d; } elif i == 1 { 0.336d; } elif i == 2 { 0.198d; } elif i == 3 { 0.007d; } else { 0.004d; };
+    let v = if i == 0 { 0.0064d } elif i == 1 { 0.0484d } elif i == 2 { 0.187d } elif i == 3 { 0.567d } else { 1.99d };
+    let w = if i == 0 { 0.455d } elif i == 1 { 0.336d } elif i == 2 { 0.198d } elif i == 3 { 0.007d } else { 0.004d };
     sum = sum + w * libc.exp(-r * r / (2d * v)) / (6.283185307179586d * v);
     i = i + 1;
   }
-  sum;
+  sum
 }
 
 // Penner and Borshukov's ring integral for the light's cosine 'nol' and a ring of radius 1 / perMm millimetres
 fn diffusion(nol f64, perMm f64) f64 {
   let theta = libc.acos(nol);
   if perMm < 0.0001d {
-    return if nol > 0d { nol; } else { 0d; };
+    return if nol > 0d { nol } else { 0d };
   }
   let rho = 1d / perMm;
   var lit = 0d;
@@ -178,11 +178,11 @@ fn diffusion(nol f64, perMm f64) f64 {
     let weight = profile(r) * dx;
     let a = libc.cos(theta + x);
     let b = libc.cos(theta - x);
-    lit = lit + weight * ((if a > 0d { a; } else { 0d; }) + (if b > 0d { b; } else { 0d; }));
+    lit = lit + weight * ((if a > 0d { a } else { 0d }) + (if b > 0d { b } else { 0d }));
     total = total + weight * 2d;
     i = i + 1;
   }
-  lit / total;
+  lit / total
 }
 
 // How much the caustic volume 'v' (strength 1, the surface height 'top') brightens the sun at the
@@ -212,12 +212,12 @@ fn causticFactor(wx f64, wz f64, lx f64, ly f64, lz f64, top f64, height f64, wa
   }
   let kk = depth * (1d - 1d / ior);
   let det = (1d - kk * hxx) * (1d - kk * hzz) - kk * kk * hxz * hxz;
-  let absDet = if det < 0d { -det; } else { det; };
-  let focus0 = 1d / (if absDet > 0.2d { absDet; } else { 0.2d; });
-  let focus = if focus0 > 5d { 5d; } else { focus0; };
+  let absDet = if det < 0d { -det } else { det };
+  let focus0 = 1d / (if absDet > 0.2d { absDet } else { 0.2d });
+  let focus = if focus0 > 5d { 5d } else { focus0 };
   let fade0 = 1d - depth / (6d * wavelength);
-  let fade = if fade0 < 0d { 0d; } elif fade0 > 1d { 1d; } else { fade0; };
-  1d + fade * (focus - 1d);
+  let fade = if fade0 < 0d { 0d } elif fade0 > 1d { 1d } else { fade0 };
+  1d + fade * (focus - 1d)
 }
 
 // The anisotropic lobe's D V (lobes.slang), in double precision
@@ -229,7 +229,7 @@ fn anisotropicDV(at f64, ab f64, toh f64, boh f64, noh f64, tov f64, bov f64, to
   let lambdaV = nol * libc.sqrt(square(at * tov) + square(ab * bov) + nov * nov);
   let lambdaL = nov * libc.sqrt(square(at * tol) + square(ab * bol) + nol * nol);
   let v = 0.5d / (lambdaV + lambdaL);
-  d * (if v > 1d { 1d; } else { v; });
+  d * (if v > 1d { 1d } else { v })
 }
 
 fn main() i32 {
@@ -303,8 +303,8 @@ fn main() i32 {
       while i < SIZE * SIZE * 4u32 {
         let a = *base[usize.from(i)];
         let b = radiance(p, SIZE, (i / 4u32) % SIZE, (i / 4u32) / SIZE, usize.from(i % 4u32));
-        let d = if a > b { a - b; } else { b - a; };
-        let scale = if a > 0.003d { a; } else { 0.003d; };
+        let d = if a > b { a - b } else { b - a };
+        let scale = if a > 0.003d { a } else { 0.003d };
         if d / scale > worst and d > 0.003d { worst = d / scale; }
         if a > bright { bright = a; }
         i = i + 1u32;
@@ -347,7 +347,7 @@ fn main() i32 {
       let y = cases[c * 2usize + 1usize];
       let nov = (f64.from(x) + 0.5d) / 32d;
       let r = (f64.from(y) + 0.5d) / 32d;
-      let rough = if r < 0.07d { 0.07d; } else { r; };
+      let rough = if r < 0.07d { 0.07d } else { r };
       let want = sheenAlbedo(nov, rough);
       let got = radiance(sp, 32u32, x, y, 0usize);
       expect(within(got, want, 0.02d, 0.001d), "the sheen table matches the CPU's integral of D V cos");
@@ -412,7 +412,7 @@ fn main() i32 {
     let scale = 1d - 1d * sheenAlbedo(nov, 0.5d);
     var ch = 0usize;
     while ch < 3usize {
-      let c = if ch == 0usize { 1d; } elif ch == 1usize { 0.5d; } else { 0.25d; };
+      let c = if ch == 0usize { 1d } elif ch == 1usize { 0.5d } else { 0.25d };
       let want = term * c + scale * without[ch];
       let got = radiance(p, SIZE, 32u32, 32u32, ch);
       expect(within(got, want, 0.03d, 0.0003d), "sheen: the Charlie lobe plus the base it leaves");
@@ -575,7 +575,7 @@ fn main() i32 {
       let wz = (f64.from(py) + 0.5d - 32d) / 32d * 3d * 0.36397023d;
       let want = causticFactor(wx, wz, lx, ly, lz, 0.4d, 0.02d, 0.3d, 1.33d, 0.7d);
       let got = radiance(p, SIZE, px, py, 1usize) / dry[q];
-      let e = if got > want { got - want; } else { want - got; };
+      let e = if got > want { got - want } else { want - got };
       if e / want > worst { worst = e / want; }
       if got < lowest { lowest = got; }
       if got > highest { highest = got; }
@@ -616,5 +616,5 @@ fn main() i32 {
     expect(g.glass == 1. and g.ior == 1.5 and g.dispersion == 2. and g.alphaMode == ALPHA_BLEND and g.readsFrame(),
       "glassOf describes see-through glass that reads the frame");
   }
-  done();
+  done()
 }

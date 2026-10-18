@@ -313,7 +313,7 @@ class Scenarios(unittest.TestCase):
               printStr("sum = ");
               io.printInt(twice.of(21i64));
               printStr("\\n");
-              0i32;
+              0i32
             }
             """)
         write(pkg / "src" / "twice" / "twice.cone", """
@@ -322,14 +322,14 @@ class Scenarios(unittest.TestCase):
             import helper as h;
 
             pub fn of(n i64) i64 {
-              h.add(n, n);
+              h.add(n, n)
             }
             """)
         write(pkg / "src" / "helper" / "helper.cone", """
             mod helper;
 
             pub fn add(a i64, b i64) i64 {
-              a + b;
+              a + b
             }
             """)
         run = self.congo("run", cwd=pkg)
@@ -360,19 +360,19 @@ class Scenarios(unittest.TestCase):
               printStr("\\n");
               fmt.line("twice", twice.of(21i64));
               fmt.line("tripled", tripled(5i64));
-              0i32;
+              0i32
             }
             """)
         write(pkg / "src" / "util" / "extra.cone", """
             fn tripled(n i64) i64 {
-              n * 3i64;
+              n * 3i64
             }
             """)
         write(pkg / "src" / "twice.cone", """
             mod twice;
 
             pub fn of(n i64) i64 {
-              n + n;
+              n + n
             }
             """)
         write(pkg / "src" / "fmt" / "fmt.cone", """
@@ -417,7 +417,7 @@ class Scenarios(unittest.TestCase):
               print <- "lone ";
               print <- 6i64 * 7i64;
               print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "lone.cone", cwd=self.root)
@@ -444,7 +444,7 @@ class Scenarios(unittest.TestCase):
               if isDefined("FAST") {print <- "fast ";} else {print <- "slow ";}
               print <- definedInt("LEVEL");
               print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "-D", "FAST", "-DLEVEL=7", "flags.cone", cwd=self.root)
@@ -474,7 +474,7 @@ class Scenarios(unittest.TestCase):
               if Hasher.seeded().finish() == Hasher.withSeed(processSeed()).finish() {print <- "same";}
               else {print <- "different";}
               print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         seeds = []
@@ -502,7 +502,7 @@ class Scenarios(unittest.TestCase):
               print <- "lone ";
               print <- 6i64 * 7i64;
               print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", f"{name}/{name}.cone", cwd=self.root)
@@ -521,7 +521,7 @@ class Scenarios(unittest.TestCase):
 
             fn main() i32 {
               nosuch();
-              0i32;
+              0i32
             }
             """)
         run = subprocess.run([*CONGO, "run", f"{name}/bad.cone"], cwd=self.root,
@@ -570,7 +570,7 @@ class Scenarios(unittest.TestCase):
             fn main() i32 {
               greet.hello(greet.count + 4i64);
               greet.hello(greet.count * 10i64);
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
@@ -605,7 +605,7 @@ class Scenarios(unittest.TestCase):
               pub step i64;
 
               pub fn next(self) i64 {
-                count + step;
+                count + step
               }
             }
             """)
@@ -615,11 +615,11 @@ class Scenarios(unittest.TestCase):
             import b;
 
             pub fn start(n i64) b.Counter {
-              new b.Counter(n, 5i64);
+              new b.Counter(n, 5i64)
             }
 
             pub fn advance(c b.Counter) b.Counter {
-              new b.Counter(c.next(), c.step);
+              new b.Counter(c.next(), c.step)
             }
             """)
         write(self.root / "app.cone", """
@@ -637,7 +637,7 @@ class Scenarios(unittest.TestCase):
               stdio.print <- "\\n";
               stdio.print <- d.step;
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
@@ -690,8 +690,8 @@ class Scenarios(unittest.TestCase):
             pub struct Bag {
               items List[Pt];
 
-              pub fn empty() Bag { new Bag(List[Pt].empty()); }
-              pub fn first(self &) &Pt { items[0usize]; }
+              pub fn empty() Bag { new Bag(List[Pt].empty()) }
+              pub fn first(self &) &Pt { items[0usize] }
               pub fn add(self &mut, p Pt) { items.push(p); }
             }
 
@@ -699,8 +699,8 @@ class Scenarios(unittest.TestCase):
             pub struct Shelf is Sendable {
               items List[Pt];
 
-              pub fn empty() Shelf { new Shelf(List[Pt].empty()); }
-              pub fn first(self &) &Pt { items[0usize]; }
+              pub fn empty() Shelf { new Shelf(List[Pt].empty()) }
+              pub fn first(self &) &Pt { items[0usize] }
               pub fn add(self &mut, p Pt) { items.push(p); }
             }
 
@@ -708,8 +708,8 @@ class Scenarios(unittest.TestCase):
             pub struct Gauge {
               n i64;
 
-              pub fn start(n i64) Gauge { new Gauge(n); }
-              pub fn peek(self &) &i64 { &n; }
+              pub fn start(n i64) Gauge { new Gauge(n) }
+              pub fn peek(self &) &i64 { &n }
               pub fn bump(self &mut) { n = n + 1; }
             }
             """)
@@ -722,13 +722,13 @@ class Scenarios(unittest.TestCase):
             fn viaGauge(g &mut shapes.Gauge) i64 {
               let e = g.peek();
               g.bump();
-              *e;
+              *e
             }
 
             fn usedFirst(bag &mut shapes.Bag, p shapes.Pt) i64 {
               let x = bag.first().x;
               bag.add(p);
-              x;
+              x
             }
 
             fn main() i32 {
@@ -739,7 +739,7 @@ class Scenarios(unittest.TestCase):
               bag.add(new shapes.Pt(7i64, 0i64));
               stdio.print <- usedFirst(&mut bag, new shapes.Pt(8i64, 0i64));
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "good.cone", cwd=self.root)
@@ -765,10 +765,10 @@ class Scenarios(unittest.TestCase):
                 fn viaShape(w &mut {spelling}, p shapes.Pt) i64 {{
                   let e = w.first();
                   w.add(p);
-                  e.x;
+                  e.x
                 }}
 
-                fn main() i32 {{ 0i32; }}
+                fn main() i32 {{ 0i32 }}
                 """)
             run = self.congo("run", f"{name}.cone", cwd=self.root, ok=False)
             self.assertNotEqual(run.returncode, 0, name)
@@ -804,7 +804,7 @@ class Scenarios(unittest.TestCase):
             }
 
             pub fn get() i64 {
-              value;
+              value
             }
             """)
         write(packages / "b" / "src" / "sub.cone", """
@@ -840,7 +840,7 @@ class Scenarios(unittest.TestCase):
             }
 
             pub fn readB() i64 {
-              b.value;
+              b.value
             }
             """)
         write(packages / "c" / "src" / "c.cone", """
@@ -858,7 +858,7 @@ class Scenarios(unittest.TestCase):
             }
 
             pub fn twiceB() i64 {
-              b.get() * 2i64;
+              b.get() * 2i64
             }
             """)
         write(self.root / "app.cone", """
@@ -876,7 +876,7 @@ class Scenarios(unittest.TestCase):
               stdio.print <- c.twiceB();
               stdio.print <- "\\n";
               finalAll();
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
@@ -919,16 +919,16 @@ class Scenarios(unittest.TestCase):
             pub use kinds.Kind;
 
             pub fn classify(n i64) kinds.Kind {
-              if n < 10i64 {Small;} else {Large;}
+              if n < 10i64 {Small} else {Large}
             }
 
             pub fn code(k kinds.Kind) i64 {
-              if k is Small {1i64;} else {2i64;}
+              if k is Small {1i64} else {2i64}
             }
 
             // Expanded in the program: it names vec's function and vec.cell's
             pub fn total(s Stack) i64 inline {
-              vec.sum(s) + vec.cell.bonus();
+              vec.sum(s) + vec.cell.bonus()
             }
             """)
         write(packages / "coll" / "src" / "vec" / "vec.cone", """
@@ -939,24 +939,24 @@ class Scenarios(unittest.TestCase):
               pub b i64;
 
               pub fn swap(self) Stack {
-                new Stack(b, a);
+                new Stack(b, a)
               }
             }
 
             pub fn sum(s Stack) i64 {
-              s.a + s.b;
+              s.a + s.b
             }
 
             // Reached by nothing outside vec: not in the include file
             pub fn unseen() i64 {
-              0i64;
+              0i64
             }
             """)
         write(packages / "coll" / "src" / "vec" / "cell.cone", """
             pub mod cell;
 
             pub fn bonus() i64 {
-              100i64;
+              100i64
             }
             """)
         write(packages / "coll" / "src" / "kinds.cone", """
@@ -980,7 +980,7 @@ class Scenarios(unittest.TestCase):
               stdio.print <- "\\n";
               stdio.print <- coll.code(coll.classify(20i64));
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
@@ -1036,7 +1036,7 @@ class Scenarios(unittest.TestCase):
               stdio.print <- "\\n";
               stdio.print <- winstr.ToIntA(&"-56" as *u8) + 100i32;
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root, ok=False)
@@ -1097,7 +1097,7 @@ class Scenarios(unittest.TestCase):
             fn main() i32 {
               stdio.print <- tri.triple(14i32);
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
@@ -1134,7 +1134,7 @@ class Scenarios(unittest.TestCase):
             fn main() i32 {
               stdio.print <- tri.triple(14i32);
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         return pkg
@@ -1443,7 +1443,7 @@ class Scenarios(unittest.TestCase):
                   f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n')
             write(packages / name / "src" / f"{name}.cone",
                   f"mod {name};\n\nimport {other};\n\npub fn f() {{}}\n")
-        write(self.root / "p.cone", "import ping;\n\nfn main() i32 {\n  0i32;\n}\n")
+        write(self.root / "p.cone", "import ping;\n\nfn main() i32 {\n  0i32\n}\n")
         run = self.congo("run", "p.cone", cwd=self.root, ok=False)
         self.assertEqual(run.returncode, 1)
         self.assertIn("import loop between packages: ping -> pong -> ping", run.stderr)
@@ -1457,11 +1457,11 @@ class Scenarios(unittest.TestCase):
             mod tree;
 
             pub fn shared() i64 {
-              1i64;
+              1i64
             }
 
             fn main() i32 {
-              0i32;
+              0i32
             }
             """)
         write(pkg / "src" / "lexer.cone", "mod lexer;\n\nimport parser;\n")
@@ -1492,7 +1492,7 @@ class Scenarios(unittest.TestCase):
         self.congo("build", cwd=pkg)
 
     def test_an_unknown_import_is_named(self):
-        write(self.root / "p.cone", "import nosuch;\n\nfn main() i32 {\n  0i32;\n}\n")
+        write(self.root / "p.cone", "import nosuch;\n\nfn main() i32 {\n  0i32\n}\n")
         run = self.congo("run", "p.cone", cwd=self.root, ok=False)
         self.assertIn("p.cone:1: import nosuch: no package named 'nosuch'", run.stderr)
 
@@ -1528,7 +1528,7 @@ class Scenarios(unittest.TestCase):
         # Wherever Congo takes a module's name from a file or a folder, a word
         # the compiler never reads as a name is refused, naming the file, before
         # a build description is written that the compiler could not read
-        main = "fn main() i32 {\n  0i32;\n}\n"
+        main = "fn main() i32 {\n  0i32\n}\n"
         write(self.root / "use.cone", main)
         run = self.congo("run", "use.cone", cwd=self.root, ok=False)
         self.assertIn("use.cone: with no 'mod' line it is named by its file: 'use' is a"
@@ -1587,7 +1587,7 @@ class Testing(unittest.TestCase):
             mod counter;
 
             pub fn twice(n i64) i64 {
-              n * 2i64;
+              n * 2i64
             }
             """)
         test = """
@@ -1599,7 +1599,7 @@ class Testing(unittest.TestCase):
             fn main() i32 {{
               printInt(counter.twice({n}i64));
               printStr("\\n");
-              {status};
+              {status}
             }}
             """
         write(pkg / "tests" / "doubles.cone", test.format(name="doubles", n=21, status="0i32"))
@@ -1619,7 +1619,7 @@ class Testing(unittest.TestCase):
 
             fn main() i32 {
               counter.thrice(1i64);
-              0i32;
+              0i32
             }
             """)
         return pkg
@@ -1662,7 +1662,7 @@ class Testing(unittest.TestCase):
             mod perhost;
 
             pub fn one() i64 {
-              1i64;
+              1i64
             }
             """)
         write(pkg / "tests" / "says.cone", """
@@ -1675,7 +1675,7 @@ class Testing(unittest.TestCase):
               printInt(perhost.one());
               printStr(" on this host\\n");
               eprintStr("note\\n");
-              0i32;
+              0i32
             }
             """)
         other = "macos" if congo.HOST_OS != "macos" else "windows"
@@ -1791,12 +1791,12 @@ class Testing(unittest.TestCase):
               kind Kind;
 
               fn weight(self &) u64 {
-                n * 2u64;
+                n * 2u64
               }
             }
 
             fn scale(n u64) u64 {
-              n + 100u64;
+              n + 100u64
             }
 
             pub actor Tally {
@@ -1832,7 +1832,7 @@ class Testing(unittest.TestCase):
             }
 
             pub fn stamp() Stamp {
-              new Stamp(new Mark(0u64));
+              new Stamp(new Mark(0u64))
             }
             """)
         write(pkg / "tests" / "useit.cone", """
@@ -1878,7 +1878,7 @@ class Testing(unittest.TestCase):
 
             fn main() i32 {
               printStr("caf\\u00e9 \\u65e5\\u672c\\n");
-              0i32;
+              0i32
             }
             """)
         write(pkg / "tests" / "accent.out", "cafe 日本\n")
@@ -1916,7 +1916,7 @@ class Testing(unittest.TestCase):
         # is a keyword: Congo says so, naming the file, and writes no build
         # description the compiler could not read
         pkg = self.counter(self.root)
-        write(pkg / "tests" / "use.cone", "mod use;\n\nfn main() i32 {\n  0i32;\n}\n")
+        write(pkg / "tests" / "use.cone", "mod use;\n\nfn main() i32 {\n  0i32\n}\n")
         write(pkg / "tests" / "use.out", "\n")
         run = self.congo("test", "use", cwd=pkg, ok=False)
         self.assertIn("test use ... FAILED", run.stdout)
@@ -1974,7 +1974,7 @@ class Testing(unittest.TestCase):
               "\n"
               "pub fn half(n i64) i64 {\n"
               '  assertDebugMsg(n % 2i64 == 0i64, "only an even number halves");\n'
-              "  n / 2i64;\n"
+              "  n / 2i64\n"
               "}\n")
         test = """
             mod {name};
@@ -1985,7 +1985,7 @@ class Testing(unittest.TestCase):
             fn main() i32 {{
               printInt(halver.half({n}i64));
               printStr("\\n");
-              0i32;
+              0i32
             }}
             """
         write(pkg / "tests" / "even.cone", test.format(name="even", n=8))
@@ -2115,7 +2115,7 @@ class RuntimeLibraries(unittest.TestCase):
             fn main() i32 {
               stdio.print <- tri.triple(14i32);
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         return self.root / "app.cone"
@@ -2229,7 +2229,7 @@ class RuntimeLibraries(unittest.TestCase):
 
             fn main() i32 {
               stdio.print <- tri.triple(14i32);
-              0i32;
+              0i32
             }
             """)
         write(user / "tests" / "triple.out", "42")
@@ -2252,7 +2252,7 @@ class RuntimeLibraries(unittest.TestCase):
             import tri;
 
             pub fn sextuple(n i32) i32 {
-              2i32 * tri.triple(n);
+              2i32 * tri.triple(n)
             }
             """)
         self.congo("new", "user", cwd=self.root)
@@ -2266,7 +2266,7 @@ class RuntimeLibraries(unittest.TestCase):
             fn main() i32 {
               stdio.print <- wrap.sextuple(7i32);
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }
             """)
         self.congo("build", cwd=user)
@@ -2285,14 +2285,14 @@ class RuntimeLibraries(unittest.TestCase):
         write(pkg / "congo.toml",
               '[package]\nname = "fake"\nversion = "0.1.0"\noutput = "library"\n'
               '\n[link]\npaths = ["clib"]\nruntime = ["fake"]\n')
-        write(pkg / "src" / "fake.cone", "mod fake;\n\npub fn one() i32 {\n  1i32;\n}\n")
+        write(pkg / "src" / "fake.cone", "mod fake;\n\npub fn one() i32 {\n  1i32\n}\n")
         write(self.root / "app.cone", """
             mod app;
 
             import fake;
 
             fn main() i32 {
-              fake.one() - 1i32;
+              fake.one() - 1i32
             }
             """)
         deps = self.root / "deps"
@@ -2328,7 +2328,7 @@ class RuntimeLibraries(unittest.TestCase):
             fn main() i32 {{
               stdio.print <- tri.triple(5i32);
               stdio.print <- "\\n";
-              0i32;
+              0i32
             }}
             """
         write(pkg / "tests" / "triples.cone", program.format(name="triples"))
@@ -2380,7 +2380,7 @@ class GpuKernels(unittest.TestCase):
         import geomath use *;
 
         pub fn half(x f32) f32 {
-          x * 0.5;
+          x * 0.5
         }
 
         // A kernel: one invocation for each point
@@ -2406,7 +2406,7 @@ class GpuKernels(unittest.TestCase):
           if fs.isFile("kern.spv") {{
             stdio.print <- "kern.spv is here\\n";
           }}
-          0i32;
+          0i32
         }}
         """
 
@@ -2520,7 +2520,7 @@ class GpuKernels(unittest.TestCase):
             mod quiet;
 
             pub fn said() &Array[u8] {
-              "fn @compute(64)";
+              "fn @compute(64)"
             }
             """)
         run = self.congo("build", cwd=quiet)
@@ -2534,13 +2534,13 @@ class GpuKernels(unittest.TestCase):
     def test_an_import_not_marked_is_refused(self):
         pkgs = self.root / "pkgs"
         self.registry(pkgs)
-        self.package(pkgs / "plain", "plain", "mod plain;\n\npub fn one() i32 {\n  1i32;\n}\n",
+        self.package(pkgs / "plain", "plain", "mod plain;\n\npub fn one() i32 {\n  1i32\n}\n",
                      gpu=False)
-        self.package(pkgs / "loose", "loose", "mod loose;\n\npub fn two() i32 {\n  2i32;\n}\n",
+        self.package(pkgs / "loose", "loose", "mod loose;\n\npub fn two() i32 {\n  2i32\n}\n",
                      gpu=False)
         mid = self.package(pkgs / "mid", "mid",
                            "mod mid;\n\nimport plain;\n\npub fn three() i32 {\n"
-                           "  plain.one() + 2i32;\n}\n")
+                           "  plain.one() + 2i32\n}\n")
         kern = self.package(pkgs / "kern", "kern", """
             mod kern;
 
@@ -2575,7 +2575,7 @@ class GpuKernels(unittest.TestCase):
                       run.stderr)
         # A program that imports mid builds nothing for the GPU, and so is not
         write(self.root / "app.cone", "mod app;\n\nimport mid;\n\nfn main() i32 {\n"
-                                      "  mid.three() - 3i32;\n}\n")
+                                      "  mid.three() - 3i32\n}\n")
         self.congo("run", "app.cone", cwd=self.root)
 
     def test_a_package_compiled_for_the_gpu_is_in_a_folder_named_for_it(self):
@@ -2618,12 +2618,12 @@ class GpuFolder(unittest.TestCase):
         import geomath use *;
 
         pub fn half(x f32) f32 {
-          x * 0.5;
+          x * 0.5
         }
         """
     MATHS_MORE = """
         pub fn len(p Vec3) f32 {
-          p.length();
+          p.length()
         }
         """
     # A module of one file in gpu/, importing its sister there, maths
@@ -2665,7 +2665,7 @@ class GpuFolder(unittest.TestCase):
             pub use maths half;
 
             pub fn quarter(x f32) f32 {
-              maths.half(user.halved(x));
+              maths.half(user.halved(x))
             }
             """)
         # A module of src/ may import one of gpu/, its sister
@@ -2675,7 +2675,7 @@ class GpuFolder(unittest.TestCase):
             import maths;
 
             pub fn halved(x f32) f32 {
-              maths.half(x);
+              maths.half(x)
             }
             """)
         self.gpu_modules(shapes)
@@ -2715,7 +2715,7 @@ class GpuFolder(unittest.TestCase):
               if shapes.quarter(8.) == 2. and shapes.half(8.) == 4. {
                 stdio.print <- "a quarter of 8 is 2\\n";
               }
-              0i32;
+              0i32
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
@@ -2737,7 +2737,7 @@ class GpuFolder(unittest.TestCase):
               if maths.half(8.) == 4. {
                 stdio.print <- "half of 8 is 4\\n";
               }
-              0i32;
+              0i32
             }
             """)
         self.gpu_modules(app)
@@ -2758,10 +2758,10 @@ class GpuFolder(unittest.TestCase):
             mod lib;
 
             pub fn answer() i32 {
-              42i32;
+              42i32
             }
             """)
-        write(lib / "src" / "helpers.cone", "mod helpers;\n\npub fn one() i32 {\n  1i32;\n}\n")
+        write(lib / "src" / "helpers.cone", "mod helpers;\n\npub fn one() i32 {\n  1i32\n}\n")
         tail = (", and gpu/ may not use src/: gpu/ is compiled for the GPU without src/. Move"
                 " what both need into gpu/, which src/ may use")
         kern = Path("gpu") / "kern.cone"
@@ -2811,7 +2811,7 @@ class GpuFolder(unittest.TestCase):
             mod kern;
 
             pub fn down(n u32) u32 {
-              if n == 0u32 {0u32;} else {down(n - 1u32);};
+              if n == 0u32 {0u32} else {down(n - 1u32)}
             }
 
             pub fn @compute(64) fill(inv Invocation, out &mut Array[f32]) {
@@ -2847,14 +2847,14 @@ class GpuFolder(unittest.TestCase):
         self.registry(pkgs)
         lib = self.package(pkgs / "lib", "lib", "mod lib;\n")
         loose = lib / "gpu" / "loose.cone"
-        write(loose, "pub fn one() i32 {\n  1i32;\n}\n")
+        write(loose, "pub fn one() i32 {\n  1i32\n}\n")
         self.assertIn(f"congo: error: {loose}: a file in gpu/ opens with its own 'mod' line, as"
                       f" a module of one file named for the file: gpu/ holds the package's GPU"
                       f" modules, and a file with no 'mod' line would join none\n",
                       self.congo("build", cwd=lib, ok=False).stderr)
         loose.unlink()
         bare = lib / "gpu" / "bare"
-        write(bare / "one.cone", "pub fn one() i32 {\n  1i32;\n}\n")
+        write(bare / "one.cone", "pub fn one() i32 {\n  1i32\n}\n")
         self.assertIn(f"congo: error: {bare}: a folder in gpu/ is a module folder, holding its"
                       f" designated file, bare.cone: gpu/ holds the package's GPU modules, and"
                       f" a folder with none would be part of no module\n",
@@ -2987,7 +2987,7 @@ class IndexRegistries(unittest.TestCase):
         write(folder / "src" / f"{name}.cone", f"mod {name};\n\n{imports}\n{body}\n")
 
     def answer(self, value: int) -> str:
-        return f"pub fn answer() i64 {{\n  {value}i64;\n}}\n"
+        return f"pub fn answer() i64 {{\n  {value}i64\n}}\n"
 
     def index(self, name: str = "index") -> tuple[Path, str]:
         work, url = self.repo(name)
@@ -3008,7 +3008,7 @@ class IndexRegistries(unittest.TestCase):
         imports = "".join(f"import {n};\n" for n in names)
         prints = "".join(f'  stdio.print <- {n}.answer();\n  stdio.print <- "\\n";\n' for n in names)
         write(self.root / "app.cone", f"mod app;\n\nimport stdio;\n{imports}\n"
-                                      f"fn main() i32 {{\n{prints}  0i32;\n}}\n")
+                                      f"fn main() i32 {{\n{prints}  0i32\n}}\n")
         return self.root / "app.cone"
 
     def test_a_package_is_fetched_by_name_at_its_pinned_commit(self):
@@ -3079,7 +3079,7 @@ class IndexRegistries(unittest.TestCase):
 
     def test_a_fetched_package_imports_another_by_name(self):
         src, src_url = self.repo("src")
-        self.library(src / "a", "alpha", "pub fn answer() i64 {\n  beta.answer() + 1i64;\n}\n",
+        self.library(src / "a", "alpha", "pub fn answer() i64 {\n  beta.answer() + 1i64\n}\n",
                      imports="import beta;\n")
         self.library(src / "b", "beta", self.answer(40))
         commit = self.commit(src, "both")

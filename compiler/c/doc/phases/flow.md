@@ -364,8 +364,8 @@ goes on into what it hands back — a block's final expression and the value of
 each `break` that leaves it (not a loop's final expression, which loops back),
 each branch of an `if` — checking every one of those values. Through
 `flowHandleMove` it deactivates every variable any one of them moves out of,
-and marks each name use a value leaves by (`FlagMoveOut`): `let y = {a;}`,
-`if c {a;} else {a;}` and a loop whose only exits all `break a` leave their
+and marks each name use a value leaves by (`FlagMoveOut`): `let y = {a}`,
+`if c {a} else {a}` and a loop whose only exits all `break a` leave their
 source moved on every path, exactly as `let y = a` does, so it is finalized
 once, by the new holder. A variable moved out of by only some of them is a
 conditional move: it may not be used again, and whether its scope's end
@@ -385,8 +385,8 @@ of that scope handed over whole (`flowScopeHandsBack`, the same
 the receiver as it is. Anything else it can be read from is still held where it
 was after the scope ends: a field or an element of a local, which the scope's
 release then releases with the local; a value read through a borrow (a field of
-a borrowed `self`); a variable of an enclosing scope (`let y = {r;}`); a
-global; an assignment's target (`{b = make();}`, `flowIsKeptRead`). A tuple
+a borrowed `self`); a variable of an enclosing scope (`let y = {r}`); a
+global; an assignment's target (`{b = make()}`, `flowIsKeptRead`). A tuple
 literal handed back is counted element by element (`return h.r, 3`). A
 temporary is not an lvalue and hands over the holder it was born
 with. The copy's receiver counts nothing more: a block, an `if` or a call is
@@ -1167,13 +1167,13 @@ using nothing, an `H { r &R; fn final … }` uses `r`. Each variable then ends,
 an access conflicting with every loan of it: a holder still alive holding one
 — declared outside the block, or before the variable in it and so finalized
 after it — and used afterwards, is refused. That is the borrow kept past its
-source, `{ var a = 1i64; var b &i64 = &zero; b = &a; r = b; } *r`, or `{ var a
+source, `{ var a = 1i64; var b &i64 = &zero; b = &a; r = b } *r`, or `{ var a
 = Arena.empty(); h = new Holder(a.alloc(v)); } h.r`. A variable's lifetime
 follows what it holds now, so the stores themselves are legal, and so is
 `r` never used again after `a` ends; this is where a borrow kept past its
 source in a variable of the function is refused. A block handing a value on to a holder — its final
 expression, or a `break`'s — keeps what that value carries in flight while its
-variables end (`pwScopeEndHanding`), so `let h = { let x = ..; new H(&x); }`
+variables end (`pwScopeEndHanding`), so `let h = { let x = ..; new H(&x) }`
 is refused at `x`.
 
 **Temporaries.** A temporary at the root of a place — read through (`*mkso()`,
@@ -1189,7 +1189,7 @@ Ending is the access a variable's scope end is, so a holder still holding a
 borrow of one and used later is refused at the temporary — `let r =
 id(mkso(3)); r.n` is Rust's E0716 — and a block value carrying one is refused
 at once. A loan of a stand-in is local, so a `return` or a store away of a
-borrow of a temporary (`fn f() &R { mkso(); }`) is an escape. A temporary a
+borrow of a temporary (`fn f() &R { mkso() }`) is an escape. A temporary a
 variable's initializer extends arrives as a hidden local (`tempLocalName`),
 an ordinary variable of its block; the messages name both kinds as
 temporaries (`loanTempKind`).
@@ -1684,7 +1684,7 @@ loans differ point at different places (`loanNearApart`). Three kinds of place:
   `break`s and its end (`pwBlockExits`, `pwLoop`), reported at once, at the
   `if` or the block (`loanChosen`); and a function's returns, each against the
   first (`pwStmts`), reported at the return, so `fn pick(a &f32, b &f32) &f32
-  {if c {a;} else {b;};}` is refused in its own body, wherever it is called
+  {if c {a} else {b}}` is refused in its own body, wherever it is called
   from;
 - a holder at a join (`pathJoin`), loop heads included: a pending conflict of
   its own (`loanChosenPending`, kind `PendingChosen`), fired at the holder's

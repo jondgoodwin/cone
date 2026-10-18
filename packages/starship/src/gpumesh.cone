@@ -32,8 +32,8 @@ struct GpuTimes {
   pub relaxing i64;      // relaxation, normals and the quads cut again
   pub reading i64;       // the mesh read back and the slabs joined
 
-  pub fn zero() GpuTimes { new GpuTimes(0i64, 0i64, 0i64, 0i64); }
-  pub fn total(self &) i64 { sampling + meshing + relaxing + reading; }
+  pub fn zero() GpuTimes { new GpuTimes(0i64, 0i64, 0i64, 0i64) }
+  pub fn total(self &) i64 { sampling + meshing + relaxing + reading }
 }
 
 // What one meshing did
@@ -44,18 +44,18 @@ struct GpuStats {
   pub ok bool;
 }
 
-fn micros(t Instant) i64 { (Instant.now() - t).micros(); }
+fn micros(t Instant) i64 { (Instant.now() - t).micros() }
 
 // Workgroups for n invocations of 64 each: x, and y rows of x (the kernels
 // flatten the two)
 fn groupsX(n u32) u32 {
   let g = (n + 63u32) / 64u32;
-  if g == 0u32 { 1u32; } elif g <= 65535u32 { g; } else { 32768u32; };
+  if g == 0u32 { 1u32 } elif g <= 65535u32 { g } else { 32768u32 }
 }
 fn groupsY(n u32) u32 {
   let g = (n + 63u32) / 64u32;
   let x = groupsX(n);
-  if g <= x { 1u32; } else { (g + x - 1u32) / x; };
+  if g <= x { 1u32 } else { (g + x - 1u32) / x }
 }
 
 // The most words GridMesher puts in a buffer: WebGPU's storage binding
@@ -72,7 +72,7 @@ fn slabsOf(grid SampleGrid, most u32, out &mut List[u32]) {
   let last = grid.samplesZ - 1u32;
   var z0 = 0u32;
   while true {
-    let e = if z0 + fit - 1u32 < last { z0 + fit - 1u32; } else { last; };
+    let e = if z0 + fit - 1u32 < last { z0 + fit - 1u32 } else { last };
     out.push(z0);
     out.push(e - z0 + 1u32);
     if e == last { break; }
@@ -83,8 +83,8 @@ fn slabsOf(grid SampleGrid, most u32, out &mut List[u32]) {
 // A buffer for the kernels to fill, not zeroed (each word is written before
 // any is read)
 fn scratch(device &mut Device, words u64) Buffer {
-  device.createBuffer(if words == 0u64 { 4u64; } else { 4u64 * words; },
-    BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+  device.createBuffer(if words == 0u64 { 4u64 } else { 4u64 * words },
+    BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC)
 }
 
 // shipfield's kernels and sdfmesh's mesher, made once
@@ -110,12 +110,12 @@ struct ShipMesher {
       Kernel.make(device, s, "shade", &[READ, READ, READ_WRITE]),
       Kernel.make(device, s, "recut", &[READ, READ, READ_WRITE]),
       Kernel.make(device, s, "layerEnd", &[READ, READ, READ_WRITE]),
-      GridMesher.make(device), 0u32);
+      GridMesher.make(device), 0u32)
   }
 
   pub fn isValid(self &) bool {
     blocks.isValid() and sample.isValid() and probe.isValid() and move.isValid() and shade.isValid()
-      and recut.isValid() and layerEnd.isValid() and mesher.isValid();
+      and recut.isValid() and layerEnd.isValid() and mesher.isValid()
   }
 
   // The GPU's samples against the CPU's, printed: the ship sampled on the
@@ -131,7 +131,7 @@ struct ShipMesher {
     let nslabs = slabs.len() / 2usize;
     let blockCount = blocksAlong(grid.samplesX - 1u32) * blocksAlong(grid.samplesY - 1u32)
       * blocksAlong(grid.samplesZ - 1u32);
-    let sp = if sparse { 1u32; } else { 0u32; };
+    let sp = if sparse { 1u32 } else { 0u32 };
     var compared = 0u64;
     var same = 0u64;
     var flipped = 0u64;
@@ -162,7 +162,7 @@ struct ShipMesher {
       if done.len() != 1usize or !done[0usize].ok { print <- "  sampling on the GPU FAILED\n"; return false; }
       let words = done[0usize].words(back);
       // Each slab's samples but its first layer, the slab before's last
-      var i = if k == 0usize { 0u32; } else { 2u32 * grid.samplesX * grid.samplesY; };
+      var i = if k == 0usize { 0u32 } else { 2u32 * grid.samplesX * grid.samplesY };
       while usize.from(i) < words.len() and i < n {
         let g = *words[usize.from(i)] as f32;
         if absf(g) < band {
@@ -189,7 +189,7 @@ struct ShipMesher {
     print <- "  samples within "; print <- band; print <- " of the surface: "; print <- compared; print <- ", ";
     print <- same; print <- " the CPU's bits, "; print <- flipped; print <- " of a different sign, at most ";
     print <- most; print <- " apart\n";
-    flipped == 0u64;
+    flipped == 0u64
   }
 
   // The ship over 'box' in cells 'cell', meshed on the GPU, relaxed 'relax'
@@ -208,9 +208,9 @@ struct ShipMesher {
     let blockCount = blx * bly * blz;
     stats.samples = u64.from(grid.samplesX) * u64.from(grid.samplesY) * u64.from(grid.samplesZ);
     stats.slabs = u32.from(nslabs);
-    stats.blocks = if sparse { blockCount; } else { 0u32; };
+    stats.blocks = if sparse { blockCount } else { 0u32 };
     stats.ok = false;
-    let sp = if sparse { 1u32; } else { 0u32; };
+    let sp = if sparse { 1u32 } else { 0u32 };
 
     // Sampling: the blocks, then each slab's samples, one job
     let t0 = Instant.now();
@@ -219,8 +219,8 @@ struct ShipMesher {
     let shipSlot = job.give(uploadValue(device, ship));
     let whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, h);
     let wholeSlot = job.give(uploadValue(device, &whole));
-    let centres = job.give(scratch(device, if sparse { u64.from(blockCount); } else { 1u64; }));
-    let far = job.give(scratch(device, if sparse { u64.from(blockCount); } else { 1u64; }));
+    let centres = job.give(scratch(device, if sparse { u64.from(blockCount) } else { 1u64 }));
+    let far = job.give(scratch(device, if sparse { u64.from(blockCount) } else { 1u64 }));
     if sparse {
       job.dispatch(device, &blocks, &[wholeSlot, shipSlot, centres, far], groupsX(blockCount), groupsY(blockCount));
     }
@@ -322,7 +322,7 @@ struct ShipMesher {
       let c = &mut rdone[0usize];
       if !c.ok { return mesh.Mesh.empty(); }
       let w = c.words(back);
-      drops.push(if w.len() > 0usize { *w[0usize]; } else { 0u32; });
+      drops.push(if w.len() > 0usize { *w[0usize] } else { 0u32 });
       net.positions = c.take(ps);
       net.normals = c.take(ns);
       net.vertexCells = c.take(cs);
@@ -337,12 +337,12 @@ struct ShipMesher {
     k = 0usize;
     while k < nslabs {
       let part = nets[k].readBackMesh(device);
-      join(&mut joined, &part, if k == 0usize { 0u32; } else { *drops[k]; });
+      join(&mut joined, &part, if k == 0usize { 0u32 } else { *drops[k] });
       k = k + 1usize;
     }
     times.reading = micros(t3);
     stats.ok = true;
-    joined;
+    joined
   }
 }
 

@@ -72,7 +72,7 @@ for name, fields in structs:
         c.append(f'  O({name}, {cfld}, "{fld}");')
     cone.append('    libc.free(raw as *u8);')
     cone.append('  }')
-cone.append('  0;')
+cone.append('  0')
 cone.append('}')
 
 with open(os.path.join(here, 'layout.inc'), 'w', newline='\n') as f:
