@@ -497,6 +497,17 @@ tightest, in `parseexpr.c`:
   into `parseAnyExpr` for the right-hand side, as do `:=`, `<=>` and every
   op-assign form.
 
+**`&&` is refused where an operand precedes it.** The lexer keeps `&&` as two
+`AmperToken`s, because it is two borrows in a type or before an operand
+(`&&Pt`, `&&x`). `parseAnd` leaves `lexIsAmpAmp` (a `&` with another directly
+against it) unconsumed, and `parseAndLogicFrom` takes it where it takes `and`:
+it reports `ErrorAndAnd` at the operator and reads it as `and`, so the right
+side is an `and`'s and nothing after it is reported twice. `a & &b` (a space)
+and `a & (&b)` stay a bitwise and of a borrow. The same test keeps a `match`
+pattern's `case x && y` on the path that reports a condition as a pattern.
+`||` is not read at all: a second `|` where an operand belongs is
+`ErrorBadTerm`.
+
 `parseCmpOp` is the comparison level's one list of operators — `==`, `!=`,
 `===`, `!==` and the four orderings — and a `match` pattern reads the same list
 (section 6). The lexer takes `===` and `!==` whole ahead of `==` and `!=`.

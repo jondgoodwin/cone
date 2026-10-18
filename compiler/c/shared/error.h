@@ -706,6 +706,8 @@ enum ErrorCode {
 
     ErrorDclWord = 1508,        // 'imm' or 'mut' where a declaration's word is expected (`imm n = 3;`, `mut n i32;`, `pub imm id i32`, `fn f(mut self)`, `case imm x Some`): they are the permissions of a reference, and a declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value). The word is read as the one that replaces it, so the declaration is checked as written
 
+    ErrorAndAnd = 1509,         // '&&' written as an operator after an operand (`ready && go()`): Cone has no '&&'; logical and is 'and'. '&&' would otherwise read as the bitwise '&' of a borrow of the right side, which evaluates that side whatever the left is. It is refused at the operator and read as 'and', so nothing after it is reported twice. '&&' before an operand or in a type is two borrows and is unchanged, and so is `a & &b` written with a space
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -134,6 +134,12 @@ after it is reported twice. A permission that is neither (`ro`, `uni`, `opaq`,
 `mut1`) stays `ErrorInvType`, and `let` or `var` where a name belongs is
 `ErrorNoName` on a function and `ErrorNoIdent` on a variable.
 
+`ErrorAndAnd` is `&&` written as an operator after an operand (parse): Cone has no `&&`,
+and logical and is `and`. It would otherwise read as the bitwise `&` of a borrow of the
+right side, which evaluates that side whatever the left is. The message names `and`, and
+the `&&` is read as `and` so the right side is checked as written. `&&` before an operand
+or in a type is two borrows and is not this error.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

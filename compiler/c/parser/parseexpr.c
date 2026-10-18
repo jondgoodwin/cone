@@ -1195,7 +1195,9 @@ INode *parseShift(ParseState *parse) {
 INode *parseAnd(ParseState *parse) {
     INode *lhnode = parseShift(parse);
     while (1) {
-        if (lexIsToken(AmperToken)) {
+        // '&&' after an operand is not the bitwise and of a borrow ('a & &b' is
+        // written with a space); parseAndLogicFrom refuses it and reads it as 'and'
+        if (lexIsToken(AmperToken) && !lexIsAmpAmp()) {
             FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseShift(parse));
@@ -1291,8 +1293,15 @@ INode *parseNotLogic(ParseState *parse) {
 
 // Parse 'and' logical operator, following a left operand already parsed
 static INode *parseAndLogicFrom(ParseState *parse, INode *lhnode) {
-    while (lexIsToken(AndToken)) {
+    while (lexIsToken(AndToken) || lexIsAmpAmp()) {
         LogicNode *node = newLogicNode(AndLogicTag);
+        // Cone has no '&&': 'and' is logical and, and '&&' once read as the
+        // bitwise '&' of a borrow, which never short-circuits. Refused at the
+        // operator and read as 'and', so nothing after it is reported twice.
+        if (lexIsAmpAmp()) {
+            errorMsgLex(ErrorAndAnd, "Cone has no '&&': write 'and' for logical and, which does not evaluate its right side when the left is false.");
+            lexNextToken();
+        }
         lexNextToken();
         node->lexp = lhnode;
         node->rexp = parseNotLogic(parse);

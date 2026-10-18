@@ -1,0 +1,62 @@
+// What '&&' is not refused for, and what 'and' and 'or' do (see lexical_reject_andand
+// for the refusal). Before an operand, and in a type, '&&' is two borrows; written with a
+// space after an operand, '& &x' is the bitwise and of a borrow, and '&(&x)' a borrow of
+// a borrow. 'and' and 'or' skip their right side when the left decides, which '&&' never
+// did.
+//
+// Each printed value was checked by hand against the source.
+
+mod lexical_andand_borrows;
+
+import stdio use *;
+
+var calls i64 = 0;
+
+fn side(result bool) bool {
+  calls = calls + 1;
+  result;
+}
+
+fn twice(p &&i64) i64 {
+  **p + **p;
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  // 'and' skips the right side when the left is false, 'or' when the left is true
+  var r i64 = 0;
+  if false and side(true) { r = 1; }
+  show("false-and-side-calls", calls);          // 0
+  if true or side(true) { r = 2; }
+  show("true-or-side-calls", calls);            // 0
+  if true and side(true) { r = 3; }
+  show("true-and-side-calls", calls);           // 1
+  if false or side(false) { r = 4; }
+  show("false-or-side-calls", calls);           // 2
+  show("result", r);                            // 3
+
+  // two borrows, in a prefix and in a type
+  let x i64 = 5;
+  let p = &x;
+  let pp = &&x;
+  show("prefix-double-borrow", **pp);           // 5
+  show("double-borrow-parameter", twice(&p));   // 10
+
+  // a space, or parentheses, keep a borrow of a borrow
+  let q = & &x;
+  let s = &(&x);
+  show("spaced-borrow", **q);                   // 5
+  show("parenthesized-borrow", **s);            // 5
+
+  // the single '&' stays bitwise and, on numbers and after a borrow
+  let a i64 = 12;
+  let b i64 = 10;
+  show("bitwise-and", a & b);                   // 8
+  show("bitwise-and-of-borrow", a & &b);        // 8
+}

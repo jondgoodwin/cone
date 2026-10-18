@@ -1504,6 +1504,10 @@ int lexNextIsWord(char *word) {
     return lexIsWordAt(srcp, word);
 }
 
+int lexIsAmpAmp() {
+    return lex->toktype == AmperToken && *lex->srcp == '&';
+}
+
 // Pass over the white space and comments in front of a token, on text that is
 // not a block: nothing is counted, since there is no block to count it in
 static char *lexSkipTrivia(char *srcp) {
