@@ -220,7 +220,9 @@ print &lt;- wide, " ", wider, "\n";   // 4 260
 		virtual reference, a plain <span class="pre">&amp;Trait</span>, a generic's bound or a <span class="pre">where</span>
 		that would reach a private field or method through the trait is refused (1505), naming the member. A generic's
 		bound is judged from the module the generic is written in, since its body is the code that will use the member,
-		wherever it is instantiated.</p>
+		wherever it is instantiated. The type's own module may still make the virtual reference and hand it out, and a
+		type that declares the trait with <a href="mod-substitution.html#isa"><span class="pre">is</span></a> has asserted
+		the fit itself, so it meets the trait everywhere.</p>
 
 	<h2 id="concrete">Structs and traits: concrete and abstract types</h2>
 	<p>The same rules extend to a struct. Every field of the supertype must be in the subtype, with the same type or a
@@ -330,22 +332,31 @@ reader(&amp;same, &amp;mut pt);       // 3
 	<p>The reverse is refused: a function taking <span class="pre">p &amp;mut P</span>, given where the signature lends
 		<span class="pre">p &amp;P</span>, would change what the caller lent only to be read (1013). A
 		<a href="mod-functions.html#fnref">function reference</a> points at one compiled function, so only a recast can
-		apply to its parameters and result: a function taking a <span class="pre">u32</span> is not given where
-		<span class="pre">&amp;fn(n u8)</span> is wanted, since each <span class="pre">u8</span> would need converting
-		before the call (1013). Nor is a function taking an enum by value given where the signature passes one of its
-		variants, or the reverse: the two are the same size but are passed and returned as different aggregates (1506).
-		Write a wrapper function that converts, and take a reference to that. A method meeting a trait may take a weaker <span class="pre">self</span> than the trait
+		apply to its parameters and result, and a call through the type must pass and return the very same bytes. A
+		function taking a <span class="pre">u32</span> is not given where <span class="pre">&amp;fn(n u8)</span> is wanted,
+		since each <span class="pre">u8</span> would need converting before the call (1013), and no value is made an
+		<span class="pre">Option</span> on the way either. Nor is a function taking an enum by value given where the
+		signature passes one of its variants, or the reverse: the two are the same size but are passed and returned as
+		different aggregates (1506). A reference to either is one address, so a function taking a
+		<span class="pre">&amp;Shape</span> is given where <span class="pre">&amp;fn(s &amp;Shape.Circle) i32</span> is
+		wanted. Where a conversion is meant, write a wrapper function that does it, and take a reference to that. A
+		function whose result holds fewer borrows than the signature allows is accepted too: one returning only its
+		first parameter's borrow is an <span class="pre">&amp;fn(a &amp;i64, b &amp;i64) &amp;i64</span>, since a call
+		through the type is checked against the more it allows. A method meeting a trait may take a weaker <span class="pre">self</span> than the trait
 		declares (<a href="mod-substitution.html#working">Working with virtual references</a>).</p>
 	<p>The same rule decides whether a type's method meets a trait's: its parameters after <span class="pre">self</span>
 		may ask less than the trait's, and its result may give more. That holds wherever a type meets a trait: a generic
 		constraint, a virtual reference, a <span class="pre">So[Trait]</span>, an <span class="pre">is</span> test, an
 		<span class="pre">extends</span>, and a callable's <span class="pre">()</span>. Only a recast counts here too: a
-		method taking a variant where the trait says its enum, or the reverse, by value, would need converting, so it
-		does not meet the trait, while a reference to the variant does.</p>
+		reference to a variant for one to its enum, or the reverse, meets it. A wider number, a value made an
+		<span class="pre">Option</span>, and a variant or an enum held by value for the other are conversions, so they do
+		not; nor does anything behind a <span class="pre">&amp;mut</span> that differs at all, since it is read and
+		written. Where a name declares a method of exactly the required signature, that one meets the requirement.</p>
 	<p>A <span class="pre">&amp;&lt;fn</span> made from a plain function, and a module meeting a
 		<a href="mod-substitution.html#modtrait">module trait</a>, follow the same rule, and so do
 		<span class="pre">new So[fn(..)](&amp;f)</span> and a generic's <span class="pre">fn(..)</span> condition: there is
-		one rule for every place a function or method meets a signature.</p>
+		one rule for every place a function or method meets a signature, and each refuses a parameter or result held by
+		value that is not one layout with the same error (1506) and the same advice.</p>
 	<p id="refvariance"><b>References.</b> Whether the type a reference points at may vary depends on the reference's
 		permission. A reference that may only read is covariant: a <span class="pre">&amp;Circle</span>, to an enum's
 		variant, may be read as a <span class="pre">&amp;Shape</span>. A reference that may read and write is invariant:

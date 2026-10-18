@@ -82,7 +82,9 @@ dostuff(&amp;incr);     // 5
 		carries no lifetime restrictions, as there is no risk of a global function going away. Its type is its
 		signature. Its parameters may be written as their types alone, as here, or with names, as in
 		<span class="pre">&amp;fn(nbr u32) u32</span>: only the types are part of the type, so either spelling accepts
-		a reference to <span class="pre">incr</span>. Its permission is <span class="pre">opaq</span>, the default and
+		a reference to <span class="pre">incr</span>. A function whose signature differs from the type's only by a
+		recast is accepted as well, and one that would need converting is not
+		(<a href="mod-subtyping.html#variance">Variance</a> has the rule). Its permission is <span class="pre">opaq</span>, the default and
 		the only one permitted, which allows no dereference at all, so the function's code can be neither read nor
 		changed through it.</p>
 	<p>A function-reference parameter may stand anywhere in a parameter list. Inside a list in parentheses (a
@@ -392,7 +394,7 @@ fn run(f So[fn(x i32) i32], x i32) i32 { f(x); }
 
 	<h4 id="meets">What meets it</h4>
 	<p>Anything that has a <span class="pre">pub</span> <span class="pre">()</span> method of the signature, parameters
-		and return type exactly (the parameters' names do not matter):</p>
+		and return type (the parameters' names do not matter, and a recast's difference is allowed, below):</p>
 <pre>
 struct Triple { pub k i32; pub fn `()`(self &amp;, x i32) i32 { x * k; } }
 struct Count  { pub n i32; pub fn `()`(self &amp;mut, x i32) i32 { n = n + x; n; } }
@@ -410,7 +412,11 @@ applyMut(&amp;mut tally, 5);       // 5
 applyMut(&amp;mut tally, 7);       // 12, and tally.n is 12
 </pre>
 	<p>A plain function needs no state, so a reference to it meets any of the references above. A callable that reads
-		meets <span class="pre">&amp;&lt;mut fn</span> as well, since a reference that may change can read. A callable that
+		meets <span class="pre">&amp;&lt;mut fn</span> as well, since a reference that may change can read. A function whose
+		signature differs from the callable's by a recast alone meets it too, as a method meets a
+		<a href="mod-subtyping.html#variance">trait's</a>: a parameter that asks for less (<span class="pre">&amp;P</span>
+		for <span class="pre">&amp;mut P</span>), a result that promises more. A wider number, a value made an
+		<span class="pre">Option</span>, or a variant held by value for its enum is a conversion, and is refused. A callable that
 		<i>changes</i> its state (its <span class="pre">()</span> takes <span class="pre">self &amp;mut</span>) is refused
 		behind <span class="pre">&amp;&lt;fn(sig)</span>, which promises only to read: "`&amp;&lt;fn(i32) i32` may only call a
 		callable that reads its state; this closure changes it (its `()` takes `self &amp;mut`). To let it change, the type
