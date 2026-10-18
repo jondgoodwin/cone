@@ -73,8 +73,8 @@ fn main() {
 	<p style="margin-left: 40px;"><i>Note: Generators are built: a function declared <span class="pre">yields</span>, with
 		<span class="pre">yield</span> and <span class="pre">yield each</span>, among a module's functions or as a method of
 		a struct, generic or not. A generator may not be <span class="pre">inline</span>, have a
-		<span class="pre">where</span> clause, or be a method of a trait, an enum, an actor or a type that declares
-		lifetimes. Two-way <span class="pre">yield</span> is an idea that is not built.</i></p>
+		<span class="pre">where</span> clause, or be a method of a trait, an enum, an actor or a type that declares an
+		invariant lifetime. Two-way <span class="pre">yield</span> is an idea that is not built.</i></p>
 	<p>A generator is a function that hands its caller values one at a time. It runs until it reaches a
 		<span class="pre">yield</span>, gives the caller the value written there, and waits. When the caller asks for the
 		next value it goes on from that <span class="pre">yield</span>, with its local variables as they were. It is a
@@ -192,8 +192,8 @@ each n in tree.walk() { print &lt;- n.val, " "; }
 	<p>The method that makes the generator is the one written; the struct that is the generator is made beside the type
 		and has no name in source (a message spells it <span class="pre">Tree.walk.Gen</span>). A method of a trait or of
 		an enum cannot be a generator, since a trait's methods are copied into each type that implements it and an enum's
-		into each of its variants; nor can an actor's, or a method of a type that declares lifetimes. Write a function that
-		takes what the method would.</p>
+		into each of its variants; nor can an actor's, or a method of a type that declares an invariant lifetime
+		(<a href="#gengeneric">below</a>). Write a function that takes what the method would.</p>
 
 	<h2 id="gengeneric">Generic generators</h2>
 	<p>A generator may be generic, a function over a type or a method of a generic type or both
@@ -213,8 +213,20 @@ each x in items(&amp;ints) { print &lt;- *x, " "; }      // a generator over i64
 	<p>A generator may be a method of a type with lifetimes, such as a <span class="pre">View['a]</span> that borrows
 		what it shows, with a receiver of <span class="pre">self &amp;</span>, <span class="pre">self &amp;mut</span> or by
 		value. The generator takes the type's lifetimes and one of its own, so it may not outlive the receiver or anything
-		it borrows. Not built yet: a generator method on a type with an invariant lifetime
-		(<span class="pre">'=a</span>), or one that writes a lifetime in its own signature (1352).</p>
+		it borrows. It holds the receiver, so it holds what the receiver borrows as well as what the receiver was lent:
+		neither may be changed, and neither may die first, while the generator lives.</p>
+<pre>
+struct View['a] {
+  pub r &amp;'a i64;
+  fn twice(self &amp;) yields i64 { yield *r; yield *r; }
+}
+
+imm x = 4i64;
+imm v = new View(&amp;x);
+each k in v.twice() { print &lt;- k, " "; }   // 4 4
+</pre>
+	<p>Not built yet: a generator method on a type with an invariant lifetime (<span class="pre">'=a</span>), or one
+		that writes a lifetime in its own signature (1352).</p>
 
 	<h2 id="genpackages">Generators across packages</h2>
 	<p>A <span class="pre">pub</span> generator of a package, a function, a method or a method of a generic type, can be
@@ -263,7 +275,9 @@ fn bad(k i64) yields i64 {
 </pre>
 	<p>The parameters are held in the generator, and the body names them as a method names its fields. It may borrow or
 		copy one, or change one declared <span class="pre">mut</span>, but it may not move one out. A parameter lives as long
-		as the generator does, not as long as the body, and dies after the locals.</p>
+		as the generator does, not as long as the body, and dies after the locals. A parameter may be called anything but
+		<span class="pre">self</span>: its name never clashes with a method the generator has, so a generator may take a
+		parameter called <span class="pre">count</span> or <span class="pre">map</span> and still be counted and mapped.</p>
 
 	<h2 id="generatorsfine"><span id="dying"></span>When a generator dies</h2>
 	<p>The locals of the body die as they would in a function, in the order they were declared, last first, where the
