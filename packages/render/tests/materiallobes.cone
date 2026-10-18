@@ -69,7 +69,7 @@ fn powerPreference() u32 {
 fn halfToFloat(h u16) f32 {
   let bits = u32.from(h);
   let exponent = (bits >> 10u32) & 31u32;
-  let sign = if (bits & 0x8000u32) != 0u32 { -1. } else { 1. };
+  let sign = if (bits & 0x8000u32) != 0u32 { -1.f } else { 1. };
   if exponent == 0u32 { return 0.; }
   let f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
   sign * (f as f32)
@@ -95,12 +95,12 @@ fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Te
 // The mean of the four pixels round the middle of the frame: the one point on the camera's axis
 fn centre(p *u8, c usize) f64 {
   (radiance(p, SIZE, 31u32, 31u32, c) + radiance(p, SIZE, 32u32, 31u32, c) + radiance(p, SIZE, 31u32, 32u32, c)
-    + radiance(p, SIZE, 32u32, 32u32, c)) * 0.25d
+    + radiance(p, SIZE, 32u32, 32u32, c)) * 0.25
 }
 
 fn within(got f64, want f64, relative f64, absolute f64) bool {
   let d = if got < want { want - got } else { got - want };
-  d <= absolute + relative * (if want < 0d { -want } else { want })
+  d <= absolute + relative * (if want < 0.0 { -want } else { want })
 }
 
 // ---- The CPU's side ----
@@ -109,27 +109,27 @@ fn square(x f64) f64 { x * x }
 
 // Charlie's sheen distribution and Neubelt's visibility
 fn sheenD(noh f64, alpha f64) f64 {
-  let invA = 1d / alpha;
-  let sin2h = if 1d - noh * noh > 0.0078125d { 1d - noh * noh } else { 0.0078125d };
-  (2d + invA) * libc.pow(sin2h, invA * 0.5d) / (2d * 3.14159265358979d)
+  let invA = 1.0 / alpha;
+  let sin2h = if 1.0 - noh * noh > 0.0078125 { 1.0 - noh * noh } else { 0.0078125 };
+  (2.0 + invA) * libc.pow(sin2h, invA * 0.5) / (2.0 * 3.14159265358979)
 }
 fn sheenV(nov f64, nol f64) f64 {
-  let v = 1d / (4d * (nol + nov - nol * nov));
-  if v > 1d { 1d } else { v }
+  let v = 1.0 / (4.0 * (nol + nov - nol * nov));
+  if v > 1.0 { 1.0 } else { v }
 }
 
 // The sheen lobe's directional albedo: its integral over the hemisphere of light directions (midpoint rule)
 fn sheenAlbedo(nov f64, roughness f64) f64 {
   let alpha = roughness * roughness;
-  let vx = libc.sqrt(1d - nov * nov);
-  var sum = 0d;
+  let vx = libc.sqrt(1.0 - nov * nov);
+  var sum = 0.0;
   var i = 0;
   while i < 400 {
-    let cosL = (f64.from(i) + 0.5d) / 400d;
-    let sinL = libc.sqrt(1d - cosL * cosL);
+    let cosL = (f64.from(i) + 0.5) / 400.0;
+    let sinL = libc.sqrt(1.0 - cosL * cosL);
     var j = 0;
     while j < 800 {
-      let phi = (f64.from(j) + 0.5d) / 800d * 6.283185307179586d;
+      let phi = (f64.from(j) + 0.5) / 800.0 * 6.283185307179586;
       let lx = sinL * libc.cos(phi);
       let ly = sinL * libc.sin(phi);
       let hx = vx + lx;
@@ -141,17 +141,17 @@ fn sheenAlbedo(nov f64, roughness f64) f64 {
     }
     i = i + 1;
   }
-  sum / 400d * (6.283185307179586d / 800d)
+  sum / 400.0 * (6.283185307179586 / 800.0)
 }
 
 // d'Eon and Luebke's green skin profile, a sum of five Gaussians (variances in mm2)
 fn profile(r f64) f64 {
-  var sum = 0d;
+  var sum = 0.0;
   var i = 0;
   while i < 5 {
-    let v = if i == 0 { 0.0064d } elif i == 1 { 0.0484d } elif i == 2 { 0.187d } elif i == 3 { 0.567d } else { 1.99d };
-    let w = if i == 0 { 0.455d } elif i == 1 { 0.336d } elif i == 2 { 0.198d } elif i == 3 { 0.007d } else { 0.004d };
-    sum = sum + w * libc.exp(-r * r / (2d * v)) / (6.283185307179586d * v);
+    let v = if i == 0 { 0.0064 } elif i == 1 { 0.0484 } elif i == 2 { 0.187 } elif i == 3 { 0.567 } else { 1.99 };
+    let w = if i == 0 { 0.455 } elif i == 1 { 0.336 } elif i == 2 { 0.198 } elif i == 3 { 0.007 } else { 0.004 };
+    sum = sum + w * libc.exp(-r * r / (2.0 * v)) / (6.283185307179586 * v);
     i = i + 1;
   }
   sum
@@ -160,26 +160,26 @@ fn profile(r f64) f64 {
 // Penner and Borshukov's ring integral for the light's cosine 'nol' and a ring of radius 1 / perMm millimetres
 fn diffusion(nol f64, perMm f64) f64 {
   let theta = libc.acos(nol);
-  if perMm < 0.0001d {
-    return if nol > 0d { nol } else { 0d };
+  if perMm < 0.0001 {
+    return if nol > 0.0 { nol } else { 0.0 };
   }
-  let rho = 1d / perMm;
-  var lit = 0d;
-  var total = 0d;
+  let rho = 1.0 / perMm;
+  var lit = 0.0;
+  var total = 0.0;
   var i = 0;
   while i < 400000 {
-    let s0 = f64.from(i) / 400000d;
-    let s1 = f64.from(i + 1) / 400000d;
-    let x0 = 3.14159265358979d * libc.pow(s0, 6d);
-    let x1 = 3.14159265358979d * libc.pow(s1, 6d);
-    let x = 0.5d * (x0 + x1);
+    let s0 = f64.from(i) / 400000.0;
+    let s1 = f64.from(i + 1) / 400000.0;
+    let x0 = 3.14159265358979 * libc.pow(s0, 6.0);
+    let x1 = 3.14159265358979 * libc.pow(s1, 6.0);
+    let x = 0.5 * (x0 + x1);
     let dx = x1 - x0;
-    let r = 2d * rho * libc.sin(0.5d * x);
+    let r = 2.0 * rho * libc.sin(0.5 * x);
     let weight = profile(r) * dx;
     let a = libc.cos(theta + x);
     let b = libc.cos(theta - x);
-    lit = lit + weight * ((if a > 0d { a } else { 0d }) + (if b > 0d { b } else { 0d }));
-    total = total + weight * 2d;
+    lit = lit + weight * ((if a > 0.0 { a } else { 0.0 }) + (if b > 0.0 { b } else { 0.0 }));
+    total = total + weight * 2.0;
     i = i + 1;
   }
   lit / total
@@ -192,32 +192,32 @@ fn causticFactor(wx f64, wz f64, lx f64, ly f64, lz f64, top f64, height f64, wa
   let depth = top;
   let sx = wx + lx * (depth / ly);
   let sz = wz + lz * (depth / ly);
-  let k0 = 6.283185307179586d / wavelength;
-  var hxx = 0d;
-  var hzz = 0d;
-  var hxz = 0d;
+  let k0 = 6.283185307179586 / wavelength;
+  var hxx = 0.0;
+  var hzz = 0.0;
+  var hxz = 0.0;
   var i = 0;
   while i < 4 {
-    let angle = 0.7d + 1.9d * f64.from(i);
+    let angle = 0.7 + 1.9 * f64.from(i);
     let dx = libc.cos(angle);
     let dz = libc.sin(angle);
-    let k = k0 * (1d + 0.55d * f64.from(i));
-    let a = height / (1d + 0.8d * f64.from(i));
-    let phase = k * (dx * sx + dz * sz) + time * libc.sqrt(1d + 0.55d * f64.from(i)) + 2.1d * f64.from(i);
+    let k = k0 * (1.0 + 0.55 * f64.from(i));
+    let a = height / (1.0 + 0.8 * f64.from(i));
+    let phase = k * (dx * sx + dz * sz) + time * libc.sqrt(1.0 + 0.55 * f64.from(i)) + 2.1 * f64.from(i);
     let c = -a * k * k * libc.sin(phase);
     hxx = hxx + c * dx * dx;
     hzz = hzz + c * dz * dz;
     hxz = hxz + c * dx * dz;
     i = i + 1;
   }
-  let kk = depth * (1d - 1d / ior);
-  let det = (1d - kk * hxx) * (1d - kk * hzz) - kk * kk * hxz * hxz;
-  let absDet = if det < 0d { -det } else { det };
-  let focus0 = 1d / (if absDet > 0.2d { absDet } else { 0.2d });
-  let focus = if focus0 > 5d { 5d } else { focus0 };
-  let fade0 = 1d - depth / (6d * wavelength);
-  let fade = if fade0 < 0d { 0d } elif fade0 > 1d { 1d } else { fade0 };
-  1d + fade * (focus - 1d)
+  let kk = depth * (1.0 - 1.0 / ior);
+  let det = (1.0 - kk * hxx) * (1.0 - kk * hzz) - kk * kk * hxz * hxz;
+  let absDet = if det < 0.0 { -det } else { det };
+  let focus0 = 1.0 / (if absDet > 0.2 { absDet } else { 0.2 });
+  let focus = if focus0 > 5.0 { 5.0 } else { focus0 };
+  let fade0 = 1.0 - depth / (6.0 * wavelength);
+  let fade = if fade0 < 0.0 { 0.0 } elif fade0 > 1.0 { 1.0 } else { fade0 };
+  1.0 + fade * (focus - 1.0)
 }
 
 // The anisotropic lobe's D V (lobes.slang), in double precision
@@ -225,11 +225,11 @@ fn anisotropicDV(at f64, ab f64, toh f64, boh f64, noh f64, tov f64, bov f64, to
   let a2 = at * ab;
   let d2 = square(ab * toh) + square(at * boh) + square(a2 * noh);
   let b2 = a2 / d2;
-  let d = a2 * b2 * b2 / 3.14159265358979d;
+  let d = a2 * b2 * b2 / 3.14159265358979;
   let lambdaV = nol * libc.sqrt(square(at * tov) + square(ab * bov) + nov * nov);
   let lambdaL = nov * libc.sqrt(square(at * tol) + square(ab * bol) + nol * nol);
-  let v = 0.5d / (lambdaV + lambdaL);
-  d * (if v > 1d { 1d } else { v })
+  let v = 0.5 / (lambdaV + lambdaL);
+  d * (if v > 1.0 { 1.0 } else { v })
 }
 
 fn main() i32 {
@@ -255,14 +255,14 @@ fn main() i32 {
   camera.fov = radians(40.);
   camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0., 1.);
-  let pi64 = 3.14159265358979d;
+  let pi64 = 3.14159265358979;
 
   // The square (a plane turned to face +z; its uv's u runs along +x), and a sphere
   let square1 = renderer.addMesh(&mut device, &Mesh.plane(1, 1.));
   var tangentSquare = Mesh.plane(1, 1.);
   tangentSquare.computeTangents();
-  expectFloat(f64.from(tangentSquare.tangents[0usize].x), 1d, 0.0001d, "the square's tangent runs along +x (increasing u)");
-  expectFloat(f64.from(tangentSquare.tangents[0usize].y), 0d, 0.0001d, "and has no y");
+  expectFloat(f64.from(tangentSquare.tangents[0usize].x), 1.0, 0.0001, "the square's tangent runs along +x (increasing u)");
+  expectFloat(f64.from(tangentSquare.tangents[0usize].y), 0.0, 0.0001, "and has no y");
   let square2 = renderer.addMesh(&mut device, &tangentSquare);
   let ball = renderer.addMesh(&mut device, &Mesh.sphere(0.5, 64));
   let faceZ = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)), new Vec3(1.6, 1., 1.6));
@@ -297,20 +297,20 @@ fn main() i32 {
       }
       renderer.forceExtended(&mut device, true);
       drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
-      var worst = 0d;
-      var bright = 0d;
+      var worst = 0.0;
+      var bright = 0.0;
       i = 0u32;
       while i < SIZE * SIZE * 4u32 {
         let a = *base[usize.from(i)];
         let b = radiance(p, SIZE, (i / 4u32) % SIZE, (i / 4u32) / SIZE, usize.from(i % 4u32));
         let d = if a > b { a - b } else { b - a };
-        let scale = if a > 0.003d { a } else { 0.003d };
-        if d / scale > worst and d > 0.003d { worst = d / scale; }
+        let scale = if a > 0.003 { a } else { 0.003 };
+        if d / scale > worst and d > 0.003 { worst = d / scale; }
         if a > bright { bright = a; }
         i = i + 1u32;
       }
-      expect(worst < 0.02d, "the extended pipelines with every lobe off draw what the base ones do");
-      expect(bright > 0.2d, "and the scene was lit");
+      expect(worst < 0.02, "the extended pipelines with every lobe off draw what the base ones do");
+      expect(bright > 0.2, "and the scene was lit");
       renderer.forceExtended(&mut device, false);
       m = m + 1usize;
     }
@@ -345,13 +345,13 @@ fn main() i32 {
     while c < 5usize {
       let x = cases[c * 2usize];
       let y = cases[c * 2usize + 1usize];
-      let nov = (f64.from(x) + 0.5d) / 32d;
-      let r = (f64.from(y) + 0.5d) / 32d;
-      let rough = if r < 0.07d { 0.07d } else { r };
+      let nov = (f64.from(x) + 0.5) / 32.0;
+      let r = (f64.from(y) + 0.5) / 32.0;
+      let rough = if r < 0.07 { 0.07 } else { r };
       let want = sheenAlbedo(nov, rough);
       let got = radiance(sp, 32u32, x, y, 0usize);
-      expect(within(got, want, 0.02d, 0.001d), "the sheen table matches the CPU's integral of D V cos");
-      if !within(got, want, 0.02d, 0.001d) { eprint <- "  at n.v "; eprint <- nov; eprint <- " roughness "; eprint <- rough; eprint <- ": table "; eprint <- got; eprint <- ", integral "; eprint <- want; eprint <- "\n"; }
+      expect(within(got, want, 0.02, 0.001), "the sheen table matches the CPU's integral of D V cos");
+      if !within(got, want, 0.02, 0.001) { eprint <- "  at n.v "; eprint <- nov; eprint <- " roughness "; eprint <- rough; eprint <- ": table "; eprint <- got; eprint <- ", integral "; eprint <- want; eprint <- "\n"; }
       c = c + 1usize;
     }
     // The diffusion table: texel (x, y) is n.l = (x + 0.5) / 64 - 1 and v = (y + 0.5) / 64, 1/rho = v^2 / 2 per mm
@@ -360,30 +360,30 @@ fn main() i32 {
     while c < 6usize {
       let x = cases2[c * 2usize];
       let y = cases2[c * 2usize + 1usize];
-      let nol = (f64.from(x) + 0.5d) / 64d - 1d;
-      let v = (f64.from(y) + 0.5d) / 64d;
-      let perMm = v * v * 0.5d;
+      let nol = (f64.from(x) + 0.5) / 64.0 - 1.0;
+      let v = (f64.from(y) + 0.5) / 64.0;
+      let perMm = v * v * 0.5;
       let want = diffusion(nol, perMm);
       let got = radiance(tp, 128u32, x, y, 0usize);
-      expect(within(got, want, 0d, 0.01d), "the diffusion table matches the CPU's ring integral");
-      if !within(got, want, 0d, 0.01d) { eprint <- "  at n.l "; eprint <- nol; eprint <- " 1/rho "; eprint <- perMm; eprint <- ": table "; eprint <- got; eprint <- ", integral "; eprint <- want; eprint <- "\n"; }
+      expect(within(got, want, 0.0, 0.01), "the diffusion table matches the CPU's ring integral");
+      if !within(got, want, 0.0, 0.01) { eprint <- "  at n.l "; eprint <- nol; eprint <- " 1/rho "; eprint <- perMm; eprint <- ": table "; eprint <- got; eprint <- ", integral "; eprint <- want; eprint <- "\n"; }
       c = c + 1usize;
     }
     // A flat surface (v about 0): the clamped cosine
-    expect(within(radiance(tp, 128u32, 96u32, 0u32, 0usize), (96d + 0.5d) / 64d - 1d, 0d, 0.02d), "a flat surface keeps the cosine");
-    expect(radiance(tp, 128u32, 40u32, 0u32, 0usize) < 0.03d, "a flat surface leaves its dark side dark");
+    expect(within(radiance(tp, 128u32, 96u32, 0u32, 0usize), (96.0 + 0.5) / 64.0 - 1.0, 0.0, 0.02), "a flat surface keeps the cosine");
+    expect(radiance(tp, 128u32, 40u32, 0u32, 0usize) < 0.03, "a flat surface leaves its dark side dark");
     // A sharply curved surface lifts the dark side and lowers the lit side
     // (the green profile is narrow: a 2 mm ring leaks light across 11 degrees of the terminator)
     let farCurved = radiance(tp, 128u32, 60u32, 60u32, 0usize);
     let farFlat = radiance(tp, 128u32, 60u32, 0u32, 0usize);
-    expect(farCurved > farFlat + 0.004d, "a curved surface lights its far side");
-    if !(farCurved > farFlat + 0.004d) { eprint <- "  far side: curved "; eprint <- farCurved; eprint <- ", flat "; eprint <- farFlat; eprint <- "\n"; }
+    expect(farCurved > farFlat + 0.004, "a curved surface lights its far side");
+    if !(farCurved > farFlat + 0.004) { eprint <- "  far side: curved "; eprint <- farCurved; eprint <- ", flat "; eprint <- farFlat; eprint <- "\n"; }
     expect(radiance(tp, 128u32, 120u32, 60u32, 0usize) < radiance(tp, 128u32, 120u32, 0u32, 0usize),
       "and takes some from its lit one");
   }
 
   // The sun: irradiance pi, so a Lambert surface of albedo a gives a x n.l
-  let pi32 = 3.14159265;
+  let pi32 = 3.14159265f;
 
   // ---- 3. Sheen ----
   {
@@ -402,24 +402,24 @@ fn main() i32 {
     list.add(square1, cloth, faceZ);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
     // The geometry at the middle pixel: n.v 1 (to 0.6 degrees), n.l 0.5, h between them
-    let nov = 1d;
-    let nol = 0.5d;
-    let hx = 0.8660254d;
-    let hz = 1.5d;
+    let nov = 1.0;
+    let nol = 0.5;
+    let hx = 0.8660254;
+    let hz = 1.5;
     let hl = libc.sqrt(hx * hx + hz * hz);
     let noh = hz / hl;
-    let term = sheenD(noh, 0.25d) * sheenV(nov, nol) * nol * 3.14159265d;
-    let scale = 1d - 1d * sheenAlbedo(nov, 0.5d);
+    let term = sheenD(noh, 0.25) * sheenV(nov, nol) * nol * 3.14159265;
+    let scale = 1.0 - 1.0 * sheenAlbedo(nov, 0.5);
     var ch = 0usize;
     while ch < 3usize {
-      let c = if ch == 0usize { 1d } elif ch == 1usize { 0.5d } else { 0.25d };
+      let c = if ch == 0usize { 1.0 } elif ch == 1usize { 0.5 } else { 0.25 };
       let want = term * c + scale * without[ch];
       let got = radiance(p, SIZE, 32u32, 32u32, ch);
-      expect(within(got, want, 0.03d, 0.0003d), "sheen: the Charlie lobe plus the base it leaves");
-      if !within(got, want, 0.03d, 0.0003d) { eprint <- "  channel "; eprint <- ch; eprint <- ": got "; eprint <- got; eprint <- ", wanted "; eprint <- want; eprint <- " (term "; eprint <- term * c; eprint <- ", scale "; eprint <- scale; eprint <- ", base "; eprint <- without[ch]; eprint <- ")\n"; }
+      expect(within(got, want, 0.03, 0.0003), "sheen: the Charlie lobe plus the base it leaves");
+      if !within(got, want, 0.03, 0.0003) { eprint <- "  channel "; eprint <- ch; eprint <- ": got "; eprint <- got; eprint <- ", wanted "; eprint <- want; eprint <- " (term "; eprint <- term * c; eprint <- ", scale "; eprint <- scale; eprint <- ", base "; eprint <- without[ch]; eprint <- ")\n"; }
       ch = ch + 1usize;
     }
-    expect(radiance(p, SIZE, 32u32, 32u32, 0usize) > without[0usize] * 1.5d, "the sheen made the base brighter at this angle");
+    expect(radiance(p, SIZE, 32u32, 32u32, 0usize) > without[0usize] * 1.5, "the sheen made the base brighter at this angle");
   }
 
   // ---- 4. Anisotropy ----
@@ -429,8 +429,8 @@ fn main() i32 {
     metal.anisotropyRotation = pi32 / 2.;
     let turned = renderer.addPbrMaterial(&mut device, &metal);
     // The sun 40 degrees off the normal, in the x-z plane and then in the y-z plane
-    let s40 = 0.6427876;
-    let c40 = 0.7660444;
+    let s40 = 0.6427876f;
+    let c40 = 0.7660444f;
     let sunX = Light.directional(new Vec3(-s40, 0., -c40), Color.gray(pi32), Color.gray(0.));
     let sunY = Light.directional(new Vec3(0., -s40, -c40), Color.gray(pi32), Color.gray(0.));
     list.clear();
@@ -441,15 +441,15 @@ fn main() i32 {
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunY, &list);
     let ly = centre(p, 1usize);
     // The CPU's ratio: h at 20 degrees to the normal; the alphas 0.25 x 1.5 and 0.25 x 0.5
-    let at = 0.375d;
-    let ab = 0.125d;
-    let sh = 0.3420201d;
-    let ch = 0.9396926d;
-    let dvX = anisotropicDV(at, ab, sh, 0d, ch, 0d, 0d, 0.6427876d, 0d, 1d, 0.7660444d);
-    let dvY = anisotropicDV(at, ab, 0d, sh, ch, 0d, 0d, 0d, 0.6427876d, 1d, 0.7660444d);
-    expect(lx > 0.05d and ly > 0d, "both highlights exist");
-    expect(within(lx / ly, dvX / dvY, 0.04d, 0d), "anisotropy: the highlight along the grain over the one across it is the lobe's");
-    if !within(lx / ly, dvX / dvY, 0.04d, 0d) { eprint <- "  ratio "; eprint <- lx / ly; eprint <- ", wanted "; eprint <- dvX / dvY; eprint <- " (x "; eprint <- lx; eprint <- ", y "; eprint <- ly; eprint <- ")\n"; }
+    let at = 0.375;
+    let ab = 0.125;
+    let sh = 0.3420201;
+    let ch = 0.9396926;
+    let dvX = anisotropicDV(at, ab, sh, 0.0, ch, 0.0, 0.0, 0.6427876, 0.0, 1.0, 0.7660444);
+    let dvY = anisotropicDV(at, ab, 0.0, sh, ch, 0.0, 0.0, 0.0, 0.6427876, 1.0, 0.7660444);
+    expect(lx > 0.05 and ly > 0.0, "both highlights exist");
+    expect(within(lx / ly, dvX / dvY, 0.04, 0.0), "anisotropy: the highlight along the grain over the one across it is the lobe's");
+    if !within(lx / ly, dvX / dvY, 0.04, 0.0) { eprint <- "  ratio "; eprint <- lx / ly; eprint <- ", wanted "; eprint <- dvX / dvY; eprint <- " (x "; eprint <- lx; eprint <- ", y "; eprint <- ly; eprint <- ")\n"; }
     // Turned a quarter turn: inverted
     list.clear();
     list.add(square1, turned, faceZ);
@@ -457,14 +457,14 @@ fn main() i32 {
     let tx = centre(p, 1usize);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunY, &list);
     let ty = centre(p, 1usize);
-    expect(within(ty / tx, dvX / dvY, 0.04d, 0d), "turned by a quarter turn the highlights swap");
+    expect(within(ty / tx, dvX / dvY, 0.04, 0.0), "turned by a quarter turn the highlights swap");
     // The mesh's own tangents: the tangent pipeline draws what the derivative frame does
     list.clear();
     list.add(square2, grain, faceZ);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunX, &list);
-    expect(within(centre(p, 1usize), lxTexel, 0.015d, 0.0001d), "a mesh with tangents draws the same highlight (x)");
+    expect(within(centre(p, 1usize), lxTexel, 0.015, 0.0001), "a mesh with tangents draws the same highlight (x)");
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sunY, &list);
-    expect(within(centre(p, 1usize), ly, 0.015d, 0.0001d), "and across the grain (y)");
+    expect(within(centre(p, 1usize), ly, 0.015, 0.0001), "and across the grain (y)");
   }
 
   // ---- 5. Subsurface ----
@@ -484,8 +484,8 @@ fn main() i32 {
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &side, &list);
     let dark = radiance(p, SIZE, 30u32, 32u32, 0usize);
     let litSide = radiance(p, SIZE, 44u32, 32u32, 0usize);
-    expect(dark < 0.001d, "Lambert: nothing past the terminator");
-    expect(litSide > 0.1d, "and light before it");
+    expect(dark < 0.001, "Lambert: nothing past the terminator");
+    expect(litSide > 0.1, "and light before it");
     list.clear();
     list.add(ball, narrow, Mat4.identity());
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &side, &list);
@@ -495,8 +495,8 @@ fn main() i32 {
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &side, &list);
     let darkWide = radiance(p, SIZE, 30u32, 32u32, 0usize);
     let litWide = radiance(p, SIZE, 44u32, 32u32, 0usize);
-    expect(darkWide > dark + 0.003d, "subsurface: light reaches past the terminator");
-    if !(darkWide > dark + 0.003d) { eprint <- "  dark: lambert "; eprint <- dark; eprint <- ", narrow "; eprint <- darkNarrow; eprint <- ", wide "; eprint <- darkWide; eprint <- "\n"; }
+    expect(darkWide > dark + 0.003, "subsurface: light reaches past the terminator");
+    if !(darkWide > dark + 0.003) { eprint <- "  dark: lambert "; eprint <- dark; eprint <- ", narrow "; eprint <- darkNarrow; eprint <- ", wide "; eprint <- darkWide; eprint <- "\n"; }
     expect(darkWide > darkNarrow, "more scattering reaches further");
     expect(litWide < litSide, "and takes from the lit side");
   }
@@ -504,7 +504,7 @@ fn main() i32 {
   // ---- 6. Wet ----
   {
     // The sun 45 degrees off the normal: n.l 0.7071, n.h = cos 22.5 degrees, far from the coat's peak
-    let s45 = 0.70710678;
+    let s45 = 0.70710678f;
     let sun = Light.directional(new Vec3(-s45, 0., -s45), Color.gray(pi32), Color.gray(0.));
     let dry = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.8), 0., 0.9));
     let soaked = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.8), 0., 0.9).soaked(1.));
@@ -516,8 +516,8 @@ fn main() i32 {
     list.add(square1, soaked, faceZ);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
     let wetL = centre(p, 1usize);
-    expect(dryL > 0.2d, "the dry square is lit");
-    expectFloat(wetL / dryL, 0.48d, 0.02d, "wet darkens by half, less the coat's Fresnel");
+    expect(dryL > 0.2, "the dry square is lit");
+    expectFloat(wetL / dryL, 0.48, 0.02, "wet darkens by half, less the coat's Fresnel");
   }
 
   // ---- 6b. Caustics ----
@@ -529,12 +529,12 @@ fn main() i32 {
     down.fov = radians(40.);
     down.lookAt(new Vec3(0., 3., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
     down.background = new Color(0., 0., 0., 1.);
-    let s = 0.6427876;
-    let c = 0.7660444;
+    let s = 0.6427876f;
+    let c = 0.7660444f;
     let sun = Light.directional(new Vec3(-s * 0.8, -c, -s * 0.6), Color.gray(pi32), Color.gray(0.));
-    let lx = 0.8d * 0.6427876d;
-    let ly = 0.7660444d;
-    let lz = 0.6d * 0.6427876d;
+    let lx = 0.8 * 0.6427876;
+    let ly = 0.7660444;
+    let lz = 0.6 * 0.6427876;
     let plain = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.7), 0., 1.));
     let seabed = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color.gray(0.7), 0., 1.).causticReceiver(1.));
     var v = CausticVolume.none();
@@ -551,7 +551,7 @@ fn main() i32 {
     list.clear();
     list.add(square1, plain, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &down, &sun, &list);
-    var dry = new Array[f64, 64] <- fill 0d;
+    var dry = new Array[f64, 64] <- fill 0.0;
     var samples = 0usize;
     var q = 0usize;
     while q < 64usize {
@@ -563,17 +563,17 @@ fn main() i32 {
     list.clear();
     list.add(square1, seabed, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &down, &sun, &list);
-    var worst = 0d;
-    var lowest = 100d;
-    var highest = 0d;
-    var total = 0d;
+    var worst = 0.0;
+    var lowest = 100.0;
+    var highest = 0.0;
+    var total = 0.0;
     q = 0usize;
     while q < 64usize {
       let px = 8u32 + u32.from(q % 8usize) * 6u32;
       let py = 8u32 + u32.from(q / 8usize) * 6u32;
-      let wx = (f64.from(px) + 0.5d - 32d) / 32d * 3d * 0.36397023d;
-      let wz = (f64.from(py) + 0.5d - 32d) / 32d * 3d * 0.36397023d;
-      let want = causticFactor(wx, wz, lx, ly, lz, 0.4d, 0.02d, 0.3d, 1.33d, 0.7d);
+      let wx = (f64.from(px) + 0.5 - 32.0) / 32.0 * 3.0 * 0.36397023;
+      let wz = (f64.from(py) + 0.5 - 32.0) / 32.0 * 3.0 * 0.36397023;
+      let want = causticFactor(wx, wz, lx, ly, lz, 0.4, 0.02, 0.3, 1.33, 0.7);
       let got = radiance(p, SIZE, px, py, 1usize) / dry[q];
       let e = if got > want { got - want } else { want - got };
       if e / want > worst { worst = e / want; }
@@ -582,17 +582,17 @@ fn main() i32 {
       total = total + got;
       q = q + 1usize;
     }
-    expect(worst < 0.04d, "caustics: the sun's brightness on the seabed is the CPU's focus of the four-wave field at every sample");
-    if !(worst < 0.04d) { eprint <- "  worst relative error "; eprint <- worst; eprint <- "\n"; }
-    expect(highest > 1.5d and lowest < 0.8d, "bright lines and dim gaps: the light is focused, not just scaled");
-    expect(total / 64d > 0.7d and total / 64d < 1.6d, "and its mean is about the unfocused light");
-    if !(highest > 1.5d and lowest < 0.8d and total / 64d > 0.7d and total / 64d < 1.6d) { eprint <- "  factor from "; eprint <- lowest; eprint <- " to "; eprint <- highest; eprint <- ", mean "; eprint <- total / 64d; eprint <- "\n"; }
+    expect(worst < 0.04, "caustics: the sun's brightness on the seabed is the CPU's focus of the four-wave field at every sample");
+    if !(worst < 0.04) { eprint <- "  worst relative error "; eprint <- worst; eprint <- "\n"; }
+    expect(highest > 1.5 and lowest < 0.8, "bright lines and dim gaps: the light is focused, not just scaled");
+    expect(total / 64.0 > 0.7 and total / 64.0 < 1.6, "and its mean is about the unfocused light");
+    if !(highest > 1.5 and lowest < 0.8 and total / 64.0 > 0.7 and total / 64.0 < 1.6) { eprint <- "  factor from "; eprint <- lowest; eprint <- " to "; eprint <- highest; eprint <- ", mean "; eprint <- total / 64.0; eprint <- "\n"; }
     // A surface that is not a receiver is lit as before
     list.clear();
     list.add(square1, plain, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &down, &sun, &list);
     // (pixel (20, 20) is sample 18 of the grid: column 2, row 2)
-    expectFloat(radiance(p, SIZE, 20u32, 20u32, 1usize), dry[18usize], 0.0001d, "a floor that is not a receiver is lit as before");
+    expectFloat(radiance(p, SIZE, 20u32, 20u32, 1usize), dry[18usize], 0.0001, "a floor that is not a receiver is lit as before");
     renderer.setCaustics(&mut device, &CausticVolume.none());
   }
 
@@ -601,7 +601,7 @@ fn main() i32 {
     let m = PbrMaterial.standard(Color.gray(0.5), 0., 0.5);
     expect(!m.isExtended(), "a plain material is not extended");
     let c = m.coated(0.7, 0.1);
-    expectFloat(f64.from(c.clearcoat), 0.7d, 0.0001d, "coated sets the coat");
+    expectFloat(f64.from(c.clearcoat), 0.7, 0.0001, "coated sets the coat");
     expect(!c.isExtended(), "a coat is not an extended lobe (the base shader has it)");
     let i = m.iridescent(200., 500., 1.7, 3u32);
     expect(i.film and i.clearcoat > 0. and i.filmSeed == 3u32, "iridescent sets a film, and lays a coat for it");

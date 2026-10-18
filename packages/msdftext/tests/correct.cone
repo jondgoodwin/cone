@@ -27,7 +27,7 @@ fn flatten(shape &Shape, out &mut List[f64]) {
   while i < shape.edges.len() {
     let e = *shape.edges[i];
     let steps = if e.kind == EDGE_LINE { 1u32 } else { 16u32 };
-    var prev = e.point(0.0d);
+    var prev = e.point(0.0);
     var s = 1u32;
     while s <= steps {
       let p = e.point(f64.from(s) / f64.from(steps));
@@ -43,7 +43,7 @@ fn flatten(shape &Shape, out &mut List[f64]) {
 }
 
 fn trueDistance(segs &List[f64], p Pt) f64 {
-  var best = 1.0e30d;
+  var best = 1.0e30;
   var winding = 0i32;
   var i = 0usize;
   while i < segs.len() {
@@ -52,13 +52,13 @@ fn trueDistance(segs &List[f64], p Pt) f64 {
     let ab = b - a;
     let ap = p - a;
     var t = ap.dot(ab) / ab.dot(ab);
-    if t < 0.0d { t = 0.0d; }
-    if t > 1.0d { t = 1.0d; }
+    if t < 0.0 { t = 0.0; }
+    if t > 1.0 { t = 1.0; }
     let d = (p - (a + ab * t)).length();
     if d < best { best = d; }
     if a.y <= p.y {
-      if b.y > p.y and ab.cross(ap) > 0.0d { winding = winding + 1i32; }
-    } elif b.y <= p.y and ab.cross(ap) < 0.0d {
+      if b.y > p.y and ab.cross(ap) > 0.0 { winding = winding + 1i32; }
+    } elif b.y <= p.y and ab.cross(ap) < 0.0 {
       winding = winding - 1i32;
     }
     i = i + 4usize;
@@ -73,17 +73,17 @@ fn wrongSamples(font &Font, glyph u32, counts &mut Array[u32, 4]) {
   let o = font.outline(glyph);
   var shape = Shape.fromOutline(&o);
   if shape.edges.len() == 0usize { return; }
-  colorEdges(&mut shape, 3.0d, 0u64);
+  colorEdges(&mut shape, 3.0, 0u64);
   var segs = List[f64].empty();
   flatten(&shape, &mut segs);
-  var lo = new Pt(0.0d, 0.0d);
-  var hi = new Pt(0.0d, 0.0d);
+  var lo = new Pt(0.0, 0.0);
+  var hi = new Pt(0.0, 0.0);
   shape.bounds(&mut lo, &mut hi);
-  let scale = 24.0d / f64.from(font.unitsPerEm);
-  let range = 6.0d / scale;
-  let margin = 4.0d;
-  let w = u32.from((hi.x - lo.x) * scale + 2.0d * margin) + 1u32;
-  let h = u32.from((hi.y - lo.y) * scale + 2.0d * margin) + 1u32;
+  let scale = 24.0 / f64.from(font.unitsPerEm);
+  let range = 6.0 / scale;
+  let margin = 4.0;
+  let w = u32.from((hi.x - lo.x) * scale + 2.0 * margin) + 1u32;
+  let h = u32.from((hi.y - lo.y) * scale + 2.0 * margin) + 1u32;
   let frame = new Frame(w, h, scale, margin / scale - lo.x, margin / scale - lo.y, range);
   let raw = generateMsdf(&shape, &frame);
   var fixed = generateMsdf(&shape, &frame);
@@ -96,16 +96,16 @@ fn wrongSamples(font &Font, glyph u32, counts &mut Array[u32, 4]) {
       while fy < 3u32 {
         var fx = 0u32;
         while fx < 3u32 {
-          let u = (f64.from(fx) + 0.5d) / 3.0d;
-          let v = (f64.from(fy) + 0.5d) / 3.0d;
+          let u = (f64.from(fx) + 0.5) / 3.0;
+          let v = (f64.from(fy) + 0.5) / 3.0;
           let want = trueDistance(&segs, frame.pointOf(f64.from(x) + u, f64.from(y) + v));
           let texels = libc.fabs(want) * scale;
-          if texels > 1.0d {
-            let rawWrong = (sampleMedian(&raw, x, y, u, v) > 0.5d) != (want > 0.0d);
-            let fixedWrong = (sampleMedian(&fixed, x, y, u, v) > 0.5d) != (want > 0.0d);
+          if texels > 1.0 {
+            let rawWrong = (sampleMedian(&raw, x, y, u, v) > 0.5) != (want > 0.0);
+            let fixedWrong = (sampleMedian(&fixed, x, y, u, v) > 0.5) != (want > 0.0);
             if rawWrong { counts[0] = counts[0] + 1u32; }
             if fixedWrong { counts[2] = counts[2] + 1u32; }
-            if texels > 1.5d {
+            if texels > 1.5 {
               if rawWrong { counts[1] = counts[1] + 1u32; }
               if fixedWrong { counts[3] = counts[3] + 1u32; }
             }
@@ -122,14 +122,14 @@ fn wrongSamples(font &Font, glyph u32, counts &mut Array[u32, 4]) {
 
 // The median of the bilinearly interpolated channels at (x + u, y + v)
 fn sampleMedian(field &Field, x u32, y u32, u f64, v f64) f64 {
-  var m = new Array[f64, 3] <- fill 0.0d;
+  var m = new Array[f64, 3] <- fill 0.0;
   var ch = 0u32;
   while ch < 3u32 {
     let a = f64.from(field.texel(x, y, ch));
     let b = f64.from(field.texel(x + 1u32, y, ch));
     let c = f64.from(field.texel(x, y + 1u32, ch));
     let d = f64.from(field.texel(x + 1u32, y + 1u32, ch));
-    m[usize.from(ch)] = (a * (1.0d - u) + b * u) * (1.0d - v) + (c * (1.0d - u) + d * u) * v;
+    m[usize.from(ch)] = (a * (1.0 - u) + b * u) * (1.0 - v) + (c * (1.0 - u) + d * u) * v;
     ch = ch + 1u32;
   }
   new Rgb(m[0], m[1], m[2]).median()

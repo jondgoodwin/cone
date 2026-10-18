@@ -1,28 +1,31 @@
-// Float literals the lexer refuses: a value past the range of its type.
+// Float literals the lexer refuses: a value past the range of the type it has.
 //
-// A float literal is never given the type it is wanted as. It is f32 unless
-// suffixed 'd' or 'f64', decided here, and generated at that type -- so a value
-// past f32's range was generated as infinity, even as an f64's initializer or
-// argument, and one past f64's range was infinity whatever its suffix. The
-// lexer refuses it once, at the literal. A minus sign is no part of the rule.
+// A float literal with no suffix is an f64 until a place gives it a float type,
+// so the lexer refuses it only past f64's range; a suffix gives the type at
+// once, and the lexer refuses a value past that one -- an f32 for 'f' and 'f32',
+// an f64 for 'f64'. (A literal with no suffix that a place makes an f32 and
+// whose value that cannot hold is refused where it is given the type, a
+// type-check error: typemgmt_typecheck_floatlit.) A minus sign is no part of
+// the rule.
 //
 // This is a parse-stage file, so nothing later than the parser runs. The clean
 // lines pin the boundary: a value just past f32's maximum that rounds down to
-// it still fits, as does anything an f64 holds once it is suffixed.
+// it still fits, as does anything an f64 holds when it is unsuffixed or 'f64'.
 
 mod lexical_reject_float_range;
 
 fn main() {
-  // Past f32, unsuffixed or suffixed, and wherever it is wanted
-  var plain f32 = 1e39;                    //~ ErrorFloatRange:19 "'1e39' does not fit f32"
-  var suffixed f32 = 1e39f32;              //~ ErrorFloatRange:22 "'1e39f32'"
-  var wanted f64 = 1e39;                   //~ ErrorFloatRange:20 "the 'd' suffix"
-  var negative f64 = -1e39;                //~ ErrorFloatRange:23 "'1e39'"
+  // Past f32, with the suffix that makes it one
+  var suffixed f32 = 1e39f32;              //~ ErrorFloatRange:22 "'1e39f32' does not fit f32"
+  var short f32 = 1e39f;                   //~ ErrorFloatRange:19 "'1e39f'"
+  var negative f32 = -1e39f;               //~ ErrorFloatRange:23 "'1e39f'"
   // Past f64
-  var double f64 = 1e400d;                 //~ ErrorFloatRange:20 "'1e400d' does not fit f64"
-  // Still fits: f32's maximum, one that rounds down to it, and an f64 suffixed as one
+  var double f64 = 1e400;                  //~ ErrorFloatRange:20 "'1e400' does not fit f64"
+  var wide f64 = 1e400f64;                 //~ ErrorFloatRange:18 "'1e400f64' does not fit f64"
+  // Still fits: f32's maximum, one that rounds down to it, and what an f64 holds
   var top f32 = 3.4028234e38;
   var roundsDown f32 = 3.4028235e38;
-  var big f64 = 1e39d;
-  var bigger f64 = 1.7e308d;
+  var big f64 = 1e39;
+  var bigf64 f64 = 1e39f64;
+  var bigger f64 = 1.7e308;
 }

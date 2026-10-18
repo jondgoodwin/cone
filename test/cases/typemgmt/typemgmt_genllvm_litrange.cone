@@ -2,9 +2,10 @@
 // not fit the i32 it defaults to.
 //
 // Such a literal takes the number type it is wanted as, wherever it meets it.
-// But an operator's candidates are chosen by its operands' types, so an 'if'
-// passed as an operand never sees a type, and the literals in its branches
-// keep the i32 default. Such a literal was materialized at 32 bits and widened
+// But an operator's candidates are chosen by its operands' types, so a block
+// passed as an operand never sees a type, and the literals in it
+// keep the i32 default. (An 'if' on either side of a number operator is wanted as the
+// other operand's number type, and is not one of these.) Such a literal was materialized at 32 bits and widened
 // afterward, silently dropping every bit above them. The same happens wherever
 // a literal's type comes from nothing but itself -- a variable, a global or a
 // constant declared without a type, an array literal's elements. Each is
@@ -31,11 +32,11 @@ fn wantI64(n i64) i64 {
 }
 
 const Huge = 5000000000;         //~ ErrorLitRange:14 "Integer literal '5000000000' does not fit i32"
+const Sum = 2147483647 + 1;      //~ ErrorLitRange:24 "The value 2147483648 of this expression of literals does not fit i32"
 let global = 3000000000;         //~ ErrorLitRange:14 "Integer literal '3000000000' does not fit i32"
 
 fn positions(v bool, x i64) i64 {
-  // An operand's 'if'
-  let sum = x + if v {5000000000} else {1};  //~ ErrorLitRange:23 "does not fit i32, the type it defaults to"
+  // An operand's block
   let diff = x - {5000000000};                //~ ErrorLitRange:19 "Give it a suffix ('5000000000i64')"
 
   // A literal whose type comes from nothing but itself
@@ -46,9 +47,11 @@ fn positions(v bool, x i64) i64 {
   // negated, so the digits written are what is measured
   let widest = 18446744073709551615; //~ ErrorLitRange:16 "'18446744073709551615'"
   wantI64(Huge);
+  wantI64(Sum);
   wantI64(global);
 
   // Still compiled: each literal here gets a type, or fits the one it has
+  let sum = x + if v {5000000000} else {1};
   wantI64(5000000000);
   let typed i64 = if v {5000000000} else {1};
   wantI64(if v {5000000000} else {1});

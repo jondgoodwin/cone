@@ -349,7 +349,7 @@ class Scenarios(unittest.TestCase):
               print <- "sum = ";
               print <- 19i64 + 23i64;
               print <- "\\n";
-              let half = 7.0d / 2.0d;
+              let half = 7.0 / 2.0;
               print <- "half = ";
               print <- half;
               print <- "\\n";

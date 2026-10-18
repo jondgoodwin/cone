@@ -128,18 +128,18 @@ fn chainLines(m &PolyMesh, flag &List[bool], minLength usize) List[List[u32]] {
             let cn = m.vertexNeighbors(u32.from(cur));
             // continue to the unused flagged neighbour that keeps the direction
             var bestN = NoIndex;
-            var bestScore = -2.d;
+            var bestScore = -2.0;
             var j = 0usize;
             while j < cn.len() {
               let c = usize.from(*cn[j]);
               if *flag[c] and not *used[c] {
-                var score = 0.d;
+                var score = 0.0;
                 if line.len() >= 2usize {
                   let prev = DVec3.from(*m.positions[usize.from(*line[line.len() - 2usize])]);
                   let here = DVec3.from(*m.positions[cur]);
                   let go = unitd(DVec3.from(*m.positions[c]) - here);
                   score = go.dot(unitd(here - prev));
-                } else { score = 0.d; }
+                } else { score = 0.0; }
                 if bestN == NoIndex or score > bestScore { bestN = *cn[j]; bestScore = score; }
               }
               j += 1usize;
@@ -177,7 +177,7 @@ pub fn findCreases(m &PolyMesh, field &List[f32], minBend f32, minLength usize) 
   while v < nv {
     let ring = twoRing(m, u32.from(v));
     let n = unitd(DVec3.from(*normals[v]));
-    if ring.len() >= 5usize and n.lengthSquared() > 0.5d {
+    if ring.len() >= 5usize and n.lengthSquared() > 0.5 {
       let e1 = perpendicularTo(n);
       let e2 = crossd(n, e1);
       let p0 = DVec3.from(*m.positions[v]);
@@ -190,8 +190,8 @@ pub fn findCreases(m &PolyMesh, field &List[f32], minBend f32, minLength usize) 
         let u = d.dot(e1);
         let w2 = d.dot(e2);
         let df = f64.from(*field[usize.from(*ring[k])] - *field[v]);
-        let wgt = 1.d / (d.lengthSquared() + 1.0e-30d);
-        let row = [u, w2, 0.5d * u * u, u * w2, 0.5d * w2 * w2];
+        let wgt = 1.0 / (d.lengthSquared() + 1.0e-30);
+        let row = [u, w2, 0.5 * u * u, u * w2, 0.5 * w2 * w2];
         var r = 0usize;
         while r < 5usize {
           var c = 0usize;
@@ -202,29 +202,29 @@ pub fn findCreases(m &PolyMesh, field &List[f32], minBend f32, minLength usize) 
         k += 1usize;
       }
       // a little ridge regularisation keeps a thin neighbourhood solvable
-      var tr = 0.d;
+      var tr = 0.0;
       k = 0usize;
       while k < 5usize { tr = tr + *a[k * 5usize + k]; k += 1usize; }
       k = 0usize;
-      while k < 5usize { a.set(k * 5usize + k, *a[k * 5usize + k] + 1.0e-9d * tr + 1.0e-300d); k += 1usize; }
+      while k < 5usize { a.set(k * 5usize + k, *a[k * 5usize + k] + 1.0e-9 * tr + 1.0e-300); k += 1usize; }
       if solveLinear(&mut a, &mut b, 5usize) {
         // The Hessian [[hxx, hxy], [hxy, hyy]]: eigenvalues and directions
         let hxx = *b[2];
         let hxy = *b[3];
         let hyy = *b[4];
-        let half = 0.5d * (hxx - hyy);
+        let half = 0.5 * (hxx - hyy);
         let rad = sqrtd(half * half + hxy * hxy);
-        let mid = 0.5d * (hxx + hyy);
+        let mid = 0.5 * (hxx + hyy);
         let lamHi = mid + rad;
         let lamLo = mid - rad;
         // angle of the eigenvector of lamHi, the other perpendicular
-        let th = 0.5d * libc.atan2(2.d * hxy, hxx - hyy);
+        let th = 0.5 * libc.atan2(2.0 * hxy, hxx - hyy);
         let dirHi = e1 * libc.cos(th) + e2 * libc.sin(th);
         let dirLo = crossd(n, dirHi);
         // ridge: bends down most across dirLo
         // and the bend the other way is less than half as strong: a bump bends both ways, a ridge one
-        if lamLo < -f64.from(minBend) and lamHi > 0.5d * lamLo and crestAlong(m, field, v, dirLo, true) { ridge.set(v, true); }
-        if lamHi > f64.from(minBend) and lamLo < 0.5d * lamHi and crestAlong(m, field, v, dirHi, false) { valley.set(v, true); }
+        if lamLo < -f64.from(minBend) and lamHi > 0.5 * lamLo and crestAlong(m, field, v, dirLo, true) { ridge.set(v, true); }
+        if lamHi > f64.from(minBend) and lamLo < 0.5 * lamHi and crestAlong(m, field, v, dirHi, false) { valley.set(v, true); }
       }
     }
     v += 1usize;
@@ -248,8 +248,8 @@ pub fn findCreases(m &PolyMesh, field &List[f32], minBend f32, minLength usize) 
 fn crestAlong(m &PolyMesh, field &List[f32], v usize, d DVec3, high bool) bool {
   let nb = m.vertexNeighbors(u32.from(v));
   let p0 = DVec3.from(*m.positions[v]);
-  var bestF = -1.d;
-  var bestB = -1.d;
+  var bestF = -1.0;
+  var bestB = -1.0;
   var nF = NoIndex;
   var nB = NoIndex;
   var k = 0usize;
@@ -261,10 +261,10 @@ fn crestAlong(m &PolyMesh, field &List[f32], v usize, d DVec3, high bool) bool {
     k += 1usize;
   }
   var ok = true;
-  if nF != NoIndex and bestF > 0.5d {
+  if nF != NoIndex and bestF > 0.5 {
     if high { if *field[usize.from(nF)] > *field[v] { ok = false; } } else { if *field[usize.from(nF)] < *field[v] { ok = false; } }
   }
-  if nB != NoIndex and bestB > 0.5d {
+  if nB != NoIndex and bestB > 0.5 {
     if high { if *field[usize.from(nB)] > *field[v] { ok = false; } } else { if *field[usize.from(nB)] < *field[v] { ok = false; } }
   }
   ok

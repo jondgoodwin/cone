@@ -159,7 +159,7 @@ pub struct Synth {
   // The next mono sample, 'rate' Hz
   pub fn next(self &mut) f32 {
     let dt = 1. / rate;
-    var out = 0.;
+    var out = 0.f;
     if kind == SYNTH_WIND { out = windNext(self); }
     elif kind == SYNTH_WATER { out = waterNext(self); }
     elif kind == SYNTH_FIRE { out = fireNext(self); }
@@ -220,7 +220,7 @@ fn waterNext(s &mut Synth) f32 {
     s.bubAmp[slot] = s.rng.range(0.15, 0.5);
     s.bubDecay[slot] = 1. / (0.004 + 8. / f0);              // per second, a ring of 4 to 20 ms
   }
-  var sum = 0.;
+  var sum = 0.f;
   var k = 0usize;
   while k < BUBBLES {
     if s.bubAmp[k] > 0.0005 {
@@ -251,7 +251,7 @@ fn fireNext(s &mut Synth) f32 {
   let hiss = s.fc.process(s.rng.signed()) * 0.08 * (0.3 + s.p1);
   // crackle: Poisson pops exciting a resonator that is retuned at each pop
   let popRate = 3. + 40. * s.p0;
-  var pop = 0.;
+  var pop = 0.f;
   if s.rng.unit() < popRate / s.rate {
     let a = s.rng.unit();
     let amp = 0.15 + 1.4 * a * a * a;
@@ -267,28 +267,28 @@ fn fireNext(s &mut Synth) f32 {
 // ringing: a soft band-passed rustle and a few tiny crunches.
 fn stepNext(s &mut Synth) f32 {
   let w = 0.4 + 0.6 * s.p1;
-  var out = 0.;
+  var out = 0.f;
   let thump = (TAU * (70. + 30. * (1. - s.p1)) * s.t).sin() * libc.expf(-s.t * 55.);
   if s.p0 < 0.5 {
     // grass: rustle envelope with 15 ms attack and 90 ms decay
     let env = (1. - libc.expf(-s.t * 200.)) * libc.expf(-s.t * 12.);
     let rustle = s.fa.process(s.pink.next() * 2.) * env;
     // crunches: sparse highpassed clicks over the first 120 ms
-    var click = 0.;
+    var click = 0.f;
     if s.t < 0.12 and s.rng.unit() < 40. / s.rate { click = s.rng.signed(); }
     let crunch = s.fb.process(click * 3.) * 0.35;
     out = (rustle * 0.8 + crunch + thump * 0.18) * w;
     if s.t > 0.35 { s.done = true; }
   } elif s.p0 < 1.5 {
     // wood: a 2 ms noise burst excites three modes; hollow boom of a board
-    var ex = 0.;
+    var ex = 0.f;
     if s.t < 0.002 { ex = s.rng.signed(); }
     let modes = s.fa.process(ex) * 1.4 + s.fb.process(ex) * 1.0 + s.fc.process(ex) * 0.6;
     out = (modes * 14. + thump * 0.2) * w;
     if s.t > 0.4 { s.done = true; }
   } else {
     // stone: a 0.7 ms burst, bright short modes, a faint thump
-    var ex = 0.;
+    var ex = 0.f;
     if s.t < 0.0007 { ex = s.rng.signed(); }
     let modes = s.fa.process(ex) * 1.2 + s.fb.process(ex) * 1.0 + s.fc.process(ex) * 0.7;
     out = (modes * 13. + thump * 0.05) * w;
