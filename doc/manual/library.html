@@ -80,7 +80,10 @@ fn main() {
 	<tr><td><span class="pre">stdio</span><br><span class="pre">import stdio use *;</span></td><td>Printing text and
 		numbers to standard output and standard error: <span class="pre">printStr</span>,
 		<span class="pre">printInt</span>, <span class="pre">print &lt;- x</span>, and the
-		<span class="pre">eprint</span> forms for standard error. Standard output is buffered;
+		<span class="pre">eprint</span> forms for standard error. The <span class="pre">&lt;-</span> prints text,
+		integers, floats, a <span class="pre">bool</span> (as <span class="pre">true</span> or
+		<span class="pre">false</span>) and a <span class="pre">char</span> (as its UTF-8 bytes), and a borrow of a number,
+		bool or char as the value it lends. Standard output is buffered;
 		<span class="pre">print.flush()</span> writes it out before another program writes to the same place.</td></tr>
 	<tr><td><span class="pre">libc</span><br><span class="pre">import libc;</span></td><td>The ISO C library as C
 		spells it: C names, C types, errors as C reports them. A raw layer for programs that call C; the
@@ -216,6 +219,87 @@ fn main() {
 		over a socket, in one process, or across a simulated lossy link. A working name.</td></tr>
 	</table>
 	<p><a href="lib-netmsg.html">Game Networking</a> describes it.</p>
+
+	<h3 id="chatpkgs">Chat APIs: chatapi</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">chatapi</span><br><span class="pre">import chatapi use *;</span></td>
+		<td>A client for the OpenAI-compatible Chat Completions API, pointed at any base URL (OpenAI's, or a
+		llama.cpp, vLLM or Ollama server on this machine): messages and settings in, a whole reply or a stream of
+		chunks out, over <span class="pre">json</span>, <span class="pre">sse</span> and
+		<span class="pre">actorhttp</span>. The key is read from an environment variable the caller names and is sent
+		only as the Authorization field. Written in Cone, with no C library.</td></tr>
+	</table>
+
+	<h3 id="chatapi">chatapi</h3>
+	<p>A <span class="pre">Chat</span> is an <a href="guide-actors.html">actor</a> made from an
+		<span class="pre">actorhttp.Client</span> and an <span class="pre">Endpoint</span> (a base URL and the
+		<em>name</em> of the environment variable that holds the key, or none). A behaviour awaits
+		<span class="pre">chat.complete(request)</span> for a whole reply, or <span class="pre">chat.stream(request)</span>
+		for a <span class="pre">ChatStream</span> whose <span class="pre">next()</span> awaits each chunk's
+		<span class="pre">Delta</span> (the text it adds, then <span class="pre">None</span> at the end) and whose
+		<span class="pre">collect()</span> gathers the rest into a reply. A <span class="pre">ChatRequest</span> holds the
+		model, the messages (system, user, assistant, tool) and the settings <span class="pre">temperature</span>,
+		<span class="pre">topP</span>, <span class="pre">maxTokens</span> and <span class="pre">stop</span>; a setting left
+		<span class="pre">None</span> is not sent. Every call answers a <span class="pre">Result</span>: the error says
+		whether the key was missing, the network failed, the API refused it (its status and error object) or the answer
+		was not what the API writes, and <span class="pre">isRetryable()</span> whether trying again may help. The
+		package's header lists what it chose and what it left out (tool calls, images, several choices, retries).</p>
+<pre>
+mod ask;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actorhttp use Client;
+import chatapi use *;
+
+actor Asker {
+  chat Chat;
+
+  pub async do ask(self, done OneshotSender[i32]) {
+    mut req = ChatRequest.make("my-model");
+    req.addUser("Why is the sky blue?");
+    imm opened = await chat.stream(req);
+    match opened {
+      case imm cs Ok {
+        mut going = true;
+        while going {
+          imm n = await cs.next();
+          match n {
+            case imm ok Ok {
+              match ok {
+                case imm d Some {printStr(d.content.view());}
+                case is None[Delta] {going = false;}
+              }
+            }
+            case imm e Error {printStr(e.message().view()); going = false;}
+          }
+        }
+      }
+      case imm e Error {printStr(e.message().view());}
+    }
+    mut d = done;
+    d.send(0i32);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx OneshotSender[i32];
+  mut rx OneshotReceiver[i32];
+  tx, rx = Oneshot[i32].make();
+  {
+    // a server on this machine needs no key; OpenAI's is Endpoint.openai(), the key in $OPENAI_API_KEY
+    imm a = new Asker(new Chat(Client.standard(), Endpoint.loopback(8080u16)));
+    a.ask(tx);
+  }
+  rx.recv();
+  finalAll();
+  0i32;
+}
+</pre>
+	<p><span class="pre">chatapi</span>'s tests run against a mock server on loopback, and
+		<span class="pre">examples/ask.cone</span> takes a base URL, a model, the key's variable and a prompt.</p>
 
 	<h3 id="textpkgs">Text: textdiff, toml and json</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -576,6 +660,45 @@ fn main() i32 {
 the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
 </pre>
 
+	<h3 id="llmpkg">Language models: weights and layers</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">llmreference</span><br><span class="pre">import llmreference use *;</span></td>
+		<td>The CPU side of running a Llama-family model: the weight block layouts of a GGUF file (F32, F16, Q8_0,
+		Q4_K, Q6_K) and their decoders, half-precision conversion, seeded synthetic weights, and a CPU twin of
+		each GPU kernel (matrix-vector and matrix-matrix products over the quantised weights, RMSNorm, rotary
+		position embedding, softmax, attention over a KV cache, SiLU, GELU, add, multiply). Written in Cone with
+		no GPU.</td></tr>
+	<tr><td><span class="pre">llmkernels</span><br><span class="pre">import llmkernels use *;</span></td>
+		<td>The same layers as GPU compute kernels (Slang, compiled ahead of time and run through
+		<span class="pre">gpuwork</span>; see <a href="conc-gpu.html">The GPU</a>), each checked against its twin.
+		Needs a Vulkan 1.3 device.</td></tr>
+	</table>
+
+	<h3 id="llmreference">llmreference and llmkernels</h3>
+	<p>A weight matrix is a <span class="pre">QMatrix</span>: rows of <span class="pre">cols</span> elements of one
+		type, each row a whole number of the type's blocks, the bytes in the tensor's own layout.
+		<span class="pre">syntheticMatrix(&amp;mut rng, QTYPE_Q4_K, rows, cols)</span> makes one of seeded random
+		blocks (so a test needs no model file), <span class="pre">m.row(r)</span> decodes a row to f32, and
+		<span class="pre">m.words()</span> packs the bytes into the 32-bit words a GPU buffer holds. The kernels read
+		those words by byte offset and unpack the half-precision scales with integers, so the device needs no 8-bit
+		or 16-bit storage feature. In <span class="pre">llmkernels</span>,
+		<span class="pre">Kernels.make(&amp;device)</span> builds the eleven pipelines once, and each method
+		(<span class="pre">matvec</span>, <span class="pre">matmul</span>, <span class="pre">rmsnorm</span>,
+		<span class="pre">rope</span>, <span class="pre">softmax</span>, <span class="pre">attention</span>,
+		<span class="pre">kvAppend</span>, <span class="pre">silu</span>, <span class="pre">gelu</span>,
+		<span class="pre">add</span>, <span class="pre">mul</span>) records one dispatch into a
+		<span class="pre">gpuwork</span> <span class="pre">Job</span> over buffers already given to it, answering whether
+		it was recorded.</p>
+	<p>The twins work in f64 and round once, so a GPU result's difference from its twin is the GPU's own error. The
+		tests bound each kernel by a stated tolerance (a sum of products by <span class="pre">(n + 4) 2<sup>-24</sup></span>
+		times the sum of its terms' absolute values; the others by units of 2<sup>-24</sup> that the packages' headers
+		derive) and, run with <span class="pre">LLMKERNELS_REPORT</span> set, print the worst error seen: on the
+		RTX 4060 Laptop GPU the sums are within 4 units of a bound of up to 2300. Both packages' headers list the
+		method choices and what was left out (flash attention, several sequences at once, f16 activations, subgroup
+		and 16-bit fast paths, the other quantisation types), the block layouts, and the one check still to do: the
+		layouts are written from knowledge of ggml and have not been compared with a real model file.</p>
+
 	<h3 id="ggufpkg">Model files: GGUF</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
@@ -766,6 +889,10 @@ fn main() i32 {
 		<span class="pre">/usr/lib/llvm-23</span> on Linux); its tests pass on both, with the same IR text and answers.</p>
 	<p><span class="pre">deflate</span> calls nothing of the system's; its tests, and those of
 		<span class="pre">imagedecode</span> over it, have been run on both, and write the same bytes.</p>
+	<p><span class="pre">llmreference</span> is Cone alone and has no call of the system's; its tests pass on Windows
+		and on Linux (Ubuntu 24.04), and its example prints the same numbers on both. <span class="pre">llmkernels</span>
+		needs a GPU and the GPU packages, which run on Windows only for now: it compiles on Linux and its tests
+		(which run on a real GPU) do not.</p>
 	<p><span class="pre">gguf</span> calls nothing of the system's; its tests pass on Windows and on Linux
 		(Ubuntu 24.04), and write and read the same bytes.</p>
 	<p><span class="pre">bpetokenize</span> calls nothing of the system's; its tests pass on Windows and on Linux
