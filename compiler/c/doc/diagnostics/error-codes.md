@@ -141,9 +141,11 @@ the `&&` is read as `and` so the right side is checked as written. `&&` before a
 or in a type is two borrows and is not this error.
 
 `ErrorTailSemi` and `ErrorTailOpen` are the two ways a block's last line, an expression, can
-have the wrong end (parse). Its `;` throws its value away, so it is left off where the block's
-value is used and kept everywhere else. `ErrorTailSemi` is a `;` where the value is used and is
-pointed at the `;` to remove; `ErrorTailOpen` is no `;` where it is not used and is pointed at
+have the wrong end (parse). A `;` delimits statements, so a block that ends in one ends in an
+empty statement, which has no value: the `;` is left off where the block's value is used and
+kept everywhere else. `ErrorTailSemi` is a `;` where the value is used (after an expression, or
+after an `if`, `match`, loop or block, which delimit themselves but are followed by an empty
+statement all the same) and is pointed at the `;` to remove; `ErrorTailOpen` is no `;` where it is not used and is pointed at
 the line. Neither looks at the type of the line, so a line that gives no value is refused with
 the same code. They are the parser's, one code each for every kind of block (a function's body, an `if` or `match`
 arm, a block that is an operand, a macro, a loop's `else`, a loop's body), and a closure that

@@ -1520,13 +1520,13 @@ INode *parseWith(ParseState *parse) {
     return (INode *)blk;
 }
 
-// An expression statement in a block. A ';' ends it, as it ends every statement not
-// ending in a block, and throws its value away. The block's last line may leave the
-// ';' off, and then it is the block's value. Whether the ';' belongs there depends on
-// whether the block's value is used, which the construct the block stands in tells
-// (parseTailCheck): so the statement is handed back with a mark to point an error at in
-// *semip, the ';' that ended it or, where the block's '}' stood in its place (*openp
-// set), the line's first token.
+// An expression statement in a block. A ';' is a delimiter: 'A; B; C' is three statements,
+// and the block's value is the last, C. In 'A; B;' the last statement is empty, and an
+// empty statement's value is void. So the ';' after the block's last expression throws
+// its value away, and the block's value is used or not by the construct it stands in
+// (parseTailCheck). The statement is handed back with a mark to point an error at in
+// *semip: the ';' that follows it, which makes the block's last statement an empty one, or,
+// where the block's '}' stood in its place (*openp set), the line's first token.
 static INode *parseBlockExpStmt(ParseState *parse, INode **semip, int *openp) {
     char *startp = lex->tokp, *linep = lex->linep;
     uint32_t linenbr = lex->linenbr;
@@ -1548,8 +1548,9 @@ static INode *parseBlockExpStmt(ParseState *parse, INode **semip, int *openp) {
     return node;
 }
 
-// The ';' that ends a block's last line is left off where the block's value is used
-// and kept everywhere else, whatever type the line has (ErrorTailSemi, ErrorTailOpen).
+// A block ending in ';' ends in an empty statement, which has no value. So the block's
+// last line has no ';' where the block's value is used, and keeps it everywhere else,
+// whatever type the line has (ErrorTailSemi, ErrorTailOpen).
 // 'used' says where the block stands: TailUnused, TailUsed, or TailFree where the type
 // to give is read off the line, as a closure's is. It follows the block into the
 // statements that end in a block: the last statement of a block hands on what the
@@ -1596,6 +1597,10 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         blk->stmts = newNodes(8);
     INode *expstmt = NULL, *expsemi = NULL;   // the latest expression statement, and its ';'
     int expopen = 0;
+    // The latest statement that ends in a block, and the ';' written directly after it. A
+    // statement that ends in a block delimits itself, so that ';' delimits an empty
+    // statement after it, and the block's last statement is that one
+    INode *blockstmt = NULL, *blocksemi = NULL;
 
     // A block's statements stand at the top level, even inside a list: a
     // comma there belongs to them, not to the list around the block
@@ -1604,8 +1609,14 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
     parseBlockStart();
 
     while (!parseBlockEnd()) {
+        int endsinblock = lex->toktype == IfToken || lex->toktype == MatchToken || lex->toktype == WhileToken
+            || lex->toktype == EachToken || lex->toktype == WithToken || lex->toktype == LCurlyToken
+            || lex->toktype == LifetimeToken
+            || (lex->toktype == IdentToken && lex->val.ident == parallelName && lexNextIsWord("each"));
         switch (lex->toktype) {
         case SemiToken:
+            if (blockstmt && blocksemi == NULL && nodesLast(blk->stmts) == blockstmt)
+                blocksemi = (INode*)newNilLitNode();   // positioned at the ';'
             lexNextToken();
             break;
 
@@ -1740,12 +1751,22 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             expstmt = parseBlockExpStmt(parse, &expsemi, &expopen);
             nodesAdd(&blk->stmts, expstmt);
         }
+        if (endsinblock) {
+            blockstmt = nodesLast(blk->stmts);
+            blocksemi = NULL;
+        }
     }
 
     // Whether the block's last line is an expression, and whether it ends in ';'. Whether
     // that is right depends on whether the block's value is used, which the construct the
-    // block stands in tells: parseTailCheck judges it there
-    if (expstmt && nodesLast(blk->stmts) == expstmt) {
+    // block stands in tells: parseTailCheck judges it there. The ';' after a statement that
+    // ends in a block makes the block's last statement an empty one, as it does after an
+    // expression. Mid-block, or where no value is used, that empty statement is harmless
+    if (blockstmt && blocksemi && nodesLast(blk->stmts) == blockstmt) {
+        blk->tailmark = blocksemi;
+        blk->flags |= FlagTailSemi;
+    }
+    else if (expstmt && nodesLast(blk->stmts) == expstmt) {
         blk->tailmark = expsemi;
         if (expopen)
             blk->flags |= FlagTailOpen;

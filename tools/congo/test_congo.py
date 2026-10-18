@@ -2811,7 +2811,7 @@ class GpuFolder(unittest.TestCase):
             mod kern;
 
             pub fn down(n u32) u32 {
-              if n == 0u32 {0u32} else {down(n - 1u32)};
+              if n == 0u32 {0u32} else {down(n - 1u32)}
             }
 
             pub fn @compute(64) fill(inv Invocation, out &mut Array[f32]) {

@@ -418,19 +418,25 @@ read the rest through as the thin form.
 
 ### Blocks and statement ends
 
-A block is `{`, statements, `}`. A statement that does not end in a block ends
-at `;`, and nothing stands in for the `;`: not the end of a line, not the `}`
-that closes the block, not the end of the file. The lexer records no
+A block is `{`, statements, `}`. A `;` is a delimiter between statements: `A; B; C`
+is three statements, and the block's value is the last, C. A statement that does not
+end in a block is delimited by a `;`, and nothing stands in for the `;`: not the end
+of a line, not the end of the file, and, but for a block's last line (below), not the
+`}` that closes the block. The lexer records no
 indentation and no column; `lexNewLine` counts the line for diagnostics and
 that is all, so a statement runs on across lines until its `;` arrives, and an
 operator that starts a line — `-`, `*`, `&`, `.`, `(`, `[`, each of which also
 reads as a prefix — continues the expression before it.
 
-**The last line of a block, and its `;`.** The one place the `}` does stand in for
-the `;` is after an expression that is a block's last line, and there it is not
-optional either way: the `;` throws the expression's value away, so it is left off
-where the block's value is used and kept everywhere else. Where a block stands
-decides it, never the type of the line: `print <- "hi"` ending a function that
+**The last line of a block, and its `;`.** In `A; B;` the last statement is empty, and an
+empty statement's value is void; in `A; B` it is B. So the one place the `}` does stand
+in for the `;` is after an expression that is a block's last line, and there it is not
+optional either way: a `;` makes the block's last statement an empty one, so it is left
+off where the block's value is used and kept everywhere else. A statement that ends in a
+block delimits itself and takes no `;`, but a `;` written after one is a `;` all the same,
+and makes an empty last statement: `{ if c {1} else {2}; }` is void. Mid-block, or where
+no value is used, that empty statement is harmless and is accepted without a word. Where
+a block stands decides it, never the type of the line: `print <- "hi"` ending a function that
 returns nothing is refused (`ErrorTailOpen`) as `5;` ending one that returns an
 `i32` is (`ErrorTailSemi`). A block's value is used when it is
 a function body whose signature writes a return type, a macro's body, an operand of an
@@ -441,15 +447,16 @@ return type (a generator's included), an `if`, `match`, `with` or block that is 
 statement, any statement but the last of a block, or a loop's body. A closure that writes
 no return type reads it off its body, so its last line goes either way: with a `;` it
 returns nothing, without one it returns the value. `parseExprBlock` records on the
-block, by `FlagTailSemi` or `FlagTailOpen` and `tailmark`, whether its last statement is an
-expression and how it ends; `parseTailCheck` walks the finished construct once it is
+block, by `FlagTailSemi` (the last statement is empty, after an expression or a
+block-ending statement) or `FlagTailOpen` (the last statement is an expression with no
+`;`) and `tailmark`, where to point; `parseTailCheck` walks the finished construct once it is
 known where it stands, handing the last statement of a block on with the block's use and
 every other statement `TailUnused`, and reports. The check is the parser's because the
 rule depends on position alone: it judges a generic function that is never instanced and
 an `inline` body as it does any other, and a generic whose result type becomes `void` when
 instanced (the signature wrote a type, so its last line gives the value) as it does one
 instanced with a number. A statement that ends in a block takes no `;` and is not judged
-itself, only its arms. A `;` after one is an empty statement and changes nothing.
+itself, only its arms.
 Reading a closure's body, type check has the rest of the rule (`closureContextTail`, for a
 closure whose type comes from where it is given).
 
