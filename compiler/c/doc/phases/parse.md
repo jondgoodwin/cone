@@ -188,9 +188,17 @@ margin is then empty. This replaced stripping whatever indentation a line had,
 up to the closing quote's count with a tab counted as one. `lexical_mlstring`
 and `lexical_mlstring_crlf` hold the rules, `lexical_mlstring_margin` the
 margin; `lexical_reject_mlstring` and `lexical_reject_mlstring_margin` the
-refusals. A literal that spans lines
-without its opening quote ending one is read as before: its line ends and the
-spaces and tabs that begin each next line are dropped.
+refusals. A literal with text after its
+opening quote that runs on to another line is neither a multi-line literal nor a
+one-line one: `lexScanString` reports `ErrorBadTok` at the opening quote, saying
+the text must start on the next line, found by the same sizing walk that finds
+the closing quote (an escape stepped over whole, so an escaped quote is not taken
+for it). The build still reads the literal as it did, dropping its line ends and
+the spaces and tabs that begin each next line, so what follows lexes unchanged.
+A backslash at a line's end inside the literal already has its own error
+(`lexScanEscape`), and the walk stops there without adding this one: one mistake,
+one diagnostic. `lexical_reject_mlstring_open` holds the refusal and
+`lexical_mlstring_open` the legal forms beside it.
 
 **A raw tab in a literal is content; every other raw control character is
 refused.** Jon's ruling of 24 September 2026: a tab written as itself is part
@@ -204,9 +212,9 @@ control character 0x01 raw, where it cannot be seen: write it as \x01". The
 string leaves it out; the character literal takes it as its value, so the
 literal still closes. Before, a one-line string dropped every control
 character silently, a tab included, but kept 0x7F; a character literal took
-any as its value. A line end is not in this rule: a string that spans lines
-drops it (above), a multi-line string makes it a new-line, and a character
-literal refuses it in its own words (below). Dropping the white space after a
+any as its value. A line end is not in this rule: a multi-line string makes it
+a new-line, text after the opening quote that runs on to another line is
+refused (above), and a character literal refuses it in its own words (below). Dropping the white space after a
 line end used to skip further line ends uncounted as well, so a blank line
 inside such a string put every later diagnostic a line early; the white space
 dropped is now spaces and tabs only, and each line is counted. `lexical_raw_tab`

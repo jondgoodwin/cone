@@ -611,6 +611,27 @@ void lexScanString(char *srcp) {
     // quote, before the build below counts the lines the literal runs over
     if (*endp != '"')
         errorMsgLex(ErrorBadTok, "String literal is never closed: no closing quote before the end of the file");
+    // Text follows the opening quote and the literal runs on to another line.
+    // The manual's multi-line literal ends its line right after the opening
+    // quote, so this is neither that nor a one-line literal. Reported at the
+    // opening quote, before the build counts the lines; the build below still
+    // reads the literal as it always has, so the rest of the file lexes as before
+    else if (!multiline) {
+        for (char *p = srcp; p < endp; ++p) {
+            if (*p == '\\' && p + 1 < endp) {
+                // An escape is stepped over whole, as the count above does. A
+                // backslash at a line's end is an error of its own (the build
+                // below reports it), and one mistake gets one diagnostic
+                if (lexEolLen(p + 1))
+                    break;
+                ++p;
+            }
+            else if (*p == '\n') {
+                errorMsgLex(ErrorBadTok, "Text after the opening quote of a multi-line string literal must start on the next line: end the line right after the opening quote, or write a one-line string and spell a line's end as '\\n'");
+                break;
+            }
+        }
+    }
 
     if (multiline) {
         // The closing quote's indentation, which must be all its line holds before it
