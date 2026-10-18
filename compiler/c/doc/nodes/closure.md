@@ -136,7 +136,13 @@ and `returnTypeCheck` for a function whose `ClosureInfo` says `retinfer`) set it
 from the first return the check meets and hold the others to it. An `if` whose
 branches disagree says `ErrorClosureRet`, in the closure's words, from the one
 place that finds it (`iexpMultiInfer`, told by `closureInferring`). A body with
-nothing to hand back returns nothing.
+nothing to hand back returns nothing. So does one whose last line ends in `;`, which
+throws the value away: a closure that writes no return type goes either way,
+`fn(x i64) { x + 1 }` returning the value and `fn(x i64) { total += x; }` nothing
+(`FlagTailSemi` on the body, read by `closureImplicitReturn`). One that is given its
+type (`closureContextTail`) is held to the rule of a function: a last line with a `;`
+where the type is a value, or none where it is `void`, is `ErrorTailSemi` or
+`ErrorTailOpen`. A closure that writes its type is judged by the parser as a function is.
 
 ## A closure given to a call
 

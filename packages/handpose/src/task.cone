@@ -34,7 +34,7 @@ pub struct HandKey {
   pub close f32;             // 0 the pose as it is, 1 closed on the prop
   pub pose HandPose;
 
-  pub fn make(pose HandPose) HandKey { new HandKey(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0., pose); }
+  pub fn make(pose HandPose) HandKey { new HandKey(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0., pose) }
 
   pub fn flat(self &) List[f32] {
     var out = List[f32].empty();
@@ -43,21 +43,21 @@ pub struct HandKey {
     out.push(close);
     var i = 0usize;
     while i < pose.v.len() { out.push(*pose.v[i]); i = i + 1usize; }
-    out;
+    out
   }
 
   pub fn fromFlat(v &List[f32]) HandKey {
     var p = HandPose.zero();
     var i = 0usize;
     while i < FINGERS * DOF { p.v.set(i, *v[7usize + i]); i = i + 1usize; }
-    new HandKey(new Vec3(*v[0], *v[1], *v[2]), new Vec3(*v[3], *v[4], *v[5]), *v[6], p);
+    new HandKey(new Vec3(*v[0], *v[1], *v[2]), new Vec3(*v[3], *v[4], *v[5]), *v[6], p)
   }
 
   // The wrist's offset as a transform
   pub fn offset(self &) Transform3 {
     let angle = rotation.length();
-    let q = if angle > 0.000001 { Quat.angleAxis(angle, rotation * (1. / angle)); } else { Quat.identity(); };
-    new Transform3(translation, q, new Vec3(1., 1., 1.));
+    let q = if angle > 0.000001 { Quat.angleAxis(angle, rotation * (1. / angle)) } else { Quat.identity() };
+    new Transform3(translation, q, new Vec3(1., 1., 1.))
   }
 }
 
@@ -71,7 +71,7 @@ pub struct HandMotion {
   pub keys List[MotionKey];
   pub period f32;
 
-  pub fn make(name &str, period f32) HandMotion { new HandMotion(String.from(name), List[MotionKey].empty(), period); }
+  pub fn make(name &str, period f32) HandMotion { new HandMotion(String.from(name), List[MotionKey].empty(), period) }
 
   pub fn add(self &mut, time f32, key HandKey) { keys.push(new MotionKey(time, key)); }
 
@@ -87,9 +87,9 @@ pub struct HandMotion {
     let pi_ = (i + n - 1usize) % n;
     let nj = (j + 1usize) % n;
     let t0 = keys[i].time;
-    let t1 = if j > i { keys[j].time; } else { keys[j].time + period; };
-    let tp = if pi_ < i { keys[pi_].time; } else { keys[pi_].time - period; };
-    let tn = if nj > j { keys[nj].time; } else { keys[nj].time + period; };
+    let t1 = if j > i { keys[j].time } else { keys[j].time + period };
+    let tp = if pi_ < i { keys[pi_].time } else { keys[pi_].time - period };
+    let tn = if nj > j { keys[nj].time } else { keys[nj].time + period };
     let h = t1 - t0;
     let s = (u - t0) / h;
     let v0 = keys[i].key.flat();
@@ -110,7 +110,7 @@ pub struct HandMotion {
       out.push(h00 * *v0[k] + h10 * m0 + h01 * *v1[k] + h11 * m1);
       k = k + 1usize;
     }
-    HandKey.fromFlat(&out);
+    HandKey.fromFlat(&out)
   }
 }
 
@@ -124,14 +124,14 @@ pub struct TaskBlend {
   pub clock f32;
 
   pub fn make() TaskBlend {
-    new TaskBlend(List[HandMotion].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0.);
+    new TaskBlend(List[HandMotion].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0.)
   }
 
   // Add a motion with weight 'weight' at first: its number
   pub fn add(self &mut, m HandMotion, weight f32) usize {
     motions.push(m);
     weight_push(self, weight);
-    motions.len() - 1usize;
+    motions.len() - 1usize
   }
 
   // Ease motion 'i' to 'w', within 1% in 'seconds'
@@ -169,7 +169,7 @@ pub struct TaskBlend {
       }
       i = i + 1usize;
     }
-    HandKey.fromFlat(&acc);
+    HandKey.fromFlat(&acc)
   }
 }
 
@@ -179,7 +179,7 @@ fn weight_push(b &mut TaskBlend, w f32) {
   b.rate.push(4.6 / 0.3);
 }
 
-fn fmax(a f32, b f32) f32 { if a > b { return a; } b; }
+fn fmax(a f32, b f32) f32 { if a > b { return a; } b }
 
 // ---- the stock tasks ----
 
@@ -189,7 +189,7 @@ pub fn holdMotion(pose &HandPose, close f32) HandMotion {
   var k = HandKey.make(pose.copy());
   k.close = close;
   m.add(0., k);
-  m;
+  m
 }
 
 // A sinusoidal cycle of wrist translation and rotation about a held pose
@@ -206,17 +206,17 @@ pub fn oscillate(name &str, translationAmp Vec3, rotationAmp Vec3, period f32, p
     m.add(ph * period, k);
     i = i + 1;
   }
-  m;
+  m
 }
 
 // Turn: the wrist rolls about the forearm (the hand's y axis) by +-'roll' radians
 pub fn turnMotion(roll f32, period f32, pose &HandPose, close f32) HandMotion {
-  oscillate("turn", new Vec3(0., 0., 0.), new Vec3(0., roll, 0.), period, pose, close);
+  oscillate("turn", new Vec3(0., 0., 0.), new Vec3(0., roll, 0.), period, pose, close)
 }
 
 // Swing: the wrist hinges about its bending axis (across the hand: z) by +-'angle', a hammer's stroke
 pub fn swingMotion(angle f32, period f32, pose &HandPose, close f32) HandMotion {
-  oscillate("swing", new Vec3(0., 0., 0.), new Vec3(0., 0., angle), period, pose, close);
+  oscillate("swing", new Vec3(0., 0., 0.), new Vec3(0., 0., angle), period, pose, close)
 }
 
 // Press: the palm leans into the surface by 'depth' metres along its normal and eases off
@@ -232,7 +232,7 @@ pub fn pressMotion(spec &HandSpec, depth f32, period f32, pose &HandPose) HandMo
     m.add(ph * period, k);
     i = i + 1;
   }
-  m;
+  m
 }
 
 fn keyAt(spec &HandSpec, along f32, lean f32, roll f32, pose &HandPose, close f32) HandKey {
@@ -241,7 +241,7 @@ fn keyAt(spec &HandSpec, along f32, lean f32, roll f32, pose &HandPose, close f3
   k.translation = new Vec3(0., -along, 0.) + spec.palmNormal * lean;
   k.rotation = new Vec3(0., 0., roll * spec.h);
   k.close = close;
-  k;
+  k
 }
 
 // Knead: the heel of the palm pushes forward and down, the fingers fold at the end of the stroke
@@ -256,7 +256,7 @@ pub fn kneadMotion(spec &HandSpec, stroke f32, depth f32, period f32) HandMotion
   m.add(0.50 * period, keyAt(spec, stroke * 0.5, depth * 0.85, 0.12, &mid, 0.4));
   m.add(0.64 * period, keyAt(spec, stroke * 0.38, depth * 0.30, -0.04, &claw, 1.));
   m.add(0.84 * period, keyAt(spec, -stroke * 0.25, depth * 0.25, -0.02, &claw, 1.));
-  m;
+  m
 }
 
 // ---- evaluating a key ----
@@ -295,5 +295,5 @@ pub fn evaluateKey(spec &HandSpec, shape &GripShape, base &Transform3, key &Hand
     result = measure(spec, &pose, &wrist, surface);
     again = again + 1;
   }
-  new HandFrame(wrist, pose.copy(), result);
+  new HandFrame(wrist, pose.copy(), result)
 }

@@ -17,7 +17,7 @@ pub struct Device {
                                    // (WebGPU's 128 MiB; the GPU's own with ComputeRequest.largeBuffers)
   pub maxStorageBuffersPerStage u32 = MAX_STORAGE_BUFFERS_PER_SHADER_STAGE;   // the most storage buffers one shader stage sees (8; ditto)
 
-  pub fn isValid(self &) bool { (backend.device as *u8 as usize) != 0usize; }
+  pub fn isValid(self &) bool { (backend.device as *u8 as usize) != 0usize }
 
   // Begin a frame, if one is not begun: wait until the GPU has finished the
   // frame that last used this frame's state, and reset its command pools.
@@ -52,7 +52,7 @@ pub struct Device {
     let i = usize.from(frame % u64.from(FRAMES_IN_FLIGHT));
     if !queue.backend.frames[i].pending { return true; }
     var fence = queue.backend.frames[i].fence;
-    backend.fns.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, 0u64) == vulkan.SUCCESS;
+    backend.fns.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, 0u64) == vulkan.SUCCESS
   }
 
   // Wait until the GPU has finished frame 'frame', and nothing submitted
@@ -76,14 +76,14 @@ pub struct Device {
       let fci = new vulkan.FenceCreateInfo();
       check(backend.fns.createFence(backend.device, &fci, nullp(), &mut fence), "vkCreateFence");
     }
-    new Fence(backend.device, backend.fns, fence, false);
+    new Fence(backend.device, backend.fns, fence, false)
   }
 
   // A command encoder, recording into a command buffer of this frame's
   pub fn createCommandEncoder(self &mut) CommandEncoder {
     beginQueueFrame(&mut queue);
     let cmd = nextCommandBuffer(&mut queue);
-    new CommandEncoder(new EncoderBackend(cmd, queue.fns));
+    new CommandEncoder(new EncoderBackend(cmd, queue.fns))
   }
 
   // A swapchain presenting to 'surface', its textures 'width' by 'height'
@@ -112,7 +112,7 @@ pub struct Device {
       i = i + 1usize;
     }
     sc.configure();
-    sc;
+    sc
   }
 
   // A buffer of 'size' bytes, for 'usage' (BUFFER_USAGE_... OR-ed). One the
@@ -159,19 +159,19 @@ pub struct Device {
     let mapping = usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE);
     var b = new BufferBackend(backend.device, backend.fns, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
     if self.isValid() { b = allocateBuffer(&backend.fns, backend.device, &queue.backend.memory, size, vkUsage, mapping); }
-    new Buffer(b, size, usage);
+    new Buffer(b, size, usage)
   }
 
   // The ray-tracing structure over one mesh's triangles, 'vertexCount' float3 positions and
   // 'indexCount' u32 indices, both buffers made with BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT
   // (raytracing.cone). Needs 'rayTracing'. Check 'isValid'.
   pub fn createBottomLevel(self &mut, positions &Buffer, vertexCount u32, indices &Buffer, indexCount u32) AccelerationStructure {
-    makeBottomLevel(self, positions, vertexCount, indices, indexCount);
+    makeBottomLevel(self, positions, vertexCount, indices, indexCount)
   }
 
   // The structure over up to 'maxInstances' placed bottom-level ones (raytracing.cone). Needs
   // 'rayTracing'. Check 'isValid'.
-  pub fn createTopLevel(self &mut, maxInstances u32) AccelerationStructure { makeTopLevel(self, maxInstances); }
+  pub fn createTopLevel(self &mut, maxInstances u32) AccelerationStructure { makeTopLevel(self, maxInstances) }
 
   // A texture 'desc' describes, in the GPU's own memory: one to draw into,
   // its usage TEXTURE_USAGE_RENDER_ATTACHMENT (and TEXTURE_USAGE_COPY_SRC to
@@ -274,13 +274,13 @@ pub struct Device {
     result.backend.view = view;
     result.backend.kind = kind;
     result.backend.mipCount = desc.mipLevelCount;
-    result.backend.layerCount = if volume { 1u32; } else { desc.depthOrArrayLayers; };
+    result.backend.layerCount = if volume { 1u32 } else { desc.depthOrArrayLayers };
     // Room for a view of each level of each layer, a cube and an array view
     // of each level, and a few more
     result.backend.views = newViews(desc.mipLevelCount * (desc.depthOrArrayLayers + 2u32) + 8u32);
     let cmd = uploadCommands(&mut queue);
     if !isNull(cmd) { firstLayout(&backend.fns, cmd, image, kind); }
-    result;
+    result
   }
 
   // A shader module from SPIR-V: 32-bit words, as tools/shaders/shaders.py
@@ -292,7 +292,7 @@ pub struct Device {
       let ci = new vulkan.ShaderModuleCreateInfo(codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32);
       check(backend.fns.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
     }
-    new ShaderModule(new ShaderModuleBackend(backend.device, backend.fns, module));
+    new ShaderModule(new ShaderModuleBackend(backend.device, backend.fns, module))
   }
 
   // A bind group layout: the bindings a bind group of it has, each a
@@ -340,7 +340,7 @@ pub struct Device {
     var layout = new vulkan.DescriptorSetLayout(0u64);
     check(backend.fns.createDescriptorSetLayout(backend.device, &ci, nullp(), &mut layout), "vkCreateDescriptorSetLayout");
     result.backend.layout = layout;
-    result;
+    result
   }
 
   // A pipeline layout: the bind groups a pipeline of it binds, in order
@@ -376,14 +376,14 @@ pub struct Device {
       }
       s = s + 1usize;
     }
-    makePipelineLayout(&backend.fns, backend.device, u32.from(bindGroupLayouts.len), &sets, immediateSize);
+    makePipelineLayout(&backend.fns, backend.device, u32.from(bindGroupLayouts.len), &sets, immediateSize)
   }
 
   // A pipeline layout with no bind groups, only 'immediateSize' bytes of
   // immediates (0 for none)
   pub fn createEmptyPipelineLayout(self &, immediateSize u32) PipelineLayout {
     let sets = new Array[vulkan.DescriptorSetLayout, 4] <- fill new vulkan.DescriptorSetLayout(0u64);
-    makePipelineLayout(&backend.fns, backend.device, 0u32, &sets, immediateSize);
+    makePipelineLayout(&backend.fns, backend.device, 0u32, &sets, immediateSize)
   }
 
   // A render pipeline, as 'desc' describes it: what its shaders are, how
@@ -482,7 +482,7 @@ pub struct Device {
       blendAttachment.dstAlphaBlendFactor = blendFactor(desc.alphaDstFactor);
     }
     // (a depth-only pipeline, colorFormat UNDEFINED, has none)
-    let colorCount = if desc.colorFormat == TEXTURE_FORMAT_UNDEFINED { 0u32; } else { 1u32; };
+    let colorCount = if desc.colorFormat == TEXTURE_FORMAT_UNDEFINED { 0u32 } else { 1u32 };
     let blend = new vulkan.PipelineColorBlendStateCreateInfo(attachmentCount: colorCount,
       pAttachments: &blendAttachment as *vulkan.PipelineColorBlendAttachmentState, blendConstants: new Array[f32, 4] <- fill 0f);
     let dynamics Array[u32, 2] = [vulkan.DYNAMIC_STATE_VIEWPORT, vulkan.DYNAMIC_STATE_SCISSOR];
@@ -510,7 +510,7 @@ pub struct Device {
     check(backend.fns.createGraphicsPipelines(backend.device, new vulkan.PipelineCache(0u64), 1u32,
       &ci as *vulkan.GraphicsPipelineCreateInfo, nullp(), &mut pipeline as *vulkan.Pipeline), "vkCreateGraphicsPipelines");
     result.backend.pipeline = pipeline;
-    result;
+    result
   }
 
   // A compute pipeline, as 'desc' describes it: its shader's entry point
@@ -527,7 +527,7 @@ pub struct Device {
     check(backend.fns.createComputePipelines(backend.device, new vulkan.PipelineCache(0u64), 1u32,
       &ci as *vulkan.ComputePipelineCreateInfo, nullp(), &mut pipeline as *vulkan.Pipeline), "vkCreateComputePipelines");
     result.backend.pipeline = pipeline;
-    result;
+    result
   }
 
   // A query set of 'count' queries (at most MAX_QUERY_COUNT) of 'type':
@@ -546,7 +546,7 @@ pub struct Device {
     var pool = new vulkan.QueryPool(0u64);
     check(backend.fns.createQueryPool(backend.device, &ci, nullp(), &mut pool), "vkCreateQueryPool");
     result.backend.pool = pool;
-    result;
+    result
   }
 
   // A sampler, filtering and wrapping as 'desc' says. Check 'isValid'.
@@ -576,7 +576,7 @@ pub struct Device {
       }
       check(backend.fns.createSampler(backend.device, &ci, nullp(), &mut sampler), "vkCreateSampler");
     }
-    new Sampler(new SamplerBackend(backend.device, backend.fns, sampler));
+    new Sampler(new SamplerBackend(backend.device, backend.fns, sampler))
   }
 
   // A bind group of 'layout': what each of its bindings is given ('entries',
@@ -679,7 +679,7 @@ pub struct Device {
       i = i + 1usize;
     }
     backend.fns.updateDescriptorSets(backend.device, u32.from(entries.len), &writes as *vulkan.WriteDescriptorSet, 0u32, nullp());
-    result;
+    result
   }
 
   // Its end, after its buffers and swapchains, once the GPU is idle
@@ -715,7 +715,7 @@ fn endFrameSignalling(device &mut Device, signalCount u32, signals *vulkan.Semap
   device.queue.backend.frameIndex = (device.queue.backend.frameIndex + 1u32) % FRAMES_IN_FLIGHT;
   device.queue.backend.inFrame = false;
   device.frameNumber = device.frameNumber + 1u64;
-  ok;
+  ok
 }
 
 // The first memory type of those in 'bits' that has all of 'want'
@@ -725,14 +725,14 @@ fn memoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, want u32) 
     if (bits & (1u32 << i)) != 0u32 and (props.memoryTypes[usize.from(i)].propertyFlags & want) == want { return i; }
     i = i + 1u32;
   }
-  0xFFFFFFFFu32;
+  0xFFFFFFFFu32
 }
 
 // Memory of a type in 'bits' with 'want', of 'size' bytes: its own
 // allocation
 fn allocate(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, req &vulkan.MemoryRequirements,
     want u32) vulkan.DeviceMemory {
-  allocateFlagged(fns, device, props, req, want, false);
+  allocateFlagged(fns, device, props, req, want, false)
 }
 
 // The same, for a buffer whose device address is taken (ray tracing's inputs, scratch and structures): the
@@ -746,10 +746,10 @@ fn allocateFlagged(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDevi
     return memory;
   }
   let flags = new vulkan.MemoryAllocateFlagsInfo(flags: vulkan.MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT);
-  let mai = new vulkan.MemoryAllocateInfo(pNext: if addressable { &flags as *u8; } else { null; },
+  let mai = new vulkan.MemoryAllocateInfo(pNext: if addressable { &flags as *u8 } else { null },
     allocationSize: req.size, memoryTypeIndex: typeIndex);
   check(fns.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
-  memory;
+  memory
 }
 
 // The memory type for a buffer the CPU maps as 'mapping' says (MAP_READ,
@@ -774,7 +774,7 @@ fn mappedMemoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, mapp
     }
   }
   if t == 0xFFFFFFFFu32 { t = memoryType(props, bits, visible | coherent); }
-  t;
+  t
 }
 
 // A buffer of 'size' bytes with Vulkan's 'usage', in memory of its own: the
@@ -814,14 +814,14 @@ fn allocateBuffer(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDevic
       result.mapped = p;
     }
   }
-  result;
+  result
 }
 
 // A 2-D image 'width' by 'height' of 'format' and Vulkan's 'usage', in the
 // GPU's memory, of its own, and a view of all of it
 fn makeImage(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
     format u32, usage u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) bool {
-  makeImageLevels(fns, device, props, width, height, format, usage, 1u32, 1u32, 0u32, false, image, memory, view);
+  makeImageLevels(fns, device, props, width, height, format, usage, 1u32, 1u32, 0u32, false, image, memory, view)
 }
 
 // The same, of 'levels' mip levels and 'layers' layers, made with 'flags'
@@ -853,7 +853,7 @@ fn makeImageLevels(fns &DevFns, device vulkan.Device, props &vulkan.PhysicalDevi
   let vci = new vulkan.ImageViewCreateInfo(image: *image, viewType: viewType, format: format,
     components: new vulkan.ComponentMapping(), subresourceRange: new vulkan.ImageSubresourceRange(aspectMask: aspectOf(format),
     levelCount: levels, layerCount: arrayLayers));
-  check(fns.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
+  check(fns.createImageView(device, &vci, nullp(), view), "vkCreateImageView")
 }
 
 fn makePipelineLayout(fns &DevFns, device vulkan.Device, setCount u32, sets &Array[vulkan.DescriptorSetLayout, 4],
@@ -873,5 +873,5 @@ fn makePipelineLayout(fns &DevFns, device vulkan.Device, setCount u32, sets &Arr
   var layout = new vulkan.PipelineLayout(0u64);
   check(fns.createPipelineLayout(device, &ci, nullp(), &mut layout), "vkCreatePipelineLayout");
   result.backend.layout = layout;
-  result;
+  result
 }

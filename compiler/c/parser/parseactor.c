@@ -37,7 +37,7 @@
  *
  * and, once per module, the helper 'actors.take' (a function of the module's
  * own, named as no source can spell), which moves a field out of a message:
- * 'fn actors.take[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T);}':
+ * 'fn actors.take[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T)}':
  * what is moved out holds only borrows of the whole program, the only borrows a
  * message carries, and none of the borrow of the node it is read from, which the
  * trip through a number says to the loan walk.
@@ -703,7 +703,7 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     // one that is copied
     genPuts(g, "fn ");
     genSlot(g, GenTake);
-    genPuts(g, "[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T);}\n");
+    genPuts(g, "[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T)}\n");
     return 2;
 }
 
@@ -852,7 +852,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     genSlot(&g, GenState);
     genPuts(&g, ", ");
     genSlot(&g, GenMsg);
-    genPuts(&g, "](self);\n  }\n}\n");
+    genPuts(&g, "](self)\n  }\n}\n");
 
     // The message enum: a variant per message, its fields the parameters,
     // written after the handle (a reference to it lays out nothing of it).
@@ -1154,7 +1154,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenActors);
         genPuts(&g, ".futureReply[");
         genPutn(&g, rtx.text, rtx.len);
-        genPuts(&g, "](&f)));\n    f;\n  }\n");
+        genPuts(&g, "](&f)));\n    f\n  }\n");
     }
     genPuts(&g, "}\n");
 
@@ -1308,7 +1308,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, withid ? GenResumeId : GenResume);
         genPuts(&g, withid ? "(run, id, " : "(run, ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".replyData(&r)));\n  r;\n}\n");
+        genPuts(&g, ".replyData(&r)));\n  r\n}\n");
     }
 
     // 'selfactor': the actor's own handle, another owner of its mailbox, which
@@ -1331,7 +1331,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenState);
         genPuts(&g, ", ");
         genSlot(&g, GenMsg);
-        genPuts(&g, "](st));}\n");
+        genPuts(&g, "](st))}\n");
     }
 
     // Parse it, as the actor's own source, its diagnostics reported at its name

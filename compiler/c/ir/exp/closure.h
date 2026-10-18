@@ -80,6 +80,7 @@ INode *closureSelfParm(FnDclNode *fn);
 
 // Reading the return type off a closure's paths (fndcl.c, return.c)
 void closureImplicitReturn(FnDclNode *fn);
+void closureContextTail(FnDclNode *fn);
 void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode);
 
 // The signature a closure given as an argument is to fit, set by the call that

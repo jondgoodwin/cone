@@ -14,19 +14,19 @@ pub struct Words {
   pub len usize;               // its words
   slice bool;                  // bound as a slice, as the kernel's SPIR-V says
 
-  pub fn u32s(self) &Array[u32] { mem.sliceFromParts[u32](ptr, len); }
-  pub fn u32sMut(self) &mut Array[u32] { mem.sliceFromPartsMut[u32](ptr, len); }
-  pub fn i32s(self) &Array[i32] { mem.sliceFromParts[i32](ptr as *i32, len); }
-  pub fn i32sMut(self) &mut Array[i32] { mem.sliceFromPartsMut[i32](ptr as *i32, len); }
-  pub fn f32s(self) &Array[f32] { mem.sliceFromParts[f32](ptr as *f32, len); }
-  pub fn f32sMut(self) &mut Array[f32] { mem.sliceFromPartsMut[f32](ptr as *f32, len); }
+  pub fn u32s(self) &Array[u32] { mem.sliceFromParts[u32](ptr, len) }
+  pub fn u32sMut(self) &mut Array[u32] { mem.sliceFromPartsMut[u32](ptr, len) }
+  pub fn i32s(self) &Array[i32] { mem.sliceFromParts[i32](ptr as *i32, len) }
+  pub fn i32sMut(self) &mut Array[i32] { mem.sliceFromPartsMut[i32](ptr as *i32, len) }
+  pub fn f32s(self) &Array[f32] { mem.sliceFromParts[f32](ptr as *f32, len) }
+  pub fn f32sMut(self) &mut Array[f32] { mem.sliceFromPartsMut[f32](ptr as *f32, len) }
   // As '&mut Array[Atomic[u32]]' or '&mut Array[Atomic[i32]]', what a kernel declares
   // for a counter or slots its invocations claim ('count[0usize].add(1u32)')
-  pub fn atomicU32s(self) &mut Array[Atomic[u32]] { mem.sliceFromPartsMut[Atomic[u32]](ptr as *Atomic[u32], len); }
-  pub fn atomicI32s(self) &mut Array[Atomic[i32]] { mem.sliceFromPartsMut[Atomic[i32]](ptr as *Atomic[i32], len); }
+  pub fn atomicU32s(self) &mut Array[Atomic[u32]] { mem.sliceFromPartsMut[Atomic[u32]](ptr as *Atomic[u32], len) }
+  pub fn atomicI32s(self) &mut Array[Atomic[i32]] { mem.sliceFromPartsMut[Atomic[i32]](ptr as *Atomic[i32], len) }
 
   // Its first words as a T (a by-value struct parameter)
-  pub fn value[T](self) T { mem.readRaw[T](ptr as *T); }
+  pub fn value[T](self) T { mem.readRaw[T](ptr as *T) }
 }
 
 // The most invocations a workgroup whose twin runs them together may have,
@@ -61,9 +61,9 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
   while b < buffers.len() {
     let inner = &mut buffers[b];
     let v = inner.viewMut();
-    let p = if v.len > 0usize { &mut v[0usize] as *u32; } else { null as *u32; };
+    let p = if v.len > 0usize { &mut v[0usize] as *u32 } else { null as *u32 };
     let slice = kernel.hasDirect and kernel.shapes[b] == SHAPE_SLICE;
-    let elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]); } else { v.len; };
+    let elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]) } else { v.len };
     if kernel.hasDirect and !slice and v.len * 4usize < usize.from(kernel.needs[b]) {
       fail("runTwin: a buffer is smaller than the struct its direct twin reads from it");
       return false;
@@ -106,7 +106,7 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
     }
     gz = gz + 1u32;
   }
-  true;
+  true
 }
 
 // ---- A workgroup's invocations together, on threads ----
@@ -202,7 +202,7 @@ fn runLane(lane Lane) {
 fn runTogether(kernel &Kernel, view &Array[Words], x u32, y u32, z u32) {
   let size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
   var t = new Together(Atomic[u32].of(0u32), Atomic[u32].of(0u32), size, kernel as *Kernel,
-    if view.len > 0usize { &view[0usize] as *Words; } else { null as *Words; }, view.len, [x, y, z]);
+    if view.len > 0usize { &view[0usize] as *Words } else { null as *Words }, view.len, [x, y, z]);
   let pt = &mut t as *Together;
   {
     // A handle dropped joins its thread: every one, at the block's end
@@ -227,7 +227,7 @@ pub struct Parity {
   pub cpuWord u32;
 
   // Whether the two agree, every bit of every word written
-  pub fn exact(self &) bool { ran and mismatched == 0u64 and compared > 0u64; }
+  pub fn exact(self &) bool { ran and mismatched == 0u64 and compared > 0u64 }
 }
 
 // Run 'kernel' on the GPU and its CPU twin on the CPU, each over its own
@@ -254,7 +254,7 @@ pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]],
   var backs = List[u32].empty();
   b = 0usize;
   while b < buffers.len() {
-    backs.push(if kernel.accessOf(u32.from(b)) == READ_WRITE { job.readback(device, u32.from(b)); } else { 0u32; });
+    backs.push(if kernel.accessOf(u32.from(b)) == READ_WRITE { job.readback(device, u32.from(b)) } else { 0u32 });
     b = b + 1usize;
   }
   let ticket = works.submit(device, job, Target.Here(0u64));
@@ -287,7 +287,7 @@ pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]],
       let cpuWords = cpu[b].view();
       var i = 0usize;
       while i < cpuWords.len {
-        let g = if i < gpuWords.len() { *gpuWords[i]; } else { 0u32; };
+        let g = if i < gpuWords.len() { *gpuWords[i] } else { 0u32 };
         if g != cpuWords[i] {
           if result.mismatched == 0u64 {
             result.firstBinding = u32.from(b);
@@ -303,5 +303,5 @@ pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]],
     }
     b = b + 1usize;
   }
-  result;
+  result
 }

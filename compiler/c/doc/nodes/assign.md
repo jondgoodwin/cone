@@ -144,7 +144,7 @@ which every path calls. `assignSingleFlow` first moves or copies the value out
 of its source (`flowHandleMoveOrCopy`: a move type deactivates its source, an
 lvalue read of a counted reference gets a `+1`), and only then asks about the
 target, as generation evaluates the value before it stores over the target: so
-`p = p`, or `p = if c {p;} else {q;}`, finds `p` empty where the value left
+`p = p`, or `p = if c {p} else {q}`, finds `p` empty where the value left
 it, and releases nothing the new value still is. A parallel assignment
 (`assignParaFlow`) takes every value before it stores over any target, as
 generation evaluates them all first: `a, b = b, a` swaps two values that move.

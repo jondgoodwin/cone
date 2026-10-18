@@ -72,7 +72,7 @@
 // region is the futures' alone, and is allocated only here
 struct Futures is RegionRef, ThreadSafe {
   cnt usize;
-  fn alloc(size usize) *u8 inline {libc.malloc(size);}
+  fn alloc(size usize) *u8 inline {libc.malloc(size)}
   fn init(self &new) inline {*self = new Futures(1usize);}
   fn aliasRef(self &uni Futures) inline {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
@@ -80,7 +80,7 @@ struct Futures is RegionRef, ThreadSafe {
   fn dealiasRef(self &uni Futures) bool inline {
     let last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
     if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire);}
-    last;
+    last
   }
   fn free(self &uni Futures) {
     futuresLive.subOrdered(1usize, MemOrder.Relaxed);
@@ -97,7 +97,7 @@ let futuresLive Atomic[usize];
 let futuresMade Atomic[u64];
 
 pub fn liveFutures() usize {
-  futuresLive.loadOrdered(MemOrder.Acquire);
+  futuresLive.loadOrdered(MemOrder.Acquire)
 }
 
 // A future's state
@@ -150,7 +150,7 @@ pub struct Future[T] is Move if T is Move {
 
 // Where after its header a future's payload is
 fn cellOffset[T]() usize {
-  roundUp(mem.sizeof[Futures](), mem.alignof[FutureCell[T]]());
+  roundUp(mem.sizeof[Futures](), mem.alignof[FutureCell[T]]())
 }
 
 // A new future, Pending, owed by the actor whose Mailbox mb is: its one
@@ -171,7 +171,7 @@ pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
   (*c).owesActor = mb as *Header as usize;
   (*c).owesId = futuresMade.addOrdered(1u64, MemOrder.Relaxed) + 1u64;
   (*c).release = &futureRelease[T];
-  new Future[T]((block as usize + off) as Futures[opaq, FutureCell[T]]);
+  new Future[T]((block as usize + off) as Futures[opaq, FutureCell[T]])
 }
 
 // The producer's reference to future f, counted: the envelope its request
@@ -179,7 +179,7 @@ pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
 pub fn futureReply[T](f &Future[T]) Reply {
   let c = *(f as *Future[T] as **u8);
   mem.atomicAdd[usize]((c - cellOffset[T]()) as *usize, 1usize, MemOrder.Relaxed);
-  new Reply(cell: c, data: (*(c as *FutureCell[T])).value);
+  new Reply(cell: c, data: (*(c as *FutureCell[T])).value)
 }
 
 // One count of the future whose payload is at c let go: a reference remade
@@ -220,13 +220,13 @@ fn futureEnd(c *u8, s u32) {
 
 // The payload of the future lying at fut
 fn cellAt(fut *u8) *FutureCell[u8] {
-  *(fut as **FutureCell[u8]);
+  *(fut as **FutureCell[u8])
 }
 
 // Whether the future lying at fut has its ending, so that an 'await' on it
 // need not park: its value arrived, or it never will
 pub fn futureReady(fut *u8) bool {
-  mem.atomicLoad[u32](&(*cellAt(fut)).state as *u32, MemOrder.Acquire) != futPending;
+  mem.atomicLoad[u32](&(*cellAt(fut)).state as *u32, MemOrder.Acquire) != futPending
 }
 
 // Park a continuation on the future lying at fut: rp is the envelope its
@@ -256,7 +256,7 @@ pub fn futureRegister(fut *u8, rp Reply) bool {
     }
     head = seen;
   }
-  false;
+  false
 }
 
 // Where the value is in the future lying at fut, which has its ending, for
@@ -275,7 +275,7 @@ pub fn futureOpen(fut *u8, file &str, line u32) *u8 {
   if s == futTaken {
     dieOwed("actors: an awaited future's value was taken already (request ", (*c).owesId, ")", file, line);
   }
-  dieOwed("actors: an awaited future has not arrived (request ", (*c).owesId, ")", file, line);
+  dieOwed("actors: an awaited future has not arrived (request ", (*c).owesId, ")", file, line)
 }
 
 // A move value read out of the future lying at fut: it is Taken, so that it
@@ -304,7 +304,7 @@ fn dieOwed(before &str, id u64, after &str, file &str, line u32) Never {
     n = n + 1usize;
   }
   n = putText(buf, n, after);
-  panic(mem.sliceFromParts[u8](buf, n) as &str, file, line);
+  panic(mem.sliceFromParts[u8](buf, n) as &str, file, line)
 }
 
 fn putText(buf *u8, at usize, s &str) usize {
@@ -313,5 +313,5 @@ fn putText(buf *u8, at usize, s &str) usize {
     *(buf + at + i) = s[i];
     i = i + 1usize;
   }
-  at + s.len;
+  at + s.len
 }

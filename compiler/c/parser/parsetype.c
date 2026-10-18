@@ -1611,6 +1611,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
         else
             isgen = 1;
     }
+    // (a generator's 'yields' type is no return type: the generator's body ends in a ';')
     // A '+' and a marker's name after the parameters of a function-reference type,
     // '&<fn(x i32) + ShapeKeeping', joins the marker to the reference (parseRefBounds);
     // it does not begin a return type
@@ -1618,6 +1619,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
             && !(reftype && lexIsToken(PlusToken)
                 && (lexNextIsWord("Sendable") || lexNextIsWord("Shareable") || lexNextIsWord("ShapeKeeping")))
             && (fnsig->rettype = parseType(parse)) != unknownType) {
+        fnsig->retwritten = 1;
         // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
         // list -- a parameter list, a tuple, arguments -- the comma continues
         // the list instead, so a signature there returning several values

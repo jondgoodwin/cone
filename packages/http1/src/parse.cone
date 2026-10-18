@@ -10,14 +10,14 @@ fn bad(err &mut HttpError, kind ErrorKind, status u16, why &str) bool {
   err.kind = kind;
   err.status = status;
   err.detail = String.from(why);
-  false;
+  false
 }
 
 // The first offset of byte c in s at or after from, or s.len
 fn indexOf(s &Array[u8], c u8, from usize) usize {
   var i = from;
   while i < s.len and s[i] != c {i = i + 1usize;}
-  i;
+  i
 }
 
 // The end of the line starting at from: the offset of its CR, or of its LF
@@ -25,11 +25,11 @@ fn indexOf(s &Array[u8], c u8, from usize) usize {
 // response a client reads; it has checked that an LF follows every CR)
 fn lineEnd(h &Array[u8], from usize) usize {
   let lf = indexOf(h, '\n', from);
-  if lf > from and h[lf - 1usize] == '\r' {lf - 1usize;} else {lf;};
+  if lf > from and h[lf - 1usize] == '\r' {lf - 1usize} else {lf};
 }
 
 // Where the line after the one ending at end starts: past its LF
-fn lineNext(h &Array[u8], end usize) usize {indexOf(h, '\n', end) + 1usize;}
+fn lineNext(h &Array[u8], end usize) usize {indexOf(h, '\n', end) + 1usize}
 
 // HTTP-version, 'HTTP/1.1': 11 for 1.1 (and any later 1.x, read as 1.1, RFC
 // 9110 section 6.2), 10 for 1.0, 0 for another major version, and 1 for text
@@ -40,7 +40,7 @@ fn versionOf(v &Array[u8]) u32 {
   let minor = v[7usize];
   if major < '0' or major > '9' or v[6usize] != '.' or minor < '0' or minor > '9' {return 1u32;}
   if major != '1' {return 0u32;}
-  if minor == '0' {10u32;} else {11u32;};
+  if minor == '0' {10u32} else {11u32};
 }
 
 // request-line = method SP request-target SP HTTP-version (RFC 9112, 3):
@@ -66,8 +66,8 @@ fn parseRequestLine(line &Array[u8], head &mut RequestHead, err &mut HttpError) 
   if ver == 1u32 {return bad(err, ErrorKind.Malformed, 400u16, "the request line does not end in an HTTP version");}
   if ver == 0u32 {return bad(err, ErrorKind.Unsupported, 505u16, "the request's major version is not 1");}
   *head = RequestHead.make(method as &str, target as &str, "");
-  head.version = if ver == 10u32 {Version.Http10;} else {Version.Http11;};
-  true;
+  head.version = if ver == 10u32 {Version.Http10} else {Version.Http11};
+  true
 }
 
 // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112,
@@ -97,8 +97,8 @@ fn parseStatusLine(line &Array[u8], head &mut ResponseHead, err &mut HttpError) 
     }
   }
   head.status = code;
-  head.version = if ver == 10u32 {Version.Http10;} else {Version.Http11;};
-  true;
+  head.version = if ver == 10u32 {Version.Http10} else {Version.Http11};
+  true
 }
 
 // The field lines of h from offset 'from' up to the empty line that ends
@@ -109,8 +109,8 @@ fn parseStatusLine(line &Array[u8], head &mut ResponseHead, err &mut HttpError) 
 // field before it, the fold replaced by one space
 fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost bool, headers &mut Headers,
     host &mut String, hostCount &mut usize, err &mut HttpError) bool {
-  let status = if request {431u16;} else {0u16;};
-  let malformed = if request {400u16;} else {0u16;};
+  let status = if request {431u16} else {0u16};
+  let malformed = if request {400u16} else {0u16};
   var at = from;
   var n = 0usize;
   // The field read last, not yet added: its name and value in h, and its
@@ -145,7 +145,7 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
       continue;
     }
     if pending {
-      addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt ..< valueEnd];},
+      addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]},
         takeHost, headers, host, hostCount);
       folded = false;
     }
@@ -169,10 +169,10 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
     at = lineNext(h, end);
   }
   if pending {
-    addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt ..< valueEnd];},
+    addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]},
       takeHost, headers, host, hostCount);
   }
-  true;
+  true
 }
 
 // A field read and checked: to headers, or a request's Host to host
@@ -223,7 +223,7 @@ fn contentLength(headers &Headers, n &mut u64, err &mut HttpError, malformed u16
     f = f + 1usize;
   }
   *n = value;
-  true;
+  true
 }
 
 // A received message's framing (RFC 9112, 6.3), refusing every shape a
@@ -231,7 +231,7 @@ fn contentLength(headers &Headers, n &mut u64, err &mut HttpError, malformed u16
 // Content-Length, Transfer-Encoding in HTTP/1.0, chunked not last or twice,
 // any coding but chunked, and Content-Lengths that disagree
 fn framingOf(headers &Headers, request bool, http10 bool, mode &mut u32, n &mut u64, err &mut HttpError) bool {
-  let malformed = if request {400u16;} else {0u16;};
+  let malformed = if request {400u16} else {0u16};
   let hasTe = headers.has("Transfer-Encoding");
   let hasCl = headers.has("Content-Length");
   if hasTe {
@@ -250,7 +250,7 @@ fn framingOf(headers &Headers, request bool, http10 bool, mode &mut u32, n &mut 
       } elif chunked > 0u32 {
         return bad(err, ErrorKind.Malformed, malformed, "chunked is not the last transfer coding");
       } else {
-        return bad(err, ErrorKind.Unsupported, if request {501u16;} else {0u16;}, "a transfer coding other than chunked");
+        return bad(err, ErrorKind.Unsupported, if request {501u16} else {0u16}, "a transfer coding other than chunked");
       }
       start = end + 1usize;
     }
@@ -264,9 +264,9 @@ fn framingOf(headers &Headers, request bool, http10 bool, mode &mut u32, n &mut 
     *mode = frameSized;
     return true;
   }
-  *mode = if request {frameEmpty;} else {frameClose;};
+  *mode = if request {frameEmpty} else {frameClose};
   *n = 0u64;
-  true;
+  true
 }
 
 // chunk-size [ chunk-ext ] (RFC 9112, 7.1), the line without its CRLF: the
@@ -297,5 +297,5 @@ fn parseChunkLine(line &Array[u8], cfg &Config, size &mut u64, err &mut HttpErro
     }
   }
   *size = v;
-  true;
+  true
 }

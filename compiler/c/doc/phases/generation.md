@@ -2328,7 +2328,7 @@ variables.
   refuses as unreachable rather than build a wrong record.
 - **A jump out of the middle of a statement finalizes its pending temporaries
   before the locals of the blocks it leaves**, whatever order they were made
-  in: `f(mk(1).n, { let x = mk(2); if c { return; } 3; })` finalizes the first
+  in: `f(mk(1).n, { let x = mk(2); if c { return; } 3 })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
 - **A function taking an aggregate passed as a pointer, or returning any

@@ -97,7 +97,7 @@ def generate(mode: str, n: int) -> str:
         out.append("  var total = 0i64;")
         for g in range(n):
             out += group(g)
-        out.append("  total;")
+        out.append("  total")
         out.append("}")
     elif mode in ("many", "plain", "nest", "flat"):
         for f in range(FUNCTIONS if mode in ("nest", "flat") else n):
@@ -110,7 +110,7 @@ def generate(mode: str, n: int) -> str:
                     out += plain(g)
                 else:
                     out += looped(g, n, mode == "nest")
-            out.append("  total;")
+            out.append("  total")
             out.append("}")
             out.append("")
     else:

@@ -222,8 +222,8 @@ fn @initpure init() {
   liveBytes = Atomic[u64].of(0u64);
 }
 
-pub fn osBlocks() u64 {liveBlocks.load();}
-pub fn osBytes() u64 {liveBytes.load();}
+pub fn osBlocks() u64 {liveBlocks.load()}
+pub fn osBytes() u64 {liveBytes.load()}
 
 fn osAlloc(size usize) *u8 {
   var b = null as *u8;
@@ -237,7 +237,7 @@ fn osAlloc(size usize) *u8 {
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
     liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed);
   }
-  b;
+  b
 }
 
 fn osFree(block *u8, size usize) {
@@ -259,11 +259,11 @@ pub const classCount = 5u32;
 const oversize = 5u32;
 
 pub fn classSize(c u32) usize {
-  if c == 0u32 {4096usize;}
-  elif c == 1u32 {16384usize;}
-  elif c == 2u32 {65536usize;}
-  elif c == 3u32 {262144usize;}
-  else {1048576usize;}
+  if c == 0u32 {4096usize}
+  elif c == 1u32 {16384usize}
+  elif c == 2u32 {65536usize}
+  elif c == 3u32 {262144usize}
+  else {1048576usize}
 }
 
 // The largest size a class holds
@@ -276,12 +276,12 @@ fn classFor(size usize) u32 {
     if size <= classSize(c) {return c;}
     c = c + 1u32;
   }
-  oversize;
+  oversize
 }
 
 // size rounded up to whole pages
 fn pageCeil(size usize) usize {
-  (size + page - 1usize) & (0usize - page);
+  (size + page - 1usize) & (0usize - page)
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ struct PoolState is Sendable {
       idle[i] = idle[i] - 1u32;
       idleBytes = idleBytes - classSize(c);
     }
-    b;
+    b
   }
 
   // Keep block b of class c idle
@@ -378,7 +378,7 @@ struct PoolState is Sendable {
     heldBytes = heldBytes + size;
     osAllocs = osAllocs + 1u64;
     lent = lent + 1u64;
-    null, true;
+    null, true
   }
 
   // The OS could not give the block lend counted
@@ -400,7 +400,7 @@ struct PoolState is Sendable {
     }
     heldBytes = heldBytes - size;
     osFrees = osFrees + 1u64;
-    true;
+    true
   }
 
   // Hand every idle block to 'out' to free
@@ -421,7 +421,7 @@ struct PoolState is Sendable {
 
   fn stats(self &) Stats {
     new Stats(maxBytes, keepBytes, heldBytes, idleBytes, lent, takes, reuses,
-      osAllocs, osFrees, refused);
+      osAllocs, osFrees, refused)
   }
 
   // The last owner has gone, so no buffer is lent: free the idle blocks
@@ -440,8 +440,8 @@ fn link(b *u8, next *u8, size usize) {
   *(b as **u8) = next;
   *((b as *usize) + 1usize) = size;
 }
-fn linkNext(b *u8) *u8 {*(b as **u8);}
-fn linkSize(b *u8) usize {*((b as *usize) + 1usize);}
+fn linkNext(b *u8) *u8 {*(b as **u8)}
+fn linkSize(b *u8) usize {*((b as *usize) + 1usize)}
 
 // Free a list of linked blocks
 fn freeList(head *u8) {
@@ -472,13 +472,13 @@ pub struct Pool {
       idle: new Array[u32, 5] <- fill 0u32,
       maxBytes: maxBytes, keepBytes: keepBytes, heldBytes: 0usize, idleBytes: 0usize,
       lent: 0u64, takes: 0u64, reuses: 0u64, osAllocs: 0u64, osFrees: 0u64, refused: 0u64));
-    new Pool(s);
+    new Pool(s)
   }
 
   // A buffer of at least size bytes, empty, or None when the bound refuses it
   pub fn take(self &, size usize) Option[IoBuf] {
     let c = classFor(size);
-    let cap = if c == oversize {pageCeil(size);} else {classSize(c);};
+    let cap = if c == oversize {pageCeil(size)} else {classSize(c)};
     var trim = null as *u8;
     var b = null as *u8;
     var room = false;
@@ -494,7 +494,7 @@ pub struct Pool {
         return None;
       }
     }
-    Some[IoBuf](new IoBuf(b, 0usize, cap, c, Some[Shared](state)));
+    Some[IoBuf](new IoBuf(b, 0usize, cap, c, Some[Shared](state)))
   }
 
   // A buffer of at least size bytes, empty; a panic, reported at the
@@ -505,7 +505,7 @@ pub struct Pool {
       case var s Some {b <=> s;}
       case is None[IoBuf] {panic("iobuf: Pool.mustTake refused: the pool's bound is reached", file, line);}
     }
-    b;
+    b
   }
 
   // Give every idle block back to the OS
@@ -517,7 +517,7 @@ pub struct Pool {
 
   // Its counters, as they are now
   pub fn stats(self &) Stats {
-    (&*state).stats();
+    (&*state).stats()
   }
 }
 
@@ -537,21 +537,21 @@ pub struct IoBuf is Move, Sendable {
   pool Option[Shared];
 
   // A buffer with no block: capacity 0, from no pool
-  pub fn empty() IoBuf {new IoBuf(null, 0usize, 0usize, 0u32, None);}
+  pub fn empty() IoBuf {new IoBuf(null, 0usize, 0usize, 0u32, None)}
 
-  pub fn len(self &) usize {used;}
-  pub fn capacity(self &) usize {cap;}
-  pub fn room(self &) usize {cap - used;}
-  pub fn isEmpty(self &) bool {used == 0usize;}
+  pub fn len(self &) usize {used}
+  pub fn capacity(self &) usize {cap}
+  pub fn room(self &) usize {cap - used}
+  pub fn isEmpty(self &) bool {used == 0usize}
 
   // The bytes it holds
-  pub fn view(self &) &Array[u8] {mem.sliceFromParts(data, used);}
+  pub fn view(self &) &Array[u8] {mem.sliceFromParts(data, used)}
   // The room after them, to fill
-  pub fn spare(self &mut) &mut Array[u8] {mem.sliceFromPartsMut(data + used, cap - used);}
+  pub fn spare(self &mut) &mut Array[u8] {mem.sliceFromPartsMut(data + used, cap - used)}
   // The whole block
-  pub fn whole(self &mut) &mut Array[u8] {mem.sliceFromPartsMut(data, cap);}
+  pub fn whole(self &mut) &mut Array[u8] {mem.sliceFromPartsMut(data, cap)}
   // Its address, for the OS
-  pub fn base(self &) *u8 {data;}
+  pub fn base(self &) *u8 {data}
 
   // Say it holds n bytes: a panic, at the caller's line, past its capacity
   pub fn setLen(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
@@ -562,14 +562,14 @@ pub struct IoBuf is Move, Sendable {
   pub fn clear(self &mut) {used = 0usize;}
 
     // Move it into Bytes, shared and read-only
-  pub fn freeze(self) Bytes {freezeBuf(self);}
+  pub fn freeze(self) Bytes {freezeBuf(self)}
 
   // Copy in as many of bytes as fit: how many
   pub fn append(self &mut, bytes &Array[u8]) usize {
-    let n = if bytes.len < cap - used {bytes.len;} else {cap - used;};
+    let n = if bytes.len < cap - used {bytes.len} else {cap - used};
     if n > 0usize {libc.memcpy(data + used, &bytes[0usize] as *u8, n);}
     used = used + n;
-    n;
+    n
   }
 
   fn final(self &uni) {
@@ -596,19 +596,19 @@ pub struct Bytes {
   from usize;
   n usize;
 
-  pub fn len(self &) usize {n;}
-  pub fn view(self &) &Array[u8] {mem.sliceFromParts(buf.data + from, n);}
+  pub fn len(self &) usize {n}
+  pub fn view(self &) &Array[u8] {mem.sliceFromParts(buf.data + from, n)}
   // Another owner of bytes start to end of these: a panic, at the caller's
   // line, out of range
   pub fn slice(self &, start usize, end usize, file &Array[u8] = srcFile(), line u32 = srcLine()) Bytes {
     if start > end or end > n {panic("iobuf: Bytes.slice out of range", file, line);}
-    new Bytes(buf, from + start, end - start);
+    new Bytes(buf, from + start, end - start)
   }
 }
 
 fn freezeBuf(b IoBuf) Bytes {
   let n = b.len();
-  new Bytes(new Arc[imm, IoBuf](b), 0usize, n);
+  new Bytes(new Arc[imm, IoBuf](b), 0usize, n)
 }
 
 // ---------------------------------------------------------------------------
@@ -629,29 +629,29 @@ pub struct Chain is Move, Sendable {
 
   // An empty chain holding at most limit unconsumed bytes
   pub fn make(limit usize) Chain {
-    new Chain(null, 0usize, 0usize, 0usize, 0usize, 0usize, limit);
+    new Chain(null, 0usize, 0usize, 0usize, 0usize, 0usize, limit)
   }
 
-  pub fn len(self &) usize {total;}
-  pub fn isEmpty(self &) bool {total == 0usize;}
-  pub fn segments(self &) usize {count;}
-  pub fn bound(self &) usize {limit;}
+  pub fn len(self &) usize {total}
+  pub fn isEmpty(self &) bool {total == 0usize}
+  pub fn segments(self &) usize {count}
+  pub fn bound(self &) usize {limit}
 
   // How many unconsumed bytes the first segment holds: what 'popFront'
   // would hand over; 0 when the chain is empty
   pub fn firstLen(self &) usize {
     if count == 0usize {return 0usize;}
-    (self.at(0usize) as &IoBuf).used - skip;
+    (self.at(0usize) as &IoBuf).used - skip
   }
 
   // The k-th segment
-  fn at(self &, k usize) *IoBuf {ring + ((head + k) & (slots - 1usize));}
+  fn at(self &, k usize) *IoBuf {ring + ((head + k) & (slots - 1usize))}
 
   // The unconsumed bytes of the k-th segment
   fn seg(self &, k usize) &Array[u8] {
     let b = self.at(k) as &IoBuf;
-    let off = if k == 0usize {skip;} else {0usize;};
-    mem.sliceFromParts(b.data + off, b.used - off);
+    let off = if k == 0usize {skip} else {0usize};
+    mem.sliceFromParts(b.data + off, b.used - off)
   }
 
   // Add a filled buffer's bytes after those held: None once it is in (an
@@ -671,12 +671,12 @@ pub struct Chain is Move, Sendable {
     mem.writeRaw[IoBuf](self.at(count), buf);
     count = count + 1usize;
     total = total + n;
-    None;
+    None
   }
 
   // Twice the slots, the segments moved to the front in order
   fn grow(self &mut) {
-    let want = if slots == 0usize {4usize;} else {slots * 2usize;};
+    let want = if slots == 0usize {4usize} else {slots * 2usize};
     let fresh = libc.malloc(want * mem.sizeof[IoBuf]()) as *IoBuf;
     if fresh as usize == 0usize {panic("iobuf: out of memory for a chain's ring");}
     var k = 0usize;
@@ -701,13 +701,13 @@ pub struct Chain is Move, Sendable {
       at = at - s.len;
       k = k + 1usize;
     }
-    0u8;
+    0u8
   }
 
   // The byte at offset i, or None past the end
   pub fn peek(self &, i usize) Option[u8] {
     if i >= total {return None;}
-    Some[u8](self.byteAt(i));
+    Some[u8](self.byteAt(i))
   }
 
   // Whether pat is there at segment k, offset j onward
@@ -726,7 +726,7 @@ pub struct Chain is Move, Sendable {
       k = k + 1usize;
       j = 0usize;
     }
-    true;
+    true
   }
 
   // Whether the unconsumed bytes from offset i begin with pat
@@ -740,7 +740,7 @@ pub struct Chain is Move, Sendable {
       at = at - s.len;
       k = k + 1usize;
     }
-    pat.len == 0usize;
+    pat.len == 0usize
   }
 
   // The offset of the first pat at or after offset 'from', across segment
@@ -754,7 +754,7 @@ pub struct Chain is Move, Sendable {
     var k = 0usize;
     while k < count {
       let s = self.seg(k);
-      var j = if from > base {from - base;} else {0usize;};
+      var j = if from > base {from - base} else {0usize};
       while j < s.len {
         if base + j > last {return None;}
         if s[j] == first and self.matchFrom(k, j, pat) {
@@ -765,7 +765,7 @@ pub struct Chain is Move, Sendable {
       base = base + s.len;
       k = k + 1usize;
     }
-    None;
+    None
   }
 
   // The offset of the first byte b at or after offset 'from', or None
@@ -774,7 +774,7 @@ pub struct Chain is Move, Sendable {
     var k = 0usize;
     while k < count {
       let s = self.seg(k);
-      var j = if from > base {from - base;} else {0usize;};
+      var j = if from > base {from - base} else {0usize};
       while j < s.len {
         if s[j] == b {return Some[usize](base + j);}
         j = j + 1usize;
@@ -782,7 +782,7 @@ pub struct Chain is Move, Sendable {
       base = base + s.len;
       k = k + 1usize;
     }
-    None;
+    None
   }
 
   // Copy unconsumed bytes from offset 'from' into dest, as many as fit and
@@ -798,14 +798,14 @@ pub struct Chain is Move, Sendable {
       } else {
         let here = s.len - at;
         let want = dest.len - done;
-        let n = if here < want {here;} else {want;};
+        let n = if here < want {here} else {want};
         libc.memcpy(&mut dest[done] as *u8, &s[at] as *u8, n);
         done = done + n;
         at = 0usize;
       }
       k = k + 1usize;
     }
-    done;
+    done
   }
 
   // The n unconsumed bytes from offset 'from' as one slice, when they lie in
@@ -824,7 +824,7 @@ pub struct Chain is Move, Sendable {
       at = at - s.len;
       k = k + 1usize;
     }
-    None;
+    None
   }
 
   // Consume the first n bytes: every segment wholly consumed dies, its block
@@ -852,7 +852,7 @@ pub struct Chain is Move, Sendable {
   pub fn take(self &mut, dest &mut Array[u8]) usize {
     let n = self.copyOut(0usize, dest);
     self.advance(n);
-    n;
+    n
   }
 
   // Move the first segment out whole, its unconsumed bytes moved to its
@@ -869,7 +869,7 @@ pub struct Chain is Move, Sendable {
       skip = 0usize;
     }
     total = total - b.used;
-    Some[IoBuf](b);
+    Some[IoBuf](b)
   }
 
   // Its death: every segment it still holds, back to its pool

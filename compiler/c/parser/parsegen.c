@@ -14,10 +14,10 @@
  *     state' u32;                                      where the body resumes
  *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
  *     fn final(self &uni) {}                           what the frame's drop hangs on
- *     fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v);}   what a 'yield' hands the caller
- *     fn walk.none() Option[&Node] {None[&Node];}                     what its end hands the caller
+ *     fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v)}    what a 'yield' hands the caller
+ *     fn walk.none() Option[&Node] {None[&Node]}                      what its end hands the caller
  *   }
- *   fn walk(t &Tree, n i32) walk.Gen {new walk.Gen(t, n, 0u32);}    the generator, made
+ *   fn walk(t &Tree, n i32) walk.Gen {new walk.Gen(t, n, 0u32)}     the generator, made
  *
  * A generator may be generic, 'fn items[T](l &List[T]) yields &T': the struct is
  * 'items.Gen[T]', taking the function's type parameters as they are written, and
@@ -577,13 +577,13 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     genPutn(&g, yplain.text, yplain.len);
     genPuts(&g, "] inline {Some[");
     genPutn(&g, yplain.text, yplain.len);
-    genPuts(&g, "](v);}\n  fn ");
+    genPuts(&g, "](v)}\n  fn ");
     genSlot(&g, GenNone);
     genPuts(&g, "() Option[");
     genPutn(&g, yplain.text, yplain.len);
     genPuts(&g, "] {None[");
     genPutn(&g, yplain.text, yplain.len);
-    genPuts(&g, "];}\n}\n");
+    genPuts(&g, "]}\n}\n");
 
     // The generator, made: its parameters in the struct, unstarted
     genPuts(&g, "fn ");
@@ -642,7 +642,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         genName(&g, parms[i].name);
         genPuts(&g, ", ");
     }
-    genPuts(&g, "0u32);}\n");
+    genPuts(&g, "0u32)}\n");
 
     // Parse it, as the generator's own source, its diagnostics reported at its name
     Lexer *gen = lexNew(g.text, url);

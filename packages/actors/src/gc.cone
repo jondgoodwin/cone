@@ -186,7 +186,7 @@ pub struct ActorGc is RegionRef, Traced, ActorLocal {
     if sp == null {
       panic("ActorGc: a value is made in an actor's region by 'new self[T](...)', never by 'new ActorGc[...]' on its own");
     }
-    (sp as &mut ActorRegion).allocate(size, ty);
+    (sp as &mut ActorRegion).allocate(size, ty)
   }
 
   // A reference was found, by the state, a parked record or an object being
@@ -282,14 +282,14 @@ pub struct ActorRegion {
     }
     mem.writeRaw(g, new ActorRegion(null, new MemRegion(&blockAlloc, &blockResize, &blockRelease)));
     (*g).region = (&mut (*g).vt) as *MemRegion;
-    g;
+    g
   }
 
   // A value made in the actor's region: 'new self[T](v)'. The next ActorGc
   // value made on this thread is in this region
   pub fn alloc[T](self &mut, v T) ActorGc[mut, T] {
     target = self as *ActorRegion;
-    new ActorGc[mut, T](v);
+    new ActorGc[mut, T](v)
   }
 
   // A value made in the actor's region that nothing changes: the reference is
@@ -300,13 +300,13 @@ pub struct ActorRegion {
   // goes in the brackets, 'new self[imm, T]', or this stays)
   pub fn allocImm[T](self &mut, v T) ActorGc[imm, T] {
     target = self as *ActorRegion;
-    new ActorGc[imm, T](v);
+    new ActorGc[imm, T](v)
   }
 
   // What the region holds and has done, for tests and tuning
   pub fn stats(self &) GcStats {
     new GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
-      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks);
+      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks)
   }
 
   // ---- A collection's block: the region's allocate, resize and release ----
@@ -328,7 +328,7 @@ pub struct ActorRegion {
     }
     self.blocks = self.blocks + bytes;
     self.allocated = self.allocated + bytes;
-    p;
+    p
   }
 
   // The block, 'old' bytes long, made 'new': in place or not. A
@@ -351,7 +351,7 @@ pub struct ActorRegion {
     } else {
       self.blocks = self.blocks - (oldBytes - newBytes);
     }
-    p;
+    p
   }
 
   // The block given back: by the collection's own 'final'
@@ -369,13 +369,13 @@ pub struct ActorRegion {
 
   // n rounded up to a multiple of a, a power of two
   fn roundUp(n usize, a usize) usize {
-    (n + a - 1usize) & (0usize - a);
+    (n + a - 1usize) & (0usize - a)
   }
 
   // Where the value of an object with this type record sits after its header:
   // the {region, permission, value} layout the compiler lays out
   fn valueOffset(rec &TypeRecord) usize {
-    ActorRegion.roundUp(mem.sizeof[ActorGc](), rec.align);
+    ActorRegion.roundUp(mem.sizeof[ActorGc](), rec.align)
   }
 
   // Room for an object of 'bytes' bytes (a multiple of 16): the newest chunk's
@@ -391,7 +391,7 @@ pub struct ActorRegion {
     let chunk = c as &mut Chunk;
     let at = (c as *u8) + chunk.used;
     chunk.used = chunk.used + bytes;
-    at;
+    at
   }
 
   // A new newest chunk with room for 'bytes': the first is small, each next
@@ -421,7 +421,7 @@ pub struct ActorRegion {
     self.last = c;
     self.nchunks = self.nchunks + 1usize;
     self.bytes = self.bytes + size;
-    c;
+    c
   }
 
   // A new object: 'size' is the compiler's, the header and the value. Null if
@@ -458,7 +458,7 @@ pub struct ActorRegion {
     }
     self.allocated = self.allocated + bytes;
     self.nobjects = self.nobjects + 1usize;
-    p;
+    p
   }
 
   // The object with a final at 'header', put last on the final list
@@ -574,7 +574,7 @@ pub struct ActorRegion {
 
   // Has a collection found the object at 'header'?
   fn reached(header usize) bool {
-    ((header as &ActorGc).flags & (flagForwarded | flagMarked)) != 0u32;
+    ((header as &ActorGc).flags & (flagForwarded | flagMarked)) != 0u32
   }
 
   // The object's header now: where it was copied, or where it stayed
@@ -582,7 +582,7 @@ pub struct ActorRegion {
     if (header as &ActorGc).flags & flagLarge != 0u32 {
       return header;
     }
-    (header as &ActorGc).link;
+    (header as &ActorGc).link
   }
 
   // The objects with a final that nothing reached: each is kept one more
@@ -720,7 +720,7 @@ pub struct ActorRegion {
       }
       c = (c as &Chunk).next;
     }
-    n;
+    n
   }
 
   // The actor has died, its state finalized: every object on the final list
@@ -760,15 +760,15 @@ pub struct ActorRegion {
 // MemRegion it holds, which is the 'vt' field of the actor's ActorRegion: one
 // pointer past its start
 fn blockRegion(r *MemRegion) &mut ActorRegion {
-  ((r as usize - mem.sizeof[usize]()) as *ActorRegion) as &mut ActorRegion;
+  ((r as usize - mem.sizeof[usize]()) as *ActorRegion) as &mut ActorRegion
 }
 
 fn blockAlloc(r *MemRegion, bytes usize, align usize) *u8 {
-  blockRegion(r).blockNew(bytes, align);
+  blockRegion(r).blockNew(bytes, align)
 }
 
 fn blockResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
-  blockRegion(r).blockGrow(block, oldBytes, newBytes, align);
+  blockRegion(r).blockGrow(block, oldBytes, newBytes, align)
 }
 
 fn blockRelease(r *MemRegion, block *u8, bytes usize) {
@@ -799,5 +799,5 @@ pub fn regionOf[S, M Sendable](st &mut S) &'static mut ActorRegion {
   if (*h).gc as usize == 0usize {
     (*h).gc = ActorRegion.create();
   }
-  (*h).gc as &mut ActorRegion;
+  (*h).gc as &mut ActorRegion
 }

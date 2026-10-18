@@ -140,6 +140,15 @@ right side, which evaluates that side whatever the left is. The message names `a
 the `&&` is read as `and` so the right side is checked as written. `&&` before an operand
 or in a type is two borrows and is not this error.
 
+`ErrorTailSemi` and `ErrorTailOpen` are the two ways a block's last line, an expression, can
+have the wrong end (parse). Its `;` throws its value away, so it is left off where the block's
+value is used and kept everywhere else. `ErrorTailSemi` is a `;` where the value is used and is
+pointed at the `;` to remove; `ErrorTailOpen` is no `;` where it is not used and is pointed at
+the line. Neither looks at the type of the line, so a line that gives no value is refused with
+the same code. They are the parser's, one code each for every kind of block (a function's body, an `if` or `match`
+arm, a block that is an operand, a macro, a loop's `else`, a loop's body), and a closure that
+is given its type, which type check judges (`closureContextTail`).
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

@@ -335,7 +335,7 @@ import time;
 // A lock misused, a channel's memory exhausted: a panic, reported at the line calling 'die'. Each message ends in
 // a line end, which the panic's own line leaves off
 fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
-  panic(&msg[0usize ..< msg.len - 1usize], file, line);
+  panic(&msg[0usize ..< msg.len - 1usize], file, line)
 }
 
 // SHARED OWNERS: 'Arc', the region whose owners several threads may hold.
@@ -386,7 +386,7 @@ fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
 // the region itself.
 pub struct Arc is RegionRef, ThreadSafe {
   cnt usize;
-  fn alloc(size usize) *u8 inline {RawBlocks.alloc(size, 16usize);}
+  fn alloc(size usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
   fn init(self &new) inline {*self = new Arc(1usize);}
   fn aliasRef(self &uni Arc) inline {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
@@ -394,7 +394,7 @@ pub struct Arc is RegionRef, ThreadSafe {
   fn dealiasRef(self &uni Arc) bool inline {
     let last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
     if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire);}
-    last;
+    last
   }
   fn free(self &uni Arc) inline {RawBlocks.release(self as *u8);}
 }
@@ -452,25 +452,25 @@ const forever = 0xFFFFFFFFFFFFFFFFu64;
 // A Duration as the nanoseconds inside: zero or less is 0
 fn durationNs(d time.Duration) u64 {
   let ns = d.nanos();
-  if ns <= 0i64 {0u64;} else {u64.from(ns);};
+  if ns <= 0i64 {0u64} else {u64.from(ns)};
 }
 
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
 fn msCeil(ns u64) u32 {
-  let ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64;} else {0u64;});
-  if ms >= u64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
+  let ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64} else {0u64});
+  if ms >= u64.from(infinite) {infinite - 1u32} else {u32.from(ms)};
 }
 
 // Sleep while the word holds expected, until woken. It may return
 // spuriously: a caller loops
 pub fn futexWait(word &opaq Atomic[u32], expected u32) bool {
-  rawWait(word as *u32, expected, forever);
+  rawWait(word as *u32, expected, forever)
 }
 
 // Sleep while the word holds expected, until woken or d passes: false only
 // if the timeout passed
 pub fn futexWaitTimeout(word &opaq Atomic[u32], expected u32, d time.Duration) bool {
-  rawWait(word as *u32, expected, durationNs(d));
+  rawWait(word as *u32, expected, durationNs(d))
 }
 
 // Wake one thread waiting on the word
@@ -485,22 +485,22 @@ pub fn futexWakeAll(word &opaq Atomic[u32]) {
 
 // The same three on the word's address, as the locks reach their own words
 fn rawWait(word *u32, expected u32, timeoutNs u64) bool {
-  if isWindows() {windowsWait(word, expected, timeoutNs);} else {linuxWait(word, expected, timeoutNs);}
+  if isWindows() {windowsWait(word, expected, timeoutNs)} else {linuxWait(word, expected, timeoutNs)}
 }
 
 // Each system's calls are a function of their own, called from the branch for
 // that system alone: on the other system it is not part of the program
 fn windowsWait(word *u32, expected u32, timeoutNs u64) bool {
-  let ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
+  let ms = if timeoutNs == forever {infinite} else {msCeil(timeoutNs)};
   var compare = expected;
   if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
     return true;
   }
-  GetLastError() != errorTimeout;
+  GetLastError() != errorTimeout
 }
 
 fn linuxWait(word *u32, expected u32, timeoutNs u64) bool {
-  cone_futexWait(word, expected, timeoutNs) != 0i32;
+  cone_futexWait(word, expected, timeoutNs) != 0i32
 }
 
 fn rawWake(word *u32) {
@@ -531,15 +531,15 @@ const spinLimit = 100u32;
 // Put desired in *p if it holds expected, acquiring when it does: whether it
 // did, and the value seen
 fn casAcquire(p *u32, expected u32, desired u32) u32, bool {
-  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Acquire, MemOrder.Relaxed);
+  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Acquire, MemOrder.Relaxed)
 }
 
 fn casRelaxed(p *u32, expected u32, desired u32) u32, bool {
-  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Relaxed, MemOrder.Relaxed);
+  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Relaxed, MemOrder.Relaxed)
 }
 
 fn loadRelaxed(p *u32) u32 {
-  mem.atomicLoad[u32](p, MemOrder.Relaxed);
+  mem.atomicLoad[u32](p, MemOrder.Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +559,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   state Atomic[u32];
 
   // An unlocked Mutex
-  pub fn make() Mutex {new Mutex(state: Atomic[u32].of(mutexUnlocked));}
+  pub fn make() Mutex {new Mutex(state: Atomic[u32].of(mutexUnlocked))}
 
   // As a lock permission: unlocked in a new allocation's header, and taken by
   // every borrow through the reference, read-only or not, since a Mutex has
@@ -569,14 +569,14 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   fn releaseMut(self &opaq) inline {self.unlock();}
 
   // The state word, as core's mem operations reach it
-  fn word(self &opaq) *u32 {&(*(self as *Mutex)).state as *u32;}
+  fn word(self &opaq) *u32 {&(*(self as *Mutex)).state as *u32}
 
   // Take the lock if nobody holds it: whether it was taken
   pub fn tryLock(self &opaq) bool {
     var seen = 0u32;
     var taken = false;
     seen, taken = casAcquire(self.word(), mutexUnlocked, mutexLocked);
-    taken;
+    taken
   }
 
   // Take the lock, sleeping while another thread holds it
@@ -625,7 +625,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
       }
       n = n - 1u32;
     }
-    mutexLocked;
+    mutexLocked
   }
 
   // Give up the lock, waking one waiting thread if any may be asleep. The one
@@ -657,16 +657,16 @@ const rwMaxReaders = 0x3FFFFFFEu32;
 const rwReadersWaiting = 0x40000000u32;
 const rwWritersWaiting = 0x80000000u32;
 
-fn rwIsUnlocked(s u32) bool {(s & rwMask) == 0u32;}
-fn rwIsWriteLocked(s u32) bool {(s & rwMask) == rwWriteLocked;}
-fn rwHasReadersWaiting(s u32) bool {(s & rwReadersWaiting) != 0u32;}
-fn rwHasWritersWaiting(s u32) bool {(s & rwWritersWaiting) != 0u32;}
+fn rwIsUnlocked(s u32) bool {(s & rwMask) == 0u32}
+fn rwIsWriteLocked(s u32) bool {(s & rwMask) == rwWriteLocked}
+fn rwHasReadersWaiting(s u32) bool {(s & rwReadersWaiting) != 0u32}
+fn rwHasWritersWaiting(s u32) bool {(s & rwWritersWaiting) != 0u32}
 
 // A reader may take it: not write-locked, room for another reader, and
 // nobody waiting (a waiting writer is preferred, and waiting readers mean
 // the unlocking thread is still deciding whom to wake)
 fn rwIsReadLockable(s u32) bool {
-  (s & rwMask) < rwMaxReaders and !rwHasReadersWaiting(s) and !rwHasWritersWaiting(s);
+  (s & rwMask) < rwMaxReaders and !rwHasReadersWaiting(s) and !rwHasWritersWaiting(s)
 }
 
 // Many readers at once, or one writer alone: a plain, unchecked lock held as
@@ -679,7 +679,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
   writerNotify Atomic[u32];
 
   // An unlocked Rwlock
-  pub fn make() Rwlock {new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));}
+  pub fn make() Rwlock {new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32))}
 
   // As a lock permission: unlocked in a new allocation's header; a borrow
   // that may write takes the write lock, a read-only one a read lock. Called
@@ -692,8 +692,8 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
   fn acquireRead(self &opaq) inline {self.readLock();}
   fn releaseRead(self &opaq) inline {self.readUnlock();}
 
-  fn word(self &opaq) *u32 {&(*(self as *Rwlock)).state as *u32;}
-  fn notifyWord(self &opaq) *u32 {&(*(self as *Rwlock)).writerNotify as *u32;}
+  fn word(self &opaq) *u32 {&(*(self as *Rwlock)).state as *u32}
+  fn notifyWord(self &opaq) *u32 {&(*(self as *Rwlock)).writerNotify as *u32}
 
   // Take a read lock if a reader may now: whether it was taken
   pub fn tryReadLock(self &opaq) bool {
@@ -706,7 +706,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
         return true;
       }
     }
-    false;
+    false
   }
 
   // Take a read lock, sleeping while a writer holds it or waits for it
@@ -773,7 +773,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
         return true;
       }
     }
-    false;
+    false
   }
 
   // Take the write lock, sleeping while any reader or writer holds it
@@ -884,7 +884,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       }
       n = n - 1u32;
     }
-    0u32;
+    0u32
   }
 
   // Spin while locked with no writer waiting: a waiting writer stops the
@@ -899,7 +899,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       }
       n = n - 1u32;
     }
-    0u32;
+    0u32
   }
 }
 
@@ -916,9 +916,9 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
 pub struct Condvar is Move {
   seq Atomic[u32];
 
-  pub fn make() Condvar {new Condvar(Atomic[u32].of(0u32));}
+  pub fn make() Condvar {new Condvar(Atomic[u32].of(0u32))}
 
-  fn word(self &opaq) *u32 {&(*(self as *Condvar)).seq as *u32;}
+  fn word(self &opaq) *u32 {&(*(self as *Condvar)).seq as *u32}
 
   // Wake one thread waiting
   pub fn notifyOne(self &opaq) {
@@ -943,7 +943,7 @@ pub struct Condvar is Move {
   // The same, sleeping at most d: false only if the timeout passed. The
   // Mutex is locked again either way.
   pub fn condWaitTimeout(self &opaq, mutex &opaq Mutex, d time.Duration) bool {
-    self.waitFor(mutex, durationNs(d));
+    self.waitFor(mutex, durationNs(d))
   }
 
   fn waitFor(self &opaq, mutex &opaq Mutex, timeoutNs u64) bool {
@@ -952,7 +952,7 @@ pub struct Condvar is Move {
     mutex.unlock();
     let woken = rawWait(p, seen, timeoutNs);
     mutex.lock();
-    woken;
+    woken
   }
 }
 
@@ -974,14 +974,14 @@ pub struct Once is Move {
   state Atomic[u32];
 
   // A Once whose function has not run
-  pub fn make() Once {new Once(Atomic[u32].of(onceIncomplete));}
+  pub fn make() Once {new Once(Atomic[u32].of(onceIncomplete))}
 
-  fn word(self &opaq) *u32 {&(*(self as *Once)).state as *u32;}
+  fn word(self &opaq) *u32 {&(*(self as *Once)).state as *u32}
 
   // Whether a call has run its function to the end; if so, all it did is
   // seen by this thread
   pub fn isCompleted(self &opaq) bool {
-    mem.atomicLoad[u32](self.word(), MemOrder.Acquire) == onceComplete;
+    mem.atomicLoad[u32](self.word(), MemOrder.Acquire) == onceComplete
   }
 
   // Run f() if no call on this Once has run its function. Every call returns
@@ -1037,7 +1037,7 @@ pub struct Once is Move {
       rawWait(p, s, forever);
       s = mem.atomicLoad[u32](p, MemOrder.Acquire);
     }
-    false;
+    false
   }
 
   // The function has returned: complete, and wake whoever waits
@@ -1085,8 +1085,8 @@ const chanOffsetMask = 63u64;          // chanLap - 1
 
 // Where a position falls in its block, and the position itself without the
 // closed bit
-fn chanOffset(index u64) u64 {(index >> chanShift) & chanOffsetMask;}
-fn chanPos(index u64) u64 {index >> chanShift;}
+fn chanOffset(index u64) u64 {(index >> chanShift) & chanOffsetMask}
+fn chanPos(index u64) u64 {index >> chanShift}
 
 // One value's place: 'state' is 0 until the value is written, then 1
 struct Slot[T] {
@@ -1151,11 +1151,11 @@ fn blockNew[T]() *Block[T] {
   if b as usize == 0usize {
     die("sync: out of memory for a channel's block\n");
   }
-  b;
+  b
 }
 
 fn slotAt[T](b *Block[T], offset u64) *Slot[T] {
-  (&(*b).slots as *Slot[T]) + usize.from(offset);
+  (&(*b).slots as *Slot[T]) + usize.from(offset)
 }
 
 // The receiver's index after taking the slot at offset: the next position,
@@ -1164,7 +1164,7 @@ fn chanStep(head u64, offset u64) u64 {
   if offset + 1u64 < blockCap {
     return head + chanOne;
   }
-  (chanPos(head) - offset + chanLap) << chanShift;
+  (chanPos(head) - offset + chanLap) << chanShift
 }
 
 // The receiver has taken the last slot of block b: follow its link, and free
@@ -1183,7 +1183,7 @@ fn chanPassBlock[T](b *Block[T]) *Block[T] {
     next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire);
   }
   libc.free(b as *u8);
-  next;
+  next
 }
 
 // Wait a moment for another thread to finish a step it has begun (a send
@@ -1195,7 +1195,7 @@ fn chanBackoff(step u32) u32 {
     return step + 1u32;
   }
   yieldProcessor();
-  step;
+  step
 }
 
 // Wake the receiver if it sleeps or is about to. The load is sequentially
@@ -1225,7 +1225,7 @@ fn chanRelease[T](c *Chan[T]) {
 // The clock the timeouts measure by: the time package's steady clock, in
 // nanoseconds from its fixed origin, which are never negative
 fn nowNs() u64 {
-  u64.from(time.Instant.now().nanos());
+  u64.from(time.Instant.now().nanos())
 }
 
 // ---------------------------------------------------------------------------
@@ -1277,7 +1277,7 @@ struct Cell[T] {
 }
 
 fn cellAt[T](ring *Cell[T], i u64) *Cell[T] {
-  ring + usize.from(i);
+  ring + usize.from(i)
 }
 
 // Put v in a bounded channel's ring, waiting while it is full if mayWait,
@@ -1358,7 +1358,7 @@ fn ringSend[T](c *Chan[T], v T, mayWait bool, timeoutNs u64) Option[T] {
     spins = 0u32;
     tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
   }
-  Some[T](v);
+  Some[T](v)
 }
 
 // A sender that found the ring full sleeps until the receiver takes a value
@@ -1570,7 +1570,7 @@ pub struct Channel[T Sendable] {
     }
     let b = blockNew[T]();
     chanInit[T](c, b, null, 0u64);
-    Sender[T].made(c), Receiver[T].made(c, b, null, 0u64, false);
+    Sender[T].made(c), Receiver[T].made(c, b, null, 0u64, false)
   }
 
   // A new bounded channel holding at most n values -- n rounded up to a
@@ -1585,7 +1585,7 @@ pub struct Channel[T Sendable] {
     }
     let ring = ((c as *u8) + head) as *Cell[T];
     chanInit[T](c, null, ring, cap - 1u64);
-    Sender[T].made(c), Receiver[T].made(c, null, ring, cap - 1u64, false);
+    Sender[T].made(c), Receiver[T].made(c, null, ring, cap - 1u64, false)
   }
 
   // A new single-sender channel holding at most n values, rounded as
@@ -1604,7 +1604,7 @@ pub struct Channel[T Sendable] {
     let ring = (c as *u8) + head;
     chanInit[T](c, null, ring as *Cell[T], cap - 1u64);
     SoloSender[T].made(c, ring as *T, cap - 1u64),
-      Receiver[T].made(c, null, ring as *Cell[T], cap - 1u64, true);
+      Receiver[T].made(c, null, ring as *Cell[T], cap - 1u64, true)
   }
 }
 
@@ -1617,7 +1617,7 @@ fn ringCap(n u64) u64 {
     }
     cap = cap << 1u64;
   }
-  cap;
+  cap
 }
 
 // The shared part's fields, before any thread can reach it
@@ -1642,7 +1642,7 @@ fn chanInit[T](c *Chan[T], b *Block[T], ring *Cell[T], mask u64) {
 pub struct Sender[T Sendable] is Sendable {
   chan *Chan[T];
 
-  fn made(c *Chan[T]) Sender[T] {new Sender[T](c);}
+  fn made(c *Chan[T]) Sender[T] {new Sender[T](c)}
 
   // Put v on the channel: None once it is there. A bounded channel's send
   // waits while it is full; an unbounded one's never waits. If the receiver
@@ -1651,7 +1651,7 @@ pub struct Sender[T Sendable] is Sendable {
     if (*chan).ring as usize == 0usize {
       return self.listSend(v);
     }
-    ringSend[T](chan, v, true, forever);
+    ringSend[T](chan, v, true, forever)
   }
 
   // Put v on the channel if there is room now, never waiting: None once it
@@ -1661,7 +1661,7 @@ pub struct Sender[T Sendable] is Sendable {
     if (*chan).ring as usize == 0usize {
       return self.listSend(v);
     }
-    ringSend[T](chan, v, false, 0u64);
+    ringSend[T](chan, v, false, 0u64)
   }
 
   // send, waiting at most d for room: Some(v) back when there was none in
@@ -1670,7 +1670,7 @@ pub struct Sender[T Sendable] is Sendable {
     if (*chan).ring as usize == 0usize {
       return self.listSend(v);
     }
-    ringSend[T](chan, v, true, durationNs(d));
+    ringSend[T](chan, v, true, durationNs(d))
   }
 
   // An unbounded channel's send
@@ -1741,19 +1741,19 @@ pub struct Sender[T Sendable] is Sendable {
     // acquires this state
     mem.atomicStore[u32](&(*slot).state as *u32, 1u32, MemOrder.Release);
     chanWake(&(*c).sleeping as *u32);
-    None;
+    None
   }
 
   // 'tx <- v' is send: what it answers is send's
   pub fn `<-`(self &, v T) Option[T] {
-    self.send(v);
+    self.send(v)
   }
 
   // Another sender on the same channel. Relaxed: this sender is alive, so
   // the count cannot reach 0 meanwhile, and nothing is published by it.
   pub fn clone(self &) Sender[T] {
     mem.atomicAdd[u64](&(*chan).senders as *u64, 1u64, MemOrder.Relaxed);
-    new Sender[T](chan);
+    new Sender[T](chan)
   }
 
   // Whether the channel is closed, by the receiver's close or its going:
@@ -1761,7 +1761,7 @@ pub struct Sender[T Sendable] is Sendable {
   // value back on a channel that is not closed found it full. Acquire, as
   // the receiver's isClosed.
   pub fn isClosed(self &) bool {
-    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire) & chanClosed) != 0u64;
+    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire) & chanClosed) != 0u64
   }
 
   // The last sender to go closes the channel, and wakes the receiver, which
@@ -1794,30 +1794,30 @@ pub struct SoloSender[T Sendable] is Sendable {
   room u64;                    // the position at which the ring was last seen full
 
   fn made(c *Chan[T], ring *T, mask u64) SoloSender[T] {
-    new SoloSender[T](c, ring, mask, 0u64, mask + 1u64);
+    new SoloSender[T](c, ring, mask, 0u64, mask + 1u64)
   }
 
   // Put v on the channel, waiting while it is full: None once it is there,
   // or Some(v), handed back, when the receiver has gone or closed it
   pub fn send(self &mut, v T) Option[T] {
-    self.put(v, true, forever);
+    self.put(v, true, forever)
   }
 
   // Put v on the channel if there is room now, never waiting: Some(v) back
   // when it is full, or closed
   pub fn trySend(self &mut, v T) Option[T] {
-    self.put(v, false, 0u64);
+    self.put(v, false, 0u64)
   }
 
   // send, waiting at most d for room: Some(v) back when there was none in
   // that time, or the channel is closed
   pub fn sendTimeout(self &mut, v T, d time.Duration) Option[T] {
-    self.put(v, true, durationNs(d));
+    self.put(v, true, durationNs(d))
   }
 
   // 'tx <- v' is send: what it answers is send's
   pub fn `<-`(self &mut, v T) Option[T] {
-    self.send(v);
+    self.send(v)
   }
 
   // The send itself. Room first, from what the sender last saw of the
@@ -1855,7 +1855,7 @@ pub struct SoloSender[T Sendable] is Sendable {
     mem.atomicStore[u64](&(*c).tail as *u64, tail << soloShift, MemOrder.Release);
     mem.atomicStore[u64](busyp, 0u64, MemOrder.Release);
     chanWake(&(*c).sleeping as *u32);
-    None;
+    None
   }
 
   // The ring was full when last seen: read the receiver's count again, and,
@@ -1897,7 +1897,7 @@ pub struct SoloSender[T Sendable] is Sendable {
       soloWaitRoom[T](c, tail, mask, left);
       spins = 0u32;
     }
-    false;
+    false
   }
 
   // The sender's going closes the channel: the index, with the closed bit,
@@ -1924,7 +1924,7 @@ pub struct Receiver[T Sendable] is Sendable {
   limit u64;                   // single-sender: the senders' index as last read
 
   fn made(c *Chan[T], b *Block[T], ring *Cell[T], mask u64, solo bool) Receiver[T] {
-    new Receiver[T](c, 0u64, b, ring, mask, solo, 0u64);
+    new Receiver[T](c, 0u64, b, ring, mask, solo, 0u64)
   }
 
   // Each way of receiving asks which kind the channel is once, at the top,
@@ -1952,7 +1952,7 @@ pub struct Receiver[T Sendable] is Sendable {
       }
       self.park(forever);
     }
-    None;
+    None
   }
 
   // The next value if one is there now, never waiting; None when there is
@@ -1973,12 +1973,12 @@ pub struct Receiver[T Sendable] is Sendable {
     if self.poll() == pollReady {
       return Some[T](self.take());
     }
-    None;
+    None
   }
 
   // A bounded channel's recv and recvTimeout: timeoutNs is forever for recv
   fn ringRecv(self &mut, timeoutNs u64) Option[T] {
-    let start = if timeoutNs == forever {0u64;} else {nowNs();};
+    let start = if timeoutNs == forever {0u64} else {nowNs()};
     while true {
       let found = self.ringPoll();
       if found == pollReady {
@@ -1997,7 +1997,7 @@ pub struct Receiver[T Sendable] is Sendable {
         self.park(timeoutNs - waited);
       }
     }
-    None;
+    None
   }
 
   // The next value, waiting at most d for one; None when none came in that
@@ -2026,7 +2026,7 @@ pub struct Receiver[T Sendable] is Sendable {
       }
       self.park(ns - waited);
     }
-    None;
+    None
   }
 
   // Refuse any further send: each is handed its value back. What was sent
@@ -2055,13 +2055,13 @@ pub struct Receiver[T Sendable] is Sendable {
     if solo {
       return (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32;
     }
-    (tail & chanClosed) != 0u64;
+    (tail & chanClosed) != 0u64
   }
 
   // A single-sender channel's recv and recvTimeout: timeoutNs is forever
   // for recv
   fn soloRecv(self &mut, timeoutNs u64) Option[T] {
-    let start = if timeoutNs == forever {0u64;} else {nowNs();};
+    let start = if timeoutNs == forever {0u64} else {nowNs()};
     while true {
       let found = self.soloPoll();
       if found == pollReady {
@@ -2080,7 +2080,7 @@ pub struct Receiver[T Sendable] is Sendable {
         self.soloPark(timeoutNs - waited);
       }
     }
-    None;
+    None
   }
 
   // A single-sender channel's poll. A value is there while the count taken,
@@ -2101,7 +2101,7 @@ pub struct Receiver[T Sendable] is Sendable {
     if (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32 {
       return pollClosed;
     }
-    pollEmpty;
+    pollEmpty
   }
 
   // A single-sender channel's take: move the value out, count it, and say
@@ -2115,7 +2115,7 @@ pub struct Receiver[T Sendable] is Sendable {
     head = head + 1u64;
     mem.atomicStore[u64](&(*chan).taken as *u64, head, MemOrder.Release);
     ringFreed[T](chan);
-    v;
+    v
   }
 
   // Sleep until a send or the sender's going may have changed what soloPoll
@@ -2156,14 +2156,14 @@ pub struct Receiver[T Sendable] is Sendable {
     // did before it closed is seen too
     let tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     if chanPos(tail) == chanPos(head) {
-      return if (tail & chanClosed) != 0u64 {pollClosed;} else {pollEmpty;};
+      return if (tail & chanClosed) != 0u64 {pollClosed} else {pollEmpty};
     }
     // Claimed, and being written
     var step = 0u32;
     while mem.atomicLoad[u32](statep, MemOrder.Acquire) == 0u32 {
       step = chanBackoff(step);
     }
-    pollReady;
+    pollReady
   }
 
   // A bounded channel's poll: the same three answers, from its cell's stamp
@@ -2177,14 +2177,14 @@ pub struct Receiver[T Sendable] is Sendable {
     // Acquire, as the unbounded kind's poll
     let tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     if chanPos(tail) == pos {
-      return if (tail & chanClosed) != 0u64 {pollClosed;} else {pollEmpty;};
+      return if (tail & chanClosed) != 0u64 {pollClosed} else {pollEmpty};
     }
     // Claimed, and being written
     var step = 0u32;
     while mem.atomicLoad[u64](stampp, MemOrder.Acquire) != pos + 1u64 {
       step = chanBackoff(step);
     }
-    pollReady;
+    pollReady
   }
 
   // A bounded channel's take: move the written value out, step past it,
@@ -2202,7 +2202,7 @@ pub struct Receiver[T Sendable] is Sendable {
     head = head + chanOne;
     mem.atomicStore[u64](&(*chan).taken as *u64, pos + 1u64, MemOrder.SeqCst);
     ringFreed[T](chan);
-    v;
+    v
   }
 
   // Move the written value at the index out, and step past it
@@ -2210,7 +2210,7 @@ pub struct Receiver[T Sendable] is Sendable {
     let offset = chanOffset(head);
     let v = mem.readRaw[T](&(*slotAt[T](block, offset)).value as *T);
     self.advance(offset);
-    v;
+    v
   }
 
   // Step past the slot at offset, which is taken. Past a block's last slot,
@@ -2348,7 +2348,7 @@ pub struct Oneshot[T Sendable] {
     (*s).state = oneEmpty;
     (*s).sides = 2u32;
     (*s).gone = 0u32;
-    new OneshotSender[T](s, false), new OneshotReceiver[T](s);
+    new OneshotSender[T](s, false), new OneshotReceiver[T](s)
   }
 }
 
@@ -2369,13 +2369,13 @@ pub struct OneshotSender[T Sendable] is Sendable {
     if mem.atomicSwap[u32](st, oneFull, MemOrder.AcqRel) == oneWaiting {
       rawWake(st);
     }
-    None;
+    None
   }
 
   // Whether a send would hand its value back: one was sent, or the
   // receiver has gone
   pub fn isClosed(self &) bool {
-    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32;
+    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32
   }
 
   // A sender going without sending closes the channel: the receiver, asleep
@@ -2398,13 +2398,13 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
   // The value, waiting while there is none; None when the sender went
   // without sending, or the value was taken already
   pub fn recv(self &mut) Option[T] {
-    self.recvFor(forever);
+    self.recvFor(forever)
   }
 
   // recv, waiting at most d (the futex's resolution: it may run over by a
   // tick); None, too, when nothing came in that time
   pub fn recvTimeout(self &mut, d time.Duration) Option[T] {
-    self.recvFor(durationNs(d));
+    self.recvFor(durationNs(d))
   }
 
   // The value if it is there now, never waiting
@@ -2412,30 +2412,30 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
     if mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire) == oneFull {
       return Some[T](self.take());
     }
-    None;
+    None
   }
 
   // Whether the value is there, to be taken
   pub fn isReady(self &) bool {
-    mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire) == oneFull;
+    mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire) == oneFull
   }
 
   // Whether nothing more will come: the sender went without sending, or the
   // value was taken
   pub fn isClosed(self &) bool {
     let s = mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire);
-    s == oneClosed or s == oneTaken;
+    s == oneClosed or s == oneTaken
   }
 
   fn take(self &mut) T {
     let v = mem.readRaw[T](&(*slot).value as *T);
     mem.atomicStore[u32](&(*slot).state as *u32, oneTaken, MemOrder.Relaxed);
-    v;
+    v
   }
 
   fn recvFor(self &mut, timeoutNs u64) Option[T] {
     let st = &(*slot).state as *u32;
-    let start = if timeoutNs == forever {0u64;} else {nowNs();};
+    let start = if timeoutNs == forever {0u64} else {nowNs()};
     while true {
       let s = mem.atomicLoad[u32](st, MemOrder.Acquire);
       if s == oneFull {
@@ -2462,7 +2462,7 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
         rawWait(st, oneWaiting, timeoutNs - waited);
       }
     }
-    None;
+    None
   }
 
   // The receiver's going: a later send hands its value back, and a value

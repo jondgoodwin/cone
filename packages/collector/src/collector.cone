@@ -342,11 +342,11 @@ pub struct Gc is RegionRef, Traced {
     // barrier shades; during the sweep, the new white, which survives it
     let fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
     let extra = u32.from((bytes - objBytes(ty)) / 8usize);
-    mem.writeRaw(p as *Gc, new Gc(if fin {finobj;} else {allgc;}, 0usize, ty, curWhite, extra));
+    mem.writeRaw(p as *Gc, new Gc(if fin {finobj} else {allgc}, 0usize, ty, curWhite, extra));
     if fin { finobj = p as usize; } else { allgc = p as usize; }
     totalBytes = totalBytes + bytes;
     nobjects = nobjects + 1usize;
-    p;
+    p
   }
 
   // A 'Gc' reference was found, by a root or in a value being traced; 'slot'
@@ -395,11 +395,11 @@ pub struct Gc is RegionRef, Traced {
       if !stressOn and totalBytes + bytes <= trigger {
         return false;
       }
-      debt = if stressOn {bytes;} else {stepSize;};
+      debt = if stressOn {bytes} else {stepSize};
       return true;
     }
     debt = debt + bytes;
-    stressOn or debt >= stepSize;
+    stressOn or debt >= stepSize
   }
 
   // The step the bytes allocated have paid for
@@ -414,19 +414,19 @@ pub struct Gc is RegionRef, Traced {
     if maxBytes != 0usize and totalBytes + bytes > maxBytes {
       return null;
     }
-    libc.malloc(bytes);
+    libc.malloc(bytes)
   }
 
   // n rounded up to a multiple of align, a power of two
   fn roundUp(n usize, align usize) usize {
-    (n + align - 1usize) & (0usize - align);
+    (n + align - 1usize) & (0usize - align)
   }
 
   // Where the value sits after its header: the {region, permission, value}
   // layout, whose permission takes no room (the compiler refuses a traced
   // region with one that does)
   fn valueOffset(ty *TypeRecord) usize {
-    roundUp(mem.sizeof[Gc](), (ty as &TypeRecord).align);
+    roundUp(mem.sizeof[Gc](), (ty as &TypeRecord).align)
   }
 
   // The bytes an object takes, as the compiler sized it for 'alloc'
@@ -434,7 +434,7 @@ pub struct Gc is RegionRef, Traced {
     let rec = ty as &TypeRecord;
     var al = rec.align;
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
-    roundUp(valueOffset(ty) + rec.size, al);
+    roundUp(valueOffset(ty) + rec.size, al)
   }
 
   // The bytes an object takes, for a size the compiler asked for: the record's
@@ -446,21 +446,21 @@ pub struct Gc is RegionRef, Traced {
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
     let asked = roundUp(size, al);
     let one = objBytes(ty);
-    if asked > one { asked; } else { one; }
+    if asked > one { asked } else { one }
   }
 
   // The bytes the object whose header is 'h' takes: as counted when it was made
   fn heldBytes(h &Gc) usize {
-    objBytes(h.ty) + usize.from(h.extra) * 8usize;
+    objBytes(h.ty) + usize.from(h.extra) * 8usize
   }
 
   fn header(at usize) &mut Gc {
-    at as &mut Gc;
+    at as &mut Gc
   }
 
   // The value of the object whose header is at 'at'
   fn valueOf(at usize) *u8 {
-    (at + valueOffset(header(at).ty)) as *u8;
+    (at + valueOffset(header(at).ty)) as *u8
   }
 
   // Mark the object at 'at': a white one turns gray, onto the gray list
@@ -494,7 +494,7 @@ pub struct Gc is RegionRef, Traced {
       let tracefn = rec.trace;
       tracefn(valueOf(at), 0u32);
     }
-    bytes;
+    bytes
   }
 
   // Until nothing is gray
@@ -503,7 +503,7 @@ pub struct Gc is RegionRef, Traced {
     while grays != 0usize {
       work = work + propagateOne();
     }
-    work;
+    work
   }
 
   // A collection starts: every root is marked, and marking begins. After a
@@ -600,11 +600,11 @@ pub struct Gc is RegionRef, Traced {
     gcPhase = sweepPhase;
     sweepList = 0u32;
     sweepAt = 0usize;
-    work + 1usize;
+    work + 1usize
   }
 
   fn listHead(which u32) usize {
-    if which == 0u32 { allgc; } else if which == 1u32 { finobj; } else { tobefnz; }
+    if which == 0u32 { allgc } else if which == 1u32 { finobj } else { tobefnz }
   }
   fn setListHead(which u32, at usize) {
     if which == 0u32 { allgc = at; } else if which == 1u32 { finobj = at; } else { tobefnz = at; }
@@ -614,7 +614,7 @@ pub struct Gc is RegionRef, Traced {
   // old one does: new objects are pushed at a list's head, so everything
   // after it is older, and old (Acorn's mem_sweeplist, 'tostop')
   fn endsSweep(at usize) bool {
-    at == 0usize or (sweepGen and header(at).marked & oldBit != 0u32);
+    at == 0usize or (sweepGen and header(at).marked & oldBit != 0u32)
   }
 
   // Sweep the next object: freed if it carries the dead white. A survivor is
@@ -623,7 +623,7 @@ pub struct Gc is RegionRef, Traced {
   // sweep ends: the trigger is set from what the collection found live, and
   // finalizing begins, if anything was separated.
   fn sweepOne() usize {
-    var at = if sweepAt == 0usize {listHead(sweepList);} else {header(sweepAt).next;};
+    var at = if sweepAt == 0usize {listHead(sweepList)} else {header(sweepAt).next};
     while sweepList < 2u32 and endsSweep(at) {
       sweepList = sweepList + 1u32;
       sweepAt = 0usize;
@@ -638,7 +638,7 @@ pub struct Gc is RegionRef, Traced {
       // trigger at each minor collection, however little is live
       if !minorMark {
         fullEstimate = estimate;
-        oldLimit = if estimate < minTrigger {minTrigger;} else {estimate;};
+        oldLimit = if estimate < minTrigger {minTrigger} else {estimate};
       }
       var allowed = fullEstimate * 2usize;
       if allowed < minTrigger { allowed = minTrigger; }
@@ -648,7 +648,7 @@ pub struct Gc is RegionRef, Traced {
       // generation holds of garbage grows further
       if minorMark and !sweepGen { trigger = 0usize; }
       oldGen = sweepGen;
-      gcPhase = if tobefnz != 0usize {finalizePhase;} else {pausePhase;};
+      gcPhase = if tobefnz != 0usize {finalizePhase} else {pausePhase};
       return 1usize;
     }
     let h = header(at);
@@ -687,7 +687,7 @@ pub struct Gc is RegionRef, Traced {
       // barrier since: young, and left as it is
       sweepAt = at;
     }
-    bytes;
+    bytes
   }
 
   // Run the finalizer of the newest object separated. It is marked
@@ -705,7 +705,7 @@ pub struct Gc is RegionRef, Traced {
     if tobefnz == 0usize { gcPhase = pausePhase; }
     let fin = (h.ty as &TypeRecord).finalize;
     fin(valueOf(at));
-    heldBytes(h);
+    heldBytes(h)
   }
 
   // One piece of the collection, whichever phase it is in; its work
@@ -715,12 +715,12 @@ pub struct Gc is RegionRef, Traced {
       return 1usize;
     }
     if gcPhase == markPhase {
-      return if grays != 0usize {propagateOne();} else {atomic();};
+      return if grays != 0usize {propagateOne()} else {atomic()};
     }
     if gcPhase == sweepPhase {
       return sweepOne();
     }
-    finalizeOne();
+    finalizeOne()
   }
 
   // Work until 'budget' bytes' worth is done, at least one piece, or until
@@ -737,7 +737,7 @@ pub struct Gc is RegionRef, Traced {
       going = work < budget and gcPhase != pausePhase;
     }
     stepping = false;
-    work;
+    work
   }
 
   // Work done, by a minor collection or a full one
@@ -756,7 +756,7 @@ pub struct Gc is RegionRef, Traced {
       work = work + heldBytes(h);
       at = h.next;
     }
-    work;
+    work
   }
 
   // Every object white and young, and nothing gray: the marks of a
@@ -766,7 +766,7 @@ pub struct Gc is RegionRef, Traced {
     grays = 0usize;
     oldGen = false;
     oldGenBytes = 0usize;
-    unmark(allgc) + unmark(finobj) + unmark(tobefnz);
+    unmark(allgc) + unmark(finobj) + unmark(tobefnz)
   }
 
   // The sweep and finalizing of the collection in progress, to their end;
@@ -778,7 +778,7 @@ pub struct Gc is RegionRef, Traced {
       if emergency { gcPhase = pausePhase; }
       else { while gcPhase == finalizePhase { work = work + finalizeOne(); } }
     }
-    work;
+    work
   }
 
   // A whole collection, stop-the-world. One in progress is finished first --
@@ -824,52 +824,52 @@ pub struct Gc is RegionRef, Traced {
       return false;
     }
     runStep(work);
-    gcPhase == pausePhase;
+    gcPhase == pausePhase
   }
   // Where the collection is: 0 none running, 1 marking, 2 sweeping,
   // 3 finalizing
-  pub fn phase() u32 { gcPhase; }
+  pub fn phase() u32 { gcPhase }
   // Turn the automatic work off, and on again
   pub fn stop() { autoOn = false; }
   pub fn start() { autoOn = true; }
   // A step at every allocation, or not; and whether it does (either stress)
   pub fn setStress(on bool) { readEnv(); stressOn = on; stressFull = false; }
-  pub fn stressed() bool { readEnv(); stressOn; }
+  pub fn stressed() bool { readEnv(); stressOn }
   // Generational running, or incremental: from the next sweep on (see THE
   // GENERATIONS); and which is chosen
   pub fn setGenerational(on bool) { readEnv(); genOn = on; }
-  pub fn generational() bool { readEnv(); genOn; }
+  pub fn generational() bool { readEnv(); genOn }
   // No more than 'bytes' of objects at once, headers included; 0 is no limit
   pub fn setLimit(bytes usize) { maxBytes = bytes; }
 
   // Objects not yet freed: live ones, and finalized ones awaiting the
   // collection that frees them
-  pub fn liveObjects() usize { nobjects; }
+  pub fn liveObjects() usize { nobjects }
   // Their bytes, headers included
-  pub fn liveBytes() usize { totalBytes; }
+  pub fn liveBytes() usize { totalBytes }
   // Collections that finished marking, finalizers run, objects freed, and
   // steps taken (by allocations, and Gc.step()), since the program began
-  pub fn collections() usize { ncollections; }
-  pub fn finalized() usize { nfinalized; }
-  pub fn freed() usize { nfreed; }
-  pub fn steps() usize { nsteps; }
+  pub fn collections() usize { ncollections }
+  pub fn finalized() usize { nfinalized }
+  pub fn freed() usize { nfreed }
+  pub fn steps() usize { nsteps }
   // The most work an allocation's step has done, in bytes: the longest pause
-  pub fn largestStep() usize { maxStep; }
+  pub fn largestStep() usize { maxStep }
   // Of the collections, the minor ones: a minor marking, and a sweep that
   // stopped at the old generation
-  pub fn minorCollections() usize { nminor; }
+  pub fn minorCollections() usize { nminor }
   // Objects made black, and objects the sweep freed or kept: the work,
   // counted in objects
-  pub fn markedObjects() usize { nmarked; }
-  pub fn sweptObjects() usize { nswept; }
+  pub fn markedObjects() usize { nmarked }
+  pub fn sweptObjects() usize { nswept }
   // Bytes of work done, by every step and whole collection: objects marked,
   // swept or finalized, each costing its bytes
-  pub fn work() usize { nwork; }
+  pub fn work() usize { nwork }
   // Of that, the work of minor collections (and the marking of one whose
   // sweep turned out full, for a full marking after it)
-  pub fn minorWork() usize { nminorWork; }
+  pub fn minorWork() usize { nminorWork }
   // Bytes promoted to the old generation by minor collections
-  pub fn promotedBytes() usize { npromoted; }
+  pub fn promotedBytes() usize { npromoted }
   // Bytes of the old generation now
-  pub fn oldBytes() usize { oldGenBytes; }
+  pub fn oldBytes() usize { oldGenBytes }
 }

@@ -14,6 +14,8 @@ BlockNode *newBlockNode() {
     blk->vtype = unknownType;  // This will be overridden with loop-as-expr
     blk->stmts = newNodes(8);
     blk->lifesym = NULL;
+    blk->tailmark = NULL;
+    blk->elseblk = NULL;
     blk->breaks = NULL;
     blk->flowmark = 0;
     return blk;
@@ -69,6 +71,7 @@ void blockPrint(BlockNode *blk) {
 // anything else (a declaration) gives none.
 BlockNode *blockElseFinish(BlockNode *elseblk, BlockNode *loop, INode *lexnode) {
     elseblk->flags |= FlagLoopElse;
+    loop->elseblk = elseblk;   // the parser judges its last line from the loop (parseTailCheck)
     INode *last = elseblk->stmts->used > 0 ? nodesLast(elseblk->stmts) : NULL;
     if (last != NULL && (last->tag == ReturnTag || last->tag == BreakTag || last->tag == ContinueTag))
         return elseblk;
